@@ -1,0 +1,32 @@
+{
+  "name": "@crosstown/client",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@crosstown/core": "workspace:*",
+    "nostr-tools": "^2.20.0"
+  },
+  "peerDependencies": {
+    "@agent-runtime/connector": ">=1.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@agent-runtime/connector": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@crosstown/relay": "workspace:*",
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  }
+}
