@@ -130,10 +130,13 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
       throw new ValidationError('Peer url must be a non-empty string');
     }
 
-    // Validate BTP URL format
-    if (!config.url.startsWith('btp+ws://') && !config.url.startsWith('btp+wss://')) {
+    // Validate BTP URL format (accept both ws:// and btp+ws:// formats)
+    const hasWsPrefix = config.url.startsWith('ws://') || config.url.startsWith('wss://');
+    const hasBtpPrefix = config.url.startsWith('btp+ws://') || config.url.startsWith('btp+wss://');
+
+    if (!hasWsPrefix && !hasBtpPrefix) {
       throw new ValidationError(
-        `Invalid BTP URL format: "${config.url}". Must start with 'btp+ws://' or 'btp+wss://'`
+        `Invalid BTP URL format: "${config.url}". Must start with 'ws://', 'wss://', 'btp+ws://', or 'btp+wss://'`
       );
     }
 
@@ -327,8 +330,12 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
       };
     }
   ): Promise<void> {
-    // Strip btp+ prefix for connector API (expects ws:// or wss://)
-    const connectorUrl = config.url.replace(/^btp\+/, '');
+    // Normalize URL for connector API (expects ws:// or wss://)
+    // Strip btp+ prefix if present, or use as-is if already plain ws://
+    let connectorUrl = config.url;
+    if (connectorUrl.startsWith('btp+')) {
+      connectorUrl = connectorUrl.replace(/^btp\+/, '');
+    }
 
     try {
       const response = await this.httpClient(url, {
