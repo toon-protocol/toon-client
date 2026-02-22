@@ -1,15 +1,14 @@
 # @crosstown/client
 
-High-level client library for interacting with the Crosstown protocol — an ILP-gated Nostr relay that solves the relay business model through micropayments.
+High-level TypeScript client for publishing Nostr events to the Crosstown protocol — an ILP-gated Nostr relay that enables sustainable relay operation through micropayments.
 
-## Features
+## What It Does
 
-- **HTTP Mode**: Connect to external ILP connector service via HTTP/WebSocket
-- **Peer Discovery**: Automatic peer discovery via NIP-02 follow lists and kind:10032 events
-- **SPSP Handshakes**: Automated SPSP (Simple Payment Setup Protocol) handshakes over Nostr
-- **Event Publishing**: Publish Nostr events to relay with ILP micropayments
-- **Bootstrap & Monitoring**: Automatic network bootstrap and real-time relay monitoring
-- **Type-Safe**: Full TypeScript support with strict typing
+This client handles:
+- **ILP Micropayments**: Pay to publish Nostr events (read is free)
+- **Network Bootstrap**: Automatically discover and handshake with ILP peers via NIP-02 follow lists
+- **HTTP-Only Mode**: Connects to external ILP connector service (embedded mode not yet implemented)
+- **TOON Encoding**: Native binary format for agent-friendly event encoding
 
 ## Installation
 
@@ -17,51 +16,67 @@ High-level client library for interacting with the Crosstown protocol — an ILP
 pnpm add @crosstown/client @crosstown/core @crosstown/relay nostr-tools
 ```
 
+## Prerequisites
+
+### Required Infrastructure (HTTP Mode)
+
+The client requires external services. Use docker-compose for local development:
+
+```bash
+# Start all required services
+docker compose -f docker-compose-simple.yml up -d
+
+# Verify services are healthy
+curl http://localhost:8080/health  # ILP Connector (runtime)
+curl http://localhost:8081/health  # ILP Connector (admin)
+curl http://localhost:3100/health  # Crosstown BLS
+# Nostr relay on ws://localhost:7100 (WebSocket, no HTTP endpoint)
+
+# Stop infrastructure
+docker compose -f docker-compose-simple.yml down
+```
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| **ILP Connector (Runtime)** | 8080 | Routes ILP packets to relay |
+| **ILP Connector (Admin)** | 8081 | Manages peer configuration |
+| **Crosstown BLS** | 3100 | Validates events, calculates pricing, stores events |
+| **Nostr Relay** | 7100 | WebSocket relay for peer discovery (kind:10032) |
+
+See [docker-compose-simple.yml](../../docker-compose-simple.yml) for configuration details.
+
+---
+
 ## Quick Start
-
-### HTTP Mode (Recommended)
-
-HTTP mode connects to an external ILP connector service. This is the recommended mode for most applications.
 
 ```typescript
 import { CrosstownClient } from '@crosstown/client';
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
 
-// Generate identity
+// 1. Generate identity
 const secretKey = generateSecretKey();
 const pubkey = getPublicKey(secretKey);
 
-// Create client
+// 2. Create client
 const client = new CrosstownClient({
-  // HTTP connector URL (required)
-  connectorUrl: 'http://localhost:8080',
-
-  // Identity (required)
-  secretKey,
-  ilpInfo: {
+  connectorUrl: 'http://localhost:8080',       // Required: ILP connector endpoint
+  secretKey,                                   // Required: Nostr private key
+  ilpInfo: {                                   // Required: ILP peer info
     pubkey,
     ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`,
     btpEndpoint: 'ws://localhost:3000',
   },
-
-  // TOON encoding (required)
-  toonEncoder: encodeEventToToon,
-  toonDecoder: decodeEventFromToon,
-
-  // Network (optional, defaults shown)
-  relayUrl: 'ws://localhost:7100',      // Nostr relay URL
-  queryTimeout: 30000,                  // Query timeout (30s)
-  maxRetries: 3,                        // Max retry attempts
-  retryDelay: 1000,                     // Retry delay (1s)
+  toonEncoder: encodeEventToToon,              // Required: TOON encoder
+  toonDecoder: decodeEventFromToon,            // Required: TOON decoder
+  relayUrl: 'ws://localhost:7100',             // Optional: defaults to ws://localhost:7100
 });
 
-// Start client (bootstrap peers, start monitoring)
+// 3. Start (bootstrap network, discover peers)
 const result = await client.start();
-console.log(`Started in ${result.mode} mode`);
 console.log(`Discovered ${result.peersDiscovered} peers`);
 
-// Publish event to relay via ILP payment
+// 4. Publish event to relay via ILP payment
 const event = finalizeEvent({
   kind: 1,
   content: 'Hello from Crosstown!',
@@ -71,21 +86,27 @@ const event = finalizeEvent({
 
 const publishResult = await client.publishEvent(event);
 if (publishResult.success) {
-  console.log(`Published event ${publishResult.eventId}`);
+  console.log(`Published: ${publishResult.eventId}`);
   console.log(`Fulfillment: ${publishResult.fulfillment}`);
 } else {
-  console.error(`Failed to publish: ${publishResult.error}`);
+  console.error(`Failed: ${publishResult.error}`);
 }
 
-// Clean up
+// 5. Clean up
 await client.stop();
 ```
 
+---
+
 ## API Reference
 
-### `CrosstownClient`
+### Main Class: `CrosstownClient`
 
-Main client class for interacting with Crosstown network.
+The primary interface for interacting with the Crosstown network.
+
+```typescript
+import { CrosstownClient } from '@crosstown/client';
+```
 
 #### Constructor
 
@@ -93,152 +114,462 @@ Main client class for interacting with Crosstown network.
 new CrosstownClient(config: CrosstownClientConfig)
 ```
 
-**Config Parameters:**
+Creates a new client instance. Does NOT start the client — call `start()` to initialize.
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `connectorUrl` | `string` | ✅ | - | HTTP URL of external connector service (e.g., `http://localhost:8080`) |
-| `secretKey` | `Uint8Array` | ✅ | - | 32-byte Nostr private key |
-| `ilpInfo` | `IlpPeerInfo` | ✅ | - | ILP peer information (address, BTP endpoint, pubkey) |
-| `toonEncoder` | `Function` | ✅ | - | Function to encode Nostr events to TOON binary format |
-| `toonDecoder` | `Function` | ✅ | - | Function to decode TOON binary format to Nostr events |
-| `relayUrl` | `string` | ❌ | `ws://localhost:7100` | Nostr relay URL for peer discovery |
-| `queryTimeout` | `number` | ❌ | `30000` | Query timeout in milliseconds |
-| `maxRetries` | `number` | ❌ | `3` | Maximum retry attempts for failed operations |
-| `retryDelay` | `number` | ❌ | `1000` | Delay between retries in milliseconds |
+**Throws:**
+- `ValidationError` - If configuration is invalid
 
-#### Methods
+---
 
-##### `async start(): Promise<CrosstownStartResult>`
+### Configuration: `CrosstownClientConfig`
 
-Starts the client and bootstraps the network.
+```typescript
+interface CrosstownClientConfig {
+  // ===== REQUIRED =====
+
+  /** HTTP URL of external ILP connector service */
+  connectorUrl: string;                        // Example: 'http://localhost:8080'
+
+  /** 32-byte Nostr private key (generated via nostr-tools) */
+  secretKey: Uint8Array;
+
+  /** ILP peer information for this client */
+  ilpInfo: {
+    pubkey: string;                            // Nostr public key (hex)
+    ilpAddress: string;                        // ILP address (e.g., 'g.crosstown.abc123')
+    btpEndpoint: string;                       // BTP WebSocket endpoint (e.g., 'ws://localhost:3000')
+  };
+
+  /** Function to encode Nostr events to TOON binary format */
+  toonEncoder: (event: NostrEvent) => Uint8Array;
+
+  /** Function to decode TOON binary to Nostr events */
+  toonDecoder: (bytes: Uint8Array) => NostrEvent;
+
+  // ===== OPTIONAL =====
+
+  /** Nostr relay URL for peer discovery (default: 'ws://localhost:7100') */
+  relayUrl?: string;
+
+  /** Query timeout in milliseconds (default: 30000) */
+  queryTimeout?: number;
+
+  /** Max retry attempts for failed operations (default: 3) */
+  maxRetries?: number;
+
+  /** Delay between retries in milliseconds (default: 1000) */
+  retryDelay?: number;
+}
+```
+
+**Important Notes:**
+- `connector` parameter is **not supported** (embedded mode not implemented)
+- Passing `connector` will throw `ValidationError: "Embedded mode not yet implemented"`
+- HTTP mode is the only supported mode in this version
+
+---
+
+### Methods
+
+#### `start(): Promise<CrosstownStartResult>`
+
+Starts the client, bootstraps the network, and begins monitoring for new peers.
+
+**What it does:**
+1. Initializes HTTP runtime and admin clients
+2. Discovers peers via NIP-02 follow lists and kind:10032 events
+3. Performs SPSP handshakes with discovered peers
+4. Starts monitoring relay for new kind:10032 events
 
 **Returns:**
 ```typescript
 {
-  mode: 'http' | 'embedded',
-  peersDiscovered: number
+  mode: 'http',           // Always 'http' in this version
+  peersDiscovered: number // Number of peers found during bootstrap
 }
 ```
 
 **Throws:**
-- `CrosstownClientError` - If client is already started or initialization fails
+- `CrosstownClientError` - If client is already started
+- `CrosstownClientError` - If initialization fails (wraps underlying error)
+
+**Example:**
+```typescript
+const result = await client.start();
+console.log(`Mode: ${result.mode}, Peers: ${result.peersDiscovered}`);
+```
 
 ---
 
-##### `async publishEvent(event: NostrEvent): Promise<PublishEventResult>`
+#### `publishEvent(event: NostrEvent): Promise<PublishEventResult>`
 
-Publishes a signed Nostr event to the relay via ILP payment.
+Publishes a signed Nostr event to the relay via ILP micropayment.
 
 **Parameters:**
-- `event` - Finalized (signed) Nostr event
+- `event` - **Must be finalized** (signed with `id`, `pubkey`, `sig`). Use `finalizeEvent()` from nostr-tools.
 
 **Returns:**
 ```typescript
 {
-  success: boolean,
-  eventId?: string,
-  fulfillment?: string,
-  error?: string
+  success: boolean,       // Whether event was successfully published
+  eventId?: string,       // Event ID (if success)
+  fulfillment?: string,   // ILP fulfillment proof (if success)
+  error?: string          // Error message (if failure)
 }
 ```
 
 **Throws:**
-- `CrosstownClientError` - If client is not started or publishing fails
+- `CrosstownClientError` - If client is not started
+- `CrosstownClientError` - If publishing fails (network/connector error)
+
+**Example:**
+```typescript
+const event = finalizeEvent({ kind: 1, content: 'Hello', tags: [], created_at: now }, secretKey);
+const result = await client.publishEvent(event);
+
+if (result.success) {
+  console.log(`Published: ${result.eventId}`);
+} else {
+  console.error(`Failed: ${result.error}`);
+}
+```
 
 ---
 
-##### `async stop(): Promise<void>`
+#### `stop(): Promise<void>`
 
 Stops the client and cleans up resources.
 
+**What it does:**
+1. Stops relay monitoring subscription
+2. Closes SimplePool connections
+3. Clears internal state
+
 **Throws:**
-- `CrosstownClientError` - If client is not started or stopping fails
+- `CrosstownClientError` - If client is not started
+- `CrosstownClientError` - If stopping fails
+
+**Example:**
+```typescript
+await client.stop();
+```
 
 ---
 
-##### `isStarted(): boolean`
+#### `isStarted(): boolean`
 
-Returns `true` if the client is currently started.
+Returns `true` if the client is currently started, `false` otherwise.
+
+**Example:**
+```typescript
+if (!client.isStarted()) {
+  await client.start();
+}
+```
 
 ---
 
-##### `getPeersCount(): number`
+#### `getPeersCount(): number`
 
 Returns the number of peers discovered during bootstrap.
 
 **Throws:**
 - `CrosstownClientError` - If client is not started
 
+**Example:**
+```typescript
+const count = client.getPeersCount();
+console.log(`Connected to ${count} peers`);
+```
+
 ---
 
-##### `getDiscoveredPeers(): DiscoveredPeer[]`
+#### `getDiscoveredPeers(): DiscoveredPeer[]`
 
 Returns the list of peers discovered by the relay monitor.
+
+**Returns:**
+```typescript
+Array<{
+  ilpAddress: string;
+  btpEndpoint: string;
+  pubkey: string;
+  // ... other peer metadata
+}>
+```
 
 **Throws:**
 - `CrosstownClientError` - If client is not started
 
-## Docker Infrastructure
-
-The client requires external infrastructure in HTTP mode. Use docker-compose for local development:
-
-### Quick Start
-
-```bash
-# From repository root
-docker compose -f docker-compose-simple.yml up -d
-
-# Verify services are healthy
-curl http://localhost:8080/health  # Connector
-curl http://localhost:3100/health  # BLS
-
-# Use the client (see Quick Start above)
-
-# Stop infrastructure
-docker compose -f docker-compose-simple.yml down
+**Example:**
+```typescript
+const peers = client.getDiscoveredPeers();
+peers.forEach(peer => {
+  console.log(`Peer: ${peer.pubkey} at ${peer.ilpAddress}`);
+});
 ```
 
-### Services
-
-| Service | Port | Purpose |
-|---------|------|---------|
-| Connector Runtime | 8080 | ILP packet routing |
-| Connector Admin | 8081 | Peer management |
-| Crosstown BLS | 3100 | Business logic server (event pricing, validation) |
-| Nostr Relay | 7100 | Nostr WebSocket relay |
-
-See [docker-compose-simple.yml](../../docker-compose-simple.yml) for full configuration.
+---
 
 ## Error Handling
 
-The client provides typed error classes for different failure scenarios:
+The client provides specialized error classes for different failure scenarios.
+
+### Error Class Hierarchy
+
+```typescript
+CrosstownClientError (base class)
+├── NetworkError              // Connection failures (ECONNREFUSED, ETIMEDOUT)
+├── ConnectorError           // Connector server errors (5xx)
+├── ValidationError          // Invalid config or input
+├── UnauthorizedError        // Admin API 401 responses
+├── PeerNotFoundError        // Admin API 404 responses (peer not found)
+└── PeerAlreadyExistsError   // Admin API 409 responses (duplicate peer)
+```
+
+### Importing Error Classes
 
 ```typescript
 import {
-  CrosstownClientError,  // Base error class
-  NetworkError,          // Network failures (ECONNREFUSED, ETIMEDOUT)
-  ConnectorError,        // Connector server errors (5xx)
-  ValidationError,       // Invalid configuration or input
+  CrosstownClientError,
+  NetworkError,
+  ConnectorError,
+  ValidationError,
+  UnauthorizedError,
+  PeerNotFoundError,
+  PeerAlreadyExistsError,
 } from '@crosstown/client';
+```
 
+### Error Properties
+
+All error classes extend `CrosstownClientError` with these properties:
+
+```typescript
+class CrosstownClientError extends Error {
+  name: string;        // Error class name
+  message: string;     // Human-readable error message
+  code: string;        // Machine-readable error code
+  cause?: Error;       // Original error (if wrapped)
+}
+```
+
+### Usage Example
+
+```typescript
 try {
   await client.start();
 } catch (error) {
   if (error instanceof NetworkError) {
-    console.error('Network failure:', error.message);
-    // Retry or fallback to different connector
+    // Connection to connector failed (ECONNREFUSED, timeout, DNS failure)
+    console.error('Cannot reach connector:', error.message);
+    // Retry with exponential backoff or switch to backup connector
   } else if (error instanceof ConnectorError) {
-    console.error('Connector unavailable:', error.message);
-    // Wait and retry, or alert user
+    // Connector returned 5xx server error
+    console.error('Connector is malfunctioning:', error.message);
+    // Alert ops team, wait before retry
   } else if (error instanceof ValidationError) {
+    // Invalid configuration (fix before retry)
     console.error('Invalid config:', error.message);
-    // Fix configuration and restart
+    // Fix config and restart
+  } else if (error instanceof UnauthorizedError) {
+    // Admin API authentication failed
+    console.error('Auth failed:', error.message);
+    // Check auth credentials
+  } else if (error instanceof PeerNotFoundError) {
+    // Tried to remove non-existent peer
+    console.error('Peer not found:', error.message);
+  } else if (error instanceof PeerAlreadyExistsError) {
+    // Tried to add duplicate peer
+    console.error('Peer already exists:', error.message);
   } else {
+    // Unexpected error
     console.error('Unexpected error:', error);
   }
 }
 ```
+
+### Error Codes
+
+| Error Class | Code | Meaning |
+|-------------|------|---------|
+| `CrosstownClientError` | `INVALID_STATE` | Operation called in wrong state (e.g., `stop()` before `start()`) |
+| `CrosstownClientError` | `INITIALIZATION_ERROR` | Client failed to initialize during `start()` |
+| `CrosstownClientError` | `PUBLISH_ERROR` | Event publishing failed |
+| `CrosstownClientError` | `STOP_ERROR` | Error during cleanup in `stop()` |
+| `NetworkError` | `NETWORK_ERROR` | Connection failure (ECONNREFUSED, ETIMEDOUT, DNS) |
+| `ConnectorError` | `CONNECTOR_ERROR` | Connector 5xx server error |
+| `ValidationError` | `VALIDATION_ERROR` | Invalid configuration or input parameters |
+| `UnauthorizedError` | `UNAUTHORIZED` | Admin API 401 authentication failure |
+| `PeerNotFoundError` | `PEER_NOT_FOUND` | Admin API 404 peer not found |
+| `PeerAlreadyExistsError` | `PEER_ALREADY_EXISTS` | Admin API 409 duplicate peer |
+
+---
+
+## Advanced Usage: HTTP Adapters
+
+For advanced use cases, you can use the HTTP adapter classes directly without `CrosstownClient`.
+
+### `HttpRuntimeClient`
+
+Low-level client for sending ILP packets to the connector runtime API.
+
+```typescript
+import { HttpRuntimeClient } from '@crosstown/client';
+
+const runtimeClient = new HttpRuntimeClient({
+  connectorUrl: 'http://localhost:8080',
+  timeout: 30000,        // Optional: request timeout (ms)
+  maxRetries: 3,         // Optional: max retry attempts
+  retryDelay: 1000,      // Optional: retry delay (ms)
+});
+
+const result = await runtimeClient.sendIlpPacket({
+  destination: 'g.crosstown.relay',
+  amount: '1000',
+  data: 'base64EncodedToonData==',
+});
+
+if (result.accepted) {
+  console.log('Payment accepted:', result.fulfillment);
+} else {
+  console.error('Payment rejected:', result.code, result.message);
+}
+```
+
+**Methods:**
+- `sendIlpPacket(params): Promise<IlpSendResult>`
+  - `params.destination` - ILP address (must start with `g.`)
+  - `params.amount` - Amount in base units (stringified integer)
+  - `params.data` - Base64-encoded packet data
+  - `params.timeout` - Optional timeout override (ms)
+
+**Throws:**
+- `ValidationError` - Invalid parameters (empty destination, malformed ILP address, invalid amount, non-Base64 data)
+- `NetworkError` - Connection failure (retries automatically)
+- `ConnectorError` - Connector 5xx error (no retry)
+
+---
+
+### `HttpConnectorAdmin`
+
+Low-level client for managing ILP peers via the connector admin API.
+
+```typescript
+import { HttpConnectorAdmin } from '@crosstown/client';
+
+const adminClient = new HttpConnectorAdmin({
+  adminUrl: 'http://localhost:8081',
+  timeout: 30000,        // Optional: request timeout (ms)
+  maxRetries: 3,         // Optional: max retry attempts
+  retryDelay: 1000,      // Optional: retry delay (ms)
+});
+
+// Add single peer
+await adminClient.addPeer({
+  id: 'nostr-abc123',
+  url: 'btp+ws://alice.example.com:3000',
+  authToken: 'secret-token',
+  routes: [{ prefix: 'g.crosstown.alice' }],
+  settlement: {
+    preference: 'payment-channel',
+    evmAddress: '0x...',
+    tokenAddress: '0x...',
+    tokenNetworkAddress: '0x...',
+    chainId: 1,
+  },
+});
+
+// Remove single peer
+await adminClient.removePeer('nostr-abc123');
+
+// Bulk operations (parallel execution with Promise.allSettled)
+const addResults = await adminClient.addPeers([
+  { id: 'peer1', url: 'btp+ws://...', authToken: 'token1' },
+  { id: 'peer2', url: 'btp+ws://...', authToken: 'token2' },
+]);
+
+const removeResults = await adminClient.removePeers(['peer1', 'peer2']);
+
+// Check results
+addResults.forEach(result => {
+  if (result.success) {
+    console.log(`Added: ${result.peerId}`);
+  } else {
+    console.error(`Failed: ${result.peerId}`, result.error);
+  }
+});
+```
+
+**Methods:**
+
+1. **`addPeer(config): Promise<void>`**
+   - `config.id` - Unique peer identifier (non-empty string)
+   - `config.url` - BTP WebSocket URL (must start with `btp+ws://` or `btp+wss://`)
+   - `config.authToken` - Authentication token (can be empty string for no auth)
+   - `config.routes` - Optional routing table entries
+   - `config.settlement` - Optional settlement configuration
+
+2. **`removePeer(peerId): Promise<void>`**
+   - `peerId` - Peer identifier to remove
+
+3. **`addPeers(configs): Promise<PeerOperationResult[]>`**
+   - Bulk add with parallel execution
+   - Returns array of results (success/error per peer)
+
+4. **`removePeers(peerIds): Promise<PeerOperationResult[]>`**
+   - Bulk remove with parallel execution
+   - Returns array of results (success/error per peer)
+
+**Throws:**
+- `ValidationError` - Invalid parameters (empty id, malformed URL, etc.)
+- `PeerAlreadyExistsError` - Peer with same ID exists (409)
+- `PeerNotFoundError` - Peer doesn't exist (404)
+- `UnauthorizedError` - Authentication failed (401)
+- `NetworkError` - Connection failure (retries automatically)
+- `ConnectorError` - Server error (5xx)
+
+**Bulk Operation Result:**
+```typescript
+interface PeerOperationResult {
+  peerId: string;    // Peer ID that was operated on
+  success: boolean;  // Whether operation succeeded
+  error?: Error;     // Error object (if failed)
+}
+```
+
+---
+
+## Utilities
+
+### `withRetry()`
+
+Retry helper with exponential backoff.
+
+```typescript
+import { withRetry } from '@crosstown/client';
+
+const result = await withRetry(
+  async () => {
+    // Your async operation
+    return await fetchData();
+  },
+  {
+    maxRetries: 3,
+    retryDelay: 1000,
+    exponentialBackoff: true,
+    shouldRetry: (error) => error instanceof NetworkError,
+  }
+);
+```
+
+**Options:**
+- `maxRetries` - Maximum retry attempts (default: 3)
+- `retryDelay` - Initial delay between retries in ms (default: 1000)
+- `exponentialBackoff` - Double delay after each retry (default: false)
+- `shouldRetry` - Function to determine if error is retryable (default: retry all)
+
+---
 
 ## Testing
 
@@ -269,64 +600,89 @@ pnpm test:e2e
 docker compose -f docker-compose-simple.yml down
 ```
 
-See [tests/e2e/README.md](tests/e2e/README.md) for detailed E2E test setup instructions.
+See [tests/e2e/README.md](tests/e2e/README.md) for detailed E2E setup.
 
-## Limitations (Current Version)
+---
 
-This version implements **HTTP mode only**. The following limitations apply:
+## Current Limitations
 
-### 1. Embedded Mode Not Implemented
+### 1. HTTP Mode Only
 
-The `connector` config parameter is not yet supported. Embedded mode (running connector in-process) will be added in a future epic.
+**Embedded mode is not implemented.** Attempting to use it will throw an error:
 
 ```typescript
-// ❌ NOT SUPPORTED (will throw error)
+// ❌ NOT SUPPORTED
 const client = new CrosstownClient({
-  connector: embeddedConnectorInstance,  // Error: "Embedded mode not yet implemented"
-  ...
+  connector: embeddedConnectorInstance,  // ValidationError: "Embedded mode not yet implemented"
+  // ...
 });
 
-// ✅ SUPPORTED (HTTP mode)
+// ✅ SUPPORTED
 const client = new CrosstownClient({
   connectorUrl: 'http://localhost:8080',
-  ...
+  // ...
 });
 ```
 
-### 2. HTTP Mode Limitations
+### 2. No Direct Payment Channels
 
-- **No Direct Channel Client:** HTTP mode does not support direct payment channels (returns `null` in initialization)
-- **No `handlePacket` Callback:** Connector handles incoming packets internally
-- **Requires External Service:** Connector must be running externally (docker-compose or standalone)
+HTTP mode does not support direct payment channel client (returns `null` during initialization). Payment channel management must be handled externally via the connector.
 
-### 3. Authentication Deferred
+### 3. No Authentication
 
-HTTP connector API is assumed to be local/trusted (no authentication required). Production authentication will be added in a future security enhancement story.
+HTTP connector API is assumed to be local/trusted. Production authentication will be added in a future release.
+
+### 4. Fixed Pricing
+
+Event pricing is currently hardcoded (`amount: '1000'` in `publishEvent()`). Dynamic pricing based on event size/kind will be added in a future release.
+
+---
 
 ## Troubleshooting
 
 ### Client Fails to Start
 
-**Problem:** `CrosstownClientError: Failed to start client`
+**Symptom:** `CrosstownClientError: Failed to start client`
 
 **Solutions:**
-1. Verify connector is running: `curl http://localhost:8080/health`
-2. Check connector logs: `docker compose -f docker-compose-simple.yml logs connector`
+1. Verify connector is running:
+   ```bash
+   curl http://localhost:8080/health
+   ```
+2. Check connector logs:
+   ```bash
+   docker compose -f docker-compose-simple.yml logs connector
+   ```
 3. Verify config has valid `connectorUrl`, `secretKey`, and `ilpInfo`
+
+---
 
 ### Event Publishing Fails
 
-**Problem:** `PublishEventResult.success === false`
+**Symptom:** `PublishEventResult.success === false`
 
 **Solutions:**
-1. Verify client is started: `client.isStarted()` should return `true`
+1. Verify client is started:
+   ```typescript
+   if (!client.isStarted()) {
+     await client.start();
+   }
+   ```
 2. Check event is properly signed (use `finalizeEvent` from nostr-tools)
-3. Verify relay is accessible: `wscat -c ws://localhost:7100`
-4. Check BLS logs: `docker compose -f docker-compose-simple.yml logs crosstown-node`
+3. Verify relay is accessible:
+   ```bash
+   wscat -c ws://localhost:7100
+   ```
+4. Check BLS logs:
+   ```bash
+   docker compose -f docker-compose-simple.yml logs crosstown-node
+   ```
+
+---
 
 ### Port Conflicts
 
-**Problem:** `Error: bind: address already in use`
+**Symptom:** `Error: bind: address already in use`
 
 **Solutions:**
 ```bash
@@ -340,6 +696,25 @@ lsof -ti:3100 | xargs kill -9  # BLS
 docker compose -f docker-compose-simple.yml up -d
 ```
 
+---
+
+### Network Errors
+
+**Symptom:** `NetworkError: Failed to connect to connector`
+
+**Solutions:**
+1. Check connector is running and accessible
+2. Verify firewall/network settings allow connections to connector ports
+3. Increase timeout in config:
+   ```typescript
+   const client = new CrosstownClient({
+     // ...
+     queryTimeout: 60000,  // 60 seconds
+   });
+   ```
+
+---
+
 ## Examples
 
 See [packages/examples/](../examples/) for more examples:
@@ -347,12 +722,17 @@ See [packages/examples/](../examples/) for more examples:
 - Multi-client event publishing
 - Error handling patterns
 - Custom retry strategies
+- Direct adapter usage
+
+---
 
 ## Related Packages
 
-- `@crosstown/core` - Core protocol implementation (peer discovery, SPSP, bootstrap)
-- `@crosstown/relay` - Nostr relay server with ILP payment gating
-- `@crosstown/bls` - Business Logic Server (event pricing, validation, storage)
+- **[@crosstown/core](../core/)** - Core protocol (peer discovery, SPSP, bootstrap)
+- **[@crosstown/relay](../relay/)** - Nostr relay with ILP payment gating
+- **[@crosstown/bls](../bls/)** - Business Logic Server (pricing, validation, storage)
+
+---
 
 ## License
 
