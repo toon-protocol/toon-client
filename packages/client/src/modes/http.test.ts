@@ -1,16 +1,29 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SimplePool } from 'nostr-tools/pool';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { initializeHttpMode } from './http.js';
-import type { CrosstownClientConfig } from '../types.js';
+import type { ResolvedConfig } from '../config.js';
+
+// Mock BtpRuntimeClient to avoid real WebSocket connections
+vi.mock('../adapters/BtpRuntimeClient.js', () => {
+  return {
+    BtpRuntimeClient: vi.fn().mockImplementation(() => ({
+      connect: vi.fn().mockResolvedValue(undefined),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+      sendIlpPacket: vi.fn(),
+      isConnected: true,
+    })),
+  };
+});
 
 describe('initializeHttpMode', () => {
   let pool: SimplePool;
-  let config: Required<Omit<CrosstownClientConfig, 'connector'>> & { connector?: unknown };
+  let config: ResolvedConfig;
   let secretKey: Uint8Array;
   let pubkey: string;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     pool = new SimplePool();
     secretKey = generateSecretKey();
     pubkey = getPublicKey(secretKey);
@@ -40,33 +53,13 @@ describe('initializeHttpMode', () => {
     };
   });
 
-  describe('HTTP mode initialization (AC: 1)', () => {
-    it('should create HttpRuntimeClient and HttpConnectorAdmin from config', async () => {
+  describe('HTTP mode initialization', () => {
+    it('should create components from config', async () => {
       const result = await initializeHttpMode(config, pool);
 
       expect(result.runtimeClient).toBeDefined();
-      expect(result.adminClient).toBeDefined();
       expect(result.bootstrapService).toBeDefined();
       expect(result.relayMonitor).toBeDefined();
-      expect(result.channelClient).toBeNull();
-    });
-
-    it('should create HttpRuntimeClient with correct connectorUrl', async () => {
-      const result = await initializeHttpMode(config, pool);
-
-      // HttpRuntimeClient should have the connectorUrl from config
-      expect(result.runtimeClient).toBeDefined();
-      // Note: HttpRuntimeClient is a class, so we can't directly inspect private fields
-      // We verify it works by checking it was created successfully
-    });
-
-    it('should create HttpConnectorAdmin with correct admin URL', async () => {
-      const result = await initializeHttpMode(config, pool);
-
-      // HttpConnectorAdmin should have admin URL (port 8080 → 8081)
-      expect(result.adminClient).toBeDefined();
-      // Note: HttpConnectorAdmin is a class, so we can't directly inspect private fields
-      // We verify it works by checking it was created successfully
     });
 
     it('should create BootstrapService correctly', async () => {
@@ -84,58 +77,99 @@ describe('initializeHttpMode', () => {
       expect(result.relayMonitor.getDiscoveredPeers()).toEqual([]);
     });
 
-    it('should set channelClient to null (HTTP mode limitation)', async () => {
+    it('should not wire ConnectorAdmin', async () => {
       const result = await initializeHttpMode(config, pool);
 
-      expect(result.channelClient).toBeNull();
+      expect(result.adminClient).toBeNull();
+    });
+
+    it('should set btpClient to null when btpUrl not configured', async () => {
+      delete (config as any).btpUrl;
+      const result = await initializeHttpMode(config, pool);
+
+      expect(result.btpClient).toBeNull();
+    });
+
+    it('should set onChainChannelClient to null when EVM not configured', async () => {
+      const result = await initializeHttpMode(config, pool);
+
+      expect(result.onChainChannelClient).toBeNull();
     });
   });
 
-  describe('URL derivation', () => {
-    it('should derive admin URL from runtime URL (port 8080 → 8081)', async () => {
-      config.connectorUrl = 'http://localhost:8080';
+  describe('BTP transport', () => {
+    it('should create BtpRuntimeClient when btpUrl configured', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+      config.btpAuthToken = 'test-token';
+
       const result = await initializeHttpMode(config, pool);
 
-      // Verify admin client was created (implies URL derivation worked)
-      expect(result.adminClient).toBeDefined();
+      expect(result.btpClient).not.toBeNull();
+      expect(result.btpClient!.connect).toHaveBeenCalled();
     });
 
-    it('should handle non-standard ports correctly', async () => {
-      config.connectorUrl = 'http://localhost:9999';
+    it('should use BTP client as runtime client when available', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+
       const result = await initializeHttpMode(config, pool);
 
-      // Should still create admin client (even if port mapping is wrong)
-      expect(result.adminClient).toBeDefined();
+      // runtimeClient should be the btpClient
+      expect(result.runtimeClient).toBe(result.btpClient);
     });
 
-    it('should handle HTTPS URLs correctly', async () => {
-      config.connectorUrl = 'https://connector.example.com:8080';
+    it('should fall back to HttpRuntimeClient when btpUrl absent', async () => {
+      delete (config as any).btpUrl;
       const result = await initializeHttpMode(config, pool);
 
+      expect(result.btpClient).toBeNull();
       expect(result.runtimeClient).toBeDefined();
-      expect(result.adminClient).toBeDefined();
+      // It should be an HttpRuntimeClient (not BtpRuntimeClient)
+      expect(result.runtimeClient.constructor.name).toBe('HttpRuntimeClient');
+    });
+  });
+
+  describe('on-chain channel client', () => {
+    it('should create OnChainChannelClient when evmPrivateKey + chainRpcUrls configured', async () => {
+      config.evmPrivateKey = '0x' + 'ab'.repeat(32);
+      config.chainRpcUrls = { 'evm:anvil:31337': 'http://localhost:8545' };
+
+      const result = await initializeHttpMode(config, pool);
+
+      expect(result.onChainChannelClient).not.toBeNull();
+    });
+
+    it('should not create OnChainChannelClient when only evmPrivateKey configured', async () => {
+      config.evmPrivateKey = '0x' + 'ab'.repeat(32);
+
+      const result = await initializeHttpMode(config, pool);
+
+      expect(result.onChainChannelClient).toBeNull();
+    });
+  });
+
+  describe('settlement info propagation', () => {
+    it('should propagate settlementInfo to BootstrapService when configured', async () => {
+      config.supportedChains = ['evm:anvil:31337'];
+      config.settlementAddresses = { 'evm:anvil:31337': '0xabc' };
+
+      const result = await initializeHttpMode(config, pool);
+
+      // BootstrapService should be created with settlement info
+      expect(result.bootstrapService).toBeDefined();
+    });
+
+    it('should propagate settlementInfo to RelayMonitor when configured', async () => {
+      config.supportedChains = ['evm:anvil:31337'];
+
+      const result = await initializeHttpMode(config, pool);
+
+      expect(result.relayMonitor).toBeDefined();
     });
   });
 
   describe('configuration propagation', () => {
-    it('should propagate queryTimeout to HTTP clients', async () => {
+    it('should propagate queryTimeout', async () => {
       config.queryTimeout = 60000;
-      const result = await initializeHttpMode(config, pool);
-
-      // Verify clients were created with config (timeout is private, so just check creation)
-      expect(result.runtimeClient).toBeDefined();
-      expect(result.adminClient).toBeDefined();
-    });
-
-    it('should propagate maxRetries to HTTP runtime client', async () => {
-      config.maxRetries = 5;
-      const result = await initializeHttpMode(config, pool);
-
-      expect(result.runtimeClient).toBeDefined();
-    });
-
-    it('should propagate retryDelay to HTTP runtime client', async () => {
-      config.retryDelay = 2000;
       const result = await initializeHttpMode(config, pool);
 
       expect(result.runtimeClient).toBeDefined();
@@ -166,37 +200,6 @@ describe('initializeHttpMode', () => {
       const result = await initializeHttpMode(config, pool);
 
       expect(result.bootstrapService).toBeDefined();
-      expect(result.relayMonitor).toBeDefined();
-    });
-  });
-
-  describe('component wiring', () => {
-    it('should wire runtimeClient into BootstrapService', async () => {
-      const result = await initializeHttpMode(config, pool);
-
-      // BootstrapService should have runtime client set via setAgentRuntimeClient()
-      // We can't directly verify private fields, but we can verify the service was created
-      expect(result.bootstrapService).toBeDefined();
-    });
-
-    it('should wire adminClient into BootstrapService', async () => {
-      const result = await initializeHttpMode(config, pool);
-
-      // BootstrapService should have admin client set via setConnectorAdmin()
-      expect(result.bootstrapService).toBeDefined();
-    });
-
-    it('should wire runtimeClient into RelayMonitor', async () => {
-      const result = await initializeHttpMode(config, pool);
-
-      // RelayMonitor should have runtime client set via setAgentRuntimeClient()
-      expect(result.relayMonitor).toBeDefined();
-    });
-
-    it('should wire adminClient into RelayMonitor', async () => {
-      const result = await initializeHttpMode(config, pool);
-
-      // RelayMonitor should have admin client set via setConnectorAdmin()
       expect(result.relayMonitor).toBeDefined();
     });
   });

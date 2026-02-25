@@ -11,16 +11,10 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@agent-society/connector": "^1.2.0",
     "@crosstown/core": "workspace:*",
-    "nostr-tools": "^2.20.0"
-  },
-  "peerDependencies": {
-    "@agent-runtime/connector": ">=1.2.0"
-  },
-  "peerDependenciesMeta": {
-    "@agent-runtime/connector": {
-      "optional": true
-    }
+    "nostr-tools": "^2.20.0",
+    "viem": "^2.0.0"
   },
   "devDependencies": {
     "@crosstown/relay": "workspace:*",

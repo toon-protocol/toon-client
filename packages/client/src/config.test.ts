@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { validateConfig, applyDefaults } from './config.js';
+import { validateConfig, applyDefaults, buildSettlementInfo } from './config.js';
 import { ValidationError } from './errors.js';
 import type { CrosstownClientConfig } from './types.js';
 
@@ -92,11 +92,10 @@ describe('validateConfig', () => {
   });
 
   describe('secretKey validation', () => {
-    it('should throw error when secretKey is missing', () => {
-      const config = createValidConfig({ secretKey: undefined as any });
+    it('should accept config when secretKey is omitted (auto-generated)', () => {
+      const config = createValidConfig({ secretKey: undefined });
 
-      expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('secretKey must be 32 bytes');
+      expect(() => validateConfig(config)).not.toThrow();
     });
 
     it('should throw error when secretKey is not 32 bytes', () => {
@@ -197,6 +196,89 @@ describe('validateConfig', () => {
       expect(() => validateConfig(config)).not.toThrow();
     });
   });
+
+  describe('evmPrivateKey validation', () => {
+    it('should accept valid hex string with 0x prefix', () => {
+      const config = createValidConfig({
+        evmPrivateKey: '0x' + 'ab'.repeat(32),
+      });
+
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('should accept valid hex string without 0x prefix', () => {
+      const config = createValidConfig({
+        evmPrivateKey: 'cd'.repeat(32),
+      });
+
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('should accept valid Uint8Array', () => {
+      const config = createValidConfig({
+        evmPrivateKey: new Uint8Array(32),
+      });
+
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('should throw error for invalid hex string', () => {
+      const config = createValidConfig({
+        evmPrivateKey: '0xnothex',
+      });
+
+      expect(() => validateConfig(config)).toThrow(ValidationError);
+      expect(() => validateConfig(config)).toThrow('32-byte hex string');
+    });
+
+    it('should throw error for wrong length Uint8Array', () => {
+      const config = createValidConfig({
+        evmPrivateKey: new Uint8Array(16),
+      });
+
+      expect(() => validateConfig(config)).toThrow(ValidationError);
+      expect(() => validateConfig(config)).toThrow('evmPrivateKey must be 32 bytes');
+    });
+  });
+
+  describe('btpUrl validation', () => {
+    it('should accept valid WS URL', () => {
+      const config = createValidConfig({ btpUrl: 'ws://localhost:3000' });
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('should accept valid WSS URL', () => {
+      const config = createValidConfig({ btpUrl: 'wss://secure.example.com' });
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('should throw error for non-WebSocket URL', () => {
+      const config = createValidConfig({ btpUrl: 'http://localhost:3000' });
+      expect(() => validateConfig(config)).toThrow(ValidationError);
+      expect(() => validateConfig(config)).toThrow('must be a valid WebSocket URL');
+    });
+  });
+
+  describe('chainRpcUrls validation', () => {
+    it('should throw when chainRpcUrls key is not in supportedChains', () => {
+      const config = createValidConfig({
+        supportedChains: ['evm:anvil:31337'],
+        chainRpcUrls: { 'evm:mainnet:1': 'http://localhost:8545' },
+      });
+
+      expect(() => validateConfig(config)).toThrow(ValidationError);
+      expect(() => validateConfig(config)).toThrow('not in supportedChains');
+    });
+
+    it('should accept when chainRpcUrls keys match supportedChains', () => {
+      const config = createValidConfig({
+        supportedChains: ['evm:anvil:31337'],
+        chainRpcUrls: { 'evm:anvil:31337': 'http://localhost:8545' },
+      });
+
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+  });
 });
 
 describe('applyDefaults', () => {
@@ -223,6 +305,47 @@ describe('applyDefaults', () => {
       }),
     };
   };
+
+  it('should auto-generate secretKey when omitted', () => {
+    const config = createMinimalConfig();
+    delete (config as any).secretKey;
+    config.secretKey = undefined;
+    const result = applyDefaults(config);
+
+    expect(result.secretKey).toBeDefined();
+    expect(result.secretKey).toHaveLength(32);
+  });
+
+  it('should preserve provided secretKey', () => {
+    const config = createMinimalConfig();
+    const originalKey = config.secretKey;
+    const result = applyDefaults(config);
+
+    expect(result.secretKey).toBe(originalKey);
+  });
+
+  it('should derive btpUrl from connectorUrl when not provided', () => {
+    const config = createMinimalConfig();
+    const result = applyDefaults(config);
+
+    expect(result.btpUrl).toBe('ws://localhost:3000');
+  });
+
+  it('should preserve custom btpUrl', () => {
+    const config = createMinimalConfig();
+    config.btpUrl = 'ws://custom:5000';
+    const result = applyDefaults(config);
+
+    expect(result.btpUrl).toBe('ws://custom:5000');
+  });
+
+  it('should derive wss btpUrl from https connectorUrl', () => {
+    const config = createMinimalConfig();
+    config.connectorUrl = 'https://connector.example.com:8080';
+    const result = applyDefaults(config);
+
+    expect(result.btpUrl).toBe('wss://connector.example.com:3000');
+  });
 
   it('should apply default relayUrl', () => {
     const config = createMinimalConfig();
@@ -293,5 +416,47 @@ describe('applyDefaults', () => {
     expect(result.ilpInfo).toBe(config.ilpInfo);
     expect(result.toonEncoder).toBe(config.toonEncoder);
     expect(result.toonDecoder).toBe(config.toonDecoder);
+  });
+});
+
+describe('buildSettlementInfo', () => {
+  const createConfig = (overrides: Partial<CrosstownClientConfig> = {}): CrosstownClientConfig => ({
+    connectorUrl: 'http://localhost:8080',
+    ilpInfo: { ilpAddress: 'g.test', btpEndpoint: 'ws://test', pubkey: 'abc' },
+    toonEncoder: () => new Uint8Array(0),
+    toonDecoder: () => ({ id: '', pubkey: '', created_at: 0, kind: 1, tags: [], content: '', sig: '' }),
+    ...overrides,
+  });
+
+  it('should return undefined when no settlement config present', () => {
+    const config = createConfig();
+    expect(buildSettlementInfo(config)).toBeUndefined();
+  });
+
+  it('should produce correct SpspRequestSettlementInfo', () => {
+    const config = createConfig({
+      supportedChains: ['evm:anvil:31337'],
+      settlementAddresses: { 'evm:anvil:31337': '0xabc' },
+      preferredTokens: { 'evm:anvil:31337': '0xtoken' },
+      tokenNetworks: { 'evm:anvil:31337': '0xtokennet' },
+    });
+
+    const info = buildSettlementInfo(config);
+
+    expect(info).toBeDefined();
+    expect(info!.ilpAddress).toBe('g.test');
+    expect(info!.supportedChains).toEqual(['evm:anvil:31337']);
+    expect(info!.settlementAddresses).toEqual({ 'evm:anvil:31337': '0xabc' });
+    expect(info!.preferredTokens).toEqual({ 'evm:anvil:31337': '0xtoken' });
+    expect(info!.tokenNetworks).toEqual({ 'evm:anvil:31337': '0xtokennet' });
+  });
+
+  it('should include ilpAddress from config', () => {
+    const config = createConfig({
+      supportedChains: ['evm:anvil:31337'],
+    });
+
+    const info = buildSettlementInfo(config);
+    expect(info!.ilpAddress).toBe('g.test');
   });
 });

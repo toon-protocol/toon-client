@@ -1,16 +1,20 @@
 import { SimplePool } from 'nostr-tools/pool';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
-import type { BootstrapService, RelayMonitor } from '@crosstown/core';
+import type { BootstrapService, RelayMonitor, IlpSendResult, AgentRuntimeClient } from '@crosstown/core';
 import { validateConfig, applyDefaults } from './config.js';
+import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import { CrosstownClientError } from './errors.js';
+import { EvmSigner } from './signing/evm-signer.js';
+import { ChannelManager } from './channel/ChannelManager.js';
+import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
 import type {
   CrosstownClientConfig,
   CrosstownStartResult,
   PublishEventResult,
+  SignedBalanceProof,
 } from './types.js';
-import type { HttpRuntimeClient } from './adapters/HttpRuntimeClient.js';
-import type { HttpConnectorAdmin } from './adapters/HttpConnectorAdmin.js';
 
 /**
  * Internal state for CrosstownClient after initialization.
@@ -19,10 +23,9 @@ interface CrosstownClientState {
   bootstrapService: BootstrapService;
   relayMonitor: RelayMonitor;
   subscription: any; // Subscription from relayMonitor.start()
-  runtimeClient: HttpRuntimeClient;
-  adminClient: HttpConnectorAdmin;
-  channelClient: null; // HTTP mode only for now
-  peersDiscovered: number; // Track peers discovered during bootstrap
+  runtimeClient: AgentRuntimeClient;
+  peersDiscovered: number;
+  btpClient?: BtpRuntimeClient;
 }
 
 /**
@@ -57,11 +60,11 @@ interface CrosstownClientState {
  * ```
  */
 export class CrosstownClient {
-  private readonly config: Required<Omit<CrosstownClientConfig, 'connector'>> & {
-    connector?: unknown;
-  };
+  private readonly config: ResolvedConfig;
   private readonly pool: SimplePool;
   private state: CrosstownClientState | null = null;
+  private readonly evmSigner?: EvmSigner;
+  private channelManager?: ChannelManager;
 
   /**
    * Creates a new CrosstownClient instance.
@@ -73,11 +76,42 @@ export class CrosstownClient {
     // Validate config (will reject embedded mode, require connectorUrl)
     validateConfig(config);
 
-    // Apply defaults to optional fields
+    // Apply defaults to optional fields (auto-generates secretKey if needed)
     this.config = applyDefaults(config);
 
     // Create shared SimplePool instance
     this.pool = new SimplePool();
+
+    // Create EVM signer if private key provided
+    if (this.config.evmPrivateKey) {
+      this.evmSigner = new EvmSigner(this.config.evmPrivateKey);
+    }
+  }
+
+  /**
+   * Generates a new Nostr keypair.
+   *
+   * @returns Object with secretKey (Uint8Array) and pubkey (hex string)
+   */
+  static generateKeypair(): { secretKey: Uint8Array; pubkey: string } {
+    const secretKey = generateSecretKey();
+    const pubkey = getPublicKey(secretKey);
+    return { secretKey, pubkey };
+  }
+
+  /**
+   * Gets the Nostr public key derived from the secret key.
+   * Works before start() is called.
+   */
+  getPublicKey(): string {
+    return getPublicKey(this.config.secretKey);
+  }
+
+  /**
+   * Gets the EVM address if an EVM private key was configured.
+   */
+  getEvmAddress(): string | undefined {
+    return this.evmSigner?.address;
   }
 
   /**
@@ -99,14 +133,22 @@ export class CrosstownClient {
 
     try {
       // Initialize HTTP mode components
-      // Note: validateConfig already ensured connector is not provided and connectorUrl is valid
       const initialization = await initializeHttpMode(this.config, this.pool);
 
-      const { bootstrapService, relayMonitor, runtimeClient, adminClient, channelClient } =
-        initialization;
+      const { bootstrapService, relayMonitor, runtimeClient, btpClient } = initialization;
 
       // Start bootstrap process (discover peers, handshake, announce)
       const bootstrapResults = await bootstrapService.bootstrap();
+
+      // Create channel manager and track channels from bootstrap results
+      if (this.evmSigner) {
+        this.channelManager = new ChannelManager(this.evmSigner);
+        for (const result of bootstrapResults) {
+          if (result.channelId) {
+            this.channelManager.trackChannel(result.channelId);
+          }
+        }
+      }
 
       // Start relay monitoring (watch for new kind:10032 events)
       const subscription = relayMonitor.start();
@@ -117,9 +159,8 @@ export class CrosstownClient {
         relayMonitor,
         subscription,
         runtimeClient,
-        adminClient,
-        channelClient,
         peersDiscovered: bootstrapResults.length,
+        btpClient: btpClient ?? undefined,
       };
 
       return {
@@ -141,11 +182,15 @@ export class CrosstownClient {
    * The event must already be finalized (signed with id, pubkey, sig).
    *
    * @param event - Signed Nostr event to publish
+   * @param options - Optional options including a signed balance proof claim
    * @returns Result with success status, event ID, and fulfillment
    * @throws {CrosstownClientError} If client is not started
    * @throws {CrosstownClientError} If event publishing fails
    */
-  async publishEvent(event: NostrEvent): Promise<PublishEventResult> {
+  async publishEvent(
+    event: NostrEvent,
+    options?: { claim?: SignedBalanceProof }
+  ): Promise<PublishEventResult> {
     if (!this.state) {
       throw new CrosstownClientError(
         'Client not started. Call start() first.',
@@ -157,13 +202,27 @@ export class CrosstownClient {
       // Encode event to TOON format
       const toonData = this.config.toonEncoder(event);
 
-      // Send ILP packet via HTTP runtime client
-      // Note: In HTTP mode, the connector routes the packet to the relay BLS
-      const response = await this.state.runtimeClient.sendIlpPacket({
-        destination: 'g.crosstown.relay', // Replace with actual relay ILP address
-        amount: '1000', // Replace with pricing calculation
-        data: Buffer.from(toonData).toString('base64'),
-      });
+      let response: IlpSendResult;
+
+      // If claim provided and BTP client available, send with claim
+      if (options?.claim && this.state.btpClient) {
+        const claimMessage = EvmSigner.buildClaimMessage(options.claim, this.getPublicKey());
+        response = await this.state.btpClient.sendIlpPacketWithClaim(
+          {
+            destination: 'g.crosstown.relay',
+            amount: '1000',
+            data: Buffer.from(toonData).toString('base64'),
+          },
+          claimMessage
+        );
+      } else {
+        // Send ILP packet via runtime client
+        response = await this.state.runtimeClient.sendIlpPacket({
+          destination: 'g.crosstown.relay',
+          amount: '1000',
+          data: Buffer.from(toonData).toString('base64'),
+        });
+      }
 
       if (!response.accepted) {
         return {
@@ -187,12 +246,73 @@ export class CrosstownClient {
   }
 
   /**
+   * Signs a balance proof for the given channel with the specified amount.
+   * Delegates to ChannelManager which auto-increments nonce and tracks cumulative amount.
+   *
+   * @param channelId - Payment channel identifier
+   * @param amount - Additional amount to add to cumulative transferred amount
+   * @returns Signed balance proof
+   * @throws {CrosstownClientError} If no EVM signer configured or channel not tracked
+   */
+  async signBalanceProof(channelId: string, amount: bigint): Promise<SignedBalanceProof> {
+    if (!this.channelManager) {
+      throw new CrosstownClientError(
+        'No EVM signer configured. Provide evmPrivateKey in config.',
+        'NO_EVM_SIGNER'
+      );
+    }
+    return this.channelManager.signBalanceProof(channelId, amount);
+  }
+
+  /**
+   * Gets list of tracked payment channel IDs.
+   */
+  getTrackedChannels(): string[] {
+    return this.channelManager?.getTrackedChannels() ?? [];
+  }
+
+  /**
+   * Sends an ILP payment, optionally with a balance proof claim via BTP.
+   *
+   * @param params - Payment parameters
+   * @returns ILP send result
+   * @throws {CrosstownClientError} If client is not started
+   */
+  async sendPayment(params: {
+    destination: string;
+    amount: string;
+    data?: string;
+    claim?: SignedBalanceProof;
+  }): Promise<IlpSendResult> {
+    if (!this.state) {
+      throw new CrosstownClientError(
+        'Client not started. Call start() first.',
+        'INVALID_STATE'
+      );
+    }
+
+    const ilpParams = {
+      destination: params.destination,
+      amount: params.amount,
+      data: params.data ?? '',
+    };
+
+    if (params.claim && this.state.btpClient) {
+      const claimMessage = EvmSigner.buildClaimMessage(params.claim, this.getPublicKey());
+      return this.state.btpClient.sendIlpPacketWithClaim(ilpParams, claimMessage);
+    }
+
+    return this.state.runtimeClient.sendIlpPacket(ilpParams);
+  }
+
+  /**
    * Stops the CrosstownClient and cleans up resources.
    *
    * This will:
-   * 1. Stop relay monitoring
-   * 2. Close SimplePool connections
-   * 3. Clear internal state
+   * 1. Disconnect BTP client if connected
+   * 2. Stop relay monitoring
+   * 3. Close SimplePool connections
+   * 4. Clear internal state
    *
    * @throws {CrosstownClientError} If client is not started
    */
@@ -202,6 +322,11 @@ export class CrosstownClient {
     }
 
     try {
+      // Disconnect BTP client if connected
+      if (this.state.btpClient) {
+        await this.state.btpClient.disconnect();
+      }
+
       // Stop relay monitoring subscription
       if (this.state.subscription) {
         this.state.subscription.close?.();
