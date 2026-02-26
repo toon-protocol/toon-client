@@ -132,19 +132,35 @@ export class CrosstownClient {
     }
 
     try {
+      // Create channel manager FIRST (before bootstrap) so it can sign claims during handshake
+      if (this.evmSigner) {
+        this.channelManager = new ChannelManager(this.evmSigner);
+      }
+
       // Initialize HTTP mode components
       const initialization = await initializeHttpMode(this.config, this.pool);
 
       const { bootstrapService, relayMonitor, runtimeClient, btpClient } = initialization;
 
-      // Start bootstrap process (discover peers, handshake, announce)
+      // Wire claim signer to bootstrap service if we have channel manager
+      if (this.channelManager) {
+        bootstrapService.setClaimSigner(async (channelId: string, amount: bigint) => {
+          // Track the channel if not already tracked
+          if (!this.channelManager!.isTracking(channelId)) {
+            this.channelManager!.trackChannel(channelId);
+          }
+          // Sign balance proof and return claim
+          return this.channelManager!.signBalanceProof(channelId, amount);
+        });
+      }
+
+      // Start bootstrap process (discover peers, handshake with signed claims, announce)
       const bootstrapResults = await bootstrapService.bootstrap();
 
-      // Create channel manager and track channels from bootstrap results
-      if (this.evmSigner) {
-        this.channelManager = new ChannelManager(this.evmSigner);
+      // Track any additional channels from bootstrap results
+      if (this.channelManager) {
         for (const result of bootstrapResults) {
-          if (result.channelId) {
+          if (result.channelId && !this.channelManager.isTracking(result.channelId)) {
             this.channelManager.trackChannel(result.channelId);
           }
         }

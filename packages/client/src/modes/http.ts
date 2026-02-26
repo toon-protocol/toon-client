@@ -64,7 +64,7 @@ export async function initializeHttpMode(
 
   // Create BootstrapService
   const bootstrapConfig: BootstrapServiceConfig = {
-    knownPeers: [], // Start with no known peers; RelayMonitor will discover them
+    knownPeers: config.knownPeers || [], // Use configured peers or start empty; RelayMonitor will discover more
     queryTimeout: config.queryTimeout,
     ardriveEnabled: true,
     defaultRelayUrl: config.relayUrl,

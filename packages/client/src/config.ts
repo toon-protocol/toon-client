@@ -121,6 +121,7 @@ export type ResolvedConfig = Required<
     | 'chainRpcUrls'
     | 'initialDeposit'
     | 'settlementTimeout'
+    | 'knownPeers'
   >
 > & {
   connector?: unknown;
@@ -135,6 +136,11 @@ export type ResolvedConfig = Required<
   chainRpcUrls?: Record<string, string>;
   initialDeposit?: string;
   settlementTimeout?: number;
+  knownPeers?: Array<{
+    pubkey: string;
+    relayUrl: string;
+    btpEndpoint?: string;
+  }>;
 };
 
 /**

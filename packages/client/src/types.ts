@@ -126,6 +126,17 @@ export interface CrosstownClientConfig {
   /** Nostr relay URL for peer discovery. Default: 'ws://localhost:7100' */
   relayUrl?: string;
 
+  /**
+   * Known peers to bootstrap with.
+   * If provided, these peers will be used for initial bootstrap.
+   * RelayMonitor will discover additional peers from the relay after bootstrap.
+   */
+  knownPeers?: Array<{
+    pubkey: string;
+    relayUrl: string;
+    btpEndpoint?: string;
+  }>;
+
   // ============================================================================
   // TIMEOUTS & RETRIES (optional with defaults)
   // ============================================================================
