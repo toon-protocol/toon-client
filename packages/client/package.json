@@ -1,9 +1,32 @@
 {
   "name": "@crosstown/client",
   "version": "0.2.0",
+  "description": "Crosstown client for ILP-gated Nostr publishing with multi-hop routing and payment channels",
+  "license": "MIT",
+  "author": "Jonathan Green",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ALLiDoizCode/crosstown.git",
+    "directory": "packages/client"
+  },
+  "keywords": [
+    "nostr",
+    "ilp",
+    "interledger",
+    "crosstown",
+    "spsp",
+    "payment-channels",
+    "btp",
+    "micropayments",
+    "nip-02"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
