@@ -31,27 +31,26 @@ export async function initializeHttpMode(
   // Build settlement info from config
   const settlementInfo = buildSettlementInfo(config);
 
-  // Create HTTP runtime client (fallback when BTP not configured)
-  const httpRuntimeClient = new HttpRuntimeClient({
+  // Create BTP runtime client — this is the primary transport for the client SDK.
+  // The client connects to the connector via BTP WebSocket to send ILP packets.
+  // HTTP is not used for ILP packet transport.
+  let btpClient: BtpRuntimeClient | null = null;
+  if (config.btpUrl) {
+    btpClient = new BtpRuntimeClient({
+      btpUrl: config.btpUrl,
+      peerId: config.btpPeerId ?? `client`,
+      authToken: config.btpAuthToken ?? '',
+    });
+    await btpClient.connect();
+  }
+
+  // BTP is the runtime client for sending ILP packets
+  const runtimeClient = btpClient ?? new HttpRuntimeClient({
     connectorUrl,
     timeout: config.queryTimeout,
     maxRetries: config.maxRetries,
     retryDelay: config.retryDelay,
   });
-
-  // Create BTP runtime client when btpUrl is configured
-  let btpClient: BtpRuntimeClient | null = null;
-  if (config.btpUrl) {
-    btpClient = new BtpRuntimeClient({
-      btpUrl: config.btpUrl,
-      peerId: `nostr-${config.ilpInfo.pubkey?.slice(0, 16) ?? 'client'}`,
-      authToken: config.btpAuthToken ?? 'default-token',
-    });
-    await btpClient.connect();
-  }
-
-  // Use BTP client as runtime client when available, fall back to HTTP
-  const runtimeClient = btpClient ?? httpRuntimeClient;
 
   // Create on-chain channel client when EVM is configured
   let onChainChannelClient: OnChainChannelClient | null = null;

@@ -103,6 +103,9 @@ export interface CrosstownClientConfig {
   /** Auth token for BTP handshake */
   btpAuthToken?: string;
 
+  /** Peer ID for BTP connection (used in connector env var BTP_PEER_{ID}_SECRET) */
+  btpPeerId?: string;
+
   // ============================================================================
   // ON-CHAIN INTERACTION (optional)
   // ============================================================================

@@ -117,6 +117,7 @@ export type ResolvedConfig = Required<
     | 'tokenNetworks'
     | 'btpUrl'
     | 'btpAuthToken'
+    | 'btpPeerId'
     | 'chainRpcUrls'
     | 'initialDeposit'
     | 'settlementTimeout'
@@ -130,6 +131,7 @@ export type ResolvedConfig = Required<
   tokenNetworks?: Record<string, string>;
   btpUrl?: string;
   btpAuthToken?: string;
+  btpPeerId?: string;
   chainRpcUrls?: Record<string, string>;
   initialDeposit?: string;
   settlementTimeout?: number;

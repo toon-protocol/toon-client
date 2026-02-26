@@ -18,6 +18,20 @@ const BTP_CLAIM_PROTOCOL = {
   CONTENT_TYPE: 1,
 } as const;
 
+/** Creates a pino-compatible logger wrapper around console */
+function createConsoleLogger(): any {
+  const logger: any = {
+    info: console.info.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+    debug: console.debug.bind(console),
+    trace: console.debug.bind(console),
+    fatal: console.error.bind(console),
+    child: () => createConsoleLogger(),
+  };
+  return logger;
+}
+
 /** ILP packet type constants — matches @agent-society/shared's PacketType enum */
 const ILP_PACKET_TYPE = {
   PREPARE: 12,
@@ -60,7 +74,7 @@ export class BtpRuntimeClient implements AgentRuntimeClient {
     this.btpClient = new BTPClient(
       peer,
       this.config.peerId,
-      this.config.logger ?? console
+      this.config.logger ?? createConsoleLogger()
     );
 
     await this.btpClient.connect();

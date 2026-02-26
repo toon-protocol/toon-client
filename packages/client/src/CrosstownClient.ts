@@ -202,6 +202,10 @@ export class CrosstownClient {
       // Encode event to TOON format
       const toonData = this.config.toonEncoder(event);
 
+      // Calculate payment amount: basePricePerByte * encoded size
+      const basePricePerByte = 10n;
+      const amount = String(BigInt(toonData.length) * basePricePerByte);
+
       let response: IlpSendResult;
 
       // If claim provided and BTP client available, send with claim
@@ -210,7 +214,7 @@ export class CrosstownClient {
         response = await this.state.btpClient.sendIlpPacketWithClaim(
           {
             destination: 'g.crosstown.relay',
-            amount: '1000',
+            amount,
             data: Buffer.from(toonData).toString('base64'),
           },
           claimMessage
@@ -219,7 +223,7 @@ export class CrosstownClient {
         // Send ILP packet via runtime client
         response = await this.state.runtimeClient.sendIlpPacket({
           destination: 'g.crosstown.relay',
-          amount: '1000',
+          amount,
           data: Buffer.from(toonData).toString('base64'),
         });
       }
