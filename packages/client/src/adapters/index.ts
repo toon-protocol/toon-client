@@ -4,3 +4,4 @@ export {
   type HttpConnectorAdminConfig,
   type PeerOperationResult,
 } from './HttpConnectorAdmin.js';
+export { BtpRuntimeClient, type BtpRuntimeClientConfig } from './BtpRuntimeClient.js';

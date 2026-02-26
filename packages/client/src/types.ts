@@ -51,8 +51,11 @@ export interface CrosstownClientConfig {
   // IDENTITY (required)
   // ============================================================================
 
-  /** 32-byte Nostr private key (hex or Uint8Array) */
-  secretKey: Uint8Array;
+  /**
+   * 32-byte Nostr private key (hex or Uint8Array).
+   * Optional — if omitted, a keypair is auto-generated in applyDefaults().
+   */
+  secretKey?: Uint8Array;
 
   /** ILP peer information for this client */
   ilpInfo: IlpPeerInfo;
@@ -68,11 +71,81 @@ export interface CrosstownClientConfig {
   toonDecoder: (bytes: Uint8Array) => NostrEvent;
 
   // ============================================================================
+  // EVM IDENTITY (optional)
+  // ============================================================================
+
+  /** EVM private key for signing balance proofs and on-chain transactions */
+  evmPrivateKey?: string | Uint8Array;
+
+  // ============================================================================
+  // SETTLEMENT PREFERENCES (optional)
+  // ============================================================================
+
+  /** Supported settlement chain identifiers (e.g., ["evm:anvil:31337"]) */
+  supportedChains?: string[];
+
+  /** Maps chain identifier to EVM settlement address */
+  settlementAddresses?: Record<string, string>;
+
+  /** Maps chain identifier to preferred token contract address */
+  preferredTokens?: Record<string, string>;
+
+  /** Maps chain identifier to TokenNetwork contract address (EVM only) */
+  tokenNetworks?: Record<string, string>;
+
+  // ============================================================================
+  // BTP TRANSPORT (optional)
+  // ============================================================================
+
+  /** BTP WebSocket URL (e.g., "ws://localhost:3000") */
+  btpUrl?: string;
+
+  /** Auth token for BTP handshake */
+  btpAuthToken?: string;
+
+  /** Peer ID for BTP connection (used in connector env var BTP_PEER_{ID}_SECRET) */
+  btpPeerId?: string;
+
+  /**
+   * ILP destination address for event publishing.
+   * Defaults to the connector's local address (derived from connectorUrl host).
+   * For multi-hop routing, set this to the target node's ILP address.
+   * Examples:
+   * - 'g.crosstown.genesis' - Publish to genesis node
+   * - 'g.crosstown.peer1' - Publish to peer1 node
+   */
+  destinationAddress?: string;
+
+  // ============================================================================
+  // ON-CHAIN INTERACTION (optional)
+  // ============================================================================
+
+  /** Maps chain identifier to RPC URL (e.g., {"evm:anvil:31337": "http://localhost:8545"}) */
+  chainRpcUrls?: Record<string, string>;
+
+  /** Amount to deposit when opening channel (default: "0") */
+  initialDeposit?: string;
+
+  /** Challenge period in seconds (default: 86400) */
+  settlementTimeout?: number;
+
+  // ============================================================================
   // NETWORK (optional with defaults)
   // ============================================================================
 
   /** Nostr relay URL for peer discovery. Default: 'ws://localhost:7100' */
   relayUrl?: string;
+
+  /**
+   * Known peers to bootstrap with.
+   * If provided, these peers will be used for initial bootstrap.
+   * RelayMonitor will discover additional peers from the relay after bootstrap.
+   */
+  knownPeers?: Array<{
+    pubkey: string;
+    relayUrl: string;
+    btpEndpoint?: string;
+  }>;
 
   // ============================================================================
   // TIMEOUTS & RETRIES (optional with defaults)
@@ -114,4 +187,30 @@ export interface PublishEventResult {
 
   /** Error message if success is false */
   error?: string;
+}
+
+/**
+ * Parameters for signing a balance proof.
+ */
+export interface BalanceProofParams {
+  /** Payment channel identifier */
+  channelId: string;
+  /** Monotonically increasing nonce */
+  nonce: number;
+  /** Cumulative amount transferred */
+  transferredAmount: bigint;
+  /** Amount locked in pending transfers */
+  lockedAmount: bigint;
+  /** Merkle root of pending lock hashes */
+  locksRoot: string;
+}
+
+/**
+ * A signed balance proof with EIP-712 signature.
+ */
+export interface SignedBalanceProof extends BalanceProofParams {
+  /** EIP-712 signature */
+  signature: string;
+  /** Address of the signer */
+  signerAddress: string;
 }

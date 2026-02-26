@@ -1,12 +1,13 @@
 import type { BootstrapService, RelayMonitor } from '@crosstown/core';
 import type { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
 import type { HttpConnectorAdmin } from '../adapters/HttpConnectorAdmin.js';
+import type { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
+import type { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
 
 /**
  * Result of HTTP mode initialization.
  *
  * HTTP mode uses external connector service via HTTP/WebSocket.
- * Channel client is null because HTTP mode doesn't support direct payment channels yet.
  */
 export interface HttpModeInitialization {
   /** Bootstrap service for peer discovery and handshaking */
@@ -15,17 +16,17 @@ export interface HttpModeInitialization {
   /** Relay monitor for tracking new peers from kind:10032 events */
   relayMonitor: RelayMonitor;
 
-  /** HTTP client for sending ILP packets to connector */
-  runtimeClient: HttpRuntimeClient;
+  /** Runtime client for sending ILP packets (HTTP or BTP) */
+  runtimeClient: HttpRuntimeClient | BtpRuntimeClient;
 
-  /** HTTP client for connector admin operations (add/remove peers) */
-  adminClient: HttpConnectorAdmin;
+  /** HTTP client for connector admin operations (add/remove peers). Null when admin not wired. */
+  adminClient: HttpConnectorAdmin | null;
 
-  /**
-   * Channel client for direct payment channels.
-   * Always null in HTTP mode (not supported yet).
-   */
-  channelClient: null;
+  /** BTP client for WebSocket transport. Null when btpUrl not configured. */
+  btpClient: BtpRuntimeClient | null;
+
+  /** On-chain channel client. Null when EVM not configured. */
+  onChainChannelClient: OnChainChannelClient | null;
 }
 
 /**
