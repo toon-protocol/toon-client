@@ -122,6 +122,7 @@ export type ResolvedConfig = Required<
     | 'initialDeposit'
     | 'settlementTimeout'
     | 'knownPeers'
+    | 'destinationAddress'
   >
 > & {
   connector?: unknown;
@@ -141,6 +142,7 @@ export type ResolvedConfig = Required<
     relayUrl: string;
     btpEndpoint?: string;
   }>;
+  destinationAddress: string;
 };
 
 /**
@@ -165,6 +167,36 @@ export function applyDefaults(config: CrosstownClientConfig): ResolvedConfig {
     }
   }
 
+  // Derive destinationAddress from connectorUrl port when not explicitly provided
+  // This provides sensible defaults for local development:
+  // - http://localhost:8080 → g.crosstown.genesis (genesis node)
+  // - http://localhost:8090 → g.crosstown.peer1 (peer1 node)
+  // For production, explicitly set destinationAddress in config
+  let destinationAddress = config.destinationAddress;
+  if (!destinationAddress && config.connectorUrl) {
+    try {
+      const url = new URL(config.connectorUrl);
+      if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+        // Map common local ports to known nodes
+        if (url.port === '8080') {
+          destinationAddress = 'g.crosstown.genesis';
+        } else if (url.port === '8090') {
+          destinationAddress = 'g.crosstown.peer1';
+        } else if (url.port === '8100') {
+          destinationAddress = 'g.crosstown.peer2';
+        } else {
+          // Fallback: use ilpInfo.ilpAddress if available
+          destinationAddress = config.ilpInfo?.ilpAddress || 'g.crosstown.relay';
+        }
+      } else {
+        // Production: default to ilpInfo.ilpAddress
+        destinationAddress = config.ilpInfo?.ilpAddress || 'g.crosstown.relay';
+      }
+    } catch {
+      destinationAddress = config.ilpInfo?.ilpAddress || 'g.crosstown.relay';
+    }
+  }
+
   return {
     ...config,
     secretKey,
@@ -174,6 +206,7 @@ export function applyDefaults(config: CrosstownClientConfig): ResolvedConfig {
     maxRetries: config.maxRetries ?? 3,
     retryDelay: config.retryDelay ?? 1000,
     btpUrl,
+    destinationAddress: destinationAddress!,  // Always set by logic above
   };
 }
 

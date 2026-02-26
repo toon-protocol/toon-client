@@ -229,7 +229,7 @@ export class CrosstownClient {
         const claimMessage = EvmSigner.buildClaimMessage(options.claim, this.getPublicKey());
         response = await this.state.btpClient.sendIlpPacketWithClaim(
           {
-            destination: 'g.crosstown.relay',
+            destination: this.config.destinationAddress,
             amount,
             data: Buffer.from(toonData).toString('base64'),
           },
@@ -238,7 +238,7 @@ export class CrosstownClient {
       } else {
         // Send ILP packet via runtime client
         response = await this.state.runtimeClient.sendIlpPacket({
-          destination: 'g.crosstown.relay',
+          destination: this.config.destinationAddress,
           amount,
           data: Buffer.from(toonData).toString('base64'),
         });

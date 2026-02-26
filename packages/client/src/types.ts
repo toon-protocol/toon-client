@@ -106,6 +106,16 @@ export interface CrosstownClientConfig {
   /** Peer ID for BTP connection (used in connector env var BTP_PEER_{ID}_SECRET) */
   btpPeerId?: string;
 
+  /**
+   * ILP destination address for event publishing.
+   * Defaults to the connector's local address (derived from connectorUrl host).
+   * For multi-hop routing, set this to the target node's ILP address.
+   * Examples:
+   * - 'g.crosstown.genesis' - Publish to genesis node
+   * - 'g.crosstown.peer1' - Publish to peer1 node
+   */
+  destinationAddress?: string;
+
   // ============================================================================
   // ON-CHAIN INTERACTION (optional)
   // ============================================================================

@@ -26,14 +26,16 @@ async function main() {
   console.log('📝 Generated keypair');
   console.log(`   Public key: ${pubkey.slice(0, 32)}...\n`);
 
-  // Create client connected to PEER1
+  // Create client connected to PEER1, targeting GENESIS
   console.log('🔧 Creating client...');
-  console.log('   Target: Genesis relay (g.crosstown.relay)');
+  console.log('   Connected to: Peer1 (localhost:8090)');
+  console.log('   Target: Genesis (g.crosstown.genesis)');
   console.log('   Route:  Client → Peer1 → Genesis\n');
 
   const client = new CrosstownClient({
     connectorUrl: 'http://localhost:8090',      // PEER1 connector
     btpUrl: 'ws://localhost:3010',              // PEER1 BTP
+    destinationAddress: 'g.crosstown.genesis',  // Target genesis node (multi-hop!)
     secretKey,
     ilpInfo: {
       pubkey,
