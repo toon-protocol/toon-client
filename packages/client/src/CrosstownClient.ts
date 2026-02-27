@@ -55,7 +55,13 @@ interface CrosstownClientState {
  * });
  *
  * await client.start(); // Bootstrap peers, start monitoring
- * await client.publishEvent(signedEvent); // Publish to relay via ILP
+ *
+ * // Publish to default destination (from config)
+ * await client.publishEvent(signedEvent);
+ *
+ * // Publish to specific destination (multi-hop routing)
+ * await client.publishEvent(signedEvent, { destination: 'g.crosstown.peer1' });
+ *
  * await client.stop(); // Cleanup
  * ```
  */
@@ -198,14 +204,14 @@ export class CrosstownClient {
    * The event must already be finalized (signed with id, pubkey, sig).
    *
    * @param event - Signed Nostr event to publish
-   * @param options - Optional options including a signed balance proof claim
+   * @param options - Optional options including destination and signed balance proof claim
    * @returns Result with success status, event ID, and fulfillment
    * @throws {CrosstownClientError} If client is not started
    * @throws {CrosstownClientError} If event publishing fails
    */
   async publishEvent(
     event: NostrEvent,
-    options?: { claim?: SignedBalanceProof }
+    options?: { destination?: string; claim?: SignedBalanceProof }
   ): Promise<PublishEventResult> {
     if (!this.state) {
       throw new CrosstownClientError(
@@ -222,6 +228,9 @@ export class CrosstownClient {
       const basePricePerByte = 10n;
       const amount = String(BigInt(toonData.length) * basePricePerByte);
 
+      // Use provided destination or fall back to config default
+      const destination = options?.destination ?? this.config.destinationAddress;
+
       let response: IlpSendResult;
 
       // If claim provided and BTP client available, send with claim
@@ -229,7 +238,7 @@ export class CrosstownClient {
         const claimMessage = EvmSigner.buildClaimMessage(options.claim, this.getPublicKey());
         response = await this.state.btpClient.sendIlpPacketWithClaim(
           {
-            destination: this.config.destinationAddress,
+            destination,
             amount,
             data: Buffer.from(toonData).toString('base64'),
           },
@@ -238,7 +247,7 @@ export class CrosstownClient {
       } else {
         // Send ILP packet via runtime client
         response = await this.state.runtimeClient.sendIlpPacket({
-          destination: this.config.destinationAddress,
+          destination,
           amount,
           data: Buffer.from(toonData).toString('base64'),
         });

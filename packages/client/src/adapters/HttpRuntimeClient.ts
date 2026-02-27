@@ -126,9 +126,9 @@ export class HttpRuntimeClient implements AgentRuntimeClient {
     }
     try {
       const amountBigInt = BigInt(params.amount);
-      if (amountBigInt < 0n) {
+      if (amountBigInt <= 0n) {
         throw new ValidationError(
-          `Amount must be non-negative: "${params.amount}"`
+          `Amount must be positive: "${params.amount}"`
         );
       }
     } catch (error) {

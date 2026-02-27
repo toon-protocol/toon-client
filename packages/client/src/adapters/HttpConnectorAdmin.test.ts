@@ -62,13 +62,17 @@ describe('HttpConnectorAdmin', () => {
       // Act
       await admin.addPeer(mockPeerConfig);
 
-      // Assert
+      // Assert - URL should have btp+ prefix stripped
+      const expectedConfig = {
+        ...mockPeerConfig,
+        url: 'ws://alice.example.com:3000', // btp+ prefix stripped
+      };
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:8081/admin/peers',
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(mockPeerConfig),
+          body: JSON.stringify(expectedConfig),
         })
       );
     });
@@ -94,12 +98,16 @@ describe('HttpConnectorAdmin', () => {
       // Act
       await admin.addPeer(minimalConfig);
 
-      // Assert
+      // Assert - URL should have btp+ prefix stripped
+      const expectedConfig = {
+        ...minimalConfig,
+        url: 'wss://bob.example.com:3000', // btp+ prefix stripped
+      };
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:8081/admin/peers',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify(minimalConfig),
+          body: JSON.stringify(expectedConfig),
         })
       );
     });
@@ -168,14 +176,12 @@ describe('HttpConnectorAdmin', () => {
         httpClient: mockFetch as unknown as MockFetch,
       });
 
+      // http:// is invalid (not a WebSocket protocol)
       await expect(
         admin.addPeer({ ...mockPeerConfig, url: 'http://example.com' })
       ).rejects.toThrow(ValidationError);
 
-      await expect(
-        admin.addPeer({ ...mockPeerConfig, url: 'ws://example.com' })
-      ).rejects.toThrow(ValidationError);
-
+      // ftp:// is invalid
       await expect(
         admin.addPeer({ ...mockPeerConfig, url: 'ftp://example.com' })
       ).rejects.toThrow(ValidationError);
@@ -183,7 +189,7 @@ describe('HttpConnectorAdmin', () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('should accept valid BTP URLs (btp+ws:// and btp+wss://)', async () => {
+    it('should accept valid BTP URLs (btp+ws://, btp+wss://, ws://, wss://)', async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
         status: 201,
@@ -194,25 +200,35 @@ describe('HttpConnectorAdmin', () => {
         httpClient: mockFetch as unknown as MockFetch,
       });
 
+      // Accept URLs with btp+ prefix
       await admin.addPeer({ ...mockPeerConfig, url: 'btp+ws://example.com:3000' });
       await admin.addPeer({ ...mockPeerConfig, url: 'btp+wss://example.com:3000' });
 
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      // Also accept plain WebSocket URLs (without btp+ prefix)
+      await admin.addPeer({ ...mockPeerConfig, url: 'ws://example.com:3000' });
+      await admin.addPeer({ ...mockPeerConfig, url: 'wss://example.com:3000' });
+
+      expect(mockFetch).toHaveBeenCalledTimes(4);
     });
 
-    it('should throw ValidationError on missing authToken', async () => {
+    it('should throw ValidationError on invalid authToken type', async () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
         httpClient: mockFetch as unknown as MockFetch,
       });
 
+      // authToken can be empty string (for no auth), but must be a string
       await expect(
-        admin.addPeer({ ...mockPeerConfig, authToken: '' })
+        admin.addPeer({ ...mockPeerConfig, authToken: undefined as any })
       ).rejects.toThrow(ValidationError);
 
       await expect(
-        admin.addPeer({ ...mockPeerConfig, authToken: '   ' })
+        admin.addPeer({ ...mockPeerConfig, authToken: null as any })
+      ).rejects.toThrow(ValidationError);
+
+      await expect(
+        admin.addPeer({ ...mockPeerConfig, authToken: 123 as any })
       ).rejects.toThrow(ValidationError);
 
       expect(mockFetch).not.toHaveBeenCalled();

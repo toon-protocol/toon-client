@@ -263,7 +263,7 @@ describe('HttpRuntimeClient', () => {
       });
 
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:8080/ilp',
+        'http://localhost:8080/admin/ilp/send',
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -326,7 +326,7 @@ describe('HttpRuntimeClient', () => {
       });
 
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:8080/ilp',
+        'http://localhost:8080/admin/ilp/send',
         expect.anything()
       );
     });
@@ -781,7 +781,7 @@ describe('HttpRuntimeClient', () => {
       });
 
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:8080/ilp',
+        'http://localhost:8080/admin/ilp/send',
         expect.objectContaining({
           body: expect.stringContaining(largeAmount),
         })

@@ -26,16 +26,15 @@ async function main() {
   console.log('📝 Generated keypair');
   console.log(`   Public key: ${pubkey.slice(0, 32)}...\n`);
 
-  // Create client connected to PEER1, targeting GENESIS
+  // Create client connected to PEER1
+  // Note: No destinationAddress in config - we'll specify per-event
   console.log('🔧 Creating client...');
   console.log('   Connected to: Peer1 (localhost:8090)');
-  console.log('   Target: Genesis (g.crosstown.genesis)');
-  console.log('   Route:  Client → Peer1 → Genesis\n');
+  console.log('   Can route to: Any destination via per-event destination parameter\n');
 
   const client = new CrosstownClient({
     connectorUrl: 'http://localhost:8090',      // PEER1 connector
     btpUrl: 'ws://localhost:3010',              // PEER1 BTP
-    destinationAddress: 'g.crosstown.genesis',  // Target genesis node (multi-hop!)
     secretKey,
     ilpInfo: {
       pubkey,
@@ -68,9 +67,9 @@ async function main() {
 
   console.log('📨 Publishing event via multi-hop route...');
   console.log(`   Event ID: ${event.id.slice(0, 32)}...`);
-  console.log(`   Destination: g.crosstown.relay (genesis)\n`);
+  console.log(`   Destination: g.crosstown.genesis (via destination parameter)\n`);
 
-  // Publish event
+  // Publish event with explicit destination
   console.log('💰 ILP packet flow:');
   console.log('   1. Client sends to peer1 connector (localhost:8090)');
   console.log('   2. Peer1 forwards to genesis connector (via BTP)');
@@ -78,7 +77,7 @@ async function main() {
   console.log('   4. BLS validates and stores event');
   console.log('   5. Fulfillment returns: Genesis → Peer1 → Client\n');
 
-  client.publishEvent(event).then(result => {
+  client.publishEvent(event, { destination: 'g.crosstown.genesis' }).then(result => {
     if (result.success) {
       console.log('✅ SUCCESS - Multi-hop routing worked!');
       console.log(`   Event ID: ${result.eventId?.slice(0, 32)}...`);
