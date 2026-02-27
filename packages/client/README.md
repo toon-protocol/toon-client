@@ -6,6 +6,8 @@ High-level TypeScript client for publishing Nostr events to the Crosstown protoc
 
 This client handles:
 - **ILP Micropayments**: Pay to publish Nostr events (read is free)
+- **Payment Channels**: Automatic on-chain channel creation with off-chain settlement via signed balance proofs
+- **Multi-Hop Routing**: Publish to any destination address, not just your direct peer
 - **Network Bootstrap**: Automatically discover and handshake with ILP peers via NIP-02 follow lists
 - **HTTP-Only Mode**: Connects to external ILP connector service (embedded mode not yet implemented)
 - **TOON Encoding**: Native binary format for agent-friendly event encoding
@@ -84,6 +86,7 @@ const event = finalizeEvent({
   created_at: Math.floor(Date.now() / 1000),
 }, secretKey);
 
+// Publish to default destination (from config)
 const publishResult = await client.publishEvent(event);
 if (publishResult.success) {
   console.log(`Published: ${publishResult.eventId}`);
@@ -92,9 +95,77 @@ if (publishResult.success) {
   console.error(`Failed: ${publishResult.error}`);
 }
 
+// Or publish to specific destination (multi-hop routing)
+const multiHopResult = await client.publishEvent(event, {
+  destination: 'g.crosstown.peer1'
+});
+
 // 5. Clean up
 await client.stop();
 ```
+
+---
+
+## Payment Channels
+
+The client supports EVM-based payment channels for off-chain settlement.
+
+### Quick Setup
+
+```typescript
+import { CrosstownClient } from '@crosstown/client';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
+
+const secretKey = generateSecretKey();
+const pubkey = getPublicKey(secretKey);
+
+// Configure with EVM private key for payment channels
+const client = new CrosstownClient({
+  connectorUrl: 'http://localhost:8080',
+  secretKey,
+  ilpInfo: {
+    pubkey,
+    ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`,
+    btpEndpoint: 'ws://localhost:3000',
+  },
+  toonEncoder: encodeEventToToon,
+  toonDecoder: decodeEventFromToon,
+
+  // Payment channel configuration
+  evmPrivateKey: '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
+  supportedChains: ['evm:anvil:31337'],
+  settlementAddresses: {
+    'evm:anvil:31337': '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'
+  },
+  tokenNetworks: {
+    'evm:anvil:31337': '0xCafac3dD18aC6c6e92c921884f9E4176737C052c'
+  },
+  chainRpcUrls: {
+    'evm:anvil:31337': 'http://localhost:8545'
+  },
+  initialDeposit: '1000000000000000000',  // 1 ETH in wei
+});
+
+await client.start();
+
+// Payment channels are created automatically during bootstrap
+const channels = client.getTrackedChannels();
+console.log(`Tracking ${channels.length} payment channels`);
+
+// Publish with signed balance proof
+const channelId = channels[0];
+const claim = await client.signBalanceProof(channelId, 1000n);
+await client.publishEvent(event, { claim });
+```
+
+### How It Works
+
+1. **Bootstrap**: Client discovers peers via NIP-02 and kind:10032 events
+2. **SPSP Negotiation**: Exchanges settlement parameters (chain, token, addresses)
+3. **Channel Creation**: Opens on-chain payment channel BEFORE SPSP handshake
+4. **Off-chain Payments**: Signed balance proofs settle payments off-chain
+5. **Auto-tracking**: ChannelManager automatically tracks channels and increments nonces
 
 ---
 
@@ -151,6 +222,42 @@ interface CrosstownClientConfig {
   /** Nostr relay URL for peer discovery (default: 'ws://localhost:7100') */
   relayUrl?: string;
 
+  /** ILP destination address for event publishing (default: derived from connectorUrl port) */
+  destinationAddress?: string;
+
+  /** EVM private key for signing balance proofs and on-chain transactions */
+  evmPrivateKey?: string | Uint8Array;
+
+  /** BTP WebSocket URL (default: derived from connectorUrl) */
+  btpUrl?: string;
+
+  /** BTP auth token for BTP handshake */
+  btpAuthToken?: string;
+
+  /** BTP peer ID (used in connector env var BTP_PEER_{ID}_SECRET) */
+  btpPeerId?: string;
+
+  /** Supported settlement chain identifiers (e.g., ["evm:anvil:31337"]) */
+  supportedChains?: string[];
+
+  /** Maps chain identifier to EVM settlement address */
+  settlementAddresses?: Record<string, string>;
+
+  /** Maps chain identifier to preferred token contract address */
+  preferredTokens?: Record<string, string>;
+
+  /** Maps chain identifier to TokenNetwork contract address (EVM only) */
+  tokenNetworks?: Record<string, string>;
+
+  /** Maps chain identifier to RPC URL (e.g., {"evm:anvil:31337": "http://localhost:8545"}) */
+  chainRpcUrls?: Record<string, string>;
+
+  /** Amount to deposit when opening channel (default: "0") */
+  initialDeposit?: string;
+
+  /** Challenge period in seconds (default: 86400) */
+  settlementTimeout?: number;
+
   /** Query timeout in milliseconds (default: 30000) */
   queryTimeout?: number;
 
@@ -201,12 +308,15 @@ console.log(`Mode: ${result.mode}, Peers: ${result.peersDiscovered}`);
 
 ---
 
-#### `publishEvent(event: NostrEvent): Promise<PublishEventResult>`
+#### `publishEvent(event: NostrEvent, options?: PublishEventOptions): Promise<PublishEventResult>`
 
 Publishes a signed Nostr event to the relay via ILP micropayment.
 
 **Parameters:**
 - `event` - **Must be finalized** (signed with `id`, `pubkey`, `sig`). Use `finalizeEvent()` from nostr-tools.
+- `options` - Optional configuration:
+  - `destination?: string` - ILP destination address (defaults to `config.destinationAddress`)
+  - `claim?: SignedBalanceProof` - Signed balance proof for payment channel settlement
 
 **Returns:**
 ```typescript
@@ -222,7 +332,9 @@ Publishes a signed Nostr event to the relay via ILP micropayment.
 - `CrosstownClientError` - If client is not started
 - `CrosstownClientError` - If publishing fails (network/connector error)
 
-**Example:**
+**Examples:**
+
+*Basic usage (publishes to default destination):*
 ```typescript
 const event = finalizeEvent({ kind: 1, content: 'Hello', tags: [], created_at: now }, secretKey);
 const result = await client.publishEvent(event);
@@ -232,6 +344,148 @@ if (result.success) {
 } else {
   console.error(`Failed: ${result.error}`);
 }
+```
+
+*Multi-hop routing (publish to different destination):*
+```typescript
+// Publish to genesis node via peer1 connector
+const result = await client.publishEvent(event, {
+  destination: 'g.crosstown.genesis'
+});
+```
+
+*With payment channel claim:*
+```typescript
+const claim = await client.signBalanceProof(channelId, amount);
+const result = await client.publishEvent(event, {
+  destination: 'g.crosstown.peer1',
+  claim
+});
+```
+
+---
+
+#### `signBalanceProof(channelId: string, amount: bigint): Promise<SignedBalanceProof>`
+
+Signs a balance proof for a payment channel with the specified amount.
+
+**Parameters:**
+- `channelId` - Payment channel identifier
+- `amount` - Additional amount to add to cumulative transferred amount
+
+**Returns:**
+```typescript
+{
+  channelId: string;
+  nonce: number;              // Auto-incremented
+  transferredAmount: bigint;  // Cumulative amount
+  lockedAmount: bigint;       // Always 0n (no HTLCs yet)
+  locksRoot: string;          // Hash of empty lock set
+  signature: string;          // EIP-712 signature
+  signerAddress: string;      // EVM address of signer
+}
+```
+
+**Throws:**
+- `CrosstownClientError` - If no EVM signer configured (missing `evmPrivateKey`)
+- `CrosstownClientError` - If channel not tracked
+
+**Example:**
+```typescript
+// Configure client with EVM private key
+const client = new CrosstownClient({
+  // ... other config
+  evmPrivateKey: '0x...',
+});
+
+// Sign balance proof for 1000 wei payment
+const claim = await client.signBalanceProof('0xChannelId...', 1000n);
+
+// Use claim in payment
+await client.publishEvent(event, { claim });
+```
+
+---
+
+#### `getTrackedChannels(): string[]`
+
+Returns list of payment channel IDs currently tracked by the client.
+
+**Returns:** Array of channel ID strings
+
+**Example:**
+```typescript
+const channels = client.getTrackedChannels();
+console.log(`Tracking ${channels.length} channels:`, channels);
+```
+
+---
+
+#### `getPublicKey(): string`
+
+Returns the Nostr public key derived from the secret key. Works before `start()` is called.
+
+**Returns:** Hex-encoded public key string
+
+**Example:**
+```typescript
+const pubkey = client.getPublicKey();
+console.log(`Public key: ${pubkey}`);
+```
+
+---
+
+#### `getEvmAddress(): string | undefined`
+
+Returns the EVM address if an EVM private key was configured, otherwise `undefined`.
+
+**Returns:** EVM address string or `undefined`
+
+**Example:**
+```typescript
+const evmAddr = client.getEvmAddress();
+if (evmAddr) {
+  console.log(`EVM address: ${evmAddr}`);
+}
+```
+
+---
+
+#### `sendPayment(params: PaymentParams): Promise<IlpSendResult>`
+
+Sends an ILP payment, optionally with a balance proof claim via BTP.
+
+**Parameters:**
+```typescript
+{
+  destination: string;          // ILP destination address
+  amount: string;              // Amount in base units
+  data?: string;               // Base64-encoded data
+  claim?: SignedBalanceProof;  // Optional balance proof
+}
+```
+
+**Returns:**
+```typescript
+{
+  accepted: boolean;
+  fulfillment?: string;
+  code?: string;
+  message?: string;
+  data?: string;
+}
+```
+
+**Throws:**
+- `CrosstownClientError` - If client is not started
+
+**Example:**
+```typescript
+const result = await client.sendPayment({
+  destination: 'g.crosstown.peer1',
+  amount: '5000',
+  data: Buffer.from('custom data').toString('base64')
+});
 ```
 
 ---
@@ -624,17 +878,13 @@ const client = new CrosstownClient({
 });
 ```
 
-### 2. No Direct Payment Channels
-
-HTTP mode does not support direct payment channel client (returns `null` during initialization). Payment channel management must be handled externally via the connector.
-
-### 3. No Authentication
+### 2. No Authentication
 
 HTTP connector API is assumed to be local/trusted. Production authentication will be added in a future release.
 
-### 4. Fixed Pricing
+### 3. Dynamic Pricing
 
-Event pricing is currently hardcoded (`amount: '1000'` in `publishEvent()`). Dynamic pricing based on event size/kind will be added in a future release.
+Event pricing is calculated as `basePricePerByte * toonData.length` where `basePricePerByte = 10n`. This is currently hardcoded but accurately reflects the TOON-encoded event size.
 
 ---
 
