@@ -1,6 +1,6 @@
 {
   "name": "@crosstown/client",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Crosstown client for ILP-gated Nostr publishing with multi-hop routing and payment channels",
   "license": "MIT",
   "author": "Jonathan Green",
