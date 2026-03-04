@@ -31,7 +31,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
 import { CrosstownClient } from '../../src/CrosstownClient.js';
 import { createPublicClient, http, defineChain, type Hex } from 'viem';
@@ -44,10 +48,12 @@ const RELAY_URL = 'ws://localhost:7100';
 const CONNECTOR_URL = 'http://localhost:8080';
 const BLS_URL = 'http://localhost:3100';
 const ANVIL_RPC = 'http://localhost:8545';
-const GENESIS_PUBKEY = 'aa1857d0ff1fcb1aeb1907b3b98290f3ecb5545473c0b9296fb0b44481deb572';
+const GENESIS_PUBKEY =
+  'aa1857d0ff1fcb1aeb1907b3b98290f3ecb5545473c0b9296fb0b44481deb572';
 
 // Anvil Account #2 (for testing — has 10k ETH pre-funded)
-const TEST_ACCOUNT_PRIVATE_KEY = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
+const TEST_ACCOUNT_PRIVATE_KEY =
+  '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
 const TEST_ACCOUNT_ADDRESS = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
 
 // Deployed contract addresses (deterministic on Anvil)
@@ -84,6 +90,7 @@ function waitForEventOnRelay(
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(relayUrl);
     const subId = `test-${Date.now()}`;
+    // eslint-disable-next-line prefer-const
     let timer: ReturnType<typeof setTimeout>;
 
     const cleanup = () => {
@@ -152,7 +159,14 @@ async function getChannelState(channelId: string) {
     args: [channelId as Hex],
   });
 
-  const [settlementTimeout, state, closedAt, openedAt, participant1, participant2] = result;
+  const [
+    settlementTimeout,
+    state,
+    closedAt,
+    openedAt,
+    participant1,
+    participant2,
+  ] = result;
 
   const stateNames = ['settled', 'open', 'closed', 'settled'];
   return {
@@ -170,7 +184,10 @@ async function getChannelState(channelId: string) {
  * Create a CrosstownClient configured for E2E testing against the genesis node.
  * Extracted to reduce duplication across test cases.
  */
-function createTestClient(secretKey: Uint8Array, pubkey: string): InstanceType<typeof CrosstownClient> {
+function createTestClient(
+  secretKey: Uint8Array,
+  pubkey: string
+): InstanceType<typeof CrosstownClient> {
   return new CrosstownClient({
     connectorUrl: CONNECTOR_URL,
     secretKey,
@@ -230,7 +247,9 @@ describe.skip('SDK-Based Relay Validation (Story 2.3)', () => {
         signal: AbortSignal.timeout(3000),
       });
       if (!connectorHealth.ok) {
-        console.warn('Connector not ready. Deploy SDK-based genesis node first.');
+        console.warn(
+          'Connector not ready. Deploy SDK-based genesis node first.'
+        );
         return;
       }
 
@@ -246,9 +265,11 @@ describe.skip('SDK-Based Relay Validation (Story 2.3)', () => {
       // Verify this is an SDK-based relay (not the old entrypoint.ts)
       // The SDK-based relay health endpoint should include an "sdk" field
       // WILL FAIL: The old entrypoint.ts health response lacks this field
-      const blsHealthBody = await blsHealth.json() as Record<string, unknown>;
+      const blsHealthBody = (await blsHealth.json()) as Record<string, unknown>;
       if (!blsHealthBody['sdk']) {
-        console.warn('Genesis node is not SDK-based. Redeploy with @crosstown/town.');
+        console.warn(
+          'Genesis node is not SDK-based. Redeploy with @crosstown/town.'
+        );
         return;
       }
 
@@ -292,7 +313,9 @@ describe.skip('SDK-Based Relay Validation (Story 2.3)', () => {
       servicesReady = true;
     } catch (error) {
       console.warn('SDK-based genesis node not running.');
-      console.warn(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn(
+        `Error: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }, 15000);
 
@@ -330,8 +353,10 @@ describe.skip('SDK-Based Relay Validation (Story 2.3)', () => {
 
     // Verify test account is a participant
     expect(
-      channelState.participant1.toLowerCase() === TEST_ACCOUNT_ADDRESS.toLowerCase() ||
-      channelState.participant2.toLowerCase() === TEST_ACCOUNT_ADDRESS.toLowerCase()
+      channelState.participant1.toLowerCase() ===
+        TEST_ACCOUNT_ADDRESS.toLowerCase() ||
+        channelState.participant2.toLowerCase() ===
+          TEST_ACCOUNT_ADDRESS.toLowerCase()
     ).toBe(true);
 
     await client.stop();
@@ -519,31 +544,44 @@ describe.skip('SDK-Based Relay Validation (Story 2.3)', () => {
 
     // Query the relay for a kind:10032 event authored by the genesis pubkey.
     // This event was published during bootstrap without ILP payment (self-write bypass).
-    const selfWriteEvent = await new Promise<Record<string, unknown> | null>((resolve) => {
-      const timer = setTimeout(() => {
-        ws.close();
-        resolve(null);
-      }, 10000);
+    const selfWriteEvent = await new Promise<Record<string, unknown> | null>(
+      (resolve) => {
+        const timer = setTimeout(() => {
+          ws.close();
+          resolve(null);
+        }, 10000);
 
-      ws.send(JSON.stringify(['REQ', subId, { kinds: [10032], authors: [GENESIS_PUBKEY], limit: 1 }]));
+        ws.send(
+          JSON.stringify([
+            'REQ',
+            subId,
+            { kinds: [10032], authors: [GENESIS_PUBKEY], limit: 1 },
+          ])
+        );
 
-      ws.on('message', (data: Buffer) => {
-        try {
-          const msg = JSON.parse(data.toString());
-          if (Array.isArray(msg) && msg[0] === 'EVENT' && msg[1] === subId && msg[2]) {
-            const toonBytes = new TextEncoder().encode(msg[2]);
-            const event = decodeEventFromToon(toonBytes);
-            clearTimeout(timer);
-            ws.close();
-            resolve(event as unknown as Record<string, unknown>);
-          } else if (msg[0] === 'EOSE' && msg[1] === subId) {
-            // Wait a bit after EOSE for late arrivals, then resolve null
+        ws.on('message', (data: Buffer) => {
+          try {
+            const msg = JSON.parse(data.toString());
+            if (
+              Array.isArray(msg) &&
+              msg[0] === 'EVENT' &&
+              msg[1] === subId &&
+              msg[2]
+            ) {
+              const toonBytes = new TextEncoder().encode(msg[2]);
+              const event = decodeEventFromToon(toonBytes);
+              clearTimeout(timer);
+              ws.close();
+              resolve(event as unknown as Record<string, unknown>);
+            } else if (msg[0] === 'EOSE' && msg[1] === subId) {
+              // Wait a bit after EOSE for late arrivals, then resolve null
+            }
+          } catch {
+            // ignore parse errors
           }
-        } catch {
-          // ignore parse errors
-        }
-      });
-    });
+        });
+      }
+    );
 
     // The genesis node's own kind:10032 event should be stored (self-write bypass)
     expect(selfWriteEvent).not.toBeNull();
@@ -578,7 +616,7 @@ describe.skip('SDK-Based Relay Validation (Story 2.3)', () => {
 
     // Verify the BLS health endpoint reports SDK mode
     const healthResp = await fetch(`${BLS_URL}/health`);
-    const health = await healthResp.json() as Record<string, unknown>;
+    const health = (await healthResp.json()) as Record<string, unknown>;
 
     // SDK-based relay should advertise itself
     // WILL FAIL: The old entrypoint.ts does not include 'sdk' in health response
@@ -623,7 +661,7 @@ describe.skip('SDK-Based Relay Validation (Story 2.3)', () => {
       // If the file doesn't exist, that's the RED phase signal
       expect.fail(
         '@crosstown/town package does not exist yet. ' +
-        'Create packages/town/src/index.ts with startTown() function.'
+          'Create packages/town/src/index.ts with startTown() function.'
       );
       return;
     }
@@ -640,7 +678,11 @@ describe.skip('SDK-Based Relay Validation (Story 2.3)', () => {
       // Skip import statements
       if (trimmed.startsWith('import ')) return false;
       // Skip export type/interface declarations
-      if (trimmed.startsWith('export type') || trimmed.startsWith('export interface')) return false;
+      if (
+        trimmed.startsWith('export type') ||
+        trimmed.startsWith('export interface')
+      )
+        return false;
       // Skip closing braces only (formatting lines)
       if (trimmed === '}' || trimmed === '};' || trimmed === '},') return false;
       return true;

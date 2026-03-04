@@ -6,7 +6,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { execSync } from 'node:child_process';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
 
 // --- Imports from @crosstown/rig (DOES NOT EXIST YET) ---
@@ -22,7 +26,6 @@ import {
   STATUS_DRAFT_KIND,
   STATUS_OPEN_KIND,
   REPOSITORY_ANNOUNCEMENT_KIND,
-  PATCH_KIND,
 } from '@crosstown/core/nip34';
 
 // ---------------------------------------------------------------------------
@@ -40,7 +43,7 @@ function createRepoWithBranches(
     mainCommits?: number;
     featureBranch?: string;
     featureCommits?: number;
-  } = {},
+  } = {}
 ): {
   bareRepoPath: string;
   workTreePath: string;
@@ -57,24 +60,41 @@ function createRepoWithBranches(
   execSync(`git init --bare "${bareRepoPath}"`, { stdio: 'pipe' });
 
   // Clone to worktree for committing
-  const workTreePath = fs.mkdtempSync(path.join(os.tmpdir(), 'rig-pr-worktree-'));
+  const workTreePath = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'rig-pr-worktree-')
+  );
   execSync(`git clone "${bareRepoPath}" "${workTreePath}"`, { stdio: 'pipe' });
-  execSync('git config user.email "test@nostr"', { cwd: workTreePath, stdio: 'pipe' });
-  execSync('git config user.name "test-user"', { cwd: workTreePath, stdio: 'pipe' });
+  execSync('git config user.email "test@nostr"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
+  execSync('git config user.name "test-user"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
 
   // Create initial commit on main
   fs.writeFileSync(path.join(workTreePath, 'README.md'), '# Test Repo\n');
   execSync('git add README.md', { cwd: workTreePath, stdio: 'pipe' });
-  execSync('git commit -m "Initial commit"', { cwd: workTreePath, stdio: 'pipe' });
+  execSync('git commit -m "Initial commit"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
 
   // Add additional main commits
   for (let i = 1; i < mainCommitCount; i++) {
     fs.writeFileSync(
       path.join(workTreePath, `main-file-${i}.txt`),
-      `Main commit ${i}\n`,
+      `Main commit ${i}\n`
     );
-    execSync(`git add main-file-${i}.txt`, { cwd: workTreePath, stdio: 'pipe' });
-    execSync(`git commit -m "Main commit ${i}"`, { cwd: workTreePath, stdio: 'pipe' });
+    execSync(`git add main-file-${i}.txt`, {
+      cwd: workTreePath,
+      stdio: 'pipe',
+    });
+    execSync(`git commit -m "Main commit ${i}"`, {
+      cwd: workTreePath,
+      stdio: 'pipe',
+    });
   }
 
   // Push main to bare repo
@@ -86,19 +106,31 @@ function createRepoWithBranches(
   }).trim();
 
   // Create feature branch with diverging commits
-  execSync(`git checkout -b "${featureBranchName}"`, { cwd: workTreePath, stdio: 'pipe' });
+  execSync(`git checkout -b "${featureBranchName}"`, {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
 
   for (let i = 0; i < featureCommitCount; i++) {
     fs.writeFileSync(
       path.join(workTreePath, `feature-file-${i}.txt`),
-      `Feature commit ${i}\n`,
+      `Feature commit ${i}\n`
     );
-    execSync(`git add feature-file-${i}.txt`, { cwd: workTreePath, stdio: 'pipe' });
-    execSync(`git commit -m "Feature commit ${i}"`, { cwd: workTreePath, stdio: 'pipe' });
+    execSync(`git add feature-file-${i}.txt`, {
+      cwd: workTreePath,
+      stdio: 'pipe',
+    });
+    execSync(`git commit -m "Feature commit ${i}"`, {
+      cwd: workTreePath,
+      stdio: 'pipe',
+    });
   }
 
   // Push feature branch to bare repo
-  execSync(`git push origin "${featureBranchName}"`, { cwd: workTreePath, stdio: 'pipe' });
+  execSync(`git push origin "${featureBranchName}"`, {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
 
   const featureHeadSha = execSync('git rev-parse HEAD', {
     cwd: workTreePath,
@@ -125,7 +157,7 @@ function createStatusEvent(
     secretKey?: Uint8Array;
     targetBranch?: string;
     featureBranch?: string;
-  } = {},
+  } = {}
 ): { event: NostrEvent; secretKey: Uint8Array; pubkey: string } {
   const secretKey = overrides.secretKey ?? generateSecretKey();
   const pubkey = getPublicKey(secretKey);
@@ -150,7 +182,7 @@ function createStatusEvent(
       tags,
       created_at: Math.floor(Date.now() / 1000),
     },
-    secretKey,
+    secretKey
   );
 
   return { event, secretKey, pubkey };
@@ -164,7 +196,7 @@ function createMockHandlerContext(
   overrides: {
     amount?: bigint;
     destination?: string;
-  } = {},
+  } = {}
 ): HandlerContext & {
   acceptSpy: ReturnType<typeof vi.fn>;
   rejectSpy: ReturnType<typeof vi.fn>;
@@ -228,17 +260,12 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
     const repoBaseDir = path.join(baseDir, ownerPrefix);
     fs.mkdirSync(repoBaseDir, { recursive: true });
 
-    const {
-      bareRepoPath,
-      workTreePath,
-      mainHeadSha,
-      featureBranchName,
-      featureHeadSha,
-    } = createRepoWithBranches(repoBaseDir, repoName, {
-      mainCommits: 2,
-      featureBranch: 'feature/add-widget',
-      featureCommits: 2,
-    });
+    const { bareRepoPath, workTreePath, mainHeadSha, featureBranchName } =
+      createRepoWithBranches(repoBaseDir, repoName, {
+        mainCommits: 2,
+        featureBranch: 'feature/add-widget',
+        featureCommits: 2,
+      });
     workTreePaths.push(workTreePath);
 
     // Register repo in metadata store with maintainer
@@ -253,7 +280,8 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
     });
 
     // Mock a patch event ID that the status event references
-    const patchEventId = 'abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234';
+    const patchEventId =
+      'abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234';
     const repoRef = `${REPOSITORY_ANNOUNCEMENT_KIND}:${maintainerPubkey}:${repoName}`;
 
     // Register the patch in metadata so the handler can look it up
@@ -267,11 +295,16 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
     });
 
     // Create kind:1631 (Applied/Merged) status event from maintainer
-    const { event } = createStatusEvent(STATUS_APPLIED_KIND, patchEventId, repoRef, {
-      secretKey: maintainerKey,
-      targetBranch: 'main',
-      featureBranch: featureBranchName,
-    });
+    const { event } = createStatusEvent(
+      STATUS_APPLIED_KIND,
+      patchEventId,
+      repoRef,
+      {
+        secretKey: maintainerKey,
+        targetBranch: 'main',
+        featureBranch: featureBranchName,
+      }
+    );
     const ctx = createMockHandlerContext(event);
 
     // Act
@@ -312,11 +345,11 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
     const repoBaseDir = path.join(baseDir, ownerPrefix);
     fs.mkdirSync(repoBaseDir, { recursive: true });
 
-    const { bareRepoPath, workTreePath, featureBranchName } = createRepoWithBranches(
-      repoBaseDir,
-      repoName,
-      { featureBranch: 'feature/author-check', featureCommits: 1 },
-    );
+    const { bareRepoPath, workTreePath, featureBranchName } =
+      createRepoWithBranches(repoBaseDir, repoName, {
+        featureBranch: 'feature/author-check',
+        featureCommits: 1,
+      });
     workTreePaths.push(workTreePath);
 
     metadataStore.storeRepo({
@@ -329,7 +362,8 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
       createdAt: Math.floor(Date.now() / 1000),
     });
 
-    const patchEventId = 'ef561234ef561234ef561234ef561234ef561234ef561234ef561234ef561234';
+    const patchEventId =
+      'ef561234ef561234ef561234ef561234ef561234ef561234ef561234ef561234';
     const repoRef = `${REPOSITORY_ANNOUNCEMENT_KIND}:${maintainerPubkey}:${repoName}`;
 
     metadataStore.storePatch({
@@ -341,11 +375,16 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
       authorPubkey: getPublicKey(generateSecretKey()),
     });
 
-    const { event } = createStatusEvent(STATUS_APPLIED_KIND, patchEventId, repoRef, {
-      secretKey: maintainerKey,
-      targetBranch: 'main',
-      featureBranch: featureBranchName,
-    });
+    const { event } = createStatusEvent(
+      STATUS_APPLIED_KIND,
+      patchEventId,
+      repoRef,
+      {
+        secretKey: maintainerKey,
+        targetBranch: 'main',
+        featureBranch: featureBranchName,
+      }
+    );
     const ctx = createMockHandlerContext(event);
 
     // Act
@@ -376,11 +415,10 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
     const repoBaseDir = path.join(baseDir, ownerPrefix);
     fs.mkdirSync(repoBaseDir, { recursive: true });
 
-    const { bareRepoPath, workTreePath, featureBranchName } = createRepoWithBranches(
-      repoBaseDir,
-      repoName,
-      { featureBranch: 'feature/unauthorized' },
-    );
+    const { bareRepoPath, workTreePath, featureBranchName } =
+      createRepoWithBranches(repoBaseDir, repoName, {
+        featureBranch: 'feature/unauthorized',
+      });
     workTreePaths.push(workTreePath);
 
     metadataStore.storeRepo({
@@ -393,7 +431,8 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
       createdAt: Math.floor(Date.now() / 1000),
     });
 
-    const patchEventId = 'dead1234dead1234dead1234dead1234dead1234dead1234dead1234dead1234';
+    const patchEventId =
+      'dead1234dead1234dead1234dead1234dead1234dead1234dead1234dead1234';
     const repoRef = `${REPOSITORY_ANNOUNCEMENT_KIND}:${maintainerPubkey}:${repoName}`;
 
     metadataStore.storePatch({
@@ -406,11 +445,16 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
     });
 
     // Create merge event from UNAUTHORIZED user
-    const { event } = createStatusEvent(STATUS_APPLIED_KIND, patchEventId, repoRef, {
-      secretKey: unauthorizedKey,
-      targetBranch: 'main',
-      featureBranch: featureBranchName,
-    });
+    const { event } = createStatusEvent(
+      STATUS_APPLIED_KIND,
+      patchEventId,
+      repoRef,
+      {
+        secretKey: unauthorizedKey,
+        targetBranch: 'main',
+        featureBranch: featureBranchName,
+      }
+    );
     const ctx = createMockHandlerContext(event);
 
     // Act
@@ -418,7 +462,10 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
 
     // Assert
     expect(ctx.rejectSpy).toHaveBeenCalledOnce();
-    expect(ctx.rejectSpy).toHaveBeenCalledWith('F06', expect.stringContaining('nauthorized'));
+    expect(ctx.rejectSpy).toHaveBeenCalledWith(
+      'F06',
+      expect.stringContaining('nauthorized')
+    );
     expect(ctx.acceptSpy).not.toHaveBeenCalled();
   });
 
@@ -435,11 +482,10 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
     const repoBaseDir = path.join(baseDir, ownerPrefix);
     fs.mkdirSync(repoBaseDir, { recursive: true });
 
-    const { bareRepoPath, workTreePath, mainHeadSha, featureBranchName } = createRepoWithBranches(
-      repoBaseDir,
-      repoName,
-      { featureBranch: 'feature/to-close' },
-    );
+    const { bareRepoPath, workTreePath, mainHeadSha, featureBranchName } =
+      createRepoWithBranches(repoBaseDir, repoName, {
+        featureBranch: 'feature/to-close',
+      });
     workTreePaths.push(workTreePath);
 
     metadataStore.storeRepo({
@@ -452,7 +498,8 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
       createdAt: Math.floor(Date.now() / 1000),
     });
 
-    const patchEventId = 'cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234';
+    const patchEventId =
+      'cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234';
     const repoRef = `${REPOSITORY_ANNOUNCEMENT_KIND}:${maintainerPubkey}:${repoName}`;
 
     metadataStore.storePatch({
@@ -464,9 +511,14 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
       authorPubkey: maintainerPubkey,
     });
 
-    const { event } = createStatusEvent(STATUS_CLOSED_KIND, patchEventId, repoRef, {
-      secretKey: maintainerKey,
-    });
+    const { event } = createStatusEvent(
+      STATUS_CLOSED_KIND,
+      patchEventId,
+      repoRef,
+      {
+        secretKey: maintainerKey,
+      }
+    );
     const ctx = createMockHandlerContext(event);
 
     // Act
@@ -502,11 +554,10 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
     const repoBaseDir = path.join(baseDir, ownerPrefix);
     fs.mkdirSync(repoBaseDir, { recursive: true });
 
-    const { bareRepoPath, workTreePath, featureBranchName } = createRepoWithBranches(
-      repoBaseDir,
-      repoName,
-      { featureBranch: 'feature/draft-pr' },
-    );
+    const { bareRepoPath, workTreePath, featureBranchName } =
+      createRepoWithBranches(repoBaseDir, repoName, {
+        featureBranch: 'feature/draft-pr',
+      });
     workTreePaths.push(workTreePath);
 
     metadataStore.storeRepo({
@@ -519,7 +570,8 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
       createdAt: Math.floor(Date.now() / 1000),
     });
 
-    const patchEventId = 'babe1234babe1234babe1234babe1234babe1234babe1234babe1234babe1234';
+    const patchEventId =
+      'babe1234babe1234babe1234babe1234babe1234babe1234babe1234babe1234';
     const repoRef = `${REPOSITORY_ANNOUNCEMENT_KIND}:${maintainerPubkey}:${repoName}`;
 
     metadataStore.storePatch({
@@ -531,9 +583,14 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
       authorPubkey: maintainerPubkey,
     });
 
-    const { event } = createStatusEvent(STATUS_DRAFT_KIND, patchEventId, repoRef, {
-      secretKey: maintainerKey,
-    });
+    const { event } = createStatusEvent(
+      STATUS_DRAFT_KIND,
+      patchEventId,
+      repoRef,
+      {
+        secretKey: maintainerKey,
+      }
+    );
     const ctx = createMockHandlerContext(event);
 
     // Act
@@ -559,11 +616,10 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
     const repoBaseDir = path.join(baseDir, ownerPrefix);
     fs.mkdirSync(repoBaseDir, { recursive: true });
 
-    const { bareRepoPath, workTreePath, featureBranchName } = createRepoWithBranches(
-      repoBaseDir,
-      repoName,
-      { featureBranch: 'feature/open-pr' },
-    );
+    const { bareRepoPath, workTreePath, featureBranchName } =
+      createRepoWithBranches(repoBaseDir, repoName, {
+        featureBranch: 'feature/open-pr',
+      });
     workTreePaths.push(workTreePath);
 
     metadataStore.storeRepo({
@@ -576,7 +632,8 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
       createdAt: Math.floor(Date.now() / 1000),
     });
 
-    const patchEventId = 'face1234face1234face1234face1234face1234face1234face1234face1234';
+    const patchEventId =
+      'face1234face1234face1234face1234face1234face1234face1234face1234';
     const repoRef = `${REPOSITORY_ANNOUNCEMENT_KIND}:${maintainerPubkey}:${repoName}`;
 
     metadataStore.storePatch({
@@ -588,9 +645,14 @@ describe('3.6-INT-001: PR Lifecycle via NIP-34 Status Events', () => {
       authorPubkey: maintainerPubkey,
     });
 
-    const { event } = createStatusEvent(STATUS_OPEN_KIND, patchEventId, repoRef, {
-      secretKey: maintainerKey,
-    });
+    const { event } = createStatusEvent(
+      STATUS_OPEN_KIND,
+      patchEventId,
+      repoRef,
+      {
+        secretKey: maintainerKey,
+      }
+    );
     const ctx = createMockHandlerContext(event);
 
     // Act

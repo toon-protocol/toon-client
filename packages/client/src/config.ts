@@ -41,7 +41,9 @@ export function validateConfig(config: CrosstownClientConfig): void {
   // Validate secretKey only when provided
   if (config.secretKey !== undefined) {
     if (!config.secretKey || config.secretKey.length !== 32) {
-      throw new ValidationError('secretKey must be 32 bytes (Nostr private key)');
+      throw new ValidationError(
+        'secretKey must be 32 bytes (Nostr private key)'
+      );
     }
   }
 
@@ -71,7 +73,9 @@ export function validateConfig(config: CrosstownClientConfig): void {
         throw new ValidationError('evmPrivateKey must be a 32-byte hex string');
       }
     } else {
-      throw new ValidationError('evmPrivateKey must be a hex string or Uint8Array');
+      throw new ValidationError(
+        'evmPrivateKey must be a hex string or Uint8Array'
+      );
     }
   }
 
@@ -137,11 +141,11 @@ export type ResolvedConfig = Required<
   chainRpcUrls?: Record<string, string>;
   initialDeposit?: string;
   settlementTimeout?: number;
-  knownPeers?: Array<{
+  knownPeers?: {
     pubkey: string;
     relayUrl: string;
     btpEndpoint?: string;
-  }>;
+  }[];
   destinationAddress: string;
 };
 
@@ -186,7 +190,8 @@ export function applyDefaults(config: CrosstownClientConfig): ResolvedConfig {
           destinationAddress = 'g.crosstown.peer2';
         } else {
           // Fallback: use ilpInfo.ilpAddress if available
-          destinationAddress = config.ilpInfo?.ilpAddress || 'g.crosstown.relay';
+          destinationAddress =
+            config.ilpInfo?.ilpAddress || 'g.crosstown.relay';
         }
       } else {
         // Production: default to ilpInfo.ilpAddress
@@ -200,13 +205,13 @@ export function applyDefaults(config: CrosstownClientConfig): ResolvedConfig {
   return {
     ...config,
     secretKey,
-    connectorUrl: config.connectorUrl!, // Already validated as required
+    connectorUrl: config.connectorUrl as string, // Already validated as required
     relayUrl: config.relayUrl ?? 'ws://localhost:7100',
     queryTimeout: config.queryTimeout ?? 30000,
     maxRetries: config.maxRetries ?? 3,
     retryDelay: config.retryDelay ?? 1000,
     btpUrl,
-    destinationAddress: destinationAddress!,  // Always set by logic above
+    destinationAddress: destinationAddress as string, // Always set by logic above
   };
 }
 

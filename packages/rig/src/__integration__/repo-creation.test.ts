@@ -5,7 +5,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
 
 // --- Imports from @crosstown/rig (DOES NOT EXIST YET) ---
@@ -15,9 +19,7 @@ import type { MetadataStore, RepoMetadata } from '../storage/metadata-store.js';
 import type { HandlerContext } from '../types.js';
 
 // --- Imports from @crosstown/core (exists) ---
-import {
-  REPOSITORY_ANNOUNCEMENT_KIND,
-} from '@crosstown/core/nip34';
+import { REPOSITORY_ANNOUNCEMENT_KIND } from '@crosstown/core/nip34';
 
 // ---------------------------------------------------------------------------
 // Factory Functions
@@ -34,12 +36,13 @@ function createRepoAnnouncementEvent(
     description?: string;
     repoId?: string;
     maintainers?: string[];
-  } = {},
+  } = {}
 ): { event: NostrEvent; secretKey: Uint8Array; pubkey: string } {
   const secretKey = overrides.secretKey ?? generateSecretKey();
   const pubkey = getPublicKey(secretKey);
   const repoName = overrides.repoName ?? 'test-repo';
-  const description = overrides.description ?? 'A test repository for integration testing';
+  const description =
+    overrides.description ?? 'A test repository for integration testing';
   const repoId = overrides.repoId ?? repoName;
   const maintainers = overrides.maintainers ?? [pubkey];
 
@@ -60,7 +63,7 @@ function createRepoAnnouncementEvent(
       tags,
       created_at: Math.floor(Date.now() / 1000),
     },
-    secretKey,
+    secretKey
   );
 
   return { event, secretKey, pubkey };
@@ -89,7 +92,7 @@ function createMockHandlerContext(
   overrides: {
     amount?: bigint;
     destination?: string;
-  } = {},
+  } = {}
 ): HandlerContext & {
   acceptSpy: ReturnType<typeof vi.fn>;
   rejectSpy: ReturnType<typeof vi.fn>;
@@ -154,7 +157,11 @@ describe('3.1-INT-001: Repo Creation via kind:30617', () => {
     await handleRepoCreation(ctx, { repoDir, metadataStore });
 
     // Assert - bare git repo created on disk
-    const expectedRepoPath = path.join(repoDir, pubkey.slice(0, 8), 'my-project.git');
+    const expectedRepoPath = path.join(
+      repoDir,
+      pubkey.slice(0, 8),
+      'my-project.git'
+    );
     expect(fs.existsSync(expectedRepoPath)).toBe(true);
     expect(fs.existsSync(path.join(expectedRepoPath, 'HEAD'))).toBe(true);
     expect(fs.existsSync(path.join(expectedRepoPath, 'objects'))).toBe(true);
@@ -163,7 +170,7 @@ describe('3.1-INT-001: Repo Creation via kind:30617', () => {
     // Verify HEAD points to a valid ref (bare repo convention)
     const headContent = fs.readFileSync(
       path.join(expectedRepoPath, 'HEAD'),
-      'utf-8',
+      'utf-8'
     );
     expect(headContent.trim()).toMatch(/^ref: refs\/heads\//);
   });
@@ -186,7 +193,7 @@ describe('3.1-INT-001: Repo Creation via kind:30617', () => {
     // Assert - metadata stored in SQLite
     const storedRepo: RepoMetadata | undefined = metadataStore.getRepo(
       pubkey.slice(0, 8),
-      'metadata-test',
+      'metadata-test'
     );
     expect(storedRepo).toBeDefined();
     expect(storedRepo!.name).toBe('metadata-test');
@@ -239,7 +246,10 @@ describe('3.1-INT-001: Repo Creation via kind:30617', () => {
 
     // Assert
     expect(ctx2.rejectSpy).toHaveBeenCalledOnce();
-    expect(ctx2.rejectSpy).toHaveBeenCalledWith('F00', expect.stringContaining('already exists'));
+    expect(ctx2.rejectSpy).toHaveBeenCalledWith(
+      'F00',
+      expect.stringContaining('already exists')
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -256,7 +266,7 @@ describe('3.1-INT-001: Repo Creation via kind:30617', () => {
         tags: [['d', 'no-name-repo']], // missing 'name' tag
         created_at: Math.floor(Date.now() / 1000),
       },
-      secretKey,
+      secretKey
     );
     const ctx = createMockHandlerContext(event);
 
@@ -265,7 +275,10 @@ describe('3.1-INT-001: Repo Creation via kind:30617', () => {
 
     // Assert
     expect(ctx.rejectSpy).toHaveBeenCalledOnce();
-    expect(ctx.rejectSpy).toHaveBeenCalledWith('F00', expect.stringContaining('name'));
+    expect(ctx.rejectSpy).toHaveBeenCalledWith(
+      'F00',
+      expect.stringContaining('name')
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -286,7 +299,10 @@ describe('3.1-INT-001: Repo Creation via kind:30617', () => {
     await handleRepoCreation(ctx, { repoDir, metadataStore });
 
     // Assert
-    const storedRepo = metadataStore.getRepo(pubkey.slice(0, 8), 'maintainer-test');
+    const storedRepo = metadataStore.getRepo(
+      pubkey.slice(0, 8),
+      'maintainer-test'
+    );
     expect(storedRepo).toBeDefined();
     expect(storedRepo!.maintainers).toContain(pubkey);
     expect(storedRepo!.maintainers).toContain(maintainerPubkey);

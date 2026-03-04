@@ -14,6 +14,7 @@ docker compose version    # Should show Compose v2+
 ```
 
 If not installed:
+
 - **macOS:** Install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 - **Linux:** Install [Docker Engine](https://docs.docker.com/engine/install/) and [Docker Compose](https://docs.docker.com/compose/install/)
 
@@ -42,6 +43,7 @@ docker compose -f docker-compose-simple.yml up -d
 ```
 
 Expected output:
+
 ```
 ✔ Container crosstown-connector  Started
 ✔ Container crosstown-node       Started
@@ -69,6 +71,7 @@ pnpm test:e2e
 ```
 
 Expected output:
+
 ```
 ✓ CrosstownClient HTTP Mode E2E > HTTP Mode Bootstrap and Lifecycle
 ✓ CrosstownClient HTTP Mode E2E > Event Publishing via HTTP Connector
@@ -94,6 +97,7 @@ docker compose -f docker-compose-simple.yml down -v
 **Symptom:** E2E tests show `⏭️  Skipping: Infrastructure not ready`
 
 **Solution:**
+
 1. Verify docker-compose is running: `docker compose -f docker-compose-simple.yml ps`
 2. Check service health:
    ```bash
@@ -111,6 +115,7 @@ docker compose -f docker-compose-simple.yml down -v
 **Symptom:** `Error: bind: address already in use`
 
 **Solution:**
+
 ```bash
 # Find process using port 8080 (connector runtime)
 lsof -ti:8080 | xargs kill -9
@@ -126,6 +131,7 @@ lsof -ti:3100 | xargs kill -9
 ```
 
 Then restart docker-compose:
+
 ```bash
 docker compose -f docker-compose-simple.yml up -d
 ```
@@ -142,6 +148,7 @@ Build the images first (see Prerequisites step 2 above).
 **Symptom:** `curl http://localhost:8080/health` returns connection refused
 
 **Solution:**
+
 1. Check if connector container is running:
    ```bash
    docker compose -f docker-compose-simple.yml ps
@@ -160,6 +167,7 @@ Build the images first (see Prerequisites step 2 above).
 **Symptom:** `curl http://localhost:3100/health` returns connection refused
 
 **Solution:**
+
 1. Check if crosstown-node container is running:
    ```bash
    docker compose -f docker-compose-simple.yml ps
@@ -175,6 +183,7 @@ Build the images first (see Prerequisites step 2 above).
 **Symptom:** `Test timed out in 30000ms`
 
 **Solution:**
+
 1. Check if relay is slow to respond (network issues)
 2. Increase timeout in `vitest.e2e.config.ts`:
    ```typescript
@@ -187,7 +196,11 @@ You can also test the client manually using the infrastructure:
 
 ```javascript
 import { CrosstownClient } from '@crosstown/client';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
 
 const secretKey = generateSecretKey();
@@ -208,12 +221,15 @@ const client = new CrosstownClient({
 
 await client.start();
 
-const event = finalizeEvent({
-  kind: 1,
-  content: 'Hello from Crosstown!',
-  tags: [],
-  created_at: Math.floor(Date.now() / 1000),
-}, secretKey);
+const event = finalizeEvent(
+  {
+    kind: 1,
+    content: 'Hello from Crosstown!',
+    tags: [],
+    created_at: Math.floor(Date.now() / 1000),
+  },
+  secretKey
+);
 
 const result = await client.publishEvent(event);
 console.log('Published:', result);

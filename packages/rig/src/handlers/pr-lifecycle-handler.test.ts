@@ -15,7 +15,7 @@ import type { HandlerContext } from '@crosstown/sdk';
  * Factory for creating a mock HandlerContext for PR lifecycle handler tests.
  */
 function createMockHandlerContext(
-  overrides: Partial<HandlerContext> = {},
+  overrides: Partial<HandlerContext> = {}
 ): HandlerContext {
   return {
     toon: 'mock-toon-string',
@@ -56,22 +56,24 @@ function createMockRepoStore(
       owner: string;
       maintainers: string[];
     }
-  > = {},
+  > = {}
 ) {
   return {
-    exists: vi.fn().mockImplementation((repoIdentifier: string) =>
-      Object.keys(repos).some((k) => repoIdentifier.includes(k)),
-    ),
+    exists: vi
+      .fn()
+      .mockImplementation((repoIdentifier: string) =>
+        Object.keys(repos).some((k) => repoIdentifier.includes(k))
+      ),
     get: vi.fn().mockImplementation((repoIdentifier: string) => {
       const entry = Object.entries(repos).find(([k]) =>
-        repoIdentifier.includes(k),
+        repoIdentifier.includes(k)
       );
       return entry ? entry[1] : undefined;
     }),
     updateStatus: vi.fn().mockResolvedValue(undefined),
     getMaintainers: vi.fn().mockImplementation((repoIdentifier: string) => {
       const entry = Object.entries(repos).find(([k]) =>
-        repoIdentifier.includes(k),
+        repoIdentifier.includes(k)
       );
       return entry ? entry[1].maintainers : [];
     }),
@@ -84,7 +86,7 @@ function createMockRepoStore(
  */
 function createMockRepoEventFetcher(
   maintainerPubkeys: string[],
-  ownerPubkey: string = 'ab'.repeat(32),
+  ownerPubkey: string = 'ab'.repeat(32)
 ) {
   return vi.fn().mockResolvedValue({
     id: 'd'.repeat(64),
@@ -127,7 +129,7 @@ describe('PR Lifecycle Handler - Maintainer Authorization', () => {
     });
     const fetchRepoEvent = createMockRepoEventFetcher(
       [maintainerPubkey],
-      maintainerPubkey,
+      maintainerPubkey
     );
     const ctx = createMockHandlerContext({
       kind: 1631,
@@ -171,7 +173,7 @@ describe('PR Lifecycle Handler - Maintainer Authorization', () => {
     });
     const fetchRepoEvent = createMockRepoEventFetcher(
       [maintainerPubkey],
-      maintainerPubkey,
+      maintainerPubkey
     );
     const ctx = createMockHandlerContext({
       kind: 1631,
@@ -201,7 +203,7 @@ describe('PR Lifecycle Handler - Maintainer Authorization', () => {
     expect(ctx.reject).toHaveBeenCalledTimes(1);
     expect(ctx.reject).toHaveBeenCalledWith(
       'F06',
-      'Unauthorized: pubkey lacks maintainer permissions',
+      'Unauthorized: pubkey lacks maintainer permissions'
     );
     expect(ctx.accept).not.toHaveBeenCalled();
   });
@@ -218,7 +220,7 @@ describe('PR Lifecycle Handler - Maintainer Authorization', () => {
     });
     const fetchRepoEvent = createMockRepoEventFetcher(
       [maintainerPubkey],
-      maintainerPubkey,
+      maintainerPubkey
     );
     const ctx = createMockHandlerContext({
       kind: 1631,
@@ -235,7 +237,7 @@ describe('PR Lifecycle Handler - Maintainer Authorization', () => {
     // Assert
     expect(fetchRepoEvent).toHaveBeenCalledTimes(1);
     expect(fetchRepoEvent).toHaveBeenCalledWith(
-      expect.stringContaining('test-repo'),
+      expect.stringContaining('test-repo')
     );
   });
 });
@@ -261,7 +263,7 @@ describe('PR Lifecycle Handler - Status Events', () => {
     });
     const fetchRepoEvent = createMockRepoEventFetcher(
       [maintainerPubkey],
-      maintainerPubkey,
+      maintainerPubkey
     );
     const patchEventId = 'b'.repeat(64);
     const ctx = createMockHandlerContext({
@@ -292,7 +294,7 @@ describe('PR Lifecycle Handler - Status Events', () => {
     expect(repoStore.updateStatus).toHaveBeenCalledWith(
       expect.stringContaining('test-repo'),
       patchEventId,
-      'open',
+      'open'
     );
     expect(ctx.accept).toHaveBeenCalledTimes(1);
   });
@@ -309,7 +311,7 @@ describe('PR Lifecycle Handler - Status Events', () => {
     });
     const fetchRepoEvent = createMockRepoEventFetcher(
       [maintainerPubkey],
-      maintainerPubkey,
+      maintainerPubkey
     );
     const patchEventId = 'b'.repeat(64);
     const ctx = createMockHandlerContext({
@@ -340,7 +342,7 @@ describe('PR Lifecycle Handler - Status Events', () => {
     expect(repoStore.updateStatus).toHaveBeenCalledWith(
       expect.stringContaining('test-repo'),
       patchEventId,
-      'closed',
+      'closed'
     );
     expect(ctx.accept).toHaveBeenCalledTimes(1);
   });
@@ -357,7 +359,7 @@ describe('PR Lifecycle Handler - Status Events', () => {
     });
     const fetchRepoEvent = createMockRepoEventFetcher(
       [maintainerPubkey],
-      maintainerPubkey,
+      maintainerPubkey
     );
     const patchEventId = 'b'.repeat(64);
     const ctx = createMockHandlerContext({
@@ -388,7 +390,7 @@ describe('PR Lifecycle Handler - Status Events', () => {
     expect(repoStore.updateStatus).toHaveBeenCalledWith(
       expect.stringContaining('test-repo'),
       patchEventId,
-      'draft',
+      'draft'
     );
     expect(ctx.accept).toHaveBeenCalledTimes(1);
   });
@@ -405,7 +407,7 @@ describe('PR Lifecycle Handler - Status Events', () => {
     });
     const fetchRepoEvent = createMockRepoEventFetcher(
       [maintainerPubkey],
-      maintainerPubkey,
+      maintainerPubkey
     );
     const patchEventId = 'b'.repeat(64);
     const ctx = createMockHandlerContext({
@@ -436,7 +438,7 @@ describe('PR Lifecycle Handler - Status Events', () => {
     expect(repoStore.updateStatus).toHaveBeenCalledWith(
       expect.stringContaining('test-repo'),
       patchEventId,
-      'merged',
+      'merged'
     );
   });
 });

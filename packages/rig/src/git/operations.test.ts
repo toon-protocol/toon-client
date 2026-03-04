@@ -27,37 +27,41 @@ function createMockExecFile(
     stdout?: string;
     stderr?: string;
     error?: Error | null;
-  } = {},
+  } = {}
 ) {
   const { stdout = '', stderr = '', error = null } = overrides;
-  const mock = vi.fn().mockImplementation(
-    (
-      _file: string,
-      _args: string[],
-      _options: unknown,
-      callback?: (err: Error | null, stdout: string, stderr: string) => void,
-    ) => {
-      if (callback) {
-        if (error) {
-          callback(error, stdout, stderr);
-        } else {
-          callback(null, stdout, stderr);
+  const mock = vi
+    .fn()
+    .mockImplementation(
+      (
+        _file: string,
+        _args: string[],
+        _options: unknown,
+        callback?: (err: Error | null, stdout: string, stderr: string) => void
+      ) => {
+        if (callback) {
+          if (error) {
+            callback(error, stdout, stderr);
+          } else {
+            callback(null, stdout, stderr);
+          }
         }
+        return { pid: 12345, kill: vi.fn() };
       }
-      return { pid: 12345, kill: vi.fn() };
-    },
-  );
+    );
   return mock;
 }
 
 /**
  * Factory for creating a mock HTTP request object.
  */
-function createMockHttpRequest(overrides: {
-  url?: string;
-  method?: string;
-  query?: Record<string, string>;
-} = {}) {
+function createMockHttpRequest(
+  overrides: {
+    url?: string;
+    method?: string;
+    query?: Record<string, string>;
+  } = {}
+) {
   return {
     url: overrides.url ?? '/test-repo.git/info/refs?service=git-upload-pack',
     method: overrides.method ?? 'GET',
@@ -103,7 +107,8 @@ describe('Git Operations - Command Injection Prevention', () => {
     // Arrange
     const mockExecFile = createMockExecFile({ stdout: 'Applying: test patch' });
     const repoPath = '/tmp/repos/test-repo.git';
-    const patchContent = 'From: test\nSubject: test\n---\ndiff --git a/file.ts b/file.ts\n';
+    const patchContent =
+      'From: test\nSubject: test\n---\ndiff --git a/file.ts b/file.ts\n';
 
     // Act
     await applyPatch(repoPath, patchContent, { execFile: mockExecFile });
@@ -131,7 +136,9 @@ describe('Git Operations - Path Traversal Prevention', () => {
     const maliciousName = '../evil';
 
     // Act & Assert
-    expect(() => validateRepoName(maliciousName)).toThrow(/invalid.*repo.*name/i);
+    expect(() => validateRepoName(maliciousName)).toThrow(
+      /invalid.*repo.*name/i
+    );
   });
 
   it.skip('[P0] validateRepoName rejects absolute paths', () => {
@@ -139,7 +146,9 @@ describe('Git Operations - Path Traversal Prevention', () => {
     const absolutePath = '/absolute/path';
 
     // Act & Assert
-    expect(() => validateRepoName(absolutePath)).toThrow(/invalid.*repo.*name/i);
+    expect(() => validateRepoName(absolutePath)).toThrow(
+      /invalid.*repo.*name/i
+    );
   });
 
   it.skip('[P0] validateRepoName rejects null bytes', () => {
@@ -147,7 +156,9 @@ describe('Git Operations - Path Traversal Prevention', () => {
     const nullByteName = 'repo\x00evil';
 
     // Act & Assert
-    expect(() => validateRepoName(nullByteName)).toThrow(/invalid.*repo.*name/i);
+    expect(() => validateRepoName(nullByteName)).toThrow(
+      /invalid.*repo.*name/i
+    );
   });
 
   it.skip('[P0] validateRepoName rejects shell metacharacters', () => {
@@ -155,7 +166,9 @@ describe('Git Operations - Path Traversal Prevention', () => {
     const shellInjection = 'repo;rm -rf /';
 
     // Act & Assert
-    expect(() => validateRepoName(shellInjection)).toThrow(/invalid.*repo.*name/i);
+    expect(() => validateRepoName(shellInjection)).toThrow(
+      /invalid.*repo.*name/i
+    );
   });
 
   it.skip('[P0] validateRepoName rejects backtick command substitution', () => {
@@ -163,7 +176,9 @@ describe('Git Operations - Path Traversal Prevention', () => {
     const backtickInjection = 'repo`whoami`';
 
     // Act & Assert
-    expect(() => validateRepoName(backtickInjection)).toThrow(/invalid.*repo.*name/i);
+    expect(() => validateRepoName(backtickInjection)).toThrow(
+      /invalid.*repo.*name/i
+    );
   });
 
   it.skip('[P0] validateRepoName accepts valid repo names', () => {
@@ -228,12 +243,17 @@ describe('Git Operations - Malformed Patch Handling', () => {
   it.skip('[P0] applyPatch returns rejection when git am fails', async () => {
     // Arrange
     const gitError = new Error('fatal: git am failed');
-    const mockExecFile = createMockExecFile({ error: gitError, stderr: 'Patch does not apply' });
+    const mockExecFile = createMockExecFile({
+      error: gitError,
+      stderr: 'Patch does not apply',
+    });
     const repoPath = '/tmp/repos/test-repo.git';
     const malformedPatch = 'not a real patch';
 
     // Act
-    const result = await applyPatch(repoPath, malformedPatch, { execFile: mockExecFile });
+    const result = await applyPatch(repoPath, malformedPatch, {
+      execFile: mockExecFile,
+    });
 
     // Assert
     expect(result.success).toBe(false);
@@ -377,7 +397,7 @@ describe('Git HTTP Backend - Push Rejection', () => {
     // Assert
     expect(mockResponse.status).toHaveBeenCalledWith(403);
     expect(mockResponse.send).toHaveBeenCalledWith(
-      expect.stringMatching(/forbidden|not allowed|push.*rejected/i),
+      expect.stringMatching(/forbidden|not allowed|push.*rejected/i)
     );
   });
 });

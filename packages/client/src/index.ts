@@ -42,4 +42,8 @@ export {
 export { withRetry, type RetryOptions } from './utils/index.js';
 
 // Config validation (for advanced use cases)
-export { validateConfig, applyDefaults, buildSettlementInfo } from './config.js';
+export {
+  validateConfig,
+  applyDefaults,
+  buildSettlementInfo,
+} from './config.js';

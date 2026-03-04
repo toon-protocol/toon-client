@@ -1,7 +1,7 @@
 // ATDD Red Phase - Integration tests will fail until implementation exists
 // Tests: 3.7-INT-001, 3.8-INT-001, 3.8-INT-002, 3.9-INT-001, 3.9-INT-002, 3.10-INT-001
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -28,7 +28,7 @@ function createGitRepoWithFiles(
   baseDir: string,
   ownerPrefix: string,
   repoName: string,
-  files: Record<string, string>,
+  files: Record<string, string>
 ): {
   bareRepoPath: string;
   workTreePath: string;
@@ -40,10 +40,18 @@ function createGitRepoWithFiles(
   const bareRepoPath = path.join(ownerDir, `${repoName}.git`);
   execSync(`git init --bare "${bareRepoPath}"`, { stdio: 'pipe' });
 
-  const workTreePath = fs.mkdtempSync(path.join(os.tmpdir(), 'rig-web-worktree-'));
+  const workTreePath = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'rig-web-worktree-')
+  );
   execSync(`git clone "${bareRepoPath}" "${workTreePath}"`, { stdio: 'pipe' });
-  execSync('git config user.email "test@nostr"', { cwd: workTreePath, stdio: 'pipe' });
-  execSync('git config user.name "test-user"', { cwd: workTreePath, stdio: 'pipe' });
+  execSync('git config user.email "test@nostr"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
+  execSync('git config user.name "test-user"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
 
   const commitShas: string[] = [];
 
@@ -56,7 +64,10 @@ function createGitRepoWithFiles(
   }
 
   execSync('git add -A', { cwd: workTreePath, stdio: 'pipe' });
-  execSync('git commit -m "Add initial files"', { cwd: workTreePath, stdio: 'pipe' });
+  execSync('git commit -m "Add initial files"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
   execSync('git push origin main', { cwd: workTreePath, stdio: 'pipe' });
 
   const sha = execSync('git rev-parse HEAD', {
@@ -74,14 +85,20 @@ function createGitRepoWithFiles(
  */
 function addCommitToRepo(
   workTreePath: string,
-  changes: { filename: string; content: string; commitMessage: string },
+  changes: { filename: string; content: string; commitMessage: string }
 ): string {
   const fullPath = path.join(workTreePath, changes.filename);
   const dir = path.dirname(fullPath);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(fullPath, changes.content);
-  execSync(`git add "${changes.filename}"`, { cwd: workTreePath, stdio: 'pipe' });
-  execSync(`git commit -m "${changes.commitMessage}"`, { cwd: workTreePath, stdio: 'pipe' });
+  execSync(`git add "${changes.filename}"`, {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
+  execSync(`git commit -m "${changes.commitMessage}"`, {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
   execSync('git push origin main', { cwd: workTreePath, stdio: 'pipe' });
 
   return execSync('git rev-parse HEAD', {
@@ -142,20 +159,16 @@ describe('Web Route Integration Tests', () => {
       const repo1Name = 'alpha-project';
       const repo2Name = 'beta-service';
 
-      const { bareRepoPath: repo1Path, workTreePath: wt1 } = createGitRepoWithFiles(
-        repoDir,
-        ownerPrefix,
-        repo1Name,
-        { 'README.md': '# Alpha Project\n' },
-      );
+      const { bareRepoPath: repo1Path, workTreePath: wt1 } =
+        createGitRepoWithFiles(repoDir, ownerPrefix, repo1Name, {
+          'README.md': '# Alpha Project\n',
+        });
       workTreePaths.push(wt1);
 
-      const { bareRepoPath: repo2Path, workTreePath: wt2 } = createGitRepoWithFiles(
-        repoDir,
-        ownerPrefix,
-        repo2Name,
-        { 'README.md': '# Beta Service\n' },
-      );
+      const { bareRepoPath: repo2Path, workTreePath: wt2 } =
+        createGitRepoWithFiles(repoDir, ownerPrefix, repo2Name, {
+          'README.md': '# Beta Service\n',
+        });
       workTreePaths.push(wt2);
 
       metadataStore.storeRepo({
@@ -209,7 +222,7 @@ describe('Web Route Integration Tests', () => {
           'README.md': '# Tree View Test\n',
           'src/index.ts': 'console.log("hello");\n',
           'src/utils/helpers.ts': 'export const help = () => {};\n',
-        },
+        }
       );
       workTreePaths.push(workTreePath);
 
@@ -250,7 +263,7 @@ describe('Web Route Integration Tests', () => {
         repoDir,
         ownerPrefix,
         repoName,
-        { 'README.md': fileContent },
+        { 'README.md': fileContent }
       );
       workTreePaths.push(workTreePath);
 
@@ -268,7 +281,7 @@ describe('Web Route Integration Tests', () => {
 
       // Act
       const response = await request(app).get(
-        `/${ownerPrefix}/${repoName}/blob/main/README.md`,
+        `/${ownerPrefix}/${repoName}/blob/main/README.md`
       );
 
       // Assert
@@ -290,7 +303,7 @@ describe('Web Route Integration Tests', () => {
         repoDir,
         ownerPrefix,
         repoName,
-        { 'README.md': '# Commit Log Test\n' },
+        { 'README.md': '# Commit Log Test\n' }
       );
       workTreePaths.push(workTreePath);
 
@@ -320,7 +333,9 @@ describe('Web Route Integration Tests', () => {
       app = createTestRigApp({ repoDir, metadataStore });
 
       // Act
-      const response = await request(app).get(`/${ownerPrefix}/${repoName}/commits`);
+      const response = await request(app).get(
+        `/${ownerPrefix}/${repoName}/commits`
+      );
 
       // Assert
       expect(response.status).toBe(200);
@@ -343,14 +358,15 @@ describe('Web Route Integration Tests', () => {
         repoDir,
         ownerPrefix,
         repoName,
-        { 'data.txt': 'original content\nline two\nline three\n' },
+        { 'data.txt': 'original content\nline two\nline three\n' }
       );
       workTreePaths.push(workTreePath);
 
       // Modify the file in second commit
       const commitSha = addCommitToRepo(workTreePath, {
         filename: 'data.txt',
-        content: 'modified content\nline two\nnew line three\nadded line four\n',
+        content:
+          'modified content\nline two\nnew line three\nadded line four\n',
         commitMessage: 'Modify data.txt with changes',
       });
 
@@ -368,14 +384,14 @@ describe('Web Route Integration Tests', () => {
 
       // Act
       const response = await request(app).get(
-        `/${ownerPrefix}/${repoName}/commit/${commitSha}`,
+        `/${ownerPrefix}/${repoName}/commit/${commitSha}`
       );
 
       // Assert
       expect(response.status).toBe(200);
       expect(response.headers['content-type']).toContain('text/html');
       // Response should contain diff markers (additions/deletions)
-      expect(response.text).toMatch(/[+\-].*content/);
+      expect(response.text).toMatch(/[+-].*content/);
       expect(response.text).toContain('Modify data.txt with changes');
     });
   });
@@ -392,14 +408,18 @@ describe('Web Route Integration Tests', () => {
         repoDir,
         ownerPrefix,
         repoName,
-        { 'src/module.ts': 'line one from first commit\nline two from first commit\n' },
+        {
+          'src/module.ts':
+            'line one from first commit\nline two from first commit\n',
+        }
       );
       workTreePaths.push(workTreePath);
 
       // Modify file in second commit (only change line 2)
       const secondSha = addCommitToRepo(workTreePath, {
         filename: 'src/module.ts',
-        content: 'line one from first commit\nline two modified in second commit\n',
+        content:
+          'line one from first commit\nline two modified in second commit\n',
         commitMessage: 'Update module line 2',
       });
 
@@ -417,7 +437,7 @@ describe('Web Route Integration Tests', () => {
 
       // Act
       const response = await request(app).get(
-        `/${ownerPrefix}/${repoName}/blame/main/src/module.ts`,
+        `/${ownerPrefix}/${repoName}/blame/main/src/module.ts`
       );
 
       // Assert

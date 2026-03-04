@@ -107,11 +107,15 @@ describe('ChannelManager', () => {
 
   describe('getNonce / getCumulativeAmount errors', () => {
     it('should throw for untracked channel on getNonce', () => {
-      expect(() => manager.getNonce('0x' + 'ff'.repeat(32))).toThrow('not being tracked');
+      expect(() => manager.getNonce('0x' + 'ff'.repeat(32))).toThrow(
+        'not being tracked'
+      );
     });
 
     it('should throw for untracked channel on getCumulativeAmount', () => {
-      expect(() => manager.getCumulativeAmount('0x' + 'ff'.repeat(32))).toThrow('not being tracked');
+      expect(() => manager.getCumulativeAmount('0x' + 'ff'.repeat(32))).toThrow(
+        'not being tracked'
+      );
     });
   });
 

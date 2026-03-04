@@ -5,18 +5,21 @@
 ## ✅ What's Working
 
 ### 1. Client Initialization & Connection
+
 - ✅ Client creates successfully with HTTP mode
 - ✅ Connects to genesis node connector (http://localhost:8080)
 - ✅ BTP WebSocket connection established (ws://localhost:3000)
 - ✅ Authentication successful via BTP
 
 ### 2. Event Publishing
+
 - ✅ Events are being published successfully!
 - ✅ ILP payments are processed correctly
 - ✅ Connector receives packets and routes to BLS
 - ✅ BLS fulfills payment and returns success
 
 **Evidence from connector logs:**
+
 ```json
 {
   "msg": "Packet fulfilled by business logic server",
@@ -27,13 +30,14 @@
 ```
 
 ### 3. Core Functionality
+
 - ✅ TOON encoding/decoding
 - ✅ Dynamic pricing (10 base units per byte)
 - ✅ ILP packet construction
 - ✅ HTTP runtime client
 - ✅ BTP runtime client
 
-## ⚠️  Known Issue
+## ⚠️ Known Issue
 
 **`nostr-tools` SimplePool - "window is not defined"**
 
@@ -46,6 +50,7 @@
 ## 🧪 Test Results
 
 ### Manual Test (basic-publish.ts)
+
 ```bash
 $ pnpm exec tsx packages/client/examples/basic-publish.ts
 
@@ -65,12 +70,14 @@ $ pnpm exec tsx packages/client/examples/basic-publish.ts
 ```
 
 ### Connector Confirmation
+
 - Packet received from client ✅
 - Delivered to BLS via local delivery ✅
 - BLS fulfilled packet ✅
 - Fulfillment sent back to client ✅
 
 ### Infrastructure Status
+
 ```
 CONTAINER             PORT     STATUS
 ─────────────────────────────────────────────
@@ -89,17 +96,20 @@ connector-peer1       8090     ✅ healthy
 ## 📋 Next Steps
 
 ### Option 1: Fix nostr-tools Issue
+
 - Replace SimplePool with custom WebSocket client
 - Or use polyfill for `window` object in Node.js
 - Update client to handle cleanup gracefully
 
 ### Option 2: Ignore and Document
+
 - Event publishing works perfectly
 - Crash happens after success
 - Document as known limitation
 - Users can catch and ignore the error
 
 ### Option 3: Test with Browser Environment
+
 - Build browser bundle
 - Test in actual browser where `window` exists
 - May work perfectly in intended environment
@@ -123,7 +133,11 @@ connector-peer1       8090     ✅ healthy
 
 ```typescript
 import { CrosstownClient } from '@crosstown/client';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
 
 const secretKey = generateSecretKey();
@@ -144,12 +158,15 @@ const client = new CrosstownClient({
 
 await client.start();
 
-const event = finalizeEvent({
-  kind: 1,
-  content: 'Hello Crosstown!',
-  tags: [],
-  created_at: Math.floor(Date.now() / 1000),
-}, secretKey);
+const event = finalizeEvent(
+  {
+    kind: 1,
+    content: 'Hello Crosstown!',
+    tags: [],
+    created_at: Math.floor(Date.now() / 1000),
+  },
+  secretKey
+);
 
 // This WORKS! Event is published and paid for via ILP
 const result = await client.publishEvent(event);

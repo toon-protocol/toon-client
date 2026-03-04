@@ -8,7 +8,11 @@
  */
 
 import { CrosstownClient } from '../src/index.js';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
 
 async function main() {
@@ -23,16 +27,16 @@ async function main() {
   // 2. Create client (connects to genesis node)
   console.log('\n🔧 Creating client...');
   const client = new CrosstownClient({
-    connectorUrl: 'http://localhost:8080',       // Genesis connector runtime
+    connectorUrl: 'http://localhost:8080', // Genesis connector runtime
     secretKey,
     ilpInfo: {
       pubkey,
       ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`,
-      btpEndpoint: 'ws://localhost:3000',        // Genesis connector BTP
+      btpEndpoint: 'ws://localhost:3000', // Genesis connector BTP
     },
     toonEncoder: encodeEventToToon,
     toonDecoder: decodeEventFromToon,
-    relayUrl: 'ws://localhost:7100',             // Genesis relay
+    relayUrl: 'ws://localhost:7100', // Genesis relay
   });
 
   try {
@@ -44,12 +48,15 @@ async function main() {
 
     // 4. Create and publish a test event
     console.log('\n📨 Publishing test event...');
-    const event = finalizeEvent({
-      kind: 1,
-      content: `Hello from Crosstown! Timestamp: ${new Date().toISOString()}`,
-      tags: [],
-      created_at: Math.floor(Date.now() / 1000),
-    }, secretKey);
+    const event = finalizeEvent(
+      {
+        kind: 1,
+        content: `Hello from Crosstown! Timestamp: ${new Date().toISOString()}`,
+        tags: [],
+        created_at: Math.floor(Date.now() / 1000),
+      },
+      secretKey
+    );
 
     console.log(`   Event ID: ${event.id}`);
     console.log(`   Content: "${event.content}"`);
@@ -59,7 +66,9 @@ async function main() {
     if (publishResult.success) {
       console.log(`\n✅ SUCCESS!`);
       console.log(`   Event ID: ${publishResult.eventId}`);
-      console.log(`   ILP Fulfillment: ${publishResult.fulfillment?.slice(0, 32)}...`);
+      console.log(
+        `   ILP Fulfillment: ${publishResult.fulfillment?.slice(0, 32)}...`
+      );
     } else {
       console.error(`\n❌ FAILED: ${publishResult.error}`);
     }
@@ -68,10 +77,9 @@ async function main() {
     console.log(`\n📊 Client Stats:`);
     console.log(`   Peers: ${client.getPeersCount()}`);
     const peers = client.getDiscoveredPeers();
-    peers.forEach(peer => {
+    peers.forEach((peer) => {
       console.log(`   - ${peer.pubkey.slice(0, 16)}... at ${peer.ilpAddress}`);
     });
-
   } catch (error) {
     console.error('\n❌ Error:', error);
     throw error;
@@ -103,7 +111,7 @@ process.on('unhandledRejection', (error: any) => {
 });
 
 // Run
-main().catch(error => {
+main().catch((error) => {
   console.error('Fatal error:', error);
   process.exit(1);
 });

@@ -6,7 +6,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { execSync } from 'node:child_process';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
 import request from 'supertest';
 import type { Express } from 'express';
@@ -25,7 +29,6 @@ import {
   PATCH_KIND,
   STATUS_OPEN_KIND,
   STATUS_APPLIED_KIND,
-  STATUS_CLOSED_KIND,
   STATUS_DRAFT_KIND,
   REPOSITORY_ANNOUNCEMENT_KIND,
 } from '@crosstown/core/nip34';
@@ -50,7 +53,7 @@ function createNip34Event(
     referencedEventId?: string;
     tags?: string[][];
     created_at?: number;
-  } = {},
+  } = {}
 ): { event: NostrEvent; secretKey: Uint8Array; pubkey: string } {
   const secretKey = overrides.secretKey ?? generateSecretKey();
   const pubkey = getPublicKey(secretKey);
@@ -80,7 +83,7 @@ function createNip34Event(
       tags,
       created_at: overrides.created_at ?? Math.floor(Date.now() / 1000),
     },
-    secretKey,
+    secretKey
   );
 
   return { event, secretKey, pubkey };
@@ -92,7 +95,7 @@ function createNip34Event(
 function createMinimalRepo(
   baseDir: string,
   ownerPrefix: string,
-  repoName: string,
+  repoName: string
 ): { bareRepoPath: string; workTreePath: string } {
   const ownerDir = path.join(baseDir, ownerPrefix);
   fs.mkdirSync(ownerDir, { recursive: true });
@@ -100,14 +103,25 @@ function createMinimalRepo(
   const bareRepoPath = path.join(ownerDir, `${repoName}.git`);
   execSync(`git init --bare "${bareRepoPath}"`, { stdio: 'pipe' });
 
-  const workTreePath = fs.mkdtempSync(path.join(os.tmpdir(), 'rig-relay-worktree-'));
+  const workTreePath = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'rig-relay-worktree-')
+  );
   execSync(`git clone "${bareRepoPath}" "${workTreePath}"`, { stdio: 'pipe' });
-  execSync('git config user.email "test@nostr"', { cwd: workTreePath, stdio: 'pipe' });
-  execSync('git config user.name "test-user"', { cwd: workTreePath, stdio: 'pipe' });
+  execSync('git config user.email "test@nostr"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
+  execSync('git config user.name "test-user"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
 
   fs.writeFileSync(path.join(workTreePath, 'README.md'), '# Test\n');
   execSync('git add README.md', { cwd: workTreePath, stdio: 'pipe' });
-  execSync('git commit -m "Initial commit"', { cwd: workTreePath, stdio: 'pipe' });
+  execSync('git commit -m "Initial commit"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
   execSync('git push origin main', { cwd: workTreePath, stdio: 'pipe' });
 
   return { bareRepoPath, workTreePath };
@@ -148,7 +162,11 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
     it.skip('[P2] GET /{owner}/{repo}/issues renders issue titles from relay events', async () => {
       // Arrange
       const repoName = 'issues-test-repo';
-      const { bareRepoPath, workTreePath } = createMinimalRepo(repoDir, ownerPrefix, repoName);
+      const { bareRepoPath, workTreePath } = createMinimalRepo(
+        repoDir,
+        ownerPrefix,
+        repoName
+      );
       workTreePaths.push(workTreePath);
 
       const repoRef = `${REPOSITORY_ANNOUNCEMENT_KIND}:${ownerPubkey}:${repoName}`;
@@ -188,7 +206,9 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
       app = createRigApp(appConfig);
 
       // Act
-      const response = await request(app).get(`/${ownerPrefix}/${repoName}/issues`);
+      const response = await request(app).get(
+        `/${ownerPrefix}/${repoName}/issues`
+      );
 
       // Assert
       expect(response.status).toBe(200);
@@ -206,7 +226,11 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
     it.skip('[P2] GET /{owner}/{repo}/pulls renders PRs with correct status', async () => {
       // Arrange
       const repoName = 'pulls-test-repo';
-      const { bareRepoPath, workTreePath } = createMinimalRepo(repoDir, ownerPrefix, repoName);
+      const { bareRepoPath, workTreePath } = createMinimalRepo(
+        repoDir,
+        ownerPrefix,
+        repoName
+      );
       workTreePaths.push(workTreePath);
 
       const repoRef = `${REPOSITORY_ANNOUNCEMENT_KIND}:${ownerPubkey}:${repoName}`;
@@ -259,8 +283,12 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
 
       // Mock relay pool returns patches and status events
       const mockPool = createMockRelayPool([
-        pr1, pr2, pr3,
-        status1, status2, status3,
+        pr1,
+        pr2,
+        pr3,
+        status1,
+        status2,
+        status3,
       ]);
 
       const appConfig: RigAppConfig = {
@@ -272,7 +300,9 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
       app = createRigApp(appConfig);
 
       // Act
-      const response = await request(app).get(`/${ownerPrefix}/${repoName}/pulls`);
+      const response = await request(app).get(
+        `/${ownerPrefix}/${repoName}/pulls`
+      );
 
       // Assert
       expect(response.status).toBe(200);
@@ -299,7 +329,11 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
     it.skip('[P2] GET /{owner}/{repo}/issues/{id} renders comments in chronological order', async () => {
       // Arrange
       const repoName = 'comments-test-repo';
-      const { bareRepoPath, workTreePath } = createMinimalRepo(repoDir, ownerPrefix, repoName);
+      const { bareRepoPath, workTreePath } = createMinimalRepo(
+        repoDir,
+        ownerPrefix,
+        repoName
+      );
       workTreePaths.push(workTreePath);
 
       const repoRef = `${REPOSITORY_ANNOUNCEMENT_KIND}:${ownerPubkey}:${repoName}`;
@@ -347,7 +381,12 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
       });
 
       // Mock relay - return comments in scrambled order to test sorting
-      const mockPool = createMockRelayPool([issue, comment3, comment1, comment2]);
+      const mockPool = createMockRelayPool([
+        issue,
+        comment3,
+        comment1,
+        comment2,
+      ]);
 
       const appConfig: RigAppConfig = {
         repoDir,
@@ -359,7 +398,7 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
 
       // Act
       const response = await request(app).get(
-        `/${ownerPrefix}/${repoName}/issues/${issue.id}`,
+        `/${ownerPrefix}/${repoName}/issues/${issue.id}`
       );
 
       // Assert
@@ -389,7 +428,11 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
     it.skip('[P2] GET /{owner}/{repo}/issues returns 200 with degradation message when relay fails', async () => {
       // Arrange
       const repoName = 'relay-fail-repo';
-      const { bareRepoPath, workTreePath } = createMinimalRepo(repoDir, ownerPrefix, repoName);
+      const { bareRepoPath, workTreePath } = createMinimalRepo(
+        repoDir,
+        ownerPrefix,
+        repoName
+      );
       workTreePaths.push(workTreePath);
 
       metadataStore.storeRepo({
@@ -420,7 +463,9 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
       app = createRigApp(appConfig);
 
       // Act
-      const response = await request(app).get(`/${ownerPrefix}/${repoName}/issues`);
+      const response = await request(app).get(
+        `/${ownerPrefix}/${repoName}/issues`
+      );
 
       // Assert - page should still render (not crash)
       expect(response.status).toBe(200);
@@ -428,13 +473,19 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
 
       // Should contain a graceful degradation message
       const lowerText = response.text.toLowerCase();
-      expect(lowerText).toMatch(/relay.*unavailable|unable.*relay|no.*connection/);
+      expect(lowerText).toMatch(
+        /relay.*unavailable|unable.*relay|no.*connection/
+      );
     });
 
     it.skip('[P2] GET /{owner}/{repo}/pulls returns 200 with degradation message when relay fails', async () => {
       // Arrange
       const repoName = 'relay-fail-pulls-repo';
-      const { bareRepoPath, workTreePath } = createMinimalRepo(repoDir, ownerPrefix, repoName);
+      const { bareRepoPath, workTreePath } = createMinimalRepo(
+        repoDir,
+        ownerPrefix,
+        repoName
+      );
       workTreePaths.push(workTreePath);
 
       metadataStore.storeRepo({
@@ -464,13 +515,17 @@ describe('3.11-INT: Relay Integration for Issues/PRs/Comments', () => {
       app = createRigApp(appConfig);
 
       // Act
-      const response = await request(app).get(`/${ownerPrefix}/${repoName}/pulls`);
+      const response = await request(app).get(
+        `/${ownerPrefix}/${repoName}/pulls`
+      );
 
       // Assert - page should still render (not crash)
       expect(response.status).toBe(200);
       expect(response.headers['content-type']).toContain('text/html');
       const lowerText = response.text.toLowerCase();
-      expect(lowerText).toMatch(/relay.*unavailable|unable.*relay|no.*connection/);
+      expect(lowerText).toMatch(
+        /relay.*unavailable|unable.*relay|no.*connection/
+      );
     });
   });
 });

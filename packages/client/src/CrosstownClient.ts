@@ -1,7 +1,13 @@
 import { SimplePool } from 'nostr-tools/pool';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
-import type { BootstrapService, RelayMonitor, IlpSendResult, AgentRuntimeClient } from '@crosstown/core';
+import type {
+  BootstrapService,
+  RelayMonitor,
+  IlpSendResult,
+  AgentRuntimeClient,
+  Subscription,
+} from '@crosstown/core';
 import { validateConfig, applyDefaults } from './config.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
@@ -22,7 +28,7 @@ import type {
 interface CrosstownClientState {
   bootstrapService: BootstrapService;
   relayMonitor: RelayMonitor;
-  subscription: any; // Subscription from relayMonitor.start()
+  subscription: Subscription;
   runtimeClient: AgentRuntimeClient;
   peersDiscovered: number;
   btpClient?: BtpRuntimeClient;
@@ -146,18 +152,22 @@ export class CrosstownClient {
       // Initialize HTTP mode components
       const initialization = await initializeHttpMode(this.config, this.pool);
 
-      const { bootstrapService, relayMonitor, runtimeClient, btpClient } = initialization;
+      const { bootstrapService, relayMonitor, runtimeClient, btpClient } =
+        initialization;
 
       // Wire claim signer to bootstrap service if we have channel manager
       if (this.channelManager) {
-        bootstrapService.setClaimSigner(async (channelId: string, amount: bigint) => {
-          // Track the channel if not already tracked
-          if (!this.channelManager!.isTracking(channelId)) {
-            this.channelManager!.trackChannel(channelId);
+        const cm = this.channelManager;
+        bootstrapService.setClaimSigner(
+          async (channelId: string, amount: bigint) => {
+            // Track the channel if not already tracked
+            if (!cm.isTracking(channelId)) {
+              cm.trackChannel(channelId);
+            }
+            // Sign balance proof and return claim
+            return cm.signBalanceProof(channelId, amount);
           }
-          // Sign balance proof and return claim
-          return this.channelManager!.signBalanceProof(channelId, amount);
-        });
+        );
       }
 
       // Start bootstrap process (discover peers, handshake with signed claims, announce)
@@ -166,7 +176,10 @@ export class CrosstownClient {
       // Track any additional channels from bootstrap results
       if (this.channelManager) {
         for (const result of bootstrapResults) {
-          if (result.channelId && !this.channelManager.isTracking(result.channelId)) {
+          if (
+            result.channelId &&
+            !this.channelManager.isTracking(result.channelId)
+          ) {
             this.channelManager.trackChannel(result.channelId);
           }
         }
@@ -229,13 +242,17 @@ export class CrosstownClient {
       const amount = String(BigInt(toonData.length) * basePricePerByte);
 
       // Use provided destination or fall back to config default
-      const destination = options?.destination ?? this.config.destinationAddress;
+      const destination =
+        options?.destination ?? this.config.destinationAddress;
 
       let response: IlpSendResult;
 
       // If claim provided and BTP client available, send with claim
       if (options?.claim && this.state.btpClient) {
-        const claimMessage = EvmSigner.buildClaimMessage(options.claim, this.getPublicKey());
+        const claimMessage = EvmSigner.buildClaimMessage(
+          options.claim,
+          this.getPublicKey()
+        );
         response = await this.state.btpClient.sendIlpPacketWithClaim(
           {
             destination,
@@ -283,7 +300,10 @@ export class CrosstownClient {
    * @returns Signed balance proof
    * @throws {CrosstownClientError} If no EVM signer configured or channel not tracked
    */
-  async signBalanceProof(channelId: string, amount: bigint): Promise<SignedBalanceProof> {
+  async signBalanceProof(
+    channelId: string,
+    amount: bigint
+  ): Promise<SignedBalanceProof> {
     if (!this.channelManager) {
       throw new CrosstownClientError(
         'No EVM signer configured. Provide evmPrivateKey in config.',
@@ -327,8 +347,14 @@ export class CrosstownClient {
     };
 
     if (params.claim && this.state.btpClient) {
-      const claimMessage = EvmSigner.buildClaimMessage(params.claim, this.getPublicKey());
-      return this.state.btpClient.sendIlpPacketWithClaim(ilpParams, claimMessage);
+      const claimMessage = EvmSigner.buildClaimMessage(
+        params.claim,
+        this.getPublicKey()
+      );
+      return this.state.btpClient.sendIlpPacketWithClaim(
+        ilpParams,
+        claimMessage
+      );
     }
 
     return this.state.runtimeClient.sendIlpPacket(ilpParams);
@@ -358,7 +384,7 @@ export class CrosstownClient {
 
       // Stop relay monitoring subscription
       if (this.state.subscription) {
-        this.state.subscription.close?.();
+        this.state.subscription.unsubscribe();
       }
 
       // Close SimplePool connections

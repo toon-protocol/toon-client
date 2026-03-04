@@ -141,11 +141,11 @@ export interface CrosstownClientConfig {
    * If provided, these peers will be used for initial bootstrap.
    * RelayMonitor will discover additional peers from the relay after bootstrap.
    */
-  knownPeers?: Array<{
+  knownPeers?: {
     pubkey: string;
     relayUrl: string;
     btpEndpoint?: string;
-  }>;
+  }[];
 
   // ============================================================================
   // TIMEOUTS & RETRIES (optional with defaults)

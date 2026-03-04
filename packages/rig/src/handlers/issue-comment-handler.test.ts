@@ -18,7 +18,7 @@ import type { HandlerContext } from '@crosstown/sdk';
  * Factory for creating a mock HandlerContext for issue/comment handler tests.
  */
 function createMockHandlerContext(
-  overrides: Partial<HandlerContext> = {},
+  overrides: Partial<HandlerContext> = {}
 ): HandlerContext {
   return {
     toon: 'mock-toon-string',
@@ -51,13 +51,13 @@ function createMockHandlerContext(
 /**
  * Factory for creating a mock RepoMetadataStore that tracks repository existence.
  */
-function createMockRepoStore(
-  repos: string[] = ['test-repo'],
-) {
+function createMockRepoStore(repos: string[] = ['test-repo']) {
   return {
-    exists: vi.fn().mockImplementation((repoIdentifier: string) =>
-      repos.some((r) => repoIdentifier.includes(r)),
-    ),
+    exists: vi
+      .fn()
+      .mockImplementation((repoIdentifier: string) =>
+        repos.some((r) => repoIdentifier.includes(r))
+      ),
     get: vi.fn().mockImplementation((repoIdentifier: string) => {
       const found = repos.find((r) => repoIdentifier.includes(r));
       if (!found) return undefined;

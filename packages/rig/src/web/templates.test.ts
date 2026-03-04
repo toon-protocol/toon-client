@@ -28,27 +28,26 @@ function createMockRepo(
     owner?: string;
     description?: string;
     lastCommitDate?: number;
-  } = {},
+  } = {}
 ) {
   return {
     name: overrides.name ?? 'test-repo',
     owner: overrides.owner ?? 'ab'.repeat(32),
     description: overrides.description ?? 'A test repository',
-    lastCommitDate:
-      overrides.lastCommitDate ?? Math.floor(Date.now() / 1000),
+    lastCommitDate: overrides.lastCommitDate ?? Math.floor(Date.now() / 1000),
   };
 }
 
 /**
  * Factory for creating a mock tree entry (directory/file listing).
  */
-function createMockTreeEntry(
+function _createMockTreeEntry(
   overrides: {
     mode?: string;
     type?: 'blob' | 'tree';
     name?: string;
     hash?: string;
-  } = {},
+  } = {}
 ) {
   return {
     mode: overrides.mode ?? '100644',
@@ -68,7 +67,7 @@ function createMockIssue(
     title?: string;
     content?: string;
     createdAt?: number;
-  } = {},
+  } = {}
 ) {
   return {
     id: overrides.id ?? 'a'.repeat(64),
@@ -137,7 +136,7 @@ describe('Templates - File Tree and Blob', () => {
     const repoName = 'test-repo';
     const ref = 'main';
     const path = 'does/not/exist';
-    const treeEntries: ReturnType<typeof createMockTreeEntry>[] | null = null;
+    const treeEntries: ReturnType<typeof _createMockTreeEntry>[] | null = null;
 
     // Act
     const result = renderTreeView(repoName, ref, path, treeEntries);
@@ -176,7 +175,7 @@ describe('Templates - Commit Diff', () => {
     // Arrange
     const repoName = 'test-repo';
     const sha = 'deadbeef'.repeat(5); // 40-char nonexistent SHA
-    const commitData: null = null;
+    const commitData = null;
 
     // Act
     const result = renderCommitDiff(repoName, sha, commitData);
@@ -190,7 +189,7 @@ describe('Templates - Commit Diff', () => {
     // Arrange
     const repoName = 'test-repo';
     const sha = 'not-a-valid-sha';
-    const commitData: null = null;
+    const commitData = null;
 
     // Act
     const result = renderCommitDiff(repoName, sha, commitData);
@@ -214,7 +213,7 @@ describe('Templates - Blame View', () => {
     const repoName = 'test-repo';
     const ref = 'main';
     const path = 'missing-file.ts';
-    const blameData: null = null;
+    const blameData = null;
 
     // Act
     const result = renderBlameView(repoName, ref, path, blameData);

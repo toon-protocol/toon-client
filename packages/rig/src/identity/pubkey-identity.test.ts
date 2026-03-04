@@ -18,8 +18,8 @@ import type { HandlerContext } from '@crosstown/sdk';
 /**
  * Factory for creating a mock HandlerContext for authorization tests.
  */
-function createMockHandlerContext(
-  overrides: Partial<HandlerContext> = {},
+function _createMockHandlerContext(
+  overrides: Partial<HandlerContext> = {}
 ): HandlerContext {
   return {
     toon: 'mock-toon-string',
@@ -71,7 +71,10 @@ function createMockRepoAnnouncementEvent(maintainerPubkeys: string[]) {
  * Factory for creating a mock relay query client that returns kind:0 profiles.
  */
 function createMockRelayClient(
-  profiles: Record<string, { name?: string; display_name?: string; picture?: string }> = {},
+  profiles: Record<
+    string,
+    { name?: string; display_name?: string; picture?: string }
+  > = {}
 ) {
   return {
     queryProfile: vi.fn().mockImplementation(async (pubkey: string) => {
@@ -158,9 +161,15 @@ describe('Pubkey Identity - Authorization', () => {
     ]);
 
     // Act & Assert
-    expect(checkMaintainerAuthorization(maintainer1, repoEvent).authorized).toBe(true);
-    expect(checkMaintainerAuthorization(maintainer2, repoEvent).authorized).toBe(true);
-    expect(checkMaintainerAuthorization(maintainer3, repoEvent).authorized).toBe(true);
+    expect(
+      checkMaintainerAuthorization(maintainer1, repoEvent).authorized
+    ).toBe(true);
+    expect(
+      checkMaintainerAuthorization(maintainer2, repoEvent).authorized
+    ).toBe(true);
+    expect(
+      checkMaintainerAuthorization(maintainer3, repoEvent).authorized
+    ).toBe(true);
   });
 });
 

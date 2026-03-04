@@ -19,7 +19,7 @@ function createMockArgs(
     relayUrl?: string;
     httpPort?: number;
     repoDir?: string;
-  } = {},
+  } = {}
 ): string[] {
   const args: string[] = [];
 
@@ -63,7 +63,7 @@ describe('@crosstown/rig public API exports', () => {
     // and can be referenced. The type check happens at compile time.
     expect(rig.startRig).toBeDefined();
     // If we can construct a config object and pass it, the type exists
-    const config = {
+    const _config = {
       mnemonic: 'test test test test test test test test test test test about',
       relayUrl: 'ws://localhost:7100',
     };
@@ -85,7 +85,8 @@ describe('@crosstown/rig CLI entrypoint', () => {
   it.skip('[P3] parses --mnemonic flag into config.mnemonic', () => {
     // Arrange
     const args = createMockArgs({
-      mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      mnemonic:
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
       relayUrl: 'ws://localhost:7100',
     });
 
@@ -94,7 +95,7 @@ describe('@crosstown/rig CLI entrypoint', () => {
 
     // Assert
     expect(config.mnemonic).toBe(
-      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
     );
   });
 

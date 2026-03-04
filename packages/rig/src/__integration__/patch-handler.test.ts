@@ -6,7 +6,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { execSync } from 'node:child_process';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
 
 // --- Imports from @crosstown/rig (DOES NOT EXIST YET) ---
@@ -31,7 +35,7 @@ import {
  */
 function createGitRepoWithCommit(
   baseDir: string,
-  repoName: string,
+  repoName: string
 ): {
   bareRepoPath: string;
   workTreePath: string;
@@ -46,13 +50,22 @@ function createGitRepoWithCommit(
   execSync(`git clone "${bareRepoPath}" "${workTreePath}"`, { stdio: 'pipe' });
 
   // Configure git identity in the worktree
-  execSync('git config user.email "test@nostr"', { cwd: workTreePath, stdio: 'pipe' });
-  execSync('git config user.name "test-user"', { cwd: workTreePath, stdio: 'pipe' });
+  execSync('git config user.email "test@nostr"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
+  execSync('git config user.name "test-user"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
 
   // Create initial file and commit
   fs.writeFileSync(path.join(workTreePath, 'README.md'), '# Test Repository\n');
   execSync('git add README.md', { cwd: workTreePath, stdio: 'pipe' });
-  execSync('git commit -m "Initial commit"', { cwd: workTreePath, stdio: 'pipe' });
+  execSync('git commit -m "Initial commit"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
   execSync('git push origin main', { cwd: workTreePath, stdio: 'pipe' });
 
   // Get initial commit SHA
@@ -69,12 +82,18 @@ function createGitRepoWithCommit(
  */
 function generatePatchContent(
   workTreePath: string,
-  changes: { filename: string; content: string; commitMessage: string },
+  changes: { filename: string; content: string; commitMessage: string }
 ): string {
   // Make a change in the worktree
   fs.writeFileSync(path.join(workTreePath, changes.filename), changes.content);
-  execSync(`git add "${changes.filename}"`, { cwd: workTreePath, stdio: 'pipe' });
-  execSync(`git commit -m "${changes.commitMessage}"`, { cwd: workTreePath, stdio: 'pipe' });
+  execSync(`git add "${changes.filename}"`, {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
+  execSync(`git commit -m "${changes.commitMessage}"`, {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
 
   // Generate format-patch output
   const patch = execSync('git format-patch -1 --stdout', {
@@ -96,7 +115,7 @@ function createPatchEvent(
     secretKey?: Uint8Array;
     commitSha?: string;
     parentCommitSha?: string;
-  } = {},
+  } = {}
 ): { event: NostrEvent; secretKey: Uint8Array; pubkey: string } {
   const secretKey = overrides.secretKey ?? generateSecretKey();
   const pubkey = getPublicKey(secretKey);
@@ -121,7 +140,7 @@ function createPatchEvent(
       tags,
       created_at: Math.floor(Date.now() / 1000),
     },
-    secretKey,
+    secretKey
   );
 
   return { event, secretKey, pubkey };
@@ -135,7 +154,7 @@ function createMockHandlerContext(
   overrides: {
     amount?: bigint;
     destination?: string;
-  } = {},
+  } = {}
 ): HandlerContext & {
   acceptSpy: ReturnType<typeof vi.fn>;
   rejectSpy: ReturnType<typeof vi.fn>;
@@ -200,10 +219,8 @@ describe('3.2-INT-001: Patch Application via kind:1617', () => {
     const repoBaseDir = path.join(baseDir, ownerPrefix);
     fs.mkdirSync(repoBaseDir, { recursive: true });
 
-    const { bareRepoPath, workTreePath, initialCommitSha } = createGitRepoWithCommit(
-      repoBaseDir,
-      repoName,
-    );
+    const { bareRepoPath, workTreePath, initialCommitSha } =
+      createGitRepoWithCommit(repoBaseDir, repoName);
     workTreePaths.push(workTreePath);
 
     // Register repo in metadata store
@@ -266,7 +283,10 @@ describe('3.2-INT-001: Patch Application via kind:1617', () => {
     const repoBaseDir = path.join(baseDir, ownerPrefix);
     fs.mkdirSync(repoBaseDir, { recursive: true });
 
-    const { bareRepoPath, workTreePath } = createGitRepoWithCommit(repoBaseDir, repoName);
+    const { bareRepoPath, workTreePath } = createGitRepoWithCommit(
+      repoBaseDir,
+      repoName
+    );
     workTreePaths.push(workTreePath);
 
     metadataStore.storeRepo({
@@ -309,7 +329,10 @@ describe('3.2-INT-001: Patch Application via kind:1617', () => {
     const repoBaseDir = path.join(baseDir, ownerPrefix);
     fs.mkdirSync(repoBaseDir, { recursive: true });
 
-    const { bareRepoPath, workTreePath } = createGitRepoWithCommit(repoBaseDir, repoName);
+    const { bareRepoPath, workTreePath } = createGitRepoWithCommit(
+      repoBaseDir,
+      repoName
+    );
     workTreePaths.push(workTreePath);
 
     metadataStore.storeRepo({
@@ -323,7 +346,8 @@ describe('3.2-INT-001: Patch Application via kind:1617', () => {
     });
 
     // Create a malformed patch
-    const malformedPatch = 'This is not a valid git patch format\n@@ invalid diff @@\n';
+    const malformedPatch =
+      'This is not a valid git patch format\n@@ invalid diff @@\n';
     const { event } = createPatchEvent(ownerPubkey, repoName, malformedPatch);
     const ctx = createMockHandlerContext(event);
 
@@ -332,7 +356,10 @@ describe('3.2-INT-001: Patch Application via kind:1617', () => {
 
     // Assert
     expect(ctx.rejectSpy).toHaveBeenCalledOnce();
-    expect(ctx.rejectSpy).toHaveBeenCalledWith('F00', expect.stringContaining('atch'));
+    expect(ctx.rejectSpy).toHaveBeenCalledWith(
+      'F00',
+      expect.stringContaining('atch')
+    );
     expect(ctx.acceptSpy).not.toHaveBeenCalled();
   });
 
@@ -344,9 +371,14 @@ describe('3.2-INT-001: Patch Application via kind:1617', () => {
     // Arrange
     const ownerKey = generateSecretKey();
     const ownerPubkey = getPublicKey(ownerKey);
-    const patchContent = 'From abc123 Mon Sep 17 00:00:00 2001\nSubject: test\n---\n';
+    const patchContent =
+      'From abc123 Mon Sep 17 00:00:00 2001\nSubject: test\n---\n';
 
-    const { event } = createPatchEvent(ownerPubkey, 'nonexistent-repo', patchContent);
+    const { event } = createPatchEvent(
+      ownerPubkey,
+      'nonexistent-repo',
+      patchContent
+    );
     const ctx = createMockHandlerContext(event);
 
     // Act
@@ -354,7 +386,10 @@ describe('3.2-INT-001: Patch Application via kind:1617', () => {
 
     // Assert
     expect(ctx.rejectSpy).toHaveBeenCalledOnce();
-    expect(ctx.rejectSpy).toHaveBeenCalledWith('F00', expect.stringContaining('not found'));
+    expect(ctx.rejectSpy).toHaveBeenCalledWith(
+      'F00',
+      expect.stringContaining('not found')
+    );
     expect(ctx.acceptSpy).not.toHaveBeenCalled();
   });
 
@@ -371,7 +406,10 @@ describe('3.2-INT-001: Patch Application via kind:1617', () => {
     const repoBaseDir = path.join(baseDir, ownerPrefix);
     fs.mkdirSync(repoBaseDir, { recursive: true });
 
-    const { bareRepoPath, workTreePath } = createGitRepoWithCommit(repoBaseDir, repoName);
+    const { bareRepoPath, workTreePath } = createGitRepoWithCommit(
+      repoBaseDir,
+      repoName
+    );
     workTreePaths.push(workTreePath);
 
     metadataStore.storeRepo({

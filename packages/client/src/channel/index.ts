@@ -1,2 +1,5 @@
-export { OnChainChannelClient, type OnChainChannelClientConfig } from './OnChainChannelClient.js';
+export {
+  OnChainChannelClient,
+  type OnChainChannelClientConfig,
+} from './OnChainChannelClient.js';
 export { ChannelManager } from './ChannelManager.js';

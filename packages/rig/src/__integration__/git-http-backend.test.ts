@@ -1,7 +1,7 @@
 // ATDD Red Phase - Integration tests will fail until implementation exists
 // Tests: 3.4-INT-001, 3.4-INT-002, 3.4-INT-003
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -26,7 +26,7 @@ import type { RigAppConfig } from '../app.js';
 function createGitRepoWithCommit(
   baseDir: string,
   ownerPrefix: string,
-  repoName: string,
+  repoName: string
 ): {
   bareRepoPath: string;
   workTreePath: string;
@@ -39,15 +39,26 @@ function createGitRepoWithCommit(
   execSync(`git init --bare "${bareRepoPath}"`, { stdio: 'pipe' });
 
   // Clone to worktree for committing
-  const workTreePath = fs.mkdtempSync(path.join(os.tmpdir(), 'rig-http-worktree-'));
+  const workTreePath = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'rig-http-worktree-')
+  );
   execSync(`git clone "${bareRepoPath}" "${workTreePath}"`, { stdio: 'pipe' });
-  execSync('git config user.email "test@nostr"', { cwd: workTreePath, stdio: 'pipe' });
-  execSync('git config user.name "test-user"', { cwd: workTreePath, stdio: 'pipe' });
+  execSync('git config user.email "test@nostr"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
+  execSync('git config user.name "test-user"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
 
   // Create initial commit
   fs.writeFileSync(path.join(workTreePath, 'README.md'), '# Test Repository\n');
   execSync('git add README.md', { cwd: workTreePath, stdio: 'pipe' });
-  execSync('git commit -m "Initial commit"', { cwd: workTreePath, stdio: 'pipe' });
+  execSync('git commit -m "Initial commit"', {
+    cwd: workTreePath,
+    stdio: 'pipe',
+  });
   execSync('git push origin main', { cwd: workTreePath, stdio: 'pipe' });
 
   const commitSha = execSync('git rev-parse HEAD', {
@@ -110,7 +121,7 @@ describe('3.4-INT: Git HTTP Backend for Clone and Fetch', () => {
     const { bareRepoPath, workTreePath, commitSha } = createGitRepoWithCommit(
       repoDir,
       ownerPrefix,
-      repoName,
+      repoName
     );
     workTreePaths.push(workTreePath);
 
@@ -133,7 +144,9 @@ describe('3.4-INT: Git HTTP Backend for Clone and Fetch', () => {
 
     // Assert
     expect(response.status).toBe(200);
-    expect(response.headers['content-type']).toContain('application/x-git-upload-pack-advertisement');
+    expect(response.headers['content-type']).toContain(
+      'application/x-git-upload-pack-advertisement'
+    );
 
     // Response body should contain refs
     const body = response.text ?? response.body.toString();
@@ -148,11 +161,11 @@ describe('3.4-INT: Git HTTP Backend for Clone and Fetch', () => {
   it.skip('[P1] 3.4-INT-002: fetch returns updated refs after new commit', async () => {
     // Arrange
     const repoName = 'fetch-test';
-    const { bareRepoPath, workTreePath, commitSha: initialSha } = createGitRepoWithCommit(
-      repoDir,
-      ownerPrefix,
-      repoName,
-    );
+    const {
+      bareRepoPath,
+      workTreePath,
+      commitSha: initialSha,
+    } = createGitRepoWithCommit(repoDir, ownerPrefix, repoName);
     workTreePaths.push(workTreePath);
 
     metadataStore.storeRepo({
@@ -168,7 +181,10 @@ describe('3.4-INT: Git HTTP Backend for Clone and Fetch', () => {
     // Add a new commit
     fs.writeFileSync(path.join(workTreePath, 'new-file.txt'), 'New content\n');
     execSync('git add new-file.txt', { cwd: workTreePath, stdio: 'pipe' });
-    execSync('git commit -m "Add new file"', { cwd: workTreePath, stdio: 'pipe' });
+    execSync('git commit -m "Add new file"', {
+      cwd: workTreePath,
+      stdio: 'pipe',
+    });
     execSync('git push origin main', { cwd: workTreePath, stdio: 'pipe' });
 
     const newSha = execSync('git rev-parse HEAD', {
@@ -220,7 +236,7 @@ describe('3.4-INT: Git HTTP Backend for Clone and Fetch', () => {
     const { bareRepoPath, workTreePath } = createGitRepoWithCommit(
       repoDir,
       ownerPrefix,
-      repoName,
+      repoName
     );
     workTreePaths.push(workTreePath);
 

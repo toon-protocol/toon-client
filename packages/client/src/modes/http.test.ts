@@ -36,8 +36,8 @@ describe('initializeHttpMode', () => {
         ilpAddress: 'g.test.address',
         btpEndpoint: 'ws://localhost:3000',
       },
-      toonEncoder: (event) => new Uint8Array(0),
-      toonDecoder: (bytes) => ({
+      toonEncoder: (_event) => new Uint8Array(0),
+      toonDecoder: (_bytes) => ({
         id: '',
         pubkey: '',
         created_at: 0,
@@ -183,8 +183,8 @@ describe('initializeHttpMode', () => {
     });
 
     it('should propagate toonEncoder and toonDecoder to services', async () => {
-      const customEncoder = (event: any) => new Uint8Array([1, 2, 3]);
-      const customDecoder = (bytes: Uint8Array) => ({
+      const customEncoder = (_event: unknown) => new Uint8Array([1, 2, 3]);
+      const customDecoder = (_bytes: Uint8Array) => ({
         id: 'custom',
         pubkey: '',
         created_at: 0,

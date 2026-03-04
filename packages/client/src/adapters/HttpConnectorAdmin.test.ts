@@ -10,7 +10,10 @@ import {
 } from '../errors.js';
 
 // Type for mocked fetch function
-type MockFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type MockFetch = (
+  input: RequestInfo | URL,
+  init?: RequestInit
+) => Promise<Response>;
 
 describe('HttpConnectorAdmin', () => {
   const mockPeerConfig = {
@@ -127,7 +130,9 @@ describe('HttpConnectorAdmin', () => {
       });
 
       // Act & Assert
-      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(PeerAlreadyExistsError);
+      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(
+        PeerAlreadyExistsError
+      );
       await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(
         /Peer already exists.*nostr-abc123/
       );
@@ -201,8 +206,14 @@ describe('HttpConnectorAdmin', () => {
       });
 
       // Accept URLs with btp+ prefix
-      await admin.addPeer({ ...mockPeerConfig, url: 'btp+ws://example.com:3000' });
-      await admin.addPeer({ ...mockPeerConfig, url: 'btp+wss://example.com:3000' });
+      await admin.addPeer({
+        ...mockPeerConfig,
+        url: 'btp+ws://example.com:3000',
+      });
+      await admin.addPeer({
+        ...mockPeerConfig,
+        url: 'btp+wss://example.com:3000',
+      });
 
       // Also accept plain WebSocket URLs (without btp+ prefix)
       await admin.addPeer({ ...mockPeerConfig, url: 'ws://example.com:3000' });
@@ -242,7 +253,10 @@ describe('HttpConnectorAdmin', () => {
       });
 
       await expect(
-        admin.addPeer({ ...mockPeerConfig, routes: 'invalid' as unknown as MockFetch })
+        admin.addPeer({
+          ...mockPeerConfig,
+          routes: 'invalid' as unknown as MockFetch,
+        })
       ).rejects.toThrow(ValidationError);
 
       expect(mockFetch).not.toHaveBeenCalled();
@@ -274,7 +288,12 @@ describe('HttpConnectorAdmin', () => {
       });
 
       await expect(
-        admin.addPeer({ ...mockPeerConfig, routes: [{ prefix: 'g.test', priority: 'high' as unknown as MockFetch }] })
+        admin.addPeer({
+          ...mockPeerConfig,
+          routes: [
+            { prefix: 'g.test', priority: 'high' as unknown as MockFetch },
+          ],
+        })
       ).rejects.toThrow(ValidationError);
 
       expect(mockFetch).not.toHaveBeenCalled();
@@ -288,11 +307,17 @@ describe('HttpConnectorAdmin', () => {
       });
 
       await expect(
-        admin.addPeer({ ...mockPeerConfig, settlement: 'invalid' as unknown as MockFetch })
+        admin.addPeer({
+          ...mockPeerConfig,
+          settlement: 'invalid' as unknown as MockFetch,
+        })
       ).rejects.toThrow(ValidationError);
 
       await expect(
-        admin.addPeer({ ...mockPeerConfig, settlement: null as unknown as MockFetch })
+        admin.addPeer({
+          ...mockPeerConfig,
+          settlement: null as unknown as MockFetch,
+        })
       ).rejects.toThrow(ValidationError);
 
       expect(mockFetch).not.toHaveBeenCalled();
@@ -306,7 +331,10 @@ describe('HttpConnectorAdmin', () => {
       });
 
       await expect(
-        admin.addPeer({ ...mockPeerConfig, settlement: {} as unknown as MockFetch })
+        admin.addPeer({
+          ...mockPeerConfig,
+          settlement: {} as unknown as MockFetch,
+        })
       ).rejects.toThrow(ValidationError);
 
       expect(mockFetch).not.toHaveBeenCalled();
@@ -321,13 +349,15 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        maxRetries: 0,  // Disable retries for faster test
+        maxRetries: 0, // Disable retries for faster test
         httpClient: mockFetch as unknown as MockFetch,
       });
 
       // Act & Assert
       await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(NetworkError);
-      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(/Failed to connect/);
+      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(
+        /Failed to connect/
+      );
     });
 
     it('should throw NetworkError on timeout', async () => {
@@ -340,13 +370,15 @@ describe('HttpConnectorAdmin', () => {
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
         timeout: 5000,
-        maxRetries: 0,  // Disable retries for faster test
+        maxRetries: 0, // Disable retries for faster test
         httpClient: mockFetch as unknown as MockFetch,
       });
 
       // Act & Assert
       await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(NetworkError);
-      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(/timed out after 5000ms/);
+      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(
+        /timed out after 5000ms/
+      );
     });
 
     it('should throw UnauthorizedError on 401', async () => {
@@ -364,8 +396,12 @@ describe('HttpConnectorAdmin', () => {
       });
 
       // Act & Assert
-      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(UnauthorizedError);
-      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(/authentication failed/);
+      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(
+        UnauthorizedError
+      );
+      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(
+        /authentication failed/
+      );
     });
 
     it('should throw ConnectorError on 5xx server error', async () => {
@@ -383,7 +419,9 @@ describe('HttpConnectorAdmin', () => {
       });
 
       // Act & Assert
-      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(ConnectorError);
+      await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(
+        ConnectorError
+      );
       await expect(admin.addPeer(mockPeerConfig)).rejects.toThrow(/500/);
     });
 
@@ -472,8 +510,12 @@ describe('HttpConnectorAdmin', () => {
       });
 
       // Act & Assert
-      await expect(admin.removePeer('nostr-unknown')).rejects.toThrow(PeerNotFoundError);
-      await expect(admin.removePeer('nostr-unknown')).rejects.toThrow(/nostr-unknown/);
+      await expect(admin.removePeer('nostr-unknown')).rejects.toThrow(
+        PeerNotFoundError
+      );
+      await expect(admin.removePeer('nostr-unknown')).rejects.toThrow(
+        /nostr-unknown/
+      );
     });
 
     it('should throw ValidationError on empty peerId', async () => {
@@ -498,13 +540,17 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        maxRetries: 0,  // Disable retries for faster test
+        maxRetries: 0, // Disable retries for faster test
         httpClient: mockFetch as unknown as MockFetch,
       });
 
       // Act & Assert
-      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(NetworkError);
-      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(/Failed to connect/);
+      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(
+        NetworkError
+      );
+      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(
+        /Failed to connect/
+      );
     });
 
     it('should throw NetworkError on timeout', async () => {
@@ -517,13 +563,17 @@ describe('HttpConnectorAdmin', () => {
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
         timeout: 5000,
-        maxRetries: 0,  // Disable retries for faster test
+        maxRetries: 0, // Disable retries for faster test
         httpClient: mockFetch as unknown as MockFetch,
       });
 
       // Act & Assert
-      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(NetworkError);
-      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(/timed out after 5000ms/);
+      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(
+        NetworkError
+      );
+      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(
+        /timed out after 5000ms/
+      );
     });
 
     it('should throw UnauthorizedError on 401', async () => {
@@ -541,8 +591,12 @@ describe('HttpConnectorAdmin', () => {
       });
 
       // Act & Assert
-      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(UnauthorizedError);
-      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(/authentication failed/);
+      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(
+        UnauthorizedError
+      );
+      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(
+        /authentication failed/
+      );
     });
 
     it('should throw ConnectorError on 5xx server error', async () => {
@@ -560,7 +614,9 @@ describe('HttpConnectorAdmin', () => {
       });
 
       // Act & Assert
-      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(ConnectorError);
+      await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(
+        ConnectorError
+      );
       await expect(admin.removePeer('nostr-abc123')).rejects.toThrow(/503/);
     });
 
@@ -593,14 +649,14 @@ describe('HttpConnectorAdmin', () => {
       const networkError = new Error('ECONNREFUSED');
       const mockFetch = vi
         .fn()
-        .mockRejectedValueOnce(networkError)  // Fail first attempt
-        .mockRejectedValueOnce(networkError)  // Fail second attempt
-        .mockResolvedValue({ ok: true, status: 201 });  // Succeed third attempt
+        .mockRejectedValueOnce(networkError) // Fail first attempt
+        .mockRejectedValueOnce(networkError) // Fail second attempt
+        .mockResolvedValue({ ok: true, status: 201 }); // Succeed third attempt
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
         maxRetries: 3,
-        retryDelay: 10,  // Short delay for fast tests
+        retryDelay: 10, // Short delay for fast tests
         httpClient: mockFetch as unknown as MockFetch,
       });
 
@@ -608,7 +664,7 @@ describe('HttpConnectorAdmin', () => {
       await admin.addPeer(mockPeerConfig);
 
       // Assert
-      expect(mockFetch).toHaveBeenCalledTimes(3);  // 2 failures + 1 success
+      expect(mockFetch).toHaveBeenCalledTimes(3); // 2 failures + 1 success
     });
 
     it('should retry removePeer on network error and eventually succeed', async () => {
@@ -616,8 +672,8 @@ describe('HttpConnectorAdmin', () => {
       const networkError = new Error('ETIMEDOUT');
       const mockFetch = vi
         .fn()
-        .mockRejectedValueOnce(networkError)  // Fail first attempt
-        .mockResolvedValue({ ok: true, status: 204 });  // Succeed second attempt
+        .mockRejectedValueOnce(networkError) // Fail first attempt
+        .mockResolvedValue({ ok: true, status: 204 }); // Succeed second attempt
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
@@ -630,7 +686,7 @@ describe('HttpConnectorAdmin', () => {
       await admin.removePeer('nostr-abc123');
 
       // Assert
-      expect(mockFetch).toHaveBeenCalledTimes(2);  // 1 failure + 1 success
+      expect(mockFetch).toHaveBeenCalledTimes(2); // 1 failure + 1 success
     });
 
     it('should NOT retry on validation errors', async () => {
@@ -642,7 +698,9 @@ describe('HttpConnectorAdmin', () => {
       });
 
       // Act & Assert
-      await expect(admin.addPeer({ ...mockPeerConfig, id: '' })).rejects.toThrow(ValidationError);
+      await expect(
+        admin.addPeer({ ...mockPeerConfig, id: '' })
+      ).rejects.toThrow(ValidationError);
 
       // Should fail immediately without calling fetch
       expect(mockFetch).not.toHaveBeenCalled();
@@ -715,7 +773,7 @@ describe('HttpConnectorAdmin', () => {
 
       // Should have some delay between retries (exponential backoff: 100ms, 200ms)
       // Total delay should be at least 300ms (100 + 200)
-      expect(duration).toBeGreaterThanOrEqual(250);  // Allow for timing variance
+      expect(duration).toBeGreaterThanOrEqual(250); // Allow for timing variance
       expect(mockFetch).toHaveBeenCalledTimes(3);
     });
   });
@@ -755,14 +813,15 @@ describe('HttpConnectorAdmin', () => {
       it('should handle partial failures in bulk add', async () => {
         const mockFetch = vi
           .fn()
-          .mockResolvedValueOnce({ ok: true, status: 201 })  // peer1 succeeds
-          .mockResolvedValueOnce({  // peer2 fails (conflict)
+          .mockResolvedValueOnce({ ok: true, status: 201 }) // peer1 succeeds
+          .mockResolvedValueOnce({
+            // peer2 fails (conflict)
             ok: false,
             status: 409,
             statusText: 'Conflict',
             text: vi.fn().mockResolvedValue('Peer exists'),
           })
-          .mockResolvedValueOnce({ ok: true, status: 201 });  // peer3 succeeds
+          .mockResolvedValueOnce({ ok: true, status: 201 }); // peer3 succeeds
 
         const admin = new HttpConnectorAdmin({
           adminUrl: 'http://localhost:8081',
@@ -854,14 +913,15 @@ describe('HttpConnectorAdmin', () => {
       it('should handle partial failures in bulk remove', async () => {
         const mockFetch = vi
           .fn()
-          .mockResolvedValueOnce({ ok: true, status: 204 })  // peer1 succeeds
-          .mockResolvedValueOnce({  // peer2 fails (not found)
+          .mockResolvedValueOnce({ ok: true, status: 204 }) // peer1 succeeds
+          .mockResolvedValueOnce({
+            // peer2 fails (not found)
             ok: false,
             status: 404,
             statusText: 'Not Found',
             text: vi.fn().mockResolvedValue('Peer not found'),
           })
-          .mockResolvedValueOnce({ ok: true, status: 204 });  // peer3 succeeds
+          .mockResolvedValueOnce({ ok: true, status: 204 }); // peer3 succeeds
 
         const admin = new HttpConnectorAdmin({
           adminUrl: 'http://localhost:8081',

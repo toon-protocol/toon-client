@@ -122,17 +122,27 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
     };
   }): Promise<void> {
     // Validate required fields
-    if (!config.id || typeof config.id !== 'string' || config.id.trim() === '') {
+    if (
+      !config.id ||
+      typeof config.id !== 'string' ||
+      config.id.trim() === ''
+    ) {
       throw new ValidationError('Peer id must be a non-empty string');
     }
 
-    if (!config.url || typeof config.url !== 'string' || config.url.trim() === '') {
+    if (
+      !config.url ||
+      typeof config.url !== 'string' ||
+      config.url.trim() === ''
+    ) {
       throw new ValidationError('Peer url must be a non-empty string');
     }
 
     // Validate BTP URL format (accept both ws:// and btp+ws:// formats)
-    const hasWsPrefix = config.url.startsWith('ws://') || config.url.startsWith('wss://');
-    const hasBtpPrefix = config.url.startsWith('btp+ws://') || config.url.startsWith('btp+wss://');
+    const hasWsPrefix =
+      config.url.startsWith('ws://') || config.url.startsWith('wss://');
+    const hasBtpPrefix =
+      config.url.startsWith('btp+ws://') || config.url.startsWith('btp+wss://');
 
     if (!hasWsPrefix && !hasBtpPrefix) {
       throw new ValidationError(
@@ -141,8 +151,14 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
     }
 
     // authToken can be empty string for BTP (doesn't require authentication)
-    if (config.authToken === undefined || config.authToken === null || typeof config.authToken !== 'string') {
-      throw new ValidationError('Peer authToken must be a string (can be empty for no auth)');
+    if (
+      config.authToken === undefined ||
+      config.authToken === null ||
+      typeof config.authToken !== 'string'
+    ) {
+      throw new ValidationError(
+        'Peer authToken must be a string (can be empty for no auth)'
+      );
     }
 
     // Validate routes (if provided)
@@ -152,10 +168,17 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
       }
 
       for (const route of config.routes) {
-        if (!route.prefix || typeof route.prefix !== 'string' || route.prefix.trim() === '') {
+        if (
+          !route.prefix ||
+          typeof route.prefix !== 'string' ||
+          route.prefix.trim() === ''
+        ) {
           throw new ValidationError('Route prefix must be a non-empty string');
         }
-        if (route.priority !== undefined && typeof route.priority !== 'number') {
+        if (
+          route.priority !== undefined &&
+          typeof route.priority !== 'number'
+        ) {
           throw new ValidationError('Route priority must be a number');
         }
       }
@@ -167,27 +190,29 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
         throw new ValidationError('Peer settlement must be an object');
       }
 
-      if (!config.settlement.preference || typeof config.settlement.preference !== 'string') {
-        throw new ValidationError('Settlement preference must be a non-empty string');
+      if (
+        !config.settlement.preference ||
+        typeof config.settlement.preference !== 'string'
+      ) {
+        throw new ValidationError(
+          'Settlement preference must be a non-empty string'
+        );
       }
     }
 
     // Send HTTP POST request with retry logic
     const url = `${this.adminUrl}/admin/peers`;
 
-    await withRetry(
-      async () => this.sendAddPeerRequest(url, config),
-      {
-        maxRetries: this.retryConfig.maxRetries,
-        retryDelay: this.retryConfig.retryDelay,
-        exponentialBackoff: true,
-        shouldRetry: (error) => {
-          // Only retry on network errors (ECONNREFUSED, ETIMEDOUT)
-          // Do not retry on validation errors, 4xx, or 5xx errors
-          return error instanceof NetworkError;
-        },
-      }
-    );
+    await withRetry(async () => this.sendAddPeerRequest(url, config), {
+      maxRetries: this.retryConfig.maxRetries,
+      retryDelay: this.retryConfig.retryDelay,
+      exponentialBackoff: true,
+      shouldRetry: (error) => {
+        // Only retry on network errors (ECONNREFUSED, ETIMEDOUT)
+        // Do not retry on validation errors, 4xx, or 5xx errors
+        return error instanceof NetworkError;
+      },
+    });
   }
 
   /**
@@ -212,18 +237,15 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
     // Send HTTP DELETE request with retry logic
     const url = `${this.adminUrl}/admin/peers/${encodeURIComponent(peerId)}`;
 
-    await withRetry(
-      async () => this.sendRemovePeerRequest(url, peerId),
-      {
-        maxRetries: this.retryConfig.maxRetries,
-        retryDelay: this.retryConfig.retryDelay,
-        exponentialBackoff: true,
-        shouldRetry: (error) => {
-          // Only retry on network errors
-          return error instanceof NetworkError;
-        },
-      }
-    );
+    await withRetry(async () => this.sendRemovePeerRequest(url, peerId), {
+      maxRetries: this.retryConfig.maxRetries,
+      retryDelay: this.retryConfig.retryDelay,
+      exponentialBackoff: true,
+      shouldRetry: (error) => {
+        // Only retry on network errors
+        return error instanceof NetworkError;
+      },
+    });
   }
 
   /**
@@ -272,11 +294,14 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
       configs.map((config) => this.addPeer(config))
     );
 
-    return results.map((result, index) => ({
-      peerId: configs[index]!.id,
-      success: result.status === 'fulfilled',
-      error: result.status === 'rejected' ? result.reason : undefined,
-    }));
+    return results.map((result, index) => {
+      const config = configs[index];
+      return {
+        peerId: config ? config.id : 'unknown',
+        success: result.status === 'fulfilled',
+        error: result.status === 'rejected' ? result.reason : undefined,
+      };
+    });
   }
 
   /**
@@ -301,11 +326,14 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
       peerIds.map((peerId) => this.removePeer(peerId))
     );
 
-    return results.map((result, index) => ({
-      peerId: peerIds[index]!,
-      success: result.status === 'fulfilled',
-      error: result.status === 'rejected' ? result.reason : undefined,
-    }));
+    return results.map((result, index) => {
+      const peerId = peerIds[index];
+      return {
+        peerId: peerId ?? 'unknown',
+        success: result.status === 'fulfilled',
+        error: result.status === 'rejected' ? result.reason : undefined,
+      };
+    });
   }
 
   /**
@@ -365,7 +393,10 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
    * Send HTTP DELETE request to remove a peer.
    * Separated for retry logic wrapping.
    */
-  private async sendRemovePeerRequest(url: string, peerId: string): Promise<void> {
+  private async sendRemovePeerRequest(
+    url: string,
+    peerId: string
+  ): Promise<void> {
     try {
       const response = await this.httpClient(url, {
         method: 'DELETE',
@@ -394,7 +425,11 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
    * @param operation - Operation name (for error messages)
    * @throws {NetworkError} Network connection or timeout error
    */
-  private handleNetworkError(error: unknown, url: string, operation: string): never {
+  private handleNetworkError(
+    error: unknown,
+    url: string,
+    operation: string
+  ): never {
     // Timeout errors (AbortSignal)
     if (error instanceof Error && error.name === 'AbortError') {
       throw new NetworkError(
@@ -404,10 +439,12 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
     }
 
     // Connection errors (ECONNREFUSED, ETIMEDOUT, DNS failures)
-    if (error instanceof Error &&
-        (error.message.includes('ECONNREFUSED') ||
-         error.message.includes('ETIMEDOUT') ||
-         error.message.includes('ENOTFOUND'))) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('ECONNREFUSED') ||
+        error.message.includes('ETIMEDOUT') ||
+        error.message.includes('ENOTFOUND'))
+    ) {
       throw new NetworkError(
         `Failed to connect to connector admin API at ${url}: ${error.message}`,
         error
@@ -415,11 +452,13 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
     }
 
     // Re-throw if already a CrosstownClientError
-    if (error instanceof ValidationError ||
-        error instanceof PeerAlreadyExistsError ||
-        error instanceof PeerNotFoundError ||
-        error instanceof UnauthorizedError ||
-        error instanceof ConnectorError) {
+    if (
+      error instanceof ValidationError ||
+      error instanceof PeerAlreadyExistsError ||
+      error instanceof PeerNotFoundError ||
+      error instanceof UnauthorizedError ||
+      error instanceof ConnectorError
+    ) {
       throw error;
     }
 

@@ -9,7 +9,7 @@ const mockWriteContract = vi.fn();
 const mockWaitForTransactionReceipt = vi.fn();
 
 vi.mock('viem', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('viem')>();
+  const actual: Record<string, unknown> = await importOriginal();
   return {
     ...actual,
     createPublicClient: vi.fn(() => ({
@@ -20,7 +20,7 @@ vi.mock('viem', async (importOriginal) => {
       writeContract: mockWriteContract,
     })),
     // Mock decodeEventLog so we don't need real ABI-encoded log data
-    decodeEventLog: vi.fn(({ data, topics }: any) => {
+    decodeEventLog: vi.fn(({ topics }: { topics?: string[] }) => {
       // Return ChannelOpened event with channelId from topics[1]
       if (topics && topics.length >= 2) {
         return {
@@ -66,7 +66,12 @@ describe('OnChainChannelClient', () => {
       mockWaitForTransactionReceipt.mockResolvedValueOnce({
         logs: [
           {
-            topics: ['0xeventhash', TEST_CHANNEL_ID, '0xparticipant1', '0xparticipant2'],
+            topics: [
+              '0xeventhash',
+              TEST_CHANNEL_ID,
+              '0xparticipant1',
+              '0xparticipant2',
+            ],
             data: '0x',
           },
         ],
@@ -101,7 +106,12 @@ describe('OnChainChannelClient', () => {
       mockWaitForTransactionReceipt.mockResolvedValueOnce({
         logs: [
           {
-            topics: ['0xeventhash', TEST_CHANNEL_ID, '0xparticipant1', '0xparticipant2'],
+            topics: [
+              '0xeventhash',
+              TEST_CHANNEL_ID,
+              '0xparticipant1',
+              '0xparticipant2',
+            ],
             data: '0x',
           },
         ],
@@ -131,7 +141,12 @@ describe('OnChainChannelClient', () => {
       mockWaitForTransactionReceipt.mockResolvedValueOnce({
         logs: [
           {
-            topics: ['0xeventhash', TEST_CHANNEL_ID, '0xparticipant1', '0xparticipant2'],
+            topics: [
+              '0xeventhash',
+              TEST_CHANNEL_ID,
+              '0xparticipant1',
+              '0xparticipant2',
+            ],
             data: '0x',
           },
         ],
@@ -212,7 +227,12 @@ describe('OnChainChannelClient', () => {
       mockWaitForTransactionReceipt.mockResolvedValueOnce({
         logs: [
           {
-            topics: ['0xeventhash', TEST_CHANNEL_ID, '0xparticipant1', '0xparticipant2'],
+            topics: [
+              '0xeventhash',
+              TEST_CHANNEL_ID,
+              '0xparticipant1',
+              '0xparticipant2',
+            ],
             data: '0x',
           },
         ],
@@ -228,11 +248,11 @@ describe('OnChainChannelClient', () => {
       // Now query state — state uint8 = 1 → 'open'
       mockReadContract.mockResolvedValueOnce([
         86400n, // settlementTimeout
-        1,      // state (open)
-        0n,     // closedAt
-        1000n,  // openedAt
-        signer.address,     // participant1
-        TEST_PEER_ADDRESS,  // participant2
+        1, // state (open)
+        0n, // closedAt
+        1000n, // openedAt
+        signer.address, // participant1
+        TEST_PEER_ADDRESS, // participant2
       ]);
 
       const state = await client.getChannelState(TEST_CHANNEL_ID);

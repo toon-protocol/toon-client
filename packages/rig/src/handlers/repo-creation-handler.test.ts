@@ -19,7 +19,7 @@ import type { HandlerContext } from '@crosstown/sdk';
  * Mirrors the convention from @crosstown/sdk handler-registry.test.ts.
  */
 function createMockHandlerContext(
-  overrides: Partial<HandlerContext> = {},
+  overrides: Partial<HandlerContext> = {}
 ): HandlerContext {
   return {
     toon: 'mock-toon-string',
@@ -57,26 +57,32 @@ function createMockExecFileForGitCheck(
   overrides: {
     available?: boolean;
     version?: string;
-  } = {},
+  } = {}
 ) {
   const { available = true, version = 'git version 2.43.0' } = overrides;
-  return vi.fn().mockImplementation(
-    (
-      _file: string,
-      _args: string[],
-      _options: unknown,
-      callback?: (err: Error | null, stdout: string, stderr: string) => void,
-    ) => {
-      if (callback) {
-        if (available) {
-          callback(null, version, '');
-        } else {
-          callback(new Error('ENOENT: git not found'), '', 'git: command not found');
+  return vi
+    .fn()
+    .mockImplementation(
+      (
+        _file: string,
+        _args: string[],
+        _options: unknown,
+        callback?: (err: Error | null, stdout: string, stderr: string) => void
+      ) => {
+        if (callback) {
+          if (available) {
+            callback(null, version, '');
+          } else {
+            callback(
+              new Error('ENOENT: git not found'),
+              '',
+              'git: command not found'
+            );
+          }
         }
+        return { pid: 12345, kill: vi.fn() };
       }
-      return { pid: 12345, kill: vi.fn() };
-    },
-  );
+    );
 }
 
 // ============================================================================
@@ -111,7 +117,7 @@ describe('Repo Creation Handler - Git Startup Verification', () => {
     expect(result.available).toBe(true);
     expect(result.version).toBe('git version 2.43.0');
     expect(mockLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining('git version 2.43.0'),
+      expect.stringContaining('git version 2.43.0')
     );
   });
 
@@ -130,7 +136,7 @@ describe('Repo Creation Handler - Git Startup Verification', () => {
     expect(result.available).toBe(false);
     expect(result.version).toBeUndefined();
     expect(mockLogger.error).toHaveBeenCalledWith(
-      expect.stringMatching(/git.*not found|git.*unavailable/i),
+      expect.stringMatching(/git.*not found|git.*unavailable/i)
     );
   });
 
@@ -181,7 +187,7 @@ describe('Repo Creation Handler - Unsupported NIP-34 Kind', () => {
     const handler = createRepoCreationHandler({ repoDir: '/tmp/repos' });
 
     // Act
-    const result = await handler(ctx);
+    const _result = await handler(ctx);
 
     // Assert
     expect(ctx.reject).toHaveBeenCalledTimes(1);
