@@ -22,6 +22,8 @@ describe('validateConfig', () => {
         pubkey,
         ilpAddress: 'g.test.address',
         btpEndpoint: 'ws://localhost:3000',
+        assetCode: 'USD',
+        assetScale: 6,
       },
       toonEncoder: (_event) => new Uint8Array(0),
       toonDecoder: (_bytes) => ({
@@ -130,7 +132,13 @@ describe('validateConfig', () => {
       const pubkey = getPublicKey(secretKey);
       const config = createValidConfig({
         secretKey,
-        ilpInfo: { pubkey, ilpAddress: 'g.test', btpEndpoint: 'ws://test' },
+        ilpInfo: {
+          pubkey,
+          ilpAddress: 'g.test',
+          btpEndpoint: 'ws://test',
+          assetCode: 'USD',
+          assetScale: 6,
+        },
       });
 
       expect(() => validateConfig(config)).not.toThrow();
@@ -152,7 +160,13 @@ describe('validateConfig', () => {
       const pubkey = getPublicKey(secretKey);
       const config = createValidConfig({
         secretKey,
-        ilpInfo: { ilpAddress: '', btpEndpoint: 'ws://test', pubkey },
+        ilpInfo: {
+          ilpAddress: '',
+          btpEndpoint: 'ws://test',
+          pubkey,
+          assetCode: 'USD',
+          assetScale: 6,
+        },
       });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
@@ -170,6 +184,8 @@ describe('validateConfig', () => {
           pubkey,
           ilpAddress: 'g.test.address',
           btpEndpoint: 'ws://localhost:3000',
+          assetCode: 'USD',
+          assetScale: 6,
         },
       });
 
@@ -335,6 +351,8 @@ describe('applyDefaults', () => {
         pubkey,
         ilpAddress: 'g.test.address',
         btpEndpoint: 'ws://localhost:3000',
+        assetCode: 'USD',
+        assetScale: 6,
       },
       toonEncoder: (_event) => new Uint8Array(0),
       toonDecoder: (_bytes) => ({
@@ -467,7 +485,13 @@ describe('buildSettlementInfo', () => {
     overrides: Partial<CrosstownClientConfig> = {}
   ): CrosstownClientConfig => ({
     connectorUrl: 'http://localhost:8080',
-    ilpInfo: { ilpAddress: 'g.test', btpEndpoint: 'ws://test', pubkey: 'abc' },
+    ilpInfo: {
+      ilpAddress: 'g.test',
+      btpEndpoint: 'ws://test',
+      pubkey: 'abc',
+      assetCode: 'USD',
+      assetScale: 6,
+    },
     toonEncoder: () => new Uint8Array(0),
     toonDecoder: () => ({
       id: '',

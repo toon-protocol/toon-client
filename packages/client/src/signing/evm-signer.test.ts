@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { recoverTypedDataAddress } from 'viem';
 import { generatePrivateKey } from 'viem/accounts';
 import { EvmSigner } from './evm-signer.js';
+import type { SignedBalanceProof } from '../types.js';
 
 const TEST_CHAIN_ID = 31337;
 const TEST_TOKEN_NETWORK = '0x5FbDB2315678afecb367f032d93F642f64180aa3';

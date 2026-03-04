@@ -195,6 +195,8 @@ function createTestClient(
       pubkey,
       ilpAddress: `g.crosstown.test.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3000',
+      assetCode: 'USD',
+      assetScale: 6,
     },
     toonEncoder: encodeEventToToon,
     toonDecoder: decodeEventFromToon,
@@ -406,10 +408,10 @@ describe.skip('SDK-Based Relay Validation (Story 2.3)', () => {
     // Verify event is retrievable from the relay
     const storedEvent = await waitForEventOnRelay(RELAY_URL, event.id, 10000);
     expect(storedEvent).not.toBeNull();
-    expect(storedEvent!.id).toBe(event.id);
-    expect(storedEvent!.content).toBe(testContent);
-    expect(storedEvent!.pubkey).toBe(pubkey);
-    expect(storedEvent!.kind).toBe(1);
+    expect(storedEvent!['id']).toBe(event.id);
+    expect(storedEvent!['content']).toBe(testContent);
+    expect(storedEvent!['pubkey']).toBe(pubkey);
+    expect(storedEvent!['kind']).toBe(1);
 
     await client.stop();
   }, 60000);
@@ -585,11 +587,11 @@ describe.skip('SDK-Based Relay Validation (Story 2.3)', () => {
 
     // The genesis node's own kind:10032 event should be stored (self-write bypass)
     expect(selfWriteEvent).not.toBeNull();
-    expect(selfWriteEvent!.pubkey).toBe(GENESIS_PUBKEY);
-    expect(selfWriteEvent!.kind).toBe(10032);
+    expect(selfWriteEvent!['pubkey']).toBe(GENESIS_PUBKEY);
+    expect(selfWriteEvent!['kind']).toBe(10032);
 
     // Verify the event contains valid ILP peer info
-    const content = selfWriteEvent!.content as string;
+    const content = selfWriteEvent!['content'] as string;
     expect(content).toBeDefined();
     const peerInfo = JSON.parse(content);
     expect(peerInfo.ilpAddress).toBeDefined();

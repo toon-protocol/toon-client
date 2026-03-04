@@ -72,7 +72,7 @@ describe('withRetry', () => {
     await vi.advanceTimersByTimeAsync(4000); // 3rd retry
 
     // Wait for the promise to resolve with the error
-    const error = await errorPromise;
+    const error = (await errorPromise) as Error;
     expect(error.message).toBe('Attempt 4');
     expect(operation).toHaveBeenCalledTimes(4); // Initial + 3 retries
   });
@@ -157,7 +157,7 @@ describe('withRetry', () => {
 
   it('should respect shouldRetry predicate', async () => {
     class NonRetryableError extends Error {
-      name = 'NonRetryableError';
+      override name = 'NonRetryableError';
     }
 
     const operation = vi
@@ -176,7 +176,7 @@ describe('withRetry', () => {
 
   it('should retry only matching errors with shouldRetry', async () => {
     class NetworkError extends Error {
-      name = 'NetworkError';
+      override name = 'NetworkError';
     }
 
     const operation = vi

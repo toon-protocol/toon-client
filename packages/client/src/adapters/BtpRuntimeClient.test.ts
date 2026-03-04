@@ -201,7 +201,7 @@ describe('BtpRuntimeClient', () => {
       const protocolCallOrder =
         mockSendProtocolData.mock.invocationCallOrder[0];
       const packetCallOrder = mockSendPacket.mock.invocationCallOrder[0];
-      expect(protocolCallOrder).toBeLessThan(packetCallOrder);
+      expect(protocolCallOrder).toBeLessThan(packetCallOrder!);
     });
 
     it('should throw when not connected', async () => {

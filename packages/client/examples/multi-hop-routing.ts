@@ -46,6 +46,8 @@ async function main() {
       pubkey,
       ilpAddress: `g.crosstown.peer1.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3010',
+      assetCode: 'USD',
+      assetScale: 6,
     },
     toonEncoder: encodeEventToToon,
     toonDecoder: decodeEventFromToon,

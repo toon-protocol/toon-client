@@ -35,6 +35,8 @@ describe('initializeHttpMode', () => {
         pubkey,
         ilpAddress: 'g.test.address',
         btpEndpoint: 'ws://localhost:3000',
+        assetCode: 'USD',
+        assetScale: 6,
       },
       toonEncoder: (_event) => new Uint8Array(0),
       toonDecoder: (_bytes) => ({
@@ -50,6 +52,7 @@ describe('initializeHttpMode', () => {
       queryTimeout: 30000,
       maxRetries: 3,
       retryDelay: 1000,
+      destinationAddress: 'g.crosstown.genesis',
     };
   });
 

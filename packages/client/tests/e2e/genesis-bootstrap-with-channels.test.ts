@@ -235,7 +235,7 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
 
   it('should create payment channel before SPSP, publish with claim, and verify', async () => {
     if (!servicesReady) {
-      if (process.env.CI) {
+      if (process.env['CI']) {
         throw new Error(
           'Genesis node services not ready — E2E tests cannot run in CI. Check deploy-genesis-node.sh and service health.'
         );
@@ -259,6 +259,8 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
         pubkey,
         ilpAddress: `g.crosstown.test.${pubkey.slice(0, 8)}`,
         btpEndpoint: 'ws://localhost:3000',
+        assetCode: 'USD',
+        assetScale: 6,
       },
       toonEncoder: encodeEventToToon,
       toonDecoder: decodeEventFromToon,
@@ -369,10 +371,10 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
     const storedEvent = await waitForEventOnRelay(RELAY_URL, event.id, 10000);
 
     expect(storedEvent).not.toBeNull();
-    expect(storedEvent!.id).toBe(event.id);
-    expect(storedEvent!.content).toBe(testContent);
-    expect(storedEvent!.pubkey).toBe(pubkey);
-    expect(storedEvent!.kind).toBe(1);
+    expect(storedEvent!['id']).toBe(event.id);
+    expect(storedEvent!['content']).toBe(testContent);
+    expect(storedEvent!['pubkey']).toBe(pubkey);
+    expect(storedEvent!['kind']).toBe(1);
 
     console.log(`✅ Event verified on relay!\n`);
 

@@ -118,6 +118,8 @@ async function main() {
       pubkey,
       ilpAddress: `g.crosstown.test.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3000',
+      assetCode: 'USD',
+      assetScale: 6,
     },
     toonEncoder: encodeEventToToon,
     toonDecoder: decodeEventFromToon,
@@ -213,7 +215,7 @@ async function main() {
     // Sign balance proof claim
     const claim = await client.signBalanceProof(channelId, 1000n);
     console.log(`   Claim nonce: ${claim.nonce}`);
-    console.log(`   Claim amount: ${claim.amount}`);
+    console.log(`   Claim amount: ${claim.transferredAmount}`);
 
     // Publish with claim
     const publishResult = await client.publishEvent(event, { claim });

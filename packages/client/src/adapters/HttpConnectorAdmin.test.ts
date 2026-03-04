@@ -9,12 +9,6 @@ import {
   ConnectorError,
 } from '../errors.js';
 
-// Type for mocked fetch function
-type MockFetch = (
-  input: RequestInfo | URL,
-  init?: RequestInit
-) => Promise<Response>;
-
 describe('HttpConnectorAdmin', () => {
   const mockPeerConfig = {
     id: 'nostr-abc123',
@@ -34,7 +28,7 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081/',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       expect(admin).toBeDefined();
@@ -59,7 +53,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act
@@ -89,7 +83,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       const minimalConfig = {
@@ -126,7 +120,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -142,7 +136,7 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       await expect(
@@ -160,7 +154,7 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       await expect(
@@ -178,7 +172,7 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // http:// is invalid (not a WebSocket protocol)
@@ -202,7 +196,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Accept URLs with btp+ prefix
@@ -226,7 +220,7 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // authToken can be empty string (for no auth), but must be a string
@@ -249,13 +243,13 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       await expect(
         admin.addPeer({
           ...mockPeerConfig,
-          routes: 'invalid' as unknown as MockFetch,
+          routes: 'invalid' as any,
         })
       ).rejects.toThrow(ValidationError);
 
@@ -266,7 +260,7 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       await expect(
@@ -284,15 +278,13 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       await expect(
         admin.addPeer({
           ...mockPeerConfig,
-          routes: [
-            { prefix: 'g.test', priority: 'high' as unknown as MockFetch },
-          ],
+          routes: [{ prefix: 'g.test', priority: 'high' as any }],
         })
       ).rejects.toThrow(ValidationError);
 
@@ -303,20 +295,20 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       await expect(
         admin.addPeer({
           ...mockPeerConfig,
-          settlement: 'invalid' as unknown as MockFetch,
+          settlement: 'invalid' as any,
         })
       ).rejects.toThrow(ValidationError);
 
       await expect(
         admin.addPeer({
           ...mockPeerConfig,
-          settlement: null as unknown as MockFetch,
+          settlement: null as any,
         })
       ).rejects.toThrow(ValidationError);
 
@@ -327,13 +319,13 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       await expect(
         admin.addPeer({
           ...mockPeerConfig,
-          settlement: {} as unknown as MockFetch,
+          settlement: {} as any,
         })
       ).rejects.toThrow(ValidationError);
 
@@ -350,7 +342,7 @@ describe('HttpConnectorAdmin', () => {
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
         maxRetries: 0, // Disable retries for faster test
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -371,7 +363,7 @@ describe('HttpConnectorAdmin', () => {
         adminUrl: 'http://localhost:8081',
         timeout: 5000,
         maxRetries: 0, // Disable retries for faster test
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -392,7 +384,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -415,7 +407,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -434,7 +426,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081/',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act
@@ -458,7 +450,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act
@@ -482,7 +474,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act
@@ -506,7 +498,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -522,7 +514,7 @@ describe('HttpConnectorAdmin', () => {
       const mockFetch = vi.fn();
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       await expect(admin.removePeer('')).rejects.toThrow(ValidationError);
@@ -541,7 +533,7 @@ describe('HttpConnectorAdmin', () => {
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
         maxRetries: 0, // Disable retries for faster test
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -564,7 +556,7 @@ describe('HttpConnectorAdmin', () => {
         adminUrl: 'http://localhost:8081',
         timeout: 5000,
         maxRetries: 0, // Disable retries for faster test
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -587,7 +579,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -610,7 +602,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -629,7 +621,7 @@ describe('HttpConnectorAdmin', () => {
 
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081/',
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act
@@ -657,7 +649,7 @@ describe('HttpConnectorAdmin', () => {
         adminUrl: 'http://localhost:8081',
         maxRetries: 3,
         retryDelay: 10, // Short delay for fast tests
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act
@@ -679,7 +671,7 @@ describe('HttpConnectorAdmin', () => {
         adminUrl: 'http://localhost:8081',
         maxRetries: 3,
         retryDelay: 10,
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act
@@ -694,7 +686,7 @@ describe('HttpConnectorAdmin', () => {
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
         maxRetries: 3,
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -718,7 +710,7 @@ describe('HttpConnectorAdmin', () => {
         adminUrl: 'http://localhost:8081',
         maxRetries: 3,
         retryDelay: 10,
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -740,7 +732,7 @@ describe('HttpConnectorAdmin', () => {
         adminUrl: 'http://localhost:8081',
         maxRetries: 3,
         retryDelay: 10,
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       // Act & Assert
@@ -764,7 +756,7 @@ describe('HttpConnectorAdmin', () => {
         adminUrl: 'http://localhost:8081',
         maxRetries: 3,
         retryDelay: 100,
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       const startTime = Date.now();
@@ -789,7 +781,7 @@ describe('HttpConnectorAdmin', () => {
         const admin = new HttpConnectorAdmin({
           adminUrl: 'http://localhost:8081',
           maxRetries: 0,
-          httpClient: mockFetch as unknown as MockFetch,
+          httpClient: mockFetch as any,
         });
 
         const peers = [
@@ -805,9 +797,9 @@ describe('HttpConnectorAdmin', () => {
         expect(results).toHaveLength(3);
         expect(results.every((r) => r.success)).toBe(true);
         expect(mockFetch).toHaveBeenCalledTimes(3);
-        expect(results[0].peerId).toBe('peer1');
-        expect(results[1].peerId).toBe('peer2');
-        expect(results[2].peerId).toBe('peer3');
+        expect(results[0]!.peerId).toBe('peer1');
+        expect(results[1]!.peerId).toBe('peer2');
+        expect(results[2]!.peerId).toBe('peer3');
       });
 
       it('should handle partial failures in bulk add', async () => {
@@ -826,7 +818,7 @@ describe('HttpConnectorAdmin', () => {
         const admin = new HttpConnectorAdmin({
           adminUrl: 'http://localhost:8081',
           maxRetries: 0,
-          httpClient: mockFetch as unknown as MockFetch,
+          httpClient: mockFetch as any,
         });
 
         const peers = [
@@ -842,7 +834,7 @@ describe('HttpConnectorAdmin', () => {
         expect(results).toHaveLength(3);
         expect(results[0]).toMatchObject({ peerId: 'peer1', success: true });
         expect(results[1]).toMatchObject({ peerId: 'peer2', success: false });
-        expect(results[1].error).toBeDefined();
+        expect(results[1]!.error).toBeDefined();
         expect(results[2]).toMatchObject({ peerId: 'peer3', success: true });
       });
 
@@ -857,7 +849,7 @@ describe('HttpConnectorAdmin', () => {
         const admin = new HttpConnectorAdmin({
           adminUrl: 'http://localhost:8081',
           maxRetries: 0,
-          httpClient: mockFetch as unknown as MockFetch,
+          httpClient: mockFetch as any,
         });
 
         const peers = [
@@ -895,7 +887,7 @@ describe('HttpConnectorAdmin', () => {
         const admin = new HttpConnectorAdmin({
           adminUrl: 'http://localhost:8081',
           maxRetries: 0,
-          httpClient: mockFetch as unknown as MockFetch,
+          httpClient: mockFetch as any,
         });
 
         const peerIds = ['peer1', 'peer2', 'peer3'];
@@ -926,7 +918,7 @@ describe('HttpConnectorAdmin', () => {
         const admin = new HttpConnectorAdmin({
           adminUrl: 'http://localhost:8081',
           maxRetries: 0,
-          httpClient: mockFetch as unknown as MockFetch,
+          httpClient: mockFetch as any,
         });
 
         const peerIds = ['peer1', 'peer2', 'peer3'];
@@ -938,7 +930,7 @@ describe('HttpConnectorAdmin', () => {
         expect(results).toHaveLength(3);
         expect(results[0]).toMatchObject({ peerId: 'peer1', success: true });
         expect(results[1]).toMatchObject({ peerId: 'peer2', success: false });
-        expect(results[1].error).toBeDefined();
+        expect(results[1]!.error).toBeDefined();
         expect(results[2]).toMatchObject({ peerId: 'peer3', success: true });
       });
 
@@ -965,7 +957,7 @@ describe('HttpConnectorAdmin', () => {
       const admin = new HttpConnectorAdmin({
         adminUrl: 'http://localhost:8081',
         maxRetries: 0,
-        httpClient: mockFetch as unknown as MockFetch,
+        httpClient: mockFetch as any,
       });
 
       const peers = [

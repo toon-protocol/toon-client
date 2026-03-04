@@ -33,7 +33,8 @@ async function main() {
       pubkey,
       ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3000', // Genesis connector BTP
-    },
+      assetCode: 'USD',
+      assetScale: 6,    },
     toonEncoder: encodeEventToToon,
     toonDecoder: decodeEventFromToon,
     relayUrl: 'ws://localhost:7100', // Genesis relay
@@ -78,7 +79,7 @@ async function main() {
     console.log(`   Peers: ${client.getPeersCount()}`);
     const peers = client.getDiscoveredPeers();
     peers.forEach((peer) => {
-      console.log(`   - ${peer.pubkey.slice(0, 16)}... at ${peer.ilpAddress}`);
+      console.log(`   - ${peer.pubkey.slice(0, 16)}... at ${peer.peerInfo.ilpAddress}`);
     });
   } catch (error) {
     console.error('\n❌ Error:', error);
