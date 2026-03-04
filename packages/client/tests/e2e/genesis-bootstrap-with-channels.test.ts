@@ -219,7 +219,10 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
 
   it('should create payment channel before SPSP, publish with claim, and verify', async () => {
     if (!servicesReady) {
-      console.log('Skipping: Genesis node not ready');
+      if (process.env.CI) {
+        throw new Error('Genesis node services not ready — E2E tests cannot run in CI. Check deploy-genesis-node.sh and service health.');
+      }
+      console.log('Skipping: Genesis node not ready (local development)');
       return;
     }
 
