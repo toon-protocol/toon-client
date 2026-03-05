@@ -1,12 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { validateConfig, applyDefaults, buildSettlementInfo } from './config.js';
+import {
+  validateConfig,
+  applyDefaults,
+  buildSettlementInfo,
+} from './config.js';
 import { ValidationError } from './errors.js';
 import type { CrosstownClientConfig } from './types.js';
 
 describe('validateConfig', () => {
   // Helper to create minimal valid config
-  const createValidConfig = (overrides: Partial<CrosstownClientConfig> = {}): CrosstownClientConfig => {
+  const createValidConfig = (
+    overrides: Partial<CrosstownClientConfig> = {}
+  ): CrosstownClientConfig => {
     const secretKey = generateSecretKey();
     const pubkey = getPublicKey(secretKey);
     return {
@@ -16,9 +22,11 @@ describe('validateConfig', () => {
         pubkey,
         ilpAddress: 'g.test.address',
         btpEndpoint: 'ws://localhost:3000',
+        assetCode: 'USD',
+        assetScale: 6,
       },
-      toonEncoder: (event) => new Uint8Array(0),
-      toonDecoder: (bytes) => ({
+      toonEncoder: (_event) => new Uint8Array(0),
+      toonDecoder: (_bytes) => ({
         id: '',
         pubkey: '',
         created_at: 0,
@@ -36,11 +44,15 @@ describe('validateConfig', () => {
       const config = createValidConfig({ connector: {} as unknown });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('Embedded mode not yet implemented');
+      expect(() => validateConfig(config)).toThrow(
+        'Embedded mode not yet implemented'
+      );
     });
 
     it('should throw error with explicit message for embedded mode', () => {
-      const config = createValidConfig({ connector: { some: 'value' } as unknown });
+      const config = createValidConfig({
+        connector: { some: 'value' } as unknown,
+      });
 
       expect(() => validateConfig(config)).toThrow(
         'Embedded mode not yet implemented in CrosstownClient. Use connectorUrl for HTTP mode.'
@@ -65,13 +77,17 @@ describe('validateConfig', () => {
     });
 
     it('should accept valid HTTP connectorUrl', () => {
-      const config = createValidConfig({ connectorUrl: 'http://localhost:8080' });
+      const config = createValidConfig({
+        connectorUrl: 'http://localhost:8080',
+      });
 
       expect(() => validateConfig(config)).not.toThrow();
     });
 
     it('should accept valid HTTPS connectorUrl', () => {
-      const config = createValidConfig({ connectorUrl: 'https://connector.example.com' });
+      const config = createValidConfig({
+        connectorUrl: 'https://connector.example.com',
+      });
 
       expect(() => validateConfig(config)).not.toThrow();
     });
@@ -80,14 +96,18 @@ describe('validateConfig', () => {
       const config = createValidConfig({ connectorUrl: 'ws://localhost:8080' });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('must be a valid HTTP/HTTPS URL');
+      expect(() => validateConfig(config)).toThrow(
+        'must be a valid HTTP/HTTPS URL'
+      );
     });
 
     it('should throw error for invalid URL format', () => {
       const config = createValidConfig({ connectorUrl: 'not-a-url' });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('must be a valid HTTP/HTTPS URL');
+      expect(() => validateConfig(config)).toThrow(
+        'must be a valid HTTP/HTTPS URL'
+      );
     });
   });
 
@@ -102,13 +122,24 @@ describe('validateConfig', () => {
       const config = createValidConfig({ secretKey: new Uint8Array(16) });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('secretKey must be 32 bytes');
+      expect(() => validateConfig(config)).toThrow(
+        'secretKey must be 32 bytes'
+      );
     });
 
     it('should accept 32-byte secretKey', () => {
       const secretKey = generateSecretKey();
       const pubkey = getPublicKey(secretKey);
-      const config = createValidConfig({ secretKey, ilpInfo: { pubkey, ilpAddress: 'g.test', btpEndpoint: 'ws://test' } });
+      const config = createValidConfig({
+        secretKey,
+        ilpInfo: {
+          pubkey,
+          ilpAddress: 'g.test',
+          btpEndpoint: 'ws://test',
+          assetCode: 'USD',
+          assetScale: 6,
+        },
+      });
 
       expect(() => validateConfig(config)).not.toThrow();
     });
@@ -119,7 +150,9 @@ describe('validateConfig', () => {
       const config = createValidConfig({ ilpInfo: undefined as any });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('ilpInfo.ilpAddress is required');
+      expect(() => validateConfig(config)).toThrow(
+        'ilpInfo.ilpAddress is required'
+      );
     });
 
     it('should throw error when ilpInfo.ilpAddress is missing', () => {
@@ -127,11 +160,19 @@ describe('validateConfig', () => {
       const pubkey = getPublicKey(secretKey);
       const config = createValidConfig({
         secretKey,
-        ilpInfo: { ilpAddress: '', btpEndpoint: 'ws://test', pubkey },
+        ilpInfo: {
+          ilpAddress: '',
+          btpEndpoint: 'ws://test',
+          pubkey,
+          assetCode: 'USD',
+          assetScale: 6,
+        },
       });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('ilpInfo.ilpAddress is required');
+      expect(() => validateConfig(config)).toThrow(
+        'ilpInfo.ilpAddress is required'
+      );
     });
 
     it('should accept valid ilpInfo', () => {
@@ -143,6 +184,8 @@ describe('validateConfig', () => {
           pubkey,
           ilpAddress: 'g.test.address',
           btpEndpoint: 'ws://localhost:3000',
+          assetCode: 'USD',
+          assetScale: 6,
         },
       });
 
@@ -155,34 +198,46 @@ describe('validateConfig', () => {
       const config = createValidConfig({ toonEncoder: undefined as any });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('toonEncoder function is required');
+      expect(() => validateConfig(config)).toThrow(
+        'toonEncoder function is required'
+      );
     });
 
     it('should throw error when toonEncoder is not a function', () => {
-      const config = createValidConfig({ toonEncoder: 'not-a-function' as any });
+      const config = createValidConfig({
+        toonEncoder: 'not-a-function' as any,
+      });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('toonEncoder function is required');
+      expect(() => validateConfig(config)).toThrow(
+        'toonEncoder function is required'
+      );
     });
 
     it('should throw error when toonDecoder is missing', () => {
       const config = createValidConfig({ toonDecoder: undefined as any });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('toonDecoder function is required');
+      expect(() => validateConfig(config)).toThrow(
+        'toonDecoder function is required'
+      );
     });
 
     it('should throw error when toonDecoder is not a function', () => {
-      const config = createValidConfig({ toonDecoder: 'not-a-function' as any });
+      const config = createValidConfig({
+        toonDecoder: 'not-a-function' as any,
+      });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('toonDecoder function is required');
+      expect(() => validateConfig(config)).toThrow(
+        'toonDecoder function is required'
+      );
     });
 
     it('should accept valid toonEncoder and toonDecoder', () => {
       const config = createValidConfig({
-        toonEncoder: (event) => new Uint8Array(0),
-        toonDecoder: (bytes) => ({
+        toonEncoder: (_event) => new Uint8Array(0),
+        toonDecoder: (_bytes) => ({
           id: '',
           pubkey: '',
           created_at: 0,
@@ -237,7 +292,9 @@ describe('validateConfig', () => {
       });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('evmPrivateKey must be 32 bytes');
+      expect(() => validateConfig(config)).toThrow(
+        'evmPrivateKey must be 32 bytes'
+      );
     });
   });
 
@@ -255,7 +312,9 @@ describe('validateConfig', () => {
     it('should throw error for non-WebSocket URL', () => {
       const config = createValidConfig({ btpUrl: 'http://localhost:3000' });
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('must be a valid WebSocket URL');
+      expect(() => validateConfig(config)).toThrow(
+        'must be a valid WebSocket URL'
+      );
     });
   });
 
@@ -292,9 +351,11 @@ describe('applyDefaults', () => {
         pubkey,
         ilpAddress: 'g.test.address',
         btpEndpoint: 'ws://localhost:3000',
+        assetCode: 'USD',
+        assetScale: 6,
       },
-      toonEncoder: (event) => new Uint8Array(0),
-      toonDecoder: (bytes) => ({
+      toonEncoder: (_event) => new Uint8Array(0),
+      toonDecoder: (_bytes) => ({
         id: '',
         pubkey: '',
         created_at: 0,
@@ -420,11 +481,27 @@ describe('applyDefaults', () => {
 });
 
 describe('buildSettlementInfo', () => {
-  const createConfig = (overrides: Partial<CrosstownClientConfig> = {}): CrosstownClientConfig => ({
+  const createConfig = (
+    overrides: Partial<CrosstownClientConfig> = {}
+  ): CrosstownClientConfig => ({
     connectorUrl: 'http://localhost:8080',
-    ilpInfo: { ilpAddress: 'g.test', btpEndpoint: 'ws://test', pubkey: 'abc' },
+    ilpInfo: {
+      ilpAddress: 'g.test',
+      btpEndpoint: 'ws://test',
+      pubkey: 'abc',
+      assetCode: 'USD',
+      assetScale: 6,
+    },
     toonEncoder: () => new Uint8Array(0),
-    toonDecoder: () => ({ id: '', pubkey: '', created_at: 0, kind: 1, tags: [], content: '', sig: '' }),
+    toonDecoder: () => ({
+      id: '',
+      pubkey: '',
+      created_at: 0,
+      kind: 1,
+      tags: [],
+      content: '',
+      sig: '',
+    }),
     ...overrides,
   });
 

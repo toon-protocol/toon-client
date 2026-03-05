@@ -9,7 +9,11 @@
  */
 
 import { CrosstownClient } from '../src/index.js';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
 
 async function main() {
@@ -29,6 +33,8 @@ async function main() {
       pubkey,
       ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3000',
+      assetCode: 'USD',
+      assetScale: 6,
     },
     toonEncoder: encodeEventToToon,
     toonDecoder: decodeEventFromToon,
@@ -39,16 +45,24 @@ async function main() {
   console.log('\n🌐 Starting client...');
   const startResult = await client.start();
   console.log(`   ✅ Connected (mode: ${startResult.mode})`);
-  console.log(`   ✅ Bootstrap complete (${startResult.peersDiscovered} peers found)`);
+  console.log(
+    `   ✅ Bootstrap complete (${startResult.peersDiscovered} peers found)`
+  );
 
   // 4. Create event
   const timestamp = new Date().toISOString();
-  const event = finalizeEvent({
-    kind: 1,
-    content: `Test event from @crosstown/client - ${timestamp}`,
-    tags: [['client', 'crosstown'], ['timestamp', timestamp]],
-    created_at: Math.floor(Date.now() / 1000),
-  }, secretKey);
+  const event = finalizeEvent(
+    {
+      kind: 1,
+      content: `Test event from @crosstown/client - ${timestamp}`,
+      tags: [
+        ['client', 'crosstown'],
+        ['timestamp', timestamp],
+      ],
+      created_at: Math.floor(Date.now() / 1000),
+    },
+    secretKey
+  );
 
   console.log(`\n📨 Publishing event...`);
   console.log(`   Event ID: ${event.id}`);
@@ -58,23 +72,30 @@ async function main() {
   console.log(`\n💰 Sending ILP payment...`);
 
   // Fire and forget - we know from connector logs it works
-  client.publishEvent(event).then(result => {
-    if (result.success) {
-      console.log(`   ✅ SUCCESS - Event ${result.eventId}`);
-      console.log(`   ✅ ILP Fulfillment: ${result.fulfillment?.slice(0, 32)}...`);
-    } else {
-      console.log(`   ❌ FAILED: ${result.error}`);
-    }
-  }).catch(err => {
-    console.error(`   ❌ Error: ${err.message}`);
-  });
+  client
+    .publishEvent(event)
+    .then((result) => {
+      if (result.success) {
+        console.log(`   ✅ SUCCESS - Event ${result.eventId}`);
+        console.log(
+          `   ✅ ILP Fulfillment: ${result.fulfillment?.slice(0, 32)}...`
+        );
+      } else {
+        console.log(`   ❌ FAILED: ${result.error}`);
+      }
+    })
+    .catch((err) => {
+      console.error(`   ❌ Error: ${err.message}`);
+    });
 
   // Give it a moment to send, then exit
-  await new Promise(resolve => setTimeout(resolve, 500));
+  await new Promise((resolve) => setTimeout(resolve, 500));
 
   console.log(`\n✅ Event published successfully!`);
   console.log(`\n📊 Verification:`);
-  console.log(`   Run: docker logs crosstown-connector --tail 20 | grep "fulfilled"`);
+  console.log(
+    `   Run: docker logs crosstown-connector --tail 20 | grep "fulfilled"`
+  );
   console.log(`   Expected: "Packet fulfilled by business logic server"`);
   console.log(`\n💡 Note: Exiting early to avoid nostr-tools SimplePool issue`);
   console.log(`   (This is a known limitation when running in Node.js)\n`);
@@ -83,7 +104,7 @@ async function main() {
   process.exit(0);
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error('\n❌ Fatal error:', error.message);
   process.exit(1);
 });

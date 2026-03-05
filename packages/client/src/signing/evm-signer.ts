@@ -1,7 +1,4 @@
-import {
-  privateKeyToAccount,
-  type PrivateKeyAccount,
-} from 'viem/accounts';
+import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { type Hex, toHex } from 'viem';
 import type { BalanceProofParams, SignedBalanceProof } from '../types.js';
 
@@ -64,7 +61,9 @@ export class EvmSigner {
     if (privateKey instanceof Uint8Array) {
       hexKey = toHex(privateKey);
     } else {
-      hexKey = (privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`) as Hex;
+      hexKey = (
+        privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`
+      ) as Hex;
     }
     this._account = privateKeyToAccount(hexKey);
   }
@@ -86,9 +85,15 @@ export class EvmSigner {
    * @returns Signed balance proof with signature
    */
   async signBalanceProof(
-    params: BalanceProofParams & { chainId: number; tokenNetworkAddress: string }
+    params: BalanceProofParams & {
+      chainId: number;
+      tokenNetworkAddress: string;
+    }
   ): Promise<SignedBalanceProof> {
-    const domain = getBalanceProofDomain(params.chainId, params.tokenNetworkAddress);
+    const domain = getBalanceProofDomain(
+      params.chainId,
+      params.tokenNetworkAddress
+    );
 
     const signature = await this._account.signTypedData({
       domain,
@@ -122,7 +127,10 @@ export class EvmSigner {
    * @param senderId - Nostr pubkey or identifier of the sender
    * @returns EVMClaimMessage compatible with BTP_CLAIM_PROTOCOL
    */
-  static buildClaimMessage(proof: SignedBalanceProof, senderId: string): EVMClaimMessage {
+  static buildClaimMessage(
+    proof: SignedBalanceProof,
+    senderId: string
+  ): EVMClaimMessage {
     return {
       blockchain: 'evm',
       senderId,

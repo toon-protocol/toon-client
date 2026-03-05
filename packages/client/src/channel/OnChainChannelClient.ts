@@ -8,7 +8,12 @@ import {
   type Hex,
   type TransactionReceipt,
 } from 'viem';
-import type { ConnectorChannelClient, OpenChannelParams, OpenChannelResult, ChannelState } from '@crosstown/core';
+import type {
+  ConnectorChannelClient,
+  OpenChannelParams,
+  OpenChannelResult,
+  ChannelState,
+} from '@crosstown/core';
 import type { EvmSigner } from '../signing/evm-signer.js';
 
 // TokenNetwork ABI — only the functions we need
@@ -106,7 +111,10 @@ export interface OnChainChannelClientConfig {
 export class OnChainChannelClient implements ConnectorChannelClient {
   private readonly evmSigner: EvmSigner;
   private readonly chainRpcUrls: Record<string, string>;
-  private readonly channelContext = new Map<string, { chain: string; tokenNetworkAddress: string }>();
+  private readonly channelContext = new Map<
+    string,
+    { chain: string; tokenNetworkAddress: string }
+  >();
 
   constructor(config: OnChainChannelClientConfig) {
     this.evmSigner = config.evmSigner;
@@ -120,9 +128,17 @@ export class OnChainChannelClient implements ConnectorChannelClient {
   private parseChainId(chain: string): number {
     const parts = chain.split(':');
     if (parts.length < 3) {
-      throw new Error(`Invalid chain format: "${chain}". Expected "evm:{network}:{chainId}".`);
+      throw new Error(
+        `Invalid chain format: "${chain}". Expected "evm:{network}:{chainId}".`
+      );
     }
-    const chainId = parseInt(parts[2]!, 10);
+    const chainIdStr = parts[2];
+    if (!chainIdStr) {
+      throw new Error(
+        `Invalid chain format: "${chain}". Expected "evm:{network}:{chainId}".`
+      );
+    }
+    const chainId = parseInt(chainIdStr, 10);
     if (isNaN(chainId)) {
       throw new Error(`Invalid chainId in chain "${chain}".`);
     }
@@ -135,7 +151,9 @@ export class OnChainChannelClient implements ConnectorChannelClient {
   private createClients(chain: string) {
     const rpcUrl = this.chainRpcUrls[chain];
     if (!rpcUrl) {
-      throw new Error(`No RPC URL configured for chain "${chain}". Available: ${Object.keys(this.chainRpcUrls).join(', ')}`);
+      throw new Error(
+        `No RPC URL configured for chain "${chain}". Available: ${Object.keys(this.chainRpcUrls).join(', ')}`
+      );
     }
 
     const chainId = this.parseChainId(chain);
@@ -170,10 +188,18 @@ export class OnChainChannelClient implements ConnectorChannelClient {
    * 4. Deposit initial funds if specified
    */
   async openChannel(params: OpenChannelParams): Promise<OpenChannelResult> {
-    const { chain, tokenNetwork, peerAddress, initialDeposit, settlementTimeout } = params;
+    const {
+      chain,
+      tokenNetwork,
+      peerAddress,
+      initialDeposit,
+      settlementTimeout,
+    } = params;
 
     if (!tokenNetwork) {
-      throw new Error('tokenNetwork address is required for on-chain channel opening');
+      throw new Error(
+        'tokenNetwork address is required for on-chain channel opening'
+      );
     }
 
     const { publicClient, walletClient } = this.createClients(chain);
@@ -212,7 +238,8 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       args: [peerAddress as Hex, timeout],
     });
 
-    const receipt: TransactionReceipt = await publicClient.waitForTransactionReceipt({ hash: openHash });
+    const receipt: TransactionReceipt =
+      await publicClient.waitForTransactionReceipt({ hash: openHash });
 
     // Extract channelId from ChannelOpened event
     let channelId: string | undefined;
@@ -224,7 +251,9 @@ export class OnChainChannelClient implements ConnectorChannelClient {
           topics: log.topics,
         });
         if (decoded.eventName === 'ChannelOpened') {
-          channelId = (decoded.args as any).channelId;
+          channelId = (decoded.args as Record<string, unknown>)[
+            'channelId'
+          ] as string;
           break;
         }
       } catch {
@@ -237,7 +266,10 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     }
 
     // Cache context for getChannelState
-    this.channelContext.set(channelId, { chain, tokenNetworkAddress: tokenNetwork });
+    this.channelContext.set(channelId, {
+      chain,
+      tokenNetworkAddress: tokenNetwork,
+    });
 
     // Deposit initial funds if specified
     if (deposit > 0n) {
@@ -259,7 +291,9 @@ export class OnChainChannelClient implements ConnectorChannelClient {
   async getChannelState(channelId: string): Promise<ChannelState> {
     const context = this.channelContext.get(channelId);
     if (!context) {
-      throw new Error(`No context for channel "${channelId}". Channel must be opened via this client first.`);
+      throw new Error(
+        `No context for channel "${channelId}". Channel must be opened via this client first.`
+      );
     }
 
     const { publicClient } = this.createClients(context.chain);
@@ -271,7 +305,14 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       args: [channelId as Hex],
     });
 
-    const [, state] = result as [bigint, number, bigint, bigint, string, string];
+    const [, state] = result as [
+      bigint,
+      number,
+      bigint,
+      bigint,
+      string,
+      string,
+    ];
     const status = STATE_MAP[state] ?? 'settled';
 
     return {

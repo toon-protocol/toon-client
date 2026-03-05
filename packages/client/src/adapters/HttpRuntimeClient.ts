@@ -85,19 +85,16 @@ export class HttpRuntimeClient implements AgentRuntimeClient {
     this.validateRequest(params);
 
     // Wrap HTTP request with retry logic
-    return withRetry(
-      async () => this.sendHttpRequest(params),
-      {
-        maxRetries: this.retryConfig.maxRetries,
-        retryDelay: this.retryConfig.retryDelay,
-        exponentialBackoff: true,
-        shouldRetry: (error) => {
-          // Only retry on network errors (ECONNREFUSED, ETIMEDOUT)
-          // Do not retry on validation errors, 4xx, or 5xx errors
-          return error instanceof NetworkError;
-        },
-      }
-    );
+    return withRetry(async () => this.sendHttpRequest(params), {
+      maxRetries: this.retryConfig.maxRetries,
+      retryDelay: this.retryConfig.retryDelay,
+      exponentialBackoff: true,
+      shouldRetry: (error) => {
+        // Only retry on network errors (ECONNREFUSED, ETIMEDOUT)
+        // Do not retry on validation errors, 4xx, or 5xx errors
+        return error instanceof NetworkError;
+      },
+    });
   }
 
   /**
@@ -180,46 +177,60 @@ export class HttpRuntimeClient implements AgentRuntimeClient {
 
     try {
       // NOTE: Using admin endpoint /admin/ilp/send since connector doesn't have public /ilp endpoint yet
-      const response = await this.httpClient(`${this.connectorUrl}/admin/ilp/send`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          destination: params.destination,
-          amount: params.amount,
-          data: params.data,
-        }),
-        signal: controller.signal,
-      });
+      const response = await this.httpClient(
+        `${this.connectorUrl}/admin/ilp/send`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            destination: params.destination,
+            amount: params.amount,
+            data: params.data,
+          }),
+          signal: controller.signal,
+        }
+      );
 
       clearTimeout(timeoutId);
 
       // Handle response by status code
       if (response.ok) {
         // 200 OK: Parse response as IlpSendResult
-        const result = (await response.json()) as any;
+        const result = (await response.json()) as Record<string, unknown>;
         return {
-          accepted: result.accepted ?? false,
-          fulfillment: result.fulfillment,
-          data: result.data,
-          code: result.code,
-          message: result.message,
+          accepted: (result['accepted'] as boolean) ?? false,
+          fulfillment: result['fulfillment'] as string | undefined,
+          data: result['data'] as string | undefined,
+          code: result['code'] as string | undefined,
+          message: result['message'] as string | undefined,
         };
       } else if (response.status >= 400 && response.status < 500) {
         // 4xx: Client error - return as failed ILP response (no retry)
-        const errorBody = (await response.json().catch(() => ({}))) as any;
+        const errorBody = (await response.json().catch(() => ({}))) as Record<
+          string,
+          unknown
+        >;
         return {
           accepted: false,
           code: `HTTP_${response.status}`,
-          message: errorBody.message ?? errorBody.error ?? response.statusText,
+          message:
+            (errorBody['message'] as string) ??
+            (errorBody['error'] as string) ??
+            response.statusText,
         };
       } else if (response.status >= 500 && response.status < 600) {
         // 5xx: Server error - throw ConnectorError (no retry)
-        const errorBody = (await response.json().catch(() => ({}))) as any;
+        const errorBody = (await response.json().catch(() => ({}))) as Record<
+          string,
+          unknown
+        >;
         throw new ConnectorError(
           `Connector server error (${response.status}): ${
-            errorBody.message ?? errorBody.error ?? response.statusText
+            (errorBody['message'] as string) ??
+            (errorBody['error'] as string) ??
+            response.statusText
           }`
         );
       }

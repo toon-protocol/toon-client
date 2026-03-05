@@ -18,7 +18,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
 import { CrosstownClient } from '../../src/CrosstownClient.js';
 import { createPublicClient, http, defineChain, type Hex } from 'viem';
@@ -28,15 +32,17 @@ const RELAY_URL = 'ws://localhost:7100';
 const CONNECTOR_URL = 'http://localhost:8080';
 const BLS_URL = 'http://localhost:3100';
 const ANVIL_RPC = 'http://localhost:8545';
-const GENESIS_PUBKEY = 'aa1857d0ff1fcb1aeb1907b3b98290f3ecb5545473c0b9296fb0b44481deb572';
+const GENESIS_PUBKEY =
+  'aa1857d0ff1fcb1aeb1907b3b98290f3ecb5545473c0b9296fb0b44481deb572';
 
 // Anvil Account #2 (for testing - has 10k ETH pre-funded)
-const TEST_ACCOUNT_PRIVATE_KEY = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
+const TEST_ACCOUNT_PRIVATE_KEY =
+  '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
 const TEST_ACCOUNT_ADDRESS = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
 
 // Deployed contract addresses (deterministic on Anvil)
 const TOKEN_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
-const REGISTRY_ADDRESS = '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512';
+const _REGISTRY_ADDRESS = '0xe7f1725e7734ce288f8367e1bb143e90bb3f0512';
 const TOKEN_NETWORK_ADDRESS = '0xCafac3dD18aC6c6e92c921884f9E4176737C052c';
 
 // Token Network ABI (minimal - just what we need to query channels)
@@ -68,6 +74,7 @@ function waitForEventOnRelay(
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(relayUrl);
     const subId = `test-${Date.now()}`;
+    // eslint-disable-next-line prefer-const
     let timer: ReturnType<typeof setTimeout>;
 
     const cleanup = () => {
@@ -136,7 +143,14 @@ async function getChannelState(channelId: string) {
     args: [channelId as Hex],
   });
 
-  const [settlementTimeout, state, closedAt, openedAt, participant1, participant2] = result;
+  const [
+    settlementTimeout,
+    state,
+    closedAt,
+    openedAt,
+    participant1,
+    participant2,
+  ] = result;
 
   const stateNames = ['settled', 'open', 'closed', 'settled'];
   return {
@@ -213,13 +227,20 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
       servicesReady = true;
     } catch (error) {
       console.warn('Genesis node not running. Run: ./deploy-genesis-node.sh');
-      console.warn(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn(
+        `Error: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }, 15000);
 
   it('should create payment channel before SPSP, publish with claim, and verify', async () => {
     if (!servicesReady) {
-      console.log('Skipping: Genesis node not ready');
+      if (process.env['CI']) {
+        throw new Error(
+          'Genesis node services not ready — E2E tests cannot run in CI. Check deploy-genesis-node.sh and service health.'
+        );
+      }
+      console.log('Skipping: Genesis node not ready (local development)');
       return;
     }
 
@@ -238,6 +259,8 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
         pubkey,
         ilpAddress: `g.crosstown.test.${pubkey.slice(0, 8)}`,
         btpEndpoint: 'ws://localhost:3000',
+        assetCode: 'USD',
+        assetScale: 6,
       },
       toonEncoder: encodeEventToToon,
       toonDecoder: decodeEventFromToon,
@@ -272,14 +295,18 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
       btpUrl: 'ws://localhost:3000',
     });
 
-    console.log('\n⏳ Starting bootstrap (will create payment channel first)...');
+    console.log(
+      '\n⏳ Starting bootstrap (will create payment channel first)...'
+    );
 
     // 3. Bootstrap with genesis peer
     const startResult = await client.start();
     expect(startResult.mode).toBe('http');
     expect(client.isStarted()).toBe(true);
 
-    console.log(`✅ Bootstrap complete! Discovered ${startResult.peersDiscovered} peer(s)`);
+    console.log(
+      `✅ Bootstrap complete! Discovered ${startResult.peersDiscovered} peer(s)`
+    );
 
     // 4. Verify channel was created during bootstrap
     const channels = client.getTrackedChannels();
@@ -300,8 +327,10 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
 
     expect(channelState.state).toBe('open');
     expect(
-      channelState.participant1.toLowerCase() === TEST_ACCOUNT_ADDRESS.toLowerCase() ||
-      channelState.participant2.toLowerCase() === TEST_ACCOUNT_ADDRESS.toLowerCase()
+      channelState.participant1.toLowerCase() ===
+        TEST_ACCOUNT_ADDRESS.toLowerCase() ||
+        channelState.participant2.toLowerCase() ===
+          TEST_ACCOUNT_ADDRESS.toLowerCase()
     ).toBe(true);
 
     // 6. Create and sign a Nostr event
@@ -324,9 +353,13 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
 
     const publishResult = await client.publishEvent(event, { claim });
 
-    console.log(`   Result: ${publishResult.success ? '✅ success' : '❌ failed'}`);
+    console.log(
+      `   Result: ${publishResult.success ? '✅ success' : '❌ failed'}`
+    );
     if (publishResult.fulfillment) {
-      console.log(`   Fulfillment: ${publishResult.fulfillment.slice(0, 32)}...`);
+      console.log(
+        `   Fulfillment: ${publishResult.fulfillment.slice(0, 32)}...`
+      );
     }
 
     expect(publishResult.success).toBe(true);
@@ -338,10 +371,10 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
     const storedEvent = await waitForEventOnRelay(RELAY_URL, event.id, 10000);
 
     expect(storedEvent).not.toBeNull();
-    expect(storedEvent!.id).toBe(event.id);
-    expect(storedEvent!.content).toBe(testContent);
-    expect(storedEvent!.pubkey).toBe(pubkey);
-    expect(storedEvent!.kind).toBe(1);
+    expect(storedEvent!['id']).toBe(event.id);
+    expect(storedEvent!['content']).toBe(testContent);
+    expect(storedEvent!['pubkey']).toBe(pubkey);
+    expect(storedEvent!['kind']).toBe(1);
 
     console.log(`✅ Event verified on relay!\n`);
 

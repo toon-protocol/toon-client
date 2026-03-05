@@ -44,10 +44,15 @@ export class ChannelManager {
    * @returns Signed balance proof
    * @throws Error if channel is not being tracked
    */
-  async signBalanceProof(channelId: string, additionalAmount: bigint): Promise<SignedBalanceProof> {
+  async signBalanceProof(
+    channelId: string,
+    additionalAmount: bigint
+  ): Promise<SignedBalanceProof> {
     const tracking = this.channels.get(channelId);
     if (!tracking) {
-      throw new Error(`Channel "${channelId}" is not being tracked. Call trackChannel() first.`);
+      throw new Error(
+        `Channel "${channelId}" is not being tracked. Call trackChannel() first.`
+      );
     }
 
     tracking.nonce += 1;
@@ -61,7 +66,8 @@ export class ChannelManager {
       nonce: tracking.nonce,
       transferredAmount: tracking.cumulativeAmount,
       lockedAmount: 0n,
-      locksRoot: '0x0000000000000000000000000000000000000000000000000000000000000000',
+      locksRoot:
+        '0x0000000000000000000000000000000000000000000000000000000000000000',
       chainId: 31337, // Default — will be configurable via channel context
       tokenNetworkAddress: '0x0000000000000000000000000000000000000000',
     });

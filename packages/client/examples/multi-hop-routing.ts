@@ -13,7 +13,11 @@
  */
 
 import { CrosstownClient } from '../src/index.js';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
 
 async function main() {
@@ -30,44 +34,55 @@ async function main() {
   // Note: No destinationAddress in config - we'll specify per-event
   console.log('🔧 Creating client...');
   console.log('   Connected to: Peer1 (localhost:8090)');
-  console.log('   Can route to: Any destination via per-event destination parameter\n');
+  console.log(
+    '   Can route to: Any destination via per-event destination parameter\n'
+  );
 
   const client = new CrosstownClient({
-    connectorUrl: 'http://localhost:8090',      // PEER1 connector
-    btpUrl: 'ws://localhost:3010',              // PEER1 BTP
+    connectorUrl: 'http://localhost:8090', // PEER1 connector
+    btpUrl: 'ws://localhost:3010', // PEER1 BTP
     secretKey,
     ilpInfo: {
       pubkey,
       ilpAddress: `g.crosstown.peer1.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3010',
+      assetCode: 'USD',
+      assetScale: 6,
     },
     toonEncoder: encodeEventToToon,
     toonDecoder: decodeEventFromToon,
-    relayUrl: 'ws://localhost:7110',            // PEER1 relay
+    relayUrl: 'ws://localhost:7110', // PEER1 relay
   });
 
   // Start client
   console.log('🌐 Starting client (connecting to peer1)...');
   const startResult = await client.start();
   console.log(`   ✅ Connected (mode: ${startResult.mode})`);
-  console.log(`   ✅ Bootstrap complete (${startResult.peersDiscovered} peers)\n`);
+  console.log(
+    `   ✅ Bootstrap complete (${startResult.peersDiscovered} peers)\n`
+  );
 
   // Create event
   const timestamp = new Date().toISOString();
-  const event = finalizeEvent({
-    kind: 1,
-    content: `Multi-hop routing test: Client → Peer1 → Genesis (${timestamp})`,
-    tags: [
-      ['routing', 'multi-hop'],
-      ['source', 'peer1'],
-      ['destination', 'genesis'],
-    ],
-    created_at: Math.floor(Date.now() / 1000),
-  }, secretKey);
+  const event = finalizeEvent(
+    {
+      kind: 1,
+      content: `Multi-hop routing test: Client → Peer1 → Genesis (${timestamp})`,
+      tags: [
+        ['routing', 'multi-hop'],
+        ['source', 'peer1'],
+        ['destination', 'genesis'],
+      ],
+      created_at: Math.floor(Date.now() / 1000),
+    },
+    secretKey
+  );
 
   console.log('📨 Publishing event via multi-hop route...');
   console.log(`   Event ID: ${event.id.slice(0, 32)}...`);
-  console.log(`   Destination: g.crosstown.genesis (via destination parameter)\n`);
+  console.log(
+    `   Destination: g.crosstown.genesis (via destination parameter)\n`
+  );
 
   // Publish event with explicit destination
   console.log('💰 ILP packet flow:');
@@ -77,30 +92,39 @@ async function main() {
   console.log('   4. BLS validates and stores event');
   console.log('   5. Fulfillment returns: Genesis → Peer1 → Client\n');
 
-  client.publishEvent(event, { destination: 'g.crosstown.genesis' }).then(result => {
-    if (result.success) {
-      console.log('✅ SUCCESS - Multi-hop routing worked!');
-      console.log(`   Event ID: ${result.eventId?.slice(0, 32)}...`);
-      console.log(`   Fulfillment: ${result.fulfillment?.slice(0, 32)}...`);
-    } else {
-      console.log(`❌ FAILED: ${result.error}`);
-    }
-  }).catch(err => {
-    console.error(`❌ Error: ${err.message}`);
-  });
+  client
+    .publishEvent(event, { destination: 'g.crosstown.genesis' })
+    .then((result) => {
+      if (result.success) {
+        console.log('✅ SUCCESS - Multi-hop routing worked!');
+        console.log(`   Event ID: ${result.eventId?.slice(0, 32)}...`);
+        console.log(`   Fulfillment: ${result.fulfillment?.slice(0, 32)}...`);
+      } else {
+        console.log(`❌ FAILED: ${result.error}`);
+      }
+    })
+    .catch((err) => {
+      console.error(`❌ Error: ${err.message}`);
+    });
 
   // Wait for completion
-  await new Promise(resolve => setTimeout(resolve, 1000));
+  await new Promise((resolve) => setTimeout(resolve, 1000));
 
   console.log('\n📊 Verification:');
   console.log('   Check peer1 connector logs:');
-  console.log('   $ docker logs connector-peer1 --tail 30 | grep "Forwarding packet"');
+  console.log(
+    '   $ docker logs connector-peer1 --tail 30 | grep "Forwarding packet"'
+  );
   console.log('');
   console.log('   Check genesis connector logs:');
-  console.log('   $ docker logs crosstown-connector --tail 30 | grep "fulfilled"');
+  console.log(
+    '   $ docker logs crosstown-connector --tail 30 | grep "fulfilled"'
+  );
   console.log('');
   console.log('   Check genesis node logs:');
-  console.log('   $ docker logs crosstown-node --tail 30 | grep "Storing event"');
+  console.log(
+    '   $ docker logs crosstown-node --tail 30 | grep "Storing event"'
+  );
 
   console.log('\n💡 Expected log entries:');
   console.log('   Peer1:   "Forwarding packet to peer via BTP" (to genesis)');
@@ -111,7 +135,7 @@ async function main() {
   process.exit(0);
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error('\n❌ Fatal error:', error);
   process.exit(1);
 });

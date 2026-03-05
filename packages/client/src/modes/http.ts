@@ -1,8 +1,10 @@
-import { SimplePool } from 'nostr-tools/pool';
+import type { SimplePool } from 'nostr-tools/pool';
 import { BootstrapService, RelayMonitor } from '@crosstown/core';
-import type { BootstrapServiceConfig, RelayMonitorConfig } from '@crosstown/core';
+import type {
+  BootstrapServiceConfig,
+  RelayMonitorConfig,
+} from '@crosstown/core';
 import { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
-import { HttpConnectorAdmin } from '../adapters/HttpConnectorAdmin.js';
 import { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
 import { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
 import { EvmSigner } from '../signing/evm-signer.js';
@@ -26,7 +28,6 @@ export async function initializeHttpMode(
 ): Promise<HttpModeInitialization> {
   // Derive admin URL from connector URL (change port 8080 → 8081)
   const connectorUrl = config.connectorUrl;
-  const adminUrl = connectorUrl.replace(':8080', ':8081');
 
   // Build settlement info from config
   const settlementInfo = buildSettlementInfo(config);
@@ -45,12 +46,14 @@ export async function initializeHttpMode(
   }
 
   // BTP is the runtime client for sending ILP packets
-  const runtimeClient = btpClient ?? new HttpRuntimeClient({
-    connectorUrl,
-    timeout: config.queryTimeout,
-    maxRetries: config.maxRetries,
-    retryDelay: config.retryDelay,
-  });
+  const runtimeClient =
+    btpClient ??
+    new HttpRuntimeClient({
+      connectorUrl,
+      timeout: config.queryTimeout,
+      maxRetries: config.maxRetries,
+      retryDelay: config.retryDelay,
+    });
 
   // Create on-chain channel client when EVM is configured
   let onChainChannelClient: OnChainChannelClient | null = null;
@@ -64,7 +67,11 @@ export async function initializeHttpMode(
 
   // Create BootstrapService
   const bootstrapConfig: BootstrapServiceConfig = {
-    knownPeers: config.knownPeers || [], // Use configured peers or start empty; RelayMonitor will discover more
+    knownPeers: (config.knownPeers || []).map((p) => ({
+      pubkey: p.pubkey,
+      relayUrl: p.relayUrl,
+      btpEndpoint: p.btpEndpoint ?? '',
+    })),
     queryTimeout: config.queryTimeout,
     ardriveEnabled: true,
     defaultRelayUrl: config.relayUrl,

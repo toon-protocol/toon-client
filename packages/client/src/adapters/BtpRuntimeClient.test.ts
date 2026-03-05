@@ -96,7 +96,9 @@ describe('BtpRuntimeClient', () => {
       });
 
       expect(result.accepted).toBe(true);
-      expect(result.fulfillment).toBe(Buffer.from('fulfillment-data').toString('base64'));
+      expect(result.fulfillment).toBe(
+        Buffer.from('fulfillment-data').toString('base64')
+      );
       expect(result.data).toBe(Buffer.from('response-data').toString('base64'));
     });
 
@@ -196,9 +198,10 @@ describe('BtpRuntimeClient', () => {
       expect(result.accepted).toBe(true);
 
       // Verify claim was sent before packet
-      const protocolCallOrder = mockSendProtocolData.mock.invocationCallOrder[0];
+      const protocolCallOrder =
+        mockSendProtocolData.mock.invocationCallOrder[0];
       const packetCallOrder = mockSendPacket.mock.invocationCallOrder[0];
-      expect(protocolCallOrder).toBeLessThan(packetCallOrder);
+      expect(protocolCallOrder).toBeLessThan(packetCallOrder!);
     });
 
     it('should throw when not connected', async () => {

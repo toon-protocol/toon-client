@@ -18,9 +18,27 @@ const BTP_CLAIM_PROTOCOL = {
   CONTENT_TYPE: 1,
 } as const;
 
+/** Pino-compatible logger interface */
+interface ConsoleLogger {
+  level: string;
+  silent: (...args: unknown[]) => void;
+  info: typeof console.info;
+  warn: typeof console.warn;
+  error: typeof console.error;
+  debug: typeof console.debug;
+  trace: typeof console.debug;
+  fatal: typeof console.error;
+  child: () => ConsoleLogger;
+}
+
 /** Creates a pino-compatible logger wrapper around console */
-function createConsoleLogger(): any {
-  const logger: any = {
+function createConsoleLogger(): ConsoleLogger {
+  const noop = (..._args: unknown[]) => {
+    // intentional no-op for pino's silent log level
+  };
+  const logger: ConsoleLogger = {
+    level: 'info',
+    silent: noop,
     info: console.info.bind(console),
     warn: console.warn.bind(console),
     error: console.error.bind(console),
@@ -39,11 +57,26 @@ const ILP_PACKET_TYPE = {
   REJECT: 14,
 } as const;
 
+/** Shape of a BTP fulfill response */
+interface BtpFulfillResponse {
+  type: typeof ILP_PACKET_TYPE.FULFILL;
+  fulfillment: Buffer;
+  data: Buffer;
+}
+
+/** Shape of a BTP reject response */
+interface BtpRejectResponse {
+  type: typeof ILP_PACKET_TYPE.REJECT;
+  code: string;
+  message: string;
+  data: Buffer;
+}
+
 export interface BtpRuntimeClientConfig {
   btpUrl: string;
   peerId: string;
   authToken: string;
-  logger?: any;
+  logger?: ConsoleLogger;
 }
 
 /**
@@ -71,10 +104,14 @@ export class BtpRuntimeClient implements AgentRuntimeClient {
       lastSeen: new Date(),
     };
 
+    // Cast logger: ConsoleLogger implements the subset of pino's Logger
+    // that BTPClient actually uses at runtime (info, warn, error, debug, child)
+    const logger = this.config.logger ?? createConsoleLogger();
     this.btpClient = new BTPClient(
       peer,
       this.config.peerId,
-      this.config.logger ?? createConsoleLogger()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      logger as any
     );
 
     await this.btpClient.connect();
@@ -123,19 +160,25 @@ export class BtpRuntimeClient implements AgentRuntimeClient {
       const response = await this.btpClient.sendPacket(packet);
 
       if (response.type === ILP_PACKET_TYPE.FULFILL) {
+        const fulfill = response as unknown as BtpFulfillResponse;
         return {
           accepted: true,
-          fulfillment: (response as any).fulfillment.toString('base64'),
-          data: (response as any).data.length > 0 ? (response as any).data.toString('base64') : undefined,
+          fulfillment: fulfill.fulfillment.toString('base64'),
+          data:
+            fulfill.data.length > 0
+              ? fulfill.data.toString('base64')
+              : undefined,
         };
       }
 
       // Reject packet
+      const reject = response as unknown as BtpRejectResponse;
       return {
         accepted: false,
-        code: (response as any).code,
-        message: (response as any).message,
-        data: (response as any).data.length > 0 ? (response as any).data.toString('base64') : undefined,
+        code: reject.code,
+        message: reject.message,
+        data:
+          reject.data.length > 0 ? reject.data.toString('base64') : undefined,
       };
     } catch (error) {
       return {

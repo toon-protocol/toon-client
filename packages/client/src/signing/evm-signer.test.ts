@@ -2,11 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { recoverTypedDataAddress } from 'viem';
 import { generatePrivateKey } from 'viem/accounts';
 import { EvmSigner } from './evm-signer.js';
-import type { BalanceProofParams, SignedBalanceProof } from '../types.js';
+import type { SignedBalanceProof } from '../types.js';
 
 const TEST_CHAIN_ID = 31337;
 const TEST_TOKEN_NETWORK = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
-const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000';
+const ZERO_BYTES32 =
+  '0x0000000000000000000000000000000000000000000000000000000000000000';
 
 describe('EvmSigner', () => {
   describe('construction', () => {
@@ -33,7 +34,9 @@ describe('EvmSigner', () => {
     it('should derive same address from hex and Uint8Array of same key', () => {
       const key = generatePrivateKey();
       const signerHex = new EvmSigner(key);
-      const signerBytes = new EvmSigner(new Uint8Array(Buffer.from(key.slice(2), 'hex')));
+      const signerBytes = new EvmSigner(
+        new Uint8Array(Buffer.from(key.slice(2), 'hex'))
+      );
       expect(signerHex.address).toBe(signerBytes.address);
     });
   });

@@ -13,7 +13,11 @@
  */
 
 import { CrosstownClient } from '../src/index.js';
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
 import { createPublicClient, http, defineChain, type Hex } from 'viem';
 
@@ -21,10 +25,12 @@ import { createPublicClient, http, defineChain, type Hex } from 'viem';
 const RELAY_URL = 'ws://localhost:7100';
 const CONNECTOR_URL = 'http://localhost:8080';
 const ANVIL_RPC = 'http://localhost:8545';
-const GENESIS_PUBKEY = 'aa1857d0ff1fcb1aeb1907b3b98290f3ecb5545473c0b9296fb0b44481deb572';
+const GENESIS_PUBKEY =
+  'aa1857d0ff1fcb1aeb1907b3b98290f3ecb5545473c0b9296fb0b44481deb572';
 
 // Test account (Anvil Account #2 with 10k ETH pre-funded)
-const TEST_ACCOUNT_PRIVATE_KEY = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
+const TEST_ACCOUNT_PRIVATE_KEY =
+  '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
 const TEST_ACCOUNT_ADDRESS = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
 
 // Deployed contract addresses (deterministic on Anvil)
@@ -69,7 +75,14 @@ async function getChannelState(channelId: string) {
     args: [channelId as Hex],
   });
 
-  const [settlementTimeout, state, closedAt, openedAt, participant1, participant2] = result;
+  const [
+    settlementTimeout,
+    state,
+    closedAt,
+    openedAt,
+    participant1,
+    participant2,
+  ] = result;
   const stateNames = ['settled', 'open', 'closed', 'settled'];
 
   return {
@@ -105,6 +118,8 @@ async function main() {
       pubkey,
       ilpAddress: `g.crosstown.test.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3000',
+      assetCode: 'USD',
+      assetScale: 6,
     },
     toonEncoder: encodeEventToToon,
     toonDecoder: decodeEventFromToon,
@@ -175,7 +190,9 @@ async function main() {
       console.log(`   Participant 1: ${channelState.participant1}`);
       console.log(`   Participant 2: ${channelState.participant2}`);
       console.log(`   Settlement timeout: ${channelState.settlementTimeout}s`);
-      console.log(`   Opened at: ${new Date(channelState.openedAt * 1000).toISOString()}`);
+      console.log(
+        `   Opened at: ${new Date(channelState.openedAt * 1000).toISOString()}`
+      );
     } catch (error: any) {
       console.log(`   ❌ Failed to query: ${error.message}`);
     }
@@ -183,19 +200,22 @@ async function main() {
     // 5. Publish event with signed balance proof claim
     console.log('\n📨 Publishing event with signed claim...');
 
-    const event = finalizeEvent({
-      kind: 1,
-      content: `Payment channel test - ${new Date().toISOString()}`,
-      tags: [['channel', channelId.slice(0, 16)]],
-      created_at: Math.floor(Date.now() / 1000),
-    }, secretKey);
+    const event = finalizeEvent(
+      {
+        kind: 1,
+        content: `Payment channel test - ${new Date().toISOString()}`,
+        tags: [['channel', channelId.slice(0, 16)]],
+        created_at: Math.floor(Date.now() / 1000),
+      },
+      secretKey
+    );
 
     console.log(`   Event ID: ${event.id.slice(0, 32)}...`);
 
     // Sign balance proof claim
     const claim = await client.signBalanceProof(channelId, 1000n);
     console.log(`   Claim nonce: ${claim.nonce}`);
-    console.log(`   Claim amount: ${claim.amount}`);
+    console.log(`   Claim amount: ${claim.transferredAmount}`);
 
     // Publish with claim
     const publishResult = await client.publishEvent(event, { claim });
@@ -203,7 +223,9 @@ async function main() {
     if (publishResult.success) {
       console.log(`\n✅ Event published with signed claim!`);
       console.log(`   Event ID: ${publishResult.eventId?.slice(0, 32)}...`);
-      console.log(`   Fulfillment: ${publishResult.fulfillment?.slice(0, 32)}...`);
+      console.log(
+        `   Fulfillment: ${publishResult.fulfillment?.slice(0, 32)}...`
+      );
     } else {
       console.log(`\n❌ Publish failed: ${publishResult.error}`);
     }
@@ -211,7 +233,9 @@ async function main() {
 
   console.log('\n📊 Summary:');
   console.log(`   ✅ Client bootstrapped with genesis`);
-  console.log(`   ✅ Payment channel ${channels.length > 0 ? 'opened' : 'attempted'}`);
+  console.log(
+    `   ✅ Payment channel ${channels.length > 0 ? 'opened' : 'attempted'}`
+  );
   console.log(`   ✅ SPSP handshake with settlement negotiation`);
   console.log(`   ✅ Event publishing with balance proof claims`);
 
@@ -219,7 +243,7 @@ async function main() {
   process.exit(0);
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error('\n❌ Fatal error:', error);
   process.exit(1);
 });
