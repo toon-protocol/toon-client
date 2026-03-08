@@ -139,7 +139,7 @@ export interface CrosstownClientConfig {
   /**
    * Known peers to bootstrap with.
    * If provided, these peers will be used for initial bootstrap.
-   * RelayMonitor will discover additional peers from the relay after bootstrap.
+   * DiscoveryTracker will discover additional peers from kind:10032 events after bootstrap.
    */
   knownPeers?: {
     pubkey: string;
