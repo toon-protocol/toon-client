@@ -1,9 +1,9 @@
-import { BTPClient } from '@agent-society/connector';
-import type { ILPPreparePacket } from '@agent-society/connector';
+import { BTPClient } from '@crosstown/connector';
+import type { ILPPreparePacket } from '@crosstown/connector';
 import type { AgentRuntimeClient, IlpSendResult } from '@crosstown/core';
 import type { EVMClaimMessage } from '../signing/evm-signer.js';
 
-/** BTP Peer — matches @agent-society/connector's Peer interface */
+/** BTP Peer — matches @crosstown/connector's Peer interface */
 interface Peer {
   id: string;
   url: string;
@@ -12,7 +12,7 @@ interface Peer {
   lastSeen: Date;
 }
 
-/** BTP claim protocol constants — matches @agent-society/connector's BTP_CLAIM_PROTOCOL */
+/** BTP claim protocol constants — matches @crosstown/connector's BTP_CLAIM_PROTOCOL */
 const BTP_CLAIM_PROTOCOL = {
   NAME: 'payment-channel-claim',
   CONTENT_TYPE: 1,
@@ -50,7 +50,7 @@ function createConsoleLogger(): ConsoleLogger {
   return logger;
 }
 
-/** ILP packet type constants — matches @agent-society/shared's PacketType enum */
+/** ILP packet type constants — matches @crosstown/connector's PacketType enum */
 const ILP_PACKET_TYPE = {
   PREPARE: 12,
   FULFILL: 13,
@@ -81,7 +81,7 @@ export interface BtpRuntimeClientConfig {
 
 /**
  * BTP transport implementing AgentRuntimeClient.
- * Wraps BTPClient from @agent-society/connector.
+ * Wraps BTPClient from @crosstown/connector.
  */
 export class BtpRuntimeClient implements AgentRuntimeClient {
   private btpClient: BTPClient | null = null;

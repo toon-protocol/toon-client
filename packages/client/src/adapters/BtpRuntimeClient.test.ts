@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-/** ILP packet type constants — matches @agent-society/shared's PacketType enum */
+/** ILP packet type constants — matches @crosstown/connector's PacketType enum */
 const ILP_PACKET_TYPE = {
   PREPARE: 12,
   FULFILL: 13,
@@ -13,8 +13,8 @@ const mockDisconnect = vi.fn();
 const mockSendPacket = vi.fn();
 const mockSendProtocolData = vi.fn();
 
-// Mock @agent-society/connector
-vi.mock('@agent-society/connector', () => {
+// Mock @crosstown/connector
+vi.mock('@crosstown/connector', () => {
   return {
     BTPClient: vi.fn().mockImplementation(() => ({
       connect: mockConnect,
