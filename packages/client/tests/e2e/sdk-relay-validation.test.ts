@@ -16,7 +16,7 @@
  * **Status: GREEN phase**
  * - docker/src/entrypoint-town.ts is implemented (SDK-based Docker entrypoint)
  * - Docker image uses the SDK-based relay entrypoint
- * - Stories 2.1 (event-storage-handler), 2.2 (spsp-handshake-handler), and 2.3 (E2E validation) are complete
+ * - Stories 2.1 (event-storage-handler), 2.2, and 2.3 (E2E validation) are complete
  *
  * **What this validates vs existing genesis-bootstrap-with-channels.test.ts:**
  * The existing test validates the manually-wired entrypoint.ts. This test validates
@@ -25,7 +25,7 @@
  *
  * **Additional SDK-specific assertions:**
  * - Self-write bypass (node's own pubkey writes without payment)
- * - SPSP handled through SDK handler (not manual BLS wiring)
+ * - Settlement handled through local negotiation (not manual BLS wiring)
  * - Entrypoint is < 100 lines of handler code
  */
 
@@ -578,7 +578,7 @@ describe('SDK-Based Relay Validation (Story 2.3)', () => {
     expect(peerInfo.btpEndpoint).toBeDefined();
   }, 60000);
 
-  it('should handle SPSP handshake through SDK handler (not manual BLS wiring)', async () => {
+  it('should handle settlement through local negotiation (not manual BLS wiring)', async () => {
     if (!servicesReady) {
       console.log('Skipping: SDK-based genesis node not ready');
       return;
@@ -588,7 +588,7 @@ describe('SDK-Based Relay Validation (Story 2.3)', () => {
     const pubkey = getPublicKey(secretKey);
     const client = createTestClient(secretKey, pubkey);
 
-    // Bootstrap should trigger SPSP handshake (kind:23194 request/response)
+    // Bootstrap should trigger settlement negotiation during peer registration
     const startResult = await client.start();
     expect(startResult.peersDiscovered).toBeGreaterThanOrEqual(1);
 
@@ -599,7 +599,7 @@ describe('SDK-Based Relay Validation (Story 2.3)', () => {
     // SDK-based relay should advertise itself
     expect(health['sdk']).toBe(true);
 
-    // Verify channel was opened during SPSP (settlement negotiation works through SDK handler)
+    // Verify channel was opened during bootstrap (settlement negotiation works locally)
     const channels = client.getTrackedChannels();
     expect(channels.length).toBeGreaterThan(0);
 

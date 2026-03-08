@@ -131,7 +131,7 @@ export class CrosstownClient {
    *
    * This will:
    * 1. Initialize HTTP mode components (runtime client, admin client, bootstrap, monitor)
-   * 2. Bootstrap the network (discover and handshake with peers)
+   * 2. Bootstrap the network (discover peers, register, and open channels)
    * 3. Start monitoring relay for new peers (kind:10032 events)
    *
    * @returns Result with number of peers discovered and mode
@@ -144,7 +144,7 @@ export class CrosstownClient {
     }
 
     try {
-      // Create channel manager FIRST (before bootstrap) so it can sign claims during handshake
+      // Create channel manager FIRST (before bootstrap) so it can sign claims during settlement
       if (this.evmSigner) {
         this.channelManager = new ChannelManager(this.evmSigner);
       }
@@ -170,7 +170,7 @@ export class CrosstownClient {
         );
       }
 
-      // Start bootstrap process (discover peers, handshake with signed claims, announce)
+      // Start bootstrap process (discover peers, register with settlement, announce)
       const bootstrapResults = await bootstrapService.bootstrap();
 
       // Track any additional channels from bootstrap results

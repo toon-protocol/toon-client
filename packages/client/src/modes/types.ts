@@ -10,7 +10,7 @@ import type { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
  * HTTP mode uses external connector service via HTTP/WebSocket.
  */
 export interface HttpModeInitialization {
-  /** Bootstrap service for peer discovery and handshaking */
+  /** Bootstrap service for peer discovery and registration */
   bootstrapService: BootstrapService;
 
   /** Relay monitor for tracking new peers from kind:10032 events */
