@@ -1,6 +1,6 @@
 import { BTPClient } from '@crosstown/connector';
 import type { ILPPreparePacket } from '@crosstown/connector';
-import type { AgentRuntimeClient, IlpSendResult } from '@crosstown/core';
+import type { IlpClient, IlpSendResult } from '@crosstown/core';
 import type { EVMClaimMessage } from '../signing/evm-signer.js';
 
 /** BTP Peer — matches @crosstown/connector's Peer interface */
@@ -80,10 +80,10 @@ export interface BtpRuntimeClientConfig {
 }
 
 /**
- * BTP transport implementing AgentRuntimeClient.
+ * BTP transport implementing IlpClient.
  * Wraps BTPClient from @crosstown/connector.
  */
-export class BtpRuntimeClient implements AgentRuntimeClient {
+export class BtpRuntimeClient implements IlpClient {
   private btpClient: BTPClient | null = null;
   private readonly config: BtpRuntimeClientConfig;
   private _isConnected = false;
@@ -135,7 +135,7 @@ export class BtpRuntimeClient implements AgentRuntimeClient {
 
   /**
    * Sends an ILP packet via BTP.
-   * Satisfies AgentRuntimeClient interface.
+   * Satisfies IlpClient interface.
    */
   async sendIlpPacket(params: {
     destination: string;

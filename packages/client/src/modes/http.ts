@@ -86,8 +86,8 @@ export async function initializeHttpMode(
     pool
   );
 
-  // Wire runtime client into bootstrap service
-  bootstrapService.setAgentRuntimeClient(runtimeClient);
+  // Wire ILP client into bootstrap service
+  bootstrapService.setIlpClient(runtimeClient);
 
   // Wire on-chain channel client if available
   if (onChainChannelClient) {

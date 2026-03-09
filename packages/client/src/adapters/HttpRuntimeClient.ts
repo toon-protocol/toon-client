@@ -1,4 +1,4 @@
-import type { AgentRuntimeClient, IlpSendResult } from '@crosstown/core';
+import type { IlpClient, IlpSendResult } from '@crosstown/core';
 import { NetworkError, ConnectorError, ValidationError } from '../errors.js';
 import { withRetry } from '../utils/retry.js';
 
@@ -21,7 +21,7 @@ export interface HttpRuntimeClientConfig {
 /**
  * HTTP client for sending ILP packets to an external connector runtime API.
  *
- * Implements the AgentRuntimeClient interface for use with Crosstown agents
+ * Implements the IlpClient interface for use with Crosstown agents
  * that need to send ILP packets without embedding a full connector.
  *
  * Features:
@@ -49,7 +49,7 @@ export interface HttpRuntimeClientConfig {
  * }
  * ```
  */
-export class HttpRuntimeClient implements AgentRuntimeClient {
+export class HttpRuntimeClient implements IlpClient {
   private readonly connectorUrl: string;
   private readonly timeout: number;
   private readonly retryConfig: { maxRetries: number; retryDelay: number };

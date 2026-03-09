@@ -5,7 +5,7 @@ import type {
   BootstrapService,
   DiscoveryTracker,
   IlpSendResult,
-  AgentRuntimeClient,
+  IlpClient,
 } from '@crosstown/core';
 import { validateConfig, applyDefaults } from './config.js';
 import type { ResolvedConfig } from './config.js';
@@ -27,7 +27,7 @@ import type {
 interface CrosstownClientState {
   bootstrapService: BootstrapService;
   discoveryTracker: DiscoveryTracker;
-  runtimeClient: AgentRuntimeClient;
+  runtimeClient: IlpClient;
   peersDiscovered: number;
   btpClient?: BtpRuntimeClient;
 }
