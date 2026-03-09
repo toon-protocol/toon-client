@@ -4,7 +4,7 @@ import type { BalanceProofParams, SignedBalanceProof } from '../types.js';
 
 /**
  * EVM claim message for BTP protocol data.
- * Matches @agent-society/connector's EVMClaimMessage interface.
+ * Matches @crosstown/connector's EVMClaimMessage interface.
  */
 export interface EVMClaimMessage {
   blockchain: 'evm';

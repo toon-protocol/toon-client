@@ -1,4 +1,5 @@
-import type { BootstrapService, RelayMonitor } from '@crosstown/core';
+import type { BootstrapService } from '@crosstown/core';
+import type { DiscoveryTracker } from '@crosstown/core';
 import type { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
 import type { HttpConnectorAdmin } from '../adapters/HttpConnectorAdmin.js';
 import type { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
@@ -10,11 +11,11 @@ import type { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
  * HTTP mode uses external connector service via HTTP/WebSocket.
  */
 export interface HttpModeInitialization {
-  /** Bootstrap service for peer discovery and handshaking */
+  /** Bootstrap service for peer discovery and registration */
   bootstrapService: BootstrapService;
 
-  /** Relay monitor for tracking new peers from kind:10032 events */
-  relayMonitor: RelayMonitor;
+  /** Discovery tracker for tracking new peers from kind:10032 events */
+  discoveryTracker: DiscoveryTracker;
 
   /** Runtime client for sending ILP packets (HTTP or BTP) */
   runtimeClient: HttpRuntimeClient | BtpRuntimeClient;
@@ -35,7 +36,7 @@ export interface HttpModeInitialization {
  */
 export interface EmbeddedModeInitialization {
   bootstrapService: BootstrapService;
-  relayMonitor: RelayMonitor;
+  discoveryTracker: DiscoveryTracker;
   runtimeClient: unknown; // DirectRuntimeClient (future)
   adminClient: unknown; // DirectConnectorAdmin (future)
   channelClient: unknown; // DirectChannelClient (future)

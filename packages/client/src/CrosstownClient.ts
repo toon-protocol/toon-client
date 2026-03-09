@@ -3,10 +3,9 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type {
   BootstrapService,
-  RelayMonitor,
+  DiscoveryTracker,
   IlpSendResult,
-  AgentRuntimeClient,
-  Subscription,
+  IlpClient,
 } from '@crosstown/core';
 import { validateConfig, applyDefaults } from './config.js';
 import type { ResolvedConfig } from './config.js';
@@ -27,9 +26,8 @@ import type {
  */
 interface CrosstownClientState {
   bootstrapService: BootstrapService;
-  relayMonitor: RelayMonitor;
-  subscription: Subscription;
-  runtimeClient: AgentRuntimeClient;
+  discoveryTracker: DiscoveryTracker;
+  runtimeClient: IlpClient;
   peersDiscovered: number;
   btpClient?: BtpRuntimeClient;
 }
@@ -131,7 +129,7 @@ export class CrosstownClient {
    *
    * This will:
    * 1. Initialize HTTP mode components (runtime client, admin client, bootstrap, monitor)
-   * 2. Bootstrap the network (discover and handshake with peers)
+   * 2. Bootstrap the network (discover peers, register, and open channels)
    * 3. Start monitoring relay for new peers (kind:10032 events)
    *
    * @returns Result with number of peers discovered and mode
@@ -144,7 +142,7 @@ export class CrosstownClient {
     }
 
     try {
-      // Create channel manager FIRST (before bootstrap) so it can sign claims during handshake
+      // Create channel manager FIRST (before bootstrap) so it can sign claims during settlement
       if (this.evmSigner) {
         this.channelManager = new ChannelManager(this.evmSigner);
       }
@@ -152,7 +150,7 @@ export class CrosstownClient {
       // Initialize HTTP mode components
       const initialization = await initializeHttpMode(this.config, this.pool);
 
-      const { bootstrapService, relayMonitor, runtimeClient, btpClient } =
+      const { bootstrapService, discoveryTracker, runtimeClient, btpClient } =
         initialization;
 
       // Wire claim signer to bootstrap service if we have channel manager
@@ -170,7 +168,7 @@ export class CrosstownClient {
         );
       }
 
-      // Start bootstrap process (discover peers, handshake with signed claims, announce)
+      // Start bootstrap process (discover peers, register with settlement, announce)
       const bootstrapResults = await bootstrapService.bootstrap();
 
       // Track any additional channels from bootstrap results
@@ -185,14 +183,10 @@ export class CrosstownClient {
         }
       }
 
-      // Start relay monitoring (watch for new kind:10032 events)
-      const subscription = relayMonitor.start();
-
       // Store state
       this.state = {
         bootstrapService,
-        relayMonitor,
-        subscription,
+        discoveryTracker,
         runtimeClient,
         peersDiscovered: bootstrapResults.length,
         btpClient: btpClient ?? undefined,
@@ -382,11 +376,6 @@ export class CrosstownClient {
         await this.state.btpClient.disconnect();
       }
 
-      // Stop relay monitoring subscription
-      if (this.state.subscription) {
-        this.state.subscription.unsubscribe();
-      }
-
       // Close SimplePool connections
       this.pool.close(Object.keys(this.pool));
 
@@ -439,6 +428,6 @@ export class CrosstownClient {
       );
     }
 
-    return this.state.relayMonitor.getDiscoveredPeers();
+    return this.state.discoveryTracker.getDiscoveredPeers();
   }
 }

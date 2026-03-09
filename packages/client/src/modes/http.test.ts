@@ -62,7 +62,7 @@ describe('initializeHttpMode', () => {
 
       expect(result.runtimeClient).toBeDefined();
       expect(result.bootstrapService).toBeDefined();
-      expect(result.relayMonitor).toBeDefined();
+      expect(result.discoveryTracker).toBeDefined();
     });
 
     it('should create BootstrapService correctly', async () => {
@@ -73,11 +73,11 @@ describe('initializeHttpMode', () => {
       expect(result.bootstrapService.getPubkey()).toBe(pubkey);
     });
 
-    it('should create RelayMonitor correctly', async () => {
+    it('should create DiscoveryTracker correctly', async () => {
       const result = await initializeHttpMode(config, pool);
 
-      expect(result.relayMonitor).toBeDefined();
-      expect(result.relayMonitor.getDiscoveredPeers()).toEqual([]);
+      expect(result.discoveryTracker).toBeDefined();
+      expect(result.discoveryTracker.getDiscoveredPeers()).toEqual([]);
     });
 
     it('should not wire ConnectorAdmin', async () => {
@@ -161,12 +161,12 @@ describe('initializeHttpMode', () => {
       expect(result.bootstrapService).toBeDefined();
     });
 
-    it('should propagate settlementInfo to RelayMonitor when configured', async () => {
+    it('should propagate settlementInfo to DiscoveryTracker when configured', async () => {
       config.supportedChains = ['evm:anvil:31337'];
 
       const result = await initializeHttpMode(config, pool);
 
-      expect(result.relayMonitor).toBeDefined();
+      expect(result.discoveryTracker).toBeDefined();
     });
   });
 
@@ -178,11 +178,11 @@ describe('initializeHttpMode', () => {
       expect(result.runtimeClient).toBeDefined();
     });
 
-    it('should propagate relayUrl to RelayMonitor', async () => {
+    it('should propagate relayUrl to DiscoveryTracker', async () => {
       config.relayUrl = 'ws://custom-relay:7777';
       const result = await initializeHttpMode(config, pool);
 
-      expect(result.relayMonitor).toBeDefined();
+      expect(result.discoveryTracker).toBeDefined();
     });
 
     it('should propagate toonEncoder and toonDecoder to services', async () => {
@@ -203,7 +203,7 @@ describe('initializeHttpMode', () => {
       const result = await initializeHttpMode(config, pool);
 
       expect(result.bootstrapService).toBeDefined();
-      expect(result.relayMonitor).toBeDefined();
+      expect(result.discoveryTracker).toBeDefined();
     });
   });
 });

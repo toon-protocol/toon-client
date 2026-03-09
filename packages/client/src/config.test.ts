@@ -510,7 +510,7 @@ describe('buildSettlementInfo', () => {
     expect(buildSettlementInfo(config)).toBeUndefined();
   });
 
-  it('should produce correct SpspRequestSettlementInfo', () => {
+  it('should produce correct ClientSettlementInfo', () => {
     const config = createConfig({
       supportedChains: ['evm:anvil:31337'],
       settlementAddresses: { 'evm:anvil:31337': '0xabc' },

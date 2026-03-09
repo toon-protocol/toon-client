@@ -9,9 +9,8 @@
  *
  * **What this test verifies:**
  * - CrosstownClient bootstraps with EVM configuration
- * - Payment channel is created BEFORE SPSP handshake
+ * - Payment channel is created during peer registration
  * - Channel is funded on-chain (Anvil)
- * - SPSP handshake includes signed balance proof claim
  * - publishEvent() sends paid ILP packet with signed claim
  * - Event is stored on the genesis node's Nostr relay
  * - On-chain channel state can be queried
@@ -233,7 +232,7 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
     }
   }, 15000);
 
-  it('should create payment channel before SPSP, publish with claim, and verify', async () => {
+  it('should create payment channel during bootstrap, publish with claim, and verify', async () => {
     if (!servicesReady) {
       if (process.env['CI']) {
         throw new Error(

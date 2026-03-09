@@ -1,7 +1,18 @@
 import { generateSecretKey } from 'nostr-tools/pure';
-import type { SpspRequestSettlementInfo } from '@crosstown/core';
 import { ValidationError } from './errors.js';
 import type { CrosstownClientConfig } from './types.js';
+
+/**
+ * Settlement info produced by buildSettlementInfo().
+ * Extends the core SettlementConfig shape with ilpAddress for client use.
+ */
+export interface ClientSettlementInfo {
+  ilpAddress?: string;
+  supportedChains?: string[];
+  settlementAddresses?: Record<string, string>;
+  preferredTokens?: Record<string, string>;
+  tokenNetworks?: Record<string, string>;
+}
 
 /**
  * Validates CrosstownClient configuration.
@@ -216,12 +227,12 @@ export function applyDefaults(config: CrosstownClientConfig): ResolvedConfig {
 }
 
 /**
- * Builds SpspRequestSettlementInfo from client config.
+ * Builds SettlementConfig from client config.
  * Returns undefined if no settlement-related config is present.
  */
 export function buildSettlementInfo(
   config: CrosstownClientConfig
-): SpspRequestSettlementInfo | undefined {
+): ClientSettlementInfo | undefined {
   if (
     !config.supportedChains?.length &&
     !config.settlementAddresses &&

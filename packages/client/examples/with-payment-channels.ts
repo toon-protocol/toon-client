@@ -5,7 +5,7 @@
  * This example:
  * 1. Configures EVM wallet and chain settings
  * 2. Bootstrap with genesis peer
- * 3. Opens payment channel during SPSP handshake
+ * 3. Opens payment channel during bootstrap
  * 4. Publishes event with signed balance proof claim
  * 5. Verifies channel state on-chain
  *
@@ -158,12 +158,12 @@ async function main() {
   console.log('   ✅ Client configured with EVM wallet');
   console.log('   ✅ Payment channel support enabled');
 
-  // 3. Bootstrap (will open payment channel during SPSP handshake)
+  // 3. Bootstrap (will open payment channel during peer registration)
   console.log('\n🌐 Starting bootstrap...');
   console.log('   This will:');
   console.log('   - Discover genesis peer via relay');
-  console.log('   - Perform SPSP handshake with settlement negotiation');
-  console.log('   - Open payment channel on-chain');
+  console.log('   - Negotiate settlement and open payment channel on-chain');
+  console.log('   - Announce own ILP peer info');
 
   const startResult = await client.start();
   console.log(`\n✅ Bootstrap complete!`);
@@ -176,7 +176,7 @@ async function main() {
   console.log(`   Tracked channels: ${channels.length}`);
 
   if (channels.length === 0) {
-    console.log('   ⚠️  No channels opened (SPSP handshake may have failed)');
+    console.log('   ⚠️  No channels opened (settlement negotiation may have failed)');
     console.log('   Check genesis node supports settlement negotiation');
   } else {
     const channelId = channels[0]!;
@@ -236,7 +236,7 @@ async function main() {
   console.log(
     `   ✅ Payment channel ${channels.length > 0 ? 'opened' : 'attempted'}`
   );
-  console.log(`   ✅ SPSP handshake with settlement negotiation`);
+  console.log(`   ✅ Settlement negotiation with channel opening`);
   console.log(`   ✅ Event publishing with balance proof claims`);
 
   console.log('\n⚠️  Exiting early to avoid nostr-tools issue\n');

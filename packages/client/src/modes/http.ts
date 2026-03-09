@@ -1,9 +1,6 @@
 import type { SimplePool } from 'nostr-tools/pool';
-import { BootstrapService, RelayMonitor } from '@crosstown/core';
-import type {
-  BootstrapServiceConfig,
-  RelayMonitorConfig,
-} from '@crosstown/core';
+import { BootstrapService, createDiscoveryTracker } from '@crosstown/core';
+import type { BootstrapServiceConfig } from '@crosstown/core';
 import { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
 import { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
 import { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
@@ -89,8 +86,8 @@ export async function initializeHttpMode(
     pool
   );
 
-  // Wire runtime client into bootstrap service
-  bootstrapService.setAgentRuntimeClient(runtimeClient);
+  // Wire ILP client into bootstrap service
+  bootstrapService.setIlpClient(runtimeClient);
 
   // Wire on-chain channel client if available
   if (onChainChannelClient) {
@@ -100,25 +97,15 @@ export async function initializeHttpMode(
   // Do NOT wire ConnectorAdmin — addPeer() at line 472 is skipped when connectorAdmin is null
   // This is intentional: the client is a standalone peer, not an admin interface
 
-  // Create RelayMonitor
-  const monitorConfig: RelayMonitorConfig = {
-    relayUrl: config.relayUrl,
+  // Create DiscoveryTracker
+  const discoveryTracker = createDiscoveryTracker({
     secretKey: config.secretKey,
-    toonEncoder: config.toonEncoder,
-    toonDecoder: config.toonDecoder,
-    basePricePerByte: 10n,
     settlementInfo,
-    defaultTimeout: config.queryTimeout,
-  };
-
-  const relayMonitor = new RelayMonitor(monitorConfig, pool);
-
-  // Wire runtime client into relay monitor
-  relayMonitor.setAgentRuntimeClient(runtimeClient);
+  });
 
   return {
     bootstrapService,
-    relayMonitor,
+    discoveryTracker,
     runtimeClient,
     adminClient: null,
     btpClient,
