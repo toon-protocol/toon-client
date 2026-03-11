@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generatePrivateKey } from 'viem/accounts';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { ChannelManager } from './ChannelManager.js';
+import type { ChannelStore } from './ChannelStore.js';
 
 describe('ChannelManager', () => {
   let signer: EvmSigner;
@@ -127,6 +128,66 @@ describe('ChannelManager', () => {
 
       expect(proof.nonce).toBe(11);
       expect(proof.transferredAmount).toBe(51000n);
+    });
+  });
+
+  describe('persistence via ChannelStore', () => {
+    let store: ChannelStore;
+
+    beforeEach(() => {
+      store = {
+        save: vi.fn(),
+        load: vi.fn().mockReturnValue(undefined),
+        list: vi.fn().mockReturnValue([]),
+        delete: vi.fn(),
+      };
+    });
+
+    it('should save state after signBalanceProof', async () => {
+      const mgr = new ChannelManager(signer, store);
+      mgr.trackChannel(CHANNEL_ID);
+
+      await mgr.signBalanceProof(CHANNEL_ID, 100n);
+
+      expect(store.save).toHaveBeenCalledWith(CHANNEL_ID, {
+        nonce: 1,
+        cumulativeAmount: 100n,
+      });
+    });
+
+    it('should load persisted state on trackChannel', () => {
+      (store.load as ReturnType<typeof vi.fn>).mockReturnValue({
+        nonce: 5,
+        cumulativeAmount: 5000n,
+      });
+
+      const mgr = new ChannelManager(signer, store);
+      mgr.trackChannel(CHANNEL_ID);
+
+      expect(mgr.getNonce(CHANNEL_ID)).toBe(5);
+      expect(mgr.getCumulativeAmount(CHANNEL_ID)).toBe(5000n);
+    });
+
+    it('should resume nonce sequence from persisted state', async () => {
+      (store.load as ReturnType<typeof vi.fn>).mockReturnValue({
+        nonce: 10,
+        cumulativeAmount: 50000n,
+      });
+
+      const mgr = new ChannelManager(signer, store);
+      mgr.trackChannel(CHANNEL_ID);
+
+      const proof = await mgr.signBalanceProof(CHANNEL_ID, 1000n);
+      expect(proof.nonce).toBe(11);
+      expect(proof.transferredAmount).toBe(51000n);
+    });
+
+    it('should use provided defaults when store has no persisted state', () => {
+      const mgr = new ChannelManager(signer, store);
+      mgr.trackChannel(CHANNEL_ID, 3, 300n);
+
+      expect(mgr.getNonce(CHANNEL_ID)).toBe(3);
+      expect(mgr.getCumulativeAmount(CHANNEL_ID)).toBe(300n);
     });
   });
 });

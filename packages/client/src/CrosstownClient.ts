@@ -1,4 +1,3 @@
-import { SimplePool } from 'nostr-tools/pool';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type {
@@ -13,6 +12,7 @@ import { initializeHttpMode } from './modes/http.js';
 import { CrosstownClientError } from './errors.js';
 import { EvmSigner } from './signing/evm-signer.js';
 import { ChannelManager } from './channel/ChannelManager.js';
+import { JsonFileChannelStore } from './channel/ChannelStore.js';
 import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
 import type {
   CrosstownClientConfig,
@@ -71,7 +71,6 @@ interface CrosstownClientState {
  */
 export class CrosstownClient {
   private readonly config: ResolvedConfig;
-  private readonly pool: SimplePool;
   private state: CrosstownClientState | null = null;
   private readonly evmSigner?: EvmSigner;
   private channelManager?: ChannelManager;
@@ -88,9 +87,6 @@ export class CrosstownClient {
 
     // Apply defaults to optional fields (auto-generates secretKey if needed)
     this.config = applyDefaults(config);
-
-    // Create shared SimplePool instance
-    this.pool = new SimplePool();
 
     // Create EVM signer if private key provided
     if (this.config.evmPrivateKey) {
@@ -144,11 +140,14 @@ export class CrosstownClient {
     try {
       // Create channel manager FIRST (before bootstrap) so it can sign claims during settlement
       if (this.evmSigner) {
-        this.channelManager = new ChannelManager(this.evmSigner);
+        const store = this.config.channelStorePath
+          ? new JsonFileChannelStore(this.config.channelStorePath)
+          : undefined;
+        this.channelManager = new ChannelManager(this.evmSigner, store);
       }
 
       // Initialize HTTP mode components
-      const initialization = await initializeHttpMode(this.config, this.pool);
+      const initialization = await initializeHttpMode(this.config);
 
       const { bootstrapService, discoveryTracker, runtimeClient, btpClient } =
         initialization;
@@ -359,9 +358,7 @@ export class CrosstownClient {
    *
    * This will:
    * 1. Disconnect BTP client if connected
-   * 2. Stop relay monitoring
-   * 3. Close SimplePool connections
-   * 4. Clear internal state
+   * 2. Clear internal state
    *
    * @throws {CrosstownClientError} If client is not started
    */
@@ -375,9 +372,6 @@ export class CrosstownClient {
       if (this.state.btpClient) {
         await this.state.btpClient.disconnect();
       }
-
-      // Close SimplePool connections
-      this.pool.close(Object.keys(this.pool));
 
       // Clear state
       this.state = null;

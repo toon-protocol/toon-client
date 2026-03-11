@@ -2,6 +2,7 @@ import { BTPClient } from '@crosstown/connector';
 import type { ILPPreparePacket } from '@crosstown/connector';
 import type { IlpClient, IlpSendResult } from '@crosstown/core';
 import type { EVMClaimMessage } from '../signing/evm-signer.js';
+import { withRetry } from '../utils/retry.js';
 
 /** BTP Peer — matches @crosstown/connector's Peer interface */
 interface Peer {
@@ -77,19 +78,42 @@ export interface BtpRuntimeClientConfig {
   peerId: string;
   authToken: string;
   logger?: ConsoleLogger;
+  /** Max reconnection attempts on send failure (default: 3) */
+  maxRetries?: number;
+  /** Delay between reconnection attempts in ms (default: 1000) */
+  retryDelay?: number;
+}
+
+/**
+ * Returns true if the error is a connection-level error worth retrying.
+ * ILP application-level rejects (F02, T01, etc.) are NOT retried.
+ */
+function isConnectionError(error: Error): boolean {
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes('not connected') ||
+    msg.includes('connection') ||
+    msg.includes('websocket') ||
+    msg.includes('econnrefused') ||
+    msg.includes('econnreset') ||
+    msg.includes('socket hang up') ||
+    msg.includes('timeout')
+  );
 }
 
 /**
  * BTP transport implementing IlpClient.
- * Wraps BTPClient from @crosstown/connector.
+ * Wraps BTPClient from @crosstown/connector with auto-reconnect on connection loss.
  */
 export class BtpRuntimeClient implements IlpClient {
   private btpClient: BTPClient | null = null;
   private readonly config: BtpRuntimeClientConfig;
   private _isConnected = false;
+  private readonly logger: ConsoleLogger;
 
   constructor(config: BtpRuntimeClientConfig) {
     this.config = config;
+    this.logger = config.logger ?? createConsoleLogger();
   }
 
   /**
@@ -106,16 +130,34 @@ export class BtpRuntimeClient implements IlpClient {
 
     // Cast logger: ConsoleLogger implements the subset of pino's Logger
     // that BTPClient actually uses at runtime (info, warn, error, debug, child)
-    const logger = this.config.logger ?? createConsoleLogger();
     this.btpClient = new BTPClient(
       peer,
       this.config.peerId,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      logger as any
+      this.logger as any
     );
 
     await this.btpClient.connect();
     this._isConnected = true;
+  }
+
+  /**
+   * Attempts to reconnect by creating a fresh BTPClient and connecting.
+   */
+  async reconnect(): Promise<void> {
+    // Clean up old client if it exists
+    if (this.btpClient) {
+      try {
+        await this.btpClient.disconnect();
+      } catch {
+        // Ignore disconnect errors during reconnect
+      }
+      this.btpClient = null;
+      this._isConnected = false;
+    }
+
+    this.logger.info('[BtpRuntimeClient] Reconnecting...');
+    await this.connect();
   }
 
   /**
@@ -134,7 +176,7 @@ export class BtpRuntimeClient implements IlpClient {
   }
 
   /**
-   * Sends an ILP packet via BTP.
+   * Sends an ILP packet via BTP with auto-reconnect on connection errors.
    * Satisfies IlpClient interface.
    */
   async sendIlpPacket(params: {
@@ -143,8 +185,59 @@ export class BtpRuntimeClient implements IlpClient {
     data: string;
     timeout?: number;
   }): Promise<IlpSendResult> {
-    if (!this.btpClient || !this._isConnected) {
-      throw new Error('BTP client not connected. Call connect() first.');
+    return withRetry(
+      () => this._sendIlpPacketOnce(params),
+      {
+        maxRetries: this.config.maxRetries ?? 3,
+        retryDelay: this.config.retryDelay ?? 1000,
+        shouldRetry: (error) => {
+          if (!isConnectionError(error)) return false;
+          // Mark as disconnected so reconnect happens on next attempt
+          this._isConnected = false;
+          return true;
+        },
+      }
+    );
+  }
+
+  /**
+   * Sends a balance proof claim via BTP protocol data, then sends an ILP packet.
+   * Auto-reconnects on connection errors.
+   */
+  async sendIlpPacketWithClaim(
+    params: {
+      destination: string;
+      amount: string;
+      data: string;
+      timeout?: number;
+    },
+    claim: EVMClaimMessage
+  ): Promise<IlpSendResult> {
+    return withRetry(
+      () => this._sendIlpPacketWithClaimOnce(params, claim),
+      {
+        maxRetries: this.config.maxRetries ?? 3,
+        retryDelay: this.config.retryDelay ?? 1000,
+        shouldRetry: (error) => {
+          if (!isConnectionError(error)) return false;
+          this._isConnected = false;
+          return true;
+        },
+      }
+    );
+  }
+
+  /**
+   * Single-attempt ILP packet send. Reconnects if not connected.
+   */
+  private async _sendIlpPacketOnce(params: {
+    destination: string;
+    amount: string;
+    data: string;
+    timeout?: number;
+  }): Promise<IlpSendResult> {
+    if (!this._isConnected) {
+      await this.reconnect();
     }
 
     const packet = {
@@ -156,47 +249,35 @@ export class BtpRuntimeClient implements IlpClient {
       data: Buffer.from(params.data, 'base64'),
     } as ILPPreparePacket;
 
-    try {
-      const response = await this.btpClient.sendPacket(packet);
+    const response = await this.btpClient!.sendPacket(packet);
 
-      if (response.type === ILP_PACKET_TYPE.FULFILL) {
-        const fulfill = response as unknown as BtpFulfillResponse;
-        return {
-          accepted: true,
-          fulfillment: fulfill.fulfillment.toString('base64'),
-          data:
-            fulfill.data.length > 0
-              ? fulfill.data.toString('base64')
-              : undefined,
-        };
-      }
-
-      // Reject packet
-      const reject = response as unknown as BtpRejectResponse;
+    if (response.type === ILP_PACKET_TYPE.FULFILL) {
+      const fulfill = response as unknown as BtpFulfillResponse;
       return {
-        accepted: false,
-        code: reject.code,
-        message: reject.message,
+        accepted: true,
+        fulfillment: fulfill.fulfillment.toString('base64'),
         data:
-          reject.data.length > 0 ? reject.data.toString('base64') : undefined,
-      };
-    } catch (error) {
-      return {
-        accepted: false,
-        code: 'T00',
-        message: error instanceof Error ? error.message : String(error),
+          fulfill.data.length > 0
+            ? fulfill.data.toString('base64')
+            : undefined,
       };
     }
+
+    // Reject packet — ILP application-level error, not a connection error
+    const reject = response as unknown as BtpRejectResponse;
+    return {
+      accepted: false,
+      code: reject.code,
+      message: reject.message,
+      data:
+        reject.data.length > 0 ? reject.data.toString('base64') : undefined,
+    };
   }
 
   /**
-   * Sends a balance proof claim via BTP protocol data, then sends an ILP packet.
-   *
-   * @param params - ILP packet parameters
-   * @param claim - EVM claim message to attach
-   * @returns ILP send result
+   * Single-attempt claim + ILP packet send. Reconnects if not connected.
    */
-  async sendIlpPacketWithClaim(
+  private async _sendIlpPacketWithClaimOnce(
     params: {
       destination: string;
       amount: string;
@@ -205,18 +286,18 @@ export class BtpRuntimeClient implements IlpClient {
     },
     claim: EVMClaimMessage
   ): Promise<IlpSendResult> {
-    if (!this.btpClient || !this._isConnected) {
-      throw new Error('BTP client not connected. Call connect() first.');
+    if (!this._isConnected) {
+      await this.reconnect();
     }
 
     // Send claim as BTP protocol data first
-    await this.btpClient.sendProtocolData(
+    await this.btpClient!.sendProtocolData(
       BTP_CLAIM_PROTOCOL.NAME,
       BTP_CLAIM_PROTOCOL.CONTENT_TYPE,
       Buffer.from(JSON.stringify(claim))
     );
 
     // Then send the ILP packet
-    return this.sendIlpPacket(params);
+    return this._sendIlpPacketOnce(params);
   }
 }

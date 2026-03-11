@@ -136,6 +136,7 @@ export type ResolvedConfig = Required<
     | 'chainRpcUrls'
     | 'initialDeposit'
     | 'settlementTimeout'
+    | 'channelStorePath'
     | 'knownPeers'
     | 'destinationAddress'
   >
@@ -152,6 +153,7 @@ export type ResolvedConfig = Required<
   chainRpcUrls?: Record<string, string>;
   initialDeposit?: string;
   settlementTimeout?: number;
+  channelStorePath?: string;
   knownPeers?: {
     pubkey: string;
     relayUrl: string;

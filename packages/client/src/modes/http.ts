@@ -1,4 +1,3 @@
-import type { SimplePool } from 'nostr-tools/pool';
 import { BootstrapService, createDiscoveryTracker } from '@crosstown/core';
 import type { BootstrapServiceConfig } from '@crosstown/core';
 import { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
@@ -16,12 +15,10 @@ import type { HttpModeInitialization } from './types.js';
  * This function creates all necessary clients and services for operating in HTTP mode.
  *
  * @param config - CrosstownClient configuration (must have connectorUrl)
- * @param pool - SimplePool instance for Nostr relay operations
  * @returns Initialized HTTP mode components
  */
 export async function initializeHttpMode(
-  config: ResolvedConfig,
-  pool: SimplePool
+  config: ResolvedConfig
 ): Promise<HttpModeInitialization> {
   // Derive admin URL from connector URL (change port 8080 → 8081)
   const connectorUrl = config.connectorUrl;
@@ -82,8 +79,7 @@ export async function initializeHttpMode(
   const bootstrapService = new BootstrapService(
     bootstrapConfig,
     config.secretKey,
-    config.ilpInfo,
-    pool
+    config.ilpInfo
   );
 
   // Wire ILP client into bootstrap service

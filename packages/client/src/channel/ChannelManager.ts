@@ -1,5 +1,6 @@
 import type { EvmSigner } from '../signing/evm-signer.js';
 import type { SignedBalanceProof } from '../types.js';
+import type { ChannelStore } from './ChannelStore.js';
 
 interface ChannelTracking {
   nonce: number;
@@ -15,9 +16,11 @@ interface ChannelTracking {
 export class ChannelManager {
   private readonly evmSigner: EvmSigner;
   private readonly channels = new Map<string, ChannelTracking>();
+  private readonly store?: ChannelStore;
 
-  constructor(evmSigner: EvmSigner) {
+  constructor(evmSigner: EvmSigner, store?: ChannelStore) {
     this.evmSigner = evmSigner;
+    this.store = store;
   }
 
   /**
@@ -29,6 +32,18 @@ export class ChannelManager {
    * @param initialAmount - Starting cumulative amount (default: 0n)
    */
   trackChannel(channelId: string, initialNonce = 0, initialAmount = 0n): void {
+    // If store has persisted state for this channel, resume from it
+    if (this.store) {
+      const persisted = this.store.load(channelId);
+      if (persisted) {
+        this.channels.set(channelId, {
+          nonce: persisted.nonce,
+          cumulativeAmount: persisted.cumulativeAmount,
+        });
+        return;
+      }
+    }
+
     this.channels.set(channelId, {
       nonce: initialNonce,
       cumulativeAmount: initialAmount,
@@ -57,6 +72,14 @@ export class ChannelManager {
 
     tracking.nonce += 1;
     tracking.cumulativeAmount += additionalAmount;
+
+    // Persist updated state
+    if (this.store) {
+      this.store.save(channelId, {
+        nonce: tracking.nonce,
+        cumulativeAmount: tracking.cumulativeAmount,
+      });
+    }
 
     // Note: chainId and tokenNetworkAddress are needed for EIP-712 signing.
     // In the full flow, these would come from the channel context.

@@ -130,6 +130,13 @@ export interface CrosstownClientConfig {
   settlementTimeout?: number;
 
   // ============================================================================
+  // PERSISTENCE (optional)
+  // ============================================================================
+
+  /** File path for persisting payment channel nonce/amount state across restarts */
+  channelStorePath?: string;
+
+  // ============================================================================
   // NETWORK (optional with defaults)
   // ============================================================================
 

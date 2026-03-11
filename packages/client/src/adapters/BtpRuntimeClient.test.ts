@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 /** ILP packet type constants — matches @crosstown/connector's PacketType enum */
 const ILP_PACKET_TYPE = {
@@ -31,12 +31,19 @@ describe('BtpRuntimeClient', () => {
   let client: BtpRuntimeClient;
 
   beforeEach(() => {
+    vi.useFakeTimers();
     vi.clearAllMocks();
     client = new BtpRuntimeClient({
       btpUrl: 'ws://localhost:3000',
       peerId: 'test-peer',
       authToken: 'test-token',
+      maxRetries: 2,
+      retryDelay: 100,
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe('connect/disconnect lifecycle', () => {
@@ -66,20 +73,30 @@ describe('BtpRuntimeClient', () => {
       await client.connect();
     });
 
-    it('should throw when not connected', async () => {
-      const disconnectedClient = new BtpRuntimeClient({
-        btpUrl: 'ws://localhost:3000',
-        peerId: 'test-peer',
-        authToken: 'test-token',
+    it('should auto-reconnect when not connected', async () => {
+      // Simulate disconnection
+      mockSendPacket
+        .mockRejectedValueOnce(new Error('BTP client not connected'))
+        .mockResolvedValueOnce({
+          type: ILP_PACKET_TYPE.FULFILL,
+          fulfillment: Buffer.alloc(32),
+          data: Buffer.alloc(0),
+        });
+      mockDisconnect.mockResolvedValue(undefined);
+
+      const resultPromise = client.sendIlpPacket({
+        destination: 'g.test',
+        amount: '1000',
+        data: Buffer.from('test').toString('base64'),
       });
 
-      await expect(
-        disconnectedClient.sendIlpPacket({
-          destination: 'g.test',
-          amount: '1000',
-          data: Buffer.from('test').toString('base64'),
-        })
-      ).rejects.toThrow('BTP client not connected');
+      // Advance through retry delay
+      await vi.advanceTimersByTimeAsync(100);
+
+      const result = await resultPromise;
+      expect(result.accepted).toBe(true);
+      // connect called: initial + reconnect
+      expect(mockConnect).toHaveBeenCalledTimes(2);
     });
 
     it('should map fulfill response to IlpSendResult', async () => {
@@ -122,18 +139,39 @@ describe('BtpRuntimeClient', () => {
       expect(result.message).toBe('Insufficient funds');
     });
 
-    it('should handle errors gracefully', async () => {
+    it('should throw after exhausting retries on connection errors', async () => {
       mockSendPacket.mockRejectedValue(new Error('Connection lost'));
+      mockDisconnect.mockResolvedValue(undefined);
 
-      const result = await client.sendIlpPacket({
+      const resultPromise = client.sendIlpPacket({
         destination: 'g.test.relay',
         amount: '1000',
         data: Buffer.from('test').toString('base64'),
       });
 
-      expect(result.accepted).toBe(false);
-      expect(result.code).toBe('T00');
-      expect(result.message).toBe('Connection lost');
+      const errorPromise = resultPromise.catch((err) => err);
+
+      // Advance through all retry delays
+      await vi.advanceTimersByTimeAsync(100); // 1st retry
+      await vi.advanceTimersByTimeAsync(200); // 2nd retry (exponential)
+
+      const error = (await errorPromise) as Error;
+      expect(error.message).toBe('Connection lost');
+    });
+
+    it('should not retry on ILP application errors (non-connection)', async () => {
+      mockSendPacket.mockRejectedValue(new Error('Invalid packet format'));
+
+      await expect(
+        client.sendIlpPacket({
+          destination: 'g.test.relay',
+          amount: '1000',
+          data: Buffer.from('test').toString('base64'),
+        })
+      ).rejects.toThrow('Invalid packet format');
+
+      // Only one attempt, no retries
+      expect(mockSendPacket).toHaveBeenCalledTimes(1);
     });
 
     it('should create ILP packet with correct fields', async () => {
@@ -204,12 +242,51 @@ describe('BtpRuntimeClient', () => {
       expect(protocolCallOrder).toBeLessThan(packetCallOrder!);
     });
 
-    it('should throw when not connected', async () => {
+    it('should auto-reconnect on connection error during claim send', async () => {
+      mockSendProtocolData
+        .mockRejectedValueOnce(new Error('WebSocket closed'))
+        .mockResolvedValueOnce(undefined);
+      mockSendPacket.mockResolvedValue({
+        type: ILP_PACKET_TYPE.FULFILL,
+        fulfillment: Buffer.alloc(32),
+        data: Buffer.alloc(0),
+      });
+      mockDisconnect.mockResolvedValue(undefined);
+
+      const claim = {
+        blockchain: 'evm' as const,
+        senderId: 'test',
+        channelId: '0x1234',
+        nonce: 1,
+        transferredAmount: '1000',
+        lockedAmount: '0',
+        locksRoot: '0x0000',
+        signature: '0xabcd',
+        signerAddress: '0x1111',
+      };
+
+      const resultPromise = client.sendIlpPacketWithClaim(
+        { destination: 'g.test', amount: '1000', data: '' },
+        claim
+      );
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      const result = await resultPromise;
+      expect(result.accepted).toBe(true);
+      // connect called: initial + reconnect
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
+    it('should throw when not connected and reconnect fails', async () => {
       const disconnectedClient = new BtpRuntimeClient({
         btpUrl: 'ws://localhost:3000',
         peerId: 'test-peer',
         authToken: 'test-token',
+        maxRetries: 0,
       });
+
+      mockConnect.mockRejectedValue(new Error('ECONNREFUSED'));
 
       const claim = {
         blockchain: 'evm' as const,
@@ -228,7 +305,28 @@ describe('BtpRuntimeClient', () => {
           { destination: 'g.test', amount: '1000', data: '' },
           claim
         )
-      ).rejects.toThrow('BTP client not connected');
+      ).rejects.toThrow('ECONNREFUSED');
+    });
+  });
+
+  describe('reconnect', () => {
+    it('should create a new BTPClient and connect', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockDisconnect.mockResolvedValue(undefined);
+
+      await client.connect();
+      expect(client.isConnected).toBe(true);
+
+      await client.reconnect();
+      expect(client.isConnected).toBe(true);
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
+    it('should handle reconnect when not previously connected', async () => {
+      mockConnect.mockResolvedValue(undefined);
+
+      await client.reconnect();
+      expect(client.isConnected).toBe(true);
     });
   });
 });

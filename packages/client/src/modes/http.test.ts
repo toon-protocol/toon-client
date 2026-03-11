@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { SimplePool } from 'nostr-tools/pool';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { initializeHttpMode } from './http.js';
 import type { ResolvedConfig } from '../config.js';
@@ -17,14 +16,12 @@ vi.mock('../adapters/BtpRuntimeClient.js', () => {
 });
 
 describe('initializeHttpMode', () => {
-  let pool: SimplePool;
   let config: ResolvedConfig;
   let secretKey: Uint8Array;
   let pubkey: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    pool = new SimplePool();
     secretKey = generateSecretKey();
     pubkey = getPublicKey(secretKey);
 
@@ -58,7 +55,7 @@ describe('initializeHttpMode', () => {
 
   describe('HTTP mode initialization', () => {
     it('should create components from config', async () => {
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.runtimeClient).toBeDefined();
       expect(result.bootstrapService).toBeDefined();
@@ -66,7 +63,7 @@ describe('initializeHttpMode', () => {
     });
 
     it('should create BootstrapService correctly', async () => {
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.bootstrapService).toBeDefined();
       expect(result.bootstrapService.getPhase()).toBe('discovering');
@@ -74,27 +71,27 @@ describe('initializeHttpMode', () => {
     });
 
     it('should create DiscoveryTracker correctly', async () => {
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.discoveryTracker).toBeDefined();
       expect(result.discoveryTracker.getDiscoveredPeers()).toEqual([]);
     });
 
     it('should not wire ConnectorAdmin', async () => {
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.adminClient).toBeNull();
     });
 
     it('should set btpClient to null when btpUrl not configured', async () => {
       delete (config as any).btpUrl;
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.btpClient).toBeNull();
     });
 
     it('should set onChainChannelClient to null when EVM not configured', async () => {
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.onChainChannelClient).toBeNull();
     });
@@ -105,7 +102,7 @@ describe('initializeHttpMode', () => {
       config.btpUrl = 'ws://localhost:3000';
       config.btpAuthToken = 'test-token';
 
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.btpClient).not.toBeNull();
       expect(result.btpClient!.connect).toHaveBeenCalled();
@@ -114,7 +111,7 @@ describe('initializeHttpMode', () => {
     it('should use BTP client as runtime client when available', async () => {
       config.btpUrl = 'ws://localhost:3000';
 
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       // runtimeClient should be the btpClient
       expect(result.runtimeClient).toBe(result.btpClient);
@@ -122,7 +119,7 @@ describe('initializeHttpMode', () => {
 
     it('should fall back to HttpRuntimeClient when btpUrl absent', async () => {
       delete (config as any).btpUrl;
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.btpClient).toBeNull();
       expect(result.runtimeClient).toBeDefined();
@@ -136,7 +133,7 @@ describe('initializeHttpMode', () => {
       config.evmPrivateKey = '0x' + 'ab'.repeat(32);
       config.chainRpcUrls = { 'evm:anvil:31337': 'http://localhost:8545' };
 
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.onChainChannelClient).not.toBeNull();
     });
@@ -144,7 +141,7 @@ describe('initializeHttpMode', () => {
     it('should not create OnChainChannelClient when only evmPrivateKey configured', async () => {
       config.evmPrivateKey = '0x' + 'ab'.repeat(32);
 
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.onChainChannelClient).toBeNull();
     });
@@ -155,7 +152,7 @@ describe('initializeHttpMode', () => {
       config.supportedChains = ['evm:anvil:31337'];
       config.settlementAddresses = { 'evm:anvil:31337': '0xabc' };
 
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       // BootstrapService should be created with settlement info
       expect(result.bootstrapService).toBeDefined();
@@ -164,7 +161,7 @@ describe('initializeHttpMode', () => {
     it('should propagate settlementInfo to DiscoveryTracker when configured', async () => {
       config.supportedChains = ['evm:anvil:31337'];
 
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.discoveryTracker).toBeDefined();
     });
@@ -173,14 +170,14 @@ describe('initializeHttpMode', () => {
   describe('configuration propagation', () => {
     it('should propagate queryTimeout', async () => {
       config.queryTimeout = 60000;
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.runtimeClient).toBeDefined();
     });
 
     it('should propagate relayUrl to DiscoveryTracker', async () => {
       config.relayUrl = 'ws://custom-relay:7777';
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.discoveryTracker).toBeDefined();
     });
@@ -200,7 +197,7 @@ describe('initializeHttpMode', () => {
       config.toonEncoder = customEncoder;
       config.toonDecoder = customDecoder;
 
-      const result = await initializeHttpMode(config, pool);
+      const result = await initializeHttpMode(config);
 
       expect(result.bootstrapService).toBeDefined();
       expect(result.discoveryTracker).toBeDefined();
