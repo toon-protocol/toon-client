@@ -249,7 +249,10 @@ export class BtpRuntimeClient implements IlpClient {
       data: Buffer.from(params.data, 'base64'),
     } as ILPPreparePacket;
 
-    const response = await this.btpClient!.sendPacket(packet);
+    const response = await this.btpClient?.sendPacket(packet);
+    if (!response) {
+      throw new Error('BTP client not connected');
+    }
 
     if (response.type === ILP_PACKET_TYPE.FULFILL) {
       const fulfill = response as unknown as BtpFulfillResponse;
@@ -291,7 +294,10 @@ export class BtpRuntimeClient implements IlpClient {
     }
 
     // Send claim as BTP protocol data first
-    await this.btpClient!.sendProtocolData(
+    if (!this.btpClient) {
+      throw new Error('BTP client not connected');
+    }
+    await this.btpClient.sendProtocolData(
       BTP_CLAIM_PROTOCOL.NAME,
       BTP_CLAIM_PROTOCOL.CONTENT_TYPE,
       Buffer.from(JSON.stringify(claim))

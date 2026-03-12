@@ -57,8 +57,8 @@ export class JsonFileChannelStore implements ChannelStore {
 
   delete(channelId: string): void {
     const data = this.readFile();
-    delete data[channelId];
-    this.writeFile(data);
+    const { [channelId]: _, ...rest } = data;
+    this.writeFile(rest);
   }
 
   private readFile(): Record<string, JsonEntry> {
