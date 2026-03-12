@@ -36,10 +36,10 @@ cd ../crosstown
 
 ### Step 1: Start Infrastructure
 
-From the repository root, start the docker-compose infrastructure:
+From the repository root, start the genesis node infrastructure:
 
 ```bash
-docker compose -f docker-compose-simple.yml up -d
+docker compose -p crosstown-genesis -f docker-compose-genesis.yml up -d
 ```
 
 Expected output:
@@ -84,10 +84,10 @@ After testing, stop the infrastructure:
 
 ```bash
 # From repository root
-docker compose -f docker-compose-simple.yml down
+docker compose -p crosstown-genesis -f docker-compose-genesis.yml down
 
 # Optional: Remove volumes (clears event database)
-docker compose -f docker-compose-simple.yml down -v
+docker compose -p crosstown-genesis -f docker-compose-genesis.yml down -v
 ```
 
 ## Troubleshooting
@@ -98,7 +98,7 @@ docker compose -f docker-compose-simple.yml down -v
 
 **Solution:**
 
-1. Verify docker-compose is running: `docker compose -f docker-compose-simple.yml ps`
+1. Verify infrastructure is running: `docker compose -p crosstown-genesis -f docker-compose-genesis.yml ps`
 2. Check service health:
    ```bash
    curl http://localhost:8080/health  # Connector
@@ -106,8 +106,8 @@ docker compose -f docker-compose-simple.yml down -v
    ```
 3. If services are not healthy, check logs:
    ```bash
-   docker compose -f docker-compose-simple.yml logs connector
-   docker compose -f docker-compose-simple.yml logs crosstown-node
+   docker compose -p crosstown-genesis -f docker-compose-genesis.yml logs connector
+   docker compose -p crosstown-genesis -f docker-compose-genesis.yml logs crosstown-node
    ```
 
 ### Port Conflicts
@@ -130,10 +130,10 @@ lsof -ti:7100 | xargs kill -9
 lsof -ti:3100 | xargs kill -9
 ```
 
-Then restart docker-compose:
+Then restart infrastructure:
 
 ```bash
-docker compose -f docker-compose-simple.yml up -d
+docker compose -p crosstown-genesis -f docker-compose-genesis.yml up -d
 ```
 
 ### Images Not Found
@@ -151,15 +151,15 @@ Build the images first (see Prerequisites step 2 above).
 
 1. Check if connector container is running:
    ```bash
-   docker compose -f docker-compose-simple.yml ps
+   docker compose -p crosstown-genesis -f docker-compose-genesis.yml ps
    ```
 2. Check connector logs:
    ```bash
-   docker compose -f docker-compose-simple.yml logs connector
+   docker compose -p crosstown-genesis -f docker-compose-genesis.yml logs connector
    ```
 3. Restart infrastructure:
    ```bash
-   docker compose -f docker-compose-simple.yml restart
+   docker compose -p crosstown-genesis -f docker-compose-genesis.yml restart
    ```
 
 ### BLS Health Check Fails
@@ -170,13 +170,13 @@ Build the images first (see Prerequisites step 2 above).
 
 1. Check if crosstown-node container is running:
    ```bash
-   docker compose -f docker-compose-simple.yml ps
+   docker compose -p crosstown-genesis -f docker-compose-genesis.yml ps
    ```
 2. Check BLS logs:
    ```bash
-   docker compose -f docker-compose-simple.yml logs crosstown-node
+   docker compose -p crosstown-genesis -f docker-compose-genesis.yml logs crosstown-node
    ```
-3. Verify BLS config in docker-compose-simple.yml
+3. Verify BLS config in docker-compose-genesis.yml
 
 ### Tests Timeout
 
@@ -246,7 +246,7 @@ To run E2E tests in CI:
 ```yaml
 # Example GitHub Actions workflow
 - name: Start Infrastructure
-  run: docker compose -f docker-compose-simple.yml up -d
+  run: docker compose -p crosstown-genesis -f docker-compose-genesis.yml up -d
 
 - name: Wait for Services
   run: |
@@ -258,11 +258,9 @@ To run E2E tests in CI:
   run: cd packages/client && pnpm test:e2e
 
 - name: Stop Infrastructure
-  run: docker compose -f docker-compose-simple.yml down
+  run: docker compose -p crosstown-genesis -f docker-compose-genesis.yml down
 ```
 
 ## Further Reading
 
 - [Docker Compose Documentation](https://docs.docker.com/compose/)
-- [Crosstown Architecture](../../../docs/architecture/)
-- [ILP Connector Documentation](https://github.com/interledger/rafiki/tree/main/packages/backend)
