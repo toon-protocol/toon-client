@@ -8,9 +8,9 @@ This client handles:
 
 - **ILP Micropayments**: Pay to publish Nostr events (read is free)
 - **Payment Channels**: Automatic on-chain channel creation with off-chain settlement via signed balance proofs
+- **Unified Identity**: One Nostr key = one EVM address (both use secp256k1, derived automatically)
 - **Multi-Hop Routing**: Publish to any destination address, not just your direct peer
 - **Network Bootstrap**: Automatically discover and handshake with ILP peers via NIP-02 follow lists
-- **HTTP-Only Mode**: Connects to external ILP connector service (embedded mode not yet implemented)
 - **TOON Encoding**: Native binary format for agent-friendly event encoding
 
 ## Installation
@@ -54,82 +54,14 @@ See [docker-compose-simple.yml](../../docker-compose-simple.yml) for configurati
 
 ```typescript
 import { CrosstownClient } from '@crosstown/client';
-import {
-  generateSecretKey,
-  getPublicKey,
-  finalizeEvent,
-} from 'nostr-tools/pure';
+import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
 
-// 1. Generate identity
+// 1. Generate identity — one key gives you both Nostr and EVM identities
 const secretKey = generateSecretKey();
 const pubkey = getPublicKey(secretKey);
 
 // 2. Create client
-const client = new CrosstownClient({
-  connectorUrl: 'http://localhost:8080', // Required: ILP connector endpoint
-  secretKey, // Required: Nostr private key
-  ilpInfo: {
-    // Required: ILP peer info
-    pubkey,
-    ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`,
-    btpEndpoint: 'ws://localhost:3000',
-  },
-  toonEncoder: encodeEventToToon, // Required: TOON encoder
-  toonDecoder: decodeEventFromToon, // Required: TOON decoder
-  relayUrl: 'ws://localhost:7100', // Optional: defaults to ws://localhost:7100
-});
-
-// 3. Start (bootstrap network, discover peers)
-const result = await client.start();
-console.log(`Discovered ${result.peersDiscovered} peers`);
-
-// 4. Publish event to relay via ILP payment
-const event = finalizeEvent(
-  {
-    kind: 1,
-    content: 'Hello from Crosstown!',
-    tags: [],
-    created_at: Math.floor(Date.now() / 1000),
-  },
-  secretKey
-);
-
-// Publish to default destination (from config)
-const publishResult = await client.publishEvent(event);
-if (publishResult.success) {
-  console.log(`Published: ${publishResult.eventId}`);
-  console.log(`Fulfillment: ${publishResult.fulfillment}`);
-} else {
-  console.error(`Failed: ${publishResult.error}`);
-}
-
-// Or publish to specific destination (multi-hop routing)
-const multiHopResult = await client.publishEvent(event, {
-  destination: 'g.crosstown.peer1',
-});
-
-// 5. Clean up
-await client.stop();
-```
-
----
-
-## Payment Channels
-
-The client supports EVM-based payment channels for off-chain settlement.
-
-### Quick Setup
-
-```typescript
-import { CrosstownClient } from '@crosstown/client';
-import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
-
-const secretKey = generateSecretKey();
-const pubkey = getPublicKey(secretKey);
-
-// Configure with EVM private key for payment channels
 const client = new CrosstownClient({
   connectorUrl: 'http://localhost:8080',
   secretKey,
@@ -140,26 +72,58 @@ const client = new CrosstownClient({
   },
   toonEncoder: encodeEventToToon,
   toonDecoder: decodeEventFromToon,
+});
 
-  // Payment channel configuration
-  evmPrivateKey:
-    '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
+// 3. Start (bootstrap network, discover peers)
+await client.start();
+
+// Your EVM address is derived from the same key — no separate config needed
+console.log(`EVM address: ${client.getEvmAddress()}`);
+
+// 4. Publish event to relay via ILP payment
+const event = finalizeEvent(
+  { kind: 1, content: 'Hello from Crosstown!', tags: [], created_at: Math.floor(Date.now() / 1000) },
+  secretKey,
+);
+
+const result = await client.publishEvent(event);
+if (result.success) {
+  console.log(`Published: ${result.eventId}`);
+}
+
+// 5. Clean up
+await client.stop();
+```
+
+---
+
+## Payment Channels
+
+The client supports EVM-based payment channels for off-chain settlement. Your EVM identity is derived from your Nostr `secretKey` automatically — no separate EVM key needed.
+
+### Enabling Payment Channels
+
+To use payment channels, add chain configuration. The client already has your EVM identity from `secretKey`:
+
+```typescript
+const client = new CrosstownClient({
+  connectorUrl: 'http://localhost:8080',
+  secretKey,
+  ilpInfo: { pubkey, ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`, btpEndpoint: 'ws://localhost:3000' },
+  toonEncoder: encodeEventToToon,
+  toonDecoder: decodeEventFromToon,
+
+  // Add chain config to enable payment channels
   supportedChains: ['evm:anvil:31337'],
-  settlementAddresses: {
-    'evm:anvil:31337': '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
-  },
-  tokenNetworks: {
-    'evm:anvil:31337': '0xCafac3dD18aC6c6e92c921884f9E4176737C052c',
-  },
-  chainRpcUrls: {
-    'evm:anvil:31337': 'http://localhost:8545',
-  },
+  chainRpcUrls: { 'evm:anvil:31337': 'http://localhost:8545' },
+  settlementAddresses: { 'evm:anvil:31337': client.getEvmAddress()! },
+  tokenNetworks: { 'evm:anvil:31337': '0xCafac3dD18aC6c6e92c921884f9E4176737C052c' },
   initialDeposit: '1000000000000000000', // 1 ETH in wei
 });
 
 await client.start();
 
-// Payment channels are created automatically during bootstrap
+// Channels are created automatically during bootstrap
 const channels = client.getTrackedChannels();
 console.log(`Tracking ${channels.length} payment channels`);
 
@@ -172,10 +136,20 @@ await client.publishEvent(event, { claim });
 ### How It Works
 
 1. **Bootstrap**: Client discovers peers via NIP-02 and kind:10032 events
-2. **SPSP Negotiation**: Exchanges settlement parameters (chain, token, addresses)
-3. **Channel Creation**: Opens on-chain payment channel BEFORE SPSP handshake
-4. **Off-chain Payments**: Signed balance proofs settle payments off-chain
-5. **Auto-tracking**: ChannelManager automatically tracks channels and increments nonces
+2. **Channel Creation**: Opens on-chain payment channel using your derived EVM address
+3. **Off-chain Payments**: Signed balance proofs settle payments off-chain
+4. **Auto-tracking**: ChannelManager automatically tracks channels and increments nonces
+
+### Using a Separate EVM Key (Advanced)
+
+If you need a different EVM identity than your Nostr key (e.g., hardware wallet or custodial key), pass `evmPrivateKey` explicitly:
+
+```typescript
+const client = new CrosstownClient({
+  // ... required config ...
+  evmPrivateKey: '0x...', // Overrides the default derivation from secretKey
+});
+```
 
 ---
 
@@ -212,7 +186,8 @@ interface CrosstownClientConfig {
   /** HTTP URL of external ILP connector service */
   connectorUrl: string; // Example: 'http://localhost:8080'
 
-  /** 32-byte Nostr private key (generated via nostr-tools) */
+  /** 32-byte Nostr private key (generated via nostr-tools).
+   *  Your EVM address is derived from this key automatically. */
   secretKey: Uint8Array;
 
   /** ILP peer information for this client */
@@ -236,7 +211,8 @@ interface CrosstownClientConfig {
   /** ILP destination address for event publishing (default: derived from connectorUrl port) */
   destinationAddress?: string;
 
-  /** EVM private key for signing balance proofs and on-chain transactions */
+  /** Override EVM private key. By default, the EVM key is derived from secretKey
+   *  (both use secp256k1). Only set this if you need a different EVM identity. */
   evmPrivateKey?: string | Uint8Array;
 
   /** BTP WebSocket URL (default: derived from connectorUrl) */
@@ -282,8 +258,9 @@ interface CrosstownClientConfig {
 
 **Important Notes:**
 
+- **EVM identity is automatic**: Your EVM address is derived from `secretKey` — no separate key management needed. Both Nostr and EVM use secp256k1, so one key provides both identities.
+- `evmPrivateKey` is an optional override for advanced use cases (hardware wallets, custodial keys)
 - `connector` parameter is **not supported** (embedded mode not implemented)
-- Passing `connector` will throw `ValidationError: "Embedded mode not yet implemented"`
 - HTTP mode is the only supported mode in this version
 
 ---
@@ -415,19 +392,12 @@ Signs a balance proof for a payment channel with the specified amount.
 
 **Throws:**
 
-- `CrosstownClientError` - If no EVM signer configured (missing `evmPrivateKey`)
 - `CrosstownClientError` - If channel not tracked
 
 **Example:**
 
 ```typescript
-// Configure client with EVM private key
-const client = new CrosstownClient({
-  // ... other config
-  evmPrivateKey: '0x...',
-});
-
-// Sign balance proof for 1000 wei payment
+// EVM signer is always available (derived from secretKey)
 const claim = await client.signBalanceProof('0xChannelId...', 1000n);
 
 // Use claim in payment
@@ -468,17 +438,15 @@ console.log(`Public key: ${pubkey}`);
 
 #### `getEvmAddress(): string | undefined`
 
-Returns the EVM address if an EVM private key was configured, otherwise `undefined`.
+Returns the EVM address derived from `secretKey` (or explicit `evmPrivateKey` override). Works before `start()` is called.
 
-**Returns:** EVM address string or `undefined`
+**Returns:** EVM address string
 
 **Example:**
 
 ```typescript
 const evmAddr = client.getEvmAddress();
-if (evmAddr) {
-  console.log(`EVM address: ${evmAddr}`);
-}
+console.log(`EVM address: ${evmAddr}`);
 ```
 
 ---
@@ -532,9 +500,8 @@ Stops the client and cleans up resources.
 
 **What it does:**
 
-1. Stops relay monitoring subscription
-2. Closes SimplePool connections
-3. Clears internal state
+1. Disconnects BTP client if connected
+2. Clears internal state
 
 **Throws:**
 

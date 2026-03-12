@@ -71,10 +71,19 @@ export interface CrosstownClientConfig {
   toonDecoder: (bytes: Uint8Array) => NostrEvent;
 
   // ============================================================================
-  // EVM IDENTITY (optional)
+  // EVM IDENTITY (auto-derived, optional override)
   // ============================================================================
 
-  /** EVM private key for signing balance proofs and on-chain transactions */
+  /**
+   * EVM private key for signing balance proofs and on-chain transactions.
+   *
+   * By default, this is derived from `secretKey` — both Nostr and EVM use
+   * secp256k1, so a single key provides both identities (matching the SDK's
+   * `fromMnemonic()`/`fromSecretKey()` behavior).
+   *
+   * Only set this if you need a *different* EVM key than your Nostr key
+   * (e.g., hardware wallet, custodial key, or legacy key separation).
+   */
   evmPrivateKey?: string | Uint8Array;
 
   // ============================================================================

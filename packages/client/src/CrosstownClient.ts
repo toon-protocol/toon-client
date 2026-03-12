@@ -114,7 +114,7 @@ export class CrosstownClient {
   }
 
   /**
-   * Gets the EVM address if an EVM private key was configured.
+   * Gets the EVM address derived from the Nostr secret key (or explicit evmPrivateKey override).
    */
   getEvmAddress(): string | undefined {
     return this.evmSigner?.address;

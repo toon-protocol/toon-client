@@ -478,6 +478,33 @@ describe('applyDefaults', () => {
     expect(result.toonEncoder).toBe(config.toonEncoder);
     expect(result.toonDecoder).toBe(config.toonDecoder);
   });
+
+  it('should derive evmPrivateKey from secretKey when not provided', () => {
+    const config = createMinimalConfig();
+    const result = applyDefaults(config);
+
+    // evmPrivateKey should be the same Uint8Array as secretKey
+    expect(result.evmPrivateKey).toBe(config.secretKey);
+  });
+
+  it('should preserve explicit evmPrivateKey when provided', () => {
+    const config = createMinimalConfig();
+    const explicitKey = '0x' + 'ab'.repeat(32);
+    config.evmPrivateKey = explicitKey;
+    const result = applyDefaults(config);
+
+    expect(result.evmPrivateKey).toBe(explicitKey);
+  });
+
+  it('should derive evmPrivateKey from auto-generated secretKey when both omitted', () => {
+    const config = createMinimalConfig();
+    config.secretKey = undefined;
+    const result = applyDefaults(config);
+
+    // Both should be auto-generated, and evmPrivateKey should be the same key
+    expect(result.secretKey).toHaveLength(32);
+    expect(result.evmPrivateKey).toBe(result.secretKey);
+  });
 });
 
 describe('buildSettlementInfo', () => {

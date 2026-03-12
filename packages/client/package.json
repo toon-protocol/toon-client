@@ -1,6 +1,6 @@
 {
   "name": "@crosstown/client",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Crosstown client for ILP-gated Nostr publishing with multi-hop routing and payment channels",
   "license": "MIT",
   "author": "Jonathan Green",
@@ -34,7 +34,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@crosstown/connector": "^1.7.0",
+    "@crosstown/connector": "^1.7.1",
     "@crosstown/core": "workspace:*",
     "nostr-tools": "^2.20.0",
     "viem": "^2.0.0"

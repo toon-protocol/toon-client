@@ -142,7 +142,8 @@ export type ResolvedConfig = Required<
   >
 > & {
   connector?: unknown;
-  evmPrivateKey?: string | Uint8Array;
+  /** Always present after applyDefaults() — derived from secretKey if not explicitly provided */
+  evmPrivateKey: string | Uint8Array;
   supportedChains?: string[];
   settlementAddresses?: Record<string, string>;
   preferredTokens?: Record<string, string>;
@@ -215,9 +216,14 @@ export function applyDefaults(config: CrosstownClientConfig): ResolvedConfig {
     }
   }
 
+  // Derive EVM private key from Nostr secret key when not explicitly provided.
+  // Both Nostr and EVM use secp256k1, so a single 32-byte key works for both.
+  const evmPrivateKey = config.evmPrivateKey ?? secretKey;
+
   return {
     ...config,
     secretKey,
+    evmPrivateKey,
     connectorUrl: config.connectorUrl as string, // Already validated as required
     relayUrl: config.relayUrl ?? 'ws://localhost:7100',
     queryTimeout: config.queryTimeout ?? 30000,

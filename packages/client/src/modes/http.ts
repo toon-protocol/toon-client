@@ -49,9 +49,10 @@ export async function initializeHttpMode(
       retryDelay: config.retryDelay,
     });
 
-  // Create on-chain channel client when EVM is configured
+  // Create on-chain channel client when chain RPC URLs are configured.
+  // evmPrivateKey is always present (derived from secretKey by default).
   let onChainChannelClient: OnChainChannelClient | null = null;
-  if (config.evmPrivateKey && config.chainRpcUrls) {
+  if (config.chainRpcUrls) {
     const evmSigner = new EvmSigner(config.evmPrivateKey);
     onChainChannelClient = new OnChainChannelClient({
       evmSigner,

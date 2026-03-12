@@ -28,6 +28,7 @@ describe('initializeHttpMode', () => {
     config = {
       connectorUrl: 'http://localhost:8080',
       secretKey,
+      evmPrivateKey: secretKey, // Derived from secretKey by default
       ilpInfo: {
         pubkey,
         ilpAddress: 'g.test.address',
@@ -90,7 +91,7 @@ describe('initializeHttpMode', () => {
       expect(result.btpClient).toBeNull();
     });
 
-    it('should set onChainChannelClient to null when EVM not configured', async () => {
+    it('should set onChainChannelClient to null when chainRpcUrls not configured', async () => {
       const result = await initializeHttpMode(config);
 
       expect(result.onChainChannelClient).toBeNull();
@@ -129,8 +130,7 @@ describe('initializeHttpMode', () => {
   });
 
   describe('on-chain channel client', () => {
-    it('should create OnChainChannelClient when evmPrivateKey + chainRpcUrls configured', async () => {
-      config.evmPrivateKey = '0x' + 'ab'.repeat(32);
+    it('should create OnChainChannelClient when chainRpcUrls configured', async () => {
       config.chainRpcUrls = { 'evm:anvil:31337': 'http://localhost:8545' };
 
       const result = await initializeHttpMode(config);
@@ -138,9 +138,9 @@ describe('initializeHttpMode', () => {
       expect(result.onChainChannelClient).not.toBeNull();
     });
 
-    it('should not create OnChainChannelClient when only evmPrivateKey configured', async () => {
-      config.evmPrivateKey = '0x' + 'ab'.repeat(32);
-
+    it('should not create OnChainChannelClient when chainRpcUrls absent', async () => {
+      // evmPrivateKey is always present (derived from secretKey), but without
+      // chainRpcUrls there's nothing to connect to
       const result = await initializeHttpMode(config);
 
       expect(result.onChainChannelClient).toBeNull();
