@@ -185,19 +185,16 @@ export class BtpRuntimeClient implements IlpClient {
     data: string;
     timeout?: number;
   }): Promise<IlpSendResult> {
-    return withRetry(
-      () => this._sendIlpPacketOnce(params),
-      {
-        maxRetries: this.config.maxRetries ?? 3,
-        retryDelay: this.config.retryDelay ?? 1000,
-        shouldRetry: (error) => {
-          if (!isConnectionError(error)) return false;
-          // Mark as disconnected so reconnect happens on next attempt
-          this._isConnected = false;
-          return true;
-        },
-      }
-    );
+    return withRetry(() => this._sendIlpPacketOnce(params), {
+      maxRetries: this.config.maxRetries ?? 3,
+      retryDelay: this.config.retryDelay ?? 1000,
+      shouldRetry: (error) => {
+        if (!isConnectionError(error)) return false;
+        // Mark as disconnected so reconnect happens on next attempt
+        this._isConnected = false;
+        return true;
+      },
+    });
   }
 
   /**
@@ -213,18 +210,15 @@ export class BtpRuntimeClient implements IlpClient {
     },
     claim: EVMClaimMessage
   ): Promise<IlpSendResult> {
-    return withRetry(
-      () => this._sendIlpPacketWithClaimOnce(params, claim),
-      {
-        maxRetries: this.config.maxRetries ?? 3,
-        retryDelay: this.config.retryDelay ?? 1000,
-        shouldRetry: (error) => {
-          if (!isConnectionError(error)) return false;
-          this._isConnected = false;
-          return true;
-        },
-      }
-    );
+    return withRetry(() => this._sendIlpPacketWithClaimOnce(params, claim), {
+      maxRetries: this.config.maxRetries ?? 3,
+      retryDelay: this.config.retryDelay ?? 1000,
+      shouldRetry: (error) => {
+        if (!isConnectionError(error)) return false;
+        this._isConnected = false;
+        return true;
+      },
+    });
   }
 
   /**
@@ -260,9 +254,7 @@ export class BtpRuntimeClient implements IlpClient {
         accepted: true,
         fulfillment: fulfill.fulfillment.toString('base64'),
         data:
-          fulfill.data.length > 0
-            ? fulfill.data.toString('base64')
-            : undefined,
+          fulfill.data.length > 0 ? fulfill.data.toString('base64') : undefined,
       };
     }
 
@@ -272,8 +264,7 @@ export class BtpRuntimeClient implements IlpClient {
       accepted: false,
       code: reject.code,
       message: reject.message,
-      data:
-        reject.data.length > 0 ? reject.data.toString('base64') : undefined,
+      data: reject.data.length > 0 ? reject.data.toString('base64') : undefined,
     };
   }
 
