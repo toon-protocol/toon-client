@@ -5,7 +5,7 @@ import { EvmSigner } from './evm-signer.js';
 import type { SignedBalanceProof } from '../types.js';
 
 const TEST_CHAIN_ID = 31337;
-const TEST_TOKEN_NETWORK = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
+const TEST_TOKEN_NETWORK = '0x5FbDB2315678afecb367f032d93F642f64180aa3'; // Mock USDC address (used as test TokenNetwork)
 const ZERO_BYTES32 =
   '0x0000000000000000000000000000000000000000000000000000000000000000';
 

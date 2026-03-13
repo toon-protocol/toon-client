@@ -52,7 +52,7 @@ const TEST_PRIVATE_KEY =
 const TEST_EVM_ADDRESS = '0x90F79bf6EB2c4f870365E785982E1f101E93b906';
 
 // Deployed contract addresses (deterministic on Anvil)
-const TOKEN_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
+const TOKEN_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3'; // Mock USDC (Anvil)
 const TOKEN_NETWORK_ADDRESS = '0xCafac3dD18aC6c6e92c921884f9E4176737C052c';
 
 // Token Network ABI (minimal)
