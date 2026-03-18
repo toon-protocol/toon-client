@@ -204,8 +204,7 @@ export function applyDefaults(config: ToonClientConfig): ResolvedConfig {
           destinationAddress = 'g.toon.peer2';
         } else {
           // Fallback: use ilpInfo.ilpAddress if available
-          destinationAddress =
-            config.ilpInfo?.ilpAddress || 'g.toon.relay';
+          destinationAddress = config.ilpInfo?.ilpAddress || 'g.toon.relay';
         }
       } else {
         // Production: default to ilpInfo.ilpAddress
