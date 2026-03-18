@@ -1,7 +1,7 @@
 /**
- * @crosstown/rig
+ * @toon-protocol/rig
  *
- * Git forge rig for Crosstown - NIP-34 based code collaboration.
+ * Git forge rig for TOON - NIP-34 based code collaboration.
  * Stub: Will be implemented as part of the rig epic.
  */
 

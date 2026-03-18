@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  CrosstownClientError,
+  ToonClientError,
   NetworkError,
   ConnectorError,
   ValidationError,
@@ -9,25 +9,25 @@ import {
   PeerAlreadyExistsError,
 } from './errors.js';
 
-describe('CrosstownClientError', () => {
+describe('ToonClientError', () => {
   it('should create error with message and code', () => {
-    const error = new CrosstownClientError('Test error', 'TEST_CODE');
+    const error = new ToonClientError('Test error', 'TEST_CODE');
     expect(error.message).toBe('Test error');
     expect(error.code).toBe('TEST_CODE');
-    expect(error.name).toBe('CrosstownClientError');
+    expect(error.name).toBe('ToonClientError');
     expect(error.cause).toBeUndefined();
   });
 
   it('should create error with cause', () => {
     const cause = new Error('Original error');
-    const error = new CrosstownClientError('Test error', 'TEST_CODE', cause);
+    const error = new ToonClientError('Test error', 'TEST_CODE', cause);
     expect(error.cause).toBe(cause);
   });
 
   it('should be instance of Error', () => {
-    const error = new CrosstownClientError('Test error', 'TEST_CODE');
+    const error = new ToonClientError('Test error', 'TEST_CODE');
     expect(error).toBeInstanceOf(Error);
-    expect(error).toBeInstanceOf(CrosstownClientError);
+    expect(error).toBeInstanceOf(ToonClientError);
   });
 });
 
@@ -39,9 +39,9 @@ describe('NetworkError', () => {
     expect(error.name).toBe('NetworkError');
   });
 
-  it('should inherit from CrosstownClientError', () => {
+  it('should inherit from ToonClientError', () => {
     const error = new NetworkError('Connection failed');
-    expect(error).toBeInstanceOf(CrosstownClientError);
+    expect(error).toBeInstanceOf(ToonClientError);
     expect(error).toBeInstanceOf(NetworkError);
   });
 
@@ -60,9 +60,9 @@ describe('ConnectorError', () => {
     expect(error.name).toBe('ConnectorError');
   });
 
-  it('should inherit from CrosstownClientError', () => {
+  it('should inherit from ToonClientError', () => {
     const error = new ConnectorError('Connector unavailable');
-    expect(error).toBeInstanceOf(CrosstownClientError);
+    expect(error).toBeInstanceOf(ToonClientError);
     expect(error).toBeInstanceOf(ConnectorError);
   });
 
@@ -81,9 +81,9 @@ describe('ValidationError', () => {
     expect(error.name).toBe('ValidationError');
   });
 
-  it('should inherit from CrosstownClientError', () => {
+  it('should inherit from ToonClientError', () => {
     const error = new ValidationError('Invalid input');
-    expect(error).toBeInstanceOf(CrosstownClientError);
+    expect(error).toBeInstanceOf(ToonClientError);
     expect(error).toBeInstanceOf(ValidationError);
   });
 
@@ -102,9 +102,9 @@ describe('UnauthorizedError', () => {
     expect(error.name).toBe('UnauthorizedError');
   });
 
-  it('should inherit from CrosstownClientError', () => {
+  it('should inherit from ToonClientError', () => {
     const error = new UnauthorizedError('Authentication failed');
-    expect(error).toBeInstanceOf(CrosstownClientError);
+    expect(error).toBeInstanceOf(ToonClientError);
     expect(error).toBeInstanceOf(UnauthorizedError);
   });
 
@@ -123,9 +123,9 @@ describe('PeerNotFoundError', () => {
     expect(error.name).toBe('PeerNotFoundError');
   });
 
-  it('should inherit from CrosstownClientError', () => {
+  it('should inherit from ToonClientError', () => {
     const error = new PeerNotFoundError('Peer does not exist');
-    expect(error).toBeInstanceOf(CrosstownClientError);
+    expect(error).toBeInstanceOf(ToonClientError);
     expect(error).toBeInstanceOf(PeerNotFoundError);
   });
 
@@ -144,9 +144,9 @@ describe('PeerAlreadyExistsError', () => {
     expect(error.name).toBe('PeerAlreadyExistsError');
   });
 
-  it('should inherit from CrosstownClientError', () => {
+  it('should inherit from ToonClientError', () => {
     const error = new PeerAlreadyExistsError('Duplicate peer');
-    expect(error).toBeInstanceOf(CrosstownClientError);
+    expect(error).toBeInstanceOf(ToonClientError);
     expect(error).toBeInstanceOf(PeerAlreadyExistsError);
   });
 

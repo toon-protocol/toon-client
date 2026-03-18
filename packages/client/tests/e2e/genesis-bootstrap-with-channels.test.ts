@@ -1,5 +1,5 @@
 /**
- * E2E Test: CrosstownClient Bootstrap with Payment Channels
+ * E2E Test: ToonClient Bootstrap with Payment Channels
  *
  * **Prerequisites:**
  * 1. Genesis node deployed with Anvil:
@@ -8,7 +8,7 @@
  *    ```
  *
  * **What this test verifies:**
- * - CrosstownClient bootstraps with EVM configuration
+ * - ToonClient bootstraps with EVM configuration
  * - Payment channel is created during peer registration
  * - Channel is funded on-chain (Anvil)
  * - publishEvent() sends paid ILP packet with signed claim
@@ -22,8 +22,8 @@ import {
   getPublicKey,
   finalizeEvent,
 } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
-import { CrosstownClient } from '../../src/CrosstownClient.js';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
+import { ToonClient } from '../../src/ToonClient.js';
 import { createPublicClient, http, defineChain, type Hex } from 'viem';
 import WebSocket from 'ws';
 
@@ -163,7 +163,7 @@ async function getChannelState(channelId: string) {
   };
 }
 
-describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
+describe('ToonClient Genesis Bootstrap with Payment Channels E2E', () => {
   let servicesReady = false;
 
   beforeAll(async () => {
@@ -250,13 +250,13 @@ describe('CrosstownClient Genesis Bootstrap with Payment Channels E2E', () => {
     console.log(`\n🔑 Test account: ${TEST_ACCOUNT_ADDRESS}`);
     console.log(`📝 Client pubkey: ${pubkey.slice(0, 16)}...`);
 
-    // 2. Create CrosstownClient with EVM configuration
-    const client = new CrosstownClient({
+    // 2. Create ToonClient with EVM configuration
+    const client = new ToonClient({
       connectorUrl: CONNECTOR_URL,
       secretKey,
       ilpInfo: {
         pubkey,
-        ilpAddress: `g.crosstown.test.${pubkey.slice(0, 8)}`,
+        ilpAddress: `g.toon.test.${pubkey.slice(0, 8)}`,
         btpEndpoint: 'ws://localhost:3000',
         assetCode: 'USD',
         assetScale: 6,

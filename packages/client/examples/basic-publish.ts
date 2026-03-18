@@ -1,22 +1,22 @@
 #!/usr/bin/env tsx
 /**
- * Basic example: Publish a Nostr event to the Crosstown network
+ * Basic example: Publish a Nostr event to the TOON network
  *
  * Prerequisites:
  * - Genesis node running (docker compose up)
  * - Run with: tsx packages/client/examples/basic-publish.ts
  */
 
-import { CrosstownClient } from '../src/index.js';
+import { ToonClient } from '../src/index.js';
 import {
   generateSecretKey,
   getPublicKey,
   finalizeEvent,
 } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
 
 async function main() {
-  console.log('🚀 Crosstown Client Example\n');
+  console.log('🚀 TOON Client Example\n');
 
   // 1. Generate Nostr identity
   console.log('📝 Generating Nostr keypair...');
@@ -26,12 +26,12 @@ async function main() {
 
   // 2. Create client (connects to genesis node)
   console.log('\n🔧 Creating client...');
-  const client = new CrosstownClient({
+  const client = new ToonClient({
     connectorUrl: 'http://localhost:8080', // Genesis connector runtime
     secretKey,
     ilpInfo: {
       pubkey,
-      ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`,
+      ilpAddress: `g.toon.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3000', // Genesis connector BTP
       assetCode: 'USD',
       assetScale: 6,    },
@@ -52,7 +52,7 @@ async function main() {
     const event = finalizeEvent(
       {
         kind: 1,
-        content: `Hello from Crosstown! Timestamp: ${new Date().toISOString()}`,
+        content: `Hello from TOON! Timestamp: ${new Date().toISOString()}`,
         tags: [],
         created_at: Math.floor(Date.now() / 1000),
       },

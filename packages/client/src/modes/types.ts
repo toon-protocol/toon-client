@@ -1,5 +1,5 @@
-import type { BootstrapService } from '@crosstown/core';
-import type { DiscoveryTracker } from '@crosstown/core';
+import type { BootstrapService } from '@toon-protocol/core';
+import type { DiscoveryTracker } from '@toon-protocol/core';
 import type { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
 import type { HttpConnectorAdmin } from '../adapters/HttpConnectorAdmin.js';
 import type { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';

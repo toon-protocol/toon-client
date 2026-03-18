@@ -1,5 +1,5 @@
 /**
- * E2E Test: CrosstownClient against SDK E2E Peer Infrastructure
+ * E2E Test: ToonClient against SDK E2E Peer Infrastructure
  *
  * **Prerequisites:**
  * SDK E2E infrastructure running:
@@ -8,7 +8,7 @@
  * ```
  *
  * **What this test verifies (production-realistic):**
- * - CrosstownClient connects to a real peer node via BTP
+ * - ToonClient connects to a real peer node via BTP
  * - Payment channel opened on Anvil during bootstrap
  * - Per-packet signed EIP-712 balance proofs (claims)
  * - publishEvent() delivers via ILP with claim attached
@@ -18,7 +18,7 @@
  * **Why this reflects production:**
  * In production, clients connect to discovered peer nodes, not a
  * privileged genesis node. This test targets the SDK E2E peers
- * which are real Crosstown nodes running in Docker containers.
+ * which are real TOON nodes running in Docker containers.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -27,8 +27,8 @@ import {
   getPublicKey,
   finalizeEvent,
 } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
-import { CrosstownClient } from '../../src/CrosstownClient.js';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
+import { ToonClient } from '../../src/ToonClient.js';
 import { createPublicClient, http, defineChain, type Hex } from 'viem';
 import WebSocket from 'ws';
 
@@ -168,7 +168,7 @@ async function getChannelState(channelId: string) {
 // Test Suite
 // ---------------------------------------------------------------------------
 
-describe('CrosstownClient against SDK E2E Peers', () => {
+describe('ToonClient against SDK E2E Peers', () => {
   let servicesReady = false;
 
   beforeAll(async () => {
@@ -242,14 +242,14 @@ describe('CrosstownClient against SDK E2E Peers', () => {
   function createTestClient(
     secretKey: Uint8Array,
     pubkey: string
-  ): CrosstownClient {
-    return new CrosstownClient({
+  ): ToonClient {
+    return new ToonClient({
       // connectorUrl is required but BTP is the actual transport
       connectorUrl: PEER1_BLS_URL,
       secretKey,
       ilpInfo: {
         pubkey,
-        ilpAddress: `g.crosstown.test.${pubkey.slice(0, 8)}`,
+        ilpAddress: `g.toon.test.${pubkey.slice(0, 8)}`,
         btpEndpoint: PEER1_BTP_URL,
         assetCode: 'USD',
         assetScale: 6,
@@ -280,7 +280,7 @@ describe('CrosstownClient against SDK E2E Peers', () => {
         'evm:base:31337': TOKEN_NETWORK_ADDRESS,
       },
       btpUrl: PEER1_BTP_URL,
-      destinationAddress: 'g.crosstown.peer1',
+      destinationAddress: 'g.toon.peer1',
     });
   }
 

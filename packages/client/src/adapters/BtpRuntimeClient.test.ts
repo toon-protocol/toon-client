@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-/** ILP packet type constants — matches @crosstown/connector's PacketType enum */
+/** ILP packet type constants — matches @toon-protocol/connector's PacketType enum */
 const ILP_PACKET_TYPE = {
   PREPARE: 12,
   FULFILL: 13,
@@ -13,8 +13,8 @@ const mockDisconnect = vi.fn();
 const mockSendPacket = vi.fn();
 const mockSendProtocolData = vi.fn();
 
-// Mock @crosstown/connector
-vi.mock('@crosstown/connector', () => {
+// Mock @toon-protocol/connector
+vi.mock('@toon-protocol/connector', () => {
   return {
     BTPClient: vi.fn().mockImplementation(() => ({
       connect: mockConnect,

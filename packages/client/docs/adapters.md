@@ -1,13 +1,13 @@
 # HTTP Adapters & Utilities
 
-For advanced use cases, you can use the HTTP adapter classes directly without `CrosstownClient`.
+For advanced use cases, you can use the HTTP adapter classes directly without `TOONClient`.
 
 ## `HttpRuntimeClient`
 
 Low-level client for sending ILP packets to the connector runtime API.
 
 ```typescript
-import { HttpRuntimeClient } from '@crosstown/client';
+import { HttpRuntimeClient } from '@toon-protocol/client';
 
 const runtimeClient = new HttpRuntimeClient({
   connectorUrl: 'http://localhost:8080',
@@ -17,7 +17,7 @@ const runtimeClient = new HttpRuntimeClient({
 });
 
 const result = await runtimeClient.sendIlpPacket({
-  destination: 'g.crosstown.relay',
+  destination: 'g.toon.relay',
   amount: '1000',
   data: 'base64EncodedToonData==',
 });
@@ -50,7 +50,7 @@ if (result.accepted) {
 Low-level client for managing ILP peers via the connector admin API.
 
 ```typescript
-import { HttpConnectorAdmin } from '@crosstown/client';
+import { HttpConnectorAdmin } from '@toon-protocol/client';
 
 const adminClient = new HttpConnectorAdmin({
   adminUrl: 'http://localhost:8081',
@@ -64,7 +64,7 @@ await adminClient.addPeer({
   id: 'nostr-abc123',
   url: 'btp+ws://alice.example.com:3000',
   authToken: 'secret-token',
-  routes: [{ prefix: 'g.crosstown.alice' }],
+  routes: [{ prefix: 'g.toon.alice' }],
   settlement: {
     preference: 'payment-channel',
     evmAddress: '0x...',
@@ -141,7 +141,7 @@ interface PeerOperationResult {
 Retry helper with exponential backoff.
 
 ```typescript
-import { withRetry } from '@crosstown/client';
+import { withRetry } from '@toon-protocol/client';
 
 const result = await withRetry(
   async () => {

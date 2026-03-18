@@ -1,19 +1,22 @@
 {
-  "name": "@crosstown/client",
-  "version": "0.4.2",
-  "description": "Crosstown client for ILP-gated Nostr publishing with multi-hop routing and payment channels",
+  "name": "@toon-protocol/client",
+  "version": "0.4.3",
+  "description": "TOON client for ILP-gated Nostr publishing with multi-hop routing and payment channels",
   "license": "MIT",
   "author": "Jonathan Green",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ALLiDoizCode/crosstown.git",
+    "url": "https://github.com/toon-protocol/town.git",
     "directory": "packages/client"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "keywords": [
     "nostr",
     "ilp",
     "interledger",
-    "crosstown",
+    "toon",
     "settlement",
     "payment-channels",
     "btp",
@@ -34,13 +37,13 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@crosstown/connector": "^1.7.1",
-    "@crosstown/core": "workspace:*",
+    "@toon-protocol/connector": "^1.7.1",
+    "@toon-protocol/core": "workspace:*",
     "nostr-tools": "^2.20.0",
     "viem": "^2.0.0"
   },
   "devDependencies": {
-    "@crosstown/relay": "workspace:*",
+    "@toon-protocol/relay": "workspace:*",
     "@types/node": "^20.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.3.0",

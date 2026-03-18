@@ -10,7 +10,7 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import request from 'supertest';
 import type { Express } from 'express';
 
-// --- Imports from @crosstown/rig (DOES NOT EXIST YET) ---
+// --- Imports from @toon-protocol/rig (DOES NOT EXIST YET) ---
 import { createRigApp } from '../app.js';
 import { createInMemoryMetadataStore } from '../storage/metadata-store.js';
 import type { MetadataStore } from '../storage/metadata-store.js';

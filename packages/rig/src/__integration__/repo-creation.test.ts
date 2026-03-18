@@ -12,14 +12,14 @@ import {
 } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
 
-// --- Imports from @crosstown/rig (DOES NOT EXIST YET) ---
+// --- Imports from @toon-protocol/rig (DOES NOT EXIST YET) ---
 import { handleRepoCreation } from '../handlers/repo-creation-handler.js';
 import { createInMemoryMetadataStore } from '../storage/metadata-store.js';
 import type { MetadataStore, RepoMetadata } from '../storage/metadata-store.js';
 import type { HandlerContext } from '../types.js';
 
-// --- Imports from @crosstown/core (exists) ---
-import { REPOSITORY_ANNOUNCEMENT_KIND } from '@crosstown/core/nip34';
+// --- Imports from @toon-protocol/core (exists) ---
+import { REPOSITORY_ANNOUNCEMENT_KIND } from '@toon-protocol/core/nip34';
 
 // ---------------------------------------------------------------------------
 // Factory Functions

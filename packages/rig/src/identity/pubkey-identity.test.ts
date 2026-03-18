@@ -9,7 +9,7 @@ import {
   toGitAuthorIdentity,
   enrichPubkeyProfile,
 } from './pubkey-identity.js';
-import type { HandlerContext } from '@crosstown/sdk';
+import type { HandlerContext } from '@toon-protocol/sdk';
 
 // ============================================================================
 // Factories

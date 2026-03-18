@@ -1,17 +1,17 @@
 # API Reference
 
-## Main Class: `CrosstownClient`
+## Main Class: `TOONClient`
 
-The primary interface for interacting with the Crosstown network.
+The primary interface for interacting with the TOON network.
 
 ```typescript
-import { CrosstownClient } from '@crosstown/client';
+import { TOONClient } from '@toon-protocol/client';
 ```
 
 ### Constructor
 
 ```typescript
-new CrosstownClient(config: CrosstownClientConfig)
+new TOONClient(config: TOONClientConfig)
 ```
 
 Creates a new client instance. Does NOT start the client — call `start()` to initialize.
@@ -22,10 +22,10 @@ Creates a new client instance. Does NOT start the client — call `start()` to i
 
 ---
 
-## Configuration: `CrosstownClientConfig`
+## Configuration: `TOONClientConfig`
 
 ```typescript
-interface CrosstownClientConfig {
+interface TOONClientConfig {
   // ===== REQUIRED =====
 
   /** HTTP URL of external ILP connector service */
@@ -38,7 +38,7 @@ interface CrosstownClientConfig {
   /** ILP peer information for this client */
   ilpInfo: {
     pubkey: string; // Nostr public key (hex)
-    ilpAddress: string; // ILP address (e.g., 'g.crosstown.abc123')
+    ilpAddress: string; // ILP address (e.g., 'g.toon.abc123')
     btpEndpoint: string; // BTP WebSocket endpoint (e.g., 'ws://localhost:3000')
   };
 
@@ -112,7 +112,7 @@ interface CrosstownClientConfig {
 
 ## Methods
 
-### `start(): Promise<CrosstownStartResult>`
+### `start(): Promise<TOONStartResult>`
 
 Starts the client, bootstraps the network, and begins monitoring for new peers.
 
@@ -134,8 +134,8 @@ Starts the client, bootstraps the network, and begins monitoring for new peers.
 
 **Throws:**
 
-- `CrosstownClientError` - If client is already started
-- `CrosstownClientError` - If initialization fails (wraps underlying error)
+- `TOONClientError` - If client is already started
+- `TOONClientError` - If initialization fails (wraps underlying error)
 
 **Example:**
 
@@ -170,8 +170,8 @@ Publishes a signed Nostr event to the relay via ILP micropayment.
 
 **Throws:**
 
-- `CrosstownClientError` - If client is not started
-- `CrosstownClientError` - If publishing fails (network/connector error)
+- `TOONClientError` - If client is not started
+- `TOONClientError` - If publishing fails (network/connector error)
 
 **Examples:**
 
@@ -196,7 +196,7 @@ _Multi-hop routing (publish to different destination):_
 ```typescript
 // Publish to genesis node via peer1 connector
 const result = await client.publishEvent(event, {
-  destination: 'g.crosstown.genesis',
+  destination: 'g.toon.genesis',
 });
 ```
 
@@ -205,7 +205,7 @@ _With payment channel claim:_
 ```typescript
 const claim = await client.signBalanceProof(channelId, amount);
 const result = await client.publishEvent(event, {
-  destination: 'g.crosstown.peer1',
+  destination: 'g.toon.peer1',
   claim,
 });
 ```
@@ -237,7 +237,7 @@ Signs a balance proof for a payment channel with the specified amount.
 
 **Throws:**
 
-- `CrosstownClientError` - If channel not tracked
+- `TOONClientError` - If channel not tracked
 
 **Example:**
 
@@ -325,13 +325,13 @@ Sends an ILP payment, optionally with a balance proof claim via BTP.
 
 **Throws:**
 
-- `CrosstownClientError` - If client is not started
+- `TOONClientError` - If client is not started
 
 **Example:**
 
 ```typescript
 const result = await client.sendPayment({
-  destination: 'g.crosstown.peer1',
+  destination: 'g.toon.peer1',
   amount: '5000',
   data: Buffer.from('custom data').toString('base64'),
 });
@@ -350,8 +350,8 @@ Stops the client and cleans up resources.
 
 **Throws:**
 
-- `CrosstownClientError` - If client is not started
-- `CrosstownClientError` - If stopping fails
+- `TOONClientError` - If client is not started
+- `TOONClientError` - If stopping fails
 
 **Example:**
 
@@ -381,7 +381,7 @@ Returns the number of peers discovered during bootstrap.
 
 **Throws:**
 
-- `CrosstownClientError` - If client is not started
+- `TOONClientError` - If client is not started
 
 **Example:**
 
@@ -409,7 +409,7 @@ Array<{
 
 **Throws:**
 
-- `CrosstownClientError` - If client is not started
+- `TOONClientError` - If client is not started
 
 **Example:**
 

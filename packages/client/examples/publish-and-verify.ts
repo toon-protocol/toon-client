@@ -8,16 +8,16 @@
  * Run: pnpm exec tsx packages/client/examples/publish-and-verify.ts
  */
 
-import { CrosstownClient } from '../src/index.js';
+import { ToonClient } from '../src/index.js';
 import {
   generateSecretKey,
   getPublicKey,
   finalizeEvent,
 } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
 
 async function main() {
-  console.log('🚀 Crosstown Client - Publish & Verify\n');
+  console.log('🚀 TOON Client - Publish & Verify\n');
 
   // 1. Generate identity
   const secretKey = generateSecretKey();
@@ -26,12 +26,12 @@ async function main() {
   console.log(`   Public key: ${pubkey.slice(0, 32)}...`);
 
   // 2. Create client
-  const client = new CrosstownClient({
+  const client = new ToonClient({
     connectorUrl: 'http://localhost:8080',
     secretKey,
     ilpInfo: {
       pubkey,
-      ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`,
+      ilpAddress: `g.toon.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3000',
       assetCode: 'USD',
       assetScale: 6,
@@ -54,9 +54,9 @@ async function main() {
   const event = finalizeEvent(
     {
       kind: 1,
-      content: `Test event from @crosstown/client - ${timestamp}`,
+      content: `Test event from @toon-protocol/client - ${timestamp}`,
       tags: [
-        ['client', 'crosstown'],
+        ['client', 'toon'],
         ['timestamp', timestamp],
       ],
       created_at: Math.floor(Date.now() / 1000),
@@ -94,7 +94,7 @@ async function main() {
   console.log(`\n✅ Event published successfully!`);
   console.log(`\n📊 Verification:`);
   console.log(
-    `   Run: docker logs crosstown-connector --tail 20 | grep "fulfilled"`
+    `   Run: docker logs toon-connector --tail 20 | grep "fulfilled"`
   );
   console.log(`   Expected: "Packet fulfilled by business logic server"`);
   console.log(`\n💡 Note: Exiting early to avoid nostr-tools SimplePool issue`);

@@ -43,7 +43,7 @@ function createMockArgs(
 // Tests
 // ============================================================================
 
-describe('@crosstown/rig public API exports', () => {
+describe('@toon-protocol/rig public API exports', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -73,7 +73,7 @@ describe('@crosstown/rig public API exports', () => {
   });
 });
 
-describe('@crosstown/rig CLI entrypoint', () => {
+describe('@toon-protocol/rig CLI entrypoint', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

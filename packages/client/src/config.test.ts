@@ -6,13 +6,13 @@ import {
   buildSettlementInfo,
 } from './config.js';
 import { ValidationError } from './errors.js';
-import type { CrosstownClientConfig } from './types.js';
+import type { ToonClientConfig } from './types.js';
 
 describe('validateConfig', () => {
   // Helper to create minimal valid config
   const createValidConfig = (
-    overrides: Partial<CrosstownClientConfig> = {}
-  ): CrosstownClientConfig => {
+    overrides: Partial<ToonClientConfig> = {}
+  ): ToonClientConfig => {
     const secretKey = generateSecretKey();
     const pubkey = getPublicKey(secretKey);
     return {
@@ -55,7 +55,7 @@ describe('validateConfig', () => {
       });
 
       expect(() => validateConfig(config)).toThrow(
-        'Embedded mode not yet implemented in CrosstownClient. Use connectorUrl for HTTP mode.'
+        'Embedded mode not yet implemented in ToonClient. Use connectorUrl for HTTP mode.'
       );
     });
   });
@@ -341,7 +341,7 @@ describe('validateConfig', () => {
 });
 
 describe('applyDefaults', () => {
-  const createMinimalConfig = (): CrosstownClientConfig => {
+  const createMinimalConfig = (): ToonClientConfig => {
     const secretKey = generateSecretKey();
     const pubkey = getPublicKey(secretKey);
     return {
@@ -509,8 +509,8 @@ describe('applyDefaults', () => {
 
 describe('buildSettlementInfo', () => {
   const createConfig = (
-    overrides: Partial<CrosstownClientConfig> = {}
-  ): CrosstownClientConfig => ({
+    overrides: Partial<ToonClientConfig> = {}
+  ): ToonClientConfig => ({
     connectorUrl: 'http://localhost:8080',
     ilpInfo: {
       ilpAddress: 'g.test',

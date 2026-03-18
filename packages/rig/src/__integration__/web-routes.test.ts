@@ -10,7 +10,7 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import request from 'supertest';
 import type { Express } from 'express';
 
-// --- Imports from @crosstown/rig (DOES NOT EXIST YET) ---
+// --- Imports from @toon-protocol/rig (DOES NOT EXIST YET) ---
 import { createRigApp } from '../app.js';
 import { createInMemoryMetadataStore } from '../storage/metadata-store.js';
 import type { MetadataStore } from '../storage/metadata-store.js';
@@ -258,7 +258,7 @@ describe('Web Route Integration Tests', () => {
     it.skip('[P1] GET /{owner}/{repo}/blob/main/{path} returns file content', async () => {
       // Arrange
       const repoName = 'blob-view-repo';
-      const fileContent = 'Hello World from Crosstown Rig!';
+      const fileContent = 'Hello World from TOON Rig!';
       const { bareRepoPath, workTreePath } = createGitRepoWithFiles(
         repoDir,
         ownerPrefix,
@@ -287,7 +287,7 @@ describe('Web Route Integration Tests', () => {
       // Assert
       expect(response.status).toBe(200);
       expect(response.headers['content-type']).toContain('text/html');
-      expect(response.text).toContain('Hello World from Crosstown Rig!');
+      expect(response.text).toContain('Hello World from TOON Rig!');
     });
   });
 

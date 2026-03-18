@@ -1,5 +1,5 @@
 /**
- * PR lifecycle handler for @crosstown/rig.
+ * PR lifecycle handler for @toon-protocol/rig.
  *
  * Stub: Will be implemented as part of the rig epic.
  * Handles kind:1630 (Open), kind:1631 (Merged), kind:1632 (Closed),

@@ -5,7 +5,7 @@ The client provides specialized error classes for different failure scenarios.
 ## Error Class Hierarchy
 
 ```typescript
-CrosstownClientError (base class)
+TOONClientError (base class)
 ├── NetworkError              // Connection failures (ECONNREFUSED, ETIMEDOUT)
 ├── ConnectorError           // Connector server errors (5xx)
 ├── ValidationError          // Invalid config or input
@@ -18,22 +18,22 @@ CrosstownClientError (base class)
 
 ```typescript
 import {
-  CrosstownClientError,
+  TOONClientError,
   NetworkError,
   ConnectorError,
   ValidationError,
   UnauthorizedError,
   PeerNotFoundError,
   PeerAlreadyExistsError,
-} from '@crosstown/client';
+} from '@toon-protocol/client';
 ```
 
 ## Error Properties
 
-All error classes extend `CrosstownClientError` with these properties:
+All error classes extend `TOONClientError` with these properties:
 
 ```typescript
-class CrosstownClientError extends Error {
+class TOONClientError extends Error {
   name: string; // Error class name
   message: string; // Human-readable error message
   code: string; // Machine-readable error code
@@ -80,10 +80,10 @@ try {
 
 | Error Class              | Code                   | Meaning                                                           |
 | ------------------------ | ---------------------- | ----------------------------------------------------------------- |
-| `CrosstownClientError`   | `INVALID_STATE`        | Operation called in wrong state (e.g., `stop()` before `start()`) |
-| `CrosstownClientError`   | `INITIALIZATION_ERROR` | Client failed to initialize during `start()`                      |
-| `CrosstownClientError`   | `PUBLISH_ERROR`        | Event publishing failed                                           |
-| `CrosstownClientError`   | `STOP_ERROR`           | Error during cleanup in `stop()`                                  |
+| `TOONClientError`   | `INVALID_STATE`        | Operation called in wrong state (e.g., `stop()` before `start()`) |
+| `TOONClientError`   | `INITIALIZATION_ERROR` | Client failed to initialize during `start()`                      |
+| `TOONClientError`   | `PUBLISH_ERROR`        | Event publishing failed                                           |
+| `TOONClientError`   | `STOP_ERROR`           | Error during cleanup in `stop()`                                  |
 | `NetworkError`           | `NETWORK_ERROR`        | Connection failure (ECONNREFUSED, ETIMEDOUT, DNS)                 |
 | `ConnectorError`         | `CONNECTOR_ERROR`      | Connector 5xx server error                                        |
 | `ValidationError`        | `VALIDATION_ERROR`     | Invalid configuration or input parameters                         |

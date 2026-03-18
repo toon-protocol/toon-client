@@ -1,14 +1,14 @@
-import type { IlpPeerInfo } from '@crosstown/core';
+import type { IlpPeerInfo } from '@toon-protocol/core';
 import type { NostrEvent } from 'nostr-tools/pure';
 
 /**
- * Configuration for CrosstownClient.
+ * Configuration for ToonClient.
  *
  * This story implements HTTP mode only. Embedded mode will be added in a future epic.
  *
  * @example HTTP Mode (implemented)
  * ```typescript
- * const client = new CrosstownClient({
+ * const client = new ToonClient({
  *   connectorUrl: 'http://localhost:8080',
  *   secretKey,
  *   ilpInfo: { ilpAddress, btpEndpoint, pubkey },
@@ -19,7 +19,7 @@ import type { NostrEvent } from 'nostr-tools/pure';
  *
  * @example Embedded Mode (not yet implemented)
  * ```typescript
- * const client = new CrosstownClient({
+ * const client = new ToonClient({
  *   connector: embeddedConnectorInstance,  // Will throw error: "Embedded mode not yet implemented"
  *   secretKey,
  *   ilpInfo,
@@ -28,7 +28,7 @@ import type { NostrEvent } from 'nostr-tools/pure';
  * });
  * ```
  */
-export interface CrosstownClientConfig {
+export interface ToonClientConfig {
   // ============================================================================
   // CONNECTOR (required for HTTP mode)
   // ============================================================================
@@ -42,7 +42,7 @@ export interface CrosstownClientConfig {
 
   /**
    * Embedded connector instance - NOT IMPLEMENTED in this story.
-   * Will throw error: "Embedded mode not yet implemented in CrosstownClient."
+   * Will throw error: "Embedded mode not yet implemented in ToonClient."
    * Reserved for future implementation.
    */
   connector?: unknown;
@@ -120,8 +120,8 @@ export interface CrosstownClientConfig {
    * Defaults to the connector's local address (derived from connectorUrl host).
    * For multi-hop routing, set this to the target node's ILP address.
    * Examples:
-   * - 'g.crosstown.genesis' - Publish to genesis node
-   * - 'g.crosstown.peer1' - Publish to peer1 node
+   * - 'g.toon.genesis' - Publish to genesis node
+   * - 'g.toon.peer1' - Publish to peer1 node
    */
   destinationAddress?: string;
 
@@ -178,9 +178,9 @@ export interface CrosstownClientConfig {
 }
 
 /**
- * Result returned by CrosstownClient.start()
+ * Result returned by ToonClient.start()
  */
-export interface CrosstownStartResult {
+export interface ToonStartResult {
   /** Number of peers discovered during bootstrap */
   peersDiscovered: number;
 
@@ -189,7 +189,7 @@ export interface CrosstownStartResult {
 }
 
 /**
- * Result returned by CrosstownClient.publishEvent()
+ * Result returned by ToonClient.publishEvent()
  */
 export interface PublishEventResult {
   /** Whether the event was successfully published */

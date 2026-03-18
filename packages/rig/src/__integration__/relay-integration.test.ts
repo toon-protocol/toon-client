@@ -15,7 +15,7 @@ import type { NostrEvent } from 'nostr-tools/pure';
 import request from 'supertest';
 import type { Express } from 'express';
 
-// --- Imports from @crosstown/rig (DOES NOT EXIST YET) ---
+// --- Imports from @toon-protocol/rig (DOES NOT EXIST YET) ---
 import { createRigApp } from '../app.js';
 import { createInMemoryMetadataStore } from '../storage/metadata-store.js';
 import { createMockRelayPool } from '../relay/mock-relay-pool.js';
@@ -23,7 +23,7 @@ import type { MetadataStore } from '../storage/metadata-store.js';
 import type { RelayPool } from '../relay/relay-pool.js';
 import type { RigAppConfig } from '../app.js';
 
-// --- Imports from @crosstown/core (exists) ---
+// --- Imports from @toon-protocol/core (exists) ---
 import {
   ISSUE_KIND,
   PATCH_KIND,
@@ -31,9 +31,9 @@ import {
   STATUS_APPLIED_KIND,
   STATUS_DRAFT_KIND,
   REPOSITORY_ANNOUNCEMENT_KIND,
-} from '@crosstown/core/nip34';
+} from '@toon-protocol/core/nip34';
 
-// Comment kind (not yet defined as a constant in @crosstown/core/nip34)
+// Comment kind (not yet defined as a constant in @toon-protocol/core/nip34)
 const COMMENT_KIND = 1622;
 
 // ---------------------------------------------------------------------------

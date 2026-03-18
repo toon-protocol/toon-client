@@ -13,7 +13,7 @@ import type {
   OpenChannelParams,
   OpenChannelResult,
   ChannelState,
-} from '@crosstown/core';
+} from '@toon-protocol/core';
 import type { EvmSigner } from '../signing/evm-signer.js';
 
 // TokenNetwork ABI — only the functions we need

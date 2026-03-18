@@ -1,10 +1,10 @@
-import { BTPClient } from '@crosstown/connector';
-import type { ILPPreparePacket } from '@crosstown/connector';
-import type { IlpClient, IlpSendResult } from '@crosstown/core';
+import { BTPClient } from '@toon-protocol/connector';
+import type { ILPPreparePacket } from '@toon-protocol/connector';
+import type { IlpClient, IlpSendResult } from '@toon-protocol/core';
 import type { EVMClaimMessage } from '../signing/evm-signer.js';
 import { withRetry } from '../utils/retry.js';
 
-/** BTP Peer — matches @crosstown/connector's Peer interface */
+/** BTP Peer — matches @toon-protocol/connector's Peer interface */
 interface Peer {
   id: string;
   url: string;
@@ -13,7 +13,7 @@ interface Peer {
   lastSeen: Date;
 }
 
-/** BTP claim protocol constants — matches @crosstown/connector's BTP_CLAIM_PROTOCOL */
+/** BTP claim protocol constants — matches @toon-protocol/connector's BTP_CLAIM_PROTOCOL */
 const BTP_CLAIM_PROTOCOL = {
   NAME: 'payment-channel-claim',
   CONTENT_TYPE: 1,
@@ -51,7 +51,7 @@ function createConsoleLogger(): ConsoleLogger {
   return logger;
 }
 
-/** ILP packet type constants — matches @crosstown/connector's PacketType enum */
+/** ILP packet type constants — matches @toon-protocol/connector's PacketType enum */
 const ILP_PACKET_TYPE = {
   PREPARE: 12,
   FULFILL: 13,
@@ -103,7 +103,7 @@ function isConnectionError(error: Error): boolean {
 
 /**
  * BTP transport implementing IlpClient.
- * Wraps BTPClient from @crosstown/connector with auto-reconnect on connection loss.
+ * Wraps BTPClient from @toon-protocol/connector with auto-reconnect on connection loss.
  */
 export class BtpRuntimeClient implements IlpClient {
   private btpClient: BTPClient | null = null;

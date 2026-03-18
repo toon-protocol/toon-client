@@ -1,10 +1,10 @@
 // Main Client
-export { CrosstownClient } from './CrosstownClient.js';
+export { ToonClient } from './ToonClient.js';
 
 // Types
 export type {
-  CrosstownClientConfig,
-  CrosstownStartResult,
+  ToonClientConfig,
+  ToonStartResult,
   PublishEventResult,
   BalanceProofParams,
   SignedBalanceProof,
@@ -12,7 +12,7 @@ export type {
 
 // Error classes
 export {
-  CrosstownClientError,
+  ToonClientError,
   NetworkError,
   ConnectorError,
   ValidationError,

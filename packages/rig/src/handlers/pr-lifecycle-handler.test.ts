@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createPrLifecycleHandler } from './pr-lifecycle-handler.js';
-import type { HandlerContext } from '@crosstown/sdk';
+import type { HandlerContext } from '@toon-protocol/sdk';
 
 // ============================================================================
 // Factories
