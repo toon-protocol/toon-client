@@ -74,7 +74,7 @@ export async function initializeHttpMode(
     ownIlpAddress: config.ilpInfo.ilpAddress,
     toonEncoder: config.toonEncoder,
     toonDecoder: config.toonDecoder,
-    basePricePerByte: 10n, // Default pricing
+    basePricePerByte: 1n, // Default pricing (1 micro-USDC per byte)
   };
 
   const bootstrapService = new BootstrapService(
