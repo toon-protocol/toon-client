@@ -1,4 +1,4 @@
-import type { ConnectorAdminClient } from '@crosstown/core';
+import type { ConnectorAdminClient } from '@toon-protocol/core';
 import {
   ValidationError,
   NetworkError,
@@ -58,7 +58,7 @@ export interface PeerOperationResult {
  *   id: 'nostr-abc123',
  *   url: 'btp+ws://alice.example.com:3000',
  *   authToken: 'secret-token',
- *   routes: [{ prefix: 'g.crosstown.alice' }]
+ *   routes: [{ prefix: 'g.toon.alice' }]
  * });
  *
  * // Remove peer
@@ -418,7 +418,7 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
    * Handle network errors from HTTP requests.
    *
    * Converts connection failures, timeouts, and unknown errors to NetworkError.
-   * Re-throws existing CrosstownClientError instances.
+   * Re-throws existing ToonClientError instances.
    *
    * @param error - Error thrown by HTTP client
    * @param url - Request URL (for error messages)
@@ -451,7 +451,7 @@ export class HttpConnectorAdmin implements ConnectorAdminClient {
       );
     }
 
-    // Re-throw if already a CrosstownClientError
+    // Re-throw if already a ToonClientError
     if (
       error instanceof ValidationError ||
       error instanceof PeerAlreadyExistsError ||

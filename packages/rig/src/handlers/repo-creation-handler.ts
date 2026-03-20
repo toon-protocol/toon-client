@@ -1,5 +1,5 @@
 /**
- * Repository creation handler for @crosstown/rig.
+ * Repository creation handler for @toon-protocol/rig.
  *
  * Stub: Will be implemented as part of the rig epic.
  * Handles kind:30617 repository announcement events and verifies

@@ -1,5 +1,5 @@
-import { BootstrapService, createDiscoveryTracker } from '@crosstown/core';
-import type { BootstrapServiceConfig } from '@crosstown/core';
+import { BootstrapService, createDiscoveryTracker } from '@toon-protocol/core';
+import type { BootstrapServiceConfig } from '@toon-protocol/core';
 import { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
 import { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
 import { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
@@ -9,12 +9,12 @@ import type { ResolvedConfig } from '../config.js';
 import type { HttpModeInitialization } from './types.js';
 
 /**
- * Initializes HTTP mode for CrosstownClient.
+ * Initializes HTTP mode for ToonClient.
  *
  * HTTP mode uses external connector service via HTTP/WebSocket.
  * This function creates all necessary clients and services for operating in HTTP mode.
  *
- * @param config - CrosstownClient configuration (must have connectorUrl)
+ * @param config - ToonClient configuration (must have connectorUrl)
  * @returns Initialized HTTP mode components
  */
 export async function initializeHttpMode(

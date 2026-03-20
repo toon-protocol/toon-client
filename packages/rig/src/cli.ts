@@ -1,5 +1,5 @@
 /**
- * CLI flag parser for @crosstown/rig.
+ * CLI flag parser for @toon-protocol/rig.
  *
  * Stub: Will be implemented as part of the rig epic.
  */

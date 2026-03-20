@@ -2,7 +2,7 @@
 
 ## Client Fails to Start
 
-**Symptom:** `CrosstownClientError: Failed to start client`
+**Symptom:** `TOONClientError: Failed to start client`
 
 **Solutions:**
 
@@ -12,7 +12,7 @@
    ```
 2. Check connector logs:
    ```bash
-   docker compose -p crosstown-genesis -f docker-compose-genesis.yml logs crosstown
+   docker compose -p toon-genesis -f docker-compose-genesis.yml logs toon
    ```
 3. Verify config has valid `connectorUrl`, `secretKey`, and `ilpInfo`
 
@@ -37,7 +37,7 @@
    ```
 4. Check BLS logs:
    ```bash
-   docker compose -p crosstown-genesis -f docker-compose-genesis.yml logs crosstown
+   docker compose -p toon-genesis -f docker-compose-genesis.yml logs toon
    ```
 
 ---
@@ -56,7 +56,7 @@ lsof -ti:7100 | xargs kill -9  # Nostr relay
 lsof -ti:3100 | xargs kill -9  # BLS
 
 # Restart infrastructure
-docker compose -p crosstown-genesis -f docker-compose-genesis.yml up -d
+docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
 ```
 
 ---
@@ -71,7 +71,7 @@ docker compose -p crosstown-genesis -f docker-compose-genesis.yml up -d
 2. Verify firewall/network settings allow connections to connector ports
 3. Increase timeout in config:
    ```typescript
-   const client = new CrosstownClient({
+   const client = new TOONClient({
      // ...
      queryTimeout: 60000, // 60 seconds
    });

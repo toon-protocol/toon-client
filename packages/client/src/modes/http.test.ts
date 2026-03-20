@@ -50,7 +50,7 @@ describe('initializeHttpMode', () => {
       queryTimeout: 30000,
       maxRetries: 3,
       retryDelay: 1000,
-      destinationAddress: 'g.crosstown.genesis',
+      destinationAddress: 'g.toon.genesis',
     };
   });
 

@@ -4,7 +4,7 @@
  *
  * Flow:
  * 1. Client connects to peer1 (ws://localhost:3010)
- * 2. Client publishes event to genesis relay (g.crosstown.relay)
+ * 2. Client publishes event to genesis relay (g.toon.relay)
  * 3. Peer1 routes ILP packet to genesis connector
  * 4. Genesis delivers to BLS and stores event
  * 5. Verify event appears on genesis relay
@@ -12,13 +12,13 @@
  * Run: pnpm exec tsx packages/client/examples/multi-hop-routing.ts
  */
 
-import { CrosstownClient } from '../src/index.js';
+import { ToonClient } from '../src/index.js';
 import {
   generateSecretKey,
   getPublicKey,
   finalizeEvent,
 } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
 
 async function main() {
   console.log('🚀 Multi-Hop ILP Routing Test\n');
@@ -38,13 +38,13 @@ async function main() {
     '   Can route to: Any destination via per-event destination parameter\n'
   );
 
-  const client = new CrosstownClient({
+  const client = new ToonClient({
     connectorUrl: 'http://localhost:8090', // PEER1 connector
     btpUrl: 'ws://localhost:3010', // PEER1 BTP
     secretKey,
     ilpInfo: {
       pubkey,
-      ilpAddress: `g.crosstown.peer1.${pubkey.slice(0, 8)}`,
+      ilpAddress: `g.toon.peer1.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3010',
       assetCode: 'USD',
       assetScale: 6,
@@ -81,7 +81,7 @@ async function main() {
   console.log('📨 Publishing event via multi-hop route...');
   console.log(`   Event ID: ${event.id.slice(0, 32)}...`);
   console.log(
-    `   Destination: g.crosstown.genesis (via destination parameter)\n`
+    `   Destination: g.toon.genesis (via destination parameter)\n`
   );
 
   // Publish event with explicit destination
@@ -93,7 +93,7 @@ async function main() {
   console.log('   5. Fulfillment returns: Genesis → Peer1 → Client\n');
 
   client
-    .publishEvent(event, { destination: 'g.crosstown.genesis' })
+    .publishEvent(event, { destination: 'g.toon.genesis' })
     .then((result) => {
       if (result.success) {
         console.log('✅ SUCCESS - Multi-hop routing worked!');
@@ -118,12 +118,12 @@ async function main() {
   console.log('');
   console.log('   Check genesis connector logs:');
   console.log(
-    '   $ docker logs crosstown-connector --tail 30 | grep "fulfilled"'
+    '   $ docker logs toon-connector --tail 30 | grep "fulfilled"'
   );
   console.log('');
   console.log('   Check genesis node logs:');
   console.log(
-    '   $ docker logs crosstown-node --tail 30 | grep "Storing event"'
+    '   $ docker logs toon-node --tail 30 | grep "Storing event"'
   );
 
   console.log('\n💡 Expected log entries:');

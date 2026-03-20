@@ -7,10 +7,10 @@
  * proof that the SDK is feature-complete for relay use cases.
  *
  * **Prerequisites:**
- * 1. Genesis node deployed with the SDK-based relay (@crosstown/town):
+ * 1. Genesis node deployed with the SDK-based relay (@toon-protocol/town):
  *    ```bash
  *    # Once packages/town exists and is built:
- *    # deploy-genesis-node.sh using @crosstown/town instead of docker/src/entrypoint.ts
+ *    # deploy-genesis-node.sh using @toon-protocol/town instead of docker/src/entrypoint.ts
  *    ```
  *
  * **Status: GREEN phase**
@@ -35,8 +35,8 @@ import {
   getPublicKey,
   finalizeEvent,
 } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
-import { CrosstownClient } from '../../src/CrosstownClient.js';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
+import { ToonClient } from '../../src/ToonClient.js';
 import { createPublicClient, http, defineChain, type Hex } from 'viem';
 import WebSocket from 'ws';
 
@@ -180,19 +180,19 @@ async function getChannelState(channelId: string) {
 }
 
 /**
- * Create a CrosstownClient configured for E2E testing against the genesis node.
+ * Create a ToonClient configured for E2E testing against the genesis node.
  * Extracted to reduce duplication across test cases.
  */
 function createTestClient(
   secretKey: Uint8Array,
   pubkey: string
-): InstanceType<typeof CrosstownClient> {
-  return new CrosstownClient({
+): InstanceType<typeof ToonClient> {
+  return new ToonClient({
     connectorUrl: CONNECTOR_URL,
     secretKey,
     ilpInfo: {
       pubkey,
-      ilpAddress: `g.crosstown.test.${pubkey.slice(0, 8)}`,
+      ilpAddress: `g.toon.test.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3000',
       assetCode: 'USD',
       assetScale: 6,
@@ -231,7 +231,7 @@ function createTestClient(
 
 // ============================================================================
 // SDK-based relay is now implemented (Stories 2.1-2.3 complete).
-// These tests run against a genesis node deployed with @crosstown/town
+// These tests run against a genesis node deployed with @toon-protocol/town
 // (docker/src/entrypoint-town.ts) instead of docker/src/entrypoint.ts.
 // ============================================================================
 
@@ -265,7 +265,7 @@ describe('SDK-Based Relay Validation (Story 2.3)', () => {
       const blsHealthBody = (await blsHealth.json()) as Record<string, unknown>;
       if (!blsHealthBody['sdk']) {
         console.warn(
-          'Genesis node is not SDK-based. Redeploy with @crosstown/town.'
+          'Genesis node is not SDK-based. Redeploy with @toon-protocol/town.'
         );
         return;
       }

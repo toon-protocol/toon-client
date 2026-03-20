@@ -1,6 +1,6 @@
 import { generateSecretKey } from 'nostr-tools/pure';
 import { ValidationError } from './errors.js';
-import type { CrosstownClientConfig } from './types.js';
+import type { ToonClientConfig } from './types.js';
 
 /**
  * Settlement info produced by buildSettlementInfo().
@@ -15,17 +15,17 @@ export interface ClientSettlementInfo {
 }
 
 /**
- * Validates CrosstownClient configuration.
+ * Validates ToonClient configuration.
  *
  * This story implements HTTP mode only. Embedded mode validation will be added in a future epic.
  *
  * @throws {ValidationError} If configuration is invalid
  */
-export function validateConfig(config: CrosstownClientConfig): void {
+export function validateConfig(config: ToonClientConfig): void {
   // Reject embedded mode (not implemented in this story)
   if (config.connector !== undefined) {
     throw new ValidationError(
-      'Embedded mode not yet implemented in CrosstownClient. Use connectorUrl for HTTP mode.'
+      'Embedded mode not yet implemented in ToonClient. Use connectorUrl for HTTP mode.'
     );
   }
 
@@ -123,7 +123,7 @@ export function validateConfig(config: CrosstownClientConfig): void {
  */
 export type ResolvedConfig = Required<
   Omit<
-    CrosstownClientConfig,
+    ToonClientConfig,
     | 'connector'
     | 'evmPrivateKey'
     | 'supportedChains'
@@ -168,7 +168,7 @@ export type ResolvedConfig = Required<
  * Auto-generates a Nostr keypair when secretKey is omitted.
  * Derives btpUrl from connectorUrl when not provided.
  */
-export function applyDefaults(config: CrosstownClientConfig): ResolvedConfig {
+export function applyDefaults(config: ToonClientConfig): ResolvedConfig {
   // Auto-generate Nostr keypair when secretKey is omitted
   const secretKey = config.secretKey ?? generateSecretKey();
 
@@ -187,8 +187,8 @@ export function applyDefaults(config: CrosstownClientConfig): ResolvedConfig {
 
   // Derive destinationAddress from connectorUrl port when not explicitly provided
   // This provides sensible defaults for local development:
-  // - http://localhost:8080 → g.crosstown.genesis (genesis node)
-  // - http://localhost:8090 → g.crosstown.peer1 (peer1 node)
+  // - http://localhost:8080 → g.toon.genesis (genesis node)
+  // - http://localhost:8090 → g.toon.peer1 (peer1 node)
   // For production, explicitly set destinationAddress in config
   let destinationAddress = config.destinationAddress;
   if (!destinationAddress && config.connectorUrl) {
@@ -197,22 +197,21 @@ export function applyDefaults(config: CrosstownClientConfig): ResolvedConfig {
       if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
         // Map common local ports to known nodes
         if (url.port === '8080') {
-          destinationAddress = 'g.crosstown.genesis';
+          destinationAddress = 'g.toon.genesis';
         } else if (url.port === '8090') {
-          destinationAddress = 'g.crosstown.peer1';
+          destinationAddress = 'g.toon.peer1';
         } else if (url.port === '8100') {
-          destinationAddress = 'g.crosstown.peer2';
+          destinationAddress = 'g.toon.peer2';
         } else {
           // Fallback: use ilpInfo.ilpAddress if available
-          destinationAddress =
-            config.ilpInfo?.ilpAddress || 'g.crosstown.relay';
+          destinationAddress = config.ilpInfo?.ilpAddress || 'g.toon.relay';
         }
       } else {
         // Production: default to ilpInfo.ilpAddress
-        destinationAddress = config.ilpInfo?.ilpAddress || 'g.crosstown.relay';
+        destinationAddress = config.ilpInfo?.ilpAddress || 'g.toon.relay';
       }
     } catch {
-      destinationAddress = config.ilpInfo?.ilpAddress || 'g.crosstown.relay';
+      destinationAddress = config.ilpInfo?.ilpAddress || 'g.toon.relay';
     }
   }
 
@@ -239,7 +238,7 @@ export function applyDefaults(config: CrosstownClientConfig): ResolvedConfig {
  * Returns undefined if no settlement-related config is present.
  */
 export function buildSettlementInfo(
-  config: CrosstownClientConfig
+  config: ToonClientConfig
 ): ClientSettlementInfo | undefined {
   if (
     !config.supportedChains?.length &&

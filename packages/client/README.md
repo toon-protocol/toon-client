@@ -1,6 +1,6 @@
-# @crosstown/client
+# @toon-protocol/client
 
-High-level TypeScript client for publishing Nostr events to the Crosstown protocol — an ILP-gated Nostr relay that enables sustainable relay operation through micropayments.
+High-level TypeScript client for publishing Nostr events to the TOON protocol — an ILP-gated Nostr relay that enables sustainable relay operation through micropayments.
 
 ## What It Does
 
@@ -16,7 +16,7 @@ This client handles:
 ## Installation
 
 ```bash
-pnpm add @crosstown/client @crosstown/core @crosstown/relay nostr-tools
+pnpm add @toon-protocol/client @toon-protocol/core @toon-protocol/relay nostr-tools
 ```
 
 ## Prerequisites
@@ -25,23 +25,23 @@ The client requires external services. Use docker-compose for local development:
 
 ```bash
 # Start genesis node
-docker compose -p crosstown-genesis -f docker-compose-genesis.yml up -d
+docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
 
 # Verify services are healthy
 curl http://localhost:8080/health  # ILP Connector (runtime)
 curl http://localhost:8081/health  # ILP Connector (admin)
-curl http://localhost:3100/health  # Crosstown BLS
+curl http://localhost:3100/health  # TOON BLS
 # Nostr relay on ws://localhost:7100 (WebSocket, no HTTP endpoint)
 
 # Stop infrastructure
-docker compose -p crosstown-genesis -f docker-compose-genesis.yml down
+docker compose -p toon-genesis -f docker-compose-genesis.yml down
 ```
 
 | Service                     | Port | Purpose                                             |
 | --------------------------- | ---- | --------------------------------------------------- |
 | **ILP Connector (Runtime)** | 8080 | Routes ILP packets to relay                         |
 | **ILP Connector (Admin)**   | 8081 | Manages peer configuration                          |
-| **Crosstown BLS**           | 3100 | Validates events, calculates pricing, stores events |
+| **TOON BLS**           | 3100 | Validates events, calculates pricing, stores events |
 | **Nostr Relay**             | 7100 | WebSocket relay for peer discovery (kind:10032)     |
 
 ---
@@ -49,21 +49,21 @@ docker compose -p crosstown-genesis -f docker-compose-genesis.yml down
 ## Quick Start
 
 ```typescript
-import { CrosstownClient } from '@crosstown/client';
+import { TOONClient } from '@toon-protocol/client';
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
 
 // 1. Generate identity — one key gives you both Nostr and EVM identities
 const secretKey = generateSecretKey();
 const pubkey = getPublicKey(secretKey);
 
 // 2. Create client
-const client = new CrosstownClient({
+const client = new TOONClient({
   connectorUrl: 'http://localhost:8080',
   secretKey,
   ilpInfo: {
     pubkey,
-    ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`,
+    ilpAddress: `g.toon.${pubkey.slice(0, 8)}`,
     btpEndpoint: 'ws://localhost:3000',
   },
   toonEncoder: encodeEventToToon,
@@ -78,7 +78,7 @@ console.log(`EVM address: ${client.getEvmAddress()}`);
 
 // 4. Publish event to relay via ILP payment
 const event = finalizeEvent(
-  { kind: 1, content: 'Hello from Crosstown!', tags: [], created_at: Math.floor(Date.now() / 1000) },
+  { kind: 1, content: 'Hello from TOON!', tags: [], created_at: Math.floor(Date.now() / 1000) },
   secretKey,
 );
 
@@ -102,10 +102,10 @@ The client supports EVM-based payment channels for off-chain settlement. Your EV
 To use payment channels, add chain configuration. The client already has your EVM identity from `secretKey`:
 
 ```typescript
-const client = new CrosstownClient({
+const client = new TOONClient({
   connectorUrl: 'http://localhost:8080',
   secretKey,
-  ilpInfo: { pubkey, ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`, btpEndpoint: 'ws://localhost:3000' },
+  ilpInfo: { pubkey, ilpAddress: `g.toon.${pubkey.slice(0, 8)}`, btpEndpoint: 'ws://localhost:3000' },
   toonEncoder: encodeEventToToon,
   toonDecoder: decodeEventFromToon,
 
@@ -141,7 +141,7 @@ await client.publishEvent(event, { claim });
 If you need a different EVM identity than your Nostr key (e.g., hardware wallet or custodial key), pass `evmPrivateKey` explicitly:
 
 ```typescript
-const client = new CrosstownClient({
+const client = new TOONClient({
   // ... required config ...
   evmPrivateKey: '0x...', // Overrides the default derivation from secretKey
 });
@@ -174,7 +174,7 @@ E2E tests require the genesis node infrastructure:
 
 ```bash
 # Start infrastructure
-docker compose -p crosstown-genesis -f docker-compose-genesis.yml up -d
+docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
 sleep 10
 
 # Run E2E tests
@@ -197,9 +197,9 @@ See [examples/client-example/](../../examples/client-example/) for standalone cl
 
 ## Related Packages
 
-- **[@crosstown/core](../core/)** — Core protocol (peer discovery, bootstrap)
-- **[@crosstown/relay](../relay/)** — Nostr relay with ILP payment gating
-- **[@crosstown/bls](../bls/)** — Business Logic Server (pricing, validation, storage)
+- **[@toon-protocol/core](../core/)** — Core protocol (peer discovery, bootstrap)
+- **[@toon-protocol/relay](../relay/)** — Nostr relay with ILP payment gating
+- **[@toon-protocol/bls](../bls/)** — Business Logic Server (pricing, validation, storage)
 
 ---
 

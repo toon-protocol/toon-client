@@ -10,16 +10,16 @@
  * Run: pnpm exec tsx packages/client/examples/publish-to-peer1.ts
  */
 
-import { CrosstownClient } from '../src/index.js';
+import { ToonClient } from '../src/index.js';
 import {
   generateSecretKey,
   getPublicKey,
   finalizeEvent,
 } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
 
 async function main() {
-  console.log('🚀 Crosstown Client - Publish to Peer1\n');
+  console.log('🚀 TOON Client - Publish to Peer1\n');
 
   // 1. Generate identity
   const secretKey = generateSecretKey();
@@ -29,13 +29,13 @@ async function main() {
 
   // 2. Create client (connected to PEER1 instead of genesis)
   console.log('\n🔧 Creating client for peer1...');
-  const client = new CrosstownClient({
+  const client = new ToonClient({
     connectorUrl: 'http://localhost:8090', // PEER1 connector runtime
     btpUrl: 'ws://localhost:3010', // PEER1 connector BTP (IMPORTANT!)
     secretKey,
     ilpInfo: {
       pubkey,
-      ilpAddress: `g.crosstown.peer1.${pubkey.slice(0, 8)}`,
+      ilpAddress: `g.toon.peer1.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3010', // PEER1 connector BTP
       assetCode: 'USD',
       assetScale: 6,
@@ -64,7 +64,7 @@ async function main() {
       kind: 1,
       content: `Hello from peer1! Timestamp: ${timestamp}`,
       tags: [
-        ['client', 'crosstown'],
+        ['client', 'toon'],
         ['node', 'peer1'],
         ['timestamp', timestamp],
       ],
@@ -103,12 +103,12 @@ async function main() {
   console.log(`\n✅ Event published to peer1!`);
   console.log(`\n📊 Verification:`);
   console.log(
-    `   Genesis connector: docker logs crosstown-connector --tail 20 | grep fulfilled`
+    `   Genesis connector: docker logs toon-connector --tail 20 | grep fulfilled`
   );
   console.log(
     `   Peer1 connector:   docker logs connector-peer1 --tail 20 | grep fulfilled`
   );
-  console.log(`   Peer1 node:        docker logs crosstown-peer1 --tail 20`);
+  console.log(`   Peer1 node:        docker logs toon-peer1 --tail 20`);
   console.log(`\n💡 Expected flow:`);
   console.log(`   1. Client → Peer1 connector (ILP packet)`);
   console.log(`   2. Peer1 connector → Peer1 BLS (local delivery)`);

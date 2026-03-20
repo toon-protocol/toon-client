@@ -14,7 +14,7 @@ describe('HttpConnectorAdmin', () => {
     id: 'nostr-abc123',
     url: 'btp+ws://alice.example.com:3000',
     authToken: 'secret-token-abc123',
-    routes: [{ prefix: 'g.crosstown.alice', priority: 1 }],
+    routes: [{ prefix: 'g.toon.alice', priority: 1 }],
     settlement: {
       preference: 'raiden',
       evmAddress: '0x1234567890abcdef',

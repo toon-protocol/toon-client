@@ -8,7 +8,7 @@ import {
   verifyGitAvailable,
   createRepoCreationHandler,
 } from './repo-creation-handler.js';
-import type { HandlerContext } from '@crosstown/sdk';
+import type { HandlerContext } from '@toon-protocol/sdk';
 
 // ============================================================================
 // Factories
@@ -16,7 +16,7 @@ import type { HandlerContext } from '@crosstown/sdk';
 
 /**
  * Factory for creating a mock HandlerContext matching the SDK's pattern.
- * Mirrors the convention from @crosstown/sdk handler-registry.test.ts.
+ * Mirrors the convention from @toon-protocol/sdk handler-registry.test.ts.
  */
 function createMockHandlerContext(
   overrides: Partial<HandlerContext> = {}

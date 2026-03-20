@@ -1,4 +1,4 @@
-import type { IlpClient, IlpSendResult } from '@crosstown/core';
+import type { IlpClient, IlpSendResult } from '@toon-protocol/core';
 import { NetworkError, ConnectorError, ValidationError } from '../errors.js';
 import { withRetry } from '../utils/retry.js';
 
@@ -21,7 +21,7 @@ export interface HttpRuntimeClientConfig {
 /**
  * HTTP client for sending ILP packets to an external connector runtime API.
  *
- * Implements the IlpClient interface for use with Crosstown agents
+ * Implements the IlpClient interface for use with TOON agents
  * that need to send ILP packets without embedding a full connector.
  *
  * Features:
@@ -37,7 +37,7 @@ export interface HttpRuntimeClientConfig {
  * });
  *
  * const result = await client.sendIlpPacket({
- *   destination: 'g.crosstown.alice',
+ *   destination: 'g.toon.alice',
  *   amount: '1000',
  *   data: 'base64EncodedToonData==',
  * });

@@ -1,5 +1,5 @@
 /**
- * Git operations for @crosstown/rig.
+ * Git operations for @toon-protocol/rig.
  *
  * Stub: Will be implemented as part of the rig epic.
  * All git operations use execFile (never exec) to prevent command injection.

@@ -24,10 +24,19 @@ describe('ChannelManager', () => {
     });
 
     it('should initialize with custom nonce and amount', () => {
-      manager.trackChannel(CHANNEL_ID, 5, 10000n);
+      manager.trackChannel(CHANNEL_ID, undefined, 5, 10000n);
 
       expect(manager.getNonce(CHANNEL_ID)).toBe(5);
       expect(manager.getCumulativeAmount(CHANNEL_ID)).toBe(10000n);
+    });
+
+    it('should accept chain context', () => {
+      manager.trackChannel(CHANNEL_ID, {
+        chainId: 421614,
+        tokenNetworkAddress: '0x91d62b1F7C5d1129A64EE3915c480DBF288B1cBa',
+      });
+
+      expect(manager.isTracking(CHANNEL_ID)).toBe(true);
     });
   });
 
@@ -122,7 +131,7 @@ describe('ChannelManager', () => {
 
   describe('session resume with initial values', () => {
     it('should continue from initial nonce and amount', async () => {
-      manager.trackChannel(CHANNEL_ID, 10, 50000n);
+      manager.trackChannel(CHANNEL_ID, undefined, 10, 50000n);
 
       const proof = await manager.signBalanceProof(CHANNEL_ID, 1000n);
 
@@ -184,7 +193,7 @@ describe('ChannelManager', () => {
 
     it('should use provided defaults when store has no persisted state', () => {
       const mgr = new ChannelManager(signer, store);
-      mgr.trackChannel(CHANNEL_ID, 3, 300n);
+      mgr.trackChannel(CHANNEL_ID, undefined, 3, 300n);
 
       expect(mgr.getNonce(CHANNEL_ID)).toBe(3);
       expect(mgr.getCumulativeAmount(CHANNEL_ID)).toBe(300n);

@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type {
@@ -5,26 +6,26 @@ import type {
   DiscoveryTracker,
   IlpSendResult,
   IlpClient,
-} from '@crosstown/core';
+} from '@toon-protocol/core';
 import { validateConfig, applyDefaults } from './config.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
-import { CrosstownClientError } from './errors.js';
+import { ToonClientError } from './errors.js';
 import { EvmSigner } from './signing/evm-signer.js';
 import { ChannelManager } from './channel/ChannelManager.js';
 import { JsonFileChannelStore } from './channel/ChannelStore.js';
 import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
 import type {
-  CrosstownClientConfig,
-  CrosstownStartResult,
+  ToonClientConfig,
+  ToonStartResult,
   PublishEventResult,
   SignedBalanceProof,
 } from './types.js';
 
 /**
- * Internal state for CrosstownClient after initialization.
+ * Internal state for ToonClient after initialization.
  */
-interface CrosstownClientState {
+interface ToonClientState {
   bootstrapService: BootstrapService;
   discoveryTracker: DiscoveryTracker;
   runtimeClient: IlpClient;
@@ -33,25 +34,25 @@ interface CrosstownClientState {
 }
 
 /**
- * CrosstownClient - High-level client for interacting with Crosstown network.
+ * ToonClient - High-level client for interacting with TOON network.
  *
  * This story implements HTTP mode only. Embedded mode will be added in a future epic.
  *
  * @example HTTP Mode
  * ```typescript
- * import { CrosstownClient } from '@crosstown/client';
+ * import { ToonClient } from '@toon-protocol/client';
  * import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
- * import { encodeEvent, decodeEvent } from '@crosstown/relay';
+ * import { encodeEvent, decodeEvent } from '@toon-protocol/relay';
  *
  * const secretKey = generateSecretKey();
  * const pubkey = getPublicKey(secretKey);
  *
- * const client = new CrosstownClient({
+ * const client = new ToonClient({
  *   connectorUrl: 'http://localhost:8080',
  *   secretKey,
  *   ilpInfo: {
  *     pubkey,
- *     ilpAddress: `g.crosstown.${pubkey.slice(0, 8)}`,
+ *     ilpAddress: `g.toon.${pubkey.slice(0, 8)}`,
  *     btpEndpoint: 'ws://localhost:3000',
  *   },
  *   toonEncoder: encodeEvent,
@@ -64,24 +65,24 @@ interface CrosstownClientState {
  * await client.publishEvent(signedEvent);
  *
  * // Publish to specific destination (multi-hop routing)
- * await client.publishEvent(signedEvent, { destination: 'g.crosstown.peer1' });
+ * await client.publishEvent(signedEvent, { destination: 'g.toon.peer1' });
  *
  * await client.stop(); // Cleanup
  * ```
  */
-export class CrosstownClient {
+export class ToonClient {
   private readonly config: ResolvedConfig;
-  private state: CrosstownClientState | null = null;
+  private state: ToonClientState | null = null;
   private readonly evmSigner?: EvmSigner;
   private channelManager?: ChannelManager;
 
   /**
-   * Creates a new CrosstownClient instance.
+   * Creates a new ToonClient instance.
    *
    * @param config - Client configuration
    * @throws {ValidationError} If configuration is invalid
    */
-  constructor(config: CrosstownClientConfig) {
+  constructor(config: ToonClientConfig) {
     // Validate config (will reject embedded mode, require connectorUrl)
     validateConfig(config);
 
@@ -121,7 +122,7 @@ export class CrosstownClient {
   }
 
   /**
-   * Starts the CrosstownClient.
+   * Starts the ToonClient.
    *
    * This will:
    * 1. Initialize HTTP mode components (runtime client, admin client, bootstrap, monitor)
@@ -129,12 +130,12 @@ export class CrosstownClient {
    * 3. Start monitoring relay for new peers (kind:10032 events)
    *
    * @returns Result with number of peers discovered and mode
-   * @throws {CrosstownClientError} If client is already started
-   * @throws {CrosstownClientError} If initialization fails
+   * @throws {ToonClientError} If client is already started
+   * @throws {ToonClientError} If initialization fails
    */
-  async start(): Promise<CrosstownStartResult> {
+  async start(): Promise<ToonStartResult> {
     if (this.state !== null) {
-      throw new CrosstownClientError('Client already started', 'INVALID_STATE');
+      throw new ToonClientError('Client already started', 'INVALID_STATE');
     }
 
     try {
@@ -155,14 +156,18 @@ export class CrosstownClient {
       // Wire claim signer to bootstrap service if we have channel manager
       if (this.channelManager) {
         const cm = this.channelManager;
+        const nostrPubkey = this.getPublicKey();
+        // Derive default chain context from config (first supported chain)
+        const defaultChainCtx = this.getDefaultChainContext();
         bootstrapService.setClaimSigner(
           async (channelId: string, amount: bigint) => {
             // Track the channel if not already tracked
             if (!cm.isTracking(channelId)) {
-              cm.trackChannel(channelId);
+              cm.trackChannel(channelId, defaultChainCtx);
             }
-            // Sign balance proof and return claim
-            return cm.signBalanceProof(channelId, amount);
+            // Sign balance proof and build full claim message
+            const proof = await cm.signBalanceProof(channelId, amount);
+            return EvmSigner.buildClaimMessage(proof, nostrPubkey);
           }
         );
       }
@@ -177,7 +182,8 @@ export class CrosstownClient {
             result.channelId &&
             !this.channelManager.isTracking(result.channelId)
           ) {
-            this.channelManager.trackChannel(result.channelId);
+            const chainCtx = this.getChainContext(result.negotiatedChain);
+            this.channelManager.trackChannel(result.channelId, chainCtx);
           }
         }
       }
@@ -196,7 +202,7 @@ export class CrosstownClient {
         mode: 'http',
       };
     } catch (error) {
-      throw new CrosstownClientError(
+      throw new ToonClientError(
         'Failed to start client',
         'INITIALIZATION_ERROR',
         error instanceof Error ? error : undefined
@@ -212,15 +218,15 @@ export class CrosstownClient {
    * @param event - Signed Nostr event to publish
    * @param options - Optional options including destination and signed balance proof claim
    * @returns Result with success status, event ID, and fulfillment
-   * @throws {CrosstownClientError} If client is not started
-   * @throws {CrosstownClientError} If event publishing fails
+   * @throws {ToonClientError} If client is not started
+   * @throws {ToonClientError} If event publishing fails
    */
   async publishEvent(
     event: NostrEvent,
     options?: { destination?: string; claim?: SignedBalanceProof }
   ): Promise<PublishEventResult> {
     if (!this.state) {
-      throw new CrosstownClientError(
+      throw new ToonClientError(
         'Client not started. Call start() first.',
         'INVALID_STATE'
       );
@@ -238,30 +244,45 @@ export class CrosstownClient {
       const destination =
         options?.destination ?? this.config.destinationAddress;
 
-      let response: IlpSendResult;
+      // Compute ILP execution condition from raw TOON data bytes.
+      // The connector's PaymentHandlerAdapter computes:
+      //   fulfillment = SHA-256(raw_toon_bytes)
+      // So condition = SHA-256(fulfillment) = SHA-256(SHA-256(raw_toon_bytes)).
+      const fulfillment = createHash('sha256')
+        .update(Buffer.from(toonData))
+        .digest();
+      const executionCondition = createHash('sha256')
+        .update(fulfillment)
+        .digest();
 
-      // If claim provided and BTP client available, send with claim
-      if (options?.claim && this.state.btpClient) {
-        const claimMessage = EvmSigner.buildClaimMessage(
-          options.claim,
-          this.getPublicKey()
+      // Require claim + BTP — plain sendIlpPacket is only valid for
+      // node-to-node forwarding (town.ts), not client-to-node.
+      if (!options?.claim) {
+        throw new ToonClientError(
+          'Signed balance proof required. Call signBalanceProof() first.',
+          'MISSING_CLAIM'
         );
-        response = await this.state.btpClient.sendIlpPacketWithClaim(
-          {
-            destination,
-            amount,
-            data: Buffer.from(toonData).toString('base64'),
-          },
-          claimMessage
+      }
+      if (!this.state.btpClient) {
+        throw new ToonClientError(
+          'BTP client required for publishing. Configure btpUrl.',
+          'NO_BTP_CLIENT'
         );
-      } else {
-        // Send ILP packet via runtime client
-        response = await this.state.runtimeClient.sendIlpPacket({
+      }
+
+      const claimMessage = EvmSigner.buildClaimMessage(
+        options.claim,
+        this.getPublicKey()
+      );
+      const response = await this.state.btpClient.sendIlpPacketWithClaim(
+        {
           destination,
           amount,
           data: Buffer.from(toonData).toString('base64'),
-        });
-      }
+          executionCondition,
+        },
+        claimMessage
+      );
 
       if (!response.accepted) {
         return {
@@ -276,7 +297,7 @@ export class CrosstownClient {
         fulfillment: response.fulfillment,
       };
     } catch (error) {
-      throw new CrosstownClientError(
+      throw new ToonClientError(
         'Failed to publish event',
         'PUBLISH_ERROR',
         error instanceof Error ? error : undefined
@@ -291,14 +312,14 @@ export class CrosstownClient {
    * @param channelId - Payment channel identifier
    * @param amount - Additional amount to add to cumulative transferred amount
    * @returns Signed balance proof
-   * @throws {CrosstownClientError} If no EVM signer configured or channel not tracked
+   * @throws {ToonClientError} If no EVM signer configured or channel not tracked
    */
   async signBalanceProof(
     channelId: string,
     amount: bigint
   ): Promise<SignedBalanceProof> {
     if (!this.channelManager) {
-      throw new CrosstownClientError(
+      throw new ToonClientError(
         'No EVM signer configured. Provide evmPrivateKey in config.',
         'NO_EVM_SIGNER'
       );
@@ -314,11 +335,58 @@ export class CrosstownClient {
   }
 
   /**
+   * Gets the current nonce for a tracked channel.
+   */
+  getChannelNonce(channelId: string): number {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    return this.channelManager.getNonce(channelId);
+  }
+
+  /**
+   * Gets the cumulative transferred amount for a tracked channel.
+   */
+  getChannelCumulativeAmount(channelId: string): bigint {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    return this.channelManager.getCumulativeAmount(channelId);
+  }
+
+  /**
+   * Extracts chain context (chainId + tokenNetworkAddress) from a chain key like 'evm:base:421614'.
+   */
+  private getChainContext(
+    negotiatedChain?: string
+  ):
+    | { chainId: number; tokenNetworkAddress: string; tokenAddress?: string }
+    | undefined {
+    if (!negotiatedChain) return undefined;
+    const parts = negotiatedChain.split(':');
+    const chainIdPart = parts.length >= 3 ? parts[2] : undefined;
+    const numericChainId =
+      chainIdPart !== undefined ? parseInt(chainIdPart, 10) : NaN;
+    if (isNaN(numericChainId)) return undefined;
+    const tokenNetworkAddress = this.config.tokenNetworks?.[negotiatedChain];
+    if (!tokenNetworkAddress) return undefined;
+    const tokenAddress = this.config.preferredTokens?.[negotiatedChain];
+    return { chainId: numericChainId, tokenNetworkAddress, tokenAddress };
+  }
+
+  /**
+   * Gets the default chain context from the first supported chain in config.
+   */
+  private getDefaultChainContext():
+    | { chainId: number; tokenNetworkAddress: string; tokenAddress?: string }
+    | undefined {
+    const chains = this.config.supportedChains;
+    if (!chains?.length) return undefined;
+    return this.getChainContext(chains[0]);
+  }
+
+  /**
    * Sends an ILP payment, optionally with a balance proof claim via BTP.
    *
    * @param params - Payment parameters
    * @returns ILP send result
-   * @throws {CrosstownClientError} If client is not started
+   * @throws {ToonClientError} If client is not started
    */
   async sendPayment(params: {
     destination: string;
@@ -327,7 +395,7 @@ export class CrosstownClient {
     claim?: SignedBalanceProof;
   }): Promise<IlpSendResult> {
     if (!this.state) {
-      throw new CrosstownClientError(
+      throw new ToonClientError(
         'Client not started. Call start() first.',
         'INVALID_STATE'
       );
@@ -339,32 +407,40 @@ export class CrosstownClient {
       data: params.data ?? '',
     };
 
-    if (params.claim && this.state.btpClient) {
-      const claimMessage = EvmSigner.buildClaimMessage(
-        params.claim,
-        this.getPublicKey()
+    // Require claim + BTP — plain sendIlpPacket is only valid for
+    // node-to-node forwarding (town.ts), not client-to-node.
+    if (!params.claim) {
+      throw new ToonClientError(
+        'Signed balance proof required. Call signBalanceProof() first.',
+        'MISSING_CLAIM'
       );
-      return this.state.btpClient.sendIlpPacketWithClaim(
-        ilpParams,
-        claimMessage
+    }
+    if (!this.state.btpClient) {
+      throw new ToonClientError(
+        'BTP client required for sending payments. Configure btpUrl.',
+        'NO_BTP_CLIENT'
       );
     }
 
-    return this.state.runtimeClient.sendIlpPacket(ilpParams);
+    const claimMessage = EvmSigner.buildClaimMessage(
+      params.claim,
+      this.getPublicKey()
+    );
+    return this.state.btpClient.sendIlpPacketWithClaim(ilpParams, claimMessage);
   }
 
   /**
-   * Stops the CrosstownClient and cleans up resources.
+   * Stops the ToonClient and cleans up resources.
    *
    * This will:
    * 1. Disconnect BTP client if connected
    * 2. Clear internal state
    *
-   * @throws {CrosstownClientError} If client is not started
+   * @throws {ToonClientError} If client is not started
    */
   async stop(): Promise<void> {
     if (!this.state) {
-      throw new CrosstownClientError('Client not started', 'INVALID_STATE');
+      throw new ToonClientError('Client not started', 'INVALID_STATE');
     }
 
     try {
@@ -376,7 +452,7 @@ export class CrosstownClient {
       // Clear state
       this.state = null;
     } catch (error) {
-      throw new CrosstownClientError(
+      throw new ToonClientError(
         'Failed to stop client',
         'STOP_ERROR',
         error instanceof Error ? error : undefined
@@ -395,11 +471,11 @@ export class CrosstownClient {
    * Gets the number of peers discovered during bootstrap.
    *
    * @returns Number of peers discovered
-   * @throws {CrosstownClientError} If client is not started
+   * @throws {ToonClientError} If client is not started
    */
   getPeersCount(): number {
     if (!this.state) {
-      throw new CrosstownClientError(
+      throw new ToonClientError(
         'Client not started. Call start() first.',
         'INVALID_STATE'
       );
@@ -412,11 +488,11 @@ export class CrosstownClient {
    * Gets the list of peers discovered by the relay monitor.
    *
    * @returns Array of discovered peer objects
-   * @throws {CrosstownClientError} If client is not started
+   * @throws {ToonClientError} If client is not started
    */
   getDiscoveredPeers() {
     if (!this.state) {
-      throw new CrosstownClientError(
+      throw new ToonClientError(
         'Client not started. Call start() first.',
         'INVALID_STATE'
       );

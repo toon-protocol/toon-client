@@ -12,13 +12,13 @@
  * Run: pnpm exec tsx packages/client/examples/with-payment-channels.ts
  */
 
-import { CrosstownClient } from '../src/index.js';
+import { ToonClient } from '../src/index.js';
 import {
   generateSecretKey,
   getPublicKey,
   finalizeEvent,
 } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
 import { createPublicClient, http, defineChain, type Hex } from 'viem';
 
 // Infrastructure endpoints
@@ -97,7 +97,7 @@ async function getChannelState(channelId: string) {
 }
 
 async function main() {
-  console.log('🚀 Crosstown Client - With Payment Channels\n');
+  console.log('🚀 TOON Client - With Payment Channels\n');
 
   // 1. Generate Nostr identity
   const secretKey = generateSecretKey();
@@ -110,13 +110,13 @@ async function main() {
   // 2. Create client with EVM configuration for payment channels
   console.log('\n🔧 Creating client with payment channel support...');
 
-  const client = new CrosstownClient({
+  const client = new ToonClient({
     connectorUrl: CONNECTOR_URL,
     btpUrl: 'ws://localhost:3000',
     secretKey,
     ilpInfo: {
       pubkey,
-      ilpAddress: `g.crosstown.test.${pubkey.slice(0, 8)}`,
+      ilpAddress: `g.toon.test.${pubkey.slice(0, 8)}`,
       btpEndpoint: 'ws://localhost:3000',
       assetCode: 'USD',
       assetScale: 6,

@@ -1,5 +1,5 @@
 /**
- * Web templates for @crosstown/rig.
+ * Web templates for @toon-protocol/rig.
  *
  * Stub: Will be implemented as part of the rig epic.
  * Renders HTML templates for the git forge web UI with XSS prevention.

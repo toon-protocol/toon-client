@@ -4,10 +4,17 @@ import type { BalanceProofParams, SignedBalanceProof } from '../types.js';
 
 /**
  * EVM claim message for BTP protocol data.
- * Matches @crosstown/connector's EVMClaimMessage interface.
+ * Matches @toon-protocol/connector's EVMClaimMessage interface.
+ *
+ * The connector's validateClaimMessage() requires envelope fields
+ * (version, messageId, timestamp) plus EVM claim fields, and optionally
+ * chainId + tokenNetworkAddress for self-describing signature verification.
  */
 export interface EVMClaimMessage {
+  version: '1.0';
   blockchain: 'evm';
+  messageId: string;
+  timestamp: string;
   senderId: string;
   channelId: string;
   nonce: number;
@@ -16,6 +23,12 @@ export interface EVMClaimMessage {
   locksRoot: string;
   signature: string;
   signerAddress: string;
+  /** Chain ID for self-describing EIP-712 verification */
+  chainId: number;
+  /** TokenNetwork address for self-describing EIP-712 verification */
+  tokenNetworkAddress: string;
+  /** ERC-20 token address for self-describing claim verification */
+  tokenAddress?: string;
 }
 
 /**
@@ -88,6 +101,7 @@ export class EvmSigner {
     params: BalanceProofParams & {
       chainId: number;
       tokenNetworkAddress: string;
+      tokenAddress?: string;
     }
   ): Promise<SignedBalanceProof> {
     const domain = getBalanceProofDomain(
@@ -116,6 +130,9 @@ export class EvmSigner {
       locksRoot: params.locksRoot,
       signature,
       signerAddress: this._account.address,
+      chainId: params.chainId,
+      tokenNetworkAddress: params.tokenNetworkAddress,
+      ...(params.tokenAddress && { tokenAddress: params.tokenAddress }),
     };
   }
 
@@ -123,7 +140,7 @@ export class EvmSigner {
    * Builds an EVMClaimMessage from a signed balance proof.
    * Static so it can be called without an EvmSigner instance.
    *
-   * @param proof - Signed balance proof
+   * @param proof - Signed balance proof (includes chainId and tokenNetworkAddress)
    * @param senderId - Nostr pubkey or identifier of the sender
    * @returns EVMClaimMessage compatible with BTP_CLAIM_PROTOCOL
    */
@@ -132,7 +149,10 @@ export class EvmSigner {
     senderId: string
   ): EVMClaimMessage {
     return {
+      version: '1.0',
       blockchain: 'evm',
+      messageId: crypto.randomUUID(),
+      timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, '.000Z'),
       senderId,
       channelId: proof.channelId,
       nonce: proof.nonce,
@@ -141,6 +161,9 @@ export class EvmSigner {
       locksRoot: proof.locksRoot,
       signature: proof.signature,
       signerAddress: proof.signerAddress,
+      chainId: proof.chainId,
+      tokenNetworkAddress: proof.tokenNetworkAddress,
+      ...(proof.tokenAddress && { tokenAddress: proof.tokenAddress }),
     };
   }
 }

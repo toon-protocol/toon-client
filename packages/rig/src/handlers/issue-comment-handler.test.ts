@@ -8,7 +8,7 @@ import {
   createIssueHandler,
   createCommentHandler,
 } from './issue-comment-handler.js';
-import type { HandlerContext } from '@crosstown/sdk';
+import type { HandlerContext } from '@toon-protocol/sdk';
 
 // ============================================================================
 // Factories

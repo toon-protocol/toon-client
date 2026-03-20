@@ -1,6 +1,6 @@
 # E2E Test Setup Guide
 
-This guide explains how to run end-to-end tests for `@crosstown/client` HTTP mode.
+This guide explains how to run end-to-end tests for `@toon-protocol/client` HTTP mode.
 
 ## Prerequisites
 
@@ -23,13 +23,13 @@ If not installed:
 Build the required Docker images from the repository root:
 
 ```bash
-# Build Crosstown image (relay + BLS)
-docker build -f docker/Dockerfile -t crosstown:optimized .
+# Build TOON image (relay + BLS)
+docker build -f docker/Dockerfile -t toon:optimized .
 
 # Build connector image
 cd ../connector
 docker build -t connector:patched .
-cd ../crosstown
+cd ../toon
 ```
 
 ## Running E2E Tests
@@ -39,14 +39,14 @@ cd ../crosstown
 From the repository root, start the genesis node infrastructure:
 
 ```bash
-docker compose -p crosstown-genesis -f docker-compose-genesis.yml up -d
+docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
 ```
 
 Expected output:
 
 ```
-✔ Container crosstown-connector  Started
-✔ Container crosstown-node       Started
+✔ Container toon-connector  Started
+✔ Container toon-node       Started
 ```
 
 ### Step 2: Verify Services Are Healthy
@@ -58,7 +58,7 @@ Wait 5-10 seconds for services to start, then verify:
 curl http://localhost:8080/health
 # Expected: 200 OK or {"status":"ok"}
 
-# Crosstown BLS (required)
+# TOON BLS (required)
 curl http://localhost:3100/health
 # Expected: 200 OK or {"status":"ok"}
 ```
@@ -73,9 +73,9 @@ pnpm test:e2e
 Expected output:
 
 ```
-✓ CrosstownClient HTTP Mode E2E > HTTP Mode Bootstrap and Lifecycle
-✓ CrosstownClient HTTP Mode E2E > Event Publishing via HTTP Connector
-✓ CrosstownClient HTTP Mode E2E > Multiple Client Instances
+✓ TOONClient HTTP Mode E2E > HTTP Mode Bootstrap and Lifecycle
+✓ TOONClient HTTP Mode E2E > Event Publishing via HTTP Connector
+✓ TOONClient HTTP Mode E2E > Multiple Client Instances
 ```
 
 ### Step 4: Stop Infrastructure
@@ -84,10 +84,10 @@ After testing, stop the infrastructure:
 
 ```bash
 # From repository root
-docker compose -p crosstown-genesis -f docker-compose-genesis.yml down
+docker compose -p toon-genesis -f docker-compose-genesis.yml down
 
 # Optional: Remove volumes (clears event database)
-docker compose -p crosstown-genesis -f docker-compose-genesis.yml down -v
+docker compose -p toon-genesis -f docker-compose-genesis.yml down -v
 ```
 
 ## Troubleshooting
@@ -98,7 +98,7 @@ docker compose -p crosstown-genesis -f docker-compose-genesis.yml down -v
 
 **Solution:**
 
-1. Verify infrastructure is running: `docker compose -p crosstown-genesis -f docker-compose-genesis.yml ps`
+1. Verify infrastructure is running: `docker compose -p toon-genesis -f docker-compose-genesis.yml ps`
 2. Check service health:
    ```bash
    curl http://localhost:8080/health  # Connector
@@ -106,8 +106,8 @@ docker compose -p crosstown-genesis -f docker-compose-genesis.yml down -v
    ```
 3. If services are not healthy, check logs:
    ```bash
-   docker compose -p crosstown-genesis -f docker-compose-genesis.yml logs connector
-   docker compose -p crosstown-genesis -f docker-compose-genesis.yml logs crosstown-node
+   docker compose -p toon-genesis -f docker-compose-genesis.yml logs connector
+   docker compose -p toon-genesis -f docker-compose-genesis.yml logs toon-node
    ```
 
 ### Port Conflicts
@@ -133,12 +133,12 @@ lsof -ti:3100 | xargs kill -9
 Then restart infrastructure:
 
 ```bash
-docker compose -p crosstown-genesis -f docker-compose-genesis.yml up -d
+docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
 ```
 
 ### Images Not Found
 
-**Symptom:** `Error: pull access denied for crosstown:optimized`
+**Symptom:** `Error: pull access denied for toon:optimized`
 
 **Solution:**
 Build the images first (see Prerequisites step 2 above).
@@ -151,15 +151,15 @@ Build the images first (see Prerequisites step 2 above).
 
 1. Check if connector container is running:
    ```bash
-   docker compose -p crosstown-genesis -f docker-compose-genesis.yml ps
+   docker compose -p toon-genesis -f docker-compose-genesis.yml ps
    ```
 2. Check connector logs:
    ```bash
-   docker compose -p crosstown-genesis -f docker-compose-genesis.yml logs connector
+   docker compose -p toon-genesis -f docker-compose-genesis.yml logs connector
    ```
 3. Restart infrastructure:
    ```bash
-   docker compose -p crosstown-genesis -f docker-compose-genesis.yml restart
+   docker compose -p toon-genesis -f docker-compose-genesis.yml restart
    ```
 
 ### BLS Health Check Fails
@@ -168,13 +168,13 @@ Build the images first (see Prerequisites step 2 above).
 
 **Solution:**
 
-1. Check if crosstown-node container is running:
+1. Check if toon-node container is running:
    ```bash
-   docker compose -p crosstown-genesis -f docker-compose-genesis.yml ps
+   docker compose -p toon-genesis -f docker-compose-genesis.yml ps
    ```
 2. Check BLS logs:
    ```bash
-   docker compose -p crosstown-genesis -f docker-compose-genesis.yml logs crosstown-node
+   docker compose -p toon-genesis -f docker-compose-genesis.yml logs toon-node
    ```
 3. Verify BLS config in docker-compose-genesis.yml
 
@@ -195,23 +195,23 @@ Build the images first (see Prerequisites step 2 above).
 You can also test the client manually using the infrastructure:
 
 ```javascript
-import { CrosstownClient } from '@crosstown/client';
+import { TOONClient } from '@toon-protocol/client';
 import {
   generateSecretKey,
   getPublicKey,
   finalizeEvent,
 } from 'nostr-tools/pure';
-import { encodeEventToToon, decodeEventFromToon } from '@crosstown/relay';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
 
 const secretKey = generateSecretKey();
 const pubkey = getPublicKey(secretKey);
 
-const client = new CrosstownClient({
+const client = new TOONClient({
   connectorUrl: 'http://localhost:8080',
   secretKey,
   ilpInfo: {
     pubkey,
-    ilpAddress: `g.crosstown.test.${pubkey.slice(0, 8)}`,
+    ilpAddress: `g.toon.test.${pubkey.slice(0, 8)}`,
     btpEndpoint: 'ws://test:3000',
   },
   toonEncoder: encodeEventToToon,
@@ -224,7 +224,7 @@ await client.start();
 const event = finalizeEvent(
   {
     kind: 1,
-    content: 'Hello from Crosstown!',
+    content: 'Hello from TOON!',
     tags: [],
     created_at: Math.floor(Date.now() / 1000),
   },
@@ -246,7 +246,7 @@ To run E2E tests in CI:
 ```yaml
 # Example GitHub Actions workflow
 - name: Start Infrastructure
-  run: docker compose -p crosstown-genesis -f docker-compose-genesis.yml up -d
+  run: docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
 
 - name: Wait for Services
   run: |
@@ -258,7 +258,7 @@ To run E2E tests in CI:
   run: cd packages/client && pnpm test:e2e
 
 - name: Stop Infrastructure
-  run: docker compose -p crosstown-genesis -f docker-compose-genesis.yml down
+  run: docker compose -p toon-genesis -f docker-compose-genesis.yml down
 ```
 
 ## Further Reading
