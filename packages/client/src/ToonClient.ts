@@ -357,7 +357,8 @@ export class ToonClient {
   ): { chainId: number; tokenNetworkAddress: string; tokenAddress?: string } | undefined {
     if (!negotiatedChain) return undefined;
     const parts = negotiatedChain.split(':');
-    const numericChainId = parts.length >= 3 ? parseInt(parts[2]!, 10) : NaN;
+    const chainIdPart = parts.length >= 3 ? parts[2] : undefined;
+    const numericChainId = chainIdPart !== undefined ? parseInt(chainIdPart, 10) : NaN;
     if (isNaN(numericChainId)) return undefined;
     const tokenNetworkAddress =
       this.config.tokenNetworks?.[negotiatedChain];
