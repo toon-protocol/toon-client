@@ -207,6 +207,7 @@ export class BtpRuntimeClient implements IlpClient {
       amount: string;
       data: string;
       timeout?: number;
+      executionCondition?: Buffer;
     },
     claim: EVMClaimMessage
   ): Promise<IlpSendResult> {
@@ -229,6 +230,7 @@ export class BtpRuntimeClient implements IlpClient {
     amount: string;
     data: string;
     timeout?: number;
+    executionCondition?: Buffer;
   }): Promise<IlpSendResult> {
     if (!this._isConnected) {
       await this.reconnect();
@@ -238,7 +240,7 @@ export class BtpRuntimeClient implements IlpClient {
       type: ILP_PACKET_TYPE.PREPARE,
       amount: BigInt(params.amount),
       destination: params.destination,
-      executionCondition: Buffer.alloc(32),
+      executionCondition: params.executionCondition ?? Buffer.alloc(32),
       expiresAt: new Date(Date.now() + (params.timeout ?? 30000)),
       data: Buffer.from(params.data, 'base64'),
     } as ILPPreparePacket;
@@ -270,6 +272,7 @@ export class BtpRuntimeClient implements IlpClient {
 
   /**
    * Single-attempt claim + ILP packet send. Reconnects if not connected.
+   * Embeds the claim in the same BTP message as the ILP PREPARE packet.
    */
   private async _sendIlpPacketWithClaimOnce(
     params: {
@@ -277,6 +280,7 @@ export class BtpRuntimeClient implements IlpClient {
       amount: string;
       data: string;
       timeout?: number;
+      executionCondition?: Buffer;
     },
     claim: EVMClaimMessage
   ): Promise<IlpSendResult> {
@@ -284,17 +288,46 @@ export class BtpRuntimeClient implements IlpClient {
       await this.reconnect();
     }
 
-    // Send claim as BTP protocol data first
     if (!this.btpClient) {
       throw new Error('BTP client not connected');
     }
-    await this.btpClient.sendProtocolData(
-      BTP_CLAIM_PROTOCOL.NAME,
-      BTP_CLAIM_PROTOCOL.CONTENT_TYPE,
-      Buffer.from(JSON.stringify(claim))
-    );
 
-    // Then send the ILP packet
-    return this._sendIlpPacketOnce(params);
+    const packet = {
+      type: ILP_PACKET_TYPE.PREPARE,
+      amount: BigInt(params.amount),
+      destination: params.destination,
+      executionCondition: params.executionCondition ?? Buffer.alloc(32),
+      expiresAt: new Date(Date.now() + (params.timeout ?? 30000)),
+      data: Buffer.from(params.data, 'base64'),
+    } as ILPPreparePacket;
+
+    // Send ILP packet with claim embedded in the same BTP message
+    const protocolData = [
+      {
+        protocolName: BTP_CLAIM_PROTOCOL.NAME,
+        contentType: BTP_CLAIM_PROTOCOL.CONTENT_TYPE,
+        data: Buffer.from(JSON.stringify(claim)),
+      },
+    ];
+
+    const response = await this.btpClient.sendPacket(packet, protocolData);
+
+    if (response.type === ILP_PACKET_TYPE.FULFILL) {
+      const fulfill = response as unknown as BtpFulfillResponse;
+      return {
+        accepted: true,
+        fulfillment: fulfill.fulfillment.toString('base64'),
+        data:
+          fulfill.data.length > 0 ? fulfill.data.toString('base64') : undefined,
+      };
+    }
+
+    const reject = response as unknown as BtpRejectResponse;
+    return {
+      accepted: false,
+      code: reject.code,
+      message: reject.message,
+      data: reject.data.length > 0 ? reject.data.toString('base64') : undefined,
+    };
   }
 }

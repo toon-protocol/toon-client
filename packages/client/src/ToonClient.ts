@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type {
@@ -155,14 +156,18 @@ export class ToonClient {
       // Wire claim signer to bootstrap service if we have channel manager
       if (this.channelManager) {
         const cm = this.channelManager;
+        const nostrPubkey = this.getPublicKey();
+        // Derive default chain context from config (first supported chain)
+        const defaultChainCtx = this.getDefaultChainContext();
         bootstrapService.setClaimSigner(
           async (channelId: string, amount: bigint) => {
             // Track the channel if not already tracked
             if (!cm.isTracking(channelId)) {
-              cm.trackChannel(channelId);
+              cm.trackChannel(channelId, defaultChainCtx);
             }
-            // Sign balance proof and return claim
-            return cm.signBalanceProof(channelId, amount);
+            // Sign balance proof and build full claim message
+            const proof = await cm.signBalanceProof(channelId, amount);
+            return EvmSigner.buildClaimMessage(proof, nostrPubkey);
           }
         );
       }
@@ -177,7 +182,11 @@ export class ToonClient {
             result.channelId &&
             !this.channelManager.isTracking(result.channelId)
           ) {
-            this.channelManager.trackChannel(result.channelId);
+            const chainCtx = this.getChainContext(result.negotiatedChain);
+            this.channelManager.trackChannel(
+              result.channelId,
+              chainCtx
+            );
           }
         }
       }
@@ -238,30 +247,41 @@ export class ToonClient {
       const destination =
         options?.destination ?? this.config.destinationAddress;
 
-      let response: IlpSendResult;
+      // Compute ILP execution condition from raw TOON data bytes.
+      // The connector's PaymentHandlerAdapter computes:
+      //   fulfillment = SHA-256(raw_toon_bytes)
+      // So condition = SHA-256(fulfillment) = SHA-256(SHA-256(raw_toon_bytes)).
+      const fulfillment = createHash('sha256').update(Buffer.from(toonData)).digest();
+      const executionCondition = createHash('sha256').update(fulfillment).digest();
 
-      // If claim provided and BTP client available, send with claim
-      if (options?.claim && this.state.btpClient) {
-        const claimMessage = EvmSigner.buildClaimMessage(
-          options.claim,
-          this.getPublicKey()
+      // Require claim + BTP — plain sendIlpPacket is only valid for
+      // node-to-node forwarding (town.ts), not client-to-node.
+      if (!options?.claim) {
+        throw new ToonClientError(
+          'Signed balance proof required. Call signBalanceProof() first.',
+          'MISSING_CLAIM'
         );
-        response = await this.state.btpClient.sendIlpPacketWithClaim(
-          {
-            destination,
-            amount,
-            data: Buffer.from(toonData).toString('base64'),
-          },
-          claimMessage
+      }
+      if (!this.state.btpClient) {
+        throw new ToonClientError(
+          'BTP client required for publishing. Configure btpUrl.',
+          'NO_BTP_CLIENT'
         );
-      } else {
-        // Send ILP packet via runtime client
-        response = await this.state.runtimeClient.sendIlpPacket({
+      }
+
+      const claimMessage = EvmSigner.buildClaimMessage(
+        options.claim,
+        this.getPublicKey()
+      );
+      const response = await this.state.btpClient.sendIlpPacketWithClaim(
+        {
           destination,
           amount,
           data: Buffer.from(toonData).toString('base64'),
-        });
-      }
+          executionCondition,
+        },
+        claimMessage
+      );
 
       if (!response.accepted) {
         return {
@@ -314,6 +334,50 @@ export class ToonClient {
   }
 
   /**
+   * Gets the current nonce for a tracked channel.
+   */
+  getChannelNonce(channelId: string): number {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    return this.channelManager.getNonce(channelId);
+  }
+
+  /**
+   * Gets the cumulative transferred amount for a tracked channel.
+   */
+  getChannelCumulativeAmount(channelId: string): bigint {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    return this.channelManager.getCumulativeAmount(channelId);
+  }
+
+  /**
+   * Extracts chain context (chainId + tokenNetworkAddress) from a chain key like 'evm:base:421614'.
+   */
+  private getChainContext(
+    negotiatedChain?: string
+  ): { chainId: number; tokenNetworkAddress: string; tokenAddress?: string } | undefined {
+    if (!negotiatedChain) return undefined;
+    const parts = negotiatedChain.split(':');
+    const numericChainId = parts.length >= 3 ? parseInt(parts[2]!, 10) : NaN;
+    if (isNaN(numericChainId)) return undefined;
+    const tokenNetworkAddress =
+      this.config.tokenNetworks?.[negotiatedChain];
+    if (!tokenNetworkAddress) return undefined;
+    const tokenAddress = this.config.preferredTokens?.[negotiatedChain];
+    return { chainId: numericChainId, tokenNetworkAddress, tokenAddress };
+  }
+
+  /**
+   * Gets the default chain context from the first supported chain in config.
+   */
+  private getDefaultChainContext():
+    | { chainId: number; tokenNetworkAddress: string; tokenAddress?: string }
+    | undefined {
+    const chains = this.config.supportedChains;
+    if (!chains?.length) return undefined;
+    return this.getChainContext(chains[0]);
+  }
+
+  /**
    * Sends an ILP payment, optionally with a balance proof claim via BTP.
    *
    * @param params - Payment parameters
@@ -339,18 +403,29 @@ export class ToonClient {
       data: params.data ?? '',
     };
 
-    if (params.claim && this.state.btpClient) {
-      const claimMessage = EvmSigner.buildClaimMessage(
-        params.claim,
-        this.getPublicKey()
+    // Require claim + BTP — plain sendIlpPacket is only valid for
+    // node-to-node forwarding (town.ts), not client-to-node.
+    if (!params.claim) {
+      throw new ToonClientError(
+        'Signed balance proof required. Call signBalanceProof() first.',
+        'MISSING_CLAIM'
       );
-      return this.state.btpClient.sendIlpPacketWithClaim(
-        ilpParams,
-        claimMessage
+    }
+    if (!this.state.btpClient) {
+      throw new ToonClientError(
+        'BTP client required for sending payments. Configure btpUrl.',
+        'NO_BTP_CLIENT'
       );
     }
 
-    return this.state.runtimeClient.sendIlpPacket(ilpParams);
+    const claimMessage = EvmSigner.buildClaimMessage(
+      params.claim,
+      this.getPublicKey()
+    );
+    return this.state.btpClient.sendIlpPacketWithClaim(
+      ilpParams,
+      claimMessage
+    );
   }
 
   /**

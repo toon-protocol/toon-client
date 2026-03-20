@@ -229,4 +229,10 @@ export interface SignedBalanceProof extends BalanceProofParams {
   signature: string;
   /** Address of the signer */
   signerAddress: string;
+  /** Chain ID used in EIP-712 domain (e.g. 421614 for Arb Sepolia) */
+  chainId: number;
+  /** TokenNetwork contract address used in EIP-712 domain */
+  tokenNetworkAddress: string;
+  /** ERC-20 token address (e.g. USDC) for self-describing claim verification */
+  tokenAddress?: string;
 }

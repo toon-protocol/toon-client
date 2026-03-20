@@ -169,7 +169,7 @@ describe('EvmSigner', () => {
   });
 
   describe('buildClaimMessage', () => {
-    it('should produce valid EVMClaimMessage shape', () => {
+    it('should produce valid EVMClaimMessage shape with envelope fields', () => {
       const proof: SignedBalanceProof = {
         channelId: '0x' + 'dd'.repeat(32),
         nonce: 3,
@@ -178,10 +178,20 @@ describe('EvmSigner', () => {
         locksRoot: ZERO_BYTES32,
         signature: '0xabcdef',
         signerAddress: '0x1234567890123456789012345678901234567890',
+        chainId: TEST_CHAIN_ID,
+        tokenNetworkAddress: TEST_TOKEN_NETWORK,
       };
 
       const claim = EvmSigner.buildClaimMessage(proof, 'nostr-pubkey-abc');
 
+      // Envelope fields
+      expect(claim.version).toBe('1.0');
+      expect(claim.messageId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+      );
+      expect(claim.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+      // EVM claim fields
       expect(claim.blockchain).toBe('evm');
       expect(claim.senderId).toBe('nostr-pubkey-abc');
       expect(claim.channelId).toBe(proof.channelId);
@@ -191,6 +201,10 @@ describe('EvmSigner', () => {
       expect(claim.locksRoot).toBe(ZERO_BYTES32);
       expect(claim.signature).toBe('0xabcdef');
       expect(claim.signerAddress).toBe(proof.signerAddress);
+
+      // Self-describing chain context
+      expect(claim.chainId).toBe(TEST_CHAIN_ID);
+      expect(claim.tokenNetworkAddress).toBe(TEST_TOKEN_NETWORK);
     });
   });
 });

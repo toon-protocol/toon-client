@@ -1,6 +1,6 @@
 {
   "name": "@toon-protocol/client",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "TOON client for ILP-gated Nostr publishing with multi-hop routing and payment channels",
   "license": "MIT",
   "author": "Jonathan Green",
@@ -37,7 +37,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@toon-protocol/connector": "^1.7.1",
+    "@toon-protocol/connector": "^1.8.1",
     "@toon-protocol/core": "workspace:*",
     "nostr-tools": "^2.20.0",
     "viem": "^2.0.0"

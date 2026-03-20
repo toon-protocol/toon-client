@@ -5,6 +5,9 @@ import type { ChannelStore } from './ChannelStore.js';
 interface ChannelTracking {
   nonce: number;
   cumulativeAmount: bigint;
+  chainId: number;
+  tokenNetworkAddress: string;
+  tokenAddress?: string;
 }
 
 /**
@@ -28,10 +31,21 @@ export class ChannelManager {
    * Called after bootstrap returns a channelId.
    *
    * @param channelId - Payment channel identifier
+   * @param chainContext - Chain context for EIP-712 signing (chainId + tokenNetworkAddress)
    * @param initialNonce - Starting nonce (default: 0)
    * @param initialAmount - Starting cumulative amount (default: 0n)
    */
-  trackChannel(channelId: string, initialNonce = 0, initialAmount = 0n): void {
+  trackChannel(
+    channelId: string,
+    chainContext?: { chainId: number; tokenNetworkAddress: string; tokenAddress?: string },
+    initialNonce = 0,
+    initialAmount = 0n
+  ): void {
+    const cId = chainContext?.chainId ?? 31337;
+    const tnAddr =
+      chainContext?.tokenNetworkAddress ??
+      '0x0000000000000000000000000000000000000000';
+
     // If store has persisted state for this channel, resume from it
     if (this.store) {
       const persisted = this.store.load(channelId);
@@ -39,6 +53,9 @@ export class ChannelManager {
         this.channels.set(channelId, {
           nonce: persisted.nonce,
           cumulativeAmount: persisted.cumulativeAmount,
+          chainId: cId,
+          tokenNetworkAddress: tnAddr,
+          tokenAddress: chainContext?.tokenAddress,
         });
         return;
       }
@@ -47,6 +64,9 @@ export class ChannelManager {
     this.channels.set(channelId, {
       nonce: initialNonce,
       cumulativeAmount: initialAmount,
+      chainId: cId,
+      tokenNetworkAddress: tnAddr,
+      tokenAddress: chainContext?.tokenAddress,
     });
   }
 
@@ -81,9 +101,6 @@ export class ChannelManager {
       });
     }
 
-    // Note: chainId and tokenNetworkAddress are needed for EIP-712 signing.
-    // In the full flow, these would come from the channel context.
-    // For now, we use placeholder values that the caller can override.
     return this.evmSigner.signBalanceProof({
       channelId,
       nonce: tracking.nonce,
@@ -91,8 +108,9 @@ export class ChannelManager {
       lockedAmount: 0n,
       locksRoot:
         '0x0000000000000000000000000000000000000000000000000000000000000000',
-      chainId: 31337, // Default — will be configurable via channel context
-      tokenNetworkAddress: '0x0000000000000000000000000000000000000000',
+      chainId: tracking.chainId,
+      tokenNetworkAddress: tracking.tokenNetworkAddress,
+      tokenAddress: tracking.tokenAddress,
     });
   }
 

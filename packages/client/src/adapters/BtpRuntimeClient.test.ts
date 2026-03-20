@@ -27,6 +27,26 @@ vi.mock('@toon-protocol/connector', () => {
 
 import { BtpRuntimeClient } from './BtpRuntimeClient.js';
 
+/** Test claim factory — includes all fields required by connector's validateClaimMessage */
+function makeTestClaim() {
+  return {
+    version: '1.0' as const,
+    blockchain: 'evm' as const,
+    messageId: 'test-msg-id',
+    timestamp: '2026-03-19T00:00:00.000Z',
+    senderId: 'test',
+    channelId: '0x' + '12'.repeat(32),
+    nonce: 1,
+    transferredAmount: '1000',
+    lockedAmount: '0',
+    locksRoot: '0x' + '00'.repeat(32),
+    signature: '0x' + 'ab'.repeat(65),
+    signerAddress: '0x' + '11'.repeat(20),
+    chainId: 421614,
+    tokenNetworkAddress: '0x' + '99'.repeat(20),
+  };
+}
+
 describe('BtpRuntimeClient', () => {
   let client: BtpRuntimeClient;
 
@@ -203,67 +223,45 @@ describe('BtpRuntimeClient', () => {
       await client.connect();
     });
 
-    it('should send claim protocol data then ILP packet', async () => {
-      mockSendProtocolData.mockResolvedValue(undefined);
+    it('should send claim embedded in the same BTP message as ILP packet', async () => {
       mockSendPacket.mockResolvedValue({
         type: ILP_PACKET_TYPE.FULFILL,
         fulfillment: Buffer.alloc(32),
         data: Buffer.alloc(0),
       });
 
-      const claim = {
-        blockchain: 'evm' as const,
-        senderId: 'test',
-        channelId: '0x1234',
-        nonce: 1,
-        transferredAmount: '1000',
-        lockedAmount: '0',
-        locksRoot: '0x0000',
-        signature: '0xabcd',
-        signerAddress: '0x1111',
-      };
+      const claim = makeTestClaim();
 
       const result = await client.sendIlpPacketWithClaim(
         { destination: 'g.test', amount: '1000', data: '' },
         claim
       );
 
-      expect(mockSendProtocolData).toHaveBeenCalledWith(
-        'payment-channel-claim',
-        1,
-        expect.any(Buffer)
-      );
       expect(result.accepted).toBe(true);
-
-      // Verify claim was sent before packet
-      const protocolCallOrder =
-        mockSendProtocolData.mock.invocationCallOrder[0];
-      const packetCallOrder = mockSendPacket.mock.invocationCallOrder[0];
-      expect(protocolCallOrder).toBeLessThan(packetCallOrder!);
+      // Verify sendPacket was called with protocolData containing the claim
+      expect(mockSendPacket).toHaveBeenCalledWith(
+        expect.objectContaining({ destination: 'g.test' }),
+        [
+          {
+            protocolName: 'payment-channel-claim',
+            contentType: 1,
+            data: expect.any(Buffer),
+          },
+        ]
+      );
     });
 
     it('should auto-reconnect on connection error during claim send', async () => {
-      mockSendProtocolData
+      mockSendPacket
         .mockRejectedValueOnce(new Error('WebSocket closed'))
-        .mockResolvedValueOnce(undefined);
-      mockSendPacket.mockResolvedValue({
-        type: ILP_PACKET_TYPE.FULFILL,
-        fulfillment: Buffer.alloc(32),
-        data: Buffer.alloc(0),
-      });
+        .mockResolvedValueOnce({
+          type: ILP_PACKET_TYPE.FULFILL,
+          fulfillment: Buffer.alloc(32),
+          data: Buffer.alloc(0),
+        });
       mockDisconnect.mockResolvedValue(undefined);
 
-      const claim = {
-        blockchain: 'evm' as const,
-        senderId: 'test',
-        channelId: '0x1234',
-        nonce: 1,
-        transferredAmount: '1000',
-        lockedAmount: '0',
-        locksRoot: '0x0000',
-        signature: '0xabcd',
-        signerAddress: '0x1111',
-      };
+      const claim = makeTestClaim();
 
       const resultPromise = client.sendIlpPacketWithClaim(
         { destination: 'g.test', amount: '1000', data: '' },
@@ -288,17 +286,7 @@ describe('BtpRuntimeClient', () => {
 
       mockConnect.mockRejectedValue(new Error('ECONNREFUSED'));
 
-      const claim = {
-        blockchain: 'evm' as const,
-        senderId: 'test',
-        channelId: '0x1234',
-        nonce: 1,
-        transferredAmount: '1000',
-        lockedAmount: '0',
-        locksRoot: '0x0000',
-        signature: '0xabcd',
-        signerAddress: '0x1111',
-      };
+      const claim = makeTestClaim();
 
       await expect(
         disconnectedClient.sendIlpPacketWithClaim(
