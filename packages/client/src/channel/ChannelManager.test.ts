@@ -31,7 +31,10 @@ describe('ChannelManager', () => {
     });
 
     it('should accept chain context', () => {
-      manager.trackChannel(CHANNEL_ID, { chainId: 421614, tokenNetworkAddress: '0x91d62b1F7C5d1129A64EE3915c480DBF288B1cBa' });
+      manager.trackChannel(CHANNEL_ID, {
+        chainId: 421614,
+        tokenNetworkAddress: '0x91d62b1F7C5d1129A64EE3915c480DBF288B1cBa',
+      });
 
       expect(manager.isTracking(CHANNEL_ID)).toBe(true);
     });

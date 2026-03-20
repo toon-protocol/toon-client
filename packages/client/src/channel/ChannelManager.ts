@@ -37,7 +37,11 @@ export class ChannelManager {
    */
   trackChannel(
     channelId: string,
-    chainContext?: { chainId: number; tokenNetworkAddress: string; tokenAddress?: string },
+    chainContext?: {
+      chainId: number;
+      tokenNetworkAddress: string;
+      tokenAddress?: string;
+    },
     initialNonce = 0,
     initialAmount = 0n
   ): void {

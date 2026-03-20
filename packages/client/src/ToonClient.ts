@@ -183,10 +183,7 @@ export class ToonClient {
             !this.channelManager.isTracking(result.channelId)
           ) {
             const chainCtx = this.getChainContext(result.negotiatedChain);
-            this.channelManager.trackChannel(
-              result.channelId,
-              chainCtx
-            );
+            this.channelManager.trackChannel(result.channelId, chainCtx);
           }
         }
       }
@@ -251,8 +248,12 @@ export class ToonClient {
       // The connector's PaymentHandlerAdapter computes:
       //   fulfillment = SHA-256(raw_toon_bytes)
       // So condition = SHA-256(fulfillment) = SHA-256(SHA-256(raw_toon_bytes)).
-      const fulfillment = createHash('sha256').update(Buffer.from(toonData)).digest();
-      const executionCondition = createHash('sha256').update(fulfillment).digest();
+      const fulfillment = createHash('sha256')
+        .update(Buffer.from(toonData))
+        .digest();
+      const executionCondition = createHash('sha256')
+        .update(fulfillment)
+        .digest();
 
       // Require claim + BTP — plain sendIlpPacket is only valid for
       // node-to-node forwarding (town.ts), not client-to-node.
@@ -354,14 +355,16 @@ export class ToonClient {
    */
   private getChainContext(
     negotiatedChain?: string
-  ): { chainId: number; tokenNetworkAddress: string; tokenAddress?: string } | undefined {
+  ):
+    | { chainId: number; tokenNetworkAddress: string; tokenAddress?: string }
+    | undefined {
     if (!negotiatedChain) return undefined;
     const parts = negotiatedChain.split(':');
     const chainIdPart = parts.length >= 3 ? parts[2] : undefined;
-    const numericChainId = chainIdPart !== undefined ? parseInt(chainIdPart, 10) : NaN;
+    const numericChainId =
+      chainIdPart !== undefined ? parseInt(chainIdPart, 10) : NaN;
     if (isNaN(numericChainId)) return undefined;
-    const tokenNetworkAddress =
-      this.config.tokenNetworks?.[negotiatedChain];
+    const tokenNetworkAddress = this.config.tokenNetworks?.[negotiatedChain];
     if (!tokenNetworkAddress) return undefined;
     const tokenAddress = this.config.preferredTokens?.[negotiatedChain];
     return { chainId: numericChainId, tokenNetworkAddress, tokenAddress };
@@ -423,10 +426,7 @@ export class ToonClient {
       params.claim,
       this.getPublicKey()
     );
-    return this.state.btpClient.sendIlpPacketWithClaim(
-      ilpParams,
-      claimMessage
-    );
+    return this.state.btpClient.sendIlpPacketWithClaim(ilpParams, claimMessage);
   }
 
   /**
