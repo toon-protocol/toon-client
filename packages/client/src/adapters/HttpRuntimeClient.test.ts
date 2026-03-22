@@ -239,7 +239,6 @@ describe('HttpRuntimeClient', () => {
         status: 200,
         json: async () => ({
           accepted: true,
-          fulfillment: 'test-fulfillment-base64',
         }),
       });
 
@@ -256,7 +255,6 @@ describe('HttpRuntimeClient', () => {
 
       expect(result).toEqual({
         accepted: true,
-        fulfillment: 'test-fulfillment-base64',
         data: undefined,
         code: undefined,
         message: undefined,
@@ -300,7 +298,6 @@ describe('HttpRuntimeClient', () => {
 
       expect(result).toEqual({
         accepted: false,
-        fulfillment: undefined,
         data: undefined,
         code: 'F99',
         message: 'Insufficient balance',
@@ -549,7 +546,6 @@ describe('HttpRuntimeClient', () => {
           status: 200,
           json: async () => ({
             accepted: true,
-            fulfillment: 'success-after-retry',
           }),
         });
 
@@ -567,7 +563,6 @@ describe('HttpRuntimeClient', () => {
       });
 
       expect(result.accepted).toBe(true);
-      expect(result.fulfillment).toBe('success-after-retry');
       expect(mockFetch).toHaveBeenCalledTimes(3); // 2 failures + 1 success
     });
 
@@ -638,7 +633,6 @@ describe('HttpRuntimeClient', () => {
       });
 
       expect(result.accepted).toBe(true);
-      expect(result.fulfillment).toBeUndefined();
       expect(result.data).toBeUndefined();
       expect(result.code).toBeUndefined();
       expect(result.message).toBeUndefined();

@@ -381,16 +381,12 @@ describe('ToonClient against SDK E2E Peers', () => {
     // Publish with signed claim
     const publishResult = await client.publishEvent(event, { claim: claim1 });
     console.log(`   Result: ${publishResult.success ? '✅ success' : '❌ failed'}`);
-    if (publishResult.fulfillment) {
-      console.log(`   Fulfillment: ${publishResult.fulfillment.slice(0, 32)}...`);
-    }
     if (publishResult.error) {
       console.log(`   Error: ${publishResult.error}`);
     }
 
     expect(publishResult.success).toBe(true);
     expect(publishResult.eventId).toBe(event.id);
-    expect(publishResult.fulfillment).toBeDefined();
 
     // Verify event on relay (TOON format)
     console.log('🔍 Verifying event on peer1 relay...');
@@ -463,7 +459,6 @@ describe('ToonClient against SDK E2E Peers', () => {
 
     const publishResult = await client.publishEvent(event, { claim: claim3 });
     expect(publishResult.success).toBe(true);
-    expect(publishResult.fulfillment).toBeDefined();
 
     console.log('✅ Per-packet claim nonce sequence verified\n');
 

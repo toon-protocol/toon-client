@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type {
@@ -217,7 +216,7 @@ export class ToonClient {
    *
    * @param event - Signed Nostr event to publish
    * @param options - Optional options including destination and signed balance proof claim
-   * @returns Result with success status, event ID, and fulfillment
+   * @returns Result with success status and event ID
    * @throws {ToonClientError} If client is not started
    * @throws {ToonClientError} If event publishing fails
    */
@@ -244,17 +243,6 @@ export class ToonClient {
       const destination =
         options?.destination ?? this.config.destinationAddress;
 
-      // Compute ILP execution condition from raw TOON data bytes.
-      // The connector's PaymentHandlerAdapter computes:
-      //   fulfillment = SHA-256(raw_toon_bytes)
-      // So condition = SHA-256(fulfillment) = SHA-256(SHA-256(raw_toon_bytes)).
-      const fulfillment = createHash('sha256')
-        .update(Buffer.from(toonData))
-        .digest();
-      const executionCondition = createHash('sha256')
-        .update(fulfillment)
-        .digest();
-
       // Require claim + BTP — plain sendIlpPacket is only valid for
       // node-to-node forwarding (town.ts), not client-to-node.
       if (!options?.claim) {
@@ -279,7 +267,6 @@ export class ToonClient {
           destination,
           amount,
           data: Buffer.from(toonData).toString('base64'),
-          executionCondition,
         },
         claimMessage
       );
@@ -294,7 +281,6 @@ export class ToonClient {
       return {
         success: true,
         eventId: event.id,
-        fulfillment: response.fulfillment,
       };
     } catch (error) {
       throw new ToonClientError(

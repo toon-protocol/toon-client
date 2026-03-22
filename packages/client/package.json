@@ -37,7 +37,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@toon-protocol/connector": "^1.8.1",
+    "@toon-protocol/connector": "^2.0.0",
     "@toon-protocol/core": "workspace:*",
     "nostr-tools": "^2.20.0",
     "viem": "^2.0.0"

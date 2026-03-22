@@ -133,9 +133,6 @@ describe('BtpRuntimeClient', () => {
       });
 
       expect(result.accepted).toBe(true);
-      expect(result.fulfillment).toBe(
-        Buffer.from('fulfillment-data').toString('base64')
-      );
       expect(result.data).toBe(Buffer.from('response-data').toString('base64'));
     });
 

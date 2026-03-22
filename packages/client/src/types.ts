@@ -198,9 +198,6 @@ export interface PublishEventResult {
   /** ID of the published event */
   eventId?: string;
 
-  /** ILP fulfillment from the relay (proof of payment) */
-  fulfillment?: string;
-
   /** Error message if success is false */
   error?: string;
 }
