@@ -393,7 +393,6 @@ describe('SDK-Based Relay Validation (Story 2.3)', () => {
     const publishResult = await client.publishEvent(event, { claim });
     expect(publishResult.success).toBe(true);
     expect(publishResult.eventId).toBe(event.id);
-    expect(publishResult.fulfillment).toBeDefined();
 
     // Verify event is retrievable from the relay
     const storedEvent = await waitForEventOnRelay(RELAY_URL, event.id, 10000);
@@ -487,7 +486,6 @@ describe('SDK-Based Relay Validation (Story 2.3)', () => {
 
     const publishResult = await client.publishEvent(event, { claim: claim2 });
     expect(publishResult.success).toBe(true);
-    expect(publishResult.fulfillment).toBeDefined();
 
     await client.stop();
   }, 60000);

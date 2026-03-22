@@ -61,7 +61,6 @@ const ILP_PACKET_TYPE = {
 /** Shape of a BTP fulfill response */
 interface BtpFulfillResponse {
   type: typeof ILP_PACKET_TYPE.FULFILL;
-  fulfillment: Buffer;
   data: Buffer;
 }
 
@@ -207,7 +206,6 @@ export class BtpRuntimeClient implements IlpClient {
       amount: string;
       data: string;
       timeout?: number;
-      executionCondition?: Buffer;
     },
     claim: EVMClaimMessage
   ): Promise<IlpSendResult> {
@@ -230,7 +228,6 @@ export class BtpRuntimeClient implements IlpClient {
     amount: string;
     data: string;
     timeout?: number;
-    executionCondition?: Buffer;
   }): Promise<IlpSendResult> {
     if (!this._isConnected) {
       await this.reconnect();
@@ -240,7 +237,7 @@ export class BtpRuntimeClient implements IlpClient {
       type: ILP_PACKET_TYPE.PREPARE,
       amount: BigInt(params.amount),
       destination: params.destination,
-      executionCondition: params.executionCondition ?? Buffer.alloc(32),
+      executionCondition: Buffer.alloc(32),
       expiresAt: new Date(Date.now() + (params.timeout ?? 30000)),
       data: Buffer.from(params.data, 'base64'),
     } as ILPPreparePacket;
@@ -254,7 +251,6 @@ export class BtpRuntimeClient implements IlpClient {
       const fulfill = response as unknown as BtpFulfillResponse;
       return {
         accepted: true,
-        fulfillment: fulfill.fulfillment.toString('base64'),
         data:
           fulfill.data.length > 0 ? fulfill.data.toString('base64') : undefined,
       };
@@ -280,7 +276,6 @@ export class BtpRuntimeClient implements IlpClient {
       amount: string;
       data: string;
       timeout?: number;
-      executionCondition?: Buffer;
     },
     claim: EVMClaimMessage
   ): Promise<IlpSendResult> {
@@ -296,7 +291,7 @@ export class BtpRuntimeClient implements IlpClient {
       type: ILP_PACKET_TYPE.PREPARE,
       amount: BigInt(params.amount),
       destination: params.destination,
-      executionCondition: params.executionCondition ?? Buffer.alloc(32),
+      executionCondition: Buffer.alloc(32),
       expiresAt: new Date(Date.now() + (params.timeout ?? 30000)),
       data: Buffer.from(params.data, 'base64'),
     } as ILPPreparePacket;
@@ -316,7 +311,6 @@ export class BtpRuntimeClient implements IlpClient {
       const fulfill = response as unknown as BtpFulfillResponse;
       return {
         accepted: true,
-        fulfillment: fulfill.fulfillment.toString('base64'),
         data:
           fulfill.data.length > 0 ? fulfill.data.toString('base64') : undefined,
       };

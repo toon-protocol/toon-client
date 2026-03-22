@@ -43,7 +43,7 @@ export interface HttpRuntimeClientConfig {
  * });
  *
  * if (result.accepted) {
- *   console.log('Payment accepted:', result.fulfillment);
+ *   console.log('Payment accepted');
  * } else {
  *   console.error('Payment rejected:', result.code, result.message);
  * }
@@ -201,7 +201,6 @@ export class HttpRuntimeClient implements IlpClient {
         const result = (await response.json()) as Record<string, unknown>;
         return {
           accepted: (result['accepted'] as boolean) ?? false,
-          fulfillment: result['fulfillment'] as string | undefined,
           data: result['data'] as string | undefined,
           code: result['code'] as string | undefined,
           message: result['message'] as string | undefined,

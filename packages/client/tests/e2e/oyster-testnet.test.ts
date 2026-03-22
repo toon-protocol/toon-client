@@ -384,7 +384,6 @@ describe('ToonClient against Oyster CVM (Arbitrum Sepolia)', () => {
     console.log(`Result: ${publishResult.success ? 'success' : 'rejected'}`);
     if (publishResult.error) console.log(`Error: ${publishResult.error}`);
     expect(publishResult.success).toBe(true);
-    console.log(`Fulfillment: ${publishResult.fulfillment?.slice(0, 32)}...`);
 
     // Verify event stored on relay
     console.log('Verifying event on relay...');

@@ -355,15 +355,9 @@ describe('ToonClient Genesis Bootstrap with Payment Channels E2E', () => {
     console.log(
       `   Result: ${publishResult.success ? '✅ success' : '❌ failed'}`
     );
-    if (publishResult.fulfillment) {
-      console.log(
-        `   Fulfillment: ${publishResult.fulfillment.slice(0, 32)}...`
-      );
-    }
 
     expect(publishResult.success).toBe(true);
     expect(publishResult.eventId).toBe(event.id);
-    expect(publishResult.fulfillment).toBeDefined();
 
     // 8. Subscribe to relay and verify event is stored
     console.log(`\n🔍 Verifying event on relay...`);
