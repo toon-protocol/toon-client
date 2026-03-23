@@ -470,7 +470,7 @@ describe('Templates - Blame View', () => {
     vi.clearAllMocks();
   });
 
-  it('[P3] renderBlameView returns 404 for file not in repo', () => {
+  it('[P1] renderBlameView returns 404 with "File not found" for null result (not binary)', () => {
     const result = renderBlameView(
       'test-repo',
       'main',
@@ -480,6 +480,240 @@ describe('Templates - Blame View', () => {
 
     expect(result.status).toBe(404);
     expect(result.html).toContain('404');
+    expect(result.html).toContain('File not found for blame');
+  });
+
+  it('[P1] renderBlameView returns 404 with binary message for null result (binary)', () => {
+    const result = renderBlameView(
+      'test-repo',
+      'main',
+      'image.png',
+      null,
+      true
+    );
+
+    expect(result.status).toBe(404);
+    expect(result.html).toContain('Binary files cannot be blamed');
+  });
+
+  it('[P1] renders blame lines with abbreviated hash, author, date, line number, content (8.4-UNIT-004)', () => {
+    const blameResult = {
+      lines: [
+        {
+          commitSha: 'abcdef1234567890'.repeat(2) + 'abcdef12',
+          author: 'Alice <alice@example.com> 1700000000 +0000',
+          timestamp: 1700000000,
+          lineNumber: 1,
+        },
+        {
+          commitSha: '1234567890abcdef'.repeat(2) + '12345678',
+          author: 'Bob <bob@example.com> 1699990000 +0000',
+          timestamp: 1699990000,
+          lineNumber: 2,
+        },
+      ],
+      fileContent: 'line one\nline two',
+      beyondLimit: false,
+      maxDepth: 50,
+    };
+
+    const result = renderBlameView(
+      'test-repo',
+      'main',
+      'src/file.ts',
+      blameResult,
+      false,
+      'npub1test'
+    );
+
+    expect(result.status).toBe(200);
+    // Abbreviated hashes (first 7 chars)
+    expect(result.html).toContain('abcdef1');
+    expect(result.html).toContain('1234567');
+    // Author names
+    expect(result.html).toContain('Alice');
+    expect(result.html).toContain('Bob');
+    // Line numbers
+    expect(result.html).toContain('>1<');
+    expect(result.html).toContain('>2<');
+    // Line content
+    expect(result.html).toContain('line one');
+    expect(result.html).toContain('line two');
+    // Commit links
+    expect(result.html).toContain('/commit/');
+  });
+
+  it('[P1] consecutive lines from same commit show commit info only on first line', () => {
+    const sha = 'ab'.repeat(20);
+    const blameResult = {
+      lines: [
+        {
+          commitSha: sha,
+          author: 'Alice <alice@example.com> 1700000000 +0000',
+          timestamp: 1700000000,
+          lineNumber: 1,
+        },
+        {
+          commitSha: sha,
+          author: 'Alice <alice@example.com> 1700000000 +0000',
+          timestamp: 1700000000,
+          lineNumber: 2,
+        },
+        {
+          commitSha: sha,
+          author: 'Alice <alice@example.com> 1700000000 +0000',
+          timestamp: 1700000000,
+          lineNumber: 3,
+        },
+      ],
+      fileContent: 'line 1\nline 2\nline 3',
+      beyondLimit: false,
+      maxDepth: 50,
+    };
+
+    const result = renderBlameView(
+      'test-repo',
+      'main',
+      'file.ts',
+      blameResult,
+      false,
+      'npub1test'
+    );
+
+    const container = document.createElement('div');
+    container.innerHTML = result.html;
+
+    // Only first row should have the commit SHA link
+    const shaLinks = container.querySelectorAll('.blame-sha a');
+    expect(shaLinks).toHaveLength(1);
+
+    // Only first row should have author name
+    const authorCells = container.querySelectorAll('.blame-author');
+    const nonEmptyAuthors = Array.from(authorCells).filter(
+      (el) => el.textContent!.trim() !== ''
+    );
+    expect(nonEmptyAuthors).toHaveLength(1);
+  });
+
+  it('[P0] XSS in file content is escaped in blame view', () => {
+    const blameResult = {
+      lines: [
+        {
+          commitSha: 'ab'.repeat(20),
+          author: 'Test <test@test.com> 1700000000 +0000',
+          timestamp: 1700000000,
+          lineNumber: 1,
+        },
+      ],
+      fileContent: '<script>alert("xss")</script>',
+      beyondLimit: false,
+      maxDepth: 50,
+    };
+
+    const result = renderBlameView(
+      'test-repo',
+      'main',
+      'file.ts',
+      blameResult,
+      false,
+      'npub1test'
+    );
+
+    expect(result.html).not.toContain('<script>alert');
+    expect(result.html).toContain('&lt;script&gt;');
+  });
+
+  it('[P1] beyondLimit notice is shown when true, including commit count', () => {
+    const blameResult = {
+      lines: [
+        {
+          commitSha: 'ab'.repeat(20),
+          author: 'Test <test@test.com> 1700000000 +0000',
+          timestamp: 1700000000,
+          lineNumber: 1,
+        },
+      ],
+      fileContent: 'content',
+      beyondLimit: true,
+      maxDepth: 50,
+    };
+
+    const result = renderBlameView(
+      'test-repo',
+      'main',
+      'file.ts',
+      blameResult,
+      false,
+      'npub1test'
+    );
+
+    expect(result.html).toContain('blame-depth-notice');
+    expect(result.html).toContain('Blame history limited to 50 commits');
+    expect(result.html).toContain('Older attributions may be approximate');
+  });
+
+  it('[P1] beyondLimit notice is NOT shown when false', () => {
+    const blameResult = {
+      lines: [
+        {
+          commitSha: 'ab'.repeat(20),
+          author: 'Test <test@test.com> 1700000000 +0000',
+          timestamp: 1700000000,
+          lineNumber: 1,
+        },
+      ],
+      fileContent: 'content',
+      beyondLimit: false,
+      maxDepth: 50,
+    };
+
+    const result = renderBlameView(
+      'test-repo',
+      'main',
+      'file.ts',
+      blameResult,
+      false,
+      'npub1test'
+    );
+
+    expect(result.html).not.toContain('blame-depth-notice');
+  });
+});
+
+// ============================================================================
+// Story 8.4 Tests - Blob View Blame Link
+// ============================================================================
+
+describe('Templates - Story 8.4: Blob View Blame Link', () => {
+  it('[P1] renderBlobView includes a blame link for text files', () => {
+    const result = renderBlobView(
+      'test-repo',
+      'main',
+      'src/index.ts',
+      'const x = 1;',
+      false,
+      12,
+      'npub1test'
+    );
+
+    expect(result.html).toContain('blob-blame-link');
+    expect(result.html).toContain('Blame');
+    expect(result.html).toContain('/blame/main/');
+  });
+
+  it('[P1] renderBlobView does NOT include a blame link for binary files', () => {
+    const result = renderBlobView(
+      'test-repo',
+      'main',
+      'image.png',
+      null,
+      true,
+      12345,
+      'npub1test'
+    );
+
+    expect(result.html).not.toContain('blob-blame-link');
+    expect(result.html).not.toContain('Blame');
   });
 });
 

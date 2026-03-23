@@ -93,16 +93,35 @@ describe('Router - Route Parsing', () => {
     }
   });
 
-  it('[P2] parses /<npub>/<repo>/blame/<path> as blame route', () => {
+  it('[P2] parses /<npub>/<repo>/blame/<ref>/<path> as blame route', () => {
     const npub = 'npub1' + 'a'.repeat(58);
-    const route = parseRoute(`/${npub}/my-repo/blame/src/main.ts`);
+    const route = parseRoute(`/${npub}/my-repo/blame/main/src/file.ts`);
 
     expect(route.type).toBe('blame');
     if (route.type === 'blame') {
       expect(route.owner).toBe(npub);
       expect(route.repo).toBe('my-repo');
-      expect(route.path).toBe('src/main.ts');
+      expect(route.ref).toBe('main');
+      expect(route.path).toBe('src/file.ts');
     }
+  });
+
+  it('[P2] blame route with no file path (segments.length === 4) does NOT match blame', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/blame/main`);
+
+    // Should fall through to bare repo tree route, not blame
+    expect(route.type).not.toBe('blame');
+  });
+
+  it('[P2] blame route with trailing slash and no file path does NOT match blame', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/blame/main/`);
+
+    // Trailing slash produces empty segment removed by filter(Boolean),
+    // leaving [npub, repo, 'blame', 'main'] — only 4 segments, below the
+    // segments.length >= 5 guard, so this must NOT match blame.
+    expect(route.type).not.toBe('blame');
   });
 
   it('[P2] parses single-segment path as not-found', () => {

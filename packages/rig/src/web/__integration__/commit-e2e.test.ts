@@ -8,7 +8,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { parseGitCommit, parseGitTree, parseAuthorIdent } from '../git-objects.js';
+import {
+  parseGitCommit,
+  parseGitTree,
+  parseAuthorIdent,
+} from '../git-objects.js';
 import type { TreeEntry } from '../git-objects.js';
 import {
   renderCommitLog,
@@ -421,7 +425,10 @@ describe('E2E: Story 8.3 — Commit Log and Diff View', () => {
       const treeData = await fetchArweaveObject(treeTxId!);
       const currentTree = parseGitTree(treeData!);
 
-      const parentTreeTxId = await resolveGitSha(parentCommit!.treeSha, 'test-repo');
+      const parentTreeTxId = await resolveGitSha(
+        parentCommit!.treeSha,
+        'test-repo'
+      );
       const parentTreeData = await fetchArweaveObject(parentTreeTxId!);
       const parentTree = parseGitTree(parentTreeData!);
 
@@ -430,9 +437,15 @@ describe('E2E: Story 8.3 — Commit Log and Diff View', () => {
 
       // Should detect: old-file.ts deleted, README.md modified, config.json added
       expect(treeDiffEntries.length).toBe(3);
-      expect(treeDiffEntries.find((e) => e.name === 'old-file.ts')?.status).toBe('deleted');
-      expect(treeDiffEntries.find((e) => e.name === 'README.md')?.status).toBe('modified');
-      expect(treeDiffEntries.find((e) => e.name === 'config.json')?.status).toBe('added');
+      expect(
+        treeDiffEntries.find((e) => e.name === 'old-file.ts')?.status
+      ).toBe('deleted');
+      expect(treeDiffEntries.find((e) => e.name === 'README.md')?.status).toBe(
+        'modified'
+      );
+      expect(
+        treeDiffEntries.find((e) => e.name === 'config.json')?.status
+      ).toBe('added');
 
       // 6. Compute blob diffs using known content strings
       // (We use the content strings directly rather than fetching through the mock
@@ -696,7 +709,14 @@ describe('E2E: Story 8.3 — Commit Log and Diff View', () => {
         'test-repo',
         'aa'.repeat(20),
         entry,
-        [{ status: 'added', name: 'evil.js', newSha: 'bb'.repeat(20), mode: '100644' }],
+        [
+          {
+            status: 'added',
+            name: 'evil.js',
+            newSha: 'bb'.repeat(20),
+            mode: '100644',
+          },
+        ],
         fileDiffs,
         'npub1test'
       );
@@ -776,7 +796,14 @@ describe('E2E: Story 8.3 — Commit Log and Diff View', () => {
         'test-repo',
         'aa'.repeat(20),
         entry,
-        [{ status: 'added', name: 'logo.png', newSha: 'cc'.repeat(20), mode: '100644' }],
+        [
+          {
+            status: 'added',
+            name: 'logo.png',
+            newSha: 'cc'.repeat(20),
+            mode: '100644',
+          },
+        ],
         fileDiffs,
         'npub1test'
       );
@@ -843,7 +870,12 @@ describe('E2E: Story 8.3 — Commit Log and Diff View', () => {
       expect(commit).not.toBeNull();
 
       const entries: CommitLogEntry[] = [{ sha, commit: commit! }];
-      const result = renderCommitLog('test-repo', 'main', entries, 'npub1owner');
+      const result = renderCommitLog(
+        'test-repo',
+        'main',
+        entries,
+        'npub1owner'
+      );
       container.innerHTML = result.html;
 
       const link = container.querySelector('a.commit-sha');
@@ -898,7 +930,8 @@ describe('E2E: Story 8.3 — Commit Log and Diff View', () => {
       const commit = parseGitCommit(
         buildCommitBytes({
           treeSha: 'ff'.repeat(20),
-          message: 'First line summary\n\nDetailed body paragraph that should not appear.\n',
+          message:
+            'First line summary\n\nDetailed body paragraph that should not appear.\n',
         })
       );
       expect(commit).not.toBeNull();
@@ -1098,9 +1131,7 @@ describe('E2E: Story 8.3 — Commit Log and Diff View', () => {
       }
 
       // Full merge message should be displayed
-      expect(container.textContent).toContain(
-        'Merge branch feature into main'
-      );
+      expect(container.textContent).toContain('Merge branch feature into main');
     });
   });
 });

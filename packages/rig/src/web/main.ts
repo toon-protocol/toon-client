@@ -12,6 +12,7 @@ import {
   renderBlobView,
   renderCommitLog,
   renderCommitDiff,
+  renderBlameView,
 } from './templates.js';
 import type { FileDiff } from './templates.js';
 import { parseRelayUrl, parseRoute, initRouter } from './router.js';
@@ -27,6 +28,7 @@ import { resolveDefaultRef } from './ref-resolver.js';
 import { parseGitTree, parseGitCommit, isBinaryBlob } from './git-objects.js';
 import { fetchArweaveObject, resolveGitSha } from './arweave-client.js';
 import { walkCommitChain } from './commit-walker.js';
+import { computeBlame, isBlameError } from './blame.js';
 import { diffTrees } from './tree-diff.js';
 import { computeUnifiedDiff } from './unified-diff.js';
 import type { Route } from './router.js';
@@ -667,6 +669,97 @@ async function renderCommitRoute(
 }
 
 /**
+ * Render the blame route: resolve refs, compute blame from Arweave, render.
+ */
+async function renderBlameRoute(
+  owner: string,
+  repo: string,
+  ref: string,
+  path: string,
+  relayUrl: string
+): Promise<string> {
+  // 1. Query relay for kind:30617 (repo metadata)
+  const repoEvents = await queryRelay(relayUrl, {
+    kinds: [30617],
+    '#d': [repo],
+    limit: 10,
+  });
+  const repoMeta = repoEvents
+    .map((e) => parseRepoAnnouncement(e))
+    .find((r): r is RepoMetadata => r !== null);
+
+  if (!repoMeta) {
+    return renderLayout(
+      'Forge',
+      '<div class="stub-page"><div class="stub-page-title">404</div><p>Repository not found.</p></div>',
+      relayUrl
+    );
+  }
+
+  // 2. Query relay for kind:30618 (refs)
+  const refsEvents = await queryRelay(relayUrl, {
+    ...buildRepoRefsFilter(repoMeta.ownerPubkey, repo),
+    limit: 10,
+  });
+  const repoRefs = refsEvents
+    .map((e) => parseRepoRefs(e))
+    .find((r) => r !== null);
+
+  if (!repoRefs) {
+    const result = renderBlameView(repo, ref, path, null);
+    return renderLayout('Forge', result.html, relayUrl);
+  }
+
+  // 3. Resolve ref to commit SHA
+  let resolvedRef = ref;
+  let commitSha: string | undefined;
+
+  if (!ref) {
+    const defaultRef = resolveDefaultRef(repoMeta, repoRefs);
+    if (!defaultRef) {
+      const result = renderBlameView(repo, ref, path, null);
+      return renderLayout('Forge', result.html, relayUrl);
+    }
+    resolvedRef = defaultRef.refName;
+    commitSha = defaultRef.commitSha;
+  } else {
+    commitSha = repoRefs.refs.get(ref) ?? undefined;
+  }
+
+  if (!commitSha) {
+    const result = renderBlameView(repo, resolvedRef, path, null);
+    return renderLayout('Forge', result.html, relayUrl);
+  }
+
+  // 4. Compute blame
+  const blameResult = await computeBlame(path, commitSha, repo);
+
+  // Handle BlameError (binary or not-found) distinctly from null (resolution failure)
+  if (isBlameError(blameResult)) {
+    const isBinary = blameResult.reason === 'binary';
+    const result = renderBlameView(
+      repo,
+      resolvedRef,
+      path,
+      null,
+      isBinary,
+      owner
+    );
+    return renderLayout('Forge', result.html, relayUrl);
+  }
+
+  const result = renderBlameView(
+    repo,
+    resolvedRef,
+    path,
+    blameResult,
+    false,
+    owner
+  );
+  return renderLayout('Forge', result.html, relayUrl);
+}
+
+/**
  * Render a route into the app container.
  */
 async function renderRoute(route: Route, relayUrl: string): Promise<void> {
@@ -803,13 +896,31 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
       }
       break;
     }
-    case 'blame':
+    case 'blame': {
       content = renderLayout(
         'Forge',
-        '<div class="stub-page"><div class="stub-page-title">Blame</div><p>Blame view — coming in Story 8.5.</p></div>',
+        '<div class="loading">Loading blame...</div>',
         relayUrl
       );
+      app.innerHTML = content; // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method
+
+      try {
+        content = await renderBlameRoute(
+          route.owner,
+          route.repo,
+          route.ref,
+          route.path,
+          relayUrl
+        );
+      } catch {
+        content = renderLayout(
+          'Forge',
+          '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load blame view.</div></div>',
+          relayUrl
+        );
+      }
       break;
+    }
     case 'not-found':
     default:
       content = renderLayout(

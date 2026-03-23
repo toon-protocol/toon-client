@@ -8,7 +8,7 @@
  * - `/<npub>/<repo>/blob/<ref>/<path...>` — blob view
  * - `/<npub>/<repo>/commits/<ref>` — commit log
  * - `/<npub>/<repo>/commit/<sha>` — commit diff view
- * - `/<npub>/<repo>/blame/<path>` — blame view (stub)
+ * - `/<npub>/<repo>/blame/<ref>/<path...>` — blame view
  */
 
 /**
@@ -20,7 +20,7 @@ export type Route =
   | { type: 'blob'; owner: string; repo: string; ref: string; path: string }
   | { type: 'commits'; owner: string; repo: string; ref: string }
   | { type: 'commit'; owner: string; repo: string; sha: string }
-  | { type: 'blame'; owner: string; repo: string; path: string }
+  | { type: 'blame'; owner: string; repo: string; ref: string; path: string }
   | { type: 'not-found' };
 
 const DEFAULT_RELAY_URL = 'wss://localhost:7100';
@@ -94,10 +94,11 @@ export function parseRoute(pathname: string): Route {
       return { type: 'commit', owner, repo, sha: segments[3] };
     }
 
-    // /<npub>/<repo>/blame/<path...>
-    if (segments.length >= 4 && segments[2] === 'blame') {
-      const blamePath = segments.slice(3).join('/');
-      return { type: 'blame', owner, repo, path: blamePath };
+    // /<npub>/<repo>/blame/<ref>/<path...>
+    if (segments.length >= 5 && segments[2] === 'blame' && segments[3]) {
+      const ref = segments[3];
+      const blamePath = segments.slice(4).join('/');
+      return { type: 'blame', owner, repo, ref, path: blamePath };
     }
 
     // /<npub>/<repo>/ — bare repo route, resolve default ref

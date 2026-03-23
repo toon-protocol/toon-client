@@ -15,6 +15,7 @@ import { formatRelativeDate } from './date-utils.js';
 import type { CommitLogEntry } from './commit-walker.js';
 import type { TreeDiffEntry } from './tree-diff.js';
 import type { DiffHunk } from './unified-diff.js';
+import type { BlameResult } from './blame.js';
 
 export interface TemplateResult {
   status: number;
@@ -260,11 +261,27 @@ export function renderBlobView(
     .join('\n');
   const codeHtml = lines.join('\n');
 
+  // Blame link for non-binary files
+  const blameLink = (() => {
+    const encodedOwner = encodeURIComponent(owner);
+    const encodedRepo = encodeURIComponent(repoName);
+    const encodedRef = encodeURIComponent(ref);
+    const encodedPath = path
+      .split('/')
+      .filter(Boolean)
+      .map((s) => encodeURIComponent(s))
+      .join('/');
+    const blameHref = escapeHtml(
+      `/${encodedOwner}/${encodedRepo}/blame/${encodedRef}/${encodedPath}`
+    );
+    return ` <a href="${blameHref}" class="blob-blame-link">Blame</a>`;
+  })();
+
   return {
     status: 200,
     html: `${breadcrumbs}
 <div class="blob-view">
-<div class="blob-header">${escapeHtml(path.split('/').pop() ?? '')} (${escapeHtml(String(sizeBytes))} bytes)</div>
+<div class="blob-header">${escapeHtml(path.split('/').pop() ?? '')} (${escapeHtml(String(sizeBytes))} bytes)${blameLink}</div>
 <div class="blob-content">
 <pre class="blob-lines"><code>${lineNumbersHtml}</code></pre>
 <pre class="blob-code"><code>${codeHtml}</code></pre>
@@ -540,23 +557,93 @@ function getStatusBadge(status: 'added' | 'deleted' | 'modified'): string {
 
 /**
  * Renders a blame view for a file.
+ *
+ * @param repoName - Repository name
+ * @param ref - Git ref (branch/tag name)
+ * @param path - File path within the repository
+ * @param blameResult - Blame result, or null for 404/binary
+ * @param isBinary - Whether the file is binary (affects error message)
+ * @param ownerNpub - Owner's npub for constructing links
  */
 export function renderBlameView(
-  _repoName: string,
-  _ref: string,
-  _path: string,
-  blameData: unknown
+  repoName: string,
+  ref: string,
+  path: string,
+  blameResult: BlameResult | null,
+  isBinary?: boolean,
+  ownerNpub?: string
 ): TemplateResult {
-  if (blameData === null) {
+  if (blameResult === null) {
+    const message = isBinary
+      ? 'Binary files cannot be blamed'
+      : 'File not found for blame.';
     return {
       status: 404,
-      html: '<div class="stub-page"><div class="stub-page-title">404</div><p>File not found for blame.</p></div>',
+      html: `<div class="stub-page"><div class="stub-page-title">404</div><p>${escapeHtml(message)}</p></div>`,
     };
   }
-  return {
-    status: 200,
-    html: '<div class="stub-page"><div class="stub-page-title">Blame View</div><p>Blame view — coming in Story 8.5.</p></div>',
-  };
+
+  const owner = ownerNpub ?? '';
+  const breadcrumbs = renderBreadcrumbs(owner, repoName, ref, path);
+  const encodedOwner = encodeURIComponent(owner);
+  const encodedRepo = encodeURIComponent(repoName);
+
+  // Build blame table rows with grouping
+  const rows: string[] = [];
+  let prevCommitSha = '';
+  const fileLines = blameResult.fileContent.split('\n');
+
+  for (let i = 0; i < blameResult.lines.length; i++) {
+    const line = blameResult.lines[i]!;
+    const lineContent = escapeHtml(fileLines[i] ?? '');
+    const isNewGroup = line.commitSha !== prevCommitSha;
+    const groupClass = isNewGroup ? ' blame-group-start' : '';
+
+    let commitInfoHtml: string;
+    if (isNewGroup) {
+      const abbrevSha = escapeHtml(line.commitSha.slice(0, 7));
+      const commitHref = escapeHtml(
+        `/${encodedOwner}/${encodedRepo}/commit/${encodeURIComponent(line.commitSha)}`
+      );
+      const ident = parseAuthorIdent(line.author);
+      const authorName = escapeHtml(ident?.name ?? 'Unknown');
+      const relativeDate = ident
+        ? escapeHtml(formatRelativeDate(ident.timestamp))
+        : '';
+
+      commitInfoHtml = `<td class="blame-sha"><a href="${commitHref}">${abbrevSha}</a></td>
+  <td class="blame-author">${authorName}</td>
+  <td class="blame-date">${relativeDate}</td>`;
+    } else {
+      commitInfoHtml = `<td class="blame-sha"></td>
+  <td class="blame-author"></td>
+  <td class="blame-date"></td>`;
+    }
+
+    rows.push(`<tr class="blame-line${groupClass}">
+  ${commitInfoHtml}
+  <td class="blame-line-number">${line.lineNumber}</td>
+  <td class="blame-content"><pre>${lineContent}</pre></td>
+</tr>`);
+
+    prevCommitSha = line.commitSha;
+  }
+
+  const beyondLimitNotice = blameResult.beyondLimit
+    ? `<div class="blame-depth-notice">Blame history limited to ${escapeHtml(String(blameResult.maxDepth))} commits. Older attributions may be approximate.</div>`
+    : '';
+
+  const html = `${breadcrumbs}
+<div class="blame-view">
+<table class="blame-table">
+<tbody>
+${rows.join('\n')}
+</tbody>
+</table>
+${beyondLimitNotice}
+</div>`;
+
+  return { status: 200, html };
 }
 
 /**
