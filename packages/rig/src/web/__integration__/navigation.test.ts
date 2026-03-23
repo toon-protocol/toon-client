@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Test IDs: 8.1-INT-002
 // AC covered: AC9 (Repo navigation -- click repo name navigates to file tree)
 // Environment: jsdom (Vitest)

@@ -26,6 +26,20 @@ export function buildProfileFilter(pubkeys: string[]): NostrFilter {
 }
 
 /**
+ * Build a Nostr filter for querying repository refs events (kind:30618).
+ *
+ * @param pubkey - Repository owner's pubkey (hex)
+ * @param repoId - Repository identifier (d tag value from kind:30617)
+ * @returns Nostr filter for kind:30618 events
+ */
+export function buildRepoRefsFilter(
+  pubkey: string,
+  repoId: string
+): NostrFilter {
+  return { kinds: [30618], authors: [pubkey], '#d': [repoId] };
+}
+
+/**
  * Decode a TOON-encoded event string into a NostrEvent.
  *
  * The relay sends EVENT messages as ["EVENT", subId, toonString] where the

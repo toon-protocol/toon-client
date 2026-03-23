@@ -9,6 +9,7 @@ import { escapeHtml } from './escape.js';
 import { hexToNpub } from './npub.js';
 import type { ProfileCache } from './profile-cache.js';
 import type { RepoMetadata } from './nip34-parsers.js';
+import type { TreeEntry } from './git-objects.js';
 
 export interface TemplateResult {
   status: number;
@@ -73,13 +74,70 @@ export function renderRepoList(
 }
 
 /**
+ * Get a display icon for a tree entry based on its mode.
+ */
+function getTreeEntryIcon(mode: string): string {
+  if (mode === '40000') return '&#x1F4C1;'; // folder
+  if (mode === '120000') return '&#x1F517;'; // symlink
+  if (mode === '160000') return '&#x1F4E6;'; // submodule
+  return '&#x1F4C4;'; // file
+}
+
+/**
+ * Render breadcrumb navigation for a path within a repository.
+ */
+function renderBreadcrumbs(
+  ownerNpub: string,
+  repoName: string,
+  ref: string,
+  path: string
+): string {
+  const escapedRepo = escapeHtml(repoName);
+  const encodedOwner = encodeURIComponent(ownerNpub);
+  const encodedRepo = encodeURIComponent(repoName);
+  const escapedRef = escapeHtml(ref);
+
+  const crumbs: string[] = [];
+
+  // Root repo link
+  crumbs.push(
+    `<a href="/${encodedOwner}/${encodedRepo}/tree/${encodeURIComponent(ref)}/" class="breadcrumb-link">${escapedRepo}</a>`
+  );
+
+  if (path) {
+    const segments = path.split('/').filter(Boolean);
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i]!;
+      const encodedPartialPath = segments
+        .slice(0, i + 1)
+        .map((s) => encodeURIComponent(s))
+        .join('/');
+      const escapedSegment = escapeHtml(segment);
+      const href = `/${encodedOwner}/${encodedRepo}/tree/${encodeURIComponent(ref)}/${encodedPartialPath}`;
+      crumbs.push(
+        `<a href="${escapeHtml(href)}" class="breadcrumb-link">${escapedSegment}</a>`
+      );
+    }
+  }
+
+  return `<nav class="breadcrumbs"><span class="breadcrumb-ref">${escapedRef}</span> ${crumbs.join(' / ')}</nav>`;
+}
+
+/**
  * Renders a tree (directory) view for a repository.
+ *
+ * @param repoName - Repository name
+ * @param ref - Git ref (branch/tag name)
+ * @param path - Current path within the tree
+ * @param treeEntries - Parsed tree entries, or null for 404
+ * @param ownerNpub - Owner's npub for constructing links
  */
 export function renderTreeView(
-  _repoName: string,
-  _ref: string,
-  _path: string,
-  treeEntries: unknown[] | null
+  repoName: string,
+  ref: string,
+  path: string,
+  treeEntries: TreeEntry[] | null,
+  ownerNpub?: string
 ): TemplateResult {
   if (treeEntries === null) {
     return {
@@ -87,30 +145,120 @@ export function renderTreeView(
       html: '<div class="stub-page"><div class="stub-page-title">404</div><p>Path not found.</p></div>',
     };
   }
-  return {
-    status: 200,
-    html: '<div class="stub-page"><div class="stub-page-title">File Tree</div><p>File tree view — coming in Story 8.2.</p></div>',
-  };
+
+  const owner = ownerNpub ?? '';
+  const breadcrumbs = renderBreadcrumbs(owner, repoName, ref, path);
+
+  // Sort: directories first, then files, alphabetical within each group
+  const sorted = [...treeEntries].sort((a, b) => {
+    const aIsDir = a.mode === '40000' ? 0 : 1;
+    const bIsDir = b.mode === '40000' ? 0 : 1;
+    if (aIsDir !== bIsDir) return aIsDir - bIsDir;
+    return a.name.localeCompare(b.name);
+  });
+
+  const encodedOwner = encodeURIComponent(owner);
+  const encodedRepo = encodeURIComponent(repoName);
+  const encodedRef = encodeURIComponent(ref);
+  const basePath = path ? `${path}/` : '';
+
+  const rows = sorted
+    .map((entry) => {
+      const icon = getTreeEntryIcon(entry.mode);
+      const escapedName = escapeHtml(entry.name);
+      const isDir = entry.mode === '40000';
+      const routeType = isDir ? 'tree' : 'blob';
+      const encodedBasePath = basePath
+        ? basePath
+            .split('/')
+            .filter(Boolean)
+            .map((s) => encodeURIComponent(s))
+            .join('/') + '/'
+        : '';
+      const entryPath = `${encodedBasePath}${encodeURIComponent(entry.name)}`;
+      const href = escapeHtml(
+        `/${encodedOwner}/${encodedRepo}/${routeType}/${encodedRef}/${entryPath}`
+      );
+      const modeDisplay = escapeHtml(entry.mode);
+
+      return `<tr class="tree-entry">
+  <td class="tree-entry-icon">${icon}</td>
+  <td class="tree-entry-name"><a href="${href}">${escapedName}</a></td>
+  <td class="tree-entry-mode">${modeDisplay}</td>
+</tr>`;
+    })
+    .join('\n');
+
+  const html = `${breadcrumbs}
+<div class="tree-view">
+<table class="tree-table">
+<tbody>
+${rows}
+</tbody>
+</table>
+</div>`;
+
+  return { status: 200, html };
 }
 
 /**
  * Renders a blob (file) view for a repository.
+ *
+ * @param repoName - Repository name
+ * @param ref - Git ref (branch/tag name)
+ * @param path - File path within the tree
+ * @param content - File content as UTF-8 string, or null for 404
+ * @param isBinary - Whether the blob is binary
+ * @param sizeBytes - Size of the blob in bytes
+ * @param ownerNpub - Owner's npub for constructing breadcrumb links
  */
 export function renderBlobView(
-  _repoName: string,
-  _ref: string,
-  _path: string,
-  content: string | null
+  repoName: string,
+  ref: string,
+  path: string,
+  content: string | null,
+  isBinary = false,
+  sizeBytes = 0,
+  ownerNpub?: string
 ): TemplateResult {
-  if (content === null) {
+  if (content === null && !isBinary) {
     return {
       status: 404,
       html: '<div class="stub-page"><div class="stub-page-title">404</div><p>File not found.</p></div>',
     };
   }
+
+  const owner = ownerNpub ?? '';
+  const breadcrumbs = renderBreadcrumbs(owner, repoName, ref, path);
+
+  if (isBinary) {
+    return {
+      status: 200,
+      html: `${breadcrumbs}
+<div class="blob-view">
+<div class="binary-notice">Binary file (${escapeHtml(String(sizeBytes))} bytes), not displayed</div>
+</div>`,
+    };
+  }
+
+  // Render text content with line numbers
+  const escapedContent = escapeHtml(content ?? '');
+  const lines = escapedContent.split('\n');
+  const lineNumbersHtml = lines
+    .map((_, i) => `<span class="line-number">${i + 1}</span>`)
+    .join('\n');
+  const codeHtml = lines.join('\n');
+
   return {
     status: 200,
-    html: '<div class="stub-page"><div class="stub-page-title">File View</div><p>Blob view — coming in Story 8.3.</p></div>',
+    html: `${breadcrumbs}
+<div class="blob-view">
+<div class="blob-header">${escapeHtml(path.split('/').pop() ?? '')} (${escapeHtml(String(sizeBytes))} bytes)</div>
+<div class="blob-content">
+<pre class="blob-lines"><code>${lineNumbersHtml}</code></pre>
+<pre class="blob-code"><code>${codeHtml}</code></pre>
+</div>
+</div>`,
   };
 }
 

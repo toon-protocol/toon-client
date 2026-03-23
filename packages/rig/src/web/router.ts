@@ -3,7 +3,9 @@
  *
  * Uses History API for clean URLs. Routes:
  * - `/` — repository list
- * - `/<npub>/<repo>/` — file tree view (stub for Story 8.2)
+ * - `/<npub>/<repo>/` — tree view at default ref
+ * - `/<npub>/<repo>/tree/<ref>/<path...>` — tree view
+ * - `/<npub>/<repo>/blob/<ref>/<path...>` — blob view
  * - `/<npub>/<repo>/commit/<sha>` — commit view (stub)
  * - `/<npub>/<repo>/blame/<path>` — blame view (stub)
  */
@@ -13,7 +15,8 @@
  */
 export type Route =
   | { type: 'repo-list' }
-  | { type: 'file-tree'; owner: string; repo: string }
+  | { type: 'tree'; owner: string; repo: string; ref: string; path: string }
+  | { type: 'blob'; owner: string; repo: string; ref: string; path: string }
   | { type: 'commit'; owner: string; repo: string; sha: string }
   | { type: 'blame'; owner: string; repo: string; path: string }
   | { type: 'not-found' };
@@ -65,6 +68,20 @@ export function parseRoute(pathname: string): Route {
     const owner = segments[0]!;
     const repo = segments[1]!;
 
+    // /<npub>/<repo>/tree/<ref>/<path...>
+    if (segments.length >= 4 && segments[2] === 'tree' && segments[3]) {
+      const ref = segments[3];
+      const treePath = segments.length > 4 ? segments.slice(4).join('/') : '';
+      return { type: 'tree', owner, repo, ref, path: treePath };
+    }
+
+    // /<npub>/<repo>/blob/<ref>/<path...>
+    if (segments.length >= 4 && segments[2] === 'blob' && segments[3]) {
+      const ref = segments[3];
+      const blobPath = segments.length > 4 ? segments.slice(4).join('/') : '';
+      return { type: 'blob', owner, repo, ref, path: blobPath };
+    }
+
     // /<npub>/<repo>/commit/<sha>
     if (segments.length >= 4 && segments[2] === 'commit' && segments[3]) {
       return { type: 'commit', owner, repo, sha: segments[3] };
@@ -76,8 +93,8 @@ export function parseRoute(pathname: string): Route {
       return { type: 'blame', owner, repo, path: blamePath };
     }
 
-    // /<npub>/<repo>/
-    return { type: 'file-tree', owner, repo };
+    // /<npub>/<repo>/ — bare repo route, resolve default ref
+    return { type: 'tree', owner, repo, ref: '', path: '' };
   }
 
   return { type: 'not-found' };

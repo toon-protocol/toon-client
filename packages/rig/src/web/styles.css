@@ -180,6 +180,152 @@ a:hover {
   margin-bottom: 8px;
 }
 
+/* Breadcrumbs */
+
+.breadcrumbs {
+  padding: 8px 0;
+  margin-bottom: 12px;
+  font-size: 0.875rem;
+}
+
+.breadcrumb-ref {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  padding: 2px 8px;
+  border-radius: 12px;
+  margin-right: 8px;
+}
+
+.breadcrumb-link {
+  color: var(--color-primary);
+}
+
+.breadcrumb-link:hover {
+  text-decoration: underline;
+}
+
+/* Tree View */
+
+.tree-view {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.tree-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.tree-entry td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.tree-entry:last-child td {
+  border-bottom: none;
+}
+
+.tree-entry:hover td {
+  background: var(--color-bg);
+}
+
+.tree-entry-icon {
+  width: 28px;
+  text-align: center;
+}
+
+.tree-entry-name {
+  font-size: 0.875rem;
+}
+
+.tree-entry-name a {
+  color: var(--color-primary);
+}
+
+.tree-entry-name a:hover {
+  text-decoration: underline;
+}
+
+.tree-entry-mode {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  text-align: right;
+  width: 80px;
+}
+
+/* Blob View */
+
+.blob-view {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.blob-header {
+  padding: 8px 12px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.875rem;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+}
+
+.blob-content {
+  display: flex;
+  overflow-x: auto;
+  background: var(--color-surface);
+}
+
+.blob-lines {
+  padding: 8px 0;
+  margin: 0;
+  text-align: right;
+  user-select: none;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.blob-lines code {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.line-number {
+  padding: 0 12px;
+  color: var(--color-text-muted);
+  min-width: 40px;
+}
+
+.blob-code {
+  padding: 8px 16px;
+  margin: 0;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.blob-code code {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.binary-notice {
+  padding: 24px;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
 /* Responsive */
 
 @media (max-width: 600px) {

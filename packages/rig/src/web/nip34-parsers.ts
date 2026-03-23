@@ -67,6 +67,53 @@ function getTagValues(tags: string[][], name: string): string[] {
 }
 
 /**
+ * Maximum number of refs to parse from a single kind:30618 event.
+ * Prevents excessive memory allocation from maliciously crafted events.
+ */
+const MAX_REFS_PER_EVENT = 1000;
+
+/**
+ * Parsed repository refs from a kind:30618 event.
+ */
+export interface RepoRefs {
+  /** Repository identifier (from d tag) */
+  repoId: string;
+  /** Map of ref name to commit SHA */
+  refs: Map<string, string>;
+}
+
+/**
+ * Parse a kind:30618 repository refs event into RepoRefs.
+ *
+ * kind:30618 is a NIP-33 parameterized replaceable event for repository refs/branches:
+ * - `d` tag: repository identifier (matches kind:30617)
+ * - `r` tags: `["r", "<ref-name>", "<commit-sha>"]`
+ *
+ * @param event - A NostrEvent (expected kind:30618)
+ * @returns RepoRefs if valid, null if malformed
+ */
+export function parseRepoRefs(event: NostrEvent): RepoRefs | null {
+  if (event.kind !== 30618) {
+    return null;
+  }
+
+  const dTag = getTagValue(event.tags, 'd');
+  if (!dTag) {
+    return null;
+  }
+
+  const refs = new Map<string, string>();
+  for (const tag of event.tags) {
+    if (tag[0] === 'r' && tag[1] && tag[2]) {
+      if (refs.size >= MAX_REFS_PER_EVENT) break;
+      refs.set(tag[1], tag[2]);
+    }
+  }
+
+  return { repoId: dTag, refs };
+}
+
+/**
  * Parse a kind:30617 repository announcement event into RepoMetadata.
  *
  * @param event - A NostrEvent (expected kind:30617)

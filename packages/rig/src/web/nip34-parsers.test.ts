@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { parseRepoAnnouncement } from './nip34-parsers.js';
+import { parseRepoAnnouncement, parseRepoRefs } from './nip34-parsers.js';
 
 // ============================================================================
 // Factories
@@ -240,5 +240,114 @@ describe('NIP-34 Parsers - parseRepoAnnouncement', () => {
     // Assert
     expect(result).not.toBeNull();
     expect(result!.eventId).toBe(eventId);
+  });
+});
+
+// ============================================================================
+// Story 8.2: kind:30618 Ref Parsing
+// ============================================================================
+
+/**
+ * Factory: creates a valid kind:30618 NostrEvent for repository refs.
+ */
+function createMockRefsEvent(
+  overrides: {
+    id?: string;
+    pubkey?: string;
+    dTag?: string;
+    kind?: number;
+    refs?: Array<[string, string]>;
+    tags?: string[][];
+  } = {}
+) {
+  const refs = overrides.refs ?? [
+    ['main', 'aaa111'],
+    ['HEAD', 'aaa111'],
+  ];
+  const tags: string[][] = overrides.tags ?? [
+    ['d', overrides.dTag ?? 'my-repo'],
+    ...refs.map(([name, sha]) => ['r', name, sha]),
+  ];
+
+  return {
+    id: overrides.id ?? 'b'.repeat(64),
+    pubkey: overrides.pubkey ?? 'ab'.repeat(32),
+    created_at: 1700000000,
+    kind: overrides.kind ?? 30618,
+    tags,
+    content: '',
+    sig: 'c'.repeat(128),
+  };
+}
+
+describe('NIP-34 Parsers - parseRepoRefs', () => {
+  // ---------------------------------------------------------------------------
+  // 8.2-UNIT-007: Valid kind:30618 event parsed to RepoRefs
+  // AC: #1
+  // ---------------------------------------------------------------------------
+
+  it('[P1] parses valid kind:30618 event to RepoRefs with correct ref->sha mappings', () => {
+    const event = createMockRefsEvent({
+      dTag: 'my-repo',
+      refs: [
+        ['main', 'abc123'],
+        ['develop', 'def456'],
+        ['HEAD', 'abc123'],
+      ],
+    });
+
+    const result = parseRepoRefs(event);
+
+    expect(result).not.toBeNull();
+    expect(result!.repoId).toBe('my-repo');
+    expect(result!.refs.size).toBe(3);
+    expect(result!.refs.get('main')).toBe('abc123');
+    expect(result!.refs.get('develop')).toBe('def456');
+    expect(result!.refs.get('HEAD')).toBe('abc123');
+  });
+
+  it('[P1] returns null for event with wrong kind (not 30618)', () => {
+    const event = createMockRefsEvent({ kind: 1 });
+
+    const result = parseRepoRefs(event);
+
+    expect(result).toBeNull();
+  });
+
+  it('[P1] returns null for event missing d tag', () => {
+    const event = createMockRefsEvent({
+      tags: [['r', 'main', 'abc123']],
+    });
+
+    const result = parseRepoRefs(event);
+
+    expect(result).toBeNull();
+  });
+
+  it('[P2] handles event with no r tags (empty refs map)', () => {
+    const event = createMockRefsEvent({
+      tags: [['d', 'my-repo']],
+    });
+
+    const result = parseRepoRefs(event);
+
+    expect(result).not.toBeNull();
+    expect(result!.refs.size).toBe(0);
+  });
+
+  it('[P2] ignores malformed r tags (missing sha)', () => {
+    const event = createMockRefsEvent({
+      tags: [
+        ['d', 'my-repo'],
+        ['r', 'main'], // missing SHA
+        ['r', 'develop', 'def456'], // valid
+      ],
+    });
+
+    const result = parseRepoRefs(event);
+
+    expect(result).not.toBeNull();
+    expect(result!.refs.size).toBe(1);
+    expect(result!.refs.get('develop')).toBe('def456');
   });
 });

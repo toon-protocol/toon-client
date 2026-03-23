@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Test IDs: 8.1-INT-001
 // AC covered: AC5 (Repository list rendering with real DOM)
 // Environment: jsdom (Vitest)

@@ -3,7 +3,11 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { buildRepoListFilter, buildProfileFilter } from './relay-client.js';
+import {
+  buildRepoListFilter,
+  buildProfileFilter,
+  buildRepoRefsFilter,
+} from './relay-client.js';
 
 describe('Relay Query Builder', () => {
   // ---------------------------------------------------------------------------
@@ -48,5 +52,24 @@ describe('Profile Query Builder', () => {
 
     // Assert
     expect(filter).toEqual({ kinds: [0], authors: [] });
+  });
+});
+
+describe('Repo Refs Query Builder', () => {
+  // ---------------------------------------------------------------------------
+  // AC: #2 — buildRepoRefsFilter
+  // ---------------------------------------------------------------------------
+
+  it('[P1] buildRepoRefsFilter returns correct filter for kind:30618', () => {
+    const pubkey = 'ab'.repeat(32);
+    const repoId = 'my-repo';
+
+    const filter = buildRepoRefsFilter(pubkey, repoId);
+
+    expect(filter).toEqual({
+      kinds: [30618],
+      authors: [pubkey],
+      '#d': [repoId],
+    });
   });
 });
