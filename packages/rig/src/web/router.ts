@@ -6,7 +6,8 @@
  * - `/<npub>/<repo>/` — tree view at default ref
  * - `/<npub>/<repo>/tree/<ref>/<path...>` — tree view
  * - `/<npub>/<repo>/blob/<ref>/<path...>` — blob view
- * - `/<npub>/<repo>/commit/<sha>` — commit view (stub)
+ * - `/<npub>/<repo>/commits/<ref>` — commit log
+ * - `/<npub>/<repo>/commit/<sha>` — commit diff view
  * - `/<npub>/<repo>/blame/<path>` — blame view (stub)
  */
 
@@ -17,6 +18,7 @@ export type Route =
   | { type: 'repo-list' }
   | { type: 'tree'; owner: string; repo: string; ref: string; path: string }
   | { type: 'blob'; owner: string; repo: string; ref: string; path: string }
+  | { type: 'commits'; owner: string; repo: string; ref: string }
   | { type: 'commit'; owner: string; repo: string; sha: string }
   | { type: 'blame'; owner: string; repo: string; path: string }
   | { type: 'not-found' };
@@ -80,6 +82,11 @@ export function parseRoute(pathname: string): Route {
       const ref = segments[3];
       const blobPath = segments.length > 4 ? segments.slice(4).join('/') : '';
       return { type: 'blob', owner, repo, ref, path: blobPath };
+    }
+
+    // /<npub>/<repo>/commits/<ref> — commit log (MUST be before 'commit' singular)
+    if (segments.length >= 4 && segments[2] === 'commits' && segments[3]) {
+      return { type: 'commits', owner, repo, ref: segments[3] };
     }
 
     // /<npub>/<repo>/commit/<sha>

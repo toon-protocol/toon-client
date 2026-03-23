@@ -4,7 +4,12 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { parseGitTree, parseGitCommit, isBinaryBlob } from './git-objects.js';
+import {
+  parseGitTree,
+  parseGitCommit,
+  isBinaryBlob,
+  parseAuthorIdent,
+} from './git-objects.js';
 import type { TreeEntry } from './git-objects.js';
 
 // ============================================================================
@@ -344,5 +349,50 @@ describe('Git Object Parsers - isBinaryBlob', () => {
 
     // 31/100 = 0.31 > 0.3, so should be true
     expect(isBinaryBlob(data)).toBe(true);
+  });
+});
+
+// ============================================================================
+// Story 8.3 Tests - parseAuthorIdent
+// AC covered: #5
+// ============================================================================
+
+describe('Git Object Parsers - parseAuthorIdent', () => {
+  it('[P1] parses valid author string to AuthorIdent', () => {
+    const result = parseAuthorIdent(
+      'Alice <alice@example.com> 1711234567 +0000'
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe('Alice');
+    expect(result!.email).toBe('alice@example.com');
+    expect(result!.timestamp).toBe(1711234567);
+    expect(result!.timezone).toBe('+0000');
+  });
+
+  it('[P1] parses author with multi-word name', () => {
+    const result = parseAuthorIdent(
+      'Alice Bob <alice@example.com> 1700000000 -0500'
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe('Alice Bob');
+    expect(result!.timezone).toBe('-0500');
+  });
+
+  it('[P2] returns null for malformed author string', () => {
+    expect(parseAuthorIdent('malformed string')).toBeNull();
+    expect(parseAuthorIdent('')).toBeNull();
+    expect(parseAuthorIdent('Name <email>')).toBeNull();
+    expect(parseAuthorIdent('Name <email> notanumber +0000')).toBeNull();
+  });
+
+  it('[P2] parses author with special characters in name', () => {
+    const result = parseAuthorIdent(
+      "O'Brien <obrien@example.com> 1700000000 +0100"
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe("O'Brien");
   });
 });

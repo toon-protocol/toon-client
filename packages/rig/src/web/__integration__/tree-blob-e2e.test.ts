@@ -61,8 +61,12 @@ function buildCommitBytes(opts: {
   for (const parent of opts.parentShas ?? []) {
     lines.push(`parent ${parent}`);
   }
-  lines.push(`author ${opts.author ?? 'Test User <test@example.com> 1711100000 +0000'}`);
-  lines.push(`committer ${opts.committer ?? 'Test User <test@example.com> 1711100000 +0000'}`);
+  lines.push(
+    `author ${opts.author ?? 'Test User <test@example.com> 1711100000 +0000'}`
+  );
+  lines.push(
+    `committer ${opts.committer ?? 'Test User <test@example.com> 1711100000 +0000'}`
+  );
   lines.push('');
   lines.push(opts.message ?? 'test commit');
   return new TextEncoder().encode(lines.join('\n'));
@@ -205,9 +209,13 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
     };
 
     const readmeContent = '# Test Repo\n\nThis is a test repository.\n';
-    const indexContent = 'export function main() {\n  console.log("hello");\n}\n';
-    const utilsContent = 'export function add(a: number, b: number) {\n  return a + b;\n}\n';
-    const binaryData = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    const indexContent =
+      'export function main() {\n  console.log("hello");\n}\n';
+    const utilsContent =
+      'export function add(a: number, b: number) {\n  return a + b;\n}\n';
+    const binaryData = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00,
+    ]);
 
     const txData: Record<string, Uint8Array> = {
       [COMMIT_TX]: commitBytes,
@@ -223,14 +231,16 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
     globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
       // Handle Arweave GraphQL queries
       if (url.includes('/graphql')) {
-        const body = JSON.parse(
-          (init?.body as string) ?? '{}'
-        ) as { query?: string };
+        const body = JSON.parse((init?.body as string) ?? '{}') as {
+          query?: string;
+        };
         const queryStr = body.query ?? '';
 
         // Extract SHA and repo from GraphQL query
         // The query looks like: { name: "Git-SHA", values: ["<sha>"] }
-        const shaMatch = queryStr.match(/Git-SHA",\s*values:\s*\["([0-9a-f]+)"\]/);
+        const shaMatch = queryStr.match(
+          /Git-SHA",\s*values:\s*\["([0-9a-f]+)"\]/
+        );
         const repoMatch = queryStr.match(/Repo",\s*values:\s*\["([^"]+)"\]/);
         if (shaMatch && repoMatch) {
           const key = `${shaMatch[1]}:${repoMatch[1]}`;
@@ -556,12 +566,30 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
   describe('8.2-E2E-006: XSS prevention in tree view', () => {
     it('[P0] script tags in file names are escaped in DOM', () => {
       const maliciousEntries: TreeEntry[] = [
-        { mode: '100644', name: '<script>alert("xss")</script>.js', sha: 'ff'.repeat(20) },
-        { mode: '40000', name: '<img src=x onerror=alert(1)>', sha: 'ee'.repeat(20) },
-        { mode: '100644', name: '"><svg onload=alert(1)>', sha: 'dd'.repeat(20) },
+        {
+          mode: '100644',
+          name: '<script>alert("xss")</script>.js',
+          sha: 'ff'.repeat(20),
+        },
+        {
+          mode: '40000',
+          name: '<img src=x onerror=alert(1)>',
+          sha: 'ee'.repeat(20),
+        },
+        {
+          mode: '100644',
+          name: '"><svg onload=alert(1)>',
+          sha: 'dd'.repeat(20),
+        },
       ];
 
-      const result = renderTreeView('test-repo', 'main', '', maliciousEntries, 'npub1test');
+      const result = renderTreeView(
+        'test-repo',
+        'main',
+        '',
+        maliciousEntries,
+        'npub1test'
+      );
       container.innerHTML = result.html;
 
       // No script/svg elements created by injection
@@ -625,7 +653,9 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
       expect(container.querySelectorAll('script')).toHaveLength(0);
       expect(container.querySelectorAll('body[onload]')).toHaveLength(0);
       expect(container.querySelectorAll('img[onerror]')).toHaveLength(0);
-      expect(container.querySelectorAll('a[href^="javascript:"]')).toHaveLength(0);
+      expect(container.querySelectorAll('a[href^="javascript:"]')).toHaveLength(
+        0
+      );
 
       // The text content should be visible
       expect(container.textContent).toContain('<script>');
@@ -804,7 +834,10 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
         pubkey: 'ab'.repeat(32),
         created_at: 1711100000,
         kind: 30617, // wrong kind
-        tags: [['d', 'my-repo'], ['r', 'main', 'aa'.repeat(20)]],
+        tags: [
+          ['d', 'my-repo'],
+          ['r', 'main', 'aa'.repeat(20)],
+        ],
         content: '',
         sig: 'f'.repeat(128),
       };
@@ -866,12 +899,14 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
       // First call — should trigger fetch
       const txId1 = await resolveGitSha(COMMIT_SHA, 'test-repo');
       expect(txId1).toBe(COMMIT_TX);
-      const fetchCallCount1 = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+      const fetchCallCount1 = (globalThis.fetch as ReturnType<typeof vi.fn>)
+        .mock.calls.length;
 
       // Second call — should use cache
       const txId2 = await resolveGitSha(COMMIT_SHA, 'test-repo');
       expect(txId2).toBe(COMMIT_TX);
-      const fetchCallCount2 = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+      const fetchCallCount2 = (globalThis.fetch as ReturnType<typeof vi.fn>)
+        .mock.calls.length;
 
       // No additional fetch calls
       expect(fetchCallCount2).toBe(fetchCallCount1);
@@ -884,7 +919,13 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
 
   describe('8.2-E2E-012: Error states render gracefully', () => {
     it('[P1] tree view with null entries renders 404', () => {
-      const result = renderTreeView('test-repo', 'main', 'nonexistent', null, 'npub1test');
+      const result = renderTreeView(
+        'test-repo',
+        'main',
+        'nonexistent',
+        null,
+        'npub1test'
+      );
       expect(result.status).toBe(404);
       container.innerHTML = result.html;
       expect(container.textContent).toContain('404');
@@ -892,7 +933,15 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
     });
 
     it('[P1] blob view with null content renders 404', () => {
-      const result = renderBlobView('test-repo', 'main', 'missing.txt', null, false, 0, 'npub1test');
+      const result = renderBlobView(
+        'test-repo',
+        'main',
+        'missing.txt',
+        null,
+        false,
+        0,
+        'npub1test'
+      );
       expect(result.status).toBe(404);
       container.innerHTML = result.html;
       expect(container.textContent).toContain('404');
@@ -917,7 +966,13 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
       const entries = parseGitTree(emptyTree);
       expect(entries).toEqual([]);
 
-      const result = renderTreeView('test-repo', 'main', '', entries, 'npub1test');
+      const result = renderTreeView(
+        'test-repo',
+        'main',
+        '',
+        entries,
+        'npub1test'
+      );
       expect(result.status).toBe(200);
       container.innerHTML = result.html;
       // Should render the tree-view container but with no entries
@@ -935,7 +990,13 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
 
       expect(parsed.length).toBe(3);
 
-      const result = renderTreeView('test-repo', 'main', '', parsed, 'npub1test');
+      const result = renderTreeView(
+        'test-repo',
+        'main',
+        '',
+        parsed,
+        'npub1test'
+      );
       container.innerHTML = result.html;
 
       // Unicode content should be preserved
@@ -949,7 +1010,13 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
         { mode: '100644', name: 'normal.txt', sha: 'cc'.repeat(20) },
       ];
 
-      const result = renderTreeView('test-repo', 'main', '', specialEntries, 'npub1test');
+      const result = renderTreeView(
+        'test-repo',
+        'main',
+        '',
+        specialEntries,
+        'npub1test'
+      );
       container.innerHTML = result.html;
 
       expect(container.textContent).toContain('config-link');
@@ -983,7 +1050,13 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
         { mode: '100644', name: 'readme.txt', sha: 'bb'.repeat(20) },
       ];
 
-      const result = renderTreeView('test-repo', 'main', '', entries, 'npub1test');
+      const result = renderTreeView(
+        'test-repo',
+        'main',
+        '',
+        entries,
+        'npub1test'
+      );
       container.innerHTML = result.html;
 
       // Both should have blob links
@@ -1038,7 +1111,13 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
         { mode: '100644', name: 'file.txt', sha: 'aa'.repeat(20) },
       ];
 
-      const result = renderTreeView('my-repo', 'main', '', entries, 'npub1owner');
+      const result = renderTreeView(
+        'my-repo',
+        'main',
+        '',
+        entries,
+        'npub1owner'
+      );
       container.innerHTML = result.html;
 
       const crumbLinks = container.querySelectorAll('.breadcrumb-link');
@@ -1051,7 +1130,13 @@ describe('E2E: Story 8.2 — File Tree and Blob View', () => {
         { mode: '100644', name: 'file.txt', sha: 'aa'.repeat(20) },
       ];
 
-      const result = renderTreeView('my-repo', 'v2.0.0', '', entries, 'npub1owner');
+      const result = renderTreeView(
+        'my-repo',
+        'v2.0.0',
+        '',
+        entries,
+        'npub1owner'
+      );
       container.innerHTML = result.html;
 
       const refBadge = container.querySelector('.breadcrumb-ref');

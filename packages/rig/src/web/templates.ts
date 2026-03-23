@@ -10,6 +10,11 @@ import { hexToNpub } from './npub.js';
 import type { ProfileCache } from './profile-cache.js';
 import type { RepoMetadata } from './nip34-parsers.js';
 import type { TreeEntry } from './git-objects.js';
+import { parseAuthorIdent } from './git-objects.js';
+import { formatRelativeDate } from './date-utils.js';
+import type { CommitLogEntry } from './commit-walker.js';
+import type { TreeDiffEntry } from './tree-diff.js';
+import type { DiffHunk } from './unified-diff.js';
 
 export interface TemplateResult {
   status: number;
@@ -120,7 +125,13 @@ function renderBreadcrumbs(
     }
   }
 
-  return `<nav class="breadcrumbs"><span class="breadcrumb-ref">${escapedRef}</span> ${crumbs.join(' / ')}</nav>`;
+  // Commits link next to ref badge
+  const commitsHref = escapeHtml(
+    `/${encodedOwner}/${encodedRepo}/commits/${encodeURIComponent(ref)}`
+  );
+  const commitsLink = `<a href="${commitsHref}" class="breadcrumb-commits-link">Commits</a>`;
+
+  return `<nav class="breadcrumbs"><span class="breadcrumb-ref">${escapedRef}</span> ${crumbs.join(' / ')} ${commitsLink}</nav>`;
 }
 
 /**
@@ -263,23 +274,268 @@ export function renderBlobView(
 }
 
 /**
+ * A file diff entry for the commit diff view.
+ */
+export interface FileDiff {
+  /** File name */
+  name: string;
+  /** Change status */
+  status: 'added' | 'deleted' | 'modified';
+  /** Diff hunks for text files */
+  hunks: DiffHunk[];
+  /** Whether this is a binary file */
+  isBinary: boolean;
+}
+
+/**
+ * Render breadcrumb navigation for a commit view (log or diff).
+ */
+function renderCommitBreadcrumbs(
+  ownerNpub: string,
+  repoName: string,
+  ref?: string,
+  activeLabel?: string
+): string {
+  const escapedRepo = escapeHtml(repoName);
+  const encodedOwner = encodeURIComponent(ownerNpub);
+  const encodedRepo = encodeURIComponent(repoName);
+
+  const treeRef = ref ? encodeURIComponent(ref) : 'main';
+  const crumbs: string[] = [];
+
+  crumbs.push(
+    `<a href="/${encodedOwner}/${encodedRepo}/tree/${treeRef}/" class="breadcrumb-link">${escapedRepo}</a>`
+  );
+
+  if (activeLabel) {
+    crumbs.push(
+      `<span class="breadcrumb-active">${escapeHtml(activeLabel)}</span>`
+    );
+  }
+
+  const refBadge = ref
+    ? `<span class="breadcrumb-ref">${escapeHtml(ref)}</span> `
+    : '';
+
+  return `<nav class="breadcrumbs">${refBadge}${crumbs.join(' / ')}</nav>`;
+}
+
+/**
+ * Renders the commit log page.
+ *
+ * @param repoName - Repository name
+ * @param ref - Git ref (branch/tag name)
+ * @param commits - Array of CommitLogEntry from the chain walker
+ * @param ownerNpub - Owner's npub for constructing links
+ */
+export function renderCommitLog(
+  repoName: string,
+  ref: string,
+  commits: CommitLogEntry[],
+  ownerNpub?: string
+): TemplateResult {
+  const owner = ownerNpub ?? '';
+  const breadcrumbs = renderCommitBreadcrumbs(owner, repoName, ref, 'Commits');
+
+  if (!commits || commits.length === 0) {
+    return {
+      status: 200,
+      html: `${breadcrumbs}<div class="empty-state"><div class="empty-state-title">No commits found</div><div class="empty-state-message">No commits are available for this ref.</div></div>`,
+    };
+  }
+
+  const encodedOwner = encodeURIComponent(owner);
+  const encodedRepo = encodeURIComponent(repoName);
+
+  const rows = commits
+    .map((entry) => {
+      const abbrevSha = escapeHtml(entry.sha.slice(0, 7));
+      const fullSha = escapeHtml(entry.sha);
+      const commitHref = escapeHtml(
+        `/${encodedOwner}/${encodedRepo}/commit/${encodeURIComponent(entry.sha)}`
+      );
+
+      // First line of message, truncated to 72 chars
+      const firstLine = entry.commit.message.split('\n')[0] ?? '';
+      const truncatedMessage =
+        firstLine.length > 72 ? firstLine.slice(0, 72) + '...' : firstLine;
+      const escapedMessage = escapeHtml(truncatedMessage);
+
+      // Parse author identity
+      const ident = parseAuthorIdent(entry.commit.author);
+      const authorName = escapeHtml(ident?.name ?? 'Unknown');
+      const relativeDate = ident
+        ? escapeHtml(formatRelativeDate(ident.timestamp))
+        : '';
+
+      return `<div class="commit-row">
+  <div class="commit-row-main">
+    <a href="${commitHref}" class="commit-sha" title="${fullSha}">${abbrevSha}</a>
+    <span class="commit-message">${escapedMessage}</span>
+  </div>
+  <div class="commit-row-meta">
+    <span class="commit-author">${authorName}</span>
+    <span class="commit-date">${relativeDate}</span>
+  </div>
+</div>`;
+    })
+    .join('\n');
+
+  return {
+    status: 200,
+    html: `${breadcrumbs}
+<div class="commit-log">
+${rows}
+</div>`,
+  };
+}
+
+/**
  * Renders a commit diff view.
+ *
+ * @param repoName - Repository name
+ * @param sha - Commit SHA
+ * @param commit - The commit log entry, or null for 404
+ * @param diffEntries - Tree diff entries
+ * @param fileDiffs - File-level diffs with hunks
+ * @param ownerNpub - Owner's npub for constructing links
  */
 export function renderCommitDiff(
-  _repoName: string,
-  _sha: string,
-  commitData: unknown
+  repoName: string,
+  sha: string,
+  commit: CommitLogEntry | null,
+  diffEntries?: TreeDiffEntry[],
+  fileDiffs?: FileDiff[],
+  ownerNpub?: string
 ): TemplateResult {
-  if (commitData === null) {
+  if (commit === null) {
     return {
       status: 404,
       html: '<div class="stub-page"><div class="stub-page-title">404</div><p>Commit not found.</p></div>',
     };
   }
+
+  const owner = ownerNpub ?? '';
+  const breadcrumbs = renderCommitBreadcrumbs(
+    owner,
+    repoName,
+    undefined,
+    'Commit'
+  );
+  const entries = diffEntries ?? [];
+  const diffs = fileDiffs ?? [];
+
+  // Commit header
+  const escapedMessage = escapeHtml(commit.commit.message);
+  const ident = parseAuthorIdent(commit.commit.author);
+  const authorName = escapeHtml(ident?.name ?? 'Unknown');
+  const authorEmail = escapeHtml(ident?.email ?? '');
+  const relativeDate = ident
+    ? escapeHtml(formatRelativeDate(ident.timestamp))
+    : '';
+  const escapedSha = escapeHtml(sha);
+
+  const parentShasHtml =
+    commit.commit.parentShas.length > 0
+      ? commit.commit.parentShas
+          .map((p) => {
+            const encodedOwner = encodeURIComponent(owner);
+            const encodedRepo = encodeURIComponent(repoName);
+            const href = escapeHtml(
+              `/${encodedOwner}/${encodedRepo}/commit/${encodeURIComponent(p)}`
+            );
+            return `<a href="${href}" class="commit-parent-link">${escapeHtml(p.slice(0, 7))}</a>`;
+          })
+          .join(', ')
+      : '<span class="commit-root-label">root commit</span>';
+
+  // File change summary
+  const addedCount = entries.filter((e) => e.status === 'added').length;
+  const deletedCount = entries.filter((e) => e.status === 'deleted').length;
+  const modifiedCount = entries.filter((e) => e.status === 'modified').length;
+
+  // File diffs
+  const fileDiffHtml = diffs
+    .map((fileDiff) => {
+      const statusBadge = getStatusBadge(fileDiff.status);
+      const escapedName = escapeHtml(fileDiff.name);
+
+      let diffContent: string;
+      if (fileDiff.isBinary) {
+        diffContent = '<div class="diff-binary">Binary file changed</div>';
+      } else if (fileDiff.hunks.length === 0) {
+        diffContent = '';
+      } else {
+        const hunkHtml = fileDiff.hunks
+          .map((hunk) => {
+            const linesHtml = hunk.lines
+              .map((line) => {
+                const prefix =
+                  line.type === 'add'
+                    ? '+'
+                    : line.type === 'delete'
+                      ? '-'
+                      : ' ';
+                const cssClass = `diff-line diff-line-${line.type}`;
+                return `<div class="${cssClass}">${escapeHtml(prefix + line.content)}</div>`;
+              })
+              .join('');
+            return `<div class="diff-hunk">
+<div class="diff-hunk-header">@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@</div>
+${linesHtml}
+</div>`;
+          })
+          .join('');
+        diffContent = hunkHtml;
+      }
+
+      return `<div class="diff-file">
+<div class="diff-file-header">
+  ${statusBadge} <span class="diff-file-name">${escapedName}</span>
+</div>
+<div class="diff-file-content">
+${diffContent}
+</div>
+</div>`;
+    })
+    .join('\n');
+
   return {
     status: 200,
-    html: '<div class="stub-page"><div class="stub-page-title">Commit Diff</div><p>Commit diff view — coming in Story 8.4.</p></div>',
+    html: `${breadcrumbs}
+<div class="commit-diff">
+<div class="commit-diff-header">
+  <pre class="commit-diff-message">${escapedMessage}</pre>
+  <div class="commit-diff-meta">
+    <span class="commit-author">${authorName}</span>
+    ${authorEmail ? `<span class="commit-email">&lt;${authorEmail}&gt;</span>` : ''}
+    <span class="commit-date">${relativeDate}</span>
+  </div>
+  <div class="commit-diff-info">
+    <span class="commit-sha-label">Commit:</span> <span class="commit-sha-full">${escapedSha}</span>
+  </div>
+  <div class="commit-diff-parents">
+    <span class="commit-parent-label">Parent:</span> ${parentShasHtml}
+  </div>
+</div>
+<div class="commit-diff-summary">
+  <span class="diff-stat diff-stat-added">${addedCount} added</span>
+  <span class="diff-stat diff-stat-deleted">${deletedCount} deleted</span>
+  <span class="diff-stat diff-stat-modified">${modifiedCount} modified</span>
+</div>
+<div class="commit-diff-files">
+${fileDiffHtml}
+</div>
+</div>`,
   };
+}
+
+/**
+ * Get an HTML status badge for a file change type.
+ */
+function getStatusBadge(status: 'added' | 'deleted' | 'modified'): string {
+  const label = status === 'added' ? 'A' : status === 'deleted' ? 'D' : 'M';
+  return `<span class="diff-status-badge diff-status-${status}">${label}</span>`;
 }
 
 /**

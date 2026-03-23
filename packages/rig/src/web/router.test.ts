@@ -173,4 +173,37 @@ describe('Router - Route Parsing', () => {
       expect(route.path).toBe('');
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Story 8.3: Commits log route
+  // AC: #15
+  // ---------------------------------------------------------------------------
+
+  it('[P1] parses /<npub>/<repo>/commits/main as commits route', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/commits/main`);
+
+    expect(route.type).toBe('commits');
+    if (route.type === 'commits') {
+      expect(route.owner).toBe(npub);
+      expect(route.repo).toBe('my-repo');
+      expect(route.ref).toBe('main');
+    }
+  });
+
+  it('[P1] commits route (plural) does not conflict with commit route (singular)', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const sha = 'deadbeef'.repeat(5);
+
+    // commits (plural) -> commits route
+    const commitsRoute = parseRoute(`/${npub}/my-repo/commits/develop`);
+    expect(commitsRoute.type).toBe('commits');
+
+    // commit (singular) -> commit route (regression test)
+    const commitRoute = parseRoute(`/${npub}/my-repo/commit/${sha}`);
+    expect(commitRoute.type).toBe('commit');
+    if (commitRoute.type === 'commit') {
+      expect(commitRoute.sha).toBe(sha);
+    }
+  });
 });

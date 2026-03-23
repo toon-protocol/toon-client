@@ -13,11 +13,15 @@ import {
   renderTreeView,
   renderBlobView,
   renderCommitDiff,
+  renderCommitLog,
   renderBlameView,
   renderIssueContent,
   renderIssuesPage,
 } from './templates.js';
+import type { FileDiff } from './templates.js';
 import type { TreeEntry } from './git-objects.js';
+import type { CommitLogEntry } from './commit-walker.js';
+import type { TreeDiffEntry } from './tree-diff.js';
 
 // ============================================================================
 // Factories
@@ -146,6 +150,318 @@ describe('Templates - Commit Diff', () => {
     const result = renderCommitDiff('test-repo', 'not-a-valid-sha', null);
 
     expect(result.status).toBe(404);
+  });
+});
+
+// ============================================================================
+// Story 8.3 Tests - Commit Log
+// Test IDs: 8.3-UNIT-003
+// ============================================================================
+
+function createCommitLogEntry(overrides: {
+  sha?: string;
+  treeSha?: string;
+  parentShas?: string[];
+  author?: string;
+  message?: string;
+}): CommitLogEntry {
+  return {
+    sha: overrides.sha ?? 'a'.repeat(40),
+    commit: {
+      treeSha: overrides.treeSha ?? 'b'.repeat(40),
+      parentShas: overrides.parentShas ?? [],
+      author:
+        overrides.author ?? 'Test User <test@example.com> 1700000000 +0000',
+      committer: 'Test User <test@example.com> 1700000000 +0000',
+      message: overrides.message ?? 'Initial commit',
+    },
+  };
+}
+
+describe('Templates - Story 8.3: Commit Log', () => {
+  it('[P1] renders commit list with abbreviated hash, message, author, date (8.3-UNIT-003)', () => {
+    const commits: CommitLogEntry[] = [
+      createCommitLogEntry({
+        sha: 'abcdef1234567890'.repeat(2) + 'abcdef12',
+        message: 'Add new feature',
+        author: 'Alice <alice@example.com> 1700000000 +0000',
+      }),
+      createCommitLogEntry({
+        sha: '1234567890abcdef'.repeat(2) + '12345678',
+        message: 'Fix bug in parser',
+        author: 'Bob <bob@example.com> 1699990000 +0000',
+      }),
+    ];
+
+    const result = renderCommitLog('test-repo', 'main', commits, 'npub1test');
+
+    expect(result.status).toBe(200);
+    // Abbreviated hashes (first 7 chars)
+    expect(result.html).toContain('abcdef1');
+    expect(result.html).toContain('1234567');
+    // Commit messages
+    expect(result.html).toContain('Add new feature');
+    expect(result.html).toContain('Fix bug in parser');
+    // Author names
+    expect(result.html).toContain('Alice');
+    expect(result.html).toContain('Bob');
+    // Links to commit detail
+    expect(result.html).toContain('/commit/');
+  });
+
+  it('[P2] empty commits array renders empty state', () => {
+    const result = renderCommitLog('test-repo', 'main', [], 'npub1test');
+
+    expect(result.status).toBe(200);
+    expect(result.html).toContain('No commits found');
+  });
+
+  it('[P0] commit message with HTML tags is escaped', () => {
+    const commits: CommitLogEntry[] = [
+      createCommitLogEntry({
+        message: '<script>alert("xss")</script>',
+      }),
+    ];
+
+    const result = renderCommitLog('test-repo', 'main', commits, 'npub1test');
+
+    expect(result.html).not.toContain('<script>alert');
+    expect(result.html).toContain('&lt;script&gt;');
+  });
+
+  it('[P1] long commit message is truncated to ~72 chars', () => {
+    const longMessage = 'A'.repeat(100);
+    const commits: CommitLogEntry[] = [
+      createCommitLogEntry({ message: longMessage }),
+    ];
+
+    const result = renderCommitLog('test-repo', 'main', commits, 'npub1test');
+
+    // Should contain truncated version with ellipsis
+    expect(result.html).toContain('A'.repeat(72) + '...');
+    expect(result.html).not.toContain('A'.repeat(100));
+  });
+
+  it('[P1] breadcrumb includes Commits as active segment', () => {
+    const commits: CommitLogEntry[] = [createCommitLogEntry({})];
+
+    const result = renderCommitLog('test-repo', 'main', commits, 'npub1test');
+
+    expect(result.html).toContain('Commits');
+    expect(result.html).toContain('breadcrumb');
+  });
+
+  // ---------------------------------------------------------------------------
+  // AC #18: Commit hash links navigate to /<npub>/<repo>/commit/<full-sha>
+  // ---------------------------------------------------------------------------
+
+  it('[P1] commit abbreviated hash links to full commit SHA URL (AC #18)', () => {
+    const fullSha = 'abcdef1234567890'.repeat(2) + 'abcdef12';
+    const commits: CommitLogEntry[] = [createCommitLogEntry({ sha: fullSha })];
+
+    const result = renderCommitLog('test-repo', 'main', commits, 'npub1test');
+
+    const container = document.createElement('div');
+    container.innerHTML = result.html;
+
+    const shaLink = container.querySelector(
+      'a.commit-sha'
+    ) as HTMLAnchorElement;
+    expect(shaLink).not.toBeNull();
+    // Displays abbreviated hash (first 7 chars)
+    expect(shaLink.textContent).toContain(fullSha.slice(0, 7));
+    // Links to full SHA in correct URL format
+    expect(shaLink.getAttribute('href')).toContain(`/commit/${fullSha}`);
+    expect(shaLink.getAttribute('href')).toContain(
+      '/npub1test/test-repo/commit/'
+    );
+  });
+});
+
+// ============================================================================
+// Story 8.3 Tests - Commit Diff Rendering
+// ============================================================================
+
+describe('Templates - Story 8.3: Commit Diff Rendering', () => {
+  it('[P1] renders commit header with message, author, date', () => {
+    const entry = createCommitLogEntry({
+      sha: 'ab'.repeat(20),
+      message: 'Fix important bug\n\nDetailed description.',
+      author: 'Alice <alice@example.com> 1700000000 +0000',
+    });
+    const diffEntries: TreeDiffEntry[] = [];
+    const fileDiffs: FileDiff[] = [];
+
+    const result = renderCommitDiff(
+      'test-repo',
+      'ab'.repeat(20),
+      entry,
+      diffEntries,
+      fileDiffs,
+      'npub1test'
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.html).toContain('Fix important bug');
+    expect(result.html).toContain('Alice');
+  });
+
+  it('[P1] diff entries rendered with correct status badges (A/D/M)', () => {
+    const entry = createCommitLogEntry({ sha: 'ab'.repeat(20) });
+    const diffEntries: TreeDiffEntry[] = [
+      {
+        status: 'added',
+        name: 'new.ts',
+        newSha: 'a'.repeat(40),
+        mode: '100644',
+      },
+      {
+        status: 'deleted',
+        name: 'old.ts',
+        oldSha: 'b'.repeat(40),
+        mode: '100644',
+      },
+      {
+        status: 'modified',
+        name: 'changed.ts',
+        oldSha: 'c'.repeat(40),
+        newSha: 'd'.repeat(40),
+        mode: '100644',
+      },
+    ];
+    const fileDiffs: FileDiff[] = [
+      { name: 'new.ts', status: 'added', hunks: [], isBinary: false },
+      { name: 'old.ts', status: 'deleted', hunks: [], isBinary: false },
+      { name: 'changed.ts', status: 'modified', hunks: [], isBinary: false },
+    ];
+
+    const result = renderCommitDiff(
+      'test-repo',
+      'ab'.repeat(20),
+      entry,
+      diffEntries,
+      fileDiffs,
+      'npub1test'
+    );
+
+    expect(result.html).toContain('diff-status-added');
+    expect(result.html).toContain('diff-status-deleted');
+    expect(result.html).toContain('diff-status-modified');
+    expect(result.html).toContain('>A<');
+    expect(result.html).toContain('>D<');
+    expect(result.html).toContain('>M<');
+  });
+
+  it('[P1] inline diff lines rendered with add/delete styling classes', () => {
+    const entry = createCommitLogEntry({ sha: 'ab'.repeat(20) });
+    const fileDiffs: FileDiff[] = [
+      {
+        name: 'file.ts',
+        status: 'modified',
+        isBinary: false,
+        hunks: [
+          {
+            oldStart: 1,
+            oldCount: 2,
+            newStart: 1,
+            newCount: 2,
+            lines: [
+              { type: 'delete', content: 'old line' },
+              { type: 'add', content: 'new line' },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const result = renderCommitDiff(
+      'test-repo',
+      'ab'.repeat(20),
+      entry,
+      [],
+      fileDiffs,
+      'npub1test'
+    );
+
+    expect(result.html).toContain('diff-line-delete');
+    expect(result.html).toContain('diff-line-add');
+  });
+
+  it('[P0] XSS in diff content is escaped', () => {
+    const entry = createCommitLogEntry({
+      sha: 'ab'.repeat(20),
+      message: '<script>alert(1)</script>',
+      author: '<img onerror=alert(1)> <x@x.com> 1700000000 +0000',
+    });
+    const fileDiffs: FileDiff[] = [
+      {
+        name: '<script>evil.ts</script>',
+        status: 'added',
+        isBinary: false,
+        hunks: [
+          {
+            oldStart: 1,
+            oldCount: 0,
+            newStart: 1,
+            newCount: 1,
+            lines: [{ type: 'add', content: '<script>alert("xss")</script>' }],
+          },
+        ],
+      },
+    ];
+
+    const result = renderCommitDiff(
+      'test-repo',
+      'ab'.repeat(20),
+      entry,
+      [],
+      fileDiffs,
+      'npub1test'
+    );
+
+    expect(result.html).not.toContain('<script>alert');
+    expect(result.html).toContain('&lt;script&gt;');
+  });
+
+  it('[P1] binary file shows "Binary file changed"', () => {
+    const entry = createCommitLogEntry({ sha: 'ab'.repeat(20) });
+    const fileDiffs: FileDiff[] = [
+      {
+        name: 'image.png',
+        status: 'modified',
+        isBinary: true,
+        hunks: [],
+      },
+    ];
+
+    const result = renderCommitDiff(
+      'test-repo',
+      'ab'.repeat(20),
+      entry,
+      [],
+      fileDiffs,
+      'npub1test'
+    );
+
+    expect(result.html).toContain('Binary file changed');
+  });
+
+  it('[P1] root commit shows parent as "root commit"', () => {
+    const entry = createCommitLogEntry({
+      sha: 'ab'.repeat(20),
+      parentShas: [],
+    });
+
+    const result = renderCommitDiff(
+      'test-repo',
+      'ab'.repeat(20),
+      entry,
+      [],
+      [],
+      'npub1test'
+    );
+
+    expect(result.html).toContain('root commit');
   });
 });
 
@@ -656,6 +972,36 @@ describe('Templates - Story 8.2: Tree View Rendering', () => {
       '/blob/main/src/web/utils.ts'
     );
   });
+
+  // ---------------------------------------------------------------------------
+  // Story 8.3 AC #17: Commits link in tree view breadcrumbs
+  // ---------------------------------------------------------------------------
+
+  it('[P1] tree view breadcrumbs contain Commits link pointing to commits route (AC #17)', () => {
+    const entries: TreeEntry[] = [
+      createMockTreeEntry({ mode: '100644', name: 'index.ts' }),
+    ];
+
+    const result = renderTreeView(
+      'test-repo',
+      'main',
+      '',
+      entries,
+      'npub1test'
+    );
+
+    const container = document.createElement('div');
+    container.innerHTML = result.html;
+
+    const commitsLink = container.querySelector(
+      '.breadcrumb-commits-link'
+    ) as HTMLAnchorElement;
+    expect(commitsLink).not.toBeNull();
+    expect(commitsLink.textContent).toBe('Commits');
+    expect(commitsLink.getAttribute('href')).toContain(
+      '/npub1test/test-repo/commits/main'
+    );
+  });
 });
 
 describe('Templates - Story 8.2: Blob View Rendering', () => {
@@ -817,5 +1163,33 @@ describe('Templates - Story 8.2: Blob View Rendering', () => {
     expect(lineNumbers).toHaveLength(5);
     expect(lineNumbers[0]!.textContent).toBe('1');
     expect(lineNumbers[4]!.textContent).toBe('5');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Story 8.3 AC #17: Commits link in blob view breadcrumbs
+  // ---------------------------------------------------------------------------
+
+  it('[P1] blob view breadcrumbs contain Commits link pointing to commits route (AC #17)', () => {
+    const result = renderBlobView(
+      'test-repo',
+      'main',
+      'src/index.ts',
+      'const x = 1;',
+      false,
+      12,
+      'npub1test'
+    );
+
+    const container = document.createElement('div');
+    container.innerHTML = result.html;
+
+    const commitsLink = container.querySelector(
+      '.breadcrumb-commits-link'
+    ) as HTMLAnchorElement;
+    expect(commitsLink).not.toBeNull();
+    expect(commitsLink.textContent).toBe('Commits');
+    expect(commitsLink.getAttribute('href')).toContain(
+      '/npub1test/test-repo/commits/main'
+    );
   });
 });

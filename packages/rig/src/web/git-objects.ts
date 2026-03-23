@@ -152,6 +152,44 @@ export function parseGitCommit(data: Uint8Array): GitCommit | null {
 }
 
 /**
+ * Parsed author/committer identity from a git commit.
+ */
+export interface AuthorIdent {
+  /** Author name */
+  name: string;
+  /** Author email */
+  email: string;
+  /** Unix timestamp in seconds */
+  timestamp: number;
+  /** Timezone offset string (e.g., "+0000", "-0500") */
+  timezone: string;
+}
+
+/**
+ * Parse a git author/committer identity string.
+ *
+ * Format: "Name <email> timestamp timezone"
+ * Example: "Alice <alice@example.com> 1711234567 +0000"
+ *
+ * @param ident - Raw identity string from a commit object
+ * @returns Parsed AuthorIdent, or null if malformed
+ */
+export function parseAuthorIdent(ident: string): AuthorIdent | null {
+  // Match: Name <email> timestamp timezone
+  const match = /^(.+?)\s+<([^>]*)>\s+(\d+)\s+([+-]\d{4})$/.exec(ident);
+  if (!match) return null;
+
+  const name = match[1]!;
+  const email = match[2]!;
+  const timestamp = parseInt(match[3]!, 10);
+  const timezone = match[4]!;
+
+  if (isNaN(timestamp)) return null;
+
+  return { name, email, timestamp, timezone };
+}
+
+/**
  * Detect whether raw blob bytes contain binary content.
  *
  * Returns true if:

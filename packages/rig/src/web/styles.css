@@ -326,6 +326,284 @@ a:hover {
   font-style: italic;
 }
 
+/* Breadcrumb Commits Link */
+
+.breadcrumb-commits-link {
+  margin-left: 12px;
+  font-size: 0.8125rem;
+  color: var(--color-primary);
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.breadcrumb-commits-link:hover {
+  background: var(--color-bg);
+  text-decoration: none;
+}
+
+.breadcrumb-active {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+/* Commit Log */
+
+.commit-log {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.commit-row {
+  background: var(--color-surface);
+  padding: 10px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.commit-row:hover {
+  background: var(--color-bg);
+}
+
+.commit-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.commit-sha {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--color-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.commit-message {
+  font-size: 0.875rem;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.commit-author {
+  font-weight: 500;
+}
+
+.commit-date {
+  color: var(--color-text-muted);
+}
+
+/* Commit Diff View */
+
+.commit-diff {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.commit-diff-header {
+  background: var(--color-bg);
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.commit-diff-message {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 12px 0;
+  line-height: 1.5;
+}
+
+.commit-diff-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8125rem;
+  margin-bottom: 4px;
+}
+
+.commit-email {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.commit-diff-info,
+.commit-diff-parents {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  margin-top: 4px;
+}
+
+.commit-sha-label,
+.commit-parent-label {
+  font-weight: 600;
+}
+
+.commit-sha-full {
+  font-family: var(--font-mono);
+}
+
+.commit-parent-link {
+  font-family: var(--font-mono);
+  color: var(--color-primary);
+}
+
+.commit-root-label {
+  font-style: italic;
+}
+
+/* Diff Summary */
+
+.commit-diff-summary {
+  display: flex;
+  gap: 16px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  font-size: 0.8125rem;
+}
+
+.diff-stat {
+  font-weight: 500;
+}
+
+.diff-stat-added {
+  color: #1a7f37;
+}
+
+.diff-stat-deleted {
+  color: #cf222e;
+}
+
+.diff-stat-modified {
+  color: #9a6700;
+}
+
+/* Diff Files */
+
+.commit-diff-files {
+  background: var(--color-surface);
+}
+
+.diff-file {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.diff-file:last-child {
+  border-bottom: none;
+}
+
+.diff-file-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+}
+
+.diff-file-name {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.diff-status-badge {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+  text-align: center;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  border-radius: 3px;
+  color: #ffffff;
+  flex-shrink: 0;
+}
+
+.diff-status-added {
+  background: #1a7f37;
+}
+
+.diff-status-deleted {
+  background: #cf222e;
+}
+
+.diff-status-modified {
+  background: #9a6700;
+}
+
+/* Diff Content */
+
+.diff-file-content {
+  overflow-x: auto;
+}
+
+.diff-hunk {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.diff-hunk-header {
+  padding: 4px 20px;
+  background: #ddf4ff;
+  color: #0969da;
+  font-size: 0.75rem;
+}
+
+.diff-line {
+  padding: 0 20px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diff-line-context {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.diff-line-add {
+  background: #e6ffec;
+  color: #1a7f37;
+}
+
+.diff-line-delete {
+  background: #ffebe9;
+  color: #cf222e;
+}
+
+.diff-binary {
+  padding: 16px 20px;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-style: italic;
+  font-size: 0.875rem;
+}
+
 /* Responsive */
 
 @media (max-width: 600px) {

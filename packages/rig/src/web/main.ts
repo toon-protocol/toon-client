@@ -6,7 +6,14 @@
  */
 
 import { renderLayout } from './layout.js';
-import { renderRepoList, renderTreeView, renderBlobView } from './templates.js';
+import {
+  renderRepoList,
+  renderTreeView,
+  renderBlobView,
+  renderCommitLog,
+  renderCommitDiff,
+} from './templates.js';
+import type { FileDiff } from './templates.js';
 import { parseRelayUrl, parseRoute, initRouter } from './router.js';
 import {
   queryRelay,
@@ -19,6 +26,9 @@ import { ProfileCache } from './profile-cache.js';
 import { resolveDefaultRef } from './ref-resolver.js';
 import { parseGitTree, parseGitCommit, isBinaryBlob } from './git-objects.js';
 import { fetchArweaveObject, resolveGitSha } from './arweave-client.js';
+import { walkCommitChain } from './commit-walker.js';
+import { diffTrees } from './tree-diff.js';
+import { computeUnifiedDiff } from './unified-diff.js';
 import type { Route } from './router.js';
 import type { RepoMetadata } from './nip34-parsers.js';
 
@@ -425,6 +435,238 @@ async function renderBlobRoute(
 }
 
 /**
+ * Render the commits log route: resolve ref, walk commit chain, render.
+ */
+async function renderCommitsRoute(
+  owner: string,
+  repo: string,
+  ref: string,
+  relayUrl: string
+): Promise<string> {
+  // 1. Query relay for kind:30617 (repo metadata)
+  const repoEvents = await queryRelay(relayUrl, {
+    kinds: [30617],
+    '#d': [repo],
+    limit: 10,
+  });
+  const repoMeta = repoEvents
+    .map((e) => parseRepoAnnouncement(e))
+    .find((r): r is RepoMetadata => r !== null);
+
+  if (!repoMeta) {
+    return renderLayout(
+      'Forge',
+      '<div class="stub-page"><div class="stub-page-title">404</div><p>Repository not found.</p></div>',
+      relayUrl
+    );
+  }
+
+  // 2. Query relay for kind:30618 (refs)
+  const refsEvents = await queryRelay(relayUrl, {
+    ...buildRepoRefsFilter(repoMeta.ownerPubkey, repo),
+    limit: 10,
+  });
+  const repoRefs = refsEvents
+    .map((e) => parseRepoRefs(e))
+    .find((r) => r !== null);
+
+  if (!repoRefs) {
+    return renderLayout(
+      'Forge',
+      '<div class="stub-page"><div class="stub-page-title">No refs</div><p>No branch or tag data found.</p></div>',
+      relayUrl
+    );
+  }
+
+  // 3. Resolve ref to commit SHA
+  let resolvedRef = ref;
+  let commitSha: string | undefined;
+
+  if (!ref) {
+    const defaultRef = resolveDefaultRef(repoMeta, repoRefs);
+    if (!defaultRef) {
+      const result = renderCommitLog(repo, ref, [], owner);
+      return renderLayout('Forge', result.html, relayUrl);
+    }
+    resolvedRef = defaultRef.refName;
+    commitSha = defaultRef.commitSha;
+  } else {
+    commitSha = repoRefs.refs.get(ref) ?? undefined;
+  }
+
+  if (!commitSha) {
+    const result = renderCommitLog(repo, resolvedRef, [], owner);
+    return renderLayout('Forge', result.html, relayUrl);
+  }
+
+  // 4. Walk commit chain
+  const commits = await walkCommitChain(commitSha, repo);
+  const result = renderCommitLog(repo, resolvedRef, commits, owner);
+  return renderLayout('Forge', result.html, relayUrl);
+}
+
+/**
+ * Render the commit diff route: fetch commit, diff trees, render.
+ */
+async function renderCommitRoute(
+  owner: string,
+  repo: string,
+  sha: string,
+  relayUrl: string
+): Promise<string> {
+  // 1. Fetch the commit
+  const commitTxId = await resolveGitSha(sha, repo);
+  if (!commitTxId) {
+    const result = renderCommitDiff(repo, sha, null);
+    return renderLayout('Forge', result.html, relayUrl);
+  }
+
+  const commitData = await fetchArweaveObject(commitTxId);
+  if (!commitData) {
+    const result = renderCommitDiff(repo, sha, null);
+    return renderLayout('Forge', result.html, relayUrl);
+  }
+
+  const commit = parseGitCommit(commitData);
+  if (!commit) {
+    const result = renderCommitDiff(repo, sha, null);
+    return renderLayout('Forge', result.html, relayUrl);
+  }
+
+  // 2. Fetch current commit's tree
+  const currentTreeTxId = await resolveGitSha(commit.treeSha, repo);
+  const currentTreeData = currentTreeTxId
+    ? await fetchArweaveObject(currentTreeTxId)
+    : null;
+  const currentTreeEntries = currentTreeData
+    ? parseGitTree(currentTreeData)
+    : [];
+
+  // 3. Fetch parent commit's tree (if parent exists)
+  let parentTreeEntries: ReturnType<typeof parseGitTree> = [];
+  const parentSha = commit.parentShas[0];
+  if (parentSha) {
+    const parentCommitTxId = await resolveGitSha(parentSha, repo);
+    if (parentCommitTxId) {
+      const parentCommitData = await fetchArweaveObject(parentCommitTxId);
+      if (parentCommitData) {
+        const parentCommit = parseGitCommit(parentCommitData);
+        if (parentCommit) {
+          const parentTreeTxId = await resolveGitSha(
+            parentCommit.treeSha,
+            repo
+          );
+          if (parentTreeTxId) {
+            const parentTreeData = await fetchArweaveObject(parentTreeTxId);
+            if (parentTreeData) {
+              parentTreeEntries = parseGitTree(parentTreeData);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 4. Compute tree diff
+  const treeDiffEntries = diffTrees(parentTreeEntries, currentTreeEntries);
+
+  // 5. Fetch blob diffs for modified/added/deleted text files
+  const fileDiffs: FileDiff[] = [];
+  // Limit concurrency to 3 parallel blob fetches
+  const batchSize = 3;
+  for (let i = 0; i < treeDiffEntries.length; i += batchSize) {
+    const batch = treeDiffEntries.slice(i, i + batchSize);
+    const batchResults = await Promise.all(
+      batch.map(async (entry): Promise<FileDiff> => {
+        // For directories, skip blob fetching
+        if (entry.mode === '40000') {
+          return {
+            name: entry.name,
+            status: entry.status,
+            hunks: [],
+            isBinary: false,
+          };
+        }
+
+        try {
+          let oldContent = '';
+          let newContent = '';
+          let foundBinary = false;
+
+          // Fetch old blob
+          if (entry.oldSha) {
+            const oldTxId = await resolveGitSha(entry.oldSha, repo);
+            if (oldTxId) {
+              const oldData = await fetchArweaveObject(oldTxId);
+              if (oldData) {
+                if (isBinaryBlob(oldData)) {
+                  foundBinary = true;
+                } else {
+                  const decoder = new TextDecoder('utf-8', { fatal: false });
+                  oldContent = decoder.decode(oldData);
+                }
+              }
+            }
+          }
+
+          // Fetch new blob
+          if (entry.newSha && !foundBinary) {
+            const newTxId = await resolveGitSha(entry.newSha, repo);
+            if (newTxId) {
+              const newData = await fetchArweaveObject(newTxId);
+              if (newData) {
+                if (isBinaryBlob(newData)) {
+                  foundBinary = true;
+                } else {
+                  const decoder = new TextDecoder('utf-8', { fatal: false });
+                  newContent = decoder.decode(newData);
+                }
+              }
+            }
+          }
+
+          if (foundBinary) {
+            return {
+              name: entry.name,
+              status: entry.status,
+              hunks: [],
+              isBinary: true,
+            };
+          }
+
+          const hunks = computeUnifiedDiff(oldContent, newContent);
+          return {
+            name: entry.name,
+            status: entry.status,
+            hunks,
+            isBinary: false,
+          };
+        } catch {
+          return {
+            name: entry.name,
+            status: entry.status,
+            hunks: [],
+            isBinary: false,
+          };
+        }
+      })
+    );
+    fileDiffs.push(...batchResults);
+  }
+
+  const commitLogEntry = { sha, commit };
+  const result = renderCommitDiff(
+    repo,
+    sha,
+    commitLogEntry,
+    treeDiffEntries,
+    fileDiffs,
+    owner
+  );
+  return renderLayout('Forge', result.html, relayUrl);
+}
+
+/**
  * Render a route into the app container.
  */
 async function renderRoute(route: Route, relayUrl: string): Promise<void> {
@@ -513,13 +755,54 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
       }
       break;
     }
-    case 'commit':
+    case 'commits': {
       content = renderLayout(
         'Forge',
-        '<div class="stub-page"><div class="stub-page-title">Commit</div><p>Commit diff view — coming in Story 8.4.</p></div>',
+        '<div class="loading">Loading commit log...</div>',
         relayUrl
       );
+      app.innerHTML = content; // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method
+
+      try {
+        content = await renderCommitsRoute(
+          route.owner,
+          route.repo,
+          route.ref,
+          relayUrl
+        );
+      } catch {
+        content = renderLayout(
+          'Forge',
+          '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load commit log.</div></div>',
+          relayUrl
+        );
+      }
       break;
+    }
+    case 'commit': {
+      content = renderLayout(
+        'Forge',
+        '<div class="loading">Loading commit...</div>',
+        relayUrl
+      );
+      app.innerHTML = content; // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method
+
+      try {
+        content = await renderCommitRoute(
+          route.owner,
+          route.repo,
+          route.sha,
+          relayUrl
+        );
+      } catch {
+        content = renderLayout(
+          'Forge',
+          '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load commit.</div></div>',
+          relayUrl
+        );
+      }
+      break;
+    }
     case 'blame':
       content = renderLayout(
         'Forge',
