@@ -1,0 +1,208 @@
+/* Forge-UI Base Styles — minimal Forgejo-inspired design */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --color-bg: #fafafa;
+  --color-surface: #ffffff;
+  --color-text: #1a1a1a;
+  --color-text-muted: #656d76;
+  --color-border: #d1d9e0;
+  --color-primary: #4183c4;
+  --color-primary-hover: #2e6da4;
+  --color-badge-bg: #ddf4ff;
+  --color-badge-text: #0969da;
+  --color-empty-text: #656d76;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --radius: 6px;
+  --max-width: 1012px;
+}
+
+html {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--color-primary-hover);
+  text-decoration: underline;
+}
+
+/* Layout */
+
+.layout-header {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  padding: 12px 24px;
+}
+
+.layout-header-inner {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.layout-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.layout-title:hover {
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.layout-relay {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+
+.layout-content {
+  max-width: var(--max-width);
+  margin: 24px auto;
+  padding: 0 24px;
+}
+
+.layout-footer {
+  max-width: var(--max-width);
+  margin: 48px auto 24px;
+  padding: 16px 24px;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  border-top: 1px solid var(--color-border);
+}
+
+/* Repository List */
+
+.repo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--color-border);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.repo-card {
+  background: var(--color-surface);
+  padding: 16px 20px;
+}
+
+.repo-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.repo-name {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.repo-branch-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.repo-description {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  margin-bottom: 4px;
+}
+
+.repo-owner {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+
+/* Empty State */
+
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--color-empty-text);
+}
+
+.empty-state-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.empty-state-message {
+  font-size: 0.875rem;
+}
+
+/* Stub Page */
+
+.stub-page {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--color-text-muted);
+}
+
+.stub-page-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+/* Responsive */
+
+@media (max-width: 600px) {
+  .layout-header {
+    padding: 10px 12px;
+  }
+
+  .layout-content {
+    padding: 0 12px;
+    margin: 16px auto;
+  }
+
+  .layout-footer {
+    margin: 32px auto 16px;
+    padding: 12px;
+  }
+
+  .repo-card {
+    padding: 12px;
+  }
+
+  .empty-state,
+  .stub-page {
+    padding: 32px 12px;
+  }
+}

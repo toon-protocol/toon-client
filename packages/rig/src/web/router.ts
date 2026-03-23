@@ -1,0 +1,131 @@
+/**
+ * Minimal client-side router for Forge-UI.
+ *
+ * Uses History API for clean URLs. Routes:
+ * - `/` — repository list
+ * - `/<npub>/<repo>/` — file tree view (stub for Story 8.2)
+ * - `/<npub>/<repo>/commit/<sha>` — commit view (stub)
+ * - `/<npub>/<repo>/blame/<path>` — blame view (stub)
+ */
+
+/**
+ * Parsed route descriptor.
+ */
+export type Route =
+  | { type: 'repo-list' }
+  | { type: 'file-tree'; owner: string; repo: string }
+  | { type: 'commit'; owner: string; repo: string; sha: string }
+  | { type: 'blame'; owner: string; repo: string; path: string }
+  | { type: 'not-found' };
+
+const DEFAULT_RELAY_URL = 'wss://localhost:7100';
+
+/**
+ * Validate that a relay URL uses the WebSocket protocol (ws:// or wss://).
+ *
+ * @param url - URL string to validate
+ * @returns true if the URL uses ws:// or wss:// protocol
+ */
+export function isValidRelayUrl(url: string): boolean {
+  return /^wss?:\/\//i.test(url);
+}
+
+/**
+ * Extract relay URL from URL search query parameters.
+ *
+ * Only accepts URLs with ws:// or wss:// protocol to prevent
+ * SSRF, open redirect, and protocol confusion attacks.
+ *
+ * @param search - The URL search string (e.g., "?relay=wss://example.com")
+ * @returns The relay URL, or the default if not specified or invalid
+ */
+export function parseRelayUrl(search: string): string {
+  const params = new URLSearchParams(search);
+  const relay = params.get('relay');
+  if (relay && isValidRelayUrl(relay)) {
+    return relay;
+  }
+  return DEFAULT_RELAY_URL;
+}
+
+/**
+ * Parse a URL pathname into a Route descriptor.
+ */
+export function parseRoute(pathname: string): Route {
+  // Normalize: remove trailing slash for matching (except root)
+  const path = pathname === '/' ? '/' : pathname.replace(/\/+$/, '');
+
+  if (path === '/' || path === '') {
+    return { type: 'repo-list' };
+  }
+
+  const segments = path.split('/').filter(Boolean);
+
+  if (segments.length >= 2) {
+    const owner = segments[0]!;
+    const repo = segments[1]!;
+
+    // /<npub>/<repo>/commit/<sha>
+    if (segments.length >= 4 && segments[2] === 'commit' && segments[3]) {
+      return { type: 'commit', owner, repo, sha: segments[3] };
+    }
+
+    // /<npub>/<repo>/blame/<path...>
+    if (segments.length >= 4 && segments[2] === 'blame') {
+      const blamePath = segments.slice(3).join('/');
+      return { type: 'blame', owner, repo, path: blamePath };
+    }
+
+    // /<npub>/<repo>/
+    return { type: 'file-tree', owner, repo };
+  }
+
+  return { type: 'not-found' };
+}
+
+/**
+ * Navigate to a new route using History API.
+ *
+ * Only accepts relative paths starting with `/` to prevent open redirect
+ * attacks via absolute URLs or protocol-relative URLs.
+ */
+export function navigateTo(path: string): void {
+  // Block absolute URLs and protocol-relative URLs to prevent open redirects
+  if (!path.startsWith('/') || path.startsWith('//')) {
+    return;
+  }
+  window.history.pushState(null, '', path);
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
+
+/**
+ * Initialize the router on a container element.
+ *
+ * Intercepts anchor clicks within the container and uses History API
+ * navigation instead of full page reloads.
+ */
+export function initRouter(
+  container: HTMLElement,
+  onNavigate?: (route: Route) => void
+): void {
+  // Intercept link clicks
+  container.addEventListener('click', (e: Event) => {
+    const target = e.target as HTMLElement;
+    const anchor = target.closest('a');
+    if (!anchor) return;
+
+    const href = anchor.getAttribute('href');
+    if (!href || href.startsWith('http') || href.startsWith('//')) return;
+
+    e.preventDefault();
+    navigateTo(href);
+  });
+
+  // Listen for popstate (back/forward)
+  if (onNavigate) {
+    window.addEventListener('popstate', () => {
+      const route = parseRoute(window.location.pathname);
+      onNavigate(route);
+    });
+  }
+}

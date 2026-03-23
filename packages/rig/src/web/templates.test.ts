@@ -1,7 +1,9 @@
-// ATDD Red Phase - tests will fail until implementation exists
+// @vitest-environment jsdom
+// Tests for Forge-UI templates
 //
 // Test IDs: 3.7-UNIT-001, 3.8-UNIT-001, 3.9-UNIT-001, 3.10-UNIT-001,
 //           3.11-UNIT-001, 3.11-UNIT-002
+//           8.1-UNIT-002, 8.1-UNIT-003, 8.1-UNIT-009, 8.1-UNIT-010
 // Risk links: E3-R004 (XSS via Nostr event content), E3-R011 (template port fidelity)
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -20,26 +22,8 @@ import {
 // ============================================================================
 
 /**
- * Factory for creating a mock repository metadata entry.
- */
-function createMockRepo(
-  overrides: {
-    name?: string;
-    owner?: string;
-    description?: string;
-    lastCommitDate?: number;
-  } = {}
-) {
-  return {
-    name: overrides.name ?? 'test-repo',
-    owner: overrides.owner ?? 'ab'.repeat(32),
-    description: overrides.description ?? 'A test repository',
-    lastCommitDate: overrides.lastCommitDate ?? Math.floor(Date.now() / 1000),
-  };
-}
-
-/**
  * Factory for creating a mock tree entry (directory/file listing).
+ * Retained for future Story 8.2 (file tree view) tests.
  */
 function _createMockTreeEntry(
   overrides: {
@@ -74,7 +58,7 @@ function createMockIssue(
     pubkey: overrides.pubkey ?? 'ab'.repeat(32),
     title: overrides.title ?? 'Bug report',
     content: overrides.content ?? 'Something is broken',
-    createdAt: overrides.createdAt ?? Math.floor(Date.now() / 1000),
+    createdAt: overrides.createdAt ?? 1700000000,
   };
 }
 
@@ -91,9 +75,9 @@ describe('Templates - Repository List', () => {
   // 3.7-UNIT-001: Empty state when no repos exist
   // ---------------------------------------------------------------------------
 
-  it.skip('[P2] renders empty state message when no repositories exist', () => {
+  it('[P2] renders empty state message when no repositories exist', () => {
     // Arrange
-    const repos: ReturnType<typeof createMockRepo>[] = [];
+    const repos: ReturnType<typeof createRepoMetadata>[] = [];
 
     // Act
     const html = renderRepoList(repos);
@@ -103,11 +87,11 @@ describe('Templates - Repository List', () => {
     expect(html).not.toContain('<a href="/');
   });
 
-  it.skip('[P2] renders repo list when repositories exist', () => {
+  it('[P2] renders repo list when repositories exist', () => {
     // Arrange
     const repos = [
-      createMockRepo({ name: 'repo-alpha', description: 'First repo' }),
-      createMockRepo({ name: 'repo-beta', description: 'Second repo' }),
+      createRepoMetadata({ name: 'repo-alpha', description: 'First repo' }),
+      createRepoMetadata({ name: 'repo-beta', description: 'Second repo' }),
     ];
 
     // Act
@@ -131,7 +115,7 @@ describe('Templates - File Tree and Blob', () => {
   // 3.8-UNIT-001: 404 for non-existent path
   // ---------------------------------------------------------------------------
 
-  it.skip('[P2] renderTreeView returns 404 response for non-existent path', () => {
+  it('[P2] renderTreeView returns 404 response for non-existent path', () => {
     // Arrange
     const repoName = 'test-repo';
     const ref = 'main';
@@ -146,7 +130,7 @@ describe('Templates - File Tree and Blob', () => {
     expect(result.html).toContain('404');
   });
 
-  it.skip('[P2] renderBlobView returns 404 response for non-existent file', () => {
+  it('[P2] renderBlobView returns 404 response for non-existent file', () => {
     // Arrange
     const repoName = 'test-repo';
     const ref = 'main';
@@ -171,7 +155,7 @@ describe('Templates - Commit Diff', () => {
   // 3.9-UNIT-001: 404 for invalid commit SHA
   // ---------------------------------------------------------------------------
 
-  it.skip('[P2] renderCommitDiff returns 404 for non-existent commit SHA', () => {
+  it('[P2] renderCommitDiff returns 404 for non-existent commit SHA', () => {
     // Arrange
     const repoName = 'test-repo';
     const sha = 'deadbeef'.repeat(5); // 40-char nonexistent SHA
@@ -185,7 +169,7 @@ describe('Templates - Commit Diff', () => {
     expect(result.html).toContain('404');
   });
 
-  it.skip('[P2] renderCommitDiff returns 404 for malformed SHA', () => {
+  it('[P2] renderCommitDiff returns 404 for malformed SHA', () => {
     // Arrange
     const repoName = 'test-repo';
     const sha = 'not-a-valid-sha';
@@ -208,7 +192,7 @@ describe('Templates - Blame View', () => {
   // 3.10-UNIT-001: 404 for non-existent blame file at ref
   // ---------------------------------------------------------------------------
 
-  it.skip('[P3] renderBlameView returns 404 for file not in repo', () => {
+  it('[P3] renderBlameView returns 404 for file not in repo', () => {
     // Arrange
     const repoName = 'test-repo';
     const ref = 'main';
@@ -230,11 +214,11 @@ describe('Templates - XSS Prevention', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 3.11-UNIT-001: XSS payloads escaped in Eta templates
+  // 3.11-UNIT-001: XSS payloads escaped in templates
   // Risk: E3-R004 (XSS via Nostr event content)
   // ---------------------------------------------------------------------------
 
-  it.skip('[P0] script tags in issue content are escaped', () => {
+  it('[P0] script tags in issue content are escaped', () => {
     // Arrange
     const maliciousIssue = createMockIssue({
       content: '<script>alert(1)</script>',
@@ -250,7 +234,7 @@ describe('Templates - XSS Prevention', () => {
     expect(html).toContain('&lt;script&gt;');
   });
 
-  it.skip('[P0] onerror handler in img tag is escaped', () => {
+  it('[P0] onerror handler in img tag is escaped', () => {
     // Arrange
     const maliciousIssue = createMockIssue({
       content: '<img onerror=alert(1) src=x>',
@@ -258,13 +242,17 @@ describe('Templates - XSS Prevention', () => {
 
     // Act
     const html = renderIssueContent(maliciousIssue);
+    const container = document.createElement('div');
+    container.innerHTML = html;
 
-    // Assert
-    expect(html).not.toContain('onerror=');
-    expect(html).not.toContain('<img');
+    // Assert -- no img elements should be created in DOM
+    expect(container.querySelectorAll('img')).toHaveLength(0);
+    expect(container.querySelectorAll('img[onerror]')).toHaveLength(0);
+    // The raw < should be escaped
+    expect(html).toContain('&lt;img');
   });
 
-  it.skip('[P0] javascript: URI in content is escaped', () => {
+  it('[P0] javascript: URI in content is escaped', () => {
     // Arrange
     const maliciousIssue = createMockIssue({
       content: '<a href="javascript:alert(1)">click me</a>',
@@ -272,13 +260,17 @@ describe('Templates - XSS Prevention', () => {
 
     // Act
     const html = renderIssueContent(maliciousIssue);
+    const container = document.createElement('div');
+    container.innerHTML = html;
 
-    // Assert
-    expect(html).not.toContain('javascript:');
-    expect(html).not.toContain('<a href=');
+    // Assert -- no anchor with javascript: href should be created
+    const links = container.querySelectorAll('a[href^="javascript:"]');
+    expect(links).toHaveLength(0);
+    // The raw < should be escaped
+    expect(html).toContain('&lt;a');
   });
 
-  it.skip('[P0] XSS in issue title is escaped', () => {
+  it('[P0] XSS in issue title is escaped', () => {
     // Arrange
     const maliciousIssue = createMockIssue({
       title: '<script>document.cookie</script>',
@@ -292,7 +284,7 @@ describe('Templates - XSS Prevention', () => {
     expect(html).not.toContain('<script>');
   });
 
-  it.skip('[P0] nested XSS payload is escaped', () => {
+  it('[P0] nested XSS payload is escaped', () => {
     // Arrange
     const maliciousIssue = createMockIssue({
       content: '"><svg onload=alert(1)>',
@@ -300,10 +292,12 @@ describe('Templates - XSS Prevention', () => {
 
     // Act
     const html = renderIssueContent(maliciousIssue);
+    const container = document.createElement('div');
+    container.innerHTML = html;
 
-    // Assert
-    expect(html).not.toContain('<svg');
-    expect(html).not.toContain('onload=');
+    // Assert -- no svg elements should be created in DOM
+    expect(container.querySelectorAll('svg')).toHaveLength(0);
+    expect(container.querySelectorAll('svg[onload]')).toHaveLength(0);
   });
 });
 
@@ -316,7 +310,7 @@ describe('Templates - Contribution Banner', () => {
   // 3.11-UNIT-002: Contribution banner renders with docs link
   // ---------------------------------------------------------------------------
 
-  it.skip('[P3] issues page renders contribution banner with ILP/Nostr requirement', () => {
+  it('[P3] issues page renders contribution banner with ILP/Nostr requirement', () => {
     // Arrange
     const repoName = 'test-repo';
     const issues = [createMockIssue()];
@@ -328,7 +322,7 @@ describe('Templates - Contribution Banner', () => {
     expect(html).toContain('participation requires an ILP/Nostr client');
   });
 
-  it.skip('[P3] contribution banner includes documentation link', () => {
+  it('[P3] contribution banner includes documentation link', () => {
     // Arrange
     const repoName = 'test-repo';
     const issues = [createMockIssue()];
@@ -340,5 +334,226 @@ describe('Templates - Contribution Banner', () => {
     // Banner should link to documentation about submitting NIP-34 events
     expect(html).toMatch(/<a[^>]*href="[^"]*"[^>]*>/);
     expect(html).toMatch(/documentation|docs|getting started/i);
+  });
+});
+
+// ============================================================================
+// Story 8.1 Tests - Forge-UI Repository List
+// ============================================================================
+
+/**
+ * Factory for creating a RepoMetadata object (Story 8.1 format).
+ * This matches the RepoMetadata interface expected by the updated renderRepoList().
+ */
+function createRepoMetadata(
+  overrides: {
+    name?: string;
+    description?: string;
+    ownerPubkey?: string;
+    defaultBranch?: string;
+    eventId?: string;
+    cloneUrls?: string[];
+    webUrls?: string[];
+  } = {}
+) {
+  return {
+    name: overrides.name ?? 'test-repo',
+    description: overrides.description ?? 'A test repository',
+    ownerPubkey: overrides.ownerPubkey ?? 'ab'.repeat(32),
+    defaultBranch: overrides.defaultBranch ?? 'main',
+    eventId: overrides.eventId ?? 'a'.repeat(64),
+    cloneUrls: overrides.cloneUrls ?? [],
+    webUrls: overrides.webUrls ?? [],
+  };
+}
+
+describe('Templates - Story 8.1: Repo List with RepoMetadata', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 8.1-UNIT-002: Repo list renders name, description, owner, branch
+  // AC: #5
+  // ---------------------------------------------------------------------------
+
+  it('[P1] renders repo list with name, description, owner pubkey, and default branch', () => {
+    // Arrange
+    const repos = [
+      createRepoMetadata({
+        name: 'forge-ui',
+        description: 'A decentralized git forge',
+        ownerPubkey: 'cd'.repeat(32),
+        defaultBranch: 'develop',
+      }),
+      createRepoMetadata({
+        name: 'toon-core',
+        description: 'Core protocol library',
+        ownerPubkey: 'ef'.repeat(32),
+        defaultBranch: 'main',
+      }),
+    ];
+
+    // Act
+    const html = renderRepoList(repos);
+
+    // Assert -- names present
+    expect(html).toContain('forge-ui');
+    expect(html).toContain('toon-core');
+    // Assert -- descriptions present
+    expect(html).toContain('A decentralized git forge');
+    expect(html).toContain('Core protocol library');
+    // Assert -- no empty state
+    expect(html).not.toContain('No repositories');
+  });
+
+  // ---------------------------------------------------------------------------
+  // AC5 gap: verify owner pubkey display and default branch badge
+  // ---------------------------------------------------------------------------
+
+  it('[P1] renders owner pubkey as truncated npub in repo list', () => {
+    // Arrange
+    const repos = [
+      createRepoMetadata({
+        name: 'owner-test',
+        ownerPubkey: 'cd'.repeat(32),
+      }),
+    ];
+
+    // Act
+    const html = renderRepoList(repos);
+
+    // Assert -- should contain npub-derived display (truncated)
+    expect(html).toContain('npub1');
+    expect(html).toContain('...');
+    expect(html).toContain('repo-owner');
+  });
+
+  it('[P1] renders default branch badge in repo list', () => {
+    // Arrange
+    const repos = [
+      createRepoMetadata({
+        name: 'branch-test',
+        defaultBranch: 'develop',
+      }),
+    ];
+
+    // Act
+    const html = renderRepoList(repos);
+
+    // Assert
+    expect(html).toContain('develop');
+    expect(html).toContain('repo-branch-badge');
+  });
+
+  // ---------------------------------------------------------------------------
+  // 8.1-UNIT-003: Empty state message
+  // AC: #7
+  // ---------------------------------------------------------------------------
+
+  it('[P2] renders "No repositories found" when repos array is empty', () => {
+    // Arrange
+    const repos: ReturnType<typeof createRepoMetadata>[] = [];
+
+    // Act
+    const html = renderRepoList(repos);
+
+    // Assert
+    expect(html).toContain('No repositories');
+  });
+});
+
+describe('Templates - Story 8.1: XSS Prevention in Repo List', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 8.1-UNIT-009: XSS in repo name is escaped
+  // AC: #12  Risk: E3-R004
+  // ---------------------------------------------------------------------------
+
+  it('[P0] repo name containing <script> tag is HTML-escaped in rendered output', () => {
+    // Arrange
+    const repos = [
+      createRepoMetadata({
+        name: '<script>alert(1)</script>',
+        description: 'Normal description',
+      }),
+    ];
+
+    // Act
+    const html = renderRepoList(repos);
+
+    // Assert -- raw script tag must NOT appear
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('</script>');
+    // Assert -- escaped version MUST appear
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  // ---------------------------------------------------------------------------
+  // 8.1-UNIT-010: XSS in repo description is escaped
+  // AC: #12  Risk: E3-R004
+  // ---------------------------------------------------------------------------
+
+  it('[P0] repo description containing <img onerror> is HTML-escaped in rendered output', () => {
+    // Arrange
+    const repos = [
+      createRepoMetadata({
+        name: 'safe-repo',
+        description: '<img onerror=alert(1) src=x>',
+      }),
+    ];
+
+    // Act
+    const html = renderRepoList(repos);
+    const container = document.createElement('div');
+    container.innerHTML = html;
+
+    // Assert -- no img elements with onerror should be created in DOM
+    expect(container.querySelectorAll('img[onerror]')).toHaveLength(0);
+    // The raw < should be escaped
+    expect(html).toContain('&lt;img');
+  });
+
+  it('[P0] repo name with nested XSS payload is escaped', () => {
+    // Arrange
+    const repos = [
+      createRepoMetadata({
+        name: '"><svg onload=alert(1)>',
+        description: 'Normal',
+      }),
+    ];
+
+    // Act
+    const html = renderRepoList(repos);
+    const container = document.createElement('div');
+    container.innerHTML = html;
+
+    // Assert -- no svg elements should be created in DOM
+    expect(container.querySelectorAll('svg')).toHaveLength(0);
+    expect(container.querySelectorAll('svg[onload]')).toHaveLength(0);
+  });
+
+  it('[P0] repo description with javascript: URI is escaped', () => {
+    // Arrange
+    const repos = [
+      createRepoMetadata({
+        name: 'normal-repo',
+        description: '<a href="javascript:alert(1)">click</a>',
+      }),
+    ];
+
+    // Act
+    const html = renderRepoList(repos);
+    const container = document.createElement('div');
+    container.innerHTML = html;
+
+    // Assert -- no anchor with javascript: href should be created in DOM
+    const links = container.querySelectorAll('a[href^="javascript:"]');
+    expect(links).toHaveLength(0);
+    // The raw < should be escaped
+    expect(html).toContain('&lt;a');
   });
 });
