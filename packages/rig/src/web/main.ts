@@ -13,6 +13,10 @@ import {
   renderCommitLog,
   renderCommitDiff,
   renderBlameView,
+  renderIssueList,
+  renderIssueDetail,
+  renderPRList,
+  renderPRDetail,
 } from './templates.js';
 import type { FileDiff } from './templates.js';
 import { parseRelayUrl, parseRoute, initRouter } from './router.js';
@@ -21,8 +25,22 @@ import {
   buildRepoListFilter,
   buildProfileFilter,
   buildRepoRefsFilter,
+  buildIssueListFilter,
+  buildCommentFilter,
+  buildPRListFilter,
+  buildStatusFilter,
+  buildEventByIdFilter,
+  buildIssueCloseFilter,
 } from './relay-client.js';
-import { parseRepoAnnouncement, parseRepoRefs } from './nip34-parsers.js';
+import {
+  parseRepoAnnouncement,
+  parseRepoRefs,
+  parseIssue,
+  parsePR,
+  parseComment,
+  resolvePRStatus,
+} from './nip34-parsers.js';
+import type { IssueMetadata, PRMetadata } from './nip34-parsers.js';
 import { ProfileCache } from './profile-cache.js';
 import { resolveDefaultRef } from './ref-resolver.js';
 import { parseGitTree, parseGitCommit, isBinaryBlob } from './git-objects.js';
@@ -37,44 +55,15 @@ import type { RepoMetadata } from './nip34-parsers.js';
 const profileCache = new ProfileCache();
 
 /**
- * Fetch and cache kind:0 profiles for repo owners, then return a
- * display-name lookup function.
+ * Fetch and cache kind:0 profiles for repo owners.
+ * Delegates to enrichProfilesForPubkeys with extracted pubkeys.
  */
 async function enrichProfiles(
   repos: RepoMetadata[],
   relayUrl: string
 ): Promise<void> {
   const pubkeys = repos.map((r) => r.ownerPubkey);
-  const pending = profileCache.getPendingPubkeys(pubkeys);
-  if (pending.length === 0) return;
-
-  try {
-    const profileEvents = await queryRelay(
-      relayUrl,
-      buildProfileFilter(pending),
-      5000
-    );
-    for (const evt of profileEvents) {
-      try {
-        const profile = JSON.parse(evt.content) as {
-          name?: string;
-          display_name?: string;
-          picture?: string;
-        };
-        profileCache.setProfile(evt.pubkey, {
-          name: profile.name,
-          displayName: profile.display_name,
-          picture: profile.picture,
-        });
-      } catch {
-        // Ignore malformed profile JSON
-      }
-    }
-    profileCache.markRequested(pending);
-  } catch {
-    // Profile enrichment is best-effort; mark as requested to avoid retries
-    profileCache.markRequested(pending);
-  }
+  await enrichProfilesForPubkeys(pubkeys, relayUrl);
 }
 
 /**
@@ -760,6 +749,282 @@ async function renderBlameRoute(
 }
 
 /**
+ * Enrich profiles for a set of pubkeys (best-effort).
+ */
+async function enrichProfilesForPubkeys(
+  pubkeys: string[],
+  relayUrl: string
+): Promise<void> {
+  const pending = profileCache.getPendingPubkeys(pubkeys);
+  if (pending.length === 0) return;
+
+  try {
+    const profileEvents = await queryRelay(
+      relayUrl,
+      buildProfileFilter(pending),
+      5000
+    );
+    for (const evt of profileEvents) {
+      try {
+        const profile = JSON.parse(evt.content) as {
+          name?: string;
+          display_name?: string;
+          picture?: string;
+        };
+        profileCache.setProfile(evt.pubkey, {
+          name: profile.name,
+          displayName: profile.display_name,
+          picture: profile.picture,
+        });
+      } catch {
+        // Ignore malformed profile JSON
+      }
+    }
+    profileCache.markRequested(pending);
+  } catch {
+    profileCache.markRequested(pending);
+  }
+}
+
+/**
+ * Resolve repo metadata (kind:30617) for issue/PR routes.
+ */
+async function resolveRepoMeta(
+  repo: string,
+  relayUrl: string
+): Promise<{ ownerPubkey: string; repoId: string } | null> {
+  const repoEvents = await queryRelay(relayUrl, {
+    kinds: [30617],
+    '#d': [repo],
+    limit: 10,
+  });
+  const repoMeta = repoEvents
+    .map((e) => parseRepoAnnouncement(e))
+    .find((r): r is RepoMetadata => r !== null);
+
+  if (!repoMeta) return null;
+
+  // Use the d-tag value (repo name) as the repoId for filter construction
+  return { ownerPubkey: repoMeta.ownerPubkey, repoId: repo };
+}
+
+/**
+ * Render the issues list route.
+ */
+async function renderIssuesRoute(
+  owner: string,
+  repo: string,
+  relayUrl: string
+): Promise<string> {
+  const meta = await resolveRepoMeta(repo, relayUrl);
+  if (!meta) {
+    return renderLayout(
+      'Forge',
+      '<div class="stub-page"><div class="stub-page-title">404</div><p>Repository not found.</p></div>',
+      relayUrl
+    );
+  }
+
+  // Query issues
+  const issueEvents = await queryRelay(
+    relayUrl,
+    buildIssueListFilter(meta.ownerPubkey, meta.repoId)
+  );
+
+  const issues: IssueMetadata[] = issueEvents
+    .map((e) => parseIssue(e))
+    .filter((i): i is IssueMetadata => i !== null);
+
+  // Query close events to determine status
+  if (issues.length > 0) {
+    const issueIds = issues.map((i) => i.eventId);
+    const closeEvents = await queryRelay(
+      relayUrl,
+      buildIssueCloseFilter(issueIds)
+    );
+    const closedIds = new Set<string>();
+    for (const evt of closeEvents) {
+      const eTag = evt.tags.find((t) => t[0] === 'e');
+      if (eTag?.[1]) {
+        closedIds.add(eTag[1]);
+      }
+    }
+    for (const issue of issues) {
+      if (closedIds.has(issue.eventId)) {
+        issue.status = 'closed';
+      }
+    }
+  }
+
+  // Sort by created_at descending
+  issues.sort((a, b) => b.createdAt - a.createdAt);
+
+  // Enrich profiles
+  const pubkeys = issues.map((i) => i.authorPubkey);
+  await enrichProfilesForPubkeys(pubkeys, relayUrl);
+
+  const result = renderIssueList(repo, issues, profileCache, owner);
+  return renderLayout('Forge', result.html, relayUrl);
+}
+
+/**
+ * Render the issue detail route.
+ */
+async function renderIssueDetailRoute(
+  owner: string,
+  repo: string,
+  eventId: string,
+  relayUrl: string
+): Promise<string> {
+  // Fetch the issue event
+  const issueEvents = await queryRelay(
+    relayUrl,
+    buildEventByIdFilter([eventId])
+  );
+  const issueEvent = issueEvents[0];
+  if (!issueEvent) {
+    return renderLayout(
+      'Forge',
+      '<div class="stub-page"><div class="stub-page-title">404</div><p>Issue not found.</p></div>',
+      relayUrl
+    );
+  }
+
+  const issue = parseIssue(issueEvent);
+  if (!issue) {
+    return renderLayout(
+      'Forge',
+      '<div class="stub-page"><div class="stub-page-title">404</div><p>Issue not found.</p></div>',
+      relayUrl
+    );
+  }
+
+  // Check close status
+  const closeEvents = await queryRelay(
+    relayUrl,
+    buildIssueCloseFilter([eventId])
+  );
+  if (closeEvents.length > 0) {
+    issue.status = 'closed';
+  }
+
+  // Fetch comments
+  const commentEvents = await queryRelay(
+    relayUrl,
+    buildCommentFilter([eventId])
+  );
+  const comments = commentEvents
+    .map((e) => parseComment(e))
+    .filter((c): c is NonNullable<typeof c> => c !== null)
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  // Enrich profiles
+  const pubkeys = [issue.authorPubkey, ...comments.map((c) => c.authorPubkey)];
+  await enrichProfilesForPubkeys(pubkeys, relayUrl);
+
+  const result = renderIssueDetail(repo, issue, comments, profileCache, owner);
+  return renderLayout('Forge', result.html, relayUrl);
+}
+
+/**
+ * Render the pull requests list route.
+ */
+async function renderPullsRoute(
+  owner: string,
+  repo: string,
+  relayUrl: string
+): Promise<string> {
+  const meta = await resolveRepoMeta(repo, relayUrl);
+  if (!meta) {
+    return renderLayout(
+      'Forge',
+      '<div class="stub-page"><div class="stub-page-title">404</div><p>Repository not found.</p></div>',
+      relayUrl
+    );
+  }
+
+  // Query PRs
+  const prEvents = await queryRelay(
+    relayUrl,
+    buildPRListFilter(meta.ownerPubkey, meta.repoId)
+  );
+
+  const prs: PRMetadata[] = prEvents
+    .map((e) => parsePR(e))
+    .filter((p): p is PRMetadata => p !== null);
+
+  // Query status events
+  if (prs.length > 0) {
+    const prIds = prs.map((p) => p.eventId);
+    const statusEvents = await queryRelay(relayUrl, buildStatusFilter(prIds));
+    for (const pr of prs) {
+      pr.status = resolvePRStatus(pr.eventId, statusEvents);
+    }
+  }
+
+  // Sort by created_at descending
+  prs.sort((a, b) => b.createdAt - a.createdAt);
+
+  // Enrich profiles
+  const pubkeys = prs.map((p) => p.authorPubkey);
+  await enrichProfilesForPubkeys(pubkeys, relayUrl);
+
+  const result = renderPRList(repo, prs, profileCache, owner);
+  return renderLayout('Forge', result.html, relayUrl);
+}
+
+/**
+ * Render the pull request detail route.
+ */
+async function renderPullDetailRoute(
+  owner: string,
+  repo: string,
+  eventId: string,
+  relayUrl: string
+): Promise<string> {
+  // Fetch the PR event
+  const prEvents = await queryRelay(relayUrl, buildEventByIdFilter([eventId]));
+  const prEvent = prEvents[0];
+  if (!prEvent) {
+    return renderLayout(
+      'Forge',
+      '<div class="stub-page"><div class="stub-page-title">404</div><p>Pull request not found.</p></div>',
+      relayUrl
+    );
+  }
+
+  const pr = parsePR(prEvent);
+  if (!pr) {
+    return renderLayout(
+      'Forge',
+      '<div class="stub-page"><div class="stub-page-title">404</div><p>Pull request not found.</p></div>',
+      relayUrl
+    );
+  }
+
+  // Fetch status events
+  const statusEvents = await queryRelay(relayUrl, buildStatusFilter([eventId]));
+  pr.status = resolvePRStatus(eventId, statusEvents);
+
+  // Fetch comments
+  const commentEvents = await queryRelay(
+    relayUrl,
+    buildCommentFilter([eventId])
+  );
+  const comments = commentEvents
+    .map((e) => parseComment(e))
+    .filter((c): c is NonNullable<typeof c> => c !== null)
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  // Enrich profiles
+  const pubkeys = [pr.authorPubkey, ...comments.map((c) => c.authorPubkey)];
+  await enrichProfilesForPubkeys(pubkeys, relayUrl);
+
+  const result = renderPRDetail(repo, pr, comments, profileCache, owner);
+  return renderLayout('Forge', result.html, relayUrl);
+}
+
+/**
  * Render a route into the app container.
  */
 async function renderRoute(route: Route, relayUrl: string): Promise<void> {
@@ -916,6 +1181,92 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
         content = renderLayout(
           'Forge',
           '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load blame view.</div></div>',
+          relayUrl
+        );
+      }
+      break;
+    }
+    case 'issues': {
+      content = renderLayout(
+        'Forge',
+        '<div class="loading">Loading issues...</div>',
+        relayUrl
+      );
+      app.innerHTML = content; // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method
+
+      try {
+        content = await renderIssuesRoute(route.owner, route.repo, relayUrl);
+      } catch {
+        content = renderLayout(
+          'Forge',
+          '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load issues.</div></div>',
+          relayUrl
+        );
+      }
+      break;
+    }
+    case 'issue-detail': {
+      content = renderLayout(
+        'Forge',
+        '<div class="loading">Loading issue...</div>',
+        relayUrl
+      );
+      app.innerHTML = content; // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method
+
+      try {
+        content = await renderIssueDetailRoute(
+          route.owner,
+          route.repo,
+          route.eventId,
+          relayUrl
+        );
+      } catch {
+        content = renderLayout(
+          'Forge',
+          '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load issue.</div></div>',
+          relayUrl
+        );
+      }
+      break;
+    }
+    case 'pulls': {
+      content = renderLayout(
+        'Forge',
+        '<div class="loading">Loading pull requests...</div>',
+        relayUrl
+      );
+      app.innerHTML = content; // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method
+
+      try {
+        content = await renderPullsRoute(route.owner, route.repo, relayUrl);
+      } catch {
+        content = renderLayout(
+          'Forge',
+          '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load pull requests.</div></div>',
+          relayUrl
+        );
+      }
+      break;
+    }
+    case 'pull-detail': {
+      content = renderLayout(
+        'Forge',
+        '<div class="loading">Loading pull request...</div>',
+        relayUrl
+      );
+      app.innerHTML = content; // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method
+
+      try {
+        content = await renderPullDetailRoute(
+          route.owner,
+          route.repo,
+          route.eventId,
+          relayUrl
+        );
+      } catch {
+        content = renderLayout(
+          'Forge',
+          '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load pull request.</div></div>',
           relayUrl
         );
       }

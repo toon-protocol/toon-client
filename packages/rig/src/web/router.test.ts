@@ -225,4 +225,85 @@ describe('Router - Route Parsing', () => {
       expect(commitRoute.sha).toBe(sha);
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Story 8.5: Issue and PR routes
+  // ---------------------------------------------------------------------------
+
+  it('[P1] parses /<npub>/<repo>/issues as issues list route', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/issues`);
+
+    expect(route.type).toBe('issues');
+    if (route.type === 'issues') {
+      expect(route.owner).toBe(npub);
+      expect(route.repo).toBe('my-repo');
+    }
+  });
+
+  it('[P1] parses /<npub>/<repo>/issues/<eventId> as issue detail route', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const eventId = 'e'.repeat(64);
+    const route = parseRoute(`/${npub}/my-repo/issues/${eventId}`);
+
+    expect(route.type).toBe('issue-detail');
+    if (route.type === 'issue-detail') {
+      expect(route.owner).toBe(npub);
+      expect(route.repo).toBe('my-repo');
+      expect(route.eventId).toBe(eventId);
+    }
+  });
+
+  it('[P1] parses /<npub>/<repo>/pulls as pulls list route', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/pulls`);
+
+    expect(route.type).toBe('pulls');
+    if (route.type === 'pulls') {
+      expect(route.owner).toBe(npub);
+      expect(route.repo).toBe('my-repo');
+    }
+  });
+
+  it('[P1] parses /<npub>/<repo>/pulls/<eventId> as pull detail route', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const eventId = 'f'.repeat(64);
+    const route = parseRoute(`/${npub}/my-repo/pulls/${eventId}`);
+
+    expect(route.type).toBe('pull-detail');
+    if (route.type === 'pull-detail') {
+      expect(route.owner).toBe(npub);
+      expect(route.repo).toBe('my-repo');
+      expect(route.eventId).toBe(eventId);
+    }
+  });
+
+  // Regression: existing routes still parse correctly
+  it('[P1] existing tree route still works after adding issues/pulls routes', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/tree/main/src`);
+
+    expect(route.type).toBe('tree');
+  });
+
+  it('[P1] existing blob route still works after adding issues/pulls routes', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/blob/main/src/index.ts`);
+
+    expect(route.type).toBe('blob');
+  });
+
+  it('[P1] existing blame route still works after adding issues/pulls routes', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/blame/main/src/file.ts`);
+
+    expect(route.type).toBe('blame');
+  });
+
+  it('[P1] bare repo route still works after adding issues/pulls routes', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/`);
+
+    expect(route.type).toBe('tree');
+  });
 });

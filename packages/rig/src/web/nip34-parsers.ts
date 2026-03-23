@@ -1,8 +1,10 @@
 /**
  * NIP-34 event parsers for Forge-UI.
  *
- * Parses kind:30617 repository announcement events into RepoMetadata
- * for rendering in the repository list.
+ * Parses kind:30617 repository announcement events into RepoMetadata,
+ * kind:1621 issue events into IssueMetadata, kind:1617 patch events
+ * into PRMetadata, and kind:1622 comment events into CommentMetadata
+ * for rendering in the repository list and issue/PR views.
  */
 
 /**
@@ -44,7 +46,10 @@ export interface NostrEvent {
 export interface NostrFilter {
   kinds?: number[];
   authors?: string[];
+  ids?: string[];
   '#d'?: string[];
+  '#e'?: string[];
+  '#a'?: string[];
   limit?: number;
 }
 
@@ -159,4 +164,172 @@ export function parseRepoAnnouncement(event: NostrEvent): RepoMetadata | null {
     cloneUrls,
     webUrls,
   };
+}
+
+// ============================================================================
+// NIP-34 Issue / PR / Comment Types and Parsers (Story 8.5)
+// ============================================================================
+
+/**
+ * Parsed issue metadata from a kind:1621 event.
+ */
+export interface IssueMetadata {
+  eventId: string;
+  title: string;
+  content: string;
+  authorPubkey: string;
+  createdAt: number;
+  labels: string[];
+  status: 'open' | 'closed';
+}
+
+/**
+ * Parsed pull request metadata from a kind:1617 event.
+ */
+export interface PRMetadata {
+  eventId: string;
+  title: string;
+  content: string;
+  authorPubkey: string;
+  createdAt: number;
+  commitShas: string[];
+  baseBranch: string;
+  status: 'open' | 'applied' | 'closed' | 'draft';
+}
+
+/**
+ * Parsed comment metadata from a kind:1622 event.
+ */
+export interface CommentMetadata {
+  eventId: string;
+  content: string;
+  authorPubkey: string;
+  createdAt: number;
+  parentEventId: string;
+}
+
+/**
+ * Parse a kind:1621 issue event into IssueMetadata.
+ *
+ * @param event - A NostrEvent (expected kind:1621)
+ * @returns IssueMetadata if valid, null if wrong kind
+ */
+export function parseIssue(event: NostrEvent): IssueMetadata | null {
+  if (event.kind !== 1621) {
+    return null;
+  }
+
+  // Title from subject tag, fallback to first line of content
+  const subjectTag = getTagValue(event.tags, 'subject');
+  const title = subjectTag ?? event.content.split('\n')[0] ?? '';
+
+  // Labels from t tags
+  const labels = getTagValues(event.tags, 't');
+
+  return {
+    eventId: event.id,
+    title,
+    content: event.content,
+    authorPubkey: event.pubkey,
+    createdAt: event.created_at,
+    labels,
+    status: 'open',
+  };
+}
+
+/**
+ * Parse a kind:1617 patch/PR event into PRMetadata.
+ *
+ * @param event - A NostrEvent (expected kind:1617)
+ * @returns PRMetadata if valid, null if wrong kind
+ */
+export function parsePR(event: NostrEvent): PRMetadata | null {
+  if (event.kind !== 1617) {
+    return null;
+  }
+
+  const title = getTagValue(event.tags, 'subject') ?? '';
+  const commitShas = getTagValues(event.tags, 'commit');
+  const baseBranch = getTagValue(event.tags, 'branch') ?? 'main';
+
+  return {
+    eventId: event.id,
+    title,
+    content: event.content,
+    authorPubkey: event.pubkey,
+    createdAt: event.created_at,
+    commitShas,
+    baseBranch,
+    status: 'open',
+  };
+}
+
+/**
+ * Parse a kind:1622 comment event into CommentMetadata.
+ *
+ * @param event - A NostrEvent (expected kind:1622)
+ * @returns CommentMetadata if valid, null if wrong kind or missing parent
+ */
+export function parseComment(event: NostrEvent): CommentMetadata | null {
+  if (event.kind !== 1622) {
+    return null;
+  }
+
+  const parentEventId = getTagValue(event.tags, 'e');
+  if (!parentEventId) {
+    return null;
+  }
+
+  return {
+    eventId: event.id,
+    content: event.content,
+    authorPubkey: event.pubkey,
+    createdAt: event.created_at,
+    parentEventId,
+  };
+}
+
+/**
+ * Resolve the status of a PR from status events (kind:1630-1633).
+ *
+ * Filters status events to those referencing the PR, finds the most recent,
+ * and maps kind to status: 1630=open, 1631=applied, 1632=closed, 1633=draft.
+ *
+ * @param prEventId - The PR event ID to resolve status for
+ * @param statusEvents - Array of kind:1630-1633 events
+ * @returns Resolved status string
+ */
+export function resolvePRStatus(
+  prEventId: string,
+  statusEvents: NostrEvent[]
+): 'open' | 'applied' | 'closed' | 'draft' {
+  const KIND_STATUS_MAP: Record<
+    number,
+    'open' | 'applied' | 'closed' | 'draft'
+  > = {
+    1630: 'open',
+    1631: 'applied',
+    1632: 'closed',
+    1633: 'draft',
+  };
+
+  // Filter to status events referencing this PR
+  const relevant = statusEvents.filter((evt) => {
+    const eTag = getTagValue(evt.tags, 'e');
+    return eTag === prEventId && evt.kind >= 1630 && evt.kind <= 1633;
+  });
+
+  if (relevant.length === 0) {
+    return 'open';
+  }
+
+  // Find most recent by created_at
+  let latest = relevant[0]!;
+  for (let i = 1; i < relevant.length; i++) {
+    if (relevant[i]!.created_at > latest.created_at) {
+      latest = relevant[i]!;
+    }
+  }
+
+  return KIND_STATUS_MAP[latest.kind] ?? 'open';
 }

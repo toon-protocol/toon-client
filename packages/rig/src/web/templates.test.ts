@@ -15,13 +15,22 @@ import {
   renderCommitDiff,
   renderCommitLog,
   renderBlameView,
-  renderIssueContent,
-  renderIssuesPage,
+  renderIssueList,
+  renderIssueDetail,
+  renderPRList,
+  renderPRDetail,
+  renderRepoTabs,
 } from './templates.js';
 import type { FileDiff } from './templates.js';
 import type { TreeEntry } from './git-objects.js';
 import type { CommitLogEntry } from './commit-walker.js';
 import type { TreeDiffEntry } from './tree-diff.js';
+import type {
+  IssueMetadata,
+  PRMetadata,
+  CommentMetadata,
+} from './nip34-parsers.js';
+import { ProfileCache } from './profile-cache.js';
 
 // ============================================================================
 // Factories
@@ -41,27 +50,6 @@ function createMockTreeEntry(
     mode: overrides.mode ?? '100644',
     name: overrides.name ?? 'README.md',
     sha: overrides.sha ?? 'a'.repeat(40),
-  };
-}
-
-/**
- * Factory for creating a mock issue sourced from a Nostr event.
- */
-function createMockIssue(
-  overrides: {
-    id?: string;
-    pubkey?: string;
-    title?: string;
-    content?: string;
-    createdAt?: number;
-  } = {}
-) {
-  return {
-    id: overrides.id ?? 'a'.repeat(64),
-    pubkey: overrides.pubkey ?? 'ab'.repeat(32),
-    title: overrides.title ?? 'Bug report',
-    content: overrides.content ?? 'Something is broken',
-    createdAt: overrides.createdAt ?? 1700000000,
   };
 }
 
@@ -717,93 +705,528 @@ describe('Templates - Story 8.4: Blob View Blame Link', () => {
   });
 });
 
-describe('Templates - XSS Prevention', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+// ============================================================================
+// Story 8.5 Tests - Issue/PR Templates
+// Test IDs: 8.5-UNIT-005, 8.5-UNIT-006, 8.5-UNIT-008
+// ============================================================================
+
+function createIssueMetadata(
+  overrides: Partial<IssueMetadata> = {}
+): IssueMetadata {
+  return {
+    eventId: overrides.eventId ?? 'i'.repeat(64),
+    title: overrides.title ?? 'Bug report',
+    content: overrides.content ?? 'Something is broken',
+    authorPubkey: overrides.authorPubkey ?? 'ab'.repeat(32),
+    createdAt: overrides.createdAt ?? 1700000000,
+    labels: overrides.labels ?? [],
+    status: overrides.status ?? 'open',
+  };
+}
+
+function createPRMetadata(overrides: Partial<PRMetadata> = {}): PRMetadata {
+  return {
+    eventId: overrides.eventId ?? 'p'.repeat(64),
+    title: overrides.title ?? 'Add feature',
+    content: overrides.content ?? 'Patch content',
+    authorPubkey: overrides.authorPubkey ?? 'ab'.repeat(32),
+    createdAt: overrides.createdAt ?? 1700000000,
+    commitShas: overrides.commitShas ?? ['abc123'],
+    baseBranch: overrides.baseBranch ?? 'main',
+    status: overrides.status ?? 'open',
+  };
+}
+
+function createCommentMetadata(
+  overrides: Partial<CommentMetadata> = {}
+): CommentMetadata {
+  return {
+    eventId: overrides.eventId ?? 'c'.repeat(64),
+    content: overrides.content ?? 'A comment',
+    authorPubkey: overrides.authorPubkey ?? 'cd'.repeat(32),
+    createdAt: overrides.createdAt ?? 1700001000,
+    parentEventId: overrides.parentEventId ?? 'i'.repeat(64),
+  };
+}
+
+describe('Templates - Story 8.5: Issue List (8.5-UNIT-005)', () => {
+  const cache = new ProfileCache();
+
+  it('[P1] renders issues with title, author, date, labels', () => {
+    const issues = [
+      createIssueMetadata({
+        title: 'Fix the parser',
+        labels: ['bug', 'urgent'],
+      }),
+      createIssueMetadata({
+        title: 'Add feature X',
+        labels: [],
+      }),
+    ];
+
+    const result = renderIssueList('test-repo', issues, cache, 'npub1test');
+
+    expect(result.status).toBe(200);
+    expect(result.html).toContain('Fix the parser');
+    expect(result.html).toContain('Add feature X');
+    expect(result.html).toContain('bug');
+    expect(result.html).toContain('urgent');
+    expect(result.html).toContain('issue-title-link');
   });
 
-  it('[P0] script tags in issue content are escaped', () => {
-    const maliciousIssue = createMockIssue({
-      content: '<script>alert(1)</script>',
-      title: 'Normal title',
-    });
+  it('[P1] renders empty state when no issues', () => {
+    const result = renderIssueList('test-repo', [], cache, 'npub1test');
 
-    const html = renderIssueContent(maliciousIssue);
-
-    expect(html).not.toContain('<script>');
-    expect(html).not.toContain('</script>');
-    expect(html).toContain('&lt;script&gt;');
-  });
-
-  it('[P0] onerror handler in img tag is escaped', () => {
-    const maliciousIssue = createMockIssue({
-      content: '<img onerror=alert(1) src=x>',
-    });
-
-    const html = renderIssueContent(maliciousIssue);
-    const container = document.createElement('div');
-    container.innerHTML = html;
-
-    expect(container.querySelectorAll('img')).toHaveLength(0);
-    expect(container.querySelectorAll('img[onerror]')).toHaveLength(0);
-    expect(html).toContain('&lt;img');
-  });
-
-  it('[P0] javascript: URI in content is escaped', () => {
-    const maliciousIssue = createMockIssue({
-      content: '<a href="javascript:alert(1)">click me</a>',
-    });
-
-    const html = renderIssueContent(maliciousIssue);
-    const container = document.createElement('div');
-    container.innerHTML = html;
-
-    const links = container.querySelectorAll('a[href^="javascript:"]');
-    expect(links).toHaveLength(0);
-    expect(html).toContain('&lt;a');
+    expect(result.status).toBe(200);
+    expect(result.html).toContain('No issues found for this repository');
+    expect(result.html).toContain('kind:1621');
   });
 
   it('[P0] XSS in issue title is escaped', () => {
-    const maliciousIssue = createMockIssue({
-      title: '<script>document.cookie</script>',
-      content: 'Normal content',
-    });
+    const issues = [
+      createIssueMetadata({
+        title: '<script>alert(1)</script>',
+      }),
+    ];
 
-    const html = renderIssueContent(maliciousIssue);
+    const result = renderIssueList('test-repo', issues, cache, 'npub1test');
 
-    expect(html).not.toContain('<script>');
-  });
-
-  it('[P0] nested XSS payload is escaped', () => {
-    const maliciousIssue = createMockIssue({
-      content: '"><svg onload=alert(1)>',
-    });
-
-    const html = renderIssueContent(maliciousIssue);
-    const container = document.createElement('div');
-    container.innerHTML = html;
-
-    expect(container.querySelectorAll('svg')).toHaveLength(0);
-    expect(container.querySelectorAll('svg[onload]')).toHaveLength(0);
+    expect(result.html).not.toContain('<script>');
+    expect(result.html).toContain('&lt;script&gt;');
   });
 });
 
-describe('Templates - Contribution Banner', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe('Templates - Story 8.5: Issue Detail (8.5-UNIT-006)', () => {
+  const cache = new ProfileCache();
+
+  it('[P1] renders comments in chronological order', () => {
+    const issue = createIssueMetadata({ title: 'Test issue' });
+    const comments = [
+      createCommentMetadata({
+        content: 'First comment',
+        createdAt: 1700001000,
+      }),
+      createCommentMetadata({
+        content: 'Second comment',
+        createdAt: 1700002000,
+      }),
+    ];
+
+    const result = renderIssueDetail(
+      'test-repo',
+      issue,
+      comments,
+      cache,
+      'npub1test'
+    );
+
+    expect(result.status).toBe(200);
+    const firstIdx = result.html.indexOf('First comment');
+    const secondIdx = result.html.indexOf('Second comment');
+    expect(firstIdx).toBeLessThan(secondIdx);
   });
 
-  it('[P3] issues page renders contribution banner with ILP/Nostr requirement', () => {
-    const html = renderIssuesPage('test-repo', [createMockIssue()]);
+  it('[P1] renders issue body and metadata', () => {
+    const issue = createIssueMetadata({
+      title: 'Important bug',
+      content: 'Details about the bug',
+      labels: ['critical'],
+      status: 'open',
+    });
 
-    expect(html).toContain('participation requires an ILP/Nostr client');
+    const result = renderIssueDetail(
+      'test-repo',
+      issue,
+      [],
+      cache,
+      'npub1test'
+    );
+
+    expect(result.html).toContain('Important bug');
+    expect(result.html).toContain('Details about the bug');
+    expect(result.html).toContain('critical');
+    expect(result.html).toContain('status-open');
   });
 
-  it('[P3] contribution banner includes documentation link', () => {
-    const html = renderIssuesPage('test-repo', [createMockIssue()]);
+  it('[P1] includes navigation tabs (AC #22)', () => {
+    const issue = createIssueMetadata({ title: 'Tab test' });
 
-    expect(html).toMatch(/<a[^>]*href="[^"]*"[^>]*>/);
-    expect(html).toMatch(/documentation|docs|getting started/i);
+    const result = renderIssueDetail(
+      'test-repo',
+      issue,
+      [],
+      cache,
+      'npub1test'
+    );
+
+    expect(result.html).toContain('repo-tabs');
+  });
+});
+
+describe('Templates - Story 8.5: PR List', () => {
+  const cache = new ProfileCache();
+
+  it('[P1] renders PRs with correct status badges', () => {
+    const prs = [
+      createPRMetadata({ title: 'Open PR', status: 'open' }),
+      createPRMetadata({ title: 'Applied PR', status: 'applied' }),
+      createPRMetadata({ title: 'Closed PR', status: 'closed' }),
+      createPRMetadata({ title: 'Draft PR', status: 'draft' }),
+    ];
+
+    const result = renderPRList('test-repo', prs, cache, 'npub1test');
+
+    expect(result.html).toContain('status-open');
+    expect(result.html).toContain('status-applied');
+    expect(result.html).toContain('status-closed');
+    expect(result.html).toContain('status-draft');
+  });
+
+  it('[P1] renders empty state when no PRs', () => {
+    const result = renderPRList('test-repo', [], cache, 'npub1test');
+
+    expect(result.status).toBe(200);
+    expect(result.html).toContain('No pull requests found for this repository');
+    expect(result.html).toContain('kind:1617');
+  });
+});
+
+describe('Templates - Story 8.5: PR Detail', () => {
+  const cache = new ProfileCache();
+
+  it('[P1] renders commit SHA links, status badge, comments', () => {
+    const pr = createPRMetadata({
+      title: 'Feature PR',
+      commitShas: ['abc1234567890', 'def4567890abc'],
+      baseBranch: 'develop',
+      status: 'applied',
+    });
+    const comments = [createCommentMetadata({ content: 'LGTM' })];
+
+    const result = renderPRDetail(
+      'test-repo',
+      pr,
+      comments,
+      cache,
+      'npub1test'
+    );
+
+    expect(result.html).toContain('abc1234');
+    expect(result.html).toContain('def4567');
+    expect(result.html).toContain('/commit/');
+    expect(result.html).toContain('status-applied');
+    expect(result.html).toContain('develop');
+    expect(result.html).toContain('LGTM');
+  });
+
+  it('[P1] renders patch body content via renderMarkdownSafe (AC #14)', () => {
+    const pr = createPRMetadata({
+      content: 'Patch body with https://example.com link\n\nSecond paragraph',
+    });
+
+    const result = renderPRDetail('test-repo', pr, [], cache, 'npub1test');
+
+    // renderMarkdownSafe auto-links URLs and converts double newlines
+    expect(result.html).toContain('<a href=');
+    expect(result.html).toContain('https://example.com');
+    expect(result.html).toContain('<br><br>');
+  });
+
+  it('[P1] includes navigation tabs (AC #22)', () => {
+    const pr = createPRMetadata({ title: 'Tab test PR' });
+
+    const result = renderPRDetail('test-repo', pr, [], cache, 'npub1test');
+
+    expect(result.html).toContain('repo-tabs');
+  });
+});
+
+describe('Templates - Story 8.5: Contribution Banner (8.5-UNIT-008)', () => {
+  const cache = new ProfileCache();
+
+  it('[P1] contribution banner is present on issue list page', () => {
+    const result = renderIssueList('test-repo', [], cache, 'npub1test');
+
+    expect(result.html).toContain('contribution-banner');
+    expect(result.html).toContain('Forge-UI is read-only');
+    expect(result.html).toContain('NIP-34');
+  });
+
+  it('[P1] contribution banner is present on PR list page', () => {
+    const result = renderPRList('test-repo', [], cache, 'npub1test');
+
+    expect(result.html).toContain('contribution-banner');
+    expect(result.html).toContain('Forge-UI is read-only');
+  });
+
+  it('[P1] contribution banner is present on issue detail page', () => {
+    const issue = createIssueMetadata({ title: 'Test' });
+    const result = renderIssueDetail(
+      'test-repo',
+      issue,
+      [],
+      cache,
+      'npub1test'
+    );
+
+    expect(result.html).toContain('contribution-banner');
+  });
+
+  it('[P1] contribution banner is present on PR detail page', () => {
+    const pr = createPRMetadata({ title: 'Test PR' });
+    const result = renderPRDetail('test-repo', pr, [], cache, 'npub1test');
+
+    expect(result.html).toContain('contribution-banner');
+  });
+});
+
+describe('Templates - Story 8.5: Navigation Tabs', () => {
+  it('[P1] renders tabs with correct active state for issues', () => {
+    const html = renderRepoTabs('npub1test', 'my-repo', 'issues');
+
+    expect(html).toContain('repo-tabs');
+    expect(html).toContain('Code');
+    expect(html).toContain('Issues');
+    expect(html).toContain('Pull Requests');
+    // Issues tab should be active
+    expect(html).toMatch(/Issues<\/a>/);
+    expect(html).toContain('tab-active');
+  });
+
+  it('[P1] renders tabs with correct active state for code', () => {
+    const html = renderRepoTabs('npub1test', 'my-repo', 'code', 'main');
+
+    expect(html).toContain('/tree/main/');
+    expect(html).toContain('tab-active');
+  });
+
+  it('[P1] code tab links to bare repo URL when ref is undefined', () => {
+    const html = renderRepoTabs('npub1test', 'my-repo', 'issues');
+
+    expect(html).toContain('/npub1test/my-repo/');
+    expect(html).toContain('/npub1test/my-repo/issues');
+    expect(html).toContain('/npub1test/my-repo/pulls');
+  });
+
+  it('[P1] issue and PR list templates include navigation tabs', () => {
+    const cache = new ProfileCache();
+    const issueResult = renderIssueList('test-repo', [], cache, 'npub1test');
+    const prResult = renderPRList('test-repo', [], cache, 'npub1test');
+
+    expect(issueResult.html).toContain('repo-tabs');
+    expect(prResult.html).toContain('repo-tabs');
+  });
+
+  it('[P1] renders tabs with correct active state for pulls', () => {
+    const html = renderRepoTabs('npub1test', 'my-repo', 'pulls');
+
+    expect(html).toContain('Pull Requests');
+    // Pulls tab should be active
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const activeTab = container.querySelector('.tab-active');
+    expect(activeTab).not.toBeNull();
+    expect(activeTab!.textContent).toBe('Pull Requests');
+  });
+
+  it('[P1] issues tab links to /<owner>/<repo>/issues', () => {
+    const html = renderRepoTabs('npub1test', 'my-repo', 'code', 'main');
+
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const tabs = container.querySelectorAll('.repo-tab');
+    const issuesTab = Array.from(tabs).find(
+      (t) => t.textContent === 'Issues'
+    ) as HTMLAnchorElement;
+    expect(issuesTab).not.toBeNull();
+    expect(issuesTab.getAttribute('href')).toBe('/npub1test/my-repo/issues');
+  });
+
+  it('[P1] pull requests tab links to /<owner>/<repo>/pulls', () => {
+    const html = renderRepoTabs('npub1test', 'my-repo', 'code', 'main');
+
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const tabs = container.querySelectorAll('.repo-tab');
+    const pullsTab = Array.from(tabs).find(
+      (t) => t.textContent === 'Pull Requests'
+    ) as HTMLAnchorElement;
+    expect(pullsTab).not.toBeNull();
+    expect(pullsTab.getAttribute('href')).toBe('/npub1test/my-repo/pulls');
+  });
+});
+
+// ============================================================================
+// NFR: XSS Prevention in Comments and Detail Views
+// ============================================================================
+
+describe('Templates - NFR: XSS in Issue/PR Comments', () => {
+  const cache = new ProfileCache();
+
+  it('[P0] XSS in comment content is escaped via renderMarkdownSafe', () => {
+    const issue = createIssueMetadata({ title: 'Test' });
+    const comments = [
+      createCommentMetadata({
+        content: '<script>alert("xss")</script>',
+      }),
+    ];
+
+    const result = renderIssueDetail(
+      'test-repo',
+      issue,
+      comments,
+      cache,
+      'npub1test'
+    );
+
+    expect(result.html).not.toContain('<script>alert');
+    expect(result.html).toContain('&lt;script&gt;');
+  });
+
+  it('[P0] XSS in PR comment content is escaped', () => {
+    const pr = createPRMetadata({ title: 'Test PR' });
+    const comments = [
+      createCommentMetadata({
+        content: '<img onerror="alert(1)" src=x>',
+      }),
+    ];
+
+    const result = renderPRDetail(
+      'test-repo',
+      pr,
+      comments,
+      cache,
+      'npub1test'
+    );
+
+    expect(result.html).not.toContain('<img');
+    expect(result.html).toContain('&lt;img');
+  });
+
+  it('[P0] XSS in issue labels is escaped', () => {
+    const issues = [
+      createIssueMetadata({
+        title: 'Test',
+        labels: ['<script>alert(1)</script>'],
+      }),
+    ];
+
+    const result = renderIssueList('test-repo', issues, cache, 'npub1test');
+
+    expect(result.html).not.toContain('<script>');
+    expect(result.html).toContain('&lt;script&gt;');
+  });
+
+  it('[P0] XSS in PR title is escaped in detail view', () => {
+    const pr = createPRMetadata({
+      title: '"><svg onload=alert(1)>',
+    });
+
+    const result = renderPRDetail('test-repo', pr, [], cache, 'npub1test');
+
+    const container = document.createElement('div');
+    container.innerHTML = result.html;
+    expect(container.querySelectorAll('svg')).toHaveLength(0);
+    expect(result.html).toContain('&quot;&gt;&lt;svg');
+  });
+
+  it('[P1] issue list title links to /<npub>/<repo>/issues/<eventId> (AC #10)', () => {
+    const eventId = 'a'.repeat(64);
+    const issues = [createIssueMetadata({ eventId, title: 'Test link' })];
+
+    const result = renderIssueList('test-repo', issues, cache, 'npub1test');
+
+    const container = document.createElement('div');
+    container.innerHTML = result.html;
+    const titleLink = container.querySelector(
+      '.issue-title-link'
+    ) as HTMLAnchorElement;
+    expect(titleLink).not.toBeNull();
+    expect(titleLink.getAttribute('href')).toContain(
+      `/npub1test/test-repo/issues/${eventId}`
+    );
+  });
+
+  it('[P1] PR list title links to /<npub>/<repo>/pulls/<eventId> (AC #13)', () => {
+    const eventId = 'b'.repeat(64);
+    const prs = [createPRMetadata({ eventId, title: 'PR link test' })];
+
+    const result = renderPRList('test-repo', prs, cache, 'npub1test');
+
+    const container = document.createElement('div');
+    container.innerHTML = result.html;
+    const titleLink = container.querySelector(
+      '.pr-title-link'
+    ) as HTMLAnchorElement;
+    expect(titleLink).not.toBeNull();
+    expect(titleLink.getAttribute('href')).toContain(
+      `/npub1test/test-repo/pulls/${eventId}`
+    );
+  });
+
+  it('[P1] PR detail commit SHAs link to /<npub>/<repo>/commit/<sha> (AC #14)', () => {
+    const pr = createPRMetadata({
+      commitShas: ['abc1234567890def1234567890abcdef12345678'],
+    });
+
+    const result = renderPRDetail('test-repo', pr, [], cache, 'npub1test');
+
+    const container = document.createElement('div');
+    container.innerHTML = result.html;
+    const commitLink = container.querySelector(
+      '.commit-sha'
+    ) as HTMLAnchorElement;
+    expect(commitLink).not.toBeNull();
+    expect(commitLink.getAttribute('href')).toContain(
+      '/npub1test/test-repo/commit/abc1234567890def1234567890abcdef12345678'
+    );
+    // Displays abbreviated hash (first 7 chars)
+    expect(commitLink.textContent).toBe('abc1234');
+  });
+
+  it('[P1] issue detail body uses renderMarkdownSafe for content (AC #11)', () => {
+    const issue = createIssueMetadata({
+      title: 'Markdown test',
+      content: 'Visit https://example.com for info\n\nNew paragraph',
+    });
+
+    const result = renderIssueDetail(
+      'test-repo',
+      issue,
+      [],
+      cache,
+      'npub1test'
+    );
+
+    // renderMarkdownSafe should auto-link URLs
+    expect(result.html).toContain('<a href=');
+    expect(result.html).toContain('https://example.com');
+    // Double newline should produce <br><br>
+    expect(result.html).toContain('<br><br>');
+  });
+
+  it('[P1] PR detail base branch is displayed (AC #14)', () => {
+    const pr = createPRMetadata({ baseBranch: 'release/v2' });
+
+    const result = renderPRDetail('test-repo', pr, [], cache, 'npub1test');
+
+    expect(result.html).toContain('release/v2');
+    expect(result.html).toContain('pr-base-branch');
+  });
+
+  it('[P1] event IDs in detail URLs are properly encoded', () => {
+    const issues = [
+      createIssueMetadata({
+        eventId: 'abc/<script>',
+      }),
+    ];
+
+    const result = renderIssueList('test-repo', issues, cache, 'npub1test');
+
+    // The event ID should be URI-encoded in the href
+    expect(result.html).toContain(encodeURIComponent('abc/<script>'));
+    // Must not contain raw script tag
+    expect(result.html).not.toContain('<script>');
   });
 });
 

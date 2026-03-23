@@ -40,6 +40,62 @@ export function buildRepoRefsFilter(
 }
 
 /**
+ * Build a Nostr filter for querying issue events (kind:1621) for a repository.
+ */
+export function buildIssueListFilter(
+  ownerPubkey: string,
+  repoId: string
+): NostrFilter {
+  return {
+    kinds: [1621],
+    '#a': [`30617:${ownerPubkey}:${repoId}`],
+    limit: 100,
+  };
+}
+
+/**
+ * Build a Nostr filter for querying comment events (kind:1622) by parent event IDs.
+ */
+export function buildCommentFilter(eventIds: string[]): NostrFilter {
+  return { kinds: [1622], '#e': eventIds, limit: 500 };
+}
+
+/**
+ * Build a Nostr filter for querying PR/patch events (kind:1617) for a repository.
+ */
+export function buildPRListFilter(
+  ownerPubkey: string,
+  repoId: string
+): NostrFilter {
+  return {
+    kinds: [1617],
+    '#a': [`30617:${ownerPubkey}:${repoId}`],
+    limit: 100,
+  };
+}
+
+/**
+ * Build a Nostr filter for querying PR status events (kind:1630-1633) by PR event IDs.
+ */
+export function buildStatusFilter(eventIds: string[]): NostrFilter {
+  return { kinds: [1630, 1631, 1632, 1633], '#e': eventIds, limit: 500 };
+}
+
+/**
+ * Build a Nostr filter for fetching specific events by their IDs.
+ */
+export function buildEventByIdFilter(eventIds: string[]): NostrFilter {
+  return { ids: eventIds };
+}
+
+/**
+ * Build a Nostr filter for querying issue close events (kind:1632) by issue event IDs.
+ */
+export function buildIssueCloseFilter(eventIds: string[]): NostrFilter {
+  return { kinds: [1632], '#e': eventIds, limit: 500 };
+}
+
+/**
  * Decode a TOON-encoded event string into a NostrEvent.
  *
  * The relay sends EVENT messages as ["EVENT", subId, toonString] where the
@@ -105,13 +161,15 @@ export function queryRelay(
     if (!isValidRelayUrl(relayUrl)) {
       reject(
         new Error(
+          // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
           `Invalid relay URL protocol (must be ws:// or wss://): ${relayUrl}`
         )
-      ); // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+      );
       return;
     }
 
     try {
+      // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       ws = new WebSocket(relayUrl);
     } catch (err) {
       reject(new Error(`Failed to connect to relay: ${String(err)}`));

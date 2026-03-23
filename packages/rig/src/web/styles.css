@@ -708,7 +708,421 @@ a:hover {
   text-decoration: none;
 }
 
+/* Repository Tabs */
+
+.repo-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 16px;
+}
+
+.repo-tab {
+  padding: 8px 16px;
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s ease, border-bottom-color 0.15s ease;
+}
+
+.repo-tab:hover {
+  color: var(--color-text);
+  text-decoration: none;
+  border-bottom-color: var(--color-border);
+}
+
+.repo-tab.tab-active {
+  color: var(--color-text);
+  font-weight: 600;
+  border-bottom-color: var(--color-primary);
+}
+
+.repo-tab.tab-active:hover {
+  border-bottom-color: var(--color-primary);
+}
+
+/* Contribution Banner */
+
+.contribution-banner {
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  border: 1px solid #b6e3ff;
+  border-radius: var(--radius);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+/* Status Badges */
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 12px;
+  color: #ffffff;
+  text-transform: capitalize;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.status-open {
+  background: #1a7f37;
+}
+
+.status-applied {
+  background: #8250df;
+}
+
+.status-closed {
+  background: #cf222e;
+}
+
+.status-draft {
+  background: #656d76;
+}
+
+/* Label Badges */
+
+.label-badge {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #ddf4ff;
+  color: #0969da;
+  margin-left: 4px;
+  line-height: 1.4;
+  border: 1px solid rgba(9, 105, 218, 0.15);
+}
+
+/* Issue List */
+
+.issue-list {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.issue-row {
+  background: var(--color-surface);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  transition: background 0.1s ease;
+}
+
+.issue-row:hover {
+  background: var(--color-bg);
+}
+
+.issue-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.issue-title-link {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-title-link:hover {
+  text-decoration: underline;
+}
+
+.issue-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.issue-author,
+.pr-author {
+  font-weight: 500;
+}
+
+.issue-date,
+.pr-date {
+  color: var(--color-text-muted);
+}
+
+/* Issue Detail */
+
+.issue-detail,
+.pr-detail {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.issue-detail-header,
+.pr-detail-header {
+  padding: 20px 24px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.issue-detail-title,
+.pr-detail-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.issue-detail-meta,
+.pr-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  flex-wrap: wrap;
+}
+
+.issue-detail-body,
+.pr-detail-body {
+  padding: 20px 24px;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* PR List */
+
+.pr-list {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pr-row {
+  background: var(--color-surface);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  transition: background 0.1s ease;
+}
+
+.pr-row:hover {
+  background: var(--color-bg);
+}
+
+.pr-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.pr-title-link {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pr-title-link:hover {
+  text-decoration: underline;
+}
+
+.pr-base-branch {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  padding: 2px 8px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.pr-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+/* PR Detail */
+
+.pr-commits {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+
+.pr-commits .commit-sha {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--color-primary);
+}
+
+.pr-commits .commit-sha:hover {
+  text-decoration: underline;
+}
+
+.pr-commits-label {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+/* Comment Thread */
+
+.comment-thread {
+  background: var(--color-surface);
+}
+
+.comment {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.comment:last-child {
+  border-bottom: none;
+}
+
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 0.8125rem;
+}
+
+.comment-author {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.comment-date {
+  color: var(--color-text-muted);
+}
+
+.comment-body {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Markdown-Safe Content */
+
+.code-block {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 12px 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre;
+  word-wrap: normal;
+}
+
+.code-block code {
+  font-family: var(--font-mono);
+}
+
+.inline-code {
+  background: rgba(175, 184, 193, 0.2);
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+/* Loading State */
+
+.loading {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
 /* Responsive */
+
+@media (max-width: 768px) {
+  .issue-row,
+  .pr-row {
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-start;
+  }
+
+  .issue-row-meta,
+  .pr-row-meta {
+    padding-left: 0;
+  }
+
+  .issue-detail-header,
+  .pr-detail-header {
+    padding: 16px;
+  }
+
+  .issue-detail-body,
+  .pr-detail-body {
+    padding: 16px;
+  }
+
+  .comment {
+    padding: 12px 16px;
+  }
+
+  .issue-detail-meta,
+  .pr-detail-meta {
+    gap: 6px;
+  }
+
+  .repo-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
 
 @media (max-width: 600px) {
   .layout-header {

@@ -8,16 +8,9 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import {
-  parseGitCommit,
-  parseGitTree,
-  isBinaryBlob,
-} from '../git-objects.js';
+import { parseGitCommit, parseGitTree, isBinaryBlob } from '../git-objects.js';
 import type { TreeEntry } from '../git-objects.js';
-import {
-  renderBlameView,
-  renderBlobView,
-} from '../templates.js';
+import { renderBlameView, renderBlobView } from '../templates.js';
 import type { TemplateResult } from '../templates.js';
 import { parseRoute } from '../router.js';
 import { parseRepoRefs, parseRepoAnnouncement } from '../nip34-parsers.js';
@@ -158,7 +151,8 @@ const BINARY_BLOB_TX = 'binaryTx0123456789abcdefghijklmnopqrstuvwxy';
 // File contents at each commit
 const FILE_CONTENT_A = 'line one\nline two';
 const FILE_CONTENT_B = 'line one\nline two\nline three\nline four';
-const FILE_CONTENT_C = 'line one\nmodified two\nline three\nline four\nline five';
+const FILE_CONTENT_C =
+  'line one\nmodified two\nline three\nline four\nline five';
 
 // ============================================================================
 // Arweave Mock Setup
@@ -347,7 +341,11 @@ describe('E2E: Story 8.4 — Blame View', () => {
       setupArweaveMocks();
 
       // 4. Compute blame through the real resolution chain
-      const blameResult = await computeBlame('file.ts', COMMIT_C_SHA, 'test-repo');
+      const blameResult = await computeBlame(
+        'file.ts',
+        COMMIT_C_SHA,
+        'test-repo'
+      );
       expect(blameResult).not.toBeNull();
       expect(isBlameError(blameResult)).toBe(false);
 
@@ -367,7 +365,11 @@ describe('E2E: Story 8.4 — Blame View', () => {
       );
 
       // 6. Embed in layout and render into DOM
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
       // 7. Assert: blame table is rendered
@@ -423,7 +425,11 @@ describe('E2E: Story 8.4 — Blame View', () => {
       setupArweaveMocks();
 
       // Use single-commit file: all lines from commit A
-      const blameResult = await computeBlame('file.ts', COMMIT_A_SHA, 'test-repo');
+      const blameResult = await computeBlame(
+        'file.ts',
+        COMMIT_A_SHA,
+        'test-repo'
+      );
       expect(blameResult).not.toBeNull();
       expect(isBlameError(blameResult)).toBe(false);
 
@@ -470,7 +476,11 @@ describe('E2E: Story 8.4 — Blame View', () => {
       setupArweaveMocks();
 
       // Compute blame for the binary file
-      const blameResult = await computeBlame('image.png', COMMIT_C_SHA, 'test-repo');
+      const blameResult = await computeBlame(
+        'image.png',
+        COMMIT_C_SHA,
+        'test-repo'
+      );
       expect(isBlameError(blameResult)).toBe(true);
 
       const error = blameResult as BlameError;
@@ -503,7 +513,11 @@ describe('E2E: Story 8.4 — Blame View', () => {
       setupArweaveMocks();
 
       // Compute blame for a file that does not exist
-      const blameResult = await computeBlame('nonexistent.ts', COMMIT_C_SHA, 'test-repo');
+      const blameResult = await computeBlame(
+        'nonexistent.ts',
+        COMMIT_C_SHA,
+        'test-repo'
+      );
       expect(isBlameError(blameResult)).toBe(true);
 
       const error = blameResult as BlameError;
@@ -536,7 +550,12 @@ describe('E2E: Story 8.4 — Blame View', () => {
       setupArweaveMocks();
 
       // Compute blame with maxDepth=1 to trigger beyondLimit
-      const blameResult = await computeBlame('file.ts', COMMIT_C_SHA, 'test-repo', 1);
+      const blameResult = await computeBlame(
+        'file.ts',
+        COMMIT_C_SHA,
+        'test-repo',
+        1
+      );
       expect(blameResult).not.toBeNull();
       expect(isBlameError(blameResult)).toBe(false);
 
@@ -552,13 +571,19 @@ describe('E2E: Story 8.4 — Blame View', () => {
         'npub1test'
       );
 
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
       // Assert: depth limit notice is shown
       const notice = container.querySelector('.blame-depth-notice');
       expect(notice).not.toBeNull();
-      expect(notice!.textContent).toContain('Older attributions may be approximate');
+      expect(notice!.textContent).toContain(
+        'Older attributions may be approximate'
+      );
     });
   });
 
@@ -617,7 +642,9 @@ describe('E2E: Story 8.4 — Blame View', () => {
 
   describe('8.4-E2E-007: Blame route parsing', () => {
     it('[P1] parses blame route with ref and nested path', () => {
-      const route = parseRoute('/npub1owner/my-repo/blame/develop/src/web/main.ts');
+      const route = parseRoute(
+        '/npub1owner/my-repo/blame/develop/src/web/main.ts'
+      );
       expect(route.type).toBe('blame');
       if (route.type !== 'blame') throw new Error('Expected blame route');
       expect(route.owner).toBe('npub1owner');
@@ -680,7 +707,11 @@ describe('E2E: Story 8.4 — Blame View', () => {
         'npub1test'
       );
 
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
       // No script or img-onerror tags should be rendered as live DOM elements
@@ -703,7 +734,11 @@ describe('E2E: Story 8.4 — Blame View', () => {
     it('[P1] abbreviated commit hashes link to the commit diff view', async () => {
       setupArweaveMocks();
 
-      const blameResult = await computeBlame('file.ts', COMMIT_C_SHA, 'test-repo');
+      const blameResult = await computeBlame(
+        'file.ts',
+        COMMIT_C_SHA,
+        'test-repo'
+      );
       expect(blameResult).not.toBeNull();
       expect(isBlameError(blameResult)).toBe(false);
 

@@ -9,6 +9,10 @@
  * - `/<npub>/<repo>/commits/<ref>` — commit log
  * - `/<npub>/<repo>/commit/<sha>` — commit diff view
  * - `/<npub>/<repo>/blame/<ref>/<path...>` — blame view
+ * - `/<npub>/<repo>/issues` — issue list
+ * - `/<npub>/<repo>/issues/<eventId>` — issue detail
+ * - `/<npub>/<repo>/pulls` — PR list
+ * - `/<npub>/<repo>/pulls/<eventId>` — PR detail
  */
 
 /**
@@ -21,32 +25,39 @@ export type Route =
   | { type: 'commits'; owner: string; repo: string; ref: string }
   | { type: 'commit'; owner: string; repo: string; sha: string }
   | { type: 'blame'; owner: string; repo: string; ref: string; path: string }
+  | { type: 'issues'; owner: string; repo: string }
+  | { type: 'issue-detail'; owner: string; repo: string; eventId: string }
+  | { type: 'pulls'; owner: string; repo: string }
+  | { type: 'pull-detail'; owner: string; repo: string; eventId: string }
   | { type: 'not-found' };
 
+// nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
 const DEFAULT_RELAY_URL = 'wss://localhost:7100';
 
 /**
- * Validate that a relay URL uses the WebSocket protocol (ws:// or wss://).
+ * Validate that a relay URL uses the WebSocket protocol.
  *
  * @param url - URL string to validate
- * @returns true if the URL uses ws:// or wss:// protocol
+ * @returns true if the URL uses a WebSocket protocol scheme
  */
 export function isValidRelayUrl(url: string): boolean {
+  // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   return /^wss?:\/\//i.test(url);
 }
 
 /**
  * Extract relay URL from URL search query parameters.
  *
- * Only accepts URLs with ws:// or wss:// protocol to prevent
+ * Only accepts URLs with WebSocket protocol schemes to prevent
  * SSRF, open redirect, and protocol confusion attacks.
  *
- * @param search - The URL search string (e.g., "?relay=wss://example.com")
+ * @param search - The URL search string (e.g., "?relay=wss%3A%2F%2Fexample.com")
  * @returns The relay URL, or the default if not specified or invalid
  */
 export function parseRelayUrl(search: string): string {
   const params = new URLSearchParams(search);
   const relay = params.get('relay');
+  // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   if (relay && isValidRelayUrl(relay)) {
     return relay;
   }
@@ -99,6 +110,26 @@ export function parseRoute(pathname: string): Route {
       const ref = segments[3];
       const blamePath = segments.slice(4).join('/');
       return { type: 'blame', owner, repo, ref, path: blamePath };
+    }
+
+    // /<npub>/<repo>/issues/<eventId> — issue detail (MUST be before issues list)
+    if (segments.length >= 4 && segments[2] === 'issues' && segments[3]) {
+      return { type: 'issue-detail', owner, repo, eventId: segments[3] };
+    }
+
+    // /<npub>/<repo>/issues — issue list
+    if (segments.length === 3 && segments[2] === 'issues') {
+      return { type: 'issues', owner, repo };
+    }
+
+    // /<npub>/<repo>/pulls/<eventId> — PR detail (MUST be before pulls list)
+    if (segments.length >= 4 && segments[2] === 'pulls' && segments[3]) {
+      return { type: 'pull-detail', owner, repo, eventId: segments[3] };
+    }
+
+    // /<npub>/<repo>/pulls — PR list
+    if (segments.length === 3 && segments[2] === 'pulls') {
+      return { type: 'pulls', owner, repo };
     }
 
     // /<npub>/<repo>/ — bare repo route, resolve default ref

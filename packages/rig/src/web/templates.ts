@@ -8,7 +8,12 @@
 import { escapeHtml } from './escape.js';
 import { hexToNpub } from './npub.js';
 import type { ProfileCache } from './profile-cache.js';
-import type { RepoMetadata } from './nip34-parsers.js';
+import type {
+  RepoMetadata,
+  IssueMetadata,
+  PRMetadata,
+  CommentMetadata,
+} from './nip34-parsers.js';
 import type { TreeEntry } from './git-objects.js';
 import { parseAuthorIdent } from './git-objects.js';
 import { formatRelativeDate } from './date-utils.js';
@@ -16,6 +21,7 @@ import type { CommitLogEntry } from './commit-walker.js';
 import type { TreeDiffEntry } from './tree-diff.js';
 import type { DiffHunk } from './unified-diff.js';
 import type { BlameResult } from './blame.js';
+import { renderMarkdownSafe } from './markdown-safe.js';
 
 export interface TemplateResult {
   status: number;
@@ -159,6 +165,7 @@ export function renderTreeView(
   }
 
   const owner = ownerNpub ?? '';
+  const tabs = renderRepoTabs(owner, repoName, 'code', ref);
   const breadcrumbs = renderBreadcrumbs(owner, repoName, ref, path);
 
   // Sort: directories first, then files, alphabetical within each group
@@ -201,7 +208,8 @@ export function renderTreeView(
     })
     .join('\n');
 
-  const html = `${breadcrumbs}
+  const html = `${tabs}
+${breadcrumbs}
 <div class="tree-view">
 <table class="tree-table">
 <tbody>
@@ -241,12 +249,14 @@ export function renderBlobView(
   }
 
   const owner = ownerNpub ?? '';
+  const tabs = renderRepoTabs(owner, repoName, 'code', ref);
   const breadcrumbs = renderBreadcrumbs(owner, repoName, ref, path);
 
   if (isBinary) {
     return {
       status: 200,
-      html: `${breadcrumbs}
+      html: `${tabs}
+${breadcrumbs}
 <div class="blob-view">
 <div class="binary-notice">Binary file (${escapeHtml(String(sizeBytes))} bytes), not displayed</div>
 </div>`,
@@ -279,7 +289,8 @@ export function renderBlobView(
 
   return {
     status: 200,
-    html: `${breadcrumbs}
+    html: `${tabs}
+${breadcrumbs}
 <div class="blob-view">
 <div class="blob-header">${escapeHtml(path.split('/').pop() ?? '')} (${escapeHtml(String(sizeBytes))} bytes)${blameLink}</div>
 <div class="blob-content">
@@ -352,12 +363,14 @@ export function renderCommitLog(
   ownerNpub?: string
 ): TemplateResult {
   const owner = ownerNpub ?? '';
+  const tabs = renderRepoTabs(owner, repoName, 'code', ref);
   const breadcrumbs = renderCommitBreadcrumbs(owner, repoName, ref, 'Commits');
 
   if (!commits || commits.length === 0) {
     return {
       status: 200,
-      html: `${breadcrumbs}<div class="empty-state"><div class="empty-state-title">No commits found</div><div class="empty-state-message">No commits are available for this ref.</div></div>`,
+      html: `${tabs}
+${breadcrumbs}<div class="empty-state"><div class="empty-state-title">No commits found</div><div class="empty-state-message">No commits are available for this ref.</div></div>`,
     };
   }
 
@@ -400,7 +413,8 @@ export function renderCommitLog(
 
   return {
     status: 200,
-    html: `${breadcrumbs}
+    html: `${tabs}
+${breadcrumbs}
 <div class="commit-log">
 ${rows}
 </div>`,
@@ -433,6 +447,7 @@ export function renderCommitDiff(
   }
 
   const owner = ownerNpub ?? '';
+  const tabs = renderRepoTabs(owner, repoName, 'code');
   const breadcrumbs = renderCommitBreadcrumbs(
     owner,
     repoName,
@@ -519,7 +534,8 @@ ${diffContent}
 
   return {
     status: 200,
-    html: `${breadcrumbs}
+    html: `${tabs}
+${breadcrumbs}
 <div class="commit-diff">
 <div class="commit-diff-header">
   <pre class="commit-diff-message">${escapedMessage}</pre>
@@ -584,6 +600,7 @@ export function renderBlameView(
   }
 
   const owner = ownerNpub ?? '';
+  const tabs = renderRepoTabs(owner, repoName, 'code', ref);
   const breadcrumbs = renderBreadcrumbs(owner, repoName, ref, path);
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repoName);
@@ -633,7 +650,8 @@ export function renderBlameView(
     ? `<div class="blame-depth-notice">Blame history limited to ${escapeHtml(String(blameResult.maxDepth))} commits. Older attributions may be approximate.</div>`
     : '';
 
-  const html = `${breadcrumbs}
+  const html = `${tabs}
+${breadcrumbs}
 <div class="blame-view">
 <table class="blame-table">
 <tbody>
@@ -646,41 +664,329 @@ ${beyondLimitNotice}
   return { status: 200, html };
 }
 
-/**
- * Renders a single issue's content with XSS prevention.
- */
-export function renderIssueContent(issue: unknown): string {
-  const i = issue as {
-    title?: string;
-    content?: string;
-    pubkey?: string;
-    id?: string;
-    createdAt?: number;
-  };
-  const title = escapeHtml(i.title ?? '');
-  const content = escapeHtml(i.content ?? '');
-  const pubkey = escapeHtml((i.pubkey ?? '').slice(0, 12));
+// ============================================================================
+// Shared Helpers (Story 8.5)
+// ============================================================================
 
-  return `<div class="issue">
-  <h2 class="issue-title">${title}</h2>
-  <div class="issue-meta">by ${pubkey}</div>
-  <div class="issue-content">${content}</div>
-</div>`;
+/**
+ * Render the contribution banner displayed on issue/PR pages.
+ */
+function renderContributionBanner(): string {
+  return `<div class="contribution-banner">Forge-UI is read-only. To create issues or submit patches, use a TOON agent with the NIP-34 skill.</div>`;
 }
 
 /**
- * Renders the issues list page for a repository.
+ * Render repository navigation tabs (Code / Issues / Pull Requests).
  */
-export function renderIssuesPage(repoName: string, issues: unknown[]): string {
-  const escapedName = escapeHtml(repoName);
-  const issueHtml = issues.map((issue) => renderIssueContent(issue)).join('\n');
-  const banner = `<div class="contribution-banner">
-  <p>Active participation requires an ILP/Nostr client. See <a href="https://toon.dev/docs/getting-started" rel="noopener noreferrer" target="_blank">documentation</a> for getting started.</p>
-</div>`;
+export function renderRepoTabs(
+  owner: string,
+  repo: string,
+  activeTab: 'code' | 'issues' | 'pulls',
+  ref?: string
+): string {
+  const encodedOwner = encodeURIComponent(owner);
+  const encodedRepo = encodeURIComponent(repo);
 
-  return `<div class="issues-page">
-  <h1>Issues for ${escapedName}</h1>
-  ${banner}
-  ${issueHtml}
+  const codeHref = ref
+    ? escapeHtml(
+        `/${encodedOwner}/${encodedRepo}/tree/${encodeURIComponent(ref)}/`
+      )
+    : escapeHtml(`/${encodedOwner}/${encodedRepo}/`);
+  const issuesHref = escapeHtml(`/${encodedOwner}/${encodedRepo}/issues`);
+  const pullsHref = escapeHtml(`/${encodedOwner}/${encodedRepo}/pulls`);
+
+  const codeActive = activeTab === 'code' ? ' tab-active' : '';
+  const issuesActive = activeTab === 'issues' ? ' tab-active' : '';
+  const pullsActive = activeTab === 'pulls' ? ' tab-active' : '';
+
+  return `<nav class="repo-tabs">
+  <a href="${codeHref}" class="repo-tab${codeActive}">Code</a>
+  <a href="${issuesHref}" class="repo-tab${issuesActive}">Issues</a>
+  <a href="${pullsHref}" class="repo-tab${pullsActive}">Pull Requests</a>
+</nav>`;
+}
+
+/**
+ * Get a display name for a pubkey using the profile cache.
+ */
+function getAuthorDisplay(pubkey: string, profileCache: ProfileCache): string {
+  return escapeHtml(profileCache.getDisplayName(pubkey));
+}
+
+// ============================================================================
+// Issue Templates (Story 8.5)
+// ============================================================================
+
+/**
+ * Renders the issue list page for a repository.
+ */
+export function renderIssueList(
+  repoName: string,
+  issues: IssueMetadata[],
+  profileCache: ProfileCache,
+  ownerNpub?: string
+): TemplateResult {
+  const owner = ownerNpub ?? '';
+  const tabs = renderRepoTabs(owner, repoName, 'issues');
+  const banner = renderContributionBanner();
+
+  if (!issues || issues.length === 0) {
+    return {
+      status: 200,
+      html: `${tabs}
+${banner}
+<div class="empty-state">
+  <div class="empty-state-title">No issues found for this repository.</div>
+  <div class="empty-state-message">Issues are created by publishing kind:1621 events to the relay.</div>
+</div>`,
+    };
+  }
+
+  const rows = issues
+    .map((issue) => {
+      const title = escapeHtml(issue.title);
+      const author = getAuthorDisplay(issue.authorPubkey, profileCache);
+      const date = escapeHtml(formatRelativeDate(issue.createdAt));
+      const statusClass =
+        issue.status === 'closed' ? 'status-closed' : 'status-open';
+      const statusLabel = escapeHtml(issue.status);
+      const encodedOwner = encodeURIComponent(owner);
+      const encodedRepo = encodeURIComponent(repoName);
+      const detailHref = escapeHtml(
+        `/${encodedOwner}/${encodedRepo}/issues/${encodeURIComponent(issue.eventId)}`
+      );
+
+      const labelBadges = issue.labels
+        .map((l) => `<span class="label-badge">${escapeHtml(l)}</span>`)
+        .join(' ');
+
+      return `<div class="issue-row">
+  <div class="issue-row-main">
+    <span class="status-badge ${statusClass}">${statusLabel}</span>
+    <a href="${detailHref}" class="issue-title-link">${title}</a>
+    ${labelBadges}
+  </div>
+  <div class="issue-row-meta">
+    <span class="issue-author">${author}</span>
+    <span class="issue-date">${date}</span>
+  </div>
 </div>`;
+    })
+    .join('\n');
+
+  return {
+    status: 200,
+    html: `${tabs}
+${banner}
+<div class="issue-list">
+${rows}
+</div>`,
+  };
+}
+
+/**
+ * Renders the issue detail page.
+ */
+export function renderIssueDetail(
+  repoName: string,
+  issue: IssueMetadata,
+  comments: CommentMetadata[],
+  profileCache: ProfileCache,
+  ownerNpub?: string
+): TemplateResult {
+  const owner = ownerNpub ?? '';
+  const tabs = renderRepoTabs(owner, repoName, 'issues');
+  const banner = renderContributionBanner();
+
+  const title = escapeHtml(issue.title);
+  const author = getAuthorDisplay(issue.authorPubkey, profileCache);
+  const date = escapeHtml(formatRelativeDate(issue.createdAt));
+  const statusClass =
+    issue.status === 'closed' ? 'status-closed' : 'status-open';
+  const statusLabel = escapeHtml(issue.status);
+  const body = renderMarkdownSafe(issue.content);
+
+  const labelBadges = issue.labels
+    .map((l) => `<span class="label-badge">${escapeHtml(l)}</span>`)
+    .join(' ');
+
+  const commentHtml = comments
+    .map((c) => {
+      const cAuthor = getAuthorDisplay(c.authorPubkey, profileCache);
+      const cDate = escapeHtml(formatRelativeDate(c.createdAt));
+      const cBody = renderMarkdownSafe(c.content);
+      return `<div class="comment">
+  <div class="comment-header">
+    <span class="comment-author">${cAuthor}</span>
+    <span class="comment-date">${cDate}</span>
+  </div>
+  <div class="comment-body">${cBody}</div>
+</div>`;
+    })
+    .join('\n');
+
+  return {
+    status: 200,
+    html: `${tabs}
+${banner}
+<div class="issue-detail">
+  <div class="issue-detail-header">
+    <h2 class="issue-detail-title">${title}</h2>
+    <div class="issue-detail-meta">
+      <span class="status-badge ${statusClass}">${statusLabel}</span>
+      <span class="issue-author">${author}</span>
+      <span class="issue-date">${date}</span>
+      ${labelBadges}
+    </div>
+  </div>
+  <div class="issue-detail-body">${body}</div>
+  <div class="comment-thread">
+${commentHtml}
+  </div>
+</div>`,
+  };
+}
+
+// ============================================================================
+// PR Templates (Story 8.5)
+// ============================================================================
+
+/**
+ * Renders the pull request list page for a repository.
+ */
+export function renderPRList(
+  repoName: string,
+  prs: PRMetadata[],
+  profileCache: ProfileCache,
+  ownerNpub?: string
+): TemplateResult {
+  const owner = ownerNpub ?? '';
+  const tabs = renderRepoTabs(owner, repoName, 'pulls');
+  const banner = renderContributionBanner();
+
+  if (!prs || prs.length === 0) {
+    return {
+      status: 200,
+      html: `${tabs}
+${banner}
+<div class="empty-state">
+  <div class="empty-state-title">No pull requests found for this repository.</div>
+  <div class="empty-state-message">Pull requests are created by publishing kind:1617 patch events to the relay.</div>
+</div>`,
+    };
+  }
+
+  const rows = prs
+    .map((pr) => {
+      const title = escapeHtml(pr.title);
+      const author = getAuthorDisplay(pr.authorPubkey, profileCache);
+      const date = escapeHtml(formatRelativeDate(pr.createdAt));
+      const statusClass = `status-${pr.status}`;
+      const statusLabel = escapeHtml(pr.status);
+      const baseBranch = escapeHtml(pr.baseBranch);
+      const encodedOwner = encodeURIComponent(owner);
+      const encodedRepo = encodeURIComponent(repoName);
+      const detailHref = escapeHtml(
+        `/${encodedOwner}/${encodedRepo}/pulls/${encodeURIComponent(pr.eventId)}`
+      );
+
+      return `<div class="pr-row">
+  <div class="pr-row-main">
+    <span class="status-badge ${statusClass}">${statusLabel}</span>
+    <a href="${detailHref}" class="pr-title-link">${title}</a>
+    <span class="pr-base-branch">${baseBranch}</span>
+  </div>
+  <div class="pr-row-meta">
+    <span class="pr-author">${author}</span>
+    <span class="pr-date">${date}</span>
+  </div>
+</div>`;
+    })
+    .join('\n');
+
+  return {
+    status: 200,
+    html: `${tabs}
+${banner}
+<div class="pr-list">
+${rows}
+</div>`,
+  };
+}
+
+/**
+ * Renders the pull request detail page.
+ */
+export function renderPRDetail(
+  repoName: string,
+  pr: PRMetadata,
+  comments: CommentMetadata[],
+  profileCache: ProfileCache,
+  ownerNpub?: string
+): TemplateResult {
+  const owner = ownerNpub ?? '';
+  const tabs = renderRepoTabs(owner, repoName, 'pulls');
+  const banner = renderContributionBanner();
+
+  const title = escapeHtml(pr.title);
+  const author = getAuthorDisplay(pr.authorPubkey, profileCache);
+  const date = escapeHtml(formatRelativeDate(pr.createdAt));
+  const statusClass = `status-${pr.status}`;
+  const statusLabel = escapeHtml(pr.status);
+  const baseBranch = escapeHtml(pr.baseBranch);
+  const body = renderMarkdownSafe(pr.content);
+
+  const encodedOwner = encodeURIComponent(owner);
+  const encodedRepo = encodeURIComponent(repoName);
+
+  const commitLinks = pr.commitShas
+    .map((sha) => {
+      const abbrev = escapeHtml(sha.slice(0, 7));
+      const commitHref = escapeHtml(
+        `/${encodedOwner}/${encodedRepo}/commit/${encodeURIComponent(sha)}`
+      );
+      return `<a href="${commitHref}" class="commit-sha">${abbrev}</a>`;
+    })
+    .join(', ');
+
+  const commentHtml = comments
+    .map((c) => {
+      const cAuthor = getAuthorDisplay(c.authorPubkey, profileCache);
+      const cDate = escapeHtml(formatRelativeDate(c.createdAt));
+      const cBody = renderMarkdownSafe(c.content);
+      return `<div class="comment">
+  <div class="comment-header">
+    <span class="comment-author">${cAuthor}</span>
+    <span class="comment-date">${cDate}</span>
+  </div>
+  <div class="comment-body">${cBody}</div>
+</div>`;
+    })
+    .join('\n');
+
+  const commitsSection = commitLinks
+    ? `<div class="pr-commits"><span class="pr-commits-label">Commits:</span> ${commitLinks}</div>`
+    : '';
+
+  return {
+    status: 200,
+    html: `${tabs}
+${banner}
+<div class="pr-detail">
+  <div class="pr-detail-header">
+    <h2 class="pr-detail-title">${title}</h2>
+    <div class="pr-detail-meta">
+      <span class="status-badge ${statusClass}">${statusLabel}</span>
+      <span class="pr-author">${author}</span>
+      <span class="pr-date">${date}</span>
+      <span class="pr-base-branch">${baseBranch}</span>
+    </div>
+    ${commitsSection}
+  </div>
+  <div class="pr-detail-body">${body}</div>
+  <div class="comment-thread">
+${commentHtml}
+  </div>
+</div>`,
+  };
 }
