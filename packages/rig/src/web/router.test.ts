@@ -1,11 +1,19 @@
+// @vitest-environment jsdom
+
 // Test IDs: 8.1-UNIT-005, 8.2 router tests
 // AC covered: AC10 (Relay URL configuration via query param), AC17 (tree/blob routes)
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 
 import { parseRelayUrl, parseRoute, isValidRelayUrl } from './router.js';
 
 describe('Router - Relay URL Configuration', () => {
+  // Clear hash between tests to prevent cross-test pollution.
+  // parseRelayUrl migrates ?relay= to #relay=, which persists in jsdom.
+  beforeEach(() => {
+    window.location.hash = '';
+  });
+
   it('[P2] extracts relay URL from ?relay= query parameter', () => {
     const relayUrl = parseRelayUrl('?relay=wss://relay.example.com');
     expect(relayUrl).toBe('wss://relay.example.com');
@@ -31,14 +39,67 @@ describe('Router - Relay URL Configuration', () => {
     expect(relayUrl).toBe('wss://localhost:7100');
   });
 
+  // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   it('[P2] accepts ws:// relay URL', () => {
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
     const relayUrl = parseRelayUrl('?relay=ws://localhost:7100');
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
     expect(relayUrl).toBe('ws://localhost:7100');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Story 8.7: Hash fragment relay configuration for Arweave deployment
+  // AC: #11 (Relay configurable via URL hash fragment)
+  // ---------------------------------------------------------------------------
+
+  it('[P0] extracts relay URL from #relay= hash fragment (Arweave primary)', () => {
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+    window.location.hash = '#relay=wss://relay.toon-protocol.org';
+    const relayUrl = parseRelayUrl('');
+    expect(relayUrl).toBe('wss://relay.toon-protocol.org');
+  });
+
+  it('[P0] hash fragment takes priority over query parameter', () => {
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+    window.location.hash = '#relay=wss://hash-relay.example';
+    const relayUrl = parseRelayUrl('?relay=wss://query-relay.example');
+    expect(relayUrl).toBe('wss://hash-relay.example');
+  });
+
+  it('[P1] rejects non-WebSocket hash relay URL and falls through to default', () => {
+    window.location.hash = '#relay=https://evil.example';
+    const relayUrl = parseRelayUrl('');
+    expect(relayUrl).toBe('wss://localhost:7100');
+  });
+
+  it('[P1] empty hash fragment falls through to query param', () => {
+    window.location.hash = '';
+    const relayUrl = parseRelayUrl('?relay=wss://fallback.example');
+    expect(relayUrl).toBe('wss://fallback.example');
+  });
+
+  // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+  it('[P2] hash fragment with ws:// (insecure) is accepted for local dev', () => {
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+    window.location.hash = '#relay=ws://localhost:7100';
+    const relayUrl = parseRelayUrl('');
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+    expect(relayUrl).toBe('ws://localhost:7100');
+  });
+
+  it('[P2] hash fragment relay URL is shareable/bookmarkable pattern', () => {
+    // Simulates an Arweave gateway URL like https://ar-io.dev/<txId>/#relay=wss://relay.example
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+    window.location.hash = '#relay=wss://relay.example.com';
+    const relayUrl = parseRelayUrl('');
+    expect(relayUrl).toBe('wss://relay.example.com');
   });
 });
 
 describe('Router - isValidRelayUrl', () => {
+  // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   it('accepts ws:// URLs', () => {
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
     expect(isValidRelayUrl('ws://localhost:7100')).toBe(true);
   });
 

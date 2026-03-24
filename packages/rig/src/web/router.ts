@@ -31,8 +31,11 @@ export type Route =
   | { type: 'pull-detail'; owner: string; repo: string; eventId: string }
   | { type: 'not-found' };
 
+// Build-time configurable via VITE_DEFAULT_RELAY env var (e.g., for Arweave deployments).
+// Priority: (1) #relay= hash fragment, (2) ?relay= query param, (3) this default.
 // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-const DEFAULT_RELAY_URL = 'wss://localhost:7100';
+const DEFAULT_RELAY_URL: string =
+  import.meta.env.VITE_DEFAULT_RELAY || 'wss://localhost:7100';
 
 /**
  * Validate that a relay URL uses the WebSocket protocol.
@@ -83,7 +86,8 @@ export function parseRelayUrl(search: string): string {
     if (typeof window !== 'undefined') {
       params.delete('relay');
       const cleanSearch = params.toString();
-      const cleanPath = window.location.pathname + (cleanSearch ? `?${cleanSearch}` : '');
+      const cleanPath =
+        window.location.pathname + (cleanSearch ? `?${cleanSearch}` : '');
       const newHash = `#relay=${encodeURIComponent(relay)}`;
       window.history.replaceState(null, '', cleanPath + newHash);
     }
@@ -131,24 +135,40 @@ export function parseRoute(pathname: string): Route {
 
     const owner = looksLikeOwner ? firstSeg : '';
     const repo = looksLikeOwner ? segments[1]! : firstSeg;
-    const routeSegments = looksLikeOwner ? segments.slice(2) : segments.slice(1);
+    const routeSegments = looksLikeOwner
+      ? segments.slice(2)
+      : segments.slice(1);
 
     // /<repo>/tree/<ref>/<path...>
-    if (routeSegments.length >= 2 && routeSegments[0] === 'tree' && routeSegments[1]) {
+    if (
+      routeSegments.length >= 2 &&
+      routeSegments[0] === 'tree' &&
+      routeSegments[1]
+    ) {
       const ref = safeDecodeURIComponent(routeSegments[1]);
-      const treePath = routeSegments.length > 2 ? routeSegments.slice(2).join('/') : '';
+      const treePath =
+        routeSegments.length > 2 ? routeSegments.slice(2).join('/') : '';
       return { type: 'tree', owner, repo, ref, path: treePath };
     }
 
     // /<repo>/blob/<ref>/<path...>
-    if (routeSegments.length >= 2 && routeSegments[0] === 'blob' && routeSegments[1]) {
+    if (
+      routeSegments.length >= 2 &&
+      routeSegments[0] === 'blob' &&
+      routeSegments[1]
+    ) {
       const ref = safeDecodeURIComponent(routeSegments[1]);
-      const blobPath = routeSegments.length > 2 ? routeSegments.slice(2).join('/') : '';
+      const blobPath =
+        routeSegments.length > 2 ? routeSegments.slice(2).join('/') : '';
       return { type: 'blob', owner, repo, ref, path: blobPath };
     }
 
     // /<repo>/commits/<ref>
-    if (routeSegments.length >= 2 && routeSegments[0] === 'commits' && routeSegments[1]) {
+    if (
+      routeSegments.length >= 2 &&
+      routeSegments[0] === 'commits' &&
+      routeSegments[1]
+    ) {
       return {
         type: 'commits',
         owner,
@@ -158,19 +178,31 @@ export function parseRoute(pathname: string): Route {
     }
 
     // /<repo>/commit/<sha>
-    if (routeSegments.length >= 2 && routeSegments[0] === 'commit' && routeSegments[1]) {
+    if (
+      routeSegments.length >= 2 &&
+      routeSegments[0] === 'commit' &&
+      routeSegments[1]
+    ) {
       return { type: 'commit', owner, repo, sha: routeSegments[1] };
     }
 
     // /<repo>/blame/<ref>/<path...>
-    if (routeSegments.length >= 3 && routeSegments[0] === 'blame' && routeSegments[1]) {
+    if (
+      routeSegments.length >= 3 &&
+      routeSegments[0] === 'blame' &&
+      routeSegments[1]
+    ) {
       const ref = safeDecodeURIComponent(routeSegments[1]);
       const blamePath = routeSegments.slice(2).join('/');
       return { type: 'blame', owner, repo, ref, path: blamePath };
     }
 
     // /<repo>/issues/<eventId>
-    if (routeSegments.length >= 2 && routeSegments[0] === 'issues' && routeSegments[1]) {
+    if (
+      routeSegments.length >= 2 &&
+      routeSegments[0] === 'issues' &&
+      routeSegments[1]
+    ) {
       return { type: 'issue-detail', owner, repo, eventId: routeSegments[1] };
     }
 
@@ -180,7 +212,11 @@ export function parseRoute(pathname: string): Route {
     }
 
     // /<repo>/pulls/<eventId>
-    if (routeSegments.length >= 2 && routeSegments[0] === 'pulls' && routeSegments[1]) {
+    if (
+      routeSegments.length >= 2 &&
+      routeSegments[0] === 'pulls' &&
+      routeSegments[1]
+    ) {
       return { type: 'pull-detail', owner, repo, eventId: routeSegments[1] };
     }
 
@@ -258,7 +294,9 @@ export function initRouter(
     // Copy button
     const copyBtn = target.closest('[data-copy-url]') as HTMLElement | null;
     if (copyBtn) {
-      const urlInput = container.querySelector('[data-clone-url]') as HTMLInputElement | null;
+      const urlInput = container.querySelector(
+        '[data-clone-url]'
+      ) as HTMLInputElement | null;
       if (urlInput) {
         void navigator.clipboard.writeText(urlInput.value);
       }

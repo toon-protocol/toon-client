@@ -43,7 +43,12 @@ import {
 import type { IssueMetadata, PRMetadata } from './nip34-parsers.js';
 import { ProfileCache } from './profile-cache.js';
 import { resolveDefaultRef } from './ref-resolver.js';
-import { parseGitTree, parseGitCommit, isBinaryBlob, parseAuthorIdent } from './git-objects.js';
+import {
+  parseGitTree,
+  parseGitCommit,
+  isBinaryBlob,
+  parseAuthorIdent,
+} from './git-objects.js';
 import { formatRelativeDate } from './date-utils.js';
 import {
   fetchArweaveObject,
@@ -65,9 +70,7 @@ const profileCache = new ProfileCache();
  * by .find() — matching the NIP-33 spec that only the latest event is valid.
  */
 function newestFirst(events: NostrEvent[]): NostrEvent[] {
-  return [...events].sort(
-    (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)
-  );
+  return [...events].sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
 }
 
 /** Monotonically increasing render generation to prevent async race conditions. */
@@ -245,8 +248,8 @@ async function renderTreeRoute(
   const readmeNames = ['README.md', 'readme.md', 'README', 'README.txt'];
   let readmeHtml: string | undefined;
   let readmeFilename: string | undefined;
-  const readmeEntry = treeEntries.find((e) =>
-    readmeNames.includes(e.name) && e.mode !== '40000'
+  const readmeEntry = treeEntries.find(
+    (e) => readmeNames.includes(e.name) && e.mode !== '40000'
   );
   if (readmeEntry) {
     const readmeTxId = await resolveGitSha(readmeEntry.sha, repo);
@@ -276,7 +279,9 @@ async function renderTreeRoute(
         // Resolve each relative path by walking the git tree hierarchy via Arweave
         const resolvedUrls = new Map<string, string>();
 
-        async function resolveTreePath(relativePath: string): Promise<string | null> {
+        async function resolveTreePath(
+          relativePath: string
+        ): Promise<string | null> {
           const segments = relativePath.split('/').filter(Boolean);
           if (segments.length === 0) return null;
 
@@ -290,7 +295,9 @@ async function renderTreeRoute(
             const dirData = await fetchArweaveObject(dirTxId);
             if (!dirData) return null;
             const dirEntries = parseGitTree(dirData);
-            const dirEntry = dirEntries.find((e) => e.name === segments[i] && e.mode === '40000');
+            const dirEntry = dirEntries.find(
+              (e) => e.name === segments[i] && e.mode === '40000'
+            );
             if (!dirEntry) return null;
             currentTreeShaLocal = dirEntry.sha;
           }
@@ -302,7 +309,9 @@ async function renderTreeRoute(
           const finalTreeData = await fetchArweaveObject(finalTreeTxId);
           if (!finalTreeData) return null;
           const finalEntries = parseGitTree(finalTreeData);
-          const blobEntry = finalEntries.find((e) => e.name === blobName && e.mode !== '40000');
+          const blobEntry = finalEntries.find(
+            (e) => e.name === blobName && e.mode !== '40000'
+          );
           if (!blobEntry) return null;
 
           const blobTxId = await resolveGitSha(blobEntry.sha, repo);
@@ -342,7 +351,14 @@ async function renderTreeRoute(
     headCommit,
   };
 
-  const result = renderTreeView(repo, resolvedRef, path, treeEntries, owner, treeViewOptions);
+  const result = renderTreeView(
+    repo,
+    resolvedRef,
+    path,
+    treeEntries,
+    owner,
+    treeViewOptions
+  );
   return renderLayout('Forge', result.html, relayUrl);
 }
 

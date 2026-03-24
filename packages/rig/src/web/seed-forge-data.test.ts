@@ -116,9 +116,7 @@ describe('Seed Script - 8.6-SEED-001: Arweave Upload and SHA-to-txId Mappings (A
 
   it('[P1] embeds arweave tags in kind:30618 refs event', () => {
     // The script should create ['arweave', sha, txId] tags from the arweaveMap
-    expect(scriptSource).toMatch(
-      /\['arweave',\s*sha,\s*txId\]/
-    );
+    expect(scriptSource).toMatch(/\['arweave',\s*sha,\s*txId\]/);
     // And spread them into the kind:30618 event's tags
     expect(scriptSource).toContain('arweaveTags');
   });
@@ -176,9 +174,7 @@ describe('Seed Script - 8.6-SEED-002: Idempotency (AC #8)', () => {
 
   it('[P1] insertEvent generates SQL with INSERT OR IGNORE', () => {
     // Verify the actual SQL template in insertEvent function
-    expect(scriptSource).toMatch(
-      /INSERT OR IGNORE INTO events\s*\(/
-    );
+    expect(scriptSource).toMatch(/INSERT OR IGNORE INTO events\s*\(/);
   });
 
   it('[P1] catches UNIQUE constraint violations gracefully', () => {
@@ -196,7 +192,7 @@ describe('Seed Script - 8.6-SEED-002: Idempotency (AC #8)', () => {
   it('[P1] sqliteEscape escapes single quotes', () => {
     expect(sqliteEscape("it's")).toBe("it''s");
     expect(sqliteEscape("a'b'c")).toBe("a''b''c");
-    expect(sqliteEscape("no quotes")).toBe("no quotes");
+    expect(sqliteEscape('no quotes')).toBe('no quotes');
   });
 
   it('[P1] sqliteEscape handles combined null bytes and single quotes', () => {
@@ -229,7 +225,9 @@ describe('Seed Script - 8.6-SEED-002: Idempotency (AC #8)', () => {
   });
 
   it('[P1] insertEvent escapes content and tags via sqliteEscape', () => {
-    expect(scriptSource).toMatch(/sqliteEscape\(JSON\.stringify\(event\.tags\)\)/);
+    expect(scriptSource).toMatch(
+      /sqliteEscape\(JSON\.stringify\(event\.tags\)\)/
+    );
     expect(scriptSource).toMatch(/sqliteEscape\(event\.content\)/);
   });
 });
@@ -373,8 +371,12 @@ describe('Seed Script - 8.6-SEED-001: Event Structure (AC #7)', () => {
 
   it('[P2] validates CLI arguments against injection', () => {
     // Container name and DB path are validated with regex
-    expect(scriptSource).toMatch(/\/\^\[a-zA-Z0-9\._-\]\+\$\/\.test\(CONTAINER\)/);
-    expect(scriptSource).toMatch(/\/\^\[a-zA-Z0-9\._\/:-\]\+\$\/\.test\(DB_PATH\)/);
+    expect(scriptSource).toMatch(
+      /\/\^\[a-zA-Z0-9\._-\]\+\$\/\.test\(CONTAINER\)/
+    );
+    expect(scriptSource).toMatch(
+      /\/\^\[a-zA-Z0-9\._\/:-\]\+\$\/\.test\(DB_PATH\)/
+    );
   });
 
   it('[P2] validates SHA format before Arweave upload', () => {

@@ -16,12 +16,55 @@ import { escapeHtml } from './escape.js';
 
 /** HTML tags allowed in rendered markdown. All others are stripped. */
 const ALLOWED_TAGS = new Set([
-  'a', 'abbr', 'b', 'blockquote', 'br', 'code', 'dd', 'del', 'details',
-  'div', 'dl', 'dt', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
-  'i', 'img', 'ins', 'kbd', 'li', 'ol', 'p', 'picture', 'pre', 'q',
-  's', 'samp', 'small', 'source', 'span', 'strike', 'strong', 'sub',
-  'summary', 'sup', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'tt',
-  'ul', 'var',
+  'a',
+  'abbr',
+  'b',
+  'blockquote',
+  'br',
+  'code',
+  'dd',
+  'del',
+  'details',
+  'div',
+  'dl',
+  'dt',
+  'em',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'i',
+  'img',
+  'ins',
+  'kbd',
+  'li',
+  'ol',
+  'p',
+  'picture',
+  'pre',
+  'q',
+  's',
+  'samp',
+  'small',
+  'source',
+  'span',
+  'strike',
+  'strong',
+  'sub',
+  'summary',
+  'sup',
+  'table',
+  'tbody',
+  'td',
+  'th',
+  'thead',
+  'tr',
+  'tt',
+  'ul',
+  'var',
 ]);
 
 /** HTML attributes allowed on specific tags. */
@@ -65,63 +108,70 @@ function sanitizeHtml(html: string): string {
   );
 
   // Process remaining tags: strip disallowed tags, strip disallowed attributes
-  result = result.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)?\/?>/g, (match, tagName: string, attrs: string) => {
-    const tag = tagName.toLowerCase();
-    const isClosing = match.startsWith('</');
+  result = result.replace(
+    /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)?\/?>/g,
+    (match, tagName: string, attrs: string) => {
+      const tag = tagName.toLowerCase();
+      const isClosing = match.startsWith('</');
 
-    if (!ALLOWED_TAGS.has(tag)) {
-      return ''; // Strip disallowed tags entirely
-    }
+      if (!ALLOWED_TAGS.has(tag)) {
+        return ''; // Strip disallowed tags entirely
+      }
 
-    if (isClosing) {
-      return `</${tag}>`;
-    }
+      if (isClosing) {
+        return `</${tag}>`;
+      }
 
-    // Filter attributes
-    const allowedForTag = ALLOWED_ATTRS[tag];
-    const selfClosing = match.endsWith('/>');
-    let cleanAttrs = '';
+      // Filter attributes
+      const allowedForTag = ALLOWED_ATTRS[tag];
+      const selfClosing = match.endsWith('/>');
+      let cleanAttrs = '';
 
-    if (attrs && allowedForTag) {
-      // Parse attributes: name="value" or name='value' or name=value or name
-      const attrRegex = /([a-zA-Z][a-zA-Z0-9_-]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
-      let attrMatch;
-      while ((attrMatch = attrRegex.exec(attrs)) !== null) {
-        const attrName = attrMatch[1]!.toLowerCase();
-        const attrValue = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? '';
+      if (attrs && allowedForTag) {
+        // Parse attributes: name="value" or name='value' or name=value or name
+        const attrRegex =
+          /([a-zA-Z][a-zA-Z0-9_-]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+        let attrMatch;
+        while ((attrMatch = attrRegex.exec(attrs)) !== null) {
+          const attrName = attrMatch[1]!.toLowerCase();
+          const attrValue = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? '';
 
-        // Skip event handlers (on*)
-        if (attrName.startsWith('on')) continue;
+          // Skip event handlers (on*)
+          if (attrName.startsWith('on')) continue;
 
-        // Skip disallowed attributes
-        if (!allowedForTag.has(attrName)) continue;
+          // Skip disallowed attributes
+          if (!allowedForTag.has(attrName)) continue;
 
-        // Block dangerous URL schemes (javascript:, vbscript:, data:)
-        if ((attrName === 'href' || attrName === 'src') && DANGEROUS_URL_RE.test(attrValue)) {
-          continue;
+          // Block dangerous URL schemes (javascript:, vbscript:, data:)
+          if (
+            (attrName === 'href' || attrName === 'src') &&
+            DANGEROUS_URL_RE.test(attrValue)
+          ) {
+            continue;
+          }
+
+          cleanAttrs += ` ${attrName}="${escapeHtml(attrValue)}"`;
         }
-
-        cleanAttrs += ` ${attrName}="${escapeHtml(attrValue)}"`;
       }
-    }
 
-    // Add security attrs to links
-    if (tag === 'a') {
-      if (!cleanAttrs.includes('rel=')) {
-        cleanAttrs += ' rel="noopener noreferrer"';
+      // Add security attrs to links
+      if (tag === 'a') {
+        if (!cleanAttrs.includes('rel=')) {
+          cleanAttrs += ' rel="noopener noreferrer"';
+        }
+        if (!cleanAttrs.includes('target=')) {
+          cleanAttrs += ' target="_blank"';
+        }
       }
-      if (!cleanAttrs.includes('target=')) {
-        cleanAttrs += ' target="_blank"';
+
+      // Add loading=lazy to images
+      if (tag === 'img' && !cleanAttrs.includes('loading=')) {
+        cleanAttrs += ' loading="lazy"';
       }
-    }
 
-    // Add loading=lazy to images
-    if (tag === 'img' && !cleanAttrs.includes('loading=')) {
-      cleanAttrs += ' loading="lazy"';
+      return `<${tag}${cleanAttrs}${selfClosing ? ' /' : ''}>`;
     }
-
-    return `<${tag}${cleanAttrs}${selfClosing ? ' /' : ''}>`;
-  });
+  );
 
   return result;
 }
@@ -146,7 +196,10 @@ export interface MarkdownOptions {
  * @param options - Optional rendering options (relative path resolver, etc.)
  * @returns Sanitized HTML string
  */
-export function renderMarkdown(content: string, options?: MarkdownOptions): string {
+export function renderMarkdown(
+  content: string,
+  options?: MarkdownOptions
+): string {
   const rawHtml = marked.parse(content, {
     gfm: true,
     breaks: false,

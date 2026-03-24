@@ -94,16 +94,20 @@ export function renderRepoList(
 }
 
 /** SVG icon for directories — clean Forgejo-style folder. */
-const SVG_FOLDER = '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#54aeff" d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>';
+const SVG_FOLDER =
+  '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#54aeff" d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>';
 
 /** SVG icon for files — clean Forgejo-style document. */
-const SVG_FILE = '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#656d76" d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011z"/></svg>';
+const SVG_FILE =
+  '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#656d76" d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011z"/></svg>';
 
 /** SVG icon for symlinks. */
-const SVG_SYMLINK = '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#656d76" d="M4.72 3.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L7.44 7 4.72 4.28a.75.75 0 0 1 0-1.06m4.25 6.56a.75.75 0 0 0 0 1.5h3.25a.75.75 0 0 0 0-1.5z"/></svg>';
+const SVG_SYMLINK =
+  '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#656d76" d="M4.72 3.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L7.44 7 4.72 4.28a.75.75 0 0 1 0-1.06m4.25 6.56a.75.75 0 0 0 0 1.5h3.25a.75.75 0 0 0 0-1.5z"/></svg>';
 
 /** SVG icon for submodules. */
-const SVG_SUBMODULE = '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#656d76" d="M0 2.75C0 1.784.784 1 1.75 1H5c.55 0 1.07.26 1.4.7l.9 1.2a.25.25 0 0 0 .2.1h6.75c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25Zm9.42 5.08a.75.75 0 0 0 0 1.34l3 1.5a.75.75 0 0 0 .67-1.34L11.44 8.5l1.64-.82a.75.75 0 1 0-.67-1.34Z"/></svg>';
+const SVG_SUBMODULE =
+  '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#656d76" d="M0 2.75C0 1.784.784 1 1.75 1H5c.55 0 1.07.26 1.4.7l.9 1.2a.25.25 0 0 0 .2.1h6.75c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25Zm9.42 5.08a.75.75 0 0 0 0 1.34l3 1.5a.75.75 0 0 0 .67-1.34L11.44 8.5l1.64-.82a.75.75 0 1 0-.67-1.34Z"/></svg>';
 
 /**
  * Get a display icon for a tree entry based on its mode.
@@ -155,9 +159,7 @@ function renderBreadcrumbs(
   }
 
   // Commits link next to ref badge
-  const commitsHref = escapeHtml(
-    `${base}/commits/${encodeURIComponent(ref)}`
-  );
+  const commitsHref = escapeHtml(`${base}/commits/${encodeURIComponent(ref)}`);
   const commitsLink = `<a href="${commitsHref}" class="breadcrumb-commits-link">Commits</a>`;
 
   return `<nav class="breadcrumbs"><span class="breadcrumb-ref">${escapedRef}</span> ${crumbs.join(' / ')} ${commitsLink}</nav>`;
@@ -251,7 +253,8 @@ export function renderTreeView(
       let commitDateCell = '<td class="tree-entry-date"></td>';
       if (hc) {
         const firstLine = hc.message.split('\n')[0] ?? '';
-        const truncMsg = firstLine.length > 50 ? firstLine.slice(0, 50) + '...' : firstLine;
+        const truncMsg =
+          firstLine.length > 50 ? firstLine.slice(0, 50) + '...' : firstLine;
         const commitHref = escapeHtml(
           `${base}/commit/${encodeURIComponent(hc.sha)}`
         );
@@ -275,7 +278,8 @@ export function renderTreeView(
       .sort()
       .map((refName) => {
         const shortName = refName.replace(/^refs\/heads\//, '');
-        const selected = refName === ref || shortName === ref ? ' selected' : '';
+        const selected =
+          refName === ref || shortName === ref ? ' selected' : '';
         const encodedRefName = encodeURIComponent(refName);
         return `<option value="${base}/tree/${encodedRefName}/"${selected}>${escapeHtml(shortName)}</option>`;
       })
@@ -322,7 +326,8 @@ export function renderTreeView(
       `${base}/commit/${encodeURIComponent(hc.sha)}`
     );
     const firstLine = hc.message.split('\n')[0] ?? '';
-    const truncMsg = firstLine.length > 72 ? firstLine.slice(0, 72) + '...' : firstLine;
+    const truncMsg =
+      firstLine.length > 72 ? firstLine.slice(0, 72) + '...' : firstLine;
     const escapedMsg = escapeHtml(truncMsg);
     const escapedAuthor = escapeHtml(hc.authorName);
     const escapedDate = escapeHtml(hc.relativeDate);
@@ -413,9 +418,7 @@ ${breadcrumbs}
       .filter(Boolean)
       .map((s) => encodeURIComponent(s))
       .join('/');
-    const blameHref = escapeHtml(
-      `${base}/blame/${encodedRef}/${encodedPath}`
-    );
+    const blameHref = escapeHtml(`${base}/blame/${encodedRef}/${encodedPath}`);
     return ` <a href="${blameHref}" class="blob-blame-link">Blame</a>`;
   })();
 
@@ -608,9 +611,7 @@ export function renderCommitDiff(
           .map((p) => {
             const encodedOwner = encodeURIComponent(owner);
             const encodedRepo = encodeURIComponent(repoName);
-            const href = escapeHtml(
-              `${base}/commit/${encodeURIComponent(p)}`
-            );
+            const href = escapeHtml(`${base}/commit/${encodeURIComponent(p)}`);
             return `<a href="${href}" class="commit-parent-link">${escapeHtml(p.slice(0, 7))}</a>`;
           })
           .join(', ')
@@ -825,9 +826,7 @@ export function renderRepoTabs(
   const base = repoBasePath(owner, repo);
 
   const codeHref = ref
-    ? escapeHtml(
-        `${base}/tree/${encodeURIComponent(ref)}/`
-      )
+    ? escapeHtml(`${base}/tree/${encodeURIComponent(ref)}/`)
     : escapeHtml(`${base}/`);
   const issuesHref = escapeHtml(`${base}/issues`);
   const pullsHref = escapeHtml(`${base}/pulls`);
