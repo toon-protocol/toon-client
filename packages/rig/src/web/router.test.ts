@@ -306,4 +306,78 @@ describe('Router - Route Parsing', () => {
 
     expect(route.type).toBe('tree');
   });
+
+  // ---------------------------------------------------------------------------
+  // Story 8.6: 8.6-UNIT-004 — URL-encoded ref decoding
+  // AC: #4 (refs containing / round-trip through URL encoding)
+  // ---------------------------------------------------------------------------
+
+  it('[P1] decodes URL-encoded ref for tree route (refs%2Fheads%2Fmain)', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/tree/refs%2Fheads%2Fmain/src`);
+
+    expect(route.type).toBe('tree');
+    if (route.type === 'tree') {
+      expect(route.ref).toBe('refs/heads/main');
+      expect(route.path).toBe('src');
+    }
+  });
+
+  it('[P1] decodes URL-encoded ref for blob route (refs%2Fheads%2Fmain)', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(
+      `/${npub}/my-repo/blob/refs%2Fheads%2Fmain/src/index.ts`
+    );
+
+    expect(route.type).toBe('blob');
+    if (route.type === 'blob') {
+      expect(route.ref).toBe('refs/heads/main');
+      expect(route.path).toBe('src/index.ts');
+    }
+  });
+
+  it('[P1] decodes URL-encoded ref for commits route (refs%2Fheads%2Fmain)', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/commits/refs%2Fheads%2Fmain`);
+
+    expect(route.type).toBe('commits');
+    if (route.type === 'commits') {
+      expect(route.ref).toBe('refs/heads/main');
+    }
+  });
+
+  it('[P1] decodes URL-encoded ref for blame route (refs%2Fheads%2Fmain)', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(
+      `/${npub}/my-repo/blame/refs%2Fheads%2Fmain/src/file.ts`
+    );
+
+    expect(route.type).toBe('blame');
+    if (route.type === 'blame') {
+      expect(route.ref).toBe('refs/heads/main');
+      expect(route.path).toBe('src/file.ts');
+    }
+  });
+
+  it('[P2] non-encoded ref still works (no double-decode)', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    const route = parseRoute(`/${npub}/my-repo/tree/main/src`);
+
+    expect(route.type).toBe('tree');
+    if (route.type === 'tree') {
+      expect(route.ref).toBe('main');
+    }
+  });
+
+  it('[P1] malformed percent-encoding does not throw (returns original string)', () => {
+    const npub = 'npub1' + 'a'.repeat(58);
+    // %ZZ is not valid percent-encoding — decodeURIComponent would throw URIError
+    const route = parseRoute(`/${npub}/my-repo/tree/%ZZ/src`);
+
+    expect(route.type).toBe('tree');
+    if (route.type === 'tree') {
+      // Should return the original string rather than throwing
+      expect(route.ref).toBe('%ZZ');
+    }
+  });
 });

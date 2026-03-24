@@ -193,6 +193,58 @@ describe('Git Object Parsers - parseGitTree', () => {
   });
 });
 
+// ============================================================================
+// Story 8.6: 8.6-UNIT-006 — Binary tree format validation
+// AC: #6 (seed script uses `git cat-file tree` binary format)
+// ============================================================================
+
+describe('Git Object Parsers - 8.6-UNIT-006: Binary tree format', () => {
+  it('[P1] parseGitTree expects binary format: <mode> <name>\\0<20-byte-sha>', () => {
+    // AC #6: `git cat-file tree <sha>` produces binary format that parseGitTree expects.
+    // This test validates the exact binary wire format: ASCII mode, space, UTF-8 name,
+    // null byte, then 20 raw SHA-1 bytes (NOT hex-encoded).
+    const sha = 'ab'.repeat(20);
+    const data = buildTreeObject([{ mode: '100644', name: 'README.md', sha }]);
+
+    // Verify the binary structure:
+    // - Mode bytes are ASCII digits
+    expect(data[0]).toBe(0x31); // '1'
+    // - Space separator
+    expect(data[6]).toBe(0x20); // ' '
+    // - Null terminator after name
+    const nullIndex = data.indexOf(0x00);
+    expect(nullIndex).toBeGreaterThan(7);
+    // - 20 raw bytes follow the null (not 40 hex chars)
+    expect(data.length).toBe(nullIndex + 1 + 20);
+
+    // parseGitTree successfully parses this binary format
+    const entries = parseGitTree(data);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.mode).toBe('100644');
+    expect(entries[0]!.name).toBe('README.md');
+    expect(entries[0]!.sha).toBe(sha);
+  });
+
+  it('[P1] parseGitTree rejects human-readable format (git cat-file -p)', () => {
+    // The human-readable format from `git cat-file -p` looks like:
+    // "100644 blob <40-hex-sha>\tREADME.md\n"
+    // parseGitTree should NOT parse this correctly — it expects binary.
+    const humanReadable = new TextEncoder().encode(
+      '100644 blob ' + 'ab'.repeat(20) + '\tREADME.md\n'
+    );
+
+    const entries = parseGitTree(humanReadable);
+
+    // Human-readable format will either produce 0 entries or malformed entries
+    // (mode won't be "100644" because "100644 blob ..." is parsed differently).
+    // The key assertion: it does NOT produce a valid entry with name "README.md".
+    const validEntries = entries.filter(
+      (e) => e.name === 'README.md' && e.mode === '100644'
+    );
+    expect(validEntries).toHaveLength(0);
+  });
+});
+
 describe('Git Object Parsers - parseGitCommit', () => {
   // ---------------------------------------------------------------------------
   // 8.2-UNIT-003: Valid commit bytes parsed to GitCommit

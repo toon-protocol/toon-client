@@ -65,6 +65,18 @@ export function parseRelayUrl(search: string): string {
 }
 
 /**
+ * Safely decode a URI component, returning the original string
+ * if the input contains malformed percent-encoded sequences.
+ */
+function safeDecodeURIComponent(str: string): string {
+  try {
+    return decodeURIComponent(str);
+  } catch {
+    return str;
+  }
+}
+
+/**
  * Parse a URL pathname into a Route descriptor.
  */
 export function parseRoute(pathname: string): Route {
@@ -83,21 +95,26 @@ export function parseRoute(pathname: string): Route {
 
     // /<npub>/<repo>/tree/<ref>/<path...>
     if (segments.length >= 4 && segments[2] === 'tree' && segments[3]) {
-      const ref = segments[3];
+      const ref = safeDecodeURIComponent(segments[3]);
       const treePath = segments.length > 4 ? segments.slice(4).join('/') : '';
       return { type: 'tree', owner, repo, ref, path: treePath };
     }
 
     // /<npub>/<repo>/blob/<ref>/<path...>
     if (segments.length >= 4 && segments[2] === 'blob' && segments[3]) {
-      const ref = segments[3];
+      const ref = safeDecodeURIComponent(segments[3]);
       const blobPath = segments.length > 4 ? segments.slice(4).join('/') : '';
       return { type: 'blob', owner, repo, ref, path: blobPath };
     }
 
     // /<npub>/<repo>/commits/<ref> — commit log (MUST be before 'commit' singular)
     if (segments.length >= 4 && segments[2] === 'commits' && segments[3]) {
-      return { type: 'commits', owner, repo, ref: segments[3] };
+      return {
+        type: 'commits',
+        owner,
+        repo,
+        ref: safeDecodeURIComponent(segments[3]),
+      };
     }
 
     // /<npub>/<repo>/commit/<sha>
@@ -107,7 +124,7 @@ export function parseRoute(pathname: string): Route {
 
     // /<npub>/<repo>/blame/<ref>/<path...>
     if (segments.length >= 5 && segments[2] === 'blame' && segments[3]) {
-      const ref = segments[3];
+      const ref = safeDecodeURIComponent(segments[3]);
       const blamePath = segments.slice(4).join('/');
       return { type: 'blame', owner, repo, ref, path: blamePath };
     }

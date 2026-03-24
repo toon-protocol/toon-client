@@ -21,7 +21,7 @@ describe('renderLayout', () => {
     const titleLink = container.querySelector('a.layout-title');
     expect(titleLink).not.toBeNull();
     expect(titleLink!.getAttribute('href')).toBe('/');
-    expect(titleLink!.textContent).toBe('Forge');
+    expect(titleLink!.textContent).toContain('Forge');
   });
 
   it('renders a content area with the provided content', () => {

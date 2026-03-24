@@ -1,0 +1,50 @@
+- generic [ref=e2]:
+  - banner [ref=e103]:
+    - generic [ref=e104]:
+      - link "Forge" [ref=e105] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e106]: ws://localhost:19700
+  - main [ref=e107]:
+    - navigation [ref=e108]:
+      - link "Code" [ref=e109] [cursor=pointer]:
+        - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/toon-protocol/
+      - link "Issues" [ref=e110] [cursor=pointer]:
+        - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/toon-protocol/issues
+      - link "Pull Requests" [ref=e111] [cursor=pointer]:
+        - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/toon-protocol/pulls
+    - generic [ref=e112]: Forge-UI is read-only. To create issues or submit patches, use a TOON agent with the NIP-34 skill.
+    - generic [ref=e113]:
+      - generic [ref=e114]:
+        - heading "Payment channel settlement fails on Arbitrum Sepolia" [level=2] [ref=e115]
+        - generic [ref=e116]:
+          - generic [ref=e117]: closed
+          - generic [ref=e118]: npub166l7zqx3...7xqy
+          - generic [ref=e119]: 6 hours ago
+          - generic [ref=e120]: bug
+          - generic [ref=e121]: settlement
+      - generic [ref=e122]:
+        - text: "## Bug Report"
+        - text: "### Steps to Reproduce 1. Open payment channel on Arbitrum Sepolia (421614) 2. Send ILP packets 3. Attempt cooperative close"
+        - text: "### Expected Channel closes and balances settle correctly."
+        - text: "### Actual Transaction reverts with \"insufficient allowance\"."
+        - text: "### Environment - Chain: Arbitrum Sepolia (421614) - USDC: 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d - Node version: v2.0.0"
+      - generic [ref=e123]:
+        - generic [ref=e124]:
+          - generic [ref=e125]:
+            - generic [ref=e126]: npub166l7zqx3...7xqy
+            - generic [ref=e127]: 25 minutes ago
+          - generic [ref=e128]:
+            - text: I can reproduce this on Arbitrum Sepolia. The issue is that the token allowance check happens before the channel close signature verification. We need to ensure
+            - code [ref=e129]: approve()
+            - text: is called with sufficient amount before
+            - code [ref=e130]: cooperativeClose()
+            - text: .
+        - generic [ref=e131]:
+          - generic [ref=e132]:
+            - generic [ref=e133]: npub166l7zqx3...7xqy
+            - generic [ref=e134]: 15 minutes ago
+          - generic [ref=e135]:
+            - text: Good catch. I'll add an
+            - code [ref=e136]: ensureAllowance()
+            - text: helper that checks and approves in the settlement flow. PR incoming.
+  - contentinfo [ref=e137]: Forge — Decentralized Git on Nostr & TOON Protocol

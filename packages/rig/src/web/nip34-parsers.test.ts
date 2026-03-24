@@ -847,3 +847,95 @@ describe('NIP-34 Parsers - AC Gap Fill: Full Field Extraction', () => {
     expect(result!.parentEventId).toBe('parent'.padEnd(64, '0'));
   });
 });
+
+// ============================================================================
+// Story 8.6: Bug Fix Validation Tests
+// ============================================================================
+
+describe('NIP-34 Parsers - 8.6-UNIT-001: repoId from d tag', () => {
+  it('[P1] parseRepoAnnouncement populates repoId from d tag (distinct from name)', () => {
+    // AC #1: Repos where name != d tag must use repoId in URLs
+    const event = createMockRepoEvent({
+      dTag: 'my-repo-id',
+      name: 'My Repo Name',
+    });
+
+    const result = parseRepoAnnouncement(event);
+
+    expect(result).not.toBeNull();
+    expect(result!.repoId).toBe('my-repo-id');
+    expect(result!.name).toBe('My Repo Name');
+  });
+
+  it('[P1] repoId falls back to d tag value when d and name are the same', () => {
+    const event = createMockRepoEvent({
+      dTag: 'same-value',
+      name: 'same-value',
+    });
+
+    const result = parseRepoAnnouncement(event);
+
+    expect(result).not.toBeNull();
+    expect(result!.repoId).toBe('same-value');
+    expect(result!.name).toBe('same-value');
+  });
+});
+
+describe('NIP-34 Parsers - 8.6-UNIT-005b: arweaveMap from kind:30618', () => {
+  it('[P1] parseRepoRefs extracts arweave tags into arweaveMap', () => {
+    // AC #5: ["arweave", "<sha>", "<txId>"] tags populate arweaveMap
+    const sha = 'abc123' + 'de'.repeat(17);
+    const txId = 'txId456_abcdefghijklmnopqrstuvwxyz01234567';
+    const event = createMockRefsEvent({
+      tags: [
+        ['d', 'my-repo'],
+        ['r', 'main', 'aaa111'],
+        ['arweave', sha, txId],
+        [
+          'arweave',
+          'def789' + 'ab'.repeat(17),
+          'txId789_abcdefghijklmnopqrstuvwxyz01234567',
+        ],
+      ],
+    });
+
+    const result = parseRepoRefs(event);
+
+    expect(result).not.toBeNull();
+    expect(result!.arweaveMap.size).toBe(2);
+    expect(result!.arweaveMap.get(sha)).toBe(txId);
+    expect(result!.arweaveMap.get('def789' + 'ab'.repeat(17))).toBe(
+      'txId789_abcdefghijklmnopqrstuvwxyz01234567'
+    );
+  });
+
+  it('[P1] parseRepoRefs returns empty arweaveMap when no arweave tags', () => {
+    const event = createMockRefsEvent({
+      tags: [
+        ['d', 'my-repo'],
+        ['r', 'main', 'aaa111'],
+      ],
+    });
+
+    const result = parseRepoRefs(event);
+
+    expect(result).not.toBeNull();
+    expect(result!.arweaveMap.size).toBe(0);
+  });
+
+  it('[P2] parseRepoRefs ignores malformed arweave tags (missing txId)', () => {
+    const event = createMockRefsEvent({
+      tags: [
+        ['d', 'my-repo'],
+        ['arweave', 'sha-only'], // missing txId
+        ['arweave', 'good-sha', 'good-txId'],
+      ],
+    });
+
+    const result = parseRepoRefs(event);
+
+    expect(result).not.toBeNull();
+    expect(result!.arweaveMap.size).toBe(1);
+    expect(result!.arweaveMap.get('good-sha')).toBe('good-txId');
+  });
+});

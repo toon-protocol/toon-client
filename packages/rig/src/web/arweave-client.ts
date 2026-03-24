@@ -10,8 +10,9 @@
 
 /** Ordered list of Arweave gateways to try (primary first, then fallbacks). */
 export const ARWEAVE_GATEWAYS = [
+  'https://ar-io.dev',
   'https://arweave.net',
-  'https://gateway.irys.xyz',
+  'https://permagate.io',
 ];
 
 /** Timeout for individual Arweave fetch requests in milliseconds. */
@@ -44,6 +45,29 @@ function sanitizeGraphQLValue(value: string): string {
  */
 export function clearShaCache(): void {
   shaToTxIdCache.clear();
+}
+
+/**
+ * Pre-seed the SHA-to-txId cache with known mappings.
+ *
+ * Used when txId mappings are available from relay events (e.g., kind:30618
+ * `arweave` tags) to avoid the GraphQL indexing delay after Turbo/Irys uploads.
+ *
+ * @param mappings - Map of "sha:repo" cache keys to Arweave transaction IDs
+ */
+export function seedShaCache(
+  mappings: Map<string, string> | Array<[string, string]>
+): void {
+  const entries = mappings instanceof Map ? mappings.entries() : mappings;
+  for (const [key, txId] of entries) {
+    if (shaToTxIdCache.size >= SHA_CACHE_MAX_SIZE) {
+      const firstKey = shaToTxIdCache.keys().next().value;
+      if (firstKey !== undefined) {
+        shaToTxIdCache.delete(firstKey);
+      }
+    }
+    shaToTxIdCache.set(key, txId);
+  }
 }
 
 /** Arweave transaction IDs are 43-character base64url strings. */
@@ -157,7 +181,7 @@ export async function resolveGitSha(
     }
 
     const txId = edges[0]?.node?.id;
-    if (!txId) {
+    if (!txId || !isValidArweaveTxId(txId)) {
       return null;
     }
 

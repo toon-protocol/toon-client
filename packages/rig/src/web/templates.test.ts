@@ -1236,6 +1236,7 @@ describe('Templates - NFR: XSS in Issue/PR Comments', () => {
 
 function createRepoMetadata(
   overrides: {
+    repoId?: string;
     name?: string;
     description?: string;
     ownerPubkey?: string;
@@ -1246,6 +1247,7 @@ function createRepoMetadata(
   } = {}
 ) {
   return {
+    repoId: overrides.repoId ?? overrides.name ?? 'test-repo',
     name: overrides.name ?? 'test-repo',
     description: overrides.description ?? 'A test repository',
     ownerPubkey: overrides.ownerPubkey ?? 'ab'.repeat(32),
@@ -1848,5 +1850,46 @@ describe('Templates - Story 8.2: Blob View Rendering', () => {
     expect(commitsLink.getAttribute('href')).toContain(
       '/npub1test/test-repo/commits/main'
     );
+  });
+});
+
+// ============================================================================
+// Story 8.6: Bug Fix Validation Tests
+// ============================================================================
+
+describe('Templates - 8.6-UNIT-001: repoId in URL generation', () => {
+  it('[P1] renderRepoList uses repoId (not name) in repo card URLs', () => {
+    // AC #1: Repos where name != d tag navigate correctly
+    const repos = [
+      createRepoMetadata({
+        repoId: 'my-repo-id',
+        name: 'My Display Name',
+      }),
+    ];
+
+    const html = renderRepoList(repos);
+
+    // URL should contain the repoId, not the display name
+    expect(html).toContain('my-repo-id');
+    // The display name should appear as visible text
+    expect(html).toContain('My Display Name');
+  });
+
+  it('[P1] renderRepoList URL uses repoId when repoId differs from name', () => {
+    const repos = [
+      createRepoMetadata({
+        repoId: 'toon-protocol',
+        name: 'TOON Protocol',
+      }),
+    ];
+
+    const html = renderRepoList(repos);
+    const container = document.createElement('div');
+    container.innerHTML = html;
+
+    const link = container.querySelector('.repo-name') as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    // The href should contain the repoId
+    expect(link.getAttribute('href')).toContain('toon-protocol');
   });
 });

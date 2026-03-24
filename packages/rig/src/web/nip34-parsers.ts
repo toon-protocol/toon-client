@@ -11,6 +11,8 @@
  * Parsed repository metadata from a kind:30617 event.
  */
 export interface RepoMetadata {
+  /** Repository identifier (from `d` tag — used in URLs and relay queries) */
+  repoId: string;
   /** Repository name (from `name` tag, falling back to `d` tag) */
   name: string;
   /** Repository description (from `description` tag or content) */
@@ -85,6 +87,8 @@ export interface RepoRefs {
   repoId: string;
   /** Map of ref name to commit SHA */
   refs: Map<string, string>;
+  /** Map of git SHA to Arweave txId (from `arweave` tags, bypasses GraphQL) */
+  arweaveMap: Map<string, string>;
 }
 
 /**
@@ -108,14 +112,18 @@ export function parseRepoRefs(event: NostrEvent): RepoRefs | null {
   }
 
   const refs = new Map<string, string>();
+  const arweaveMap = new Map<string, string>();
   for (const tag of event.tags) {
     if (tag[0] === 'r' && tag[1] && tag[2]) {
       if (refs.size >= MAX_REFS_PER_EVENT) break;
       refs.set(tag[1], tag[2]);
+    } else if (tag[0] === 'arweave' && tag[1] && tag[2]) {
+      // ["arweave", "<git-sha>", "<arweave-txId>"]
+      arweaveMap.set(tag[1], tag[2]);
     }
   }
 
-  return { repoId: dTag, refs };
+  return { repoId: dTag, refs, arweaveMap };
 }
 
 /**
@@ -156,6 +164,7 @@ export function parseRepoAnnouncement(event: NostrEvent): RepoMetadata | null {
   const webUrls = getTagValues(event.tags, 'web');
 
   return {
+    repoId: dTag,
     name,
     description,
     ownerPubkey: event.pubkey,

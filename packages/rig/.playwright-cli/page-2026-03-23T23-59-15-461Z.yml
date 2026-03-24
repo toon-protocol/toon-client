@@ -1,0 +1,30 @@
+- generic [ref=e2]:
+  - banner [ref=e35]:
+    - generic [ref=e36]:
+      - link "Forge" [ref=e37] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e38]: ws://localhost:19700
+  - main [ref=e39]:
+    - generic [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e42]:
+          - link "TOON Protocol" [ref=e43] [cursor=pointer]:
+            - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/TOON%20Protocol/
+          - generic [ref=e44]: main
+        - generic [ref=e45]: ILP-gated Nostr relay. Pay to write, free to read.
+        - generic [ref=e46]: npub166l7zqx3...7xqy
+      - generic [ref=e47]:
+        - generic [ref=e48]:
+          - link "TOON Protocol" [ref=e49] [cursor=pointer]:
+            - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/TOON%20Protocol/
+          - generic [ref=e50]: main
+        - generic [ref=e51]: ILP-gated Nostr relay. Pay to write, free to read.
+        - generic [ref=e52]: npub166l7zqx3...7xqy
+      - generic [ref=e53]:
+        - generic [ref=e54]:
+          - link "TOON Protocol" [ref=e55] [cursor=pointer]:
+            - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/TOON%20Protocol/
+          - generic [ref=e56]: main
+        - generic [ref=e57]: ILP-gated Nostr relay. Pay to write, free to read.
+        - generic [ref=e58]: npub166l7zqx3...7xqy
+  - contentinfo [ref=e59]: Forge — Decentralized Git on Nostr & TOON Protocol

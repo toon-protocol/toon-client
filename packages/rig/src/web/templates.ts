@@ -68,7 +68,7 @@ export function renderRepoList(
           : ownerNpub.slice(0, 13) + '...' + ownerNpub.slice(-4)
       );
       const repoHref = escapeHtml(
-        `/${encodeURIComponent(ownerNpub)}/${encodeURIComponent(r.name ?? '')}/`
+        `/${encodeURIComponent(ownerNpub)}/${encodeURIComponent(r.repoId)}/`
       );
 
       return `<div class="repo-card">
@@ -87,9 +87,10 @@ export function renderRepoList(
 
 /**
  * Get a display icon for a tree entry based on its mode.
+ * Uses simple Unicode characters for clean rendering across platforms.
  */
 function getTreeEntryIcon(mode: string): string {
-  if (mode === '40000') return '&#x1F4C1;'; // folder
+  if (mode === '40000') return '&#x1F4C2;'; // open folder
   if (mode === '120000') return '&#x1F517;'; // symlink
   if (mode === '160000') return '&#x1F4E6;'; // submodule
   return '&#x1F4C4;'; // file
@@ -292,7 +293,7 @@ ${breadcrumbs}
     html: `${tabs}
 ${breadcrumbs}
 <div class="blob-view">
-<div class="blob-header">${escapeHtml(path.split('/').pop() ?? '')} (${escapeHtml(String(sizeBytes))} bytes)${blameLink}</div>
+<div class="blob-header"><span>${escapeHtml(path.split('/').pop() ?? '')} &middot; ${escapeHtml(String(sizeBytes))} bytes</span>${blameLink}</div>
 <div class="blob-content">
 <pre class="blob-lines"><code>${lineNumbersHtml}</code></pre>
 <pre class="blob-code"><code>${codeHtml}</code></pre>

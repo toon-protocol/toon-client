@@ -25,7 +25,7 @@ export function renderLayout(
 
   return `<header class="layout-header">
   <div class="layout-header-inner">
-    <a href="/" class="layout-title">${escapeHtml(title)}</a>
+    <a href="/" class="layout-title">&#x2692; ${escapeHtml(title)}</a>
     ${relayIndicator}
   </div>
 </header>

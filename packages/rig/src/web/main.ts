@@ -44,7 +44,11 @@ import type { IssueMetadata, PRMetadata } from './nip34-parsers.js';
 import { ProfileCache } from './profile-cache.js';
 import { resolveDefaultRef } from './ref-resolver.js';
 import { parseGitTree, parseGitCommit, isBinaryBlob } from './git-objects.js';
-import { fetchArweaveObject, resolveGitSha } from './arweave-client.js';
+import {
+  fetchArweaveObject,
+  resolveGitSha,
+  seedShaCache,
+} from './arweave-client.js';
 import { walkCommitChain } from './commit-walker.js';
 import { computeBlame, isBlameError } from './blame.js';
 import { diffTrees } from './tree-diff.js';
@@ -109,6 +113,15 @@ async function renderTreeRoute(
       '<div class="stub-page"><div class="stub-page-title">No refs</div><p>No branch or tag data found for this repository.</p></div>',
       relayUrl
     );
+  }
+
+  // 2b. Seed Arweave SHA→txId cache from relay data (bypasses GraphQL indexing delay)
+  if (repoRefs.arweaveMap.size > 0) {
+    const mappings: Array<[string, string]> = [];
+    for (const [sha, txId] of repoRefs.arweaveMap) {
+      mappings.push([`${sha}:${repo}`, txId]);
+    }
+    seedShaCache(mappings);
   }
 
   // 3. Resolve ref
@@ -258,6 +271,15 @@ async function renderBlobRoute(
       renderBlobView(repo, ref, path, null, false, 0, owner).html,
       relayUrl
     );
+  }
+
+  // Seed Arweave SHA→txId cache from relay data (bypasses GraphQL indexing delay)
+  if (repoRefs.arweaveMap.size > 0) {
+    const mappings: Array<[string, string]> = [];
+    for (const [sha, txId] of repoRefs.arweaveMap) {
+      mappings.push([`${sha}:${repo}`, txId]);
+    }
+    seedShaCache(mappings);
   }
 
   // 2. Resolve ref to commit SHA
@@ -469,6 +491,15 @@ async function renderCommitsRoute(
     );
   }
 
+  // Seed Arweave SHA→txId cache from relay data
+  if (repoRefs.arweaveMap.size > 0) {
+    const mappings: Array<[string, string]> = [];
+    for (const [sha, txId] of repoRefs.arweaveMap) {
+      mappings.push([`${sha}:${repo}`, txId]);
+    }
+    seedShaCache(mappings);
+  }
+
   // 3. Resolve ref to commit SHA
   let resolvedRef = ref;
   let commitSha: string | undefined;
@@ -505,6 +536,34 @@ async function renderCommitRoute(
   sha: string,
   relayUrl: string
 ): Promise<string> {
+  // 0. Seed Arweave SHA→txId cache from relay data (same pattern as tree/blob/commits/blame routes)
+  const repoEvents = await queryRelay(relayUrl, {
+    kinds: [30617],
+    '#d': [repo],
+    limit: 10,
+  });
+  const repoMeta = repoEvents
+    .map((e) => parseRepoAnnouncement(e))
+    .find((r): r is RepoMetadata => r !== null);
+
+  if (repoMeta) {
+    const refsEvents = await queryRelay(relayUrl, {
+      ...buildRepoRefsFilter(repoMeta.ownerPubkey, repo),
+      limit: 10,
+    });
+    const repoRefs = refsEvents
+      .map((e) => parseRepoRefs(e))
+      .find((r) => r !== null);
+
+    if (repoRefs && repoRefs.arweaveMap.size > 0) {
+      const mappings: Array<[string, string]> = [];
+      for (const [arSha, txId] of repoRefs.arweaveMap) {
+        mappings.push([`${arSha}:${repo}`, txId]);
+      }
+      seedShaCache(mappings);
+    }
+  }
+
   // 1. Fetch the commit
   const commitTxId = await resolveGitSha(sha, repo);
   if (!commitTxId) {
@@ -697,6 +756,15 @@ async function renderBlameRoute(
   if (!repoRefs) {
     const result = renderBlameView(repo, ref, path, null);
     return renderLayout('Forge', result.html, relayUrl);
+  }
+
+  // Seed Arweave SHA→txId cache from relay data
+  if (repoRefs.arweaveMap.size > 0) {
+    const mappings: Array<[string, string]> = [];
+    for (const [sha, txId] of repoRefs.arweaveMap) {
+      mappings.push([`${sha}:${repo}`, txId]);
+    }
+    seedShaCache(mappings);
   }
 
   // 3. Resolve ref to commit SHA
@@ -1030,6 +1098,9 @@ async function renderPullDetailRoute(
 async function renderRoute(route: Route, relayUrl: string): Promise<void> {
   const app = document.getElementById('app');
   if (!app) return;
+
+  // Scroll to top on navigation for a polished SPA feel
+  window.scrollTo(0, 0);
 
   let content: string;
 

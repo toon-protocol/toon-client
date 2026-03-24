@@ -30,6 +30,9 @@ export function truncateNpub(hexPubkey: string): string {
  * Stores profile info from kind:0 events and provides display name resolution
  * with truncated npub fallback.
  */
+/** Maximum number of profiles to cache to prevent unbounded memory growth. */
+const PROFILE_CACHE_MAX_SIZE = 5000;
+
 export class ProfileCache {
   private profiles: Map<string, ProfileData> = new Map();
   private requested: Set<string> = new Set();
@@ -38,6 +41,16 @@ export class ProfileCache {
    * Set profile data for a pubkey (from a kind:0 event).
    */
   setProfile(pubkey: string, profile: ProfileData): void {
+    // Evict oldest entry if cache exceeds max size
+    if (
+      this.profiles.size >= PROFILE_CACHE_MAX_SIZE &&
+      !this.profiles.has(pubkey)
+    ) {
+      const firstKey = this.profiles.keys().next().value;
+      if (firstKey !== undefined) {
+        this.profiles.delete(firstKey);
+      }
+    }
     this.profiles.set(pubkey, profile);
     this.requested.add(pubkey);
   }
@@ -77,6 +90,16 @@ export class ProfileCache {
    */
   markRequested(pubkeys: string[]): void {
     for (const pk of pubkeys) {
+      // Bound the requested set to prevent unbounded memory growth
+      if (
+        this.requested.size >= PROFILE_CACHE_MAX_SIZE * 2 &&
+        !this.requested.has(pk)
+      ) {
+        const firstKey = this.requested.values().next().value;
+        if (firstKey !== undefined) {
+          this.requested.delete(firstKey);
+        }
+      }
       this.requested.add(pk);
     }
   }

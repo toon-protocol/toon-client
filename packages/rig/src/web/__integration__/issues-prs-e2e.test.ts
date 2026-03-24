@@ -62,9 +62,7 @@ function createIssueEvent(opts: {
   labels?: string[];
   repoTag?: string;
 }): NostrEvent {
-  const tags: string[][] = [
-    ['a', `30617:${OWNER_PUBKEY}:${REPO_ID}`],
-  ];
+  const tags: string[][] = [['a', `30617:${OWNER_PUBKEY}:${REPO_ID}`]];
   if (opts.title) {
     tags.push(['subject', opts.title]);
   }
@@ -97,9 +95,7 @@ function createPREvent(opts: {
   commitShas?: string[];
   baseBranch?: string;
 }): NostrEvent {
-  const tags: string[][] = [
-    ['a', `30617:${OWNER_PUBKEY}:${REPO_ID}`],
-  ];
+  const tags: string[][] = [['a', `30617:${OWNER_PUBKEY}:${REPO_ID}`]];
   if (opts.title) {
     tags.push(['subject', opts.title]);
   }
@@ -273,7 +269,11 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       expect(result.status).toBe(200);
 
       // 8. Embed in layout and render into DOM
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
       // 9. Assert: titles are rendered
@@ -337,7 +337,8 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       const eventId = 'a'.repeat(64);
       const route = parseRoute(`/npub1owner/test-repo/issues/${eventId}`);
       expect(route.type).toBe('issue-detail');
-      if (route.type !== 'issue-detail') throw new Error('Expected issue-detail route');
+      if (route.type !== 'issue-detail')
+        throw new Error('Expected issue-detail route');
       expect(route.eventId).toBe(eventId);
 
       // 2. Build event-by-ID filter
@@ -353,7 +354,8 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       const issueEvent = createIssueEvent({
         id: eventId,
         title: 'Bug with code blocks',
-        content: 'When I run this:\n\n```\nconst x = 1;\nconsole.log(x);\n```\n\nIt fails with `TypeError`. See https://example.com/issue for details.',
+        content:
+          'When I run this:\n\n```\nconst x = 1;\nconsole.log(x);\n```\n\nIt fails with `TypeError`. See https://example.com/issue for details.',
         pubkey: AUTHOR_A_PUBKEY,
         createdAt: 1711180800,
         labels: ['bug'],
@@ -401,10 +403,20 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       cache.setProfile(AUTHOR_C_PUBKEY, { displayName: 'Charlie' });
 
       // 7. Render issue detail
-      const result = renderIssueDetail('test-repo', issue!, comments, cache, 'npub1owner');
+      const result = renderIssueDetail(
+        'test-repo',
+        issue!,
+        comments,
+        cache,
+        'npub1owner'
+      );
       expect(result.status).toBe(200);
 
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
       // 8. Assert: title is rendered
@@ -421,7 +433,9 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       const commentEls = container.querySelectorAll('.comment');
       expect(commentEls).toHaveLength(2);
       expect(commentEls[0]!.textContent).toContain('I can reproduce this bug.');
-      expect(commentEls[1]!.textContent).toContain('Fixed in the latest commit.');
+      expect(commentEls[1]!.textContent).toContain(
+        'Fixed in the latest commit.'
+      );
 
       // 11. Assert: comment authors
       expect(commentEls[0]!.textContent).toContain('Bob');
@@ -533,7 +547,11 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       cache.setProfile(AUTHOR_C_PUBKEY, { displayName: 'Charlie' });
 
       const result = renderPRList('test-repo', prs, cache, 'npub1owner');
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
       // 7. Assert: titles
@@ -581,14 +599,16 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       const prId = 'pr1'.padEnd(64, '0');
       const route = parseRoute(`/npub1owner/test-repo/pulls/${prId}`);
       expect(route.type).toBe('pull-detail');
-      if (route.type !== 'pull-detail') throw new Error('Expected pull-detail route');
+      if (route.type !== 'pull-detail')
+        throw new Error('Expected pull-detail route');
       expect(route.eventId).toBe(prId);
 
       // 2. Parse PR event
       const prEvent = createPREvent({
         id: prId,
         title: 'Add NIP-34 parser',
-        content: 'This patch adds parsing for NIP-34 events.\n\nSee https://github.com/nostr-protocol/nips/blob/master/34.md for spec.',
+        content:
+          'This patch adds parsing for NIP-34 events.\n\nSee https://github.com/nostr-protocol/nips/blob/master/34.md for spec.',
         pubkey: AUTHOR_A_PUBKEY,
         createdAt: 1711180800,
         commitShas: ['abc123def456', 'fed987cba654'],
@@ -636,8 +656,18 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       cache.setProfile(AUTHOR_B_PUBKEY, { name: 'Bob' });
       cache.setProfile(AUTHOR_C_PUBKEY, { displayName: 'Charlie' });
 
-      const result = renderPRDetail('test-repo', pr!, comments, cache, 'npub1owner');
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const result = renderPRDetail(
+        'test-repo',
+        pr!,
+        comments,
+        cache,
+        'npub1owner'
+      );
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
       // 6. Assert: title
@@ -657,8 +687,12 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       expect(commitLinks[0]!.textContent).toBe('abc123d');
       expect(commitLinks[1]!.textContent).toBe('fed987c');
       // Commit links should point to commit view
-      expect(commitLinks[0]!.getAttribute('href')).toContain('/commit/abc123def456');
-      expect(commitLinks[1]!.getAttribute('href')).toContain('/commit/fed987cba654');
+      expect(commitLinks[0]!.getAttribute('href')).toContain(
+        '/commit/abc123def456'
+      );
+      expect(commitLinks[1]!.getAttribute('href')).toContain(
+        '/commit/fed987cba654'
+      );
 
       // 10. Assert: markdown-safe content (URL auto-linked)
       expect(result.html).toContain('href=');
@@ -685,10 +719,16 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
     it('[P1] renders empty state message for repository with no issues', () => {
       const cache = new ProfileCache();
       const result = renderIssueList('test-repo', [], cache, 'npub1owner');
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
-      expect(container.textContent).toContain('No issues found for this repository');
+      expect(container.textContent).toContain(
+        'No issues found for this repository'
+      );
       expect(container.textContent).toContain('kind:1621');
       expect(container.textContent).toContain('Forge-UI is read-only');
     });
@@ -696,10 +736,16 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
     it('[P1] renders empty state message for repository with no PRs', () => {
       const cache = new ProfileCache();
       const result = renderPRList('test-repo', [], cache, 'npub1owner');
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
-      expect(container.textContent).toContain('No pull requests found for this repository');
+      expect(container.textContent).toContain(
+        'No pull requests found for this repository'
+      );
       expect(container.textContent).toContain('kind:1617');
       expect(container.textContent).toContain('Forge-UI is read-only');
     });
@@ -715,7 +761,8 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       const maliciousIssue: IssueMetadata = {
         eventId: 'x'.repeat(64),
         title: '<script>alert("xss")</script>',
-        content: '<img onerror=alert(1) src=x>\n\njavascript:alert(1)\n\n<div onmouseover="evil()">hover me</div>',
+        content:
+          '<img onerror=alert(1) src=x>\n\njavascript:alert(1)\n\n<div onmouseover="evil()">hover me</div>',
         authorPubkey: AUTHOR_A_PUBKEY,
         createdAt: 1711180800,
         labels: ['<script>alert("label")</script>'],
@@ -727,8 +774,17 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
         name: '<script>alert("name")</script>',
       });
 
-      const result = renderIssueList('test-repo', [maliciousIssue], cache, 'npub1owner');
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const result = renderIssueList(
+        'test-repo',
+        [maliciousIssue],
+        cache,
+        'npub1owner'
+      );
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
       // No executable script or event handler elements
@@ -745,7 +801,8 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       const maliciousPR: PRMetadata = {
         eventId: 'y'.repeat(64),
         title: '"><script>alert(1)</script>',
-        content: '<iframe src="javascript:alert(1)"></iframe>\n\n<a href="javascript:void(0)">click</a>',
+        content:
+          '<iframe src="javascript:alert(1)"></iframe>\n\n<a href="javascript:void(0)">click</a>',
         authorPubkey: AUTHOR_A_PUBKEY,
         createdAt: 1711180800,
         commitShas: ['abc123'],
@@ -754,8 +811,18 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       };
 
       const cache = new ProfileCache();
-      const result = renderPRDetail('test-repo', maliciousPR, [], cache, 'npub1owner');
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const result = renderPRDetail(
+        'test-repo',
+        maliciousPR,
+        [],
+        cache,
+        'npub1owner'
+      );
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
       expect(container.querySelectorAll('script')).toHaveLength(0);
@@ -786,8 +853,18 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       ];
 
       const cache = new ProfileCache();
-      const result = renderIssueDetail('test-repo', issue, maliciousComments, cache, 'npub1owner');
-      const fullHtml = renderLayout('Forge', result.html, 'wss://localhost:7100');
+      const result = renderIssueDetail(
+        'test-repo',
+        issue,
+        maliciousComments,
+        cache,
+        'npub1owner'
+      );
+      const fullHtml = renderLayout(
+        'Forge',
+        result.html,
+        'wss://localhost:7100'
+      );
       container.innerHTML = fullHtml;
 
       expect(container.querySelectorAll('script')).toHaveLength(0);
@@ -802,7 +879,8 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
 
   describe('8.5-E2E-007: Markdown-safe content rendering', () => {
     it('[P1] renders fenced code blocks, inline code, auto-linked URLs, and paragraph breaks', () => {
-      const content = 'First paragraph.\n\nSecond paragraph.\n\n```\nconst x = 1;\n```\n\nUse `npm install` then visit https://example.com/docs';
+      const content =
+        'First paragraph.\n\nSecond paragraph.\n\n```\nconst x = 1;\n```\n\nUse `npm install` then visit https://example.com/docs';
 
       const rendered = renderMarkdownSafe(content);
 
@@ -814,7 +892,9 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       expect(rendered).toContain('const x = 1;');
 
       // Inline code
-      expect(rendered).toContain('<code class="inline-code">npm install</code>');
+      expect(rendered).toContain(
+        '<code class="inline-code">npm install</code>'
+      );
 
       // Auto-linked URL
       expect(rendered).toContain('<a href=');
@@ -830,7 +910,9 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       // URL inside code block should not become a link
       expect(rendered).toContain('https://example.com/inside-code');
       // The code block itself should not contain <a> tags
-      const codeBlockMatch = rendered.match(/<pre class="code-block"><code>([\s\S]*?)<\/code><\/pre>/);
+      const codeBlockMatch = rendered.match(
+        /<pre class="code-block"><code>([\s\S]*?)<\/code><\/pre>/
+      );
       expect(codeBlockMatch).not.toBeNull();
       expect(codeBlockMatch![1]).not.toContain('<a ');
     });
@@ -855,7 +937,9 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
 
       const allTabs = container.querySelectorAll('.repo-tabs a');
       expect(allTabs.length).toBe(3);
-      expect(container.querySelector('.tab-active')!.textContent).toBe('Issues');
+      expect(container.querySelector('.tab-active')!.textContent).toBe(
+        'Issues'
+      );
     });
 
     it('[P1] PR list page has Code/Issues/Pull Requests tabs with Pull Requests active', () => {
@@ -864,7 +948,9 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
 
       const allTabs = container.querySelectorAll('.repo-tabs a');
       expect(allTabs.length).toBe(3);
-      expect(container.querySelector('.tab-active')!.textContent).toBe('Pull Requests');
+      expect(container.querySelector('.tab-active')!.textContent).toBe(
+        'Pull Requests'
+      );
     });
 
     it('[P1] code tab links to bare repo URL when no ref provided', () => {
@@ -1117,7 +1203,13 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
         labels: [],
         status: 'open',
       };
-      const result = renderIssueDetail('test-repo', issue, [], cache, 'npub1owner');
+      const result = renderIssueDetail(
+        'test-repo',
+        issue,
+        [],
+        cache,
+        'npub1owner'
+      );
       expect(result.html).toContain('Forge-UI is read-only');
     });
 
