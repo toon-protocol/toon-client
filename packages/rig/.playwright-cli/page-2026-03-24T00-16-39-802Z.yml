@@ -1,0 +1,24 @@
+- generic [ref=e2]:
+  - banner [ref=e10]:
+    - generic [ref=e11]:
+      - link "Forge" [ref=e12] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e13]: ws://localhost:19700
+  - main [ref=e14]:
+    - navigation [ref=e15]:
+      - link "Code" [ref=e16] [cursor=pointer]:
+        - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/toon-protocol/tree/refs%2Fheads%2Fepic-8/
+      - link "Issues" [ref=e17] [cursor=pointer]:
+        - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/toon-protocol/issues
+      - link "Pull Requests" [ref=e18] [cursor=pointer]:
+        - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/toon-protocol/pulls
+    - navigation [ref=e19]:
+      - generic [ref=e20]: refs/heads/epic-8
+      - link "toon-protocol" [ref=e21] [cursor=pointer]:
+        - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/toon-protocol/tree/refs%2Fheads%2Fepic-8/
+      - link "Commits" [ref=e22] [cursor=pointer]:
+        - /url: /npub166l7zqx3vqxqmrmkj5qkwm78fsuqj5qt6ycu3f2flzx0v9kzru6sfe7xqy/toon-protocol/commits/refs%2Fheads%2Fepic-8
+    - generic [ref=e23]:
+      - table:
+        - rowgroup
+  - contentinfo [ref=e24]: Forge — Decentralized Git on Nostr & TOON Protocol

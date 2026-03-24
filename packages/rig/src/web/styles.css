@@ -1,0 +1,1566 @@
+/* Forge-UI Base Styles — minimal Forgejo-inspired design */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --color-bg: #f6f8fa;
+  --color-surface: #ffffff;
+  --color-text: #1f2328;
+  --color-text-muted: #656d76;
+  --color-text-secondary: #59636e;
+  --color-border: #d0d7de;
+  --color-border-subtle: #e8ecf0;
+  --color-primary: #0969da;
+  --color-primary-hover: #0550ae;
+  --color-primary-subtle: #ddf4ff;
+  --color-badge-bg: #ddf4ff;
+  --color-badge-text: #0969da;
+  --color-empty-text: #656d76;
+  --color-hover-bg: rgba(208, 215, 222, 0.32);
+  --color-shadow: rgba(31, 35, 40, 0.04);
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Noto Sans, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --max-width: 1012px;
+  --transition-fast: 80ms cubic-bezier(0.33, 1, 0.68, 1);
+  --transition-normal: 150ms cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+html {
+  font-size: 16px;
+  line-height: 1.5;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+a:hover {
+  color: var(--color-primary-hover);
+  text-decoration: underline;
+}
+
+a:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Layout */
+
+.layout-header {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  padding: 12px 24px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.layout-header-inner {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.layout-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-text);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+
+.layout-title:hover {
+  color: var(--color-text);
+  text-decoration: none;
+  opacity: 0.8;
+}
+
+.layout-relay {
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  background: var(--color-bg);
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--color-border-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+.layout-content {
+  max-width: var(--max-width);
+  margin: 24px auto;
+  padding: 0 24px;
+}
+
+.layout-footer {
+  max-width: var(--max-width);
+  margin: 48px auto 24px;
+  padding: 16px 24px;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+/* Repository List */
+
+.repo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--color-border);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.repo-card {
+  background: var(--color-surface);
+  padding: 16px 20px;
+  transition: background var(--transition-fast);
+}
+
+.repo-card:hover {
+  background: var(--color-hover-bg);
+}
+
+.repo-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.repo-name {
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.repo-branch-badge {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-family: var(--font-mono);
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  padding: 2px 8px;
+  border-radius: 12px;
+  line-height: 1.4;
+}
+
+.repo-description {
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+.repo-owner {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+
+/* Empty State */
+
+.empty-state {
+  text-align: center;
+  padding: 64px 24px;
+  color: var(--color-empty-text);
+}
+
+.empty-state-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--color-text-secondary);
+}
+
+.empty-state-message {
+  font-size: 0.875rem;
+  max-width: 420px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* Stub Page */
+
+.stub-page {
+  text-align: center;
+  padding: 64px 24px;
+  color: var(--color-text-muted);
+}
+
+.stub-page-title {
+  font-size: 2rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: var(--color-text-secondary);
+  letter-spacing: -0.02em;
+}
+
+/* Breadcrumbs */
+
+.breadcrumbs {
+  padding: 10px 0;
+  margin-bottom: 12px;
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.breadcrumb-ref {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  padding: 3px 10px;
+  border-radius: 12px;
+  margin-right: 6px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.breadcrumb-link {
+  color: var(--color-primary);
+}
+
+.breadcrumb-link:hover {
+  text-decoration: underline;
+}
+
+/* Tree View */
+
+.tree-view {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.tree-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.tree-entry td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-surface);
+  transition: background var(--transition-fast);
+}
+
+.tree-entry:last-child td {
+  border-bottom: none;
+}
+
+.tree-entry:hover td {
+  background: var(--color-hover-bg);
+}
+
+/* Tree commit header (like Forgejo's "last commit" bar) */
+
+.tree-commit-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 0.8125rem;
+  min-height: 40px;
+}
+
+.tree-commit-author {
+  font-weight: 600;
+  color: var(--color-text);
+  flex-shrink: 0;
+}
+
+.tree-commit-message {
+  color: var(--color-text);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.tree-commit-message:hover {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+.tree-commit-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.tree-commit-sha {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-primary);
+  text-decoration: none;
+  padding: 2px 6px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.tree-commit-sha:hover {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.tree-commit-date {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+/* Tree entry rows — 3-column layout matching Forgejo/GitHub */
+
+.tree-icon {
+  vertical-align: text-bottom;
+}
+
+.tree-entry-icon {
+  width: 28px;
+  text-align: center;
+  line-height: 1;
+  padding-right: 0 !important;
+}
+
+.tree-entry-name {
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.tree-entry-name a {
+  color: var(--color-primary);
+}
+
+.tree-entry-name a:hover {
+  text-decoration: underline;
+}
+
+.tree-entry-message {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 0;
+  width: 50%;
+}
+
+.tree-entry-message a {
+  color: var(--color-text-muted);
+  text-decoration: none;
+}
+
+.tree-entry-message a:hover {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+.tree-entry-date {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  text-align: right;
+  white-space: nowrap;
+  width: 120px;
+}
+
+/* Tree Toolbar (branch selector + clone URL) */
+
+.tree-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.branch-selector {
+  flex-shrink: 0;
+}
+
+.branch-select {
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  padding: 5px 24px 5px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23656d76' d='M6 8.5L1 3.5h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+
+.branch-select:hover {
+  border-color: var(--color-primary);
+}
+
+.clone-bar {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.clone-protocol {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text);
+  padding: 5px 10px;
+  background: var(--color-bg);
+  border-right: 1px solid var(--color-border);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.clone-url {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 5px 8px;
+  border: none;
+  background: var(--color-surface);
+  color: var(--color-text);
+  width: 280px;
+  max-width: 40vw;
+  outline: none;
+}
+
+.clone-copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 8px;
+  border: none;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.clone-copy-btn:hover {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+/* README below tree */
+
+.readme-container {
+  margin-top: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.readme-header {
+  padding: 10px 16px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+}
+
+.readme-body {
+  padding: 24px 32px;
+  background: var(--color-surface);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--color-text);
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.readme-body h1,
+.readme-body h2,
+.readme-body h3 {
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+  border-bottom: 1px solid var(--color-border-subtle);
+  padding-bottom: 0.3em;
+}
+
+.readme-body h1 { font-size: 1.5rem; }
+.readme-body h2 { font-size: 1.25rem; }
+.readme-body h3 { font-size: 1.1rem; border-bottom: none; }
+
+.readme-body p {
+  margin-bottom: 0.75em;
+}
+
+.readme-body code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0.2em 0.4em;
+  background: var(--color-bg);
+  border-radius: 3px;
+}
+
+.readme-body pre {
+  padding: 12px 16px;
+  background: var(--color-bg);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin-bottom: 1em;
+}
+
+.readme-body pre code {
+  padding: 0;
+  background: none;
+}
+
+.readme-body ul,
+.readme-body ol {
+  padding-left: 1.5em;
+  margin-bottom: 0.75em;
+}
+
+.readme-body a {
+  color: var(--color-primary);
+}
+
+.readme-body a:hover {
+  text-decoration: underline;
+}
+
+/* Blob View */
+
+.blob-view {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.blob-header {
+  padding: 8px 16px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.blob-content {
+  display: flex;
+  overflow-x: auto;
+  background: var(--color-surface);
+}
+
+.blob-lines {
+  padding: 8px 0;
+  margin: 0;
+  text-align: right;
+  user-select: none;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.blob-lines code {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.line-number {
+  padding: 0 12px;
+  color: var(--color-text-muted);
+  min-width: 40px;
+}
+
+.blob-code {
+  padding: 8px 16px;
+  margin: 0;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.blob-code code {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.binary-notice {
+  padding: 24px;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* Breadcrumb Commits Link */
+
+.breadcrumb-commits-link {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--color-primary);
+  padding: 3px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  font-weight: 500;
+}
+
+.breadcrumb-commits-link:hover {
+  background: var(--color-hover-bg);
+  border-color: var(--color-text-muted);
+  text-decoration: none;
+}
+
+.breadcrumb-active {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+/* Commit Log */
+
+.commit-log {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.commit-row {
+  background: var(--color-surface);
+  padding: 10px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  transition: background var(--transition-fast);
+}
+
+.commit-row:hover {
+  background: var(--color-hover-bg);
+}
+
+.commit-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.commit-sha {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--color-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.commit-message {
+  font-size: 0.875rem;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.commit-author {
+  font-weight: 500;
+}
+
+.commit-date {
+  color: var(--color-text-muted);
+}
+
+/* Commit Diff View */
+
+.commit-diff {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.commit-diff-header {
+  background: var(--color-bg);
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.commit-diff-message {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 12px 0;
+  line-height: 1.5;
+}
+
+.commit-diff-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8125rem;
+  margin-bottom: 4px;
+}
+
+.commit-email {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.commit-diff-info,
+.commit-diff-parents {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  margin-top: 4px;
+}
+
+.commit-sha-label,
+.commit-parent-label {
+  font-weight: 600;
+}
+
+.commit-sha-full {
+  font-family: var(--font-mono);
+}
+
+.commit-parent-link {
+  font-family: var(--font-mono);
+  color: var(--color-primary);
+}
+
+.commit-root-label {
+  font-style: italic;
+}
+
+/* Diff Summary */
+
+.commit-diff-summary {
+  display: flex;
+  gap: 16px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  font-size: 0.8125rem;
+}
+
+.diff-stat {
+  font-weight: 500;
+}
+
+.diff-stat-added {
+  color: #1a7f37;
+}
+
+.diff-stat-deleted {
+  color: #cf222e;
+}
+
+.diff-stat-modified {
+  color: #9a6700;
+}
+
+/* Diff Files */
+
+.commit-diff-files {
+  background: var(--color-surface);
+}
+
+.diff-file {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.diff-file:last-child {
+  border-bottom: none;
+}
+
+.diff-file-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+}
+
+.diff-file-name {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.diff-status-badge {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+  text-align: center;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  border-radius: 3px;
+  color: #ffffff;
+  flex-shrink: 0;
+}
+
+.diff-status-added {
+  background: #1a7f37;
+}
+
+.diff-status-deleted {
+  background: #cf222e;
+}
+
+.diff-status-modified {
+  background: #9a6700;
+}
+
+/* Diff Content */
+
+.diff-file-content {
+  overflow-x: auto;
+}
+
+.diff-hunk {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.diff-hunk-header {
+  padding: 4px 20px;
+  background: #ddf4ff;
+  color: #0969da;
+  font-size: 0.75rem;
+}
+
+.diff-line {
+  padding: 0 20px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diff-line-context {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.diff-line-add {
+  background: #e6ffec;
+  color: #1a7f37;
+}
+
+.diff-line-delete {
+  background: #ffebe9;
+  color: #cf222e;
+}
+
+.diff-binary {
+  padding: 16px 20px;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-style: italic;
+  font-size: 0.875rem;
+}
+
+/* Blame View */
+
+.blame-view {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.blame-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.blame-line td {
+  padding: 0 8px;
+  background: var(--color-surface);
+  vertical-align: top;
+}
+
+.blame-line.blame-group-start td {
+  border-top: 1px solid var(--color-border);
+}
+
+.blame-line.blame-group-start:first-child td {
+  border-top: none;
+}
+
+.blame-sha {
+  width: 70px;
+  white-space: nowrap;
+  color: var(--color-primary);
+}
+
+.blame-sha a {
+  color: var(--color-primary);
+  font-family: var(--font-mono);
+}
+
+.blame-author {
+  width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+}
+
+.blame-date {
+  width: 100px;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+}
+
+.blame-line-number {
+  width: 40px;
+  text-align: right;
+  color: var(--color-text-muted);
+  user-select: none;
+  padding-right: 12px;
+  border-left: 1px solid var(--color-border);
+}
+
+.blame-content {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.blame-content pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
+.blame-depth-notice {
+  padding: 8px 16px;
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  font-size: 0.8125rem;
+  text-align: center;
+  border-top: 1px solid var(--color-border);
+}
+
+/* Blob Blame Link */
+
+.blob-blame-link {
+  margin-left: auto;
+  font-size: 0.6875rem;
+  color: var(--color-primary);
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  font-weight: 500;
+}
+
+.blob-blame-link:hover {
+  background: var(--color-hover-bg);
+  border-color: var(--color-text-muted);
+  text-decoration: none;
+}
+
+/* Repository Tabs */
+
+.repo-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--color-border-subtle);
+  margin-bottom: 16px;
+}
+
+.repo-tab {
+  padding: 10px 16px;
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color var(--transition-normal), border-bottom-color var(--transition-normal);
+  font-weight: 500;
+}
+
+.repo-tab:hover {
+  color: var(--color-text);
+  text-decoration: none;
+  border-bottom-color: var(--color-border);
+}
+
+.repo-tab:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+  border-radius: 2px;
+}
+
+.repo-tab.tab-active {
+  color: var(--color-text);
+  font-weight: 600;
+  border-bottom-color: var(--color-primary);
+}
+
+.repo-tab.tab-active:hover {
+  border-bottom-color: var(--color-primary);
+}
+
+/* Contribution Banner */
+
+.contribution-banner {
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  border: 1px solid #b6e3ff;
+  border-radius: var(--radius);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.contribution-banner::before {
+  content: '\2139';
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-badge-text);
+  color: #ffffff;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+/* Status Badges */
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 12px;
+  color: #ffffff;
+  text-transform: capitalize;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.status-open {
+  background: #1a7f37;
+}
+
+.status-applied {
+  background: #8250df;
+}
+
+.status-closed {
+  background: #cf222e;
+}
+
+.status-draft {
+  background: #656d76;
+}
+
+/* Label Badges */
+
+.label-badge {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #ddf4ff;
+  color: #0969da;
+  margin-left: 4px;
+  line-height: 1.4;
+  border: 1px solid rgba(9, 105, 218, 0.15);
+}
+
+/* Issue List */
+
+.issue-list {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.issue-row {
+  background: var(--color-surface);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  transition: background var(--transition-fast);
+}
+
+.issue-row:hover {
+  background: var(--color-hover-bg);
+}
+
+.issue-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.issue-title-link {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-title-link:hover {
+  text-decoration: underline;
+}
+
+.issue-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.issue-author,
+.pr-author {
+  font-weight: 500;
+}
+
+.issue-date,
+.pr-date {
+  color: var(--color-text-muted);
+}
+
+/* Issue Detail */
+
+.issue-detail,
+.pr-detail {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.issue-detail-header,
+.pr-detail-header {
+  padding: 20px 24px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.issue-detail-title,
+.pr-detail-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.issue-detail-meta,
+.pr-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  flex-wrap: wrap;
+}
+
+.issue-detail-body,
+.pr-detail-body {
+  padding: 20px 24px;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* PR List */
+
+.pr-list {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.pr-row {
+  background: var(--color-surface);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  transition: background var(--transition-fast);
+}
+
+.pr-row:hover {
+  background: var(--color-hover-bg);
+}
+
+.pr-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.pr-title-link {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pr-title-link:hover {
+  text-decoration: underline;
+}
+
+.pr-base-branch {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  padding: 2px 8px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.pr-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+/* PR Detail */
+
+.pr-commits {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+
+.pr-commits .commit-sha {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--color-primary);
+}
+
+.pr-commits .commit-sha:hover {
+  text-decoration: underline;
+}
+
+.pr-commits-label {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+/* Comment Thread */
+
+.comment-thread {
+  background: var(--color-surface);
+}
+
+.comment {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.comment:last-child {
+  border-bottom: none;
+}
+
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 0.8125rem;
+}
+
+.comment-author {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.comment-date {
+  color: var(--color-text-muted);
+}
+
+.comment-body {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Markdown-Safe Content */
+
+.code-block {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 12px 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre;
+  word-wrap: normal;
+}
+
+.code-block code {
+  font-family: var(--font-mono);
+}
+
+.inline-code {
+  background: rgba(175, 184, 193, 0.2);
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+/* Loading State */
+
+.loading {
+  text-align: center;
+  padding: 64px 24px;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.loading::before {
+  content: '';
+  display: block;
+  width: 24px;
+  height: 24px;
+  border: 2.5px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Responsive */
+
+@media (max-width: 768px) {
+  .commit-row {
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+  }
+
+  .issue-row,
+  .pr-row {
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-start;
+  }
+
+  .issue-row-meta,
+  .pr-row-meta {
+    padding-left: 0;
+  }
+
+  .issue-detail-header,
+  .pr-detail-header {
+    padding: 16px;
+  }
+
+  .issue-detail-body,
+  .pr-detail-body {
+    padding: 16px;
+  }
+
+  .comment {
+    padding: 12px 16px;
+  }
+
+  .issue-detail-meta,
+  .pr-detail-meta {
+    gap: 6px;
+  }
+
+  .repo-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .repo-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .breadcrumbs {
+    font-size: 0.8125rem;
+  }
+
+  .blob-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+}
+
+@media (max-width: 600px) {
+  .layout-header {
+    padding: 10px 12px;
+  }
+
+  .layout-relay {
+    max-width: 180px;
+    font-size: 0.625rem;
+  }
+
+  .layout-content {
+    padding: 0 12px;
+    margin: 16px auto;
+  }
+
+  .layout-footer {
+    margin: 32px auto 16px;
+    padding: 12px;
+  }
+
+  .repo-card {
+    padding: 12px;
+  }
+
+  .repo-name {
+    font-size: 1rem;
+  }
+
+  .empty-state,
+  .stub-page {
+    padding: 32px 12px;
+  }
+
+  .commit-diff-header {
+    padding: 12px 16px;
+  }
+
+  .diff-file-header {
+    padding: 6px 12px;
+  }
+
+  .diff-line {
+    padding: 0 12px;
+  }
+}
