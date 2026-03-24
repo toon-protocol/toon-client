@@ -25,7 +25,7 @@ function buildTreeEntry(mode: string, name: string, shaHex: string): number[] {
 }
 
 function buildTreeObject(
-  entries: Array<{ mode: string; name: string; sha: string }>
+  entries: { mode: string; name: string; sha: string }[]
 ): Uint8Array {
   const allBytes: number[] = [];
   for (const entry of entries) {

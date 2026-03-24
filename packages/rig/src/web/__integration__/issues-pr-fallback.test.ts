@@ -2,7 +2,7 @@
 // Test IDs: 8.5-INT-003
 // AC covered: #10, #13 (Graceful degradation when relay unavailable)
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { renderLayout } from '../layout.js';
 

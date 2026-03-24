@@ -28,6 +28,7 @@ export function renderMarkdownSafe(content: string): string {
   // Step 1: HTML-escape everything, and strip null bytes to prevent
   // placeholder collision (user content containing \x00CODEBLOCK...\x00
   // would otherwise be consumed by the restore step).
+  // eslint-disable-next-line no-control-regex -- intentional: strip null bytes to prevent placeholder collision
   let html = escapeHtml(content).replace(/\x00/g, '');
 
   // Step 2: Extract fenced code blocks (triple backtick) and replace with placeholders
@@ -62,7 +63,7 @@ export function renderMarkdownSafe(content: string): string {
     let trailing = '';
     const trailingMatch = cleanUrl.match(/([.,;:!?)]+)$/);
     if (trailingMatch) {
-      trailing = trailingMatch[1]!;
+      trailing = trailingMatch[1] as string;
       cleanUrl = cleanUrl.slice(0, -trailing.length);
     }
     // Decode HTML entities back for the href value
@@ -80,9 +81,11 @@ export function renderMarkdownSafe(content: string): string {
   html = html.replace(/\n\n/g, '<br><br>');
 
   // Step 6: Restore inline code and fenced code blocks from placeholders
+  // eslint-disable-next-line no-control-regex -- intentional: restore placeholders using null-byte delimiters
   html = html.replace(/\x00INLINECODE(\d+)\x00/g, (_match, index: string) => {
     return inlineCodeBlocks[parseInt(index, 10)] ?? '';
   });
+  // eslint-disable-next-line no-control-regex -- intentional: restore placeholders using null-byte delimiters
   html = html.replace(/\x00CODEBLOCK(\d+)\x00/g, (_match, index: string) => {
     return codeBlocks[parseInt(index, 10)] ?? '';
   });

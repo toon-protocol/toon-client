@@ -333,10 +333,11 @@ export function resolvePRStatus(
   }
 
   // Find most recent by created_at
-  let latest = relevant[0]!;
+  let latest = relevant[0] as (typeof relevant)[number];
   for (let i = 1; i < relevant.length; i++) {
-    if (relevant[i]!.created_at > latest.created_at) {
-      latest = relevant[i]!;
+    const entry = relevant[i] as (typeof relevant)[number];
+    if (entry.created_at > latest.created_at) {
+      latest = entry;
     }
   }
 

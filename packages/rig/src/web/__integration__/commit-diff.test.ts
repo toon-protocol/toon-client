@@ -51,7 +51,7 @@ function buildTreeEntry(mode: string, name: string, shaHex: string): number[] {
 }
 
 function buildTreeObject(
-  entries: Array<{ mode: string; name: string; sha: string }>
+  entries: { mode: string; name: string; sha: string }[]
 ): Uint8Array {
   const allBytes: number[] = [];
   for (const entry of entries) {
@@ -80,7 +80,7 @@ describe('Integration: Commit Diff', () => {
     const sha = 'ab'.repeat(20);
     const parentSha = 'cd'.repeat(20);
     const treeSha = 'ee'.repeat(20);
-    const parentTreeSha = 'ff'.repeat(20);
+    const _parentTreeSha = 'ff'.repeat(20);
 
     // Parse commit
     const commit = parseGitCommit(

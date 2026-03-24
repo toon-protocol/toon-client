@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion -- safe array-index accesses after bounds checks throughout */
 /**
  * Unified diff algorithm for Forge-UI.
  *
@@ -201,7 +202,7 @@ function groupIntoHunks(
   if (changeIndices.length === 0) return [];
 
   // Build ranges: each change expands to include context lines
-  const ranges: Array<{ start: number; end: number }> = [];
+  const ranges: { start: number; end: number }[] = [];
   for (const idx of changeIndices) {
     const start = Math.max(0, idx - contextLines);
     const end = Math.min(editScript.length - 1, idx + contextLines);

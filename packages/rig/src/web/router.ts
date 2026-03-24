@@ -125,7 +125,7 @@ export function parseRoute(pathname: string): Route {
   // /<repo>/ — short form: repo-id only, owner resolved at render time
   // /<repo>/tree/<ref>/<path...>, /<repo>/issues, etc.
   if (segments.length >= 1) {
-    const firstSeg = segments[0]!;
+    const firstSeg = segments[0] as string;
 
     // Determine if this is /<owner>/<repo>/... (2+ segments, first looks like npub/hex)
     // or /<repo>/... (1+ segments, first is the repo id)
@@ -134,7 +134,7 @@ export function parseRoute(pathname: string): Route {
       (firstSeg.startsWith('npub1') || /^[0-9a-f]{64}$/i.test(firstSeg));
 
     const owner = looksLikeOwner ? firstSeg : '';
-    const repo = looksLikeOwner ? segments[1]! : firstSeg;
+    const repo = looksLikeOwner ? (segments[1] as string) : firstSeg;
     const routeSegments = looksLikeOwner
       ? segments.slice(2)
       : segments.slice(1);

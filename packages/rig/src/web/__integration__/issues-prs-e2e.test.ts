@@ -15,7 +15,6 @@ import {
   parsePR,
   parseComment,
   resolvePRStatus,
-  parseRepoAnnouncement,
 } from '../nip34-parsers.js';
 import type {
   NostrEvent,

@@ -13,7 +13,7 @@ import type { TreeEntry } from '../git-objects.js';
 import { renderTreeView, renderBlobView } from '../templates.js';
 import { parseRoute } from '../router.js';
 import { parseRepoRefs, parseRepoAnnouncement } from '../nip34-parsers.js';
-import type { NostrEvent, RepoMetadata, RepoRefs } from '../nip34-parsers.js';
+import type { NostrEvent } from '../nip34-parsers.js';
 import { resolveDefaultRef } from '../ref-resolver.js';
 import {
   fetchArweaveObject,
@@ -21,7 +21,6 @@ import {
   clearShaCache,
   ARWEAVE_GATEWAYS,
 } from '../arweave-client.js';
-import { renderLayout } from '../layout.js';
 
 // ============================================================================
 // Test Fixture Helpers
@@ -29,7 +28,7 @@ import { renderLayout } from '../layout.js';
 
 /** Build raw git tree object bytes from entries. */
 function buildTreeBytes(
-  entries: Array<{ mode: string; name: string; sha: string }>
+  entries: { mode: string; name: string; sha: string }[]
 ): Uint8Array {
   const allBytes: number[] = [];
   for (const entry of entries) {

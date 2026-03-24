@@ -264,7 +264,7 @@ function createMockRefsEvent(
     pubkey?: string;
     dTag?: string;
     kind?: number;
-    refs?: Array<[string, string]>;
+    refs?: [string, string][];
     tags?: string[][];
   } = {}
 ) {

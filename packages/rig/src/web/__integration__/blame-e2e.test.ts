@@ -8,22 +8,13 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { parseGitCommit, parseGitTree, isBinaryBlob } from '../git-objects.js';
-import type { TreeEntry } from '../git-objects.js';
 import { renderBlameView, renderBlobView } from '../templates.js';
-import type { TemplateResult } from '../templates.js';
 import { parseRoute } from '../router.js';
 import { parseRepoRefs, parseRepoAnnouncement } from '../nip34-parsers.js';
-import type { NostrEvent, RepoMetadata, RepoRefs } from '../nip34-parsers.js';
-import { resolveDefaultRef } from '../ref-resolver.js';
+import type { NostrEvent } from '../nip34-parsers.js';
 import { computeBlame, isBlameError } from '../blame.js';
 import type { BlameResult, BlameError } from '../blame.js';
-import {
-  fetchArweaveObject,
-  resolveGitSha,
-  clearShaCache,
-  ARWEAVE_GATEWAYS,
-} from '../arweave-client.js';
+import { clearShaCache, ARWEAVE_GATEWAYS } from '../arweave-client.js';
 import { renderLayout } from '../layout.js';
 
 // ============================================================================
@@ -32,7 +23,7 @@ import { renderLayout } from '../layout.js';
 
 /** Build raw git tree object bytes from entries. */
 function buildTreeBytes(
-  entries: Array<{ mode: string; name: string; sha: string }>
+  entries: { mode: string; name: string; sha: string }[]
 ): Uint8Array {
   const allBytes: number[] = [];
   for (const entry of entries) {

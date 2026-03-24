@@ -83,9 +83,6 @@ const ALLOWED_ATTRS: Record<string, Set<string>> = {
   pre: new Set(['class']),
 };
 
-/** Protocols allowed in href/src attributes. Relative paths (no protocol) are also safe. */
-const SAFE_URL_RE = /^(?:https?:\/\/|mailto:|#|\/|[a-zA-Z0-9._-])/i;
-
 /** Dangerous URL schemes that must be blocked even if they match the general pattern. */
 const DANGEROUS_URL_RE = /^(?:javascript|vbscript|data):/i;
 
@@ -133,7 +130,7 @@ function sanitizeHtml(html: string): string {
           /([a-zA-Z][a-zA-Z0-9_-]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
         let attrMatch;
         while ((attrMatch = attrRegex.exec(attrs)) !== null) {
-          const attrName = attrMatch[1]!.toLowerCase();
+          const attrName = (attrMatch[1] as string).toLowerCase();
           const attrValue = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? '';
 
           // Skip event handlers (on*)

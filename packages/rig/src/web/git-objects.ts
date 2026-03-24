@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion -- safe array-index accesses in binary parsing */
 /**
  * Browser-compatible git object parsers for Forge-UI.
  *
@@ -39,8 +40,8 @@ export interface GitCommit {
  */
 function bytesToHex(bytes: Uint8Array): string {
   const hex: string[] = [];
-  for (let i = 0; i < bytes.length; i++) {
-    hex.push(bytes[i]!.toString(16).padStart(2, '0'));
+  for (const byte of bytes) {
+    hex.push(byte.toString(16).padStart(2, '0'));
   }
   return hex.join('');
 }

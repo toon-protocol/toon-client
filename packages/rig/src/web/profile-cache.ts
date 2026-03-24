@@ -34,8 +34,8 @@ export function truncateNpub(hexPubkey: string): string {
 const PROFILE_CACHE_MAX_SIZE = 5000;
 
 export class ProfileCache {
-  private profiles: Map<string, ProfileData> = new Map();
-  private requested: Set<string> = new Set();
+  private profiles = new Map<string, ProfileData>();
+  private requested = new Set<string>();
 
   /**
    * Set profile data for a pubkey (from a kind:0 event).

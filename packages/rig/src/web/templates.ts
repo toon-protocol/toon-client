@@ -130,8 +130,6 @@ function renderBreadcrumbs(
   path: string
 ): string {
   const escapedRepo = escapeHtml(repoName);
-  const encodedOwner = encodeURIComponent(ownerNpub);
-  const encodedRepo = encodeURIComponent(repoName);
   const base = repoBasePath(ownerNpub, repoName);
   const escapedRef = escapeHtml(ref);
 
@@ -145,7 +143,7 @@ function renderBreadcrumbs(
   if (path) {
     const segments = path.split('/').filter(Boolean);
     for (let i = 0; i < segments.length; i++) {
-      const segment = segments[i]!;
+      const segment = segments[i] as string;
       const encodedPartialPath = segments
         .slice(0, i + 1)
         .map((s) => encodeURIComponent(s))
@@ -224,8 +222,6 @@ export function renderTreeView(
     return a.name.localeCompare(b.name);
   });
 
-  const encodedOwner = encodeURIComponent(owner);
-  const encodedRepo = encodeURIComponent(repoName);
   const base = repoBasePath(owner, repoName);
   const encodedRef = encodeURIComponent(ref);
   const basePath = path ? `${path}/` : '';
@@ -294,7 +290,7 @@ export function renderTreeView(
   // Clone URL bar (Forgejo-style: protocol label + URL + Copy button)
   let cloneBarHtml = '';
   if (options?.cloneUrls && options.cloneUrls.length > 0 && !path) {
-    const cloneUrl = options.cloneUrls[0]!;
+    const cloneUrl = options.cloneUrls[0] as string;
     const isNostr = /^wss?:\/\//i.test(cloneUrl);
     const protocolLabel = isNostr ? 'Nostr' : 'HTTPS';
     const escapedUrl = escapeHtml(cloneUrl);
@@ -410,8 +406,6 @@ ${breadcrumbs}
 
   // Blame link for non-binary files
   const blameLink = (() => {
-    const encodedOwner = encodeURIComponent(owner);
-    const encodedRepo = encodeURIComponent(repoName);
     const encodedRef = encodeURIComponent(ref);
     const encodedPath = path
       .split('/')
@@ -460,8 +454,6 @@ function renderCommitBreadcrumbs(
   activeLabel?: string
 ): string {
   const escapedRepo = escapeHtml(repoName);
-  const encodedOwner = encodeURIComponent(ownerNpub);
-  const encodedRepo = encodeURIComponent(repoName);
   const base = repoBasePath(ownerNpub, repoName);
 
   const treeRef = ref ? encodeURIComponent(ref) : 'main';
@@ -510,8 +502,6 @@ ${breadcrumbs}<div class="empty-state"><div class="empty-state-title">No commits
     };
   }
 
-  const encodedOwner = encodeURIComponent(owner);
-  const encodedRepo = encodeURIComponent(repoName);
   const base = repoBasePath(owner, repoName);
 
   const rows = commits
@@ -609,8 +599,6 @@ export function renderCommitDiff(
     commit.commit.parentShas.length > 0
       ? commit.commit.parentShas
           .map((p) => {
-            const encodedOwner = encodeURIComponent(owner);
-            const encodedRepo = encodeURIComponent(repoName);
             const href = escapeHtml(`${base}/commit/${encodeURIComponent(p)}`);
             return `<a href="${href}" class="commit-parent-link">${escapeHtml(p.slice(0, 7))}</a>`;
           })
@@ -738,8 +726,6 @@ export function renderBlameView(
   const owner = ownerNpub ?? '';
   const tabs = renderRepoTabs(owner, repoName, 'code', ref);
   const breadcrumbs = renderBreadcrumbs(owner, repoName, ref, path);
-  const encodedOwner = encodeURIComponent(owner);
-  const encodedRepo = encodeURIComponent(repoName);
   const base = repoBasePath(owner, repoName);
 
   // Build blame table rows with grouping
@@ -748,7 +734,7 @@ export function renderBlameView(
   const fileLines = blameResult.fileContent.split('\n');
 
   for (let i = 0; i < blameResult.lines.length; i++) {
-    const line = blameResult.lines[i]!;
+    const line = blameResult.lines[i] as (typeof blameResult.lines)[number];
     const lineContent = escapeHtml(fileLines[i] ?? '');
     const isNewGroup = line.commitSha !== prevCommitSha;
     const groupClass = isNewGroup ? ' blame-group-start' : '';
@@ -821,8 +807,6 @@ export function renderRepoTabs(
   activeTab: 'code' | 'issues' | 'pulls',
   ref?: string
 ): string {
-  const encodedOwner = encodeURIComponent(owner);
-  const encodedRepo = encodeURIComponent(repo);
   const base = repoBasePath(owner, repo);
 
   const codeHref = ref
@@ -887,8 +871,6 @@ ${banner}
       const statusClass =
         issue.status === 'closed' ? 'status-closed' : 'status-open';
       const statusLabel = escapeHtml(issue.status);
-      const encodedOwner = encodeURIComponent(owner);
-      const encodedRepo = encodeURIComponent(repoName);
       const detailHref = escapeHtml(
         `${base}/issues/${encodeURIComponent(issue.eventId)}`
       );
@@ -1022,8 +1004,6 @@ ${banner}
       const statusClass = `status-${pr.status}`;
       const statusLabel = escapeHtml(pr.status);
       const baseBranch = escapeHtml(pr.baseBranch);
-      const encodedOwner = encodeURIComponent(owner);
-      const encodedRepo = encodeURIComponent(repoName);
       const detailHref = escapeHtml(
         `${base}/pulls/${encodeURIComponent(pr.eventId)}`
       );
@@ -1074,8 +1054,6 @@ export function renderPRDetail(
   const baseBranch = escapeHtml(pr.baseBranch);
   const body = renderMarkdownSafe(pr.content);
 
-  const encodedOwner = encodeURIComponent(owner);
-  const encodedRepo = encodeURIComponent(repoName);
   const base = repoBasePath(owner, repoName);
 
   const commitLinks = pr.commitShas

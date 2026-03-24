@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion -- safe DOM/array accesses after null checks */
 /**
  * Forge-UI main entry point.
  *
@@ -135,7 +136,7 @@ async function renderTreeRoute(
 
   // 2b. Seed Arweave SHA→txId cache from relay data (bypasses GraphQL indexing delay)
   if (repoRefs.arweaveMap.size > 0) {
-    const mappings: Array<[string, string]> = [];
+    const mappings: [string, string][] = [];
     for (const [sha, txId] of repoRefs.arweaveMap) {
       mappings.push([`${sha}:${repo}`, txId]);
     }
@@ -408,7 +409,7 @@ async function renderBlobRoute(
 
   // Seed Arweave SHA→txId cache from relay data (bypasses GraphQL indexing delay)
   if (repoRefs.arweaveMap.size > 0) {
-    const mappings: Array<[string, string]> = [];
+    const mappings: [string, string][] = [];
     for (const [sha, txId] of repoRefs.arweaveMap) {
       mappings.push([`${sha}:${repo}`, txId]);
     }
@@ -626,7 +627,7 @@ async function renderCommitsRoute(
 
   // Seed Arweave SHA→txId cache from relay data
   if (repoRefs.arweaveMap.size > 0) {
-    const mappings: Array<[string, string]> = [];
+    const mappings: [string, string][] = [];
     for (const [sha, txId] of repoRefs.arweaveMap) {
       mappings.push([`${sha}:${repo}`, txId]);
     }
@@ -689,7 +690,7 @@ async function renderCommitRoute(
       .find((r) => r !== null);
 
     if (repoRefs && repoRefs.arweaveMap.size > 0) {
-      const mappings: Array<[string, string]> = [];
+      const mappings: [string, string][] = [];
       for (const [arSha, txId] of repoRefs.arweaveMap) {
         mappings.push([`${arSha}:${repo}`, txId]);
       }
@@ -893,7 +894,7 @@ async function renderBlameRoute(
 
   // Seed Arweave SHA→txId cache from relay data
   if (repoRefs.arweaveMap.size > 0) {
-    const mappings: Array<[string, string]> = [];
+    const mappings: [string, string][] = [];
     for (const [sha, txId] of repoRefs.arweaveMap) {
       mappings.push([`${sha}:${repo}`, txId]);
     }

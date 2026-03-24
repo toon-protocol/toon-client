@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion -- safe array-index accesses in blame algorithm */
 /**
  * Blame algorithm for Forge-UI.
  *
