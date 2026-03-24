@@ -124,9 +124,11 @@ describe('Router - Route Parsing', () => {
     expect(route.type).not.toBe('blame');
   });
 
-  it('[P2] parses single-segment path as not-found', () => {
+  it('[P2] parses single-segment path as short-form repo route', () => {
     const route = parseRoute('/only-one-segment');
-    expect(route.type).toBe('not-found');
+    expect(route.type).toBe('tree');
+    expect((route as { owner: string }).owner).toBe('');
+    expect((route as { repo: string }).repo).toBe('only-one-segment');
   });
 
   // ---------------------------------------------------------------------------

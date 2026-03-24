@@ -20,8 +20,9 @@ describe('CSP - 8.6-UNIT-002: Arweave gateway connect-src', () => {
     expect(csp).toContain('connect-src');
   });
 
-  it('[P1] CSP connect-src includes ar-io.dev', () => {
+  it('[P1] CSP connect-src includes ar-io.dev and subdomain wildcard', () => {
     expect(csp).toContain('https://ar-io.dev');
+    expect(csp).toContain('https://*.ar-io.dev');
   });
 
   it('[P1] CSP connect-src includes arweave.net', () => {
@@ -32,8 +33,14 @@ describe('CSP - 8.6-UNIT-002: Arweave gateway connect-src', () => {
     expect(csp).toContain('https://*.arweave.net');
   });
 
-  it('[P1] CSP connect-src includes permagate.io', () => {
+  it('[P1] CSP connect-src includes permagate.io and subdomain wildcard', () => {
     expect(csp).toContain('https://permagate.io');
+    expect(csp).toContain('https://*.permagate.io');
+  });
+
+  it('[P1] CSP img-src allows data: URIs for inline favicons', () => {
+    expect(csp).toContain('img-src');
+    expect(csp).toContain('data:');
   });
 
   it('[P1] CSP connect-src includes WebSocket protocols', () => {

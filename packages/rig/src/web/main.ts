@@ -18,7 +18,7 @@ import {
   renderPRList,
   renderPRDetail,
 } from './templates.js';
-import type { FileDiff } from './templates.js';
+import type { FileDiff, TreeViewOptions, HeadCommitInfo } from './templates.js';
 import { parseRelayUrl, parseRoute, initRouter } from './router.js';
 import {
   queryRelay,
@@ -43,7 +43,8 @@ import {
 import type { IssueMetadata, PRMetadata } from './nip34-parsers.js';
 import { ProfileCache } from './profile-cache.js';
 import { resolveDefaultRef } from './ref-resolver.js';
-import { parseGitTree, parseGitCommit, isBinaryBlob } from './git-objects.js';
+import { parseGitTree, parseGitCommit, isBinaryBlob, parseAuthorIdent } from './git-objects.js';
+import { formatRelativeDate } from './date-utils.js';
 import {
   fetchArweaveObject,
   resolveGitSha,
@@ -57,6 +58,20 @@ import type { Route } from './router.js';
 import type { RepoMetadata } from './nip34-parsers.js';
 
 const profileCache = new ProfileCache();
+
+/**
+ * Sort events by created_at descending so that for NIP-33 parameterized
+ * replaceable events (kind 30000-39999), the newest event is picked first
+ * by .find() — matching the NIP-33 spec that only the latest event is valid.
+ */
+function newestFirst(events: NostrEvent[]): NostrEvent[] {
+  return [...events].sort(
+    (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)
+  );
+}
+
+/** Monotonically increasing render generation to prevent async race conditions. */
+let renderGeneration = 0;
 
 /**
  * Fetch and cache kind:0 profiles for repo owners.
@@ -86,7 +101,7 @@ async function renderTreeRoute(
     '#d': [repo],
     limit: 10,
   });
-  const repoMeta = repoEvents
+  const repoMeta = newestFirst(repoEvents)
     .map((e) => parseRepoAnnouncement(e))
     .find((r): r is RepoMetadata => r !== null);
 
@@ -103,7 +118,7 @@ async function renderTreeRoute(
     ...buildRepoRefsFilter(repoMeta.ownerPubkey, repo),
     limit: 10,
   });
-  const repoRefs = refsEvents
+  const repoRefs = newestFirst(refsEvents)
     .map((e) => parseRepoRefs(e))
     .find((r) => r !== null);
 
@@ -225,7 +240,109 @@ async function renderTreeRoute(
   }
 
   const treeEntries = parseGitTree(treeData);
-  const result = renderTreeView(repo, resolvedRef, path, treeEntries, owner);
+
+  // 7. Try to fetch README for display below tree
+  const readmeNames = ['README.md', 'readme.md', 'README', 'README.txt'];
+  let readmeHtml: string | undefined;
+  let readmeFilename: string | undefined;
+  const readmeEntry = treeEntries.find((e) =>
+    readmeNames.includes(e.name) && e.mode !== '40000'
+  );
+  if (readmeEntry) {
+    const readmeTxId = await resolveGitSha(readmeEntry.sha, repo);
+    if (readmeTxId) {
+      const readmeData = await fetchArweaveObject(readmeTxId);
+      if (readmeData) {
+        const decoder = new TextDecoder('utf-8', { fatal: false });
+        const readmeContent = decoder.decode(readmeData);
+        const { renderMarkdown } = await import('./markdown-renderer.js');
+        const { ARWEAVE_GATEWAYS } = await import('./arweave-client.js');
+        const gateway = ARWEAVE_GATEWAYS[0]!;
+
+        // Extract all relative image paths from markdown (![alt](path) and <img src="path">)
+        const imgPaths = new Set<string>();
+        const mdImgRe = /!\[[^\]]*\]\(([^)]+)\)/g;
+        const htmlImgRe = /\bsrc=["']([^"']+)["']/gi;
+        let m;
+        while ((m = mdImgRe.exec(readmeContent)) !== null) {
+          const src = m[1]!.trim();
+          if (!/^(?:https?:\/\/|data:|\/\/)/i.test(src)) imgPaths.add(src);
+        }
+        while ((m = htmlImgRe.exec(readmeContent)) !== null) {
+          const src = m[1]!.trim();
+          if (!/^(?:https?:\/\/|data:|\/\/)/i.test(src)) imgPaths.add(src);
+        }
+
+        // Resolve each relative path by walking the git tree hierarchy via Arweave
+        const resolvedUrls = new Map<string, string>();
+
+        async function resolveTreePath(relativePath: string): Promise<string | null> {
+          const segments = relativePath.split('/').filter(Boolean);
+          if (segments.length === 0) return null;
+
+          // Start from the root tree (commit.treeSha)
+          let currentTreeShaLocal = commit.treeSha;
+
+          // Walk directory segments (all but last)
+          for (let i = 0; i < segments.length - 1; i++) {
+            const dirTxId = await resolveGitSha(currentTreeShaLocal, repo);
+            if (!dirTxId) return null;
+            const dirData = await fetchArweaveObject(dirTxId);
+            if (!dirData) return null;
+            const dirEntries = parseGitTree(dirData);
+            const dirEntry = dirEntries.find((e) => e.name === segments[i] && e.mode === '40000');
+            if (!dirEntry) return null;
+            currentTreeShaLocal = dirEntry.sha;
+          }
+
+          // Resolve the final segment (blob)
+          const blobName = segments[segments.length - 1]!;
+          const finalTreeTxId = await resolveGitSha(currentTreeShaLocal, repo);
+          if (!finalTreeTxId) return null;
+          const finalTreeData = await fetchArweaveObject(finalTreeTxId);
+          if (!finalTreeData) return null;
+          const finalEntries = parseGitTree(finalTreeData);
+          const blobEntry = finalEntries.find((e) => e.name === blobName && e.mode !== '40000');
+          if (!blobEntry) return null;
+
+          const blobTxId = await resolveGitSha(blobEntry.sha, repo);
+          return blobTxId ? `${gateway}/${blobTxId}` : null;
+        }
+
+        // Resolve all image paths in parallel
+        await Promise.all(
+          [...imgPaths].map(async (imgPath) => {
+            const url = await resolveTreePath(imgPath);
+            if (url) resolvedUrls.set(imgPath, url);
+          })
+        );
+
+        readmeHtml = renderMarkdown(readmeContent, {
+          resolveRelativePath: (p) => resolvedUrls.get(p) ?? null,
+        });
+        readmeFilename = readmeEntry.name;
+      }
+    }
+  }
+
+  // 8. Build HEAD commit info for the header row
+  const commitIdent = parseAuthorIdent(commit.author);
+  const headCommit: HeadCommitInfo = {
+    sha: commitSha,
+    message: commit.message,
+    authorName: commitIdent?.name ?? 'Unknown',
+    relativeDate: commitIdent ? formatRelativeDate(commitIdent.timestamp) : '',
+  };
+
+  const treeViewOptions: TreeViewOptions = {
+    allRefs: repoRefs.refs,
+    cloneUrls: repoMeta.cloneUrls,
+    readmeHtml,
+    readmeFilename,
+    headCommit,
+  };
+
+  const result = renderTreeView(repo, resolvedRef, path, treeEntries, owner, treeViewOptions);
   return renderLayout('Forge', result.html, relayUrl);
 }
 
@@ -245,7 +362,7 @@ async function renderBlobRoute(
     '#d': [repo],
     limit: 10,
   });
-  const repoMeta = repoEvents
+  const repoMeta = newestFirst(repoEvents)
     .map((e) => parseRepoAnnouncement(e))
     .find((r): r is RepoMetadata => r !== null);
 
@@ -261,7 +378,7 @@ async function renderBlobRoute(
     ...buildRepoRefsFilter(repoMeta.ownerPubkey, repo),
     limit: 10,
   });
-  const repoRefs = refsEvents
+  const repoRefs = newestFirst(refsEvents)
     .map((e) => parseRepoRefs(e))
     .find((r) => r !== null);
 
@@ -462,7 +579,7 @@ async function renderCommitsRoute(
     '#d': [repo],
     limit: 10,
   });
-  const repoMeta = repoEvents
+  const repoMeta = newestFirst(repoEvents)
     .map((e) => parseRepoAnnouncement(e))
     .find((r): r is RepoMetadata => r !== null);
 
@@ -479,7 +596,7 @@ async function renderCommitsRoute(
     ...buildRepoRefsFilter(repoMeta.ownerPubkey, repo),
     limit: 10,
   });
-  const repoRefs = refsEvents
+  const repoRefs = newestFirst(refsEvents)
     .map((e) => parseRepoRefs(e))
     .find((r) => r !== null);
 
@@ -542,7 +659,7 @@ async function renderCommitRoute(
     '#d': [repo],
     limit: 10,
   });
-  const repoMeta = repoEvents
+  const repoMeta = newestFirst(repoEvents)
     .map((e) => parseRepoAnnouncement(e))
     .find((r): r is RepoMetadata => r !== null);
 
@@ -551,7 +668,7 @@ async function renderCommitRoute(
       ...buildRepoRefsFilter(repoMeta.ownerPubkey, repo),
       limit: 10,
     });
-    const repoRefs = refsEvents
+    const repoRefs = newestFirst(refsEvents)
       .map((e) => parseRepoRefs(e))
       .find((r) => r !== null);
 
@@ -732,7 +849,7 @@ async function renderBlameRoute(
     '#d': [repo],
     limit: 10,
   });
-  const repoMeta = repoEvents
+  const repoMeta = newestFirst(repoEvents)
     .map((e) => parseRepoAnnouncement(e))
     .find((r): r is RepoMetadata => r !== null);
 
@@ -749,7 +866,7 @@ async function renderBlameRoute(
     ...buildRepoRefsFilter(repoMeta.ownerPubkey, repo),
     limit: 10,
   });
-  const repoRefs = refsEvents
+  const repoRefs = newestFirst(refsEvents)
     .map((e) => parseRepoRefs(e))
     .find((r) => r !== null);
 
@@ -866,7 +983,7 @@ async function resolveRepoMeta(
     '#d': [repo],
     limit: 10,
   });
-  const repoMeta = repoEvents
+  const repoMeta = newestFirst(repoEvents)
     .map((e) => parseRepoAnnouncement(e))
     .find((r): r is RepoMetadata => r !== null);
 
@@ -1099,6 +1216,9 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
   const app = document.getElementById('app');
   if (!app) return;
 
+  // Increment generation — if a newer render starts, this one should bail out
+  const thisGeneration = ++renderGeneration;
+
   // Scroll to top on navigation for a polished SPA feel
   window.scrollTo(0, 0);
 
@@ -1116,9 +1236,16 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
       // Fetch repos from relay
       try {
         const events = await queryRelay(relayUrl, buildRepoListFilter());
-        const repos: RepoMetadata[] = events
+        const allRepos = newestFirst(events)
           .map((e) => parseRepoAnnouncement(e))
           .filter((r): r is RepoMetadata => r !== null);
+        // Deduplicate NIP-33 replaceable events: keep only the newest per repoId
+        const seen = new Set<string>();
+        const repos: RepoMetadata[] = allRepos.filter((r) => {
+          if (seen.has(r.repoId)) return false;
+          seen.add(r.repoId);
+          return true;
+        });
 
         // Enrich with profile data (best-effort)
         await enrichProfiles(repos, relayUrl);
@@ -1352,6 +1479,9 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
       );
       break;
   }
+
+  // Bail out if a newer navigation started while we were fetching
+  if (thisGeneration !== renderGeneration) return;
 
   app.innerHTML = content; // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method
 }

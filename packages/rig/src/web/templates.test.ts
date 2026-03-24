@@ -1508,7 +1508,7 @@ describe('Templates - Story 8.2: Tree View Rendering', () => {
     expect(result.html).toContain('web');
   });
 
-  it('[P1] displays mode values for each tree entry (AC #11)', () => {
+  it('[P1] renders SVG icons for tree entries instead of raw mode values (AC #11)', () => {
     const entries: TreeEntry[] = [
       createMockTreeEntry({ mode: '100644', name: 'file.ts' }),
       createMockTreeEntry({ mode: '40000', name: 'dir' }),
@@ -1523,10 +1523,11 @@ describe('Templates - Story 8.2: Tree View Rendering', () => {
       'npub1test'
     );
 
-    expect(result.html).toContain('100644');
-    expect(result.html).toContain('40000');
-    expect(result.html).toContain('100755');
-    expect(result.html).toContain('tree-entry-mode');
+    // SVG icons should be present instead of raw mode values
+    expect(result.html).toContain('tree-icon');
+    expect(result.html).toContain('<svg');
+    // Mode values should NOT be visible as text in the UI
+    expect(result.html).not.toContain('tree-entry-mode');
   });
 
   it('[P1] renders different icons for directories, files, symlinks, and submodules (AC #11)', () => {

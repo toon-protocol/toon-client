@@ -23,6 +23,16 @@ import type { DiffHunk } from './unified-diff.js';
 import type { BlameResult } from './blame.js';
 import { renderMarkdownSafe } from './markdown-safe.js';
 
+/**
+ * Build the base URL path for a repository.
+ * Uses short form `/<repo>` when owner is empty, full form `/<owner>/<repo>` otherwise.
+ */
+function repoBasePath(owner: string, repo: string): string {
+  const encodedRepo = encodeURIComponent(repo);
+  if (!owner) return `/${encodedRepo}`;
+  return `/${encodeURIComponent(owner)}/${encodedRepo}`;
+}
+
 export interface TemplateResult {
   status: number;
   html: string;
@@ -67,9 +77,7 @@ export function renderRepoList(
           ? cache.getDisplayName(ownerPubkey)
           : ownerNpub.slice(0, 13) + '...' + ownerNpub.slice(-4)
       );
-      const repoHref = escapeHtml(
-        `/${encodeURIComponent(ownerNpub)}/${encodeURIComponent(r.repoId)}/`
-      );
+      const repoHref = escapeHtml(`${repoBasePath('', r.repoId)}/`);
 
       return `<div class="repo-card">
   <div class="repo-card-header">
@@ -85,15 +93,27 @@ export function renderRepoList(
   return `<div class="repo-list">\n${items}\n</div>`;
 }
 
+/** SVG icon for directories — clean Forgejo-style folder. */
+const SVG_FOLDER = '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#54aeff" d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>';
+
+/** SVG icon for files — clean Forgejo-style document. */
+const SVG_FILE = '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#656d76" d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011z"/></svg>';
+
+/** SVG icon for symlinks. */
+const SVG_SYMLINK = '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#656d76" d="M4.72 3.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L7.44 7 4.72 4.28a.75.75 0 0 1 0-1.06m4.25 6.56a.75.75 0 0 0 0 1.5h3.25a.75.75 0 0 0 0-1.5z"/></svg>';
+
+/** SVG icon for submodules. */
+const SVG_SUBMODULE = '<svg class="tree-icon" viewBox="0 0 16 16" width="16" height="16"><path fill="#656d76" d="M0 2.75C0 1.784.784 1 1.75 1H5c.55 0 1.07.26 1.4.7l.9 1.2a.25.25 0 0 0 .2.1h6.75c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25Zm9.42 5.08a.75.75 0 0 0 0 1.34l3 1.5a.75.75 0 0 0 .67-1.34L11.44 8.5l1.64-.82a.75.75 0 1 0-.67-1.34Z"/></svg>';
+
 /**
  * Get a display icon for a tree entry based on its mode.
- * Uses simple Unicode characters for clean rendering across platforms.
+ * Uses inline SVG for clean Forgejo-style rendering.
  */
 function getTreeEntryIcon(mode: string): string {
-  if (mode === '40000') return '&#x1F4C2;'; // open folder
-  if (mode === '120000') return '&#x1F517;'; // symlink
-  if (mode === '160000') return '&#x1F4E6;'; // submodule
-  return '&#x1F4C4;'; // file
+  if (mode === '40000') return SVG_FOLDER;
+  if (mode === '120000') return SVG_SYMLINK;
+  if (mode === '160000') return SVG_SUBMODULE;
+  return SVG_FILE;
 }
 
 /**
@@ -108,13 +128,14 @@ function renderBreadcrumbs(
   const escapedRepo = escapeHtml(repoName);
   const encodedOwner = encodeURIComponent(ownerNpub);
   const encodedRepo = encodeURIComponent(repoName);
+  const base = repoBasePath(ownerNpub, repoName);
   const escapedRef = escapeHtml(ref);
 
   const crumbs: string[] = [];
 
   // Root repo link
   crumbs.push(
-    `<a href="/${encodedOwner}/${encodedRepo}/tree/${encodeURIComponent(ref)}/" class="breadcrumb-link">${escapedRepo}</a>`
+    `<a href="${base}/tree/${encodeURIComponent(ref)}/" class="breadcrumb-link">${escapedRepo}</a>`
   );
 
   if (path) {
@@ -126,7 +147,7 @@ function renderBreadcrumbs(
         .map((s) => encodeURIComponent(s))
         .join('/');
       const escapedSegment = escapeHtml(segment);
-      const href = `/${encodedOwner}/${encodedRepo}/tree/${encodeURIComponent(ref)}/${encodedPartialPath}`;
+      const href = `${base}/tree/${encodeURIComponent(ref)}/${encodedPartialPath}`;
       crumbs.push(
         `<a href="${escapeHtml(href)}" class="breadcrumb-link">${escapedSegment}</a>`
       );
@@ -135,11 +156,33 @@ function renderBreadcrumbs(
 
   // Commits link next to ref badge
   const commitsHref = escapeHtml(
-    `/${encodedOwner}/${encodedRepo}/commits/${encodeURIComponent(ref)}`
+    `${base}/commits/${encodeURIComponent(ref)}`
   );
   const commitsLink = `<a href="${commitsHref}" class="breadcrumb-commits-link">Commits</a>`;
 
   return `<nav class="breadcrumbs"><span class="breadcrumb-ref">${escapedRef}</span> ${crumbs.join(' / ')} ${commitsLink}</nav>`;
+}
+
+/** HEAD commit info for the tree header row. */
+export interface HeadCommitInfo {
+  sha: string;
+  message: string;
+  authorName: string;
+  relativeDate: string;
+}
+
+/** Options for tree view rendering enhancements. */
+export interface TreeViewOptions {
+  /** All branch/tag refs for the branch selector dropdown */
+  allRefs?: Map<string, string>;
+  /** Clone URLs from repo announcement */
+  cloneUrls?: string[];
+  /** Rendered README HTML (already safe-escaped) to show below the tree */
+  readmeHtml?: string;
+  /** README filename for display */
+  readmeFilename?: string;
+  /** HEAD commit info for the commit header row above the tree */
+  headCommit?: HeadCommitInfo;
 }
 
 /**
@@ -150,13 +193,15 @@ function renderBreadcrumbs(
  * @param path - Current path within the tree
  * @param treeEntries - Parsed tree entries, or null for 404
  * @param ownerNpub - Owner's npub for constructing links
+ * @param options - Optional enhancements (branch selector, clone URL, README)
  */
 export function renderTreeView(
   repoName: string,
   ref: string,
   path: string,
   treeEntries: TreeEntry[] | null,
-  ownerNpub?: string
+  ownerNpub?: string,
+  options?: TreeViewOptions
 ): TemplateResult {
   if (treeEntries === null) {
     return {
@@ -179,6 +224,7 @@ export function renderTreeView(
 
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repoName);
+  const base = repoBasePath(owner, repoName);
   const encodedRef = encodeURIComponent(ref);
   const basePath = path ? `${path}/` : '';
 
@@ -197,27 +243,111 @@ export function renderTreeView(
         : '';
       const entryPath = `${encodedBasePath}${encodeURIComponent(entry.name)}`;
       const href = escapeHtml(
-        `/${encodedOwner}/${encodedRepo}/${routeType}/${encodedRef}/${entryPath}`
+        `${base}/${routeType}/${encodedRef}/${entryPath}`
       );
-      const modeDisplay = escapeHtml(entry.mode);
+      // Per-row commit message and date (from HEAD commit — per-file history requires expensive Arweave walks)
+      const hc = options?.headCommit;
+      let commitMsgCell = '<td class="tree-entry-message"></td>';
+      let commitDateCell = '<td class="tree-entry-date"></td>';
+      if (hc) {
+        const firstLine = hc.message.split('\n')[0] ?? '';
+        const truncMsg = firstLine.length > 50 ? firstLine.slice(0, 50) + '...' : firstLine;
+        const commitHref = escapeHtml(
+          `${base}/commit/${encodeURIComponent(hc.sha)}`
+        );
+        commitMsgCell = `<td class="tree-entry-message"><a href="${commitHref}">${escapeHtml(truncMsg)}</a></td>`;
+        commitDateCell = `<td class="tree-entry-date">${escapeHtml(hc.relativeDate)}</td>`;
+      }
 
       return `<tr class="tree-entry">
   <td class="tree-entry-icon">${icon}</td>
   <td class="tree-entry-name"><a href="${href}">${escapedName}</a></td>
-  <td class="tree-entry-mode">${modeDisplay}</td>
+  ${commitMsgCell}
+  ${commitDateCell}
 </tr>`;
     })
     .join('\n');
 
+  // Branch selector dropdown
+  let branchSelectorHtml = '';
+  if (options?.allRefs && options.allRefs.size > 0) {
+    const branchOptions = [...options.allRefs.keys()]
+      .sort()
+      .map((refName) => {
+        const shortName = refName.replace(/^refs\/heads\//, '');
+        const selected = refName === ref || shortName === ref ? ' selected' : '';
+        const encodedRefName = encodeURIComponent(refName);
+        return `<option value="${base}/tree/${encodedRefName}/"${selected}>${escapeHtml(shortName)}</option>`;
+      })
+      .join('\n');
+    branchSelectorHtml = `<div class="branch-selector">
+  <select class="branch-select" data-branch-nav="true">
+    ${branchOptions}
+  </select>
+</div>`;
+  }
+
+  // Clone URL bar (Forgejo-style: protocol label + URL + Copy button)
+  let cloneBarHtml = '';
+  if (options?.cloneUrls && options.cloneUrls.length > 0 && !path) {
+    const cloneUrl = options.cloneUrls[0]!;
+    const isNostr = /^wss?:\/\//i.test(cloneUrl);
+    const protocolLabel = isNostr ? 'Nostr' : 'HTTPS';
+    const escapedUrl = escapeHtml(cloneUrl);
+    cloneBarHtml = `<div class="clone-bar">
+  <span class="clone-protocol">${protocolLabel}</span>
+  <input class="clone-url" type="text" value="${escapedUrl}" readonly data-clone-url="true" />
+  <button class="clone-copy-btn" data-copy-url="true" title="Copy URL">
+    <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25ZM5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
+  </button>
+</div>`;
+  }
+
+  // README section
+  let readmeHtml = '';
+  if (options?.readmeHtml) {
+    const readmeTitle = escapeHtml(options.readmeFilename ?? 'README.md');
+    readmeHtml = `<div class="readme-container">
+  <div class="readme-header">&#x1F4D6; ${readmeTitle}</div>
+  <div class="readme-body">${options.readmeHtml}</div>
+</div>`;
+  }
+
+  // HEAD commit header row (like Forgejo's "last commit" bar above tree)
+  let commitHeaderHtml = '';
+  if (options?.headCommit) {
+    const hc = options.headCommit;
+    const abbrevSha = escapeHtml(hc.sha.slice(0, 7));
+    const commitHref = escapeHtml(
+      `${base}/commit/${encodeURIComponent(hc.sha)}`
+    );
+    const firstLine = hc.message.split('\n')[0] ?? '';
+    const truncMsg = firstLine.length > 72 ? firstLine.slice(0, 72) + '...' : firstLine;
+    const escapedMsg = escapeHtml(truncMsg);
+    const escapedAuthor = escapeHtml(hc.authorName);
+    const escapedDate = escapeHtml(hc.relativeDate);
+    commitHeaderHtml = `<div class="tree-commit-header">
+  <span class="tree-commit-author">${escapedAuthor}</span>
+  <a href="${commitHref}" class="tree-commit-message">${escapedMsg}</a>
+  <span class="tree-commit-meta">
+    <a href="${commitHref}" class="tree-commit-sha">${abbrevSha}</a>
+    <span class="tree-commit-date">${escapedDate}</span>
+  </span>
+</div>`;
+  }
+
   const html = `${tabs}
+<div class="tree-toolbar">${branchSelectorHtml}${cloneBarHtml}</div>
 ${breadcrumbs}
 <div class="tree-view">
+${commitHeaderHtml}
 <table class="tree-table">
 <tbody>
 ${rows}
 </tbody>
 </table>
-</div>`;
+</div>
+${readmeHtml}`;
 
   return { status: 200, html };
 }
@@ -250,6 +380,7 @@ export function renderBlobView(
   }
 
   const owner = ownerNpub ?? '';
+  const base = repoBasePath(owner, repoName);
   const tabs = renderRepoTabs(owner, repoName, 'code', ref);
   const breadcrumbs = renderBreadcrumbs(owner, repoName, ref, path);
 
@@ -283,7 +414,7 @@ ${breadcrumbs}
       .map((s) => encodeURIComponent(s))
       .join('/');
     const blameHref = escapeHtml(
-      `/${encodedOwner}/${encodedRepo}/blame/${encodedRef}/${encodedPath}`
+      `${base}/blame/${encodedRef}/${encodedPath}`
     );
     return ` <a href="${blameHref}" class="blob-blame-link">Blame</a>`;
   })();
@@ -328,12 +459,13 @@ function renderCommitBreadcrumbs(
   const escapedRepo = escapeHtml(repoName);
   const encodedOwner = encodeURIComponent(ownerNpub);
   const encodedRepo = encodeURIComponent(repoName);
+  const base = repoBasePath(ownerNpub, repoName);
 
   const treeRef = ref ? encodeURIComponent(ref) : 'main';
   const crumbs: string[] = [];
 
   crumbs.push(
-    `<a href="/${encodedOwner}/${encodedRepo}/tree/${treeRef}/" class="breadcrumb-link">${escapedRepo}</a>`
+    `<a href="${base}/tree/${treeRef}/" class="breadcrumb-link">${escapedRepo}</a>`
   );
 
   if (activeLabel) {
@@ -377,13 +509,14 @@ ${breadcrumbs}<div class="empty-state"><div class="empty-state-title">No commits
 
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repoName);
+  const base = repoBasePath(owner, repoName);
 
   const rows = commits
     .map((entry) => {
       const abbrevSha = escapeHtml(entry.sha.slice(0, 7));
       const fullSha = escapeHtml(entry.sha);
       const commitHref = escapeHtml(
-        `/${encodedOwner}/${encodedRepo}/commit/${encodeURIComponent(entry.sha)}`
+        `${base}/commit/${encodeURIComponent(entry.sha)}`
       );
 
       // First line of message, truncated to 72 chars
@@ -448,6 +581,7 @@ export function renderCommitDiff(
   }
 
   const owner = ownerNpub ?? '';
+  const base = repoBasePath(owner, repoName);
   const tabs = renderRepoTabs(owner, repoName, 'code');
   const breadcrumbs = renderCommitBreadcrumbs(
     owner,
@@ -475,7 +609,7 @@ export function renderCommitDiff(
             const encodedOwner = encodeURIComponent(owner);
             const encodedRepo = encodeURIComponent(repoName);
             const href = escapeHtml(
-              `/${encodedOwner}/${encodedRepo}/commit/${encodeURIComponent(p)}`
+              `${base}/commit/${encodeURIComponent(p)}`
             );
             return `<a href="${href}" class="commit-parent-link">${escapeHtml(p.slice(0, 7))}</a>`;
           })
@@ -605,6 +739,7 @@ export function renderBlameView(
   const breadcrumbs = renderBreadcrumbs(owner, repoName, ref, path);
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repoName);
+  const base = repoBasePath(owner, repoName);
 
   // Build blame table rows with grouping
   const rows: string[] = [];
@@ -621,7 +756,7 @@ export function renderBlameView(
     if (isNewGroup) {
       const abbrevSha = escapeHtml(line.commitSha.slice(0, 7));
       const commitHref = escapeHtml(
-        `/${encodedOwner}/${encodedRepo}/commit/${encodeURIComponent(line.commitSha)}`
+        `${base}/commit/${encodeURIComponent(line.commitSha)}`
       );
       const ident = parseAuthorIdent(line.author);
       const authorName = escapeHtml(ident?.name ?? 'Unknown');
@@ -687,14 +822,15 @@ export function renderRepoTabs(
 ): string {
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repo);
+  const base = repoBasePath(owner, repo);
 
   const codeHref = ref
     ? escapeHtml(
-        `/${encodedOwner}/${encodedRepo}/tree/${encodeURIComponent(ref)}/`
+        `${base}/tree/${encodeURIComponent(ref)}/`
       )
-    : escapeHtml(`/${encodedOwner}/${encodedRepo}/`);
-  const issuesHref = escapeHtml(`/${encodedOwner}/${encodedRepo}/issues`);
-  const pullsHref = escapeHtml(`/${encodedOwner}/${encodedRepo}/pulls`);
+    : escapeHtml(`${base}/`);
+  const issuesHref = escapeHtml(`${base}/issues`);
+  const pullsHref = escapeHtml(`${base}/pulls`);
 
   const codeActive = activeTab === 'code' ? ' tab-active' : '';
   const issuesActive = activeTab === 'issues' ? ' tab-active' : '';
@@ -728,6 +864,7 @@ export function renderIssueList(
   ownerNpub?: string
 ): TemplateResult {
   const owner = ownerNpub ?? '';
+  const base = repoBasePath(owner, repoName);
   const tabs = renderRepoTabs(owner, repoName, 'issues');
   const banner = renderContributionBanner();
 
@@ -754,7 +891,7 @@ ${banner}
       const encodedOwner = encodeURIComponent(owner);
       const encodedRepo = encodeURIComponent(repoName);
       const detailHref = escapeHtml(
-        `/${encodedOwner}/${encodedRepo}/issues/${encodeURIComponent(issue.eventId)}`
+        `${base}/issues/${encodeURIComponent(issue.eventId)}`
       );
 
       const labelBadges = issue.labels
@@ -862,6 +999,7 @@ export function renderPRList(
   ownerNpub?: string
 ): TemplateResult {
   const owner = ownerNpub ?? '';
+  const base = repoBasePath(owner, repoName);
   const tabs = renderRepoTabs(owner, repoName, 'pulls');
   const banner = renderContributionBanner();
 
@@ -888,7 +1026,7 @@ ${banner}
       const encodedOwner = encodeURIComponent(owner);
       const encodedRepo = encodeURIComponent(repoName);
       const detailHref = escapeHtml(
-        `/${encodedOwner}/${encodedRepo}/pulls/${encodeURIComponent(pr.eventId)}`
+        `${base}/pulls/${encodeURIComponent(pr.eventId)}`
       );
 
       return `<div class="pr-row">
@@ -939,12 +1077,13 @@ export function renderPRDetail(
 
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repoName);
+  const base = repoBasePath(owner, repoName);
 
   const commitLinks = pr.commitShas
     .map((sha) => {
       const abbrev = escapeHtml(sha.slice(0, 7));
       const commitHref = escapeHtml(
-        `/${encodedOwner}/${encodedRepo}/commit/${encodeURIComponent(sha)}`
+        `${base}/commit/${encodeURIComponent(sha)}`
       );
       return `<a href="${commitHref}" class="commit-sha">${abbrev}</a>`;
     })

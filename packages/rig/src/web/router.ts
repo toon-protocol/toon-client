@@ -46,21 +46,50 @@ export function isValidRelayUrl(url: string): boolean {
 }
 
 /**
- * Extract relay URL from URL search query parameters.
+ * Resolve the relay URL from (in priority order):
+ * 1. URL hash fragment: `#relay=wss://...` (works on Arweave gateways, shareable)
+ * 2. `?relay=` query parameter (legacy/convenience, migrated to hash)
+ * 3. Default relay URL
  *
- * Only accepts URLs with WebSocket protocol schemes to prevent
- * SSRF, open redirect, and protocol confusion attacks.
+ * The hash fragment is used because:
+ * - It's part of the URL (shareable, bookmarkable)
+ * - It works identically across Arweave gateways (ar-io.dev, arweave.net, etc.)
+ * - It's not sent to the server (no CORS/privacy concerns)
+ * - localStorage doesn't persist across different gateway domains
  *
- * @param search - The URL search string (e.g., "?relay=wss%3A%2F%2Fexample.com")
- * @returns The relay URL, or the default if not specified or invalid
+ * Example URLs:
+ *   https://ar-io.dev/<txId>/#relay=wss://relay.toon-protocol.org
+ *   http://localhost:5173/#relay=ws://localhost:19700
+ *   http://localhost:5173/toon-protocol/#relay=ws://localhost:19700
  */
 export function parseRelayUrl(search: string): string {
+  // 1. Check hash fragment: #relay=wss://...
+  if (typeof window !== 'undefined' && window.location.hash) {
+    const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    const hashRelay = hashParams.get('relay');
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+    if (hashRelay && isValidRelayUrl(hashRelay)) {
+      return hashRelay;
+    }
+  }
+
+  // 2. Check ?relay= query param (legacy/convenience — migrate to hash)
   const params = new URLSearchParams(search);
   const relay = params.get('relay');
+
   // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   if (relay && isValidRelayUrl(relay)) {
+    // Migrate from ?relay= to #relay= for clean URLs
+    if (typeof window !== 'undefined') {
+      params.delete('relay');
+      const cleanSearch = params.toString();
+      const cleanPath = window.location.pathname + (cleanSearch ? `?${cleanSearch}` : '');
+      const newHash = `#relay=${encodeURIComponent(relay)}`;
+      window.history.replaceState(null, '', cleanPath + newHash);
+    }
     return relay;
   }
+
   return DEFAULT_RELAY_URL;
 }
 
@@ -89,68 +118,81 @@ export function parseRoute(pathname: string): Route {
 
   const segments = path.split('/').filter(Boolean);
 
-  if (segments.length >= 2) {
-    const owner = segments[0]!;
-    const repo = segments[1]!;
+  // /<repo>/ — short form: repo-id only, owner resolved at render time
+  // /<repo>/tree/<ref>/<path...>, /<repo>/issues, etc.
+  if (segments.length >= 1) {
+    const firstSeg = segments[0]!;
 
-    // /<npub>/<repo>/tree/<ref>/<path...>
-    if (segments.length >= 4 && segments[2] === 'tree' && segments[3]) {
-      const ref = safeDecodeURIComponent(segments[3]);
-      const treePath = segments.length > 4 ? segments.slice(4).join('/') : '';
+    // Determine if this is /<owner>/<repo>/... (2+ segments, first looks like npub/hex)
+    // or /<repo>/... (1+ segments, first is the repo id)
+    const looksLikeOwner =
+      segments.length >= 2 &&
+      (firstSeg.startsWith('npub1') || /^[0-9a-f]{64}$/i.test(firstSeg));
+
+    const owner = looksLikeOwner ? firstSeg : '';
+    const repo = looksLikeOwner ? segments[1]! : firstSeg;
+    const routeSegments = looksLikeOwner ? segments.slice(2) : segments.slice(1);
+
+    // /<repo>/tree/<ref>/<path...>
+    if (routeSegments.length >= 2 && routeSegments[0] === 'tree' && routeSegments[1]) {
+      const ref = safeDecodeURIComponent(routeSegments[1]);
+      const treePath = routeSegments.length > 2 ? routeSegments.slice(2).join('/') : '';
       return { type: 'tree', owner, repo, ref, path: treePath };
     }
 
-    // /<npub>/<repo>/blob/<ref>/<path...>
-    if (segments.length >= 4 && segments[2] === 'blob' && segments[3]) {
-      const ref = safeDecodeURIComponent(segments[3]);
-      const blobPath = segments.length > 4 ? segments.slice(4).join('/') : '';
+    // /<repo>/blob/<ref>/<path...>
+    if (routeSegments.length >= 2 && routeSegments[0] === 'blob' && routeSegments[1]) {
+      const ref = safeDecodeURIComponent(routeSegments[1]);
+      const blobPath = routeSegments.length > 2 ? routeSegments.slice(2).join('/') : '';
       return { type: 'blob', owner, repo, ref, path: blobPath };
     }
 
-    // /<npub>/<repo>/commits/<ref> — commit log (MUST be before 'commit' singular)
-    if (segments.length >= 4 && segments[2] === 'commits' && segments[3]) {
+    // /<repo>/commits/<ref>
+    if (routeSegments.length >= 2 && routeSegments[0] === 'commits' && routeSegments[1]) {
       return {
         type: 'commits',
         owner,
         repo,
-        ref: safeDecodeURIComponent(segments[3]),
+        ref: safeDecodeURIComponent(routeSegments[1]),
       };
     }
 
-    // /<npub>/<repo>/commit/<sha>
-    if (segments.length >= 4 && segments[2] === 'commit' && segments[3]) {
-      return { type: 'commit', owner, repo, sha: segments[3] };
+    // /<repo>/commit/<sha>
+    if (routeSegments.length >= 2 && routeSegments[0] === 'commit' && routeSegments[1]) {
+      return { type: 'commit', owner, repo, sha: routeSegments[1] };
     }
 
-    // /<npub>/<repo>/blame/<ref>/<path...>
-    if (segments.length >= 5 && segments[2] === 'blame' && segments[3]) {
-      const ref = safeDecodeURIComponent(segments[3]);
-      const blamePath = segments.slice(4).join('/');
+    // /<repo>/blame/<ref>/<path...>
+    if (routeSegments.length >= 3 && routeSegments[0] === 'blame' && routeSegments[1]) {
+      const ref = safeDecodeURIComponent(routeSegments[1]);
+      const blamePath = routeSegments.slice(2).join('/');
       return { type: 'blame', owner, repo, ref, path: blamePath };
     }
 
-    // /<npub>/<repo>/issues/<eventId> — issue detail (MUST be before issues list)
-    if (segments.length >= 4 && segments[2] === 'issues' && segments[3]) {
-      return { type: 'issue-detail', owner, repo, eventId: segments[3] };
+    // /<repo>/issues/<eventId>
+    if (routeSegments.length >= 2 && routeSegments[0] === 'issues' && routeSegments[1]) {
+      return { type: 'issue-detail', owner, repo, eventId: routeSegments[1] };
     }
 
-    // /<npub>/<repo>/issues — issue list
-    if (segments.length === 3 && segments[2] === 'issues') {
+    // /<repo>/issues
+    if (routeSegments.length === 1 && routeSegments[0] === 'issues') {
       return { type: 'issues', owner, repo };
     }
 
-    // /<npub>/<repo>/pulls/<eventId> — PR detail (MUST be before pulls list)
-    if (segments.length >= 4 && segments[2] === 'pulls' && segments[3]) {
-      return { type: 'pull-detail', owner, repo, eventId: segments[3] };
+    // /<repo>/pulls/<eventId>
+    if (routeSegments.length >= 2 && routeSegments[0] === 'pulls' && routeSegments[1]) {
+      return { type: 'pull-detail', owner, repo, eventId: routeSegments[1] };
     }
 
-    // /<npub>/<repo>/pulls — PR list
-    if (segments.length === 3 && segments[2] === 'pulls') {
+    // /<repo>/pulls
+    if (routeSegments.length === 1 && routeSegments[0] === 'pulls') {
       return { type: 'pulls', owner, repo };
     }
 
-    // /<npub>/<repo>/ — bare repo route, resolve default ref
-    return { type: 'tree', owner, repo, ref: '', path: '' };
+    // /<repo>/ — bare repo route, resolve default ref
+    if (routeSegments.length === 0) {
+      return { type: 'tree', owner, repo, ref: '', path: '' };
+    }
   }
 
   return { type: 'not-found' };
@@ -192,6 +234,35 @@ export function initRouter(
 
     e.preventDefault();
     navigateTo(href);
+  });
+
+  // Branch selector navigation (delegated — no inline JS needed)
+  container.addEventListener('change', (e: Event) => {
+    const target = e.target as HTMLSelectElement;
+    if (target.dataset.branchNav && target.value) {
+      navigateTo(target.value);
+    }
+  });
+
+  // Clone URL: click-to-select and copy button (delegated)
+  container.addEventListener('click', (e: Event) => {
+    const target = e.target as HTMLElement;
+
+    // Click-to-select on clone URL input
+    const input = target.closest('[data-clone-url]') as HTMLInputElement | null;
+    if (input) {
+      input.select();
+      return;
+    }
+
+    // Copy button
+    const copyBtn = target.closest('[data-copy-url]') as HTMLElement | null;
+    if (copyBtn) {
+      const urlInput = container.querySelector('[data-clone-url]') as HTMLInputElement | null;
+      if (urlInput) {
+        void navigator.clipboard.writeText(urlInput.value);
+      }
+    }
   });
 
   // Listen for popstate (back/forward)
