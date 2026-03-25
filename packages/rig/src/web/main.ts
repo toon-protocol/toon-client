@@ -129,7 +129,7 @@ async function renderTreeRoute(
   if (!repoRefs) {
     return renderLayout(
       'Forge',
-      '<div class="stub-page"><div class="stub-page-title">No refs</div><p>No branch or tag data found for this repository.</p></div>',
+      '<div class="stub-page"><div class="stub-page-title">No refs</div><p>No branches found.</p></div>',
       relayUrl
     );
   }

@@ -77,7 +77,7 @@ export function renderRepoList(
           ? cache.getDisplayName(ownerPubkey)
           : ownerNpub.slice(0, 13) + '...' + ownerNpub.slice(-4)
       );
-      const repoHref = escapeHtml(`${repoBasePath('', r.repoId)}/`);
+      const repoHref = escapeHtml(`${repoBasePath(ownerNpub, r.repoId)}/`);
 
       return `<div class="repo-card">
   <div class="repo-card-header">
