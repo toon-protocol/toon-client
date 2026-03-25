@@ -281,6 +281,7 @@ export class ToonClient {
       return {
         success: true,
         eventId: event.id,
+        data: response.data,
       };
     } catch (error) {
       throw new ToonClientError(

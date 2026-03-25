@@ -198,6 +198,9 @@ export interface PublishEventResult {
   /** ID of the published event */
   eventId?: string;
 
+  /** FULFILL response data (base64-encoded), e.g. Arweave tx ID from DVM */
+  data?: string;
+
   /** Error message if success is false */
   error?: string;
 }
