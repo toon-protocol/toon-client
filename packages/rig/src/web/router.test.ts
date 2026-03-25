@@ -96,6 +96,53 @@ describe('Router - Relay URL Configuration', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// __RIG_CONFIG__ relay resolution (pointer HTML injection)
+// ---------------------------------------------------------------------------
+
+describe('Router - __RIG_CONFIG__ relay resolution', () => {
+  beforeEach(() => {
+    window.location.hash = '';
+    delete (window as Record<string, unknown>).__RIG_CONFIG__;
+  });
+
+  afterEach(() => {
+    delete (window as Record<string, unknown>).__RIG_CONFIG__;
+  });
+
+  it('[P0] uses __RIG_CONFIG__.relay when set (highest priority)', () => {
+    (window as Record<string, unknown>).__RIG_CONFIG__ = {
+      relay: 'wss://pointer-relay.example',
+    };
+    const relayUrl = parseRelayUrl('?relay=wss://query-relay.example');
+    expect(relayUrl).toBe('wss://pointer-relay.example');
+  });
+
+  it('[P1] __RIG_CONFIG__.relay takes precedence over #relay= hash fragment', () => {
+    (window as Record<string, unknown>).__RIG_CONFIG__ = {
+      relay: 'wss://pointer-relay.example',
+    };
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+    window.location.hash = '#relay=wss://hash-relay.example';
+    const relayUrl = parseRelayUrl('');
+    expect(relayUrl).toBe('wss://pointer-relay.example');
+  });
+
+  it('[P1] ignores __RIG_CONFIG__ with invalid relay URL', () => {
+    (window as Record<string, unknown>).__RIG_CONFIG__ = {
+      relay: 'http://not-websocket.example',
+    };
+    const relayUrl = parseRelayUrl('');
+    expect(relayUrl).toBe('wss://localhost:7100');
+  });
+
+  it('[P2] falls back to hash/query/default when __RIG_CONFIG__ is undefined', () => {
+    // No __RIG_CONFIG__ set
+    const relayUrl = parseRelayUrl('');
+    expect(relayUrl).toBe('wss://localhost:7100');
+  });
+});
+
 describe('Router - isValidRelayUrl', () => {
   // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   it('accepts ws:// URLs', () => {

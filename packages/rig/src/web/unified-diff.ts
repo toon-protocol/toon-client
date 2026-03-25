@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- safe array-index accesses after bounds checks throughout */
 /**
- * Unified diff algorithm for Forge-UI.
+ * Unified diff algorithm for Rig-UI.
  *
  * Computes a unified diff between two text strings using a
  * longest-common-subsequence (LCS) approach. No external diff libraries.

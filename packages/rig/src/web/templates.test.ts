@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Tests for Forge-UI templates
+// Tests for Rig-UI templates
 //
 // Test IDs: 3.7-UNIT-001, 3.8-UNIT-001, 3.9-UNIT-001, 3.10-UNIT-001,
 //           3.11-UNIT-001, 3.11-UNIT-002
@@ -948,7 +948,7 @@ describe('Templates - Story 8.5: Contribution Banner (8.5-UNIT-008)', () => {
     const result = renderIssueList('test-repo', [], cache, 'npub1test');
 
     expect(result.html).toContain('contribution-banner');
-    expect(result.html).toContain('Forge-UI is read-only');
+    expect(result.html).toContain('Rig-UI is read-only');
     expect(result.html).toContain('NIP-34');
   });
 
@@ -956,7 +956,7 @@ describe('Templates - Story 8.5: Contribution Banner (8.5-UNIT-008)', () => {
     const result = renderPRList('test-repo', [], cache, 'npub1test');
 
     expect(result.html).toContain('contribution-banner');
-    expect(result.html).toContain('Forge-UI is read-only');
+    expect(result.html).toContain('Rig-UI is read-only');
   });
 
   it('[P1] contribution banner is present on issue detail page', () => {
@@ -1231,7 +1231,7 @@ describe('Templates - NFR: XSS in Issue/PR Comments', () => {
 });
 
 // ============================================================================
-// Story 8.1 Tests - Forge-UI Repository List
+// Story 8.1 Tests - Rig-UI Repository List
 // ============================================================================
 
 function createRepoMetadata(

@@ -1,5 +1,5 @@
 /**
- * Commit chain walker for Forge-UI.
+ * Commit chain walker for Rig-UI.
  *
  * Walks the parent chain of git commits stored on Arweave,
  * returning a linear history (first-parent only for merge commits).

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- safe DOM/array accesses after null checks */
 /**
- * Forge-UI main entry point.
+ * Rig-UI main entry point.
  *
  * Initializes the app, sets up routing, and renders the initial view.
  * This is a static SPA — no backend, no SDK dependency.
@@ -207,18 +207,18 @@ async function renderTreeRoute(
       const treeTxId = await resolveGitSha(currentTreeSha, repo);
       if (!treeTxId) {
         const result = renderTreeView(repo, resolvedRef, path, null, owner);
-        return renderLayout('Forge', result.html, relayUrl);
+        return renderLayout('Rig', result.html, relayUrl);
       }
       const treeData = await fetchArweaveObject(treeTxId);
       if (!treeData) {
         const result = renderTreeView(repo, resolvedRef, path, null, owner);
-        return renderLayout('Forge', result.html, relayUrl);
+        return renderLayout('Rig', result.html, relayUrl);
       }
       const entries = parseGitTree(treeData);
       const entry = entries.find((e) => e.name === segment);
       if (!entry || entry.mode !== '40000') {
         const result = renderTreeView(repo, resolvedRef, path, null, owner);
-        return renderLayout('Forge', result.html, relayUrl);
+        return renderLayout('Rig', result.html, relayUrl);
       }
       currentTreeSha = entry.sha;
     }
@@ -360,7 +360,7 @@ async function renderTreeRoute(
     owner,
     treeViewOptions
   );
-  return renderLayout('Forge', result.html, relayUrl);
+  return renderLayout('Rig', result.html, relayUrl);
 }
 
 /**
@@ -564,7 +564,7 @@ async function renderBlobRoute(
       blobData.length,
       owner
     );
-    return renderLayout('Forge', result.html, relayUrl);
+    return renderLayout('Rig', result.html, relayUrl);
   }
 
   const decoder = new TextDecoder('utf-8', { fatal: false });
@@ -578,7 +578,7 @@ async function renderBlobRoute(
     blobData.length,
     owner
   );
-  return renderLayout('Forge', result.html, relayUrl);
+  return renderLayout('Rig', result.html, relayUrl);
 }
 
 /**
@@ -642,7 +642,7 @@ async function renderCommitsRoute(
     const defaultRef = resolveDefaultRef(repoMeta, repoRefs);
     if (!defaultRef) {
       const result = renderCommitLog(repo, ref, [], owner);
-      return renderLayout('Forge', result.html, relayUrl);
+      return renderLayout('Rig', result.html, relayUrl);
     }
     resolvedRef = defaultRef.refName;
     commitSha = defaultRef.commitSha;
@@ -652,13 +652,13 @@ async function renderCommitsRoute(
 
   if (!commitSha) {
     const result = renderCommitLog(repo, resolvedRef, [], owner);
-    return renderLayout('Forge', result.html, relayUrl);
+    return renderLayout('Rig', result.html, relayUrl);
   }
 
   // 4. Walk commit chain
   const commits = await walkCommitChain(commitSha, repo);
   const result = renderCommitLog(repo, resolvedRef, commits, owner);
-  return renderLayout('Forge', result.html, relayUrl);
+  return renderLayout('Rig', result.html, relayUrl);
 }
 
 /**
@@ -702,19 +702,19 @@ async function renderCommitRoute(
   const commitTxId = await resolveGitSha(sha, repo);
   if (!commitTxId) {
     const result = renderCommitDiff(repo, sha, null);
-    return renderLayout('Forge', result.html, relayUrl);
+    return renderLayout('Rig', result.html, relayUrl);
   }
 
   const commitData = await fetchArweaveObject(commitTxId);
   if (!commitData) {
     const result = renderCommitDiff(repo, sha, null);
-    return renderLayout('Forge', result.html, relayUrl);
+    return renderLayout('Rig', result.html, relayUrl);
   }
 
   const commit = parseGitCommit(commitData);
   if (!commit) {
     const result = renderCommitDiff(repo, sha, null);
-    return renderLayout('Forge', result.html, relayUrl);
+    return renderLayout('Rig', result.html, relayUrl);
   }
 
   // 2. Fetch current commit's tree
@@ -847,7 +847,7 @@ async function renderCommitRoute(
     fileDiffs,
     owner
   );
-  return renderLayout('Forge', result.html, relayUrl);
+  return renderLayout('Rig', result.html, relayUrl);
 }
 
 /**
@@ -889,7 +889,7 @@ async function renderBlameRoute(
 
   if (!repoRefs) {
     const result = renderBlameView(repo, ref, path, null);
-    return renderLayout('Forge', result.html, relayUrl);
+    return renderLayout('Rig', result.html, relayUrl);
   }
 
   // Seed Arweave SHA→txId cache from relay data
@@ -909,7 +909,7 @@ async function renderBlameRoute(
     const defaultRef = resolveDefaultRef(repoMeta, repoRefs);
     if (!defaultRef) {
       const result = renderBlameView(repo, ref, path, null);
-      return renderLayout('Forge', result.html, relayUrl);
+      return renderLayout('Rig', result.html, relayUrl);
     }
     resolvedRef = defaultRef.refName;
     commitSha = defaultRef.commitSha;
@@ -919,7 +919,7 @@ async function renderBlameRoute(
 
   if (!commitSha) {
     const result = renderBlameView(repo, resolvedRef, path, null);
-    return renderLayout('Forge', result.html, relayUrl);
+    return renderLayout('Rig', result.html, relayUrl);
   }
 
   // 4. Compute blame
@@ -936,7 +936,7 @@ async function renderBlameRoute(
       isBinary,
       owner
     );
-    return renderLayout('Forge', result.html, relayUrl);
+    return renderLayout('Rig', result.html, relayUrl);
   }
 
   const result = renderBlameView(
@@ -947,7 +947,7 @@ async function renderBlameRoute(
     false,
     owner
   );
-  return renderLayout('Forge', result.html, relayUrl);
+  return renderLayout('Rig', result.html, relayUrl);
 }
 
 /**
@@ -1066,7 +1066,7 @@ async function renderIssuesRoute(
   await enrichProfilesForPubkeys(pubkeys, relayUrl);
 
   const result = renderIssueList(repo, issues, profileCache, owner);
-  return renderLayout('Forge', result.html, relayUrl);
+  return renderLayout('Rig', result.html, relayUrl);
 }
 
 /**
@@ -1125,7 +1125,7 @@ async function renderIssueDetailRoute(
   await enrichProfilesForPubkeys(pubkeys, relayUrl);
 
   const result = renderIssueDetail(repo, issue, comments, profileCache, owner);
-  return renderLayout('Forge', result.html, relayUrl);
+  return renderLayout('Rig', result.html, relayUrl);
 }
 
 /**
@@ -1172,7 +1172,7 @@ async function renderPullsRoute(
   await enrichProfilesForPubkeys(pubkeys, relayUrl);
 
   const result = renderPRList(repo, prs, profileCache, owner);
-  return renderLayout('Forge', result.html, relayUrl);
+  return renderLayout('Rig', result.html, relayUrl);
 }
 
 /**
@@ -1223,7 +1223,7 @@ async function renderPullDetailRoute(
   await enrichProfilesForPubkeys(pubkeys, relayUrl);
 
   const result = renderPRDetail(repo, pr, comments, profileCache, owner);
-  return renderLayout('Forge', result.html, relayUrl);
+  return renderLayout('Rig', result.html, relayUrl);
 }
 
 /**
@@ -1268,7 +1268,7 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
         await enrichProfiles(repos, relayUrl);
 
         const repoListHtml = renderRepoList(repos, profileCache);
-        content = renderLayout('Forge', repoListHtml, relayUrl);
+        content = renderLayout('Rig', repoListHtml, relayUrl);
       } catch {
         content = renderLayout(
           'Forge',
@@ -1504,7 +1504,7 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
 }
 
 /**
- * Initialize the Forge-UI application.
+ * Initialize the Rig-UI application.
  */
 function init(): void {
   const relayUrl = parseRelayUrl(window.location.search);
@@ -1516,8 +1516,14 @@ function init(): void {
     void renderRoute(route, relayUrl);
   });
 
-  // Render initial route
-  const initialRoute = parseRoute(window.location.pathname);
+  // Render initial route — deep-link to repo if __RIG_CONFIG__ specifies one
+  let initialRoute = parseRoute(window.location.pathname);
+  if (initialRoute.type === 'repo-list' && window.__RIG_CONFIG__?.repo) {
+    const owner = window.__RIG_CONFIG__.owner ?? '';
+    const repo = window.__RIG_CONFIG__.repo;
+    const deepPath = owner ? `/${owner}/${repo}/` : `/${repo}/`;
+    initialRoute = parseRoute(deepPath);
+  }
   void renderRoute(initialRoute, relayUrl);
 }
 

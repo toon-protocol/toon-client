@@ -1,5 +1,5 @@
 /**
- * NIP-34 event parsers for Forge-UI.
+ * NIP-34 event parsers for Rig-UI.
  *
  * Parses kind:30617 repository announcement events into RepoMetadata,
  * kind:1621 issue events into IssueMetadata, kind:1617 patch events

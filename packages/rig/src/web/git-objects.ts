@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- safe array-index accesses in binary parsing */
 /**
- * Browser-compatible git object parsers for Forge-UI.
+ * Browser-compatible git object parsers for Rig-UI.
  *
  * Parses git tree, commit, and blob objects from raw bytes (Uint8Array).
  * Does NOT use Node.js Buffer — uses Uint8Array, TextDecoder, and manual

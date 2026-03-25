@@ -130,7 +130,7 @@ export function queryRelay(
 ): Promise<NostrEvent[]> {
   return new Promise((resolve, reject) => {
     const events: NostrEvent[] = [];
-    const subId = `forge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const subId = `rig-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     let ws: WebSocket;
     // eslint-disable-next-line prefer-const -- reassigned in setTimeout below
     let timeoutHandle: ReturnType<typeof setTimeout>;

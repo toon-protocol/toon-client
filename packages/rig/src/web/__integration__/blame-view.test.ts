@@ -261,7 +261,7 @@ describe('Integration: Blame View', () => {
       'npub1owner'
     );
     const fullHtml = renderLayout(
-      'Forge',
+      'Rig',
       viewResult.html,
       'wss://localhost:7100'
     );
@@ -286,9 +286,9 @@ describe('Integration: Blame View', () => {
 
   it('[P1] loading state renders "Loading blame..." message inside layout (AC #15)', () => {
     // Simulate what main.ts does before the async blame call:
-    // renderLayout('Forge', '<div class="loading">Loading blame...</div>', relayUrl)
+    // renderLayout('Rig', '<div class="loading">Loading blame...</div>', relayUrl)
     const loadingHtml = renderLayout(
-      'Forge',
+      'Rig',
       '<div class="loading">Loading blame...</div>',
       'wss://localhost:7100'
     );
@@ -306,7 +306,7 @@ describe('Integration: Blame View', () => {
   it('[P1] error state renders user-friendly error message inside layout (AC #16)', () => {
     // Simulate what main.ts does on catch:
     const errorHtml = renderLayout(
-      'Forge',
+      'Rig',
       '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load blame view.</div></div>',
       'wss://localhost:7100'
     );

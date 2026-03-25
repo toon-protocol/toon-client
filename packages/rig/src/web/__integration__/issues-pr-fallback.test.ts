@@ -21,7 +21,7 @@ describe('Integration: Issues/PR Fallback', () => {
   it('[P1] relay timeout displays graceful degradation message (8.5-INT-003)', () => {
     // Simulate the error state that renderRoute would produce on relay timeout
     const errorHtml = renderLayout(
-      'Forge',
+      'Rig',
       '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load issues.</div></div>',
       'wss://localhost:7100'
     );
@@ -35,7 +35,7 @@ describe('Integration: Issues/PR Fallback', () => {
 
   it('[P1] PR relay timeout displays graceful degradation message', () => {
     const errorHtml = renderLayout(
-      'Forge',
+      'Rig',
       '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load pull requests.</div></div>',
       'wss://localhost:7100'
     );

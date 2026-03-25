@@ -1,5 +1,5 @@
 /**
- * Shared layout for Forge-UI.
+ * Shared layout for Rig-UI.
  *
  * Provides the page shell: navigation header, content area, and footer.
  */
@@ -33,6 +33,6 @@ export function renderLayout(
   ${content}
 </main>
 <footer class="layout-footer">
-  Forge &mdash; Decentralized Git on Nostr &amp; TOON Protocol
+  Rig &mdash; Decentralized Git on Nostr &amp; TOON Protocol
 </footer>`;
 }

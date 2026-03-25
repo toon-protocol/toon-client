@@ -1,5 +1,5 @@
 /**
- * Markdown renderer for Forge-UI README display.
+ * Markdown renderer for Rig-UI README display.
  *
  * Uses `marked` for full GitHub Flavored Markdown rendering, with a
  * post-processing sanitizer that strips dangerous HTML (script, style,

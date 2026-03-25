@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- safe array-index accesses in blame algorithm */
 /**
- * Blame algorithm for Forge-UI.
+ * Blame algorithm for Rig-UI.
  *
  * Walks the commit history on Arweave to attribute each line of a file
  * to the commit that last modified it. Simplified blame (not full Myers diff).

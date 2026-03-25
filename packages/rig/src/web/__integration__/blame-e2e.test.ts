@@ -356,11 +356,7 @@ describe('E2E: Story 8.4 — Blame View', () => {
       );
 
       // 6. Embed in layout and render into DOM
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       // 7. Assert: blame table is rendered
@@ -562,11 +558,7 @@ describe('E2E: Story 8.4 — Blame View', () => {
         'npub1test'
       );
 
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       // Assert: depth limit notice is shown
@@ -698,11 +690,7 @@ describe('E2E: Story 8.4 — Blame View', () => {
         'npub1test'
       );
 
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       // No script or img-onerror tags should be rendered as live DOM elements
@@ -767,7 +755,7 @@ describe('E2E: Story 8.4 — Blame View', () => {
     it('[P1] Arweave failure produces user-friendly error message in layout', () => {
       // Simulate what main.ts does on catch:
       const errorHtml = renderLayout(
-        'Forge',
+        'Rig',
         '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load blame view.</div></div>',
         'wss://localhost:7100'
       );
@@ -782,7 +770,7 @@ describe('E2E: Story 8.4 — Blame View', () => {
 
     it('[P1] loading state renders "Loading blame..." message', () => {
       const loadingHtml = renderLayout(
-        'Forge',
+        'Rig',
         '<div class="loading">Loading blame...</div>',
         'wss://localhost:7100'
       );

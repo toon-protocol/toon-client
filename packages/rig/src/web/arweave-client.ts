@@ -1,5 +1,5 @@
 /**
- * Arweave gateway client for Forge-UI.
+ * Arweave gateway client for Rig-UI.
  *
  * Fetches git objects from Arweave gateways and resolves git SHAs
  * to Arweave transaction IDs via GraphQL.

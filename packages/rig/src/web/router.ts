@@ -1,5 +1,5 @@
 /**
- * Minimal client-side router for Forge-UI.
+ * Minimal client-side router for Rig-UI.
  *
  * Uses History API for clean URLs. Routes:
  * - `/` — repository list
@@ -32,7 +32,7 @@ export type Route =
   | { type: 'not-found' };
 
 // Build-time configurable via VITE_DEFAULT_RELAY env var (e.g., for Arweave deployments).
-// Priority: (1) #relay= hash fragment, (2) ?relay= query param, (3) this default.
+// Priority: (0) window.__RIG_CONFIG__.relay, (1) #relay= hash fragment, (2) ?relay= query param, (3) this default.
 // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
 const DEFAULT_RELAY_URL: string =
   import.meta.env.VITE_DEFAULT_RELAY || 'wss://localhost:7100';
@@ -66,6 +66,14 @@ export function isValidRelayUrl(url: string): boolean {
  *   http://localhost:5173/toon-protocol/#relay=ws://localhost:19700
  */
 export function parseRelayUrl(search: string): string {
+  // 0. Check window.__RIG_CONFIG__ (pointer HTML injection — highest priority)
+  if (typeof window !== 'undefined' && window.__RIG_CONFIG__?.relay) {
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+    if (isValidRelayUrl(window.__RIG_CONFIG__.relay)) {
+      return window.__RIG_CONFIG__.relay;
+    }
+  }
+
   // 1. Check hash fragment: #relay=wss://...
   if (typeof window !== 'undefined' && window.location.hash) {
     const hashParams = new URLSearchParams(window.location.hash.slice(1));

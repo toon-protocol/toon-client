@@ -2,7 +2,7 @@
  * Minimal bech32 npub encoding for Nostr pubkeys.
  *
  * Implements bech32 encoding (BIP-173 / NIP-19) without external dependencies.
- * Only supports encoding hex pubkeys to npub format — no decoding needed for Forge-UI.
+ * Only supports encoding hex pubkeys to npub format — no decoding needed for Rig-UI.
  */
 
 const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';

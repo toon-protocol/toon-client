@@ -1,5 +1,5 @@
 /**
- * Profile enrichment cache for Forge-UI.
+ * Profile enrichment cache for Rig-UI.
  *
  * Fetches kind:0 profile events for pubkeys and provides display names.
  * Falls back to truncated npub for missing profiles.

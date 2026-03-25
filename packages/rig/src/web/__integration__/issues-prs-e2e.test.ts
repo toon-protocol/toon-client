@@ -268,11 +268,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       expect(result.status).toBe(200);
 
       // 8. Embed in layout and render into DOM
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       // 9. Assert: titles are rendered
@@ -300,7 +296,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       expect(openBadges.length).toBe(2);
 
       // 13. Assert: contribution banner
-      expect(container.textContent).toContain('Forge-UI is read-only');
+      expect(container.textContent).toContain('Rig-UI is read-only');
       expect(container.textContent).toContain('NIP-34 skill');
 
       // 14. Assert: navigation tabs (Code, Issues, Pull Requests)
@@ -411,11 +407,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       );
       expect(result.status).toBe(200);
 
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       // 8. Assert: title is rendered
@@ -441,7 +433,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       expect(commentEls[1]!.textContent).toContain('Charlie');
 
       // 12. Assert: contribution banner and tabs
-      expect(container.textContent).toContain('Forge-UI is read-only');
+      expect(container.textContent).toContain('Rig-UI is read-only');
       const activeTab = container.querySelector('.tab-active');
       expect(activeTab!.textContent).toBe('Issues');
 
@@ -546,11 +538,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       cache.setProfile(AUTHOR_C_PUBKEY, { displayName: 'Charlie' });
 
       const result = renderPRList('test-repo', prs, cache, 'npub1owner');
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       // 7. Assert: titles
@@ -583,7 +571,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
       expect(firstHref).toContain('/pulls/');
 
       // 13. Assert: contribution banner
-      expect(container.textContent).toContain('Forge-UI is read-only');
+      expect(container.textContent).toContain('Rig-UI is read-only');
     });
   });
 
@@ -662,11 +650,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
         cache,
         'npub1owner'
       );
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       // 6. Assert: title
@@ -718,35 +702,27 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
     it('[P1] renders empty state message for repository with no issues', () => {
       const cache = new ProfileCache();
       const result = renderIssueList('test-repo', [], cache, 'npub1owner');
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       expect(container.textContent).toContain(
         'No issues found for this repository'
       );
       expect(container.textContent).toContain('kind:1621');
-      expect(container.textContent).toContain('Forge-UI is read-only');
+      expect(container.textContent).toContain('Rig-UI is read-only');
     });
 
     it('[P1] renders empty state message for repository with no PRs', () => {
       const cache = new ProfileCache();
       const result = renderPRList('test-repo', [], cache, 'npub1owner');
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       expect(container.textContent).toContain(
         'No pull requests found for this repository'
       );
       expect(container.textContent).toContain('kind:1617');
-      expect(container.textContent).toContain('Forge-UI is read-only');
+      expect(container.textContent).toContain('Rig-UI is read-only');
     });
   });
 
@@ -779,11 +755,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
         cache,
         'npub1owner'
       );
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       // No executable script or event handler elements
@@ -817,11 +789,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
         cache,
         'npub1owner'
       );
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       expect(container.querySelectorAll('script')).toHaveLength(0);
@@ -859,11 +827,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
         cache,
         'npub1owner'
       );
-      const fullHtml = renderLayout(
-        'Forge',
-        result.html,
-        'wss://localhost:7100'
-      );
+      const fullHtml = renderLayout('Rig', result.html, 'wss://localhost:7100');
       container.innerHTML = fullHtml;
 
       expect(container.querySelectorAll('script')).toHaveLength(0);
@@ -1181,14 +1145,14 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
     it('[P1] contribution banner appears on issue list page', () => {
       const cache = new ProfileCache();
       const result = renderIssueList('test-repo', [], cache, 'npub1owner');
-      expect(result.html).toContain('Forge-UI is read-only');
+      expect(result.html).toContain('Rig-UI is read-only');
       expect(result.html).toContain('NIP-34 skill');
     });
 
     it('[P1] contribution banner appears on PR list page', () => {
       const cache = new ProfileCache();
       const result = renderPRList('test-repo', [], cache, 'npub1owner');
-      expect(result.html).toContain('Forge-UI is read-only');
+      expect(result.html).toContain('Rig-UI is read-only');
     });
 
     it('[P1] contribution banner appears on issue detail page', () => {
@@ -1209,7 +1173,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
         cache,
         'npub1owner'
       );
-      expect(result.html).toContain('Forge-UI is read-only');
+      expect(result.html).toContain('Rig-UI is read-only');
     });
 
     it('[P1] contribution banner appears on PR detail page', () => {
@@ -1225,7 +1189,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
         status: 'open',
       };
       const result = renderPRDetail('test-repo', pr, [], cache, 'npub1owner');
-      expect(result.html).toContain('Forge-UI is read-only');
+      expect(result.html).toContain('Rig-UI is read-only');
     });
   });
 
@@ -1237,7 +1201,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
   describe('8.5-E2E-013: Error/loading states', () => {
     it('[P1] relay timeout for issues displays graceful degradation message', () => {
       const errorHtml = renderLayout(
-        'Forge',
+        'Rig',
         '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load issues.</div></div>',
         'wss://localhost:7100'
       );
@@ -1251,7 +1215,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
 
     it('[P1] relay timeout for PRs displays graceful degradation message', () => {
       const errorHtml = renderLayout(
-        'Forge',
+        'Rig',
         '<div class="empty-state"><div class="empty-state-title">Error</div><div class="empty-state-message">Could not load pull requests.</div></div>',
         'wss://localhost:7100'
       );
@@ -1263,7 +1227,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
 
     it('[P1] loading state renders correctly for issues', () => {
       const loadingHtml = renderLayout(
-        'Forge',
+        'Rig',
         '<div class="loading">Loading issues...</div>',
         'wss://localhost:7100'
       );
@@ -1275,7 +1239,7 @@ describe('E2E: Story 8.5 — Issues and PRs', () => {
 
     it('[P1] loading state renders correctly for PRs', () => {
       const loadingHtml = renderLayout(
-        'Forge',
+        'Rig',
         '<div class="loading">Loading pull requests...</div>',
         'wss://localhost:7100'
       );

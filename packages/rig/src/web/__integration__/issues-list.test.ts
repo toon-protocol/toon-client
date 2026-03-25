@@ -61,7 +61,7 @@ describe('Integration: Issues List', () => {
     ];
 
     const result = renderIssueList('test-repo', issues, cache, 'npub1test');
-    const html = renderLayout('Forge', result.html, 'wss://localhost:7100');
+    const html = renderLayout('Rig', result.html, 'wss://localhost:7100');
     container.innerHTML = html;
 
     // Verify titles
@@ -83,13 +83,13 @@ describe('Integration: Issues List', () => {
     expect(container.textContent).toContain('enhancement');
 
     // Verify contribution banner
-    expect(container.textContent).toContain('Forge-UI is read-only');
+    expect(container.textContent).toContain('Rig-UI is read-only');
   });
 
   it('[P1] empty relay response renders empty state message', () => {
     const cache = new ProfileCache();
     const result = renderIssueList('test-repo', [], cache, 'npub1test');
-    const html = renderLayout('Forge', result.html, 'wss://localhost:7100');
+    const html = renderLayout('Rig', result.html, 'wss://localhost:7100');
     container.innerHTML = html;
 
     expect(container.textContent).toContain(

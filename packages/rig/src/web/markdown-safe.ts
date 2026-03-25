@@ -1,5 +1,5 @@
 /**
- * Markdown-safe content renderer for Forge-UI.
+ * Markdown-safe content renderer for Rig-UI.
  *
  * Provides a safe subset of markdown rendering that prevents XSS while
  * offering basic readability. This is NOT a full markdown renderer.

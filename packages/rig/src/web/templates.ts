@@ -1,7 +1,7 @@
 /**
  * Web templates for @toon-protocol/rig.
  *
- * Renders HTML templates for the git forge web UI with XSS prevention.
+ * Renders HTML templates for the Rig-UI git web UI with XSS prevention.
  * All user-supplied content is HTML-escaped before rendering.
  */
 
@@ -795,7 +795,7 @@ ${beyondLimitNotice}
  * Render the contribution banner displayed on issue/PR pages.
  */
 function renderContributionBanner(): string {
-  return `<div class="contribution-banner">Forge-UI is read-only. To create issues or submit patches, use a TOON agent with the NIP-34 skill.</div>`;
+  return `<div class="contribution-banner">Rig-UI is read-only. To create issues or submit patches, use a TOON agent with the NIP-34 skill.</div>`;
 }
 
 /**
