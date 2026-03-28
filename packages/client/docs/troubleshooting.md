@@ -12,7 +12,7 @@
    ```
 2. Check connector logs:
    ```bash
-   docker compose -p toon-genesis -f docker-compose-genesis.yml logs toon
+   docker compose -p toon-sdk-e2e -f docker-compose-sdk-e2e.yml logs toon
    ```
 3. Verify config has valid `connectorUrl`, `secretKey`, and `ilpInfo`
 
@@ -37,7 +37,7 @@
    ```
 4. Check BLS logs:
    ```bash
-   docker compose -p toon-genesis -f docker-compose-genesis.yml logs toon
+   docker compose -p toon-sdk-e2e -f docker-compose-sdk-e2e.yml logs toon
    ```
 
 ---
@@ -56,7 +56,7 @@ lsof -ti:7100 | xargs kill -9  # Nostr relay
 lsof -ti:3100 | xargs kill -9  # BLS
 
 # Restart infrastructure
-docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
+docker compose -p toon-sdk-e2e -f docker-compose-sdk-e2e.yml up -d
 ```
 
 ---
