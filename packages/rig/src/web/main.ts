@@ -1051,6 +1051,36 @@ async function renderIssuesRoute(
         closedIds.add(eTag[1]);
       }
     }
+
+    // Auto-close issues linked via `closes` marker in merged patches
+    const repoAddr = `30617:${meta.ownerPubkey}:${meta.repoId}`;
+    const patches = await queryRelay(relayUrl, {
+      kinds: [1617],
+      '#a': [repoAddr],
+      limit: 100,
+    });
+    if (patches.length > 0) {
+      const patchIds = patches.map((p) => p.id);
+      const mergeEvents = await queryRelay(relayUrl, {
+        kinds: [1632],
+        '#e': patchIds,
+        limit: 100,
+      });
+      const mergedPatchIds = new Set(
+        mergeEvents.flatMap((m) =>
+          m.tags.filter((t) => t[0] === 'e').map((t) => t[1]!)
+        )
+      );
+      for (const patch of patches) {
+        if (!mergedPatchIds.has(patch.id)) continue;
+        for (const tag of patch.tags) {
+          if (tag[0] === 'e' && tag[3] === 'closes' && tag[1]) {
+            closedIds.add(tag[1]);
+          }
+        }
+      }
+    }
+
     for (const issue of issues) {
       if (closedIds.has(issue.eventId)) {
         issue.status = 'closed';
@@ -1418,6 +1448,8 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
           relayUrl
         );
       }
+      // Wire up status filter buttons after render
+      requestAnimationFrame(() => initStatusFilter(app));
       break;
     }
     case 'issue-detail': {
@@ -1461,6 +1493,8 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
           relayUrl
         );
       }
+      // Wire up status filter buttons after render
+      requestAnimationFrame(() => initStatusFilter(app));
       break;
     }
     case 'pull-detail': {
@@ -1501,6 +1535,45 @@ async function renderRoute(route: Route, relayUrl: string): Promise<void> {
   if (thisGeneration !== renderGeneration) return;
 
   app.innerHTML = content; // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method
+}
+
+/**
+ * Wire up status filter buttons (Open/Closed/All) on issue and PR list pages.
+ * Called after innerHTML is set, since CSP blocks inline scripts.
+ */
+function initStatusFilter(container: HTMLElement): void {
+  const buttons = container.querySelectorAll('.status-filter-btn');
+  if (buttons.length === 0) return;
+
+  const items = container.querySelectorAll('[data-status]');
+
+  function applyFilter(filter: string) {
+    for (const item of items) {
+      const el = item as HTMLElement;
+      const status = el.dataset['status'] ?? '';
+      if (filter === 'all' || status === filter) {
+        el.style.display = '';
+      } else {
+        el.style.display = 'none';
+      }
+    }
+    for (const btn of buttons) {
+      btn.classList.toggle(
+        'status-filter-active',
+        (btn as HTMLElement).dataset['filter'] === filter
+      );
+    }
+  }
+
+  for (const btn of buttons) {
+    btn.addEventListener('click', () => {
+      const filter = (btn as HTMLElement).dataset['filter'] ?? 'all';
+      applyFilter(filter);
+    });
+  }
+
+  // Default to showing "open"
+  applyFilter('open');
 }
 
 /**

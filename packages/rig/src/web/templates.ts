@@ -21,7 +21,7 @@ import type { CommitLogEntry } from './commit-walker.js';
 import type { TreeDiffEntry } from './tree-diff.js';
 import type { DiffHunk } from './unified-diff.js';
 import type { BlameResult } from './blame.js';
-import { renderMarkdownSafe } from './markdown-safe.js';
+import { renderMarkdown } from './markdown-renderer.js';
 
 /**
  * Build the base URL path for a repository.
@@ -863,6 +863,15 @@ ${banner}
     };
   }
 
+  const openCount = issues.filter((i) => i.status !== 'closed').length;
+  const closedCount = issues.filter((i) => i.status === 'closed').length;
+
+  const filterBar = `<div class="status-filter">
+  <button class="status-filter-btn status-filter-active" data-filter="open">Open (${openCount})</button>
+  <button class="status-filter-btn" data-filter="closed">Closed (${closedCount})</button>
+  <button class="status-filter-btn" data-filter="all">All (${issues.length})</button>
+</div>`;
+
   const rows = issues
     .map((issue) => {
       const title = escapeHtml(issue.title);
@@ -879,7 +888,7 @@ ${banner}
         .map((l) => `<span class="label-badge">${escapeHtml(l)}</span>`)
         .join(' ');
 
-      return `<div class="issue-row">
+      return `<div class="issue-row" data-status="${issue.status === 'closed' ? 'closed' : 'open'}">
   <div class="issue-row-main">
     <span class="status-badge ${statusClass}">${statusLabel}</span>
     <a href="${detailHref}" class="issue-title-link">${title}</a>
@@ -897,6 +906,7 @@ ${banner}
     status: 200,
     html: `${tabs}
 ${banner}
+${filterBar}
 <div class="issue-list">
 ${rows}
 </div>`,
@@ -923,7 +933,7 @@ export function renderIssueDetail(
   const statusClass =
     issue.status === 'closed' ? 'status-closed' : 'status-open';
   const statusLabel = escapeHtml(issue.status);
-  const body = renderMarkdownSafe(issue.content);
+  const body = renderMarkdown(issue.content);
 
   const labelBadges = issue.labels
     .map((l) => `<span class="label-badge">${escapeHtml(l)}</span>`)
@@ -933,7 +943,7 @@ export function renderIssueDetail(
     .map((c) => {
       const cAuthor = getAuthorDisplay(c.authorPubkey, profileCache);
       const cDate = escapeHtml(formatRelativeDate(c.createdAt));
-      const cBody = renderMarkdownSafe(c.content);
+      const cBody = renderMarkdown(c.content);
       return `<div class="comment">
   <div class="comment-header">
     <span class="comment-author">${cAuthor}</span>
@@ -996,6 +1006,15 @@ ${banner}
     };
   }
 
+  const openCount = prs.filter((p) => p.status === 'open').length;
+  const closedCount = prs.filter((p) => p.status !== 'open').length;
+
+  const filterBar = `<div class="status-filter">
+  <button class="status-filter-btn status-filter-active" data-filter="open">Open (${openCount})</button>
+  <button class="status-filter-btn" data-filter="closed">Closed (${closedCount})</button>
+  <button class="status-filter-btn" data-filter="all">All (${prs.length})</button>
+</div>`;
+
   const rows = prs
     .map((pr) => {
       const title = escapeHtml(pr.title);
@@ -1007,8 +1026,9 @@ ${banner}
       const detailHref = escapeHtml(
         `${base}/pulls/${encodeURIComponent(pr.eventId)}`
       );
+      const filterStatus = pr.status === 'open' ? 'open' : 'closed';
 
-      return `<div class="pr-row">
+      return `<div class="pr-row" data-status="${filterStatus}">
   <div class="pr-row-main">
     <span class="status-badge ${statusClass}">${statusLabel}</span>
     <a href="${detailHref}" class="pr-title-link">${title}</a>
@@ -1026,6 +1046,7 @@ ${banner}
     status: 200,
     html: `${tabs}
 ${banner}
+${filterBar}
 <div class="pr-list">
 ${rows}
 </div>`,
@@ -1052,7 +1073,13 @@ export function renderPRDetail(
   const statusClass = `status-${pr.status}`;
   const statusLabel = escapeHtml(pr.status);
   const baseBranch = escapeHtml(pr.baseBranch);
-  const body = renderMarkdownSafe(pr.content);
+
+  // Parse git format-patch content: split commit message from diff
+  const { message: patchMessage, diff: patchDiff } = parsePatchContent(
+    pr.content
+  );
+  const bodyHtml = patchMessage ? renderMarkdown(patchMessage) : '';
+  const diffHtml = patchDiff ? renderDiffBlock(patchDiff) : '';
 
   const base = repoBasePath(owner, repoName);
 
@@ -1070,7 +1097,7 @@ export function renderPRDetail(
     .map((c) => {
       const cAuthor = getAuthorDisplay(c.authorPubkey, profileCache);
       const cDate = escapeHtml(formatRelativeDate(c.createdAt));
-      const cBody = renderMarkdownSafe(c.content);
+      const cBody = renderMarkdown(c.content);
       return `<div class="comment">
   <div class="comment-header">
     <span class="comment-author">${cAuthor}</span>
@@ -1100,10 +1127,122 @@ ${banner}
     </div>
     ${commitsSection}
   </div>
-  <div class="pr-detail-body">${body}</div>
+  ${bodyHtml ? `<div class="pr-detail-body">${bodyHtml}</div>` : ''}
+  ${diffHtml ? `<div class="pr-diff-section"><h3 class="pr-diff-heading">Files changed</h3>${diffHtml}</div>` : ''}
   <div class="comment-thread">
 ${commentHtml}
   </div>
 </div>`,
   };
+}
+
+/**
+ * Parse a git format-patch content string into commit message and diff sections.
+ */
+function parsePatchContent(content: string): { message: string; diff: string } {
+  // git format-patch structure:
+  //   From <sha> ... (header line)
+  //   From: <author>
+  //   Date: <date>
+  //   Subject: [PATCH] <subject>
+  //
+  //   <commit message body>
+  //   ---
+  //   <diffstat>
+  //
+  //   diff --git a/... b/...
+  //   ...
+
+  // Find the "---" separator between message and diff
+  const lines = content.split('\n');
+  let separatorIdx = -1;
+  let diffStartIdx = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === '---' && separatorIdx === -1) {
+      separatorIdx = i;
+    }
+    if (lines[i]?.startsWith('diff --git ')) {
+      diffStartIdx = i;
+      break;
+    }
+  }
+
+  if (diffStartIdx === -1) {
+    // No diff found — treat entire content as message
+    return { message: content, diff: '' };
+  }
+
+  // Extract message: skip the email header lines (From, Date, Subject)
+  // and take everything between the blank line after Subject and the "---" separator
+  let messageStart = 0;
+  for (let i = 0; i < Math.min(separatorIdx, diffStartIdx); i++) {
+    const line = lines[i] ?? '';
+    if (
+      line.startsWith('From ') ||
+      line.startsWith('From: ') ||
+      line.startsWith('Date: ') ||
+      line.startsWith('Subject: ')
+    ) {
+      messageStart = i + 1;
+    }
+  }
+
+  // Skip blank line after headers
+  if (messageStart < lines.length && lines[messageStart]?.trim() === '') {
+    messageStart++;
+  }
+
+  const messageEnd = separatorIdx > messageStart ? separatorIdx : diffStartIdx;
+  const message = lines.slice(messageStart, messageEnd).join('\n').trim();
+  const diff = lines.slice(diffStartIdx).join('\n').trim();
+
+  return { message, diff };
+}
+
+/**
+ * Render a unified diff block with syntax-colored lines (GitHub-style).
+ */
+function renderDiffBlock(diff: string): string {
+  const files = diff.split(/(?=^diff --git )/m);
+
+  return files
+    .map((file) => {
+      const fileLines = file.split('\n');
+      const header = fileLines[0] ?? '';
+
+      // Extract filename from "diff --git a/FILE b/FILE"
+      const fileMatch = header.match(/diff --git a\/(.+?) b\/(.+)/);
+      const filename = fileMatch ? escapeHtml(fileMatch[2] ?? '') : '';
+
+      // Render each line with appropriate class
+      const diffLines = fileLines
+        .slice(1)
+        .map((line) => {
+          let cls = 'diff-line';
+          if (line.startsWith('+') && !line.startsWith('+++')) {
+            cls = 'diff-line diff-line-add';
+          } else if (line.startsWith('-') && !line.startsWith('---')) {
+            cls = 'diff-line diff-line-delete';
+          } else if (line.startsWith('@@')) {
+            cls = 'diff-line diff-line-hunk';
+          } else if (
+            line.startsWith('---') ||
+            line.startsWith('+++') ||
+            line.startsWith('index ') ||
+            line.startsWith('new file') ||
+            line.startsWith('deleted file')
+          ) {
+            cls = 'diff-line diff-line-context';
+          }
+          return `<div class="${cls}">${escapeHtml(line)}</div>`;
+        })
+        .join('');
+
+      return `<div class="diff-file">
+  <div class="diff-file-header">${filename}</div>
+  <div class="diff-file-content"><pre>${diffLines}</pre></div>
+</div>`;
+    })
+    .join('\n');
 }

@@ -1,0 +1,20 @@
+- generic [ref=e2]:
+  - banner [ref=e93]:
+    - generic [ref=e94]:
+      - link "⚒ Rig" [ref=e95] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e96]: ws://localhost:19700
+  - main [ref=e97]:
+    - navigation [ref=e98]:
+      - link "Code" [ref=e99] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/
+      - link "Issues" [ref=e100] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues
+      - link "Pull Requests" [ref=e101] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/pulls
+    - generic [ref=e102]: ℹ Rig-UI is read-only. To create issues or submit patches, use a TOON agent with the NIP-34 skill.
+    - generic [ref=e103]:
+      - button "Open (0)" [ref=e104] [cursor=pointer]
+      - button "Closed (4)" [ref=e105] [cursor=pointer]
+      - button "All (4)" [ref=e106] [cursor=pointer]
+  - contentinfo [ref=e108]: Rig — Decentralized Git on Nostr & TOON Protocol

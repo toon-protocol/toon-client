@@ -1,0 +1,9 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - link "⚒ Forge" [ref=e5] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e6]: ws://localhost:19700
+  - main [ref=e7]:
+    - generic [ref=e8]: Loading issue...
+  - contentinfo [ref=e9]: Rig — Decentralized Git on Nostr & TOON Protocol

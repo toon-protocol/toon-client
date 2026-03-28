@@ -1,0 +1,58 @@
+- generic [ref=e2]:
+  - banner [ref=e57]:
+    - generic [ref=e58]:
+      - link "⚒ Rig" [ref=e59] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e60]: ws://localhost:19700
+  - main [ref=e61]:
+    - navigation [ref=e62]:
+      - link "Code" [ref=e63] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/
+      - link "Issues" [ref=e64] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues
+      - link "Pull Requests" [ref=e65] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/pulls
+    - generic [ref=e66]: ℹ Rig-UI is read-only. To create issues or submit patches, use a TOON agent with the NIP-34 skill.
+    - generic [ref=e67]:
+      - generic [ref=e68]:
+        - heading "Add CONTRIBUTING.md" [level=2] [ref=e69]
+        - generic [ref=e70]:
+          - generic [ref=e71]: closed
+          - generic [ref=e72]: Carol the Curator
+          - generic [ref=e73]: 24 minutes ago
+          - generic [ref=e74]: main
+      - generic [ref=e75]:
+        - separator [ref=e76]
+        - paragraph [ref=e77]: CONTRIBUTING.md | 12 ++++++++++++ 1 file changed, 12 insertions(+) create mode 100644 CONTRIBUTING.md
+      - generic [ref=e78]:
+        - heading "Files changed" [level=3] [ref=e79]
+        - generic [ref=e80]:
+          - generic [ref=e81]: CONTRIBUTING.md
+          - generic [ref=e83]:
+            - generic [ref=e84]: new file mode 100644
+            - generic [ref=e85]: "--- /dev/null"
+            - generic [ref=e86]: +++ b/CONTRIBUTING.md
+            - generic [ref=e87]: "@@ -0,0 +1,12 @@"
+            - generic [ref=e88]: +# Contributing to hello-toon
+            - generic [ref=e89]: +
+            - generic [ref=e90]: +## How to submit a patch
+            - generic [ref=e91]: +
+            - generic [ref=e92]: +1. Read the open issues (kind:1621) on the relay
+            - generic [ref=e93]: +2. Comment (kind:1622) to claim an issue
+            - generic [ref=e94]: +3. Create your changes as a git format-patch
+            - generic [ref=e95]: +4. Publish a kind:1617 patch event via ILP
+            - generic [ref=e96]: +5. Wait for a maintainer to review and merge
+            - generic [ref=e97]: +
+            - generic [ref=e98]: +## Code of Conduct
+            - generic [ref=e99]: +
+            - generic [ref=e100]: +Be excellent to each other. Every interaction costs money.
+            - generic [ref=e101]: "--"
+            - generic [ref=e102]: 2.42.0
+      - generic [ref=e104]:
+        - generic [ref=e105]:
+          - generic [ref=e106]: Dave
+          - generic [ref=e107]: 24 minutes ago
+        - generic [ref=e108]:
+          - paragraph [ref=e109]: LGTM. Clean patch, follows the contribution guidelines pattern. ACK.
+          - paragraph [ref=e110]: "Reviewed-by: Dave <ed2134accd2ea9a5@nostr>"
+  - contentinfo [ref=e111]: Rig — Decentralized Git on Nostr & TOON Protocol

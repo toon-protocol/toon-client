@@ -919,17 +919,18 @@ describe('Templates - Story 8.5: PR Detail', () => {
     expect(result.html).toContain('LGTM');
   });
 
-  it('[P1] renders patch body content via renderMarkdownSafe (AC #14)', () => {
+  it('[P1] renders patch body content via renderMarkdown (AC #14)', () => {
     const pr = createPRMetadata({
       content: 'Patch body with https://example.com link\n\nSecond paragraph',
     });
 
     const result = renderPRDetail('test-repo', pr, [], cache, 'npub1test');
 
-    // renderMarkdownSafe auto-links URLs and converts double newlines
+    // renderMarkdown auto-links URLs and converts double newlines to paragraphs
     expect(result.html).toContain('<a href=');
     expect(result.html).toContain('https://example.com');
-    expect(result.html).toContain('<br><br>');
+    // marked renders double newlines as separate <p> tags
+    expect(result.html).toContain('<p>');
   });
 
   it('[P1] includes navigation tabs (AC #22)', () => {
@@ -1063,7 +1064,7 @@ describe('Templates - Story 8.5: Navigation Tabs', () => {
 describe('Templates - NFR: XSS in Issue/PR Comments', () => {
   const cache = new ProfileCache();
 
-  it('[P0] XSS in comment content is escaped via renderMarkdownSafe', () => {
+  it('[P0] XSS in comment content is neutralized via renderMarkdown sanitizer', () => {
     const issue = createIssueMetadata({ title: 'Test' });
     const comments = [
       createCommentMetadata({
@@ -1079,11 +1080,12 @@ describe('Templates - NFR: XSS in Issue/PR Comments', () => {
       'npub1test'
     );
 
+    // renderMarkdown sanitizer strips disallowed tags entirely
     expect(result.html).not.toContain('<script>alert');
-    expect(result.html).toContain('&lt;script&gt;');
+    expect(result.html).not.toContain('<script>');
   });
 
-  it('[P0] XSS in PR comment content is escaped', () => {
+  it('[P0] XSS in PR comment content has event handlers stripped', () => {
     const pr = createPRMetadata({ title: 'Test PR' });
     const comments = [
       createCommentMetadata({
@@ -1099,8 +1101,9 @@ describe('Templates - NFR: XSS in Issue/PR Comments', () => {
       'npub1test'
     );
 
-    expect(result.html).not.toContain('<img');
-    expect(result.html).toContain('&lt;img');
+    // renderMarkdown sanitizer allows <img> but strips event handler attributes
+    expect(result.html).not.toContain('onerror');
+    expect(result.html).not.toContain('alert(1)');
   });
 
   it('[P0] XSS in issue labels is escaped', () => {
@@ -1184,7 +1187,7 @@ describe('Templates - NFR: XSS in Issue/PR Comments', () => {
     expect(commitLink.textContent).toBe('abc1234');
   });
 
-  it('[P1] issue detail body uses renderMarkdownSafe for content (AC #11)', () => {
+  it('[P1] issue detail body uses renderMarkdown for content (AC #11)', () => {
     const issue = createIssueMetadata({
       title: 'Markdown test',
       content: 'Visit https://example.com for info\n\nNew paragraph',
@@ -1198,11 +1201,11 @@ describe('Templates - NFR: XSS in Issue/PR Comments', () => {
       'npub1test'
     );
 
-    // renderMarkdownSafe should auto-link URLs
+    // renderMarkdown should auto-link URLs
     expect(result.html).toContain('<a href=');
     expect(result.html).toContain('https://example.com');
-    // Double newline should produce <br><br>
-    expect(result.html).toContain('<br><br>');
+    // Double newline should produce separate <p> tags via marked
+    expect(result.html).toContain('<p>');
   });
 
   it('[P1] PR detail base branch is displayed (AC #14)', () => {

@@ -1,0 +1,35 @@
+- generic [ref=e2]:
+  - banner [ref=e10]:
+    - generic [ref=e11]:
+      - link "⚒ Rig" [ref=e12] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e13]: ws://localhost:19700
+  - main [ref=e14]:
+    - navigation [ref=e15]:
+      - link "Code" [ref=e16] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/
+      - link "Issues" [ref=e17] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues
+      - link "Pull Requests" [ref=e18] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/pulls
+    - generic [ref=e19]: ℹ Rig-UI is read-only. To create issues or submit patches, use a TOON agent with the NIP-34 skill.
+    - generic [ref=e20]:
+      - generic [ref=e21]:
+        - generic [ref=e22]:
+          - generic [ref=e23]: closed
+          - link "Add CONTRIBUTING.md" [ref=e24] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/pulls/5d02dd3cc98cb9cba0e1e54722e71c3aa0e68b1949712ae2fa82e780fe586dd5
+          - generic [ref=e25]: main
+        - generic [ref=e26]:
+          - generic [ref=e27]: Carol the Curator
+          - generic [ref=e28]: just now
+      - generic [ref=e29]:
+        - generic [ref=e30]:
+          - generic [ref=e31]: closed
+          - link:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/pulls/01a4e918015877bbb0fbf510d0ec1dc9000d61b4e1eb23a02a0b721fe52d67a8
+          - generic [ref=e32]: main
+        - generic [ref=e33]:
+          - generic [ref=e34]: Carol the Curator
+          - generic [ref=e35]: 49 minutes ago
+  - contentinfo [ref=e36]: Rig — Decentralized Git on Nostr & TOON Protocol
