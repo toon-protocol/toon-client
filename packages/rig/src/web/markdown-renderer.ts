@@ -204,14 +204,17 @@ export function renderMarkdown(
 
   let result = sanitizeHtml(rawHtml);
 
-  // Rewrite relative image src and link href attributes if a resolver is provided
+  // Rewrite relative link href attributes if a resolver is provided
+  // Note: img src is NOT rewritten here — the useResolveImages hook resolves
+  // them post-render to actual Arweave gateway URLs so images display inline.
   if (options?.resolveRelativePath) {
     const resolve = options.resolveRelativePath;
+    // Rewrite relative a href (but not anchors starting with #)
     result = result.replace(
-      /(<(?:img|source)\b[^>]*\bsrc=")([^"]+)(")/gi,
-      (_match, before: string, src: string, after: string) => {
-        if (/^(?:https?:\/\/|data:|\/\/)/i.test(src)) return _match; // absolute — keep
-        const resolved = resolve(src);
+      /(<a\b[^>]*\bhref=")([^"]+)(")/gi,
+      (_match, before: string, href: string, after: string) => {
+        if (/^(?:https?:\/\/|data:|\/\/|#|mailto:)/i.test(href)) return _match;
+        const resolved = resolve(href);
         return resolved ? `${before}${escapeHtml(resolved)}${after}` : _match;
       }
     );

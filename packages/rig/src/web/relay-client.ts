@@ -9,7 +9,7 @@
 
 import { decode } from '@toon-format/toon';
 import type { NostrEvent, NostrFilter } from './nip34-parsers.js';
-import { isValidRelayUrl } from './router.js';
+import { isValidRelayUrl } from './url-utils.js';
 
 /**
  * Build a Nostr filter for querying repository announcement events (kind:30617).

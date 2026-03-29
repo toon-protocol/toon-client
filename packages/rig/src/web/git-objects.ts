@@ -213,6 +213,21 @@ export function isBinaryBlob(data: Uint8Array): boolean {
     // Null byte is a strong binary indicator
     if (byte === 0x00) return true;
 
+    // Skip valid UTF-8 multi-byte sequences
+    if (byte >= 0xc0 && byte <= 0xf7) {
+      const seqLen =
+        byte < 0xe0 ? 2 : byte < 0xf0 ? 3 : 4;
+      let valid = true;
+      for (let j = 1; j < seqLen && i + j < checkLength; j++) {
+        const cont = data[i + j]!;
+        if (cont < 0x80 || cont > 0xbf) { valid = false; break; }
+      }
+      if (valid) {
+        i += seqLen - 1; // skip continuation bytes
+        continue;
+      }
+    }
+
     // Check if non-printable (outside tab/newline/CR/FF and printable ASCII)
     const isPrintable =
       (byte >= 0x09 && byte <= 0x0d) || (byte >= 0x20 && byte <= 0x7e);

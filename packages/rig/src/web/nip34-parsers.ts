@@ -343,3 +343,24 @@ export function resolvePRStatus(
 
   return KIND_STATUS_MAP[latest.kind] ?? 'open';
 }
+
+/**
+ * Resolve the status of an issue from close events (kind:1632).
+ *
+ * An issue is closed if ANY kind:1632 event has an `e` tag referencing
+ * the issue's event ID; otherwise it is open.
+ *
+ * @param issueEventId - The issue event ID to resolve status for
+ * @param closeEvents - Array of kind:1632 events
+ * @returns Resolved status string
+ */
+export function resolveIssueStatus(
+  issueEventId: string,
+  closeEvents: NostrEvent[]
+): 'open' | 'closed' {
+  const isClosed = closeEvents.some((evt) => {
+    const eTag = getTagValue(evt.tags, 'e');
+    return eTag === issueEventId && evt.kind === 1632;
+  });
+  return isClosed ? 'closed' : 'open';
+}

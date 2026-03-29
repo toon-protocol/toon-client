@@ -280,10 +280,10 @@ describe('Deploy Script - 8.7-UNIT-004: File collection', () => {
     // Then: we find at least one .ts file with correct structure
     expect(files.length).toBeGreaterThan(0);
     const tsFile = files.find(
-      (f: { relativePath: string }) => f.relativePath === 'router.ts'
+      (f: { relativePath: string }) => f.relativePath === 'url-utils.ts'
     );
     expect(tsFile).toBeDefined();
-    expect(tsFile.absolutePath).toContain('router.ts');
+    expect(tsFile.absolutePath).toContain('url-utils.ts');
     expect(tsFile.size).toBeGreaterThan(0);
   });
 

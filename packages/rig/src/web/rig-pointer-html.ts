@@ -49,7 +49,7 @@ export function generatePointerHtml({
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Decentralized Git on Nostr &amp; TOON Protocol">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' ${GATEWAY}; script-src 'self' 'unsafe-inline' ${GATEWAY}; style-src 'self' 'unsafe-inline' ${GATEWAY}; connect-src 'self' ws: wss: ${GATEWAY} *.ar-io.dev https://arweave.net *.arweave.net https://permagate.io *.permagate.io; img-src 'self' data: https:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' ${GATEWAY}; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' ${GATEWAY}; style-src 'self' 'unsafe-inline' ${GATEWAY}; connect-src 'self' ws: wss: ${GATEWAY} *.ar-io.dev https://arweave.net *.arweave.net https://permagate.io *.permagate.io; img-src 'self' data: https:">
   <title>${title}</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x2692;</text></svg>">
   <script>window.__RIG_CONFIG__=${safeConfig}</script>
