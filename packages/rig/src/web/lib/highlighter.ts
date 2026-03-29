@@ -82,7 +82,10 @@ async function createHighlighter(): Promise<HighlighterCore> {
     ]);
 
   return createHighlighterCore({
-    themes: [import('shiki/themes/github-light.mjs'), import('shiki/themes/github-dark.mjs')],
+    themes: [
+      import('shiki/themes/github-light.mjs'),
+      import('shiki/themes/github-dark.mjs'),
+    ],
     langs: [
       js.default,
       ts.default,
@@ -104,7 +107,7 @@ async function createHighlighter(): Promise<HighlighterCore> {
 
 export async function highlight(
   code: string,
-  lang: string | null,
+  lang: string | null
 ): Promise<string> {
   if (!lang) return escapeForHtml(code);
 

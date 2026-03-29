@@ -14,7 +14,7 @@ interface UseGitTreeResult {
 export function useGitTree(
   sha: string | null,
   repoId: string,
-  refs: RepoRefs | null,
+  refs: RepoRefs | null
 ): UseGitTreeResult {
   const [entries, setEntries] = useState<TreeEntry[]>([]);
   const [loading, setLoading] = useState(!!sha);

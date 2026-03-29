@@ -14,7 +14,7 @@ interface UseRelayResult {
  */
 export function useRelay(
   relayUrl: string,
-  filter: NostrFilter | null,
+  filter: NostrFilter | null
 ): UseRelayResult {
   const [events, setEvents] = useState<NostrEvent[]>([]);
   const [loading, setLoading] = useState(!!filter);

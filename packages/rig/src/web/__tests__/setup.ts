@@ -7,10 +7,18 @@ Object.defineProperty(window, 'matchMedia', {
     matches: false,
     media: query,
     onchange: null,
-    addListener: () => { /* noop */ },
-    removeListener: () => { /* noop */ },
-    addEventListener: () => { /* noop */ },
-    removeEventListener: () => { /* noop */ },
+    addListener: () => {
+      /* noop */
+    },
+    removeListener: () => {
+      /* noop */
+    },
+    addEventListener: () => {
+      /* noop */
+    },
+    removeEventListener: () => {
+      /* noop */
+    },
     dispatchEvent: () => false,
   }),
 });

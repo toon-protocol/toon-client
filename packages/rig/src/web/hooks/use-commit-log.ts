@@ -15,7 +15,7 @@ export function useCommitLog(
   startSha: string | null,
   repoId: string,
   refs: RepoRefs | null,
-  maxDepth = 50,
+  maxDepth = 50
 ): UseCommitLogResult {
   const [entries, setEntries] = useState<CommitLogEntry[]>([]);
   const [loading, setLoading] = useState(!!startSha);
@@ -52,7 +52,9 @@ export function useCommitLog(
         }
       });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [startSha, repoId, refs, maxDepth]);
 
   return { entries, loading, hasMore, error };

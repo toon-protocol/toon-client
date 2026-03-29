@@ -2,10 +2,7 @@ import { useMemo } from 'react';
 import { useRigConfig } from './use-rig-config.js';
 import { useRelay } from './use-relay.js';
 import { npubToHex } from '../npub.js';
-import {
-  parseRepoAnnouncement,
-  parseRepoRefs,
-} from '../nip34-parsers.js';
+import { parseRepoAnnouncement, parseRepoRefs } from '../nip34-parsers.js';
 import type { RepoMetadata, RepoRefs, NostrFilter } from '../nip34-parsers.js';
 
 interface UseRepoResult {

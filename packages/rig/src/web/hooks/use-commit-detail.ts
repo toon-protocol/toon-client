@@ -17,7 +17,7 @@ interface UseCommitDetailResult {
 export function useCommitDetail(
   sha: string | null,
   repoId: string,
-  refs: RepoRefs | null,
+  refs: RepoRefs | null
 ): UseCommitDetailResult {
   const [commit, setCommit] = useState<GitCommit | null>(null);
   const [changedFiles, setChangedFiles] = useState<TreeDiffEntry[]>([]);
@@ -68,7 +68,10 @@ export function useCommitDetail(
           if (parentData) {
             const parentCommit = parseGitCommit(parentData);
             if (parentCommit) {
-              const parentTreeTxId = await resolveGitSha(parentCommit.treeSha, repoId);
+              const parentTreeTxId = await resolveGitSha(
+                parentCommit.treeSha,
+                repoId
+              );
               if (parentTreeTxId) {
                 const parentTreeData = await fetchArweaveObject(parentTreeTxId);
                 if (parentTreeData) {
@@ -93,7 +96,9 @@ export function useCommitDetail(
       }
     });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [sha, repoId, refs]);
 
   return { commit, changedFiles, loading, error };
@@ -106,7 +111,7 @@ export function useFileDiff(
   oldSha: string | undefined,
   newSha: string | undefined,
   repoId: string,
-  enabled: boolean,
+  enabled: boolean
 ) {
   const [diff, setDiff] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -145,9 +150,12 @@ export function useFileDiff(
       // Serialize hunks to unified diff text
       const lines: string[] = [];
       for (const hunk of hunks) {
-        lines.push(`@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`);
+        lines.push(
+          `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`
+        );
         for (const line of hunk.lines) {
-          const prefix = line.type === 'add' ? '+' : line.type === 'delete' ? '-' : ' ';
+          const prefix =
+            line.type === 'add' ? '+' : line.type === 'delete' ? '-' : ' ';
           lines.push(`${prefix}${line.content}`);
         }
       }
@@ -160,7 +168,9 @@ export function useFileDiff(
       if (!cancelled) setLoading(false);
     });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [oldSha, newSha, repoId, enabled]);
 
   return { diff, loading };

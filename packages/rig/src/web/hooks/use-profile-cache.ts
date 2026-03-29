@@ -25,7 +25,9 @@ interface ProfileCacheContextValue {
   requestProfiles: (pubkeys: string[]) => void;
 }
 
-const ProfileCacheContext = createContext<ProfileCacheContextValue | null>(null);
+const ProfileCacheContext = createContext<ProfileCacheContextValue | null>(
+  null
+);
 
 export function ProfileCacheProvider({ children }: { children: ReactNode }) {
   const { relayUrl } = useRigConfig();
@@ -67,7 +69,7 @@ export function ProfileCacheProvider({ children }: { children: ReactNode }) {
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(flush, 50);
     },
-    [flush],
+    [flush]
   );
 
   useEffect(() => {
@@ -78,7 +80,7 @@ export function ProfileCacheProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ProfileCacheContextValue>(
     () => ({ cache: profileCache, version, requestProfiles }),
-    [version, requestProfiles],
+    [version, requestProfiles]
   );
 
   return createElement(ProfileCacheContext.Provider, { value }, children);
@@ -93,7 +95,7 @@ export function useProfileCache() {
 
   const getDisplayName = useCallback(
     (pubkey: string) => cache.getDisplayName(pubkey),
-    [cache, version],
+    [cache, version]
   );
 
   return { getDisplayName, requestProfiles, version };

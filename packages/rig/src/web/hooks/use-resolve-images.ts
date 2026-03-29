@@ -14,7 +14,7 @@ export function useResolveImages(
   html: string | null,
   treeSha: string | null,
   repoId: string,
-  _refs: RepoRefs | null,
+  _refs: RepoRefs | null
 ): string | null {
   const [resolved, setResolved] = useState(html);
 
@@ -79,14 +79,16 @@ export function useResolveImages(
         const escaped = oldPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         newHtml = newHtml.replace(
           new RegExp(`(src=")${escaped}(")`, 'g'),
-          `$1${newUrl}$2`,
+          `$1${newUrl}$2`
         );
       }
 
       setResolved(newHtml);
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [html, treeSha, repoId, _refs]);
 
   return resolved;

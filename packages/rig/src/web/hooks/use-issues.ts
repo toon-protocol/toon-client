@@ -2,10 +2,7 @@ import { useMemo } from 'react';
 import { useRigConfig } from './use-rig-config.js';
 import { useRelay } from './use-relay.js';
 import { npubToHex } from '../npub.js';
-import {
-  parseIssue,
-  resolveIssueStatus,
-} from '../nip34-parsers.js';
+import { parseIssue, resolveIssueStatus } from '../nip34-parsers.js';
 import {
   buildIssueListFilter,
   buildIssueCloseFilter,
@@ -34,7 +31,11 @@ export function useIssues(owner: string, repoId: string): UseIssuesResult {
     return buildIssueListFilter(ownerHex, repoId);
   }, [ownerHex, repoId]);
 
-  const { events: issueEvents, loading: issuesLoading, error: issuesError } = useRelay(relayUrl, issueFilter);
+  const {
+    events: issueEvents,
+    loading: issuesLoading,
+    error: issuesError,
+  } = useRelay(relayUrl, issueFilter);
 
   // Fetch close events for all issue IDs
   const closeFilter = useMemo<NostrFilter | null>(() => {
@@ -44,7 +45,10 @@ export function useIssues(owner: string, repoId: string): UseIssuesResult {
     return buildIssueCloseFilter(ids);
   }, [issueEvents]);
 
-  const { events: closeEvents, loading: closeLoading } = useRelay(relayUrl, closeFilter);
+  const { events: closeEvents, loading: closeLoading } = useRelay(
+    relayUrl,
+    closeFilter
+  );
 
   const issues = useMemo(() => {
     const parsed: IssueMetadata[] = [];

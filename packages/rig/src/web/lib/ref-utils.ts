@@ -4,8 +4,10 @@ import type { RepoRefs } from '../nip34-parsers.js';
  * Strip the refs/heads/ or refs/tags/ prefix from a ref name for URL display.
  */
 export function shortRefName(fullRef: string): string {
-  if (fullRef.startsWith('refs/heads/')) return fullRef.slice('refs/heads/'.length);
-  if (fullRef.startsWith('refs/tags/')) return fullRef.slice('refs/tags/'.length);
+  if (fullRef.startsWith('refs/heads/'))
+    return fullRef.slice('refs/heads/'.length);
+  if (fullRef.startsWith('refs/tags/'))
+    return fullRef.slice('refs/tags/'.length);
   return fullRef;
 }
 

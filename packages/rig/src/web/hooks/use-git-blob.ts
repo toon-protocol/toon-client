@@ -12,7 +12,7 @@ interface UseGitBlobResult {
 export function useGitBlob(
   sha: string | null,
   repoId: string,
-  refs: RepoRefs | null,
+  refs: RepoRefs | null
 ): UseGitBlobResult {
   const [data, setData] = useState<Uint8Array | null>(null);
   const [loading, setLoading] = useState(!!sha);

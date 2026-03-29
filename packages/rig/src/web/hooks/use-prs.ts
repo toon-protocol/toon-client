@@ -28,7 +28,11 @@ export function usePRs(owner: string, repoId: string): UsePRsResult {
     return buildPRListFilter(ownerHex, repoId);
   }, [ownerHex, repoId]);
 
-  const { events: prEvents, loading: prsLoading, error: prsError } = useRelay(relayUrl, prFilter);
+  const {
+    events: prEvents,
+    loading: prsLoading,
+    error: prsError,
+  } = useRelay(relayUrl, prFilter);
 
   const statusFilter = useMemo<NostrFilter | null>(() => {
     if (prEvents.length === 0) return null;
@@ -37,7 +41,10 @@ export function usePRs(owner: string, repoId: string): UsePRsResult {
     return buildStatusFilter(ids);
   }, [prEvents]);
 
-  const { events: statusEvents, loading: statusLoading } = useRelay(relayUrl, statusFilter);
+  const { events: statusEvents, loading: statusLoading } = useRelay(
+    relayUrl,
+    statusFilter
+  );
 
   const prs = useMemo(() => {
     const parsed: PRMetadata[] = [];

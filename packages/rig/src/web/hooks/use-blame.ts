@@ -16,7 +16,7 @@ export function useBlame(
   startSha: string | null,
   repoId: string,
   refs: RepoRefs | null,
-  maxDepth = 50,
+  maxDepth = 50
 ): UseBlameResult {
   const [result, setResult] = useState<BlameResult | null>(null);
   const [blameError, setBlameError] = useState<BlameError | null>(null);
@@ -58,7 +58,9 @@ export function useBlame(
         }
       });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [filePath, startSha, repoId, refs, maxDepth]);
 
   return { result, blameError, loading, error };
