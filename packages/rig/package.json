@@ -9,6 +9,7 @@
     "dev": "vite",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:seed": "vitest run --config vitest.seed.config.ts",
     "test:e2e": "playwright test",
     "test:watch": "vitest"
   },
@@ -26,6 +27,9 @@
     "tailwind-merge": "^2.0.0"
   },
   "devDependencies": {
+    "@toon-protocol/client": "workspace:*",
+    "@toon-protocol/relay": "workspace:*",
+    "@toon-protocol/core": "workspace:*",
     "@playwright/test": "^1.42.0",
     "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.0.0",
