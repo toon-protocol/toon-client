@@ -18,48 +18,27 @@ If not installed:
 - **macOS:** Install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 - **Linux:** Install [Docker Engine](https://docs.docker.com/engine/install/) and [Docker Compose](https://docs.docker.com/compose/install/)
 
-### 2. Build Docker Images
-
-Build the required Docker images from the repository root:
-
-```bash
-# Build TOON image (relay + BLS)
-docker build -f docker/Dockerfile -t toon:optimized .
-
-# Build connector image
-cd ../connector
-docker build -t connector:patched .
-cd ../toon
-```
-
 ## Running E2E Tests
 
 ### Step 1: Start Infrastructure
 
-From the repository root, start the genesis node infrastructure:
+From the repository root, start the SDK E2E infrastructure:
 
 ```bash
-docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
-```
-
-Expected output:
-
-```
-✔ Container toon-connector  Started
-✔ Container toon-node       Started
+./scripts/sdk-e2e-infra.sh up
 ```
 
 ### Step 2: Verify Services Are Healthy
 
-Wait 5-10 seconds for services to start, then verify:
+Wait for the infrastructure script to complete, then verify:
 
 ```bash
-# Connector runtime (required)
-curl http://localhost:8080/health
+# Peer 1 BLS (required)
+curl http://localhost:19100/health
 # Expected: 200 OK or {"status":"ok"}
 
-# TOON BLS (required)
-curl http://localhost:3100/health
+# Peer 2 BLS (required)
+curl http://localhost:19110/health
 # Expected: 200 OK or {"status":"ok"}
 ```
 
@@ -84,10 +63,7 @@ After testing, stop the infrastructure:
 
 ```bash
 # From repository root
-docker compose -p toon-genesis -f docker-compose-genesis.yml down
-
-# Optional: Remove volumes (clears event database)
-docker compose -p toon-genesis -f docker-compose-genesis.yml down -v
+./scripts/sdk-e2e-infra.sh down
 ```
 
 ## Troubleshooting
@@ -98,16 +74,15 @@ docker compose -p toon-genesis -f docker-compose-genesis.yml down -v
 
 **Solution:**
 
-1. Verify infrastructure is running: `docker compose -p toon-genesis -f docker-compose-genesis.yml ps`
+1. Verify infrastructure is running: `docker compose -p toon-sdk-e2e -f docker-compose-sdk-e2e.yml ps`
 2. Check service health:
    ```bash
-   curl http://localhost:8080/health  # Connector
-   curl http://localhost:3100/health  # BLS
+   curl http://localhost:19100/health  # Peer 1 BLS
+   curl http://localhost:19110/health  # Peer 2 BLS
    ```
 3. If services are not healthy, check logs:
    ```bash
-   docker compose -p toon-genesis -f docker-compose-genesis.yml logs connector
-   docker compose -p toon-genesis -f docker-compose-genesis.yml logs toon-node
+   docker compose -p toon-sdk-e2e -f docker-compose-sdk-e2e.yml logs
    ```
 
 ### Port Conflicts
@@ -117,66 +92,43 @@ docker compose -p toon-genesis -f docker-compose-genesis.yml down -v
 **Solution:**
 
 ```bash
-# Find process using port 8080 (connector runtime)
-lsof -ti:8080 | xargs kill -9
+# Find process using port 19100 (Peer 1 BLS)
+lsof -ti:19100 | xargs kill -9
 
-# Find process using port 8081 (connector admin)
-lsof -ti:8081 | xargs kill -9
+# Find process using port 19110 (Peer 2 BLS)
+lsof -ti:19110 | xargs kill -9
 
-# Find process using port 7100 (Nostr relay)
-lsof -ti:7100 | xargs kill -9
+# Find process using port 19700 (Peer 1 relay)
+lsof -ti:19700 | xargs kill -9
 
-# Find process using port 3100 (BLS)
-lsof -ti:3100 | xargs kill -9
+# Find process using port 18545 (Anvil)
+lsof -ti:18545 | xargs kill -9
 ```
 
 Then restart infrastructure:
 
 ```bash
-docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
+./scripts/sdk-e2e-infra.sh down && ./scripts/sdk-e2e-infra.sh up
 ```
-
-### Images Not Found
-
-**Symptom:** `Error: pull access denied for toon:optimized`
-
-**Solution:**
-Build the images first (see Prerequisites step 2 above).
-
-### Connector Health Check Fails
-
-**Symptom:** `curl http://localhost:8080/health` returns connection refused
-
-**Solution:**
-
-1. Check if connector container is running:
-   ```bash
-   docker compose -p toon-genesis -f docker-compose-genesis.yml ps
-   ```
-2. Check connector logs:
-   ```bash
-   docker compose -p toon-genesis -f docker-compose-genesis.yml logs connector
-   ```
-3. Restart infrastructure:
-   ```bash
-   docker compose -p toon-genesis -f docker-compose-genesis.yml restart
-   ```
 
 ### BLS Health Check Fails
 
-**Symptom:** `curl http://localhost:3100/health` returns connection refused
+**Symptom:** `curl http://localhost:19100/health` returns connection refused
 
 **Solution:**
 
-1. Check if toon-node container is running:
+1. Check if containers are running:
    ```bash
-   docker compose -p toon-genesis -f docker-compose-genesis.yml ps
+   docker compose -p toon-sdk-e2e -f docker-compose-sdk-e2e.yml ps
    ```
-2. Check BLS logs:
+2. Check logs:
    ```bash
-   docker compose -p toon-genesis -f docker-compose-genesis.yml logs toon-node
+   docker compose -p toon-sdk-e2e -f docker-compose-sdk-e2e.yml logs
    ```
-3. Verify BLS config in docker-compose-genesis.yml
+3. Restart infrastructure:
+   ```bash
+   ./scripts/sdk-e2e-infra.sh down && ./scripts/sdk-e2e-infra.sh up
+   ```
 
 ### Tests Timeout
 
@@ -246,19 +198,13 @@ To run E2E tests in CI:
 ```yaml
 # Example GitHub Actions workflow
 - name: Start Infrastructure
-  run: docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
-
-- name: Wait for Services
-  run: |
-    sleep 10
-    curl --retry 5 --retry-delay 2 http://localhost:8080/health
-    curl --retry 5 --retry-delay 2 http://localhost:3100/health
+  run: ./scripts/sdk-e2e-infra.sh up
 
 - name: Run E2E Tests
   run: cd packages/client && pnpm test:e2e
 
 - name: Stop Infrastructure
-  run: docker compose -p toon-genesis -f docker-compose-genesis.yml down
+  run: ./scripts/sdk-e2e-infra.sh down
 ```
 
 ## Further Reading

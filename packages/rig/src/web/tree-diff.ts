@@ -1,5 +1,5 @@
 /**
- * Tree-to-tree diff computation for Forge-UI.
+ * Tree-to-tree diff computation for Rig-UI.
  *
  * Compares two git tree entry arrays and produces a flat diff
  * (one level only, no recursive subdirectory expansion).

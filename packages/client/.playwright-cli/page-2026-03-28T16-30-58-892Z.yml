@@ -1,0 +1,65 @@
+- generic [ref=e2]:
+  - banner [ref=e10]:
+    - generic [ref=e11]:
+      - link "⚒ Rig" [ref=e12] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e13]: ws://localhost:19700
+  - main [ref=e14]:
+    - navigation [ref=e15]:
+      - link "Code" [ref=e16] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/tree/refs%2Fheads%2Fmain/
+      - link "Issues" [ref=e17] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues
+      - link "Pull Requests" [ref=e18] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/pulls
+    - generic [ref=e19]:
+      - combobox [ref=e21] [cursor=pointer]:
+        - option "main" [selected]
+      - generic [ref=e22]:
+        - generic [ref=e23]: HTTPS
+        - textbox [ref=e24]: https://github.com/alice-toon/hello-toon.git
+        - button "Copy URL" [ref=e25] [cursor=pointer]:
+          - img [ref=e26]
+    - navigation [ref=e28]:
+      - generic [ref=e29]: refs/heads/main
+      - link "hello-toon" [ref=e30] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/tree/refs%2Fheads%2Fmain/
+      - link "Commits" [ref=e31] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/commits/refs%2Fheads%2Fmain
+    - generic [ref=e32]:
+      - generic [ref=e33]:
+        - generic [ref=e34]: Alice
+        - 'link "Initial commit: hello-toon repository" [ref=e35] [cursor=pointer]':
+          - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/commit/fc93d660bdc5bf3c36922ae6664ce3200ab17dec
+        - generic [ref=e36]:
+          - link "fc93d66" [ref=e37] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/commit/fc93d660bdc5bf3c36922ae6664ce3200ab17dec
+          - generic [ref=e38]: 8 minutes ago
+      - table [ref=e39]:
+        - rowgroup [ref=e40]:
+          - 'row "LICENSE Initial commit: hello-toon repository 8 minutes ago" [ref=e41]':
+            - cell [ref=e42]:
+              - img [ref=e43]
+            - cell "LICENSE" [ref=e45]:
+              - link "LICENSE" [ref=e46] [cursor=pointer]:
+                - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/blob/refs%2Fheads%2Fmain/LICENSE
+            - 'cell "Initial commit: hello-toon repository" [ref=e47]':
+              - 'link "Initial commit: hello-toon repository" [ref=e48] [cursor=pointer]':
+                - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/commit/fc93d660bdc5bf3c36922ae6664ce3200ab17dec
+            - cell "8 minutes ago" [ref=e49]
+          - 'row "README.md Initial commit: hello-toon repository 8 minutes ago" [ref=e50]':
+            - cell [ref=e51]:
+              - img [ref=e52]
+            - cell "README.md" [ref=e54]:
+              - link "README.md" [ref=e55] [cursor=pointer]:
+                - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/blob/refs%2Fheads%2Fmain/README.md
+            - 'cell "Initial commit: hello-toon repository" [ref=e56]':
+              - 'link "Initial commit: hello-toon repository" [ref=e57] [cursor=pointer]':
+                - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/commit/fc93d660bdc5bf3c36922ae6664ce3200ab17dec
+            - cell "8 minutes ago" [ref=e58]
+    - generic [ref=e59]:
+      - generic [ref=e60]: 📖 README.md
+      - generic [ref=e61]:
+        - heading "hello-toon" [level=1] [ref=e62]
+        - paragraph [ref=e63]: A demo repository created by autonomous TOON agents.
+  - contentinfo [ref=e64]: Rig — Decentralized Git on Nostr & TOON Protocol

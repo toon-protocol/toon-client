@@ -1,0 +1,38 @@
+- generic [ref=e2]:
+  - banner [ref=e74]:
+    - generic [ref=e75]:
+      - link "⚒ Rig" [ref=e76] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e77]: ws://localhost:19700
+  - main [ref=e78]:
+    - navigation [ref=e79]:
+      - link "Code" [ref=e80] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/tree/refs%2Fheads%2Fmain/
+      - link "Issues" [ref=e81] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues
+      - link "Pull Requests" [ref=e82] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/pulls
+    - navigation [ref=e83]:
+      - generic [ref=e84]: refs/heads/main
+      - link "hello-toon" [ref=e85] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/tree/refs%2Fheads%2Fmain/
+      - text: /
+      - generic [ref=e86]: Commits
+    - generic [ref=e87]:
+      - generic [ref=e88]:
+        - generic [ref=e89]:
+          - link "a70b5bc" [ref=e90] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/commit/a70b5bce72c0280cec4dbca2760caf3edb481133
+          - generic [ref=e91]: "Merge: Add CONTRIBUTING.md"
+        - generic [ref=e92]:
+          - generic [ref=e93]: Dave
+          - generic [ref=e94]: 1 minute ago
+      - generic [ref=e95]:
+        - generic [ref=e96]:
+          - link "0944e8b" [ref=e97] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/commit/0944e8b949114e25136523481517e6111b91bfba
+          - generic [ref=e98]: "Initial commit: hello-toon"
+        - generic [ref=e99]:
+          - generic [ref=e100]: Alice
+          - generic [ref=e101]: 1 minute ago
+  - contentinfo [ref=e102]: Rig — Decentralized Git on Nostr & TOON Protocol

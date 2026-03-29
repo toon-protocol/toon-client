@@ -2,7 +2,7 @@
  * Minimal bech32 npub encoding for Nostr pubkeys.
  *
  * Implements bech32 encoding (BIP-173 / NIP-19) without external dependencies.
- * Only supports encoding hex pubkeys to npub format — no decoding needed for Forge-UI.
+ * Only supports encoding hex pubkeys to npub format — no decoding needed for Rig-UI.
  */
 
 const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -14,7 +14,7 @@ function bech32Polymod(values: number[]): number {
     const b = chk >> 25;
     chk = ((chk & 0x1ffffff) << 5) ^ v;
     for (let i = 0; i < 5; i++) {
-      chk ^= (b >> i) & 1 ? GEN[i]! : 0;
+      chk ^= (b >> i) & 1 ? (GEN[i] as number) : 0;
     }
   }
   return chk;
@@ -89,6 +89,61 @@ export function hexToNpub(hexPubkey: string): string {
   const checksum = bech32CreateChecksum(hrp, words);
   const combined = words.concat(checksum);
   return hrp + '1' + combined.map((d) => BECH32_CHARSET[d]).join('');
+}
+
+/**
+ * Decode an npub bech32 string back to a 64-character hex pubkey.
+ *
+ * @param npub - bech32-encoded npub string (e.g., "npub1abc...xyz")
+ * @returns 64-character hex string
+ * @throws if the input is not a valid npub
+ */
+export function npubToHex(npub: string): string {
+  const lower = npub.toLowerCase();
+  if (lower !== npub && npub.toUpperCase() !== npub) {
+    throw new Error('npub: mixed case');
+  }
+  if (!lower.startsWith('npub1')) {
+    throw new Error('npub: invalid prefix');
+  }
+  if (lower.length !== 63) {
+    throw new Error('npub: invalid length');
+  }
+
+  const data: number[] = [];
+  for (let i = 5; i < lower.length; i++) {
+    const idx = BECH32_CHARSET.indexOf(lower[i] as string);
+    if (idx === -1) throw new Error('npub: invalid character');
+    data.push(idx);
+  }
+
+  // Verify checksum
+  const hrpExpanded = bech32HrpExpand('npub');
+  if (bech32Polymod(hrpExpanded.concat(data)) !== 1) {
+    throw new Error('npub: invalid checksum');
+  }
+
+  // Strip 6-byte checksum, convert 5-bit words back to 8-bit bytes
+  const words = data.slice(0, -6);
+  const bytes = convertBits(words, 5, 8, false);
+
+  // Validate: must produce exactly 32 bytes
+  if (bytes.length !== 32) {
+    throw new Error('npub: invalid data length');
+  }
+
+  // Validate trailing bits are zero
+  const totalBits = words.length * 5;
+  const trailingBits = totalBits - bytes.length * 8;
+  if (trailingBits > 0) {
+    const lastWord = words[words.length - 1] as number;
+    const mask = (1 << trailingBits) - 1;
+    if ((lastWord & mask) !== 0) {
+      throw new Error('npub: non-zero padding bits');
+    }
+  }
+
+  return bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**

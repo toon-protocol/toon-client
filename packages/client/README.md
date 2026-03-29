@@ -21,28 +21,28 @@ pnpm add @toon-protocol/client @toon-protocol/core @toon-protocol/relay nostr-to
 
 ## Prerequisites
 
-The client requires external services. Use docker-compose for local development:
+The client requires external services. Use the SDK E2E infrastructure for local development:
 
 ```bash
-# Start genesis node
-docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
+# Start SDK E2E infrastructure
+./scripts/sdk-e2e-infra.sh up
 
 # Verify services are healthy
-curl http://localhost:8080/health  # ILP Connector (runtime)
-curl http://localhost:8081/health  # ILP Connector (admin)
-curl http://localhost:3100/health  # TOON BLS
-# Nostr relay on ws://localhost:7100 (WebSocket, no HTTP endpoint)
+curl http://localhost:19100/health  # Peer 1 BLS
+curl http://localhost:19110/health  # Peer 2 BLS
+# Nostr relays on ws://localhost:19700 and ws://localhost:19710 (WebSocket, no HTTP endpoint)
 
 # Stop infrastructure
-docker compose -p toon-genesis -f docker-compose-genesis.yml down
+./scripts/sdk-e2e-infra.sh down
 ```
 
-| Service                     | Port | Purpose                                             |
-| --------------------------- | ---- | --------------------------------------------------- |
-| **ILP Connector (Runtime)** | 8080 | Routes ILP packets to relay                         |
-| **ILP Connector (Admin)**   | 8081 | Manages peer configuration                          |
-| **TOON BLS**           | 3100 | Validates events, calculates pricing, stores events |
-| **Nostr Relay**             | 7100 | WebSocket relay for peer discovery (kind:10032)     |
+| Service          | Port  | Purpose                                             |
+| ---------------- | ----- | --------------------------------------------------- |
+| **Anvil**        | 18545 | Local EVM chain (chain ID 31337)                    |
+| **Peer 1 BLS**   | 19100 | Validates events, calculates pricing, stores events |
+| **Peer 1 Relay** | 19700 | WebSocket relay for peer discovery (kind:10032)     |
+| **Peer 2 BLS**   | 19110 | Validates events, calculates pricing, stores events |
+| **Peer 2 Relay** | 19710 | WebSocket relay for peer discovery (kind:10032)     |
 
 ---
 
@@ -170,12 +170,11 @@ pnpm test:coverage        # Run with coverage report
 
 ### E2E Tests
 
-E2E tests require the genesis node infrastructure:
+E2E tests require the SDK E2E infrastructure:
 
 ```bash
 # Start infrastructure
-docker compose -p toon-genesis -f docker-compose-genesis.yml up -d
-sleep 10
+./scripts/sdk-e2e-infra.sh up
 
 # Run E2E tests
 cd packages/client

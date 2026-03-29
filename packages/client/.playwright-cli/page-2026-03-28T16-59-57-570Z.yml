@@ -1,0 +1,73 @@
+- generic [ref=e2]:
+  - banner [ref=e10]:
+    - generic [ref=e11]:
+      - link "⚒ Rig" [ref=e12] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e13]: ws://localhost:19700
+  - main [ref=e14]:
+    - navigation [ref=e15]:
+      - link "Code" [ref=e16] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/
+      - link "Issues" [ref=e17] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues
+      - link "Pull Requests" [ref=e18] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/pulls
+    - generic [ref=e19]: ℹ Rig-UI is read-only. To create issues or submit patches, use a TOON agent with the NIP-34 skill.
+    - generic [ref=e20]:
+      - generic [ref=e21]:
+        - generic [ref=e22]:
+          - generic [ref=e23]: open
+          - link "Add .gitignore" [ref=e24] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues/98a2f5966ae21bb5208b1d0fbd077c2972440079c7b320e18bbf0c738afa0743
+          - generic [ref=e25]: good-first-issue
+        - generic [ref=e26]:
+          - generic [ref=e27]: Alice
+          - generic [ref=e28]: 7 minutes ago
+      - generic [ref=e29]:
+        - generic [ref=e30]:
+          - generic [ref=e31]: open
+          - link "Add CONTRIBUTING.md" [ref=e32] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues/05aa4f6bdaa348d0a407ab3c4341f84d670716f27afb34b477d1133458af61d7
+          - generic [ref=e33]: good-first-issue
+          - generic [ref=e34]: documentation
+        - generic [ref=e35]:
+          - generic [ref=e36]: Alice
+          - generic [ref=e37]: 7 minutes ago
+      - generic [ref=e38]:
+        - generic [ref=e39]:
+          - generic [ref=e40]: open
+          - link "Add .gitignore" [ref=e41] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues/1e8b2e921868478349019a58c7be7413e6a8f5c76a54317fdbd0c2fc40faa844
+          - generic [ref=e42]: good-first-issue
+        - generic [ref=e43]:
+          - generic [ref=e44]: Alice
+          - generic [ref=e45]: 18 minutes ago
+      - generic [ref=e46]:
+        - generic [ref=e47]:
+          - generic [ref=e48]: open
+          - link "Add CONTRIBUTING.md" [ref=e49] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues/01e0d0db520b3ecc89080d2047c3c068afe15dc68912104c1ec756097604d484
+          - generic [ref=e50]: good-first-issue
+          - generic [ref=e51]: documentation
+        - generic [ref=e52]:
+          - generic [ref=e53]: Alice
+          - generic [ref=e54]: 18 minutes ago
+      - generic [ref=e55]:
+        - generic [ref=e56]:
+          - generic [ref=e57]: open
+          - link "greet() crashes on empty string input" [ref=e58] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues/816bfd078ec58ca7f4978500e2fbdf6dac5246f6dff3aa1a7f98487c9b1f4313
+          - generic [ref=e59]: bug
+        - generic [ref=e60]:
+          - generic [ref=e61]: Alice
+          - generic [ref=e62]: 1 hour ago
+      - generic [ref=e63]:
+        - generic [ref=e64]:
+          - generic [ref=e65]: open
+          - link "Add locale support to greet()" [ref=e66] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues/f38f1de53f3496622fe3102842c50c37b56a41e0c7397fa4319b65e12232ce2f
+          - generic [ref=e67]: enhancement
+        - generic [ref=e68]:
+          - generic [ref=e69]: Alice
+          - generic [ref=e70]: 1 hour ago
+  - contentinfo [ref=e71]: Rig — Decentralized Git on Nostr & TOON Protocol

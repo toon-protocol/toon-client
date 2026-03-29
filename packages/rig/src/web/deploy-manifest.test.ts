@@ -18,18 +18,18 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-type ManifestEntry = {
+interface ManifestEntry {
   path: string;
   txId: string;
-};
+}
 
-type ArweaveManifest = {
+interface ArweaveManifest {
   manifest: string;
   version: string;
   index: { path: string };
   fallback?: { id: string };
   paths: Record<string, { id: string }>;
-};
+}
 
 describe('Deploy Manifest - 8.7-UNIT-005: Arweave path manifest generation', () => {
   it('[P0] generates valid manifest with correct structure', () => {
@@ -280,10 +280,10 @@ describe('Deploy Script - 8.7-UNIT-004: File collection', () => {
     // Then: we find at least one .ts file with correct structure
     expect(files.length).toBeGreaterThan(0);
     const tsFile = files.find(
-      (f: { relativePath: string }) => f.relativePath === 'router.ts'
+      (f: { relativePath: string }) => f.relativePath === 'url-utils.ts'
     );
     expect(tsFile).toBeDefined();
-    expect(tsFile.absolutePath).toContain('router.ts');
+    expect(tsFile.absolutePath).toContain('url-utils.ts');
     expect(tsFile.size).toBeGreaterThan(0);
   });
 

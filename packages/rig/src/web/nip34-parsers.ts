@@ -1,5 +1,5 @@
 /**
- * NIP-34 event parsers for Forge-UI.
+ * NIP-34 event parsers for Rig-UI.
  *
  * Parses kind:30617 repository announcement events into RepoMetadata,
  * kind:1621 issue events into IssueMetadata, kind:1617 patch events
@@ -333,12 +333,34 @@ export function resolvePRStatus(
   }
 
   // Find most recent by created_at
-  let latest = relevant[0]!;
+  let latest = relevant[0] as (typeof relevant)[number];
   for (let i = 1; i < relevant.length; i++) {
-    if (relevant[i]!.created_at > latest.created_at) {
-      latest = relevant[i]!;
+    const entry = relevant[i] as (typeof relevant)[number];
+    if (entry.created_at > latest.created_at) {
+      latest = entry;
     }
   }
 
   return KIND_STATUS_MAP[latest.kind] ?? 'open';
+}
+
+/**
+ * Resolve the status of an issue from close events (kind:1632).
+ *
+ * An issue is closed if ANY kind:1632 event has an `e` tag referencing
+ * the issue's event ID; otherwise it is open.
+ *
+ * @param issueEventId - The issue event ID to resolve status for
+ * @param closeEvents - Array of kind:1632 events
+ * @returns Resolved status string
+ */
+export function resolveIssueStatus(
+  issueEventId: string,
+  closeEvents: NostrEvent[]
+): 'open' | 'closed' {
+  const isClosed = closeEvents.some((evt) => {
+    const eTag = getTagValue(evt.tags, 'e');
+    return eTag === issueEventId && evt.kind === 1632;
+  });
+  return isClosed ? 'closed' : 'open';
 }

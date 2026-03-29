@@ -1,5 +1,5 @@
 /**
- * Date formatting utilities for Forge-UI.
+ * Date formatting utilities for Rig-UI.
  *
  * Provides relative date formatting for commit timestamps.
  * No external date library — uses vanilla JS Date math.

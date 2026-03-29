@@ -1,5 +1,6 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion -- safe array-index accesses in binary parsing */
 /**
- * Browser-compatible git object parsers for Forge-UI.
+ * Browser-compatible git object parsers for Rig-UI.
  *
  * Parses git tree, commit, and blob objects from raw bytes (Uint8Array).
  * Does NOT use Node.js Buffer — uses Uint8Array, TextDecoder, and manual
@@ -39,8 +40,8 @@ export interface GitCommit {
  */
 function bytesToHex(bytes: Uint8Array): string {
   const hex: string[] = [];
-  for (let i = 0; i < bytes.length; i++) {
-    hex.push(bytes[i]!.toString(16).padStart(2, '0'));
+  for (const byte of bytes) {
+    hex.push(byte.toString(16).padStart(2, '0'));
   }
   return hex.join('');
 }
@@ -211,6 +212,23 @@ export function isBinaryBlob(data: Uint8Array): boolean {
 
     // Null byte is a strong binary indicator
     if (byte === 0x00) return true;
+
+    // Skip valid UTF-8 multi-byte sequences
+    if (byte >= 0xc0 && byte <= 0xf7) {
+      const seqLen = byte < 0xe0 ? 2 : byte < 0xf0 ? 3 : 4;
+      let valid = true;
+      for (let j = 1; j < seqLen && i + j < checkLength; j++) {
+        const cont = data[i + j]!;
+        if (cont < 0x80 || cont > 0xbf) {
+          valid = false;
+          break;
+        }
+      }
+      if (valid) {
+        i += seqLen - 1; // skip continuation bytes
+        continue;
+      }
+    }
 
     // Check if non-printable (outside tab/newline/CR/FF and printable ASCII)
     const isPrintable =

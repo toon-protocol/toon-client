@@ -2,7 +2,7 @@
  * HTML escaping utilities for XSS prevention.
  *
  * All user-supplied content from Nostr events MUST be escaped before
- * rendering into HTML. This is the primary security surface for Forge-UI.
+ * rendering into HTML. This is the primary security surface for Rig-UI.
  */
 
 const HTML_ESCAPE_MAP: Record<string, string> = {

@@ -1,5 +1,5 @@
 /**
- * Arweave gateway client for Forge-UI.
+ * Arweave gateway client for Rig-UI.
  *
  * Fetches git objects from Arweave gateways and resolves git SHAs
  * to Arweave transaction IDs via GraphQL.
@@ -37,6 +37,7 @@ function isValidGitSha(sha: string): boolean {
  * including backticks which some GraphQL parsers may interpret.
  */
 function sanitizeGraphQLValue(value: string): string {
+  // eslint-disable-next-line no-control-regex -- intentional: strip control chars for GraphQL safety
   return value.replace(/["\\\n\r\u0000-\u001f`]/g, '');
 }
 
@@ -56,7 +57,7 @@ export function clearShaCache(): void {
  * @param mappings - Map of "sha:repo" cache keys to Arweave transaction IDs
  */
 export function seedShaCache(
-  mappings: Map<string, string> | Array<[string, string]>
+  mappings: Map<string, string> | [string, string][]
 ): void {
   const entries = mappings instanceof Map ? mappings.entries() : mappings;
   for (const [key, txId] of entries) {
@@ -170,7 +171,7 @@ export async function resolveGitSha(
     const json = (await response.json()) as {
       data?: {
         transactions?: {
-          edges?: Array<{ node?: { id?: string } }>;
+          edges?: { node?: { id?: string } }[];
         };
       };
     };

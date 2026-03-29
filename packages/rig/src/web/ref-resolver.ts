@@ -1,5 +1,5 @@
 /**
- * Default branch/ref resolution for Forge-UI.
+ * Default branch/ref resolution for Rig-UI.
  *
  * Resolves the default ref (branch) from repository metadata and refs events.
  */

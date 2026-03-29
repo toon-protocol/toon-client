@@ -1,0 +1,51 @@
+- generic [ref=e2]:
+  - banner [ref=e10]:
+    - generic [ref=e11]:
+      - link "⚒ Rig" [ref=e12] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e13]: ws://localhost:19700
+  - main [ref=e14]:
+    - navigation [ref=e15]:
+      - link "Code" [ref=e16] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/
+      - link "Issues" [ref=e17] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues
+      - link "Pull Requests" [ref=e18] [cursor=pointer]:
+        - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/pulls
+    - generic [ref=e19]: ℹ Rig-UI is read-only. To create issues or submit patches, use a TOON agent with the NIP-34 skill.
+    - generic [ref=e20]:
+      - button "Open (5)" [ref=e21] [cursor=pointer]
+      - button "Closed (3)" [active] [ref=e22] [cursor=pointer]
+      - button "All (8)" [ref=e23] [cursor=pointer]
+    - generic [ref=e24]:
+      - generic [ref=e66]:
+        - generic [ref=e67]:
+          - generic [ref=e68]: closed
+          - link "Add CONTRIBUTING.md" [ref=e69] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues/3c98020254e4708758f1b5fbc9665f0b2f1441237ba17e6db3f585c19480e801
+          - generic [ref=e70]: good-first-issue
+          - generic [ref=e71]: documentation
+        - generic [ref=e72]:
+          - generic [ref=e73]: Alice
+          - generic [ref=e74]: 5 minutes ago
+      - generic [ref=e75]:
+        - generic [ref=e76]:
+          - generic [ref=e77]: closed
+          - link "Add CONTRIBUTING.md" [ref=e78] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues/05aa4f6bdaa348d0a407ab3c4341f84d670716f27afb34b477d1133458af61d7
+          - generic [ref=e79]: good-first-issue
+          - generic [ref=e80]: documentation
+        - generic [ref=e81]:
+          - generic [ref=e82]: Alice
+          - generic [ref=e83]: 29 minutes ago
+      - generic [ref=e84]:
+        - generic [ref=e85]:
+          - generic [ref=e86]: closed
+          - link "Add CONTRIBUTING.md" [ref=e87] [cursor=pointer]:
+            - /url: /npub12hp2geugzpv6jshac6ggkpqjwwy9hpeqh750euh4l8pq5uasjexsfhymj5/hello-toon/issues/01e0d0db520b3ecc89080d2047c3c068afe15dc68912104c1ec756097604d484
+          - generic [ref=e88]: good-first-issue
+          - generic [ref=e89]: documentation
+        - generic [ref=e90]:
+          - generic [ref=e91]: Alice
+          - generic [ref=e92]: 40 minutes ago
+  - contentinfo [ref=e65]: Rig — Decentralized Git on Nostr & TOON Protocol

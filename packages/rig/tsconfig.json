@@ -16,8 +16,12 @@
     "noEmit": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-    "noPropertyAccessFromIndexSignature": true
+    "noPropertyAccessFromIndexSignature": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": ["./src/web/*"]
+    }
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx", "*.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

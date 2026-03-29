@@ -1,5 +1,5 @@
 /**
- * Markdown renderer for Forge-UI README display.
+ * Markdown renderer for Rig-UI README display.
  *
  * Uses `marked` for full GitHub Flavored Markdown rendering, with a
  * post-processing sanitizer that strips dangerous HTML (script, style,
@@ -83,9 +83,6 @@ const ALLOWED_ATTRS: Record<string, Set<string>> = {
   pre: new Set(['class']),
 };
 
-/** Protocols allowed in href/src attributes. Relative paths (no protocol) are also safe. */
-const SAFE_URL_RE = /^(?:https?:\/\/|mailto:|#|\/|[a-zA-Z0-9._-])/i;
-
 /** Dangerous URL schemes that must be blocked even if they match the general pattern. */
 const DANGEROUS_URL_RE = /^(?:javascript|vbscript|data):/i;
 
@@ -133,7 +130,7 @@ function sanitizeHtml(html: string): string {
           /([a-zA-Z][a-zA-Z0-9_-]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
         let attrMatch;
         while ((attrMatch = attrRegex.exec(attrs)) !== null) {
-          const attrName = attrMatch[1]!.toLowerCase();
+          const attrName = (attrMatch[1] as string).toLowerCase();
           const attrValue = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? '';
 
           // Skip event handlers (on*)
@@ -207,14 +204,17 @@ export function renderMarkdown(
 
   let result = sanitizeHtml(rawHtml);
 
-  // Rewrite relative image src and link href attributes if a resolver is provided
+  // Rewrite relative link href attributes if a resolver is provided
+  // Note: img src is NOT rewritten here — the useResolveImages hook resolves
+  // them post-render to actual Arweave gateway URLs so images display inline.
   if (options?.resolveRelativePath) {
     const resolve = options.resolveRelativePath;
+    // Rewrite relative a href (but not anchors starting with #)
     result = result.replace(
-      /(<(?:img|source)\b[^>]*\bsrc=")([^"]+)(")/gi,
-      (_match, before: string, src: string, after: string) => {
-        if (/^(?:https?:\/\/|data:|\/\/)/i.test(src)) return _match; // absolute — keep
-        const resolved = resolve(src);
+      /(<a\b[^>]*\bhref=")([^"]+)(")/gi,
+      (_match, before: string, href: string, after: string) => {
+        if (/^(?:https?:\/\/|data:|\/\/|#|mailto:)/i.test(href)) return _match;
+        const resolved = resolve(href);
         return resolved ? `${before}${escapeHtml(resolved)}${after}` : _match;
       }
     );
