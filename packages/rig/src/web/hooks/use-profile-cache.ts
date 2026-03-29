@@ -93,7 +93,6 @@ export function useProfileCache() {
 
   const getDisplayName = useCallback(
     (pubkey: string) => cache.getDisplayName(pubkey),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [cache, version],
   );
 

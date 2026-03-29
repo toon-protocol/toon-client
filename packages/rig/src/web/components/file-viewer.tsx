@@ -70,7 +70,8 @@ export function FileViewer({
     const rows: string[] = [];
 
     for (let i = 0; i < blameResult.lines.length; i++) {
-      const line = blameResult.lines[i]!;
+      const line = blameResult.lines[i];
+      if (!line) continue;
       if (line.commitSha !== prevSha) {
         blockIndex++;
         prevSha = line.commitSha;

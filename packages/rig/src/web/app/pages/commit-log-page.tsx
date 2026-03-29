@@ -25,7 +25,7 @@ export function CommitLogPage() {
   }, [refs, ref]);
 
   const { entries, loading, error } = useCommitLog(startSha, metadata.repoId, refs);
-  const { getDisplayName, requestProfiles } = useProfileCache();
+  const { getDisplayName: _getDisplayName, requestProfiles } = useProfileCache();
 
   // Request profiles for commit authors
   useEffect(() => {

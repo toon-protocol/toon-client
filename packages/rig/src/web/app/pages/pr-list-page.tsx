@@ -73,6 +73,7 @@ export function PRListPage() {
           <Table>
             <TableBody>
               {filtered.map((pr) => {
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
                 const badge = STATUS_BADGE[pr.status] ?? STATUS_BADGE['open']!;
                 return (
                   <TableRow key={pr.eventId}>

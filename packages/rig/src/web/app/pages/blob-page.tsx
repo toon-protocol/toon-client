@@ -53,7 +53,7 @@ export function BlobPage() {
       // Walk path to find blob, fetching each level
       let currentSha = commit.treeSha;
       for (let i = 0; i < pathSegments.length; i++) {
-        const segment = pathSegments[i]!;
+        const segment = pathSegments[i] ?? '';
         const treeTxId = await resolveGitSha(currentSha, metadata.repoId);
         if (!treeTxId || cancelled) return;
         const treeData = await fetchArweaveObject(treeTxId);

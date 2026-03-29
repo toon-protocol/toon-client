@@ -24,7 +24,7 @@ export function PRDetailPage() {
 
   // Use the latest commit SHA for diff view
   const latestCommitSha = pr?.commitShas[pr.commitShas.length - 1] ?? null;
-  const { commit, changedFiles, loading: diffLoading } = useCommitDetail(
+  const { commit: _commit, changedFiles, loading: diffLoading } = useCommitDetail(
     latestCommitSha,
     metadata.repoId,
     refs,

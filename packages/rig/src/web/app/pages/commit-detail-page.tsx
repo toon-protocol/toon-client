@@ -32,7 +32,7 @@ export function CommitDetailPage() {
   }
 
   const author = parseAuthorIdent(commit.author);
-  const committer = parseAuthorIdent(commit.committer);
+  const _committer = parseAuthorIdent(commit.committer);
   const [title, ...bodyLines] = commit.message.split('\n');
   const body = bodyLines.join('\n').trim();
   const initials = (author?.name ?? '?').slice(0, 2).toUpperCase();

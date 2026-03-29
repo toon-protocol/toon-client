@@ -50,12 +50,14 @@ export function useRepo(owner: string, repo: string): UseRepoResult {
 
   const metadata = useMemo(() => {
     if (repoEvents.length === 0) return null;
-    return parseRepoAnnouncement(repoEvents[0]!) ?? null;
+    const first = repoEvents[0];
+    return first ? (parseRepoAnnouncement(first) ?? null) : null;
   }, [repoEvents]);
 
   const refs = useMemo(() => {
     if (refsEvents.length === 0) return null;
-    return parseRepoRefs(refsEvents[0]!) ?? null;
+    const first = refsEvents[0];
+    return first ? (parseRepoRefs(first) ?? null) : null;
   }, [refsEvents]);
 
   return {

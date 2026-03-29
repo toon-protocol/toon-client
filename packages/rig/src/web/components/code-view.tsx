@@ -26,7 +26,7 @@ export function CodeView({ text, filename }: CodeViewProps) {
         setHtml(buildPlainTable(text));
         return;
       }
-      const inner = codeMatch[1]!;
+      const inner = codeMatch[1] ?? '';
       const lineSpans = inner.split(/<span class="line">/);
       const extracted = lineSpans
         .map((s) => s.replace(/<\/span>$/, '').trim())
@@ -54,7 +54,7 @@ export function CodeView({ text, filename }: CodeViewProps) {
 
       // Remove previous highlight
       if (activeRef.current !== null) {
-        table!.querySelector(`tr.line-active`)?.classList.remove('line-active');
+        table?.querySelector(`tr.line-active`)?.classList.remove('line-active');
       }
 
       // Toggle or set new

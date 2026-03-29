@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef, useCallback } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { useOutletContext } from 'react-router';
 import type { RepoContext } from '@/app/repo-layout';
 import { useGitTree } from '@/hooks/use-git-tree';
@@ -61,34 +61,6 @@ export function RepoHomePage() {
     return () => { cancelled = true; };
   }, [refs, metadata]);
 
-  const handleBranchSelect = useCallback(
-    (fullRefName: string) => {
-      if (!refs) return;
-      const commitSha = refs.refs.get(fullRefName);
-      if (!commitSha) return;
-
-      setCurrentRef(shortRefName(fullRefName));
-      setTreeSha(null);
-      setResolveError(null);
-
-      const switchId = ++branchSwitchIdRef.current;
-
-      resolveCommitTree(commitSha, metadata.repoId)
-        .then((sha) => {
-          if (branchSwitchIdRef.current === switchId) {
-            if (sha) setTreeSha(sha);
-            else setResolveError('Could not resolve commit tree');
-          }
-        })
-        .catch((err: unknown) => {
-          if (branchSwitchIdRef.current === switchId) {
-            setResolveError(err instanceof Error ? err.message : 'Failed to load tree');
-          }
-        });
-    },
-    [refs, metadata.repoId],
-  );
-
   const { entries, loading: treeLoading } = useGitTree(treeSha, metadata.repoId, refs);
 
   // Find README and LICENSE blob SHAs
@@ -102,7 +74,7 @@ export function RepoHomePage() {
     return license?.sha ?? null;
   }, [entries]);
 
-  const readmeFilename = useMemo(() => {
+  const _readmeFilename = useMemo(() => {
     return entries.find((e) => /^readme(\.(md|txt|rst))?$/i.test(e.name))?.name ?? 'README.md';
   }, [entries]);
 

@@ -114,7 +114,8 @@ export function BlamePage() {
         <table className="w-full text-xs">
           <tbody>
             {result.lines.map((line, i) => {
-              const isEvenBlock = (lineBlocks[i]! % 2) === 0;
+              const blockVal = lineBlocks[i] ?? 0;
+              const isEvenBlock = (blockVal % 2) === 0;
               const bgClass = isEvenBlock ? 'bg-muted/30' : '';
               const showGutter = i === 0 || result.lines[i - 1]?.commitSha !== line.commitSha;
               const author = parseAuthorIdent(line.author);

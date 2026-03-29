@@ -29,7 +29,7 @@ export function useResolveImages(
     const relativePaths: { fullMatch: string; path: string }[] = [];
     let match;
     while ((match = imgSrcRegex.exec(html)) !== null) {
-      const src = match[1]!;
+      const src = match[1] ?? '';
       if (/^(?:https?:\/\/|data:|\/\/|blob:|#)/i.test(src)) continue;
       relativePaths.push({ fullMatch: match[0], path: src });
     }
