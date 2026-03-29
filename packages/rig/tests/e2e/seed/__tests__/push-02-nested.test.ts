@@ -741,7 +741,7 @@ describe('Story 10.3: Push 02 — Nested Directory Structure', () => {
   it('[P0] AC-3.5: Push02State should include all files from both pushes', async () => {
     // Verify the expected file list for Push 2 state by checking constants
     // that will be used to build the return value.
-    const push02 = await import('../push-02-nested.js');
+    const _push02 = await import('../push-02-nested.js');
     const push01 = await import('../push-01-init.js');
 
     // REPO_ID consistency with Push 1
