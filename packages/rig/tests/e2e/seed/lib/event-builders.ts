@@ -134,7 +134,7 @@ export function buildIssue(
  * @param repoOwnerPubkey - Pubkey of the repository owner
  * @param repoId - Repository identifier
  * @param issueOrPrEventId - Event ID of the issue or PR being commented on
- * @param authorPubkey - Pubkey of the comment author
+ * @param authorPubkey - Pubkey of the issue/PR author (NIP-34 `p` tag for threading), NOT the comment author
  * @param body - Comment body (Markdown content)
  * @param marker - Event reference marker: 'root' or 'reply' (default: 'reply')
  */
