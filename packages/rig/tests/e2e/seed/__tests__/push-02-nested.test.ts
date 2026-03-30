@@ -875,9 +875,9 @@ describe('Story 10.3: Push 02 — Nested Directory Structure', () => {
     ];
 
     expect(commits).toHaveLength(2);
-    expect(commits[0].message).toBe('Initial commit');
-    expect(commits[1].message).toBe('Add nested directory structure');
-    expect(commits[0].sha).not.toBe(commits[1].sha);
+    expect(commits[0]!.message).toBe('Initial commit');
+    expect(commits[1]!.message).toBe('Add nested directory structure');
+    expect(commits[0]!.sha).not.toBe(commits[1]!.sha);
   });
 
   it('[P0] AC-3.5: Push02State branches should be ["main"]', async () => {

@@ -1,15 +1,15 @@
 /**
- * Seed Script: Push 02 — Nested Directory Structure
+ * Seed Script: Push 04 — Branch Work (Second Commit on Feature Branch)
  *
- * Adds deeply nested directory structures to the E2E test repository:
- * - 4 new blobs (core.ts, format.ts, deep-file.ts, guide.md)
- * - 6 new trees (helpers/, utils/, lib/, src/, docs/, root)
- * - 1 new commit (parent = Push 1 commit)
+ * Adds a second commit on `feature/add-retry`:
+ * - 2 new blobs (modified index.ts with retry import, retry.test.ts)
+ * - 3 new trees (lib/, src/, root — all changed)
+ * - 1 new commit (parent = Push 3 commit)
+ * - kind:30618 refs with main STILL at Push 2, feature/add-retry advanced to Push 4
  *
- * Delta upload: only new/changed git objects are uploaded.
- * Reused blobs from Push 1 (README.md, package.json, index.ts) are skipped.
+ * Delta upload: only 6 new objects (2 blobs + 3 trees + 1 commit).
  *
- * Story 10.3
+ * Story 10.4
  */
 
 import { finalizeEvent } from 'nostr-tools/pure';
@@ -23,36 +23,41 @@ import {
   publishWithRetry,
   AGENT_IDENTITIES,
   type ShaToTxIdMap,
+  type GitObject,
 } from './lib/index.js';
-import { REPO_ID, README_CONTENT, PACKAGE_JSON_CONTENT, INDEX_TS_CONTENT, type Push01State } from './push-01-init.js';
+import { REPO_ID, README_CONTENT, PACKAGE_JSON_CONTENT } from './push-01-init.js';
+import { CORE_TS_CONTENT, FORMAT_TS_CONTENT, DEEP_FILE_TS_CONTENT, GUIDE_MD_CONTENT } from './push-02-nested.js';
+import { RETRY_TS_CONTENT, type Push03State } from './push-03-branch.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-export const CORE_TS_CONTENT = `export class Core {
-  init(): void { /* core initialization */ }
+export const MODIFIED_INDEX_TS_CONTENT = `import { retry } from './lib/retry.js';
+
+export function hello(): string {
+  return 'Hello from rig-e2e-test-repo';
 }
+
+export { retry };
 `;
 
-export const FORMAT_TS_CONTENT = `export function formatOutput(data: string): string {
-  return data.trim();
-}
-`;
+export const RETRY_TEST_TS_CONTENT = `import { describe, it, expect } from 'vitest';
+import { retry } from './retry.js';
 
-export const DEEP_FILE_TS_CONTENT = `export const DEEP_CONSTANT = 'found-at-depth-4';
-`;
-
-export const GUIDE_MD_CONTENT = `# Guide
-
-Getting started with rig-e2e-test-repo.
+describe('retry', () => {
+  it('should succeed on first try', async () => {
+    const result = await retry(() => Promise.resolve(42));
+    expect(result).toBe(42);
+  });
+});
 `;
 
 // ---------------------------------------------------------------------------
-// Push02State
+// Push04State
 // ---------------------------------------------------------------------------
 
-export interface Push02State {
+export interface Push04State {
   repoId: string;
   ownerPubkey: string;
   commits: { sha: string; txId: string; message: string }[];
@@ -68,34 +73,40 @@ export interface Push02State {
 // ---------------------------------------------------------------------------
 
 /**
- * Run Push 02: add nested directory structure, upload delta objects, update refs.
+ * Run Push 04: add second commit on feature branch, upload delta objects, update refs.
  *
  * @param aliceClient - Bootstrapped ToonClient for Alice
  * @param aliceSecretKey - Alice's Nostr secret key (Uint8Array, 32 bytes)
- * @param push01State - State returned from runPush01
- * @returns Push02State with appended commits, expanded shaMap, updated files
+ * @param push03State - State returned from runPush03
+ * @returns Push04State with appended commits, expanded shaMap
  */
-export async function runPush02(
+export async function runPush04(
   aliceClient: ToonClient,
   aliceSecretKey: Uint8Array,
-  push01State: Push01State
-): Promise<Push02State> {
+  push03State: Push03State
+): Promise<Push04State> {
   // -------------------------------------------------------------------------
-  // Task 1/2: Create git objects with nested tree structure (AC-3.1, AC-3.3)
+  // Task 2.4: Create git objects — modify index.ts, add retry.test.ts (AC-4.2)
   // -------------------------------------------------------------------------
 
-  // Reuse Push 1 blob SHAs (needed for tree construction, not re-uploaded)
+  // Recreate Push 1 blobs to get their SHAs (needed for tree construction)
   const readmeBlob = createGitBlob(README_CONTENT);
   const pkgBlob = createGitBlob(PACKAGE_JSON_CONTENT);
-  const indexBlob = createGitBlob(INDEX_TS_CONTENT);
 
-  // New blobs
+  // Recreate Push 2 blobs to get their SHAs
   const coreBlob = createGitBlob(CORE_TS_CONTENT);
   const formatBlob = createGitBlob(FORMAT_TS_CONTENT);
   const deepFileBlob = createGitBlob(DEEP_FILE_TS_CONTENT);
   const guideBlob = createGitBlob(GUIDE_MD_CONTENT);
 
-  // Build nested trees leaf-to-root
+  // Recreate Push 3 blob to get its SHA
+  const retryBlob = createGitBlob(RETRY_TS_CONTENT);
+
+  // New blobs for Push 4
+  const modifiedIndexBlob = createGitBlob(MODIFIED_INDEX_TS_CONTENT);
+  const retryTestBlob = createGitBlob(RETRY_TEST_TS_CONTENT);
+
+  // Rebuild unchanged subtrees (same SHAs as Push 2 — delta logic will skip)
   const helpersTree = createGitTree([
     { mode: '100644', name: 'deep-file.ts', sha: deepFileBlob.sha },
   ]);
@@ -103,17 +114,25 @@ export async function runPush02(
     { mode: '100644', name: 'format.ts', sha: formatBlob.sha },
     { mode: '040000', name: 'helpers', sha: helpersTree.sha },
   ]);
-  const libTree = createGitTree([
-    { mode: '100644', name: 'core.ts', sha: coreBlob.sha },
-    { mode: '040000', name: 'utils', sha: utilsTree.sha },
-  ]);
-  const srcTree = createGitTree([
-    { mode: '100644', name: 'index.ts', sha: indexBlob.sha },
-    { mode: '040000', name: 'lib', sha: libTree.sha },
-  ]);
   const docsTree = createGitTree([
     { mode: '100644', name: 'guide.md', sha: guideBlob.sha },
   ]);
+
+  // NEW lib/ tree — adds retry.test.ts alongside core.ts, retry.ts, utils/
+  const libTree = createGitTree([
+    { mode: '100644', name: 'core.ts', sha: coreBlob.sha },
+    { mode: '100644', name: 'retry.test.ts', sha: retryTestBlob.sha },
+    { mode: '100644', name: 'retry.ts', sha: retryBlob.sha },
+    { mode: '040000', name: 'utils', sha: utilsTree.sha },
+  ]);
+
+  // NEW src/ tree — both index.ts changed and lib/ changed
+  const srcTree = createGitTree([
+    { mode: '100644', name: 'index.ts', sha: modifiedIndexBlob.sha },
+    { mode: '040000', name: 'lib', sha: libTree.sha },
+  ]);
+
+  // NEW root tree — src/ subtree changed
   const rootTree = createGitTree([
     { mode: '100644', name: 'README.md', sha: readmeBlob.sha },
     { mode: '100644', name: 'package.json', sha: pkgBlob.sha },
@@ -121,18 +140,18 @@ export async function runPush02(
     { mode: '040000', name: 'src', sha: srcTree.sha },
   ]);
 
-  // Commit with parent = Push 1 commit
-  const commit = createGitCommit({
+  // Commit on feature branch — parent = Push 3 commit (index 2)
+  const commit04 = createGitCommit({
     treeSha: rootTree.sha,
-    parentSha: push01State.commits[0]!.sha,
+    parentSha: push03State.commits[2]!.sha,
     authorName: 'Alice',
     authorPubkey: AGENT_IDENTITIES.alice.pubkey,
-    message: 'Add nested directory structure',
-    timestamp: 1700001000,
+    message: 'Add retry tests and import',
+    timestamp: 1700003000,
   });
 
   // -------------------------------------------------------------------------
-  // Task 3: Upload only delta objects to Arweave (AC-3.2)
+  // Task 2.5: Upload only delta objects to Arweave (AC-4.2)
   // -------------------------------------------------------------------------
 
   const channelId = aliceClient.getTrackedChannels()[0];
@@ -140,27 +159,17 @@ export async function runPush02(
     throw new Error('No payment channel available. Alice client may not be bootstrapped.');
   }
 
-  const shaMap = push01State.shaMap;
+  const shaMap = push03State.shaMap;
 
-  // Upload order: new blobs first, then new trees (leaf-to-root), then commit.
-  // Reused blobs from Push 1 (README.md, package.json, index.ts) are NOT
-  // included — their SHAs are already in shaMap from Push 1.
-  // Only the 11 new objects (4 blobs + 6 trees + 1 commit) are uploaded.
-  const uploadOrder: { obj: ReturnType<typeof createGitBlob>; type: 'blob' | 'tree' | 'commit' }[] = [
-    // New blobs
-    { obj: coreBlob, type: 'blob' },
-    { obj: formatBlob, type: 'blob' },
-    { obj: deepFileBlob, type: 'blob' },
-    { obj: guideBlob, type: 'blob' },
-    // New trees (leaf-to-root)
-    { obj: helpersTree, type: 'tree' },
-    { obj: utilsTree, type: 'tree' },
+  // Upload order: new blobs, then new trees (leaf-to-root), then commit.
+  // Only 6 new objects: 2 blobs + 3 trees (lib/, src/, root) + 1 commit.
+  const uploadOrder: { obj: GitObject; type: 'blob' | 'tree' | 'commit' }[] = [
+    { obj: modifiedIndexBlob, type: 'blob' },
+    { obj: retryTestBlob, type: 'blob' },
     { obj: libTree, type: 'tree' },
     { obj: srcTree, type: 'tree' },
-    { obj: docsTree, type: 'tree' },
     { obj: rootTree, type: 'tree' },
-    // New commit
-    { obj: commit, type: 'commit' },
+    { obj: commit04, type: 'commit' },
   ];
 
   for (const { obj, type } of uploadOrder) {
@@ -187,12 +196,15 @@ export async function runPush02(
   }
 
   // -------------------------------------------------------------------------
-  // Task 4: Publish updated kind:30618 refs (AC-3.4)
+  // Task 2.6: Publish kind:30618 refs — main unchanged, feature advanced (AC-4.4, AC-4.5)
   // -------------------------------------------------------------------------
 
   const refsUnsigned = buildRepoRefs(
     REPO_ID,
-    { 'refs/heads/main': commit.sha },
+    {
+      'refs/heads/main': push03State.commits[1]!.sha,
+      'refs/heads/feature/add-retry': commit04.sha,
+    },
     shaMap
   );
   const refsSigned = finalizeEvent(refsUnsigned, aliceSecretKey);
@@ -205,37 +217,29 @@ export async function runPush02(
   }
 
   // -------------------------------------------------------------------------
-  // Task 5: Return updated state (AC-3.5)
+  // Task 2.7: Return updated state (AC-4.2)
   // -------------------------------------------------------------------------
 
-  const commitTxId = shaMap[commit.sha];
+  const commitTxId = shaMap[commit04.sha];
   if (!commitTxId) {
-    throw new Error(`Commit SHA ${commit.sha} missing from shaMap after upload`);
+    throw new Error(`Commit SHA ${commit04.sha} missing from shaMap after upload`);
   }
 
   return {
     repoId: REPO_ID,
     ownerPubkey: AGENT_IDENTITIES.alice.pubkey,
     commits: [
-      ...push01State.commits,
+      ...push03State.commits,
       {
-        sha: commit.sha,
+        sha: commit04.sha,
         txId: commitTxId,
-        message: 'Add nested directory structure',
+        message: 'Add retry tests and import',
       },
     ],
     shaMap,
-    repoAnnouncementId: push01State.repoAnnouncementId,
+    repoAnnouncementId: push03State.repoAnnouncementId,
     refsEventId: refsResult.eventId ?? refsSigned.id,
-    branches: ['main'],
-    files: [
-      'README.md',
-      'package.json',
-      'src/index.ts',
-      'src/lib/core.ts',
-      'src/lib/utils/format.ts',
-      'src/lib/utils/helpers/deep-file.ts',
-      'docs/guide.md',
-    ],
+    branches: ['main', 'feature/add-retry'],
+    files: [...new Set([...push03State.files, 'src/lib/retry.test.ts'])],
   };
 }
