@@ -47,3 +47,23 @@ export {
   applyDefaults,
   buildSettlementInfo,
 } from './config.js';
+
+// Key Management
+export {
+  KeyManager,
+  generateMnemonic,
+  validateMnemonic,
+  deriveFullIdentity,
+  deriveFromNsec,
+  generateRandomIdentity,
+  isPrfSupported,
+  buildBackupEvent,
+  buildBackupFilter,
+  parseBackupPayload,
+  type ToonIdentity,
+  type ToonSigners,
+  type PasskeyInfo,
+  type KeyManagerConfig,
+  type BackupPayload,
+  type VaultData,
+} from './keys/index.js';

@@ -49,7 +49,7 @@ curl http://localhost:19110/health  # Peer 2 BLS
 ## Quick Start
 
 ```typescript
-import { TOONClient } from '@toon-protocol/client';
+import { ToonClient } from '@toon-protocol/client';
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
 
@@ -58,7 +58,7 @@ const secretKey = generateSecretKey();
 const pubkey = getPublicKey(secretKey);
 
 // 2. Create client
-const client = new TOONClient({
+const client = new ToonClient({
   connectorUrl: 'http://localhost:8080',
   secretKey,
   ilpInfo: {
@@ -102,7 +102,7 @@ The client supports EVM-based payment channels for off-chain settlement. Your EV
 To use payment channels, add chain configuration. The client already has your EVM identity from `secretKey`:
 
 ```typescript
-const client = new TOONClient({
+const client = new ToonClient({
   connectorUrl: 'http://localhost:8080',
   secretKey,
   ilpInfo: { pubkey, ilpAddress: `g.toon.${pubkey.slice(0, 8)}`, btpEndpoint: 'ws://localhost:3000' },
@@ -141,7 +141,7 @@ await client.publishEvent(event, { claim });
 If you need a different EVM identity than your Nostr key (e.g., hardware wallet or custodial key), pass `evmPrivateKey` explicitly:
 
 ```typescript
-const client = new TOONClient({
+const client = new ToonClient({
   // ... required config ...
   evmPrivateKey: '0x...', // Overrides the default derivation from secretKey
 });
