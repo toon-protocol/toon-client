@@ -207,7 +207,7 @@ export class BtpRuntimeClient implements IlpClient {
       data: string;
       timeout?: number;
     },
-    claim: EVMClaimMessage
+    claim: EVMClaimMessage | Record<string, unknown>
   ): Promise<IlpSendResult> {
     return withRetry(() => this._sendIlpPacketWithClaimOnce(params, claim), {
       maxRetries: this.config.maxRetries ?? 3,
@@ -277,7 +277,7 @@ export class BtpRuntimeClient implements IlpClient {
       data: string;
       timeout?: number;
     },
-    claim: EVMClaimMessage
+    claim: EVMClaimMessage | Record<string, unknown>
   ): Promise<IlpSendResult> {
     if (!this._isConnected) {
       await this.reconnect();
