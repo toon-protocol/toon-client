@@ -1,6 +1,6 @@
 {
   "name": "@toon-protocol/rig",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Forge-UI: Decentralized git forge web interface for TOON Protocol",
   "type": "module",
   "private": true,
