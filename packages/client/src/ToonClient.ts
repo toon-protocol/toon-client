@@ -7,6 +7,7 @@ import type {
   IlpClient,
 } from '@toon-protocol/core';
 import { validateConfig, applyDefaults } from './config.js';
+import { toBase64 } from './utils/binary.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import { ToonClientError } from './errors.js';
@@ -181,7 +182,6 @@ export class ToonClient {
           const chainType = result.negotiatedChain.split(':')[0] ?? 'evm';
           const parts = result.negotiatedChain.split(':');
           const chainId = parts.length >= 3 ? parseInt(parts[2]!, 10) : 0;
-          // Access new fields added by lazy channel refactor
           const r = result as typeof result & { tokenAddress?: string; tokenNetwork?: string };
           this.peerNegotiations.set(result.registeredPeerId, {
             chain: result.negotiatedChain,
@@ -191,6 +191,36 @@ export class ToonClient {
             tokenAddress: r.tokenAddress,
             tokenNetwork: r.tokenNetwork,
           });
+        } else if (result.registeredPeerId && !this.peerNegotiations.has(result.registeredPeerId)) {
+          // Lightweight client fallback: bootstrap discovered the peer but didn't
+          // negotiate a chain (no connector admin to register with). Extract the
+          // peer's settlement info from their kind:10032 event data and match
+          // against our supported chains.
+          const peerInfo = result.peerInfo as typeof result.peerInfo & {
+            supportedChains?: string[];
+            settlementAddresses?: Record<string, string>;
+            preferredTokens?: Record<string, string>;
+            tokenNetworks?: Record<string, string>;
+          };
+          const peerChains = peerInfo.supportedChains ?? [];
+          const ourChains = this.config.supportedChains ?? [];
+          // Find the first chain both sides support
+          const matchedChain = ourChains.find(c => peerChains.includes(c)) ?? ourChains[0];
+          if (matchedChain) {
+            const peerAddr = peerInfo.settlementAddresses?.[matchedChain];
+            const parts = matchedChain.split(':');
+            const chainId = parts.length >= 3 ? parseInt(parts[2]!, 10) : 0;
+            if (peerAddr) {
+              this.peerNegotiations.set(result.registeredPeerId, {
+                chain: matchedChain,
+                chainType: parts[0] ?? 'evm',
+                chainId: isNaN(chainId) ? 0 : chainId,
+                settlementAddress: peerAddr,
+                tokenAddress: peerInfo.preferredTokens?.[matchedChain] ?? this.config.preferredTokens?.[matchedChain],
+                tokenNetwork: peerInfo.tokenNetworks?.[matchedChain] ?? this.config.tokenNetworks?.[matchedChain],
+              });
+            }
+          }
         }
         // Track any pre-opened channels (backwards compat)
         if (
@@ -304,7 +334,7 @@ export class ToonClient {
         {
           destination,
           amount,
-          data: Buffer.from(toonData).toString('base64'),
+          data: toBase64(toonData instanceof Uint8Array ? toonData : new Uint8Array(toonData)),
         },
         claimMessage
       );
@@ -322,6 +352,7 @@ export class ToonClient {
         data: response.data,
       };
     } catch (error) {
+      console.error('[ToonClient.publishEvent] ROOT CAUSE:', String(error), error instanceof Error ? error.stack : '');
       throw new ToonClientError(
         'Failed to publish event',
         'PUBLISH_ERROR',
@@ -483,7 +514,7 @@ export class ToonClient {
       params.claim,
       this.getPublicKey()
     );
-    return this.state.btpClient.sendIlpPacketWithClaim(ilpParams, claimMessage);
+    return this.state.btpClient.sendIlpPacketWithClaim(ilpParams, claimMessage as unknown as Record<string, unknown>);
   }
 
   /**

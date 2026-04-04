@@ -1,6 +1,7 @@
 import type { IlpClient, IlpSendResult } from '@toon-protocol/core';
 import { NetworkError, ConnectorError, ValidationError } from '../errors.js';
 import { withRetry } from '../utils/retry.js';
+import { isBase64 } from '../utils/binary.js';
 
 /**
  * Configuration options for HttpRuntimeClient.
@@ -141,10 +142,7 @@ export class HttpRuntimeClient implements IlpClient {
       throw new ValidationError('Data cannot be empty');
     }
     try {
-      // Attempt to decode Base64 to validate format
-      Buffer.from(params.data, 'base64');
-      // Verify it's actually Base64 (not just any string Buffer accepts)
-      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(params.data)) {
+      if (!isBase64(params.data)) {
         throw new ValidationError(
           `Data must be valid Base64 encoding: "${params.data}"`
         );

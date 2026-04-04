@@ -15,6 +15,7 @@ import type {
   ChannelState,
 } from '@toon-protocol/core';
 import type { EvmSigner } from '../signing/evm-signer.js';
+import { toHex } from '../utils/binary.js';
 
 // TokenNetwork ABI — only the functions we need
 const TOKEN_NETWORK_ABI = [
@@ -227,12 +228,12 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     // Derive deterministic channel ID from participants + program
     const encoder = new TextEncoder();
     const channelSeed = encoder.encode(
-      `channel:${Buffer.from(this.solanaConfig.keypair).toString('hex').slice(0, 32)}:${params.peerAddress}:${Date.now()}`
+      `channel:${toHex(this.solanaConfig.keypair).slice(0, 32)}:${params.peerAddress}:${Date.now()}`
     );
     const channelIdBytes = new Uint8Array(
       await crypto.subtle.digest('SHA-256', channelSeed)
     );
-    const channelId = '0x' + Buffer.from(channelIdBytes).toString('hex');
+    const channelId = '0x' + toHex(channelIdBytes);
 
     // Cache context
     this.channelContext.set(channelId, {
@@ -260,7 +261,7 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     const channelIdBytes = new Uint8Array(
       await crypto.subtle.digest('SHA-256', channelSeed)
     );
-    const channelId = '0x' + Buffer.from(channelIdBytes).toString('hex');
+    const channelId = '0x' + toHex(channelIdBytes);
 
     // Cache context
     this.channelContext.set(channelId, {

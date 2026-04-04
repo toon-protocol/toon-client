@@ -33,11 +33,11 @@ export async function registerPasskey(params: {
   const publicKeyOptions: PublicKeyCredentialCreationOptions = {
     rp: { id: rpId, name: rpName },
     user: {
-      id: userId,
+      id: userId as unknown as BufferSource,
       name: userName,
       displayName: userName,
     },
-    challenge: crypto.getRandomValues(new Uint8Array(32)),
+    challenge: crypto.getRandomValues(new Uint8Array(32)) as unknown as BufferSource,
     pubKeyCredParams: [
       { alg: -7, type: 'public-key' }, // ES256
       { alg: -257, type: 'public-key' }, // RS256
@@ -47,13 +47,12 @@ export async function registerPasskey(params: {
       userVerification: 'required',
     },
     extensions: {
-      // @ts-expect-error -- PRF extension not yet in TypeScript DOM types
       prf: {
         eval: {
-          first: prfSalt,
+          first: prfSalt as unknown as BufferSource,
         },
       },
-    },
+    } as AuthenticationExtensionsClientInputs,
   };
 
   const credential = (await navigator.credentials.create({
@@ -67,8 +66,7 @@ export async function registerPasskey(params: {
   const response = credential.response as AuthenticatorAttestationResponse;
   const extensionResults = credential.getClientExtensionResults();
 
-  // @ts-expect-error -- PRF extension results not yet in TypeScript DOM types
-  const prfResults = extensionResults['prf'] as
+  const prfResults = (extensionResults as Record<string, unknown>)['prf'] as
     | { enabled?: boolean; results?: { first: ArrayBuffer } }
     | undefined;
 
@@ -108,25 +106,24 @@ export async function assertPasskey(params: {
 }): Promise<PasskeyAssertionResult> {
   const { rpId, prfSalt, allowCredentials } = params;
 
-  const publicKeyOptions: PublicKeyCredentialRequestOptions = {
+  const publicKeyOptions = {
     rpId,
-    challenge: crypto.getRandomValues(new Uint8Array(32)),
-    userVerification: 'required',
+    challenge: crypto.getRandomValues(new Uint8Array(32)) as unknown as BufferSource,
+    userVerification: 'required' as const,
     ...(allowCredentials && {
       allowCredentials: allowCredentials.map((id) => ({
-        id,
+        id: id as unknown as BufferSource,
         type: 'public-key' as const,
       })),
     }),
     extensions: {
-      // @ts-expect-error -- PRF extension not yet in TypeScript DOM types
       prf: {
         eval: {
-          first: prfSalt,
+          first: prfSalt as unknown as BufferSource,
         },
       },
-    },
-  };
+    } as AuthenticationExtensionsClientInputs,
+  } as PublicKeyCredentialRequestOptions;
 
   const credential = (await navigator.credentials.get({
     publicKey: publicKeyOptions,
@@ -139,8 +136,7 @@ export async function assertPasskey(params: {
   const response = credential.response as AuthenticatorAssertionResponse;
   const extensionResults = credential.getClientExtensionResults();
 
-  // @ts-expect-error -- PRF extension results not yet in TypeScript DOM types
-  const prfResults = extensionResults['prf'] as
+  const prfResults = (extensionResults as Record<string, unknown>)['prf'] as
     | { results?: { first: ArrayBuffer } }
     | undefined;
 
@@ -180,7 +176,8 @@ export function isPrfSupported(): boolean {
 export async function hashCredentialId(
   credentialId: Uint8Array
 ): Promise<string> {
-  const hash = await crypto.subtle.digest('SHA-256', credentialId);
+  const arrayBuffer = credentialId.buffer.slice(credentialId.byteOffset, credentialId.byteOffset + credentialId.byteLength) as ArrayBuffer;
+  const hash = await crypto.subtle.digest('SHA-256', arrayBuffer);
   return Array.from(new Uint8Array(hash))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');

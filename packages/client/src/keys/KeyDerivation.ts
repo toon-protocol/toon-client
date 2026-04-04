@@ -65,11 +65,8 @@ async function deriveSolanaKey(seed: Uint8Array): Promise<{
 }> {
   // SLIP-0010 Ed25519 derivation (hardened only)
   // Uses HMAC-SHA512 with "ed25519 seed" as key
-  // @ts-expect-error -- @noble/hashes sub-path may not have types
   const { hmac } = await import('@noble/hashes/hmac');
-  // @ts-expect-error -- @noble/hashes sub-path may not have types
   const { sha512 } = await import('@noble/hashes/sha512');
-  // @ts-expect-error -- @noble/curves is an optional dep
   const { ed25519 } = await import('@noble/curves/ed25519');
 
   // SLIP-0010 master key derivation for ed25519
@@ -133,7 +130,6 @@ async function deriveMinaKey(seed: Uint8Array): Promise<{
   // Convert raw key bytes to Mina private key format
   // Mina uses Pallas curve; mina-signer accepts raw bytes or base58
   try {
-    // @ts-expect-error -- mina-signer is an optional dependency
     const MinaSignerLib = await import('mina-signer');
     const Client =
       'default' in MinaSignerLib ? MinaSignerLib.default : MinaSignerLib;

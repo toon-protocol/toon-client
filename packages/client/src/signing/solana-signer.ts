@@ -1,5 +1,6 @@
 import type { SignedBalanceProof } from '../types.js';
 import type { ChainSigner, ChainMetadata, ClaimMessage, SolanaClaimMessage } from './types.js';
+import { toHex as bytesToHex } from '../utils/binary.js';
 
 /**
  * Base58 encoding for Solana public keys.
@@ -25,7 +26,6 @@ function toBase58(bytes: Uint8Array): string {
 let _ed25519: any = null;
 async function getEd25519() {
   if (!_ed25519) {
-    // @ts-expect-error -- @noble/curves is an optional/transitive dependency
     const mod = await import('@noble/curves/ed25519');
     _ed25519 = mod.ed25519;
   }
@@ -86,7 +86,7 @@ export class SolanaSigner implements ChainSigner {
     );
 
     const signature = ed.sign(message, this.privateKey);
-    const signatureHex = '0x' + Buffer.from(signature).toString('hex');
+    const signatureHex = '0x' + bytesToHex(new Uint8Array(signature));
 
     return {
       channelId: params.channelId,

@@ -154,7 +154,6 @@ export async function publishBackupToRelays(
   relayUrls: string[]
 ): Promise<void> {
   // Dynamic import to avoid pulling nostr-tools/pool into non-browser bundles
-  // @ts-expect-error -- nostr-tools pool is a peer dependency
   const { SimplePool } = await import('nostr-tools/pool');
   const pool = new SimplePool();
 
@@ -175,7 +174,6 @@ export async function fetchBackupFromRelays(
   pubkey: string,
   relayUrls: string[]
 ): Promise<VaultData | null> {
-  // @ts-expect-error -- nostr-tools pool is a peer dependency
   const { SimplePool } = await import('nostr-tools/pool');
   const pool = new SimplePool();
 
@@ -195,7 +193,9 @@ export async function fetchBackupFromRelays(
       ) => b.created_at - a.created_at
     );
 
-    return parseBackupPayload(events[0].content);
+    const latest = events[0];
+    if (!latest) return null;
+    return parseBackupPayload(latest.content);
   } finally {
     pool.close(relayUrls);
   }
