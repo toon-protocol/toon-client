@@ -14,8 +14,8 @@ export function toBase64(bytes: Uint8Array): string {
   }
   // Browser path: use btoa with binary string
   let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
   }
   return btoa(binary);
 }
@@ -36,8 +36,8 @@ export function fromBase64(base64: string): Uint8Array {
 /** Convert a Uint8Array to a hex string. */
 export function toHex(bytes: Uint8Array): string {
   let hex = '';
-  for (let i = 0; i < bytes.length; i++) {
-    hex += bytes[i].toString(16).padStart(2, '0');
+  for (const byte of bytes) {
+    hex += byte.toString(16).padStart(2, '0');
   }
   return hex;
 }
@@ -66,4 +66,3 @@ export function decodeUtf8(bytes: Uint8Array): string {
 export function isBase64(str: string): boolean {
   return /^[A-Za-z0-9+/]*={0,2}$/.test(str);
 }
-

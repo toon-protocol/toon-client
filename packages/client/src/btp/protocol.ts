@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion -- bounds-checked binary parsing */
 /**
  * Isomorphic BTP + ILP binary protocol.
  * Uses Uint8Array and DataView — no Buffer, no Node.js dependencies.
@@ -96,13 +97,21 @@ function readUint8(buf: Uint8Array, offset: number): number {
 }
 
 function readUint16BE(buf: Uint8Array, offset: number): number {
-  if (offset + 2 > buf.length) throw new Error('Buffer underflow reading uint16');
+  if (offset + 2 > buf.length)
+    throw new Error('Buffer underflow reading uint16');
   return (buf[offset]! << 8) | buf[offset + 1]!;
 }
 
 function readUint32BE(buf: Uint8Array, offset: number): number {
-  if (offset + 4 > buf.length) throw new Error('Buffer underflow reading uint32');
-  return ((buf[offset]! << 24) | (buf[offset + 1]! << 16) | (buf[offset + 2]! << 8) | buf[offset + 3]!) >>> 0;
+  if (offset + 4 > buf.length)
+    throw new Error('Buffer underflow reading uint32');
+  return (
+    ((buf[offset]! << 24) |
+      (buf[offset + 1]! << 16) |
+      (buf[offset + 2]! << 8) |
+      buf[offset + 3]!) >>>
+    0
+  );
 }
 
 function writeUint8(value: number): Uint8Array {
@@ -114,7 +123,12 @@ function writeUint16BE(value: number): Uint8Array {
 }
 
 function writeUint32BE(value: number): Uint8Array {
-  return new Uint8Array([(value >> 24) & 0xff, (value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff]);
+  return new Uint8Array([
+    (value >> 24) & 0xff,
+    (value >> 16) & 0xff,
+    (value >> 8) & 0xff,
+    value & 0xff,
+  ]);
 }
 
 function sliceUtf8(buf: Uint8Array, offset: number, length: number): string {
@@ -136,13 +150,17 @@ function encodeVarUInt(value: bigint): Uint8Array {
   return new Uint8Array([0x80 | bytes.length, ...bytes]);
 }
 
-function decodeVarUInt(buf: Uint8Array, offset: number): { value: bigint; bytesRead: number } {
+function decodeVarUInt(
+  buf: Uint8Array,
+  offset: number
+): { value: bigint; bytesRead: number } {
   const firstByte = readUint8(buf, offset);
   if (firstByte <= 127) {
     return { value: BigInt(firstByte), bytesRead: 1 };
   }
   const length = firstByte & 0x7f;
-  if (offset + 1 + length > buf.length) throw new Error('VarUInt buffer underflow');
+  if (offset + 1 + length > buf.length)
+    throw new Error('VarUInt buffer underflow');
   let value = 0n;
   for (let i = 0; i < length; i++) {
     value = (value << 8n) | BigInt(buf[offset + 1 + i]!);
@@ -154,12 +172,19 @@ function encodeVarOctetString(data: Uint8Array): Uint8Array {
   return concat(encodeVarUInt(BigInt(data.length)), data);
 }
 
-function decodeVarOctetString(buf: Uint8Array, offset: number): { value: Uint8Array; bytesRead: number } {
+function decodeVarOctetString(
+  buf: Uint8Array,
+  offset: number
+): { value: Uint8Array; bytesRead: number } {
   const { value: length, bytesRead: lenBytes } = decodeVarUInt(buf, offset);
   const dataLen = Number(length);
   const start = offset + lenBytes;
-  if (start + dataLen > buf.length) throw new Error('VarOctetString buffer underflow');
-  return { value: buf.slice(start, start + dataLen), bytesRead: lenBytes + dataLen };
+  if (start + dataLen > buf.length)
+    throw new Error('VarOctetString buffer underflow');
+  return {
+    value: buf.slice(start, start + dataLen),
+    bytesRead: lenBytes + dataLen,
+  };
 }
 
 function encodeGeneralizedTime(date: Date): Uint8Array {
@@ -176,16 +201,17 @@ function encodeGeneralizedTime(date: Date): Uint8Array {
 // ─── ILP packet serialization ───────────────────────────────────────────────
 
 export function serializeIlpPrepare(packet: ILPPreparePacket): Uint8Array {
-  const condition = packet.executionCondition.length === 32
-    ? packet.executionCondition
-    : new Uint8Array(32);
+  const condition =
+    packet.executionCondition.length === 32
+      ? packet.executionCondition
+      : new Uint8Array(32);
   return concat(
     writeUint8(ILPPacketType.PREPARE),
     encodeVarUInt(packet.amount),
     encodeGeneralizedTime(packet.expiresAt),
     condition,
     encodeVarOctetString(textEncoder.encode(packet.destination)),
-    encodeVarOctetString(packet.data),
+    encodeVarOctetString(packet.data)
   );
 }
 
@@ -214,7 +240,10 @@ function deserializeIlpReject(buf: Uint8Array): ILPRejectPacket {
   const { bytesRead: tbBytes } = decodeVarOctetString(buf, offset);
   offset += tbBytes;
   // message
-  const { value: msgBuf, bytesRead: msgBytes } = decodeVarOctetString(buf, offset);
+  const { value: msgBuf, bytesRead: msgBytes } = decodeVarOctetString(
+    buf,
+    offset
+  );
   offset += msgBytes;
   const message = textDecoder.decode(msgBuf);
   // data
@@ -258,40 +287,56 @@ export function parseBtpMessage(buf: Uint8Array): BTPMessage {
   if (buf.length < 5) throw new Error('BTP message too short');
   let offset = 0;
 
-  const type = readUint8(buf, offset); offset += 1;
-  const requestId = readUint32BE(buf, offset); offset += 4;
+  const type = readUint8(buf, offset);
+  offset += 1;
+  const requestId = readUint32BE(buf, offset);
+  offset += 4;
 
   if (type === BTPMessageType.ERROR) {
     // code
-    const codeLen = readUint8(buf, offset); offset += 1;
-    const code = sliceUtf8(buf, offset, codeLen); offset += codeLen;
+    const codeLen = readUint8(buf, offset);
+    offset += 1;
+    const code = sliceUtf8(buf, offset, codeLen);
+    offset += codeLen;
     // name
-    const nameLen = readUint8(buf, offset); offset += 1;
-    const name = sliceUtf8(buf, offset, nameLen); offset += nameLen;
+    const nameLen = readUint8(buf, offset);
+    offset += 1;
+    const name = sliceUtf8(buf, offset, nameLen);
+    offset += nameLen;
     // triggeredAt
-    const taLen = readUint8(buf, offset); offset += 1;
-    const triggeredAt = sliceUtf8(buf, offset, taLen); offset += taLen;
+    const taLen = readUint8(buf, offset);
+    offset += 1;
+    const triggeredAt = sliceUtf8(buf, offset, taLen);
+    offset += taLen;
     // data
-    const dataLen = readUint32BE(buf, offset); offset += 4;
+    const dataLen = readUint32BE(buf, offset);
+    offset += 4;
     const data = buf.slice(offset, offset + dataLen);
     return { type, requestId, data: { code, name, triggeredAt, data } };
   }
 
   // MESSAGE or RESPONSE
-  const pdCount = readUint8(buf, offset); offset += 1;
+  const pdCount = readUint8(buf, offset);
+  offset += 1;
   const protocolData: BTPProtocolData[] = [];
   for (let i = 0; i < pdCount; i++) {
-    const nameLen = readUint8(buf, offset); offset += 1;
-    const protocolName = sliceUtf8(buf, offset, nameLen); offset += nameLen;
-    const contentType = readUint16BE(buf, offset); offset += 2;
-    const dataLen = readUint32BE(buf, offset); offset += 4;
-    const data = buf.slice(offset, offset + dataLen); offset += dataLen;
+    const nameLen = readUint8(buf, offset);
+    offset += 1;
+    const protocolName = sliceUtf8(buf, offset, nameLen);
+    offset += nameLen;
+    const contentType = readUint16BE(buf, offset);
+    offset += 2;
+    const dataLen = readUint32BE(buf, offset);
+    offset += 4;
+    const data = buf.slice(offset, offset + dataLen);
+    offset += dataLen;
     protocolData.push({ protocolName, contentType, data });
   }
 
   let ilpPacket: Uint8Array | undefined;
   if (offset + 4 <= buf.length) {
-    const ilpLen = readUint32BE(buf, offset); offset += 4;
+    const ilpLen = readUint32BE(buf, offset);
+    offset += 4;
     if (ilpLen > 0 && offset + ilpLen <= buf.length) {
       ilpPacket = buf.slice(offset, offset + ilpLen);
     }

@@ -1,5 +1,10 @@
 import type { SignedBalanceProof } from '../types.js';
-import type { ChainSigner, ChainMetadata, ClaimMessage, MinaClaimMessage } from './types.js';
+import type {
+  ChainSigner,
+  ChainMetadata,
+  ClaimMessage,
+  MinaClaimMessage,
+} from './types.js';
 
 /**
  * Mina signer for Poseidon commitment balance proofs.
@@ -10,7 +15,7 @@ import type { ChainSigner, ChainMetadata, ClaimMessage, MinaClaimMessage } from 
 export class MinaSigner implements ChainSigner {
   readonly chainType = 'mina' as const;
   private readonly privateKeyBase58: string;
-  private publicKeyBase58: string = 'uninitialized';
+  private publicKeyBase58 = 'uninitialized';
 
   constructor(privateKeyBase58: string) {
     this.privateKeyBase58 = privateKeyBase58;
@@ -22,9 +27,10 @@ export class MinaSigner implements ChainSigner {
 
   private async ensurePublicKey(): Promise<string> {
     if (this.publicKeyBase58 !== 'uninitialized') return this.publicKeyBase58;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     // @ts-expect-error -- o1js is an optional dependency
-    const o1js = await import('o1js') as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const o1js = (await import('o1js')) as any;
     const pk = o1js.PrivateKey.fromBase58(this.privateKeyBase58);
     this.publicKeyBase58 = pk.toPublicKey().toBase58();
     return this.publicKeyBase58;
@@ -39,16 +45,20 @@ export class MinaSigner implements ChainSigner {
     metadata: ChainMetadata;
   }): Promise<SignedBalanceProof> {
     if (params.metadata.chainType !== 'mina') {
-      throw new Error(`MinaSigner cannot sign for chain type: ${params.metadata.chainType}`);
+      throw new Error(
+        `MinaSigner cannot sign for chain type: ${params.metadata.chainType}`
+      );
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // @ts-expect-error -- o1js is an optional dependency
-    const o1js = await import('o1js') as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const o1js = (await import('o1js')) as any;
     const pubkey = await this.ensurePublicKey();
 
     // Compute Poseidon commitment over channel state fields
-    const channelIdNum = BigInt('0x' + params.channelId.replace(/^0x/, '').slice(0, 16));
+    const channelIdNum = BigInt(
+      '0x' + params.channelId.replace(/^0x/, '').slice(0, 16)
+    );
     const commitment = o1js.Poseidon.hash([
       o1js.Field(channelIdNum),
       o1js.Field(params.nonce),

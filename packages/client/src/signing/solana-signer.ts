@@ -1,11 +1,17 @@
 import type { SignedBalanceProof } from '../types.js';
-import type { ChainSigner, ChainMetadata, ClaimMessage, SolanaClaimMessage } from './types.js';
+import type {
+  ChainSigner,
+  ChainMetadata,
+  ClaimMessage,
+  SolanaClaimMessage,
+} from './types.js';
 import { toHex as bytesToHex } from '../utils/binary.js';
 
 /**
  * Base58 encoding for Solana public keys.
  */
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const BASE58_ALPHABET =
+  '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 function toBase58(bytes: Uint8Array): string {
   let num = BigInt(0);
   for (const b of bytes) num = num * 256n + BigInt(b);
@@ -48,7 +54,10 @@ export class SolanaSigner implements ChainSigner {
     this.privateKey = privateKey;
   }
 
-  private async ensurePublicKey(): Promise<{ publicKey: Uint8Array; base58: string }> {
+  private async ensurePublicKey(): Promise<{
+    publicKey: Uint8Array;
+    base58: string;
+  }> {
     if (this.publicKey && this.pubkeyBase58Cache) {
       return { publicKey: this.publicKey, base58: this.pubkeyBase58Cache };
     }
@@ -73,7 +82,9 @@ export class SolanaSigner implements ChainSigner {
     metadata: ChainMetadata;
   }): Promise<SignedBalanceProof> {
     if (params.metadata.chainType !== 'solana') {
-      throw new Error(`SolanaSigner cannot sign for chain type: ${params.metadata.chainType}`);
+      throw new Error(
+        `SolanaSigner cannot sign for chain type: ${params.metadata.chainType}`
+      );
     }
 
     const ed = await getEd25519();

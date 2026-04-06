@@ -72,7 +72,9 @@ export class KeyManager {
       relayUrls: config.relayUrls,
       rpId:
         config.rpId ??
-        (typeof window !== 'undefined' ? window.location.hostname : 'localhost'),
+        (typeof window !== 'undefined'
+          ? window.location.hostname
+          : 'localhost'),
       rpName: config.rpName ?? 'TOON Protocol',
       storageKey: config.storageKey ?? 'toon:keys',
     };
@@ -476,7 +478,9 @@ export class KeyManager {
   getSolanaSigner(): SolanaSigner {
     if (!this.identity) throw new Error('Identity not unlocked');
     if (!this.identity.solana.publicKey) {
-      throw new Error('Solana keys not available — was this imported from nsec?');
+      throw new Error(
+        'Solana keys not available — was this imported from nsec?'
+      );
     }
     return new SolanaSigner(this.identity.solana.secretKey);
   }
@@ -625,7 +629,8 @@ export class KeyManager {
       const request = store.get('current');
       const result = await new Promise<string | undefined>(
         (resolve, reject) => {
-          request.onsuccess = () => resolve(request.result as string | undefined);
+          request.onsuccess = () =>
+            resolve(request.result as string | undefined);
           request.onerror = () => reject(request.error);
         }
       );

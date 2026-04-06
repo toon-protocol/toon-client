@@ -33,10 +33,7 @@ describe('BackupService', () => {
       expect(event.pubkey).toBe(pubkey);
       expect(event.tags).toContainEqual(['d', 'toon:identity-backup']);
       expect(event.tags).toContainEqual(['v', '1']);
-      expect(event.tags).toContainEqual([
-        'chains',
-        'nostr,evm,solana,mina',
-      ]);
+      expect(event.tags).toContainEqual(['chains', 'nostr,evm,solana,mina']);
     });
 
     it('should include encrypted vault data in content', () => {
@@ -96,9 +93,7 @@ describe('BackupService', () => {
     });
 
     it('should throw on invalid JSON', () => {
-      expect(() => parseBackupPayload('not json')).toThrow(
-        'not valid JSON'
-      );
+      expect(() => parseBackupPayload('not json')).toThrow('not valid JSON');
     });
 
     it('should throw on missing encrypted_mnemonic', () => {
@@ -121,9 +116,7 @@ describe('BackupService', () => {
         encrypted_mnemonic: 'x',
         iv: 'y',
       });
-      expect(() => parseBackupPayload(content)).toThrow(
-        'missing wrapped_keys'
-      );
+      expect(() => parseBackupPayload(content)).toThrow('missing wrapped_keys');
     });
 
     it('should throw on invalid wrapped key entry', () => {
@@ -132,9 +125,7 @@ describe('BackupService', () => {
         iv: 'y',
         wrapped_keys: [{ id: 'a' }], // missing wrapped_dek and salt
       });
-      expect(() => parseBackupPayload(content)).toThrow(
-        'missing wrapped_dek'
-      );
+      expect(() => parseBackupPayload(content)).toThrow('missing wrapped_dek');
     });
   });
 });

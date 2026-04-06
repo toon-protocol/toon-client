@@ -12,7 +12,10 @@ import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import { ToonClientError } from './errors.js';
 import { EvmSigner } from './signing/evm-signer.js';
-import { ChannelManager, type PeerNegotiation } from './channel/ChannelManager.js';
+import {
+  ChannelManager,
+  type PeerNegotiation,
+} from './channel/ChannelManager.js';
 import { JsonFileChannelStore } from './channel/ChannelStore.js';
 import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
 import type {
@@ -181,8 +184,11 @@ export class ToonClient {
         if (result.negotiatedChain && result.settlementAddress) {
           const chainType = result.negotiatedChain.split(':')[0] ?? 'evm';
           const parts = result.negotiatedChain.split(':');
-          const chainId = parts.length >= 3 ? parseInt(parts[2]!, 10) : 0;
-          const r = result as typeof result & { tokenAddress?: string; tokenNetwork?: string };
+          const chainId = parts.length >= 3 ? parseInt(parts[2] ?? '0', 10) : 0;
+          const r = result as typeof result & {
+            tokenAddress?: string;
+            tokenNetwork?: string;
+          };
           this.peerNegotiations.set(result.registeredPeerId, {
             chain: result.negotiatedChain,
             chainType,
@@ -191,7 +197,10 @@ export class ToonClient {
             tokenAddress: r.tokenAddress,
             tokenNetwork: r.tokenNetwork,
           });
-        } else if (result.registeredPeerId && !this.peerNegotiations.has(result.registeredPeerId)) {
+        } else if (
+          result.registeredPeerId &&
+          !this.peerNegotiations.has(result.registeredPeerId)
+        ) {
           // Lightweight client fallback: bootstrap discovered the peer but didn't
           // negotiate a chain (no connector admin to register with). Extract the
           // peer's settlement info from their kind:10032 event data and match
@@ -205,19 +214,25 @@ export class ToonClient {
           const peerChains = peerInfo.supportedChains ?? [];
           const ourChains = this.config.supportedChains ?? [];
           // Find the first chain both sides support
-          const matchedChain = ourChains.find(c => peerChains.includes(c)) ?? ourChains[0];
+          const matchedChain =
+            ourChains.find((c) => peerChains.includes(c)) ?? ourChains[0];
           if (matchedChain) {
             const peerAddr = peerInfo.settlementAddresses?.[matchedChain];
             const parts = matchedChain.split(':');
-            const chainId = parts.length >= 3 ? parseInt(parts[2]!, 10) : 0;
+            const chainId =
+              parts.length >= 3 ? parseInt(parts[2] ?? '0', 10) : 0;
             if (peerAddr) {
               this.peerNegotiations.set(result.registeredPeerId, {
                 chain: matchedChain,
                 chainType: parts[0] ?? 'evm',
                 chainId: isNaN(chainId) ? 0 : chainId,
                 settlementAddress: peerAddr,
-                tokenAddress: peerInfo.preferredTokens?.[matchedChain] ?? this.config.preferredTokens?.[matchedChain],
-                tokenNetwork: peerInfo.tokenNetworks?.[matchedChain] ?? this.config.tokenNetworks?.[matchedChain],
+                tokenAddress:
+                  peerInfo.preferredTokens?.[matchedChain] ??
+                  this.config.preferredTokens?.[matchedChain],
+                tokenNetwork:
+                  peerInfo.tokenNetworks?.[matchedChain] ??
+                  this.config.tokenNetworks?.[matchedChain],
               });
             }
           }
@@ -235,7 +250,9 @@ export class ToonClient {
 
       // Wire on-chain channel client into ChannelManager for lazy opens
       if (this.channelManager && initialization.onChainChannelClient) {
-        this.channelManager.setChannelClient(initialization.onChainChannelClient);
+        this.channelManager.setChannelClient(
+          initialization.onChainChannelClient
+        );
       }
 
       // Store state
@@ -319,8 +336,14 @@ export class ToonClient {
             'PEER_NOT_NEGOTIATED'
           );
         }
-        const channelId = await this.channelManager.ensureChannel(peerId, negotiation);
-        const proof = await this.channelManager.signBalanceProof(channelId, BigInt(amount));
+        const channelId = await this.channelManager.ensureChannel(
+          peerId,
+          negotiation
+        );
+        const proof = await this.channelManager.signBalanceProof(
+          channelId,
+          BigInt(amount)
+        );
         const signer = this.channelManager.getSignerForChannel(channelId);
         claimMessage = signer.buildClaimMessage(proof, this.getPublicKey());
       } else {
@@ -334,7 +357,9 @@ export class ToonClient {
         {
           destination,
           amount,
-          data: toBase64(toonData instanceof Uint8Array ? toonData : new Uint8Array(toonData)),
+          data: toBase64(
+            toonData instanceof Uint8Array ? toonData : new Uint8Array(toonData)
+          ),
         },
         claimMessage
       );
@@ -352,7 +377,11 @@ export class ToonClient {
         data: response.data,
       };
     } catch (error) {
-      console.error('[ToonClient.publishEvent] ROOT CAUSE:', String(error), error instanceof Error ? error.stack : '');
+      console.error(
+        '[ToonClient.publishEvent] ROOT CAUSE:',
+        String(error),
+        error instanceof Error ? error.stack : ''
+      );
       throw new ToonClientError(
         'Failed to publish event',
         'PUBLISH_ERROR',
@@ -423,14 +452,18 @@ export class ToonClient {
 
     // Try "nostr-" prefixed peer IDs (convention: nostr-{pubkey_prefix})
     for (const peerId of this.peerNegotiations.keys()) {
-      if (destination.endsWith(`.${peerId}`) || destination.endsWith(`.${peerId.replace('nostr-', '')}`)) {
+      if (
+        destination.endsWith(`.${peerId}`) ||
+        destination.endsWith(`.${peerId.replace('nostr-', '')}`)
+      ) {
         return peerId;
       }
     }
 
     // Fallback: return first peer
     const firstPeerResult = this.peerNegotiations.keys().next();
-    if (!firstPeerResult.done && firstPeerResult.value) return firstPeerResult.value;
+    if (!firstPeerResult.done && firstPeerResult.value)
+      return firstPeerResult.value;
 
     throw new ToonClientError(
       `Cannot resolve peer for destination: ${destination}`,
@@ -514,7 +547,10 @@ export class ToonClient {
       params.claim,
       this.getPublicKey()
     );
-    return this.state.btpClient.sendIlpPacketWithClaim(ilpParams, claimMessage as unknown as Record<string, unknown>);
+    return this.state.btpClient.sendIlpPacketWithClaim(
+      ilpParams,
+      claimMessage as unknown as Record<string, unknown>
+    );
   }
 
   /**

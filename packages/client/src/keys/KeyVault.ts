@@ -133,10 +133,7 @@ export async function deriveKekFromPassword(
  * Wrap (encrypt) a DEK with a KEK using AES-KW.
  * @returns Base64-encoded wrapped DEK
  */
-export async function wrapDek(
-  kek: CryptoKey,
-  dek: CryptoKey
-): Promise<string> {
+export async function wrapDek(kek: CryptoKey, dek: CryptoKey): Promise<string> {
   const wrapped = await crypto.subtle.wrapKey('raw', dek, kek, 'AES-KW');
   return toBase64(new Uint8Array(wrapped));
 }
@@ -199,9 +196,7 @@ export async function unlockVault(
 ): Promise<string> {
   const entry = vault.wrappedKeys.find((e) => e.id === credentialIdHash);
   if (!entry) {
-    throw new Error(
-      `No wrapped key found for credential ${credentialIdHash}`
-    );
+    throw new Error(`No wrapped key found for credential ${credentialIdHash}`);
   }
 
   const dek = await unwrapDek(kek, entry.wrapped_dek);
@@ -254,9 +249,7 @@ export function removeKekFromVault(
   vault: VaultData,
   credentialIdHash: string
 ): VaultData {
-  const remaining = vault.wrappedKeys.filter(
-    (e) => e.id !== credentialIdHash
-  );
+  const remaining = vault.wrappedKeys.filter((e) => e.id !== credentialIdHash);
 
   if (remaining.length === 0) {
     throw new Error(

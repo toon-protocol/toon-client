@@ -220,9 +220,13 @@ export class OnChainChannelClient implements ConnectorChannelClient {
   /**
    * Opens a Solana payment channel (PDA creation).
    */
-  private async openSolanaChannel(params: OpenChannelParams): Promise<OpenChannelResult> {
+  private async openSolanaChannel(
+    params: OpenChannelParams
+  ): Promise<OpenChannelResult> {
     if (!this.solanaConfig) {
-      throw new Error('Solana channel config not provided — cannot open Solana channel');
+      throw new Error(
+        'Solana channel config not provided — cannot open Solana channel'
+      );
     }
 
     // Derive deterministic channel ID from participants + program
@@ -248,9 +252,13 @@ export class OnChainChannelClient implements ConnectorChannelClient {
    * Opens a Mina payment channel (zkApp state transition).
    * Dynamically imports o1js to avoid bundle bloat.
    */
-  private async openMinaChannel(params: OpenChannelParams): Promise<OpenChannelResult> {
+  private async openMinaChannel(
+    params: OpenChannelParams
+  ): Promise<OpenChannelResult> {
     if (!this.minaConfig) {
-      throw new Error('Mina channel config not provided — cannot open Mina channel');
+      throw new Error(
+        'Mina channel config not provided — cannot open Mina channel'
+      );
     }
 
     // Derive deterministic channel ID
@@ -280,7 +288,9 @@ export class OnChainChannelClient implements ConnectorChannelClient {
    * 3. Extract channelId from ChannelOpened event
    * 4. Deposit initial funds if specified
    */
-  private async openEvmChannel(params: OpenChannelParams): Promise<OpenChannelResult> {
+  private async openEvmChannel(
+    params: OpenChannelParams
+  ): Promise<OpenChannelResult> {
     const {
       chain,
       tokenNetwork,

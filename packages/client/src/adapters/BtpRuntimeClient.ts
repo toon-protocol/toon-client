@@ -151,6 +151,7 @@ export class BtpRuntimeClient implements IlpClient {
       await this.reconnect();
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guaranteed by reconnect() above
     const response = await this.btpClient!.sendPacket({
       type: 12 as const,
       amount: BigInt(params.amount),
@@ -213,7 +214,7 @@ export class BtpRuntimeClient implements IlpClient {
         expiresAt: new Date(Date.now() + (params.timeout ?? 30000)),
         data: fromBase64(params.data),
       },
-      protocolData,
+      protocolData
     );
 
     if (response.type === ILPPacketType.FULFILL) {

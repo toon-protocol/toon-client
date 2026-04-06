@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion -- ws is guaranteed non-null when _isConnected */
 /**
  * Isomorphic BTP client — works in both browser and Node.js.
  * Uses native WebSocket (browser) or globalThis.WebSocket (Node 21+).
@@ -81,7 +82,11 @@ export class IsomorphicBtpClient {
         this.ws = new WebSocket(this.config.url);
         this.ws.binaryType = 'arraybuffer';
       } catch (err) {
-        reject(new BtpConnectionError(`Failed to create WebSocket: ${err instanceof Error ? err.message : String(err)}`));
+        reject(
+          new BtpConnectionError(
+            `Failed to create WebSocket: ${err instanceof Error ? err.message : String(err)}`
+          )
+        );
         return;
       }
 
@@ -136,7 +141,7 @@ export class IsomorphicBtpClient {
    */
   async sendPacket(
     packet: ILPPreparePacket,
-    protocolData?: BTPProtocolData[],
+    protocolData?: BTPProtocolData[]
   ): Promise<ILPResponsePacket> {
     if (!this._isConnected || !this.ws) {
       throw new BtpConnectionError('Not connected');
@@ -188,11 +193,13 @@ export class IsomorphicBtpClient {
       type: BTPMessageType.MESSAGE,
       requestId,
       data: {
-        protocolData: [{
-          protocolName: 'auth',
-          contentType: 0,
-          data: textEncoder.encode(authData),
-        }],
+        protocolData: [
+          {
+            protocolName: 'auth',
+            contentType: 0,
+            data: textEncoder.encode(authData),
+          },
+        ],
         ilpPacket: new Uint8Array(0),
       },
     });
@@ -214,7 +221,9 @@ export class IsomorphicBtpClient {
             if (jsonStr.startsWith('{')) {
               // JSON response — not a BTP binary auth response, ignore
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
 
           // Parse as BTP binary
           const message = parseBtpMessage(data);
@@ -224,7 +233,9 @@ export class IsomorphicBtpClient {
 
             if (message.type === BTPMessageType.ERROR) {
               const errData = message.data as BTPErrorData;
-              reject(new BtpAuthError(`Authentication failed: ${errData.code}`));
+              reject(
+                new BtpAuthError(`Authentication failed: ${errData.code}`)
+              );
             } else if (message.type === BTPMessageType.RESPONSE) {
               resolve();
             }
@@ -232,7 +243,9 @@ export class IsomorphicBtpClient {
         } catch (err) {
           clearTimeout(timeout);
           this.ws!.onmessage = originalHandler;
-          reject(new BtpAuthError(err instanceof Error ? err.message : String(err)));
+          reject(
+            new BtpAuthError(err instanceof Error ? err.message : String(err))
+          );
         }
       };
 
@@ -258,7 +271,10 @@ export class IsomorphicBtpClient {
               const responseData = json['data']
                 ? this.base64ToUint8Array(json['data'] as string)
                 : new Uint8Array(0);
-              pending.resolve({ type: ILPPacketType.FULFILL, data: responseData });
+              pending.resolve({
+                type: ILPPacketType.FULFILL,
+                data: responseData,
+              });
             } else {
               pending.resolve({
                 type: ILPPacketType.REJECT,
@@ -273,14 +289,19 @@ export class IsomorphicBtpClient {
           return;
         }
       }
-    } catch { /* not JSON, try BTP binary */ }
+    } catch {
+      /* not JSON, try BTP binary */
+    }
 
     // BTP binary response
     try {
       const data = this.toUint8Array(raw);
       const message = parseBtpMessage(data);
 
-      if (message.type === BTPMessageType.RESPONSE || message.type === BTPMessageType.ERROR) {
+      if (
+        message.type === BTPMessageType.RESPONSE ||
+        message.type === BTPMessageType.ERROR
+      ) {
         const pending = this.pendingRequests.get(message.requestId);
         if (!pending) return;
 
@@ -289,7 +310,9 @@ export class IsomorphicBtpClient {
 
         if (message.type === BTPMessageType.ERROR) {
           const errData = message.data as BTPErrorData;
-          pending.reject(new BtpConnectionError(`BTP error: ${errData.code} ${errData.name}`));
+          pending.reject(
+            new BtpConnectionError(`BTP error: ${errData.code} ${errData.name}`)
+          );
           return;
         }
 

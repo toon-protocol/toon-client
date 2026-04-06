@@ -48,7 +48,11 @@ export class ChannelManager {
   // Legacy: keep EvmSigner reference for backwards compatibility
   private readonly evmSigner?: EvmSigner;
 
-  constructor(evmSigner?: EvmSigner, store?: ChannelStore, config?: ChannelManagerConfig) {
+  constructor(
+    evmSigner?: EvmSigner,
+    store?: ChannelStore,
+    config?: ChannelManagerConfig
+  ) {
     this.evmSigner = evmSigner;
     this.store = store;
     this.defaultInitialDeposit = config?.initialDeposit ?? '100000';
@@ -90,7 +94,8 @@ export class ChannelManager {
         chainType: 'evm' as const,
         signerIdentifier: evmSigner.address,
         async signBalanceProof(params) {
-          if (params.metadata.chainType !== 'evm') throw new Error('Expected EVM metadata');
+          if (params.metadata.chainType !== 'evm')
+            throw new Error('Expected EVM metadata');
           return evmSigner.signBalanceProof({
             channelId: params.channelId,
             nonce: params.nonce,
@@ -108,14 +113,19 @@ export class ChannelManager {
       };
     }
 
-    throw new Error(`No signer registered for chain type: ${tracking.chainType}`);
+    throw new Error(
+      `No signer registered for chain type: ${tracking.chainType}`
+    );
   }
 
   /**
    * Lazily open a channel for a peer. Idempotent — returns existing channel
    * if already open. Deduplicates concurrent opens for the same peer.
    */
-  async ensureChannel(peerId: string, negotiation: PeerNegotiation): Promise<string> {
+  async ensureChannel(
+    peerId: string,
+    negotiation: PeerNegotiation
+  ): Promise<string> {
     // Return existing channel
     const existing = this.peerChannels.get(peerId);
     if (existing) return existing;
@@ -125,24 +135,30 @@ export class ChannelManager {
     if (pending) return pending;
 
     if (!this.channelClient) {
-      throw new Error('No channel client configured — cannot open payment channel');
+      throw new Error(
+        'No channel client configured — cannot open payment channel'
+      );
     }
 
     const openPromise = (async () => {
       try {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- channelClient checked in constructor
         const result = await this.channelClient!.openChannel({
           peerId,
           chain: negotiation.chain,
           token: negotiation.tokenAddress,
           tokenNetwork: negotiation.tokenNetwork,
           peerAddress: negotiation.settlementAddress,
-          initialDeposit: negotiation.initialDeposit ?? this.defaultInitialDeposit,
-          settlementTimeout: negotiation.settlementTimeout ?? this.defaultSettlementTimeout,
+          initialDeposit:
+            negotiation.initialDeposit ?? this.defaultInitialDeposit,
+          settlementTimeout:
+            negotiation.settlementTimeout ?? this.defaultSettlementTimeout,
         });
 
         this.trackChannel(result.channelId, {
           chainType: negotiation.chainType,
-          chainId: typeof negotiation.chainId === 'number' ? negotiation.chainId : 0,
+          chainId:
+            typeof negotiation.chainId === 'number' ? negotiation.chainId : 0,
           tokenNetworkAddress: negotiation.tokenNetwork ?? '',
           tokenAddress: negotiation.tokenAddress,
         });
@@ -256,7 +272,8 @@ export class ChannelManager {
         nonce: tracking.nonce,
         transferredAmount: tracking.cumulativeAmount,
         lockedAmount: 0n,
-        locksRoot: '0x0000000000000000000000000000000000000000000000000000000000000000',
+        locksRoot:
+          '0x0000000000000000000000000000000000000000000000000000000000000000',
         metadata,
       });
     }
@@ -283,7 +300,10 @@ export class ChannelManager {
       case 'solana':
         return { chainType: 'solana', programId: tracking.tokenNetworkAddress };
       case 'mina':
-        return { chainType: 'mina', zkAppAddress: tracking.tokenNetworkAddress };
+        return {
+          chainType: 'mina',
+          zkAppAddress: tracking.tokenNetworkAddress,
+        };
       default:
         return {
           chainType: 'evm',

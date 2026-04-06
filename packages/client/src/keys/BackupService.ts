@@ -118,7 +118,9 @@ export function parseBackupPayload(content: string): VaultData {
       throw new Error('Invalid backup: wrapped key missing salt');
     }
     if (typeof e['created_at'] !== 'number') {
-      throw new Error('Invalid backup: wrapped key missing or invalid created_at');
+      throw new Error(
+        'Invalid backup: wrapped key missing or invalid created_at'
+      );
     }
   }
 
@@ -187,10 +189,8 @@ export async function fetchBackupFromRelays(
 
     // Sort by created_at descending, take most recent
     events.sort(
-      (
-        a: { created_at: number },
-        b: { created_at: number }
-      ) => b.created_at - a.created_at
+      (a: { created_at: number }, b: { created_at: number }) =>
+        b.created_at - a.created_at
     );
 
     const latest = events[0];

@@ -5,7 +5,12 @@ import type { EVMClaimMessage } from './evm-signer.js';
  * Chain-specific metadata (discriminated union).
  */
 export type ChainMetadata =
-  | { chainType: 'evm'; chainId: number; tokenNetworkAddress: string; tokenAddress?: string }
+  | {
+      chainType: 'evm';
+      chainId: number;
+      tokenNetworkAddress: string;
+      tokenAddress?: string;
+    }
   | { chainType: 'solana'; programId: string; tokenMint?: string }
   | { chainType: 'mina'; zkAppAddress: string; tokenId?: string };
 
@@ -26,7 +31,10 @@ export interface ChainSigner {
   buildClaimMessage(proof: SignedBalanceProof, senderId: string): ClaimMessage;
 }
 
-export type ClaimMessage = EVMClaimMessage | SolanaClaimMessage | MinaClaimMessage;
+export type ClaimMessage =
+  | EVMClaimMessage
+  | SolanaClaimMessage
+  | MinaClaimMessage;
 
 export interface SolanaClaimMessage {
   version: '1.0';

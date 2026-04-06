@@ -9,19 +9,10 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import {
-  ANVIL_RPC,
-  PEER1_BTP_URL,
-  PEER1_RELAY_URL,
   PEER1_BLS_URL,
-  TOKEN_ADDRESS,
-  TOKEN_NETWORK_ADDRESS,
-  TEST_PRIVATE_KEY,
-  CHAIN_ID,
   checkAllServicesReady,
   skipIfNotReady,
-  waitForEventOnRelay,
 } from '../../../sdk/tests/e2e/helpers/docker-e2e-setup.js';
 
 describe('Client E2E: EVM Lazy Channel', { timeout: 120_000 }, () => {
