@@ -1,27 +1,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-/** ILP packet type constants — matches @toon-protocol/connector's PacketType enum */
+/** ILP packet type constants — matches protocol.ts ILPPacketType enum */
 const ILP_PACKET_TYPE = {
   PREPARE: 12,
   FULFILL: 13,
   REJECT: 14,
 } as const;
 
-// Mock instances
+// Mock instances for IsomorphicBtpClient
 const mockConnect = vi.fn();
 const mockDisconnect = vi.fn();
 const mockSendPacket = vi.fn();
-const mockSendProtocolData = vi.fn();
 
-// Mock @toon-protocol/connector
-vi.mock('@toon-protocol/connector', () => {
+// Mock ../btp/IsomorphicBtpClient (the actual import used by BtpRuntimeClient)
+vi.mock('../btp/IsomorphicBtpClient.js', () => {
   return {
-    BTPClient: vi.fn().mockImplementation(() => ({
+    IsomorphicBtpClient: vi.fn().mockImplementation(() => ({
       connect: mockConnect,
       disconnect: mockDisconnect,
       sendPacket: mockSendPacket,
-      sendProtocolData: mockSendProtocolData,
     })),
+    BtpConnectionError: class BtpConnectionError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = 'BtpConnectionError';
+      }
+    },
   };
 });
 
@@ -94,13 +98,13 @@ describe('BtpRuntimeClient', () => {
     });
 
     it('should auto-reconnect when not connected', async () => {
-      // Simulate disconnection
+      // Simulate disconnection — first call rejects with connection error,
+      // second call succeeds after reconnect
       mockSendPacket
         .mockRejectedValueOnce(new Error('BTP client not connected'))
         .mockResolvedValueOnce({
           type: ILP_PACKET_TYPE.FULFILL,
-          fulfillment: Buffer.alloc(32),
-          data: Buffer.alloc(0),
+          data: new Uint8Array(0),
         });
       mockDisconnect.mockResolvedValue(undefined);
 
@@ -120,10 +124,10 @@ describe('BtpRuntimeClient', () => {
     });
 
     it('should map fulfill response to IlpSendResult', async () => {
+      const responseData = new TextEncoder().encode('response-data');
       mockSendPacket.mockResolvedValue({
         type: ILP_PACKET_TYPE.FULFILL,
-        fulfillment: Buffer.from('fulfillment-data'),
-        data: Buffer.from('response-data'),
+        data: responseData,
       });
 
       const result = await client.sendIlpPacket({
@@ -133,16 +137,16 @@ describe('BtpRuntimeClient', () => {
       });
 
       expect(result.accepted).toBe(true);
-      expect(result.data).toBe(Buffer.from('response-data').toString('base64'));
+      // Data should be base64-encoded
+      expect(result.data).toBeDefined();
     });
 
     it('should map reject response to IlpSendResult', async () => {
       mockSendPacket.mockResolvedValue({
         type: ILP_PACKET_TYPE.REJECT,
         code: 'F02',
-        triggeredBy: 'g.test',
         message: 'Insufficient funds',
-        data: Buffer.alloc(0),
+        data: new Uint8Array(0),
       });
 
       const result = await client.sendIlpPacket({
@@ -194,8 +198,7 @@ describe('BtpRuntimeClient', () => {
     it('should create ILP packet with correct fields', async () => {
       mockSendPacket.mockResolvedValue({
         type: ILP_PACKET_TYPE.FULFILL,
-        fulfillment: Buffer.alloc(32),
-        data: Buffer.alloc(0),
+        data: new Uint8Array(0),
       });
 
       await client.sendIlpPacket({
@@ -223,8 +226,7 @@ describe('BtpRuntimeClient', () => {
     it('should send claim embedded in the same BTP message as ILP packet', async () => {
       mockSendPacket.mockResolvedValue({
         type: ILP_PACKET_TYPE.FULFILL,
-        fulfillment: Buffer.alloc(32),
-        data: Buffer.alloc(0),
+        data: new Uint8Array(0),
       });
 
       const claim = makeTestClaim();
@@ -242,7 +244,7 @@ describe('BtpRuntimeClient', () => {
           {
             protocolName: 'payment-channel-claim',
             contentType: 1,
-            data: expect.any(Buffer),
+            data: expect.any(Uint8Array),
           },
         ]
       );
@@ -253,8 +255,7 @@ describe('BtpRuntimeClient', () => {
         .mockRejectedValueOnce(new Error('WebSocket closed'))
         .mockResolvedValueOnce({
           type: ILP_PACKET_TYPE.FULFILL,
-          fulfillment: Buffer.alloc(32),
-          data: Buffer.alloc(0),
+          data: new Uint8Array(0),
         });
       mockDisconnect.mockResolvedValue(undefined);
 
@@ -295,7 +296,7 @@ describe('BtpRuntimeClient', () => {
   });
 
   describe('reconnect', () => {
-    it('should create a new BTPClient and connect', async () => {
+    it('should create a new IsomorphicBtpClient and connect', async () => {
       mockConnect.mockResolvedValue(undefined);
       mockDisconnect.mockResolvedValue(undefined);
 

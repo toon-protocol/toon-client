@@ -1,6 +1,8 @@
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { type Hex, toHex } from 'viem';
 import type { BalanceProofParams, SignedBalanceProof } from '../types.js';
+// Types re-exported for convenience
+export type { ClaimMessage } from './types.js';
 
 /**
  * EVM claim message for BTP protocol data.
@@ -64,6 +66,7 @@ const BALANCE_PROOF_TYPES = {
  * Encapsulates the private key — no getPrivateKey() method is exposed.
  */
 export class EvmSigner {
+  readonly chainType = 'evm' as const;
   private readonly _account: PrivateKeyAccount;
 
   /**
@@ -83,6 +86,11 @@ export class EvmSigner {
 
   /** Derived 0x EVM address */
   get address(): string {
+    return this._account.address;
+  }
+
+  /** ChainSigner identifier — EVM address */
+  get signerIdentifier(): string {
     return this._account.address;
   }
 

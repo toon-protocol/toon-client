@@ -7,11 +7,15 @@ import type {
   IlpClient,
 } from '@toon-protocol/core';
 import { validateConfig, applyDefaults } from './config.js';
+import { toBase64 } from './utils/binary.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import { ToonClientError } from './errors.js';
 import { EvmSigner } from './signing/evm-signer.js';
-import { ChannelManager } from './channel/ChannelManager.js';
+import {
+  ChannelManager,
+  type PeerNegotiation,
+} from './channel/ChannelManager.js';
 import { JsonFileChannelStore } from './channel/ChannelStore.js';
 import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
 import type {
@@ -74,6 +78,7 @@ export class ToonClient {
   private state: ToonClientState | null = null;
   private readonly evmSigner?: EvmSigner;
   private channelManager?: ChannelManager;
+  private readonly peerNegotiations = new Map<string, PeerNegotiation>();
 
   /**
    * Creates a new ToonClient instance.
@@ -174,17 +179,80 @@ export class ToonClient {
       // Start bootstrap process (discover peers, register with settlement, announce)
       const bootstrapResults = await bootstrapService.bootstrap();
 
-      // Track any additional channels from bootstrap results
-      if (this.channelManager) {
-        for (const result of bootstrapResults) {
-          if (
-            result.channelId &&
-            !this.channelManager.isTracking(result.channelId)
-          ) {
-            const chainCtx = this.getChainContext(result.negotiatedChain);
-            this.channelManager.trackChannel(result.channelId, chainCtx);
+      // Store negotiation metadata from bootstrap results for lazy channel opening
+      for (const result of bootstrapResults) {
+        if (result.negotiatedChain && result.settlementAddress) {
+          const chainType = result.negotiatedChain.split(':')[0] ?? 'evm';
+          const parts = result.negotiatedChain.split(':');
+          const chainId = parts.length >= 3 ? parseInt(parts[2] ?? '0', 10) : 0;
+          const r = result as typeof result & {
+            tokenAddress?: string;
+            tokenNetwork?: string;
+          };
+          this.peerNegotiations.set(result.registeredPeerId, {
+            chain: result.negotiatedChain,
+            chainType,
+            chainId: isNaN(chainId) ? 0 : chainId,
+            settlementAddress: result.settlementAddress,
+            tokenAddress: r.tokenAddress,
+            tokenNetwork: r.tokenNetwork,
+          });
+        } else if (
+          result.registeredPeerId &&
+          !this.peerNegotiations.has(result.registeredPeerId)
+        ) {
+          // Lightweight client fallback: bootstrap discovered the peer but didn't
+          // negotiate a chain (no connector admin to register with). Extract the
+          // peer's settlement info from their kind:10032 event data and match
+          // against our supported chains.
+          const peerInfo = result.peerInfo as typeof result.peerInfo & {
+            supportedChains?: string[];
+            settlementAddresses?: Record<string, string>;
+            preferredTokens?: Record<string, string>;
+            tokenNetworks?: Record<string, string>;
+          };
+          const peerChains = peerInfo.supportedChains ?? [];
+          const ourChains = this.config.supportedChains ?? [];
+          // Find the first chain both sides support
+          const matchedChain =
+            ourChains.find((c) => peerChains.includes(c)) ?? ourChains[0];
+          if (matchedChain) {
+            const peerAddr = peerInfo.settlementAddresses?.[matchedChain];
+            const parts = matchedChain.split(':');
+            const chainId =
+              parts.length >= 3 ? parseInt(parts[2] ?? '0', 10) : 0;
+            if (peerAddr) {
+              this.peerNegotiations.set(result.registeredPeerId, {
+                chain: matchedChain,
+                chainType: parts[0] ?? 'evm',
+                chainId: isNaN(chainId) ? 0 : chainId,
+                settlementAddress: peerAddr,
+                tokenAddress:
+                  peerInfo.preferredTokens?.[matchedChain] ??
+                  this.config.preferredTokens?.[matchedChain],
+                tokenNetwork:
+                  peerInfo.tokenNetworks?.[matchedChain] ??
+                  this.config.tokenNetworks?.[matchedChain],
+              });
+            }
           }
         }
+        // Track any pre-opened channels (backwards compat)
+        if (
+          this.channelManager &&
+          result.channelId &&
+          !this.channelManager.isTracking(result.channelId)
+        ) {
+          const chainCtx = this.getChainContext(result.negotiatedChain);
+          this.channelManager.trackChannel(result.channelId, chainCtx);
+        }
+      }
+
+      // Wire on-chain channel client into ChannelManager for lazy opens
+      if (this.channelManager && initialization.onChainChannelClient) {
+        this.channelManager.setChannelClient(
+          initialization.onChainChannelClient
+        );
       }
 
       // Store state
@@ -243,14 +311,6 @@ export class ToonClient {
       const destination =
         options?.destination ?? this.config.destinationAddress;
 
-      // Require claim + BTP — plain sendIlpPacket is only valid for
-      // node-to-node forwarding (town.ts), not client-to-node.
-      if (!options?.claim) {
-        throw new ToonClientError(
-          'Signed balance proof required. Call signBalanceProof() first.',
-          'MISSING_CLAIM'
-        );
-      }
       if (!this.state.btpClient) {
         throw new ToonClientError(
           'BTP client required for publishing. Configure btpUrl.',
@@ -258,15 +318,48 @@ export class ToonClient {
         );
       }
 
-      const claimMessage = EvmSigner.buildClaimMessage(
-        options.claim,
-        this.getPublicKey()
-      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let claimMessage: any;
+      if (options?.claim) {
+        // EXISTING PATH: Caller provides pre-signed claim (backwards compatible)
+        claimMessage = EvmSigner.buildClaimMessage(
+          options.claim,
+          this.getPublicKey()
+        );
+      } else if (this.channelManager) {
+        // NEW PATH: Auto-open channel + auto-sign claim (lazy channels)
+        const peerId = this.resolvePeerId(destination);
+        const negotiation = this.peerNegotiations.get(peerId);
+        if (!negotiation) {
+          throw new ToonClientError(
+            `No negotiation metadata for peer "${peerId}" — was bootstrap completed?`,
+            'PEER_NOT_NEGOTIATED'
+          );
+        }
+        const channelId = await this.channelManager.ensureChannel(
+          peerId,
+          negotiation
+        );
+        const proof = await this.channelManager.signBalanceProof(
+          channelId,
+          BigInt(amount)
+        );
+        const signer = this.channelManager.getSignerForChannel(channelId);
+        claimMessage = signer.buildClaimMessage(proof, this.getPublicKey());
+      } else {
+        throw new ToonClientError(
+          'No claim provided and no channel manager configured',
+          'MISSING_CLAIM'
+        );
+      }
+
       const response = await this.state.btpClient.sendIlpPacketWithClaim(
         {
           destination,
           amount,
-          data: Buffer.from(toonData).toString('base64'),
+          data: toBase64(
+            toonData instanceof Uint8Array ? toonData : new Uint8Array(toonData)
+          ),
         },
         claimMessage
       );
@@ -284,6 +377,11 @@ export class ToonClient {
         data: response.data,
       };
     } catch (error) {
+      console.error(
+        '[ToonClient.publishEvent] ROOT CAUSE:',
+        String(error),
+        error instanceof Error ? error.stack : ''
+      );
       throw new ToonClientError(
         'Failed to publish event',
         'PUBLISH_ERROR',
@@ -335,6 +433,42 @@ export class ToonClient {
   getChannelCumulativeAmount(channelId: string): bigint {
     if (!this.channelManager) throw new Error('ChannelManager not initialized');
     return this.channelManager.getCumulativeAmount(channelId);
+  }
+
+  /**
+   * Resolves an ILP destination address to a peer ID.
+   * Convention: destination "g.toon.peer1" → peerId "peer1" (last segment).
+   * Falls back to first known peer if no match.
+   */
+  private resolvePeerId(destination: string): string {
+    // Check if destination matches a known peer's ILP address pattern
+    const segments = destination.split('.');
+    const lastSegment = segments[segments.length - 1] ?? '';
+
+    // Direct match against peerNegotiations keys
+    if (lastSegment && this.peerNegotiations.has(lastSegment)) {
+      return lastSegment;
+    }
+
+    // Try "nostr-" prefixed peer IDs (convention: nostr-{pubkey_prefix})
+    for (const peerId of this.peerNegotiations.keys()) {
+      if (
+        destination.endsWith(`.${peerId}`) ||
+        destination.endsWith(`.${peerId.replace('nostr-', '')}`)
+      ) {
+        return peerId;
+      }
+    }
+
+    // Fallback: return first peer
+    const firstPeerResult = this.peerNegotiations.keys().next();
+    if (!firstPeerResult.done && firstPeerResult.value)
+      return firstPeerResult.value;
+
+    throw new ToonClientError(
+      `Cannot resolve peer for destination: ${destination}`,
+      'PEER_NOT_FOUND'
+    );
   }
 
   /**
@@ -413,7 +547,10 @@ export class ToonClient {
       params.claim,
       this.getPublicKey()
     );
-    return this.state.btpClient.sendIlpPacketWithClaim(ilpParams, claimMessage);
+    return this.state.btpClient.sendIlpPacketWithClaim(
+      ilpParams,
+      claimMessage as unknown as Record<string, unknown>
+    );
   }
 
   /**
