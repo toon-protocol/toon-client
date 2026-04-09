@@ -37,7 +37,9 @@ interface NostrEventLike {
  * @param events - Array of raw Nostr events (kind:10035)
  * @returns Array of PetDvmProvider metadata, sorted by price ascending
  */
-export function filterPetDvmProviders(events: NostrEventLike[]): PetDvmProvider[] {
+export function filterPetDvmProviders(
+  events: NostrEventLike[]
+): PetDvmProvider[] {
   const providers: PetDvmProvider[] = [];
 
   for (const event of events) {

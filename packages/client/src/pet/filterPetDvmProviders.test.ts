@@ -11,7 +11,15 @@ function makeServiceDiscoveryEvent(overrides: {
   features?: string[];
   skillPresent?: boolean;
   malformedContent?: boolean;
-}): { kind: number; pubkey: string; content: string; tags: string[][]; id: string; sig: string; created_at: number } {
+}): {
+  kind: number;
+  pubkey: string;
+  content: string;
+  tags: string[][];
+  id: string;
+  sig: string;
+  created_at: number;
+} {
   const {
     pubkey = 'abc123pubkey',
     ilpAddress = 'g.toon.provider1',
@@ -132,5 +140,19 @@ describe('filterPetDvmProviders', () => {
   it('should return empty array for empty input', () => {
     const providers = filterPetDvmProviders([]);
     expect(providers).toHaveLength(0);
+  });
+
+  it('should default pricing to "0" when pricing key for 5900 is absent', () => {
+    const event = makeServiceDiscoveryEvent({
+      pricing5900: '',
+    });
+    // Override the content to have skill with empty pricing for 5900
+    const contentObj = JSON.parse(event.content);
+    contentObj.skill.pricing = {}; // no '5900' key
+    event.content = JSON.stringify(contentObj);
+
+    const providers = filterPetDvmProviders([event]);
+    expect(providers).toHaveLength(1);
+    expect(providers[0]!.pricing).toBe('0');
   });
 });

@@ -28,7 +28,8 @@ function isValidStats(obj: unknown): obj is StatValues {
   if (typeof obj !== 'object' || obj === null) return false;
   const record = obj as Record<string, unknown>;
   return STAT_FIELDS.every(
-    (field) => typeof record[field] === 'number' && Number.isFinite(record[field])
+    (field) =>
+      typeof record[field] === 'number' && Number.isFinite(record[field])
   );
 }
 
@@ -78,7 +79,12 @@ export function parsePetInteractionResult(
 
   // Validate stage (0-2)
   const stage = record['stage'];
-  if (typeof stage !== 'number' || !Number.isInteger(stage) || stage < 0 || stage > 2) {
+  if (
+    typeof stage !== 'number' ||
+    !Number.isInteger(stage) ||
+    stage < 0 ||
+    stage > 2
+  ) {
     return null;
   }
 
@@ -90,7 +96,10 @@ export function parsePetInteractionResult(
 
   // Validate lastInteraction
   const lastInteraction = record['lastInteraction'];
-  if (typeof lastInteraction !== 'number' || !Number.isFinite(lastInteraction)) {
+  if (
+    typeof lastInteraction !== 'number' ||
+    !Number.isFinite(lastInteraction)
+  ) {
     return null;
   }
 
@@ -111,12 +120,22 @@ export function parsePetInteractionResult(
     return null;
   }
 
+  // Construct clean stat object to prevent prototype pollution from JSON.parse
+  const validatedStats = record['stats'] as StatValues;
+  const stats: StatValues = {
+    hunger: validatedStats.hunger,
+    happiness: validatedStats.happiness,
+    health: validatedStats.health,
+    hygiene: validatedStats.hygiene,
+    energy: validatedStats.energy,
+  };
+
   return {
-    stats: record['stats'] as StatValues,
+    stats,
     stage,
     cycle,
     lastInteraction,
     brainHash,
-    cooldownTimestamps,
+    cooldownTimestamps: [...cooldownTimestamps],
   };
 }

@@ -74,6 +74,24 @@ describe('buildPetInteractionRequest', () => {
     ).toThrow(ValidationError);
   });
 
+  it('should throw ValidationError for non-integer actionType', () => {
+    expect(() =>
+      buildPetInteractionRequest({ ...validParams, actionType: 1.5 })
+    ).toThrow(ValidationError);
+  });
+
+  it('should throw ValidationError for NaN tokenCost', () => {
+    expect(() =>
+      buildPetInteractionRequest({ ...validParams, tokenCost: NaN })
+    ).toThrow(ValidationError);
+  });
+
+  it('should throw ValidationError for non-integer itemId', () => {
+    expect(() =>
+      buildPetInteractionRequest({ ...validParams, itemId: 2.7 })
+    ).toThrow(ValidationError);
+  });
+
   it('should accept all valid action types (0-10)', () => {
     for (let actionType = 0; actionType <= 10; actionType++) {
       const event = buildPetInteractionRequest({ ...validParams, actionType });

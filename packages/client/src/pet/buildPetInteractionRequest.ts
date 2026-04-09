@@ -9,7 +9,10 @@
 
 import { PET_INTERACTION_REQUEST_KIND } from '@toon-protocol/core';
 import { ValidationError } from '../errors.js';
-import type { PetInteractionRequestParams, UnsignedNostrEvent } from './types.js';
+import type {
+  PetInteractionRequestParams,
+  UnsignedNostrEvent,
+} from './types.js';
 
 /** Maximum valid action type index (0-10 inclusive, ACTION_COUNT = 11) */
 const MAX_ACTION_TYPE = 10;
@@ -47,7 +50,9 @@ export function buildPetInteractionRequest(
 
   // Validate itemId (>= 0)
   if (!Number.isInteger(itemId) || itemId < 0) {
-    throw new ValidationError(`itemId must be a non-negative integer, got ${itemId}`);
+    throw new ValidationError(
+      `itemId must be a non-negative integer, got ${itemId}`
+    );
   }
 
   // Validate tokenCost (>= 0)

@@ -79,4 +79,93 @@ describe('parsePetInteractionResult', () => {
     const result = parsePetInteractionResult('');
     expect(result).toBeNull();
   });
+
+  it('should return null when cooldownTimestamps contains NaN', () => {
+    const data = toBase64({
+      ...validResultData,
+      cooldownTimestamps: [0, NaN, 0],
+    });
+    const result = parsePetInteractionResult(data);
+    expect(result).toBeNull();
+  });
+
+  it('should return null when cooldownTimestamps contains Infinity', () => {
+    const data = toBase64({
+      ...validResultData,
+      cooldownTimestamps: [0, Infinity, 0],
+    });
+    const result = parsePetInteractionResult(data);
+    expect(result).toBeNull();
+  });
+
+  it('should accept brainHash with uppercase hex (case-insensitive)', () => {
+    const data = toBase64({
+      ...validResultData,
+      brainHash: 'A1B2C3D4'.repeat(8), // 64-char uppercase hex
+    });
+    const result = parsePetInteractionResult(data);
+    expect(result).not.toBeNull();
+    expect(result!.brainHash).toBe('A1B2C3D4'.repeat(8));
+  });
+
+  it('should return null when lastInteraction is not finite', () => {
+    const data = toBase64({
+      ...validResultData,
+      lastInteraction: Infinity,
+    });
+    const result = parsePetInteractionResult(data);
+    expect(result).toBeNull();
+  });
+
+  it('should return null when lastInteraction is missing', () => {
+    const { lastInteraction: _, ...withoutLast } = validResultData;
+    const data = toBase64(withoutLast);
+    const result = parsePetInteractionResult(data);
+    expect(result).toBeNull();
+  });
+
+  it('should return null when stats field is not a number', () => {
+    const data = toBase64({
+      ...validResultData,
+      stats: {
+        hunger: 80,
+        happiness: 'high',
+        health: 90,
+        hygiene: 60,
+        energy: 50,
+      },
+    });
+    const result = parsePetInteractionResult(data);
+    expect(result).toBeNull();
+  });
+
+  it('should return null for non-64-char hex brainHash', () => {
+    const data = toBase64({
+      ...validResultData,
+      brainHash: 'a'.repeat(63), // one char short
+    });
+    const result = parsePetInteractionResult(data);
+    expect(result).toBeNull();
+  });
+
+  it('should return null when brainHash contains non-hex characters', () => {
+    const data = toBase64({
+      ...validResultData,
+      brainHash: 'g'.repeat(64), // 'g' is not hex
+    });
+    const result = parsePetInteractionResult(data);
+    expect(result).toBeNull();
+  });
+
+  it('should return null when stage is not an integer', () => {
+    const data = toBase64({ ...validResultData, stage: 1.5 });
+    const result = parsePetInteractionResult(data);
+    expect(result).toBeNull();
+  });
+
+  it('should return null when cycle is not an integer', () => {
+    const data = toBase64({ ...validResultData, cycle: 2.5 });
+    const result = parsePetInteractionResult(data);
+    expect(result).toBeNull();
+  });
 });

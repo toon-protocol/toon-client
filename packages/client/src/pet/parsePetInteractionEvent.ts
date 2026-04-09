@@ -11,6 +11,7 @@ import type {
   PetInteractionEventData,
   InteractionResultContent,
   ProofStatus,
+  StatValues,
 } from './types.js';
 
 /**
@@ -39,6 +40,40 @@ function getTagValue(tags: string[][], name: string): string | undefined {
 }
 
 /**
+ * Check that an object has the expected stat fields as numbers.
+ */
+function isStatLike(obj: unknown): boolean {
+  if (typeof obj !== 'object' || obj === null) return false;
+  const r = obj as Record<string, unknown>;
+  return (
+    typeof r['hunger'] === 'number' &&
+    Number.isFinite(r['hunger']) &&
+    typeof r['happiness'] === 'number' &&
+    Number.isFinite(r['happiness']) &&
+    typeof r['health'] === 'number' &&
+    Number.isFinite(r['health']) &&
+    typeof r['hygiene'] === 'number' &&
+    Number.isFinite(r['hygiene']) &&
+    typeof r['energy'] === 'number' &&
+    Number.isFinite(r['energy'])
+  );
+}
+
+/**
+ * Construct a clean StatValues object from a validated stat-like object.
+ * Prevents prototype pollution by extracting only known fields.
+ */
+function cleanStats(obj: Record<string, unknown>): StatValues {
+  return {
+    hunger: obj['hunger'] as number,
+    happiness: obj['happiness'] as number,
+    health: obj['health'] as number,
+    hygiene: obj['hygiene'] as number,
+    energy: obj['energy'] as number,
+  };
+}
+
+/**
  * Attempt to parse content JSON into InteractionResultContent.
  * Returns null if content is malformed.
  */
@@ -46,9 +81,30 @@ function parseContent(content: string): InteractionResultContent | null {
   try {
     const parsed = JSON.parse(content);
     if (typeof parsed !== 'object' || parsed === null) return null;
-    // Basic structural check -- must have priorStats, decayedStats, finalStats
-    if (!parsed.priorStats || !parsed.decayedStats || !parsed.finalStats) return null;
-    return parsed as InteractionResultContent;
+    // Structural check -- must have stat objects with correct numeric fields
+    if (
+      !isStatLike(parsed.priorStats) ||
+      !isStatLike(parsed.decayedStats) ||
+      !isStatLike(parsed.finalStats)
+    ) {
+      return null;
+    }
+    if (
+      typeof parsed.cycle !== 'number' ||
+      typeof parsed.stage !== 'number' ||
+      typeof parsed.tokenCost !== 'number'
+    ) {
+      return null;
+    }
+    // Construct clean object to prevent prototype pollution from JSON.parse
+    return {
+      priorStats: cleanStats(parsed.priorStats),
+      decayedStats: cleanStats(parsed.decayedStats),
+      finalStats: cleanStats(parsed.finalStats),
+      cycle: parsed.cycle,
+      stage: parsed.stage,
+      tokenCost: parsed.tokenCost,
+    };
   } catch {
     return null;
   }
