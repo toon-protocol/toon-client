@@ -100,6 +100,70 @@ export interface InteractionResultContent {
 /** Proof status of a Kind 14919 event */
 export type ProofStatus = 'optimistic' | 'proven';
 
+// ============================================================
+// Pet Marketplace (Kind 30402 NIP-99 Classified Listings)
+// ============================================================
+
+/** Parameters for building a Kind 30402 pet-for-sale classified listing */
+export interface PetListingParams {
+  /** Blobbi identifier (non-empty string) — used as the 'd' tag */
+  blobbiId: string;
+  /** Asking price in USDC (> 0) */
+  askPriceUsdc: number;
+  /** 64-char hex lifecycleHash from on-chain PetZkApp state */
+  lifecycleHash: string;
+  /** Cumulative PET tokens spent (numeric string, >= "0") */
+  totalSpent: string;
+  /** Current stage: 0=Egg, 1=Baby, 2=Adult */
+  stage: number;
+  /** Current pet stats */
+  stats: StatValues;
+  /** Seller's Nostr pubkey (64-char hex) */
+  sellerPubkey: string;
+  /** Preferred relay URL for event relay routing */
+  relayUrl: string;
+  /** Listing expiry as unix timestamp */
+  expiresAt: number;
+}
+
+/** A parsed pet-for-sale listing (extends PetListingParams with event metadata) */
+export interface PetListing extends PetListingParams {
+  /** Nostr event ID of the kind:30402 listing event */
+  eventId: string;
+  /** Unix timestamp when the listing event was created */
+  createdAt: number;
+}
+
+/** Filter options for filterPetListings() */
+export interface PetListingFilterOptions {
+  /** Only include listings for pets at or above this stage */
+  minStage?: number;
+  /** Only include listings at or below this USDC price */
+  maxAskPriceUsdc?: number;
+  /** Only include listings where totalSpent >= this value (numeric string comparison) */
+  minTotalSpent?: string;
+  /** Only include listings from this seller pubkey */
+  sellerPubkey?: string;
+}
+
+// ============================================================
+// Pet Purchase Request (Kind 5900, action type 9)
+// ============================================================
+
+/** Parameters for building a Kind 5900 pet purchase request (transfer-ownership) */
+export interface PetPurchaseRequestParams {
+  /** Blobbi identifier being purchased */
+  blobbiId: string;
+  /** Nostr event ID of the kind:30402 listing being purchased */
+  listingEventId: string;
+  /** Buyer's Nostr pubkey (64-char hex) */
+  buyerPubkey: string;
+  /** Token cost for the purchase (>= 0) */
+  tokenCost: number;
+  /** Seller's Nostr pubkey — ILP payment routed to this pubkey (64-char hex) */
+  sellerPubkey: string;
+}
+
 /** Parsed data from a Kind 14919 pet interaction event */
 export interface PetInteractionEventData {
   /** Blobbi identifier from 'd' tag */
