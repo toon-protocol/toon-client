@@ -59,7 +59,9 @@ describe('parsePetListing', () => {
   });
 
   it('createdAt populated from event created_at', () => {
-    const result = parsePetListing(makeListingEvent({ created_at: 1700000000 }));
+    const result = parsePetListing(
+      makeListingEvent({ created_at: 1700000000 })
+    );
     expect(result?.createdAt).toBe(1700000000);
   });
 

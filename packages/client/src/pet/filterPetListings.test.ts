@@ -7,16 +7,18 @@ const SELLER_B = 'b'.repeat(64);
 const FUTURE = Math.floor(Date.now() / 1000) + 86400;
 const PAST = Math.floor(Date.now() / 1000) - 86400;
 
-function makeListingEvent(overrides: {
-  id?: string;
-  blobbiId?: string;
-  price?: string;
-  stage?: string;
-  totalSpent?: string;
-  sellerPubkey?: string;
-  expiration?: number | null;
-  kind?: number;
-} = {}) {
+function makeListingEvent(
+  overrides: {
+    id?: string;
+    blobbiId?: string;
+    price?: string;
+    stage?: string;
+    totalSpent?: string;
+    sellerPubkey?: string;
+    expiration?: number | null;
+    kind?: number;
+  } = {}
+) {
   const {
     id = 'evt-001',
     blobbiId = 'pet-001',
@@ -47,7 +49,13 @@ function makeListingEvent(overrides: {
     pubkey: sellerPubkey,
     created_at: 1712000000,
     tags,
-    content: JSON.stringify({ hunger: 80, happiness: 90, health: 85, hygiene: 75, energy: 70 }),
+    content: JSON.stringify({
+      hunger: 80,
+      happiness: 90,
+      health: 85,
+      hygiene: 75,
+      energy: 70,
+    }),
   };
 }
 
@@ -74,9 +82,7 @@ describe('filterPetListings', () => {
   });
 
   it('listings without expiration tag are not excluded', () => {
-    const events = [
-      makeListingEvent({ id: 'no-expiry', expiration: null }),
-    ];
+    const events = [makeListingEvent({ id: 'no-expiry', expiration: null })];
     const result = filterPetListings(events);
     expect(result).toHaveLength(1);
   });
@@ -163,7 +169,10 @@ describe('filterPetListings', () => {
       makeListingEvent({ id: 'adult-expensive', stage: '2', price: '50' }),
       makeListingEvent({ id: 'baby-cheap', stage: '1', price: '5' }),
     ];
-    const result = filterPetListings(events, { minStage: 2, maxAskPriceUsdc: 10 });
+    const result = filterPetListings(events, {
+      minStage: 2,
+      maxAskPriceUsdc: 10,
+    });
     expect(result).toHaveLength(1);
     expect(result[0]?.eventId).toBe('adult-cheap');
   });

@@ -94,7 +94,9 @@ export function filterPetListings(
 
     // Biography value filter (totalSpent numeric string comparison)
     if (options?.minTotalSpent !== undefined) {
-      if (compareNumericStrings(listing.totalSpent, options.minTotalSpent) < 0) {
+      if (
+        compareNumericStrings(listing.totalSpent, options.minTotalSpent) < 0
+      ) {
         continue;
       }
     }
@@ -111,9 +113,7 @@ export function filterPetListings(
   }
 
   // Sort by totalSpent descending (highest biography value first)
-  listings.sort((a, b) =>
-    compareNumericStrings(b.totalSpent, a.totalSpent)
-  );
+  listings.sort((a, b) => compareNumericStrings(b.totalSpent, a.totalSpent));
 
   return listings;
 }
