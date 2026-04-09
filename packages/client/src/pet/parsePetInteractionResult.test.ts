@@ -68,6 +68,13 @@ describe('parsePetInteractionResult', () => {
     expect(result).toBeNull();
   });
 
+  it('should return null when cooldownTimestamps is missing', () => {
+    const { cooldownTimestamps: _, ...withoutCooldown } = validResultData;
+    const data = toBase64(withoutCooldown);
+    const result = parsePetInteractionResult(data);
+    expect(result).toBeNull();
+  });
+
   it('should return null for empty string input', () => {
     const result = parsePetInteractionResult('');
     expect(result).toBeNull();

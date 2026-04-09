@@ -73,4 +73,12 @@ describe('buildPetInteractionRequest', () => {
       buildPetInteractionRequest({ ...validParams, tokenCost: -1 })
     ).toThrow(ValidationError);
   });
+
+  it('should accept all valid action types (0-10)', () => {
+    for (let actionType = 0; actionType <= 10; actionType++) {
+      const event = buildPetInteractionRequest({ ...validParams, actionType });
+      expect(event.kind).toBe(PET_INTERACTION_REQUEST_KIND);
+      expect(event.tags).toContainEqual(['action', String(actionType)]);
+    }
+  });
 });

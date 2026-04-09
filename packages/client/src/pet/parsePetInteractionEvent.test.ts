@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync, readdirSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { parsePetInteractionEvent } from './parsePetInteractionEvent.js';
 
 /** Helper to create a minimal Kind 14919 event */
@@ -125,5 +128,35 @@ describe('parsePetInteractionEvent', () => {
 
     expect(result).not.toBeNull();
     expect(result!.content).toBeNull();
+  });
+});
+
+describe('R-016 regression: pet module does not import forbidden packages', () => {
+  it('should not import from pet-dvm, pet-circuit, or memvid-node', () => {
+    const petDir = join(dirname(fileURLToPath(import.meta.url)));
+    const sourceFiles = readdirSync(petDir).filter(
+      (f) => f.endsWith('.ts') && !f.endsWith('.test.ts')
+    );
+
+    const forbiddenImports = [
+      '@toon-protocol/pet-dvm',
+      '@toon-protocol/pet-circuit',
+      '@toon-protocol/memvid-node',
+      'o1js',
+    ];
+
+    // Match actual import/require statements, not comments
+    const importPattern = (pkg: string) =>
+      new RegExp(`(?:import|require)\\s*[({]?.*['"]${pkg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm');
+
+    for (const file of sourceFiles) {
+      const content = readFileSync(join(petDir, file), 'utf-8');
+      for (const forbidden of forbiddenImports) {
+        expect(
+          importPattern(forbidden).test(content),
+          `${file} must not import from ${forbidden}`
+        ).toBe(false);
+      }
+    }
   });
 });
