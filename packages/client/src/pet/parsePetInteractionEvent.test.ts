@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { parsePetInteractionEvent } from './parsePetInteractionEvent.js';
-import type { PetInteractionEventData } from './types.js';
 
 /** Helper to create a minimal Kind 14919 event */
 function makeInteractionEvent(overrides?: {

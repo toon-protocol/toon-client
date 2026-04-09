@@ -48,6 +48,22 @@ export {
   buildSettlementInfo,
 } from './config.js';
 
+// Pet DVM Utilities
+export {
+  filterPetDvmProviders,
+  buildPetInteractionRequest,
+  parsePetInteractionResult,
+  parsePetInteractionEvent,
+  type PetDvmProvider,
+  type PetInteractionRequestParams,
+  type PetInteractionResultData,
+  type PetInteractionEventData,
+  type InteractionResultContent,
+  type UnsignedNostrEvent,
+  type StatValues,
+  type ProofStatus,
+} from './pet/index.js';
+
 // Key Management
 export {
   KeyManager,
