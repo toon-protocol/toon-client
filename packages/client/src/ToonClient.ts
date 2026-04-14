@@ -391,6 +391,97 @@ export class ToonClient {
   }
 
   /**
+   * Sends a raw swap ILP packet (Story 12.5) to a Mill peer with an attached
+   * balance-proof claim. This is a lower-level surface than `publishEvent`:
+   * it forwards the raw `IlpSendResult` so the sender (`streamSwap()`) can
+   * decode FULFILL metadata itself.
+   *
+   * Claim resolution mirrors `publishEvent`:
+   *   (a) explicit `params.claim` -> use it,
+   *   (b) `channelManager` present -> auto-open + auto-sign for the peer
+   *       matching `destination`,
+   *   (c) neither -> throw MISSING_CLAIM.
+   *
+   * @throws {ToonClientError} INVALID_STATE / NO_BTP_CLIENT / MISSING_CLAIM
+   */
+  async sendSwapPacket(params: {
+    destination: string;
+    amount: bigint;
+    toonData: Uint8Array;
+    timeout?: number;
+    claim?: SignedBalanceProof;
+  }): Promise<IlpSendResult> {
+    if (!this.state) {
+      throw new ToonClientError(
+        'Client not started. Call start() first.',
+        'INVALID_STATE'
+      );
+    }
+    if (!this.state.btpClient) {
+      throw new ToonClientError(
+        'BTP client required for sending swap packets. Configure btpUrl.',
+        'NO_BTP_CLIENT'
+      );
+    }
+
+    const claimMessage = await this.resolveClaimForDestination(
+      params.destination,
+      params.amount,
+      params.claim
+    );
+
+    return this.state.btpClient.sendIlpPacketWithClaim(
+      {
+        destination: params.destination,
+        amount: String(params.amount),
+        data: toBase64(params.toonData),
+        timeout: params.timeout ?? 30000,
+      },
+      claimMessage as unknown as Record<string, unknown>
+    );
+  }
+
+  /**
+   * Shared claim-resolution logic used by `publishEvent` and `sendSwapPacket`.
+   * TODO(12.5 followup): also factor `publishEvent`'s inline claim resolution
+   * to call this helper. Kept duplicated for now to minimize regression risk.
+   */
+  private async resolveClaimForDestination(
+    destination: string,
+    amount: bigint,
+    explicitClaim?: SignedBalanceProof
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- claim message is opaque forwarded type
+  ): Promise<any> {
+    if (explicitClaim) {
+      return EvmSigner.buildClaimMessage(explicitClaim, this.getPublicKey());
+    }
+    if (this.channelManager) {
+      const peerId = this.resolvePeerId(destination);
+      const negotiation = this.peerNegotiations.get(peerId);
+      if (!negotiation) {
+        throw new ToonClientError(
+          `No negotiation metadata for peer "${peerId}" — was bootstrap completed?`,
+          'PEER_NOT_NEGOTIATED'
+        );
+      }
+      const channelId = await this.channelManager.ensureChannel(
+        peerId,
+        negotiation
+      );
+      const proof = await this.channelManager.signBalanceProof(
+        channelId,
+        amount
+      );
+      const signer = this.channelManager.getSignerForChannel(channelId);
+      return signer.buildClaimMessage(proof, this.getPublicKey());
+    }
+    throw new ToonClientError(
+      'No claim provided and no channel manager configured',
+      'MISSING_CLAIM'
+    );
+  }
+
+  /**
    * Signs a balance proof for the given channel with the specified amount.
    * Delegates to ChannelManager which auto-increments nonce and tracks cumulative amount.
    *
