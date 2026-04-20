@@ -42,47 +42,50 @@ async function findReachableProxy(): Promise<string | null> {
   return null;
 }
 
-describePublic('SOCKS5 Transport via Public Anyone Proxies (ATOR_PUBLIC=1)', () => {
-  let proxyUrl: string | null = null;
+describePublic(
+  'SOCKS5 Transport via Public Anyone Proxies (ATOR_PUBLIC=1)',
+  () => {
+    let proxyUrl: string | null = null;
 
-  it('finds a reachable public Anyone proxy', async () => {
-    proxyUrl = await findReachableProxy();
-    expect(proxyUrl).not.toBeNull();
-    console.log(`[ator] Using proxy: ${proxyUrl}`);
-  }, 30_000);
+    it('finds a reachable public Anyone proxy', async () => {
+      proxyUrl = await findReachableProxy();
+      expect(proxyUrl).not.toBeNull();
+      console.log(`[ator] Using proxy: ${proxyUrl}`);
+    }, 30_000);
 
-  it('probeSocks5Proxy succeeds against public proxy', async () => {
-    if (!proxyUrl) return;
-    // Should not throw
-    await probeSocks5Proxy(proxyUrl, 10_000);
-  }, 15_000);
+    it('probeSocks5Proxy succeeds against public proxy', async () => {
+      if (!proxyUrl) return;
+      // Should not throw
+      await probeSocks5Proxy(proxyUrl, 10_000);
+    }, 15_000);
 
-  it('resolveTransport returns factories for socks5 type', async () => {
-    if (!proxyUrl) return;
-    const transport = await resolveTransport(
-      { type: 'socks5', socksProxy: proxyUrl },
-      'ws://example.com:3000',
-      'http://example.com:8080'
-    );
+    it('resolveTransport returns factories for socks5 type', async () => {
+      if (!proxyUrl) return;
+      const transport = await resolveTransport(
+        { type: 'socks5', socksProxy: proxyUrl },
+        'ws://example.com:3000',
+        'http://example.com:8080'
+      );
 
-    expect(transport.createWebSocket).toBeDefined();
-    expect(transport.httpClient).toBeDefined();
-    expect(transport.btpUrl).toBeUndefined(); // no URL rewrite in socks5 mode
-    expect(transport.connectorUrl).toBeUndefined();
-  }, 30_000);
+      expect(transport.createWebSocket).toBeDefined();
+      expect(transport.httpClient).toBeDefined();
+      expect(transport.btpUrl).toBeUndefined(); // no URL rewrite in socks5 mode
+      expect(transport.connectorUrl).toBeUndefined();
+    }, 30_000);
 
-  it('createSocks5Fetch can reach an HTTP endpoint through the proxy', async () => {
-    if (!proxyUrl) return;
+    it('createSocks5Fetch can reach an HTTP endpoint through the proxy', async () => {
+      if (!proxyUrl) return;
 
-    const proxiedFetch = createSocks5Fetch(proxyUrl);
-    const response = await proxiedFetch('http://api.ipify.org?format=json', {
-      signal: AbortSignal.timeout(30_000),
-    });
+      const proxiedFetch = createSocks5Fetch(proxyUrl);
+      const response = await proxiedFetch('http://api.ipify.org?format=json', {
+        signal: AbortSignal.timeout(30_000),
+      });
 
-    expect(response.ok).toBe(true);
-    const data = (await response.json()) as { ip: string };
-    expect(data.ip).toBeDefined();
-    // The IP should be the proxy's exit IP, not our real IP
-    console.log(`[ator] Exit IP: ${data.ip}`);
-  }, 45_000);
-});
+      expect(response.ok).toBe(true);
+      const data = (await response.json()) as { ip: string };
+      expect(data.ip).toBeDefined();
+      // The IP should be the proxy's exit IP, not our real IP
+      console.log(`[ator] Exit IP: ${data.ip}`);
+    }, 45_000);
+  }
+);

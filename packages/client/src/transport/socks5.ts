@@ -45,9 +45,7 @@ export function validateSocks5hUrl(socksProxy: string): {
     throw new Error(`SOCKS5 proxy URL missing host: "${socksProxy}"`);
   }
   if (port < 0 || port > 65535 || !Number.isFinite(port)) {
-    throw new Error(
-      `SOCKS5 proxy port out of range (0–65535): ${parsed.port}`
-    );
+    throw new Error(`SOCKS5 proxy port out of range (0–65535): ${parsed.port}`);
   }
 
   return { host, port };
@@ -63,13 +61,15 @@ export function createSocks5WebSocketFactory(
   validateSocks5hUrl(socksProxy);
 
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { SocksProxyAgent } = require('socks-proxy-agent') as typeof SocksProxyAgentModule;
+  const { SocksProxyAgent } =
+    require('socks-proxy-agent') as typeof SocksProxyAgentModule;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const WS = require('ws') as typeof WSModule;
 
   const agent = new SocksProxyAgent(socksProxy);
 
-  return (url: string) => new WS.default(url, { agent }) as unknown as WebSocket;
+  return (url: string) =>
+    new WS.default(url, { agent }) as unknown as WebSocket;
 }
 
 /**
@@ -81,7 +81,8 @@ export function createSocks5Fetch(socksProxy: string): typeof fetch {
   validateSocks5hUrl(socksProxy);
 
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { SocksProxyAgent } = require('socks-proxy-agent') as typeof SocksProxyAgentModule;
+  const { SocksProxyAgent } =
+    require('socks-proxy-agent') as typeof SocksProxyAgentModule;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const http = require('node:http') as typeof httpModule;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -90,7 +91,12 @@ export function createSocks5Fetch(socksProxy: string): typeof fetch {
   const agent = new SocksProxyAgent(socksProxy);
 
   return (input: string | URL | Request, init?: RequestInit) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
     const parsedUrl = new URL(url);
     const isHttps = parsedUrl.protocol === 'https:';
     const transport = isHttps ? https : http;
@@ -117,7 +123,11 @@ export function createSocks5Fetch(socksProxy: string): typeof fetch {
             const body = Buffer.concat(chunks);
             const responseHeaders = new Headers();
             for (const [key, val] of Object.entries(res.headers)) {
-              if (val) responseHeaders.set(key, Array.isArray(val) ? val.join(', ') : val);
+              if (val)
+                responseHeaders.set(
+                  key,
+                  Array.isArray(val) ? val.join(', ') : val
+                );
             }
             resolve(
               new Response(body, {

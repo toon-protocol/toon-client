@@ -62,7 +62,10 @@ export class IsomorphicBtpClient {
   private _isConnected = false;
   private requestIdCounter = 0;
   private readonly pendingRequests = new Map<number, PendingRequest>();
-  private readonly config: Required<Omit<IsomorphicBtpClientConfig, 'createWebSocket'>> & Pick<IsomorphicBtpClientConfig, 'createWebSocket'>;
+  private readonly config: Required<
+    Omit<IsomorphicBtpClientConfig, 'createWebSocket'>
+  > &
+    Pick<IsomorphicBtpClientConfig, 'createWebSocket'>;
 
   constructor(config: IsomorphicBtpClientConfig) {
     this.config = {
