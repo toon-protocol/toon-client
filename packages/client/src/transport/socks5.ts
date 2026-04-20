@@ -60,11 +60,11 @@ export function createSocks5WebSocketFactory(
 ): (url: string) => WebSocket {
   validateSocks5hUrl(socksProxy);
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  /* eslint-disable @typescript-eslint/no-require-imports */
   const { SocksProxyAgent } =
     require('socks-proxy-agent') as typeof SocksProxyAgentModule;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const WS = require('ws') as typeof WSModule;
+  /* eslint-enable @typescript-eslint/no-require-imports */
 
   const agent = new SocksProxyAgent(socksProxy);
 
@@ -80,13 +80,12 @@ export function createSocks5WebSocketFactory(
 export function createSocks5Fetch(socksProxy: string): typeof fetch {
   validateSocks5hUrl(socksProxy);
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  /* eslint-disable @typescript-eslint/no-require-imports */
   const { SocksProxyAgent } =
     require('socks-proxy-agent') as typeof SocksProxyAgentModule;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const http = require('node:http') as typeof httpModule;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const https = require('node:https') as typeof httpsModule;
+  /* eslint-enable @typescript-eslint/no-require-imports */
 
   const agent = new SocksProxyAgent(socksProxy);
 
