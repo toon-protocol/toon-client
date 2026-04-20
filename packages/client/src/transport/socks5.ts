@@ -70,21 +70,79 @@ export function createSocks5WebSocketFactory(
 
 /**
  * Creates a fetch wrapper that routes HTTP requests through a SOCKS5 proxy.
- * Uses `socks-proxy-agent` with Node.js native `fetch` via undici dispatcher.
+ * Uses `socks-proxy-agent` with Node.js `http`/`https` modules (not native
+ * fetch, which uses undici and doesn't support SocksProxyAgent's dispatcher).
  */
 export function createSocks5Fetch(socksProxy: string): typeof fetch {
   validateSocks5hUrl(socksProxy);
 
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { SocksProxyAgent } = require('socks-proxy-agent') as typeof import('socks-proxy-agent');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const http = require('node:http') as typeof import('node:http');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const https = require('node:https') as typeof import('node:https');
+
   const agent = new SocksProxyAgent(socksProxy);
 
   return (input: string | URL | Request, init?: RequestInit) => {
-    // Node.js fetch (undici) supports custom dispatcher via agent
-    return globalThis.fetch(input, {
-      ...init,
-      // @ts-expect-error -- Node.js fetch accepts dispatcher option not in lib.dom.d.ts
-      dispatcher: agent,
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const parsedUrl = new URL(url);
+    const isHttps = parsedUrl.protocol === 'https:';
+    const transport = isHttps ? https : http;
+
+    return new Promise<Response>((resolve, reject) => {
+      const method = init?.method ?? 'GET';
+      const headers = init?.headers
+        ? Object.fromEntries(
+            init.headers instanceof Headers
+              ? init.headers.entries()
+              : Array.isArray(init.headers)
+                ? init.headers
+                : Object.entries(init.headers)
+          )
+        : {};
+
+      const req = transport.request(
+        url,
+        { method, headers, agent, timeout: 30_000 },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => {
+            const body = Buffer.concat(chunks);
+            const responseHeaders = new Headers();
+            for (const [key, val] of Object.entries(res.headers)) {
+              if (val) responseHeaders.set(key, Array.isArray(val) ? val.join(', ') : val);
+            }
+            resolve(
+              new Response(body, {
+                status: res.statusCode ?? 200,
+                statusText: res.statusMessage ?? '',
+                headers: responseHeaders,
+              })
+            );
+          });
+        }
+      );
+
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('SOCKS5 proxied request timeout'));
+      });
+
+      if (init?.signal) {
+        init.signal.addEventListener('abort', () => {
+          req.destroy();
+          reject(new Error('Aborted'));
+        });
+      }
+
+      if (init?.body) {
+        req.write(typeof init.body === 'string' ? init.body : init.body);
+      }
+      req.end();
     });
   };
 }
