@@ -29,6 +29,8 @@ export interface IsomorphicBtpClientConfig {
   authToken: string;
   sendTimeoutMs?: number;
   authTimeoutMs?: number;
+  /** Custom WebSocket constructor (e.g., for SOCKS5 proxy support via `ws` package). */
+  createWebSocket?: (url: string) => WebSocket;
 }
 
 interface PendingRequest {
@@ -60,7 +62,7 @@ export class IsomorphicBtpClient {
   private _isConnected = false;
   private requestIdCounter = 0;
   private readonly pendingRequests = new Map<number, PendingRequest>();
-  private readonly config: Required<IsomorphicBtpClientConfig>;
+  private readonly config: Required<Omit<IsomorphicBtpClientConfig, 'createWebSocket'>> & Pick<IsomorphicBtpClientConfig, 'createWebSocket'>;
 
   constructor(config: IsomorphicBtpClientConfig) {
     this.config = {
@@ -79,7 +81,9 @@ export class IsomorphicBtpClient {
 
     return new Promise<void>((resolve, reject) => {
       try {
-        this.ws = new WebSocket(this.config.url);
+        this.ws = this.config.createWebSocket
+          ? this.config.createWebSocket(this.config.url)
+          : new WebSocket(this.config.url);
         this.ws.binaryType = 'arraybuffer';
       } catch (err) {
         reject(

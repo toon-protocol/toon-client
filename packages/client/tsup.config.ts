@@ -7,5 +7,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   outDir: 'dist',
-  external: ['o1js', '@noble/curves/ed25519'],
+  external: ['o1js', '@noble/curves/ed25519', 'ws', 'socks-proxy-agent'],
 });

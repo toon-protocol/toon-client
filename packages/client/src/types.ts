@@ -146,6 +146,21 @@ export interface ToonClientConfig {
   channelStorePath?: string;
 
   // ============================================================================
+  // TRANSPORT PRIVACY (optional)
+  // ============================================================================
+
+  /**
+   * Transport configuration for privacy-preserving connections.
+   *
+   * - `direct` (default): No privacy overlay, connect directly.
+   * - `socks5`: Route connections through a SOCKS5 proxy (Node.js only).
+   *   Requires `socks5h://` scheme for DNS leak prevention.
+   * - `gateway`: Route connections through an ator gateway URL (browser-compatible).
+   *   The gateway proxies through ator server-side.
+   */
+  transport?: ClientTransportConfig;
+
+  // ============================================================================
   // NETWORK (optional with defaults)
   // ============================================================================
 
@@ -236,3 +251,22 @@ export interface SignedBalanceProof extends BalanceProofParams {
   /** ERC-20 token address (e.g. USDC) for self-describing claim verification */
   tokenAddress?: string;
 }
+
+/**
+ * Transport configuration for privacy-preserving connections.
+ *
+ * Node.js: Use `socks5` to route WebSocket and HTTP through a SOCKS5 proxy.
+ * Browser: Use `gateway` to route through a server-side ator gateway.
+ */
+export type ClientTransportConfig =
+  | { type: 'direct' }
+  | {
+      type: 'socks5';
+      /** SOCKS5 proxy URL. MUST use `socks5h://` scheme (DNS leak prevention). */
+      socksProxy: string;
+    }
+  | {
+      type: 'gateway';
+      /** Gateway base URL that proxies connections through ator server-side. */
+      gatewayUrl: string;
+    };

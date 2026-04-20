@@ -7,6 +7,7 @@ import { EvmSigner } from '../signing/evm-signer.js';
 import { buildSettlementInfo } from '../config.js';
 import type { ResolvedConfig } from '../config.js';
 import type { HttpModeInitialization } from './types.js';
+import { resolveTransport } from '../transport/index.js';
 
 /**
  * Initializes HTTP mode for ToonClient.
@@ -20,8 +21,17 @@ import type { HttpModeInitialization } from './types.js';
 export async function initializeHttpMode(
   config: ResolvedConfig
 ): Promise<HttpModeInitialization> {
-  // Derive admin URL from connector URL (change port 8080 → 8081)
-  const connectorUrl = config.connectorUrl;
+  // Resolve transport (probes SOCKS5 proxy or rewrites gateway URLs).
+  // Fail-closed: throws if SOCKS5 proxy is configured but unreachable.
+  const transport = await resolveTransport(
+    config.transport,
+    config.btpUrl,
+    config.connectorUrl
+  );
+
+  // Apply gateway URL rewrites if present, otherwise use original URLs
+  const effectiveBtpUrl = transport.btpUrl ?? config.btpUrl;
+  const effectiveConnectorUrl = transport.connectorUrl ?? config.connectorUrl;
 
   // Build settlement info from config
   const settlementInfo = buildSettlementInfo(config);
@@ -30,11 +40,12 @@ export async function initializeHttpMode(
   // The client connects to the connector via BTP WebSocket to send ILP packets.
   // HTTP is not used for ILP packet transport.
   let btpClient: BtpRuntimeClient | null = null;
-  if (config.btpUrl) {
+  if (effectiveBtpUrl) {
     btpClient = new BtpRuntimeClient({
-      btpUrl: config.btpUrl,
+      btpUrl: effectiveBtpUrl,
       peerId: config.btpPeerId ?? `client`,
       authToken: config.btpAuthToken ?? '',
+      createWebSocket: transport.createWebSocket,
     });
     await btpClient.connect();
   }
@@ -43,10 +54,11 @@ export async function initializeHttpMode(
   const runtimeClient =
     btpClient ??
     new HttpRuntimeClient({
-      connectorUrl,
+      connectorUrl: effectiveConnectorUrl,
       timeout: config.queryTimeout,
       maxRetries: config.maxRetries,
       retryDelay: config.retryDelay,
+      httpClient: transport.httpClient,
     });
 
   // Create on-chain channel client when chain RPC URLs are configured.

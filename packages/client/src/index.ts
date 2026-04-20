@@ -8,6 +8,7 @@ export type {
   PublishEventResult,
   BalanceProofParams,
   SignedBalanceProof,
+  ClientTransportConfig,
 } from './types.js';
 
 // Error classes
