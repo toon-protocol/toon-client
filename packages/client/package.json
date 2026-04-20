@@ -51,7 +51,9 @@
   },
   "optionalDependencies": {
     "@solana/web3.js": "^1.90.0",
-    "mina-signer": "^3.0.0"
+    "mina-signer": "^3.0.0",
+    "socks-proxy-agent": "^8.0.5",
+    "ws": "^8.0.0"
   },
   "devDependencies": {
     "@toon-protocol/relay": "workspace:*",

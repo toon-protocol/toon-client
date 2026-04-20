@@ -15,6 +15,8 @@ export interface BtpRuntimeClientConfig {
   maxRetries?: number;
   /** Delay between reconnection attempts in ms (default: 1000) */
   retryDelay?: number;
+  /** Custom WebSocket constructor (for SOCKS5 proxy support). */
+  createWebSocket?: (url: string) => WebSocket;
 }
 
 /**
@@ -55,6 +57,7 @@ export class BtpRuntimeClient implements IlpClient {
       url: this.config.btpUrl,
       peerId: this.config.peerId,
       authToken: this.config.authToken,
+      createWebSocket: this.config.createWebSocket,
     });
 
     await this.btpClient.connect();

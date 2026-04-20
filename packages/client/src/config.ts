@@ -1,6 +1,6 @@
 import { generateSecretKey } from 'nostr-tools/pure';
 import { ValidationError } from './errors.js';
-import type { ToonClientConfig } from './types.js';
+import type { ToonClientConfig, ClientTransportConfig } from './types.js';
 
 /**
  * Settlement info produced by buildSettlementInfo().
@@ -105,6 +105,28 @@ export function validateConfig(config: ToonClientConfig): void {
     }
   }
 
+  // Validate transport config
+  if (config.transport) {
+    if (config.transport.type === 'socks5') {
+      if (!config.transport.socksProxy?.startsWith('socks5h://')) {
+        throw new ValidationError(
+          'transport.socksProxy must use socks5h:// scheme to prevent DNS leaks. ' +
+            'The "h" suffix ensures .anon hostnames are resolved by the proxy, not locally.'
+        );
+      }
+    } else if (config.transport.type === 'gateway') {
+      if (!config.transport.gatewayUrl) {
+        throw new ValidationError(
+          'transport.gatewayUrl is required for gateway transport'
+        );
+      }
+    } else if (config.transport.type !== 'direct') {
+      throw new ValidationError(
+        `Unknown transport type: "${(config.transport as { type: string }).type}"`
+      );
+    }
+  }
+
   // Validate chainRpcUrls keys match supportedChains when both present
   if (config.chainRpcUrls && config.supportedChains) {
     for (const chain of Object.keys(config.chainRpcUrls)) {
@@ -139,11 +161,14 @@ export type ResolvedConfig = Required<
     | 'channelStorePath'
     | 'knownPeers'
     | 'destinationAddress'
+    | 'transport'
   >
 > & {
   connector?: unknown;
   /** Always present after applyDefaults() — derived from secretKey if not explicitly provided */
   evmPrivateKey: string | Uint8Array;
+  /** Transport privacy config (optional — defaults to direct). */
+  transport?: ClientTransportConfig;
   supportedChains?: string[];
   settlementAddresses?: Record<string, string>;
   preferredTokens?: Record<string, string>;
