@@ -14,9 +14,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { createConnection } from 'node:net';
 
-import { validateSocks5hUrl, probeSocks5Proxy, createSocks5Fetch } from './socks5.js';
+import { probeSocks5Proxy, createSocks5Fetch } from './socks5.js';
 import { resolveTransport } from './index.js';
 
 const ATOR_PUBLIC = process.env.ATOR_PUBLIC === '1';

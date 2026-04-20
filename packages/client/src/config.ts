@@ -1,6 +1,6 @@
 import { generateSecretKey } from 'nostr-tools/pure';
 import { ValidationError } from './errors.js';
-import type { ToonClientConfig } from './types.js';
+import type { ToonClientConfig, ClientTransportConfig } from './types.js';
 
 /**
  * Settlement info produced by buildSettlementInfo().
@@ -168,7 +168,7 @@ export type ResolvedConfig = Required<
   /** Always present after applyDefaults() — derived from secretKey if not explicitly provided */
   evmPrivateKey: string | Uint8Array;
   /** Transport privacy config (optional — defaults to direct). */
-  transport?: import('./types.js').ClientTransportConfig;
+  transport?: ClientTransportConfig;
   supportedChains?: string[];
   settlementAddresses?: Record<string, string>;
   preferredTokens?: Record<string, string>;

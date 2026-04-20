@@ -6,6 +6,10 @@
  */
 
 import { createConnection } from 'node:net';
+import type SocksProxyAgentModule from 'socks-proxy-agent';
+import type WSModule from 'ws';
+import type httpModule from 'node:http';
+import type httpsModule from 'node:https';
 
 /**
  * Parses and validates a `socks5h://` URL.
@@ -59,9 +63,9 @@ export function createSocks5WebSocketFactory(
   validateSocks5hUrl(socksProxy);
 
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { SocksProxyAgent } = require('socks-proxy-agent') as typeof import('socks-proxy-agent');
+  const { SocksProxyAgent } = require('socks-proxy-agent') as typeof SocksProxyAgentModule;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const WS = require('ws') as typeof import('ws');
+  const WS = require('ws') as typeof WSModule;
 
   const agent = new SocksProxyAgent(socksProxy);
 
@@ -77,11 +81,11 @@ export function createSocks5Fetch(socksProxy: string): typeof fetch {
   validateSocks5hUrl(socksProxy);
 
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { SocksProxyAgent } = require('socks-proxy-agent') as typeof import('socks-proxy-agent');
+  const { SocksProxyAgent } = require('socks-proxy-agent') as typeof SocksProxyAgentModule;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const http = require('node:http') as typeof import('node:http');
+  const http = require('node:http') as typeof httpModule;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const https = require('node:https') as typeof import('node:https');
+  const https = require('node:https') as typeof httpsModule;
 
   const agent = new SocksProxyAgent(socksProxy);
 
