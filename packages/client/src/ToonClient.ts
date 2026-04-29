@@ -504,6 +504,52 @@ export class ToonClient {
   }
 
   /**
+   * Eagerly open (or return existing) payment channel for the given destination.
+   *
+   * Channels are normally opened lazily on the first `publishEvent()` /
+   * `sendSwapPacket()` call. This method exposes the lazy-open path so
+   * callers (and E2E tests) that need a tracked `channelId` BEFORE publishing
+   * can force the open. Idempotent — returns the existing channel ID for the
+   * peer if one is already open.
+   *
+   * @param destination - Optional ILP destination address. Defaults to
+   *   `config.destinationAddress`.
+   * @returns The channel ID of the (now) open channel.
+   * @throws {ToonClientError} If client not started, no channel manager
+   *   configured, or peer negotiation metadata missing.
+   */
+  async openChannel(destination?: string): Promise<string> {
+    if (!this.state) {
+      throw new ToonClientError(
+        'Client not started. Call start() first.',
+        'INVALID_STATE'
+      );
+    }
+    if (!this.channelManager) {
+      throw new ToonClientError(
+        'No channel manager configured. Provide evmPrivateKey in config.',
+        'NO_EVM_SIGNER'
+      );
+    }
+    const dest = destination ?? this.config.destinationAddress;
+    if (!dest) {
+      throw new ToonClientError(
+        'No destination provided and no default destinationAddress configured.',
+        'NO_DESTINATION'
+      );
+    }
+    const peerId = this.resolvePeerId(dest);
+    const negotiation = this.peerNegotiations.get(peerId);
+    if (!negotiation) {
+      throw new ToonClientError(
+        `No negotiation metadata for peer "${peerId}" — was bootstrap completed?`,
+        'PEER_NOT_NEGOTIATED'
+      );
+    }
+    return this.channelManager.ensureChannel(peerId, negotiation);
+  }
+
+  /**
    * Gets list of tracked payment channel IDs.
    */
   getTrackedChannels(): string[] {

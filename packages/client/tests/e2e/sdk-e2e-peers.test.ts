@@ -306,6 +306,12 @@ describe('ToonClient against SDK E2E Peers', () => {
 
     console.log(`✅ Bootstrap complete! Discovered ${startResult.peersDiscovered} peer(s)`);
 
+    // Lazy-channel architecture: bootstrap registers peers and stores
+    // negotiation metadata, but does NOT pre-open channels. Force the lazy
+    // open so we can verify the on-chain channel state below.
+    console.log('⏳ Opening payment channel (lazy)...');
+    await client.openChannel();
+
     // Verify channel was created
     const channels = client.getTrackedChannels();
     console.log(`💰 Tracked channels: ${channels.length}`);
@@ -351,6 +357,9 @@ describe('ToonClient against SDK E2E Peers', () => {
     const client = createTestClient(secretKey, pubkey);
 
     await client.start();
+
+    // Lazy-channel architecture: force-open the channel before signing claims.
+    await client.openChannel();
 
     const channels = client.getTrackedChannels();
     expect(channels.length).toBeGreaterThan(0);
@@ -416,6 +425,9 @@ describe('ToonClient against SDK E2E Peers', () => {
 
     await client.start();
 
+    // Lazy-channel architecture: force-open the channel before signing claims.
+    await client.openChannel();
+
     const channels = client.getTrackedChannels();
     expect(channels.length).toBeGreaterThan(0);
     const channelId = channels[0]!;
@@ -477,6 +489,9 @@ describe('ToonClient against SDK E2E Peers', () => {
     const client = createTestClient(secretKey, pubkey);
 
     await client.start();
+
+    // Lazy-channel architecture: force-open the channel before signing claims.
+    await client.openChannel();
 
     const channels = client.getTrackedChannels();
     expect(channels.length).toBeGreaterThan(0);
