@@ -142,6 +142,42 @@ export class BtpRuntimeClient implements IlpClient {
   }
 
   /**
+   * Send a standalone `payment-channel-claim` BTP MESSAGE (no ILP packet
+   * attached). The connector's ClaimReceiver consumes this fire-and-forget
+   * to register cumulative claim state independently of the per-packet
+   * forwarding path. Auto-reconnects on connection errors.
+   */
+  async sendClaimMessage(claim: Record<string, unknown>): Promise<void> {
+    return withRetry(() => this._sendClaimMessageOnce(claim), {
+      maxRetries: this.config.maxRetries ?? 3,
+      retryDelay: this.config.retryDelay ?? 1000,
+      shouldRetry: (error) => {
+        if (!isConnectionError(error)) return false;
+        this._isConnected = false;
+        return true;
+      },
+    });
+  }
+
+  private async _sendClaimMessageOnce(
+    claim: Record<string, unknown>
+  ): Promise<void> {
+    if (!this._isConnected) {
+      await this.reconnect();
+    }
+
+    if (!this.btpClient) {
+      throw new BtpConnectionError('BTP client not connected');
+    }
+
+    await this.btpClient.sendProtocolData(
+      'payment-channel-claim',
+      1,
+      encodeUtf8(JSON.stringify(claim))
+    );
+  }
+
+  /**
    * Single-attempt ILP packet send. Reconnects if not connected.
    */
   private async _sendIlpPacketOnce(params: {

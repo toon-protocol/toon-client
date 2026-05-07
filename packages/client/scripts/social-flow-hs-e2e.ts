@@ -34,6 +34,7 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 
 import { BtpRuntimeClient } from '../src/index.js';
 import { EvmSigner } from '../src/signing/evm-signer.js';
+import { OnChainChannelClient } from '../src/channel/OnChainChannelClient.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -72,6 +73,12 @@ const TEST_CLIENT_EVM_ADDRESS =
 const TOKEN_NETWORK_ADDRESS =
   '0xCafac3dD18aC6c6e92c921884f9E4176737C052c' as const;
 const ANVIL_CHAIN_ID = 31337;
+
+// Apex's settlement EVM address — Anvil acct[3], matches the apex's connector
+// config (docker/configs/townhouse-hs-connector.yaml). The client→apex channel
+// opened by this test script funds claims that the apex can later settle via
+// claimFromChannel().
+const APEX_EVM = '0x90F79bf6EB2c4f870365E785982E1f101E93b906' as const;
 
 // Test wallet (fresh key each run — no stable state)
 const HS_TIMEOUT_MS = 60_000;
@@ -428,37 +435,53 @@ async function main() {
   log('CONN', 'peers (before)', peersBefore);
   log('CONN', 'metrics (before)', metricsBefore);
 
-  // ─── Pre-flight: confirm apex has an open channel to `client` peer ───────
-  // The admin /channels endpoint exposes peerId + status; the participant
-  // address is implicit (apex peers config maps client → TEST_CLIENT_EVM_ADDRESS).
-  log('CHANNEL', 'pre-flight: GET /admin/channels');
-  let clientChannelId: string | null = null;
+  // ─── Apex balance snapshot (pre-claim) ───────────────────────────────────
+  // After SettlementExecutor calls claimFromChannel() on-chain, USDC moves
+  // from the TokenNetwork escrow into the apex's settlement address. We
+  // diff this against the post-test balance to prove on-chain settlement.
+  const apexBalanceBefore = await readUsdcBalance(APEX_EVM);
+  log(
+    'BALANCE',
+    `Apex USDC before = ${apexBalanceBefore} raw (${formatUnits(apexBalanceBefore, 18)} USDC)`
+  );
+
+  // ─── Open client→apex channel on-chain ───────────────────────────────────
+  // The apex→client channel from townhouse-hs-open-channels.sh handles apex
+  // outflows. For the test client to send a *signed claim* the apex can
+  // later submit via claimFromChannel(), we need a SEPARATE channel where
+  // the test client is participant1 (depositor) and the apex is participant2.
+  //
+  // 100 USDC deposit (18-decimal MockERC20 → 100e18 base units) is large
+  // enough to cover a 2_000_001 base-unit cumulative claim with margin.
+  banner('Phase 1b — Open client→apex channel on-chain');
+  const evmSigner = new EvmSigner(TEST_CLIENT_PRIVKEY);
+  const channelClient = new OnChainChannelClient({
+    evmSigner,
+    chainRpcUrls: { 'evm:base:31337': ANVIL_RPC },
+  });
+  let clientChannelId: string;
   try {
-    const res = await fetch(`${CONNECTOR_ADMIN}/admin/channels`, {
-      signal: AbortSignal.timeout(5_000),
+    log('CHANNEL', 'opening client→apex channel via OnChainChannelClient…');
+    const openResult = await channelClient.openChannel({
+      peerId: 'apex',
+      chain: 'evm:base:31337',
+      tokenNetwork: TOKEN_NETWORK_ADDRESS,
+      token: MOCK_USDC,
+      peerAddress: APEX_EVM,
+      initialDeposit: '100000000000000000000', // 100 USDC at 18 decimals
+      settlementTimeout: 86400,
     });
-    const channels = (await res.json()) as Array<{
-      channelId: string;
-      peerId: string;
-      status: string;
-    }>;
-    const clientChan = channels.find(
-      (c) => c.peerId === 'client' && c.status === 'open'
+    clientChannelId = openResult.channelId;
+    log(
+      'CHANNEL',
+      `opened channelId=${clientChannelId} status=${openResult.status}`
     );
-    if (!clientChan) {
-      console.error(
-        '\n[FATAL] No open channel found for peerId=client.\n' +
-          '        Run scripts/townhouse-hs-open-channels.sh first.\n' +
-          `        Current channels: ${JSON.stringify(channels)}`
-      );
-      process.exit(2);
-    }
-    clientChannelId = clientChan.channelId;
-    log('CHANNEL', `found channelId=${clientChannelId}`);
   } catch (err) {
     console.error(
-      `\n[FATAL] Failed to query /admin/channels: ${(err as Error).message}\n` +
-        '        Is the apex connector reachable on 127.0.0.1:9401?'
+      `\n[FATAL] Failed to open client→apex channel: ${(err as Error).message}\n` +
+        '        Check that Anvil is reachable on 127.0.0.1:8545 and that\n' +
+        '        the test client (acct[6]) has ETH for gas + 100+ USDC.\n' +
+        '        Re-run scripts/townhouse-hs-open-channels.sh if needed.'
     );
     process.exit(2);
   }
@@ -524,22 +547,23 @@ async function main() {
     // Encode the event to TOON binary, then base64 for the BTP packet payload
     const toonBytes = encodeEventToToon(event);
     const toonBase64 = Buffer.from(toonBytes).toString('base64');
-    // amount=1 base unit (smallest non-zero) — minimal claim that exercises
-    // the apex's forwarded-claim path. The apex's PerPacketClaimService
-    // validates the inbound balance proof, then signs an outbound claim
-    // (apex→town) using its own EVM key before forwarding the PREPARE.
-    const amountBigInt = 1n;
+    // amount=2_000_001 base units — chosen to push the cumulative claim
+    // PAST the SettlementMonitor default threshold (1_000_000 base units),
+    // so the apex's SettlementExecutor fires `claimFromChannel` on-chain.
+    // The apex's PerPacketClaimService validates the inbound balance proof,
+    // then signs an outbound claim (apex→town) using its own EVM key before
+    // forwarding the PREPARE.
+    const amountBigInt = 2_000_001n;
     const amount = amountBigInt.toString();
     log('BTP', `event encoded toonBytes=${toonBytes.length} amount=${amount}`);
 
     // Build + sign the cumulative balance proof. nonce monotonically
     // increases across packets per channel; transferredAmount is cumulative.
-    // For a single-packet test we use nonce=1 and transferredAmount=1.
-    const evmSigner = new EvmSigner(TEST_CLIENT_PRIVKEY);
+    // For this single-packet test, transferredAmount == amountBigInt.
     const nonce = 1;
     const cumulative = amountBigInt;
     const proof = await evmSigner.signBalanceProof({
-      channelId: clientChannelId as string,
+      channelId: clientChannelId,
       nonce,
       transferredAmount: cumulative,
       lockedAmount: 0n,
@@ -551,7 +575,7 @@ async function main() {
     const claim = EvmSigner.buildClaimMessage(proof, pubkey);
     log(
       'BTP',
-      `signed claim channelId=${clientChannelId?.slice(0, 14)}… nonce=${nonce} amt=${cumulative} signer=${proof.signerAddress}`
+      `signed claim channelId=${clientChannelId.slice(0, 14)}… nonce=${nonce} amt=${cumulative} signer=${proof.signerAddress}`
     );
 
     const destination = 'g.townhouse.town'; // apex→child route to the relay-bearing town
@@ -577,6 +601,24 @@ async function main() {
       const msg = (err as Error).message;
       log('BTP', `sendIlpPacketWithClaim threw: ${msg}`);
       publishMsg = msg;
+    }
+
+    // Send a SEPARATE `payment-channel-claim` BTP MESSAGE so the apex's
+    // ClaimReceiver fires CLAIM_RECEIVED → SettlementMonitor sees the
+    // cumulative claim cross threshold → SettlementExecutor calls
+    // claimFromChannel() on-chain. This is fire-and-forget; we hold the
+    // socket open briefly so the connector finishes processing before
+    // disconnect tears down the session.
+    if (publishOk) {
+      try {
+        await btpClient.sendClaimMessage(claim as unknown as Record<string, unknown>);
+        log('CLAIM', 'payment-channel-claim BTP MESSAGE sent (standalone)');
+      } catch (err) {
+        log('CLAIM', `sendClaimMessage threw: ${(err as Error).message}`);
+      }
+      // Give the connector a moment to process the claim + kick off the
+      // on-chain settlement transaction before we disconnect.
+      await new Promise((r) => setTimeout(r, 5_000));
     }
 
     try {
@@ -624,6 +666,24 @@ async function main() {
   log('CONN', 'peers (after)', peersAfter);
   log('CONN', 'metrics (after)', metricsAfter);
 
+  // ─── Phase 5 — Verify on-chain settlement (apex balance delta) ───────────
+  banner('Phase 5 — Verify on-chain settlement');
+
+  const apexBalanceAfter = await readUsdcBalance(APEX_EVM);
+  const apexDelta = apexBalanceAfter - apexBalanceBefore;
+  log(
+    'APEX',
+    `USDC before = ${apexBalanceBefore} (${formatUnits(apexBalanceBefore, 18)})`
+  );
+  log(
+    'APEX',
+    `USDC after  = ${apexBalanceAfter} (${formatUnits(apexBalanceAfter, 18)})`
+  );
+  log(
+    'APEX',
+    `delta = ${apexDelta} raw [positive = on-chain claim succeeded]`
+  );
+
   // ─── Summary ─────────────────────────────────────────────────────────────
   banner('Summary');
   console.log(JSON.stringify(
@@ -656,6 +716,17 @@ async function main() {
         delta: balanceDelta.toString(),
         beforeHuman: formatUnits(balanceBefore, 18),
         afterHuman: formatUnits(balanceAfter, 18),
+      },
+      apexBalance: {
+        before: apexBalanceBefore.toString(),
+        after: apexBalanceAfter.toString(),
+        delta: apexDelta.toString(),
+        beforeHuman: formatUnits(apexBalanceBefore, 18),
+        afterHuman: formatUnits(apexBalanceAfter, 18),
+        onChainSettlementSucceeded: apexDelta > 0n,
+      },
+      channel: {
+        clientChannelId,
       },
       connector: {
         peersBefore,

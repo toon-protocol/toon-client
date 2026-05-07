@@ -185,6 +185,37 @@ export class IsomorphicBtpClient {
     });
   }
 
+  /**
+   * Send a fire-and-forget BTP MESSAGE carrying only protocol data (no ILP
+   * packet). Used for out-of-band claim notifications that the connector's
+   * ClaimReceiver consumes via `handleClaimMessage` — there is no RESPONSE
+   * frame, so we resolve immediately after the WebSocket buffers the bytes.
+   *
+   * Mirrors `sendPacket` wire-format construction but uses an empty ILP
+   * payload and does not enroll a pending request.
+   */
+  async sendProtocolData(
+    protocolName: string,
+    contentType: number,
+    data: Uint8Array
+  ): Promise<void> {
+    if (!this._isConnected || !this.ws) {
+      throw new BtpConnectionError('Not connected');
+    }
+
+    const requestId = this.nextRequestId();
+    const btpMessage = serializeBtpMessage({
+      type: BTPMessageType.MESSAGE,
+      requestId,
+      data: {
+        protocolData: [{ protocolName, contentType, data }],
+        ilpPacket: new Uint8Array(0),
+      },
+    });
+
+    this.ws.send(btpMessage);
+  }
+
   // ─── Private ────────────────────────────────────────────────────────────
 
   private async authenticate(): Promise<void> {
