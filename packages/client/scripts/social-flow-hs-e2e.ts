@@ -48,7 +48,10 @@ const RELAY_HS = 'ws://o7qefbfdcxsgh2h54dngvf43235vav3iniqi5nunusha7vi6z2whftyd.
 
 // Clearnet endpoints (setup + verification)
 const FAUCET_URL = 'http://127.0.0.1:3500/api/request';
-const ANVIL_RPC = 'http://127.0.0.1:8545';
+// Anvil RPC. Override via env to point at the Akash anvil
+// (https://...ingress.akt.engineer) for cross-internet runs.
+const ANVIL_RPC =
+  process.env['ANVIL_RPC'] ?? 'http://127.0.0.1:8545';
 const CONNECTOR_ADMIN = 'http://127.0.0.1:9401';
 const MOCK_USDC = '0x5FbDB2315678afecb367f032d93F642f64180aa3' as const;
 
