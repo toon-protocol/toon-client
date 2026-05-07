@@ -33,6 +33,7 @@ import WebSocket from 'ws';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
 import { BtpRuntimeClient } from '../src/index.js';
+import { EvmSigner } from '../src/signing/evm-signer.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -49,6 +50,28 @@ const FAUCET_URL = 'http://127.0.0.1:3500/api/request';
 const ANVIL_RPC = 'http://127.0.0.1:8545';
 const CONNECTOR_ADMIN = 'http://127.0.0.1:9401';
 const MOCK_USDC = '0x5FbDB2315678afecb367f032d93F642f64180aa3' as const;
+
+// ─── Test client EVM identity (FIXED — must match channel pre-opened by
+//     scripts/townhouse-hs-open-channels.sh) ─────────────────────────────────
+// The Nostr secretKey stays fresh each run (so kind:1 events are unique),
+// but the EVM identity must be stable so the apex's pre-opened channel to
+// `client` is usable. This is Anvil acct[6] — verified via:
+//   docker exec townhouse-hs-anvil cast wallet address \
+//     0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e
+//   → 0x976EA74026E726554dB657fA54763abd0C3a0aa9
+// acct[3]=apex, [4]=town, [5]=mill, [6]=client (this script). Other accounts
+// are deployer/faucet/spare.
+const TEST_CLIENT_PRIVKEY =
+  '0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e' as const;
+const TEST_CLIENT_EVM_ADDRESS =
+  '0x976EA74026E726554dB657fA54763abd0C3a0aa9' as const;
+
+// EIP-712 domain for balance proofs — must match the apex connector's
+// chainId + tokenNetwork. TokenNetwork is deterministic from
+// contracts/evm/script/DeployLocal.s.sol (same as scripts/socialverse-e2e.ts:43).
+const TOKEN_NETWORK_ADDRESS =
+  '0xCafac3dD18aC6c6e92c921884f9E4176737C052c' as const;
+const ANVIL_CHAIN_ID = 31337;
 
 // Test wallet (fresh key each run — no stable state)
 const HS_TIMEOUT_MS = 60_000;
@@ -355,15 +378,21 @@ function subscribeViaSocks(
 async function main() {
   banner('Social-flow Hidden-Service E2E');
 
-  // ─── Generate fresh identity ─────────────────────────────────────────────
+  // ─── Generate identity ───────────────────────────────────────────────────
+  // Nostr key is fresh-each-run (so the kind:1 event is unique).
+  // EVM key is FIXED to TEST_CLIENT_PRIVKEY so the apex's pre-opened payment
+  // channel (opened by scripts/townhouse-hs-open-channels.sh) is reusable.
   const secretKey = generateSecretKey();
   const pubkey = getPublicKey(secretKey);
-  const evmPrivateKeyHex = `0x${bytesToHex(secretKey).replace(/^0x/, '')}` as `0x${string}`;
+  // bytesToHex retained for parity with prior version — surfaces the Nostr
+  // key as a hex string for debugging if needed.
+  void bytesToHex;
+  const evmPrivateKeyHex = TEST_CLIENT_PRIVKEY as `0x${string}`;
   const evmAccount = privateKeyToAccount(evmPrivateKeyHex);
   const evmAddress = evmAccount.address;
 
   log('INIT', `Nostr pubkey   = ${pubkey}`);
-  log('INIT', `EVM  address   = ${evmAddress}`);
+  log('INIT', `EVM  address   = ${evmAddress} (fixed test-client = Anvil acct[6])`);
   log('INIT', `SOCKS proxy    = ${SOCKS_PROXY}`);
   log('INIT', `Connector HS   = ${CONNECTOR_BTP_HS}`);
   log('INIT', `Relay HS       = ${RELAY_HS}`);
@@ -399,6 +428,41 @@ async function main() {
   log('CONN', 'peers (before)', peersBefore);
   log('CONN', 'metrics (before)', metricsBefore);
 
+  // ─── Pre-flight: confirm apex has an open channel to `client` peer ───────
+  // The admin /channels endpoint exposes peerId + status; the participant
+  // address is implicit (apex peers config maps client → TEST_CLIENT_EVM_ADDRESS).
+  log('CHANNEL', 'pre-flight: GET /admin/channels');
+  let clientChannelId: string | null = null;
+  try {
+    const res = await fetch(`${CONNECTOR_ADMIN}/admin/channels`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    const channels = (await res.json()) as Array<{
+      channelId: string;
+      peerId: string;
+      status: string;
+    }>;
+    const clientChan = channels.find(
+      (c) => c.peerId === 'client' && c.status === 'open'
+    );
+    if (!clientChan) {
+      console.error(
+        '\n[FATAL] No open channel found for peerId=client.\n' +
+          '        Run scripts/townhouse-hs-open-channels.sh first.\n' +
+          `        Current channels: ${JSON.stringify(channels)}`
+      );
+      process.exit(2);
+    }
+    clientChannelId = clientChan.channelId;
+    log('CHANNEL', `found channelId=${clientChannelId}`);
+  } catch (err) {
+    console.error(
+      `\n[FATAL] Failed to query /admin/channels: ${(err as Error).message}\n` +
+        '        Is the apex connector reachable on 127.0.0.1:9401?'
+    );
+    process.exit(2);
+  }
+
   // ─── Phase 2 — Publish via HS through SOCKS ──────────────────────────────
   banner('Phase 2 — Publish via SOCKS over Anyone HS');
 
@@ -428,7 +492,10 @@ async function main() {
 
   const btpClient = new BtpRuntimeClient({
     btpUrl: CONNECTOR_BTP_HS,
-    peerId: 'hs-e2e-client',
+    // Must match the static peerId in docker/configs/townhouse-hs-connector.yaml.
+    // The apex's BTP_ALLOW_NOAUTH path routes inbound BTP sessions by peerId,
+    // and the channel was opened against this same peerId.
+    peerId: 'client',
     authToken: '',
     createWebSocket,
     maxRetries: 1, // don't retry-storm on a slow circuit
@@ -457,27 +524,49 @@ async function main() {
     // Encode the event to TOON binary, then base64 for the BTP packet payload
     const toonBytes = encodeEventToToon(event);
     const toonBase64 = Buffer.from(toonBytes).toString('base64');
-    // Apex requires a perPacketClaimService for any forwarded packet with
-    // amount > 0. The apex doesn't have one wired up in this stack (settlement
-    // infra not enabled). FEE_PER_EVENT=0 on town, so amount=0 should still
-    // be accepted by town's pricing validator. This proves end-to-end routing
-    // separately from settlement.
-    const amount = '0';
+    // amount=1 base unit (smallest non-zero) — minimal claim that exercises
+    // the apex's forwarded-claim path. The apex's PerPacketClaimService
+    // validates the inbound balance proof, then signs an outbound claim
+    // (apex→town) using its own EVM key before forwarding the PREPARE.
+    const amountBigInt = 1n;
+    const amount = amountBigInt.toString();
     log('BTP', `event encoded toonBytes=${toonBytes.length} amount=${amount}`);
 
-    // We have NO open payment channel and NO peer negotiation — the connector
-    // will reject the packet at the channel-claim verification step. That's
-    // expected; the goal is to prove the packet round-trips through the HS.
-    const destination = 'g.townhouse.town'; // apex.child route to the relay-bearing town
+    // Build + sign the cumulative balance proof. nonce monotonically
+    // increases across packets per channel; transferredAmount is cumulative.
+    // For a single-packet test we use nonce=1 and transferredAmount=1.
+    const evmSigner = new EvmSigner(TEST_CLIENT_PRIVKEY);
+    const nonce = 1;
+    const cumulative = amountBigInt;
+    const proof = await evmSigner.signBalanceProof({
+      channelId: clientChannelId as string,
+      nonce,
+      transferredAmount: cumulative,
+      lockedAmount: 0n,
+      locksRoot: `0x${'00'.repeat(32)}`,
+      chainId: ANVIL_CHAIN_ID,
+      tokenNetworkAddress: TOKEN_NETWORK_ADDRESS,
+      tokenAddress: MOCK_USDC,
+    });
+    const claim = EvmSigner.buildClaimMessage(proof, pubkey);
+    log(
+      'BTP',
+      `signed claim channelId=${clientChannelId?.slice(0, 14)}… nonce=${nonce} amt=${cumulative} signer=${proof.signerAddress}`
+    );
+
+    const destination = 'g.townhouse.town'; // apex→child route to the relay-bearing town
     try {
-      log('BTP', `sending PREPARE → ${destination}`);
+      log('BTP', `sending PREPARE+claim → ${destination}`);
       const t0 = Date.now();
-      const result = await btpClient.sendIlpPacket({
-        destination,
-        amount,
-        data: toonBase64,
-        timeout: HS_TIMEOUT_MS,
-      });
+      const result = await btpClient.sendIlpPacketWithClaim(
+        {
+          destination,
+          amount,
+          data: toonBase64,
+          timeout: HS_TIMEOUT_MS,
+        },
+        claim as unknown as Record<string, unknown>
+      );
       const elapsed = Date.now() - t0;
       log('BTP', `response in ${elapsed}ms`, result);
       publishOk = result.accepted === true;
@@ -486,7 +575,7 @@ async function main() {
       publishData = result.data;
     } catch (err) {
       const msg = (err as Error).message;
-      log('BTP', `sendIlpPacket threw: ${msg}`);
+      log('BTP', `sendIlpPacketWithClaim threw: ${msg}`);
       publishMsg = msg;
     }
 
