@@ -22,7 +22,7 @@
  *   - HS endpoints (constants below) verified reachable via curl --socks5-hostname
  */
 
-/* eslint-disable no-console */
+ 
 
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools/pure';
@@ -67,7 +67,7 @@ const MOCK_USDC = '0x5FbDB2315678afecb367f032d93F642f64180aa3' as const;
 // are deployer/faucet/spare.
 const TEST_CLIENT_PRIVKEY =
   '0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e' as const;
-const TEST_CLIENT_EVM_ADDRESS =
+const _TEST_CLIENT_EVM_ADDRESS =
   '0x976EA74026E726554dB657fA54763abd0C3a0aa9' as const;
 
 // EIP-712 domain for balance proofs — must match the apex connector's
