@@ -66,10 +66,36 @@ export function createSocks5WebSocketFactory(
   const WS = require('ws') as typeof WSModule;
   /* eslint-enable @typescript-eslint/no-require-imports */
 
-  const agent = new SocksProxyAgent(socksProxy);
+  // 120s timeout: the socks library's default is 30s, which is too short for
+  // the ATOR network to build circuits to fresh hidden services from certain
+  // network paths (e.g., Akash datacenter → public ATOR proxy → local HS).
+  // 120s gives the proxy time to find a working introduction-point circuit.
+  const agent = new SocksProxyAgent(socksProxy, { timeout: 120_000 });
+
+  // CJS/ESM interop: `require('ws')` can return any of three shapes depending on
+  // the bundler/loader: the class directly (pure CJS); `{ default: WSClass, ... }`
+  // (esModuleInterop=true / synthetic default); or `{ WebSocket: WSClass, ... }`
+  // (named export, no default). Walk the ladder so this factory works in all
+  // three environments. Pass 2 code review 2026-05-18: previous `(WS as any).default ?? WS`
+  // would accept a namespace object as a "constructor" and throw cryptically.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ws = WS as any;
+  const WSClass = (typeof ws === 'function'
+    ? ws
+    : typeof ws.default === 'function'
+      ? ws.default
+      : typeof ws.WebSocket === 'function'
+        ? ws.WebSocket
+        : null) as unknown as typeof WSModule.prototype.constructor;
+  if (WSClass === null) {
+    throw new Error(
+      "createSocks5WebSocketFactory: require('ws') did not yield a constructor on .default, .WebSocket, or the module root."
+    );
+  }
 
   return (url: string) =>
-    new WS.default(url, { agent }) as unknown as WebSocket;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    new (WSClass as any)(url, { agent }) as unknown as WebSocket;
 }
 
 /**

@@ -113,8 +113,22 @@ export class IsomorphicBtpClient {
         this.handleMessage(event.data);
       };
 
-      this.ws.onerror = () => {
-        reject(new BtpConnectionError('WebSocket connection error'));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      this.ws.onerror = (event: any) => {
+        const underlying = event?.error ?? event?.message;
+        const detail =
+          underlying instanceof Error
+            ? underlying.message
+            : typeof underlying === 'string'
+              ? underlying
+              : null;
+        reject(
+          new BtpConnectionError(
+            detail
+              ? `WebSocket connection error: ${detail}`
+              : 'WebSocket connection error'
+          )
+        );
       };
 
       this.ws.onclose = () => {
@@ -272,7 +286,9 @@ export class IsomorphicBtpClient {
             if (message.type === BTPMessageType.ERROR) {
               const errData = message.data as BTPErrorData;
               reject(
-                new BtpAuthError(`Authentication failed: ${errData.code}`)
+                new BtpAuthError(
+                  `Authentication failed: ${errData.code} msg=${errData.message ?? ''} trigger=${errData.triggeredBy ?? ''}`
+                )
               );
             } else if (message.type === BTPMessageType.RESPONSE) {
               resolve();
