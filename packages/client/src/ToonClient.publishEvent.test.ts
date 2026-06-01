@@ -1,0 +1,151 @@
+/**
+ * Unit tests for ToonClient.publishEvent claim DELIVERY MECHANISM (Story 50.3 AC#1).
+ *
+ * Regression guard for the F06 ("No payment channel claim attached to packet")
+ * root cause: when a caller supplies a pre-signed `{ claim }`, the signed
+ * balance-proof MUST be attached INLINE on the ILP PREPARE packet as a
+ * `payment-channel-claim` BTP protocol-data entry (so the per-packet
+ * `InboundClaimValidator` on the receiving connector accepts it). It MUST NOT
+ * be delivered ONLY via the out-of-band `sendClaimMessage` (claim-receiver)
+ * path — that async settlement channel does not satisfy the per-packet
+ * validator, which `return null`s for amount 0 and emits F06 when no inline
+ * `payment-channel-claim` protocol-data entry is present.
+ *
+ * These tests assert at the `publishEvent` surface that the inline transport
+ * method (`sendIlpPacketWithClaim`) is the one invoked, carrying the claim, and
+ * that the async-only path (`sendClaimMessage`) is NOT used as the sole
+ * delivery mechanism.
+ */
+
+import { describe, it, expect, vi } from 'vitest';
+import { ToonClient } from './ToonClient.js';
+import type { NostrEvent } from 'nostr-tools/pure';
+import type { SignedBalanceProof } from './types.js';
+
+// A deterministic 32-byte secret key so getPublicKey() works.
+const SECRET_KEY = new Uint8Array(32).fill(7);
+
+function baseConfig() {
+  return {
+    secretKey: SECRET_KEY,
+    connectorUrl: 'http://localhost:9999',
+    destinationAddress: 'g.townhouse.town',
+    ilpInfo: {
+      pubkey: '0'.repeat(64),
+      ilpAddress: 'g.toon.test',
+    },
+    // Non-empty encoder so the computed default amount is > 0 (claim path).
+    toonEncoder: (_e: unknown) => new Uint8Array([1, 2, 3, 4]),
+    toonDecoder: (_t: string) => ({}) as never,
+  } as unknown as ConstructorParameters<typeof ToonClient>[0];
+}
+
+function makeEvent(): NostrEvent {
+  return {
+    id: 'a'.repeat(64),
+    pubkey: '0'.repeat(64),
+    created_at: 1_700_000_000,
+    kind: 1,
+    tags: [],
+    content: 'hello townhouse',
+    sig: 'b'.repeat(128),
+  } as unknown as NostrEvent;
+}
+
+function makeProof(): SignedBalanceProof {
+  return {
+    channelId:
+      '0xdff44167e826f9f85e5f046f2358c79c8354691b44a89cac0e7f584612258d2d',
+    nonce: 1,
+    transferredAmount: 1_000_000n,
+    lockedAmount: 0n,
+    locksRoot: '0x' + '0'.repeat(64),
+    signature: '0x' + 'c'.repeat(130),
+    signerAddress: '0x' + 'd'.repeat(40),
+    chainId: 31337,
+    tokenNetworkAddress: '0x' + 'e'.repeat(40),
+  } as unknown as SignedBalanceProof;
+}
+
+describe('ToonClient.publishEvent claim delivery mechanism (Story 50.3 AC#1)', () => {
+  it('attaches the explicit claim INLINE via sendIlpPacketWithClaim (not the async claim-receiver path)', async () => {
+    const client = new ToonClient(baseConfig());
+
+    const sendIlpPacketWithClaim = vi.fn(async () => ({
+      accepted: true,
+      data: undefined,
+    }));
+    // The async out-of-band path must NOT be the delivery mechanism for the
+    // PREPARE's claim — if publishEvent ever routes here instead of inline, the
+    // receiving per-packet validator emits F06.
+    const sendClaimMessage = vi.fn(async () => undefined);
+    const sendIlpPacket = vi.fn(async () => ({ accepted: true }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: {},
+      runtimeClient: {},
+      peersDiscovered: 0,
+      btpClient: { sendIlpPacketWithClaim, sendClaimMessage, sendIlpPacket },
+    };
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+
+    // INLINE path used exactly once.
+    expect(sendIlpPacketWithClaim).toHaveBeenCalledTimes(1);
+    // Async claim-receiver path was NOT used as the (sole) delivery mechanism.
+    expect(sendClaimMessage).not.toHaveBeenCalled();
+
+    const [ilpParams, claimMessage] =
+      sendIlpPacketWithClaim.mock.calls[0] ?? [];
+
+    // The PREPARE targets the configured townhouse destination.
+    expect(ilpParams).toMatchObject({ destination: 'g.townhouse.town' });
+
+    // The claim message carried inline is the EVM claim derived from the proof,
+    // matching the connector's `payment-channel-claim` validator expectations.
+    expect(claimMessage).toMatchObject({
+      blockchain: 'evm',
+      channelId: makeProof().channelId,
+      signature: makeProof().signature,
+      signerAddress: makeProof().signerAddress,
+      transferredAmount: '1000000',
+    });
+  });
+
+  it('honors an explicit ilpAmount override while still attaching the claim inline', async () => {
+    const client = new ToonClient(baseConfig());
+
+    const sendIlpPacketWithClaim = vi.fn(async () => ({
+      accepted: true,
+      data: undefined,
+    }));
+    const sendClaimMessage = vi.fn(async () => undefined);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: {},
+      runtimeClient: {},
+      peersDiscovered: 0,
+      btpClient: { sendIlpPacketWithClaim, sendClaimMessage },
+    };
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+      ilpAmount: 1_000_000n,
+    });
+
+    expect(result.success).toBe(true);
+    expect(sendIlpPacketWithClaim).toHaveBeenCalledTimes(1);
+    expect(sendClaimMessage).not.toHaveBeenCalled();
+
+    const [ilpParams] = sendIlpPacketWithClaim.mock.calls[0] ?? [];
+    expect(ilpParams).toMatchObject({ amount: '1000000' });
+  });
+});
