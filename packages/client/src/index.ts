@@ -75,6 +75,13 @@ export {
   type PetPurchaseRequestParams,
 } from './pet/index.js';
 
+// Arweave Blob Storage (kind:5094 DVM) helper
+export {
+  requestBlobStorage,
+  type RequestBlobStorageParams,
+  type RequestBlobStorageResult,
+} from './blob-storage.js';
+
 // Key Management
 export {
   KeyManager,
