@@ -1,15 +1,28 @@
 # @toon-protocol/client
 
-High-level TypeScript client for publishing Nostr events to the TOON protocol — an ILP-gated Nostr relay that enables sustainable relay operation through micropayments.
+The **client library** for TOON Protocol — _pay-to-write Nostr over Interledger (ILP)_. Use it to **pay for and publish** writes to a network of service nodes. **Reads are free; writes cost a signed EIP-712 payment-channel claim** against an on-chain deposit.
+
+> **`client` vs `townhouse`.** This package (`@toon-protocol/client`) is what an _app or end user_ uses to **pay** and publish. It does **not** run any relay or node. The nodes are operated separately by **`@toon-protocol/townhouse`** (the operator product, which runs an _apex_ connector plus `town` / `mill` / `dvm` children). Don't confuse the **client** (pays) with **townhouse** (operates), or **`town`** (a single Nostr-relay node) with **townhouse** (the whole operator stack).
+
+## Which call pays which node
+
+Every write is an ILP packet carrying a signed payment-channel claim. The client reaches all node types **through a townhouse apex** (`g.townhouse`): the apex validates the claim, takes its fee, and forwards the packet to the destination node, which returns FULFILL (accepted) or REJECT. The method you call determines which node type you pay:
+
+| Client call                       | Node type | What it does                                                                                                                                              |
+| --------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client.publishEvent(event)`      | **town**  | Publish a Nostr event (e.g. `kind:1`) to the relay.                                                                                                       |
+| `requestBlobStorage(client, …)`   | **dvm**   | NIP-90 compute/storage. Builds and publishes a `kind:5094` event that uploads a blob to Arweave — the job request **is** the payment — and decodes the Arweave tx ID from the FULFILL response. |
+| `client.sendSwapPacket(…)`        | **mill**  | Multi-chain token swap (low-level). Most callers use the higher-level `streamSwap()` from `@toon-protocol/sdk`, which is built on `sendSwapPacket`.       |
 
 ## What It Does
 
 This client handles:
 
-- **ILP Micropayments**: Pay to publish Nostr events (read is free)
+- **ILP Micropayments**: Pay to publish Nostr events (reads are free)
 - **Payment Channels**: Automatic on-chain channel creation with off-chain settlement via signed balance proofs
 - **Unified Identity**: One Nostr key = one EVM address (both use secp256k1, derived automatically)
-- **Multi-Hop Routing**: Publish to any destination address, not just your direct peer
+- **Multi-Hop Routing**: Publish to any destination address (`destination` / `destinationAddress`), not just your direct peer
+- **Private Transport**: Optionally reach a townhouse apex at its ATOR `.anon` address through a SOCKS5h proxy (see [Connecting over `.anon`](#connecting-to-an-apex-over-anon))
 - **Network Bootstrap**: Automatically discover and register with ILP peers via NIP-02 follow lists
 - **TOON Encoding**: Native binary format for agent-friendly event encoding
 
@@ -21,28 +34,40 @@ pnpm add @toon-protocol/client @toon-protocol/core @toon-protocol/relay nostr-to
 
 ## Prerequisites
 
-The client requires external services. Use the SDK E2E infrastructure for local development:
+**Reading is free** — to subscribe/query you need nothing but this package. To **write (pay)** you need:
 
-```bash
-# Start SDK E2E infrastructure
-./scripts/sdk-e2e-infra.sh up
+- **Node.js ≥ 20** — these packages are ESM.
+- **A TOON apex to pay.** You don't run any node yourself; you connect to a running
+  [`@toon-protocol/townhouse`](https://www.npmjs.com/package/@toon-protocol/townhouse) apex (or any
+  TOON connector) and pay it. From its operator you need:
+  - a **connector endpoint** — either an HTTP `connectorUrl`, or an ATOR `.anon` BTP endpoint reached
+    through a **SOCKS5h** proxy (see [Connecting over `.anon`](#connecting-to-an-apex-over-anon));
+  - a **settlement-chain RPC URL** and a **funded key** on that chain, so the client can open a
+    payment channel and sign EIP-712 claims;
+  - the **token** and **TokenNetwork** contract addresses that apex accepts on that chain (e.g. USDC).
 
-# Verify services are healthy
-curl http://localhost:19100/health  # Peer 1 BLS
-curl http://localhost:19110/health  # Peer 2 BLS
-# Nostr relays on ws://localhost:19700 and ws://localhost:19710 (WebSocket, no HTTP endpoint)
+These coordinates go straight into the [`ToonClient` config](#quick-start) below.
 
-# Stop infrastructure
-./scripts/sdk-e2e-infra.sh down
-```
-
-| Service          | Port  | Purpose                                             |
-| ---------------- | ----- | --------------------------------------------------- |
-| **Anvil**        | 18545 | Local EVM chain (chain ID 31337)                    |
-| **Peer 1 BLS**   | 19100 | Validates events, calculates pricing, stores events |
-| **Peer 1 Relay** | 19700 | WebSocket relay for peer discovery (kind:10032)     |
-| **Peer 2 BLS**   | 19110 | Validates events, calculates pricing, stores events |
-| **Peer 2 Relay** | 19710 | WebSocket relay for peer discovery (kind:10032)     |
+> **Local development (from a clone of this repo, not the npm package).** To try the client
+> end-to-end against a throwaway local network, start the monorepo's SDK E2E stack — Anvil + two peer
+> nodes + relays. This script ships with the repo, **not** the published package:
+>
+> ```bash
+> ./scripts/sdk-e2e-infra.sh up     # start (Ctrl-C-safe; `down` to stop)
+> curl http://localhost:19100/health   # peer 1 health
+> ./scripts/sdk-e2e-infra.sh down   # stop
+> ```
+>
+> | Service          | Port  | Purpose                                             |
+> | ---------------- | ----- | --------------------------------------------------- |
+> | **Anvil**        | 18545 | Local EVM chain (chain ID 31337)                    |
+> | **Peer 1 BLS**   | 19100 | Validates events, calculates pricing, stores events |
+> | **Peer 1 Relay** | 19700 | WebSocket relay for peer discovery (kind:10032)     |
+> | **Peer 2 BLS**   | 19110 | Validates events, calculates pricing, stores events |
+> | **Peer 2 Relay** | 19710 | WebSocket relay for peer discovery (kind:10032)     |
+>
+> The Quick Start below is wired for this local stack (chain `evm:anvil:31337`, TokenNetwork
+> `0xCafac3dD…052c`); swap in your apex's real coordinates for any other network.
 
 ---
 
@@ -90,6 +115,32 @@ if (result.success) {
 // 5. Clean up
 await client.stop();
 ```
+
+---
+
+## Uploading a blob to a DVM (Arweave storage)
+
+To store a blob permanently on Arweave, pay a **dvm** node with a `kind:5094` NIP-90 request. The `requestBlobStorage` helper builds the signed event, publishes it through your `ToonClient` (reusing its claim/channel plumbing), and decodes the Arweave transaction ID from the FULFILL response:
+
+```typescript
+import { ToonClient, requestBlobStorage } from '@toon-protocol/client';
+
+// `client` is a started ToonClient (see Quick Start). `secretKey` signs the kind:5094 event.
+const result = await requestBlobStorage(client, secretKey, {
+  blobData: new Uint8Array([1, 2, 3, 4]),
+  contentType: 'application/octet-stream',
+  ilpAmount: 50_000n, // USDC micro-units; also used as the event's `bid` if `bid` is omitted
+  destination: 'g.toon.peer1', // the DVM's ILP address (defaults to the client's destinationAddress)
+});
+
+if (result.success) {
+  console.log(`Stored on Arweave: https://arweave.net/${result.txId}`);
+} else {
+  console.error(`Upload failed: ${result.error}`);
+}
+```
+
+`requestBlobStorage(client, secretKey, params)` returns `{ success, txId?, eventId?, error? }` (`RequestBlobStorageParams` / `RequestBlobStorageResult` are exported for typing). It covers the **single-packet** case; for large chunked uploads, drive `client.publishEvent()` with `kind:5094` events directly.
 
 ---
 
@@ -149,6 +200,29 @@ const client = new ToonClient({
 
 ---
 
+## Connecting to an apex over `.anon`
+
+In production a townhouse apex is reachable at an ATOR `.anon` hidden-service address rather than a plain `ws://` host. To dial it, route the client's BTP/HTTP traffic through a **SOCKS5h** proxy via the `transport` option. The `socks5h://` scheme is required so DNS resolution happens at the proxy (no DNS leaks):
+
+```typescript
+const client = new ToonClient({
+  connectorUrl: 'http://localhost:8080', // local connector admin, if any
+  secretKey,
+  ilpInfo: { pubkey, ilpAddress: `g.toon.${pubkey.slice(0, 8)}`, btpEndpoint: 'ws://abc...xyz.anon:3000' },
+  btpUrl: 'ws://abc...xyz.anon:3000', // the apex's BTP endpoint at its .anon address
+  destinationAddress: 'g.townhouse', // pay the apex; it forwards to the town/dvm/mill child
+  toonEncoder: encodeEventToToon,
+  toonDecoder: decodeEventFromToon,
+
+  // Route the connection through a SOCKS5h proxy (Node.js only).
+  transport: { type: 'socks5', socksProxy: 'socks5h://127.0.0.1:9050' },
+});
+```
+
+In the browser, use `transport: { type: 'gateway', gatewayUrl: 'https://…' }` to proxy through an ator gateway server-side instead. (Default is `{ type: 'direct' }`.)
+
+---
+
 ## Documentation
 
 - **[API Reference](docs/api-reference.md)** — Constructor, config interface, and all methods
@@ -189,16 +263,20 @@ See [tests/e2e/README.md](tests/e2e/README.md) for detailed E2E setup.
 
 See [examples/client-example/](../../examples/client-example/) for standalone client examples:
 
-- **01 - Publish Event**: Full client lifecycle with self-describing claims
-- **02 - Payment Channel Lifecycle**: Multiple events with incrementing balance proofs
+- **01 - Publish Event** (`01-publish-event.ts`): Full client lifecycle with self-describing claims
+- **02 - Payment Channel Lifecycle** (`02-payment-channel.ts`): Multiple events with incrementing balance proofs
+- **03 - Multi-Chain Publish** (`03-multi-chain-publish.ts`): Publishing with multiple settlement chains configured
+- **04 - Subscribe to Events** (`04-subscribe-events.ts`): Reading events back from the relay (free)
 
 ---
 
 ## Related Packages
 
-- **[@toon-protocol/core](../core/)** — Core protocol (peer discovery, bootstrap)
-- **[@toon-protocol/relay](../relay/)** — Nostr relay with ILP payment gating
+- **[@toon-protocol/core](../core/)** — Core protocol (peer discovery, bootstrap, `buildBlobStorageRequest`)
+- **[@toon-protocol/relay](../relay/)** — Nostr relay with ILP payment gating (`encodeEventToToon` / `decodeEventFromToon`)
+- **[@toon-protocol/sdk](../sdk/)** — Higher-level helpers including `streamSwap()` for multi-chain swaps via a **mill**
 - **[@toon-protocol/bls](../bls/)** — Business Logic Server (pricing, validation, storage)
+- **[@toon-protocol/townhouse](../townhouse/)** — The operator product that runs the apex + town/mill/dvm nodes you pay
 
 ---
 
