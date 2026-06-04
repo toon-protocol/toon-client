@@ -6,10 +6,24 @@
  */
 
 import { createConnection } from 'node:net';
+import { createRequire } from 'node:module';
 import type SocksProxyAgentModule from 'socks-proxy-agent';
 import type WSModule from 'ws';
 import type httpModule from 'node:http';
 import type httpsModule from 'node:https';
+
+// ESM-safe require. This module builds as ESM (tsup `format: ['esm']`) with
+// `socks-proxy-agent`/`ws` external, so a bare `require(...)` would be rewritten
+// by esbuild into a `__require` shim that throws
+// `Dynamic require of "socks-proxy-agent" is not supported` for any pure-ESM
+// consumer — breaking the SOCKS5/ATOR transport entirely (the npm-consumer
+// toon-client image surfaced this). Building a real require off `import.meta.url`
+// (the same pattern as docker/esbuild.config.mjs's banner) keeps the
+// synchronous, browser-guarded `require(...)` calls below working in the
+// published ESM bundle while leaving the deps external. Browser bundlers never
+// reach this code: the module is dynamically imported only when
+// `transport.type === 'socks5'`, which is Node-only.
+const require = createRequire(import.meta.url);
 
 /**
  * Parses and validates a `socks5h://` URL.
@@ -60,11 +74,10 @@ export function createSocks5WebSocketFactory(
 ): (url: string) => WebSocket {
   validateSocks5hUrl(socksProxy);
 
-  /* eslint-disable @typescript-eslint/no-require-imports */
+  // Resolved via the module-scoped ESM-safe `require` (createRequire) above.
   const { SocksProxyAgent } =
     require('socks-proxy-agent') as typeof SocksProxyAgentModule;
   const WS = require('ws') as typeof WSModule;
-  /* eslint-enable @typescript-eslint/no-require-imports */
 
   // 120s timeout: the socks library's default is 30s, which is too short for
   // the ATOR network to build circuits to fresh hidden services from certain
@@ -106,12 +119,11 @@ export function createSocks5WebSocketFactory(
 export function createSocks5Fetch(socksProxy: string): typeof fetch {
   validateSocks5hUrl(socksProxy);
 
-  /* eslint-disable @typescript-eslint/no-require-imports */
+  // Resolved via the module-scoped ESM-safe `require` (createRequire) above.
   const { SocksProxyAgent } =
     require('socks-proxy-agent') as typeof SocksProxyAgentModule;
   const http = require('node:http') as typeof httpModule;
   const https = require('node:https') as typeof httpsModule;
-  /* eslint-enable @typescript-eslint/no-require-imports */
 
   const agent = new SocksProxyAgent(socksProxy);
 
