@@ -12,6 +12,9 @@ import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import { ToonClientError } from './errors.js';
 import { EvmSigner } from './signing/evm-signer.js';
+import { SolanaSigner } from './signing/solana-signer.js';
+import { MinaSigner } from './signing/mina-signer.js';
+import { deriveFullIdentity } from './keys/KeyDerivation.js';
 import {
   ChannelManager,
   type PeerNegotiation,
@@ -77,6 +80,8 @@ export class ToonClient {
   private readonly config: ResolvedConfig;
   private state: ToonClientState | null = null;
   private readonly evmSigner?: EvmSigner;
+  private solanaSigner?: SolanaSigner;
+  private minaSigner?: MinaSigner;
   private channelManager?: ChannelManager;
   private readonly peerNegotiations = new Map<string, PeerNegotiation>();
 
@@ -126,6 +131,51 @@ export class ToonClient {
   }
 
   /**
+   * Gets the Solana (base58) address, when the client was constructed from a
+   * `mnemonic`. Available only AFTER `start()` (Solana keys are derived
+   * asynchronously). Returns undefined otherwise.
+   */
+  getSolanaAddress(): string | undefined {
+    return this.solanaSigner?.signerIdentifier;
+  }
+
+  /**
+   * Gets the Mina (base58) address, when the client was constructed from a
+   * `mnemonic` AND `mina-signer` is installed. Available only AFTER `start()`.
+   * Returns undefined otherwise.
+   */
+  getMinaAddress(): string | undefined {
+    return this.minaSigner?.signerIdentifier;
+  }
+
+  /**
+   * Derive the Solana/Mina keys from the mnemonic and register their signers on
+   * the ChannelManager. Mirrors how the EVM signer is wired, but for the
+   * non-secp256k1 chains. Skips any chain whose optional dependency is missing.
+   */
+  private async registerMnemonicChainSigners(mnemonic: string): Promise<void> {
+    if (!this.channelManager) return;
+    const identity = await deriveFullIdentity(mnemonic);
+
+    // Solana: @noble/curves Ed25519 expects a 32-byte seed; deriveFullIdentity
+    // returns a 64-byte keypair (seed||pubkey).
+    if (identity.solana.publicKey) {
+      const seed = identity.solana.secretKey.slice(0, 32);
+      this.solanaSigner = new SolanaSigner(seed, identity.solana.publicKey);
+      this.channelManager.registerChainSigner('solana', this.solanaSigner);
+    }
+
+    // Mina: only present when mina-signer is installed (optional dep).
+    if (identity.mina.publicKey) {
+      this.minaSigner = new MinaSigner(
+        identity.mina.privateKey,
+        identity.mina.publicKey
+      );
+      this.channelManager.registerChainSigner('mina', this.minaSigner);
+    }
+  }
+
+  /**
    * Starts the ToonClient.
    *
    * This will:
@@ -149,6 +199,16 @@ export class ToonClient {
           ? new JsonFileChannelStore(this.config.channelStorePath)
           : undefined;
         this.channelManager = new ChannelManager(this.evmSigner, store);
+
+        // When constructed from a mnemonic, derive the non-secp256k1 keys
+        // (Solana Ed25519, Mina Pallas) and register their signers so the
+        // client can settle on those chains too. Derivation is async (dynamic
+        // imports + optional deps), hence done here rather than in the
+        // synchronous constructor. Gracefully skips a chain whose optional dep
+        // is absent (e.g. mina-signer) — deriveFullIdentity leaves it empty.
+        if (this.config.mnemonic) {
+          await this.registerMnemonicChainSigners(this.config.mnemonic);
+        }
       }
 
       // Initialize HTTP mode components

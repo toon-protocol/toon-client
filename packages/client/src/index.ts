@@ -30,7 +30,17 @@ export {
 } from './adapters/index.js';
 
 // Signing
-export { EvmSigner, type EVMClaimMessage } from './signing/index.js';
+export {
+  EvmSigner,
+  type EVMClaimMessage,
+  SolanaSigner,
+  MinaSigner,
+  type ChainSigner,
+  type ChainMetadata,
+  type ClaimMessage,
+  type SolanaClaimMessage,
+  type MinaClaimMessage,
+} from './signing/index.js';
 
 // Channel
 export {
@@ -87,6 +97,7 @@ export {
   KeyManager,
   generateMnemonic,
   validateMnemonic,
+  deriveNostrKeyFromMnemonic,
   deriveFullIdentity,
   deriveFromNsec,
   generateRandomIdentity,

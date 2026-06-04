@@ -26,6 +26,12 @@ export interface ChainSigner {
     transferredAmount: bigint;
     lockedAmount: bigint;
     locksRoot: string;
+    /**
+     * Counterparty settlement address the proof is bound to. Required for
+     * Solana/Mina (folded into the canonical balance-proof message); the EVM
+     * adapter ignores it (EIP-712 has no recipient term).
+     */
+    recipient: string;
     metadata: ChainMetadata;
   }): Promise<SignedBalanceProof>;
   buildClaimMessage(proof: SignedBalanceProof, senderId: string): ClaimMessage;
@@ -47,6 +53,8 @@ export interface SolanaClaimMessage {
   transferredAmount: string;
   signature: string;
   signerAddress: string;
+  /** Counterparty settlement address the signature is bound to (base58). */
+  recipient: string;
   programId: string;
 }
 
@@ -61,5 +69,7 @@ export interface MinaClaimMessage {
   transferredAmount: string;
   commitment: string;
   signerAddress: string;
+  /** Counterparty settlement address the signature is bound to (base58). */
+  recipient: string;
   zkAppAddress: string;
 }

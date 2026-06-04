@@ -20,7 +20,8 @@ This client handles:
 
 - **ILP Micropayments**: Pay to publish Nostr events (reads are free)
 - **Payment Channels**: Automatic on-chain channel creation with off-chain settlement via signed balance proofs
-- **Unified Identity**: One Nostr key = one EVM address (both use secp256k1, derived automatically)
+- **Unified Identity**: One Nostr key = one EVM address (both secp256k1, derived automatically) — or a single BIP-39 **mnemonic** to derive a full multi-chain identity
+- **Multi-Chain Settlement**: Sign payment-channel claims on EVM (EIP-712), Solana (Ed25519), and Mina (Pallas) from one mnemonic
 - **Multi-Hop Routing**: Publish to any destination address (`destination` / `destinationAddress`), not just your direct peer
 - **Private Transport**: Optionally reach a townhouse apex at its ATOR `.anon` address through a SOCKS5h proxy (see [Connecting over `.anon`](#connecting-to-an-apex-over-anon))
 - **Network Bootstrap**: Automatically discover and register with ILP peers via NIP-02 follow lists
@@ -30,6 +31,9 @@ This client handles:
 
 ```bash
 pnpm add @toon-protocol/client @toon-protocol/core @toon-protocol/relay nostr-tools
+
+# Optional — only needed to derive/sign on Mina (Pallas):
+pnpm add mina-signer
 ```
 
 ## Prerequisites
@@ -118,6 +122,56 @@ await client.stop();
 
 ---
 
+## Identity & Multi-Chain Settlement
+
+There are two ways to give the client an identity:
+
+### 1. Raw `secretKey` — Nostr + EVM (secp256k1)
+
+A 32-byte Nostr key. Because Nostr and EVM both use secp256k1, the same key provides your EVM identity automatically. This is the path shown in the Quick Start, and it only supports EVM settlement.
+
+### 2. `mnemonic` — full multi-chain identity (recommended for non-EVM)
+
+A single BIP-39 phrase derives **all** chain identities: Nostr (NIP-06) + EVM (secp256k1), Solana (Ed25519), and Mina (Pallas). This is required to settle on Solana or Mina — a raw secp256k1 `secretKey` cannot represent those curves.
+
+```typescript
+import { ToonClient, generateMnemonic, deriveFullIdentity } from '@toon-protocol/client';
+import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/relay';
+
+const mnemonic = generateMnemonic(); // or restore an existing 12-word phrase
+const { nostr } = await deriveFullIdentity(mnemonic); // peek at the derived keys if needed
+
+const client = new ToonClient({
+  connectorUrl: 'http://localhost:8080',
+  mnemonic, // derives Nostr/EVM synchronously; Solana/Mina during start()
+  ilpInfo: {
+    pubkey: nostr.pubkey,
+    ilpAddress: `g.toon.${nostr.pubkey.slice(0, 8)}`,
+    btpEndpoint: 'ws://localhost:3000',
+  },
+  toonEncoder: encodeEventToToon,
+  toonDecoder: decodeEventFromToon,
+});
+
+await client.start();
+
+// EVM is available before start(); Solana/Mina are derived during start()
+console.log('Nostr: ', client.getPublicKey());
+console.log('EVM:   ', client.getEvmAddress());
+console.log('Solana:', client.getSolanaAddress()); // base58, after start()
+console.log('Mina:  ', client.getMinaAddress());   // base58, after start() (needs mina-signer)
+```
+
+**Notes & rules:**
+
+- **Precedence**: `mnemonic` and `secretKey` are mutually exclusive (a separate `secretKey` would split the Nostr identity from the Solana/Mina identity — the client rejects it). An `evmPrivateKey` override **is** allowed alongside `mnemonic` (e.g. a hardware-wallet EVM key while still deriving Solana/Mina from the phrase).
+- **Solana/Mina addresses** (`getSolanaAddress()`, `getMinaAddress()`) are only available **after `start()`** — those keys are derived asynchronously. `getEvmAddress()`/`getPublicKey()` work before `start()`.
+- **Mina is optional**: it requires the `mina-signer` peer dependency (see Installation). Without it, the client still works for Nostr/EVM/Solana and `getMinaAddress()` returns `undefined`.
+- **Security**: JavaScript strings can't be zeroed from memory, so a `mnemonic` may linger in the heap. For high-security contexts, derive keys yourself (e.g. via `KeyManager`) and pass a pre-derived `secretKey`.
+- Balance-proof claims are signed with the canonical layout the connector verifies: EVM via EIP-712, Solana/Mina via the shared hashes in `@toon-protocol/core` (`balanceProofHashSolana` / `balanceProofFieldsMina`).
+
+---
+
 ## Uploading a blob to a DVM (Arweave storage)
 
 To store a blob permanently on Arweave, pay a **dvm** node with a `kind:5094` NIP-90 request. The `requestBlobStorage` helper builds the signed event, publishes it through your `ToonClient` (reusing its claim/channel plumbing), and decodes the Arweave transaction ID from the FULFILL response:
@@ -146,7 +200,7 @@ if (result.success) {
 
 ## Payment Channels
 
-The client supports EVM-based payment channels for off-chain settlement. Your EVM identity is derived from your Nostr `secretKey` automatically — no separate EVM key needed.
+The client supports payment channels for off-chain settlement on EVM, Solana, and Mina. With a raw `secretKey` you get EVM only; construct from a `mnemonic` (above) to settle on Solana/Mina. Your EVM identity is derived automatically — no separate EVM key needed.
 
 ### Enabling Payment Channels
 

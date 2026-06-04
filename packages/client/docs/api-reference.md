@@ -31,10 +31,6 @@ interface TOONClientConfig {
   /** HTTP URL of external ILP connector service */
   connectorUrl: string; // Example: 'http://localhost:8080'
 
-  /** 32-byte Nostr private key (generated via nostr-tools).
-   *  Your EVM address is derived from this key automatically. */
-  secretKey: Uint8Array;
-
   /** ILP peer information for this client */
   ilpInfo: {
     pubkey: string; // Nostr public key (hex)
@@ -48,6 +44,25 @@ interface TOONClientConfig {
   /** Function to decode TOON binary to Nostr events */
   toonDecoder: (bytes: Uint8Array) => NostrEvent;
 
+  // ===== IDENTITY (optional — provide one, else an ephemeral key is generated) =====
+
+  /** 32-byte Nostr private key. Your EVM address is derived from it automatically
+   *  (both secp256k1). secp256k1-only — cannot represent Solana/Mina. Mutually
+   *  exclusive with `mnemonic`. If neither is given, an ephemeral key is generated. */
+  secretKey?: Uint8Array;
+
+  /** BIP-39 mnemonic to derive a full multi-chain identity: Nostr (NIP-06) + EVM
+   *  (secp256k1) synchronously, plus Solana (Ed25519) + Mina (Pallas) during
+   *  start(). Required for non-EVM settlement. Mutually exclusive with `secretKey`;
+   *  may be combined with an `evmPrivateKey` override. (Strings can't be zeroed
+   *  from memory — prefer a pre-derived secretKey in high-security contexts.) */
+  mnemonic?: string;
+
+  /** Override EVM private key. By default the EVM key is derived from
+   *  `secretKey`/`mnemonic` (both use secp256k1). Set this only for a different
+   *  EVM identity (hardware wallet, custodial key). Allowed alongside `mnemonic`. */
+  evmPrivateKey?: string | Uint8Array;
+
   // ===== OPTIONAL =====
 
   /** Nostr relay URL for peer discovery (default: 'ws://localhost:7100') */
@@ -55,10 +70,6 @@ interface TOONClientConfig {
 
   /** ILP destination address for event publishing (default: derived from connectorUrl port) */
   destinationAddress?: string;
-
-  /** Override EVM private key. By default, the EVM key is derived from secretKey
-   *  (both use secp256k1). Only set this if you need a different EVM identity. */
-  evmPrivateKey?: string | Uint8Array;
 
   /** BTP WebSocket URL (default: derived from connectorUrl) */
   btpUrl?: string;
@@ -103,8 +114,9 @@ interface TOONClientConfig {
 
 **Important Notes:**
 
-- **EVM identity is automatic**: Your EVM address is derived from `secretKey` — no separate key management needed. Both Nostr and EVM use secp256k1, so one key provides both identities.
-- `evmPrivateKey` is an optional override for advanced use cases (hardware wallets, custodial keys)
+- **Provide one identity input**: `secretKey` (Nostr + EVM, secp256k1-only) **or** `mnemonic` (full multi-chain). They are mutually exclusive; if neither is given an ephemeral keypair is generated.
+- **EVM identity is automatic**: derived from `secretKey`/`mnemonic` (both use secp256k1), so one input provides both Nostr and EVM identities. `evmPrivateKey` is an optional override (hardware wallets, custodial keys) and may be combined with `mnemonic`.
+- **Solana/Mina need a `mnemonic`**: those curves (Ed25519, Pallas) can't derive from a raw secp256k1 `secretKey`. Mina additionally requires the optional `mina-signer` peer dependency.
 - `connector` parameter is **not supported** (embedded mode not implemented)
 - HTTP mode is the only supported mode in this version
 
@@ -230,10 +242,12 @@ Signs a balance proof for a payment channel with the specified amount.
   transferredAmount: bigint; // Cumulative amount
   lockedAmount: bigint; // Always 0n (no HTLCs yet)
   locksRoot: string; // Hash of empty lock set
-  signature: string; // EIP-712 signature
-  signerAddress: string; // EVM address of signer
+  signature: string; // EVM: EIP-712 sig. Solana: 0x-hex Ed25519. Mina: base58 Schnorr.
+  signerAddress: string; // signer address (EVM 0x / Solana | Mina base58)
 }
 ```
+
+The channel's chain (set during bootstrap negotiation) determines how the proof is signed: EVM uses EIP-712, while Solana/Mina use the canonical balance-proof hashes from `@toon-protocol/core`. Multi-chain channels require a client constructed from a `mnemonic`.
 
 **Throws:**
 
@@ -242,7 +256,7 @@ Signs a balance proof for a payment channel with the specified amount.
 **Example:**
 
 ```typescript
-// EVM signer is always available (derived from secretKey)
+// EVM signer is always available (derived from secretKey/mnemonic)
 const claim = await client.signBalanceProof('0xChannelId...', 1000n);
 
 // Use claim in payment
@@ -283,7 +297,7 @@ console.log(`Public key: ${pubkey}`);
 
 ### `getEvmAddress(): string | undefined`
 
-Returns the EVM address derived from `secretKey` (or explicit `evmPrivateKey` override). Works before `start()` is called.
+Returns the EVM address derived from `secretKey`/`mnemonic` (or explicit `evmPrivateKey` override). Works before `start()` is called.
 
 **Returns:** EVM address string
 
@@ -292,6 +306,26 @@ Returns the EVM address derived from `secretKey` (or explicit `evmPrivateKey` ov
 ```typescript
 const evmAddr = client.getEvmAddress();
 console.log(`EVM address: ${evmAddr}`);
+```
+
+---
+
+### `getSolanaAddress(): string | undefined`
+
+Returns the Solana (base58, Ed25519) address when the client was constructed from a `mnemonic`. Available **only after `start()`** (Solana keys are derived asynchronously); returns `undefined` otherwise.
+
+```typescript
+const solAddr = client.getSolanaAddress(); // after start()
+```
+
+---
+
+### `getMinaAddress(): string | undefined`
+
+Returns the Mina (base58, Pallas) address when the client was constructed from a `mnemonic` **and** the optional `mina-signer` peer dependency is installed. Available **only after `start()`**; returns `undefined` otherwise.
+
+```typescript
+const minaAddr = client.getMinaAddress(); // after start(), needs mina-signer
 ```
 
 ---

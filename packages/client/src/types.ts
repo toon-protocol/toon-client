@@ -52,8 +52,28 @@ export interface ToonClientConfig {
   // ============================================================================
 
   /**
+   * BIP-39 mnemonic phrase to derive a full multi-chain identity from.
+   *
+   * When provided, the client derives the Nostr (NIP-06) + EVM keys
+   * synchronously at construction and the Solana (Ed25519) + Mina (Pallas) keys
+   * lazily in `start()`, registering per-chain signers so balance-proof claims
+   * can be settled on any of those chains. This is the recommended way to use
+   * non-EVM settlement (the raw `secretKey` path is secp256k1-only).
+   *
+   * Cannot be combined with `secretKey` (ambiguous Nostr identity). May be
+   * combined with `evmPrivateKey` to use a separate EVM key (e.g. hardware
+   * wallet) while still deriving Solana/Mina from the phrase.
+   *
+   * SECURITY: JavaScript strings are immutable and cannot be zeroed from
+   * memory — the phrase may persist in the heap until GC. Prefer
+   * passing a pre-derived `secretKey`/identity in high-security contexts.
+   */
+  mnemonic?: string;
+
+  /**
    * 32-byte Nostr private key (hex or Uint8Array).
-   * Optional — if omitted, a keypair is auto-generated in applyDefaults().
+   * Optional — if omitted, a keypair is auto-generated in applyDefaults()
+   * (or derived from `mnemonic` when that is provided instead).
    */
   secretKey?: Uint8Array;
 
@@ -250,6 +270,15 @@ export interface SignedBalanceProof extends BalanceProofParams {
   tokenNetworkAddress: string;
   /** ERC-20 token address (e.g. USDC) for self-describing claim verification */
   tokenAddress?: string;
+  /**
+   * Counterparty settlement address the balance proof is bound to.
+   *
+   * Required for Solana/Mina, where the canonical balance-proof message folds
+   * the recipient in (`balanceProofHashSolana` / `balanceProofFieldsMina`).
+   * Unused for the client's EVM path (EIP-712 `BalanceProof` has no recipient
+   * term). Carried here so it flows from signing through to `buildClaimMessage`.
+   */
+  recipient?: string;
 }
 
 /**

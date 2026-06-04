@@ -11,6 +11,12 @@ interface ChannelTracking {
   chainId: number;
   tokenNetworkAddress: string;
   tokenAddress?: string;
+  /**
+   * Counterparty settlement address on this channel's chain. Required to sign
+   * Solana/Mina balance proofs (folded into the canonical message); unused for
+   * the EVM EIP-712 path.
+   */
+  recipient?: string;
 }
 
 export interface ChannelManagerConfig {
@@ -161,6 +167,7 @@ export class ChannelManager {
             typeof negotiation.chainId === 'number' ? negotiation.chainId : 0,
           tokenNetworkAddress: negotiation.tokenNetwork ?? '',
           tokenAddress: negotiation.tokenAddress,
+          recipient: negotiation.settlementAddress,
         });
         this.peerChannels.set(peerId, result.channelId);
         return result.channelId;
@@ -196,6 +203,7 @@ export class ChannelManager {
       chainId: number;
       tokenNetworkAddress: string;
       tokenAddress?: string;
+      recipient?: string;
     },
     initialNonce = 0,
     initialAmount = 0n
@@ -216,6 +224,7 @@ export class ChannelManager {
           chainId: cId,
           tokenNetworkAddress: tnAddr,
           tokenAddress: chainContext?.tokenAddress,
+          recipient: chainContext?.recipient,
         });
         return;
       }
@@ -228,6 +237,7 @@ export class ChannelManager {
       chainId: cId,
       tokenNetworkAddress: tnAddr,
       tokenAddress: chainContext?.tokenAddress,
+      recipient: chainContext?.recipient,
     });
   }
 
@@ -266,6 +276,12 @@ export class ChannelManager {
     // Route to appropriate signer for non-EVM chains
     const signer = this.chainSigners.get(tracking.chainType);
     if (signer && tracking.chainType !== 'evm') {
+      if (!tracking.recipient) {
+        throw new Error(
+          `Channel "${channelId}" (${tracking.chainType}) has no recipient settlement address; ` +
+            'cannot sign a Solana/Mina balance proof. Ensure the peer negotiation supplied a settlementAddress.'
+        );
+      }
       const metadata = this.buildMetadata(tracking);
       return signer.signBalanceProof({
         channelId,
@@ -274,6 +290,7 @@ export class ChannelManager {
         lockedAmount: 0n,
         locksRoot:
           '0x0000000000000000000000000000000000000000000000000000000000000000',
+        recipient: tracking.recipient,
         metadata,
       });
     }

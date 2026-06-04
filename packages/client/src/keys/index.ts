@@ -5,6 +5,7 @@ export { KeyManager } from './KeyManager.js';
 export {
   generateMnemonic,
   validateMnemonic,
+  deriveNostrKeyFromMnemonic,
   deriveFullIdentity,
   deriveFromNsec,
   generateRandomIdentity,

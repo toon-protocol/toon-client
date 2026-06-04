@@ -1,5 +1,9 @@
 import { generateSecretKey } from 'nostr-tools/pure';
 import { ValidationError } from './errors.js';
+import {
+  validateMnemonic,
+  deriveNostrKeyFromMnemonic,
+} from './keys/KeyDerivation.js';
 import type { ToonClientConfig, ClientTransportConfig } from './types.js';
 
 /**
@@ -55,6 +59,26 @@ export function validateConfig(config: ToonClientConfig): void {
       throw new ValidationError(
         'secretKey must be 32 bytes (Nostr private key)'
       );
+    }
+  }
+
+  // Validate mnemonic when provided. The mnemonic derives the Nostr/EVM +
+  // Solana/Mina identity, so it cannot coexist with an explicit secretKey
+  // (that would split the Nostr identity from the Solana/Mina identity). An
+  // explicit evmPrivateKey override IS allowed (documented hardware-wallet case).
+  if (config.mnemonic !== undefined) {
+    if (config.secretKey !== undefined) {
+      throw new ValidationError(
+        'Provide either `mnemonic` or `secretKey`, not both — the mnemonic ' +
+          'derives the Nostr key, so a separate secretKey would yield an ' +
+          'inconsistent cross-chain identity. (An `evmPrivateKey` override is allowed.)'
+      );
+    }
+    if (
+      typeof config.mnemonic !== 'string' ||
+      !validateMnemonic(config.mnemonic)
+    ) {
+      throw new ValidationError('mnemonic must be a valid BIP-39 phrase');
     }
   }
 
@@ -147,6 +171,7 @@ export type ResolvedConfig = Required<
   Omit<
     ToonClientConfig,
     | 'connector'
+    | 'mnemonic'
     | 'evmPrivateKey'
     | 'supportedChains'
     | 'settlementAddresses'
@@ -167,6 +192,12 @@ export type ResolvedConfig = Required<
   connector?: unknown;
   /** Always present after applyDefaults() — derived from secretKey if not explicitly provided */
   evmPrivateKey: string | Uint8Array;
+  /**
+   * BIP-39 phrase retained so `ToonClient.start()` can derive the Solana/Mina
+   * keys asynchronously and register the corresponding signers. The Nostr/EVM
+   * keys are already resolved synchronously into `secretKey`/`evmPrivateKey`.
+   */
+  mnemonic?: string;
   /** Transport privacy config (optional — defaults to direct). */
   transport?: ClientTransportConfig;
   supportedChains?: string[];
@@ -194,8 +225,16 @@ export type ResolvedConfig = Required<
  * Derives btpUrl from connectorUrl when not provided.
  */
 export function applyDefaults(config: ToonClientConfig): ResolvedConfig {
-  // Auto-generate Nostr keypair when secretKey is omitted
-  const secretKey = config.secretKey ?? generateSecretKey();
+  // Resolve the Nostr secret key. Precedence:
+  //   1. explicit secretKey
+  //   2. derived from mnemonic (Nostr/EVM only — Solana/Mina are derived
+  //      asynchronously in start(), which is why the mnemonic is retained)
+  //   3. auto-generated ephemeral key
+  const secretKey =
+    config.secretKey ??
+    (config.mnemonic
+      ? deriveNostrKeyFromMnemonic(config.mnemonic).secretKey
+      : generateSecretKey());
 
   // Derive btpUrl from connectorUrl when not explicitly provided
   // http://host:8080 → ws://host:3000

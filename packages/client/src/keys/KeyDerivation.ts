@@ -8,6 +8,7 @@ import {
 } from '@scure/bip39';
 import { wordlist as english } from '@scure/bip39/wordlists/english';
 import { HDKey } from '@scure/bip32';
+import { hexToMinaBase58PrivateKey } from '@toon-protocol/core';
 import type { ToonIdentity } from './types.js';
 
 /**
@@ -67,7 +68,7 @@ async function deriveSolanaKey(seed: Uint8Array): Promise<{
   // Uses HMAC-SHA512 with "ed25519 seed" as key
   const { hmac } = await import('@noble/hashes/hmac');
   const { sha512 } = await import('@noble/hashes/sha512');
-  const { ed25519 } = await import('@noble/curves/ed25519');
+  const { ed25519 } = await import('@noble/curves/ed25519.js');
 
   // SLIP-0010 master key derivation for ed25519
   const encoder = new TextEncoder();
@@ -127,28 +128,55 @@ async function deriveMinaKey(seed: Uint8Array): Promise<{
   }
   const keyBytes = new Uint8Array(child.privateKey);
 
-  // Convert raw key bytes to Mina private key format
-  // Mina uses Pallas curve; mina-signer accepts raw bytes or base58
+  // Clamp the top 2 bits so the scalar is within the Pallas base-field order
+  // (matches @toon-protocol/mill's `deriveMillKeys`). Without this, the raw
+  // BIP-32 child scalar can exceed the field order and mina-signer rejects it.
+  keyBytes[0] = (keyBytes[0] ?? 0) & 0x3f;
+
+  // mina-signer needs the Mina base58check (`EK…`) private-key format, NOT a
+  // raw hex scalar (raw hex fails with "invalid checksum"). Convert via the
+  // shared @toon-protocol/core helper before deriving the public key.
   try {
     const MinaSignerLib = await import('mina-signer');
     const Client =
       'default' in MinaSignerLib ? MinaSignerLib.default : MinaSignerLib;
     const client = new Client({ network: 'mainnet' });
 
-    // Derive a Mina keypair from the raw bytes by converting to hex
     const hexKey = Array.from(keyBytes)
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
-    const keypair = client.derivePublicKey(hexKey);
+    const minaPrivateKey = hexToMinaBase58PrivateKey(hexKey);
+    const publicKey = client.derivePublicKey(minaPrivateKey);
     return {
+      // Store the clamped big-endian hex scalar; consumers (e.g. the client's
+      // MinaSigner) re-convert to base58check via hexToMinaBase58PrivateKey.
       privateKey: hexKey,
-      publicKey: keypair,
+      publicKey,
     };
   } catch {
     throw new Error(
       'mina-signer is required for Mina key derivation. Install it as an optional dependency.'
     );
   }
+}
+
+/**
+ * Synchronously derive ONLY the Nostr secp256k1 key (NIP-06) from a mnemonic.
+ *
+ * The EVM key shares this same secp256k1 key. Solana (Ed25519) and Mina
+ * (Pallas) require async dynamic imports — use {@link deriveFullIdentity} for
+ * those. This sync subset exists so `ToonClient`'s synchronous constructor can
+ * resolve the Nostr/EVM identity from a `mnemonic` config field without an
+ * async factory; the client derives Solana/Mina lazily in `start()`.
+ */
+export function deriveNostrKeyFromMnemonic(mnemonic: string): {
+  secretKey: Uint8Array;
+  pubkey: string;
+} {
+  const seed = mnemonicToSeedSync(mnemonic);
+  const result = deriveNostrKey(seed);
+  seed.fill(0); // Zero seed after derivation (F7 fix)
+  return result;
 }
 
 /**
