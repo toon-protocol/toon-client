@@ -2,6 +2,34 @@ import type { IlpPeerInfo } from '@toon-protocol/core';
 import type { NostrEvent } from 'nostr-tools/pure';
 
 /**
+ * Solana payment-channel parameters supplied via `ToonClientConfig.solanaChannel`.
+ *
+ * Mirrors the `SolanaChannelConfig` consumed by `OnChainChannelClient`, minus
+ * the Ed25519 keypair (derived from the client's `mnemonic`, see
+ * `ToonClientConfig.solanaChannel`).
+ */
+export interface SolanaChannelClientOptions {
+  /** Solana JSON-RPC URL used to open the channel + read PDA state. */
+  rpcUrl: string;
+  /** Deployed payment-channel program id (base58). */
+  programId: string;
+  /**
+   * Default SPL token mint (base58) for PDA derivation. The per-channel
+   * negotiated token (the peer's preferred token) takes precedence when present.
+   */
+  tokenMint?: string;
+  /** Challenge-period duration (seconds) for `initialize_channel`. */
+  challengeDuration?: number;
+  /**
+   * Optional on-chain deposit when opening the channel: `amount` in base units
+   * (string) drawn from `payerTokenAccount` (the client's funded SPL token
+   * account / ATA, base58). When omitted, the channel is opened without a
+   * deposit (connector accepts on `opened` status + participant membership).
+   */
+  deposit?: { amount: string; payerTokenAccount: string };
+}
+
+/**
  * Configuration for ToonClient.
  *
  * This story implements HTTP mode only. Embedded mode will be added in a future epic.
@@ -157,6 +185,21 @@ export interface ToonClientConfig {
 
   /** Challenge period in seconds (default: 86400) */
   settlementTimeout?: number;
+
+  /**
+   * Solana payment-channel parameters for opening a REAL on-chain channel and
+   * signing a connector-format Solana balance proof.
+   *
+   * When present (and the client has a Solana signer — i.e. it was constructed
+   * from a `mnemonic`), `ToonClient.start()` wires these into the on-chain
+   * channel client so that negotiating a `solana:*` chain opens an on-chain
+   * channel at the connector-parity PDA and pays a Solana-denominated claim.
+   *
+   * The Ed25519 keypair is NOT carried here — it is derived from the same
+   * `mnemonic` that produces the Solana signer, so the channel-open key and the
+   * claim-signing key are guaranteed identical.
+   */
+  solanaChannel?: SolanaChannelClientOptions;
 
   // ============================================================================
   // PERSISTENCE (optional)

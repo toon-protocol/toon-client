@@ -81,6 +81,12 @@ export class ToonClient {
   private state: ToonClientState | null = null;
   private readonly evmSigner?: EvmSigner;
   private solanaSigner?: SolanaSigner;
+  /**
+   * Ed25519 signing seed (32 bytes) derived from the mnemonic for the Solana
+   * identity. Retained so `start()` can inject it into the on-chain channel
+   * client's Solana config (same key as `solanaSigner`).
+   */
+  private solanaSeed?: Uint8Array;
   private minaSigner?: MinaSigner;
   private channelManager?: ChannelManager;
   private readonly peerNegotiations = new Map<string, PeerNegotiation>();
@@ -161,6 +167,7 @@ export class ToonClient {
     // returns a 64-byte keypair (seed||pubkey).
     if (identity.solana.publicKey) {
       const seed = identity.solana.secretKey.slice(0, 32);
+      this.solanaSeed = seed;
       this.solanaSigner = new SolanaSigner(seed, identity.solana.publicKey);
       this.channelManager.registerChainSigner('solana', this.solanaSigner);
     }
@@ -313,6 +320,22 @@ export class ToonClient {
         this.channelManager.setChannelClient(
           initialization.onChainChannelClient
         );
+
+        // Late-bind the Solana channel config: the program/RPC/token come from
+        // config, the Ed25519 keypair from the mnemonic-derived Solana seed.
+        // Requires both a Solana seed (mnemonic-derived) and explicit
+        // solanaChannel config — otherwise the on-chain Solana opener has no
+        // program/RPC and would throw at openChannel time.
+        if (this.config.solanaChannel && this.solanaSeed) {
+          initialization.onChainChannelClient.setSolanaConfig({
+            rpcUrl: this.config.solanaChannel.rpcUrl,
+            programId: this.config.solanaChannel.programId,
+            tokenMint: this.config.solanaChannel.tokenMint,
+            challengeDuration: this.config.solanaChannel.challengeDuration,
+            deposit: this.config.solanaChannel.deposit,
+            keypair: this.solanaSeed,
+          });
+        }
       }
 
       // Store state

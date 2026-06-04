@@ -4,6 +4,7 @@ export { ToonClient } from './ToonClient.js';
 // Types
 export type {
   ToonClientConfig,
+  SolanaChannelClientOptions,
   ToonStartResult,
   PublishEventResult,
   BalanceProofParams,

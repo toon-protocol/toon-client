@@ -183,6 +183,7 @@ export type ResolvedConfig = Required<
     | 'chainRpcUrls'
     | 'initialDeposit'
     | 'settlementTimeout'
+    | 'solanaChannel'
     | 'channelStorePath'
     | 'knownPeers'
     | 'destinationAddress'
@@ -210,6 +211,7 @@ export type ResolvedConfig = Required<
   chainRpcUrls?: Record<string, string>;
   initialDeposit?: string;
   settlementTimeout?: number;
+  solanaChannel?: ToonClientConfig['solanaChannel'];
   channelStorePath?: string;
   knownPeers?: {
     pubkey: string;

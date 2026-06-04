@@ -155,7 +155,7 @@ export interface OnChainChannelClientConfig {
 export class OnChainChannelClient implements ConnectorChannelClient {
   private readonly evmSigner: EvmSigner;
   private readonly chainRpcUrls: Record<string, string>;
-  private readonly solanaConfig?: SolanaChannelConfig;
+  private solanaConfig?: SolanaChannelConfig;
   private readonly minaConfig?: MinaChannelConfig;
   private readonly channelContext = new Map<
     string,
@@ -167,6 +167,19 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     this.chainRpcUrls = config.chainRpcUrls;
     this.solanaConfig = config.solanaConfig;
     this.minaConfig = config.minaConfig;
+  }
+
+  /**
+   * Late-binds the Solana channel config.
+   *
+   * `ToonClient.start()` derives the Solana Ed25519 keypair from the client's
+   * mnemonic asynchronously (after this client is constructed), so the keypair
+   * is injected here rather than at construction. Same keypair as the
+   * registered Solana signer — guarantees the channel-open key and the
+   * claim-signing key match.
+   */
+  setSolanaConfig(config: SolanaChannelConfig): void {
+    this.solanaConfig = config;
   }
 
   /**
