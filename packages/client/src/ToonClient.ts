@@ -236,9 +236,12 @@ export class ToonClient {
             if (!cm.isTracking(channelId)) {
               cm.trackChannel(channelId, defaultChainCtx);
             }
-            // Sign balance proof and build full claim message
+            // Sign balance proof and build full claim message with the
+            // chain-appropriate signer (the channel is tracked above, so a
+            // non-EVM channel yields its correct envelope, not an EVM claim).
             const proof = await cm.signBalanceProof(channelId, amount);
-            return EvmSigner.buildClaimMessage(proof, nostrPubkey);
+            const signer = cm.getSignerForChannel(channelId);
+            return signer.buildClaimMessage(proof, nostrPubkey);
           }
         );
       }
@@ -412,11 +415,10 @@ export class ToonClient {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let claimMessage: any;
       if (options?.claim) {
-        // EXISTING PATH: Caller provides pre-signed claim (backwards compatible)
-        claimMessage = EvmSigner.buildClaimMessage(
-          options.claim,
-          this.getPublicKey()
-        );
+        // EXISTING PATH: Caller provides pre-signed claim (backwards compatible).
+        // Build the envelope with the chain-appropriate signer so a Solana/Mina
+        // balance proof is not mis-wrapped as an EVM claim (see F06 root cause).
+        claimMessage = this.buildClaimMessageForProof(options.claim);
       } else if (this.channelManager) {
         // NEW PATH: Auto-open channel + auto-sign claim (lazy channels)
         const peerId = this.resolvePeerId(destination);
@@ -533,6 +535,37 @@ export class ToonClient {
   }
 
   /**
+   * Build a BTP claim message from a pre-signed balance proof using the
+   * CHAIN-APPROPRIATE signer.
+   *
+   * The explicit-claim path (caller signs the balance proof, then passes
+   * `{ claim }`) must wrap the proof with the signer matching the channel's
+   * chain. Hardcoding `EvmSigner.buildClaimMessage` here produced an EVM
+   * `BTPClaimMessage` for a Solana/Mina balance proof — no `blockchain`
+   * discriminator and the base58 channel account placed in the EVM
+   * `channelId` field — which the connector's inbound validator classifies
+   * as EVM and rejects with F06 (`Invalid channelId format`).
+   *
+   * When the proof's `channelId` is tracked we use
+   * `getSignerForChannel(channelId).buildClaimMessage`, which emits the
+   * correct per-chain envelope (e.g. `blockchain:'solana'` + base58
+   * `channelAccount`). When it is not tracked we fall back to the EVM signer
+   * to preserve prior behavior for lightweight/EVM-only callers.
+   *
+   * EVM output is byte-identical to the previous hardcoded path (the EVM
+   * adapter in `getSignerForChannel` delegates to the same
+   * `EvmSigner.buildClaimMessage`).
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- claim message is opaque forwarded type
+  private buildClaimMessageForProof(claim: SignedBalanceProof): any {
+    if (this.channelManager?.isTracking(claim.channelId)) {
+      const signer = this.channelManager.getSignerForChannel(claim.channelId);
+      return signer.buildClaimMessage(claim, this.getPublicKey());
+    }
+    return EvmSigner.buildClaimMessage(claim, this.getPublicKey());
+  }
+
+  /**
    * Shared claim-resolution logic used by `publishEvent` and `sendSwapPacket`.
    * TODO(12.5 followup): also factor `publishEvent`'s inline claim resolution
    * to call this helper. Kept duplicated for now to minimize regression risk.
@@ -544,7 +577,7 @@ export class ToonClient {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- claim message is opaque forwarded type
   ): Promise<any> {
     if (explicitClaim) {
-      return EvmSigner.buildClaimMessage(explicitClaim, this.getPublicKey());
+      return this.buildClaimMessageForProof(explicitClaim);
     }
     if (this.channelManager) {
       const peerId = this.resolvePeerId(destination);
@@ -771,10 +804,7 @@ export class ToonClient {
       );
     }
 
-    const claimMessage = EvmSigner.buildClaimMessage(
-      params.claim,
-      this.getPublicKey()
-    );
+    const claimMessage = this.buildClaimMessageForProof(params.claim);
     return this.state.btpClient.sendIlpPacketWithClaim(
       ilpParams,
       claimMessage as unknown as Record<string, unknown>
