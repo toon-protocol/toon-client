@@ -1,7 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { generatePrivateKey } from 'viem/accounts';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { base58Encode } from '@toon-protocol/core';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { OnChainChannelClient } from './OnChainChannelClient.js';
+import { deriveChannelPDA } from './solana-payment-channel.js';
 
 // Mock viem module
 const mockReadContract = vi.fn();
@@ -260,6 +263,172 @@ describe('OnChainChannelClient', () => {
       expect(state.channelId).toBe(TEST_CHANNEL_ID);
       expect(state.status).toBe('open');
       expect(state.chain).toBe(TEST_CHAIN);
+    });
+  });
+
+  describe('openSolanaChannel (on-chain)', () => {
+    const SOLANA_CHAIN = 'solana:devnet';
+    const PROGRAM_ID = 'EdJxYPDxGvaJuu57DSUptf4soLv8enpdyQJJhHDLiydG';
+    const TOKEN_MINT = '6GbdrVghwNKTz9raga7y3Y4qqX5Zgg3AC4d48Kt7C59Q';
+    const APEX_PUBKEY = 'So11111111111111111111111111111111111111112';
+    const BLOCKHASH = 'GfHq2tTVk9z4eXgZ8nWz3vWqkXBQ8K9aBcDeFgHiJkLm';
+
+    // Deterministic 32-byte Ed25519 seed -> stable client pubkey.
+    const seed = new Uint8Array(32).fill(9);
+    const clientPubkey = base58Encode(
+      new Uint8Array(ed25519.getPublicKey(seed))
+    );
+
+    let fetchMock: ReturnType<typeof vi.fn>;
+    const origFetch = globalThis.fetch;
+
+    /** Queue an account-exists/absent + tx-confirm RPC sequence. */
+    function mockRpc(channelExists: boolean): void {
+      fetchMock = vi.fn(async (_url: unknown, init: RequestInit) => {
+        const body = JSON.parse(init.body as string) as { method: string };
+        let result: unknown;
+        switch (body.method) {
+          case 'getAccountInfo':
+            result = {
+              value: channelExists
+                ? // 178-byte "pchannel" discriminator account (opened)
+                  {
+                    data: [
+                      Buffer.from([
+                        0x70,
+                        0x63,
+                        0x68,
+                        0x61,
+                        0x6e,
+                        0x6e,
+                        0x65,
+                        0x6c,
+                        ...new Array(170).fill(0),
+                      ]).toString('base64'),
+                      'base64',
+                    ],
+                    owner: PROGRAM_ID,
+                    lamports: 1,
+                  }
+                : null,
+            };
+            break;
+          case 'getLatestBlockhash':
+            result = { value: { blockhash: BLOCKHASH } };
+            break;
+          case 'sendTransaction':
+            result = 'tx-signature-stub';
+            break;
+          case 'getSignatureStatuses':
+            result = { value: [{ confirmationStatus: 'confirmed' }] };
+            break;
+          default:
+            result = null;
+        }
+        return {
+          ok: true,
+          json: async () => ({ jsonrpc: '2.0', id: 1, result }),
+        } as unknown as Response;
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+    }
+
+    afterEach(() => {
+      globalThis.fetch = origFetch;
+    });
+
+    function makeClient(): OnChainChannelClient {
+      return new OnChainChannelClient({
+        evmSigner: signer,
+        chainRpcUrls: {},
+        solanaConfig: {
+          rpcUrl: 'http://localhost:8899',
+          keypair: seed,
+          programId: PROGRAM_ID,
+        },
+      });
+    }
+
+    it('returns the connector-parity PDA as the channel id and submits init', async () => {
+      mockRpc(false);
+      const c = makeClient();
+      const result = await c.openChannel({
+        peerId: 'apex',
+        chain: SOLANA_CHAIN,
+        token: TOKEN_MINT,
+        peerAddress: APEX_PUBKEY,
+      });
+
+      const expected = deriveChannelPDA(
+        clientPubkey,
+        APEX_PUBKEY,
+        TOKEN_MINT,
+        PROGRAM_ID
+      ).pda;
+      expect(result.channelId).toBe(expected);
+      expect(result.status).toBe('opening');
+
+      // An initialize_channel transaction was submitted.
+      const sent = fetchMock.mock.calls.some((call) => {
+        const body = JSON.parse((call[1] as RequestInit).body as string) as {
+          method: string;
+        };
+        return body.method === 'sendTransaction';
+      });
+      expect(sent).toBe(true);
+    });
+
+    it('is idempotent — skips init when the channel account already exists', async () => {
+      mockRpc(true);
+      const c = makeClient();
+      const result = await c.openChannel({
+        peerId: 'apex',
+        chain: SOLANA_CHAIN,
+        token: TOKEN_MINT,
+        peerAddress: APEX_PUBKEY,
+      });
+
+      const expected = deriveChannelPDA(
+        clientPubkey,
+        APEX_PUBKEY,
+        TOKEN_MINT,
+        PROGRAM_ID
+      ).pda;
+      expect(result.channelId).toBe(expected);
+
+      const sent = fetchMock.mock.calls.some((call) => {
+        const body = JSON.parse((call[1] as RequestInit).body as string) as {
+          method: string;
+        };
+        return body.method === 'sendTransaction';
+      });
+      expect(sent).toBe(false);
+    });
+
+    it('reads on-chain channel state from the PDA account', async () => {
+      mockRpc(true);
+      const c = makeClient();
+      const { channelId } = await c.openChannel({
+        peerId: 'apex',
+        chain: SOLANA_CHAIN,
+        token: TOKEN_MINT,
+        peerAddress: APEX_PUBKEY,
+      });
+      const state = await c.getChannelState(channelId);
+      expect(state.chain).toBe(SOLANA_CHAIN);
+      expect(state.status).toBe('open');
+    });
+
+    it('throws when token mint is missing', async () => {
+      mockRpc(false);
+      const c = makeClient();
+      await expect(
+        c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          peerAddress: APEX_PUBKEY,
+        })
+      ).rejects.toThrow(/token mint/i);
     });
   });
 });

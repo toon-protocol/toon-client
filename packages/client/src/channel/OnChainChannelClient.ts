@@ -14,8 +14,14 @@ import type {
   OpenChannelResult,
   ChannelState,
 } from '@toon-protocol/core';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { base58Encode } from '@toon-protocol/core';
 import type { EvmSigner } from '../signing/evm-signer.js';
 import { toHex } from '../utils/binary.js';
+import {
+  openSolanaChannel as openSolanaChannelOnChain,
+  getChannelAccountState as getSolanaChannelAccountState,
+} from './solana-payment-channel.js';
 
 // TokenNetwork ABI — only the functions we need
 const TOKEN_NETWORK_ABI = [
@@ -100,8 +106,31 @@ const STATE_MAP: Record<number, ChannelState['status']> = {
 
 export interface SolanaChannelConfig {
   rpcUrl: string;
+  /**
+   * Ed25519 keypair material. Accepts either a 32-byte seed or a 64-byte
+   * `secretKey` (seed || pubkey, as produced by `deriveFullIdentity`). The first
+   * 32 bytes are the signing seed; the public key is derived from it.
+   */
   keypair: Uint8Array;
   programId: string;
+  /**
+   * SPL token mint (base58) for PDA derivation. Optional — the per-channel
+   * negotiated token (`OpenChannelParams.token`) takes precedence when present.
+   */
+  tokenMint?: string;
+  /**
+   * Challenge-period duration in seconds for `initialize_channel`. Defaults to
+   * `OpenChannelParams.settlementTimeout` or 86400.
+   */
+  challengeDuration?: number;
+  /**
+   * Optional deposit amount (base units, string) + the payer's funded SPL token
+   * account (ATA, base58). When omitted, the channel is opened (initialized)
+   * without an on-chain deposit — the connector accepts the claim on channel
+   * `opened` status + participant membership; deposit is only consumed at
+   * on-chain claim/settle time.
+   */
+  deposit?: { amount: string; payerTokenAccount: string };
 }
 
 export interface MinaChannelConfig {
@@ -218,7 +247,19 @@ export class OnChainChannelClient implements ConnectorChannelClient {
   }
 
   /**
-   * Opens a Solana payment channel (PDA creation).
+   * Opens a REAL on-chain Solana payment channel.
+   *
+   * Derives the connector-parity channel PDA
+   * (`[b"channel", min_pubkey, max_pubkey, token_mint]`), submits the
+   * `initialize_channel` instruction (+ optional `deposit`) to the deployed
+   * payment-channel program, and returns the base58 PDA as the channel id. That
+   * PDA is what the claim carries as `channelAccount`, and the on-chain channel
+   * is what the connector's `verifySolanaClaim` reads via
+   * `provider.getChannelState` before accepting the claim.
+   *
+   * Mirrors `openEvmChannel`'s open(+deposit) structure. Idempotent: if the
+   * channel account already exists on-chain, returns its PDA without
+   * re-initializing.
    */
   private async openSolanaChannel(
     params: OpenChannelParams
@@ -229,23 +270,56 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       );
     }
 
-    // Derive deterministic channel ID from participants + program
-    const encoder = new TextEncoder();
-    const channelSeed = encoder.encode(
-      `channel:${toHex(this.solanaConfig.keypair).slice(0, 32)}:${params.peerAddress}:${Date.now()}`
+    const cfg = this.solanaConfig;
+    // First 32 bytes are the Ed25519 signing seed (config may pass a 64-byte
+    // secretKey of seed||pubkey, or a bare 32-byte seed).
+    const payerSeed = cfg.keypair.slice(0, 32);
+    const payerPubkey = base58Encode(
+      new Uint8Array(ed25519.getPublicKey(payerSeed))
     );
-    const channelIdBytes = new Uint8Array(
-      await crypto.subtle.digest('SHA-256', channelSeed)
-    );
-    const channelId = '0x' + toHex(channelIdBytes);
 
-    // Cache context
-    this.channelContext.set(channelId, {
-      chain: params.chain,
-      tokenNetworkAddress: this.solanaConfig.programId,
+    // PDA mint: per-channel negotiated token takes precedence over config default.
+    const tokenMint = params.token ?? cfg.tokenMint;
+    if (!tokenMint) {
+      throw new Error(
+        'Solana channel requires a token mint (OpenChannelParams.token or solanaConfig.tokenMint)'
+      );
+    }
+    if (!params.peerAddress) {
+      throw new Error(
+        'Solana channel requires peerAddress (apex settlement pubkey, base58)'
+      );
+    }
+
+    const challengeDuration = BigInt(
+      cfg.challengeDuration ?? params.settlementTimeout ?? 86400
+    );
+
+    const deposit = cfg.deposit
+      ? {
+          amount: BigInt(cfg.deposit.amount),
+          payerTokenAccount: cfg.deposit.payerTokenAccount,
+        }
+      : undefined;
+
+    const { channelPDA } = await openSolanaChannelOnChain({
+      rpcUrl: cfg.rpcUrl,
+      programId: cfg.programId,
+      tokenMint,
+      payerSeed,
+      payerPubkey,
+      peerPubkey: params.peerAddress,
+      challengeDuration,
+      deposit,
     });
 
-    return { channelId, status: 'opening' };
+    // Cache context (PDA is the channel id / channelAccount).
+    this.channelContext.set(channelPDA, {
+      chain: params.chain,
+      tokenNetworkAddress: cfg.programId,
+    });
+
+    return { channelId: channelPDA, status: 'opening' };
   }
 
   /**
@@ -397,6 +471,22 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       throw new Error(
         `No context for channel "${channelId}". Channel must be opened via this client first.`
       );
+    }
+
+    // Solana channels read on-chain state from the PDA account, not an EVM contract.
+    if (context.chain.split(':')[0] === 'solana' && this.solanaConfig) {
+      const account = await getSolanaChannelAccountState(
+        this.solanaConfig.rpcUrl,
+        channelId
+      );
+      const status: ChannelState['status'] = !account.exists
+        ? 'settled'
+        : account.state === 'opened'
+          ? 'open'
+          : account.state === 'closed'
+            ? 'closed'
+            : 'settled';
+      return { channelId, status, chain: context.chain };
     }
 
     const { publicClient } = this.createClients(context.chain);

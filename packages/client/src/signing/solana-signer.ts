@@ -1,5 +1,5 @@
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { balanceProofHashSolana, base58Encode } from '@toon-protocol/core';
+import { base58Encode } from '@toon-protocol/core';
 import type { SignedBalanceProof } from '../types.js';
 import type {
   ChainSigner,
@@ -8,17 +8,24 @@ import type {
   SolanaClaimMessage,
 } from './types.js';
 import { toHex as bytesToHex } from '../utils/binary.js';
+import { buildBalanceProofMessage } from '../channel/solana-payment-channel.js';
 
 /**
- * Solana signer for Ed25519 balance proofs.
+ * Solana signer for the connector payment-channel claim path.
  *
- * Signs the CANONICAL Solana balance-proof message
- * (`balanceProofHashSolana(channelId, cumulativeAmount, nonce, recipient)` from
- * `@toon-protocol/core`) so the produced 64-byte Ed25519 signature is verifiable
- * by the connector / SDK's `verifyEd25519Signature` — byte-for-byte identical to
- * the Mill's `SolanaPaymentChannelSigner`. This is what makes a client-issued
- * Solana claim acceptable on-network (the previous plaintext `channelId:nonce:…`
- * format was not).
+ * Signs the connector's on-chain payment-channel balance-proof message — the
+ * raw 48-byte `channel_pda(32) || nonce(8 LE) || transferredAmount(8 LE)` (see
+ * `@toon-protocol/connector` `SolanaPaymentChannelSDK._buildBalanceProofMessage`
+ * + `solana-payment-channel-provider.verifyBalanceProof`). The produced 64-byte
+ * Ed25519 signature verifies on the connector's `verifySolanaClaim` path, which
+ * is what makes a client-issued Solana payment-channel claim (paying the apex
+ * to write) acceptable on connector 3.9.0.
+ *
+ * NOTE: this is a DIFFERENT message from the Mill ↔ sender swap-claim wire
+ * contract (`balanceProofHashSolana`, SDK `verifyEd25519Signature`). The client
+ * here is paying a payment-channel claim to the apex, not issuing a swap claim,
+ * so it must sign the connector's on-chain payment-channel message. `channelId`
+ * MUST be the base58 channel PDA (produced by `OnChainChannelClient.openChannel`).
  */
 export class SolanaSigner implements ChainSigner {
   readonly chainType = 'solana' as const;
@@ -66,24 +73,21 @@ export class SolanaSigner implements ChainSigner {
         `SolanaSigner cannot sign for chain type: ${params.metadata.chainType}`
       );
     }
-    if (!params.recipient) {
-      throw new Error(
-        'SolanaSigner requires a recipient (counterparty settlement address) to sign a balance proof'
-      );
-    }
 
     const base58 = this.ensurePublicKey();
 
-    // Canonical Solana balance-proof message (shared with Mill signer + SDK
-    // verifier via @toon-protocol/core). cumulativeAmount == transferredAmount.
-    const msgHash = balanceProofHashSolana(
+    // Connector on-chain payment-channel balance-proof message:
+    //   channel_pda(32) || nonce(8 LE) || transferredAmount(8 LE)
+    // `channelId` is the base58 channel PDA (from OnChainChannelClient.openChannel).
+    // cumulativeAmount == transferredAmount. No recipient term — the connector's
+    // verifyBalanceProof reconstructs exactly these three fields.
+    const message = buildBalanceProofMessage(
       params.channelId,
-      params.transferredAmount,
       BigInt(params.nonce),
-      params.recipient
+      params.transferredAmount
     );
 
-    const signature = ed25519.sign(msgHash, this.privateKey);
+    const signature = ed25519.sign(message, this.privateKey);
     const signatureHex = '0x' + bytesToHex(new Uint8Array(signature));
 
     return {
@@ -101,18 +105,28 @@ export class SolanaSigner implements ChainSigner {
   }
 
   buildClaimMessage(proof: SignedBalanceProof, senderId: string): ClaimMessage {
+    // The connector verifies a base64 Ed25519 signature; the signed proof carries
+    // a 0x-prefixed 64-byte hex signature, so convert hex -> bytes -> base64.
+    const sigHex = proof.signature.startsWith('0x')
+      ? proof.signature.slice(2)
+      : proof.signature;
+    const sigBytes = Uint8Array.from(
+      sigHex.match(/.{1,2}/g)?.map((b) => parseInt(b, 16)) ?? []
+    );
+    const signatureBase64 = Buffer.from(sigBytes).toString('base64');
+
     const claim: SolanaClaimMessage = {
       version: '1.0',
       blockchain: 'solana',
       messageId: crypto.randomUUID(),
       timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, '.000Z'),
       senderId,
-      channelId: proof.channelId,
+      // channelId IS the base58 channel PDA -> connector's channelAccount.
+      channelAccount: proof.channelId,
       nonce: proof.nonce,
       transferredAmount: proof.transferredAmount.toString(),
-      signature: proof.signature,
-      signerAddress: this.pubkeyBase58Cache ?? proof.signerAddress,
-      recipient: proof.recipient ?? '',
+      signature: signatureBase64,
+      signerPublicKey: this.pubkeyBase58Cache ?? proof.signerAddress,
       programId: proof.tokenNetworkAddress,
     };
     return claim;

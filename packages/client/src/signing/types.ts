@@ -42,19 +42,28 @@ export type ClaimMessage =
   | SolanaClaimMessage
   | MinaClaimMessage;
 
+/**
+ * Solana payment-channel claim — wire-compatible with the connector's
+ * `SolanaClaimMessage` (`@toon-protocol/connector` `btp/btp-claim-types.ts`).
+ * Field names match the connector's `validateSolanaClaim` exactly:
+ * `channelAccount` (base58 PDA), `signerPublicKey` (base58), base64 `signature`.
+ */
 export interface SolanaClaimMessage {
   version: '1.0';
   blockchain: 'solana';
   messageId: string;
   timestamp: string;
   senderId: string;
-  channelId: string;
+  /** On-chain PDA account address for the payment channel (base58). */
+  channelAccount: string;
   nonce: number;
+  /** Cumulative transferred amount (string for bigint precision). */
   transferredAmount: string;
+  /** Ed25519 signature over the 48-byte balance-proof message (base64). */
   signature: string;
-  signerAddress: string;
-  /** Counterparty settlement address the signature is bound to (base58). */
-  recipient: string;
+  /** Base58-encoded Ed25519 public key of the signer. */
+  signerPublicKey: string;
+  /** Solana program id for the payment-channel program (base58). */
   programId: string;
 }
 
