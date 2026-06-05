@@ -156,7 +156,7 @@ export class OnChainChannelClient implements ConnectorChannelClient {
   private readonly evmSigner: EvmSigner;
   private readonly chainRpcUrls: Record<string, string>;
   private solanaConfig?: SolanaChannelConfig;
-  private readonly minaConfig?: MinaChannelConfig;
+  private minaConfig?: MinaChannelConfig;
   private readonly channelContext = new Map<
     string,
     { chain: string; tokenNetworkAddress: string }
@@ -180,6 +180,18 @@ export class OnChainChannelClient implements ConnectorChannelClient {
    */
   setSolanaConfig(config: SolanaChannelConfig): void {
     this.solanaConfig = config;
+  }
+
+  /**
+   * Late-binds the Mina channel config.
+   *
+   * Parallel to `setSolanaConfig`: `ToonClient.start()` derives the Mina private
+   * key from the client's mnemonic asynchronously (after this client is
+   * constructed), so the key is injected here rather than at construction. Same
+   * key as the registered Mina signer.
+   */
+  setMinaConfig(config: MinaChannelConfig): void {
+    this.minaConfig = config;
   }
 
   /**

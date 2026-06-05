@@ -88,6 +88,12 @@ export class ToonClient {
    */
   private solanaSeed?: Uint8Array;
   private minaSigner?: MinaSigner;
+  /**
+   * Mina private key (big-endian hex scalar, as `deriveFullIdentity` emits)
+   * derived from the mnemonic. Retained so `start()` can inject it into the
+   * on-chain channel client's Mina config (same key as `minaSigner`).
+   */
+  private minaPrivateKey?: string;
   private channelManager?: ChannelManager;
   private readonly peerNegotiations = new Map<string, PeerNegotiation>();
 
@@ -174,6 +180,7 @@ export class ToonClient {
 
     // Mina: only present when mina-signer is installed (optional dep).
     if (identity.mina.publicKey) {
+      this.minaPrivateKey = identity.mina.privateKey;
       this.minaSigner = new MinaSigner(
         identity.mina.privateKey,
         identity.mina.publicKey
@@ -337,6 +344,23 @@ export class ToonClient {
             challengeDuration: this.config.solanaChannel.challengeDuration,
             deposit: this.config.solanaChannel.deposit,
             keypair: this.solanaSeed,
+          });
+        }
+
+        // Late-bind the Mina channel config (parallel to Solana). The
+        // graphqlUrl + zkAppAddress come from config; the Mina private key from
+        // the mnemonic-derived Mina identity (same key as the registered Mina
+        // signer). Requires both a Mina private key (mnemonic-derived, present
+        // only when `mina-signer` is installed) and explicit minaChannel config.
+        //
+        // GATE (Stage-3): this only wires the negotiation path — the resulting
+        // claim does not yet satisfy connector 3.9.0's Mina claim contract, so a
+        // live `mina:*` loop is claim-validation gated (see MinaChannelClientOptions).
+        if (this.config.minaChannel && this.minaPrivateKey) {
+          initialization.onChainChannelClient.setMinaConfig({
+            graphqlUrl: this.config.minaChannel.graphqlUrl,
+            zkAppAddress: this.config.minaChannel.zkAppAddress,
+            privateKey: this.minaPrivateKey,
           });
         }
       }

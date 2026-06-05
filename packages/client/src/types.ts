@@ -30,6 +30,34 @@ export interface SolanaChannelClientOptions {
 }
 
 /**
+ * Mina payment-channel parameters supplied via `ToonClientConfig.minaChannel`.
+ *
+ * Mirrors the `MinaChannelConfig` consumed by `OnChainChannelClient`, minus the
+ * Mina private key (derived from the client's `mnemonic`, the same key that
+ * produces the registered Mina signer — so the channel-open key and the
+ * claim-signing key are guaranteed identical).
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * PHASE-2 STAGE-3 GATE (claim-validation divergence — NOT settle-gated):
+ * Supplying this config wires the `mina:*` negotiation path end-to-end, but the
+ * client's Mina claim does NOT yet satisfy connector 3.9.0's `MinaClaimMessage`
+ * contract (it lacks `tokenId`/`balanceCommitment`/`proof`/`salt` and signs the
+ * `balanceProofFieldsMina` Schnorr message rather than the connector's
+ * `Poseidon([balA,balB,salt]) / Poseidon(zkApp.x)` commitment), and
+ * `OnChainChannelClient.openMinaChannel` returns a synthetic SHA-256 channel id
+ * instead of a real on-chain zkApp channel for `getChannelState` to read. So a
+ * live Mina loop is REJECTED at `validateClaimMessage` (before settlement). See
+ * the Stage-3 PR description / the gated Mina smoke test for the precise gap.
+ * ────────────────────────────────────────────────────────────────────────────
+ */
+export interface MinaChannelClientOptions {
+  /** Mina GraphQL URL used to open the channel + read zkApp state. */
+  graphqlUrl: string;
+  /** Deployed payment-channel zkApp address (B62 base58). */
+  zkAppAddress: string;
+}
+
+/**
  * Configuration for ToonClient.
  *
  * This story implements HTTP mode only. Embedded mode will be added in a future epic.
@@ -200,6 +228,23 @@ export interface ToonClientConfig {
    * claim-signing key are guaranteed identical.
    */
   solanaChannel?: SolanaChannelClientOptions;
+
+  /**
+   * Mina payment-channel parameters (graphqlUrl + zkAppAddress). When present
+   * (and the client has a Mina signer — i.e. it was constructed from a
+   * `mnemonic` AND `mina-signer` is installed), `ToonClient.start()` wires these
+   * into the on-chain channel client so negotiating a `mina:*` chain routes
+   * through `openMinaChannel` and pays a Mina-denominated claim.
+   *
+   * The Mina private key is NOT carried here — it is derived from the same
+   * `mnemonic` that produces the Mina signer.
+   *
+   * NOTE (Phase-2 Stage-3 gate): see `MinaChannelClientOptions` — supplying this
+   * wires the negotiation path but the resulting claim does not yet satisfy
+   * connector 3.9.0's Mina claim contract, so a live loop is claim-validation
+   * gated (distinct from the connector #88 on-chain-settle gate).
+   */
+  minaChannel?: MinaChannelClientOptions;
 
   // ============================================================================
   // PERSISTENCE (optional)

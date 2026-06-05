@@ -184,6 +184,7 @@ export type ResolvedConfig = Required<
     | 'initialDeposit'
     | 'settlementTimeout'
     | 'solanaChannel'
+    | 'minaChannel'
     | 'channelStorePath'
     | 'knownPeers'
     | 'destinationAddress'
@@ -212,6 +213,7 @@ export type ResolvedConfig = Required<
   initialDeposit?: string;
   settlementTimeout?: number;
   solanaChannel?: ToonClientConfig['solanaChannel'];
+  minaChannel?: ToonClientConfig['minaChannel'];
   channelStorePath?: string;
   knownPeers?: {
     pubkey: string;

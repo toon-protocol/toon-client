@@ -431,4 +431,62 @@ describe('OnChainChannelClient', () => {
       ).rejects.toThrow(/token mint/i);
     });
   });
+
+  // ── Mina channel (Phase-2 Stage 3) ──────────────────────────────────────────
+  //
+  // These cover the late-bind config plumbing added in Stage 3. The live Mina
+  // loop is claim-validation gated (the claim diverges from connector 3.9.0's
+  // MinaClaimMessage contract) — see the Stage-3 PR + gated Mina smoke. What we
+  // assert here is the wiring contract: setMinaConfig late-binds the config and
+  // a mina:* open routes to openMinaChannel (vs throwing for missing config).
+  describe('Mina channel (setMinaConfig late-bind + mina:* routing)', () => {
+    const MINA_CHAIN = 'mina:devnet';
+    // A syntactically valid B62 base58 Mina address (55 chars). Used only for
+    // wiring assertions — no on-chain interaction happens in openMinaChannel.
+    const ZKAPP_ADDRESS =
+      'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im7T5sa';
+    const APEX_MINA = 'B62qksocUTe3wxR3uHB9oV7yWZi6JdkWLwNDvVoUkbXkmTGwHo3rDNc';
+
+    it('throws when mina config is not provided (no setMinaConfig)', async () => {
+      const c = new OnChainChannelClient({
+        evmSigner: signer,
+        chainRpcUrls: {},
+      });
+      await expect(
+        c.openChannel({
+          peerId: 'apex',
+          chain: MINA_CHAIN,
+          peerAddress: APEX_MINA,
+        })
+      ).rejects.toThrow(/Mina channel config not provided/i);
+    });
+
+    it('setMinaConfig late-binds config so a mina:* open routes to openMinaChannel', async () => {
+      const c = new OnChainChannelClient({
+        evmSigner: signer,
+        chainRpcUrls: {},
+      });
+      // Late-bind (parallel to setSolanaConfig): graphqlUrl + zkAppAddress from
+      // config, privateKey injected by ToonClient.start() from the mnemonic.
+      c.setMinaConfig({
+        graphqlUrl: 'http://localhost:28085/graphql',
+        zkAppAddress: ZKAPP_ADDRESS,
+        privateKey: '0x' + '11'.repeat(32),
+      });
+
+      const result = await c.openChannel({
+        peerId: 'apex',
+        chain: MINA_CHAIN,
+        peerAddress: APEX_MINA,
+      });
+
+      // openMinaChannel returns a deterministic 0x-prefixed channel id and
+      // 'opening' status (the Stage-3 stub; a real on-chain zkApp channel is the
+      // open follow-up the gate tracks). Reaching this return path — rather than
+      // the "config not provided" throw above — proves setMinaConfig late-bound
+      // the config and the mina:* prefix routed to openMinaChannel.
+      expect(result.channelId).toMatch(/^0x[0-9a-f]+$/);
+      expect(result.status).toBe('opening');
+    });
+  });
 });
