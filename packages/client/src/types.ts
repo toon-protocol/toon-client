@@ -38,16 +38,16 @@ export interface SolanaChannelClientOptions {
  * claim-signing key are guaranteed identical).
  *
  * ────────────────────────────────────────────────────────────────────────────
- * PHASE-2 STAGE-3 GATE (claim-validation divergence — NOT settle-gated):
- * Supplying this config wires the `mina:*` negotiation path end-to-end, but the
- * client's Mina claim does NOT yet satisfy connector 3.9.0's `MinaClaimMessage`
- * contract (it lacks `tokenId`/`balanceCommitment`/`proof`/`salt` and signs the
- * `balanceProofFieldsMina` Schnorr message rather than the connector's
- * `Poseidon([balA,balB,salt]) / Poseidon(zkApp.x)` commitment), and
- * `OnChainChannelClient.openMinaChannel` returns a synthetic SHA-256 channel id
- * instead of a real on-chain zkApp channel for `getChannelState` to read. So a
- * live Mina loop is REJECTED at `validateClaimMessage` (before settlement). See
- * the Stage-3 PR description / the gated Mina smoke test for the precise gap.
+ * PHASE-2 STAGE-3: the client's Mina claim now matches connector 3.9.0's
+ * `MinaClaimMessage` contract — `{ zkAppAddress, tokenId, balanceCommitment,
+ * proof (base64), salt, nonce }`, with the proof a Pallas Schnorr signature over
+ * the connector's `Poseidon([balA,balB,salt]) / Poseidon(zkApp.x)` commitment
+ * (verified field-by-field against the connector's o1js verify). A
+ * Mina-denominated paid publish is ACCEPTED at `validateClaimMessage` and the
+ * apex FULFILLs to town. On-chain SETTLE remains gated for non-EVM dynamic
+ * hidden-service peers by connector#88 (`No chain configured for peer`).
+ * `zkAppAddress` must be a REAL deployed payment-channel zkApp the apex's Mina
+ * provider can resolve on-chain (the e2e harness deploys it deterministically).
  * ────────────────────────────────────────────────────────────────────────────
  */
 export interface MinaChannelClientOptions {
@@ -367,6 +367,26 @@ export interface SignedBalanceProof extends BalanceProofParams {
    * term). Carried here so it flows from signing through to `buildClaimMessage`.
    */
   recipient?: string;
+
+  /**
+   * Mina payment-channel claim fields (connector 3.9.0 `MinaClaimMessage`).
+   *
+   * Populated only by {@link MinaSigner}, which produces the connector's
+   * `Poseidon([balA,balB,salt])` balance commitment + a Pallas Schnorr `proof`
+   * over `[commitment, Field(nonce), Poseidon(zkApp.x)]` rather than reusing the
+   * generic `signature` field. Carried so they flow from signing through to
+   * `MinaSigner.buildClaimMessage`. Absent for EVM/Solana.
+   */
+  mina?: {
+    /** `Poseidon([balanceA, balanceB, salt]).toString()`. */
+    balanceCommitment: string;
+    /** base64-encoded JSON proof `{ commitment, signature: { r, s }, nonce, signerPublicKey }`. */
+    proof: string;
+    /** Decimal salt string. */
+    salt: string;
+    /** Mina token id (default `'MINA'`). */
+    tokenId: string;
+  };
 }
 
 /**

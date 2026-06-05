@@ -11,18 +11,16 @@
  *   the message the apex's `verifySolanaClaim` path checks when the client pays
  *   a payment-channel claim — NOT the Mill ↔ sender swap-claim shape
  *   (`balanceProofHashSolana`, SDK `verifyEd25519Signature`).
- * - **Mina** still verifies against the SDK's `verifyMinaSignature` (unchanged).
+ * - **Mina** now signs the connector's PAYMENT-CHANNEL proof (Poseidon
+ *   commitment + Pallas Schnorr), a different message from the Mill↔sender
+ *   swap-claim shape; its full connector-contract conformance lives in
+ *   `mina-signer.test.ts`. This file keeps only a minimal wire-shape cross-check.
  *
- * `@toon-protocol/sdk` is a devDependency used here as the Mina verification
- * oracle.
+ * `@toon-protocol/sdk` is a devDependency (used here for `loadMinaSignerClient`).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import {
-  verifyMinaSignature,
-  loadMinaSignerClient,
-  type MinaSignerClientLike,
-} from '@toon-protocol/sdk';
+import { loadMinaSignerClient } from '@toon-protocol/sdk';
 import { hexToBytes, base58Decode } from '@toon-protocol/core';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import type { ToonIdentity } from '../keys/types.js';
@@ -35,7 +33,6 @@ import type { ChainMetadata, SolanaClaimMessage } from './types.js';
 // A valid BIP-39 phrase (the well-known Hardhat dev mnemonic).
 const MNEMONIC = 'test test test test test test test test test test test junk';
 
-const CHANNEL_ID = 'channel-1';
 /** A valid base58 32-byte Solana address standing in for the channel PDA. */
 const SOLANA_CHANNEL_PDA = 'GfHq2tTVk9z4eXgZ8nWz3vWqkXBQ8K9aBcDeFgHiJkLm';
 const RECIPIENT = 'CounterpartySettlementAddr111111111111111111';
@@ -66,24 +63,6 @@ function verifySolanaPaymentChannelSig(
   } catch {
     return false;
   }
-}
-
-/** Build the minimal `AccumulatedClaim` slice the SDK verifiers read. */
-function asClaim(fields: {
-  channelId: string;
-  cumulativeAmount: bigint;
-  nonce: number;
-  recipient: string;
-  claimBytes: Uint8Array;
-}) {
-  return {
-    channelId: fields.channelId,
-    cumulativeAmount: fields.cumulativeAmount.toString(),
-    nonce: String(fields.nonce),
-    recipient: fields.recipient,
-    claimBytes: fields.claimBytes,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
 }
 
 describe('multi-chain balance-proof claims verify against the SDK oracle', () => {
@@ -205,29 +184,30 @@ describe('multi-chain balance-proof claims verify against the SDK oracle', () =>
     });
   });
 
-  describe('Mina (Pallas)', () => {
-    const metadata: ChainMetadata = {
-      chainType: 'mina',
-      zkAppAddress: 'B62qExampleZkAppAddress00000000000000000000000000000',
-    };
-    let minaClient: MinaSignerClientLike | undefined;
-
-    beforeAll(async () => {
-      minaClient = await loadMinaSignerClient();
-    });
-
-    it('produces a signature the SDK verifier accepts', async () => {
-      if (!minaClient) {
-        // mina-signer optional dep absent — cannot verify; skip rather than pass.
-        return;
-      }
-      expect(identity.mina.publicKey).not.toBe('');
+  // Mina now signs the connector's PAYMENT-CHANNEL proof (Poseidon commitment +
+  // Pallas Schnorr over [commitment, nonce, Poseidon(zkApp.x)]) — a different
+  // message + format from the Mill↔sender swap-claim shape this file's verifier
+  // helpers cover. Its connector-contract conformance + commitment/Schnorr
+  // parity are pinned in `mina-signer.test.ts`. We keep a minimal cross-check
+  // here that the emitted claim is the new payment-channel wire shape (carries
+  // the connector's `zkAppAddress`/`balanceCommitment`/`proof`/`salt`), using a
+  // real B62 zkApp address (the example string above is not a valid Pallas
+  // point and would fail `PublicKey.fromBase58`).
+  describe('Mina (Pallas) — payment-channel claim shape', () => {
+    it('emits the connector MinaClaimMessage fields', async () => {
+      const minaClient = await loadMinaSignerClient();
+      if (!minaClient) return; // optional dep absent — skip, no false-pass
+      // Use the derived Mina public key as a valid B62 zkApp address (a valid
+      // Pallas point) so the Poseidon channel-hash derivation succeeds.
+      const zkAppAddress = identity.mina.publicKey;
+      expect(zkAppAddress).not.toBe('');
+      const metadata: ChainMetadata = { chainType: 'mina', zkAppAddress };
       const signer = new MinaSigner(
         identity.mina.privateKey,
         identity.mina.publicKey
       );
       const proof = await signer.signBalanceProof({
-        channelId: CHANNEL_ID,
+        channelId: zkAppAddress,
         nonce: NONCE,
         transferredAmount: AMOUNT,
         lockedAmount: 0n,
@@ -235,50 +215,20 @@ describe('multi-chain balance-proof claims verify against the SDK oracle', () =>
         recipient: RECIPIENT,
         metadata,
       });
-
-      // Mina claim payload = UTF-8 bytes of the base58 signature string.
-      const claim = asClaim({
-        channelId: CHANNEL_ID,
-        cumulativeAmount: AMOUNT,
-        nonce: NONCE,
-        recipient: RECIPIENT,
-        claimBytes: new TextEncoder().encode(proof.signature),
-      });
-
-      expect(verifyMinaSignature(claim, proof.signerAddress, minaClient)).toBe(
-        true
-      );
-    });
-
-    it('rejects a tampered nonce', async () => {
-      if (!minaClient) return;
-      const signer = new MinaSigner(
-        identity.mina.privateKey,
-        identity.mina.publicKey
-      );
-      const proof = await signer.signBalanceProof({
-        channelId: CHANNEL_ID,
-        nonce: NONCE,
-        transferredAmount: AMOUNT,
-        lockedAmount: 0n,
-        locksRoot: '0x00',
-        recipient: RECIPIENT,
-        metadata,
-      });
-
-      expect(
-        verifyMinaSignature(
-          asClaim({
-            channelId: CHANNEL_ID,
-            cumulativeAmount: AMOUNT,
-            nonce: NONCE + 1,
-            recipient: RECIPIENT,
-            claimBytes: new TextEncoder().encode(proof.signature),
-          }),
-          proof.signerAddress,
-          minaClient
-        )
-      ).toBe(false);
+      const claim = signer.buildClaimMessage(proof, 'g.toon.client') as {
+        blockchain: string;
+        zkAppAddress: string;
+        balanceCommitment: string;
+        proof: string;
+        salt: string;
+        tokenId: string;
+      };
+      expect(claim.blockchain).toBe('mina');
+      expect(claim.zkAppAddress).toBe(zkAppAddress);
+      expect(claim.balanceCommitment.length).toBeGreaterThan(0);
+      expect(/^[A-Za-z0-9+/]+=*$/.test(claim.proof)).toBe(true);
+      expect(claim.salt.length).toBeGreaterThan(0);
+      expect(claim.tokenId).toBe('MINA');
     });
   });
 });

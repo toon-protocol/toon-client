@@ -67,18 +67,34 @@ export interface SolanaClaimMessage {
   programId: string;
 }
 
+/**
+ * Mina payment-channel claim — wire-compatible with the connector's
+ * `MinaClaimMessage` (`@toon-protocol/connector` `btp/btp-claim-types.ts`).
+ * Field names + types match `validateMinaClaim` exactly: `zkAppAddress`
+ * (B62-prefixed 55-char base58, the channel id), `tokenId`, `balanceCommitment`
+ * (`Poseidon([balA,balB,salt])` decimal string), integer `nonce`, base64 `proof`,
+ * and `salt`. `transferredAmount`/`balanceB`/`signatureB`/`network` are OPTIONAL
+ * at validation; the apex-as-recipient single-direction claim sends party-A only.
+ */
 export interface MinaClaimMessage {
   version: '1.0';
   blockchain: 'mina';
   messageId: string;
   timestamp: string;
   senderId: string;
-  channelId: string;
-  nonce: number;
-  transferredAmount: string;
-  commitment: string;
-  signerAddress: string;
-  /** Counterparty settlement address the signature is bound to (base58). */
-  recipient: string;
+  /** Deployed payment-channel zkApp address (B62 base58) — the channel id. */
   zkAppAddress: string;
+  /** Mina token id (default `'MINA'`). */
+  tokenId: string;
+  /** `Poseidon([balanceA, balanceB, salt]).toString()`. */
+  balanceCommitment: string;
+  nonce: number;
+  /** base64-encoded JSON `{ commitment, signature: { r, s }, nonce, signerPublicKey }`. */
+  proof: string;
+  /** Commitment salt (decimal string). */
+  salt: string;
+  /** Cumulative transferred amount (optional; string for bigint precision). */
+  transferredAmount?: string;
+  /** Mina network id — defaults to `devnet` connector-side when omitted. */
+  network?: 'mainnet' | 'devnet' | 'berkeley' | 'lightnet';
 }

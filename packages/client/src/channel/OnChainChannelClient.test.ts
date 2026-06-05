@@ -480,12 +480,13 @@ describe('OnChainChannelClient', () => {
         peerAddress: APEX_MINA,
       });
 
-      // openMinaChannel returns a deterministic 0x-prefixed channel id and
-      // 'opening' status (the Stage-3 stub; a real on-chain zkApp channel is the
-      // open follow-up the gate tracks). Reaching this return path — rather than
-      // the "config not provided" throw above — proves setMinaConfig late-bound
-      // the config and the mina:* prefix routed to openMinaChannel.
-      expect(result.channelId).toMatch(/^0x[0-9a-f]+$/);
+      // openMinaChannel returns the DEPLOYED zkApp B62 address AS the channel id
+      // (the connector treats `MinaClaimMessage.zkAppAddress` as both the channel
+      // identifier and the on-chain account it reads via getChannelState) and
+      // 'opening' status. Reaching this return path — rather than the "config not
+      // provided" throw above — proves setMinaConfig late-bound the config and the
+      // mina:* prefix routed to openMinaChannel; the channel id is the zkApp addr.
+      expect(result.channelId).toBe(ZKAPP_ADDRESS);
       expect(result.status).toBe('opening');
     });
   });

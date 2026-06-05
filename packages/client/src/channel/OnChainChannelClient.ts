@@ -17,7 +17,6 @@ import type {
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Encode } from '@toon-protocol/core';
 import type { EvmSigner } from '../signing/evm-signer.js';
-import { toHex } from '../utils/binary.js';
 import {
   openSolanaChannel as openSolanaChannelOnChain,
   getChannelAccountState as getSolanaChannelAccountState,
@@ -348,8 +347,23 @@ export class OnChainChannelClient implements ConnectorChannelClient {
   }
 
   /**
-   * Opens a Mina payment channel (zkApp state transition).
-   * Dynamically imports o1js to avoid bundle bloat.
+   * Opens a Mina payment channel.
+   *
+   * The payment-channel zkApp is deployed out-of-band (the operator/e2e harness
+   * deploys it deterministically and advertises its B62 address); a zkApp
+   * `initializeChannel` proof is heavyweight o1js work that does NOT belong in
+   * the lightweight client. So this returns the configured deployed zkApp address
+   * AS the channel id — which is exactly what the connector treats as the channel
+   * id: `MinaClaimMessage.zkAppAddress` is both the claim's channel identifier
+   * AND the on-chain account the apex's Mina provider reads via
+   * `getChannelState(zkAppAddress)`. The client signs the Schnorr balance proof
+   * bound to this same address (see `MinaSigner`), so the channel-open id and the
+   * claim's channel id are guaranteed identical.
+   *
+   * Mirrors the Solana lazy-open posture: no per-client on-chain channel-open tx;
+   * the connector verifies the claim against the externally-opened on-chain
+   * channel. (For non-EVM dynamic hidden-service peers, on-chain SETTLE is gated
+   * by connector#88 regardless.)
    */
   private async openMinaChannel(
     params: OpenChannelParams
@@ -359,24 +373,20 @@ export class OnChainChannelClient implements ConnectorChannelClient {
         'Mina channel config not provided — cannot open Mina channel'
       );
     }
+    const zkAppAddress = this.minaConfig.zkAppAddress;
+    if (!zkAppAddress) {
+      throw new Error(
+        'Mina channel requires a deployed zkAppAddress (minaConfig.zkAppAddress)'
+      );
+    }
 
-    // Derive deterministic channel ID
-    const encoder = new TextEncoder();
-    const channelSeed = encoder.encode(
-      `channel:${this.minaConfig.privateKey.slice(0, 16)}:${params.peerAddress}:${Date.now()}`
-    );
-    const channelIdBytes = new Uint8Array(
-      await crypto.subtle.digest('SHA-256', channelSeed)
-    );
-    const channelId = '0x' + toHex(channelIdBytes);
-
-    // Cache context
-    this.channelContext.set(channelId, {
+    // The deployed zkApp address IS the channel id (claim `zkAppAddress`).
+    this.channelContext.set(zkAppAddress, {
       chain: params.chain,
-      tokenNetworkAddress: this.minaConfig.zkAppAddress,
+      tokenNetworkAddress: zkAppAddress,
     });
 
-    return { channelId, status: 'opening' };
+    return { channelId: zkAppAddress, status: 'opening' };
   }
 
   /**
@@ -496,6 +506,15 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       throw new Error(
         `No context for channel "${channelId}". Channel must be opened via this client first.`
       );
+    }
+
+    // Mina channels are opened/deployed out-of-band; the connector performs the
+    // authoritative on-chain `getChannelState(zkAppAddress)` check at claim
+    // verification. Reading zkApp state client-side would require the o1js WASM
+    // runtime, which the lightweight client intentionally avoids. Report `open`
+    // for the configured deployed zkApp.
+    if (context.chain.split(':')[0] === 'mina') {
+      return { channelId, status: 'open', chain: context.chain };
     }
 
     // Solana channels read on-chain state from the PDA account, not an EVM contract.
