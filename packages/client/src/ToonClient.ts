@@ -353,14 +353,28 @@ export class ToonClient {
         // signer). Requires both a Mina private key (mnemonic-derived, present
         // only when `mina-signer` is installed) and explicit minaChannel config.
         //
-        // GATE (Stage-3): this only wires the negotiation path — the resulting
-        // claim does not yet satisfy connector 3.9.0's Mina claim contract, so a
-        // live `mina:*` loop is claim-validation gated (see MinaChannelClientOptions).
+        // openMinaChannel now performs a REAL on-chain channel open
+        // (initialize + optional deposit) on the deployed zkApp so the
+        // connector's getChannelState reports `opened` and the claim verifies +
+        // stores (parity with Solana). Full on-chain Mina SETTLE remains gated by
+        // the connector-side settlement-executor (same blocker as Solana).
         if (this.config.minaChannel && this.minaPrivateKey) {
           initialization.onChainChannelClient.setMinaConfig({
             graphqlUrl: this.config.minaChannel.graphqlUrl,
             zkAppAddress: this.config.minaChannel.zkAppAddress,
             privateKey: this.minaPrivateKey,
+            ...(this.config.minaChannel.challengeDuration !== undefined
+              ? { challengeDuration: this.config.minaChannel.challengeDuration }
+              : {}),
+            ...(this.config.minaChannel.tokenId !== undefined
+              ? { tokenId: this.config.minaChannel.tokenId }
+              : {}),
+            ...(this.config.minaChannel.deposit !== undefined
+              ? { deposit: this.config.minaChannel.deposit }
+              : {}),
+            ...(this.config.minaChannel.networkId !== undefined
+              ? { networkId: this.config.minaChannel.networkId }
+              : {}),
           });
         }
       }

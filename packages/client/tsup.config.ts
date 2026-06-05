@@ -15,6 +15,7 @@ export default defineConfig({
   // consumers (deriveFullIdentity would silently return an empty Mina key).
   external: [
     'o1js',
+    '@toon-protocol/mina-zkapp',
     'mina-signer',
     '@noble/curves/ed25519',
     '@noble/curves/ed25519.js',

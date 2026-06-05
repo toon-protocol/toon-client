@@ -55,6 +55,14 @@ export interface MinaChannelClientOptions {
   graphqlUrl: string;
   /** Deployed payment-channel zkApp address (B62 base58). */
   zkAppAddress: string;
+  /** Channel settlement timeout in slots for `initializeChannel` (default 86400). */
+  challengeDuration?: number;
+  /** Mina token id field (decimal string) for `initializeChannel` (default '1'). */
+  tokenId?: string;
+  /** Optional on-chain deposit (base units, string) after the channel opens. */
+  deposit?: { amount: string };
+  /** Mina network id for the account/Schnorr prefix (default 'devnet'). */
+  networkId?: 'devnet' | 'mainnet';
 }
 
 /**

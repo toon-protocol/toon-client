@@ -21,6 +21,7 @@ import {
   openSolanaChannel as openSolanaChannelOnChain,
   getChannelAccountState as getSolanaChannelAccountState,
 } from './solana-payment-channel.js';
+import { openMinaChannelOnChain } from './mina-channel-open.js';
 
 // TokenNetwork ABI — only the functions we need
 const TOKEN_NETWORK_ABI = [
@@ -136,6 +137,25 @@ export interface MinaChannelConfig {
   graphqlUrl: string;
   privateKey: string;
   zkAppAddress: string;
+  /**
+   * Channel settlement timeout in slots for `initializeChannel`. Defaults to
+   * `OpenChannelParams.settlementTimeout` or 86400.
+   */
+  challengeDuration?: number;
+  /**
+   * Mina token id field (decimal string) for `initializeChannel`. Default '1'
+   * (native MINA). The connector reads this only as on-chain channel metadata.
+   */
+  tokenId?: string;
+  /**
+   * Optional on-chain deposit (base units, string) submitted after the channel
+   * is initialized. When omitted, the channel is opened (OPEN state) without a
+   * deposit — the connector accepts the claim on `opened` status; deposit is
+   * only consumed at on-chain settle time.
+   */
+  deposit?: { amount: string };
+  /** Mina network id for the account/Schnorr prefix. Default 'devnet'. */
+  networkId?: 'devnet' | 'mainnet';
 }
 
 export interface OnChainChannelClientConfig {
@@ -347,23 +367,32 @@ export class OnChainChannelClient implements ConnectorChannelClient {
   }
 
   /**
-   * Opens a Mina payment channel.
+   * Opens a REAL on-chain Mina payment channel on the deployed `PaymentChannel`
+   * zkApp.
    *
-   * The payment-channel zkApp is deployed out-of-band (the operator/e2e harness
-   * deploys it deterministically and advertises its B62 address); a zkApp
-   * `initializeChannel` proof is heavyweight o1js work that does NOT belong in
-   * the lightweight client. So this returns the configured deployed zkApp address
-   * AS the channel id — which is exactly what the connector treats as the channel
+   * The zkApp is deployed out-of-band (the operator/e2e harness deploys it
+   * deterministically and advertises its B62 address). This client then calls
+   * `initializeChannel` on that zkApp so its on-chain `channelState` becomes
+   * `OPEN` — which is what the connector's `MinaPaymentChannelSDK.getChannelState`
+   * reads to return status `'opened'` (claim verification otherwise fails with
+   * `mina_claim_verification_failed`). The deployed zkApp address IS the channel
    * id: `MinaClaimMessage.zkAppAddress` is both the claim's channel identifier
-   * AND the on-chain account the apex's Mina provider reads via
-   * `getChannelState(zkAppAddress)`. The client signs the Schnorr balance proof
-   * bound to this same address (see `MinaSigner`), so the channel-open id and the
-   * claim's channel id are guaranteed identical.
+   * AND the channel-hash preimage the off-chain proof binds to (see
+   * `mina-payment-channel.ts`), so the channel-open id and the claim's channel id
+   * are guaranteed identical.
    *
-   * Mirrors the Solana lazy-open posture: no per-client on-chain channel-open tx;
-   * the connector verifies the claim against the externally-opened on-chain
-   * channel. (For non-EVM dynamic hidden-service peers, on-chain SETTLE is gated
-   * by connector#88 regardless.)
+   * This is the Mina analog of `openSolanaChannel` (connector#105): the client
+   * opens its own per-channel on-chain state (initialize + optional deposit). The
+   * heavyweight o1js + `@toon-protocol/mina-zkapp` proof work is lazily imported
+   * inside `openMinaChannelOnChain` so npm consumers who never open a Mina
+   * channel don't pay the o1js cost.
+   *
+   * Idempotent: if the on-chain channel is already `OPEN`, the opener returns
+   * without re-initializing.
+   *
+   * NOTE: full on-chain Mina SETTLE remains gated by the connector-side
+   * settlement-executor (the same blocker that stops the Solana SETTLE); reaching
+   * `opened` + a stored claim is parity with Solana.
    */
   private async openMinaChannel(
     params: OpenChannelParams
@@ -373,12 +402,32 @@ export class OnChainChannelClient implements ConnectorChannelClient {
         'Mina channel config not provided — cannot open Mina channel'
       );
     }
+    // The deployed zkApp address IS the channel id (claim `zkAppAddress`).
     const zkAppAddress = this.minaConfig.zkAppAddress;
     if (!zkAppAddress) {
       throw new Error(
         'Mina channel requires a deployed zkAppAddress (minaConfig.zkAppAddress)'
       );
     }
+
+    const timeout = BigInt(
+      this.minaConfig.challengeDuration ?? params.settlementTimeout ?? 86400
+    );
+    const deposit = this.minaConfig.deposit
+      ? { amount: BigInt(this.minaConfig.deposit.amount) }
+      : undefined;
+
+    await openMinaChannelOnChain({
+      graphqlUrl: this.minaConfig.graphqlUrl,
+      zkAppAddress,
+      payerPrivateKey: this.minaConfig.privateKey,
+      // params.peerAddress is the apex Mina settlement B62 pubkey (participantB).
+      peerPublicKey: params.peerAddress,
+      timeout,
+      tokenId: this.minaConfig.tokenId,
+      deposit,
+      networkId: this.minaConfig.networkId,
+    });
 
     // The deployed zkApp address IS the channel id (claim `zkAppAddress`).
     this.channelContext.set(zkAppAddress, {

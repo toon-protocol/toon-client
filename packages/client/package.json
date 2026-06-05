@@ -52,7 +52,9 @@
   },
   "optionalDependencies": {
     "@solana/web3.js": "^1.90.0",
+    "@toon-protocol/mina-zkapp": "workspace:*",
     "mina-signer": "^3.0.0",
+    "o1js": "2.14.0",
     "socks-proxy-agent": "^8.0.5",
     "ws": "^8.0.0"
   },

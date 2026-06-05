@@ -36,6 +36,22 @@ vi.mock('viem', async (importOriginal) => {
   };
 });
 
+// Mock the on-chain Mina opener so the wiring tests don't pull o1js / hit a
+// Mina node. The real opener (mina-channel-open.ts) is exercised by the gated
+// Mina smoke loop against the live lightnet.
+const mockOpenMinaChannelOnChain = vi.fn(
+  async (p: { zkAppAddress: string }) => ({
+    zkAppAddress: p.zkAppAddress,
+    opened: true,
+    initTxHash: 'mina-init-tx-hash',
+    channelState: 1,
+  })
+);
+vi.mock('./mina-channel-open.js', () => ({
+  openMinaChannelOnChain: (...args: unknown[]) =>
+    mockOpenMinaChannelOnChain(...(args as [{ zkAppAddress: string }])),
+}));
+
 const TEST_CHAIN = 'evm:anvil:31337';
 const TEST_TOKEN_NETWORK = '0x5FbDB2315678afecb367f032d93F642f64180aa3'; // Mock USDC address (used as test TokenNetwork)
 const TEST_TOKEN = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512';
@@ -432,20 +448,22 @@ describe('OnChainChannelClient', () => {
     });
   });
 
-  // ── Mina channel (Phase-2 Stage 3) ──────────────────────────────────────────
+  // ── Mina channel (Phase-2 Stage 3 + on-chain open) ──────────────────────────
   //
-  // These cover the late-bind config plumbing added in Stage 3. The live Mina
-  // loop is claim-validation gated (the claim diverges from connector 3.9.0's
-  // MinaClaimMessage contract) — see the Stage-3 PR + gated Mina smoke. What we
-  // assert here is the wiring contract: setMinaConfig late-binds the config and
-  // a mina:* open routes to openMinaChannel (vs throwing for missing config).
-  describe('Mina channel (setMinaConfig late-bind + mina:* routing)', () => {
+  // openMinaChannel now performs a REAL on-chain channel open (initialize +
+  // optional deposit) on the deployed PaymentChannel zkApp — the Mina analog of
+  // openSolanaChannel (connector#105). The heavyweight o1js opener
+  // (mina-channel-open.ts) is mocked here (its live behaviour is exercised by
+  // the gated Mina smoke loop against the lightnet); these tests assert the
+  // wiring: setMinaConfig late-binds config and a mina:* open invokes the opener
+  // with the right params, with the zkApp address as the channel id.
+  describe('Mina channel (on-chain open via openMinaChannelOnChain)', () => {
     const MINA_CHAIN = 'mina:devnet';
-    // A syntactically valid B62 base58 Mina address (55 chars). Used only for
-    // wiring assertions — no on-chain interaction happens in openMinaChannel.
+    // A syntactically valid B62 base58 Mina address (55 chars).
     const ZKAPP_ADDRESS =
       'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im7T5sa';
     const APEX_MINA = 'B62qksocUTe3wxR3uHB9oV7yWZi6JdkWLwNDvVoUkbXkmTGwHo3rDNc';
+    const MINA_PK = '0x' + '11'.repeat(32);
 
     it('throws when mina config is not provided (no setMinaConfig)', async () => {
       const c = new OnChainChannelClient({
@@ -461,33 +479,93 @@ describe('OnChainChannelClient', () => {
       ).rejects.toThrow(/Mina channel config not provided/i);
     });
 
-    it('setMinaConfig late-binds config so a mina:* open routes to openMinaChannel', async () => {
+    it('setMinaConfig late-binds config; a mina:* open invokes openMinaChannelOnChain with the deployed zkApp + apex peer', async () => {
       const c = new OnChainChannelClient({
         evmSigner: signer,
         chainRpcUrls: {},
       });
-      // Late-bind (parallel to setSolanaConfig): graphqlUrl + zkAppAddress from
-      // config, privateKey injected by ToonClient.start() from the mnemonic.
       c.setMinaConfig({
         graphqlUrl: 'http://localhost:28085/graphql',
         zkAppAddress: ZKAPP_ADDRESS,
-        privateKey: '0x' + '11'.repeat(32),
+        privateKey: MINA_PK,
       });
 
       const result = await c.openChannel({
         peerId: 'apex',
         chain: MINA_CHAIN,
         peerAddress: APEX_MINA,
+        settlementTimeout: 123,
       });
 
-      // openMinaChannel returns the DEPLOYED zkApp B62 address AS the channel id
-      // (the connector treats `MinaClaimMessage.zkAppAddress` as both the channel
-      // identifier and the on-chain account it reads via getChannelState) and
-      // 'opening' status. Reaching this return path — rather than the "config not
-      // provided" throw above — proves setMinaConfig late-bound the config and the
-      // mina:* prefix routed to openMinaChannel; the channel id is the zkApp addr.
+      // The opener was invoked with the deployed zkApp, the client's Mina key,
+      // and the apex's Mina B62 as participantB.
+      expect(mockOpenMinaChannelOnChain).toHaveBeenCalledTimes(1);
+      const callArg = mockOpenMinaChannelOnChain.mock.calls[0]![0] as Record<
+        string,
+        unknown
+      >;
+      expect(callArg.graphqlUrl).toBe('http://localhost:28085/graphql');
+      expect(callArg.zkAppAddress).toBe(ZKAPP_ADDRESS);
+      expect(callArg.payerPrivateKey).toBe(MINA_PK);
+      expect(callArg.peerPublicKey).toBe(APEX_MINA);
+      // settlementTimeout (123) flows through as the channel timeout (bigint).
+      expect(callArg.timeout).toBe(123n);
+
+      // The deployed zkApp address IS the channel id (claim `zkAppAddress`).
       expect(result.channelId).toBe(ZKAPP_ADDRESS);
       expect(result.status).toBe('opening');
+    });
+
+    it('passes challengeDuration/tokenId/deposit/networkId from minaConfig to the opener', async () => {
+      const c = new OnChainChannelClient({
+        evmSigner: signer,
+        chainRpcUrls: {},
+      });
+      c.setMinaConfig({
+        graphqlUrl: 'http://localhost:28085/graphql',
+        zkAppAddress: ZKAPP_ADDRESS,
+        privateKey: MINA_PK,
+        challengeDuration: 99999,
+        tokenId: '1',
+        deposit: { amount: '5000000' },
+        networkId: 'devnet',
+      });
+
+      await c.openChannel({
+        peerId: 'apex',
+        chain: MINA_CHAIN,
+        peerAddress: APEX_MINA,
+        settlementTimeout: 123, // overridden by challengeDuration below
+      });
+
+      const callArg = mockOpenMinaChannelOnChain.mock.calls[0]![0] as Record<
+        string,
+        unknown
+      >;
+      // challengeDuration takes precedence over settlementTimeout.
+      expect(callArg.timeout).toBe(99999n);
+      expect(callArg.tokenId).toBe('1');
+      expect(callArg.networkId).toBe('devnet');
+      expect(callArg.deposit).toEqual({ amount: 5000000n });
+    });
+
+    it('throws for a missing zkAppAddress', async () => {
+      const c = new OnChainChannelClient({
+        evmSigner: signer,
+        chainRpcUrls: {},
+      });
+      c.setMinaConfig({
+        graphqlUrl: 'http://localhost:28085/graphql',
+        zkAppAddress: '',
+        privateKey: MINA_PK,
+      });
+      await expect(
+        c.openChannel({
+          peerId: 'apex',
+          chain: MINA_CHAIN,
+          peerAddress: APEX_MINA,
+        })
+      ).rejects.toThrow(/deployed zkAppAddress/i);
     });
   });
 });
