@@ -171,6 +171,13 @@ export class MinaSigner implements ChainSigner {
       proof: proof.mina.proof,
       salt: proof.mina.salt,
       transferredAmount: proof.transferredAmount.toString(),
+      // Surface the signer's Mina pubkey top-level (it is also embedded in the
+      // base64 `proof`). The connector's SettlementExecutor reads
+      // `latestClaim.signerPublicKey` to resolve participant keys for the
+      // on-chain claimFromChannel on an inbound/externally-opened channel;
+      // without it the Mina SDK throws ACCOUNT_NOT_FOUND. `signerAddress`
+      // carries the B62 base58 pubkey for Mina proofs (see MinaSigner.sign*).
+      signerPublicKey: proof.signerAddress,
       network: MINA_CLAIM_NETWORK,
     };
     return claim;

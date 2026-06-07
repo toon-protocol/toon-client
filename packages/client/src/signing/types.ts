@@ -95,6 +95,18 @@ export interface MinaClaimMessage {
   salt: string;
   /** Cumulative transferred amount (optional; string for bigint precision). */
   transferredAmount?: string;
+  /**
+   * Signer's Mina public key (B62 base58) — the claiming participant.
+   *
+   * Surfaced top-level (in addition to being embedded in `proof`) so the
+   * connector's `SettlementExecutor` can resolve participant keys for the
+   * on-chain `claimFromChannel` on an externally-opened (inbound) channel. The
+   * connector reads `latestClaim.signerPublicKey` directly (not the proof blob);
+   * without it the Mina SDK's `claimFromChannel` throws `ACCOUNT_NOT_FOUND`
+   * ("Participant keys not found in cache and none were supplied"). The
+   * connector accepts this as an optional `MinaClaimMessage` field.
+   */
+  signerPublicKey?: string;
   /** Mina network id — defaults to `devnet` connector-side when omitted. */
   network?: 'mainnet' | 'devnet' | 'berkeley' | 'lightnet';
 }
