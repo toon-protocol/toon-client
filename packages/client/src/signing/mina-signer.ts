@@ -8,7 +8,10 @@ import type {
   ClaimMessage,
   MinaClaimMessage,
 } from './types.js';
-import { buildMinaPaymentChannelProof } from '../channel/mina-payment-channel.js';
+import {
+  buildMinaPaymentChannelProof,
+  loadMinaPaymentChannelBindings,
+} from '../channel/mina-payment-channel.js';
 
 /** Default Mina token id when the metadata omits one. */
 const DEFAULT_MINA_TOKEN_ID = 'MINA';
@@ -41,13 +44,22 @@ function deriveMinaSalt(zkAppAddress: string, nonce: number): bigint {
  * {@link buildMinaPaymentChannelProof}):
  *
  *   commitment       = Poseidon([Field(balanceA), Field(0), Field(salt)])
- *   channelHashField = Poseidon([PublicKey.fromBase58(zkAppAddress).x])
+ *   channelHashField = Poseidon([participantA.x, participantB.x, 0])   (see below)
  *   proof            = base64(JSON{ commitment, signature: { r, s }, nonce, signerPublicKey })
  *
  * with the Schnorr signature computed over `[commitment, Field(nonce),
  * channelHashField]` using the Mina `'devnet'` network id (matching o1js's
  * hardcoded `Signature.create` prefix). Verified field-by-field against the
  * connector's o1js `Signature.fromJSON({r,s}).verify` (see the package tests).
+ *
+ * `channelHashField` is the ON-CHAIN participant form
+ * (`Poseidon([client.x, apex.x, 0])`, participantA=client, participantB=apex)
+ * whenever the apex's Mina pubkey is known (the negotiated `recipient`), so the
+ * claim can SETTLE on-chain via the zkApp's `claimFromChannel` (which only
+ * verifies the participant form). When the apex pubkey is unavailable the signer
+ * falls back to the legacy zkApp-x form (`Poseidon([zkApp.x])`); the connector's
+ * off-chain `verifyBalanceProof` accepts EITHER, so off-chain store/FULFILL works
+ * in both cases — only on-chain settle requires the participant form.
  *
  * NOTE: this is a DIFFERENT message + format from the Mill ↔ sender swap-claim
  * wire contract (`balanceProofFieldsMina` in `@toon-protocol/core`, verified by
@@ -86,6 +98,16 @@ export class MinaSigner implements ChainSigner {
     return this.publicKeyBase58 ?? 'uninitialized';
   }
 
+  /** Derive this signer's B62 public key from its (base58) private key. */
+  private async deriveOwnPublicKey(
+    minaPrivateKeyBase58: string
+  ): Promise<string> {
+    const { Client } = await loadMinaPaymentChannelBindings();
+    return new Client({ network: MINA_CLAIM_NETWORK }).derivePublicKey(
+      minaPrivateKeyBase58
+    );
+  }
+
   async signBalanceProof(params: {
     channelId: string;
     nonce: number;
@@ -115,10 +137,28 @@ export class MinaSigner implements ChainSigner {
     const tokenId = params.metadata.tokenId ?? DEFAULT_MINA_TOKEN_ID;
     const salt = deriveMinaSalt(zkAppAddress, params.nonce);
 
+    // Derive the client's own Mina pubkey now (needed as participantA for the
+    // on-chain channelHash). `buildMinaPaymentChannelProof` derives it too, but
+    // we need it here to pass the participant pair.
+    const clientPubKey =
+      this.publicKeyBase58 ?? (await this.deriveOwnPublicKey(minaPrivateKey));
+    this.publicKeyBase58 = clientPubKey;
+
+    // The apex's Mina settlement pubkey (B62) is the channel counterparty
+    // (participantB). It flows through as the negotiated recipient. When present,
+    // sign over the on-chain participant-form channelHash so the claim can SETTLE
+    // on-chain (the zkApp's claimFromChannel verifies sigA over
+    // Poseidon([client.x, apex.x, 0])). Order matches the open:
+    // participantA = client (payer), participantB = apex (peer).
+    const apexPubKey =
+      params.recipient && /^B62[a-zA-Z0-9]{40,60}$/.test(params.recipient)
+        ? params.recipient
+        : undefined;
+
     const built = await buildMinaPaymentChannelProof({
       zkAppAddress,
       minaPrivateKeyBase58: minaPrivateKey,
-      signerPublicKey: this.publicKeyBase58,
+      signerPublicKey: clientPubKey,
       // Recipient-credit (unidirectional): party A carries the cumulative amount,
       // party B is zero. `balanceB`/`signatureB` are OPTIONAL at connector
       // validation, so the single-party claim suffices for the apex-as-recipient
@@ -127,6 +167,11 @@ export class MinaSigner implements ChainSigner {
       balanceB: 0n,
       salt,
       nonce: BigInt(params.nonce),
+      // Participant-form channelHash (on-chain-settleable) when the apex pubkey
+      // is known; otherwise the legacy zkApp-x form (off-chain-store only).
+      ...(apexPubKey
+        ? { participantA: clientPubKey, participantB: apexPubKey }
+        : {}),
     });
     this.publicKeyBase58 = built.signerPublicKey;
 

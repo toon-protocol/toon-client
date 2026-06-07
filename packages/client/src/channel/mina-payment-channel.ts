@@ -173,8 +173,14 @@ export function minaBalanceCommitment(
 }
 
 /**
- * Compute the connector's channel-hash field, bound into the signed message:
- *   `Poseidon.hash([PublicKey.fromBase58(zkAppAddress).x])`.
+ * Compute the connector's LEGACY channel-hash field, bound into the signed
+ * message: `Poseidon.hash([PublicKey.fromBase58(zkAppAddress).x])`.
+ *
+ * This is the off-chain-only form. The connector's `verifyBalanceProof` accepts
+ * a signature over EITHER this OR the participant form (see
+ * {@link minaParticipantChannelHashField}), but the on-chain
+ * `PaymentChannel.claimFromChannel` only accepts the PARTICIPANT form — so for a
+ * claim that must SETTLE on-chain, sign the participant form instead.
  */
 export function minaChannelHashField(
   poseidon: PoseidonLike,
@@ -183,6 +189,37 @@ export function minaChannelHashField(
 ): bigint {
   const zkAppPubKey = publicKeyCodec.fromBase58(zkAppAddress);
   return poseidon.hash([zkAppPubKey.x]);
+}
+
+/**
+ * Compute the ON-CHAIN channel-hash field the zkApp stores and verifies:
+ *   `Poseidon.hash([participantA.x, participantB.x, channelNonce])`.
+ *
+ * This MUST byte-for-byte reproduce what `PaymentChannel.initializeChannel`
+ * wrote (`Poseidon([participantA.x, participantB.x, nonce])`, see
+ * `packages/mina-zkapp/src/PaymentChannel.ts`) so that:
+ *   1. the on-chain `claimFromChannel` signature check
+ *      (`signatureA.verify(participantA, [commitment, nonce, storedChannelHash])`)
+ *      passes, and
+ *   2. the connector's off-chain `verifyBalanceProof` accepts it via its
+ *      on-chain-channelHash message branch.
+ *
+ * Participant ORDER must match how the channel was opened. The client opens with
+ * `participantA = client (payer)`, `participantB = apex (peer)`
+ * (`OnChainChannelClient.openMinaChannel` → `openMinaChannelOnChain`), so the
+ * client signs `Poseidon([client.x, apex.x, 0])`. The connector tries both
+ * orderings when reconstructing, so it resolves the matching one regardless.
+ */
+export function minaParticipantChannelHashField(
+  poseidon: PoseidonLike,
+  publicKeyCodec: PublicKeyCodecLike,
+  participantA_B62: string,
+  participantB_B62: string,
+  channelNonce: bigint
+): bigint {
+  const a = publicKeyCodec.fromBase58(participantA_B62);
+  const b = publicKeyCodec.fromBase58(participantB_B62);
+  return poseidon.hash([a.x, b.x, channelNonce]);
 }
 
 /**
@@ -220,6 +257,20 @@ export async function buildMinaPaymentChannelProof(params: {
   salt: bigint;
   nonce: bigint;
   proofEncoding?: 'base64' | 'json';
+  /**
+   * Participant pubkeys (B62) of the on-chain channel. When BOTH are supplied,
+   * the proof is signed over the ON-CHAIN participant-form channelHash
+   * (`Poseidon([participantA.x, participantB.x, channelNonce])`) instead of the
+   * legacy zkApp-x form, so the resulting claim can settle on-chain via the
+   * zkApp's `claimFromChannel` (which only verifies the participant form). The
+   * order MUST match how the channel was opened (participantA = client/payer,
+   * participantB = apex/peer). The connector accepts EITHER form off-chain, so
+   * this is strictly an enabler for the on-chain settle path.
+   */
+  participantA?: string;
+  participantB?: string;
+  /** Channel nonce baked into the on-chain channelHash (default 0). */
+  channelNonce?: bigint;
 }): Promise<MinaPaymentChannelProof> {
   const { Client, Poseidon, Signature, PublicKey } =
     await loadMinaPaymentChannelBindings();
@@ -237,11 +288,20 @@ export async function buildMinaPaymentChannelProof(params: {
     params.balanceB,
     params.salt
   );
-  const channelHashField = minaChannelHashField(
-    Poseidon,
-    PublicKey,
-    params.zkAppAddress
-  );
+  // Sign over the on-chain participant-form channelHash when both participants
+  // are known (enables on-chain settle); otherwise fall back to the legacy
+  // zkApp-x form (off-chain-store-only). Both are accepted by the connector's
+  // verifyBalanceProof.
+  const channelHashField =
+    params.participantA && params.participantB
+      ? minaParticipantChannelHashField(
+          Poseidon,
+          PublicKey,
+          params.participantA,
+          params.participantB,
+          params.channelNonce ?? 0n
+        )
+      : minaChannelHashField(Poseidon, PublicKey, params.zkAppAddress);
 
   const message = [commitment, params.nonce, channelHashField];
   const signed = client.signFields(message, params.minaPrivateKeyBase58);

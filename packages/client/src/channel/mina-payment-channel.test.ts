@@ -14,6 +14,7 @@ import {
   loadMinaPaymentChannelBindings,
   minaBalanceCommitment,
   minaChannelHashField,
+  minaParticipantChannelHashField,
   _resetMinaBindingsCache,
 } from './mina-payment-channel.js';
 
@@ -60,6 +61,69 @@ describe('mina-payment-channel — connector parity', () => {
     const h = minaChannelHashField(Poseidon, PublicKey, zkAppAddress);
     const expected = Poseidon.hash([PublicKey.fromBase58(zkAppAddress).x]);
     expect(h).toBe(expected);
+  });
+
+  it('participant-form channel-hash = Poseidon([pA.x, pB.x, channelNonce]) (on-chain form)', async () => {
+    if (!available) return;
+    const { Poseidon, PublicKey } = await loadMinaPaymentChannelBindings();
+    // Use the same valid Pallas point for both participants (deterministic) —
+    // we only assert the helper reproduces the zkApp's stored channelHash form.
+    const h = minaParticipantChannelHashField(
+      Poseidon,
+      PublicKey,
+      signerPublicKey,
+      zkAppAddress,
+      0n
+    );
+    const expected = Poseidon.hash([
+      PublicKey.fromBase58(signerPublicKey).x,
+      PublicKey.fromBase58(zkAppAddress).x,
+      0n,
+    ]);
+    expect(h).toBe(expected);
+    // It MUST differ from the legacy zkApp-x form (distinct preimage).
+    expect(h).not.toBe(minaChannelHashField(Poseidon, PublicKey, zkAppAddress));
+  });
+
+  it('signs over the participant-form channelHash when both participants supplied (on-chain settle path)', async () => {
+    if (!available) return;
+    const balanceA = 1_000_000n;
+    const salt = 42n;
+    const nonce = 1n;
+    // participantA = signer (client), participantB = apex (here zkAppAddress
+    // stands in as a valid second Pallas point for the unit test).
+    const built = await buildMinaPaymentChannelProof({
+      zkAppAddress,
+      minaPrivateKeyBase58,
+      signerPublicKey,
+      balanceA,
+      balanceB: 0n,
+      salt,
+      nonce,
+      participantA: signerPublicKey,
+      participantB: zkAppAddress,
+      channelNonce: 0n,
+    });
+    const obj = JSON.parse(Buffer.from(built.proof, 'base64').toString('utf8'));
+
+    // Legacy zkApp-x form for the SAME inputs — identical commitment, but a
+    // DIFFERENT signed channelHash, so the emitted signature differs. This is
+    // the load-bearing distinction: only the participant form verifies against
+    // the on-chain claimFromChannel.
+    const legacyBuilt = await buildMinaPaymentChannelProof({
+      zkAppAddress,
+      minaPrivateKeyBase58,
+      signerPublicKey,
+      balanceA,
+      balanceB: 0n,
+      salt,
+      nonce,
+    });
+    const legacyObj = JSON.parse(
+      Buffer.from(legacyBuilt.proof, 'base64').toString('utf8')
+    );
+    expect(obj.commitment).toBe(legacyObj.commitment);
+    expect(obj.signature).not.toEqual(legacyObj.signature);
   });
 
   it('base64 proof decodes to {commitment, signature:{r,s}, nonce, signerPublicKey}', async () => {

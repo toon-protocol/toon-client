@@ -24,7 +24,12 @@ const txState = {
 const initializeChannel = vi.fn(async () => {});
 const deposit = vi.fn(async () => {});
 const prove = vi.fn(async () => {});
-const send = vi.fn(async () => ({ hash: 'tx-hash-xyz' }));
+const send = vi.fn(async () => ({
+  hash: 'tx-hash-xyz',
+  // `.wait()` is awaited before a deposit so the init tx is included on-chain
+  // (the deposit precondition reads channelState). The fake resolves instantly.
+  wait: vi.fn(async () => ({ status: 'included' })),
+}));
 const sign = vi.fn(() => ({ send }));
 // fetchAccount returns an account whose zkapp.appState[3] is the current
 // channelState (the opener reads state from here, not zkApp.channelState.get()).
@@ -68,7 +73,7 @@ const Field = (v: unknown) => ({
   toString: () => String(v),
 });
 
-vi.mock('o1js', () => ({
+const fakeO1js = {
   Mina: {
     Network: vi.fn(() => ({})),
     setActiveInstance: vi.fn(),
@@ -79,7 +84,7 @@ vi.mock('o1js', () => ({
   Field,
   AccountUpdate: { fundNewAccount: vi.fn() },
   fetchAccount,
-}));
+};
 
 // ── @toon-protocol/mina-zkapp mock ───────────────────────────────────────────
 
@@ -93,13 +98,19 @@ class FakePaymentChannel {
   deposit = deposit;
   constructor(public addr: unknown) {}
 }
-vi.mock('@toon-protocol/mina-zkapp', () => ({
+
+// The production loader resolves o1js + the contract through a CJS `require`
+// (so o1js's active-instance closure is shared with the CJS zkApp) — vitest's
+// `vi.mock` can't intercept that, so we inject fakes via the test hook instead.
+const {
+  openMinaChannelOnChain,
+  _resetMinaChannelOpenCache,
+  _setMinaRuntimeForTests,
+} = await import('./mina-channel-open.js');
+_setMinaRuntimeForTests(async () => ({
+  o1js: fakeO1js as never,
   PaymentChannel: FakePaymentChannel,
 }));
-
-// Import AFTER mocks are registered.
-const { openMinaChannelOnChain, _resetMinaChannelOpenCache } =
-  await import('./mina-channel-open.js');
 
 const ZKAPP = 'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im7T5sa';
 const APEX = 'B62qksocUTe3wxR3uHB9oV7yWZi6JdkWLwNDvVoUkbXkmTGwHo3rDNc';
