@@ -21,7 +21,7 @@ This client handles:
 - **ILP Micropayments**: Pay to publish Nostr events (reads are free)
 - **Payment Channels**: Automatic on-chain channel creation with off-chain settlement via signed balance proofs
 - **Unified Identity**: One Nostr key = one EVM address (both secp256k1, derived automatically) — or a single BIP-39 **mnemonic** to derive a full multi-chain identity
-- **Multi-Chain Settlement**: Sign payment-channel claims on EVM (EIP-712), Solana (Ed25519), and Mina (Pallas) from one mnemonic
+- **Multi-Chain Settlement**: Sign payment-channel claims on EVM (EIP-712), Solana (Ed25519), and Mina (Pallas) from one mnemonic. A Townhouse apex validates the claim and redeems it on-chain on the matching chain (EVM/Solana credit the recipient; Mina redeems each claim on-chain with recipient credit-at-close deferred — see [Multi-Chain Settlement notes](#identity--multi-chain-settlement))
 - **Multi-Hop Routing**: Publish to any destination address (`destination` / `destinationAddress`), not just your direct peer
 - **Private Transport**: Optionally reach a townhouse apex at its ATOR `.anon` address through a SOCKS5h proxy (see [Connecting over `.anon`](#connecting-to-an-apex-over-anon))
 - **Network Bootstrap**: Automatically discover and register with ILP peers via NIP-02 follow lists
@@ -168,7 +168,8 @@ console.log('Mina:  ', client.getMinaAddress());   // base58, after start() (nee
 - **Solana/Mina addresses** (`getSolanaAddress()`, `getMinaAddress()`) are only available **after `start()`** — those keys are derived asynchronously. `getEvmAddress()`/`getPublicKey()` work before `start()`.
 - **Mina is optional**: it requires the `mina-signer` peer dependency (see Installation). Without it, the client still works for Nostr/EVM/Solana and `getMinaAddress()` returns `undefined`.
 - **Security**: JavaScript strings can't be zeroed from memory, so a `mnemonic` may linger in the heap. For high-security contexts, derive keys yourself (e.g. via `KeyManager`) and pass a pre-derived `secretKey`.
-- Balance-proof claims are signed with the canonical layout the connector verifies: EVM via EIP-712, Solana/Mina via the shared hashes in `@toon-protocol/core` (`balanceProofHashSolana` / `balanceProofFieldsMina`).
+- **Per-chain claim formats.** Each publish carries a balance-proof claim in the format that destination chain's connector verifier expects — EVM via EIP-712, Solana as a raw Ed25519 message over the on-chain payment-channel message (`channel_pda ‖ nonce ‖ transferredAmount`), Mina as a Pallas-Schnorr claim over a Poseidon `balanceCommitment`. `ToonClient` selects the right signer for the negotiated channel automatically; you do not pick the format. Canonical layouts live in `@toon-protocol/core` (`packages/core/src/settlement/`) so client signers and connector verifiers cannot drift.
+- **On-chain redemption is automatic, and driven by the apex — not the client.** You sign off-chain claims; the Townhouse apex validates them, fulfills, and (once a per-channel threshold is crossed) submits the on-chain redemption itself. EVM and Solana credit the recipient on-chain (Solana at channel close, `SETTLE_CHANNEL`). On **Mina** each paid publish redeems on-chain (`claimFromChannel`, the apex co-signs the counterparty signature; the zkApp nonce and balance commitment advance), but **crediting the recipient's tokens at channel close is a deferred follow-up (Story 34.4)** — the claim redeems on-chain today, but recipient funds do not yet move at close. Verified against `@toon-protocol/connector` 3.9.13.
 
 ---
 
@@ -236,10 +237,11 @@ await client.publishEvent(event, { claim });
 
 ### How It Works
 
-1. **Bootstrap**: Client discovers peers via NIP-02 and kind:10032 events
-2. **Channel Creation**: Opens on-chain payment channel using your derived EVM address
-3. **Off-chain Payments**: Signed balance proofs settle payments off-chain
+1. **Bootstrap**: Client discovers peers via NIP-02 and kind:10032 events, negotiating a settlement chain with each
+2. **Channel Creation**: Opens an on-chain payment channel on the negotiated chain — using your derived EVM address (EVM), the Ed25519 channel PDA (Solana), or the deployed zkApp account (Mina) when the matching `solanaChannel` / `minaChannel` config is provided
+3. **Off-chain Payments**: Signed balance proofs (chain-appropriate format) settle payments off-chain
 4. **Auto-tracking**: ChannelManager automatically tracks channels and increments nonces
+5. **On-chain redemption**: A Townhouse apex auto-redeems claims on-chain once a per-channel threshold is crossed (see [Multi-Chain Settlement](#identity--multi-chain-settlement) for the EVM/Solana/Mina specifics and the Mina credit-at-close deferral)
 
 ### Using a Separate EVM Key (Advanced)
 
