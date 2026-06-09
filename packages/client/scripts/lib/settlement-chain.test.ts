@@ -8,9 +8,11 @@
  *
  *   pnpm --filter @toon-protocol/client exec vitest run scripts/lib/settlement-chain.test.ts
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import type { OpenChannelParams } from '@toon-protocol/core';
 
+import { OnChainChannelClient } from '../../src/channel/OnChainChannelClient.js';
 import {
   resolveSettlement,
   resolveBtpTransport,
@@ -178,6 +180,97 @@ describe('resolveSettlement — Mina apex-pubkey guard', () => {
       })
     );
     expect(r.apexSettlementAddress).toBe(APEX_MINA);
+  });
+});
+
+/**
+ * Two-party channel-open regression (the on-chain-settle root cause).
+ *
+ * The Mina/Solana on-chain channel MUST be opened with the apex's settlement
+ * pubkey as the SECOND participant (`peerAddress`). If the client opens a
+ * single-party channel (no peer), the on-chain channel records empty/duplicate
+ * participants while the off-chain claim is signed in PARTICIPANT form
+ * (`Poseidon([client.x, apex.x, 0])` for Mina; the `(participantA, participantB,
+ * mint)` PDA for Solana) — so the connector's participant/PDA-form verification
+ * fails on settle (`Invalid balance proof signature`, `participants:["",""]`).
+ *
+ * These assert the apex pubkey reaches the channel-open params. The channel
+ * client's `openChannel` is spied (no network, no o1js, no RPC).
+ */
+describe('resolveSettlement — opens channels two-party (apex pubkey as peer)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('mina: openChannel receives peerAddress = apex Mina pubkey', async () => {
+    const spy = vi
+      .spyOn(OnChainChannelClient.prototype, 'openChannel')
+      .mockImplementation(async (_params: OpenChannelParams) => ({
+        channelId: APEX_MINA,
+        status: 'opening' as const,
+      }));
+
+    const r = await resolveSettlement(
+      baseInput({
+        SETTLEMENT_CHAIN: 'mina',
+        MINA_GRAPHQL_URL: 'http://127.0.0.1:28085/graphql',
+        MINA_ZKAPP_ADDRESS: APEX_MINA,
+        APEX_MINA_PUBKEY: APEX_MINA,
+      })
+    );
+    await r.openChannel();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const opened = spy.mock.calls[0]![0];
+    expect(opened.chain).toBe('mina:devnet');
+    // The bug: a single-party open omits peerAddress → empty on-chain
+    // participants. The fix passes the apex Mina B62 as participantB.
+    expect(opened.peerAddress).toBe(APEX_MINA);
+  });
+
+  it('solana: openChannel receives peerAddress = apex Solana pubkey', async () => {
+    const spy = vi
+      .spyOn(OnChainChannelClient.prototype, 'openChannel')
+      .mockImplementation(async (_params: OpenChannelParams) => ({
+        channelId: 'FakePDA1111111111111111111111111111111111111',
+        status: 'opening' as const,
+      }));
+
+    const r = await resolveSettlement(
+      baseInput({
+        SETTLEMENT_CHAIN: 'solana',
+        SOLANA_RPC_URL: 'http://127.0.0.1:28899',
+        SOLANA_PROGRAM_ID: 'GsbwXfJraMomNxBcpR3DBNxnKwAB3avDtawHcUMtX1XK',
+        SOLANA_TOKEN_MINT: '6GbdrVghwNKTz9raga7y3Y4qqX5Zgg3AC4d48Kt7C59Q',
+        APEX_SOLANA_PUBKEY: APEX_SOLANA,
+      })
+    );
+    await r.openChannel();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const opened = spy.mock.calls[0]![0];
+    expect(opened.chain).toBe('solana:devnet');
+    // The Solana channel PDA is derived from (participantA, participantB, mint);
+    // the apex Solana pubkey MUST be participantB or the connector-derived PDA
+    // from the claim's channelAccount won't match.
+    expect(opened.peerAddress).toBe(APEX_SOLANA);
+  });
+
+  it('evm: openChannel receives peerAddress = apex EVM address (pattern parity)', async () => {
+    const spy = vi
+      .spyOn(OnChainChannelClient.prototype, 'openChannel')
+      .mockImplementation(async (_params: OpenChannelParams) => ({
+        channelId: `0x${'11'.repeat(32)}`,
+        status: 'opening' as const,
+      }));
+
+    const r = await resolveSettlement(baseInput({ SETTLEMENT_CHAIN: 'evm' }));
+    await r.openChannel();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const opened = spy.mock.calls[0]![0];
+    expect(opened.chain).toBe('evm:base:31337');
+    expect(opened.peerAddress).toBe(APEX_EVM);
   });
 });
 

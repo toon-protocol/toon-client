@@ -409,6 +409,19 @@ export class OnChainChannelClient implements ConnectorChannelClient {
         'Mina channel requires a deployed zkAppAddress (minaConfig.zkAppAddress)'
       );
     }
+    // The apex's Mina settlement B62 (participantB) is REQUIRED so the channel is
+    // opened TWO-party. The off-chain claim is signed in participant form
+    // (`Poseidon([client.x, apex.x, 0])`); without participantB the on-chain
+    // channel records empty/duplicate participants and the connector's
+    // participant-form verification fails on settle (`Invalid balance proof
+    // signature`, `participants:["",""]`). Mirrors the Solana peerAddress guard.
+    if (!params.peerAddress) {
+      throw new Error(
+        'Mina channel requires peerAddress (apex Mina settlement B62) so the ' +
+          'on-chain channel is opened two-party — the participant-form claim ' +
+          'cannot settle against a single-party channel'
+      );
+    }
 
     const timeout = BigInt(
       this.minaConfig.challengeDuration ?? params.settlementTimeout ?? 86400

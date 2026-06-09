@@ -567,5 +567,28 @@ describe('OnChainChannelClient', () => {
         })
       ).rejects.toThrow(/deployed zkAppAddress/i);
     });
+
+    it('throws when peerAddress (apex Mina B62) is missing — refuses single-party open', async () => {
+      // Root cause of the on-chain-settle failure: a single-party open records
+      // empty participants while the claim is signed in participant form. The
+      // dispatch layer must refuse it (parity with the Solana peerAddress guard).
+      const c = new OnChainChannelClient({
+        evmSigner: signer,
+        chainRpcUrls: {},
+      });
+      c.setMinaConfig({
+        graphqlUrl: 'http://localhost:28085/graphql',
+        zkAppAddress: ZKAPP_ADDRESS,
+        privateKey: MINA_PK,
+      });
+      await expect(
+        c.openChannel({
+          peerId: 'apex',
+          chain: MINA_CHAIN,
+          // peerAddress deliberately omitted
+        })
+      ).rejects.toThrow(/peerAddress/i);
+      expect(mockOpenMinaChannelOnChain).not.toHaveBeenCalled();
+    });
   });
 });
