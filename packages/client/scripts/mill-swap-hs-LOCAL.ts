@@ -2,18 +2,33 @@
 /**
  * Mill streamSwap over the HS — adapted from social-flow-hs-LOCAL.ts.
  * Client → public ATOR proxy → apex .anon → connector → mill (g.townhouse.mill).
- * EVM→EVM USDC swap (rate 1). Drives the SDK streamSwap with a BtpRuntimeClient
- * wrapped as a StreamSwapClient.
+ * Drives the SDK streamSwap with a BtpRuntimeClient wrapped as a StreamSwapClient.
+ *
+ * Swap SOURCE chain (the chain the per-packet source claim settles on) is gated
+ * by MILL_SOURCE_CHAIN ∈ {evm (default), solana, mina}; it opens the client→apex
+ * source channel on that chain and signs the source claim with that chain's
+ * signer (see scripts/lib/settlement-chain.ts). The swap DEST (`pair.to`) +
+ * `chainRecipient` are INDEPENDENTLY selectable (MILL_DEST_CHAIN / SWAP_RECIPIENT)
+ * — so a Sol-source/EVM-dest (or any combo) is expressible.
+ *
+ * solana/mina source need a mnemonic (MNEMONIC) + their chain config env
+ * (SOLANA_RPC_URL/SOLANA_PROGRAM_ID/SOLANA_TOKEN_MINT/APEX_SOLANA_PUBKEY ;
+ * MINA_GRAPHQL_URL/MINA_ZKAPP_ADDRESS/APEX_MINA_PUBKEY).
+ *
+ * Transport: SOCKS5 by default; DIRECT_BTP=1 / APEX_BTP_URL → plain ws://, no proxy.
+ *
+ * NOTE: live mill settle is Phase 5 (shares the connector dependency). This
+ * harness only CONSTRUCTS the source/dest combination correctly.
  */
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { privateKeyToAccount } from 'viem/accounts';
-import WebSocket from 'ws';
-import { SocksProxyAgent } from 'socks-proxy-agent';
 
 import { BtpRuntimeClient } from '../src/index.js';
-import { EvmSigner } from '../src/signing/evm-signer.js';
-import { OnChainChannelClient } from '../src/channel/OnChainChannelClient.js';
 import { streamSwap } from '../../sdk/src/stream-swap.js';
+import {
+  resolveSettlement,
+  resolveBtpTransport,
+} from './lib/settlement-chain.js';
 
 const SOCKS_PROXY = process.env['SOCKS_PROXY'] ?? 'socks5h://157.90.113.23:9052';
 const CONNECTOR_BTP_HS =
@@ -21,7 +36,6 @@ const CONNECTOR_BTP_HS =
 const ANVIL_RPC = process.env['ANVIL_RPC'] ?? 'http://127.0.0.1:28545';
 const MOCK_USDC = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
 const TOKEN_NETWORK_ADDRESS = '0xCafac3dD18aC6c6e92c921884f9E4176737C052c';
-const ANVIL_CHAIN_ID = 31337;
 const APEX_EVM = '0x90F79bf6EB2c4f870365E785982E1f101E93b906';
 const TEST_CLIENT_PRIVKEY =
   '0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e';
@@ -43,55 +57,54 @@ async function main() {
   log('INIT', `client nostr=${pubkey.slice(0, 12)}… evm=${evmAccount.address}`);
   log('INIT', `proxy=${SOCKS_PROXY} mill=${MILL_PUBKEY.slice(0, 12)}…`);
 
-  // ── Open client→apex channel on-chain ───────────────────────────────────
-  const evmSigner = new EvmSigner(TEST_CLIENT_PRIVKEY);
-  const channelClient = new OnChainChannelClient({
-    evmSigner,
-    chainRpcUrls: { 'evm:base:31337': ANVIL_RPC },
-  });
-  const open = await channelClient.openChannel({
-    peerId: 'apex',
-    chain: 'evm:base:31337',
+  // ── Open client→apex SOURCE channel on-chain (MILL_SOURCE_CHAIN) ─────────
+  // Phase 4b: the swap SOURCE chain is independent of the swap DEST. We drive
+  // the source channel + claim via resolveSettlement, overriding its
+  // SETTLEMENT_CHAIN selector with MILL_SOURCE_CHAIN (default evm = legacy).
+  const millSourceChain = process.env['MILL_SOURCE_CHAIN']?.trim() || 'evm';
+  const sourceEnv = { ...process.env, SETTLEMENT_CHAIN: millSourceChain };
+  const settlement = await resolveSettlement({
+    env: sourceEnv,
+    nostrPubkey: pubkey,
+    nostrSecretKey: secretKey,
+    evmPrivKey: TEST_CLIENT_PRIVKEY,
+    mnemonic: process.env['MNEMONIC'],
+    anvilRpc: ANVIL_RPC,
+    mockUsdc: MOCK_USDC,
     tokenNetwork: TOKEN_NETWORK_ADDRESS,
-    token: MOCK_USDC,
-    peerAddress: APEX_EVM,
-    initialDeposit: '100000000000000000000', // 100 USDC (18-dec)
-    settlementTimeout: 86400,
+    apexEvm: APEX_EVM,
+    deposit: '100000000000000000000', // 100 USDC (18-dec)
   });
-  const channelId = open.channelId;
-  log('CHANNEL', `opened ${channelId.slice(0, 14)}… status=${open.status}`);
+  log('CHANNEL', `mill source chain=${settlement.chain} key=${settlement.chainKey}`);
+  const channelId = await settlement.openChannel();
+  log('CHANNEL', `opened ${channelId.slice(0, 14)}… chain=${settlement.chain}`);
 
   // ── Sign the source-asset balance proof claim (covers the swap) ──────────
   const cumulative = 2_000_001n;
-  const proof = await evmSigner.signBalanceProof({
-    channelId,
-    nonce: 1,
-    transferredAmount: cumulative,
-    lockedAmount: 0n,
-    locksRoot: `0x${'00'.repeat(32)}`,
-    chainId: ANVIL_CHAIN_ID,
-    tokenNetworkAddress: TOKEN_NETWORK_ADDRESS,
-    tokenAddress: MOCK_USDC,
-  });
-  const claim = EvmSigner.buildClaimMessage(proof, pubkey);
-  log('CLAIM', `signed nonce=1 amt=${cumulative} signer=${proof.signerAddress}`);
+  const claim = (await settlement.buildClaim(cumulative, 1)) as unknown as Record<
+    string,
+    unknown
+  >;
+  log('CLAIM', `signed nonce=1 amt=${cumulative} chain=${settlement.chain}`);
 
-  // ── BTP client over SOCKS5 → apex .anon ─────────────────────────────────
-  const wsAgent = new SocksProxyAgent(SOCKS_PROXY);
-  const createWebSocket = (url: string): WebSocket =>
-    new WebSocket(url, {
-      agent: wsAgent,
-      handshakeTimeout: HS_TIMEOUT_MS,
-    }) as unknown as WebSocket;
+  // ── BTP client — SOCKS5 (default) or DIRECT ws:// ────────────────────────
+  const transport = resolveBtpTransport({
+    env: process.env,
+    socksProxy: SOCKS_PROXY,
+    socksBtpUrl: CONNECTOR_BTP_HS,
+    handshakeTimeoutMs: HS_TIMEOUT_MS,
+  });
   const btpClient = new BtpRuntimeClient({
-    btpUrl: CONNECTOR_BTP_HS,
+    btpUrl: transport.btpUrl,
     peerId: 'client',
     authToken: '',
-    createWebSocket,
+    ...(transport.createWebSocket
+      ? { createWebSocket: transport.createWebSocket }
+      : {}),
     maxRetries: 1,
     retryDelay: 2_000,
   });
-  log('BTP', 'connecting to apex HS via SOCKS (circuit warm-up 30–60s)…');
+  log('BTP', `connecting to apex via ${transport.describe}…`);
   const t0 = Date.now();
   await btpClient.connect();
   log('BTP', `connected in ${Date.now() - t0}ms`);
@@ -135,23 +148,31 @@ async function main() {
     },
   };
 
-  // ── Drive the swap: EVM USDC → Solana USDC (cross-chain) ─────────────────
-  const SOLANA_RECIPIENT =
+  // ── Drive the swap: <source> USDC → <dest> USDC (cross-chain) ────────────
+  // SOURCE chain follows the settlement resolver (MILL_SOURCE_CHAIN). DEST chain
+  // + recipient are INDEPENDENT (MILL_DEST_CHAIN / SWAP_RECIPIENT) so any
+  // source/dest combo (e.g. Sol-source/EVM-dest) is expressible.
+  const destChain = process.env['MILL_DEST_CHAIN']?.trim() || 'solana:devnet';
+  const chainRecipient =
+    process.env['SWAP_RECIPIENT'] ??
     process.env['SOLANA_RECIPIENT'] ??
     'wyNtrAWDo7gtAjUA9mXcRcdK1v78K3unREsyy5chN5U';
-  log('SWAP', `streamSwap EVM USDC→Solana USDC rate=1 amt=100000 → ${SOLANA_RECIPIENT.slice(0, 10)}…`);
+  log(
+    'SWAP',
+    `streamSwap ${settlement.chainKey} USDC→${destChain} USDC rate=1 amt=100000 → ${chainRecipient.slice(0, 10)}…`
+  );
   try {
     const result = await streamSwap({
       client: streamClient,
       millPubkey: MILL_PUBKEY,
       millIlpAddress: 'g.townhouse.mill',
       pair: {
-        from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:31337' },
-        to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+        from: { assetCode: 'USDC', assetScale: 6, chain: settlement.chainKey },
+        to: { assetCode: 'USDC', assetScale: 6, chain: destChain },
         rate: '1',
       },
       senderSecretKey: secretKey,
-      chainRecipient: SOLANA_RECIPIENT,
+      chainRecipient,
       totalAmount: 100_000n,
       packetCount: 1,
       claim,

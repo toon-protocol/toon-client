@@ -19,6 +19,15 @@
  *
  * Env overrides: SOCKS_PROXY, HANDOFF, ANVIL_RPC, MILL_PUBKEY, SOLANA_RECIPIENT.
  *
+ * Settlement chain: SETTLEMENT_CHAIN ∈ {evm (default), solana, mina} selects the
+ * client→apex channel + per-packet claim chain (see scripts/lib/settlement-chain.ts).
+ * solana/mina additionally need a mnemonic (MNEMONIC / handoff.clientFunding.mnemonic)
+ * plus their chain config (SOLANA_RPC_URL/SOLANA_PROGRAM_ID/SOLANA_TOKEN_MINT/
+ * APEX_SOLANA_PUBKEY ; MINA_GRAPHQL_URL/MINA_ZKAPP_ADDRESS/APEX_MINA_PUBKEY).
+ *
+ * Transport: SOCKS5 by default; set DIRECT_BTP=1 (or APEX_BTP_URL=ws://…) for a
+ * plain ws:// apex with no proxy.
+ *
  * Exit code: 0 iff TOWN and DVM both FULFILL. MILL is reported but NON-FATAL —
  * the currently-deployed mill image returns ILP T00 live (the swap-handler
  * ACCEPTS in local repro; PR #94 fixes the masking logger), so a mill T00 is
@@ -28,16 +37,16 @@ import { readFileSync, existsSync } from 'node:fs';
 
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 import { privateKeyToAccount } from 'viem/accounts';
-import WebSocket from 'ws';
-import { SocksProxyAgent } from 'socks-proxy-agent';
 
 import { buildBlobStorageRequest } from '@toon-protocol/core';
 import { encodeEventToToon } from '@toon-protocol/relay';
 
 import { BtpRuntimeClient } from '../src/index.js';
-import { EvmSigner } from '../src/signing/evm-signer.js';
-import { OnChainChannelClient } from '../src/channel/OnChainChannelClient.js';
 import { streamSwap } from '../../sdk/src/stream-swap.js';
+import {
+  resolveSettlement,
+  resolveBtpTransport,
+} from './lib/settlement-chain.js';
 
 // ── Hardcoded fallback constants (Anvil deterministic dev values) ───────────
 const DEFAULT_ANON =
@@ -47,7 +56,6 @@ const DEFAULT_ANVIL_RPC = 'http://127.0.0.1:28545';
 const MOCK_USDC = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
 // NOTE: TokenNetwork is NOT in the handoff — keep it as this harness constant.
 const TOKEN_NETWORK_ADDRESS = '0xCafac3dD18aC6c6e92c921884f9E4176737C052c';
-const ANVIL_CHAIN_ID = 31337;
 const APEX_EVM = '0x90F79bf6EB2c4f870365E785982E1f101E93b906';
 const DEFAULT_CLIENT_PRIVKEY =
   '0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e';
@@ -78,7 +86,7 @@ interface Handoff {
     mill?: { ilpAddress?: string; nostrPubkey?: string };
   };
   chains?: { anvilHostRpc?: string; mockUsdc?: string };
-  clientFunding?: { evmPrivKey?: string };
+  clientFunding?: { evmPrivKey?: string; mnemonic?: string };
   socksProxies?: string[];
   heroImage?: string;
 }
@@ -129,6 +137,7 @@ async function main(): Promise<void> {
   const solanaRecipient =
     process.env['SOLANA_RECIPIENT'] ?? DEFAULT_SOLANA_RECIPIENT;
   const heroImage = h.heroImage ?? DEFAULT_HERO_IMAGE;
+  const mnemonic = process.env['MNEMONIC'] ?? h.clientFunding?.mnemonic;
 
   const secretKey = generateSecretKey();
   const pubkey = getPublicKey(secretKey);
@@ -140,63 +149,57 @@ async function main(): Promise<void> {
   log('INIT', `town=${townDest} dvm=${dvmDest} mill=${millDest}`);
   log('INIT', `mill-pubkey=${millPubkey.slice(0, 12)}…`);
 
-  // ── Open ONE client→apex channel on-chain ────────────────────────────────
-  const evmSigner = new EvmSigner(clientPrivKey);
-  const channelClient = new OnChainChannelClient({
-    evmSigner,
-    chainRpcUrls: { 'evm:base:31337': anvilRpc },
-  });
-  const open = await channelClient.openChannel({
-    peerId: 'apex',
-    chain: 'evm:base:31337',
+  // ── Resolve the settlement chain (SETTLEMENT_CHAIN, default evm) ──────────
+  // The selected chain provides the channel opener + a chain-dispatched
+  // `buildClaim`. Each TOWN/DVM/MILL claim rides this chain's channel.
+  const settlement = await resolveSettlement({
+    env: process.env,
+    nostrPubkey: pubkey,
+    nostrSecretKey: secretKey,
+    evmPrivKey: clientPrivKey,
+    mnemonic,
+    anvilRpc,
+    mockUsdc,
     tokenNetwork: TOKEN_NETWORK_ADDRESS,
-    token: mockUsdc,
-    peerAddress: APEX_EVM,
-    initialDeposit: '100000000000000000000', // 100 USDC (18-dec MockUSDC)
-    settlementTimeout: 86400,
+    apexEvm: APEX_EVM,
+    deposit: '100000000000000000000', // 100 USDC (18-dec MockUSDC)
   });
-  const channelId = open.channelId;
-  log('CHANNEL', `opened ${channelId.slice(0, 14)}… status=${open.status}`);
+  log('INIT', `settlement chain=${settlement.chain} key=${settlement.chainKey}`);
 
-  // ── Connect ONE BTP session over SOCKS5 → apex .anon ─────────────────────
-  const wsAgent = new SocksProxyAgent(socks);
-  const createWebSocket = (url: string): WebSocket =>
-    new WebSocket(url, {
-      agent: wsAgent,
-      handshakeTimeout: HS_TIMEOUT_MS,
-    }) as unknown as WebSocket;
+  // ── Open ONE client→apex channel on-chain (selected chain) ───────────────
+  const channelId = await settlement.openChannel();
+  log('CHANNEL', `opened ${channelId.slice(0, 14)}… chain=${settlement.chain}`);
+
+  // ── Connect ONE BTP session — SOCKS5 (default) or DIRECT ws:// ────────────
+  const transport = resolveBtpTransport({
+    env: process.env,
+    socksProxy: socks,
+    socksBtpUrl: btpUrl,
+    handshakeTimeoutMs: HS_TIMEOUT_MS,
+  });
   const btpClient = new BtpRuntimeClient({
-    btpUrl,
+    btpUrl: transport.btpUrl,
     peerId: 'client',
     authToken: '',
-    createWebSocket,
+    ...(transport.createWebSocket
+      ? { createWebSocket: transport.createWebSocket }
+      : {}),
     maxRetries: 1,
     retryDelay: 2_000,
   });
-  log('BTP', `connecting to apex HS via SOCKS (circuit warm-up 30–60s)…`);
+  log('BTP', `connecting to apex via ${transport.describe}…`);
   const tConn = Date.now();
   await btpClient.connect();
   log('BTP', `connected in ${Date.now() - tConn}ms`);
 
   // Monotonic nonce across the single channel; each call signs a fresh
-  // cumulative balance proof. Amounts are 18-dec MockUSDC base units.
+  // cumulative balance proof via the selected chain's signer. Amounts are the
+  // selected token's base units.
   let nonce = 0;
   async function signClaim(cumulative: bigint): Promise<Record<string, unknown>> {
     nonce += 1;
-    const proof = await evmSigner.signBalanceProof({
-      channelId,
-      nonce,
-      transferredAmount: cumulative,
-      lockedAmount: 0n,
-      locksRoot: `0x${'00'.repeat(32)}`,
-      chainId: ANVIL_CHAIN_ID,
-      tokenNetworkAddress: TOKEN_NETWORK_ADDRESS,
-      tokenAddress: mockUsdc,
-    });
-    return EvmSigner.buildClaimMessage(proof, pubkey) as unknown as Record<
-      string,
-      unknown
-    >;
+    const claim = await settlement.buildClaim(cumulative, nonce);
+    return claim as unknown as Record<string, unknown>;
   }
 
   const results: Record<string, NodeResult> = {};
@@ -313,7 +316,9 @@ async function main(): Promise<void> {
       millPubkey,
       millIlpAddress: millDest,
       pair: {
-        from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:31337' },
+        // Swap SOURCE chain follows the selected settlement chain (the claim
+        // covering the source is the selected chain's claim).
+        from: { assetCode: 'USDC', assetScale: 6, chain: settlement.chainKey },
         to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
         rate: '1',
       },
