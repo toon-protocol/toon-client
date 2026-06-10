@@ -333,17 +333,23 @@ export async function openMinaChannelOnChain(
     const sentInit = await initTx.sign([payerPrivateKey]).send();
     initTxHash = sentInit.hash ?? undefined;
     opened = true;
-    // A following `deposit` reads `channelState.getAndRequireEquals()` as a
-    // precondition — it must see the channel OPEN on-chain. So when a deposit is
-    // requested we MUST wait for the init tx to be INCLUDED in a block (and
-    // re-fetch the account) before building the deposit tx; otherwise the deposit
-    // precondition fails `channelState must be OPEN: 0 != 1`. `.wait()` blocks
-    // until inclusion (lightnet block time can be a few minutes).
-    if (params.deposit && params.deposit.amount > 0n) {
-      await sentInit.wait();
-      await fetchAccount({ publicKey: zkAppPublicKey });
-      await fetchAccount({ publicKey: payerPublicKey });
-    }
+    // ALWAYS wait for the init tx to be INCLUDED in a block (and re-fetch the
+    // account) before returning — NOT only when a deposit follows.
+    //
+    // Why this matters (issue #158): the two-party `channelHash =
+    // Poseidon([client.x, apex.x, 0])` is only written to the zkApp's on-chain
+    // state once `initializeChannel` is included in a block. If we fire-and-forget
+    // the init tx, the publish proceeds immediately and the connector reads the
+    // STILL-BARE zkApp (channelState=0, channelHash empty → `participants:["",""]`)
+    // before the init lands, so its participant-form balance-proof reconstruction
+    // mismatches → `mina_claim_verification_failed: "Invalid balance proof
+    // signature"`. The EVM (`waitForTransactionReceipt`) and Solana
+    // (`waitForConfirmation`) openers both confirm their open tx before returning;
+    // Mina must do the same for parity. `.wait()` blocks until inclusion (lightnet
+    // block time can be a few minutes).
+    await sentInit.wait();
+    await fetchAccount({ publicKey: zkAppPublicKey });
+    await fetchAccount({ publicKey: payerPublicKey });
   } else if (currentState !== MINA_CHANNEL_STATE_OPEN) {
     // CLOSING (2) or SETTLED (3): cannot (re)open. Surface clearly.
     throw new Error(

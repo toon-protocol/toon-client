@@ -24,11 +24,13 @@ const txState = {
 const initializeChannel = vi.fn(async () => {});
 const deposit = vi.fn(async () => {});
 const prove = vi.fn(async () => {});
+// Shared `.wait()` spy so tests can assert the opener ALWAYS waits for the init
+// tx to be INCLUDED on-chain (issue #158 — the two-party channelHash must land
+// before the connector reads it, regardless of whether a deposit follows).
+const waitForInclusion = vi.fn(async () => ({ status: 'included' }));
 const send = vi.fn(async () => ({
   hash: 'tx-hash-xyz',
-  // `.wait()` is awaited before a deposit so the init tx is included on-chain
-  // (the deposit precondition reads channelState). The fake resolves instantly.
-  wait: vi.fn(async () => ({ status: 'included' })),
+  wait: waitForInclusion,
 }));
 const sign = vi.fn(() => ({ send }));
 // fetchAccount returns an account whose zkapp.appState[3] is the current
@@ -147,6 +149,9 @@ describe('openMinaChannelOnChain', () => {
     expect(res.zkAppAddress).toBe(ZKAPP);
     expect(res.channelState).toBe(1);
     expect(deposit).not.toHaveBeenCalled();
+    // #158: the init tx MUST be waited for inclusion even with NO deposit, so the
+    // two-party channelHash is on-chain before the connector reads it.
+    expect(waitForInclusion).toHaveBeenCalledTimes(1);
   });
 
   it('is idempotent when the channel is already OPEN (no initializeChannel)', async () => {
