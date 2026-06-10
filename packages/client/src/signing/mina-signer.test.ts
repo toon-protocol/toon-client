@@ -238,6 +238,61 @@ describe('MinaSigner — connector 3.9.0 MinaClaimMessage contract', () => {
     });
     expect(bad).toBe(false);
   });
+
+  it('binds conserved balanceB = depositTotal − balanceA when depositTotal is given (connector#133)', async () => {
+    if (!minaAvailable) return;
+    const id = await deriveFullIdentity(TEST_MNEMONIC);
+    const signer = new MinaSigner(id.mina.privateKey, id.mina.publicKey);
+    const depositTotal = 10_000_000n;
+
+    const proof = await signer.signBalanceProof({
+      channelId: zkAppAddress,
+      nonce: NONCE,
+      transferredAmount: AMOUNT,
+      lockedAmount: 0n,
+      locksRoot: '0x00',
+      recipient: RECIPIENT,
+      metadata: makeMeta(),
+      depositTotal,
+    });
+    const claim = signer.buildClaimMessage(
+      proof,
+      SENDER_ID
+    ) as MinaClaimMessage;
+
+    const { Poseidon } = await loadMinaPaymentChannelBindings();
+    // The signed commitment must bind balanceB = depositTotal − balanceA — the
+    // SAME value the connector reconstructs from on-chain depositTotal, so the
+    // on-chain claimFromChannel signatureA check passes.
+    const conserved = Poseidon.hash([
+      AMOUNT,
+      depositTotal - AMOUNT,
+      BigInt(claim.salt),
+    ]);
+    expect(claim.balanceCommitment).toBe(conserved.toString());
+    // …and it must NOT be the legacy balanceB=0 commitment (which #133 rejects
+    // on-chain as non-conserving).
+    const legacy = Poseidon.hash([AMOUNT, 0n, BigInt(claim.salt)]);
+    expect(claim.balanceCommitment).not.toBe(legacy.toString());
+  });
+
+  it('rejects a claim whose balanceA exceeds depositTotal (conservation guard)', async () => {
+    if (!minaAvailable) return;
+    const id = await deriveFullIdentity(TEST_MNEMONIC);
+    const signer = new MinaSigner(id.mina.privateKey, id.mina.publicKey);
+    await expect(
+      signer.signBalanceProof({
+        channelId: zkAppAddress,
+        nonce: NONCE,
+        transferredAmount: 20_000_000n, // > depositTotal
+        lockedAmount: 0n,
+        locksRoot: '0x00',
+        recipient: RECIPIENT,
+        metadata: makeMeta(),
+        depositTotal: 10_000_000n,
+      })
+    ).rejects.toThrow(/depositTotal/);
+  });
 });
 
 /** Load the Pallas Signature codec (toBase58) the same way the channel module does. */

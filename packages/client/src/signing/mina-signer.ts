@@ -116,6 +116,15 @@ export class MinaSigner implements ChainSigner {
     locksRoot: string;
     recipient: string;
     metadata: ChainMetadata;
+    /**
+     * On-chain channel `depositTotal`. When provided (>0), the signed commitment
+     * binds `balanceB = depositTotal − balanceA` (the funder's remaining
+     * balance), matching the connector's claimFromChannel reconstruction
+     * (toon-protocol/connector#133) and the on-chain circuit's
+     * `balanceA + balanceB == depositTotal` invariant. Omitted/0 keeps the
+     * legacy `balanceB = 0` form (off-chain-store-only, non-settleable).
+     */
+    depositTotal?: bigint;
   }): Promise<SignedBalanceProof> {
     if (params.metadata.chainType !== 'mina') {
       throw new Error(
@@ -155,16 +164,35 @@ export class MinaSigner implements ChainSigner {
         ? params.recipient
         : undefined;
 
+    // Conserved counterparty balance for the signed commitment. The on-chain
+    // PaymentChannel.claimFromChannel circuit verifies signatureA over
+    // Poseidon([balanceA, balanceB, salt]) AND asserts balanceA + balanceB ==
+    // depositTotal. The connector reconstructs balanceB = depositTotal − balanceA
+    // from the public on-chain depositTotal (toon-protocol/connector#133), so the
+    // CLIENT must sign over that same balanceB or signatureA fails verification
+    // ("participant A signature verification failed") at proof generation. When
+    // depositTotal is unknown (legacy/off-chain-only), fall back to balanceB = 0.
+    let balanceB = 0n;
+    if (params.depositTotal != null && params.depositTotal > 0n) {
+      if (params.transferredAmount > params.depositTotal) {
+        throw new Error(
+          `Mina claim balanceA (${params.transferredAmount}) exceeds on-chain ` +
+            `depositTotal (${params.depositTotal}) — cannot conserve balances`
+        );
+      }
+      balanceB = params.depositTotal - params.transferredAmount;
+    }
+
     const built = await buildMinaPaymentChannelProof({
       zkAppAddress,
       minaPrivateKeyBase58: minaPrivateKey,
       signerPublicKey: clientPubKey,
-      // Recipient-credit (unidirectional): party A carries the cumulative amount,
-      // party B is zero. `balanceB`/`signatureB` are OPTIONAL at connector
-      // validation, so the single-party claim suffices for the apex-as-recipient
-      // direction.
+      // Recipient-credit (unidirectional): party A carries the cumulative amount;
+      // party B carries the funder's remaining balance (depositTotal − balanceA)
+      // so the signed commitment conserves and the on-chain claimFromChannel
+      // signatureA check passes. `signatureB` remains apex-co-signed downstream.
       balanceA: params.transferredAmount,
-      balanceB: 0n,
+      balanceB,
       salt,
       nonce: BigInt(params.nonce),
       // Participant-form channelHash (on-chain-settleable) when the apex pubkey

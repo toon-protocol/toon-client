@@ -84,6 +84,36 @@ export interface ResolvedSettlement {
   evmAddress: string;
 }
 
+/**
+ * Read the on-chain Mina channel `depositTotal` (zkApp `zkappState` slot 4:
+ * `[balanceCommitmentA, balanceCommitmentB, nonceField, channelState,
+ * depositTotal, ...]`) straight from the GraphQL node. Used at claim time so the
+ * client binds the same conserved `balanceB = depositTotal − balanceA` the
+ * connector derives from on-chain state (connector#133). Returns 0n if the
+ * account/state is unavailable (signer then falls back to the legacy form).
+ */
+async function readMinaDepositTotal(
+  graphqlUrl: string,
+  zkAppAddress: string
+): Promise<bigint> {
+  try {
+    const res = await fetch(graphqlUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ account(publicKey: "${zkAppAddress}") { zkappState } }`,
+      }),
+    });
+    const json = (await res.json()) as {
+      data?: { account?: { zkappState?: string[] | null } | null };
+    };
+    const state = json.data?.account?.zkappState;
+    return state && state[4] != null ? BigInt(state[4]) : 0n;
+  } catch {
+    return 0n;
+  }
+}
+
 const ZERO_LOCKS_ROOT = `0x${'00'.repeat(32)}`;
 
 /** Parse the `evm:{net}:{chainId}` key into its numeric chain id. */
@@ -372,6 +402,12 @@ async function resolveMina(
     buildClaim: async (cumulative, nonce) => {
       if (!channelId)
         throw new Error('openChannel() must run before buildClaim()');
+      // Read the on-chain depositTotal so the signed commitment binds the
+      // conserved balanceB = depositTotal − balanceA — the SAME value the
+      // connector derives from on-chain state (connector#133). Using the same
+      // public source on both sides guarantees the commitments match and
+      // signatureA verifies in the on-chain claimFromChannel circuit.
+      const depositTotal = await readMinaDepositTotal(graphqlUrl, zkAppAddress);
       const proof = await minaSigner.signBalanceProof({
         channelId,
         nonce,
@@ -381,6 +417,7 @@ async function resolveMina(
         // recipient = apex Mina pubkey → participant-form (on-chain-settleable).
         recipient: apexMina,
         metadata: { chainType: 'mina', zkAppAddress },
+        depositTotal,
       });
       return minaSigner.buildClaimMessage(proof, ctx.nostrPubkey);
     },
