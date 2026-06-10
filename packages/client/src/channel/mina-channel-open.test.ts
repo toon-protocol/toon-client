@@ -182,6 +182,11 @@ describe('openMinaChannelOnChain', () => {
     expect(initializeChannel).toHaveBeenCalledTimes(1);
     expect(deposit).toHaveBeenCalledTimes(1);
     expect(res.depositTxHash).toBe('tx-hash-xyz');
+    // #158 follow-up: BOTH the init tx AND the deposit tx must be waited for
+    // inclusion (once each) before returning. The connector's claimFromChannel
+    // balance-conservation gate reads the on-chain depositTotal; a fire-and-forget
+    // deposit lets the publish/claim race ahead and read depositTotal=0.
+    expect(waitForInclusion).toHaveBeenCalledTimes(2);
   });
 
   it('does not deposit when amount is zero', async () => {

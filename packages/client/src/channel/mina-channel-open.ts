@@ -373,6 +373,18 @@ export async function openMinaChannelOnChain(
     await depositTx.prove();
     const sentDeposit = await depositTx.sign([payerPrivateKey]).send();
     depositTxHash = sentDeposit.hash ?? undefined;
+    // ALWAYS wait for the deposit tx to be INCLUDED before returning — same
+    // confirmation discipline as initializeChannel above (issue #158). The
+    // connector's claimFromChannel runs a #126 balance-conservation gate that
+    // reads the on-chain `depositTotal`; if we fire-and-forget the deposit, the
+    // publish + claim race ahead and the connector reads depositTotal=0 (deposit
+    // not yet in a block) → `PROOF_GENERATION_FAILED: Claim violates balance
+    // conservation` and the settle aborts non-retryably. Blocking on inclusion
+    // (and re-fetching) guarantees the funded depositTotal is on-chain before any
+    // claim settles against it.
+    await sentDeposit.wait();
+    await fetchAccount({ publicKey: zkAppPublicKey });
+    await fetchAccount({ publicKey: payerPublicKey });
   }
 
   // Read the resulting state from the network-fetched appState (best-effort —
