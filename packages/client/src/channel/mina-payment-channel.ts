@@ -132,7 +132,25 @@ export async function loadMinaPaymentChannelBindings(): Promise<MinaCryptoBindin
 
   // Resolve the main entry to a file URL, then navigate to the internal modules.
   // mina-signer main: <root>/dist/node/mina-signer/mina-signer.js
-  const mainUrl = import.meta.resolve(specifier);
+  //
+  // import.meta.resolve is unavailable under some module transforms (notably
+  // vitest's SSR, which replaces import.meta and drops `.resolve` → throws
+  // "__vite_ssr_import_meta__.resolve is not a function"). Fall back to Node's
+  // createRequire().resolve and convert to a file URL. Both the ESM and CJS
+  // entries live in dist/node/mina-signer/, so the relative navigation below is
+  // identical either way.
+  const resolveFn = (import.meta as { resolve?: (specifier: string) => string })
+    .resolve;
+  let mainUrl: string;
+  if (typeof resolveFn === 'function') {
+    mainUrl = resolveFn(specifier);
+  } else {
+    const { createRequire } = await import('node:module');
+    const { pathToFileURL } = await import('node:url');
+    mainUrl = pathToFileURL(
+      createRequire(import.meta.url).resolve(specifier)
+    ).href;
+  }
   const minaSignerDir = new URL('./', mainUrl); // .../dist/node/mina-signer/
   const poseidonUrl = new URL('../bindings/crypto/poseidon.js', minaSignerDir)
     .href;
