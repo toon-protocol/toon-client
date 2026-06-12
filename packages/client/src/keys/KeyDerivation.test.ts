@@ -3,10 +3,16 @@ import {
   generateMnemonic,
   validateMnemonic,
   deriveFullIdentity,
+  deriveNostrKeyFromMnemonic,
   deriveFromNsec,
   generateRandomIdentity,
 } from './KeyDerivation.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { fromMnemonicFull } from '@toon-protocol/sdk';
+
+// A fixed 12-word mnemonic so the cross-check vectors are stable across runs.
+const FIXED_MNEMONIC =
+  'legal winner thank year wave sausage worth useful legal winner thank yellow';
 
 describe('KeyDerivation', () => {
   describe('generateMnemonic', () => {
@@ -73,6 +79,79 @@ describe('KeyDerivation', () => {
       const id2 = await deriveFullIdentity(m2);
 
       expect(id1.nostr.pubkey).not.toBe(id2.nostr.pubkey);
+    });
+
+    it('default (no accountIndex) is unchanged and equals index 0', async () => {
+      const idDefault = await deriveFullIdentity(FIXED_MNEMONIC);
+      const idZero = await deriveFullIdentity(FIXED_MNEMONIC, 0);
+
+      expect(idDefault.nostr.pubkey).toBe(idZero.nostr.pubkey);
+      expect(idDefault.evm.address).toBe(idZero.evm.address);
+      expect(idDefault.solana.publicKey).toBe(idZero.solana.publicKey);
+      expect(idDefault.mina.publicKey).toBe(idZero.mina.publicKey);
+    });
+
+    it('non-zero accountIndex yields a distinct identity', async () => {
+      const id0 = await deriveFullIdentity(FIXED_MNEMONIC, 0);
+      const id3 = await deriveFullIdentity(FIXED_MNEMONIC, 3);
+
+      expect(id3.nostr.pubkey).not.toBe(id0.nostr.pubkey);
+      expect(id3.evm.address).not.toBe(id0.evm.address);
+      expect(id3.solana.publicKey).not.toBe(id0.solana.publicKey);
+    });
+
+    it('rejects an invalid accountIndex', async () => {
+      await expect(deriveFullIdentity(FIXED_MNEMONIC, -1)).rejects.toThrow(
+        /Invalid accountIndex/
+      );
+      await expect(deriveFullIdentity(FIXED_MNEMONIC, 1.5)).rejects.toThrow(
+        /Invalid accountIndex/
+      );
+    });
+  });
+
+  describe('SDK cross-check (matches fromMnemonicFull at each accountIndex)', () => {
+    for (const accountIndex of [0, 1, 5, 42]) {
+      it(`index ${accountIndex}: EVM/Solana/Mina addresses match the SDK`, async () => {
+        const client = await deriveFullIdentity(FIXED_MNEMONIC, accountIndex);
+        const sdk = await fromMnemonicFull(FIXED_MNEMONIC, { accountIndex });
+
+        // Nostr + EVM (secp256k1, shared key)
+        expect(client.nostr.pubkey).toBe(sdk.pubkey);
+        expect(client.evm.address).toBe(sdk.evmAddress);
+
+        // Solana (Ed25519, SLIP-0010)
+        expect(client.solana.publicKey).toBe(sdk.solana.publicKey);
+
+        // Mina (Pallas) — both derive via mina-signer when installed.
+        if (sdk.mina) {
+          expect(client.mina.publicKey).toBe(sdk.mina.publicKey);
+        }
+      });
+    }
+  });
+
+  describe('deriveNostrKeyFromMnemonic accountIndex', () => {
+    it('index 0 equals the SDK fromMnemonicFull index 0', async () => {
+      const client = deriveNostrKeyFromMnemonic(FIXED_MNEMONIC);
+      const sdk = await fromMnemonicFull(FIXED_MNEMONIC, { accountIndex: 0 });
+      expect(client.pubkey).toBe(sdk.pubkey);
+    });
+
+    it('non-zero index matches the SDK and differs from index 0', async () => {
+      const idx = 7;
+      const client = deriveNostrKeyFromMnemonic(FIXED_MNEMONIC, idx);
+      const sdk = await fromMnemonicFull(FIXED_MNEMONIC, { accountIndex: idx });
+      expect(client.pubkey).toBe(sdk.pubkey);
+      expect(client.pubkey).not.toBe(
+        deriveNostrKeyFromMnemonic(FIXED_MNEMONIC, 0).pubkey
+      );
+    });
+
+    it('rejects an out-of-range accountIndex', () => {
+      expect(() => deriveNostrKeyFromMnemonic(FIXED_MNEMONIC, -1)).toThrow(
+        /Invalid accountIndex/
+      );
     });
   });
 

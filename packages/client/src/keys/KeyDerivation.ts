@@ -26,14 +26,41 @@ export function validateMnemonic(mnemonic: string): boolean {
 }
 
 /**
- * Derive the Nostr secp256k1 key from mnemonic using NIP-06 path: m/44'/1237'/0'/0/0
+ * Maximum valid BIP-32 non-hardened child index (2^31 - 1).
+ * Values at or above 2^31 are reserved for hardened derivation.
  */
-function deriveNostrKey(seed: Uint8Array): {
+const MAX_BIP32_INDEX = 0x7fffffff;
+
+/**
+ * Validate a BIP-44 account index. Mirrors the SDK's `fromMnemonic` guard so
+ * the client and SDK reject the same out-of-range indices.
+ */
+function assertValidAccountIndex(accountIndex: number): void {
+  if (
+    !Number.isInteger(accountIndex) ||
+    accountIndex < 0 ||
+    accountIndex > MAX_BIP32_INDEX
+  ) {
+    throw new Error(
+      `Invalid accountIndex: expected a non-negative integer (0 to ${MAX_BIP32_INDEX}), got ${String(accountIndex)}`
+    );
+  }
+}
+
+/**
+ * Derive the Nostr secp256k1 key from mnemonic using NIP-06 path:
+ * m/44'/1237'/0'/0/{accountIndex}. At accountIndex 0 this is the canonical
+ * m/44'/1237'/0'/0/0, matching the SDK's `fromMnemonic`/`fromMnemonicFull`.
+ */
+function deriveNostrKey(
+  seed: Uint8Array,
+  accountIndex = 0
+): {
   secretKey: Uint8Array;
   pubkey: string;
 } {
   const master = HDKey.fromMasterSeed(seed);
-  const child = master.derive("m/44'/1237'/0'/0/0");
+  const child = master.derive(`m/44'/1237'/0'/0/${accountIndex}`);
   if (!child.privateKey) {
     throw new Error('Failed to derive Nostr private key from seed');
   }
@@ -57,10 +84,15 @@ function deriveEvmIdentity(secretKey: Uint8Array): {
 }
 
 /**
- * Derive Solana Ed25519 keypair using SLIP-0010 path: m/44'/501'/0'/0'
+ * Derive Solana Ed25519 keypair using SLIP-0010 path:
+ * m/44'/501'/{accountIndex}'/0' (all hardened). At accountIndex 0 this is the
+ * canonical m/44'/501'/0'/0', matching the SDK's `deriveSolanaIdentity`.
  * Dynamically imports @noble/curves for Ed25519 operations.
  */
-async function deriveSolanaKey(seed: Uint8Array): Promise<{
+async function deriveSolanaKey(
+  seed: Uint8Array,
+  accountIndex = 0
+): Promise<{
   secretKey: Uint8Array;
   publicKey: string;
 }> {
@@ -76,11 +108,11 @@ async function deriveSolanaKey(seed: Uint8Array): Promise<{
   let key = I.slice(0, 32);
   let chainCode = I.slice(32);
 
-  // Derive path: m/44'/501'/0'/0' (all hardened)
+  // Derive path: m/44'/501'/{accountIndex}'/0' (all hardened)
   const indices = [
     0x8000002c, // 44'
     0x800001f5, // 501'
-    0x80000000, // 0'
+    (0x80000000 + accountIndex) >>> 0, // {accountIndex}'
     0x80000000, // 0'
   ];
 
@@ -113,16 +145,21 @@ async function deriveSolanaKey(seed: Uint8Array): Promise<{
 }
 
 /**
- * Derive Mina Pallas key using path: m/44'/12586'/0'/0/0
+ * Derive Mina Pallas key using path: m/44'/12586'/{accountIndex}'/0/0. At
+ * accountIndex 0 this is the canonical m/44'/12586'/0'/0/0, matching the SDK's
+ * `deriveMinaIdentity`.
  * Dynamically imports mina-signer.
  */
-async function deriveMinaKey(seed: Uint8Array): Promise<{
+async function deriveMinaKey(
+  seed: Uint8Array,
+  accountIndex = 0
+): Promise<{
   privateKey: string;
   publicKey: string;
 }> {
   const master = HDKey.fromMasterSeed(seed);
   // Mina coin type = 12586 (0x312A)
-  const child = master.derive("m/44'/12586'/0'/0/0");
+  const child = master.derive(`m/44'/12586'/${accountIndex}'/0/0`);
   if (!child.privateKey) {
     throw new Error('Failed to derive Mina private key from seed');
   }
@@ -169,12 +206,16 @@ async function deriveMinaKey(seed: Uint8Array): Promise<{
  * resolve the Nostr/EVM identity from a `mnemonic` config field without an
  * async factory; the client derives Solana/Mina lazily in `start()`.
  */
-export function deriveNostrKeyFromMnemonic(mnemonic: string): {
+export function deriveNostrKeyFromMnemonic(
+  mnemonic: string,
+  accountIndex = 0
+): {
   secretKey: Uint8Array;
   pubkey: string;
 } {
+  assertValidAccountIndex(accountIndex);
   const seed = mnemonicToSeedSync(mnemonic);
-  const result = deriveNostrKey(seed);
+  const result = deriveNostrKey(seed, accountIndex);
   seed.fill(0); // Zero seed after derivation (F7 fix)
   return result;
 }
@@ -182,31 +223,42 @@ export function deriveNostrKeyFromMnemonic(mnemonic: string): {
 /**
  * Derive a full multi-chain ToonIdentity from a BIP-39 mnemonic.
  *
+ * All four chains vary by `accountIndex` (default 0), matching the SDK's
+ * {@link https://www.npmjs.com/package/@toon-protocol/sdk `fromMnemonicFull`}
+ * path-per-index scheme so a non-zero index produces the SAME addresses as
+ * `fromMnemonicFull(mnemonic, { accountIndex })`. Index 0 is unchanged from the
+ * historical fixed paths (back-compat).
+ *
  * Chains derived:
- * - Nostr (secp256k1): m/44'/1237'/0'/0/0
+ * - Nostr (secp256k1): m/44'/1237'/0'/0/{accountIndex}
  * - EVM (secp256k1): same key as Nostr
- * - Solana (Ed25519): m/44'/501'/0'/0' (SLIP-0010)
- * - Mina (Pallas): m/44'/12586'/0'/0/0
+ * - Solana (Ed25519): m/44'/501'/{accountIndex}'/0' (SLIP-0010)
+ * - Mina (Pallas): m/44'/12586'/{accountIndex}'/0/0
+ *
+ * @param mnemonic - A valid BIP-39 mnemonic (12 or 24 words).
+ * @param accountIndex - BIP-44 account index (default 0).
  */
 export async function deriveFullIdentity(
-  mnemonic: string
+  mnemonic: string,
+  accountIndex = 0
 ): Promise<ToonIdentity> {
+  assertValidAccountIndex(accountIndex);
   const seed = mnemonicToSeedSync(mnemonic);
 
-  const nostr = deriveNostrKey(seed);
+  const nostr = deriveNostrKey(seed, accountIndex);
   const evm = deriveEvmIdentity(nostr.secretKey);
 
   // Solana and Mina can fail if optional deps are missing — derive independently
   let solana: ToonIdentity['solana'];
   try {
-    solana = await deriveSolanaKey(seed);
+    solana = await deriveSolanaKey(seed, accountIndex);
   } catch {
     solana = { secretKey: new Uint8Array(64), publicKey: '' };
   }
 
   let mina: ToonIdentity['mina'];
   try {
-    mina = await deriveMinaKey(seed);
+    mina = await deriveMinaKey(seed, accountIndex);
   } catch {
     mina = { privateKey: '', publicKey: '' };
   }
