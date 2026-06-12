@@ -135,7 +135,7 @@ export function validateConfig(config: ToonClientConfig): void {
       if (!config.transport.socksProxy?.startsWith('socks5h://')) {
         throw new ValidationError(
           'transport.socksProxy must use socks5h:// scheme to prevent DNS leaks. ' +
-            'The "h" suffix ensures .anon hostnames are resolved by the proxy, not locally.'
+            'The "h" suffix ensures .anyone hostnames are resolved by the proxy, not locally.'
         );
       }
     } else if (config.transport.type === 'gateway') {

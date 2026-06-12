@@ -28,7 +28,7 @@ const require = createRequire(import.meta.url);
 /**
  * Parses and validates a `socks5h://` URL.
  * Enforces `socks5h://` scheme (not `socks5://`) to prevent DNS leaks —
- * `.anon` hostnames must be resolved by the proxy, not locally.
+ * `.anyone` hostnames must be resolved by the proxy, not locally.
  *
  * Mirrors the connector's `transport/socks-url.ts` validation logic.
  */
@@ -39,7 +39,7 @@ export function validateSocks5hUrl(socksProxy: string): {
   if (!socksProxy.startsWith('socks5h://')) {
     throw new Error(
       `SOCKS5 proxy URL must use socks5h:// scheme (got "${socksProxy.split('://')[0]}://"). ` +
-        'The "h" suffix ensures DNS resolution happens at the proxy, preventing leaks of .anon hostnames.'
+        'The "h" suffix ensures DNS resolution happens at the proxy, preventing leaks of .anyone hostnames.'
     );
   }
 

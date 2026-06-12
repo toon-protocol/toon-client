@@ -1,6 +1,14 @@
 // Main Client
 export { ToonClient } from './ToonClient.js';
 
+// Hidden-service hostname validation (.anyone TLD only — see issue #201)
+export {
+  isRoutableHsHostname,
+  assertRoutableHsHostname,
+  HS_HOSTNAME_REGEX,
+  HS_HOSTNAME_MAX_LENGTH,
+} from './transport/hs-hostname.js';
+
 // Types
 export type {
   ToonClientConfig,

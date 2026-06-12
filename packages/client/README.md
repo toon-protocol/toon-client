@@ -23,7 +23,7 @@ This client handles:
 - **Unified Identity**: One Nostr key = one EVM address (both secp256k1, derived automatically) — or a single BIP-39 **mnemonic** to derive a full multi-chain identity
 - **Multi-Chain Settlement**: Sign payment-channel claims on EVM (EIP-712), Solana (Ed25519), and Mina (Pallas) from one mnemonic. A Townhouse apex validates the claim and redeems it on-chain on the matching chain (EVM/Solana credit the recipient; Mina redeems each claim on-chain with recipient credit-at-close deferred — see [Multi-Chain Settlement notes](#identity--multi-chain-settlement))
 - **Multi-Hop Routing**: Publish to any destination address (`destination` / `destinationAddress`), not just your direct peer
-- **Private Transport**: Optionally reach a townhouse apex at its ATOR `.anon` address through a SOCKS5h proxy (see [Connecting over `.anon`](#connecting-to-an-apex-over-anon))
+- **Private Transport**: Optionally reach a townhouse apex at its ATOR `.anyone` address through a SOCKS5h proxy (see [Connecting over `.anyone`](#connecting-to-an-apex-over-anyone))
 - **Network Bootstrap**: Automatically discover and register with ILP peers via NIP-02 follow lists
 - **TOON Encoding**: Native binary format for agent-friendly event encoding
 
@@ -44,8 +44,8 @@ pnpm add mina-signer
 - **A TOON apex to pay.** You don't run any node yourself; you connect to a running
   [`@toon-protocol/townhouse`](https://www.npmjs.com/package/@toon-protocol/townhouse) apex (or any
   TOON connector) and pay it. From its operator you need:
-  - a **connector endpoint** — either an HTTP `connectorUrl`, or an ATOR `.anon` BTP endpoint reached
-    through a **SOCKS5h** proxy (see [Connecting over `.anon`](#connecting-to-an-apex-over-anon));
+  - a **connector endpoint** — either an HTTP `connectorUrl`, or an ATOR `.anyone` BTP endpoint reached
+    through a **SOCKS5h** proxy (see [Connecting over `.anyone`](#connecting-to-an-apex-over-anyone));
   - a **settlement-chain RPC URL** and a **funded key** on that chain, so the client can open a
     payment channel and sign EIP-712 claims;
   - the **token** and **TokenNetwork** contract addresses that apex accepts on that chain (e.g. USDC).
@@ -256,16 +256,16 @@ const client = new ToonClient({
 
 ---
 
-## Connecting to an apex over `.anon`
+## Connecting to an apex over `.anyone`
 
-In production a townhouse apex is reachable at an ATOR `.anon` hidden-service address rather than a plain `ws://` host. To dial it, route the client's BTP/HTTP traffic through a **SOCKS5h** proxy via the `transport` option. The `socks5h://` scheme is required so DNS resolution happens at the proxy (no DNS leaks):
+In production a townhouse apex is reachable at an ATOR `.anyone` hidden-service address rather than a plain `ws://` host. To dial it, route the client's BTP/HTTP traffic through a **SOCKS5h** proxy via the `transport` option. The `socks5h://` scheme is required so DNS resolution happens at the proxy (no DNS leaks):
 
 ```typescript
 const client = new ToonClient({
   connectorUrl: 'http://localhost:8080', // local connector admin, if any
   secretKey,
-  ilpInfo: { pubkey, ilpAddress: `g.toon.${pubkey.slice(0, 8)}`, btpEndpoint: 'ws://abc...xyz.anon:3000' },
-  btpUrl: 'ws://abc...xyz.anon:3000', // the apex's BTP endpoint at its .anon address
+  ilpInfo: { pubkey, ilpAddress: `g.toon.${pubkey.slice(0, 8)}`, btpEndpoint: 'ws://abc...xyz.anyone:3000' },
+  btpUrl: 'ws://abc...xyz.anyone:3000', // the apex's BTP endpoint at its .anyone address
   destinationAddress: 'g.townhouse', // pay the apex; it forwards to the town/dvm/mill child
   toonEncoder: encodeEventToToon,
   toonDecoder: decodeEventFromToon,
