@@ -276,6 +276,26 @@ export interface ToonClientConfig {
    */
   transport?: ClientTransportConfig;
 
+  /**
+   * Self-managed `anon` (anyone-protocol / ATOR) SOCKS5h proxy (Node.js only).
+   *
+   * When the `btpUrl` host ends in `.anyone` and NO explicit proxy is configured
+   * (`transport.socksProxy` / `transport.type === 'gateway'`) and the
+   * `ANYONE_PROXY_URLS` env var is unset, the SDK auto-downloads + spawns its own
+   * `anon` daemon, waits for it to bootstrap + bind a loopback SOCKS5 port, and
+   * routes BTP/HTTP through it — ZERO manual proxy setup. `client.stop()` tears
+   * the daemon down.
+   *
+   * - `undefined` (default): auto — managed proxy starts for `.anyone` hosts.
+   * - `false`: opt out — never auto-start (you must supply your own proxy).
+   *
+   * Ignored in browser bundles (the node-only daemon module is never loaded).
+   */
+  managedAnonProxy?: boolean;
+
+  /** Loopback SOCKS port the managed `anon` daemon binds. Default 9050. */
+  managedAnonSocksPort?: number;
+
   // ============================================================================
   // NETWORK (optional with defaults)
   // ============================================================================

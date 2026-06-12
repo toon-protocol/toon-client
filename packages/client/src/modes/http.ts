@@ -21,12 +21,22 @@ import { resolveTransport } from '../transport/index.js';
 export async function initializeHttpMode(
   config: ResolvedConfig
 ): Promise<HttpModeInitialization> {
-  // Resolve transport (probes SOCKS5 proxy or rewrites gateway URLs).
-  // Fail-closed: throws if SOCKS5 proxy is configured but unreachable.
+  // Resolve transport (probes SOCKS5 proxy or rewrites gateway URLs; for a
+  // `.anyone` btpUrl with no explicit proxy, auto-starts a managed `anon`
+  // SOCKS5h daemon). Fail-closed: throws if SOCKS5 proxy is configured but
+  // unreachable.
   const transport = await resolveTransport(
     config.transport,
     config.btpUrl,
-    config.connectorUrl
+    config.connectorUrl,
+    {
+      ...(config.managedAnonProxy !== undefined
+        ? { managedAnonProxy: config.managedAnonProxy }
+        : {}),
+      ...(config.managedAnonSocksPort !== undefined
+        ? { managedAnonSocksPort: config.managedAnonSocksPort }
+        : {}),
+    }
   );
 
   // Apply gateway URL rewrites if present, otherwise use original URLs
@@ -119,5 +129,8 @@ export async function initializeHttpMode(
     adminClient: null,
     btpClient,
     onChainChannelClient,
+    // Teardown handle for a managed `anon` proxy this init STARTED (undefined
+    // for explicit-proxy/direct/gateway). ToonClient.stop() invokes it.
+    stopManagedProxy: transport.stopManagedProxy,
   };
 }

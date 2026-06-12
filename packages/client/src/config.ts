@@ -189,6 +189,8 @@ export type ResolvedConfig = Required<
     | 'knownPeers'
     | 'destinationAddress'
     | 'transport'
+    | 'managedAnonProxy'
+    | 'managedAnonSocksPort'
   >
 > & {
   connector?: unknown;
@@ -202,6 +204,10 @@ export type ResolvedConfig = Required<
   mnemonic?: string;
   /** Transport privacy config (optional — defaults to direct). */
   transport?: ClientTransportConfig;
+  /** Self-managed `anon` SOCKS5h proxy opt-out (default auto). */
+  managedAnonProxy?: boolean;
+  /** Loopback SOCKS port for the managed `anon` daemon (default 9050). */
+  managedAnonSocksPort?: number;
   supportedChains?: string[];
   settlementAddresses?: Record<string, string>;
   preferredTokens?: Record<string, string>;

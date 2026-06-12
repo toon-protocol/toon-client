@@ -28,6 +28,14 @@ export interface HttpModeInitialization {
 
   /** On-chain channel client. Null when EVM not configured. */
   onChainChannelClient: OnChainChannelClient | null;
+
+  /**
+   * Teardown for a managed `anon` SOCKS5h proxy that transport resolution
+   * auto-started (`.anyone` host, no explicit proxy). Undefined when no managed
+   * proxy was started. `ToonClient.stop()` invokes it so the daemon does not
+   * outlive the client.
+   */
+  stopManagedProxy?: () => Promise<void>;
 }
 
 /**

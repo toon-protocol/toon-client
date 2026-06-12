@@ -61,6 +61,20 @@ export {
 // Utilities
 export { withRetry, type RetryOptions } from './utils/index.js';
 
+// Managed `anon` (ATOR) SOCKS5h proxy — Node-only. Exposed for advanced
+// consumers who want to drive the daemon directly; ToonClient auto-starts it for
+// `.anyone` hosts. Importing these names is safe in any environment (the actual
+// node-only deps are loaded lazily inside the functions).
+export {
+  startManagedAnonProxy,
+  selectAnonAsset,
+  ANON_VERSION,
+  ANON_ASSETS,
+  type ManagedAnonProxy,
+  type StartManagedAnonProxyOptions,
+  type AnonAsset,
+} from './transport/anon-proxy.js';
+
 // Config validation (for advanced use cases)
 export {
   validateConfig,
