@@ -80,6 +80,8 @@ export {
   validateConfig,
   applyDefaults,
   buildSettlementInfo,
+  applyNetworkPresets,
+  getNetworkStatus,
 } from './config.js';
 
 // Pet DVM Utilities

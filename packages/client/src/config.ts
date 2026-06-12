@@ -1,4 +1,8 @@
 import { generateSecretKey } from 'nostr-tools/pure';
+import {
+  resolveClientNetwork,
+  type NetworkFamilyStatus,
+} from '@toon-protocol/core';
 import { ValidationError } from './errors.js';
 import {
   validateMnemonic,
@@ -16,6 +20,79 @@ export interface ClientSettlementInfo {
   settlementAddresses?: Record<string, string>;
   preferredTokens?: Record<string, string>;
   tokenNetworks?: Record<string, string>;
+}
+
+/**
+ * Applies named-network preset defaults to a client config.
+ *
+ * When `config.network` is set and != `'custom'`, the settlement-related
+ * fields are defaulted from the shared core presets (`resolveClientNetwork`):
+ * RPC/GraphQL URLs, supported chain identifiers, preferred tokens, EVM
+ * TokenNetwork addresses, and the Solana/Mina channel params. Any explicit
+ * per-chain field on `config` OVERRIDES the preset (explicit always wins).
+ *
+ * `'custom'` and the unset case both pass `config` through untouched, keeping
+ * the fully-manual path and full backward compatibility.
+ *
+ * @returns A shallow copy with preset defaults merged in (never mutates input).
+ */
+export function applyNetworkPresets(
+  config: ToonClientConfig
+): ToonClientConfig {
+  const { network } = config;
+  if (!network || network === 'custom') return config;
+
+  const presets = resolveClientNetwork(network);
+
+  // Merge a preset record under an explicit one (explicit keys win).
+  const mergeRecord = (
+    explicit: Record<string, string> | undefined,
+    preset: Record<string, string>
+  ): Record<string, string> => ({ ...preset, ...explicit });
+
+  // supportedChains: union (preset first), preserving any explicit extras.
+  const supportedChains = config.supportedChains
+    ? Array.from(
+        new Set([...presets.supportedChains, ...config.supportedChains])
+      )
+    : presets.supportedChains;
+
+  return {
+    ...config,
+    supportedChains,
+    chainRpcUrls: mergeRecord(config.chainRpcUrls, presets.chainRpcUrls),
+    preferredTokens: mergeRecord(
+      config.preferredTokens,
+      presets.preferredTokens
+    ),
+    tokenNetworks: mergeRecord(config.tokenNetworks, presets.tokenNetworks),
+    // settlementAddresses are identity-derived (per-client), so they have no
+    // preset; pass any explicit value through unchanged.
+    ...(config.settlementAddresses && {
+      settlementAddresses: config.settlementAddresses,
+    }),
+    // Channel params: preset fills the deployed programId/zkApp + URLs unless
+    // the caller supplied their own (explicit object wins wholesale).
+    ...(presets.solanaChannel && {
+      solanaChannel: config.solanaChannel ?? presets.solanaChannel,
+    }),
+    ...(presets.minaChannel && {
+      minaChannel: config.minaChannel ?? presets.minaChannel,
+    }),
+  };
+}
+
+/**
+ * Returns per-chain settlement readiness for the configured `network` tier,
+ * mirroring the townhouse node's status. Returns `undefined` when `network` is
+ * unset or `'custom'` (no preset tier to report on).
+ */
+export function getNetworkStatus(
+  config: ToonClientConfig
+): NetworkFamilyStatus | undefined {
+  const { network } = config;
+  if (!network || network === 'custom') return undefined;
+  return resolveClientNetwork(network).status;
 }
 
 /**
@@ -185,6 +262,7 @@ export type ResolvedConfig = Required<
     | 'mnemonic'
     | 'mnemonicAccountIndex'
     | 'evmPrivateKey'
+    | 'network'
     | 'supportedChains'
     | 'settlementAddresses'
     | 'preferredTokens'
@@ -222,6 +300,8 @@ export type ResolvedConfig = Required<
   mnemonicAccountIndex?: number;
   /** Transport privacy config (optional — defaults to direct). */
   transport?: ClientTransportConfig;
+  /** Named network tier, retained for `getNetworkStatus()`. */
+  network?: ToonClientConfig['network'];
   /** Self-managed `anon` SOCKS5h proxy opt-out (default auto). */
   managedAnonProxy?: boolean;
   /** Loopback SOCKS port for the managed `anon` daemon (default 9050). */
@@ -252,7 +332,11 @@ export type ResolvedConfig = Required<
  * Auto-generates a Nostr keypair when secretKey is omitted.
  * Derives btpUrl from connectorUrl when not provided.
  */
-export function applyDefaults(config: ToonClientConfig): ResolvedConfig {
+export function applyDefaults(rawConfig: ToonClientConfig): ResolvedConfig {
+  // Fill settlement-related defaults from the named-network presets first
+  // (explicit per-chain fields always win). No-op for unset/`custom`.
+  const config = applyNetworkPresets(rawConfig);
+
   // Resolve the Nostr secret key. Precedence:
   //   1. explicit secretKey
   //   2. derived from mnemonic (Nostr/EVM only — Solana/Mina are derived
@@ -333,8 +417,12 @@ export function applyDefaults(config: ToonClientConfig): ResolvedConfig {
  * Returns undefined if no settlement-related config is present.
  */
 export function buildSettlementInfo(
-  config: ToonClientConfig
+  rawConfig: ToonClientConfig
 ): ClientSettlementInfo | undefined {
+  // Resolve named-network preset defaults so a `network`-only config still
+  // produces settlement info (explicit fields win; no-op for unset/`custom`).
+  const config = applyNetworkPresets(rawConfig);
+
   if (
     !config.supportedChains?.length &&
     !config.settlementAddresses &&

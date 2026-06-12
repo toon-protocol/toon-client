@@ -6,7 +6,8 @@ import type {
   IlpSendResult,
   IlpClient,
 } from '@toon-protocol/core';
-import { validateConfig, applyDefaults } from './config.js';
+import type { NetworkFamilyStatus } from '@toon-protocol/core';
+import { validateConfig, applyDefaults, getNetworkStatus } from './config.js';
 import { toBase64 } from './utils/binary.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
@@ -139,6 +140,15 @@ export class ToonClient {
    */
   getPublicKey(): string {
     return getPublicKey(this.config.secretKey);
+  }
+
+  /**
+   * Per-chain settlement readiness for the configured `network` tier, mirroring
+   * the townhouse node's status. Returns `undefined` when no named `network` is
+   * set (or `network: 'custom'`), since there is no preset tier to report on.
+   */
+  getNetworkStatus(): NetworkFamilyStatus | undefined {
+    return getNetworkStatus(this.config);
   }
 
   /**

@@ -4,6 +4,8 @@ import {
   validateConfig,
   applyDefaults,
   buildSettlementInfo,
+  applyNetworkPresets,
+  getNetworkStatus,
 } from './config.js';
 import { ValidationError } from './errors.js';
 import type { ToonClientConfig } from './types.js';
@@ -562,5 +564,198 @@ describe('buildSettlementInfo', () => {
 
     const info = buildSettlementInfo(config);
     expect(info!.ilpAddress).toBe('g.test');
+  });
+});
+
+describe('network targeting (#202)', () => {
+  const baseConfig = (
+    overrides: Partial<ToonClientConfig> = {}
+  ): ToonClientConfig => {
+    const secretKey = generateSecretKey();
+    const pubkey = getPublicKey(secretKey);
+    return {
+      connectorUrl: 'http://localhost:8080',
+      secretKey,
+      ilpInfo: {
+        pubkey,
+        ilpAddress: 'g.test.address',
+        btpEndpoint: 'ws://localhost:3000',
+        assetCode: 'USD',
+        assetScale: 6,
+      },
+      toonEncoder: () => new Uint8Array(0),
+      toonDecoder: () => ({
+        id: '',
+        pubkey: '',
+        created_at: 0,
+        kind: 1,
+        tags: [],
+        content: '',
+        sig: '',
+      }),
+      ...overrides,
+    };
+  };
+
+  describe('applyNetworkPresets — tier resolution', () => {
+    it('testnet resolves Base Sepolia + deployed TokenNetwork', () => {
+      const c = applyNetworkPresets(baseConfig({ network: 'testnet' }));
+      const evmId = 'evm:base:84532';
+      expect(c.supportedChains).toContain(evmId);
+      expect(c.chainRpcUrls?.[evmId]).toBe('https://sepolia.base.org');
+      expect(c.tokenNetworks?.[evmId]).toBe(
+        '0x47616F4b9cF4dA25F74FD727Cd85E9CA0C70Ec5C'
+      );
+      expect(c.preferredTokens?.[evmId]).toBe(
+        '0xac80670b86db1eeb5c18c82e18a6bda98fcb4504'
+      );
+    });
+
+    it('devnet resolves the deployed Solana program + Mina zkApp channels', () => {
+      const c = applyNetworkPresets(baseConfig({ network: 'devnet' }));
+      expect(c.supportedChains).toContain('solana:devnet');
+      expect(c.supportedChains).toContain('mina:devnet');
+      expect(c.solanaChannel?.programId).toBe(
+        'EdJxYPDxGvaJuu57DSUptf4soLv8enpdyQJJhHDLiydG'
+      );
+      expect(c.solanaChannel?.rpcUrl).toBe('https://api.devnet.solana.com');
+      expect(c.minaChannel?.zkAppAddress).toBe(
+        'B62qjFgXZWDWVE4P6h63JSzdMRzXpqJEgMM3Gt6PvWzzrSCawBZ4hE3'
+      );
+      expect(c.minaChannel?.networkId).toBe('devnet');
+    });
+
+    it('mainnet resolves Base mainnet but no settlement contracts (relay-only)', () => {
+      const c = applyNetworkPresets(baseConfig({ network: 'mainnet' }));
+      const evmId = 'evm:base:8453';
+      expect(c.chainRpcUrls?.[evmId]).toBe('https://mainnet.base.org');
+      expect(c.tokenNetworks?.[evmId]).toBeUndefined();
+      expect(c.solanaChannel).toBeUndefined();
+      expect(c.minaChannel).toBeUndefined();
+    });
+  });
+
+  describe('explicit overrides win over the preset', () => {
+    it('explicit chainRpcUrls / tokenNetworks override the preset value', () => {
+      const evmId = 'evm:base:84532';
+      const c = applyNetworkPresets(
+        baseConfig({
+          network: 'testnet',
+          chainRpcUrls: { [evmId]: 'https://my-rpc.example' },
+          tokenNetworks: { [evmId]: '0xOVERRIDE' },
+        })
+      );
+      expect(c.chainRpcUrls?.[evmId]).toBe('https://my-rpc.example');
+      expect(c.tokenNetworks?.[evmId]).toBe('0xOVERRIDE');
+      // Untouched preset fields still present.
+      expect(c.preferredTokens?.[evmId]).toBe(
+        '0xac80670b86db1eeb5c18c82e18a6bda98fcb4504'
+      );
+    });
+
+    it('explicit solanaChannel object replaces the preset wholesale', () => {
+      const c = applyNetworkPresets(
+        baseConfig({
+          network: 'devnet',
+          solanaChannel: {
+            rpcUrl: 'https://custom-sol.example',
+            programId: 'CustomProgram111',
+          },
+        })
+      );
+      expect(c.solanaChannel?.programId).toBe('CustomProgram111');
+      expect(c.solanaChannel?.rpcUrl).toBe('https://custom-sol.example');
+    });
+
+    it('explicit supportedChains are unioned with the preset (extras preserved)', () => {
+      const c = applyNetworkPresets(
+        baseConfig({
+          network: 'testnet',
+          supportedChains: ['evm:anvil:31337'],
+        })
+      );
+      expect(c.supportedChains).toContain('evm:anvil:31337');
+      expect(c.supportedChains).toContain('evm:base:84532');
+    });
+  });
+
+  describe('custom and unset are the fully-manual path (backward compat)', () => {
+    it('network: custom passes config through untouched', () => {
+      const input = baseConfig({
+        network: 'custom',
+        supportedChains: ['evm:base:31337'],
+        tokenNetworks: { 'evm:base:31337': '0xTN' },
+      });
+      const c = applyNetworkPresets(input);
+      expect(c).toBe(input); // no copy, no preset merge
+      expect(c.chainRpcUrls).toBeUndefined();
+    });
+
+    it('unset network passes config through untouched', () => {
+      const input = baseConfig({ supportedChains: ['evm:base:31337'] });
+      const c = applyNetworkPresets(input);
+      expect(c).toBe(input);
+    });
+
+    it('applyDefaults with no network leaves settlement fields untouched', () => {
+      const resolved = applyDefaults(baseConfig());
+      expect(resolved.supportedChains).toBeUndefined();
+      expect(resolved.chainRpcUrls).toBeUndefined();
+      expect(resolved.tokenNetworks).toBeUndefined();
+    });
+  });
+
+  describe('applyDefaults + buildSettlementInfo wire the preset through', () => {
+    it('applyDefaults(network: testnet) fills the resolved settlement maps', () => {
+      const resolved = applyDefaults(baseConfig({ network: 'testnet' }));
+      expect(resolved.supportedChains).toContain('evm:base:84532');
+      expect(resolved.tokenNetworks?.['evm:base:84532']).toBe(
+        '0x47616F4b9cF4dA25F74FD727Cd85E9CA0C70Ec5C'
+      );
+      expect(resolved.network).toBe('testnet');
+    });
+
+    it('buildSettlementInfo(network: testnet) produces settlement info from the preset', () => {
+      const info = buildSettlementInfo(baseConfig({ network: 'testnet' }));
+      expect(info).toBeDefined();
+      expect(info!.supportedChains).toContain('evm:base:84532');
+      expect(info!.tokenNetworks?.['evm:base:84532']).toBe(
+        '0x47616F4b9cF4dA25F74FD727Cd85E9CA0C70Ec5C'
+      );
+    });
+
+    it('buildSettlementInfo(network: custom) with no manual config returns undefined', () => {
+      const info = buildSettlementInfo(baseConfig({ network: 'custom' }));
+      expect(info).toBeUndefined();
+    });
+  });
+
+  describe('getNetworkStatus', () => {
+    it('reports testnet EVM configured (deployed contracts)', () => {
+      const status = getNetworkStatus(baseConfig({ network: 'testnet' }));
+      expect(status?.evm).toBe('configured');
+    });
+
+    it('reports devnet Solana + Mina configured', () => {
+      const status = getNetworkStatus(baseConfig({ network: 'devnet' }));
+      expect(status?.solana).toBe('configured');
+      expect(status?.mina).toBe('configured');
+    });
+
+    it('reports mainnet all unconfigured (no TOON contracts yet)', () => {
+      const status = getNetworkStatus(baseConfig({ network: 'mainnet' }));
+      expect(status).toEqual({
+        evm: 'unconfigured',
+        solana: 'unconfigured',
+        mina: 'unconfigured',
+      });
+    });
+
+    it('returns undefined for custom / unset', () => {
+      expect(
+        getNetworkStatus(baseConfig({ network: 'custom' }))
+      ).toBeUndefined();
+      expect(getNetworkStatus(baseConfig())).toBeUndefined();
+    });
   });
 });

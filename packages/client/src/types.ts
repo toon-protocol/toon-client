@@ -185,6 +185,32 @@ export interface ToonClientConfig {
   evmPrivateKey?: string | Uint8Array;
 
   // ============================================================================
+  // NETWORK TARGETING (optional)
+  // ============================================================================
+
+  /**
+   * Named network tier. When set (and != `'custom'`), the client defaults all
+   * settlement-related config — RPC/GraphQL URLs, supported chain identifiers,
+   * preferred tokens, EVM TokenNetwork addresses, and the Solana/Mina channel
+   * params (programId / zkApp) — from the shared core presets
+   * (`resolveClientNetwork`), so the caller no longer hand-wires every address.
+   * This is the client-side mirror of the townhouse node's `network` selector;
+   * both resolve the SAME deployed contracts.
+   *
+   * Precedence: any explicit per-chain field (`supportedChains`,
+   * `chainRpcUrls`, `settlementAddresses`, `preferredTokens`, `tokenNetworks`,
+   * `solanaChannel`, `minaChannel`) you also pass OVERRIDES the preset for that
+   * field. `'custom'` keeps the fully-manual path (no preset defaults). When
+   * unset, behaviour is unchanged (fully backward compatible).
+   *
+   * - `mainnet` — Base mainnet + public Solana/Mina (TOON contracts not yet
+   *   deployed → settlement unconfigured, relay-only).
+   * - `testnet` / `devnet` — Base Sepolia + Solana/Mina devnet with the LIVE
+   *   deployed TOON settlement contracts.
+   */
+  network?: 'mainnet' | 'testnet' | 'devnet' | 'custom';
+
+  // ============================================================================
   // SETTLEMENT PREFERENCES (optional)
   // ============================================================================
 
