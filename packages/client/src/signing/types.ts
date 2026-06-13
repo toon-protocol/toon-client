@@ -34,9 +34,12 @@ export interface ChainSigner {
     recipient: string;
     metadata: ChainMetadata;
     /**
-     * On-chain channel `depositTotal` (base units). Only the Mina signer uses it
-     * (binds `balanceB = depositTotal − balanceA`, toon-protocol/connector#133);
-     * the Solana and EVM adapters ignore it.
+     * On-chain channel `depositTotal` (base units). When supplied (>0), a Mina
+     * signer binds the conserved `balanceB = depositTotal − balanceA` commitment
+     * required to settle on a funded zkApp (connector#133); EVM/Solana signers
+     * ignore it. When omitted, a Mina signer self-resolves it from chain if it
+     * was configured with a GraphQL URL (#223), else falls back to the legacy
+     * `balanceB = 0` form.
      */
     depositTotal?: bigint;
   }): Promise<SignedBalanceProof>;

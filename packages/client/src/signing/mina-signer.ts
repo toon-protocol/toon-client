@@ -12,6 +12,22 @@ import {
   buildMinaPaymentChannelProof,
   loadMinaPaymentChannelBindings,
 } from '../channel/mina-payment-channel.js';
+import { readMinaDepositTotal } from '../channel/mina-deposit.js';
+
+/** Reads a channel zkApp's on-chain `depositTotal` (base units). */
+export type MinaDepositReader = (zkAppAddress: string) => Promise<bigint>;
+
+/** Optional `MinaSigner` wiring for on-chain `depositTotal` resolution. */
+export interface MinaSignerOptions {
+  /**
+   * Mina GraphQL URL used to read the channel's on-chain `depositTotal` when a
+   * caller doesn't supply it to `signBalanceProof`. Enables conserved
+   * `balanceB = depositTotal − balanceA` claims (settleable on funded zkApps).
+   */
+  graphqlUrl?: string;
+  /** Inject a deposit reader (tests / custom transport). Overrides `graphqlUrl`. */
+  depositReader?: MinaDepositReader;
+}
 
 /** Default Mina token id when the metadata omits one. */
 const DEFAULT_MINA_TOKEN_ID = 'MINA';
@@ -81,6 +97,9 @@ export class MinaSigner implements ChainSigner {
   /** Big-endian hex scalar (or already-`EK…` base58) Mina private key. */
   private readonly privateKey: string;
   private publicKeyBase58?: string;
+  private readonly depositReader?: MinaDepositReader;
+  /** Per-zkApp `depositTotal` cache (deposits are rare; the connector re-reads). */
+  private readonly depositCache = new Map<string, bigint>();
 
   /**
    * @param privateKey - Mina private key as big-endian hex scalar (the form
@@ -88,10 +107,44 @@ export class MinaSigner implements ChainSigner {
    *   base58 key. Converted to the base58check form mina-signer requires.
    * @param publicKeyBase58 - Optional base58 public key (e.g.
    *   `identity.mina.publicKey`). When omitted it is derived during signing.
+   * @param options - Optional on-chain `depositTotal` resolution (graphqlUrl or
+   *   an injected reader) so claims conserve balances on funded zkApps.
    */
-  constructor(privateKey: string, publicKeyBase58?: string) {
+  constructor(
+    privateKey: string,
+    publicKeyBase58?: string,
+    options?: MinaSignerOptions
+  ) {
     this.privateKey = privateKey;
     this.publicKeyBase58 = publicKeyBase58;
+    if (options?.depositReader) {
+      this.depositReader = options.depositReader;
+    } else if (options?.graphqlUrl) {
+      const url = options.graphqlUrl;
+      this.depositReader = (zkAppAddress) =>
+        readMinaDepositTotal(url, zkAppAddress);
+    }
+  }
+
+  /**
+   * Resolve the channel's on-chain `depositTotal`, caching per zkApp. Returns
+   * `undefined` when no reader is configured or the read fails — callers then
+   * fall back to the legacy `balanceB = 0` commitment.
+   */
+  private async resolveDepositTotal(
+    zkAppAddress: string
+  ): Promise<bigint | undefined> {
+    if (this.depositCache.has(zkAppAddress)) {
+      return this.depositCache.get(zkAppAddress);
+    }
+    if (!this.depositReader) return undefined;
+    try {
+      const depositTotal = await this.depositReader(zkAppAddress);
+      this.depositCache.set(zkAppAddress, depositTotal);
+      return depositTotal;
+    } catch {
+      return undefined;
+    }
   }
 
   get signerIdentifier(): string {
@@ -172,15 +225,21 @@ export class MinaSigner implements ChainSigner {
     // CLIENT must sign over that same balanceB or signatureA fails verification
     // ("participant A signature verification failed") at proof generation. When
     // depositTotal is unknown (legacy/off-chain-only), fall back to balanceB = 0.
+    // Prefer a caller-supplied depositTotal; otherwise self-resolve it from
+    // chain (when this signer was configured with a graphqlUrl / reader) so the
+    // claim conserves balances on a FUNDED zkApp. Falls back to balanceB = 0
+    // (legacy, off-chain-store-only) when neither is available.
+    const depositTotal =
+      params.depositTotal ?? (await this.resolveDepositTotal(zkAppAddress));
     let balanceB = 0n;
-    if (params.depositTotal != null && params.depositTotal > 0n) {
-      if (params.transferredAmount > params.depositTotal) {
+    if (depositTotal != null && depositTotal > 0n) {
+      if (params.transferredAmount > depositTotal) {
         throw new Error(
           `Mina claim balanceA (${params.transferredAmount}) exceeds on-chain ` +
-            `depositTotal (${params.depositTotal}) — cannot conserve balances`
+            `depositTotal (${depositTotal}) — cannot conserve balances`
         );
       }
-      balanceB = params.depositTotal - params.transferredAmount;
+      balanceB = depositTotal - params.transferredAmount;
     }
 
     const built = await buildMinaPaymentChannelProof({

@@ -276,6 +276,106 @@ describe('MinaSigner — connector 3.9.0 MinaClaimMessage contract', () => {
     expect(claim.balanceCommitment).not.toBe(legacy.toString());
   });
 
+  it('self-resolves depositTotal from the configured reader when not supplied (connector#133, issue #223)', async () => {
+    if (!minaAvailable) return;
+    const id = await deriveFullIdentity(TEST_MNEMONIC);
+    const depositTotal = 10_000_000n;
+    let reads = 0;
+    // No depositTotal passed to signBalanceProof — the signer must fetch it.
+    const signer = new MinaSigner(id.mina.privateKey, id.mina.publicKey, {
+      depositReader: async () => {
+        reads += 1;
+        return depositTotal;
+      },
+    });
+
+    const proof = await signer.signBalanceProof({
+      channelId: zkAppAddress,
+      nonce: NONCE,
+      transferredAmount: AMOUNT,
+      lockedAmount: 0n,
+      locksRoot: '0x00',
+      recipient: RECIPIENT,
+      metadata: makeMeta(),
+      // depositTotal intentionally omitted
+    });
+    const claim = signer.buildClaimMessage(
+      proof,
+      SENDER_ID
+    ) as MinaClaimMessage;
+
+    const { Poseidon } = await loadMinaPaymentChannelBindings();
+    const conserved = Poseidon.hash([
+      AMOUNT,
+      depositTotal - AMOUNT,
+      BigInt(claim.salt),
+    ]);
+    expect(claim.balanceCommitment).toBe(conserved.toString());
+    const legacy = Poseidon.hash([AMOUNT, 0n, BigInt(claim.salt)]);
+    expect(claim.balanceCommitment).not.toBe(legacy.toString());
+    expect(reads).toBe(1);
+
+    // A second signature reuses the cached depositTotal (no extra read).
+    await signer.signBalanceProof({
+      channelId: zkAppAddress,
+      nonce: NONCE + 1,
+      transferredAmount: AMOUNT,
+      lockedAmount: 0n,
+      locksRoot: '0x00',
+      recipient: RECIPIENT,
+      metadata: makeMeta(),
+    });
+    expect(reads).toBe(1);
+  });
+
+  it('falls back to legacy balanceB=0 when no depositTotal and no reader', async () => {
+    if (!minaAvailable) return;
+    const id = await deriveFullIdentity(TEST_MNEMONIC);
+    const signer = new MinaSigner(id.mina.privateKey, id.mina.publicKey);
+    const proof = await signer.signBalanceProof({
+      channelId: zkAppAddress,
+      nonce: NONCE,
+      transferredAmount: AMOUNT,
+      lockedAmount: 0n,
+      locksRoot: '0x00',
+      recipient: RECIPIENT,
+      metadata: makeMeta(),
+    });
+    const claim = signer.buildClaimMessage(
+      proof,
+      SENDER_ID
+    ) as MinaClaimMessage;
+    const { Poseidon } = await loadMinaPaymentChannelBindings();
+    const legacy = Poseidon.hash([AMOUNT, 0n, BigInt(claim.salt)]);
+    expect(claim.balanceCommitment).toBe(legacy.toString());
+  });
+
+  it('a failing deposit reader falls back to legacy balanceB=0 (no throw)', async () => {
+    if (!minaAvailable) return;
+    const id = await deriveFullIdentity(TEST_MNEMONIC);
+    const signer = new MinaSigner(id.mina.privateKey, id.mina.publicKey, {
+      depositReader: async () => {
+        throw new Error('graphql down');
+      },
+    });
+    const proof = await signer.signBalanceProof({
+      channelId: zkAppAddress,
+      nonce: NONCE,
+      transferredAmount: AMOUNT,
+      lockedAmount: 0n,
+      locksRoot: '0x00',
+      recipient: RECIPIENT,
+      metadata: makeMeta(),
+    });
+    const claim = signer.buildClaimMessage(
+      proof,
+      SENDER_ID
+    ) as MinaClaimMessage;
+    const { Poseidon } = await loadMinaPaymentChannelBindings();
+    const legacy = Poseidon.hash([AMOUNT, 0n, BigInt(claim.salt)]);
+    expect(claim.balanceCommitment).toBe(legacy.toString());
+  });
+
   it('rejects a claim whose balanceA exceeds depositTotal (conservation guard)', async () => {
     if (!minaAvailable) return;
     const id = await deriveFullIdentity(TEST_MNEMONIC);

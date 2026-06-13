@@ -44,6 +44,8 @@ export {
   type EVMClaimMessage,
   SolanaSigner,
   MinaSigner,
+  type MinaSignerOptions,
+  type MinaDepositReader,
   type ChainSigner,
   type ChainMetadata,
   type ClaimMessage,
@@ -56,6 +58,7 @@ export {
   OnChainChannelClient,
   type OnChainChannelClientConfig,
   ChannelManager,
+  readMinaDepositTotal,
 } from './channel/index.js';
 
 // Utilities

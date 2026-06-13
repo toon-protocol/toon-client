@@ -200,9 +200,17 @@ export class ToonClient {
     // Mina: only present when mina-signer is installed (optional dep).
     if (identity.mina.publicKey) {
       this.minaPrivateKey = identity.mina.privateKey;
+      // Pass the configured GraphQL URL so the signer can read the channel's
+      // on-chain `depositTotal` and bind the conserved `balanceB = depositTotal
+      // − balanceA` commitment that a funded zkApp requires (connector#133);
+      // without it Mina claims use the legacy balanceB=0 form and a funded zkApp
+      // rejects them (F06 - Invalid zk-SNARK proof on claim).
       this.minaSigner = new MinaSigner(
         identity.mina.privateKey,
-        identity.mina.publicKey
+        identity.mina.publicKey,
+        this.config.minaChannel?.graphqlUrl
+          ? { graphqlUrl: this.config.minaChannel.graphqlUrl }
+          : undefined
       );
       this.channelManager.registerChainSigner('mina', this.minaSigner);
     }

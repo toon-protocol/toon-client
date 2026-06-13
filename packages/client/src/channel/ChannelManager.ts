@@ -18,10 +18,13 @@ interface ChannelTracking {
    */
   recipient?: string;
   /**
-   * On-chain channel `depositTotal` (base units), captured at channel-open time.
-   * Threaded into the Mina signer so it binds `balanceB = depositTotal − balanceA`
-   * (toon-protocol/connector#133); the Solana signer ignores it and the EVM path
-   * never reads it.
+   * On-chain channel `depositTotal` (base units), captured at channel-open time
+   * (#220). Threaded into the Mina signer so it binds `balanceB = depositTotal −
+   * balanceA` (toon-protocol/connector#133); the Solana signer ignores it and
+   * the EVM path never reads it. When unset (e.g. a channel RESUMED via
+   * `trackChannel` rather than opened, or an idempotent re-open that didn't
+   * surface it), the Mina signer self-resolves it from chain via its GraphQL URL
+   * (#223).
    */
   depositTotal?: bigint;
 }
@@ -305,9 +308,10 @@ export class ChannelManager {
           '0x0000000000000000000000000000000000000000000000000000000000000000',
         recipient: tracking.recipient,
         metadata,
-        // On-chain depositTotal — the Mina signer binds
-        // balanceB = depositTotal − balanceA (connector#133); the Solana signer
-        // ignores it.
+        // On-chain depositTotal captured at open time (#220) — the Mina signer
+        // binds balanceB = depositTotal − balanceA (connector#133); the Solana
+        // signer ignores it. When undefined (resume / idempotent re-open) the
+        // Mina signer self-resolves it from chain (#223).
         depositTotal: tracking.depositTotal,
       });
     }
