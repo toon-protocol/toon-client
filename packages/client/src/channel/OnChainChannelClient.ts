@@ -430,7 +430,7 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       ? { amount: BigInt(this.minaConfig.deposit.amount) }
       : undefined;
 
-    await openMinaChannelOnChain({
+    const openResult = await openMinaChannelOnChain({
       graphqlUrl: this.minaConfig.graphqlUrl,
       zkAppAddress,
       payerPrivateKey: this.minaConfig.privateKey,
@@ -448,7 +448,14 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       tokenNetworkAddress: zkAppAddress,
     });
 
-    return { channelId: zkAppAddress, status: 'opening' };
+    // Surface the CURRENT on-chain depositTotal so the Mina signer can bind
+    // `balanceB = depositTotal − balanceA` (connector#133). Read at open time so
+    // a re-deposited channel signs against the live value, not a stale config.
+    return {
+      channelId: zkAppAddress,
+      status: 'opening',
+      depositTotal: openResult.depositTotal,
+    };
   }
 
   /**

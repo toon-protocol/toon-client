@@ -224,6 +224,13 @@ export interface OpenMinaChannelResult {
   depositTxHash?: string;
   /** On-chain channelState after the call (0=UNINIT,1=OPEN,2=CLOSING,3=SETTLED). */
   channelState: number;
+  /**
+   * On-chain `depositTotal` (base units), read from the zkApp appState after the
+   * open/deposit settled. The Mina balance-proof signer needs this so it can bind
+   * `balanceB = depositTotal − balanceA` (toon-protocol/connector#133). A channel
+   * can be re-deposited, so this is the CURRENT on-chain value, not a config one.
+   */
+  depositTotal: bigint;
 }
 
 /**
@@ -282,6 +289,25 @@ export async function openMinaChannelOnChain(
     // nonceField, channelState, depositTotal, ...] → channelState is index 3.
     const appState = res.account.zkapp?.appState;
     const raw = appState?.[3]?.toString() ?? '0';
+    return BigInt(raw);
+  };
+
+  // Read the on-chain `depositTotal` (appState index 4). The signer must bind
+  // `balanceB = depositTotal − balanceA` against this CURRENT on-chain value
+  // (connector#133); a channel can be re-deposited, so a stale config value
+  // would fail the signatureA verification on settle. A missing account is a
+  // hard error (same as readChannelState).
+  const readDepositTotal = async (): Promise<bigint> => {
+    const res = await fetchAccount({ publicKey: zkAppPublicKey });
+    if (res.error || !res.account) {
+      throw new Error(
+        `Mina zkApp account ${params.zkAppAddress} not found on-chain (${String(
+          res.error
+        )}) — deploy the PaymentChannel zkApp before opening a channel`
+      );
+    }
+    const appState = res.account.zkapp?.appState;
+    const raw = appState?.[4]?.toString() ?? '0';
     return BigInt(raw);
   };
 
@@ -407,11 +433,22 @@ export async function openMinaChannelOnChain(
   // refactor stops referencing it directly above; harmless no-op.
   void AccountUpdate;
 
+  // Read the resulting on-chain depositTotal (post init+deposit confirmation, so
+  // a fresh re-deposit is reflected). Best-effort: fall back to 0n if the read
+  // throws on a slow node — the connector re-reads at verification time.
+  let depositTotal: bigint;
+  try {
+    depositTotal = await readDepositTotal();
+  } catch {
+    depositTotal = 0n;
+  }
+
   return {
     zkAppAddress: params.zkAppAddress,
     opened,
     initTxHash,
     depositTxHash,
     channelState: finalState,
+    depositTotal,
   };
 }

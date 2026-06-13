@@ -1,8 +1,18 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { generatePrivateKey } from 'viem/accounts';
+import { deriveFullIdentity } from '@toon-protocol/core';
 import { EvmSigner } from '../signing/evm-signer.js';
+import { MinaSigner } from '../signing/mina-signer.js';
 import { ChannelManager } from './ChannelManager.js';
 import type { ChannelStore } from './ChannelStore.js';
+import { loadMinaPaymentChannelBindings } from './mina-payment-channel.js';
+
+// A deterministic 12-word test mnemonic (BIP-39) for Mina identity derivation.
+const TEST_MNEMONIC =
+  'test test test test test test test test test test test junk';
+// A valid B62 Mina recipient (apex settlement pubkey, participantB) so the
+// signer takes the on-chain participant-form channelHash path.
+const MINA_RECIPIENT = 'B62qktYjkc9HQQEFwlsdyQECCnQjMKLDDxntn6ZBQXt7XPjZ9hRJ7q';
 
 describe('ChannelManager', () => {
   let signer: EvmSigner;
@@ -137,6 +147,66 @@ describe('ChannelManager', () => {
 
       expect(proof.nonce).toBe(11);
       expect(proof.transferredAmount).toBe(51000n);
+    });
+  });
+
+  describe('Mina depositTotal threading (connector#133, issue #219)', () => {
+    let minaAvailable = false;
+    let zkAppAddress: string; // valid B62 Pallas point used as the channel id
+
+    beforeAll(async () => {
+      try {
+        // Derive a real, valid B62 address (Pallas point) to use as the Mina
+        // channel id / zkAppAddress. mina-signer is optional — skip if absent.
+        const id = await deriveFullIdentity(TEST_MNEMONIC);
+        zkAppAddress = id.mina.publicKey;
+        await loadMinaPaymentChannelBindings();
+        minaAvailable = !!zkAppAddress;
+      } catch {
+        minaAvailable = false;
+      }
+    });
+
+    it('binds balanceB = depositTotal − amount for a Mina channel tracked with on-chain depositTotal', async () => {
+      if (!minaAvailable) return; // optional dep absent — skip, do not false-pass
+      const id = await deriveFullIdentity(TEST_MNEMONIC);
+      const minaSigner = new MinaSigner(id.mina.privateKey, id.mina.publicKey);
+
+      const mgr = new ChannelManager(signer);
+      mgr.registerChainSigner('mina', minaSigner);
+
+      // Mimic ensureChannel/trackChannel after an on-chain Mina open: the opener
+      // read depositTotal=D from the zkApp appState (index 4) and threaded it in.
+      const depositTotal = 10_000_000n;
+      const amount = 1000n;
+      mgr.trackChannel(zkAppAddress, {
+        chainType: 'mina',
+        chainId: 0,
+        tokenNetworkAddress: zkAppAddress,
+        recipient: MINA_RECIPIENT,
+        depositTotal,
+      });
+
+      const proof = await mgr.signBalanceProof(zkAppAddress, amount);
+
+      expect(proof.mina).toBeDefined();
+      // The signed commitment must bind balanceB = depositTotal − amount — the
+      // SAME conserved value the connector reconstructs from the on-chain
+      // depositTotal (connector#133), so the on-chain claimFromChannel
+      // signatureA check passes. Reuse the mina-signer.test.ts:242 assertion:
+      // recompute Poseidon([amount, depositTotal − amount, salt]) and match.
+      const { Poseidon } = await loadMinaPaymentChannelBindings();
+      const conserved = Poseidon.hash([
+        amount,
+        depositTotal - amount,
+        BigInt(proof.mina!.salt),
+      ]);
+      expect(proof.mina!.balanceCommitment).toBe(conserved.toString());
+
+      // …and it must NOT be the legacy balanceB=0 commitment (#133 rejects that
+      // on-chain as non-conserving — the bug this fix addresses).
+      const legacy = Poseidon.hash([amount, 0n, BigInt(proof.mina!.salt)]);
+      expect(proof.mina!.balanceCommitment).not.toBe(legacy.toString());
     });
   });
 

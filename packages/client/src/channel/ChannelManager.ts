@@ -17,6 +17,13 @@ interface ChannelTracking {
    * the EVM EIP-712 path.
    */
   recipient?: string;
+  /**
+   * On-chain channel `depositTotal` (base units), captured at channel-open time.
+   * Threaded into the Mina signer so it binds `balanceB = depositTotal − balanceA`
+   * (toon-protocol/connector#133); the Solana signer ignores it and the EVM path
+   * never reads it.
+   */
+  depositTotal?: bigint;
 }
 
 export interface ChannelManagerConfig {
@@ -168,6 +175,9 @@ export class ChannelManager {
           tokenNetworkAddress: negotiation.tokenNetwork ?? '',
           tokenAddress: negotiation.tokenAddress,
           recipient: negotiation.settlementAddress,
+          // On-chain depositTotal (Mina only) — needed so the Mina signer binds
+          // balanceB = depositTotal − balanceA (connector#133).
+          depositTotal: result.depositTotal,
         });
         this.peerChannels.set(peerId, result.channelId);
         return result.channelId;
@@ -204,6 +214,7 @@ export class ChannelManager {
       tokenNetworkAddress: string;
       tokenAddress?: string;
       recipient?: string;
+      depositTotal?: bigint;
     },
     initialNonce = 0,
     initialAmount = 0n
@@ -225,6 +236,7 @@ export class ChannelManager {
           tokenNetworkAddress: tnAddr,
           tokenAddress: chainContext?.tokenAddress,
           recipient: chainContext?.recipient,
+          depositTotal: chainContext?.depositTotal,
         });
         return;
       }
@@ -238,6 +250,7 @@ export class ChannelManager {
       tokenNetworkAddress: tnAddr,
       tokenAddress: chainContext?.tokenAddress,
       recipient: chainContext?.recipient,
+      depositTotal: chainContext?.depositTotal,
     });
   }
 
@@ -292,6 +305,10 @@ export class ChannelManager {
           '0x0000000000000000000000000000000000000000000000000000000000000000',
         recipient: tracking.recipient,
         metadata,
+        // On-chain depositTotal — the Mina signer binds
+        // balanceB = depositTotal − balanceA (connector#133); the Solana signer
+        // ignores it.
+        depositTotal: tracking.depositTotal,
       });
     }
 

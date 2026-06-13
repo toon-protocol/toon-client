@@ -33,6 +33,12 @@ export interface ChainSigner {
      */
     recipient: string;
     metadata: ChainMetadata;
+    /**
+     * On-chain channel `depositTotal` (base units). Only the Mina signer uses it
+     * (binds `balanceB = depositTotal − balanceA`, toon-protocol/connector#133);
+     * the Solana and EVM adapters ignore it.
+     */
+    depositTotal?: bigint;
   }): Promise<SignedBalanceProof>;
   buildClaimMessage(proof: SignedBalanceProof, senderId: string): ClaimMessage;
 }
