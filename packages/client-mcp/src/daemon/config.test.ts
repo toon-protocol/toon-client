@@ -177,6 +177,21 @@ describe('daemon config', () => {
     expect(sol.apex?.settlementAddress).toBe('SoLApex');
   });
 
+  it('passes apexChildPeers through (and omits the key when unset)', () => {
+    const withChildren = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex/btp',
+      apexChildPeers: ['dvm', 'mill'],
+    });
+    expect(withChildren.apexChildPeers).toEqual(['dvm', 'mill']);
+
+    const without = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex/btp',
+    });
+    expect(without.apexChildPeers).toBeUndefined();
+  });
+
   it('TOON_CLIENT_CHAIN overrides the configured chain', () => {
     process.env['TOON_CLIENT_CHAIN'] = 'mina';
     const cfg = resolveConfig({

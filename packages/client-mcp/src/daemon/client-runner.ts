@@ -132,6 +132,7 @@ export class ClientRunner {
       await this.client.start();
       this.injectApexNegotiation(this.config.apex);
       this.apexChannelId = await this.openOrResumeApexChannel();
+      this.routeChildPeersThroughApexChannel();
       this.ready = true;
       this.lastError = undefined;
       this.log(`[runner] ready; apex channel ${this.apexChannelId}`);
@@ -216,6 +217,51 @@ export class ClientRunner {
       tokenNetwork: apex.tokenNetwork,
     });
     this.log(`[runner] injected apex negotiation for peer "${apex.peerId}"`);
+  }
+
+  /**
+   * Route additional apex CHILD peers (e.g. `dvm`, `mill`) through the SAME
+   * apex payment channel. In the parent→child apex model the client holds ONE
+   * channel with the apex (g.townhouse) and pays via it regardless of which
+   * child the ILP destination addresses; but `ToonClient.resolvePeerId` keys off
+   * the destination's last segment (`town`/`dvm`/`mill`), so without this each
+   * child would (a) fail the "no negotiation for peer" guard and (b) try to open
+   * a SECOND on-chain channel to the same apex receive (which reverts —
+   * channel-exists). So: inject the same apex negotiation under each child peer
+   * AND pre-map its peer→channel to the already-open apex channel so
+   * `ensureChannel` reuses it (no second open; one shared nonce sequence).
+   */
+  private routeChildPeersThroughApexChannel(): void {
+    const apex = this.config.apex;
+    const children = this.config.apexChildPeers ?? [];
+    if (!apex || !this.apexChannelId || children.length === 0) return;
+    const client = this.client as unknown as {
+      peerNegotiations?: Map<string, unknown>;
+      channelManager?: { peerChannels?: Map<string, string> };
+    };
+    const negotiations = client.peerNegotiations;
+    const peerChannels = client.channelManager?.peerChannels;
+    if (!(negotiations instanceof Map) || !(peerChannels instanceof Map)) {
+      this.log(
+        '[runner] cannot route child peers — ToonClient internals layout changed'
+      );
+      return;
+    }
+    for (const peer of children) {
+      if (peer === apex.peerId) continue;
+      negotiations.set(peer, {
+        chain: apex.chainKey,
+        chainType: apex.chain,
+        chainId: apex.chainId,
+        settlementAddress: apex.settlementAddress,
+        tokenAddress: apex.tokenAddress,
+        tokenNetwork: apex.tokenNetwork,
+      });
+      peerChannels.set(peer, this.apexChannelId);
+      this.log(
+        `[runner] routed child peer "${peer}" through apex channel ${this.apexChannelId}`
+      );
+    }
   }
 
   isReady(): boolean {

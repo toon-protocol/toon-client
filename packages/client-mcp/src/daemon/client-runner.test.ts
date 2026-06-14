@@ -161,6 +161,54 @@ describe('ClientRunner', () => {
     });
   });
 
+  it('routes apex child peers through the same apex channel (one on-chain open)', async () => {
+    // A client whose channelManager exposes the peerChannels map, like the real
+    // ToonClient. Child peers must reuse the open apex channel, not open a 2nd.
+    const childClient = new FakeClient();
+    const peerChannels = new Map<string, string>();
+    (childClient as unknown as { channelManager: unknown }).channelManager = {
+      peerChannels,
+    };
+    const openSpy = vi.spyOn(childClient, 'openChannel');
+    const r = new ClientRunner({
+      config: makeConfig({
+        apex: {
+          destination: 'g.townhouse.town',
+          peerId: 'town',
+          chain: 'evm',
+          chainKey: 'evm:base:84532',
+          chainId: 84532,
+          settlementAddress: '0xapex',
+          tokenAddress: '0xusdc',
+          tokenNetwork: '0xtn',
+        },
+        apexChildPeers: ['dvm', 'mill'],
+      }),
+      createClient: () => childClient,
+      createRelay: fakeRelay,
+    });
+    await r.bootstrap();
+
+    // Each child gets the apex negotiation injected...
+    for (const peer of ['dvm', 'mill']) {
+      expect(childClient.peerNegotiations.get(peer)).toMatchObject({
+        chainType: 'evm',
+        settlementAddress: '0xapex',
+        tokenNetwork: '0xtn',
+      });
+      // ...and is pre-mapped to the already-open apex channel.
+      expect(peerChannels.get(peer)).toBe('chan-1');
+    }
+    // The apex channel opened exactly once; children reuse it (no re-deposit).
+    expect(openSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips child-peer routing when none are configured (back-compat)', async () => {
+    await runner.bootstrap();
+    expect(client.peerNegotiations.has('dvm')).toBe(false);
+    expect(client.peerNegotiations.has('mill')).toBe(false);
+  });
+
   it('persists the apex channelId after first open', async () => {
     await runner.bootstrap();
     const saved = JSON.parse(

@@ -77,6 +77,14 @@ export interface DaemonConfigFile {
    * others are retained so switching chains needs only a `chain`/restart change.
    */
   apexChains?: Partial<Record<SettlementChain, ApexNegotiationConfig>>;
+  /**
+   * Additional apex CHILD peers (last ILP segment, e.g. `["dvm","mill"]`)
+   * reachable via the SAME apex channel — used when publishing/swapping to
+   * `g.townhouse.dvm` / `g.townhouse.mill`. The runner injects the apex
+   * negotiation under each and points it at the open apex channel (no extra
+   * on-chain channel). The apex `peerId` itself is always handled.
+   */
+  apexChildPeers?: string[];
   /** Extra settlement overrides passed straight through to ToonClient. */
   supportedChains?: string[];
   settlementAddresses?: Record<string, string>;
@@ -96,6 +104,8 @@ export interface ResolvedDaemonConfig {
   destination: string;
   feePerEvent: bigint;
   apex?: ApexNegotiationConfig;
+  /** Apex child peers reached via the same apex channel (e.g. dvm, mill). */
+  apexChildPeers?: string[];
   /** The active settlement chain for paid writes. */
   chain: SettlementChain;
   /** File mapping (destination, chain) → on-chain channelId for restart resume. */
@@ -263,6 +273,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     destination,
     feePerEvent,
     apex,
+    ...(file.apexChildPeers ? { apexChildPeers: file.apexChildPeers } : {}),
     chain,
     apexChannelStorePath,
     toonClientConfig,
