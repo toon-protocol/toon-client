@@ -44,9 +44,10 @@ const RELEASE_BASE = `https://github.com/anyone-protocol/ator-protocol/releases/
 
 /**
  * Per-platform `anon` zip asset descriptor. `sha256` is the pinned checksum of the
- * release zip; entries with `sha256: null` are recognised (correct asset name) but
- * cannot be auto-downloaded until a checksum is pinned — cross-reference issue #204
- * to add the remaining hashes (linux amd64/arm64, macos amd64).
+ * release zip. All supported platforms are pinned (issue #204); the type stays
+ * `string | null` and the download gate still defensively refuses a `null` entry,
+ * so adding a new (not-yet-hashed) platform fails closed rather than skipping
+ * verification.
  */
 export interface AnonAsset {
   /** Release asset file name, e.g. `anon-beta-macos-arm64.zip`. */
@@ -60,8 +61,9 @@ export interface AnonAsset {
  * Only macOS + Linux on x64/arm64 are supported (the `anon` releases that ship a
  * SOCKS-capable binary). Windows is intentionally absent.
  *
- * Pinned checksums (issue #204 tracks filling in the nulls):
- *   - darwin-arm64 (anon-beta-macos-arm64.zip): verified working manual flow.
+ * Pinned checksums (issue #204): all four supported platforms are pinned to the
+ * sha256 of the `v0.4.10.0-beta` release zips (downloaded + hashed; the
+ * darwin-arm64 value matches the previously-verified manual flow).
  */
 export const ANON_ASSETS: Record<string, AnonAsset> = {
   'darwin-arm64': {
@@ -70,15 +72,15 @@ export const ANON_ASSETS: Record<string, AnonAsset> = {
   },
   'darwin-x64': {
     assetName: 'anon-beta-macos-amd64.zip',
-    sha256: null,
+    sha256: 'aad277849b1e63baa75891b9e5109683534e488776ff190e884e34caa04a6d54',
   },
   'linux-x64': {
     assetName: 'anon-beta-linux-amd64.zip',
-    sha256: null,
+    sha256: '370c86f366e7f4cad896e2ef4bbd366a4e78a832c8d58064012f86c88c411a6b',
   },
   'linux-arm64': {
     assetName: 'anon-beta-linux-arm64.zip',
-    sha256: null,
+    sha256: '382d21db1052b6a0f1581bf38c9cf79b370719e313781c0eba53ef0d9570334a',
   },
 };
 

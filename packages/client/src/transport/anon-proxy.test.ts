@@ -189,21 +189,40 @@ describe('ensureAnonBinary (download + checksum gate)', () => {
     expect(existsSync(join(cacheDir, 'anon-beta-macos-arm64.zip'))).toBe(false);
   });
 
-  it('refuses platforms whose checksum is not yet pinned (issue #204)', async () => {
+  it('has a pinned sha256 for every supported platform (issue #204)', () => {
+    for (const [key, asset] of Object.entries(ANON_ASSETS)) {
+      expect(
+        asset.sha256,
+        `${key} (${asset.assetName}) must have a pinned sha256`
+      ).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it('refuses a platform whose checksum is not pinned (defensive guard, issue #204)', async () => {
     cacheDir = mkdtempSync(join(tmpdir(), 'anon-test-'));
+    // All real platforms are now pinned (#204), so exercise the defensive
+    // null-checksum guard by temporarily un-pinning one and restoring after.
+    const entry = ANON_ASSETS['linux-x64'];
+    if (!entry) throw new Error('test setup: linux-x64 asset missing');
+    const original = entry.sha256;
+    entry.sha256 = null;
     let downloadCalled = false;
-    await expect(
-      ensureAnonBinary({
-        cacheDir,
-        platform: 'linux',
-        arch: 'x64', // sha256: null in the table
-        download: async () => {
-          downloadCalled = true;
-        },
-        extract: async () => {},
-      })
-    ).rejects.toThrow(/no pinned checksum/);
-    expect(downloadCalled).toBe(false);
+    try {
+      await expect(
+        ensureAnonBinary({
+          cacheDir,
+          platform: 'linux',
+          arch: 'x64',
+          download: async () => {
+            downloadCalled = true;
+          },
+          extract: async () => {},
+        })
+      ).rejects.toThrow(/no pinned checksum/);
+      expect(downloadCalled).toBe(false);
+    } finally {
+      entry.sha256 = original;
+    }
   });
 
   it('skips re-download when an extracted anon binary already exists', async () => {
