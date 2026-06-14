@@ -620,7 +620,7 @@ describe('network targeting (#202)', () => {
       );
       expect(c.solanaChannel?.rpcUrl).toBe('https://api.devnet.solana.com');
       expect(c.minaChannel?.zkAppAddress).toBe(
-        'B62qjFgXZWDWVE4P6h63JSzdMRzXpqJEgMM3Gt6PvWzzrSCawBZ4hE3'
+        'B62qrH1As4odHiNyKpTZMHaM6tRs6gi5DJ53efZKQBtbaR5CUctbDs6'
       );
       expect(c.minaChannel?.networkId).toBe('devnet');
     });
