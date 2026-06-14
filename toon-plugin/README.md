@@ -12,7 +12,7 @@ auto-activates when you ask to publish/read/pay/swap on TOON.
 | Part | Path | Role |
 |---|---|---|
 | Manifest | `.claude-plugin/plugin.json` | Plugin name/version/metadata |
-| Marketplace entry | `.claude-plugin/marketplace.json` | Lets this repo act as a one-plugin marketplace |
+| Marketplace entry | `<repo-root>/.claude-plugin/marketplace.json` | Lets the `toon-protocol/town` repo act as a one-plugin marketplace (lists this plugin with `source: ./toon-plugin`). A GitHub-repo marketplace is discovered at the **repo root**, not in the plugin subdir. |
 | Skill | `skills/toon-client/SKILL.md` (+ `references/`, `evals/`) | Teaches pay-to-write / free-read / settlement |
 | MCP server | `.mcp.json` | Declares the `toon` MCP server, run via `npx @toon-protocol/client-mcp` |
 
@@ -35,9 +35,11 @@ claude --plugin-dir /path/to/town/toon-plugin
 /plugin install toon@toon
 ```
 
-> The marketplace points at `toon-plugin/` in the `toon-protocol/town` repo. To
-> ship it standalone, copy this directory into its own repo and add that repo as
-> the marketplace source instead.
+> The marketplace manifest lives at the **repo root** (`/.claude-plugin/marketplace.json`)
+> and points to this plugin via `source: ./toon-plugin` (a GitHub-repo marketplace
+> is resolved at the repo root, not in a subdir). To ship the plugin standalone,
+> copy `toon-plugin/` into its own repo and add a `.claude-plugin/marketplace.json`
+> at *that* repo's root with `source: ./`.
 
 ## Prerequisites
 
