@@ -93,16 +93,29 @@ describe('dispatchTool', () => {
     expect(events).toHaveBeenCalledWith({ cursor: 5, limit: 10 });
   });
 
-  it('toon_swap coerces destination/amount to strings', async () => {
-    const swap = vi.fn().mockResolvedValue({ accepted: true });
+  it('toon_swap forwards the swap params (coercing destination/amount)', async () => {
+    const swap = vi.fn().mockResolvedValue({ accepted: true, claims: [] });
     const client = stubClient({ swap });
+    const pair = {
+      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+      rate: '1.0',
+    };
     await dispatchTool(client, 'toon_swap', {
       destination: 'g.toon.mill',
       amount: 100,
+      millPubkey: 'cd'.repeat(32),
+      pair,
+      chainRecipient: 'SoLrecipient',
+      packetCount: 2,
     });
     expect(swap).toHaveBeenCalledWith({
       destination: 'g.toon.mill',
       amount: '100',
+      millPubkey: 'cd'.repeat(32),
+      pair,
+      chainRecipient: 'SoLrecipient',
+      packetCount: 2,
     });
   });
 

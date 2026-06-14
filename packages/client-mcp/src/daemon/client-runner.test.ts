@@ -1,4 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Mock the SDK swap boundary so swap() can be unit-tested without a real mill
+// (a faithful fake would have to unwrap the gift wrap + encrypt a FULFILL to the
+// ephemeral key generated inside swap()).
+vi.mock('@toon-protocol/sdk/swap', () => ({ streamSwap: vi.fn() }));
+import { streamSwap } from '@toon-protocol/sdk/swap';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -329,19 +335,110 @@ describe('ClientRunner', () => {
     ]);
   });
 
-  it('swap base64-decodes toonData and forwards to the client', async () => {
+  it('swap streams via streamSwap and maps the accumulated claims', async () => {
     await runner.bootstrap();
-    const spy = vi.spyOn(client, 'sendSwapPacket');
+    const pair = {
+      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+      rate: '1.0',
+    };
+    vi.mocked(streamSwap).mockResolvedValue({
+      state: 'completed',
+      claims: [
+        {
+          packetIndex: 0,
+          sourceAmount: 1000n,
+          targetAmount: 999n,
+          claimBytes: new Uint8Array([1, 2, 3, 4]),
+          millEphemeralPubkey: 'ab'.repeat(32),
+          claimId: 'claim-1',
+          channelId: '1111',
+          recipient: 'SoLrecipient',
+          millSignerAddress: 'MILLsigner',
+          nonce: '1',
+          cumulativeAmount: '999',
+          pair,
+          receivedAt: 0,
+        },
+      ],
+      rejections: [],
+      errors: [],
+      abortReason: 'complete',
+      cumulativeSource: 1000n,
+      cumulativeTarget: 999n,
+      packetsSent: 1,
+      packetsScheduled: 1,
+    } as unknown as Awaited<ReturnType<typeof streamSwap>>);
+
     const res = await runner.swap({
-      destination: 'g.toon.mill',
-      amount: '100',
-      toonData: Buffer.from('hello').toString('base64'),
+      destination: 'g.townhouse.mill',
+      amount: '1000',
+      millPubkey: 'cd'.repeat(32),
+      pair,
+      chainRecipient: 'SoLrecipient',
     });
+
+    // streamSwap got the request params (default single packet).
+    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
+    expect(arg.millIlpAddress).toBe('g.townhouse.mill');
+    expect(arg.millPubkey).toBe('cd'.repeat(32));
+    expect(arg.totalAmount).toBe(1000n);
+    expect(arg.chainRecipient).toBe('SoLrecipient');
+    expect(arg.packetCount).toBe(1);
+
+    // The accumulated claim is mapped (claimBytes → base64).
     expect(res.accepted).toBe(true);
-    expect(spy.mock.calls[0]![0].amount).toBe(100n);
-    expect(Buffer.from(spy.mock.calls[0]![0].toonData).toString()).toBe(
-      'hello'
-    );
+    expect(res.packetsAccepted).toBe(1);
+    expect(res.cumulativeTarget).toBe('999');
+    expect(res.state).toBe('completed');
+    expect(res.claims[0]).toMatchObject({
+      sourceAmount: '1000',
+      targetAmount: '999',
+      claim: Buffer.from([1, 2, 3, 4]).toString('base64'),
+      channelId: '1111',
+      recipient: 'SoLrecipient',
+      millSignerAddress: 'MILLsigner',
+      claimId: 'claim-1',
+    });
+  });
+
+  it('swap surfaces a mill rejection (no claims) as not-accepted', async () => {
+    await runner.bootstrap();
+    const pair = {
+      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+      rate: '1.0',
+    };
+    vi.mocked(streamSwap).mockResolvedValue({
+      state: 'failed',
+      claims: [],
+      rejections: [
+        {
+          packetIndex: 0,
+          sourceAmount: 1000n,
+          code: 'F99',
+          message: 'Payment rejected',
+        },
+      ],
+      errors: [],
+      abortReason: 'all-rejected',
+      cumulativeSource: 0n,
+      cumulativeTarget: 0n,
+      packetsSent: 1,
+      packetsScheduled: 1,
+    } as unknown as Awaited<ReturnType<typeof streamSwap>>);
+
+    const res = await runner.swap({
+      destination: 'g.townhouse.mill',
+      amount: '1000',
+      millPubkey: 'cd'.repeat(32),
+      pair,
+      chainRecipient: 'SoLrecipient',
+    });
+    expect(res.accepted).toBe(false);
+    expect(res.packetsAccepted).toBe(0);
+    expect(res.code).toBe('F99');
+    expect(res.message).toBe('Payment rejected');
   });
 
   it('subscribe + getEvents delegate to the relay subscription', async () => {

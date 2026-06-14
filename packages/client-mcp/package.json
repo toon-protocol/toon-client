@@ -47,6 +47,7 @@
   "devDependencies": {
     "@toon-protocol/client": "workspace:*",
     "@toon-protocol/core": "workspace:*",
+    "@toon-protocol/sdk": "workspace:*",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.5.10",
     "tsup": "^8.0.0",

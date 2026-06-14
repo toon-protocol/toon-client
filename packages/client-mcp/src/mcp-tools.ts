@@ -7,7 +7,11 @@
 
 import { ControlApiError, DaemonUnreachableError } from './control-client.js';
 import type { ControlClient } from './control-client.js';
-import type { NostrFilter, PublishRequest } from './control-api.js';
+import type {
+  NostrFilter,
+  PublishRequest,
+  SwapRequest,
+} from './control-api.js';
 
 /** A JSON-Schema-described MCP tool. */
 export interface ToolDefinition {
@@ -144,21 +148,49 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'toon_swap',
     description:
       'Pay a mill peer (asset A) to receive asset B plus a signed target-chain ' +
-      'claim. Returns the FULFILL data when accepted.',
+      'claim. Builds the NIP-59 gift-wrapped kind:20032 swap rumor and streams ' +
+      'it; the source-asset claim is signed against the open apex channel (the ' +
+      'mill must be routed via apexChildPeers). Returns the accumulated, ' +
+      'decrypted target-chain claim(s) and settlement metadata.',
     inputSchema: {
       type: 'object',
       properties: {
         destination: {
           type: 'string',
-          description: 'Mill peer ILP destination.',
+          description: 'Mill peer ILP destination (e.g. g.townhouse.mill).',
         },
-        amount: { type: 'string', description: 'Amount to send, base units.' },
-        toonData: {
+        amount: {
           type: 'string',
-          description: 'Optional base64 TOON payload.',
+          description: 'Total source-asset amount to swap, source micro-units.',
+        },
+        millPubkey: {
+          type: 'string',
+          description:
+            "Mill's 64-char lowercase hex Nostr pubkey (gift-wrap recipient).",
+        },
+        pair: {
+          type: 'object',
+          description:
+            'The swap pair (from kind:10032 discovery or operator-supplied): ' +
+            '{ from:{assetCode,assetScale,chain}, to:{...}, rate, minAmount?, maxAmount? }.',
+        },
+        chainRecipient: {
+          type: 'string',
+          description:
+            "Sender's payout address on pair.to.chain (EVM 0x-hex / Solana / Mina base58).",
+        },
+        packetCount: {
+          type: 'number',
+          description: 'Split the swap into N equal packets (default 1).',
         },
       },
-      required: ['destination', 'amount'],
+      required: [
+        'destination',
+        'amount',
+        'millPubkey',
+        'pair',
+        'chainRecipient',
+      ],
       additionalProperties: false,
     },
   },
@@ -227,8 +259,11 @@ export async function dispatchTool(
           await client.swap({
             destination: String(args['destination']),
             amount: String(args['amount']),
-            ...(typeof args['toonData'] === 'string'
-              ? { toonData: args['toonData'] }
+            millPubkey: String(args['millPubkey']),
+            pair: args['pair'] as SwapRequest['pair'],
+            chainRecipient: String(args['chainRecipient']),
+            ...(typeof args['packetCount'] === 'number'
+              ? { packetCount: args['packetCount'] }
               : {}),
           })
         );

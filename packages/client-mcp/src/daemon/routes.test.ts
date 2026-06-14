@@ -1,4 +1,30 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// swap() streams via the SDK; mock the boundary so route wiring tests don't need
+// a real mill. The mock returns a single accepted claim.
+vi.mock('@toon-protocol/sdk/swap', () => ({
+  streamSwap: vi.fn().mockResolvedValue({
+    state: 'completed',
+    claims: [
+      {
+        packetIndex: 0,
+        sourceAmount: 10n,
+        targetAmount: 10n,
+        claimBytes: new Uint8Array([1]),
+        millEphemeralPubkey: 'ab'.repeat(32),
+        pair: {},
+        receivedAt: 0,
+      },
+    ],
+    rejections: [],
+    errors: [],
+    abortReason: 'complete',
+    cumulativeSource: 10n,
+    cumulativeTarget: 10n,
+    packetsSent: 1,
+    packetsScheduled: 1,
+  }),
+}));
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -176,7 +202,17 @@ describe('control-plane routes', () => {
       const res = await app.inject({
         method: 'POST',
         url: '/swap',
-        payload: { destination: 'g.toon.mill', amount: '10' },
+        payload: {
+          destination: 'g.toon.mill',
+          amount: '10',
+          millPubkey: 'cd'.repeat(32),
+          pair: {
+            from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+            to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+            rate: '1.0',
+          },
+          chainRecipient: 'SoLrecipient',
+        },
       });
       expect(res.statusCode).toBe(200);
       expect(res.json().accepted).toBe(true);
@@ -187,6 +223,15 @@ describe('control-plane routes', () => {
         method: 'POST',
         url: '/swap',
         payload: { amount: '10' },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('POST /swap rejects a missing pair/millPubkey/chainRecipient with 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/swap',
+        payload: { destination: 'g.toon.mill', amount: '10' },
       });
       expect(res.statusCode).toBe(400);
     });

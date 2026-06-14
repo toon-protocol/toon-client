@@ -14,7 +14,9 @@
  */
 
 import type { NostrEvent } from 'nostr-tools/pure';
+import { generateSecretKey } from 'nostr-tools/pure';
 import { decodeEventFromToon } from '@toon-protocol/core';
+import { streamSwap } from '@toon-protocol/sdk/swap';
 import { RelaySubscription } from '../relay-subscription.js';
 import type {
   ChannelsResponse,
@@ -372,22 +374,57 @@ export class ClientRunner {
     return { channels };
   }
 
-  /** Send a swap packet to a mill peer. */
+  /**
+   * Swap source asset → target asset against a mill peer.
+   *
+   * Uses SDK `streamSwap`, which builds a NIP-59 gift-wrapped kind:20032 swap
+   * rumor per packet and sends it over the open BTP session. The source-asset
+   * balance proof is signed by the ToonClient's ChannelManager against the apex
+   * channel — so the mill peer MUST be routed via `apexChildPeers` (otherwise
+   * there is no channel to sign against and the mill rejects with F99).
+   *
+   * A fresh ephemeral gift-wrap key is generated per swap (used for sealing the
+   * rumor AND decrypting the FULFILL claims) — independent of the daemon's
+   * settlement identity, so callers never need to expose a key.
+   */
   async swap(req: SwapRequest): Promise<SwapResponse> {
     this.assertReady();
-    const toonData = req.toonData
-      ? new Uint8Array(Buffer.from(req.toonData, 'base64'))
-      : new Uint8Array(0);
-    const result = await this.client.sendSwapPacket({
-      destination: req.destination,
-      amount: BigInt(req.amount),
-      toonData,
+    const senderSecretKey = generateSecretKey();
+    const result = await streamSwap({
+      client: this.client as unknown as Parameters<
+        typeof streamSwap
+      >[0]['client'],
+      millPubkey: req.millPubkey,
+      millIlpAddress: req.destination,
+      pair: req.pair,
+      senderSecretKey,
+      chainRecipient: req.chainRecipient,
+      totalAmount: BigInt(req.amount),
+      packetCount: req.packetCount ?? 1,
     });
+    const firstReject = result.rejections[0];
     return {
-      accepted: result.accepted,
-      data: result.data,
-      code: result.code,
-      message: result.message,
+      accepted: result.claims.length > 0,
+      packetsAccepted: result.claims.length,
+      claims: result.claims.map((c) => ({
+        sourceAmount: c.sourceAmount.toString(),
+        targetAmount: c.targetAmount.toString(),
+        claim: Buffer.from(c.claimBytes).toString('base64'),
+        ...(c.channelId ? { channelId: c.channelId } : {}),
+        ...(c.recipient ? { recipient: c.recipient } : {}),
+        ...(c.millSignerAddress
+          ? { millSignerAddress: c.millSignerAddress }
+          : {}),
+        ...(c.claimId ? { claimId: c.claimId } : {}),
+        ...(c.nonce ? { nonce: c.nonce } : {}),
+        ...(c.cumulativeAmount ? { cumulativeAmount: c.cumulativeAmount } : {}),
+      })),
+      cumulativeSource: result.cumulativeSource.toString(),
+      cumulativeTarget: result.cumulativeTarget.toString(),
+      state: result.state,
+      ...(firstReject
+        ? { code: firstReject.code, message: firstReject.message }
+        : {}),
     };
   }
 

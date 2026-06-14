@@ -9,6 +9,7 @@
  */
 
 import type { NostrEvent } from 'nostr-tools/pure';
+import type { SwapPair } from '@toon-protocol/core';
 
 /** The chain family a paid write settles on. */
 export type SettlementChain = 'evm' | 'solana' | 'mina';
@@ -126,21 +127,72 @@ export interface ChannelsResponse {
   channels: ChannelInfo[];
 }
 
-/** `POST /swap` — pay asset A to a mill peer, receive asset B + a target claim. */
+/**
+ * `POST /swap` — pay asset A to a mill peer, receive asset B + a signed
+ * target-chain claim. The daemon builds the NIP-59 gift-wrapped kind:20032 swap
+ * rumor and streams it via SDK `streamSwap`, signing the source-asset claim
+ * against the open apex channel (the mill peer must be routed via
+ * `apexChildPeers`).
+ */
 export interface SwapRequest {
-  /** Mill peer ILP destination. */
+  /** Mill peer ILP destination (e.g. `g.townhouse.mill`). */
   destination: string;
-  /** Amount to send in base units. */
+  /** Total source-asset amount to swap, in source micro-units. */
   amount: string;
-  /** Optional base64 TOON payload describing the swap intent. */
-  toonData?: string;
+  /** Mill's 64-char lowercase hex Nostr pubkey (NIP-59 gift-wrap recipient). */
+  millPubkey: string;
+  /**
+   * The swap pair to execute — from kind:10032 discovery, or operator-supplied
+   * when the mill announces pairs to a relay other than the town relay.
+   */
+  pair: SwapPair;
+  /**
+   * Sender's payout address on `pair.to.chain` (EVM 0x-hex / Solana or Mina
+   * base58). Echoed on every rumor as the `chain-recipient` tag.
+   */
+  chainRecipient: string;
+  /** Split the swap into N equal packets (default 1). */
+  packetCount?: number;
+}
+
+/** One accumulated, decrypted claim harvested from a single swap packet. */
+export interface SwapClaim {
+  /** Source-asset amount sent for this packet (micro-units, decimal). */
+  sourceAmount: string;
+  /** Target-asset amount claimed (micro-units, decimal). */
+  targetAmount: string;
+  /** Decrypted signed target-chain claim bytes, base64. */
+  claim: string;
+  /** Target-chain channel id (real on-chain id, or a dev placeholder). */
+  channelId?: string;
+  /** Sender's payout address echoed by the mill. */
+  recipient?: string;
+  /** Mill's on-chain signer address. */
+  millSignerAddress?: string;
+  /** Mill-side claim id. */
+  claimId?: string;
+  /** Balance-proof nonce on the target channel (decimal). */
+  nonce?: string;
+  /** Cumulative transferred on the target channel (micro-units, decimal). */
+  cumulativeAmount?: string;
 }
 
 export interface SwapResponse {
+  /** True when at least one packet FULFILLed with a usable claim. */
   accepted: boolean;
-  /** base64 FULFILL data (the signed target-chain claim), when accepted. */
-  data?: string;
+  /** Number of packets the mill FULFILLed. */
+  packetsAccepted: number;
+  /** Per-packet accumulated claims (settlement metadata + signed claim). */
+  claims: SwapClaim[];
+  /** Total source sent across accepted packets (micro-units, decimal). */
+  cumulativeSource: string;
+  /** Total target received across accepted packets (micro-units, decimal). */
+  cumulativeTarget: string;
+  /** Final stream state. */
+  state: 'completed' | 'failed' | 'stopped';
+  /** First rejection code from the mill, if any (e.g. `F99`). */
   code?: string;
+  /** First rejection message, if any. */
   message?: string;
 }
 

@@ -74,9 +74,17 @@ export function registerRoutes(
 
   app.post<{ Body: SwapRequest }>('/swap', async (req, reply) => {
     const body = req.body;
-    if (!body || !body.destination || body.amount === undefined) {
+    if (
+      !body ||
+      !body.destination ||
+      body.amount === undefined ||
+      !body.millPubkey ||
+      !body.pair ||
+      !body.chainRecipient
+    ) {
       return sendError(reply, 400, 'invalid_swap', {
-        detail: 'body.destination and body.amount are required.',
+        detail:
+          'body.destination, amount, millPubkey, pair, and chainRecipient are required.',
       });
     }
     try {
