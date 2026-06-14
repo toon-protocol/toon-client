@@ -1,0 +1,86 @@
+{
+  "trigger_evals": [
+    { "query": "How do I publish a note to TOON?", "should_trigger": true },
+    { "query": "How do I post on the TOON network from Claude?", "should_trigger": true },
+    { "query": "How do I read events from a TOON relay?", "should_trigger": true },
+    { "query": "How do I subscribe to events on TOON?", "should_trigger": true },
+    { "query": "Use toon_publish to send this event", "should_trigger": true },
+    { "query": "Why is reading free but writing costs money on TOON?", "should_trigger": true },
+    { "query": "How do I check my TOON payment channel nonce and balance?", "should_trigger": true },
+    { "query": "How do I open a payment channel on TOON?", "should_trigger": true },
+    { "query": "Am I connected to the TOON network? What is my TOON address?", "should_trigger": true },
+    { "query": "How do I swap tokens via a TOON mill?", "should_trigger": true },
+    { "query": "The toon tool says it is bootstrapping, what do I do?", "should_trigger": true },
+    { "query": "How does pay-to-write work with payment channel claims on TOON?", "should_trigger": true },
+    { "query": "How do I deploy a container to Akash?", "should_trigger": false },
+    { "query": "How do I write a unit test in vitest?", "should_trigger": false },
+    { "query": "How do I create a badge definition with NIP-58?", "should_trigger": false },
+    { "query": "What is the git object binary format?", "should_trigger": false }
+  ],
+  "output_evals": [
+    {
+      "id": "publish-note",
+      "prompt": "Publish a kind:1 note saying \"gm\" to TOON for me.",
+      "expected_output": "Sign the kind:1 event, then call toon_publish with the fully-signed event. Note that the write costs a fee and advances the channel nonce. If toon_status shows bootstrapping, wait and retry. Report the returned eventId and nonce from the tool result; do not invent them.",
+      "rubric": {
+        "correct": "Uses toon_publish with a fully-signed event; notes the write costs a fee / advances the nonce; handles the bootstrapping-retry case; reads eventId/nonce from the result.",
+        "acceptable": "Uses toon_publish with a signed event but omits the fee/bootstrapping nuance.",
+        "incorrect": "Tries to publish without signing, fabricates an eventId/nonce, or uses a non-existent tool."
+      },
+      "assertions": [
+        "Response calls toon_publish with a fully-signed Nostr event",
+        "Response notes the publish costs a fee and advances the channel nonce",
+        "Response handles the bootstrapping/retry case (poll toon_status until ready)",
+        "Response reads eventId and nonce from the tool result rather than fabricating them"
+      ]
+    },
+    {
+      "id": "read-back",
+      "prompt": "Watch for new kind:1 notes from author <hexpubkey> on TOON and show them to me as they arrive.",
+      "expected_output": "Call toon_subscribe with filters {authors:[<hexpubkey>], kinds:[1]} to get a subId, then poll toon_read with that subId, passing back the returned cursor each call so only new events are returned. Reads are free.",
+      "rubric": {
+        "correct": "Uses toon_subscribe then toon_read; passes the cursor back across calls; notes reads are free.",
+        "acceptable": "Uses toon_subscribe + toon_read but doesn't mention the cursor long-poll pattern.",
+        "incorrect": "Uses a paid tool to read, or invents a reading mechanism not in the toon-* tools."
+      },
+      "assertions": [
+        "Response uses toon_subscribe with a NIP-01 filter, then toon_read",
+        "Response passes the returned cursor back on each toon_read to fetch only new events",
+        "Response notes that reads are free (no payment)",
+        "Response does not use toon_publish or any paid tool to read"
+      ]
+    },
+    {
+      "id": "status-bootstrap",
+      "prompt": "My toon_publish just returned a message about the client still bootstrapping. What's happening and what should I do?",
+      "expected_output": "The daemon's managed anon proxy + BTP session are still coming up (~30-90s on a cold start); the write path is not ready yet. This is not an error. Call toon_status and wait until ready:true, then retry the publish. Free reads may still work meanwhile.",
+      "rubric": {
+        "correct": "Explains bootstrapping is the anon/BTP warm-up (not an error); says to poll toon_status until ready then retry; notes reads can work meanwhile.",
+        "acceptable": "Says to wait and retry but doesn't explain why or mention toon_status.",
+        "incorrect": "Treats bootstrapping as a fatal error, or advises re-signing/refunding, or loops the publish blindly."
+      },
+      "assertions": [
+        "Response explains bootstrapping is the anon proxy / BTP warm-up, not an error",
+        "Response says to poll toon_status until ready:true before retrying",
+        "Response does not blindly retry toon_publish in a tight loop",
+        "Response notes free reads can proceed while the write path is bootstrapping"
+      ]
+    },
+    {
+      "id": "channel-balance",
+      "prompt": "How much have I spent on TOON so far and what's my current channel nonce?",
+      "expected_output": "Call toon_channels to list tracked channels with their nonce (watermark) and cumulativeAmount. Report those values from the tool result. Optionally call toon_status / toon_identity for chain + address context. Do not fabricate balances.",
+      "rubric": {
+        "correct": "Uses toon_channels and reports nonce + cumulativeAmount from the result; does not invent figures.",
+        "acceptable": "Uses toon_channels but conflates nonce and amount or omits one.",
+        "incorrect": "Fabricates a balance/nonce, or uses a non-existent tool."
+      },
+      "assertions": [
+        "Response uses toon_channels to read nonce and cumulativeAmount",
+        "Response reports the values from the tool result rather than inventing them",
+        "Response correctly distinguishes nonce (watermark) from cumulativeAmount (spend)",
+        "Response treats channel balances as the user's financial state"
+      ]
+    }
+  ]
+}
