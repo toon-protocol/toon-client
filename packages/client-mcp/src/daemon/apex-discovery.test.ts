@@ -104,6 +104,53 @@ describe('discoverApex', () => {
     expect(result.negotiation.chainKey).toBe('evm:base:84532');
   });
 
+  it('finds an announcement already buffered under another subscription (dedup regression)', async () => {
+    const { relay, open, emit } = controllableRelay();
+    open();
+    // A pre-existing subscription receives the announcement first; RelaySubscription
+    // de-dups by event.id, so a fresh discovery REQ would never see a replay. The
+    // buffer-wide scan must still find it.
+    relay.subscribe([{ kinds: [10032] }], 'pre-existing-sub');
+    emit(['EVENT', 'pre-existing-sub', announcement('g.townhouse.town')]);
+    const result = await discoverApex({
+      relay,
+      ilpAddress: 'g.townhouse.town',
+      timeoutMs: 1000,
+      pollMs: 10,
+    });
+    expect(result.btpUrl).toBe('ws://apex.example/btp');
+  });
+
+  it('disambiguates same-ilpAddress announcements by pubkey', async () => {
+    const { relay, open, emit } = controllableRelay();
+    open();
+    // Two nodes advertise g.townhouse.town with different btpEndpoints/pubkeys.
+    const a = announcement('g.townhouse.town'); // pubkey 'b'*64, btp ws://apex.example/btp
+    const b: NostrEvent = {
+      ...announcement('g.townhouse.town'),
+      id: 'f'.repeat(64),
+      pubkey: '9'.repeat(64),
+      content: JSON.stringify({
+        ilpAddress: 'g.townhouse.town',
+        btpEndpoint: 'ws://other.example/btp',
+        assetCode: 'USD',
+        assetScale: 6,
+        supportedChains: ['evm:base:84532'],
+        settlementAddresses: { 'evm:base:84532': '0xOther' },
+      }),
+    };
+    emit(['EVENT', 'sub-x', a]);
+    emit(['EVENT', 'sub-x', b]);
+    const result = await discoverApex({
+      relay,
+      ilpAddress: 'g.townhouse.town',
+      pubkey: '9'.repeat(64), // target node b
+      timeoutMs: 1000,
+      pollMs: 10,
+    });
+    expect(result.btpUrl).toBe('ws://other.example/btp');
+  });
+
   it('times out when no matching announcement arrives (retryable)', async () => {
     const { relay, open } = controllableRelay();
     open();

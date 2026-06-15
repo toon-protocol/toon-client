@@ -126,9 +126,14 @@ function fakeRelay(): RelaySubscription {
 describe('ClientRunner', () => {
   let client: FakeClient;
   let runner: ClientRunner;
+  let prevHome: string | undefined;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'toon-runner-'));
+    // Isolate from the user's real ~/.toon-client (persisted targets.json,
+    // channel stores) so tests never read or write live state.
+    prevHome = process.env['TOON_CLIENT_HOME'];
+    process.env['TOON_CLIENT_HOME'] = tmpDir;
     client = new FakeClient();
     runner = new ClientRunner({
       config: makeConfig({
@@ -149,6 +154,8 @@ describe('ClientRunner', () => {
   });
 
   afterEach(() => {
+    if (prevHome === undefined) delete process.env['TOON_CLIENT_HOME'];
+    else process.env['TOON_CLIENT_HOME'] = prevHome;
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -593,12 +600,20 @@ function apexAnnouncement(ilpAddress: string): NostrEvent {
 describe('ClientRunner multi-target', () => {
   let dir: string;
   let targetsPath: string;
+  let prevHome: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'toon-mt-'));
     targetsPath = join(dir, 'targets.json');
+    // Isolate per-apex channel stores (configDir()) from the user's real home.
+    prevHome = process.env['TOON_CLIENT_HOME'];
+    process.env['TOON_CLIENT_HOME'] = dir;
   });
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env['TOON_CLIENT_HOME'];
+    else process.env['TOON_CLIENT_HOME'] = prevHome;
+    rmSync(dir, { recursive: true, force: true });
+  });
 
   function build() {
     const { createRelay, emit } = relayFactory();

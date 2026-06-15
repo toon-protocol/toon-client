@@ -81,9 +81,14 @@ export async function discoverApex(
     const deadline = Date.now() + timeoutMs;
     let cursor = 0;
     while (Date.now() < deadline) {
-      const { events, cursor: next } = relay.getEvents({ subId, cursor });
+      // Scan the WHOLE relay buffer (no subId filter), not just our discovery
+      // subscription. `RelaySubscription` de-dups by event.id globally, so if a
+      // pre-existing subscription already buffered the announcement, the relay's
+      // replay to our fresh REQ is dropped and would never appear under our
+      // subId — buffer-wide reads find it regardless of which sub received it.
+      const { events, cursor: next } = relay.getEvents({ cursor });
       cursor = next;
-      const match = events.find((e) => matchesApex(e, ilpAddress));
+      const match = events.find((e) => matchesApex(e, ilpAddress, pubkey));
       if (match) return mapAnnouncement(match, { chain, childPeers });
       await delay(pollMs);
     }
@@ -97,9 +102,20 @@ export async function discoverApex(
   }
 }
 
-/** Whether a kind:10032 event announces the target apex's ILP address. */
-function matchesApex(event: NostrEvent, ilpAddress: string): boolean {
+/**
+ * Whether a kind:10032 event announces the target apex's ILP address. When a
+ * `pubkey` is given it must also match the event author — multiple nodes can
+ * advertise the same ILP address (e.g. `g.townhouse.town`), so the pubkey is how
+ * the caller disambiguates which one to add. (Buffer-wide scanning means we can
+ * no longer rely on the REQ's `authors` filter to do this for us.)
+ */
+function matchesApex(
+  event: NostrEvent,
+  ilpAddress: string,
+  pubkey?: string
+): boolean {
   if (event.kind !== ILP_PEER_INFO_KIND) return false;
+  if (pubkey && event.pubkey !== pubkey) return false;
   try {
     const info = parseIlpPeerInfo(event);
     const addrs = info.ilpAddresses ?? [info.ilpAddress];
