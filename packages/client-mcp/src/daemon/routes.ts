@@ -15,6 +15,7 @@ import {
   PublishRejectedError,
   TargetError,
 } from './client-runner.js';
+import { ApexDiscoveryError } from './apex-discovery.js';
 import type {
   AddApexRequest,
   AddRelayRequest,
@@ -198,6 +199,16 @@ function mapError(reply: FastifyReply, err: unknown): FastifyReply {
     // 404 for "no such target", 400 otherwise — both are caller-fixable.
     const status = /no such/i.test(err.message) ? 404 : 400;
     return sendError(reply, status, 'invalid_target', { detail: err.message });
+  }
+  if (err instanceof ApexDiscoveryError) {
+    // A timeout is a retryable 504 (apex may be slow/offline); a malformed
+    // announcement is a non-retryable 502 (the apex must republish).
+    return err.retryable
+      ? sendError(reply, 504, 'discovery_timeout', {
+          detail: err.message,
+          retryable: true,
+        })
+      : sendError(reply, 502, 'discovery_failed', { detail: err.message });
   }
   return sendError(reply, 500, 'internal_error', {
     detail: err instanceof Error ? err.message : String(err),

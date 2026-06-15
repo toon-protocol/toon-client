@@ -40,9 +40,16 @@ export interface DiscoveredApex {
   apexChildPeers?: string[];
 }
 
-/** Thrown when no matching kind:10032 appears before the timeout. */
+/**
+ * Thrown when discovery fails. `retryable` is true for a TIMEOUT (the apex may
+ * just be slow/offline — the caller can retry once it's reachable) and false
+ * for a malformed announcement (retrying won't help until the apex republishes).
+ */
 export class ApexDiscoveryError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly retryable = false
+  ) {
     super(message);
     this.name = 'ApexDiscoveryError';
   }
@@ -82,7 +89,8 @@ export async function discoverApex(
     }
     throw new ApexDiscoveryError(
       `Timed out after ${timeoutMs}ms waiting for the apex kind:${ILP_PEER_INFO_KIND} ` +
-        `announcement for "${ilpAddress}" on the relay. Is the relay reachable and the apex online?`
+        `announcement for "${ilpAddress}" on the relay. Is the relay reachable and the apex online?`,
+      true // retryable: the apex may just be slow/offline
     );
   } finally {
     relay.unsubscribe(subId);

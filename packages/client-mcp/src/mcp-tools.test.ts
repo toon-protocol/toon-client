@@ -171,6 +171,30 @@ describe('dispatchTool', () => {
     expect(res.content[0]!.text).toMatch(/Unknown tool/);
   });
 
+  it('surfaces a 504 discovery timeout with a discovery-specific retry hint', async () => {
+    const client = stubClient({
+      addApex: vi
+        .fn()
+        .mockRejectedValue(
+          new ControlApiError(
+            'discovery_timeout',
+            504,
+            true,
+            'Timed out after 15000ms'
+          )
+        ),
+    });
+    const res = await dispatchTool(client, 'toon_add_apex', {
+      ilpAddress: 'g.x.town',
+      relayUrl: 'ws://r',
+    });
+    expect(res.isError).toBe(true);
+    // Discovery-specific hint, NOT the daemon-bootstrapping message.
+    expect(res.content[0]!.text).toMatch(/Timed out after 15000ms/);
+    expect(res.content[0]!.text).toMatch(/retry once the relay is reachable/);
+    expect(res.content[0]!.text).not.toMatch(/bootstrapping/);
+  });
+
   it('toon_targets lists registered relays + apexes', async () => {
     const targets = vi
       .fn()

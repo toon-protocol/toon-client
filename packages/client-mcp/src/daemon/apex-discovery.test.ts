@@ -104,16 +104,46 @@ describe('discoverApex', () => {
     expect(result.negotiation.chainKey).toBe('evm:base:84532');
   });
 
-  it('times out when no matching announcement arrives', async () => {
+  it('times out when no matching announcement arrives (retryable)', async () => {
     const { relay, open } = controllableRelay();
     open();
-    await expect(
-      discoverApex({
-        relay,
-        ilpAddress: 'g.missing.town',
-        timeoutMs: 120,
-        pollMs: 20,
-      })
-    ).rejects.toBeInstanceOf(ApexDiscoveryError);
+    const err = await discoverApex({
+      relay,
+      ilpAddress: 'g.missing.town',
+      timeoutMs: 120,
+      pollMs: 20,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApexDiscoveryError);
+    // A timeout is retryable — the apex may just be slow/offline.
+    expect(err.retryable).toBe(true);
+  });
+
+  it('rejects a malformed announcement as NON-retryable', async () => {
+    const { relay, open, emit } = controllableRelay();
+    open();
+    // kind:10032 with no supportedChains → cannot settle, won't help to retry.
+    const bad: NostrEvent = {
+      id: 'a'.repeat(64),
+      pubkey: 'b'.repeat(64),
+      created_at: 1,
+      kind: ILP_PEER_INFO_KIND,
+      tags: [],
+      sig: 'c'.repeat(128),
+      content: JSON.stringify({
+        ilpAddress: 'g.bad.town',
+        btpEndpoint: 'ws://bad/btp',
+        assetCode: 'USD',
+        assetScale: 6,
+      }),
+    };
+    emit(['EVENT', 'apex-discovery-g.bad.town', bad]);
+    const err = await discoverApex({
+      relay,
+      ilpAddress: 'g.bad.town',
+      timeoutMs: 1000,
+      pollMs: 10,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApexDiscoveryError);
+    expect(err.retryable).toBe(false);
   });
 });

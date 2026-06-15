@@ -432,6 +432,13 @@ export async function dispatchTool(
         return err(`Unknown tool: ${name}`);
     }
   } catch (e) {
+    // A 504 is a retryable apex-discovery timeout — give a discovery-specific
+    // hint rather than the daemon-bootstrapping one.
+    if (e instanceof ControlApiError && e.status === 504) {
+      return err(
+        `${e.detail ?? e.message} — retry once the relay is reachable and the apex is online.`
+      );
+    }
     if (e instanceof ControlApiError && e.retryable) {
       return err(
         `TOON client is still bootstrapping (the anon proxy / BTP session can take ` +
