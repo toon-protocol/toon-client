@@ -10,11 +10,19 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type { ClientRunner } from './client-runner.js';
-import { NotReadyError, PublishRejectedError } from './client-runner.js';
+import {
+  NotReadyError,
+  PublishRejectedError,
+  TargetError,
+} from './client-runner.js';
 import type {
+  AddApexRequest,
+  AddRelayRequest,
   EventsQuery,
   OpenChannelRequest,
   PublishRequest,
+  RemoveApexRequest,
+  RemoveRelayRequest,
   SubscribeRequest,
   SwapRequest,
 } from '../control-api.js';
@@ -47,20 +55,29 @@ export function registerRoutes(
           'body.filters is required (a NIP-01 filter or array of filters).',
       });
     }
-    return runner.subscribe(body);
+    try {
+      return runner.subscribe(body);
+    } catch (err) {
+      return mapError(reply, err);
+    }
   });
 
-  app.get<{ Querystring: { subId?: string; cursor?: string; limit?: string } }>(
-    '/events',
-    async (req) => {
-      const q = req.query;
-      const query: EventsQuery = {};
-      if (q.subId) query.subId = q.subId;
-      if (q.cursor !== undefined) query.cursor = Number(q.cursor);
-      if (q.limit !== undefined) query.limit = Number(q.limit);
-      return runner.getEvents(query);
-    }
-  );
+  app.get<{
+    Querystring: {
+      subId?: string;
+      cursor?: string;
+      limit?: string;
+      relayUrl?: string;
+    };
+  }>('/events', async (req) => {
+    const q = req.query;
+    const query: EventsQuery = {};
+    if (q.subId) query.subId = q.subId;
+    if (q.cursor !== undefined) query.cursor = Number(q.cursor);
+    if (q.limit !== undefined) query.limit = Number(q.limit);
+    if (q.relayUrl) query.relayUrl = q.relayUrl;
+    return runner.getEvents(query);
+  });
 
   app.post<{ Body: OpenChannelRequest }>('/channels', async (req, reply) => {
     try {
@@ -93,6 +110,67 @@ export function registerRoutes(
       return mapError(reply, err);
     }
   });
+
+  app.get('/targets', async () => runner.getTargets());
+
+  app.post<{ Body: AddRelayRequest }>('/relays', async (req, reply) => {
+    const url = req.body?.relayUrl;
+    if (!url) {
+      return sendError(reply, 400, 'invalid_relay', {
+        detail: 'body.relayUrl is required.',
+      });
+    }
+    try {
+      await runner.addRelay(url);
+      return runner.getTargets();
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
+
+  app.delete<{ Body: RemoveRelayRequest }>('/relays', async (req, reply) => {
+    const url = req.body?.relayUrl;
+    if (!url) {
+      return sendError(reply, 400, 'invalid_relay', {
+        detail: 'body.relayUrl is required.',
+      });
+    }
+    try {
+      runner.removeRelay(url);
+      return runner.getTargets();
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
+
+  app.post<{ Body: AddApexRequest }>('/apex', async (req, reply) => {
+    const body = req.body;
+    if (!body || !body.ilpAddress || !body.relayUrl) {
+      return sendError(reply, 400, 'invalid_apex', {
+        detail: 'body.ilpAddress and body.relayUrl are required.',
+      });
+    }
+    try {
+      return await runner.addApex(body);
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
+
+  app.delete<{ Body: RemoveApexRequest }>('/apex', async (req, reply) => {
+    const url = req.body?.btpUrl;
+    if (!url) {
+      return sendError(reply, 400, 'invalid_apex', {
+        detail: 'body.btpUrl is required.',
+      });
+    }
+    try {
+      await runner.removeApex(url);
+      return runner.getTargets();
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
 }
 
 function isSignedEvent(event: unknown): event is NostrEvent {
@@ -115,6 +193,11 @@ function mapError(reply: FastifyReply, err: unknown): FastifyReply {
   }
   if (err instanceof PublishRejectedError) {
     return sendError(reply, 502, 'rejected', { detail: err.message });
+  }
+  if (err instanceof TargetError) {
+    // 404 for "no such target", 400 otherwise — both are caller-fixable.
+    const status = /no such/i.test(err.message) ? 404 : 400;
+    return sendError(reply, status, 'invalid_target', { detail: err.message });
   }
   return sendError(reply, 500, 'internal_error', {
     detail: err instanceof Error ? err.message : String(err),

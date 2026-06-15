@@ -75,6 +75,12 @@ export interface PublishRequest {
   destination?: string;
   /** Fee override in base units. Defaults to the daemon's configured fee. */
   fee?: string;
+  /**
+   * Which apex (BTP write target) to publish through. Defaults to the
+   * config-seeded apex. Writes always go through BTP — never to a relay
+   * directly — so this selects among the registered apexes, not relays.
+   */
+  btpUrl?: string;
 }
 
 export interface PublishResponse {
@@ -93,10 +99,18 @@ export interface SubscribeRequest {
   filters: NostrFilter | NostrFilter[];
   /** Optional caller-supplied subscription id (else one is generated). */
   subId?: string;
+  /**
+   * Restrict the subscription to a single relay. Omit to FAN OUT across every
+   * registered relay (the same subId is registered on each); reads merge into
+   * one ordered stream.
+   */
+  relayUrl?: string;
 }
 
 export interface SubscribeResponse {
   subId: string;
+  /** The relays the subscription was registered on. */
+  relays: string[];
 }
 
 /** `GET /events` — drain buffered events for a subscription (free read). */
@@ -107,6 +121,8 @@ export interface EventsQuery {
   cursor?: number;
   /** Max events to return (default 200). */
   limit?: number;
+  /** Restrict the drain to events received from a single relay. */
+  relayUrl?: string;
 }
 
 export interface EventsResponse {
@@ -160,6 +176,11 @@ export interface SwapRequest {
   chainRecipient: string;
   /** Split the swap into N equal packets (default 1). */
   packetCount?: number;
+  /**
+   * Which apex to settle the source-asset claim through (default: the
+   * config-seeded apex). The mill must be a child peer of this apex.
+   */
+  btpUrl?: string;
 }
 
 /** One accumulated, decrypted claim harvested from a single swap packet. */
@@ -201,6 +222,85 @@ export interface SwapResponse {
   code?: string;
   /** First rejection message, if any. */
   message?: string;
+}
+
+// ── Dynamic targets (1-to-many: many apexes to write through, many relays to
+//    read from). Added at runtime, persisted across restarts, removable. ──────
+
+/** `POST /relays` — add a relay READ target (fans into all fan-out reads). */
+export interface AddRelayRequest {
+  /** Relay WS URL, e.g. `ws://host:7100` or a `.anyone` hidden service. */
+  relayUrl: string;
+}
+
+/** `DELETE /relays` — remove a relay read target. */
+export interface RemoveRelayRequest {
+  relayUrl: string;
+}
+
+/**
+ * `POST /apex` — add an apex WRITE target. Settlement params are DISCOVERED by
+ * reading the apex's `kind:10032` announcement off a relay, so the caller never
+ * hand-supplies chain/settlement details.
+ */
+export interface AddApexRequest {
+  /** ILP address of the apex to add (e.g. `g.townhouse.town`). */
+  ilpAddress: string;
+  /**
+   * Relay to discover the apex's `kind:10032` on. If it isn't already a read
+   * target it is added (and persisted) first.
+   */
+  relayUrl: string;
+  /** Optional apex Nostr pubkey to narrow the discovery filter (64-char hex). */
+  pubkey?: string;
+  /** Preferred settlement chain family; defaults to the apex's first chain. */
+  chain?: SettlementChain;
+  /** Child peers reached via this apex's channel (e.g. `["dvm","mill"]`). */
+  childPeers?: string[];
+  /** Per-write fee override (base units) for this apex. */
+  feePerEvent?: string;
+}
+
+export interface AddApexResponse {
+  btpUrl: string;
+  destination: string;
+  chain: SettlementChain;
+  /** Whether the apex bootstrapped + opened a channel by the time we replied. */
+  ready: boolean;
+}
+
+/** `DELETE /apex` — remove an apex write target by its BTP URL. */
+export interface RemoveApexRequest {
+  btpUrl: string;
+}
+
+/** Status of one registered relay read target. */
+export interface RelayTargetStatus {
+  relayUrl: string;
+  connected: boolean;
+  buffered: number;
+  subscriptions: string[];
+  /** True for the permanent config-seeded relay (not removable). */
+  isDefault: boolean;
+}
+
+/** Status of one registered apex write target. */
+export interface ApexTargetStatus {
+  btpUrl: string;
+  destination: string;
+  chain: SettlementChain;
+  ready: boolean;
+  bootstrapping: boolean;
+  channelId?: string;
+  lastError?: string;
+  /** True for the permanent config-seeded apex (not removable). */
+  isDefault: boolean;
+}
+
+/** `GET /targets` — list every registered relay + apex target. */
+export interface TargetsResponse {
+  relays: RelayTargetStatus[];
+  apexes: ApexTargetStatus[];
 }
 
 /** Uniform error envelope returned with non-2xx responses. */

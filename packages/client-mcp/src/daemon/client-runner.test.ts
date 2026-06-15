@@ -17,6 +17,8 @@ import {
 } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
 import { RelaySubscription } from '../relay-subscription.js';
+import { ILP_PEER_INFO_KIND } from '@toon-protocol/core';
+import { loadTargets } from './targets-store.js';
 
 let tmpDir: string;
 
@@ -514,5 +516,222 @@ describe('ClientRunner', () => {
       expect(r.getStatus().lastError).toBeUndefined();
       expect(r.getStatus().relay.proxyError).toContain('anon download failed');
     });
+  });
+});
+
+// ── 1-to-many: dynamic relays + apexes, fan-out reads, persistence ──────────
+
+/** A relay factory backed by drivable fake sockets, honoring onEvent wiring. */
+function relayFactory(): {
+  createRelay: (opts: {
+    relayUrl: string;
+    onEvent: (subId: string, event: NostrEvent) => void;
+  }) => RelaySubscription;
+  emit: (relayUrl: string, subId: string, event: NostrEvent) => void;
+} {
+  const handlersByUrl = new Map<
+    string,
+    Record<string, (a?: unknown) => void>
+  >();
+  const createRelay = (opts: {
+    relayUrl: string;
+    onEvent: (subId: string, event: NostrEvent) => void;
+  }): RelaySubscription => {
+    const handlers: Record<string, (a?: unknown) => void> = {};
+    handlersByUrl.set(opts.relayUrl, handlers);
+    return new RelaySubscription({
+      relayUrl: opts.relayUrl,
+      onEvent: opts.onEvent,
+      wsFactory: () =>
+        ({
+          send: () => {},
+          close: () => {},
+          on: (ev: string, cb: (a?: unknown) => void) => {
+            handlers[ev] = cb;
+          },
+        }) as never,
+    });
+  };
+  const emit = (relayUrl: string, subId: string, event: NostrEvent): void =>
+    handlersByUrl
+      .get(relayUrl)
+      ?.['message']?.(JSON.stringify(['EVENT', subId, event]));
+  return { createRelay, emit };
+}
+
+function note(id: string): NostrEvent {
+  return {
+    id,
+    pubkey: 'p'.repeat(64),
+    created_at: 1,
+    kind: 1,
+    tags: [],
+    sig: 's'.repeat(128),
+    content: 'hi',
+  };
+}
+
+function apexAnnouncement(ilpAddress: string): NostrEvent {
+  return {
+    id: 'd'.repeat(64),
+    pubkey: 'e'.repeat(64),
+    created_at: 1,
+    kind: ILP_PEER_INFO_KIND,
+    tags: [],
+    sig: 'f'.repeat(128),
+    content: JSON.stringify({
+      ilpAddress,
+      btpEndpoint: 'ws://apex2.example/btp',
+      assetCode: 'USD',
+      assetScale: 6,
+      supportedChains: ['evm:base:84532'],
+      settlementAddresses: { 'evm:base:84532': '0xS2' },
+    }),
+  };
+}
+
+describe('ClientRunner multi-target', () => {
+  let dir: string;
+  let targetsPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'toon-mt-'));
+    targetsPath = join(dir, 'targets.json');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  function build() {
+    const { createRelay, emit } = relayFactory();
+    const runner = new ClientRunner({
+      config: makeConfig({
+        relayUrl: 'ws://relay.test',
+        apexChannelStorePath: join(dir, 'apex-channels.json'),
+      }),
+      createClient: () => new FakeClient(),
+      createRelay,
+      targetsPath,
+    });
+    return { runner, emit };
+  }
+
+  it('fans out a subscription across relays and merges reads with one cursor', async () => {
+    const { runner, emit } = build();
+    runner.start();
+    await runner.addRelay('ws://relay2.test');
+
+    const { subId, relays } = runner.subscribe({ filters: { kinds: [1] } });
+    expect(relays.sort()).toEqual(['ws://relay.test', 'ws://relay2.test']);
+
+    emit('ws://relay.test', subId, note('1'.repeat(64)));
+    emit('ws://relay2.test', subId, note('2'.repeat(64)));
+
+    const first = runner.getEvents({});
+    expect(first.events.map((e) => e.id)).toEqual([
+      '1'.repeat(64),
+      '2'.repeat(64),
+    ]);
+    // Cursor advances; a second drain past it is empty.
+    expect(runner.getEvents({ cursor: first.cursor }).events).toEqual([]);
+  });
+
+  it('de-dups the same event seen on two relays', async () => {
+    const { runner, emit } = build();
+    runner.start();
+    await runner.addRelay('ws://relay2.test');
+    const { subId } = runner.subscribe({ filters: { kinds: [1] } });
+    emit('ws://relay.test', subId, note('9'.repeat(64)));
+    emit('ws://relay2.test', subId, note('9'.repeat(64)));
+    expect(runner.getEvents({}).events).toHaveLength(1);
+  });
+
+  it('scopes a read to one relay via relayUrl', async () => {
+    const { runner, emit } = build();
+    runner.start();
+    await runner.addRelay('ws://relay2.test');
+    const { subId } = runner.subscribe({ filters: { kinds: [1] } });
+    emit('ws://relay.test', subId, note('a'.repeat(64)));
+    emit('ws://relay2.test', subId, note('b'.repeat(64)));
+    const scoped = runner.getEvents({ relayUrl: 'ws://relay2.test' });
+    expect(scoped.events.map((e) => e.id)).toEqual(['b'.repeat(64)]);
+  });
+
+  it('addRelay persists and getTargets reflects it; default relay is not removable', async () => {
+    const { runner } = build();
+    runner.start();
+    await runner.addRelay('ws://relay2.test');
+    expect(
+      runner
+        .getTargets()
+        .relays.map((r) => r.relayUrl)
+        .sort()
+    ).toEqual(['ws://relay.test', 'ws://relay2.test']);
+    expect(loadTargets(targetsPath).relays).toEqual([
+      { relayUrl: 'ws://relay2.test' },
+    ]);
+    expect(() => runner.removeRelay('ws://relay.test')).toThrow(/default/i);
+    runner.removeRelay('ws://relay2.test');
+    expect(runner.getTargets().relays.map((r) => r.relayUrl)).toEqual([
+      'ws://relay.test',
+    ]);
+    expect(loadTargets(targetsPath).relays).toEqual([]);
+  });
+
+  it('replays a persisted relay on construction', async () => {
+    const { createRelay } = relayFactory();
+    // Seed the store, then construct a fresh runner pointed at it.
+    const seed = new ClientRunner({
+      config: makeConfig({ apexChannelStorePath: join(dir, 'a.json') }),
+      createClient: () => new FakeClient(),
+      createRelay,
+      targetsPath,
+    });
+    seed.start();
+    await seed.addRelay('ws://persisted.test');
+
+    const fresh = new ClientRunner({
+      config: makeConfig({ apexChannelStorePath: join(dir, 'a.json') }),
+      createClient: () => new FakeClient(),
+      createRelay,
+      targetsPath,
+    });
+    fresh.start();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fresh.getTargets().relays.map((r) => r.relayUrl)).toContain(
+      'ws://persisted.test'
+    );
+  });
+
+  it('discovers + adds an apex from a relay announcement (persisted)', async () => {
+    const { runner, emit } = build();
+    runner.start();
+    // Pre-buffer the apex's kind:10032 on the discovery relay.
+    emit(
+      'ws://relay.test',
+      'apex-discovery-g.other.town',
+      apexAnnouncement('g.other.town')
+    );
+
+    const res = await runner.addApex({
+      ilpAddress: 'g.other.town',
+      relayUrl: 'ws://relay.test',
+    });
+    expect(res.btpUrl).toBe('ws://apex2.example/btp');
+    const apexes = runner.getTargets().apexes;
+    expect(apexes.map((a) => a.btpUrl)).toContain('ws://apex2.example/btp');
+    expect(loadTargets(targetsPath).apexes.map((a) => a.btpUrl)).toEqual([
+      'ws://apex2.example/btp',
+    ]);
+  });
+
+  it('publish to an unknown apex throws; default apex is not removable', async () => {
+    const { runner } = build();
+    runner.start();
+    await runner.bootstrap();
+    await expect(
+      runner.publish({ event: note('c'.repeat(64)), btpUrl: 'ws://nope/btp' })
+    ).rejects.toThrow(/no such apex/i);
+    await expect(runner.removeApex('ws://apex.test/btp')).rejects.toThrow(
+      /default/i
+    );
   });
 });

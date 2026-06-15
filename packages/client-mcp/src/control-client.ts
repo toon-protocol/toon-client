@@ -5,6 +5,9 @@
  */
 
 import type {
+  AddApexRequest,
+  AddApexResponse,
+  AddRelayRequest,
   ChannelsResponse,
   ErrorResponse,
   EventsQuery,
@@ -12,11 +15,14 @@ import type {
   OpenChannelRequest,
   PublishRequest,
   PublishResponse,
+  RemoveApexRequest,
+  RemoveRelayRequest,
   StatusResponse,
   SubscribeRequest,
   SubscribeResponse,
   SwapRequest,
   SwapResponse,
+  TargetsResponse,
 } from './control-api.js';
 
 /** Error thrown when the daemon returns a non-2xx response. */
@@ -92,6 +98,7 @@ export class ControlClient {
     if (query.subId) qs.set('subId', query.subId);
     if (query.cursor !== undefined) qs.set('cursor', String(query.cursor));
     if (query.limit !== undefined) qs.set('limit', String(query.limit));
+    if (query.relayUrl) qs.set('relayUrl', query.relayUrl);
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return this.request<EventsResponse>('GET', `/events${suffix}`);
   }
@@ -106,6 +113,26 @@ export class ControlClient {
 
   swap(body: SwapRequest): Promise<SwapResponse> {
     return this.request<SwapResponse>('POST', '/swap', body);
+  }
+
+  targets(): Promise<TargetsResponse> {
+    return this.request<TargetsResponse>('GET', '/targets');
+  }
+
+  addRelay(body: AddRelayRequest): Promise<TargetsResponse> {
+    return this.request<TargetsResponse>('POST', '/relays', body);
+  }
+
+  removeRelay(body: RemoveRelayRequest): Promise<TargetsResponse> {
+    return this.request<TargetsResponse>('DELETE', '/relays', body);
+  }
+
+  addApex(body: AddApexRequest): Promise<AddApexResponse> {
+    return this.request<AddApexResponse>('POST', '/apex', body);
+  }
+
+  removeApex(body: RemoveApexRequest): Promise<TargetsResponse> {
+    return this.request<TargetsResponse>('DELETE', '/apex', body);
   }
 
   private async request<T>(

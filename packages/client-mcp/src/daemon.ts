@@ -52,8 +52,8 @@ async function runForeground(): Promise<void> {
 
   const runner = new ClientRunner({
     config,
-    createClient: () =>
-      new ToonClient(config.toonClientConfig) as unknown as ToonClientLike,
+    createClient: (clientConfig) =>
+      new ToonClient(clientConfig) as unknown as ToonClientLike,
     logger: log,
   });
 

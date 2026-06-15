@@ -8,8 +8,10 @@
 import { ControlApiError, DaemonUnreachableError } from './control-client.js';
 import type { ControlClient } from './control-client.js';
 import type {
+  AddApexRequest,
   NostrFilter,
   PublishRequest,
+  SettlementChain,
   SwapRequest,
 } from './control-api.js';
 
@@ -74,6 +76,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             'Optional fee override in base units (default: daemon config).',
         },
+        btpUrl: {
+          type: 'string',
+          description:
+            'Which apex (BTP write target) to publish through (default: the ' +
+            'config-seeded apex). Use toon_targets to list registered apexes. ' +
+            'Writes always go through BTP — never a relay directly.',
+        },
       },
       required: ['event'],
       additionalProperties: false,
@@ -91,6 +100,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description: 'A NIP-01 filter object or an array of OR-ed filters.',
         },
         subId: { type: 'string', description: 'Optional caller-supplied id.' },
+        relayUrl: {
+          type: 'string',
+          description:
+            'Restrict to one relay. Omit to FAN OUT across every registered ' +
+            'relay (reads merge into one ordered stream).',
+        },
       },
       required: ['filters'],
       additionalProperties: false,
@@ -112,6 +127,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         limit: {
           type: 'number',
           description: 'Max events to return (default 200).',
+        },
+        relayUrl: {
+          type: 'string',
+          description: 'Restrict the drain to events from a single relay.',
         },
       },
       additionalProperties: false,
@@ -194,6 +213,111 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'toon_targets',
+    description:
+      'List every registered target: relays (read sources, with connection + ' +
+      'buffered-event status) and apexes (BTP write targets, with ready/' +
+      'channel status). The TOON client is 1-to-many — many apexes to write ' +
+      'through, many relays to read from.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_add_relay',
+    description:
+      'Add a relay READ target at runtime (persisted across restarts). It joins ' +
+      'all fan-out reads immediately; `.anyone` hidden-service relays reuse the ' +
+      'managed anon read proxy automatically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        relayUrl: {
+          type: 'string',
+          description: 'Relay WS URL (ws://host:7100 or a .anyone service).',
+        },
+      },
+      required: ['relayUrl'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_remove_relay',
+    description:
+      'Remove a relay read target (persisted). The config-seeded default relay ' +
+      'cannot be removed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        relayUrl: { type: 'string', description: 'Relay WS URL to remove.' },
+      },
+      required: ['relayUrl'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_add_apex',
+    description:
+      'Add an apex WRITE target at runtime (persisted across restarts). ' +
+      'Settlement params are DISCOVERED by reading the apex’s kind:10032 ' +
+      'announcement off the given relay — you do not supply chain/settlement ' +
+      'details. The relay is added as a read target first if unknown.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ilpAddress: {
+          type: 'string',
+          description: 'ILP address of the apex (e.g. g.townhouse.town).',
+        },
+        relayUrl: {
+          type: 'string',
+          description: 'Relay to discover the apex’s kind:10032 on.',
+        },
+        pubkey: {
+          type: 'string',
+          description:
+            'Optional apex Nostr pubkey (64-char hex) to narrow discovery.',
+        },
+        chain: {
+          type: 'string',
+          enum: ['evm', 'solana', 'mina'],
+          description: 'Preferred settlement chain (default: apex’s first).',
+        },
+        childPeers: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Child peers via this apex’s channel (e.g. ["dvm","mill"]).',
+        },
+        feePerEvent: {
+          type: 'string',
+          description: 'Per-write fee override for this apex (base units).',
+        },
+      },
+      required: ['ilpAddress', 'relayUrl'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_remove_apex',
+    description:
+      'Remove an apex write target by its BTP URL (persisted). The ' +
+      'config-seeded default apex cannot be removed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        btpUrl: {
+          type: 'string',
+          description: 'BTP URL of the apex to remove (from toon_targets).',
+        },
+      },
+      required: ['btpUrl'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 /**
@@ -228,6 +352,9 @@ export async function dispatchTool(
             ...(typeof args['subId'] === 'string'
               ? { subId: args['subId'] }
               : {}),
+            ...(typeof args['relayUrl'] === 'string'
+              ? { relayUrl: args['relayUrl'] }
+              : {}),
           })
         );
       case 'toon_read':
@@ -241,6 +368,9 @@ export async function dispatchTool(
               : {}),
             ...(typeof args['limit'] === 'number'
               ? { limit: args['limit'] }
+              : {}),
+            ...(typeof args['relayUrl'] === 'string'
+              ? { relayUrl: args['relayUrl'] }
               : {}),
           })
         );
@@ -267,6 +397,37 @@ export async function dispatchTool(
               : {}),
           })
         );
+      case 'toon_targets':
+        return ok(await client.targets());
+      case 'toon_add_relay':
+        return ok(
+          await client.addRelay({ relayUrl: String(args['relayUrl']) })
+        );
+      case 'toon_remove_relay':
+        return ok(
+          await client.removeRelay({ relayUrl: String(args['relayUrl']) })
+        );
+      case 'toon_add_apex': {
+        const req: AddApexRequest = {
+          ilpAddress: String(args['ilpAddress']),
+          relayUrl: String(args['relayUrl']),
+          ...(typeof args['pubkey'] === 'string'
+            ? { pubkey: args['pubkey'] }
+            : {}),
+          ...(typeof args['chain'] === 'string'
+            ? { chain: args['chain'] as SettlementChain }
+            : {}),
+          ...(Array.isArray(args['childPeers'])
+            ? { childPeers: (args['childPeers'] as unknown[]).map(String) }
+            : {}),
+          ...(typeof args['feePerEvent'] === 'string'
+            ? { feePerEvent: args['feePerEvent'] }
+            : {}),
+        };
+        return ok(await client.addApex(req));
+      }
+      case 'toon_remove_apex':
+        return ok(await client.removeApex({ btpUrl: String(args['btpUrl']) }));
       default:
         return err(`Unknown tool: ${name}`);
     }

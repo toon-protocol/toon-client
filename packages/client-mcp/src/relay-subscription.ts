@@ -54,6 +54,14 @@ export interface RelaySubscriptionOptions {
    * object it is used directly and this is not called.
    */
   decodeEvent?: (raw: string) => NostrEvent;
+  /**
+   * Invoked once per newly-buffered (de-duplicated) event. The daemon uses this
+   * to feed a runner-level MERGED buffer across many relays — so a fan-out read
+   * (`toon_read` with no relayUrl) draws from one ordered stream with a single
+   * scalar cursor. The relay still keeps its own buffer for `bufferedCount` /
+   * single-relay drains.
+   */
+  onEvent?: (subId: string, event: NostrEvent) => void;
   /** Optional logger. */
   logger?: (msg: string) => void;
 }
@@ -87,6 +95,7 @@ export class RelaySubscription {
   private readonly log: (msg: string) => void;
   private readonly wsFactory: WebSocketFactory;
   private readonly decodeEvent?: (raw: string) => NostrEvent;
+  private readonly onEvent?: (subId: string, event: NostrEvent) => void;
 
   /** Active subscriptions: subId -> filters (re-sent on every (re)connect). */
   private readonly subscriptions = new Map<string, NostrFilter[]>();
@@ -113,6 +122,7 @@ export class RelaySubscription {
     this.log = opts.logger ?? noop;
     this.wsFactory = opts.wsFactory ?? defaultWebSocketFactory(this.socksProxy);
     this.decodeEvent = opts.decodeEvent;
+    this.onEvent = opts.onEvent;
   }
 
   /** Whether the underlying socket is currently open. */
@@ -324,6 +334,8 @@ export class RelaySubscription {
       const evicted = this.buffer.shift();
       if (evicted) this.seen.delete(evicted.event.id);
     }
+    // Mirror into the runner-level merged buffer (cross-relay fan-out reads).
+    this.onEvent?.(subId, event);
   }
 }
 

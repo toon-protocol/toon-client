@@ -22,6 +22,11 @@ describe('TOOL_DEFINITIONS', () => {
         'toon_status',
         'toon_swap',
         'toon_subscribe',
+        'toon_targets',
+        'toon_add_relay',
+        'toon_remove_relay',
+        'toon_add_apex',
+        'toon_remove_apex',
       ].sort()
     );
   });
@@ -164,5 +169,57 @@ describe('dispatchTool', () => {
     const res = await dispatchTool(stubClient({}), 'toon_bogus', {});
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toMatch(/Unknown tool/);
+  });
+
+  it('toon_targets lists registered relays + apexes', async () => {
+    const targets = vi
+      .fn()
+      .mockResolvedValue({ relays: [{ relayUrl: 'ws://r' }], apexes: [] });
+    const res = await dispatchTool(stubClient({ targets }), 'toon_targets', {});
+    expect(res.isError).toBeFalsy();
+    expect(JSON.parse(res.content[0]!.text).relays).toHaveLength(1);
+  });
+
+  it('toon_add_relay forwards the relayUrl', async () => {
+    const addRelay = vi.fn().mockResolvedValue({ relays: [], apexes: [] });
+    await dispatchTool(stubClient({ addRelay }), 'toon_add_relay', {
+      relayUrl: 'ws://r2',
+    });
+    expect(addRelay).toHaveBeenCalledWith({ relayUrl: 'ws://r2' });
+  });
+
+  it('toon_remove_relay forwards the relayUrl', async () => {
+    const removeRelay = vi.fn().mockResolvedValue({ relays: [], apexes: [] });
+    await dispatchTool(stubClient({ removeRelay }), 'toon_remove_relay', {
+      relayUrl: 'ws://r2',
+    });
+    expect(removeRelay).toHaveBeenCalledWith({ relayUrl: 'ws://r2' });
+  });
+
+  it('toon_add_apex forwards discovery params (only those provided)', async () => {
+    const addApex = vi.fn().mockResolvedValue({
+      btpUrl: 'ws://a/btp',
+      destination: 'g.x',
+      chain: 'evm',
+      ready: false,
+    });
+    await dispatchTool(stubClient({ addApex }), 'toon_add_apex', {
+      ilpAddress: 'g.x.town',
+      relayUrl: 'ws://r',
+      childPeers: ['dvm', 'mill'],
+    });
+    expect(addApex).toHaveBeenCalledWith({
+      ilpAddress: 'g.x.town',
+      relayUrl: 'ws://r',
+      childPeers: ['dvm', 'mill'],
+    });
+  });
+
+  it('toon_remove_apex forwards the btpUrl', async () => {
+    const removeApex = vi.fn().mockResolvedValue({ relays: [], apexes: [] });
+    await dispatchTool(stubClient({ removeApex }), 'toon_remove_apex', {
+      btpUrl: 'ws://a/btp',
+    });
+    expect(removeApex).toHaveBeenCalledWith({ btpUrl: 'ws://a/btp' });
   });
 });
