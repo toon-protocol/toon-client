@@ -95,6 +95,54 @@ describe('daemon config', () => {
     expect(cfg.socksProxy).toBe('socks5h://127.0.0.1:9999');
   });
 
+  it('infers a daemon-managed read proxy when the relay is .anyone but btp is direct', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://direct-apex:3000/btp',
+      relayUrl: 'ws://relay.anyone:7100',
+    });
+    // BTP stays direct (the ToonClient does not start a proxy)...
+    expect(cfg.toonClientConfig.transport).toEqual({ type: 'direct' });
+    expect(cfg.toonClientConfig.managedAnonProxy).toBe(false);
+    // ...but the daemon must start its own read proxy and point reads at it.
+    expect(cfg.manageReadProxy).toBe(true);
+    expect(cfg.readProxySocksPort).toBe(9050);
+    expect(cfg.socksProxy).toBe('socks5h://127.0.0.1:9050');
+  });
+
+  it('does not manage a read proxy when both btp and relay are direct', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://direct-apex:3000/btp',
+      relayUrl: 'ws://localhost:7100',
+    });
+    expect(cfg.manageReadProxy).toBe(false);
+    expect(cfg.readProxySocksPort).toBeUndefined();
+    expect(cfg.socksProxy).toBeUndefined();
+  });
+
+  it('lets the client own the proxy (no daemon read proxy) when btp is .anyone', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.anyone:3000/btp',
+      relayUrl: 'ws://relay.anyone:7100',
+    });
+    expect(cfg.toonClientConfig.managedAnonProxy).toBe(true);
+    expect(cfg.manageReadProxy).toBe(false); // client's proxy already serves reads
+    expect(cfg.socksProxy).toBe('socks5h://127.0.0.1:9050');
+  });
+
+  it('managedAnonProxy:false opts out even for a .anyone relay', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://direct-apex:3000/btp',
+      relayUrl: 'ws://relay.anyone:7100',
+      managedAnonProxy: false,
+    });
+    expect(cfg.manageReadProxy).toBe(false);
+    expect(cfg.socksProxy).toBeUndefined();
+  });
+
   it('uses a socks5 transport when a proxy is configured', () => {
     const cfg = resolveConfig({
       mnemonic: MNEMONIC,

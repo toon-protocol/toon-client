@@ -34,10 +34,16 @@ export {
   readConfigFile,
   configDir,
   defaultConfigPath,
+  DEFAULT_KEYSTORE_PASSWORD,
   type DaemonConfigFile,
   type ResolvedDaemonConfig,
   type ApexNegotiationConfig,
 } from './daemon/config.js';
+export {
+  scaffoldFirstRun,
+  hasConfiguredIdentity,
+  defaultKeystorePath,
+} from './daemon/first-run.js';
 export { registerRoutes } from './daemon/routes.js';
 export {
   acquireLock,

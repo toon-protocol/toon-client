@@ -44,6 +44,15 @@ export interface DaemonConfigFile {
   mnemonic?: string;
   mnemonicAccountIndex?: number;
   keystorePath?: string;
+  /**
+   * Set when the daemon auto-generated the keystore (#251 first-run onboarding).
+   * Such a keystore is encrypted with a default password so the identity reloads
+   * across restarts without `TOON_CLIENT_KEYSTORE_PASSWORD`. A user-imported
+   * keystore leaves this unset and still requires the env password.
+   */
+  keystoreAutoPassword?: boolean;
+  /** Human-facing onboarding notes written by first-run scaffolding (ignored at runtime). */
+  _help?: Record<string, string>;
   /** BTP WebSocket URL of the apex/connector. */
   btpUrl?: string;
   /** Transport: `direct` or a `socks5h://` proxy for `.anyone` hosts. */
@@ -101,6 +110,15 @@ export interface ResolvedDaemonConfig {
   httpPort: number;
   relayUrl: string;
   socksProxy?: string;
+  /**
+   * When true the daemon must start its OWN managed `anon` proxy for free reads
+   * — the btp-direct + relay-`.anyone` case the ToonClient does not cover (it
+   * only auto-starts a proxy for a `.anyone` btpUrl). `readProxySocksPort` is the
+   * loopback port to bind; `socksProxy` already points the relay at it.
+   */
+  manageReadProxy: boolean;
+  /** Loopback SOCKS port for the daemon-managed read proxy (when `manageReadProxy`). */
+  readProxySocksPort?: number;
   destination: string;
   feePerEvent: bigint;
   apex?: ApexNegotiationConfig;
@@ -114,6 +132,15 @@ export interface ResolvedDaemonConfig {
   toonClientConfig: ToonClientConfig;
   network?: string;
 }
+
+/**
+ * Password used to encrypt an auto-generated keystore (#251 first-run
+ * onboarding) when `TOON_CLIENT_KEYSTORE_PASSWORD` is unset. At-rest
+ * obfuscation only — its purpose is letting the daemon reload the identity
+ * across restarts with no env var. Users wanting a real password re-import the
+ * keystore and set the env var.
+ */
+export const DEFAULT_KEYSTORE_PASSWORD = 'toon-client-default';
 
 /** Default config directory: `~/.toon-client`. Overridable via env. */
 export function configDir(): string {
@@ -145,7 +172,12 @@ export function resolveMnemonic(file: DaemonConfigFile): string {
   if (envMnemonic) return envMnemonic.trim();
 
   if (file.keystorePath) {
-    const password = process.env['TOON_CLIENT_KEYSTORE_PASSWORD'];
+    // An auto-provisioned keystore (#251) falls back to the default password so
+    // the identity reloads with no env var; a user-imported one still requires
+    // TOON_CLIENT_KEYSTORE_PASSWORD.
+    const password =
+      process.env['TOON_CLIENT_KEYSTORE_PASSWORD'] ??
+      (file.keystoreAutoPassword ? DEFAULT_KEYSTORE_PASSWORD : undefined);
     if (!password) {
       throw new Error(
         'keystorePath is set but TOON_CLIENT_KEYSTORE_PASSWORD is not provided'
@@ -197,29 +229,47 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     'evm') as SettlementChain;
   const apex = file.apexChains?.[chain] ?? file.apex;
 
-  // Transport / proxy resolution. Three modes:
-  //  • explicit socksProxy → BTP uses it; reads route through it too.
-  //  • managed anon (auto for `.anyone` hosts with no explicit proxy, or forced
-  //    via managedAnonProxy:true) → the ToonClient spawns its own anon daemon on
-  //    a loopback SOCKS port; the relay subscription points at that SAME port so
-  //    free reads to a `.anyone` relay work with zero external setup.
+  // Transport / proxy resolution. The managed `anon` SOCKS5h proxy reaches
+  // `.anyone` hidden services with zero setup, and TWO consumers need it
+  // independently: the ToonClient (paid writes over BTP) and the daemon's
+  // RelaySubscription (free reads). Crucially, the ToonClient only auto-starts
+  // its own proxy when the *btpUrl* is `.anyone` — so the `.anyone`-ness of the
+  // relay is inferred SEPARATELY here, and when the btp is direct but the relay
+  // is a hidden service the daemon must start the read proxy itself.
+  //  • explicit socksProxy → BTP + reads both route through it.
+  //  • btp `.anyone` → the ToonClient spawns the anon daemon on a loopback SOCKS
+  //    port; reads reuse that SAME port (covers a `.anyone` relay too).
+  //  • btp direct + relay `.anyone` → the daemon starts the read proxy on that
+  //    loopback port (`manageReadProxy`); BTP stays direct.
   //  • otherwise → direct, no proxy.
   const managedPort = Number(file.managedAnonSocksPort ?? 9050);
-  const wantManaged =
-    file.managedAnonProxy ?? (explicitSocks ? false : isAnyoneHost(btpUrl));
+  // Explicit opt-out (`managedAnonProxy:false`) disables auto-start everywhere;
+  // an explicit socksProxy takes the first branch regardless.
+  const allowManaged = file.managedAnonProxy ?? true;
+  const btpIsAnyone = isAnyoneHost(btpUrl);
+  const relayIsAnyone = isAnyoneHost(relayUrl);
 
   let transport: ToonClientConfig['transport'];
   let managedAnonProxy: boolean;
   let managedAnonSocksPort: number | undefined;
   // The proxy the relay subscription uses for free reads (may differ from BTP).
   let readsSocksProxy: string | undefined;
+  // Whether the DAEMON (not the ToonClient) must start the read proxy, for the
+  // btp-direct + relay-`.anyone` case the ToonClient does not cover.
+  let manageReadProxy = false;
   if (explicitSocks) {
     transport = { type: 'socks5', socksProxy: explicitSocks };
     managedAnonProxy = false;
     readsSocksProxy = explicitSocks;
-  } else if (wantManaged) {
+  } else if (allowManaged && btpIsAnyone) {
     transport = { type: 'direct' };
     managedAnonProxy = true;
+    managedAnonSocksPort = managedPort;
+    readsSocksProxy = `socks5h://127.0.0.1:${managedPort}`;
+  } else if (allowManaged && relayIsAnyone) {
+    transport = { type: 'direct' };
+    managedAnonProxy = false;
+    manageReadProxy = true;
     managedAnonSocksPort = managedPort;
     readsSocksProxy = `socks5h://127.0.0.1:${managedPort}`;
   } else {
@@ -270,6 +320,8 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     httpPort,
     relayUrl,
     ...(readsSocksProxy !== undefined ? { socksProxy: readsSocksProxy } : {}),
+    manageReadProxy,
+    ...(manageReadProxy ? { readProxySocksPort: managedPort } : {}),
     destination,
     feePerEvent,
     apex,

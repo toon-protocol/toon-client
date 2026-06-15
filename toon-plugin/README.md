@@ -14,7 +14,7 @@ auto-activates when you ask to publish/read/pay/swap on TOON.
 | Manifest | `.claude-plugin/plugin.json` | Plugin name/version/metadata |
 | Marketplace entry | `<repo-root>/.claude-plugin/marketplace.json` | Lets the `toon-protocol/town` repo act as a one-plugin marketplace (lists this plugin with `source: ./toon-plugin`). A GitHub-repo marketplace is discovered at the **repo root**, not in the plugin subdir. |
 | Skill | `skills/toon-client/SKILL.md` (+ `references/`, `evals/`) | Teaches pay-to-write / free-read / settlement |
-| MCP server | `.mcp.json` | Declares the `toon` MCP server, run via `npx @toon-protocol/client-mcp` |
+| MCP server | `.mcp.json` | Declares the `toon` MCP server, run via `npx -y -p @toon-protocol/client-mcp toon-mcp` |
 
 The MCP server itself is published separately to npm as
 [`@toon-protocol/client-mcp`](https://www.npmjs.com/package/@toon-protocol/client-mcp)
@@ -43,11 +43,14 @@ claude --plugin-dir /path/to/town/toon-plugin
 
 ## Prerequisites
 
-The MCP server needs Node ≥ 20 (`npx` fetches `@toon-protocol/client-mcp` on
-first run) and a configured TOON client identity. Configure the daemon via
-`~/.toon-client/config.json` and a mnemonic/keystore — see the
+The MCP server needs Node ≥ 20 — `npx` fetches `@toon-protocol/client-mcp` on
+first run. **No identity setup is required:** on first launch the daemon
+auto-generates an encrypted identity at `~/.toon-client/keystore.json` and writes
+a starter `~/.toon-client/config.json` (it prints the seed phrase once — back it
+up). The one thing you supply is the apex you pay: set `btpUrl` (and usually
+`relayUrl`) in that config. See the
 [`@toon-protocol/client-mcp` README](https://www.npmjs.com/package/@toon-protocol/client-mcp)
-for the config schema, the `toon_*` tool reference, and a usage example.
+for the full config schema, the `toon_*` tool reference, and a usage example.
 
 ## Tools (8)
 

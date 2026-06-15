@@ -22,6 +22,7 @@ import {
   resolveConfig,
   type ResolvedDaemonConfig,
 } from './daemon/config.js';
+import { scaffoldFirstRun } from './daemon/first-run.js';
 import { ClientRunner, type ToonClientLike } from './daemon/client-runner.js';
 import { registerRoutes } from './daemon/routes.js';
 import {
@@ -140,9 +141,13 @@ async function main(): Promise<void> {
   const cmd = process.argv[2] ?? 'run';
   switch (cmd) {
     case 'run':
+      // First-run onboarding (#251): mint + persist an identity and scaffold
+      // the transport config so a fresh install starts with no manual setup.
+      await scaffoldFirstRun();
       await runForeground();
       break;
     case 'start':
+      await scaffoldFirstRun();
       await start();
       break;
     case 'stop':

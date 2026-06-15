@@ -56,16 +56,43 @@ The `toon-client` MCP server exposes **8 tools**:
 ## Install
 
 ```bash
-pnpm add -g @toon-protocol/client-mcp     # or use npx/pnpm dlx
+pnpm add -g @toon-protocol/client-mcp     # installs both bins
 ```
 
-This installs two bins: `toon-clientd` and `toon-mcp`.
+This installs two bins: `toon-clientd` and `toon-mcp`. To run a bin straight
+from npm without a global install, name it explicitly (the package name is not a
+bin, so plain `npx @toon-protocol/client-mcp` fails):
+
+```bash
+npx -y -p @toon-protocol/client-mcp toon-mcp       # MCP stdio server
+npx -y -p @toon-protocol/client-mcp toon-clientd   # daemon
+```
+
+## First run (zero-config onboarding)
+
+On the **first** `toon-clientd run`/`start` (including the auto-spawn from
+`toon-mcp`), the daemon onboards a brand-new user with no manual setup:
+
+- **Identity** — if no mnemonic is configured, it generates a fresh BIP-39
+  mnemonic, encrypts it to `~/.toon-client/keystore.json`, records
+  `keystorePath` in `config.json`, and prints the seed phrase + derived
+  addresses **once** (back it up). The keystore is encrypted with
+  `TOON_CLIENT_KEYSTORE_PASSWORD` when set, otherwise a default password so the
+  identity reloads on every restart with **no env var required**.
+- **Transport scaffolding** — it writes a starter `~/.toon-client/config.json`
+  carrying the `btpUrl`/`relayUrl`/`managedAnonProxy` knobs plus a `_help`
+  block documenting direct-vs-`.anyone` selection.
+
+The one thing you must supply is the apex you pay: set **`btpUrl`** (and usually
+`relayUrl`) in the scaffolded config, then publish. Everything below is for
+overriding those auto-provisioned defaults.
 
 ## Configure the daemon
 
 The daemon reads `~/.toon-client/config.json` (override with `TOON_CLIENT_CONFIG`).
-The **mnemonic is never stored in plaintext by default** — supply it via env or an
-encrypted keystore (scrypt + AES-256-GCM, mode 0600).
+The **mnemonic is never stored in plaintext by default** — it is auto-generated
+into an encrypted keystore (scrypt + AES-256-GCM, mode 0600) on first run, or you
+can supply your own via env or an imported keystore.
 
 ```jsonc
 // ~/.toon-client/config.json
@@ -96,9 +123,23 @@ Environment overrides: `TOON_CLIENT_MNEMONIC`, `TOON_CLIENT_KEYSTORE_PASSWORD`,
 `TOON_CLIENT_BTP_URL`, `TOON_CLIENT_RELAY_URL`, `TOON_CLIENT_SOCKS`,
 `TOON_CLIENT_HTTP_PORT`, `TOON_CLIENT_NETWORK`, `TOON_CLIENT_HOME`.
 
-The managed `.anyone` SOCKS5h proxy auto-starts when `btpUrl` is a `.anyone`
-host and no explicit `socksProxy` is set. The first bootstrap pays the anon
-warm-up cost (~30–90s) **once** — the detached daemon then stays up.
+**Transport is inferred from the URLs — no separate "direct vs hidden-service"
+switch.** The daemon parses the host of each URL independently:
+
+- `btpUrl`/`relayUrl` on a normal host (`ws://1.2.3.4:3000/btp`, `wss://…`) →
+  **direct**, dialed as-is.
+- `btpUrl` on a `.anyone` host → the ToonClient auto-starts a managed `anon`
+  SOCKS5h proxy and routes paid writes (and reads) through it.
+- `btpUrl` **direct** but `relayUrl` on a `.anyone` host → the daemon starts its
+  own managed `anon` proxy just for the free-read subscription; paid writes stay
+  direct. (Mixed transports — a direct apex with a hidden-service relay — work
+  out of the box.)
+
+No explicit `socksProxy` is needed for any of these. Set `socksProxy` only to
+point at your own external proxy, or `managedAnonProxy: false` to opt out of the
+managed proxy entirely. The first bootstrap pays the anon warm-up cost (~30–90s)
+**once** — the detached daemon then stays up. A read-proxy failure surfaces under
+`relay.proxyError` in `toon_status` and never blocks direct paid writes.
 
 ### Create an encrypted keystore
 

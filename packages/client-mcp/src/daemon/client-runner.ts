@@ -16,6 +16,7 @@
 import type { NostrEvent } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
 import { decodeEventFromToon } from '@toon-protocol/core';
+import { startManagedAnonProxy } from '@toon-protocol/client';
 import { streamSwap } from '@toon-protocol/sdk/swap';
 import { RelaySubscription } from '../relay-subscription.js';
 import type {
@@ -76,12 +77,28 @@ export interface ToonClientLike {
   }>;
 }
 
+/** A started managed proxy: just the teardown handle the runner needs. */
+export interface ManagedProxyHandle {
+  stop(): Promise<void>;
+}
+
+/** Starts a managed `anon` read proxy on a loopback SOCKS port. */
+export type StartReadProxy = (opts: {
+  socksPort: number;
+  log?: (msg: string) => void;
+}) => Promise<ManagedProxyHandle>;
+
 export interface ClientRunnerDeps {
   config: ResolvedDaemonConfig;
   /** Factory producing the (real or fake) ToonClient. */
   createClient: () => ToonClientLike;
   /** Factory producing the relay subscription (defaults to the real one). */
   createRelay?: () => RelaySubscription;
+  /**
+   * Starts the daemon-managed read proxy (defaults to the real
+   * `startManagedAnonProxy`). Injected so tests avoid the anon download/spawn.
+   */
+  startReadProxy?: StartReadProxy;
   logger?: (msg: string) => void;
 }
 
@@ -89,6 +106,7 @@ export class ClientRunner {
   private readonly config: ResolvedDaemonConfig;
   private readonly client: ToonClientLike;
   private readonly relay: RelaySubscription;
+  private readonly startReadProxy: StartReadProxy;
   private readonly log: (msg: string) => void;
 
   private readonly startedAt = Date.now();
@@ -97,6 +115,10 @@ export class ClientRunner {
   private lastError: string | undefined;
   /** Channel opened against the default apex destination. */
   private apexChannelId: string | undefined;
+  /** Teardown for a daemon-managed read proxy (btp-direct + relay-`.anyone`). */
+  private stopReadProxy: (() => Promise<void>) | undefined;
+  /** Error from the read proxy (kept separate from the paid-path `lastError`). */
+  private readProxyError: string | undefined;
   private stopped = false;
 
   constructor(deps: ClientRunnerDeps) {
@@ -112,6 +134,13 @@ export class ClientRunner {
         decodeEvent: (raw) =>
           decodeEventFromToon(new TextEncoder().encode(raw)),
       });
+    this.startReadProxy =
+      deps.startReadProxy ??
+      ((opts) =>
+        startManagedAnonProxy({
+          socksPort: opts.socksPort,
+          ...(opts.log ? { log: opts.log } : {}),
+        }));
     this.log = deps.logger ?? ((): void => undefined);
   }
 
@@ -123,9 +152,42 @@ export class ClientRunner {
   start(): void {
     if (this.bootstrapping || this.ready) return;
     this.bootstrapping = true;
+    // When the relay is a `.anyone` hidden service but the btp is direct, the
+    // ToonClient won't start a proxy — so the daemon brings one up for reads.
+    // Kept independent of the paid-write bootstrap: a proxy failure must not
+    // block direct publishing, and the relay retry-connects until it binds.
+    if (this.config.manageReadProxy) void this.bringUpReadProxy();
     // Reads can start immediately and independently of the paid-write path.
     this.relay.start();
     void this.bootstrap();
+  }
+
+  /** Start the daemon-managed `anon` read proxy (best-effort; logs on failure). */
+  private async bringUpReadProxy(): Promise<void> {
+    const socksPort = this.config.readProxySocksPort ?? 9050;
+    try {
+      this.log(
+        `[runner] starting managed read proxy on 127.0.0.1:${socksPort}`
+      );
+      const proxy = await this.startReadProxy({
+        socksPort,
+        log: (m) => this.log(`[anon] ${m}`),
+      });
+      // A teardown race: if stop() ran while we were booting, kill it now.
+      if (this.stopped) {
+        await proxy.stop();
+        return;
+      }
+      this.stopReadProxy = () => proxy.stop();
+      this.readProxyError = undefined;
+      this.log('[runner] managed read proxy ready');
+    } catch (err) {
+      // Kept off `lastError` (the paid-write path) — a successful BTP bootstrap
+      // would otherwise clear it. Direct writes are unaffected by a read-proxy
+      // failure; only hidden-service reads go down.
+      this.readProxyError = err instanceof Error ? err.message : String(err);
+      this.log(`[runner] managed read proxy failed: ${this.readProxyError}`);
+    }
   }
 
   /** The background bootstrap routine (exposed for awaiting in tests). */
@@ -304,6 +366,7 @@ export class ClientRunner {
         connected: this.relay.isConnected(),
         buffered: this.relay.bufferedCount(),
         subscriptions: this.relay.activeSubscriptions(),
+        ...(this.readProxyError ? { proxyError: this.readProxyError } : {}),
       },
       ...(network ? { network } : {}),
       ...(this.lastError ? { lastError: this.lastError } : {}),
@@ -433,6 +496,16 @@ export class ClientRunner {
     if (this.stopped) return;
     this.stopped = true;
     this.relay.close();
+    if (this.stopReadProxy) {
+      try {
+        await this.stopReadProxy();
+      } catch (err) {
+        this.log(
+          `[runner] read proxy stop error: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      this.stopReadProxy = undefined;
+    }
     try {
       await this.client.stop();
     } catch (err) {
