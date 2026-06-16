@@ -165,6 +165,27 @@ describe('discoverApex', () => {
     expect(err.retryable).toBe(true);
   });
 
+  it('skips a NIP-40-expired announcement and times out (retryable)', async () => {
+    const { relay, open, emit } = controllableRelay();
+    open();
+    // A valid announcement, but its expiration tag is in the past → the apex
+    // stopped re-publishing (offline). Discovery must NOT match it (issue #261).
+    const expired: NostrEvent = {
+      ...announcement('g.townhouse.town'),
+      tags: [['expiration', '1']], // unix second 1 — long past
+    };
+    emit(['EVENT', 'apex-discovery-g.townhouse.town', expired]);
+    const err = await discoverApex({
+      relay,
+      ilpAddress: 'g.townhouse.town',
+      timeoutMs: 120,
+      pollMs: 20,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApexDiscoveryError);
+    // Retryable: a fresh, unexpired announcement may arrive once the apex is back.
+    expect(err.retryable).toBe(true);
+  });
+
   it('rejects a malformed announcement as NON-retryable', async () => {
     const { relay, open, emit } = controllableRelay();
     open();
