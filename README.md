@@ -12,7 +12,7 @@ TOON Protocol consumer side — @toon-protocol/client (pay-to-write Nostr client
 # install devbox (once, system-wide)
 curl -fsSL https://get.jetify.com/devbox | bash
 
-# enter the pinned dev shell — node@22 + pnpm@8.15.0 (via corepack) are on PATH
+# enter the pinned dev shell — nodejs@22 + pnpm@8.15.9 are on PATH
 devbox shell
 
 # then work as normal
@@ -21,4 +21,4 @@ pnpm -r build
 pnpm -r test
 ```
 
-Devbox reads the `packageManager` field in `package.json` and activates pnpm automatically via Corepack — no separate `devbox add pnpm` step needed.
+Both `nodejs@22` and `pnpm@8.15.9` are installed directly from nixpkgs by devbox — Corepack is not used.
