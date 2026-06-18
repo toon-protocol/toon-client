@@ -24,6 +24,7 @@ import type {
   OpenChannelRequest,
   PublishRequest,
   PublishUnsignedRequest,
+  QueryRequest,
   RemoveApexRequest,
   RemoveRelayRequest,
   SubscribeRequest,
@@ -77,6 +78,21 @@ export function registerRoutes(
     }
     try {
       return await runner.uploadMedia(body);
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
+
+  app.post<{ Body: QueryRequest }>('/query', async (req, reply) => {
+    const body = req.body;
+    if (!body || body.filters === undefined) {
+      return sendError(reply, 400, 'invalid_filters', {
+        detail: 'body.filters is required (a NIP-01 filter or array of filters).',
+      });
+    }
+    try {
+      const events = await runner.query(body.filters, body.timeoutMs);
+      return { events };
     } catch (err) {
       return mapError(reply, err);
     }

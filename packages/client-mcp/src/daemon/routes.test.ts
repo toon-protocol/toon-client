@@ -234,6 +234,22 @@ describe('control-plane routes', () => {
       expect(res.json().error).toBe('invalid_media');
     });
 
+    it('POST /query returns matching events (empty buffer → [])', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/query',
+        payload: { filters: { kinds: [1] }, timeoutMs: 10 },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ events: [] });
+    });
+
+    it('POST /query rejects a missing filter with 400', async () => {
+      const res = await app.inject({ method: 'POST', url: '/query', payload: {} });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('invalid_filters');
+    });
+
     it('POST /subscribe + GET /events round-trip', async () => {
       const sub = await app.inject({
         method: 'POST',

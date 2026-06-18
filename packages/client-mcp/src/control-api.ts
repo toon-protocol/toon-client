@@ -168,6 +168,20 @@ export interface SubscribeResponse {
   relays: string[];
 }
 
+/**
+ * `POST /query` — one-shot free read: subscribe the filter(s), wait briefly, and
+ * return every buffered event matching them. Used by the apps `toon_query` tool.
+ */
+export interface QueryRequest {
+  filters: NostrFilter | NostrFilter[];
+  /** Bounded wait for relay delivery, ms (default 1200). */
+  timeoutMs?: number;
+}
+
+export interface QueryResponse {
+  events: NostrEvent[];
+}
+
 /** `GET /events` — drain buffered events for a subscription (free read). */
 export interface EventsQuery {
   /** Restrict to a single subscription id. */

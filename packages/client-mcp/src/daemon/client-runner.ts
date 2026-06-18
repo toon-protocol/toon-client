@@ -387,6 +387,30 @@ export class ClientRunner {
     return { subId, relays: targets };
   }
 
+  /**
+   * One-shot free read: subscribe the given filter(s) across all relays, wait a
+   * bounded window for the relay(s) to deliver, then return every buffered event
+   * matching the filter (matched by content, not subId — so events already
+   * buffered by other subscriptions are included despite the global dedup).
+   *
+   * Backs the apps `toon_query` tool the generative-UI runtime calls to resolve
+   * a ViewSpec node's data bind.
+   */
+  async query(
+    filters: NostrFilter | NostrFilter[],
+    timeoutMs = 1200
+  ): Promise<NostrEvent[]> {
+    const list = Array.isArray(filters) ? filters : [filters];
+    const subId = `q-${++this.subIdCounter}`;
+    const targets = [...this.relays.keys()];
+    for (const url of targets) this.relays.get(url)?.subscribe(list, subId);
+    await delay(timeoutMs);
+    for (const url of targets) this.relays.get(url)?.unsubscribe(subId);
+    return this.merged
+      .map((m) => m.event)
+      .filter((event) => list.some((f) => matchesFilter(event, f)));
+  }
+
   /** Drain merged events newer than the cursor (free read), optionally scoped. */
   getEvents(query: EventsQuery): EventsResponse {
     const after = query.cursor ?? 0;
@@ -1119,6 +1143,29 @@ const ARWEAVE_GATEWAY = 'https://arweave.net';
 /** Current time in whole seconds (Nostr `created_at` unit). */
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+/** Resolve after `ms` (bounded wait for relay delivery in `query`). */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** NIP-01 filter match (kinds/authors/ids/since/until + `#<letter>` tag filters). */
+function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
+  if (filter.ids && !filter.ids.includes(event.id)) return false;
+  if (filter.kinds && !filter.kinds.includes(event.kind)) return false;
+  if (filter.authors && !filter.authors.includes(event.pubkey)) return false;
+  if (filter.since !== undefined && event.created_at < filter.since) return false;
+  if (filter.until !== undefined && event.created_at > filter.until) return false;
+  for (const [key, values] of Object.entries(filter)) {
+    if (!key.startsWith('#') || !Array.isArray(values)) continue;
+    const letter = key.slice(1);
+    const hit = event.tags.some(
+      (t) => t[0] === letter && t[1] !== undefined && values.includes(t[1])
+    );
+    if (!hit) return false;
+  }
+  return true;
 }
 
 /** Validate that `raw` is an array of string arrays, returning it typed. */

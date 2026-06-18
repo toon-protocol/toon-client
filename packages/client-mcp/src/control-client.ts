@@ -16,6 +16,8 @@ import type {
   PublishRequest,
   PublishResponse,
   PublishUnsignedRequest,
+  QueryRequest,
+  QueryResponse,
   RemoveApexRequest,
   RemoveRelayRequest,
   StatusResponse,
@@ -102,6 +104,10 @@ export class ControlClient {
 
   subscribe(body: SubscribeRequest): Promise<SubscribeResponse> {
     return this.request<SubscribeResponse>('POST', '/subscribe', body);
+  }
+
+  query(body: QueryRequest): Promise<QueryResponse> {
+    return this.request<QueryResponse>('POST', '/query', body);
   }
 
   events(query: EventsQuery = {}): Promise<EventsResponse> {

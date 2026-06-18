@@ -10,8 +10,10 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
@@ -20,7 +22,8 @@
     "toon-apps-fake": "./dist/server/fake-main.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && vite build",
+    "build:lib": "tsc -p tsconfig.build.json",
     "build:app": "vite build",
     "demo:apps": "node dist/server/fake-main.js",
     "test": "vitest run",
