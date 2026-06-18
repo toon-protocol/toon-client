@@ -1,6 +1,6 @@
 # toon-client
 
-The TOON Protocol **consumer side**: `@toon-protocol/client` (pay-to-write Nostr client — one-mnemonic multi-chain identity, payment-channel lifecycle, balance-proof signing, free reads), `@toon-protocol/client-mcp` (the `toon-clientd` daemon + `toon-mcp` MCP server letting Claude agents act as a TOON client), and the `rig` decentralized git-forge UI. Ships the `toon-plugin/` (the `toon-client` skill + `toon-mcp`).
+The TOON Protocol **consumer side**: `@toon-protocol/client` (pay-to-write Nostr client — one-mnemonic multi-chain identity, payment-channel lifecycle, balance-proof signing, free reads), `@toon-protocol/client-mcp` (the `toon-clientd` daemon + `toon-mcp` MCP server letting Claude agents act as a TOON client), and `rig` — a browser-only frontend that interprets TOON events into a **decentralized control plane** (it speaks the NIP-34 git vocabulary backed by Arweave today, so it presents as a read-only git forge, but it is not a GitHub clone). Ships the `toon-plugin/` (the `toon-client` skill + `toon-mcp`).
 
 Part of the **TOON Protocol** — pay-to-write Nostr over Interledger (ILP), split into per-team repos. The client signs a payment-channel claim and sends a TOON-encoded event over BTP to an apex; it reads free over Nostr WS.
 
