@@ -28,7 +28,7 @@ vi.mock('@toon-protocol/sdk/swap', () => ({
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
-import type { NostrEvent } from 'nostr-tools/pure';
+import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { registerRoutes } from './routes.js';
 import { ClientRunner, type ToonClientLike } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
@@ -65,6 +65,25 @@ class FakeClient implements ToonClientLike {
   async signBalanceProof(): Promise<unknown> {
     this.nonce += 1;
     return {};
+  }
+  signEvent(template: EventTemplate): NostrEvent {
+    return {
+      id: `signed-${template.kind}`,
+      pubkey: this.getPublicKey(),
+      sig: '0xsig',
+      created_at: template.created_at,
+      kind: template.kind,
+      tags: template.tags,
+      content: template.content,
+    };
+  }
+  async uploadBlob(): Promise<{
+    success: boolean;
+    txId?: string;
+    eventId?: string;
+    error?: string;
+  }> {
+    return { success: true, txId: 'tx-routes', eventId: 'blob-evt' };
   }
   async openChannel(): Promise<string> {
     return 'chan-1';
@@ -169,6 +188,50 @@ describe('control-plane routes', () => {
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBe('invalid_event');
+    });
+
+    it('POST /publish-unsigned signs + publishes, returning eventId + nonce', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/publish-unsigned',
+        payload: { kind: 1, content: 'hi', tags: [['t', 'x']] },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ channelId: 'chan-1', nonce: 1 });
+      expect(res.json().eventId).toBe('signed-1');
+    });
+
+    it('POST /publish-unsigned rejects a missing kind with 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/publish-unsigned',
+        payload: { content: 'no kind' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('invalid_event');
+    });
+
+    it('POST /upload-media uploads + publishes, returning url + txId', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/upload-media',
+        payload: { dataBase64: Buffer.from('x').toString('base64'), mime: 'image/png', kind: 20 },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        url: 'https://arweave.net/tx-routes',
+        txId: 'tx-routes',
+      });
+    });
+
+    it('POST /upload-media rejects missing bytes with 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/upload-media',
+        payload: { mime: 'image/png' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('invalid_media');
     });
 
     it('POST /subscribe + GET /events round-trip', async () => {

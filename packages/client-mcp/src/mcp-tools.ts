@@ -11,8 +11,10 @@ import type {
   AddApexRequest,
   NostrFilter,
   PublishRequest,
+  PublishUnsignedRequest,
   SettlementChain,
   SwapRequest,
+  UploadMediaRequest,
 } from './control-api.js';
 
 /** A JSON-Schema-described MCP tool. */
@@ -85,6 +87,58 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
       },
       required: ['event'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_publish_unsigned',
+    description:
+      'Pay-to-write WITHOUT holding a key: supply only the event shell (kind, ' +
+      'content, tags) and the daemon signs it with the held Nostr key, signs the ' +
+      'payment-channel claim, and forwards over BTP. For replaceable kinds ' +
+      '(0 profile, 3 follow list) the daemon merges the latest known tags first. ' +
+      'This is the path MCP-app UI actions use so the iframe never signs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'number', description: 'Event kind (integer 0–65535).' },
+        content: { type: 'string', description: 'Event content (default empty).' },
+        tags: {
+          type: 'array',
+          items: { type: 'array', items: { type: 'string' } },
+          description: 'Event tags (array of string arrays).',
+        },
+        destination: { type: 'string', description: 'Optional ILP destination override.' },
+        fee: { type: 'string', description: 'Optional fee override (base units).' },
+        btpUrl: { type: 'string', description: 'Which apex to publish through (default: config-seeded).' },
+      },
+      required: ['kind'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_upload_media',
+    description:
+      'Pay-to-write media (SPENDY, two-step): upload base64 bytes to Arweave via ' +
+      'the kind:5094 blob-storage DVM, then sign+publish a media event ' +
+      '(default kind:1063 NIP-94; 20=picture, 21/22=video, 1=note w/ NIP-92 imeta) ' +
+      'referencing the resulting Arweave URL. Single-packet only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dataBase64: { type: 'string', description: 'Base64-encoded media bytes.' },
+        mime: { type: 'string', description: "MIME type (default 'application/octet-stream')." },
+        kind: { type: 'number', description: 'Media event kind (default 1063).' },
+        caption: { type: 'string', description: 'Caption/content for the media event.' },
+        tags: {
+          type: 'array',
+          items: { type: 'array', items: { type: 'string' } },
+          description: 'Extra tags merged into the published media event.',
+        },
+        fee: { type: 'string', description: 'Optional fee override (base units).' },
+        btpUrl: { type: 'string', description: 'Which apex to publish through (default: config-seeded).' },
+      },
+      required: ['dataBase64'],
       additionalProperties: false,
     },
   },
@@ -345,6 +399,14 @@ export async function dispatchTool(
       }
       case 'toon_publish':
         return ok(await client.publish(args as unknown as PublishRequest));
+      case 'toon_publish_unsigned':
+        return ok(
+          await client.publishUnsigned(args as unknown as PublishUnsignedRequest)
+        );
+      case 'toon_upload_media':
+        return ok(
+          await client.uploadMedia(args as unknown as UploadMediaRequest)
+        );
       case 'toon_subscribe':
         return ok(
           await client.subscribe({

@@ -8,9 +8,10 @@ import { streamSwap } from '@toon-protocol/sdk/swap';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { NostrEvent } from 'nostr-tools/pure';
+import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import {
   ClientRunner,
+  InvalidPayloadError,
   NotReadyError,
   PublishRejectedError,
   type ToonClientLike,
@@ -91,6 +92,34 @@ class FakeClient implements ToonClientLike {
     ch.nonce += 1;
     ch.cumulative += amount;
     return { channelId, signature: '0xsig' };
+  }
+  /** Records the last template signed, and returns a deterministic signed event. */
+  lastSigned?: EventTemplate;
+  signEvent(template: EventTemplate): NostrEvent {
+    this.lastSigned = template;
+    return {
+      id: `signed-${template.kind}-${template.created_at}`,
+      pubkey: this.getPublicKey(),
+      sig: '0xsig',
+      created_at: template.created_at,
+      kind: template.kind,
+      tags: template.tags,
+      content: template.content,
+    };
+  }
+  uploadImpl: () => Promise<{
+    success: boolean;
+    txId?: string;
+    eventId?: string;
+    error?: string;
+  }> = async () => ({ success: true, txId: 'tx-abc', eventId: 'blob-evt' });
+  async uploadBlob(): Promise<{
+    success: boolean;
+    txId?: string;
+    eventId?: string;
+    error?: string;
+  }> {
+    return this.uploadImpl();
   }
   async openChannel(): Promise<string> {
     const id = 'chan-1';
@@ -323,6 +352,56 @@ describe('ClientRunner', () => {
     });
     await expect(
       runner.publish({ event: { id: 'e' } as NostrEvent })
+    ).rejects.toBeInstanceOf(PublishRejectedError);
+  });
+
+  it('publishUnsigned builds the event, signs with the held key, and publishes', async () => {
+    await runner.bootstrap();
+    const res = await runner.publishUnsigned({
+      kind: 1,
+      content: 'hello',
+      tags: [['t', 'toon']],
+    });
+    expect(client.lastSigned?.kind).toBe(1);
+    expect(client.lastSigned?.content).toBe('hello');
+    expect(client.lastSigned?.tags).toEqual([['t', 'toon']]);
+    expect(res.channelId).toBe('chan-1');
+    expect(res.nonce).toBe(1);
+    expect(res.eventId).toMatch(/^signed-1-/);
+  });
+
+  it('publishUnsigned validates the model-authored payload', async () => {
+    await runner.bootstrap();
+    await expect(runner.publishUnsigned({ kind: -1 })).rejects.toBeInstanceOf(
+      InvalidPayloadError
+    );
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      runner.publishUnsigned({ kind: 1, tags: ['not-an-array'] as any })
+    ).rejects.toBeInstanceOf(InvalidPayloadError);
+  });
+
+  it('uploadMedia uploads to Arweave then publishes a referencing media event', async () => {
+    await runner.bootstrap();
+    const res = await runner.uploadMedia({
+      dataBase64: Buffer.from('img-bytes').toString('base64'),
+      mime: 'image/png',
+      kind: 20,
+    });
+    expect(res.txId).toBe('tx-abc');
+    expect(res.url).toBe('https://arweave.net/tx-abc');
+    expect(client.lastSigned?.kind).toBe(20);
+    expect(client.lastSigned?.tags?.[0]?.[0]).toBe('imeta');
+    expect(client.lastSigned?.tags?.[0]?.[1]).toContain(
+      'https://arweave.net/tx-abc'
+    );
+  });
+
+  it('uploadMedia surfaces a DVM upload failure as PublishRejectedError', async () => {
+    await runner.bootstrap();
+    client.uploadImpl = async () => ({ success: false, error: 'F99 dvm down' });
+    await expect(
+      runner.uploadMedia({ dataBase64: 'AAAA' })
     ).rejects.toBeInstanceOf(PublishRejectedError);
   });
 

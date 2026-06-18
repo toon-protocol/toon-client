@@ -1,5 +1,5 @@
-import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import type { NostrEvent } from 'nostr-tools/pure';
+import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import type {
   BootstrapService,
   DiscoveryTracker,
@@ -21,6 +21,10 @@ import {
   type PeerNegotiation,
 } from './channel/ChannelManager.js';
 import { JsonFileChannelStore } from './channel/ChannelStore.js';
+import {
+  requestBlobStorage,
+  type RequestBlobStorageResult,
+} from './blob-storage.js';
 import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
 import type {
   ToonClientConfig,
@@ -140,6 +144,36 @@ export class ToonClient {
    */
   getPublicKey(): string {
     return getPublicKey(this.config.secretKey);
+  }
+
+  /**
+   * Sign an unsigned Nostr event template with the client's Nostr secret key,
+   * returning a fully-signed event (id + pubkey + sig).
+   *
+   * This is the key primitive behind the daemon's sign-and-publish path: a UI
+   * or agent supplies only `{ kind, content, tags, created_at }` and never holds
+   * the private key — signing happens here, inside the key owner.
+   */
+  signEvent(template: EventTemplate): NostrEvent {
+    return finalizeEvent(template, this.config.secretKey);
+  }
+
+  /**
+   * Upload bytes to Arweave via the kind:5094 blob-storage DVM (single-packet),
+   * signing the request with this client's Nostr key and paying through its
+   * existing channel. Returns the Arweave tx id on success.
+   *
+   * Backs the daemon's `upload-media` path: the key and claim/channel plumbing
+   * stay inside the client; callers pass only the bytes.
+   */
+  async uploadBlob(params: {
+    blobData: Uint8Array;
+    contentType?: string;
+    bid?: string;
+    destination?: string;
+    ilpAmount?: bigint;
+  }): Promise<RequestBlobStorageResult> {
+    return requestBlobStorage(this, this.config.secretKey, params);
   }
 
   /**
