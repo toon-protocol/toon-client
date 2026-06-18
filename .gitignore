@@ -94,6 +94,9 @@ __pycache__/
 # Nix build output (symlink to /nix/store result)
 /result
 
+# Devbox virtual environment (platform-specific nix store symlinks)
+.devbox/
+
 # Generated deployment files
 docker-compose-peer*.yml
 genesis.env
