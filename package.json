@@ -49,7 +49,8 @@
       "cookie": ">=0.7.0",
       "path-to-regexp": ">=0.1.10",
       "express": ">=4.21.0",
-      "@toon-protocol/core": "^1.4.1"
+      "@toon-protocol/core": "^1.4.1",
+      "@toon-protocol/relay": "^1.3.1"
     },
     "auditConfig": {
       "ignoreCves": [
