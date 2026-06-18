@@ -21,4 +21,4 @@ pnpm -r build
 pnpm -r test
 ```
 
-Both `nodejs@22` and `pnpm@8.15.9` are installed directly from nixpkgs by devbox — Corepack is not used.
+Both `nodejs@22` and `pnpm@8.15.9` are installed directly from nixpkgs by devbox. The devbox Node.js plugin activates a Corepack setup shim at init time; `COREPACK_ENABLE_STRICT=0` (set in `devbox.json`'s `env` block and in CI) prevents that shim from enforcing the `packageManager` field — pnpm is managed by the devbox nixpkg, not by Corepack.

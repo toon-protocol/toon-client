@@ -16,6 +16,7 @@ jobs:
           enable-cache: true
         env:
           DEVBOX_USE_VERSION: "0.17.3"
+          COREPACK_ENABLE_STRICT: "0"
 
       - run: devbox run -- pnpm install --no-frozen-lockfile
 
