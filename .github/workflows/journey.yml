@@ -17,6 +17,10 @@ on:
         type: choice
         options: [smoke, full]
         default: smoke
+      topup:
+        description: 'Top up the client wallet from the treasury if balances are low (auto-on for full)'
+        type: boolean
+        default: false
   # Uncomment to run on a schedule (smoke):
   # schedule:
   #   - cron: '0 14 * * 1'
@@ -42,6 +46,18 @@ jobs:
       LINODE_TOKEN: ${{ secrets.LINODE_TOKEN }}
       HUB_INSTANCE_LABEL: ${{ vars.HUB_INSTANCE_LABEL || 'townhouse-hub' }}
       HUB_DESTINATION: ${{ vars.HUB_DESTINATION || 'g.townhouse.town' }}
+      # Wallet derivation + treasury top-up. CLIENT_ACCOUNT_INDEX must differ from the
+      # treasury index — the top-up sends treasury[idx] -> client[idx].
+      CLIENT_ACCOUNT_INDEX: ${{ vars.CLIENT_ACCOUNT_INDEX || '1' }}
+      TREASURY_ACCOUNT_INDEX: ${{ vars.TREASURY_ACCOUNT_INDEX || '0' }}
+      BASE_SEPOLIA_RPC: ${{ vars.BASE_SEPOLIA_RPC }}
+      USDC_ADDRESS: ${{ vars.USDC_ADDRESS }}
+      MIN_ETH: ${{ vars.MIN_ETH || '0.002' }}
+      TOPUP_ETH: ${{ vars.TOPUP_ETH || '0.005' }}
+      MIN_USDC: ${{ vars.MIN_USDC || '5' }}
+      TOPUP_USDC: ${{ vars.TOPUP_USDC || '10' }}
+      # Real top-up when full OR explicitly requested; otherwise just report (dry-run).
+      DO_TOPUP: ${{ (inputs.topup || inputs.journey_mode == 'full') && 'true' || 'false' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -57,6 +73,12 @@ jobs:
         run: |
           npm install -g "@toon-protocol/client-mcp@${CLIENT_VERSION}"
           npm --prefix journey install --no-audit --no-fund
+
+      - name: Check balances + top up (Base Sepolia)
+        run: |
+          # Always reports balances; only sends when DO_TOPUP=true (full or topup input).
+          if [ "$DO_TOPUP" != "true" ]; then export TOPUP_DRY_RUN=true; fi
+          node journey/topup.mjs
 
       - name: Resolve hub endpoints from Linode
         run: |
@@ -88,7 +110,7 @@ jobs:
             "relayUrl": "$RELAY_URL",
             "transport": "direct",
             "httpPort": 8787,
-            "mnemonicAccountIndex": ${{ vars.CLIENT_ACCOUNT_INDEX || '0' }}
+            "mnemonicAccountIndex": ${CLIENT_ACCOUNT_INDEX}
           }
           JSON
 

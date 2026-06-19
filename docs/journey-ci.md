@@ -53,10 +53,25 @@ The daemon derives the Nostr + EVM/Solana/Mina identity from `TREASURY_MNEMONIC`
 `CLIENT_ACCOUNT_INDEX` — deterministic, so the client is the **same identity every run**.
 
 - **smoke** (default): read-only (`toon_status` / `toon_identity`) — **no funds needed**.
-- **full**: spends. Fund the derived addresses with **small** testnet/devnet amounts
-  (Base Sepolia USDC + a little gas; Solana devnet SOL; Mina devnet MINA). Print them from
-  a smoke run's `toon_identity` output, then fund from the treasury. Use a distinct
-  `CLIENT_ACCOUNT_INDEX` from the hub's settlement accounts to avoid key collisions.
+- **full**: spends, so the wallet must hold gas + USDC — handled by the top-up below.
+
+### Auto top-up from the treasury (`journey/topup.mjs`)
+
+Every run includes a **Check balances + top up** step. It derives the **treasury**
+(`TREASURY_ACCOUNT_INDEX`, default `0`) and **client** (`CLIENT_ACCOUNT_INDEX`, default
+`1`) accounts from the seed and, on **Base Sepolia**, checks the client's ETH (gas) +
+USDC and tops them up from the treasury when below the floors:
+
+- **smoke / topup off:** dry-run — **reports balances only**, no transactions.
+- **full, or `topup=true`:** sends `TOPUP_ETH` / `TOPUP_USDC` from the treasury when the
+  client is under `MIN_ETH` / `MIN_USDC`. Treasury-insufficient is a warning, not a send.
+
+Tunable via repo variables (all optional, sane defaults): `TREASURY_ACCOUNT_INDEX`,
+`CLIENT_ACCOUNT_INDEX`, `BASE_SEPOLIA_RPC`, `USDC_ADDRESS`, `MIN_ETH`, `TOPUP_ETH`,
+`MIN_USDC`, `TOPUP_USDC`. **`USDC_ADDRESS` must match the token the hub advertises** for
+`evm:base:84532` (the client discovers it via apex-discovery; set the same value here).
+The treasury and client indices **must differ** (the step transfers between them).
+Solana/Mina top-ups are deferred until their on-chain settlement lands (epic WS3).
 
 ## Reaching the hub
 
