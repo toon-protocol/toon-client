@@ -3,12 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Headless mcp-use journey runner for the TOON client (deploy scaffold). Backed by the WS5 orchestrator + WS7 harness once those land.",
+  "description": "Headless Claude Agent SDK journey runner for the TOON client (deploy scaffold). Backed by the WS5 orchestrator + WS7 harness once those land.",
   "bin": {
     "toon-headless": "./runner.mjs"
   },
   "dependencies": {
-    "@langchain/anthropic": "^1.5.0",
-    "mcp-use": "^1.32.0"
+    "@anthropic-ai/claude-agent-sdk": "^0.3.0"
   }
 }

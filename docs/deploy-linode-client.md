@@ -1,9 +1,10 @@
 # Deploying the headless TOON client to Linode
 
-Stands a **headless mcp-use client** up on a Linode VPS: an always-on `toon-clientd`
-daemon plus a Claude-driven journey runner that exercises the SocialFi + DeFi journey
-against a live apex hub. As a pure consumer the box has **no inbound ports** — only
-outbound to the hub's BTP/relay (or its `.anon` hidden service in Phase 2).
+Stands a **headless Claude-agent client** up on a Linode VPS: an always-on `toon-clientd`
+daemon plus a journey runner — the **Claude Agent SDK** driving the `toon-mcp` tools — that
+exercises the SocialFi + DeFi journey against a live apex hub. As a pure consumer the box
+has **no inbound ports** — only outbound to the hub's BTP/relay (or its `.anon` hidden
+service in Phase 2).
 
 > **Runner status:** the deterministic journey orchestrator is WS5 + WS7
 > (`toon-protocol/toon-client#21`). Until it lands, the runner does a **safe read-only
@@ -23,7 +24,7 @@ the same** `LINODE_TOKEN`, `LINODE_OBJ_*`, `TF_STATE_*`, `LINODE_REGION`, and
 | `CLIENT_SSH_KEY` | secret | Private CI deploy key for this box. |
 | `CLIENT_SSH_PUBKEY` | var | Public half → cloud-init. |
 | `TOON_CLIENT_KEYSTORE_PASSWORD` | secret | Unlocks the client's encrypted keystore. |
-| `ANTHROPIC_API_KEY` | secret | Claude API key the mcp-use agent uses. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret | Max-plan auth for the Agent SDK runner (the same org secret the backlog loops use). |
 
 Generate the deploy key: `ssh-keygen -t ed25519 -f client_deploy -N ''`.
 
@@ -90,5 +91,5 @@ No firewall change is needed — the box was already egress-only.
 
 - The Block Storage volume is the durable root of the client wallet/keystore — **snapshot
   it before `terraform destroy`.**
-- Rotate `CLIENT_SSH_KEY`, `TOON_CLIENT_KEYSTORE_PASSWORD`, and `ANTHROPIC_API_KEY` per
-  the org's secret-rotation policy.
+- Rotate `CLIENT_SSH_KEY` and `TOON_CLIENT_KEYSTORE_PASSWORD` per the org's
+  secret-rotation policy (`CLAUDE_CODE_OAUTH_TOKEN` is the shared org token).

@@ -1,7 +1,7 @@
 # Headless TOON client — Linode (Akamai Connected Cloud) infrastructure.
 #
 # Provisions one egress-only VPS + a persistent Block Storage volume. The box runs the
-# `toon-clientd` daemon (always-on) and a headless mcp-use agent (the journey runner)
+# `toon-clientd` daemon (always-on) and a headless Claude Agent SDK runner (the journey)
 # that drives the SocialFi + DeFi journey against a live apex hub. As a pure consumer it
 # needs NO inbound ports — only outbound to the hub's BTP/relay (or .anon in Phase 2).
 #

@@ -18,8 +18,8 @@ users:
 
 write_files:
   # Non-secret env: config path on the persistent volume. The daemon's HTTP control API
-  # binds loopback only; the *_KEYSTORE_PASSWORD / ANTHROPIC_API_KEY live in the
-  # CI-written secrets file below, never here.
+  # binds loopback only; TOON_CLIENT_KEYSTORE_PASSWORD / CLAUDE_CODE_OAUTH_TOKEN live in
+  # the CI-written secrets file below, never here.
   - path: /etc/toon-client.env
     permissions: '0644'
     content: |
@@ -31,7 +31,7 @@ write_files:
     permissions: '0600'
     owner: deploy:deploy
     content: |
-      # written by the deploy workflow: TOON_CLIENT_KEYSTORE_PASSWORD, ANTHROPIC_API_KEY
+      # written by the deploy workflow: TOON_CLIENT_KEYSTORE_PASSWORD, CLAUDE_CODE_OAUTH_TOKEN
 
   - path: /usr/local/sbin/toon-client-mount-volume.sh
     permissions: '0755'
@@ -69,7 +69,7 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 
-  # Headless journey runner — mcp-use + Claude driving the SocialFi/DeFi journey.
+  # Headless journey runner — Claude Agent SDK driving the SocialFi/DeFi journey.
   # oneshot + NOT WantedBy any target: it never auto-starts (it spends funds + tokens).
   # Trigger a run with `systemctl start toon-headless` or the deploy workflow's
   # run_journey input.
@@ -77,7 +77,7 @@ write_files:
     permissions: '0644'
     content: |
       [Unit]
-      Description=TOON headless mcp-use journey runner (manual/triggered)
+      Description=TOON headless Claude Agent SDK journey runner (manual/triggered)
       After=toon-clientd.service
       Requires=toon-clientd.service
 

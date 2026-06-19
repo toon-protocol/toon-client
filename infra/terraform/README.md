@@ -3,7 +3,7 @@
 Provisions one **egress-only** Linode instance + a persistent Block Storage volume, and
 bootstraps it (Node 20, the pinned `@toon-protocol/client-mcp` CLI, systemd units) via
 cloud-init. The box runs `toon-clientd` (always-on) and, on demand, the headless
-mcp-use journey runner.
+Claude Agent SDK journey runner.
 
 Normally driven by `.github/workflows/deploy-client.yml`; notes below are for local runs.
 

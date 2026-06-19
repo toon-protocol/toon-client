@@ -1,7 +1,7 @@
 name: Deploy Headless Client (Linode)
 
 # Provisions/updates the egress-only client host with Terraform, then deploys: installs
-# the pinned client-mcp CLI, ships the headless mcp-use runner, writes the runtime
+# the pinned client-mcp CLI, ships the headless Agent SDK runner, writes the runtime
 # secrets (keystore password + Anthropic key) to a root-only file on the box, and
 # restarts toon-clientd. The journey runner is NOT started automatically (it spends
 # funds + tokens) — set run_journey to trigger one oneshot run.
@@ -106,7 +106,7 @@ jobs:
         working-directory: .
         env:
           KEYSTORE_PW: ${{ secrets.TOON_CLIENT_KEYSTORE_PASSWORD }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           JOURNEY_MODE: ${{ inputs.journey_mode || 'smoke' }}
         run: |
           ssh -i ~/.ssh/client_deploy "deploy@${{ steps.ip.outputs.ip }}" 'bash -s' <<EOF
@@ -117,7 +117,7 @@ jobs:
           umask 077
           cat > /etc/toon-client.secrets <<SEC
           TOON_CLIENT_KEYSTORE_PASSWORD=${KEYSTORE_PW}
-          ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+          CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
           TOON_JOURNEY=${JOURNEY_MODE}
           SEC
           chmod 600 /etc/toon-client.secrets
