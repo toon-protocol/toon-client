@@ -10,15 +10,44 @@
  *   • Claude Code   — `claude mcp add toon -- toon-mcp`  (or `.mcp.json`).
  */
 
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
+  ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  ReadResourceRequestSchema,
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
+import { APP_RESOURCE_URI } from '@toon-protocol/views';
 import { ControlClient } from './control-client.js';
 import { dispatchTool, TOOL_DEFINITIONS } from './mcp-tools.js';
+
+/** MIME marking the bundle as an MCP-app UI resource (ext-apps profile). */
+const APP_MIME = 'text/html;profile=mcp-app';
+
+/** Load the prebuilt single-file MCP-app bundle served as `ui://toon/app`. */
+function loadAppHtml(): string {
+  // 1. Prefer the copy shipped next to the built server (tsup onSuccess copies
+  //    it into dist/app). This is what a published client-mcp serves — no
+  //    dependency on the unpublished @toon-protocol/views package at runtime.
+  try {
+    return readFileSync(new URL('./app/index.html', import.meta.url), 'utf8');
+  } catch {
+    /* running from source / not yet copied — fall through to the dev resolve */
+  }
+  // 2. Dev fallback: resolve the bundle from the @toon-protocol/views workspace.
+  try {
+    const req = createRequire(import.meta.url);
+    const entry = req.resolve('@toon-protocol/views'); // …/views/dist/index.js
+    return readFileSync(join(dirname(entry), 'app', 'index.html'), 'utf8');
+  } catch {
+    return '<!doctype html><html><body><div id="root">toon app bundle missing — run `pnpm --filter @toon-protocol/views build`</div></body></html>';
+  }
+}
 import { defaultConfigPath, readConfigFile } from './daemon/config.js';
 import {
   isDaemonRunning,
@@ -73,12 +102,30 @@ async function main(): Promise<void> {
 
   const server = new Server(
     { name: 'toon-client', version: '0.1.0' },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {}, resources: {} } }
   );
+
+  const appHtml = loadAppHtml();
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: TOOL_DEFINITIONS,
   }));
+
+  // The MCP-app UI resource the host renders for toon_render results.
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [
+      { uri: APP_RESOURCE_URI, name: 'TOON', mimeType: APP_MIME },
+    ],
+  }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri !== APP_RESOURCE_URI) {
+      throw new Error(`Unknown resource: ${request.params.uri}`);
+    }
+    return {
+      contents: [{ uri: APP_RESOURCE_URI, mimeType: APP_MIME, text: appHtml }],
+    };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;

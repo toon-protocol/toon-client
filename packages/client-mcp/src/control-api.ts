@@ -93,6 +93,61 @@ export interface PublishResponse {
   nonce: number;
 }
 
+/**
+ * `POST /publish-unsigned` — build, SIGN (with the daemon-held key), and
+ * pay-to-write a Nostr event. The caller (a UI/agent) supplies only the event
+ * shell — it never holds the private key. For replaceable kinds (0 profile,
+ * 3 follow list) the daemon merges the latest known event's tags before signing.
+ */
+export interface PublishUnsignedRequest {
+  /** Event kind to publish (integer, 0–65535). */
+  kind: number;
+  /** Event content (default ''). */
+  content?: string;
+  /** Event tags (array of string arrays). */
+  tags?: string[][];
+  /** ILP destination override (default: the configured apex/town address). */
+  destination?: string;
+  /** Fee override in base units. Defaults to the daemon's configured fee. */
+  fee?: string;
+  /** Which apex (BTP write target) to publish through (default: config-seeded). */
+  btpUrl?: string;
+}
+
+/**
+ * `POST /upload-media` — two-step spendy write: upload bytes to Arweave via the
+ * kind:5094 blob-storage DVM, then sign+publish a media event referencing the
+ * resulting Arweave URL. Single-packet only (large media is out of scope; see
+ * `requestBlobStorage`).
+ */
+export interface UploadMediaRequest {
+  /** Base64-encoded media bytes. */
+  dataBase64: string;
+  /** MIME type (default 'application/octet-stream'). */
+  mime?: string;
+  /**
+   * Kind of the media event to publish referencing the upload. Default 1063
+   * (NIP-94 file metadata). 20 = NIP-68 picture, 21/22 = NIP-71 video, 1 = note
+   * with a NIP-92 `imeta` attachment.
+   */
+  kind?: number;
+  /** Caption / content for the published media event. */
+  caption?: string;
+  /** Extra tags merged into the published media event. */
+  tags?: string[][];
+  /** Fee override in base units (applies to the upload + the publish). */
+  fee?: string;
+  /** Which apex to publish through (default: config-seeded). */
+  btpUrl?: string;
+}
+
+export interface UploadMediaResponse extends PublishResponse {
+  /** Arweave URL the media event references. */
+  url: string;
+  /** Arweave transaction id of the uploaded blob. */
+  txId: string;
+}
+
 /** `POST /subscribe` — register a persistent free-read subscription. */
 export interface SubscribeRequest {
   /** NIP-01 filter(s). A single object or an array of OR-ed filters. */
@@ -111,6 +166,20 @@ export interface SubscribeResponse {
   subId: string;
   /** The relays the subscription was registered on. */
   relays: string[];
+}
+
+/**
+ * `POST /query` — one-shot free read: subscribe the filter(s), wait briefly, and
+ * return every buffered event matching them. Used by the apps `toon_query` tool.
+ */
+export interface QueryRequest {
+  filters: NostrFilter | NostrFilter[];
+  /** Bounded wait for relay delivery, ms (default 1200). */
+  timeoutMs?: number;
+}
+
+export interface QueryResponse {
+  events: NostrEvent[];
 }
 
 /** `GET /events` — drain buffered events for a subscription (free read). */

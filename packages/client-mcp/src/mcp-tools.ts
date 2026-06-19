@@ -5,14 +5,24 @@
  * "bootstrapping — retry" handling can be unit-tested directly.
  */
 
+import {
+  ATOM_CATALOG,
+  CATALOG_ATOM_IDS,
+  EXAMPLE_VIEWSPECS,
+  WRITE_TOOLS,
+  APP_RESOURCE_URI,
+  validateViewSpec,
+} from '@toon-protocol/views';
 import { ControlApiError, DaemonUnreachableError } from './control-client.js';
 import type { ControlClient } from './control-client.js';
 import type {
   AddApexRequest,
   NostrFilter,
   PublishRequest,
+  PublishUnsignedRequest,
   SettlementChain,
   SwapRequest,
+  UploadMediaRequest,
 } from './control-api.js';
 
 /** A JSON-Schema-described MCP tool. */
@@ -20,11 +30,15 @@ export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** MCP-apps metadata, e.g. `{ ui: { resourceUri } }` linking a UI resource. */
+  _meta?: Record<string, unknown>;
 }
 
 /** MCP tool-call result shape (subset of the SDK's CallToolResult). */
 export interface ToolResult {
   content: { type: 'text'; text: string }[];
+  /** Machine-readable payload the MCP-app iframe reads (events, ViewSpec, …). */
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 }
 
@@ -85,6 +99,100 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
       },
       required: ['event'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_publish_unsigned',
+    description:
+      'Pay-to-write WITHOUT holding a key: supply only the event shell (kind, ' +
+      'content, tags) and the daemon signs it with the held Nostr key, signs the ' +
+      'payment-channel claim, and forwards over BTP. For replaceable kinds ' +
+      '(0 profile, 3 follow list) the daemon merges the latest known tags first. ' +
+      'This is the path MCP-app UI actions use so the iframe never signs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'number', description: 'Event kind (integer 0–65535).' },
+        content: { type: 'string', description: 'Event content (default empty).' },
+        tags: {
+          type: 'array',
+          items: { type: 'array', items: { type: 'string' } },
+          description: 'Event tags (array of string arrays).',
+        },
+        destination: { type: 'string', description: 'Optional ILP destination override.' },
+        fee: { type: 'string', description: 'Optional fee override (base units).' },
+        btpUrl: { type: 'string', description: 'Which apex to publish through (default: config-seeded).' },
+      },
+      required: ['kind'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_upload_media',
+    description:
+      'Pay-to-write media (SPENDY, two-step): upload base64 bytes to Arweave via ' +
+      'the kind:5094 blob-storage DVM, then sign+publish a media event ' +
+      '(default kind:1063 NIP-94; 20=picture, 21/22=video, 1=note w/ NIP-92 imeta) ' +
+      'referencing the resulting Arweave URL. Single-packet only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dataBase64: { type: 'string', description: 'Base64-encoded media bytes.' },
+        mime: { type: 'string', description: "MIME type (default 'application/octet-stream')." },
+        kind: { type: 'number', description: 'Media event kind (default 1063).' },
+        caption: { type: 'string', description: 'Caption/content for the media event.' },
+        tags: {
+          type: 'array',
+          items: { type: 'array', items: { type: 'string' } },
+          description: 'Extra tags merged into the published media event.',
+        },
+        fee: { type: 'string', description: 'Optional fee override (base units).' },
+        btpUrl: { type: 'string', description: 'Which apex to publish through (default: config-seeded).' },
+      },
+      required: ['dataBase64'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_atoms',
+    description:
+      'List the atom vocabulary (ids, kinds rendered, props, write actions) plus ' +
+      'example ViewSpecs, for composing a view to pass to toon_render. This is how ' +
+      'you build the user a generative UI for their journey.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'toon_render',
+    description:
+      'Render an agent-authored ViewSpec (a tree of atoms with data binds and ' +
+      'write actions) as the in-host UI. Call toon_atoms first to learn the ' +
+      'vocabulary. The ViewSpec is validated; the host renders the app with it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spec: {
+          type: 'object',
+          description: 'A ViewSpec: { title?, root: ViewNode }. See toon_atoms examples.',
+        },
+      },
+      required: ['spec'],
+      additionalProperties: false,
+    },
+    _meta: { ui: { resourceUri: APP_RESOURCE_URI } },
+  },
+  {
+    name: 'toon_query',
+    description:
+      'Free read for the UI: resolve a NIP-01 filter to matching events ' +
+      '(subscribes, waits briefly, returns matches). Used to fill ViewSpec binds.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filter: { description: 'A NIP-01 filter object.' },
+        timeoutMs: { type: 'number', description: 'Bounded wait, ms (default 1200).' },
+      },
+      required: ['filter'],
       additionalProperties: false,
     },
   },
@@ -345,6 +453,43 @@ export async function dispatchTool(
       }
       case 'toon_publish':
         return ok(await client.publish(args as unknown as PublishRequest));
+      case 'toon_publish_unsigned':
+        return ok(
+          await client.publishUnsigned(args as unknown as PublishUnsignedRequest)
+        );
+      case 'toon_upload_media':
+        return ok(
+          await client.uploadMedia(args as unknown as UploadMediaRequest)
+        );
+      case 'toon_atoms':
+        return okStructured('Atom vocabulary + example ViewSpecs.', {
+          atoms: ATOM_CATALOG,
+          examples: EXAMPLE_VIEWSPECS,
+        });
+      case 'toon_render': {
+        const check = validateViewSpec(args['spec'], {
+          allowedAtoms: CATALOG_ATOM_IDS,
+          allowedTools: WRITE_TOOLS,
+        });
+        if (!check.ok) {
+          return err(`Invalid ViewSpec:\n- ${check.errors.join('\n- ')}`);
+        }
+        return okStructured(
+          `Rendering view${check.spec.title ? `: ${check.spec.title}` : ''}.`,
+          { viewSpec: check.spec }
+        );
+      }
+      case 'toon_query': {
+        const res = await client.query({
+          filters: args['filter'] as NostrFilter,
+          ...(typeof args['timeoutMs'] === 'number'
+            ? { timeoutMs: args['timeoutMs'] }
+            : {}),
+        });
+        return okStructured(`${res.events.length} event(s).`, {
+          events: res.events,
+        });
+      }
       case 'toon_subscribe':
         return ok(
           await client.subscribe({
@@ -460,6 +605,14 @@ export async function dispatchTool(
 
 function ok(data: unknown): ToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+}
+
+/** Result carrying machine-readable `structuredContent` for the MCP-app iframe. */
+function okStructured(
+  text: string,
+  structuredContent: Record<string, unknown>
+): ToolResult {
+  return { content: [{ type: 'text', text }], structuredContent };
 }
 
 function err(message: string): ToolResult {

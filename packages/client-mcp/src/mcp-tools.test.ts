@@ -14,10 +14,15 @@ describe('TOOL_DEFINITIONS', () => {
   it('exposes the documented tool surface', () => {
     expect(TOOL_DEFINITIONS.map((t) => t.name).sort()).toEqual(
       [
+        'toon_atoms',
         'toon_channels',
         'toon_identity',
         'toon_open_channel',
         'toon_publish',
+        'toon_publish_unsigned',
+        'toon_query',
+        'toon_render',
+        'toon_upload_media',
         'toon_read',
         'toon_status',
         'toon_swap',
@@ -245,5 +250,34 @@ describe('dispatchTool', () => {
       btpUrl: 'ws://a/btp',
     });
     expect(removeApex).toHaveBeenCalledWith({ btpUrl: 'ws://a/btp' });
+  });
+
+  it('toon_atoms returns the atom catalog as structuredContent', async () => {
+    const res = await dispatchTool(stubClient({}), 'toon_atoms', {});
+    expect(res.isError).toBeFalsy();
+    const atoms = res.structuredContent?.['atoms'] as { id: string }[];
+    expect(atoms.some((a) => a.id === 'note-card')).toBe(true);
+  });
+
+  it('toon_render validates and echoes a ViewSpec', async () => {
+    const spec = { title: 'Feed', root: { atom: 'stack', children: [{ atom: 'note-card' }] } };
+    const ok = await dispatchTool(stubClient({}), 'toon_render', { spec });
+    expect(ok.isError).toBeFalsy();
+    expect(ok.structuredContent?.['viewSpec']).toEqual(spec);
+
+    const bad = await dispatchTool(stubClient({}), 'toon_render', {
+      spec: { root: { atom: 'definitely-not-real' } },
+    });
+    expect(bad.isError).toBe(true);
+  });
+
+  it('toon_query forwards the filter and returns events', async () => {
+    const query = vi.fn().mockResolvedValue({ events: [{ id: 'e1', kind: 1 }] });
+    const res = await dispatchTool(stubClient({ query }), 'toon_query', {
+      filter: { kinds: [1] },
+      timeoutMs: 50,
+    });
+    expect(query).toHaveBeenCalledWith({ filters: { kinds: [1] }, timeoutMs: 50 });
+    expect((res.structuredContent?.['events'] as unknown[]).length).toBe(1);
   });
 });

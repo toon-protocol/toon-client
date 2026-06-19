@@ -1,0 +1,136 @@
+/**
+ * ViewSpec composition runtime.
+ *
+ * Interprets a (model-authored, validated) ViewSpec into a React tree using the
+ * atom registry. Data binds resolve via the {@link ViewBridge} (free reads);
+ * write actions are wired to the bridge. Unknown atom ids / invalid specs
+ * degrade to the generic fallback — never crash, never `eval`.
+ */
+
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { type NostrEvent } from './types.js';
+import { type ViewBridge } from './app-bridge/types.js';
+import {
+  type ViewBind,
+  type ViewNode,
+  validateViewSpec,
+} from './spec.js';
+import {
+  ATOMS,
+  ATOM_IDS,
+  defaultAtomForKind,
+  fallbackAtomFor,
+} from './atoms/registry.js';
+import { type AtomAction } from './atoms/types.js';
+import { QUERY_TOOL, WRITE_TOOLS } from './tool-names.js';
+
+// Re-export so existing importers (and tests) can keep importing from the runtime.
+export { QUERY_TOOL, WRITE_TOOLS } from './tool-names.js';
+
+function useBind(bind: ViewBind | undefined, bridge: ViewBridge): NostrEvent[] {
+  const [events, setEvents] = useState<NostrEvent[]>([]);
+  const bindKey = bind ? JSON.stringify(bind) : '';
+
+  useEffect(() => {
+    const filter = bind?.query ?? (bind?.eventId ? { ids: [bind.eventId] } : undefined);
+    if (!filter) {
+      setEvents([]);
+      return;
+    }
+    let cancelled = false;
+    void bridge.callTool(QUERY_TOOL, { filter }).then((res) => {
+      if (!cancelled && res.events) setEvents(res.events);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // bindKey captures the (serialized) bind; bridge is stable for a session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bindKey, bridge]);
+
+  return events;
+}
+
+function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAction> {
+  const actions: Record<string, AtomAction> = {};
+  for (const [name, ref] of Object.entries(node.actions ?? {})) {
+    actions[name] = async (runtimeArgs) => {
+      const args: Record<string, unknown> = { ...(ref.args ?? {}), ...(runtimeArgs ?? {}) };
+      // Spendy actions are gated host-side by server-raised elicitation; we pass
+      // the hint through so the daemon knows to confirm before spending.
+      if (ref.spendy) args['spendy'] = true;
+      const res = await bridge.callTool(ref.tool, args);
+      bridge.notifyModel(
+        res.ok ? `Action "${name}" completed.` : `Action "${name}" failed: ${res.error ?? 'unknown'}`
+      );
+    };
+  }
+  return actions;
+}
+
+/** Render a single event through its kind's default atom (feeds / kindAuto). */
+function EventAtom({ event }: { event: NostrEvent }): ReactNode {
+  const Component = defaultAtomForKind(event.kind).Component;
+  return (
+    <Component
+      events={[event]}
+      props={{}}
+      actions={{}}
+      renderEvent={(e) => <EventAtom key={e.id} event={e} />}
+    >
+      {null}
+    </Component>
+  );
+}
+
+function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): ReactNode {
+  const atom = ATOMS.get(node.atom) ?? fallbackAtomFor();
+  const events = useBind(node.bind, bridge);
+  const actions = useMemo(() => buildActions(node, bridge), [node, bridge]);
+
+  if (node.bind?.kindAuto) {
+    return <>{events.map((e) => <EventAtom key={e.id} event={e} />)}</>;
+  }
+
+  const Component = atom.Component;
+  return (
+    <Component
+      events={events}
+      props={node.props ?? {}}
+      actions={actions}
+      renderEvent={(e) => <EventAtom key={e.id} event={e} />}
+    >
+      {node.children?.map((child, i) => <NodeView key={i} node={child} bridge={bridge} />)}
+    </Component>
+  );
+}
+
+/** Renders an invalid spec's errors without leaking internals to the user. */
+function InvalidSpec({ errors }: { errors: string[] }): ReactNode {
+  return (
+    <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
+      <div className="font-medium">This view could not be rendered.</div>
+      <ul className="mt-1 list-disc pl-5 text-xs text-muted-foreground">
+        {errors.slice(0, 5).map((e, i) => (
+          <li key={i}>{e}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Top-level: validate an untrusted ViewSpec then render it, or show the error. */
+export function ViewSpecRenderer({
+  spec,
+  bridge,
+}: {
+  spec: unknown;
+  bridge: ViewBridge;
+}): ReactNode {
+  const result = useMemo(
+    () => validateViewSpec(spec, { allowedAtoms: ATOM_IDS, allowedTools: WRITE_TOOLS }),
+    [spec]
+  );
+  if (!result.ok) return <InvalidSpec errors={result.errors} />;
+  return <NodeView node={result.spec.root} bridge={bridge} />;
+}

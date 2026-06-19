@@ -1,6 +1,29 @@
+import { copyFileSync, mkdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
+  // After bundling, ship the MCP-app UI bundle WITH this package: copy
+  // @toon-protocol/views' prebuilt single-file `dist/app/index.html` into our
+  // own dist/app so a published client-mcp serves `ui://toon/app` without
+  // resolving the (unpublished, workspace-only) views package at runtime.
+  // views is a bundled devDep; `pnpm -r build` builds it (incl. the bundle)
+  // before client-mcp, so the source exists here. Non-fatal if it doesn't yet.
+  onSuccess: async () => {
+    try {
+      const req = createRequire(import.meta.url);
+      const viewsEntry = req.resolve('@toon-protocol/views'); // …/views/dist/index.js
+      const src = join(dirname(viewsEntry), 'app', 'index.html');
+      mkdirSync('dist/app', { recursive: true });
+      copyFileSync(src, 'dist/app/index.html');
+      console.log('[tsup] copied @toon-protocol/views app bundle → dist/app/index.html');
+    } catch (err) {
+      console.warn(
+        `[tsup] skipped copying views app bundle (build views first): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  },
   // Three entry points: the library surface (index), and the two bins
   // (`toon-clientd` daemon, `toon-mcp` stdio server). The bin sources carry a
   // `#!/usr/bin/env node` shebang which tsup preserves in the emitted files.

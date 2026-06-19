@@ -11,6 +11,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type { ClientRunner } from './client-runner.js';
 import {
+  InvalidPayloadError,
   NotReadyError,
   PublishRejectedError,
   TargetError,
@@ -22,10 +23,13 @@ import type {
   EventsQuery,
   OpenChannelRequest,
   PublishRequest,
+  PublishUnsignedRequest,
+  QueryRequest,
   RemoveApexRequest,
   RemoveRelayRequest,
   SubscribeRequest,
   SwapRequest,
+  UploadMediaRequest,
 } from '../control-api.js';
 
 export function registerRoutes(
@@ -43,6 +47,52 @@ export function registerRoutes(
     }
     try {
       return await runner.publish(body);
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
+
+  app.post<{ Body: PublishUnsignedRequest }>(
+    '/publish-unsigned',
+    async (req, reply) => {
+      const body = req.body;
+      if (!body || !Number.isInteger(body.kind)) {
+        return sendError(reply, 400, 'invalid_event', {
+          detail: 'body.kind (integer) is required; the daemon signs the event.',
+        });
+      }
+      try {
+        return await runner.publishUnsigned(body);
+      } catch (err) {
+        return mapError(reply, err);
+      }
+    }
+  );
+
+  app.post<{ Body: UploadMediaRequest }>('/upload-media', async (req, reply) => {
+    const body = req.body;
+    if (!body || typeof body.dataBase64 !== 'string' || body.dataBase64 === '') {
+      return sendError(reply, 400, 'invalid_media', {
+        detail: 'body.dataBase64 (base64-encoded media bytes) is required.',
+      });
+    }
+    try {
+      return await runner.uploadMedia(body);
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
+
+  app.post<{ Body: QueryRequest }>('/query', async (req, reply) => {
+    const body = req.body;
+    if (!body || body.filters === undefined) {
+      return sendError(reply, 400, 'invalid_filters', {
+        detail: 'body.filters is required (a NIP-01 filter or array of filters).',
+      });
+    }
+    try {
+      const events = await runner.query(body.filters, body.timeoutMs);
+      return { events };
     } catch (err) {
       return mapError(reply, err);
     }
@@ -191,6 +241,9 @@ function mapError(reply: FastifyReply, err: unknown): FastifyReply {
       detail: err.message,
       retryable: true,
     });
+  }
+  if (err instanceof InvalidPayloadError) {
+    return sendError(reply, 400, 'invalid_payload', { detail: err.message });
   }
   if (err instanceof PublishRejectedError) {
     return sendError(reply, 502, 'rejected', { detail: err.message });
