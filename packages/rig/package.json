@@ -1,7 +1,7 @@
 {
   "name": "@toon-protocol/rig",
   "version": "0.2.0",
-  "description": "Forge-UI: Decentralized git forge web interface for TOON Protocol",
+  "description": "Decentralized control plane for TOON Protocol — a browser frontend that interprets events (NIP-34 git is its first surface, not a GitHub clone)",
   "type": "module",
   "private": true,
   "scripts": {
