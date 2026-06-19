@@ -43,7 +43,7 @@ jobs:
       TOON_JOURNEY: ${{ inputs.journey_mode || 'smoke' }}
       # Hub discovery: the workflow already holds LINODE_TOKEN, so it resolves the hub's
       # IP from the Linode API by label instead of hand-entered endpoint vars.
-      LINODE_TOKEN: ${{ secrets.LINODE_TOKEN }}
+      LINODE_TOKEN: ${{ secrets.LINODE_CLI_TOKEN }}
       HUB_INSTANCE_LABEL: ${{ vars.HUB_INSTANCE_LABEL || 'townhouse-hub' }}
       HUB_DESTINATION: ${{ vars.HUB_DESTINATION || 'g.townhouse.town' }}
       # Wallet derivation + treasury top-up. CLIENT_ACCOUNT_INDEX must differ from the
