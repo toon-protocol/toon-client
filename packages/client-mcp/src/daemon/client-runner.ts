@@ -18,7 +18,7 @@
  * writes against it report `bootstrapping` so tools surface "retry".
  */
 
-import type { NostrEvent } from 'nostr-tools/pure';
+import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
 import { decodeEventFromToon } from '@toon-protocol/core';
 import { startManagedAnonProxy } from '@toon-protocol/client';
@@ -34,6 +34,7 @@ import type {
   EventsResponse,
   NostrFilter,
   PublishResponse,
+  PublishUnsignedRequest,
   RelayTargetStatus,
   SettlementChain,
   StatusResponse,
@@ -41,6 +42,8 @@ import type {
   SubscribeResponse,
   SwapResponse,
   TargetsResponse,
+  UploadMediaRequest,
+  UploadMediaResponse,
 } from '../control-api.js';
 import type {
   EventsQuery,
@@ -86,6 +89,23 @@ export interface ToonClientLike {
     error?: string;
   }>;
   signBalanceProof(channelId: string, amount: bigint): Promise<unknown>;
+  /**
+   * Sign an unsigned event template with the daemon-held Nostr key (the key
+   * never leaves the daemon). Backs the `publish-unsigned` / `upload-media`
+   * paths so a UI/agent supplies only the event shell.
+   */
+  signEvent(template: EventTemplate): NostrEvent | Promise<NostrEvent>;
+  /**
+   * Upload bytes to Arweave via the kind:5094 blob-storage DVM (single-packet),
+   * returning the Arweave tx id. Reuses the client's claim/channel plumbing.
+   */
+  uploadBlob(params: {
+    blobData: Uint8Array;
+    contentType?: string;
+    bid?: string;
+    destination?: string;
+    ilpAmount?: bigint;
+  }): Promise<{ success: boolean; txId?: string; eventId?: string; error?: string }>;
   openChannel(destination?: string): Promise<string>;
   getTrackedChannels(): string[];
   getChannelNonce(channelId: string): number;
@@ -365,6 +385,30 @@ export class ClientRunner {
     if (!req.relayUrl) this.fanoutSubs.set(subId, filters);
     for (const url of targets) this.relays.get(url)?.subscribe(filters, subId);
     return { subId, relays: targets };
+  }
+
+  /**
+   * One-shot free read: subscribe the given filter(s) across all relays, wait a
+   * bounded window for the relay(s) to deliver, then return every buffered event
+   * matching the filter (matched by content, not subId — so events already
+   * buffered by other subscriptions are included despite the global dedup).
+   *
+   * Backs the apps `toon_query` tool the generative-UI runtime calls to resolve
+   * a ViewSpec node's data bind.
+   */
+  async query(
+    filters: NostrFilter | NostrFilter[],
+    timeoutMs = 1200
+  ): Promise<NostrEvent[]> {
+    const list = Array.isArray(filters) ? filters : [filters];
+    const subId = `q-${++this.subIdCounter}`;
+    const targets = [...this.relays.keys()];
+    for (const url of targets) this.relays.get(url)?.subscribe(list, subId);
+    await delay(timeoutMs);
+    for (const url of targets) this.relays.get(url)?.unsubscribe(subId);
+    return this.merged
+      .map((m) => m.event)
+      .filter((event) => list.some((f) => matchesFilter(event, f)));
   }
 
   /** Drain merged events newer than the cursor (free read), optionally scoped. */
@@ -816,6 +860,125 @@ export class ClientRunner {
     };
   }
 
+  /**
+   * Build, sign (with the daemon-held key), and pay-to-write an event. The
+   * caller supplies only the event shell; the private key never leaves the
+   * daemon. Payloads are MODEL-AUTHORED → validated server-side here (the model
+   * is not a security boundary). Replaceable kinds (0/3) merge the latest known
+   * event's tags before signing.
+   */
+  async publishUnsigned(req: PublishUnsignedRequest): Promise<PublishResponse> {
+    const apex = this.selectApex(req.btpUrl);
+    this.assertApexReady(apex);
+    const template = this.buildTemplate(apex, req);
+    const signed = await apex.client.signEvent(template);
+    return this.publish({
+      event: signed,
+      ...(req.destination ? { destination: req.destination } : {}),
+      ...(req.fee ? { fee: req.fee } : {}),
+      ...(req.btpUrl ? { btpUrl: req.btpUrl } : {}),
+    });
+  }
+
+  /**
+   * Upload media to Arweave (kind:5094 blob DVM, single-packet) then sign+publish
+   * a media event referencing the resulting URL. One spendy operation, two steps,
+   * entirely server-side.
+   */
+  async uploadMedia(req: UploadMediaRequest): Promise<UploadMediaResponse> {
+    const apex = this.selectApex(req.btpUrl);
+    this.assertApexReady(apex);
+    if (typeof req.dataBase64 !== 'string' || req.dataBase64 === '') {
+      throw new InvalidPayloadError('dataBase64 (base64 media bytes) is required.');
+    }
+    const blobData = new Uint8Array(Buffer.from(req.dataBase64, 'base64'));
+    const fee = req.fee !== undefined ? BigInt(req.fee) : apex.feePerEvent;
+    const upload = await apex.client.uploadBlob({
+      blobData,
+      ...(req.mime ? { contentType: req.mime } : {}),
+      ilpAmount: fee,
+    });
+    if (!upload.success || !upload.txId) {
+      throw new PublishRejectedError(upload.error ?? 'blob upload rejected');
+    }
+    const url = `${ARWEAVE_GATEWAY}/${upload.txId}`;
+    const kind = req.kind ?? 1063;
+    const signed = await apex.client.signEvent({
+      kind,
+      created_at: nowSeconds(),
+      tags: this.buildMediaTags(kind, url, req),
+      content: req.caption ?? '',
+    });
+    const pub = await this.publish({
+      event: signed,
+      ...(req.fee ? { fee: req.fee } : {}),
+      ...(req.btpUrl ? { btpUrl: req.btpUrl } : {}),
+    });
+    return { ...pub, url, txId: upload.txId };
+  }
+
+  /** Validate + assemble a signable event template (with replaceable merge). */
+  private buildTemplate(
+    apex: ApexConnection,
+    req: PublishUnsignedRequest
+  ): EventTemplate {
+    if (!Number.isInteger(req.kind) || req.kind < 0 || req.kind > 65535) {
+      throw new InvalidPayloadError('kind must be an integer in [0, 65535].');
+    }
+    if (req.content !== undefined && typeof req.content !== 'string') {
+      throw new InvalidPayloadError('content must be a string.');
+    }
+    const tags = normalizeTags(req.tags);
+    const content = req.content ?? '';
+
+    // Replaceable kinds: merge the latest known self-authored event so a single
+    // "follow X" / profile edit doesn't clobber prior tags. Best-effort from the
+    // read buffer (v1 — concurrent edits can still race; see plan risk #6).
+    if (req.kind === 0 || req.kind === 3) {
+      const prior = this.latestSelfReplaceable(apex, req.kind);
+      if (prior) {
+        return {
+          kind: req.kind,
+          created_at: nowSeconds(),
+          tags: mergeTags(prior.tags, tags),
+          content: content !== '' ? content : prior.content,
+        };
+      }
+    }
+    return { kind: req.kind, created_at: nowSeconds(), tags, content };
+  }
+
+  /** Latest self-authored event of `kind` currently in the merged read buffer. */
+  private latestSelfReplaceable(
+    apex: ApexConnection,
+    kind: number
+  ): NostrEvent | undefined {
+    const pubkey = safe(() => apex.client.getPublicKey());
+    if (!pubkey) return undefined;
+    let latest: NostrEvent | undefined;
+    for (const m of this.merged) {
+      if (m.event.kind !== kind || m.event.pubkey !== pubkey) continue;
+      if (!latest || m.event.created_at > latest.created_at) latest = m.event;
+    }
+    return latest;
+  }
+
+  /** Tags for a published media event referencing an Arweave URL. */
+  private buildMediaTags(
+    kind: number,
+    url: string,
+    req: UploadMediaRequest
+  ): string[][] {
+    const mime = req.mime ?? 'application/octet-stream';
+    const extra = normalizeTags(req.tags);
+    if (kind === 1063) {
+      // NIP-94 file metadata: separate url/m tags.
+      return [['url', url], ['m', mime], ...extra];
+    }
+    // NIP-68/71 picture/video + NIP-92 inline note: a single `imeta` tag.
+    return [['imeta', `url ${url}`, `m ${mime}`], ...extra];
+  }
+
   /** Open (or return) a payment channel on the selected (or default) apex. */
   async openChannel(
     destination?: string,
@@ -964,6 +1127,71 @@ export class TargetError extends Error {
     super(message);
     this.name = 'TargetError';
   }
+}
+
+/** Thrown when a model-authored publish/upload payload fails validation (HTTP 400). */
+export class InvalidPayloadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidPayloadError';
+  }
+}
+
+/** Arweave gateway used to construct media URLs from uploaded blob tx ids. */
+const ARWEAVE_GATEWAY = 'https://arweave.net';
+
+/** Current time in whole seconds (Nostr `created_at` unit). */
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+/** Resolve after `ms` (bounded wait for relay delivery in `query`). */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** NIP-01 filter match (kinds/authors/ids/since/until + `#<letter>` tag filters). */
+function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
+  if (filter.ids && !filter.ids.includes(event.id)) return false;
+  if (filter.kinds && !filter.kinds.includes(event.kind)) return false;
+  if (filter.authors && !filter.authors.includes(event.pubkey)) return false;
+  if (filter.since !== undefined && event.created_at < filter.since) return false;
+  if (filter.until !== undefined && event.created_at > filter.until) return false;
+  for (const [key, values] of Object.entries(filter)) {
+    if (!key.startsWith('#') || !Array.isArray(values)) continue;
+    const letter = key.slice(1);
+    const hit = event.tags.some(
+      (t) => t[0] === letter && t[1] !== undefined && values.includes(t[1])
+    );
+    if (!hit) return false;
+  }
+  return true;
+}
+
+/** Validate that `raw` is an array of string arrays, returning it typed. */
+function normalizeTags(raw: unknown): string[][] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new InvalidPayloadError('tags must be an array.');
+  return raw.map((tag, i) => {
+    if (!Array.isArray(tag) || !tag.every((x) => typeof x === 'string')) {
+      throw new InvalidPayloadError(`tags[${i}] must be an array of strings.`);
+    }
+    return tag as string[];
+  });
+}
+
+/** Append `additions` to `base`, de-duping whole tags (for replaceable merges). */
+function mergeTags(base: string[][], additions: string[][]): string[][] {
+  const seen = new Set(base.map((t) => JSON.stringify(t)));
+  const out = [...base];
+  for (const tag of additions) {
+    const key = JSON.stringify(tag);
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(tag);
+    }
+  }
+  return out;
 }
 
 function safe<T>(fn: () => T): T | undefined {

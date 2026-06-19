@@ -15,6 +15,9 @@ import type {
   OpenChannelRequest,
   PublishRequest,
   PublishResponse,
+  PublishUnsignedRequest,
+  QueryRequest,
+  QueryResponse,
   RemoveApexRequest,
   RemoveRelayRequest,
   StatusResponse,
@@ -23,6 +26,8 @@ import type {
   SwapRequest,
   SwapResponse,
   TargetsResponse,
+  UploadMediaRequest,
+  UploadMediaResponse,
 } from './control-api.js';
 
 /** Error thrown when the daemon returns a non-2xx response. */
@@ -89,8 +94,20 @@ export class ControlClient {
     return this.request<PublishResponse>('POST', '/publish', body);
   }
 
+  publishUnsigned(body: PublishUnsignedRequest): Promise<PublishResponse> {
+    return this.request<PublishResponse>('POST', '/publish-unsigned', body);
+  }
+
+  uploadMedia(body: UploadMediaRequest): Promise<UploadMediaResponse> {
+    return this.request<UploadMediaResponse>('POST', '/upload-media', body);
+  }
+
   subscribe(body: SubscribeRequest): Promise<SubscribeResponse> {
     return this.request<SubscribeResponse>('POST', '/subscribe', body);
+  }
+
+  query(body: QueryRequest): Promise<QueryResponse> {
+    return this.request<QueryResponse>('POST', '/query', body);
   }
 
   events(query: EventsQuery = {}): Promise<EventsResponse> {
