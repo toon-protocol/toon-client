@@ -31,15 +31,21 @@ needed persistence. A dedicated box is only worth it for a *resident, always-on*
 | --- | --- |
 | `TREASURY_MNEMONIC` | The seed phrase the daemon derives the client wallet from (`TOON_CLIENT_MNEMONIC`). Map this to your existing seed-phrase org secret if it has a different name. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Max-plan auth for the Agent SDK (the same org secret the backlog loops use). |
+| `LINODE_TOKEN` | Reused from the hub deploy — lets the job **discover the hub's IP** from the Linode API (no hand-entered endpoint vars). |
 
-**Variables**
+**Variables** — all optional; the hub endpoints are auto-discovered.
 
-| Name | Example | Purpose |
+| Name | Default | Purpose |
 | --- | --- | --- |
-| `HUB_DESTINATION` | `g.townhouse.town` | Apex ILP address. |
-| `HUB_BTP_URL` | `ws://<hub-ip>:3000` | Hub BTP endpoint (pay-to-write). |
-| `HUB_RELAY_URL` | `ws://<hub-ip>:7100` | Hub Nostr relay WS (reads). |
-| `CLIENT_ACCOUNT_INDEX` | `0` | BIP-44 account index the client wallet derives at (optional, default `0`). |
+| `HUB_INSTANCE_LABEL` | `townhouse-hub` | Linode label the job looks up to resolve the hub IP. |
+| `HUB_DESTINATION` | `g.townhouse.town` | Apex ILP address (protocol constant, not IP-derived). |
+| `CLIENT_ACCOUNT_INDEX` | `0` | BIP-44 account index the client wallet derives at. |
+| `HUB_BTP_URL` / `HUB_RELAY_URL` | _(derived)_ | Optional overrides; otherwise `ws://<hub-ip>:3000` / `:7100` from the discovered IP. |
+
+The job resolves the hub IP via the Linode API by `HUB_INSTANCE_LABEL` and derives the
+BTP (`3000`) + relay WS (`7100`) endpoints — so the only thing you set per-environment is
+the seed. Set `HUB_BTP_URL`/`HUB_RELAY_URL` only to override (e.g. a `.anon` endpoint in
+Phase 2).
 
 ## Wallet & funding
 

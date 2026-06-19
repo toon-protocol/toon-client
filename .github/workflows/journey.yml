@@ -37,6 +37,11 @@ jobs:
       TOON_CLIENT_MNEMONIC: ${{ secrets.TREASURY_MNEMONIC }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       TOON_JOURNEY: ${{ inputs.journey_mode || 'smoke' }}
+      # Hub discovery: the workflow already holds LINODE_TOKEN, so it resolves the hub's
+      # IP from the Linode API by label instead of hand-entered endpoint vars.
+      LINODE_TOKEN: ${{ secrets.LINODE_TOKEN }}
+      HUB_INSTANCE_LABEL: ${{ vars.HUB_INSTANCE_LABEL || 'townhouse-hub' }}
+      HUB_DESTINATION: ${{ vars.HUB_DESTINATION || 'g.townhouse.town' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -53,14 +58,34 @@ jobs:
           npm install -g "@toon-protocol/client-mcp@${CLIENT_VERSION}"
           npm --prefix journey install --no-audit --no-fund
 
+      - name: Resolve hub endpoints from Linode
+        run: |
+          # Optional overrides; otherwise discover the hub IP via the Linode API by label
+          # and derive the BTP (3000) + relay WS (7100) endpoints from it.
+          BTP="${{ vars.HUB_BTP_URL }}"
+          RELAY="${{ vars.HUB_RELAY_URL }}"
+          if [ -z "$BTP" ] || [ -z "$RELAY" ]; then
+            HUB_IP=$(curl -fsS -H "Authorization: Bearer $LINODE_TOKEN" \
+              https://api.linode.com/v4/linode/instances \
+              | jq -r --arg L "$HUB_INSTANCE_LABEL" '.data[] | select(.label==$L) | .ipv4[0]')
+            if [ -z "$HUB_IP" ] || [ "$HUB_IP" = "null" ]; then
+              echo "::error::could not resolve hub IP for label '$HUB_INSTANCE_LABEL' via the Linode API"; exit 1
+            fi
+            echo "Resolved hub '$HUB_INSTANCE_LABEL' -> $HUB_IP"
+            BTP="${BTP:-ws://$HUB_IP:3000}"
+            RELAY="${RELAY:-ws://$HUB_IP:7100}"
+          fi
+          echo "BTP_URL=$BTP" >> "$GITHUB_ENV"
+          echo "RELAY_URL=$RELAY" >> "$GITHUB_ENV"
+
       - name: Write client config (points at the hub)
         run: |
           mkdir -p "$(dirname "$TOON_CLIENT_CONFIG")"
           cat > "$TOON_CLIENT_CONFIG" <<JSON
           {
-            "destination": "${{ vars.HUB_DESTINATION }}",
-            "btpUrl": "${{ vars.HUB_BTP_URL }}",
-            "relayUrl": "${{ vars.HUB_RELAY_URL }}",
+            "destination": "$HUB_DESTINATION",
+            "btpUrl": "$BTP_URL",
+            "relayUrl": "$RELAY_URL",
             "transport": "direct",
             "httpPort": 8787,
             "mnemonicAccountIndex": ${{ vars.CLIENT_ACCOUNT_INDEX || '0' }}
