@@ -5,17 +5,17 @@
 // from the environment: the Agent SDK spawns the bundled Claude Code CLI, which reads
 // CLAUDE_CODE_OAUTH_TOKEN (your Max plan) — the same auth the org's backlog loops use.
 //
-// STATUS: deploy-side scaffold. The deterministic SocialFi + DeFi journey orchestrator is
-// WS5 + WS7 (toon-protocol/toon-client#21). Until that lands, this runs a SAFE read-only
-// smoke by default (status/identity only, no spend). Set TOON_JOURNEY=full once the
-// orchestrator + funded keystore are in place.
+// STATUS: scaffold. The deterministic SocialFi + DeFi journey orchestrator is WS5 + WS7
+// (toon-protocol/toon-client#21). Until that lands, this runs a SAFE read-only smoke by
+// default (status/identity only, no spend). Set TOON_JOURNEY=full once the orchestrator
+// + a funded wallet are in place.
 //
 // Env:
-//   CLAUDE_CODE_OAUTH_TOKEN       (required) Max-plan auth, read by the bundled CLI
-//   CLAUDE_MODEL                  (optional) default "sonnet"
-//   TOON_CLIENT_CONFIG            (required) path to the client config.json
-//   TOON_CLIENT_KEYSTORE_PASSWORD (required for full) unlocks the encrypted keystore
-//   TOON_JOURNEY                  smoke | full   (default: smoke)
+//   CLAUDE_CODE_OAUTH_TOKEN  (required) Max-plan auth, read by the bundled CLI
+//   CLAUDE_MODEL             (optional) default "sonnet"
+//   TOON_CLIENT_CONFIG       (required) path to the client config.json
+//   TOON_CLIENT_MNEMONIC     (required) seed the daemon derives the funded wallet from
+//   TOON_JOURNEY             smoke | full   (default: smoke)
 
 import { query } from '@anthropic-ai/claude-agent-sdk'
 
@@ -78,7 +78,7 @@ async function main() {
           args: [],
           env: {
             TOON_CLIENT_CONFIG: process.env.TOON_CLIENT_CONFIG ?? '',
-            TOON_CLIENT_KEYSTORE_PASSWORD: process.env.TOON_CLIENT_KEYSTORE_PASSWORD ?? '',
+            TOON_CLIENT_MNEMONIC: process.env.TOON_CLIENT_MNEMONIC ?? '',
           },
         },
       },

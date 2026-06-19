@@ -1,0 +1,88 @@
+name: Client Journey (CI)
+
+# Runs the headless TOON client as an ephemeral GitHub Actions job — no dedicated VM.
+# The job installs the pinned client-mcp CLI + the Agent SDK runner, derives a funded
+# wallet from the treasury seed (TREASURY_MNEMONIC -> TOON_CLIENT_MNEMONIC), starts
+# toon-clientd, and drives the SocialFi + DeFi journey against the live apex hub via the
+# Claude Agent SDK (auth: CLAUDE_CODE_OAUTH_TOKEN, the org's Max-plan token).
+#
+# Default is a SAFE read-only smoke. `full` spends tiny testnet amounts and needs the
+# derived wallet funded + the WS5 orchestrator (toon-protocol/toon-client#21).
+
+on:
+  workflow_dispatch:
+    inputs:
+      journey_mode:
+        description: 'smoke (read-only) or full (spends tiny testnet amounts)'
+        type: choice
+        options: [smoke, full]
+        default: smoke
+  # Uncomment to run on a schedule (smoke):
+  # schedule:
+  #   - cron: '0 14 * * 1'
+
+concurrency:
+  group: client-journey
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  journey:
+    runs-on: ubuntu-latest
+    env:
+      TOON_CLIENT_CONFIG: ${{ github.workspace }}/.toon-client/config.json
+      TOON_CLIENT_HTTP_PORT: '8787'
+      TOON_CLIENT_MNEMONIC: ${{ secrets.TREASURY_MNEMONIC }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      TOON_JOURNEY: ${{ inputs.journey_mode || 'smoke' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Pin client version
+        run: echo "CLIENT_VERSION=$(tr -d '[:space:]' < journey/client-version.txt)" >> "$GITHUB_ENV"
+
+      - name: Install client CLI + runner deps
+        run: |
+          npm install -g "@toon-protocol/client-mcp@${CLIENT_VERSION}"
+          npm --prefix journey install --no-audit --no-fund
+
+      - name: Write client config (points at the hub)
+        run: |
+          mkdir -p "$(dirname "$TOON_CLIENT_CONFIG")"
+          cat > "$TOON_CLIENT_CONFIG" <<JSON
+          {
+            "destination": "${{ vars.HUB_DESTINATION }}",
+            "btpUrl": "${{ vars.HUB_BTP_URL }}",
+            "relayUrl": "${{ vars.HUB_RELAY_URL }}",
+            "transport": "direct",
+            "httpPort": 8787,
+            "mnemonicAccountIndex": ${{ vars.CLIENT_ACCOUNT_INDEX || '0' }}
+          }
+          JSON
+
+      - name: Start toon-clientd
+        run: |
+          nohup toon-clientd > "$RUNNER_TEMP/clientd.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/clientd.pid"
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:8787/status" >/dev/null; then echo "daemon up"; break; fi
+            sleep 2
+          done
+
+      - name: Run journey
+        run: node journey/runner.mjs
+
+      - name: Daemon logs
+        if: always()
+        run: cat "$RUNNER_TEMP/clientd.log" || true
+
+      - name: Stop daemon
+        if: always()
+        run: kill "$(cat "$RUNNER_TEMP/clientd.pid" 2>/dev/null)" 2>/dev/null || true
