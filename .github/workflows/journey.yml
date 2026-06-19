@@ -38,7 +38,7 @@ jobs:
     env:
       TOON_CLIENT_CONFIG: ${{ github.workspace }}/.toon-client/config.json
       TOON_CLIENT_HTTP_PORT: '8787'
-      TOON_CLIENT_MNEMONIC: ${{ secrets.TREASURY_MNEMONIC }}
+      TOON_CLIENT_MNEMONIC: ${{ secrets.E2E_DEV_MNEMONIC }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       TOON_JOURNEY: ${{ inputs.journey_mode || 'smoke' }}
       # Hub discovery: the workflow already holds LINODE_TOKEN, so it resolves the hub's
