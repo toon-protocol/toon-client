@@ -29,8 +29,17 @@ import { dispatchTool, TOOL_DEFINITIONS } from './mcp-tools.js';
 /** MIME marking the bundle as an MCP-app UI resource (ext-apps profile). */
 const APP_MIME = 'text/html;profile=mcp-app';
 
-/** Load the prebuilt single-file MCP-app bundle from @toon-protocol/views. */
+/** Load the prebuilt single-file MCP-app bundle served as `ui://toon/app`. */
 function loadAppHtml(): string {
+  // 1. Prefer the copy shipped next to the built server (tsup onSuccess copies
+  //    it into dist/app). This is what a published client-mcp serves — no
+  //    dependency on the unpublished @toon-protocol/views package at runtime.
+  try {
+    return readFileSync(new URL('./app/index.html', import.meta.url), 'utf8');
+  } catch {
+    /* running from source / not yet copied — fall through to the dev resolve */
+  }
+  // 2. Dev fallback: resolve the bundle from the @toon-protocol/views workspace.
   try {
     const req = createRequire(import.meta.url);
     const entry = req.resolve('@toon-protocol/views'); // …/views/dist/index.js
