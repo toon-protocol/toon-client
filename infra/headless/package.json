@@ -1,0 +1,14 @@
+{
+  "name": "toon-headless-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless mcp-use journey runner for the TOON client (deploy scaffold). Backed by the WS5 orchestrator + WS7 harness once those land.",
+  "bin": {
+    "toon-headless": "./runner.mjs"
+  },
+  "dependencies": {
+    "@langchain/anthropic": "^1.5.0",
+    "mcp-use": "^1.32.0"
+  }
+}

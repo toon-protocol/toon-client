@@ -1,0 +1,100 @@
+#cloud-config
+# Headless client bootstrap. Installs Node 20 + the pinned client-mcp CLI
+# (toon-clientd / toon-mcp), provisions the 'deploy' user, mounts the persistent volume
+# at /mnt/toon-client, and installs the systemd units. Deliberately does NOT create the
+# wallet/keystore and does NOT auto-start anything — an operator initializes the
+# keystore + config once (seed stays off CI), then deploys.
+
+package_update: true
+package_upgrade: false
+
+users:
+  - default
+  - name: deploy
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    ssh_authorized_keys:
+      - ${ssh_pubkey}
+
+write_files:
+  # Non-secret env: config path on the persistent volume. The daemon's HTTP control API
+  # binds loopback only; the *_KEYSTORE_PASSWORD / ANTHROPIC_API_KEY live in the
+  # CI-written secrets file below, never here.
+  - path: /etc/toon-client.env
+    permissions: '0644'
+    content: |
+      TOON_CLIENT_CONFIG=/mnt/toon-client/config.json
+
+  # Placeholder secrets file (CI overwrites it at deploy with 0600). Keeps the daemon
+  # unit from failing if it starts before the first deploy.
+  - path: /etc/toon-client.secrets
+    permissions: '0600'
+    owner: deploy:deploy
+    content: |
+      # written by the deploy workflow: TOON_CLIENT_KEYSTORE_PASSWORD, ANTHROPIC_API_KEY
+
+  - path: /usr/local/sbin/toon-client-mount-volume.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      DEV="/dev/disk/by-id/scsi-0Linode_Volume_${volume_label}"
+      MNT="/mnt/toon-client"
+      for i in $(seq 1 30); do [ -e "$DEV" ] && break; sleep 2; done
+      if [ ! -e "$DEV" ]; then echo "volume $DEV not found" >&2; exit 1; fi
+      if ! blkid "$DEV" >/dev/null 2>&1; then mkfs.ext4 -m 0 -L tooncli "$DEV"; fi
+      mkdir -p "$MNT"
+      grep -q "$MNT" /etc/fstab || echo "$DEV $MNT ext4 defaults,noatime,nofail 0 2" >> /etc/fstab
+      mount -a
+      chown -R deploy:deploy "$MNT"
+
+  # Always-on client daemon. Started by the deploy step once config.json + keystore exist.
+  - path: /etc/systemd/system/toon-clientd.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=TOON client daemon (toon-clientd)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=deploy
+      EnvironmentFile=/etc/toon-client.env
+      EnvironmentFile=-/etc/toon-client.secrets
+      ExecStart=/usr/bin/env toon-clientd
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Headless journey runner — mcp-use + Claude driving the SocialFi/DeFi journey.
+  # oneshot + NOT WantedBy any target: it never auto-starts (it spends funds + tokens).
+  # Trigger a run with `systemctl start toon-headless` or the deploy workflow's
+  # run_journey input.
+  - path: /etc/systemd/system/toon-headless.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=TOON headless mcp-use journey runner (manual/triggered)
+      After=toon-clientd.service
+      Requires=toon-clientd.service
+
+      [Service]
+      Type=oneshot
+      User=deploy
+      WorkingDirectory=/opt/toon-headless
+      EnvironmentFile=/etc/toon-client.env
+      EnvironmentFile=/etc/toon-client.secrets
+      ExecStart=/usr/bin/env node /opt/toon-headless/runner.mjs
+
+runcmd:
+  - [ bash, /usr/local/sbin/toon-client-mount-volume.sh ]
+  - [ bash, -c, "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -" ]
+  - [ bash, -c, "apt-get install -y nodejs" ]
+  - [ bash, -c, "npm install -g @toon-protocol/client-mcp@${client_version}" ]
+  - [ bash, -c, "mkdir -p /opt/toon-headless && chown -R deploy:deploy /opt/toon-headless" ]
+  - [ systemctl, daemon-reload ]
+  - [ systemctl, enable, toon-clientd.service ]
+  - [ bash, -c, "echo 'set -a; . /etc/toon-client.env; set +a' > /etc/profile.d/toon-client.sh" ]
