@@ -60,3 +60,11 @@ export {
   type ToolDefinition,
   type ToolResult,
 } from './mcp-tools.js';
+export {
+  runJourney,
+  type JourneyStep,
+  type JourneyPlan,
+  type JourneyState,
+  type JourneyStepResult,
+  type JourneyResult,
+} from './journey/index.js';
