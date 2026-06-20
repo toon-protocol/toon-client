@@ -5,7 +5,6 @@ import {
   assertMinaReceipt,
   type EvmUsdcSettleOpts,
   type SolanaReceiptOpts,
-  type MinaReceiptOpts,
 } from './assert-receipt.js';
 
 // ── EVM fixtures ─────────────────────────────────────────────────────────────
@@ -69,7 +68,7 @@ describe('assertEvmUsdcSettle', () => {
 
     await expect(
       assertEvmUsdcSettle({ txHash: EVM_TX, usdcAddress: USDC, recipient: RECIPIENT_EVM, expectedAmount: AMOUNT, client })
-    ).rejects.toThrow(/no Transfer log/);
+    ).rejects.toThrow(/amount does not match/);
   });
 
   it('resolves when a later Transfer log has the correct amount', async () => {
@@ -117,20 +116,23 @@ describe('assertEvmUsdcSettle', () => {
 
 const RECIPIENT_SOL = 'RecipientSolOwner11111111111111111111111111';
 const SOL_SIG = 'solTxSignature111111111111111111111111111111';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const OTHER_MINT = 'So11111111111111111111111111111111111111112';
 
 function makeSolanaTx(
   recipientPostAmount: string,
   recipientPreAmount = '0',
-  err: unknown = null
+  err: unknown = null,
+  mint = USDC_MINT
 ) {
   return {
     meta: {
       err,
       preTokenBalances: [
-        { owner: RECIPIENT_SOL, uiTokenAmount: { amount: recipientPreAmount } },
+        { owner: RECIPIENT_SOL, mint, uiTokenAmount: { amount: recipientPreAmount } },
       ],
       postTokenBalances: [
-        { owner: RECIPIENT_SOL, uiTokenAmount: { amount: recipientPostAmount } },
+        { owner: RECIPIENT_SOL, mint, uiTokenAmount: { amount: recipientPostAmount } },
       ],
     },
   };
@@ -144,28 +146,28 @@ describe('assertSolanaReceipt', () => {
   it('resolves when SPL token delta matches expectedAmount', async () => {
     const connection = mockSolConnection(makeSolanaTx('1000000'));
     await expect(
-      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, expectedAmount: AMOUNT, connection })
+      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, mintAddress: USDC_MINT, expectedAmount: AMOUNT, connection })
     ).resolves.toBeUndefined();
   });
 
   it('throws when token delta does not match', async () => {
     const connection = mockSolConnection(makeSolanaTx('500000'));
     await expect(
-      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, expectedAmount: AMOUNT, connection })
+      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, mintAddress: USDC_MINT, expectedAmount: AMOUNT, connection })
     ).rejects.toThrow(/expected 1000000/);
   });
 
   it('throws when meta.err is set', async () => {
     const connection = mockSolConnection(makeSolanaTx('1000000', '0', { code: 1 }));
     await expect(
-      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, expectedAmount: AMOUNT, connection })
+      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, mintAddress: USDC_MINT, expectedAmount: AMOUNT, connection })
     ).rejects.toThrow(/failed/);
   });
 
   it('throws when transaction is not found', async () => {
     const connection = mockSolConnection(null);
     await expect(
-      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, expectedAmount: AMOUNT, connection })
+      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, mintAddress: USDC_MINT, expectedAmount: AMOUNT, connection })
     ).rejects.toThrow(/not found/);
   });
 
@@ -175,21 +177,43 @@ describe('assertSolanaReceipt', () => {
         meta: {
           err: null,
           preTokenBalances: [],
-          postTokenBalances: [{ owner: RECIPIENT_SOL, uiTokenAmount: { amount: '1000000' } }],
+          postTokenBalances: [{ owner: RECIPIENT_SOL, mint: USDC_MINT, uiTokenAmount: { amount: '1000000' } }],
         },
       }),
     } as SolanaReceiptOpts['connection'];
 
     await expect(
-      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, expectedAmount: AMOUNT, connection })
+      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, mintAddress: USDC_MINT, expectedAmount: AMOUNT, connection })
     ).resolves.toBeUndefined();
+  });
+
+  it('ignores SPL tokens that do not match mintAddress', async () => {
+    // OTHER_MINT has delta = AMOUNT but mintAddress is USDC_MINT — without mint filtering this would pass incorrectly
+    const connection = {
+      getTransaction: vi.fn().mockResolvedValue({
+        meta: {
+          err: null,
+          preTokenBalances: [
+            { owner: RECIPIENT_SOL, mint: OTHER_MINT, uiTokenAmount: { amount: '0' } },
+            { owner: RECIPIENT_SOL, mint: USDC_MINT, uiTokenAmount: { amount: '0' } },
+          ],
+          postTokenBalances: [
+            { owner: RECIPIENT_SOL, mint: OTHER_MINT, uiTokenAmount: { amount: '1000000' } },
+            { owner: RECIPIENT_SOL, mint: USDC_MINT, uiTokenAmount: { amount: '500000' } },
+          ],
+        },
+      }),
+    } as SolanaReceiptOpts['connection'];
+
+    await expect(
+      assertSolanaReceipt({ signature: SOL_SIG, recipient: RECIPIENT_SOL, mintAddress: USDC_MINT, expectedAmount: AMOUNT, connection })
+    ).rejects.toThrow(/expected 1000000/);
   });
 });
 
 // ── Mina fixtures ─────────────────────────────────────────────────────────────
 
 const RECIPIENT_MINA = 'B62qjBukhHFJKREuY7DMimhQJuGSh1e6UMJMbGe5hWQa5GXjUFu';
-const ZKAPP_ADDR = 'B62qoLBeSGYeGHaVBqp1n5m5s1xFVPTPKLAkbfEQqhRv5BoEbPM';
 const MINA_TX = 'CkZpeSomeMinaTxHash11111111111111111111111';
 
 function mockFetch(data: unknown, ok = true) {
@@ -212,7 +236,7 @@ describe('assertMinaReceipt', () => {
     await expect(
       assertMinaReceipt({
         txHash: MINA_TX,
-        zkAppAddress: ZKAPP_ADDR,
+
         recipient: RECIPIENT_MINA,
         expectedAmount: AMOUNT,
         rpcUrl: 'http://mina-gql',
@@ -232,7 +256,7 @@ describe('assertMinaReceipt', () => {
     await expect(
       assertMinaReceipt({
         txHash: MINA_TX,
-        zkAppAddress: ZKAPP_ADDR,
+
         recipient: RECIPIENT_MINA,
         expectedAmount: AMOUNT,
         rpcUrl: 'http://mina-gql',
@@ -252,7 +276,7 @@ describe('assertMinaReceipt', () => {
     await expect(
       assertMinaReceipt({
         txHash: MINA_TX,
-        zkAppAddress: ZKAPP_ADDR,
+
         recipient: RECIPIENT_MINA,
         expectedAmount: AMOUNT,
         rpcUrl: 'http://mina-gql',
@@ -272,7 +296,7 @@ describe('assertMinaReceipt', () => {
     await expect(
       assertMinaReceipt({
         txHash: MINA_TX,
-        zkAppAddress: ZKAPP_ADDR,
+
         recipient: RECIPIENT_MINA,
         expectedAmount: AMOUNT,
         rpcUrl: 'http://mina-gql',
@@ -287,7 +311,7 @@ describe('assertMinaReceipt', () => {
     await expect(
       assertMinaReceipt({
         txHash: MINA_TX,
-        zkAppAddress: ZKAPP_ADDR,
+
         recipient: RECIPIENT_MINA,
         expectedAmount: AMOUNT,
         rpcUrl: 'http://mina-gql',
@@ -302,7 +326,7 @@ describe('assertMinaReceipt', () => {
     await expect(
       assertMinaReceipt({
         txHash: MINA_TX,
-        zkAppAddress: ZKAPP_ADDR,
+
         recipient: RECIPIENT_MINA,
         expectedAmount: AMOUNT,
         rpcUrl: 'http://mina-gql',

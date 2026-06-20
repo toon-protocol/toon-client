@@ -35,8 +35,12 @@ export async function assertEvmUsdcSettle(opts: EvmUsdcSettleOpts): Promise<void
     );
   }
 
+  let foundUsdcLog = false;
+  let foundRecipientLog = false;
+
   for (const log of receipt.logs) {
     if (log.address.toLowerCase() !== usdcAddress.toLowerCase()) continue;
+    foundUsdcLog = true;
     let decoded: { to: `0x${string}`; value: bigint } | null = null;
     try {
       const result = decodeEventLog({ abi: [TRANSFER_EVENT], data: log.data, topics: log.topics });
@@ -46,13 +50,24 @@ export async function assertEvmUsdcSettle(opts: EvmUsdcSettleOpts): Promise<void
       continue;
     }
     if (!decoded || decoded.to.toLowerCase() !== recipient.toLowerCase()) continue;
+    foundRecipientLog = true;
     if (decoded.value !== expectedAmount) continue;
     return;
   }
 
-  throw new Error(
-    `assertEvmUsdcSettle: no Transfer log to recipient ${recipient} found in tx ${txHash}`
-  );
+  if (!foundUsdcLog) {
+    throw new Error(
+      `assertEvmUsdcSettle: no Transfer log from USDC contract ${usdcAddress} in tx ${txHash}`
+    );
+  } else if (!foundRecipientLog) {
+    throw new Error(
+      `assertEvmUsdcSettle: no Transfer log to recipient ${recipient} from USDC contract ${usdcAddress} in tx ${txHash}`
+    );
+  } else {
+    throw new Error(
+      `assertEvmUsdcSettle: Transfer to ${recipient} in tx ${txHash} found but amount does not match expected ${expectedAmount}`
+    );
+  }
 }
 
 // ── Solana (SPL token) ───────────────────────────────────────────────────────
@@ -75,19 +90,21 @@ interface SolanaTx {
 
 interface SolanaTokenBalance {
   owner?: string;
+  mint?: string;
   uiTokenAmount: { amount: string };
 }
 
 export interface SolanaReceiptOpts {
   signature: string;
   recipient: string;
+  mintAddress: string;
   expectedAmount: bigint;
   connection?: SolanaConnection;
   rpcUrl?: string;
 }
 
 export async function assertSolanaReceipt(opts: SolanaReceiptOpts): Promise<void> {
-  const { signature, recipient, expectedAmount, rpcUrl } = opts;
+  const { signature, recipient, mintAddress, expectedAmount, rpcUrl } = opts;
 
   let connection: SolanaConnection;
   if (opts.connection) {
@@ -115,8 +132,12 @@ export async function assertSolanaReceipt(opts: SolanaReceiptOpts): Promise<void
     );
   }
 
-  const pre = (tx.meta.preTokenBalances ?? []).find((b) => b.owner === recipient);
-  const post = (tx.meta.postTokenBalances ?? []).find((b) => b.owner === recipient);
+  const pre = (tx.meta.preTokenBalances ?? []).find(
+    (b) => b.owner === recipient && b.mint === mintAddress
+  );
+  const post = (tx.meta.postTokenBalances ?? []).find(
+    (b) => b.owner === recipient && b.mint === mintAddress
+  );
 
   const preAmount = pre ? BigInt(pre.uiTokenAmount.amount) : 0n;
   const postAmount = post ? BigInt(post.uiTokenAmount.amount) : 0n;
@@ -133,8 +154,6 @@ export async function assertSolanaReceipt(opts: SolanaReceiptOpts): Promise<void
 
 export interface MinaReceiptOpts {
   txHash: string;
-  /** The settlement zkApp's base58 public key — passed for future live assertions. */
-  zkAppAddress: string;
   recipient: string;
   expectedAmount: bigint;
   /** Mina GraphQL/archive endpoint. */
