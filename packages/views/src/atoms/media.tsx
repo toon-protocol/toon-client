@@ -71,8 +71,12 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
         binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
       }
       const dataBase64 = btoa(binary);
-      await actions['upload']?.({ dataBase64, mime: file.type || undefined });
-      setUploadedOk(true);
+      const ok = await actions['upload']?.({ dataBase64, mime: file.type || undefined });
+      if (ok === false) {
+        setUploadError(true);
+      } else {
+        setUploadedOk(true);
+      }
     } catch {
       setUploadError(true);
     } finally {

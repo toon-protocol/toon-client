@@ -58,6 +58,7 @@ function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAc
       const args: Record<string, unknown> = { ...(ref.args ?? {}), ...(runtimeArgs ?? {}) };
       if (ref.spendy) {
         const label = ref.confirmLabel ?? 'This action spends to publish. Continue?';
+        // Fallback is browser-only; auto-approves in Worker/SSR environments where window is absent.
         const confirmFn =
           bridge.confirm ??
           ((msg: string) =>
@@ -65,7 +66,7 @@ function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAc
         const ok = await confirmFn(label);
         if (!ok) {
           bridge.notifyModel(`Action "${name}" cancelled.`);
-          return;
+          return false;
         }
         args['spendy'] = true;
       }
@@ -73,6 +74,7 @@ function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAc
       bridge.notifyModel(
         res.ok ? `Action "${name}" completed.` : `Action "${name}" failed: ${res.error ?? 'unknown'}`
       );
+      return res.ok;
     };
   }
   return actions;

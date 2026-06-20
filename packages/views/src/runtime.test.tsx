@@ -108,9 +108,7 @@ describe('ViewSpecRenderer', () => {
     );
     const btn = await screen.findByRole('button');
     fireEvent.click(btn);
-    // Let the async confirm + potential callTool settle
-    await new Promise<void>((r) => setTimeout(r, 0));
-    expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeUndefined();
+    await waitFor(() => expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeUndefined());
   });
 
   it('spendy confirm accepted — tool is called with spendy flag', async () => {
@@ -128,11 +126,35 @@ describe('ViewSpecRenderer', () => {
     );
     const btn = await screen.findByRole('button');
     fireEvent.click(btn);
-    await new Promise<void>((r) => setTimeout(r, 0));
+    await waitFor(() => expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeTruthy());
     const call = calls.find((c) => c.name === 'toon_publish_unsigned');
-    expect(call).toBeTruthy();
     expect(call?.args['spendy']).toBe(true);
     expect(call?.args['kind']).toBe(3);
+  });
+
+  it('MediaUploader — spendy confirm cancelled — shows upload-failed, not success', async () => {
+    const { bridge } = mockBridge([], async () => false);
+    const { container } = render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'media-uploader',
+            actions: {
+              upload: { tool: 'toon_upload_media', args: { kind: 20 }, spendy: true },
+            },
+          },
+        }}
+      />
+    );
+
+    const inputEl = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
+    Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
+    fireEvent.change(inputEl);
+
+    await waitFor(() => expect(screen.getByText(/upload failed/i)).toBeTruthy());
+    expect(screen.queryByText(/uploaded successfully/i)).toBeNull();
   });
 
   it('MediaUploader picks a file, base64-encodes it, and fires toon_upload_media', async () => {
