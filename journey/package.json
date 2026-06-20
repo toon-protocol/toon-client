@@ -1,0 +1,14 @@
+{
+  "name": "toon-headless-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless Claude Agent SDK journey runner for the TOON client, run in CI (scaffold). Backed by the WS5 orchestrator + WS7 harness once those land.",
+  "bin": {
+    "toon-headless": "./runner.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.0",
+    "viem": "^2.52.0"
+  }
+}

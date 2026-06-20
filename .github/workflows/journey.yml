@@ -1,0 +1,135 @@
+name: Client Journey (CI)
+
+# Runs the headless TOON client as an ephemeral GitHub Actions job — no dedicated VM.
+# The job installs the pinned client-mcp CLI + the Agent SDK runner, derives a funded
+# wallet from the treasury seed (TREASURY_MNEMONIC -> TOON_CLIENT_MNEMONIC), starts
+# toon-clientd, and drives the SocialFi + DeFi journey against the live apex hub via the
+# Claude Agent SDK (auth: CLAUDE_CODE_OAUTH_TOKEN, the org's Max-plan token).
+#
+# Default is a SAFE read-only smoke. `full` spends tiny testnet amounts and needs the
+# derived wallet funded + the WS5 orchestrator (toon-protocol/toon-client#21).
+
+on:
+  workflow_dispatch:
+    inputs:
+      journey_mode:
+        description: 'smoke (read-only) or full (spends tiny testnet amounts)'
+        type: choice
+        options: [smoke, full]
+        default: smoke
+      topup:
+        description: 'Top up the client wallet from the treasury if balances are low (auto-on for full)'
+        type: boolean
+        default: false
+  # Uncomment to run on a schedule (smoke):
+  # schedule:
+  #   - cron: '0 14 * * 1'
+
+concurrency:
+  group: client-journey
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  journey:
+    runs-on: ubuntu-latest
+    env:
+      TOON_CLIENT_CONFIG: ${{ github.workspace }}/.toon-client/config.json
+      TOON_CLIENT_HTTP_PORT: '8787'
+      TOON_CLIENT_MNEMONIC: ${{ secrets.E2E_DEV_MNEMONIC }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      TOON_JOURNEY: ${{ inputs.journey_mode || 'smoke' }}
+      # Hub discovery: the workflow already holds LINODE_TOKEN, so it resolves the hub's
+      # IP from the Linode API by label instead of hand-entered endpoint vars.
+      LINODE_TOKEN: ${{ secrets.LINODE_CLI_TOKEN }}
+      HUB_INSTANCE_LABEL: ${{ vars.HUB_INSTANCE_LABEL || 'townhouse-hub' }}
+      HUB_DESTINATION: ${{ vars.HUB_DESTINATION || 'g.townhouse.town' }}
+      # Wallet derivation + treasury top-up. CLIENT_ACCOUNT_INDEX must differ from the
+      # treasury index — the top-up sends treasury[idx] -> client[idx].
+      CLIENT_ACCOUNT_INDEX: ${{ vars.CLIENT_ACCOUNT_INDEX || '1' }}
+      TREASURY_ACCOUNT_INDEX: ${{ vars.TREASURY_ACCOUNT_INDEX || '0' }}
+      BASE_SEPOLIA_RPC: ${{ vars.BASE_SEPOLIA_RPC }}
+      USDC_ADDRESS: ${{ vars.USDC_ADDRESS }}
+      MIN_ETH: ${{ vars.MIN_ETH || '0.002' }}
+      TOPUP_ETH: ${{ vars.TOPUP_ETH || '0.005' }}
+      MIN_USDC: ${{ vars.MIN_USDC || '5' }}
+      TOPUP_USDC: ${{ vars.TOPUP_USDC || '10' }}
+      # Real top-up when full OR explicitly requested; otherwise just report (dry-run).
+      DO_TOPUP: ${{ (inputs.topup || inputs.journey_mode == 'full') && 'true' || 'false' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Pin client version
+        run: echo "CLIENT_VERSION=$(tr -d '[:space:]' < journey/client-version.txt)" >> "$GITHUB_ENV"
+
+      - name: Install client CLI + runner deps
+        run: |
+          npm install -g "@toon-protocol/client-mcp@${CLIENT_VERSION}"
+          npm --prefix journey install --no-audit --no-fund
+
+      - name: Check balances + top up (Base Sepolia)
+        run: |
+          # Always reports balances; only sends when DO_TOPUP=true (full or topup input).
+          if [ "$DO_TOPUP" != "true" ]; then export TOPUP_DRY_RUN=true; fi
+          node journey/topup.mjs
+
+      - name: Resolve hub endpoints from Linode
+        run: |
+          # Optional overrides; otherwise discover the hub IP via the Linode API by label
+          # and derive the BTP (3000) + relay WS (7100) endpoints from it.
+          BTP="${{ vars.HUB_BTP_URL }}"
+          RELAY="${{ vars.HUB_RELAY_URL }}"
+          if [ -z "$BTP" ] || [ -z "$RELAY" ]; then
+            HUB_IP=$(curl -fsS -H "Authorization: Bearer $LINODE_TOKEN" \
+              https://api.linode.com/v4/linode/instances \
+              | jq -r --arg L "$HUB_INSTANCE_LABEL" '.data[] | select(.label==$L) | .ipv4[0]')
+            if [ -z "$HUB_IP" ] || [ "$HUB_IP" = "null" ]; then
+              echo "::error::could not resolve hub IP for label '$HUB_INSTANCE_LABEL' via the Linode API"; exit 1
+            fi
+            echo "Resolved hub '$HUB_INSTANCE_LABEL' -> $HUB_IP"
+            BTP="${BTP:-ws://$HUB_IP:3000}"
+            RELAY="${RELAY:-ws://$HUB_IP:7100}"
+          fi
+          echo "BTP_URL=$BTP" >> "$GITHUB_ENV"
+          echo "RELAY_URL=$RELAY" >> "$GITHUB_ENV"
+
+      - name: Write client config (points at the hub)
+        run: |
+          mkdir -p "$(dirname "$TOON_CLIENT_CONFIG")"
+          cat > "$TOON_CLIENT_CONFIG" <<JSON
+          {
+            "destination": "$HUB_DESTINATION",
+            "btpUrl": "$BTP_URL",
+            "relayUrl": "$RELAY_URL",
+            "transport": "direct",
+            "httpPort": 8787,
+            "mnemonicAccountIndex": ${CLIENT_ACCOUNT_INDEX}
+          }
+          JSON
+
+      - name: Start toon-clientd
+        run: |
+          nohup toon-clientd > "$RUNNER_TEMP/clientd.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/clientd.pid"
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:8787/status" >/dev/null; then echo "daemon up"; break; fi
+            sleep 2
+          done
+
+      - name: Run journey
+        run: node journey/runner.mjs
+
+      - name: Daemon logs
+        if: always()
+        run: cat "$RUNNER_TEMP/clientd.log" || true
+
+      - name: Stop daemon
+        if: always()
+        run: kill "$(cat "$RUNNER_TEMP/clientd.pid" 2>/dev/null)" 2>/dev/null || true
