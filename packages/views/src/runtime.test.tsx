@@ -94,7 +94,10 @@ describe('ViewSpecRenderer', () => {
   });
 
   it('spendy confirm declined — tool is NOT called', async () => {
+    const notified: string[] = [];
     const { bridge, calls } = mockBridge([], async () => false);
+    const origNotify = bridge.notifyModel.bind(bridge);
+    bridge.notifyModel = (t) => { notified.push(t); origNotify(t); };
     render(
       <ViewSpecRenderer
         bridge={bridge}
@@ -108,7 +111,9 @@ describe('ViewSpecRenderer', () => {
     );
     const btn = await screen.findByRole('button');
     fireEvent.click(btn);
-    await waitFor(() => expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeUndefined());
+    // Wait for the cancel notification — proves the async chain ran to completion before asserting negative.
+    await waitFor(() => expect(notified.some((m) => m.includes('cancelled'))).toBe(true));
+    expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeUndefined();
   });
 
   it('spendy confirm accepted — tool is called with spendy flag', async () => {

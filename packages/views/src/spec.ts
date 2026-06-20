@@ -217,6 +217,9 @@ export function validateViewSpec(
           if (ref['spendy'] !== undefined && typeof ref['spendy'] !== 'boolean') {
             errors.push(`${p}.spendy: must be a boolean`);
           }
+          if (ref['confirmLabel'] !== undefined && typeof ref['confirmLabel'] !== 'string') {
+            errors.push(`${p}.confirmLabel: must be a string`);
+          }
         }
       }
     }
