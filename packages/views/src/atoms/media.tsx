@@ -1,5 +1,5 @@
 /** Media atoms — NIP-68/71 posts + NIP-94 files (read), and the spendy uploader. */
-import { type FC } from 'react';
+import { useRef, useState, type FC } from 'react';
 import { type MediaVariant, parseMediaPost, parseFileMetadata, parseInlineMedia } from '../parsers/media.js';
 import { type NostrEvent } from '../types.js';
 import { type Atom, type AtomRenderProps } from './types.js';
@@ -48,15 +48,72 @@ const MediaEmbed: FC<AtomRenderProps> = ({ events }) => {
 
 const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
   const label = typeof props['label'] === 'string' ? props['label'] : 'Upload media';
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [uploadedOk, setUploadedOk] = useState(false);
+  const [uploadError, setUploadError] = useState(false);
+
+  const handleFile = async (file: File): Promise<void> => {
+    setBusy(true);
+    setUploadedOk(false);
+    setUploadError(false);
+    try {
+      const buf = await new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(file);
+      });
+      const bytes = new Uint8Array(buf);
+      let binary = '';
+      const chunk = 8192;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+      }
+      const dataBase64 = btoa(binary);
+      const ok = await actions['upload']?.({ dataBase64, mime: file.type || undefined });
+      if (ok === false) {
+        setUploadError(true);
+      } else {
+        setUploadedOk(true);
+      }
+    } catch {
+      setUploadError(true);
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
   return (
-    <button
-      type="button"
-      disabled={!actions['upload']}
-      className="rounded-md border border-dashed border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
-      onClick={() => void actions['upload']?.()}
-    >
-      {label} <span className="text-xs text-muted-foreground">(pays to publish)</span>
-    </button>
+    <div className="flex flex-col gap-1">
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*,video/*"
+        className="sr-only"
+        disabled={busy || !actions['upload']}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void handleFile(file);
+        }}
+      />
+      <button
+        type="button"
+        disabled={busy || !actions['upload']}
+        className="rounded-md border border-dashed border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+        onClick={() => inputRef.current?.click()}
+      >
+        {busy ? 'Uploading…' : label}{' '}
+        <span className="text-xs text-muted-foreground">(pays to publish)</span>
+      </button>
+      {uploadedOk && (
+        <p className="text-xs text-muted-foreground">Uploaded successfully.</p>
+      )}
+      {uploadError && (
+        <p className="text-xs text-destructive">Upload failed.</p>
+      )}
+    </div>
   );
 };
 

@@ -10,8 +10,10 @@
 import { type FC, type ReactNode } from 'react';
 import { type NostrEvent } from '../types.js';
 
-/** A wired write action; runtimeArgs are merged over the ViewSpec's static args. */
-export type AtomAction = (runtimeArgs?: Record<string, unknown>) => void | Promise<void>;
+/** A wired write action; runtimeArgs are merged over the ViewSpec's static args.
+ * Returns `false` when the action was declined (spendy confirm) or the tool reported
+ * failure; returns `true` on success; returns `void` / `undefined` if unused. */
+export type AtomAction = (runtimeArgs?: Record<string, unknown>) => boolean | void | Promise<boolean | void>;
 
 export interface AtomRenderProps {
   /** Events resolved from the node's `bind` (empty when there is no binding). */

@@ -80,4 +80,15 @@ describe('validateViewSpec', () => {
     const res = validate({ root: { atom: 'note-card', props } });
     expect(res.ok).toBe(false);
   });
+
+  it('rejects a non-string confirmLabel', () => {
+    const res = validate({
+      root: {
+        atom: 'note-card',
+        actions: { x: { tool: 'toon_publish_unsigned', spendy: true, confirmLabel: 42 } },
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.errors.join()).toContain('confirmLabel: must be a string');
+  });
 });

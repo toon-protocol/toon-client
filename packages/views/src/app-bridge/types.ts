@@ -34,4 +34,10 @@ export interface ViewBridge {
    * result). Returns an unsubscribe fn.
    */
   onSpec(cb: (spec: unknown) => void): () => void;
+  /**
+   * Optional async confirmation gate for spendy actions. Return `true` to
+   * proceed, `false` to abort. Defaults to `window.confirm` in browser runtimes.
+   * Inject a custom function in tests to avoid real modal dialogs.
+   */
+  confirm?: (message: string) => Promise<boolean>;
 }
