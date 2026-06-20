@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { ViewSpecRenderer, QUERY_TOOL } from './runtime.js';
 import { type ViewBridge } from './app-bridge/types.js';
 import { type NostrEvent } from './types.js';
@@ -17,7 +17,10 @@ function evt(partial: Partial<NostrEvent> & { kind: number; id: string }): Nostr
   };
 }
 
-function mockBridge(events: NostrEvent[]): { bridge: ViewBridge; calls: { name: string; args: Record<string, unknown> }[] } {
+function mockBridge(
+  events: NostrEvent[],
+  confirmFn?: (msg: string) => Promise<boolean>
+): { bridge: ViewBridge; calls: { name: string; args: Record<string, unknown> }[] } {
   const calls: { name: string; args: Record<string, unknown> }[] = [];
   const bridge: ViewBridge = {
     async callTool(name, args) {
@@ -29,6 +32,7 @@ function mockBridge(events: NostrEvent[]): { bridge: ViewBridge; calls: { name: 
     onSpec() {
       return () => {};
     },
+    ...(confirmFn ? { confirm: confirmFn } : {}),
   };
   return { bridge, calls };
 }
@@ -87,5 +91,81 @@ describe('ViewSpecRenderer', () => {
       />
     );
     expect(await screen.findByText('raw payload')).toBeTruthy();
+  });
+
+  it('spendy confirm declined — tool is NOT called', async () => {
+    const { bridge, calls } = mockBridge([], async () => false);
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'follow-button',
+            actions: { follow: { tool: 'toon_publish_unsigned', args: { kind: 3 }, spendy: true } },
+          },
+        }}
+      />
+    );
+    const btn = await screen.findByRole('button');
+    fireEvent.click(btn);
+    // Let the async confirm + potential callTool settle
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeUndefined();
+  });
+
+  it('spendy confirm accepted — tool is called with spendy flag', async () => {
+    const { bridge, calls } = mockBridge([], async () => true);
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'follow-button',
+            actions: { follow: { tool: 'toon_publish_unsigned', args: { kind: 3 }, spendy: true } },
+          },
+        }}
+      />
+    );
+    const btn = await screen.findByRole('button');
+    fireEvent.click(btn);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const call = calls.find((c) => c.name === 'toon_publish_unsigned');
+    expect(call).toBeTruthy();
+    expect(call?.args['spendy']).toBe(true);
+    expect(call?.args['kind']).toBe(3);
+  });
+
+  it('MediaUploader picks a file, base64-encodes it, and fires toon_upload_media', async () => {
+    const { bridge, calls } = mockBridge([], async () => true);
+    const { container } = render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'media-uploader',
+            actions: {
+              upload: { tool: 'toon_upload_media', args: { kind: 20 }, spendy: true },
+            },
+          },
+        }}
+      />
+    );
+
+    const inputEl = container.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(inputEl).toBeTruthy();
+
+    const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
+    Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
+    fireEvent.change(inputEl);
+
+    await waitFor(() => {
+      expect(calls.find((c) => c.name === 'toon_upload_media')).toBeTruthy();
+    });
+
+    const call = calls.find((c) => c.name === 'toon_upload_media');
+    expect(typeof call?.args['dataBase64']).toBe('string');
+    expect(call?.args['mime']).toBe('image/png');
+    // base64 of 'img-content'
+    expect(call?.args['dataBase64']).toBe(btoa('img-content'));
   });
 });

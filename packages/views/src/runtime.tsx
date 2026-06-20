@@ -56,9 +56,19 @@ function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAc
   for (const [name, ref] of Object.entries(node.actions ?? {})) {
     actions[name] = async (runtimeArgs) => {
       const args: Record<string, unknown> = { ...(ref.args ?? {}), ...(runtimeArgs ?? {}) };
-      // Spendy actions are gated host-side by server-raised elicitation; we pass
-      // the hint through so the daemon knows to confirm before spending.
-      if (ref.spendy) args['spendy'] = true;
+      if (ref.spendy) {
+        const label = ref.confirmLabel ?? 'This action spends to publish. Continue?';
+        const confirmFn =
+          bridge.confirm ??
+          ((msg: string) =>
+            Promise.resolve(typeof window !== 'undefined' ? !!window.confirm(msg) : true));
+        const ok = await confirmFn(label);
+        if (!ok) {
+          bridge.notifyModel(`Action "${name}" cancelled.`);
+          return;
+        }
+        args['spendy'] = true;
+      }
       const res = await bridge.callTool(ref.tool, args);
       bridge.notifyModel(
         res.ok ? `Action "${name}" completed.` : `Action "${name}" failed: ${res.error ?? 'unknown'}`
