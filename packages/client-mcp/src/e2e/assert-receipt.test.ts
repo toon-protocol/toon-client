@@ -35,17 +35,6 @@ function makeTransferLog(to: `0x${string}`, value: bigint, addr = USDC) {
   };
 }
 
-function mockEvmClient(overrides: Partial<ReturnType<typeof makeTransferLog>> & { status?: string } = {}) {
-  return {
-    getTransactionReceipt: vi.fn().mockResolvedValue({
-      status: overrides.status ?? 'success',
-      logs: overrides.status === 'reverted'
-        ? []
-        : [makeTransferLog(RECIPIENT_EVM, overrides.data !== undefined ? 0n : AMOUNT)],
-    }),
-  } as unknown as EvmUsdcSettleOpts['client'];
-}
-
 describe('assertEvmUsdcSettle', () => {
   it('resolves when Transfer log matches recipient and amount', async () => {
     const client = {
@@ -80,7 +69,20 @@ describe('assertEvmUsdcSettle', () => {
 
     await expect(
       assertEvmUsdcSettle({ txHash: EVM_TX, usdcAddress: USDC, recipient: RECIPIENT_EVM, expectedAmount: AMOUNT, client })
-    ).rejects.toThrow(/expected 1000000/);
+    ).rejects.toThrow(/no Transfer log/);
+  });
+
+  it('resolves when a later Transfer log has the correct amount', async () => {
+    const client = {
+      getTransactionReceipt: vi.fn().mockResolvedValue({
+        status: 'success',
+        logs: [makeTransferLog(RECIPIENT_EVM, 500n), makeTransferLog(RECIPIENT_EVM, AMOUNT)],
+      }),
+    } as unknown as EvmUsdcSettleOpts['client'];
+
+    await expect(
+      assertEvmUsdcSettle({ txHash: EVM_TX, usdcAddress: USDC, recipient: RECIPIENT_EVM, expectedAmount: AMOUNT, client })
+    ).resolves.toBeUndefined();
   });
 
   it('throws when no Transfer to the expected recipient', async () => {
@@ -199,9 +201,12 @@ function mockFetch(data: unknown, ok = true) {
 }
 
 describe('assertMinaReceipt', () => {
-  it('resolves when tx is APPLIED and balance matches', async () => {
+  it('resolves when tx is APPLIED and payment matches', async () => {
     const fetchFn = mockFetch({
-      data: { transactionStatus: 'APPLIED', account: { balance: { total: '1000000' } } },
+      data: {
+        transactionStatus: 'APPLIED',
+        payment: { amount: '1000000', receiver: { publicKey: RECIPIENT_MINA } },
+      },
     });
 
     await expect(
@@ -216,9 +221,12 @@ describe('assertMinaReceipt', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('throws when balance does not match expectedAmount', async () => {
+  it('throws when payment amount does not match expectedAmount', async () => {
     const fetchFn = mockFetch({
-      data: { transactionStatus: 'APPLIED', account: { balance: { total: '500000' } } },
+      data: {
+        transactionStatus: 'APPLIED',
+        payment: { amount: '500000', receiver: { publicKey: RECIPIENT_MINA } },
+      },
     });
 
     await expect(
@@ -230,12 +238,35 @@ describe('assertMinaReceipt', () => {
         rpcUrl: 'http://mina-gql',
         fetchFn,
       })
-    ).rejects.toThrow(/balance mismatch/);
+    ).rejects.toThrow(/amount mismatch/);
+  });
+
+  it('throws when payment receiver does not match recipient', async () => {
+    const fetchFn = mockFetch({
+      data: {
+        transactionStatus: 'APPLIED',
+        payment: { amount: '1000000', receiver: { publicKey: 'B62qSomeOtherKey' } },
+      },
+    });
+
+    await expect(
+      assertMinaReceipt({
+        txHash: MINA_TX,
+        zkAppAddress: ZKAPP_ADDR,
+        recipient: RECIPIENT_MINA,
+        expectedAmount: AMOUNT,
+        rpcUrl: 'http://mina-gql',
+        fetchFn,
+      })
+    ).rejects.toThrow(/recipient mismatch/);
   });
 
   it('throws when transaction is not APPLIED', async () => {
     const fetchFn = mockFetch({
-      data: { transactionStatus: 'FAILED', account: { balance: { total: '1000000' } } },
+      data: {
+        transactionStatus: 'FAILED',
+        payment: { amount: '1000000', receiver: { publicKey: RECIPIENT_MINA } },
+      },
     });
 
     await expect(

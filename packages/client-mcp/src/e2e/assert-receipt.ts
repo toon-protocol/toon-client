@@ -46,11 +46,7 @@ export async function assertEvmUsdcSettle(opts: EvmUsdcSettleOpts): Promise<void
       continue;
     }
     if (!decoded || decoded.to.toLowerCase() !== recipient.toLowerCase()) continue;
-    if (decoded.value !== expectedAmount) {
-      throw new Error(
-        `assertEvmUsdcSettle: Transfer to ${recipient} in tx ${txHash}: expected ${expectedAmount}, got ${decoded.value}`
-      );
-    }
+    if (decoded.value !== expectedAmount) continue;
     return;
   }
 
@@ -98,10 +94,11 @@ export async function assertSolanaReceipt(opts: SolanaReceiptOpts): Promise<void
     connection = opts.connection;
   } else {
     // Lazy import — @solana/web3.js is an optionalDependency
+    if (!rpcUrl) throw new Error('assertSolanaReceipt: rpcUrl is required when connection is not provided');
     const { Connection } = (await import('@solana/web3.js')) as {
       Connection: new (url: string, commitment: string) => SolanaConnection;
     };
-    connection = new Connection(rpcUrl!, 'confirmed');
+    connection = new Connection(rpcUrl, 'confirmed');
   }
 
   const tx = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0 });
@@ -148,12 +145,14 @@ export interface MinaReceiptOpts {
 
 // GraphQL query used to verify a Mina settlement receipt:
 //   transactionStatus — must be "APPLIED"
-//   account.balance.total — must equal expectedAmount (nanomina / custom token units)
+//   payment.amount — must equal expectedAmount (nanomina / custom token units)
+//   payment.receiver.publicKey — must equal recipient
 const MINA_VERIFY_QUERY = `
-  query VerifySettlement($txHash: String!, $recipient: String!) {
+  query VerifySettlement($txHash: String!) {
     transactionStatus(payment: $txHash)
-    account(publicKey: $recipient) {
-      balance { total }
+    payment(paymentId: $txHash) {
+      amount
+      receiver { publicKey }
     }
   }
 `;
@@ -172,7 +171,7 @@ export async function assertMinaReceipt(opts: MinaReceiptOpts): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       query: MINA_VERIFY_QUERY,
-      variables: { txHash, recipient },
+      variables: { txHash },
     }),
   });
 
@@ -185,7 +184,7 @@ export async function assertMinaReceipt(opts: MinaReceiptOpts): Promise<void> {
   const json = (await resp.json()) as {
     data?: {
       transactionStatus?: string;
-      account?: { balance?: { total?: string } };
+      payment?: { amount?: string; receiver?: { publicKey?: string } };
     };
     errors?: Array<{ message: string }>;
   };
@@ -203,17 +202,27 @@ export async function assertMinaReceipt(opts: MinaReceiptOpts): Promise<void> {
     );
   }
 
-  const balanceStr = json.data?.account?.balance?.total;
-  if (balanceStr == null) {
+  const payment = json.data?.payment;
+  if (!payment) {
+    throw new Error(`assertMinaReceipt: payment ${txHash} not found`);
+  }
+
+  const actualReceiver = payment.receiver?.publicKey;
+  if (actualReceiver !== recipient) {
     throw new Error(
-      `assertMinaReceipt: no balance found for recipient ${recipient}`
+      `assertMinaReceipt: payment ${txHash} recipient mismatch: expected ${recipient}, got ${actualReceiver ?? 'null'}`
     );
   }
 
-  const actual = BigInt(balanceStr);
+  const amountStr = payment.amount;
+  if (amountStr == null) {
+    throw new Error(`assertMinaReceipt: payment ${txHash} has no amount`);
+  }
+
+  const actual = BigInt(amountStr);
   if (actual !== expectedAmount) {
     throw new Error(
-      `assertMinaReceipt: recipient ${recipient} balance mismatch: expected ${expectedAmount}, got ${actual}`
+      `assertMinaReceipt: payment ${txHash} amount mismatch: expected ${expectedAmount}, got ${actual}`
     );
   }
 }
