@@ -6,7 +6,7 @@
   "author": "Jonathan Green",
   "repository": {
     "type": "git",
-    "url": "https://github.com/toon-protocol/town.git",
+    "url": "https://github.com/toon-protocol/toon-client.git",
     "directory": "packages/client"
   },
   "publishConfig": {

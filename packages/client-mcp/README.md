@@ -2,7 +2,7 @@
 
 Let a Claude agent — **Claude Desktop or Claude Code** — act as a full TOON
 Protocol client: **pay-to-write** publishing, **free** reads/subscriptions,
-payment-channel/balance management, and mill swaps.
+payment-channel/balance management, and swaps.
 
 The agent surface is an **MCP server** — bin **`toon-mcp`**, which registers
 with the host under the server name **`toon-client`** (this is the name that

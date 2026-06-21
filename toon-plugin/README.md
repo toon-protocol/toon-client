@@ -12,7 +12,7 @@ auto-activates when you ask to publish/read/pay/swap on TOON.
 | Part | Path | Role |
 |---|---|---|
 | Manifest | `.claude-plugin/plugin.json` | Plugin name/version/metadata |
-| Marketplace entry | `<repo-root>/.claude-plugin/marketplace.json` | Lets the `toon-protocol/town` repo act as a one-plugin marketplace (lists this plugin with `source: ./toon-plugin`). A GitHub-repo marketplace is discovered at the **repo root**, not in the plugin subdir. |
+| Marketplace entry | `<repo-root>/.claude-plugin/marketplace.json` | Lets the `toon-protocol/toon-client` repo act as a one-plugin marketplace (lists this plugin with `source: ./toon-plugin`). A GitHub-repo marketplace is discovered at the **repo root**, not in the plugin subdir. |
 | Skill | `skills/toon-client/SKILL.md` (+ `references/`, `evals/`) | Teaches pay-to-write / free-read / settlement |
 | MCP server | `.mcp.json` | Declares the `toon` MCP server, run via `npx -y -p @toon-protocol/client-mcp toon-mcp` |
 
@@ -26,12 +26,12 @@ auto-spawned by `toon-mcp` — the plugin only declares the one server.
 
 **Try it locally (no marketplace):**
 ```bash
-claude --plugin-dir /path/to/town/toon-plugin
+claude --plugin-dir /path/to/toon-client/toon-plugin
 ```
 
 **Via marketplace (this repo doubles as one):**
 ```text
-/plugin marketplace add toon-protocol/town
+/plugin marketplace add toon-protocol/toon-client
 /plugin install toon@toon
 ```
 
