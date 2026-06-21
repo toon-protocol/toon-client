@@ -7,6 +7,9 @@ dist/
 # Turbo
 .turbo/
 
+# Devbox local environment (nix symlinks/cache)
+.devbox/
+
 # Akash deploy state — leases (mutable, contains DSEQ + provider) and the
 # ATOR probe's v3 hidden-service keypair. The secret key is sensitive — never
 # commit it. The .anyone hostname is derived from the public key; if that
