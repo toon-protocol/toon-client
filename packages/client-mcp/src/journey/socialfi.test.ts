@@ -67,7 +67,8 @@ describe('socialFiJourney', () => {
     const client = stubClient({ status, publishUnsigned, uploadMedia });
     await runJourney(socialFiJourney({ pubkey: TEST_PUBKEY }), client);
 
-    expect(status).toHaveBeenCalledOnce();
+    // status is called by step 1 (onboard) and step 5 (dvm-upload auto-probe)
+    expect(status).toHaveBeenCalledTimes(2);
   });
 
   it('step 2 (publish-profile) calls publishUnsigned with kind:0', async () => {
@@ -174,7 +175,7 @@ describe('socialFiJourney', () => {
     expect(viewSpec.root.children[1]?.bind?.query?.authors).toEqual([TEST_PUBKEY]);
   });
 
-  it('step 5 (dvm-upload) calls uploadMedia with the correct payload', async () => {
+  it('step 5 (dvm-upload) auto-calls toon_status (read-only), not uploadMedia', async () => {
     const status = vi.fn().mockResolvedValue(fakeStatus);
     const publishUnsigned = vi.fn().mockResolvedValue(fakePublishResponse);
     const uploadMedia = vi.fn().mockResolvedValue(fakeUploadResponse);
@@ -182,9 +183,10 @@ describe('socialFiJourney', () => {
     const client = stubClient({ status, publishUnsigned, uploadMedia });
     await runJourney(socialFiJourney({ pubkey: TEST_PUBKEY }), client);
 
-    expect(uploadMedia).toHaveBeenCalledWith(
-      expect.objectContaining({ dataBase64: '', mime: 'image/png', kind: 1063 })
-    );
+    // The actual upload is user-initiated via the panel action; the auto-call
+    // must never touch the spend-path toon_upload_media tool.
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(status).toHaveBeenCalledTimes(2); // step 1 (onboard) + step 5 (dvm-upload probe)
   });
 
   it('every step panel passes validateViewSpec', async () => {

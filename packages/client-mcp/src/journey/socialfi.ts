@@ -121,14 +121,12 @@ export function socialFiJourney(opts?: { pubkey?: string }): JourneyPlan {
       },
 
       // ── Step 5: DVM upload (kind:1063) + media-embed read-back ──────────────
+      // Use toon_status (read-only) for the auto-call; the actual upload is
+      // user-initiated via the panel's media-uploader action (spendy, confirmed).
       {
         id: 'dvm-upload',
-        toolName: 'toon_upload_media',
-        buildInput: () => ({
-          dataBase64: '',
-          mime: 'image/png',
-          kind: 1063,
-        }),
+        toolName: 'toon_status',
+        buildInput: () => ({}),
         renderPanel: (_data, state) => ({
           title: 'Media Upload',
           root: {
