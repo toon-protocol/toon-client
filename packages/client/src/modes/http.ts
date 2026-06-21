@@ -2,6 +2,11 @@ import { BootstrapService, createDiscoveryTracker } from '@toon-protocol/core';
 import type { BootstrapServiceConfig } from '@toon-protocol/core';
 import { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
 import { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
+import { HttpIlpClient } from '../adapters/HttpIlpClient.js';
+import {
+  selectIlpTransport,
+  readDiscoveredIlpPeer,
+} from '../adapters/selectIlpTransport.js';
 import { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { buildSettlementInfo } from '../config.js';
@@ -46,9 +51,51 @@ export async function initializeHttpMode(
   // Build settlement info from config
   const settlementInfo = buildSettlementInfo(config);
 
-  // Create BTP runtime client — this is the primary transport for the client SDK.
-  // The client connects to the connector via BTP WebSocket to send ILP packets.
-  // HTTP is not used for ILP packet transport.
+  // Select the ILP transport for the uplink connector.
+  //
+  // The connector serves ILP-over-HTTP (`POST /ilp`) and BTP on the SAME port
+  // (connector PR #181). A peer advertises the `POST /ilp` URL in discovery via
+  // `IlpPeerInfo.httpEndpoint` (+ `supportsUpgrade`) added in toon PR #29.
+  //
+  // The client SDK's only "peer" at init time is its uplink connector, so we
+  // build a DiscoveredIlpPeer from the connector endpoints we know: the derived
+  // BTP WebSocket URL plus an optional explicit `connectorHttpEndpoint` (which
+  // mirrors the on-wire `httpEndpoint`). `readDiscoveredIlpPeer` reads those
+  // fields defensively so this stays compatible with the installed
+  // @toon-protocol/core 1.4.2 (pre-PR-#29).
+  //
+  // NOTE(dep): once a @toon-protocol/core release with the PR-#29
+  // `httpEndpoint`/`supportsUpgrade` IlpPeerInfo fields is published (latest on
+  // npm is still 1.4.2), bump the dep and feed real discovered peer info here
+  // instead of (or in addition to) the explicit config field.
+  //
+  // FALLBACK GUARANTEE: when no `httpEndpoint` is present (the default — no
+  // connector advertises one yet, and `connectorHttpEndpoint` is unset),
+  // `selectIlpTransport` returns `{ kind: 'btp' }`, which is exactly the prior
+  // behavior. Existing BTP-only flows are unchanged.
+  const discoveredPeer = readDiscoveredIlpPeer({
+    btpEndpoint: effectiveBtpUrl,
+    httpEndpoint: config.connectorHttpEndpoint,
+    supportsUpgrade: config.connectorSupportsUpgrade,
+  });
+
+  // The client SDK's runtime client is a one-shot consumer (it sends ILP
+  // packets and reads the synchronous FULFILL/REJECT). It does not need a duplex
+  // session at the transport-selection layer, so `needsDuplex` stays false and
+  // HTTP is preferred when advertised. A `btpEndpoint` is always present when
+  // `btpUrl` is configured, so HTTP is only ever selected when an httpEndpoint
+  // is explicitly available.
+  const transportChoice =
+    discoveredPeer.httpEndpoint || discoveredPeer.btpEndpoint
+      ? selectIlpTransport(discoveredPeer, { needsDuplex: false })
+      : null;
+
+  // Create BTP runtime client — the duplex transport for the client SDK.
+  // The client connects to the connector via BTP WebSocket to send ILP packets
+  // AND to receive server-initiated packets / act as a peer. We always open it
+  // when a btpUrl is configured (publishing, swaps and payments require it), so
+  // ToonClient's `btpClient`-gated paths keep working even when one-shot writes
+  // go over HTTP.
   let btpClient: BtpRuntimeClient | null = null;
   if (effectiveBtpUrl) {
     btpClient = new BtpRuntimeClient({
@@ -60,8 +107,37 @@ export async function initializeHttpMode(
     await btpClient.connect();
   }
 
-  // BTP is the runtime client for sending ILP packets
+  // Build the HTTP one-shot client when the transport policy selected it.
+  let httpIlpClient: HttpIlpClient | null = null;
+  if (
+    transportChoice &&
+    (transportChoice.kind === 'http' ||
+      transportChoice.kind === 'http-upgradable')
+  ) {
+    httpIlpClient = new HttpIlpClient({
+      httpEndpoint: transportChoice.httpEndpoint,
+      ...(config.btpPeerId !== undefined ? { peerId: config.btpPeerId } : {}),
+      ...(config.btpAuthToken !== undefined
+        ? { authToken: config.btpAuthToken }
+        : {}),
+      timeout: config.queryTimeout,
+      maxRetries: config.maxRetries,
+      retryDelay: config.retryDelay,
+      ...(transport.httpClient !== undefined
+        ? { httpClient: transport.httpClient }
+        : {}),
+      ...(transport.createWebSocket !== undefined
+        ? { createWebSocket: transport.createWebSocket }
+        : {}),
+    });
+  }
+
+  // Runtime client precedence for sending ILP packets:
+  //   1. HttpIlpClient  — when the connector advertises an httpEndpoint (PR #29).
+  //   2. BtpRuntimeClient — the BTP WebSocket (existing default; FALLBACK).
+  //   3. HttpRuntimeClient — connector-admin-style HTTP when no btpUrl at all.
   const runtimeClient =
+    httpIlpClient ??
     btpClient ??
     new HttpRuntimeClient({
       connectorUrl: effectiveConnectorUrl,
