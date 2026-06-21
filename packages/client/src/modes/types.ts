@@ -1,6 +1,7 @@
 import type { BootstrapService } from '@toon-protocol/core';
 import type { DiscoveryTracker } from '@toon-protocol/core';
 import type { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
+import type { HttpIlpClient } from '../adapters/HttpIlpClient.js';
 import type { HttpConnectorAdmin } from '../adapters/HttpConnectorAdmin.js';
 import type { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
 import type { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
@@ -17,8 +18,14 @@ export interface HttpModeInitialization {
   /** Discovery tracker for tracking new peers from kind:10032 events */
   discoveryTracker: DiscoveryTracker;
 
-  /** Runtime client for sending ILP packets (HTTP or BTP) */
-  runtimeClient: HttpRuntimeClient | BtpRuntimeClient;
+  /**
+   * Runtime client for sending ILP packets. One of:
+   *  - `HttpIlpClient`    — stateless ILP-over-HTTP one-shot writes (chosen when
+   *                         the connector advertises an `httpEndpoint`).
+   *  - `BtpRuntimeClient` — duplex BTP WebSocket (the default / fallback).
+   *  - `HttpRuntimeClient`— connector-admin-style HTTP (no btpUrl configured).
+   */
+  runtimeClient: HttpIlpClient | HttpRuntimeClient | BtpRuntimeClient;
 
   /** HTTP client for connector admin operations (add/remove peers). Null when admin not wired. */
   adminClient: HttpConnectorAdmin | null;

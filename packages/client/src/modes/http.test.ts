@@ -129,6 +129,50 @@ describe('initializeHttpMode', () => {
     });
   });
 
+  describe('ILP-over-HTTP transport selection', () => {
+    it('uses HttpIlpClient when connectorHttpEndpoint is advertised', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+      config.connectorHttpEndpoint = 'http://localhost:3000/ilp';
+
+      const result = await initializeHttpMode(config);
+
+      // One-shot writes go over HTTP when the connector advertises an endpoint.
+      expect(result.runtimeClient.constructor.name).toBe('HttpIlpClient');
+      // BTP is still opened (duplex paths — publish/swap/pay — need it).
+      expect(result.btpClient).not.toBeNull();
+    });
+
+    it('falls back to BtpRuntimeClient when no httpEndpoint is present', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+      // connectorHttpEndpoint intentionally unset (the default / safe path).
+
+      const result = await initializeHttpMode(config);
+
+      // No httpEndpoint advertised -> BTP remains the runtime client.
+      expect(result.runtimeClient).toBe(result.btpClient);
+    });
+
+    it('ignores a blank connectorHttpEndpoint and falls back to BTP', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+      config.connectorHttpEndpoint = '   ';
+
+      const result = await initializeHttpMode(config);
+
+      // Whitespace-only endpoint is treated as absent by selectIlpTransport.
+      expect(result.runtimeClient).toBe(result.btpClient);
+    });
+
+    it('uses HttpIlpClient over HTTP even when no btpUrl is configured', async () => {
+      delete (config as any).btpUrl;
+      config.connectorHttpEndpoint = 'http://localhost:3000/ilp';
+
+      const result = await initializeHttpMode(config);
+
+      expect(result.btpClient).toBeNull();
+      expect(result.runtimeClient.constructor.name).toBe('HttpIlpClient');
+    });
+  });
+
   describe('on-chain channel client', () => {
     it('should create OnChainChannelClient when chainRpcUrls configured', async () => {
       config.chainRpcUrls = { 'evm:anvil:31337': 'http://localhost:8545' };

@@ -240,6 +240,29 @@ export interface ToonClientConfig {
   btpPeerId?: string;
 
   /**
+   * ILP-over-HTTP one-shot endpoint of the uplink connector (the `POST /ilp`
+   * URL, e.g. "http://localhost:3000/ilp"). When set, the client prefers the
+   * stateless {@link HttpIlpClient} transport for one-shot writes instead of
+   * opening a persistent BTP WebSocket.
+   *
+   * This mirrors the `httpEndpoint` field a peer advertises in discovery
+   * (`IlpPeerInfo`, toon PR #29). It is surfaced here as explicit config so the
+   * default runtime can opt into ILP-over-HTTP before connectors advertise the
+   * field on-wire. Leave unset to keep the existing BTP-only behavior (the safe
+   * default — no connector advertises an httpEndpoint until the connector + a
+   * core release with these fields ship).
+   */
+  connectorHttpEndpoint?: string;
+
+  /**
+   * Whether the uplink connector accepts a BTP `Upgrade` over its HTTP endpoint
+   * (mirrors `IlpPeerInfo.supportsUpgrade`, toon PR #29). Only consulted when
+   * `connectorHttpEndpoint` is set and a duplex session is required. Defaults to
+   * false (no upgrade) when omitted.
+   */
+  connectorSupportsUpgrade?: boolean;
+
+  /**
    * ILP destination address for event publishing.
    * Defaults to the connector's local address (derived from connectorUrl host).
    * For multi-hop routing, set this to the target node's ILP address.
