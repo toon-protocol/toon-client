@@ -126,6 +126,54 @@ describe('socialFiJourney', () => {
     expect(followButtonActions?.args?.tags).toEqual([['p', TEST_PUBKEY]]);
   });
 
+  it('step 2 (publish-profile) renderPanel bind query uses state-threaded pubkey when opts is omitted', async () => {
+    const status = vi.fn().mockResolvedValue(fakeStatus);
+    const publishUnsigned = vi.fn().mockResolvedValue(fakePublishResponse);
+    const uploadMedia = vi.fn().mockResolvedValue(fakeUploadResponse);
+
+    const client = stubClient({ status, publishUnsigned, uploadMedia });
+    const result = await runJourney(socialFiJourney(), client); // no opts — must read pubkey from state
+
+    const profileStep = result.steps.find((s) => s.stepId === 'publish-profile');
+    expect(profileStep).toBeDefined();
+    const viewSpec = profileStep!.panel.structuredContent?.['viewSpec'] as {
+      root: { bind: { query: { authors?: string[] } } };
+    };
+    expect(viewSpec.root.bind.query.authors).toEqual([TEST_PUBKEY]);
+  });
+
+  it('step 3 (publish-note) renderPanel bind query uses state-threaded pubkey when opts is omitted', async () => {
+    const status = vi.fn().mockResolvedValue(fakeStatus);
+    const publishUnsigned = vi.fn().mockResolvedValue(fakePublishResponse);
+    const uploadMedia = vi.fn().mockResolvedValue(fakeUploadResponse);
+
+    const client = stubClient({ status, publishUnsigned, uploadMedia });
+    const result = await runJourney(socialFiJourney(), client); // no opts — must read pubkey from state
+
+    const noteStep = result.steps.find((s) => s.stepId === 'publish-note');
+    expect(noteStep).toBeDefined();
+    const viewSpec = noteStep!.panel.structuredContent?.['viewSpec'] as {
+      root: { children: Array<{ bind?: { query?: { authors?: string[] } } }> };
+    };
+    expect(viewSpec.root.children[1]?.bind?.query?.authors).toEqual([TEST_PUBKEY]);
+  });
+
+  it('step 5 (dvm-upload) renderPanel bind query uses state-threaded pubkey when opts is omitted', async () => {
+    const status = vi.fn().mockResolvedValue(fakeStatus);
+    const publishUnsigned = vi.fn().mockResolvedValue(fakePublishResponse);
+    const uploadMedia = vi.fn().mockResolvedValue(fakeUploadResponse);
+
+    const client = stubClient({ status, publishUnsigned, uploadMedia });
+    const result = await runJourney(socialFiJourney(), client); // no opts — must read pubkey from state
+
+    const uploadStep = result.steps.find((s) => s.stepId === 'dvm-upload');
+    expect(uploadStep).toBeDefined();
+    const viewSpec = uploadStep!.panel.structuredContent?.['viewSpec'] as {
+      root: { children: Array<{ bind?: { query?: { authors?: string[] } } }> };
+    };
+    expect(viewSpec.root.children[1]?.bind?.query?.authors).toEqual([TEST_PUBKEY]);
+  });
+
   it('step 5 (dvm-upload) calls uploadMedia with the correct payload', async () => {
     const status = vi.fn().mockResolvedValue(fakeStatus);
     const publishUnsigned = vi.fn().mockResolvedValue(fakePublishResponse);

@@ -54,11 +54,11 @@ export function socialFiJourney(opts?: { pubkey?: string }): JourneyPlan {
           kind: 0,
           content: JSON.stringify({ name: 'TOON User', about: 'Published via the SocialFi journey.' }),
         }),
-        renderPanel: (_data) => ({
+        renderPanel: (_data, state) => ({
           title: 'Profile',
           root: {
             atom: 'profile-header',
-            bind: { query: buildProfileFilter([opts?.pubkey ?? '']) },
+            bind: { query: buildProfileFilter([pubkeyFromState(state, opts?.pubkey)]) },
           },
         }),
       },
@@ -71,7 +71,7 @@ export function socialFiJourney(opts?: { pubkey?: string }): JourneyPlan {
           kind: 1,
           content: 'Hello from TOON Protocol!',
         }),
-        renderPanel: (_data) => ({
+        renderPanel: (_data, state) => ({
           title: 'Note',
           root: {
             atom: 'stack',
@@ -83,7 +83,7 @@ export function socialFiJourney(opts?: { pubkey?: string }): JourneyPlan {
               },
               {
                 atom: 'note-card',
-                bind: { query: buildFeedFilter([opts?.pubkey ?? ''], 50), kindAuto: true },
+                bind: { query: buildFeedFilter([pubkeyFromState(state, opts?.pubkey)], 50), kindAuto: true },
               },
             ],
           },
@@ -129,7 +129,7 @@ export function socialFiJourney(opts?: { pubkey?: string }): JourneyPlan {
           mime: 'image/png',
           kind: 1063,
         }),
-        renderPanel: (_data) => ({
+        renderPanel: (_data, state) => ({
           title: 'Media Upload',
           root: {
             atom: 'stack',
@@ -148,7 +148,7 @@ export function socialFiJourney(opts?: { pubkey?: string }): JourneyPlan {
               },
               {
                 atom: 'media-embed',
-                bind: { query: buildFileMetadataFilter([opts?.pubkey ?? ''], 30), kindAuto: true },
+                bind: { query: buildFileMetadataFilter([pubkeyFromState(state, opts?.pubkey)], 30), kindAuto: true },
               },
             ],
           },
