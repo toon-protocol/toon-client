@@ -2,7 +2,7 @@ import {
   buildProfileFilter,
   buildFeedFilter,
   buildFollowListFilter,
-  buildMediaFeedFilter,
+  buildFileMetadataFilter,
   PUBLISH_TOOL,
   UPLOAD_TOOL,
 } from '@toon-protocol/views';
@@ -98,8 +98,8 @@ export function socialFiJourney(opts?: { pubkey?: string }): JourneyPlan {
           const pubkey = pubkeyFromState(state, opts?.pubkey);
           return { kind: 3, tags: [['p', pubkey]] };
         },
-        renderPanel: (_data) => {
-          const pubkey = opts?.pubkey ?? '';
+        renderPanel: (_data, state) => {
+          const pubkey = pubkeyFromState(state, opts?.pubkey);
           return {
             title: 'Follow',
             root: {
@@ -148,7 +148,7 @@ export function socialFiJourney(opts?: { pubkey?: string }): JourneyPlan {
               },
               {
                 atom: 'media-embed',
-                bind: { query: buildMediaFeedFilter([opts?.pubkey ?? ''], 30), kindAuto: true },
+                bind: { query: buildFileMetadataFilter([opts?.pubkey ?? ''], 30), kindAuto: true },
               },
             ],
           },

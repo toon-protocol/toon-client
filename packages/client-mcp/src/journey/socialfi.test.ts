@@ -109,6 +109,23 @@ describe('socialFiJourney', () => {
     );
   });
 
+  it('step 4 (follow) renderPanel action tags use state-threaded pubkey when opts is omitted', async () => {
+    const status = vi.fn().mockResolvedValue(fakeStatus);
+    const publishUnsigned = vi.fn().mockResolvedValue(fakePublishResponse);
+    const uploadMedia = vi.fn().mockResolvedValue(fakeUploadResponse);
+
+    const client = stubClient({ status, publishUnsigned, uploadMedia });
+    const result = await runJourney(socialFiJourney(), client); // no opts — must read pubkey from state
+
+    const followStep = result.steps.find((s) => s.stepId === 'follow');
+    expect(followStep).toBeDefined();
+    const viewSpec = followStep!.panel.structuredContent?.['viewSpec'] as {
+      root: { children: Array<{ actions?: { follow?: { args?: { tags?: string[][] } } } }> };
+    };
+    const followButtonActions = viewSpec.root.children[0]?.actions?.follow;
+    expect(followButtonActions?.args?.tags).toEqual([['p', TEST_PUBKEY]]);
+  });
+
   it('step 5 (dvm-upload) calls uploadMedia with the correct payload', async () => {
     const status = vi.fn().mockResolvedValue(fakeStatus);
     const publishUnsigned = vi.fn().mockResolvedValue(fakePublishResponse);

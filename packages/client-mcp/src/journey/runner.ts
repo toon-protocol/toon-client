@@ -28,7 +28,7 @@ export async function runJourney(
     const data = extractData(toolResult);
     state[step.id] = data;
 
-    const viewSpec = step.renderPanel(data);
+    const viewSpec = step.renderPanel(data, state);
     const panel: ToolResult = {
       content: [{ type: 'text', text: `Journey step: ${step.id}` }],
       structuredContent: { viewSpec },
