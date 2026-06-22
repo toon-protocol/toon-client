@@ -281,7 +281,9 @@ function isPrivateHost(hostname: string): boolean {
   if (parts.length !== 4) return false;
   const nums = parts.map(Number);
   if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
-  const [a, b] = nums;
+  const a = nums[0] as number;
+  const b = nums[1] as number;
+  if (a === 0) return true; // 0.0.0.0/8 — routes to loopback on Linux/macOS
   if (a === 127) return true; // 127.0.0.0/8 loopback
   if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local (IMDS)
   if (a === 10) return true; // 10.0.0.0/8

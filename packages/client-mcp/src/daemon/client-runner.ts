@@ -1072,6 +1072,7 @@ export class ClientRunner {
     try {
       const res = await globalThis.fetch(req.url, {
         method: req.method ?? 'GET',
+        redirect: 'error',
         ...(req.headers ? { headers: req.headers } : {}),
         ...(req.body !== undefined ? { body: req.body } : {}),
         signal: controller.signal,

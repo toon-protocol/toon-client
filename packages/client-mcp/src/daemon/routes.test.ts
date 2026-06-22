@@ -347,6 +347,7 @@ describe('control-plane routes', () => {
 
     it.each([
       'http://localhost/foo',
+      'http://0.0.0.0/',
       'http://127.0.0.1/',
       'http://127.1.2.3/',
       'http://[::1]/',
