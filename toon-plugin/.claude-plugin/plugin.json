@@ -1,13 +1,13 @@
 {
   "name": "toon",
-  "description": "TOON Protocol client for Claude — pay-to-write Nostr over Interledger. Bundles the toon-client skill and the toon-mcp MCP server (publish, free reads, payment channels, mill swaps).",
+  "description": "TOON Protocol client for Claude — pay-to-write Nostr over Interledger. Bundles the toon-client skill and the toon-mcp MCP server (publish, free reads, payment channels, swaps).",
   "version": "0.1.0",
   "author": {
     "name": "Jonathan Green",
     "email": "dev.jonathan.green@gmail.com"
   },
-  "homepage": "https://github.com/toon-protocol/town/tree/main/toon-plugin",
-  "repository": "https://github.com/toon-protocol/town",
+  "homepage": "https://github.com/toon-protocol/toon-client/tree/main/toon-plugin",
+  "repository": "https://github.com/toon-protocol/toon-client",
   "license": "MIT",
   "keywords": ["toon", "nostr", "interledger", "ilp", "mcp", "pay-to-write"]
 }
