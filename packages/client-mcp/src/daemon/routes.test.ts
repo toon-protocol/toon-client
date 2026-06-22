@@ -100,6 +100,14 @@ class FakeClient implements ToonClientLike {
   async sendSwapPacket(): Promise<{ accepted: boolean }> {
     return { accepted: true };
   }
+  /** Default: a 200 text/plain 'hello'. Overridden per-test where needed. */
+  h402Fetch = vi.fn(
+    async (): Promise<Response> =>
+      new Response('hello', {
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+      })
+  );
 }
 
 function config(): ResolvedDaemonConfig {
@@ -313,6 +321,70 @@ describe('control-plane routes', () => {
         payload: { destination: 'g.toon.mill', amount: '10' },
       });
       expect(res.statusCode).toBe(400);
+    });
+
+    it('POST /http-fetch-paid returns { status, headers, body }', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/http-fetch-paid',
+        payload: { url: 'https://paid.example/resource' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+        body: 'hello',
+      });
+      expect(client.h402Fetch).toHaveBeenCalledWith(
+        'https://paid.example/resource',
+        {}
+      );
+    });
+
+    it('POST /http-fetch-paid forwards method/headers/body/timeout', async () => {
+      await app.inject({
+        method: 'POST',
+        url: '/http-fetch-paid',
+        payload: {
+          url: 'https://paid.example/post',
+          method: 'POST',
+          headers: { 'x-test': '1' },
+          body: 'payload',
+          timeout: 5000,
+        },
+      });
+      expect(client.h402Fetch).toHaveBeenCalledWith(
+        'https://paid.example/post',
+        {
+          method: 'POST',
+          headers: { 'x-test': '1' },
+          body: 'payload',
+          timeout: 5000,
+        }
+      );
+    });
+
+    it('POST /http-fetch-paid rejects a missing url with 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/http-fetch-paid',
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('POST /http-fetch-paid surfaces a thrown error via ErrorResponse', async () => {
+      client.h402Fetch.mockRejectedValueOnce(new Error('origin exploded'));
+      const res = await app.inject({
+        method: 'POST',
+        url: '/http-fetch-paid',
+        payload: { url: 'https://paid.example/boom' },
+      });
+      expect(res.statusCode).toBe(500);
+      expect(res.json()).toMatchObject({
+        error: 'internal_error',
+        detail: 'origin exploded',
+      });
     });
   });
 

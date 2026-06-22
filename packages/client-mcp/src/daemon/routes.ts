@@ -21,6 +21,7 @@ import type {
   AddApexRequest,
   AddRelayRequest,
   EventsQuery,
+  HttpFetchPaidRequest,
   OpenChannelRequest,
   PublishRequest,
   PublishUnsignedRequest,
@@ -161,6 +162,23 @@ export function registerRoutes(
       return mapError(reply, err);
     }
   });
+
+  app.post<{ Body: HttpFetchPaidRequest }>(
+    '/http-fetch-paid',
+    async (req, reply) => {
+      const body = req.body;
+      if (!body || typeof body.url !== 'string' || body.url === '') {
+        return sendError(reply, 400, 'invalid_url', {
+          detail: 'body.url (absolute resource URL) is required.',
+        });
+      }
+      try {
+        return await runner.httpFetchPaid(body);
+      } catch (err) {
+        return mapError(reply, err);
+      }
+    }
+  );
 
   app.get('/targets', async () => runner.getTargets());
 

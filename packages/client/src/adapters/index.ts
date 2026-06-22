@@ -26,3 +26,16 @@ export {
   type IlpTransportChoice,
   type SelectIlpTransportOptions,
 } from './selectIlpTransport.js';
+export {
+  Http402Client,
+  parseX402Challenge,
+  parseX402Body,
+  serializeHttpRequest,
+  parseHttpResponse,
+  type H402FetchOptions,
+  type Http402ClientConfig,
+  type ClaimResolver,
+  type HttpIlpClientFactory,
+  type ToonChannelAccept,
+  type ParsedX402Challenge,
+} from './Http402Client.js';

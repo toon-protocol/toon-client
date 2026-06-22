@@ -26,6 +26,7 @@ describe('TOOL_DEFINITIONS', () => {
         'toon_read',
         'toon_status',
         'toon_swap',
+        'toon_http_fetch_paid',
         'toon_subscribe',
         'toon_targets',
         'toon_add_relay',
@@ -126,6 +127,48 @@ describe('dispatchTool', () => {
       pair,
       chainRecipient: 'SoLrecipient',
       packetCount: 2,
+    });
+  });
+
+  it('toon_http_fetch_paid forwards inputs and returns { status, headers, body }', async () => {
+    const httpFetchPaid = vi.fn().mockResolvedValue({
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+      body: 'hello',
+    });
+    const client = stubClient({ httpFetchPaid });
+    const res = await dispatchTool(client, 'toon_http_fetch_paid', {
+      url: 'https://paid.example/resource',
+      method: 'POST',
+      headers: { 'x-test': '1' },
+      body: 'payload',
+      timeout: 5000,
+    });
+    expect(httpFetchPaid).toHaveBeenCalledWith({
+      url: 'https://paid.example/resource',
+      method: 'POST',
+      headers: { 'x-test': '1' },
+      body: 'payload',
+      timeout: 5000,
+    });
+    expect(res.isError).toBeFalsy();
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+      body: 'hello',
+    });
+  });
+
+  it('toon_http_fetch_paid coerces url and omits absent optional fields', async () => {
+    const httpFetchPaid = vi
+      .fn()
+      .mockResolvedValue({ status: 200, headers: {}, body: '' });
+    const client = stubClient({ httpFetchPaid });
+    await dispatchTool(client, 'toon_http_fetch_paid', {
+      url: 'https://paid.example/get',
+    });
+    expect(httpFetchPaid).toHaveBeenCalledWith({
+      url: 'https://paid.example/get',
     });
   });
 

@@ -12,6 +12,8 @@ import type {
   ErrorResponse,
   EventsQuery,
   EventsResponse,
+  HttpFetchPaidRequest,
+  HttpFetchPaidResponse,
   OpenChannelRequest,
   PublishRequest,
   PublishResponse,
@@ -130,6 +132,14 @@ export class ControlClient {
 
   swap(body: SwapRequest): Promise<SwapResponse> {
     return this.request<SwapResponse>('POST', '/swap', body);
+  }
+
+  httpFetchPaid(body: HttpFetchPaidRequest): Promise<HttpFetchPaidResponse> {
+    return this.request<HttpFetchPaidResponse>(
+      'POST',
+      '/http-fetch-paid',
+      body
+    );
   }
 
   targets(): Promise<TargetsResponse> {

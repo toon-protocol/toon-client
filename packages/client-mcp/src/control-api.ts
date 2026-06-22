@@ -293,6 +293,38 @@ export interface SwapResponse {
   message?: string;
 }
 
+/**
+ * `POST /http-fetch-paid` — payment-aware HTTP GET/POST. The daemon issues the
+ * request via `ToonClient.h402Fetch`; if the origin answers `402 Payment
+ * Required` the client transparently pays over TOON and retries, returning the
+ * settled resource. The caller never holds chain keys — settlement happens
+ * inside the daemon against the open apex channel.
+ */
+export interface HttpFetchPaidRequest {
+  /** Absolute URL of the resource to fetch (the origin may gate it behind 402). */
+  url: string;
+  /** HTTP method (default GET). */
+  method?: string;
+  /** Request headers as a flat string→string map. */
+  headers?: Record<string, string>;
+  /** Request body (string; sent verbatim). Typically used with POST. */
+  body?: string;
+  /** Per-request timeout, ms (passed through to the client). */
+  timeout?: number;
+}
+
+export interface HttpFetchPaidResponse {
+  /** Final HTTP status after any 402-pay-and-retry round trip. */
+  status: number;
+  /** Response headers as a flat string→string map. */
+  headers: Record<string, string>;
+  /**
+   * Response body decoded as text. Binary bodies are returned as their decoded
+   * text for v1 (acceptable; a base64 path can be added later if needed).
+   */
+  body: string;
+}
+
 // ── Dynamic targets (1-to-many: many apexes to write through, many relays to
 //    read from). Added at runtime, persisted across restarts, removable. ──────
 
