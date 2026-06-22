@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import {
   ClientRunner,
+  FetchBodyLimitError,
   FetchNetworkError,
   InvalidPayloadError,
   MAX_BODY_BYTES,
@@ -836,7 +837,7 @@ describe('ClientRunner multi-target', () => {
       vi.restoreAllMocks();
     });
 
-    it('throws FetchNetworkError when response body exceeds MAX_BODY_BYTES', async () => {
+    it('throws FetchBodyLimitError (not re-wrapped) when response body exceeds MAX_BODY_BYTES', async () => {
       const { runner: r } = build();
       const oversize = new Uint8Array(MAX_BODY_BYTES + 1);
       const stream = new ReadableStream<Uint8Array>({
@@ -848,9 +849,11 @@ describe('ClientRunner multi-target', () => {
       vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
         new Response(stream, { status: 200 })
       );
+      // Must be FetchBodyLimitError specifically — if the catch block re-wraps it
+      // into a plain FetchNetworkError, this assertion fails (regression guard).
       await expect(
         r.httpFetchPaid({ url: 'https://example.com/' })
-      ).rejects.toBeInstanceOf(FetchNetworkError);
+      ).rejects.toBeInstanceOf(FetchBodyLimitError);
     });
 
     it('returns status, headers, and body on success', async () => {

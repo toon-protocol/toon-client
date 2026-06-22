@@ -1089,7 +1089,7 @@ export class ClientRunner {
           received += value.byteLength;
           if (received > MAX_BODY_BYTES) {
             await reader.cancel();
-            throw new FetchNetworkError(
+            throw new FetchBodyLimitError(
               `Response body exceeded ${MAX_BODY_BYTES} byte limit`
             );
           }
@@ -1103,6 +1103,7 @@ export class ClientRunner {
       });
       return { status: res.status, headers, body };
     } catch (err) {
+      if (err instanceof FetchTimeoutError || err instanceof FetchNetworkError) throw err;
       if (err instanceof Error && err.name === 'AbortError') {
         throw new FetchTimeoutError(`Request timed out after ${timeout}ms`);
       }
@@ -1204,6 +1205,14 @@ export class FetchNetworkError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'FetchNetworkError';
+  }
+}
+
+/** Thrown when httpFetchPaid response body exceeds MAX_BODY_BYTES. Subclass of FetchNetworkError → 502. */
+export class FetchBodyLimitError extends FetchNetworkError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FetchBodyLimitError';
   }
 }
 
