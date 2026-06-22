@@ -13,7 +13,7 @@ export interface JourneyStep {
   /** Build the tool input from accumulated prior-step state. */
   buildInput: (state: JourneyState) => Record<string, unknown>;
   /** Render the step's result data as a ViewSpec panel. */
-  renderPanel: (data: unknown) => ViewSpec;
+  renderPanel: (data: unknown, state: JourneyState) => ViewSpec;
 }
 
 /** Ordered sequence of steps with plan metadata. */
