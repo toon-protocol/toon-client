@@ -47,6 +47,17 @@ export {
   type DiscoveredIlpPeer,
   type IlpTransportChoice,
   type SelectIlpTransportOptions,
+  Http402Client,
+  parseX402Challenge,
+  parseX402Body,
+  serializeHttpRequest,
+  parseHttpResponse,
+  type H402FetchOptions,
+  type Http402ClientConfig,
+  type ClaimResolver,
+  type HttpIlpClientFactory,
+  type ToonChannelAccept,
+  type ParsedX402Challenge,
 } from './adapters/index.js';
 
 // Signing

@@ -17,6 +17,7 @@ import { ControlApiError, DaemonUnreachableError } from './control-client.js';
 import type { ControlClient } from './control-client.js';
 import type {
   AddApexRequest,
+  HttpFetchPaidRequest,
   NostrFilter,
   PublishRequest,
   PublishUnsignedRequest,
@@ -322,6 +323,42 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'toon_http_fetch_paid',
+    description:
+      'Fetch a paid HTTP resource: issues the request, and if the server ' +
+      'returns 402 Payment Required, transparently pays over TOON and retries, ' +
+      'returning the settled resource. Settlement happens inside the daemon ' +
+      'against the open apex channel (the caller never holds chain keys). ' +
+      'Returns { status, headers, body } (body decoded as text).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'Absolute URL of the resource to fetch.',
+        },
+        method: {
+          type: 'string',
+          description: 'HTTP method (default GET).',
+        },
+        headers: {
+          type: 'object',
+          description: 'Request headers as a flat string→string map.',
+        },
+        body: {
+          type: 'string',
+          description: 'Request body (string, sent verbatim; e.g. with POST).',
+        },
+        timeout: {
+          type: 'number',
+          description: 'Per-request timeout, ms.',
+        },
+      },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'toon_targets',
     description:
       'List every registered target: relays (read sources, with connection + ' +
@@ -542,6 +579,22 @@ export async function dispatchTool(
               : {}),
           })
         );
+      case 'toon_http_fetch_paid': {
+        const req: HttpFetchPaidRequest = {
+          url: String(args['url']),
+          ...(typeof args['method'] === 'string'
+            ? { method: args['method'] }
+            : {}),
+          ...(args['headers'] && typeof args['headers'] === 'object'
+            ? { headers: args['headers'] as Record<string, string> }
+            : {}),
+          ...(typeof args['body'] === 'string' ? { body: args['body'] } : {}),
+          ...(typeof args['timeout'] === 'number'
+            ? { timeout: args['timeout'] }
+            : {}),
+        };
+        return ok(await client.httpFetchPaid(req));
+      }
       case 'toon_targets':
         return ok(await client.targets());
       case 'toon_add_relay':

@@ -26,6 +26,10 @@ import {
   type RequestBlobStorageResult,
 } from './blob-storage.js';
 import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
+import {
+  Http402Client,
+  type H402FetchOptions,
+} from './adapters/Http402Client.js';
 import type {
   ToonClientConfig,
   ToonStartResult,
@@ -589,6 +593,54 @@ export class ToonClient {
         error instanceof Error ? error : undefined
       );
     }
+  }
+
+  /**
+   * Payment-aware HTTP fetch over TOON (issue #50). A `fetch()`-like method that
+   * makes paying for an HTTP resource transparent:
+   *
+   *   1. Issues the HTTP request to `url`.
+   *   2. On `402`, parses the x402 `accepts` array and selects the
+   *      `toon-channel` entry (see {@link Http402Client} for the wire shape).
+   *   3. Opens/reuses a payment channel for the entry's ILP destination (via
+   *      ChannelManager), signs a balance proof for the demanded price, and
+   *      re-sends the SAME HTTP request as a transparent HTTP-in-ILP packet to
+   *      the connector's `POST /ilp` (via {@link HttpIlpClient}), with the claim
+   *      in the `ILP-Payment-Channel-Claim` header.
+   *   4. Reconstructs and returns a standard Web `Response` from the FULFILL
+   *      `data`. The caller never sees ILP.
+   *
+   * If the origin offers no `toon-channel` entry, the original `402` Response is
+   * returned unchanged (the caller sees the vanilla x402 challenge).
+   *
+   * The channel/claim plumbing is wired to the live ChannelManager + per-chain
+   * signer via `resolveClaimForDestination` — identical to `publishEvent`. The
+   * `amount` paid comes from the selected x402 entry (the resource's price).
+   *
+   * @throws {ToonClientError} If the client is not started.
+   * @throws {ConnectorError} If the connector rejects the payment or returns no
+   *   HTTP payload.
+   */
+  async h402Fetch(url: string, opts?: H402FetchOptions): Promise<Response> {
+    if (!this.state) {
+      throw new ToonClientError(
+        'Client not started. Call start() first.',
+        'INVALID_STATE'
+      );
+    }
+
+    // Pay only when a channel manager is configured; otherwise the engine still
+    // probes and transparently surfaces the vanilla 402 (no resolveClaim hook).
+    const client = new Http402Client({
+      ...(this.channelManager
+        ? {
+            resolveClaim: (destination: string, amount: bigint) =>
+              this.resolveClaimForDestination(destination, amount),
+          }
+        : {}),
+    });
+
+    return client.fetch(url, opts);
   }
 
   /**

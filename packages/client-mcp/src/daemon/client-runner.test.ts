@@ -138,6 +138,12 @@ class FakeClient implements ToonClientLike {
   async sendSwapPacket(): Promise<{ accepted: boolean; data?: string }> {
     return { accepted: true, data: 'c3dhcA==' };
   }
+  async h402Fetch(): Promise<Response> {
+    return new Response('hello', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    });
+  }
 }
 
 /** A relay that never opens a real socket (no wsFactory call until start). */

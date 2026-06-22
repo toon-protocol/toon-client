@@ -32,6 +32,8 @@ import type {
   ChannelsResponse,
   ChainStatus,
   EventsResponse,
+  HttpFetchPaidRequest,
+  HttpFetchPaidResponse,
   NostrFilter,
   PublishResponse,
   PublishUnsignedRequest,
@@ -121,6 +123,21 @@ export interface ToonClientLike {
     code?: string;
     message?: string;
   }>;
+  /**
+   * Payment-aware HTTP fetch: issue the request and, on a `402 Payment
+   * Required`, transparently pay over TOON and retry, returning the settled Web
+   * `Response`. Pinned to the `ToonClient.h402Fetch` shape (issue #50).
+   */
+  h402Fetch(
+    url: string,
+    opts?: {
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string | Uint8Array;
+      timeout?: number;
+      destination?: string;
+    }
+  ): Promise<Response>;
 }
 
 /** A started managed proxy: just the teardown handle the runner needs. */
@@ -1055,6 +1072,29 @@ export class ClientRunner {
       ...(firstReject
         ? { code: firstReject.code, message: firstReject.message }
         : {}),
+    };
+  }
+
+  /**
+   * Payment-aware HTTP fetch through an apex's client. The client issues the
+   * request and, on `402 Payment Required`, pays over TOON and retries; we
+   * translate the resulting Web `Response` into the wire envelope.
+   */
+  async httpFetchPaid(
+    req: HttpFetchPaidRequest
+  ): Promise<HttpFetchPaidResponse> {
+    const apex = this.selectApex();
+    this.assertApexReady(apex);
+    const res = await apex.client.h402Fetch(req.url, {
+      ...(req.method ? { method: req.method } : {}),
+      ...(req.headers ? { headers: req.headers } : {}),
+      ...(req.body !== undefined ? { body: req.body } : {}),
+      ...(req.timeout !== undefined ? { timeout: req.timeout } : {}),
+    });
+    return {
+      status: res.status,
+      headers: Object.fromEntries(res.headers.entries()),
+      body: await res.text(),
     };
   }
 
