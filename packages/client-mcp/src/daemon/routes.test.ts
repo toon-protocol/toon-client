@@ -30,7 +30,7 @@ import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { registerRoutes } from './routes.js';
-import { ClientRunner, type ToonClientLike } from './client-runner.js';
+import { ClientRunner, FetchNetworkError, FetchTimeoutError, type ToonClientLike } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
 import { RelaySubscription } from '../relay-subscription.js';
 
@@ -343,6 +343,54 @@ describe('control-plane routes', () => {
       });
       expect(res.statusCode).toBe(400);
       expect(res.json()).toMatchObject({ error: 'invalid_request' });
+    });
+
+    it.each([
+      'http://localhost/foo',
+      'http://127.0.0.1/',
+      'http://127.1.2.3/',
+      'http://[::1]/',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://169.254.0.1/',
+      'http://10.0.0.1/',
+      'http://10.255.255.255/',
+      'http://172.16.0.1/',
+      'http://172.31.255.255/',
+      'http://192.168.1.1/',
+    ])('POST /http-fetch-paid rejects private/loopback URL %s with 400', async (url) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/http-fetch-paid',
+        payload: { url },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: 'invalid_request' });
+    });
+
+    it('POST /http-fetch-paid maps FetchTimeoutError to 504', async () => {
+      vi.spyOn(runner, 'httpFetchPaid').mockRejectedValueOnce(
+        new FetchTimeoutError('Request timed out after 30000ms')
+      );
+      const res = await app.inject({
+        method: 'POST',
+        url: '/http-fetch-paid',
+        payload: { url: 'https://example.com/' },
+      });
+      expect(res.statusCode).toBe(504);
+      expect(res.json()).toMatchObject({ error: 'fetch_timeout', retryable: true });
+    });
+
+    it('POST /http-fetch-paid maps FetchNetworkError to 502', async () => {
+      vi.spyOn(runner, 'httpFetchPaid').mockRejectedValueOnce(
+        new FetchNetworkError('getaddrinfo ENOTFOUND example.invalid')
+      );
+      const res = await app.inject({
+        method: 'POST',
+        url: '/http-fetch-paid',
+        payload: { url: 'https://example.com/' },
+      });
+      expect(res.statusCode).toBe(502);
+      expect(res.json()).toMatchObject({ error: 'fetch_network_error' });
     });
   });
 

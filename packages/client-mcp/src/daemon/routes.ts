@@ -11,6 +11,8 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type { ClientRunner } from './client-runner.js';
 import {
+  FetchNetworkError,
+  FetchTimeoutError,
   InvalidPayloadError,
   NotReadyError,
   PublishRejectedError,
@@ -244,6 +246,11 @@ export function registerRoutes(
         detail: 'body.url must use http or https scheme.',
       });
     }
+    if (isPrivateHost(parsedUrl.hostname)) {
+      return sendError(reply, 400, 'invalid_request', {
+        detail: 'body.url must not target a private or loopback address.',
+      });
+    }
     try {
       return await runner.httpFetchPaid(body);
     } catch (err) {
@@ -261,6 +268,26 @@ function isSignedEvent(event: unknown): event is NostrEvent {
     typeof e['pubkey'] === 'string' &&
     typeof e['kind'] === 'number'
   );
+}
+
+/**
+ * Returns true for loopback, link-local (IMDS), and RFC-1918 hostnames.
+ * Checked before the fetch to prevent SSRF via the daemon's broader network access.
+ */
+function isPrivateHost(hostname: string): boolean {
+  // URL.hostname keeps brackets for IPv6: http://[::1]/ → "[::1]"
+  if (hostname === 'localhost' || hostname === '::1' || hostname === '[::1]') return true;
+  const parts = hostname.split('.');
+  if (parts.length !== 4) return false;
+  const nums = parts.map(Number);
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [a, b] = nums;
+  if (a === 127) return true; // 127.0.0.0/8 loopback
+  if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local (IMDS)
+  if (a === 10) return true; // 10.0.0.0/8
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  return false;
 }
 
 function mapError(reply: FastifyReply, err: unknown): FastifyReply {
@@ -290,6 +317,15 @@ function mapError(reply: FastifyReply, err: unknown): FastifyReply {
           retryable: true,
         })
       : sendError(reply, 502, 'discovery_failed', { detail: err.message });
+  }
+  if (err instanceof FetchTimeoutError) {
+    return sendError(reply, 504, 'fetch_timeout', {
+      detail: err.message,
+      retryable: true,
+    });
+  }
+  if (err instanceof FetchNetworkError) {
+    return sendError(reply, 502, 'fetch_network_error', { detail: err.message });
   }
   return sendError(reply, 500, 'internal_error', {
     detail: err instanceof Error ? err.message : String(err),

@@ -1083,7 +1083,10 @@ export class ClientRunner {
       });
       return { status: res.status, headers, body };
     } catch (err) {
-      throw new InvalidPayloadError(err instanceof Error ? err.message : String(err));
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new FetchTimeoutError(`Request timed out after ${timeout}ms`);
+      }
+      throw new FetchNetworkError(err instanceof Error ? err.message : String(err));
     } finally {
       clearTimeout(timer);
     }
@@ -1165,6 +1168,22 @@ export class InvalidPayloadError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'InvalidPayloadError';
+  }
+}
+
+/** Thrown when httpFetchPaid times out (AbortError from the signal). Maps to 504. */
+export class FetchTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FetchTimeoutError';
+  }
+}
+
+/** Thrown when httpFetchPaid fails due to a network/DNS error (TypeError). Maps to 502. */
+export class FetchNetworkError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FetchNetworkError';
   }
 }
 
