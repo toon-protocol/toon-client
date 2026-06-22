@@ -21,6 +21,7 @@ import type {
   AddApexRequest,
   AddRelayRequest,
   EventsQuery,
+  H402FetchRequest,
   OpenChannelRequest,
   PublishRequest,
   PublishUnsignedRequest,
@@ -218,6 +219,20 @@ export function registerRoutes(
     try {
       await runner.removeApex(url);
       return runner.getTargets();
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
+
+  app.post<{ Body: H402FetchRequest }>('/http-fetch-paid', async (req, reply) => {
+    const body = req.body;
+    if (!body || typeof body.url !== 'string' || body.url === '') {
+      return sendError(reply, 400, 'invalid_request', {
+        detail: 'body.url is required.',
+      });
+    }
+    try {
+      return await runner.httpFetchPaid(body);
     } catch (err) {
       return mapError(reply, err);
     }

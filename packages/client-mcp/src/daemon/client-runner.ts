@@ -32,6 +32,8 @@ import type {
   ChannelsResponse,
   ChainStatus,
   EventsResponse,
+  H402FetchRequest,
+  H402FetchResponse,
   NostrFilter,
   PublishResponse,
   PublishUnsignedRequest,
@@ -1056,6 +1058,38 @@ export class ClientRunner {
         ? { code: firstReject.code, message: firstReject.message }
         : {}),
     };
+  }
+
+  /**
+   * Fetch a paid HTTP resource (h402 shim). Makes the request directly via the
+   * daemon's network access and returns the raw response. Full ILP payment
+   * negotiation for HTTP 402 responses is deferred to a future release.
+   */
+  async httpFetchPaid(req: H402FetchRequest): Promise<H402FetchResponse> {
+    const controller = new AbortController();
+    const timeout = req.timeout ?? 30_000;
+    const timer = setTimeout(() => controller.abort(), timeout);
+    let res: Response;
+    try {
+      res = await globalThis.fetch(req.url, {
+        method: req.method ?? 'GET',
+        ...(req.headers ? { headers: req.headers } : {}),
+        ...(req.body !== undefined ? { body: req.body } : {}),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      throw new InvalidPayloadError(
+        `fetch failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    const body = await res.text();
+    const headers: Record<string, string> = {};
+    res.headers.forEach((value, key) => {
+      headers[key] = value;
+    });
+    return { status: res.status, headers, body };
   }
 
   /** Graceful teardown: close every relay + stop every apex client + read proxy. */

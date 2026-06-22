@@ -17,6 +17,7 @@ import { ControlApiError, DaemonUnreachableError } from './control-client.js';
 import type { ControlClient } from './control-client.js';
 import type {
   AddApexRequest,
+  H402FetchRequest,
   NostrFilter,
   PublishRequest,
   PublishUnsignedRequest,
@@ -426,6 +427,43 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'toon_http_fetch_paid',
+    description:
+      'Fetch a paid HTTP resource through the TOON client daemon. Dispatches ' +
+      'the request via the daemon network access and returns the raw response ' +
+      '(status, headers, body). This is an h402-aware shim: it sends the request ' +
+      'as-is today; full ILP payment negotiation for HTTP 402 responses is ' +
+      'deferred to a future release.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'Target URL.',
+        },
+        method: {
+          type: 'string',
+          description: 'HTTP method (default GET).',
+        },
+        headers: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'Request headers as key-value pairs.',
+        },
+        body: {
+          type: 'string',
+          description: 'Request body as a plain string.',
+        },
+        timeout: {
+          type: 'number',
+          description: 'Per-request timeout, ms (default 30000).',
+        },
+      },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 /**
@@ -573,6 +611,15 @@ export async function dispatchTool(
       }
       case 'toon_remove_apex':
         return ok(await client.removeApex({ btpUrl: String(args['btpUrl']) }));
+      case 'toon_http_fetch_paid': {
+        const req: H402FetchRequest = { url: String(args['url']) };
+        if (typeof args['method'] === 'string') req.method = args['method'];
+        if (args['headers'] && typeof args['headers'] === 'object')
+          req.headers = args['headers'] as Record<string, string>;
+        if (typeof args['body'] === 'string') req.body = args['body'];
+        if (typeof args['timeout'] === 'number') req.timeout = args['timeout'];
+        return ok(await client.httpFetchPaid(req));
+      }
       default:
         return err(`Unknown tool: ${name}`);
     }

@@ -16,6 +16,7 @@ describe('TOOL_DEFINITIONS', () => {
       [
         'toon_atoms',
         'toon_channels',
+        'toon_http_fetch_paid',
         'toon_identity',
         'toon_open_channel',
         'toon_publish',
@@ -279,5 +280,43 @@ describe('dispatchTool', () => {
     });
     expect(query).toHaveBeenCalledWith({ filters: { kinds: [1] }, timeoutMs: 50 });
     expect((res.structuredContent?.['events'] as unknown[]).length).toBe(1);
+  });
+
+  it('toon_http_fetch_paid forwards url and optional fields', async () => {
+    const httpFetchPaid = vi.fn().mockResolvedValue({
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body: '{"ok":true}',
+    });
+    const res = await dispatchTool(
+      stubClient({ httpFetchPaid }),
+      'toon_http_fetch_paid',
+      { url: 'https://example.com/api', method: 'POST', body: '{"x":1}', timeout: 5000 }
+    );
+    expect(httpFetchPaid).toHaveBeenCalledWith({
+      url: 'https://example.com/api',
+      method: 'POST',
+      body: '{"x":1}',
+      timeout: 5000,
+    });
+    expect(JSON.parse(res.content[0]!.text).status).toBe(200);
+    expect(res.isError).toBeFalsy();
+  });
+
+  it('toon_http_fetch_paid sends only url when no optional fields given', async () => {
+    const httpFetchPaid = vi.fn().mockResolvedValue({
+      status: 404,
+      headers: {},
+      body: 'Not Found',
+    });
+    const res = await dispatchTool(
+      stubClient({ httpFetchPaid }),
+      'toon_http_fetch_paid',
+      { url: 'https://example.com/missing' }
+    );
+    expect(httpFetchPaid).toHaveBeenCalledWith({
+      url: 'https://example.com/missing',
+    });
+    expect(JSON.parse(res.content[0]!.text).status).toBe(404);
   });
 });

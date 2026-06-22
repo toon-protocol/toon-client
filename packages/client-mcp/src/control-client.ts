@@ -12,6 +12,8 @@ import type {
   ErrorResponse,
   EventsQuery,
   EventsResponse,
+  H402FetchRequest,
+  H402FetchResponse,
   OpenChannelRequest,
   PublishRequest,
   PublishResponse,
@@ -150,6 +152,10 @@ export class ControlClient {
 
   removeApex(body: RemoveApexRequest): Promise<TargetsResponse> {
     return this.request<TargetsResponse>('DELETE', '/apex', body);
+  }
+
+  httpFetchPaid(body: H402FetchRequest): Promise<H402FetchResponse> {
+    return this.request<H402FetchResponse>('POST', '/http-fetch-paid', body);
   }
 
   private async request<T>(

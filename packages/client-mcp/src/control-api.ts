@@ -372,6 +372,23 @@ export interface TargetsResponse {
   apexes: ApexTargetStatus[];
 }
 
+/** `POST /http-fetch-paid` — fetch a paid HTTP resource via the daemon. */
+export interface H402FetchRequest {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  /** Request body as a plain string. */
+  body?: string;
+  /** Per-request timeout, ms (default 30000). */
+  timeout?: number;
+}
+
+export interface H402FetchResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
 /** Uniform error envelope returned with non-2xx responses. */
 export interface ErrorResponse {
   error: string;
