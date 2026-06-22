@@ -7,3 +7,5 @@ export type {
   JourneyStepResult,
   JourneyResult,
 } from './types.js';
+export { deFiJourney } from './defi.js';
+export type { DeFiJourneyOpts } from './defi.js';
