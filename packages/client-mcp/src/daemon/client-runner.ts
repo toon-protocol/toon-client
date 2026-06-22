@@ -1069,27 +1069,24 @@ export class ClientRunner {
     const controller = new AbortController();
     const timeout = req.timeout ?? 30_000;
     const timer = setTimeout(() => controller.abort(), timeout);
-    let res: Response;
     try {
-      res = await globalThis.fetch(req.url, {
+      const res = await globalThis.fetch(req.url, {
         method: req.method ?? 'GET',
         ...(req.headers ? { headers: req.headers } : {}),
         ...(req.body !== undefined ? { body: req.body } : {}),
         signal: controller.signal,
       });
+      const body = await res.text();
+      const headers: Record<string, string> = {};
+      res.headers.forEach((value, key) => {
+        headers[key] = value;
+      });
+      return { status: res.status, headers, body };
     } catch (err) {
-      throw new InvalidPayloadError(
-        `fetch failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      throw new InvalidPayloadError(err instanceof Error ? err.message : String(err));
     } finally {
       clearTimeout(timer);
     }
-    const body = await res.text();
-    const headers: Record<string, string> = {};
-    res.headers.forEach((value, key) => {
-      headers[key] = value;
-    });
-    return { status: res.status, headers, body };
   }
 
   /** Graceful teardown: close every relay + stop every apex client + read proxy. */

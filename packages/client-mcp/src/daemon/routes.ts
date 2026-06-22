@@ -231,6 +231,19 @@ export function registerRoutes(
         detail: 'body.url is required.',
       });
     }
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(body.url);
+    } catch {
+      return sendError(reply, 400, 'invalid_request', {
+        detail: 'body.url is not a valid URL.',
+      });
+    }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      return sendError(reply, 400, 'invalid_request', {
+        detail: 'body.url must use http or https scheme.',
+      });
+    }
     try {
       return await runner.httpFetchPaid(body);
     } catch (err) {

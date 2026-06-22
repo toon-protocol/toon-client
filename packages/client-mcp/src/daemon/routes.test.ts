@@ -314,6 +314,36 @@ describe('control-plane routes', () => {
       });
       expect(res.statusCode).toBe(400);
     });
+
+    it('POST /http-fetch-paid rejects a missing url with 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/http-fetch-paid',
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: 'invalid_request' });
+    });
+
+    it('POST /http-fetch-paid rejects a non-http/https scheme with 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/http-fetch-paid',
+        payload: { url: 'file:///etc/passwd' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: 'invalid_request' });
+    });
+
+    it('POST /http-fetch-paid rejects an invalid URL with 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/http-fetch-paid',
+        payload: { url: 'not-a-url' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: 'invalid_request' });
+    });
   });
 
   describe('when bootstrapping', () => {
