@@ -192,6 +192,8 @@ interface MergedEvent {
 }
 
 const MERGED_BUFFER = 5000;
+/** Maximum response body size for httpFetchPaid — guards daemon heap. */
+export const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
 export class ClientRunner {
   private readonly config: ResolvedDaemonConfig;
@@ -1077,7 +1079,24 @@ export class ClientRunner {
         ...(req.body !== undefined ? { body: req.body } : {}),
         signal: controller.signal,
       });
-      const body = await res.text();
+      const reader = res.body?.getReader();
+      let received = 0;
+      const chunks: Uint8Array[] = [];
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          received += value.byteLength;
+          if (received > MAX_BODY_BYTES) {
+            await reader.cancel();
+            throw new FetchNetworkError(
+              `Response body exceeded ${MAX_BODY_BYTES} byte limit`
+            );
+          }
+          chunks.push(value);
+        }
+      }
+      const body = Buffer.concat(chunks).toString('utf-8');
       const headers: Record<string, string> = {};
       res.headers.forEach((value, key) => {
         headers[key] = value;

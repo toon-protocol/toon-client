@@ -11,7 +11,9 @@ import { join } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import {
   ClientRunner,
+  FetchNetworkError,
   InvalidPayloadError,
+  MAX_BODY_BYTES,
   NotReadyError,
   PublishRejectedError,
   type ToonClientLike,
@@ -827,5 +829,48 @@ describe('ClientRunner multi-target', () => {
     await expect(runner.removeApex('ws://apex.test/btp')).rejects.toThrow(
       /default/i
     );
+  });
+
+  describe('httpFetchPaid', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('throws FetchNetworkError when response body exceeds MAX_BODY_BYTES', async () => {
+      const { runner: r } = build();
+      const oversize = new Uint8Array(MAX_BODY_BYTES + 1);
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(oversize);
+          controller.close();
+        },
+      });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(stream, { status: 200 })
+      );
+      await expect(
+        r.httpFetchPaid({ url: 'https://example.com/' })
+      ).rejects.toBeInstanceOf(FetchNetworkError);
+    });
+
+    it('returns status, headers, and body on success', async () => {
+      const { runner: r } = build();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('hello'));
+          controller.close();
+        },
+      });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(stream, {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        })
+      );
+      const result = await r.httpFetchPaid({ url: 'https://example.com/' });
+      expect(result.status).toBe(200);
+      expect(result.body).toBe('hello');
+      expect(result.headers['content-type']).toBe('text/plain');
+    });
   });
 });
