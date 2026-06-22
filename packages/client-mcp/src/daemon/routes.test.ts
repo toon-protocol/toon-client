@@ -358,6 +358,17 @@ describe('control-plane routes', () => {
       'http://172.16.0.1/',
       'http://172.31.255.255/',
       'http://192.168.1.1/',
+      // IPv4-mapped IPv6 — bypass vectors for loopback and RFC-1918
+      'http://[::ffff:7f00:1]/',
+      'http://[::ffff:127.0.0.1]/',
+      'http://[::ffff:0a00:0001]/',
+      'http://[::ffff:a9fe:a9fe]/',
+      // Unique-local fc00::/7
+      'http://[fc00::1]/',
+      'http://[fd12:3456:789a::1]/',
+      // Link-local fe80::/10
+      'http://[fe80::1]/',
+      'http://[feb0::1]/',
     ])('POST /http-fetch-paid rejects private/loopback URL %s with 400', async (url) => {
       const res = await app.inject({
         method: 'POST',

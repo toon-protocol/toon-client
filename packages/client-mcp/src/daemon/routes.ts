@@ -271,12 +271,46 @@ function isSignedEvent(event: unknown): event is NostrEvent {
 }
 
 /**
- * Returns true for loopback, link-local (IMDS), and RFC-1918 hostnames.
+ * Returns true for loopback, link-local (IMDS), RFC-1918, and private IPv6 hostnames.
  * Checked before the fetch to prevent SSRF via the daemon's broader network access.
  */
 function isPrivateHost(hostname: string): boolean {
-  // URL.hostname keeps brackets for IPv6: http://[::1]/ → "[::1]"
-  if (hostname === 'localhost' || hostname === '::1' || hostname === '[::1]') return true;
+  if (hostname === 'localhost') return true;
+
+  // URL.hostname wraps IPv6 in brackets: http://[::1]/ → "[::1]"
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    const ipv6 = hostname.slice(1, -1).toLowerCase();
+    if (ipv6 === '::1') return true;
+    // IPv4-mapped ::ffff:0:0/96 — covers both dotted (::ffff:127.0.0.1) and hex (::ffff:7f00:1)
+    if (ipv6.startsWith('::ffff:')) {
+      const rest = ipv6.slice(7);
+      if (rest.includes('.')) {
+        // Dotted-decimal embedded IPv4: delegate to IPv4 check
+        if (isPrivateHost(rest)) return true;
+      } else {
+        // Two hex groups: high:low — reconstruct dotted IPv4 and re-check
+        const groups = rest.split(':');
+        if (groups.length === 2) {
+          const high = parseInt(groups[0]!, 16);
+          const low = parseInt(groups[1]!, 16);
+          if (Number.isFinite(high) && Number.isFinite(low)) {
+            const ipv4 = `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+            if (isPrivateHost(ipv4)) return true;
+          }
+        }
+      }
+    }
+    // Unique-local fc00::/7 (fc and fd prefixes)
+    if (/^f[cd][0-9a-f]{2}:/.test(ipv6)) return true;
+    // Link-local fe80::/10 (fe80 through febf)
+    if (/^fe[89ab][0-9a-f]:/.test(ipv6)) return true;
+    return false;
+  }
+
+  // Non-bracketed ::1 (guard for any non-URL.hostname callers)
+  if (hostname === '::1') return true;
+
+  // IPv4 address checks
   const parts = hostname.split('.');
   if (parts.length !== 4) return false;
   const nums = parts.map(Number);
