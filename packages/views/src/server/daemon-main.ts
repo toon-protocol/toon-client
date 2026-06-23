@@ -38,6 +38,7 @@ import {
   type DaemonUploadMediaRequest,
   type DaemonUploadMediaResponse,
 } from './daemon-backend.js';
+import { type SwapRequest, type SwapResponse } from './backend.js';
 
 function loadAppHtml(): string {
   // Compiled to dist/server/daemon-main.js; the bundle is at dist/app/index.html.
@@ -130,6 +131,9 @@ function makeControl(baseUrl: string): DaemonControl {
       post<DaemonPublishResponse>('/publish-unsigned', b),
     uploadMedia: (b: DaemonUploadMediaRequest) =>
       post<DaemonUploadMediaResponse>('/upload-media', b),
+    openChannel: (b: { destination?: string }) =>
+      post<{ channelId: string }>('/channels', b),
+    swap: (b: SwapRequest) => post<SwapResponse>('/swap', b),
   };
 }
 

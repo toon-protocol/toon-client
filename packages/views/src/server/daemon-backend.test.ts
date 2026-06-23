@@ -13,6 +13,7 @@ import {
   type DaemonUploadMediaRequest,
   type DaemonUploadMediaResponse,
 } from './daemon-backend.js';
+import { type SwapRequest, type SwapResponse } from './backend.js';
 import { type NostrEvent, type NostrFilter } from '../types.js';
 
 const APP_HTML = '<!doctype html><html><body><div id="root"></div></body></html>';
@@ -27,6 +28,8 @@ class FakeDaemonControl implements DaemonControl {
   readonly queries: DaemonQueryRequest[] = [];
   readonly publishes: DaemonPublishUnsignedRequest[] = [];
   readonly uploads: DaemonUploadMediaRequest[] = [];
+  readonly opens: { destination?: string }[] = [];
+  readonly swaps: SwapRequest[] = [];
   private nonce = 0;
   events: NostrEvent[] = [
     {
@@ -81,6 +84,25 @@ class FakeDaemonControl implements DaemonControl {
       sig: 'sig',
     });
     return Promise.resolve({ eventId, channelId: 'chan-1', nonce, url, txId });
+  }
+
+  openChannel(body: { destination?: string }): Promise<{ channelId: string }> {
+    this.opens.push(body);
+    return Promise.resolve({ channelId: `chan-${++this.nonce}` });
+  }
+
+  swap(body: SwapRequest): Promise<SwapResponse> {
+    this.swaps.push(body);
+    return Promise.resolve({
+      accepted: true,
+      packetsAccepted: 1,
+      claims: [
+        { sourceAmount: body.amount, targetAmount: body.amount, claim: 'claim_b64' },
+      ],
+      cumulativeSource: body.amount,
+      cumulativeTarget: body.amount,
+      state: 'completed',
+    });
   }
 }
 
@@ -165,5 +187,31 @@ describe('DaemonAppBackend (daemon-backed apps surface)', () => {
     expect(control.uploads).toHaveLength(1);
     expect(control.uploads[0]?.kind).toBe(20);
     expect(control.uploads[0]?.mime).toBe('image/png');
+  });
+
+  it('openChannel + swap (DeFi seam) delegate to the control port', async () => {
+    const ctrl = new FakeDaemonControl();
+    const backend = new DaemonAppBackend(ctrl);
+
+    const ch = await backend.openChannel({ destination: 'g.proxy.relay' });
+    expect(ch.channelId).toMatch(/^chan-/);
+    expect(ctrl.opens).toEqual([{ destination: 'g.proxy.relay' }]);
+
+    const req: SwapRequest = {
+      destination: 'g.proxy.mill',
+      amount: '1000',
+      millPubkey: 'ab'.repeat(32),
+      pair: {
+        from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:31337' },
+        to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+        rate: '1',
+      },
+      chainRecipient: 'SoLrecipient',
+    };
+    const sr = await backend.swap(req);
+    expect(sr.accepted).toBe(true);
+    expect(sr.state).toBe('completed');
+    expect(sr.cumulativeTarget).toBe('1000');
+    expect(ctrl.swaps).toEqual([req]);
   });
 });
