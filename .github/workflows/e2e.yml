@@ -1,0 +1,51 @@
+name: E2E (testnet journey)
+
+on:
+  workflow_dispatch:        # always available — manual run
+  # HUMAN DECISION (trigger policy): uncomment/adjust per the checklist below
+  # schedule:
+  #   - cron: "0 6 * * *"   # daily 06:00 UTC
+  # push:
+  #   branches: [main]
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: e2e          # gates secrets behind a protected GitHub Environment (recommended)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --no-frozen-lockfile
+
+      - run: pnpm -r build
+
+      - name: Run mcp-use e2e journey (testnet, bounded budget)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2E_DEV_MNEMONIC: ${{ secrets.E2E_DEV_MNEMONIC }}
+          E2E_SOLANA_RPC_URL: ${{ secrets.E2E_SOLANA_RPC_URL }}
+          E2E_MINA_RPC_URL: ${{ secrets.E2E_MINA_RPC_URL }}
+          E2E_EVM_RPC_URL: ${{ secrets.E2E_EVM_RPC_URL }}
+          # Non-secret, human-set knobs (GitHub repo/environment Variables):
+          E2E_NETWORK: ${{ vars.E2E_NETWORK }}                 # e.g. "devnet"
+          E2E_MAX_SPEND_PER_RUN: ${{ vars.E2E_MAX_SPEND_PER_RUN }}  # e.g. "0.50" (USDC)
+          E2E_CLAUDE_MODEL: ${{ vars.E2E_CLAUDE_MODEL }}       # e.g. "claude-sonnet-4-6"
+        run: pnpm test:e2e
+
+      - name: Report failure
+        if: failure()
+        run: echo "::error title=E2E journey failed::mcp-use testnet journey failed — check on-chain assertion output above. Verify treasury balance, RPC reachability, and the E2E_MAX_SPEND_PER_RUN cap."
