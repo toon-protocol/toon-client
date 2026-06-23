@@ -9,3 +9,11 @@ export type {
 } from './types.js';
 export { deFiJourney } from './defi.js';
 export type { DeFiJourneyOpts } from './defi.js';
+export {
+  chainJourneys,
+  capstoneJourney,
+  extractReceipt,
+  runCapstoneDemo,
+  type SettlementReceipt,
+  type DemoLogger,
+} from './demo.js';
