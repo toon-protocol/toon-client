@@ -110,6 +110,24 @@ export function mediaView(): ViewSpec {
   };
 }
 
+/** An onboarding journey: get-started card + the new user's profile header. */
+export function onboardView(pubkey: string): ViewSpec {
+  return {
+    title: 'Get started',
+    root: {
+      atom: 'stack',
+      children: [
+        {
+          atom: 'onboard-card',
+          props: { pubkey, label: 'Publish profile' },
+          actions: { publish: { tool: PUBLISH_TOOL, args: { kind: 0 } } },
+        },
+        { atom: 'profile-header', bind: { query: buildProfileFilter([pubkey]) } },
+      ],
+    },
+  };
+}
+
 /** A DeFi panel: pre-open a channel, run a swap, show the settlement receipt. */
 export function swapView(): ViewSpec {
   return {
@@ -143,5 +161,6 @@ export const EXAMPLE_VIEWSPECS: ExampleView[] = [
   { name: 'thread', description: 'A note with its replies and a reply composer.', spec: threadView('<root-event-id>') },
   { name: 'forge', description: 'Tabbed repos + issues (NIP-34).', spec: forgeView('<owner-pubkey>', '<repo-id>') },
   { name: 'media', description: 'Media gallery with an uploader.', spec: mediaView() },
+  { name: 'onboard', description: 'Get-started card + the new user’s profile header.', spec: onboardView('<pubkey-hex>') },
   { name: 'swap', description: 'Open a channel, run a swap, show the settlement receipt.', spec: swapView() },
 ];
