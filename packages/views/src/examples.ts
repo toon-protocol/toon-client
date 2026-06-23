@@ -17,7 +17,7 @@ import {
   buildEventByIdFilter,
   buildMediaFeedFilter,
 } from './filters.js';
-import { PUBLISH_TOOL, UPLOAD_TOOL } from './tool-names.js';
+import { OPEN_CHANNEL_TOOL, PUBLISH_TOOL, SWAP_TOOL, UPLOAD_TOOL } from './tool-names.js';
 
 /** A social feed: composer to post + a kindAuto note feed. */
 export function feedView(): ViewSpec {
@@ -110,6 +110,26 @@ export function mediaView(): ViewSpec {
   };
 }
 
+/** A DeFi panel: pre-open a channel, run a swap, show the settlement receipt. */
+export function swapView(): ViewSpec {
+  return {
+    title: 'Swap',
+    root: {
+      atom: 'tabs',
+      props: { labels: ['Channel', 'Swap', 'Receipt'] },
+      children: [
+        { atom: 'channel-card', actions: { open: { tool: OPEN_CHANNEL_TOOL } } },
+        {
+          atom: 'swap-form',
+          props: { label: 'Swap' },
+          actions: { swap: { tool: SWAP_TOOL, spendy: true, confirmLabel: 'Confirm swap' } },
+        },
+        { atom: 'settlement-receipt' },
+      ],
+    },
+  };
+}
+
 export interface ExampleView {
   name: string;
   description: string;
@@ -123,4 +143,5 @@ export const EXAMPLE_VIEWSPECS: ExampleView[] = [
   { name: 'thread', description: 'A note with its replies and a reply composer.', spec: threadView('<root-event-id>') },
   { name: 'forge', description: 'Tabbed repos + issues (NIP-34).', spec: forgeView('<owner-pubkey>', '<repo-id>') },
   { name: 'media', description: 'Media gallery with an uploader.', spec: mediaView() },
+  { name: 'swap', description: 'Open a channel, run a swap, show the settlement receipt.', spec: swapView() },
 ];

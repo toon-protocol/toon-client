@@ -30,13 +30,15 @@ import { type NostrFilter } from '../types.js';
 import {
   APP_RESOURCE_URI,
   ATOMS_TOOL,
+  OPEN_CHANNEL_TOOL,
   PUBLISH_TOOL,
   QUERY_TOOL,
   RENDER_TOOL,
+  SWAP_TOOL,
   UPLOAD_TOOL,
   WRITE_TOOLS,
 } from '../tool-names.js';
-import { type AppBackend } from './backend.js';
+import { type AppBackend, type SwapRequest } from './backend.js';
 
 export interface RegisterToonAppsOptions {
   /** Read/write backend (fake for the demo; real daemon later). */
@@ -170,6 +172,64 @@ export function registerToonApps(server: McpServer, opts: RegisterToonAppsOption
     }) => {
       const res = await opts.backend.uploadMedia(args);
       return result(`Uploaded + published media at ${res.url}.`, { ...res });
+    }
+  );
+
+  // toon_open_channel — pre-open a payment channel (daemon signs/settles).
+  server.registerTool(
+    OPEN_CHANNEL_TOOL,
+    {
+      description:
+        'Pre-open a payment channel (optionally toward a specific destination). ' +
+        'The backend signs/settles; the UI never holds keys. Returns { channelId }.',
+      inputSchema: { destination: z.string().optional() },
+    },
+    async (args: { destination?: string }) => {
+      const res = await opts.backend.openChannel(args);
+      return result(`Opened channel ${res.channelId}.`, { ...res });
+    }
+  );
+
+  // toon_swap — spendy cross-asset swap (daemon signs the source claim,
+  // returns the signed target-chain claim + settlement metadata).
+  server.registerTool(
+    SWAP_TOOL,
+    {
+      description:
+        'Spendy: run a cross-asset swap via a mill peer. The backend signs the ' +
+        'source-asset claim against the open channel and returns the signed ' +
+        'target-chain claim(s) + settlement metadata. UI actions target this tool.',
+      inputSchema: {
+        destination: z.string(),
+        amount: z.string(),
+        millPubkey: z.string(),
+        pair: z.object({
+          from: z.object({
+            assetCode: z.string(),
+            assetScale: z.number(),
+            chain: z.string(),
+          }),
+          to: z.object({
+            assetCode: z.string(),
+            assetScale: z.number(),
+            chain: z.string(),
+          }),
+          rate: z.string(),
+          minAmount: z.string().optional(),
+          maxAmount: z.string().optional(),
+        }),
+        chainRecipient: z.string(),
+        packetCount: z.number().optional(),
+      },
+    },
+    async (args: SwapRequest) => {
+      const res = await opts.backend.swap(args);
+      return result(
+        res.accepted
+          ? `Swap ${res.state}: ${res.cumulativeSource} → ${res.cumulativeTarget} (${res.packetsAccepted} packet(s)).`
+          : `Swap ${res.state}${res.message ? `: ${res.message}` : ''}.`,
+        { ...res }
+      );
     }
   );
 }

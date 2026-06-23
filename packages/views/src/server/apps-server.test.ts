@@ -50,6 +50,8 @@ describe('TOON apps MCP server (fake-backed)', () => {
         'toon_query',
         'toon_publish_unsigned',
         'toon_upload_media',
+        'toon_open_channel',
+        'toon_swap',
       ])
     );
     const render = tools.find((t) => t.name === 'toon_render');
@@ -114,5 +116,40 @@ describe('TOON apps MCP server (fake-backed)', () => {
     )['events'] as unknown[];
     expect(pics.length).toBeGreaterThan(0);
     expect(backend.size()).toBeGreaterThan(0);
+  });
+
+  it('toon_open_channel returns a channelId', async () => {
+    const res = await client.callTool({
+      name: 'toon_open_channel',
+      arguments: { destination: 'g.townhouse.mill' },
+    });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    expect(String(structured(res)['channelId'])).toContain('fake-channel');
+  });
+
+  it('toon_swap returns a settlement receipt (SwapResponse + one claim)', async () => {
+    const res = await client.callTool({
+      name: 'toon_swap',
+      arguments: {
+        destination: 'g.townhouse.mill',
+        amount: '1000000',
+        millPubkey: 'a'.repeat(64),
+        pair: {
+          from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:31337' },
+          to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+          rate: '1',
+        },
+        chainRecipient: '0x000000000000000000000000000000000000dEaD',
+      },
+    });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    const sc = structured(res);
+    expect(sc['accepted']).toBe(true);
+    expect(sc['state']).toBe('completed');
+    expect(sc['cumulativeTarget']).toBe('1000000');
+    const claims = sc['claims'] as { targetAmount: string; channelId?: string }[];
+    expect(claims.length).toBe(1);
+    expect(claims[0]?.targetAmount).toBe('1000000');
+    expect(String(claims[0]?.channelId)).toContain('fake-target-channel');
   });
 });
