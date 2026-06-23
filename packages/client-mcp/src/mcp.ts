@@ -96,8 +96,8 @@ async function main(): Promise<void> {
   const url = controlPlaneUrl();
   const control = new ControlClient({ baseUrl: url });
 
-  // Kick off daemon startup; don't block server init on it (anon bootstrap is
-  // slow). Tools report "bootstrapping — retry" until it is ready.
+  // Kick off daemon startup; don't block server init on it (BTP bootstrap can
+  // take a moment). Tools report "bootstrapping — retry" until it is ready.
   void ensureDaemon(url);
 
   const server = new Server(

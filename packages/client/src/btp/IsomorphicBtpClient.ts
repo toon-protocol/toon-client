@@ -29,7 +29,7 @@ export interface IsomorphicBtpClientConfig {
   authToken: string;
   sendTimeoutMs?: number;
   authTimeoutMs?: number;
-  /** Custom WebSocket constructor (e.g., for SOCKS5 proxy support via `ws` package). */
+  /** Custom WebSocket constructor (e.g., the Node `ws` package, or for testing). */
   createWebSocket?: (url: string) => WebSocket;
 }
 

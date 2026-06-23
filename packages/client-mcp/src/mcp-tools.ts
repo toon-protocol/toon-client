@@ -375,14 +375,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'toon_add_relay',
     description:
       'Add a relay READ target at runtime (persisted across restarts). It joins ' +
-      'all fan-out reads immediately; `.anyone` hidden-service relays reuse the ' +
-      'managed anon read proxy automatically.',
+      'all fan-out reads immediately.',
     inputSchema: {
       type: 'object',
       properties: {
         relayUrl: {
           type: 'string',
-          description: 'Relay WS URL (ws://host:7100 or a .anyone service).',
+          description: 'Relay WS URL (ws://host:7100).',
         },
       },
       required: ['relayUrl'],
@@ -639,8 +638,8 @@ export async function dispatchTool(
     }
     if (e instanceof ControlApiError && e.retryable) {
       return err(
-        `TOON client is still bootstrapping (the anon proxy / BTP session can take ` +
-          `30–90s) — retry shortly. (${e.message})`
+        `TOON client is still bootstrapping (the BTP session can take a few ` +
+          `seconds) — retry shortly. (${e.message})`
       );
     }
     if (e instanceof DaemonUnreachableError) {

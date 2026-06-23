@@ -9,8 +9,8 @@ with the host under the server name **`toon-client`** (this is the name that
 appears in Claude's MCP server list and in the `initialize` handshake;
 `mcpServers.toon` in config is just your local alias). The two long-lived
 connections that can't live in an ephemeral agent session — a **BTP** session
-(paid writes via the connector/apex, optionally over a managed `.anyone`
-SOCKS5h proxy) and a **town-relay Nostr-WS** subscription (free reads) — live in
+(paid writes via the connector/apex) and a **town-relay Nostr-WS** subscription
+(free reads) — live in
 an **always-on detached daemon** (`toon-clientd`). The MCP server is a thin
 stdio proxy that auto-spawns the daemon and never holds chain keys.
 
@@ -34,8 +34,8 @@ Claude (Desktop / Code)
 
 | Layer | Bin / module | Responsibility |
 |---|---|---|
-| **Daemon** | `toon-clientd` | Owns one `ToonClient` (BTP + managed anon + channels + mnemonic keystore + network targeting) **plus** a persistent town-relay subscription. Loopback HTTP control API, single-instance PID lock, channel nonce-watermark persistence, graceful shutdown. |
-| **MCP server** | `toon-mcp` | `@modelcontextprotocol/sdk` stdio server. Maps tools → daemon HTTP; auto-spawns the daemon detached if down; reports "bootstrapping — retry" while anon boots; holds no keys. |
+| **Daemon** | `toon-clientd` | Owns one `ToonClient` (BTP + channels + mnemonic keystore + network targeting) **plus** a persistent town-relay subscription. Loopback HTTP control API, single-instance PID lock, channel nonce-watermark persistence, graceful shutdown. |
+| **MCP server** | `toon-mcp` | `@modelcontextprotocol/sdk` stdio server. Maps tools → daemon HTTP; auto-spawns the daemon detached if down; reports "bootstrapping — retry" while the BTP session comes up; holds no keys. |
 | **Skill** | `.claude/skills/toon-client/` | Teaches the agent pay-to-write / free-read / settlement semantics. |
 
 ## Tools
@@ -80,8 +80,7 @@ On the **first** `toon-clientd run`/`start` (including the auto-spawn from
   `TOON_CLIENT_KEYSTORE_PASSWORD` when set, otherwise a default password so the
   identity reloads on every restart with **no env var required**.
 - **Transport scaffolding** — it writes a starter `~/.toon-client/config.json`
-  carrying the `btpUrl`/`relayUrl`/`managedAnonProxy` knobs plus a `_help`
-  block documenting direct-vs-`.anyone` selection.
+  carrying the `btpUrl`/`relayUrl` knobs plus a `_help` block documenting them.
 
 The one thing you must supply is the apex you pay: set **`btpUrl`** (and usually
 `relayUrl`) in the scaffolded config, then publish. Everything below is for
@@ -99,12 +98,12 @@ can supply your own via env or an imported keystore.
 {
   "network": "testnet",                       // settlement presets (#209)
   "keystorePath": "~/.toon-client/keystore.json",
-  "btpUrl": "ws://<apex-host>.anyone:3000/btp",
-  "relayUrl": "wss://<relay-host>.anyone/",   // free reads
+  "btpUrl": "ws://<apex-host>:3000/btp",
+  "relayUrl": "ws://<relay-host>:7100",       // free reads
   "destination": "g.townhouse.town",
   "feePerEvent": "1",
   "httpPort": 8787,
-  // HS / direct-apex mode: bootstrap finds 0 peers, so name the apex's
+  // Direct-apex mode: bootstrap finds 0 peers, so name the apex's
   // settlement address directly (mirrors the docker entrypoint):
   "apex": {
     "destination": "g.townhouse.town",
@@ -120,26 +119,12 @@ can supply your own via env or an imported keystore.
 ```
 
 Environment overrides: `TOON_CLIENT_MNEMONIC`, `TOON_CLIENT_KEYSTORE_PASSWORD`,
-`TOON_CLIENT_BTP_URL`, `TOON_CLIENT_RELAY_URL`, `TOON_CLIENT_SOCKS`,
+`TOON_CLIENT_BTP_URL`, `TOON_CLIENT_RELAY_URL`,
 `TOON_CLIENT_HTTP_PORT`, `TOON_CLIENT_NETWORK`, `TOON_CLIENT_HOME`.
 
-**Transport is inferred from the URLs — no separate "direct vs hidden-service"
-switch.** The daemon parses the host of each URL independently:
-
-- `btpUrl`/`relayUrl` on a normal host (`ws://1.2.3.4:3000/btp`, `wss://…`) →
-  **direct**, dialed as-is.
-- `btpUrl` on a `.anyone` host → the ToonClient auto-starts a managed `anon`
-  SOCKS5h proxy and routes paid writes (and reads) through it.
-- `btpUrl` **direct** but `relayUrl` on a `.anyone` host → the daemon starts its
-  own managed `anon` proxy just for the free-read subscription; paid writes stay
-  direct. (Mixed transports — a direct apex with a hidden-service relay — work
-  out of the box.)
-
-No explicit `socksProxy` is needed for any of these. Set `socksProxy` only to
-point at your own external proxy, or `managedAnonProxy: false` to opt out of the
-managed proxy entirely. The first bootstrap pays the anon warm-up cost (~30–90s)
-**once** — the detached daemon then stays up. A read-proxy failure surfaces under
-`relay.proxyError` in `toon_status` and never blocks direct paid writes.
+`btpUrl` (paid writes over BTP) and `relayUrl` (free reads over Nostr-WS) are
+dialed directly as-is. The first bootstrap brings up the BTP session **once** —
+the detached daemon then stays up.
 
 ### Create an encrypted keystore
 
@@ -197,7 +182,7 @@ Add to `claude_desktop_config.json`:
 
 Then restart Claude Desktop. The TOON tools appear in the tool list; the first
 `toon_publish` after a cold start may report "bootstrapping — retry" while the
-anon proxy + BTP session come up.
+BTP session comes up.
 
 ## Usage example
 
@@ -213,8 +198,8 @@ The agent runs:
    { "ready": true, "bootstrapping": false, "settlementChain": "evm",
      "relay": { "connected": true }, "identity": { "evmAddress": "0x99ed…" } }
    ```
-   (If it returns `bootstrapping: true` or a "retry shortly" message, wait ~30–90s
-   for the anon proxy + BTP session, then retry.)
+   (If it returns `bootstrapping: true` or a "retry shortly" message, wait a few
+   seconds for the BTP session, then retry.)
 
 2. **`toon_subscribe`** for its own author so it can read the note back:
    ```json
@@ -273,14 +258,10 @@ receive a target-chain claim.
 
 ```bash
 pnpm --filter @toon-protocol/client-mcp test              # unit
-RUN_LIVE_HS_E2E=1 …env… \
-  pnpm --filter @toon-protocol/client-mcp test:integration # gated live-HS round-trip
+pnpm --filter @toon-protocol/client-mcp test:integration  # gated integration suite
 ```
 
-The gated integration test boots the daemon against a live `.anyone` HS apex,
-publishes a paid event, reads it back through the subscription, verifies the
-channel nonce advanced, restarts the daemon, and confirms the nonce watermark
-persisted. See `src/__integration__/`.
+The integration suite lives in `src/__integration__/`.
 
 ## Publishing
 
@@ -295,7 +276,7 @@ are **bundled into `dist`** at build time (tsup `noExternal`), so the published
 `package.json` carries **zero `@toon-protocol/*` runtime deps** — only npm
 packages (`fastify`, `@modelcontextprotocol/sdk`, `nostr-tools`, `viem`, `ws`,
 `@toon-format/toon`) plus optional chain libs (`o1js`, `mina-signer`,
-`@solana/web3.js`, `socks-proxy-agent`) installed only when you use those chains.
+`@solana/web3.js`) installed only when you use those chains.
 A guard test (`src/package-structure.test.ts`) fails the build if a
 `@toon-protocol/*` runtime dep ever leaks in.
 

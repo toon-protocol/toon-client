@@ -9,18 +9,16 @@
  * with exponential backoff and re-issues every active REQ on reconnect.
  *
  * The WebSocket is injectable (`wsFactory`) so unit tests can drive the wire
- * protocol without a real relay; the default factory uses the `ws` package and,
- * when a `socks5h://` proxy is configured, routes through it so `.anyone`
- * hidden-service relays are reachable.
+ * protocol without a real relay; the default factory uses the `ws` package.
  */
 
 import { createRequire } from 'node:module';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type { NostrFilter } from './control-api.js';
 
-// ESM has no `require`; synchronously load the node-only `ws`/`socks-proxy-agent`
-// deps for the default WebSocket factory without forcing every caller (e.g. the
-// browser-style injected-factory path in tests) to pull them in.
+// ESM has no `require`; synchronously load the node-only `ws` dep for the default
+// WebSocket factory without forcing every caller (e.g. the browser-style
+// injected-factory path in tests) to pull it in.
 const nodeRequire = createRequire(import.meta.url);
 
 /** Minimal WebSocket surface this module depends on (subset of `ws`). */
@@ -35,10 +33,8 @@ export interface MinimalWebSocket {
 export type WebSocketFactory = (url: string) => MinimalWebSocket;
 
 export interface RelaySubscriptionOptions {
-  /** Town relay WS URL, e.g. `wss://<host>.anyone/` or `ws://localhost:7100`. */
+  /** Town relay WS URL, e.g. `ws://localhost:7100`. */
   relayUrl: string;
-  /** Optional `socks5h://host:port` proxy for `.anyone` relays. */
-  socksProxy?: string;
   /** Max events retained in the ring buffer (oldest evicted). Default 5000. */
   bufferSize?: number;
   /** Base reconnect delay, ms. Default 1000. */
@@ -88,7 +84,6 @@ const noop = (): void => undefined;
 
 export class RelaySubscription {
   private readonly relayUrl: string;
-  private readonly socksProxy?: string;
   private readonly bufferSize: number;
   private readonly reconnectBaseMs: number;
   private readonly reconnectMaxMs: number;
@@ -115,12 +110,11 @@ export class RelaySubscription {
 
   constructor(opts: RelaySubscriptionOptions) {
     this.relayUrl = opts.relayUrl;
-    this.socksProxy = opts.socksProxy;
     this.bufferSize = opts.bufferSize ?? DEFAULT_BUFFER;
     this.reconnectBaseMs = opts.reconnectBaseMs ?? DEFAULT_BASE_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_MAX_MS;
     this.log = opts.logger ?? noop;
-    this.wsFactory = opts.wsFactory ?? defaultWebSocketFactory(this.socksProxy);
+    this.wsFactory = opts.wsFactory ?? defaultWebSocketFactory();
     this.decodeEvent = opts.decodeEvent;
     this.onEvent = opts.onEvent;
   }
@@ -351,23 +345,13 @@ function errMsg(err: unknown): string {
 }
 
 /**
- * Default factory backed by the `ws` package. When a `socks5h://` proxy is
- * provided, routes the WebSocket through it via `socks-proxy-agent` (optional
- * dependency, loaded lazily so the bundle works without it).
+ * Default factory backed by the `ws` package.
  */
-function defaultWebSocketFactory(socksProxy?: string): WebSocketFactory {
+function defaultWebSocketFactory(): WebSocketFactory {
   return (url: string): MinimalWebSocket => {
     const WebSocketImpl = nodeRequire('ws') as new (
-      address: string,
-      opts?: { agent?: unknown }
+      address: string
     ) => MinimalWebSocket;
-    let agent: unknown;
-    if (socksProxy) {
-      const { SocksProxyAgent } = nodeRequire('socks-proxy-agent') as {
-        SocksProxyAgent: new (proxy: string) => unknown;
-      };
-      agent = new SocksProxyAgent(socksProxy);
-    }
-    return new WebSocketImpl(url, agent ? { agent } : undefined);
+    return new WebSocketImpl(url);
   };
 }

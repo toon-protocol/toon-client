@@ -55,12 +55,6 @@ export interface DaemonConfigFile {
   _help?: Record<string, string>;
   /** BTP WebSocket URL of the apex/connector. */
   btpUrl?: string;
-  /** Transport: `direct` or a `socks5h://` proxy for `.anyone` hosts. */
-  socksProxy?: string;
-  /** Auto-manage the anon proxy for `.anyone` BTP hosts. Default true for HS. */
-  managedAnonProxy?: boolean;
-  /** Loopback SOCKS port the managed anon proxy binds (also used for reads). Default 9050. */
-  managedAnonSocksPort?: number;
   /** Town relay WS URL for FREE reads. */
   relayUrl?: string;
   /** Default ILP publish destination. Default `g.townhouse.town`. */
@@ -109,16 +103,6 @@ export interface DaemonConfigFile {
 export interface ResolvedDaemonConfig {
   httpPort: number;
   relayUrl: string;
-  socksProxy?: string;
-  /**
-   * When true the daemon must start its OWN managed `anon` proxy for free reads
-   * — the btp-direct + relay-`.anyone` case the ToonClient does not cover (it
-   * only auto-starts a proxy for a `.anyone` btpUrl). `readProxySocksPort` is the
-   * loopback port to bind; `socksProxy` already points the relay at it.
-   */
-  manageReadProxy: boolean;
-  /** Loopback SOCKS port for the daemon-managed read proxy (when `manageReadProxy`). */
-  readProxySocksPort?: number;
   destination: string;
   feePerEvent: bigint;
   apex?: ApexNegotiationConfig;
@@ -197,7 +181,7 @@ export function resolveMnemonic(file: DaemonConfigFile): string {
 /**
  * Build the full resolved daemon config (file overlaid with env, mnemonic
  * resolved, ToonClientConfig assembled). Env overrides supported:
- *   TOON_CLIENT_BTP_URL, TOON_CLIENT_RELAY_URL, TOON_CLIENT_SOCKS,
+ *   TOON_CLIENT_BTP_URL, TOON_CLIENT_RELAY_URL,
  *   TOON_CLIENT_HTTP_PORT, TOON_CLIENT_NETWORK.
  */
 export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
@@ -213,7 +197,6 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     process.env['TOON_CLIENT_RELAY_URL'] ??
     file.relayUrl ??
     'ws://localhost:7100';
-  const explicitSocks = process.env['TOON_CLIENT_SOCKS'] ?? file.socksProxy;
   const httpPort = Number(
     process.env['TOON_CLIENT_HTTP_PORT'] ?? file.httpPort ?? 8787
   );
@@ -228,54 +211,6 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     file.chain ??
     'evm') as SettlementChain;
   const apex = file.apexChains?.[chain] ?? file.apex;
-
-  // Transport / proxy resolution. The managed `anon` SOCKS5h proxy reaches
-  // `.anyone` hidden services with zero setup, and TWO consumers need it
-  // independently: the ToonClient (paid writes over BTP) and the daemon's
-  // RelaySubscription (free reads). Crucially, the ToonClient only auto-starts
-  // its own proxy when the *btpUrl* is `.anyone` — so the `.anyone`-ness of the
-  // relay is inferred SEPARATELY here, and when the btp is direct but the relay
-  // is a hidden service the daemon must start the read proxy itself.
-  //  • explicit socksProxy → BTP + reads both route through it.
-  //  • btp `.anyone` → the ToonClient spawns the anon daemon on a loopback SOCKS
-  //    port; reads reuse that SAME port (covers a `.anyone` relay too).
-  //  • btp direct + relay `.anyone` → the daemon starts the read proxy on that
-  //    loopback port (`manageReadProxy`); BTP stays direct.
-  //  • otherwise → direct, no proxy.
-  const managedPort = Number(file.managedAnonSocksPort ?? 9050);
-  // Explicit opt-out (`managedAnonProxy:false`) disables auto-start everywhere;
-  // an explicit socksProxy takes the first branch regardless.
-  const allowManaged = file.managedAnonProxy ?? true;
-  const btpIsAnyone = isAnyoneHost(btpUrl);
-  const relayIsAnyone = isAnyoneHost(relayUrl);
-
-  let transport: ToonClientConfig['transport'];
-  let managedAnonProxy: boolean;
-  let managedAnonSocksPort: number | undefined;
-  // The proxy the relay subscription uses for free reads (may differ from BTP).
-  let readsSocksProxy: string | undefined;
-  // Whether the DAEMON (not the ToonClient) must start the read proxy, for the
-  // btp-direct + relay-`.anyone` case the ToonClient does not cover.
-  let manageReadProxy = false;
-  if (explicitSocks) {
-    transport = { type: 'socks5', socksProxy: explicitSocks };
-    managedAnonProxy = false;
-    readsSocksProxy = explicitSocks;
-  } else if (allowManaged && btpIsAnyone) {
-    transport = { type: 'direct' };
-    managedAnonProxy = true;
-    managedAnonSocksPort = managedPort;
-    readsSocksProxy = `socks5h://127.0.0.1:${managedPort}`;
-  } else if (allowManaged && relayIsAnyone) {
-    transport = { type: 'direct' };
-    managedAnonProxy = false;
-    manageReadProxy = true;
-    managedAnonSocksPort = managedPort;
-    readsSocksProxy = `socks5h://127.0.0.1:${managedPort}`;
-  } else {
-    transport = { type: 'direct' };
-    managedAnonProxy = false;
-  }
 
   const channelStorePath =
     file.channelStorePath ?? join(configDir(), 'channels.json');
@@ -297,9 +232,6 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     toonDecoder: decodeEventFromToon,
     btpUrl,
     btpAuthToken: '',
-    transport,
-    managedAnonProxy,
-    ...(managedAnonSocksPort !== undefined ? { managedAnonSocksPort } : {}),
     destinationAddress: destination,
     relayUrl: '', // reads use our own RelaySubscription, not bootstrap discovery
     knownPeers: [],
@@ -319,9 +251,6 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   return {
     httpPort,
     relayUrl,
-    ...(readsSocksProxy !== undefined ? { socksProxy: readsSocksProxy } : {}),
-    manageReadProxy,
-    ...(manageReadProxy ? { readProxySocksPort: managedPort } : {}),
     destination,
     feePerEvent,
     apex,
@@ -331,12 +260,4 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     toonClientConfig,
     network,
   };
-}
-
-function isAnyoneHost(url: string): boolean {
-  try {
-    return new URL(url).hostname.endsWith('.anyone');
-  } catch {
-    return false;
-  }
 }
