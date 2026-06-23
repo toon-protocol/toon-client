@@ -117,6 +117,21 @@ export const ATOM_CATALOG: AtomMeta[] = [
       'claim, channelId, tx/claim id, nonce). No writes.',
   },
 
+  // onboard
+  {
+    id: 'onboard-card',
+    description:
+      'Onboarding / get-started card: walks a new user through claiming an ' +
+      'identity and opening a payment channel before they pay-to-write. Optional ' +
+      '"publish" action publishes their initial kind:0 profile.',
+    writes: [{ name: 'toon_publish_unsigned' }],
+    propsSchema: {
+      pubkey: 'string (the user’s Nostr pubkey, hex)',
+      steps: 'string[] (optional checklist of get-started steps)',
+      label: 'string (optional publish-profile button label)',
+    },
+  },
+
   // fallback
   { id: 'generic-event', description: 'Fallback: decoded JSON + tags for any kind without a bespoke atom.' },
 ];
