@@ -27,7 +27,7 @@ export default defineConfig({
   // Three entry points: the library surface (index), and the two bins
   // (`toon-clientd` daemon, `toon-mcp` stdio server). The bin sources carry a
   // `#!/usr/bin/env node` shebang which tsup preserves in the emitted files.
-  entry: ['src/index.ts', 'src/daemon.ts', 'src/mcp.ts'],
+  entry: ['src/index.ts', 'src/daemon.ts', 'src/mcp.ts', 'src/e2e/run-journey.ts'],
   format: ['esm'],
   dts: true,
   sourcemap: true,
