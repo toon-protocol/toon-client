@@ -10,6 +10,7 @@
     "test:jest": "pnpm --filter @toon-protocol/pet-dvm test",
     "test:zk": "pnpm --filter @toon-protocol/pet-circuit test",
     "test:all": "vitest run && pnpm test:jest",
+    "test:e2e": "RUN_MCP_USE_JOURNEY=1 pnpm --filter @toon-protocol/client-mcp test:integration",
     "test:coverage": "vitest --coverage",
     "lint": "eslint .",
     "format": "prettier --write \"packages/*/src/**/*.ts\"",
@@ -38,7 +39,7 @@
   "packageManager": "pnpm@8.15.9",
   "pnpm": {
     "neverBuiltDependencies": [
-      "@anyone-protocol/anyone-client"
+      "better-sqlite3"
     ],
     "overrides": {
       "protobufjs": ">=7.2.5",

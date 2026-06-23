@@ -132,7 +132,8 @@ export function defaultDaemonEntry(): string {
 /**
  * Poll the control plane until the daemon answers `GET /status`, up to
  * `timeoutMs`. Resolves true once reachable (NOT necessarily done
- * bootstrapping — anon can take 30–90s; callers surface `bootstrapping`).
+ * bootstrapping — the BTP session can take a moment; callers surface
+ * `bootstrapping`).
  */
 export async function waitForReady(
   baseUrl: string,

@@ -29,7 +29,6 @@ function makeConfig(
   return {
     httpPort: 8787,
     relayUrl: 'ws://relay.test',
-    manageReadProxy: false,
     destination: 'g.townhouse.town',
     feePerEvent: 1n,
     chain: 'evm',
@@ -326,11 +325,11 @@ describe('ClientRunner', () => {
 
   it('records lastError when bootstrap fails and stays not-ready', async () => {
     client.startImpl = async () => {
-      throw new Error('anon never bound');
+      throw new Error('BTP never connected');
     };
     await runner.bootstrap();
     expect(runner.isReady()).toBe(false);
-    expect(runner.getStatus().lastError).toContain('anon never bound');
+    expect(runner.getStatus().lastError).toContain('BTP never connected');
   });
 
   it('publish throws NotReadyError while bootstrapping', async () => {
@@ -551,63 +550,13 @@ describe('ClientRunner', () => {
     );
   });
 
-  describe('daemon-managed read proxy (btp-direct + relay-.anyone)', () => {
-    it('starts the read proxy when manageReadProxy is set, then tears it down', async () => {
-      const stop = vi.fn(async () => {});
-      const startReadProxy = vi.fn(async () => ({ stop }));
-      const r = new ClientRunner({
-        config: makeConfig({
-          manageReadProxy: true,
-          readProxySocksPort: 9050,
-          socksProxy: 'socks5h://127.0.0.1:9050',
-        }),
-        createClient: () => client,
-        createRelay: fakeRelay,
-        startReadProxy,
-      });
-      r.start();
-      // start() kicks the proxy off asynchronously; let the microtask settle.
-      await new Promise((res) => setTimeout(res, 0));
-      expect(startReadProxy).toHaveBeenCalledWith(
-        expect.objectContaining({ socksPort: 9050 })
-      );
-      await r.stop();
-      expect(stop).toHaveBeenCalledTimes(1);
+  it('reports a direct transport (no anon/HS overlay)', () => {
+    const r = new ClientRunner({
+      config: makeConfig(),
+      createClient: () => client,
+      createRelay: fakeRelay,
     });
-
-    it('does NOT start a read proxy in the default (direct/managed-by-client) case', async () => {
-      const startReadProxy = vi.fn(async () => ({ stop: async () => {} }));
-      const r = new ClientRunner({
-        config: makeConfig(), // manageReadProxy: false
-        createClient: () => client,
-        createRelay: fakeRelay,
-        startReadProxy,
-      });
-      r.start();
-      await new Promise((res) => setTimeout(res, 0));
-      expect(startReadProxy).not.toHaveBeenCalled();
-      await r.stop();
-    });
-
-    it('a read-proxy failure is recorded but does not abort the (direct) paid path', async () => {
-      const startReadProxy = vi.fn(async () => {
-        throw new Error('anon download failed');
-      });
-      const r = new ClientRunner({
-        config: makeConfig({ manageReadProxy: true, readProxySocksPort: 9050 }),
-        createClient: () => client,
-        createRelay: fakeRelay,
-        startReadProxy,
-      });
-      r.start();
-      await new Promise((res) => setTimeout(res, 0));
-      // The paid-write bootstrap still completes — direct BTP needs no proxy.
-      await r.bootstrap();
-      expect(r.isReady()).toBe(true);
-      // The failure surfaces on the relay (reads), NOT the paid-path lastError.
-      expect(r.getStatus().lastError).toBeUndefined();
-      expect(r.getStatus().relay.proxyError).toContain('anon download failed');
-    });
+    expect(r.getStatus().transport.type).toBe('direct');
   });
 });
 

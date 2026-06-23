@@ -42,4 +42,95 @@ export interface AppWriteBackend {
   }): Promise<UploadResult>;
 }
 
-export interface AppBackend extends AppReadBackend, AppWriteBackend {}
+// ── DeFi seam (open-channel + swap). ────────────────────────────────────────
+//
+// The minimal swap shapes are re-declared inline (mirroring `PublishResult` /
+// `UploadResult`) so `@toon-protocol/views` never imports `@toon-protocol/
+// client-mcp` or the React bundle. They are a structural subset of the daemon's
+// `control-api` types; the real `DaemonAppBackend` (#16) satisfies this seam by
+// delegating to `control-client.openChannel` / `control-client.swap`. No key
+// material or payment-claim validation lives here — that stays in the daemon
+// and the connector.
+
+/** Swap pair (source → target asset), mirroring `@toon-protocol/core`'s `SwapPair`. */
+export interface SwapPair {
+  /** Source asset. */
+  from: { assetCode: string; assetScale: number; chain: string };
+  /** Target asset. */
+  to: { assetCode: string; assetScale: number; chain: string };
+  /** Exchange rate as a decimal string (target units per source unit). */
+  rate: string;
+  /** Minimum swap amount per packet in source micro-units. */
+  minAmount?: string;
+  /** Maximum swap amount per packet in source micro-units. */
+  maxAmount?: string;
+}
+
+/** Parameters for a cross-asset swap (subset of the daemon's `SwapRequest`). */
+export interface SwapRequest {
+  /** Mill peer ILP destination (e.g. `g.townhouse.mill`). */
+  destination: string;
+  /** Total source-asset amount to swap, in source micro-units (decimal string). */
+  amount: string;
+  /** Mill's 64-char lowercase hex Nostr pubkey (NIP-59 gift-wrap recipient). */
+  millPubkey: string;
+  /** The swap pair to execute. */
+  pair: SwapPair;
+  /** Sender's payout address on `pair.to.chain`. */
+  chainRecipient: string;
+  /** Split the swap into N equal packets (default 1). */
+  packetCount?: number;
+}
+
+/** One accumulated, decrypted claim harvested from a single swap packet. */
+export interface SwapClaim {
+  /** Source-asset amount sent for this packet (micro-units, decimal). */
+  sourceAmount: string;
+  /** Target-asset amount claimed (micro-units, decimal). */
+  targetAmount: string;
+  /** Decrypted signed target-chain claim bytes, base64. */
+  claim: string;
+  /** Target-chain channel id (real on-chain id, or a dev placeholder). */
+  channelId?: string;
+  /** Sender's payout address echoed by the mill. */
+  recipient?: string;
+  /** Mill's on-chain signer address. */
+  millSignerAddress?: string;
+  /** Mill-side claim id. */
+  claimId?: string;
+  /** Balance-proof nonce on the target channel (decimal). */
+  nonce?: string;
+  /** Cumulative transferred on the target channel (micro-units, decimal). */
+  cumulativeAmount?: string;
+}
+
+/** Result of a swap (subset of the daemon's `SwapResponse`). */
+export interface SwapResponse {
+  /** True when at least one packet FULFILLed with a usable claim. */
+  accepted: boolean;
+  /** Number of packets the mill FULFILLed. */
+  packetsAccepted: number;
+  /** Per-packet accumulated claims (settlement metadata + signed claim). */
+  claims: SwapClaim[];
+  /** Total source sent across accepted packets (micro-units, decimal). */
+  cumulativeSource: string;
+  /** Total target received across accepted packets (micro-units, decimal). */
+  cumulativeTarget: string;
+  /** Final stream state. */
+  state: 'completed' | 'failed' | 'stopped';
+  /** First rejection code from the mill, if any (e.g. `F99`). */
+  code?: string;
+  /** First rejection message, if any. */
+  message?: string;
+}
+
+/**
+ * DeFi side: pre-open a payment channel and run a swap. The UI only *calls*
+ * these tools — all signing/settlement happens daemon-side.
+ */
+export interface AppDefiBackend {
+  openChannel(req: { destination?: string }): Promise<{ channelId: string }>;
+  swap(req: SwapRequest): Promise<SwapResponse>;
+}
+
+export interface AppBackend extends AppReadBackend, AppWriteBackend, AppDefiBackend {}

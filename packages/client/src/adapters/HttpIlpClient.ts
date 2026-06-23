@@ -63,11 +63,11 @@ export interface HttpIlpClientConfig {
   maxRetries?: number;
   /** Initial retry delay in milliseconds (default: 1000). */
   retryDelay?: number;
-  /** Custom fetch implementation (SOCKS5 mode / testing). */
+  /** Custom fetch implementation (for testing / custom transports). */
   httpClient?: typeof fetch;
   /**
-   * Custom WebSocket constructor for the BTP upgrade path (SOCKS5 mode).
-   * Forwarded to the underlying BtpRuntimeClient.
+   * Custom WebSocket constructor for the BTP upgrade path (for testing /
+   * custom transports). Forwarded to the underlying BtpRuntimeClient.
    */
   createWebSocket?: (url: string) => WebSocket;
 }
@@ -334,7 +334,7 @@ async function makeBtpWebSocketFactory(
   const WS = require('ws') as typeof WSModule;
 
   // CJS/ESM interop: walk the constructor ladder (class / .default / .WebSocket)
-  // — same shape-handling as transport/socks5.ts so this works under any loader.
+  // so this works under any loader.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ws = WS as any;
   const WSClass = (typeof ws === 'function'

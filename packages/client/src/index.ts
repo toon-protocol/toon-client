@@ -1,14 +1,6 @@
 // Main Client
 export { ToonClient } from './ToonClient.js';
 
-// Hidden-service hostname validation (.anyone TLD only — see issue #201)
-export {
-  isRoutableHsHostname,
-  assertRoutableHsHostname,
-  HS_HOSTNAME_REGEX,
-  HS_HOSTNAME_MAX_LENGTH,
-} from './transport/hs-hostname.js';
-
 // Types
 export type {
   ToonClientConfig,
@@ -17,7 +9,6 @@ export type {
   PublishEventResult,
   BalanceProofParams,
   SignedBalanceProof,
-  ClientTransportConfig,
 } from './types.js';
 
 // Error classes
@@ -86,20 +77,6 @@ export {
 // Utilities
 export { withRetry, type RetryOptions } from './utils/index.js';
 
-// Managed `anon` (ATOR) SOCKS5h proxy — Node-only. Exposed for advanced
-// consumers who want to drive the daemon directly; ToonClient auto-starts it for
-// `.anyone` hosts. Importing these names is safe in any environment (the actual
-// node-only deps are loaded lazily inside the functions).
-export {
-  startManagedAnonProxy,
-  selectAnonAsset,
-  ANON_VERSION,
-  ANON_ASSETS,
-  type ManagedAnonProxy,
-  type StartManagedAnonProxyOptions,
-  type AnonAsset,
-} from './transport/anon-proxy.js';
-
 // Config validation (for advanced use cases)
 export {
   validateConfig,
@@ -107,6 +84,7 @@ export {
   buildSettlementInfo,
   applyNetworkPresets,
   getNetworkStatus,
+  proxyIlpEndpoint,
 } from './config.js';
 
 // Pet DVM Utilities
@@ -134,6 +112,14 @@ export {
   type PetListingFilterOptions,
   type PetPurchaseRequestParams,
 } from './pet/index.js';
+
+// Devnet faucet helper
+export {
+  fundWallet,
+  type FaucetChain,
+  type FundWalletResult,
+  type FundWalletOptions,
+} from './faucet.js';
 
 // Arweave Blob Storage (kind:5094 DVM) helper
 export {

@@ -106,24 +106,18 @@ describe('first-run onboarding (#251)', () => {
     expect(file.keystorePath).toBeUndefined();
   });
 
-  it('scaffolds no concrete managedAnonProxy, so transport stays URL-inferred', async () => {
+  it('scaffolds a config that resolves to a direct transport', async () => {
     await scaffoldFirstRun({ log: silent });
     const file = readConfigFile(configPath);
-    // The scaffold must NOT pin managedAnonProxy — that would short-circuit the
-    // btpUrl-based inference in resolveConfig.
-    expect(file.managedAnonProxy).toBeUndefined();
 
-    // A direct btpUrl → direct transport, no proxy.
-    const direct = resolveConfig({ ...file, btpUrl: 'ws://1.2.3.4:3000/btp' });
-    expect(direct.toonClientConfig.transport).toEqual({ type: 'direct' });
-    expect(direct.toonClientConfig.managedAnonProxy).toBe(false);
-
-    // A .anyone btpUrl → managed anon proxy auto-enabled.
-    const anyone = resolveConfig({
-      ...file,
-      btpUrl: 'ws://abc.anyone:3000/btp',
-    });
-    expect(anyone.toonClientConfig.managedAnonProxy).toBe(true);
+    const resolved = resolveConfig({ ...file, btpUrl: 'ws://1.2.3.4:3000/btp' });
+    // No anon/HS transport overlay survives the scaffold → resolve path.
+    expect(
+      (resolved.toonClientConfig as Record<string, unknown>)['transport']
+    ).toBeUndefined();
+    expect(
+      (resolved.toonClientConfig as Record<string, unknown>)['managedAnonProxy']
+    ).toBeUndefined();
   });
 
   it('hasConfiguredIdentity reflects each source', () => {
