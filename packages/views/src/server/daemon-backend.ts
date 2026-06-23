@@ -16,6 +16,8 @@ import { type NostrEvent, type NostrFilter } from '../types.js';
 import {
   type AppBackend,
   type PublishResult,
+  type SwapRequest,
+  type SwapResponse,
   type UploadResult,
 } from './backend.js';
 
@@ -72,6 +74,8 @@ export interface DaemonControl {
   uploadMedia(
     body: DaemonUploadMediaRequest
   ): Promise<DaemonUploadMediaResponse>;
+  openChannel(body: { destination?: string }): Promise<{ channelId: string }>;
+  swap(body: SwapRequest): Promise<SwapResponse>;
 }
 
 /**
@@ -128,5 +132,15 @@ export class DaemonAppBackend implements AppBackend {
       url: res.url,
       txId: res.txId,
     };
+  }
+
+  /** Pre-open a payment channel. Daemon-side; no key material in the iframe. */
+  async openChannel(req: { destination?: string }): Promise<{ channelId: string }> {
+    return this.control.openChannel(req);
+  }
+
+  /** Run a cross-asset swap. All signing/settlement happens daemon-side. */
+  async swap(req: SwapRequest): Promise<SwapResponse> {
+    return this.control.swap(req);
   }
 }
