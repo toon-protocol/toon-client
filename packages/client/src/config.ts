@@ -96,6 +96,21 @@ export function getNetworkStatus(
 }
 
 /**
+ * Normalize a connector-proxy base URL into its `POST /ilp` endpoint.
+ *
+ * `https://proxy.devnet.toonprotocol.dev`      → `https://proxy.devnet.toonprotocol.dev/ilp`
+ * `https://proxy.devnet.toonprotocol.dev/ilp`  → unchanged (idempotent)
+ * `https://proxy.devnet.toonprotocol.dev/`     → `https://proxy.devnet.toonprotocol.dev/ilp`
+ *
+ * Returns `undefined` for an empty/falsy input so callers can `??`-chain it.
+ */
+export function proxyIlpEndpoint(proxyUrl: string | undefined): string | undefined {
+  if (!proxyUrl) return undefined;
+  const trimmed = proxyUrl.replace(/\/+$/, '');
+  return /\/ilp$/i.test(trimmed) ? trimmed : `${trimmed}/ilp`;
+}
+
+/**
  * Validates ToonClient configuration.
  *
  * This story implements HTTP mode only. Embedded mode validation will be added in a future epic.
@@ -110,24 +125,47 @@ export function validateConfig(config: ToonClientConfig): void {
     );
   }
 
-  // Require connectorUrl for HTTP mode
-  if (!config.connectorUrl) {
+  // Require an HTTP edge for HTTP mode — either an explicit `connectorUrl` or a
+  // connector-`proxyUrl` (the devnet payment-proxy). `applyDefaults` derives
+  // `connectorUrl` from `proxyUrl` when only the proxy is given.
+  if (!config.connectorUrl && !config.proxyUrl) {
     throw new ValidationError(
-      'connectorUrl is required for HTTP mode. Example: "http://localhost:8080"'
+      'connectorUrl (or proxyUrl) is required for HTTP mode. Example: "http://localhost:8080"'
     );
   }
 
   // Validate connectorUrl format
-  try {
-    const url = new URL(config.connectorUrl);
-    if (!url.protocol.startsWith('http')) {
-      throw new Error('Must be HTTP or HTTPS');
+  if (config.connectorUrl) {
+    try {
+      const url = new URL(config.connectorUrl);
+      if (!url.protocol.startsWith('http')) {
+        throw new Error('Must be HTTP or HTTPS');
+      }
+    } catch (error) {
+      throw new ValidationError(
+        `Invalid connectorUrl: must be a valid HTTP/HTTPS URL (e.g., "http://localhost:8080"). ` +
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
-  } catch (error) {
-    throw new ValidationError(
-      `Invalid connectorUrl: must be a valid HTTP/HTTPS URL (e.g., "http://localhost:8080"). ` +
-        `Error: ${error instanceof Error ? error.message : String(error)}`
-    );
+  }
+
+  // Validate proxyUrl / faucetUrl format when provided (both are HTTP(S) URLs).
+  for (const [field, value] of [
+    ['proxyUrl', config.proxyUrl],
+    ['faucetUrl', config.faucetUrl],
+  ] as const) {
+    if (value === undefined) continue;
+    try {
+      const url = new URL(value);
+      if (!url.protocol.startsWith('http')) {
+        throw new Error('Must be HTTP or HTTPS');
+      }
+    } catch (error) {
+      throw new ValidationError(
+        `Invalid ${field}: must be a valid HTTP/HTTPS URL. ` +
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   // Validate secretKey only when provided
@@ -249,6 +287,8 @@ export type ResolvedConfig = Required<
     | 'btpAuthToken'
     | 'btpPeerId'
     | 'connectorHttpEndpoint'
+    | 'proxyUrl'
+    | 'faucetUrl'
     | 'connectorSupportsUpgrade'
     | 'chainRpcUrls'
     | 'initialDeposit'
@@ -285,6 +325,8 @@ export type ResolvedConfig = Required<
   btpAuthToken?: string;
   btpPeerId?: string;
   connectorHttpEndpoint?: string;
+  proxyUrl?: string;
+  faucetUrl?: string;
   connectorSupportsUpgrade?: boolean;
   chainRpcUrls?: Record<string, string>;
   initialDeposit?: string;
@@ -324,12 +366,28 @@ export function applyDefaults(rawConfig: ToonClientConfig): ResolvedConfig {
         ).secretKey
       : generateSecretKey());
 
+  // Derive the connector-proxy `POST /ilp` endpoint from `proxyUrl` (unless an
+  // explicit `connectorHttpEndpoint` was given — explicit always wins). When set
+  // this makes `selectIlpTransport` prefer the stateless HttpIlpClient transport
+  // for one-shot writes, routing through the devnet payment-proxy.
+  const connectorHttpEndpoint =
+    config.connectorHttpEndpoint ?? proxyIlpEndpoint(config.proxyUrl);
+
+  // `connectorUrl` is required by validateConfig but can be satisfied by
+  // `proxyUrl`; fall back to the proxy base so downstream code (HttpRuntimeClient
+  // fallback, destination derivation) always has an HTTP edge URL.
+  const connectorUrl =
+    config.connectorUrl ?? config.proxyUrl?.replace(/\/+$/, '');
+
   // Derive btpUrl from connectorUrl when not explicitly provided
-  // http://host:8080 → ws://host:3000
+  // http://host:8080 → ws://host:3000.
+  // SKIP this auto-derivation when an HTTP/proxy transport is configured: the
+  // proxy edge serves ILP-over-HTTP and may not expose BTP, so we must not open
+  // (or require) a BTP socket. Writes route through HttpIlpClient instead.
   let btpUrl = config.btpUrl;
-  if (!btpUrl && config.connectorUrl) {
+  if (!btpUrl && connectorUrl && !connectorHttpEndpoint) {
     try {
-      const url = new URL(config.connectorUrl);
+      const url = new URL(connectorUrl);
       const wsProtocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
       btpUrl = `${wsProtocol}//${url.hostname}:3000`;
     } catch {
@@ -343,9 +401,9 @@ export function applyDefaults(rawConfig: ToonClientConfig): ResolvedConfig {
   // - http://localhost:8090 → g.toon.peer1 (peer1 node)
   // For production, explicitly set destinationAddress in config
   let destinationAddress = config.destinationAddress;
-  if (!destinationAddress && config.connectorUrl) {
+  if (!destinationAddress && connectorUrl) {
     try {
-      const url = new URL(config.connectorUrl);
+      const url = new URL(connectorUrl);
       if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
         // Map common local ports to known nodes
         if (url.port === '8080') {
@@ -375,7 +433,10 @@ export function applyDefaults(rawConfig: ToonClientConfig): ResolvedConfig {
     ...config,
     secretKey,
     evmPrivateKey,
-    connectorUrl: config.connectorUrl as string, // Already validated as required
+    // Satisfied by connectorUrl OR proxyUrl (validateConfig enforced one of them).
+    connectorUrl: connectorUrl as string,
+    // Surface the derived `POST /ilp` endpoint so HTTP mode selects HttpIlpClient.
+    ...(connectorHttpEndpoint ? { connectorHttpEndpoint } : {}),
     relayUrl: config.relayUrl ?? 'ws://localhost:7100',
     queryTimeout: config.queryTimeout ?? 30000,
     maxRetries: config.maxRetries ?? 3,

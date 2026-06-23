@@ -52,11 +52,25 @@ export function hasConfiguredIdentity(file: DaemonConfigFile): boolean {
 /** The `_help` block written into a scaffolded config to document transport. */
 const CONFIG_HELP = {
   transport:
-    'Point btpUrl/relayUrl at your apex, e.g. ws://<host>:3000/btp + ' +
-    'ws://<host>:7100.',
-  btpUrl: 'REQUIRED. BTP WebSocket URL of the apex/connector for paid writes.',
+    'Configure ONE uplink for paid writes: either `proxyUrl` (connector ' +
+    'payment-proxy over ILP-over-HTTP, e.g. https://proxy.devnet.toonprotocol.dev) ' +
+    'OR `btpUrl` (BTP WebSocket, e.g. ws://<host>:3000/btp). Reads are always ' +
+    'free over relayUrl.',
+  proxyUrl:
+    'Connector-proxy base URL (deployed devnet/testnet edge). When set, paid ' +
+    'writes route through `POST /ilp` and no BTP socket is needed. Set ' +
+    '`destination` to the apex ILP address (e.g. g.proxy for devnet).',
+  faucetUrl:
+    'Devnet faucet base URL (e.g. https://faucet.devnet.toonprotocol.dev) used ' +
+    'to drip test funds before publishing.',
+  btpUrl:
+    'BTP WebSocket URL of the apex/connector for paid writes. Optional when ' +
+    '`proxyUrl` is set.',
   relayUrl:
     'Town relay WebSocket URL for FREE reads. Default ws://localhost:7100.',
+  destination:
+    'Default ILP publish destination (apex address). Default g.townhouse.town; ' +
+    'set to g.proxy for the deployed devnet proxy.',
   keystorePath:
     'Auto-generated encrypted identity. Do not hand-edit; back up your seed phrase.',
 };

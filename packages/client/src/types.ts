@@ -255,6 +255,32 @@ export interface ToonClientConfig {
   connectorHttpEndpoint?: string;
 
   /**
+   * Connector-PROXY base URL for the deployed devnet/testnet edge (e.g.
+   * `https://proxy.devnet.toonprotocol.dev`). The connector is now a
+   * payment-proxy that serves ILP-over-HTTP at `POST /ilp`; setting `proxyUrl`
+   * is the high-level way to route paid writes through that proxy WITHOUT a
+   * persistent BTP socket.
+   *
+   * When set, `applyDefaults` derives `connectorHttpEndpoint` from it (appending
+   * `/ilp` to the base unless the URL already ends in `/ilp`), so the existing
+   * {@link HttpIlpClient} transport selection (`selectIlpTransport`) picks the
+   * stateless one-shot HTTP transport for `publishEvent`/`sendSwapPacket`/
+   * `sendPayment`. An explicit `connectorHttpEndpoint` always wins over this.
+   *
+   * The eventual home for these endpoints is a `@toon-protocol/core` devnet
+   * preset; until that ships, set this field explicitly.
+   */
+  proxyUrl?: string;
+
+  /**
+   * Faucet base URL for the deployed devnet (e.g.
+   * `https://faucet.devnet.toonprotocol.dev`). Consumed by the {@link fundWallet}
+   * helper to drip test funds to the client's chain address before publishing.
+   * Has no effect on the runtime transport; it is config carried for tooling/e2e.
+   */
+  faucetUrl?: string;
+
+  /**
    * Whether the uplink connector accepts a BTP `Upgrade` over its HTTP endpoint
    * (mirrors `IlpPeerInfo.supportsUpgrade`, toon PR #29). Only consulted when
    * `connectorHttpEndpoint` is set and a duplex session is required. Defaults to
