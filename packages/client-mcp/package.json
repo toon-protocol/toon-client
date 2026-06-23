@@ -9,7 +9,8 @@
   "types": "./dist/index.d.ts",
   "bin": {
     "toon-clientd": "./dist/daemon.js",
-    "toon-mcp": "./dist/mcp.js"
+    "toon-mcp": "./dist/mcp.js",
+    "toon-journey": "./dist/e2e/run-journey.js"
   },
   "files": [
     "dist",
