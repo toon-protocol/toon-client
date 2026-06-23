@@ -19,6 +19,7 @@
     "dist"
   ],
   "bin": {
+    "toon-apps": "./dist/server/daemon-main.js",
     "toon-apps-fake": "./dist/server/fake-main.js"
   },
   "scripts": {
@@ -26,6 +27,7 @@
     "build:lib": "tsc -p tsconfig.build.json",
     "build:app": "vite build",
     "demo:apps": "node dist/server/fake-main.js",
+    "demo:apps:daemon": "node dist/server/daemon-main.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
