@@ -55,6 +55,19 @@ export interface DaemonConfigFile {
   _help?: Record<string, string>;
   /** BTP WebSocket URL of the apex/connector. */
   btpUrl?: string;
+  /**
+   * Connector-PROXY base URL (devnet payment-proxy, e.g.
+   * `https://proxy.devnet.toonprotocol.dev`). When set, the daemon routes paid
+   * writes through the proxy's `POST /ilp` (ILP-over-HTTP) WITHOUT a BTP socket;
+   * `btpUrl` then becomes optional. Env override: `TOON_CLIENT_PROXY_URL`.
+   */
+  proxyUrl?: string;
+  /**
+   * Devnet faucet base URL (e.g. `https://faucet.devnet.toonprotocol.dev`),
+   * carried through to the ToonClient config for tooling/e2e funding. Env
+   * override: `TOON_CLIENT_FAUCET_URL`.
+   */
+  faucetUrl?: string;
   /** Town relay WS URL for FREE reads. */
   relayUrl?: string;
   /** Default ILP publish destination. Default `g.townhouse.town`. */
@@ -103,6 +116,10 @@ export interface DaemonConfigFile {
 export interface ResolvedDaemonConfig {
   httpPort: number;
   relayUrl: string;
+  /** Connector-proxy base URL (devnet payment-proxy), when configured. */
+  proxyUrl?: string;
+  /** Devnet faucet base URL, when configured. */
+  faucetUrl?: string;
   destination: string;
   feePerEvent: bigint;
   apex?: ApexNegotiationConfig;
@@ -181,16 +198,25 @@ export function resolveMnemonic(file: DaemonConfigFile): string {
 /**
  * Build the full resolved daemon config (file overlaid with env, mnemonic
  * resolved, ToonClientConfig assembled). Env overrides supported:
- *   TOON_CLIENT_BTP_URL, TOON_CLIENT_RELAY_URL,
- *   TOON_CLIENT_HTTP_PORT, TOON_CLIENT_NETWORK.
+ *   TOON_CLIENT_BTP_URL, TOON_CLIENT_PROXY_URL, TOON_CLIENT_FAUCET_URL,
+ *   TOON_CLIENT_RELAY_URL, TOON_CLIENT_HTTP_PORT, TOON_CLIENT_NETWORK,
+ *   TOON_CLIENT_DESTINATION.
  */
 export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const mnemonic = resolveMnemonic(file);
 
+  const proxyUrl = process.env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl;
+  const faucetUrl = process.env['TOON_CLIENT_FAUCET_URL'] ?? file.faucetUrl;
   const btpUrl = process.env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl;
-  if (!btpUrl) {
+
+  // Exactly one HTTP/ILP uplink is required: a connector PROXY (devnet
+  // ILP-over-HTTP, no BTP socket) OR a BTP url. The proxy path makes btpUrl
+  // optional — paid writes route through `POST /ilp` via HttpIlpClient.
+  if (!btpUrl && !proxyUrl) {
     throw new Error(
-      'No btpUrl configured. Set TOON_CLIENT_BTP_URL or add `btpUrl` to the config file.'
+      'No uplink configured. Set TOON_CLIENT_PROXY_URL (connector proxy, ' +
+        'ILP-over-HTTP) or TOON_CLIENT_BTP_URL (BTP socket), or add `proxyUrl`/' +
+        '`btpUrl` to the config file.'
     );
   }
   const relayUrl =
@@ -200,7 +226,10 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const httpPort = Number(
     process.env['TOON_CLIENT_HTTP_PORT'] ?? file.httpPort ?? 8787
   );
-  const destination = file.destination ?? 'g.townhouse.town';
+  const destination =
+    process.env['TOON_CLIENT_DESTINATION'] ??
+    file.destination ??
+    'g.townhouse.town';
   const feePerEvent = BigInt(file.feePerEvent ?? '1');
   const network = (process.env['TOON_CLIENT_NETWORK'] ?? file.network) as
     | ToonClientConfig['network']
@@ -217,21 +246,24 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const apexChannelStorePath = join(configDir(), 'apex-channels.json');
 
   const toonClientConfig: ToonClientConfig = {
-    // Required by validateConfig but unused at runtime (BTP transport is used).
-    connectorUrl: 'http://127.0.0.1:1',
+    // validateConfig requires connectorUrl OR proxyUrl. When only BTP is set
+    // we pass a dummy connectorUrl (unused at runtime — BTP transport is used);
+    // when a proxy is configured, `proxyUrl` satisfies the requirement and the
+    // client derives the `POST /ilp` endpoint + routes writes over HTTP.
+    ...(proxyUrl ? { proxyUrl } : { connectorUrl: 'http://127.0.0.1:1' }),
+    ...(faucetUrl ? { faucetUrl } : {}),
     mnemonic,
     mnemonicAccountIndex: file.mnemonicAccountIndex ?? 0,
     ilpInfo: {
       pubkey: '00'.repeat(32),
       ilpAddress: 'g.toon.client',
-      btpEndpoint: btpUrl,
+      btpEndpoint: btpUrl ?? '',
       assetCode: 'USD',
       assetScale: 6,
     },
     toonEncoder: encodeEventToToon,
     toonDecoder: decodeEventFromToon,
-    btpUrl,
-    btpAuthToken: '',
+    ...(btpUrl ? { btpUrl, btpAuthToken: '' } : {}),
     destinationAddress: destination,
     relayUrl: '', // reads use our own RelaySubscription, not bootstrap discovery
     knownPeers: [],
@@ -251,6 +283,8 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   return {
     httpPort,
     relayUrl,
+    ...(proxyUrl ? { proxyUrl } : {}),
+    ...(faucetUrl ? { faucetUrl } : {}),
     destination,
     feePerEvent,
     apex,

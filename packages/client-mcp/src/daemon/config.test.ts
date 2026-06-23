@@ -6,10 +6,13 @@ const MNEMONIC = 'test test test test test test test test test test test junk';
 const ENV_KEYS = [
   'TOON_CLIENT_MNEMONIC',
   'TOON_CLIENT_BTP_URL',
+  'TOON_CLIENT_PROXY_URL',
+  'TOON_CLIENT_FAUCET_URL',
   'TOON_CLIENT_RELAY_URL',
   'TOON_CLIENT_HTTP_PORT',
   'TOON_CLIENT_NETWORK',
   'TOON_CLIENT_CHAIN',
+  'TOON_CLIENT_DESTINATION',
   'TOON_CLIENT_KEYSTORE_PASSWORD',
 ];
 
@@ -52,8 +55,53 @@ describe('daemon config', () => {
     expect(readConfigFile('/nonexistent/toon-client/config.json')).toEqual({});
   });
 
-  it('resolveConfig requires a btpUrl', () => {
+  it('resolveConfig requires a btpUrl or proxyUrl', () => {
     expect(() => resolveConfig({ mnemonic: MNEMONIC })).toThrow(/btpUrl/);
+    expect(() => resolveConfig({ mnemonic: MNEMONIC })).toThrow(/PROXY_URL/);
+  });
+
+  it('proxyUrl satisfies the uplink requirement (no btpUrl needed)', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      destination: 'g.proxy',
+    });
+    expect(cfg.proxyUrl).toBe('https://proxy.devnet.toonprotocol.dev');
+    expect(cfg.destination).toBe('g.proxy');
+    // No BTP socket is configured on the proxy path.
+    expect(cfg.toonClientConfig.btpUrl).toBeUndefined();
+    expect(
+      (cfg.toonClientConfig as Record<string, unknown>)['proxyUrl']
+    ).toBe('https://proxy.devnet.toonprotocol.dev');
+    // connectorUrl is NOT injected as a dummy when proxyUrl is present.
+    expect(cfg.toonClientConfig.connectorUrl).toBeUndefined();
+  });
+
+  it('TOON_CLIENT_PROXY_URL / FAUCET_URL / DESTINATION env overrides', () => {
+    process.env['TOON_CLIENT_PROXY_URL'] = 'https://env-proxy/ilp';
+    process.env['TOON_CLIENT_FAUCET_URL'] = 'https://env-faucet';
+    process.env['TOON_CLIENT_DESTINATION'] = 'g.proxy.relay';
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      proxyUrl: 'https://file-proxy',
+      faucetUrl: 'https://file-faucet',
+      destination: 'g.file.dest',
+    });
+    expect(cfg.proxyUrl).toBe('https://env-proxy/ilp');
+    expect(cfg.faucetUrl).toBe('https://env-faucet');
+    expect(cfg.destination).toBe('g.proxy.relay');
+    expect(
+      (cfg.toonClientConfig as Record<string, unknown>)['faucetUrl']
+    ).toBe('https://env-faucet');
+  });
+
+  it('still injects a dummy connectorUrl on the BTP-only path', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.test:3000/btp',
+    });
+    expect(cfg.toonClientConfig.connectorUrl).toBe('http://127.0.0.1:1');
+    expect(cfg.proxyUrl).toBeUndefined();
   });
 
   it('resolveConfig builds a ToonClientConfig with defaults', () => {

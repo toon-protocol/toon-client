@@ -84,6 +84,7 @@ export {
   buildSettlementInfo,
   applyNetworkPresets,
   getNetworkStatus,
+  proxyIlpEndpoint,
 } from './config.js';
 
 // Pet DVM Utilities
@@ -111,6 +112,14 @@ export {
   type PetListingFilterOptions,
   type PetPurchaseRequestParams,
 } from './pet/index.js';
+
+// Devnet faucet helper
+export {
+  fundWallet,
+  type FaucetChain,
+  type FundWalletResult,
+  type FundWalletOptions,
+} from './faucet.js';
 
 // Arweave Blob Storage (kind:5094 DVM) helper
 export {
