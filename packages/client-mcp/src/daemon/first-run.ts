@@ -13,9 +13,8 @@
  *      a default password so the identity survives restarts with no env var.
  *      The mnemonic + derived addresses are printed ONCE for backup.
  *   2. **Transport scaffolding** — ensure `config.json` carries the transport
- *      knobs (`btpUrl`/`relayUrl`/`managedAnonProxy`) plus a `_help` block
- *      documenting direct-vs-`.anyone` selection, so the user can see what to
- *      point at.
+ *      knobs (`btpUrl`/`relayUrl`) plus a `_help` block documenting them, so the
+ *      user can see what to point at.
  *
  * This is all idempotent: on later runs an identity already exists, so nothing
  * is regenerated and the config is left untouched.
@@ -53,16 +52,11 @@ export function hasConfiguredIdentity(file: DaemonConfigFile): boolean {
 /** The `_help` block written into a scaffolded config to document transport. */
 const CONFIG_HELP = {
   transport:
-    'Point btpUrl/relayUrl at your apex. For an .anyone hidden service use ' +
-    'ws://<host>.anyone:3000/btp + ws://<host>.anyone:7100 — the daemon ' +
-    'auto-routes through a managed anon proxy. For a direct apex use ' +
-    'ws://<host>:3000/btp + ws://<host>:7100.',
+    'Point btpUrl/relayUrl at your apex, e.g. ws://<host>:3000/btp + ' +
+    'ws://<host>:7100.',
   btpUrl: 'REQUIRED. BTP WebSocket URL of the apex/connector for paid writes.',
   relayUrl:
     'Town relay WebSocket URL for FREE reads. Default ws://localhost:7100.',
-  managedAnonProxy:
-    'Optional override — leave unset to auto-infer from btpUrl (.anyone host → ' +
-    'managed anon proxy, anything else → direct).',
   keystorePath:
     'Auto-generated encrypted identity. Do not hand-edit; back up your seed phrase.',
 };
@@ -128,11 +122,7 @@ export async function scaffoldFirstRun(
 
   // --- 2. Transport scaffolding --------------------------------------------
   if (!existsSync(configPath)) {
-    // Fresh install: surface the transport knobs with guidance. We deliberately
-    // do NOT write a concrete `managedAnonProxy` — leaving it unset lets
-    // `resolveConfig` infer the transport from the btpUrl hostname (`.anyone` →
-    // managed anon proxy, anything else → direct). Writing `false` here would
-    // short-circuit that inference and break a later `.anyone` btpUrl.
+    // Fresh install: surface the transport knobs with guidance.
     updated = {
       _help: CONFIG_HELP,
       btpUrl: '',

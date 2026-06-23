@@ -8,7 +8,7 @@ import {
   validateMnemonic,
   deriveNostrKeyFromMnemonic,
 } from './keys/KeyDerivation.js';
-import type { ToonClientConfig, ClientTransportConfig } from './types.js';
+import type { ToonClientConfig } from './types.js';
 
 /**
  * Settlement info produced by buildSettlementInfo().
@@ -217,28 +217,6 @@ export function validateConfig(config: ToonClientConfig): void {
     }
   }
 
-  // Validate transport config
-  if (config.transport) {
-    if (config.transport.type === 'socks5') {
-      if (!config.transport.socksProxy?.startsWith('socks5h://')) {
-        throw new ValidationError(
-          'transport.socksProxy must use socks5h:// scheme to prevent DNS leaks. ' +
-            'The "h" suffix ensures .anyone hostnames are resolved by the proxy, not locally.'
-        );
-      }
-    } else if (config.transport.type === 'gateway') {
-      if (!config.transport.gatewayUrl) {
-        throw new ValidationError(
-          'transport.gatewayUrl is required for gateway transport'
-        );
-      }
-    } else if (config.transport.type !== 'direct') {
-      throw new ValidationError(
-        `Unknown transport type: "${(config.transport as { type: string }).type}"`
-      );
-    }
-  }
-
   // Validate chainRpcUrls keys match supportedChains when both present
   if (config.chainRpcUrls && config.supportedChains) {
     for (const chain of Object.keys(config.chainRpcUrls)) {
@@ -280,9 +258,6 @@ export type ResolvedConfig = Required<
     | 'channelStorePath'
     | 'knownPeers'
     | 'destinationAddress'
-    | 'transport'
-    | 'managedAnonProxy'
-    | 'managedAnonSocksPort'
   >
 > & {
   connector?: unknown;
@@ -300,14 +275,8 @@ export type ResolvedConfig = Required<
    * same index as the synchronously-resolved Nostr/EVM keys.
    */
   mnemonicAccountIndex?: number;
-  /** Transport privacy config (optional — defaults to direct). */
-  transport?: ClientTransportConfig;
   /** Named network tier, retained for `getNetworkStatus()`. */
   network?: ToonClientConfig['network'];
-  /** Self-managed `anon` SOCKS5h proxy opt-out (default auto). */
-  managedAnonProxy?: boolean;
-  /** Loopback SOCKS port for the managed `anon` daemon (default 9050). */
-  managedAnonSocksPort?: number;
   supportedChains?: string[];
   settlementAddresses?: Record<string, string>;
   preferredTokens?: Record<string, string>;

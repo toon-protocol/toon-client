@@ -7,7 +7,6 @@ const ENV_KEYS = [
   'TOON_CLIENT_MNEMONIC',
   'TOON_CLIENT_BTP_URL',
   'TOON_CLIENT_RELAY_URL',
-  'TOON_CLIENT_SOCKS',
   'TOON_CLIENT_HTTP_PORT',
   'TOON_CLIENT_NETWORK',
   'TOON_CLIENT_CHAIN',
@@ -66,96 +65,14 @@ describe('daemon config', () => {
     expect(cfg.relayUrl).toBe('ws://localhost:7100');
     expect(cfg.destination).toBe('g.townhouse.town');
     expect(cfg.feePerEvent).toBe(1n);
-    expect(cfg.toonClientConfig.transport).toEqual({ type: 'direct' });
     expect(cfg.toonClientConfig.btpUrl).toBe('ws://apex.test:3000/btp');
-    // No SOCKS + non-.anyone host → managed anon stays off.
-    expect(cfg.toonClientConfig.managedAnonProxy).toBe(false);
-  });
-
-  it('auto-enables managed anon proxy for .anyone BTP hosts and points reads at it', () => {
-    const cfg = resolveConfig({
-      mnemonic: MNEMONIC,
-      btpUrl: 'ws://abc.anyone:3000/btp',
-    });
-    expect(cfg.toonClientConfig.managedAnonProxy).toBe(true);
-    expect(cfg.toonClientConfig.managedAnonSocksPort).toBe(9050);
-    // BTP routes through the managed proxy (direct transport); free reads point
-    // at the same loopback SOCKS port so a `.anyone` relay is reachable.
-    expect(cfg.toonClientConfig.transport).toEqual({ type: 'direct' });
-    expect(cfg.socksProxy).toBe('socks5h://127.0.0.1:9050');
-  });
-
-  it('honors a custom managedAnonSocksPort for both client and reads', () => {
-    const cfg = resolveConfig({
-      mnemonic: MNEMONIC,
-      btpUrl: 'ws://abc.anyone:3000/btp',
-      managedAnonSocksPort: 9999,
-    });
-    expect(cfg.toonClientConfig.managedAnonSocksPort).toBe(9999);
-    expect(cfg.socksProxy).toBe('socks5h://127.0.0.1:9999');
-  });
-
-  it('infers a daemon-managed read proxy when the relay is .anyone but btp is direct', () => {
-    const cfg = resolveConfig({
-      mnemonic: MNEMONIC,
-      btpUrl: 'ws://direct-apex:3000/btp',
-      relayUrl: 'ws://relay.anyone:7100',
-    });
-    // BTP stays direct (the ToonClient does not start a proxy)...
-    expect(cfg.toonClientConfig.transport).toEqual({ type: 'direct' });
-    expect(cfg.toonClientConfig.managedAnonProxy).toBe(false);
-    // ...but the daemon must start its own read proxy and point reads at it.
-    expect(cfg.manageReadProxy).toBe(true);
-    expect(cfg.readProxySocksPort).toBe(9050);
-    expect(cfg.socksProxy).toBe('socks5h://127.0.0.1:9050');
-  });
-
-  it('does not manage a read proxy when both btp and relay are direct', () => {
-    const cfg = resolveConfig({
-      mnemonic: MNEMONIC,
-      btpUrl: 'ws://direct-apex:3000/btp',
-      relayUrl: 'ws://localhost:7100',
-    });
-    expect(cfg.manageReadProxy).toBe(false);
-    expect(cfg.readProxySocksPort).toBeUndefined();
-    expect(cfg.socksProxy).toBeUndefined();
-  });
-
-  it('lets the client own the proxy (no daemon read proxy) when btp is .anyone', () => {
-    const cfg = resolveConfig({
-      mnemonic: MNEMONIC,
-      btpUrl: 'ws://apex.anyone:3000/btp',
-      relayUrl: 'ws://relay.anyone:7100',
-    });
-    expect(cfg.toonClientConfig.managedAnonProxy).toBe(true);
-    expect(cfg.manageReadProxy).toBe(false); // client's proxy already serves reads
-    expect(cfg.socksProxy).toBe('socks5h://127.0.0.1:9050');
-  });
-
-  it('managedAnonProxy:false opts out even for a .anyone relay', () => {
-    const cfg = resolveConfig({
-      mnemonic: MNEMONIC,
-      btpUrl: 'ws://direct-apex:3000/btp',
-      relayUrl: 'ws://relay.anyone:7100',
-      managedAnonProxy: false,
-    });
-    expect(cfg.manageReadProxy).toBe(false);
-    expect(cfg.socksProxy).toBeUndefined();
-  });
-
-  it('uses a socks5 transport when a proxy is configured', () => {
-    const cfg = resolveConfig({
-      mnemonic: MNEMONIC,
-      btpUrl: 'ws://abc.anyone:3000/btp',
-      socksProxy: 'socks5h://127.0.0.1:9050',
-    });
-    expect(cfg.toonClientConfig.transport).toEqual({
-      type: 'socks5',
-      socksProxy: 'socks5h://127.0.0.1:9050',
-    });
-    // Explicit proxy disables the managed one.
-    expect(cfg.toonClientConfig.managedAnonProxy).toBe(false);
-    expect(cfg.socksProxy).toBe('socks5h://127.0.0.1:9050');
+    // The legacy anon/HS transport overlay is gone — no transport knobs survive.
+    expect(
+      (cfg.toonClientConfig as Record<string, unknown>)['transport']
+    ).toBeUndefined();
+    expect(
+      (cfg.toonClientConfig as Record<string, unknown>)['managedAnonProxy']
+    ).toBeUndefined();
   });
 
   it('env overrides win over the config file', () => {

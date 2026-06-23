@@ -140,7 +140,7 @@ export interface Http402ClientConfig {
   resolveClaim?: ClaimResolver;
   /**
    * Builds the {@link HttpIlpClient} for a resolved endpoint. Default: construct
-   * a new `HttpIlpClient({ httpEndpoint })`. Injectable for tests / SOCKS5.
+   * a new `HttpIlpClient({ httpEndpoint })`. Injectable for tests.
    */
   createIlpClient?: HttpIlpClientFactory;
   /**

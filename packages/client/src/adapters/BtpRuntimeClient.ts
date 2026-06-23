@@ -15,7 +15,7 @@ export interface BtpRuntimeClientConfig {
   maxRetries?: number;
   /** Delay between reconnection attempts in ms (default: 1000) */
   retryDelay?: number;
-  /** Custom WebSocket constructor (for SOCKS5 proxy support). */
+  /** Custom WebSocket constructor (for testing / custom transports). */
   createWebSocket?: (url: string) => WebSocket;
 }
 

@@ -14,14 +14,13 @@
  * relay + apex are the permanent DEFAULT targets and cannot be removed.
  *
  * Each apex bootstraps asynchronously and non-blocking: the connection comes up
- * in the background (the managed anon proxy alone can take 30–90s). Until ready,
- * writes against it report `bootstrapping` so tools surface "retry".
+ * in the background. Until ready, writes against it report `bootstrapping` so
+ * tools surface "retry".
  */
 
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
 import { decodeEventFromToon } from '@toon-protocol/core';
-import { startManagedAnonProxy } from '@toon-protocol/client';
 import type { ToonClientConfig } from '@toon-protocol/client';
 import { streamSwap } from '@toon-protocol/sdk/swap';
 import { RelaySubscription } from '../relay-subscription.js';
@@ -141,23 +140,12 @@ export interface ToonClientLike {
 }
 
 /** A started managed proxy: just the teardown handle the runner needs. */
-export interface ManagedProxyHandle {
-  stop(): Promise<void>;
-}
-
-/** Starts a managed `anon` read proxy on a loopback SOCKS port. */
-export type StartReadProxy = (opts: {
-  socksPort: number;
-  log?: (msg: string) => void;
-}) => Promise<ManagedProxyHandle>;
-
 /** Builds a `ToonClient` (or a fake) for a given resolved client config. */
 export type CreateClient = (config: ToonClientConfig) => ToonClientLike;
 
-/** Builds a `RelaySubscription` for a given relay URL + optional read proxy. */
+/** Builds a `RelaySubscription` for a given relay URL. */
 export type CreateRelay = (opts: {
   relayUrl: string;
-  socksProxy?: string;
   onEvent: (subId: string, event: NostrEvent) => void;
   logger?: (msg: string) => void;
 }) => RelaySubscription;
@@ -168,11 +156,6 @@ export interface ClientRunnerDeps {
   createClient: CreateClient;
   /** Factory producing a relay subscription (defaults to the real one). */
   createRelay?: CreateRelay;
-  /**
-   * Starts the daemon-managed read proxy (defaults to the real
-   * `startManagedAnonProxy`). Injected so tests avoid the anon download/spawn.
-   */
-  startReadProxy?: StartReadProxy;
   logger?: (msg: string) => void;
   /** Path to the dynamic-targets store (tests override). */
   targetsPath?: string;
@@ -212,7 +195,6 @@ export class ClientRunner {
   private readonly config: ResolvedDaemonConfig;
   private readonly createClient: CreateClient;
   private readonly createRelay: CreateRelay;
-  private readonly startReadProxy: StartReadProxy;
   private readonly log: (msg: string) => void;
   private readonly targetsPath?: string;
 
@@ -238,9 +220,6 @@ export class ClientRunner {
   private readonly defaultBtpUrl: string;
   private readonly defaultRelayUrl: string;
 
-  /** Teardown for the daemon-managed read proxy (btp-direct + relay-`.anyone`). */
-  private stopReadProxy: (() => Promise<void>) | undefined;
-  private readProxyError: string | undefined;
   private stopped = false;
   private started = false;
 
@@ -257,7 +236,6 @@ export class ClientRunner {
       ((opts) =>
         new RelaySubscription({
           relayUrl: opts.relayUrl,
-          ...(opts.socksProxy ? { socksProxy: opts.socksProxy } : {}),
           ...(opts.logger ? { logger: opts.logger } : {}),
           onEvent: opts.onEvent,
           // The TOON relay sends events TOON-encoded (text) on reads, not JSON.
@@ -265,18 +243,10 @@ export class ClientRunner {
             decodeEventFromToon(new TextEncoder().encode(raw)),
         }));
 
-    this.startReadProxy =
-      deps.startReadProxy ??
-      ((opts) =>
-        startManagedAnonProxy({
-          socksPort: opts.socksPort,
-          ...(opts.log ? { log: opts.log } : {}),
-        }));
-
     // Build the permanent config-seeded default relay + apex up front (not yet
     // started/bootstrapped) so `bootstrap()` works standalone (the daemon and
     // tests both rely on constructing then awaiting bootstrap()).
-    this.registerRelay(this.defaultRelayUrl, this.config.socksProxy);
+    this.registerRelay(this.defaultRelayUrl);
     const defaultApex = this.makeApex({
       btpUrl: this.defaultBtpUrl,
       client: this.createClient(this.config.toonClientConfig),
@@ -301,8 +271,6 @@ export class ClientRunner {
   start(): void {
     if (this.started) return;
     this.started = true;
-    // The managed read proxy is shared by every relay; start it once up front.
-    if (this.config.manageReadProxy) void this.bringUpReadProxy();
     for (const relay of this.relays.values()) relay.start();
     void this.bootstrap();
     this.replayPersistedTargets();
@@ -322,15 +290,11 @@ export class ClientRunner {
    * merged buffer and replaying active fan-out subscriptions. Does NOT start the
    * socket — callers start it (so construction stays side-effect-free for tests).
    */
-  private registerRelay(
-    relayUrl: string,
-    socksProxy?: string
-  ): RelaySubscription {
+  private registerRelay(relayUrl: string): RelaySubscription {
     const existing = this.relays.get(relayUrl);
     if (existing) return existing;
     const relay = this.createRelay({
       relayUrl,
-      ...(socksProxy ? { socksProxy } : {}),
       logger: this.log,
       onEvent: (subId, event) => this.pushMerged(relayUrl, subId, event),
     });
@@ -342,17 +306,11 @@ export class ClientRunner {
   }
 
   /**
-   * Add a relay read target at runtime. `.anyone` relays reuse the managed read
-   * proxy (started here if needed). Persisted unless `persist` is false.
+   * Add a relay read target at runtime. Persisted unless `persist` is false.
    */
   async addRelay(relayUrl: string, persist = true): Promise<void> {
     if (this.relays.has(relayUrl)) return;
-    let socksProxy = this.config.socksProxy;
-    if (isAnyoneHost(relayUrl) && !socksProxy) {
-      await this.ensureReadProxy();
-      socksProxy = `socks5h://127.0.0.1:${this.config.readProxySocksPort ?? 9050}`;
-    }
-    const relay = this.registerRelay(relayUrl, socksProxy);
+    const relay = this.registerRelay(relayUrl);
     relay.start();
     if (persist) saveRelayTarget(relayUrl, this.targetsPath);
   }
@@ -643,37 +601,6 @@ export class ClientRunner {
     }
   }
 
-  // ── Shared read proxy ──────────────────────────────────────────────────────
-
-  private async ensureReadProxy(): Promise<void> {
-    if (this.stopReadProxy) return;
-    await this.bringUpReadProxy();
-  }
-
-  private async bringUpReadProxy(): Promise<void> {
-    if (this.stopReadProxy) return;
-    const socksPort = this.config.readProxySocksPort ?? 9050;
-    try {
-      this.log(
-        `[runner] starting managed read proxy on 127.0.0.1:${socksPort}`
-      );
-      const proxy = await this.startReadProxy({
-        socksPort,
-        log: (m) => this.log(`[anon] ${m}`),
-      });
-      if (this.stopped) {
-        await proxy.stop();
-        return;
-      }
-      this.stopReadProxy = () => proxy.stop();
-      this.readProxyError = undefined;
-      this.log('[runner] managed read proxy ready');
-    } catch (err) {
-      this.readProxyError = err instanceof Error ? err.message : String(err);
-      this.log(`[runner] managed read proxy failed: ${this.readProxyError}`);
-    }
-  }
-
   // ── Channel / negotiation helpers (per-apex) ───────────────────────────────
 
   /** Open the apex channel — or, on a restart, RESUME the existing one. */
@@ -809,10 +736,7 @@ export class ClientRunner {
         minaAddress: safe(() => client?.getMinaAddress()),
       },
       transport: {
-        type: this.config.socksProxy ? 'socks5' : 'direct',
-        ...(this.config.socksProxy
-          ? { socksProxy: this.config.socksProxy }
-          : {}),
+        type: 'direct',
         ...(apex ? { btpUrl: apex.btpUrl } : {}),
       },
       relay: {
@@ -820,7 +744,6 @@ export class ClientRunner {
         connected: relay?.isConnected() ?? false,
         buffered: relay?.bufferedCount() ?? 0,
         subscriptions: relay?.activeSubscriptions() ?? [],
-        ...(this.readProxyError ? { proxyError: this.readProxyError } : {}),
       },
       ...(network ? { network } : {}),
       ...(apex?.lastError ? { lastError: apex.lastError } : {}),
@@ -1098,19 +1021,11 @@ export class ClientRunner {
     };
   }
 
-  /** Graceful teardown: close every relay + stop every apex client + read proxy. */
+  /** Graceful teardown: close every relay + stop every apex client. */
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
     for (const relay of this.relays.values()) relay.close();
-    if (this.stopReadProxy) {
-      try {
-        await this.stopReadProxy();
-      } catch (err) {
-        this.log(`[runner] read proxy stop error: ${errMsg(err)}`);
-      }
-      this.stopReadProxy = undefined;
-    }
     for (const apex of this.apexes.values()) {
       try {
         await apex.client.stop();
@@ -1137,7 +1052,7 @@ export class ClientRunner {
     if (!apex.ready) {
       throw new NotReadyError(
         apex.bootstrapping
-          ? 'Apex is still bootstrapping (BTP/anon coming up) — retry shortly.'
+          ? 'Apex is still bootstrapping (BTP session coming up) — retry shortly.'
           : (apex.lastError ?? 'Apex is not ready.')
       );
     }
@@ -1252,12 +1167,4 @@ function sanitize(s: string): string {
     .replace(/[^a-zA-Z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80);
-}
-
-function isAnyoneHost(url: string): boolean {
-  try {
-    return new URL(url).hostname.endsWith('.anyone');
-  } catch {
-    return false;
-  }
 }

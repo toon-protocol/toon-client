@@ -55,7 +55,6 @@
     "@toon-protocol/mina-zkapp": "^0.1.0",
     "mina-signer": "^3.0.0",
     "o1js": "2.14.0",
-    "socks-proxy-agent": "^8.0.5",
     "ws": "^8.0.0"
   },
   "devDependencies": {

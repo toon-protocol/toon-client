@@ -27,8 +27,8 @@ export interface StatusResponse {
   /** Daemon process uptime, ms. */
   uptimeMs: number;
   /**
-   * True while the managed anon proxy / BTP session / channel are still coming
-   * up. Tools should surface "bootstrapping — retry" rather than blocking.
+   * True while the BTP session / channel are still coming up. Tools should
+   * surface "bootstrapping — retry" rather than blocking.
    */
   bootstrapping: boolean;
   /** True once the client has started and a channel is open (ready to publish). */
@@ -42,8 +42,7 @@ export interface StatusResponse {
     minaAddress?: string;
   };
   transport: {
-    type: 'direct' | 'socks5' | 'gateway';
-    socksProxy?: string;
+    type: 'direct';
     btpUrl?: string;
   };
   relay: {
@@ -53,13 +52,6 @@ export interface StatusResponse {
     buffered: number;
     /** Active subscription ids. */
     subscriptions: string[];
-    /**
-     * Error from the daemon-managed read proxy, if any. Set only in the
-     * btp-direct + relay-`.anyone` case where the daemon starts its own `anon`
-     * proxy for reads; a failure here means hidden-service reads are down while
-     * direct paid writes are unaffected.
-     */
-    proxyError?: string;
   };
   /** Per-chain settlement status when a named `network` tier is configured. */
   network?: ChainStatus[];
@@ -330,7 +322,7 @@ export interface HttpFetchPaidResponse {
 
 /** `POST /relays` — add a relay READ target (fans into all fan-out reads). */
 export interface AddRelayRequest {
-  /** Relay WS URL, e.g. `ws://host:7100` or a `.anyone` hidden service. */
+  /** Relay WS URL, e.g. `ws://host:7100`. */
   relayUrl: string;
 }
 

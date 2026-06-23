@@ -325,41 +325,6 @@ export interface ToonClientConfig {
   channelStorePath?: string;
 
   // ============================================================================
-  // TRANSPORT PRIVACY (optional)
-  // ============================================================================
-
-  /**
-   * Transport configuration for privacy-preserving connections.
-   *
-   * - `direct` (default): No privacy overlay, connect directly.
-   * - `socks5`: Route connections through a SOCKS5 proxy (Node.js only).
-   *   Requires `socks5h://` scheme for DNS leak prevention.
-   * - `gateway`: Route connections through an ator gateway URL (browser-compatible).
-   *   The gateway proxies through ator server-side.
-   */
-  transport?: ClientTransportConfig;
-
-  /**
-   * Self-managed `anon` (anyone-protocol / ATOR) SOCKS5h proxy (Node.js only).
-   *
-   * When the `btpUrl` host ends in `.anyone` and NO explicit proxy is configured
-   * (`transport.socksProxy` / `transport.type === 'gateway'`) and the
-   * `ANYONE_PROXY_URLS` env var is unset, the SDK auto-downloads + spawns its own
-   * `anon` daemon, waits for it to bootstrap + bind a loopback SOCKS5 port, and
-   * routes BTP/HTTP through it — ZERO manual proxy setup. `client.stop()` tears
-   * the daemon down.
-   *
-   * - `undefined` (default): auto — managed proxy starts for `.anyone` hosts.
-   * - `false`: opt out — never auto-start (you must supply your own proxy).
-   *
-   * Ignored in browser bundles (the node-only daemon module is never loaded).
-   */
-  managedAnonProxy?: boolean;
-
-  /** Loopback SOCKS port the managed `anon` daemon binds. Default 9050. */
-  managedAnonSocksPort?: number;
-
-  // ============================================================================
   // NETWORK (optional with defaults)
   // ============================================================================
 
@@ -479,22 +444,3 @@ export interface SignedBalanceProof extends BalanceProofParams {
     tokenId: string;
   };
 }
-
-/**
- * Transport configuration for privacy-preserving connections.
- *
- * Node.js: Use `socks5` to route WebSocket and HTTP through a SOCKS5 proxy.
- * Browser: Use `gateway` to route through a server-side ator gateway.
- */
-export type ClientTransportConfig =
-  | { type: 'direct' }
-  | {
-      type: 'socks5';
-      /** SOCKS5 proxy URL. MUST use `socks5h://` scheme (DNS leak prevention). */
-      socksProxy: string;
-    }
-  | {
-      type: 'gateway';
-      /** Gateway base URL that proxies connections through ator server-side. */
-      gatewayUrl: string;
-    };
