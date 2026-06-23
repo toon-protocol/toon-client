@@ -12,6 +12,7 @@ import { socialAtoms } from './social.js';
 import { mediaAtoms } from './media.js';
 import { forgeAtoms } from './forge.js';
 import { interactiveAtoms } from './interactive.js';
+import { defiAtoms } from './defi.js';
 import { fallbackAtom, GENERIC_ATOM_ID } from './fallback.js';
 
 const ALL_ATOMS: Atom[] = [
@@ -20,6 +21,7 @@ const ALL_ATOMS: Atom[] = [
   ...mediaAtoms,
   ...forgeAtoms,
   ...interactiveAtoms,
+  ...defiAtoms,
   fallbackAtom,
 ];
 

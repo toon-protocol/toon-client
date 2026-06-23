@@ -17,7 +17,7 @@ describe('example ViewSpecs', () => {
 
   it('covers the headline journeys', () => {
     expect(EXAMPLE_VIEWSPECS.map((e) => e.name)).toEqual(
-      expect.arrayContaining(['feed', 'profile', 'thread', 'forge', 'media'])
+      expect.arrayContaining(['feed', 'profile', 'thread', 'forge', 'media', 'swap'])
     );
   });
 });

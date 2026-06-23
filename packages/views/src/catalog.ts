@@ -8,6 +8,8 @@
  * `@toon-protocol/client-mcp` never imports the React bundle.
  */
 
+import { OPEN_CHANNEL_TOOL, SWAP_TOOL } from './tool-names.js';
+
 export interface AtomWriteMeta {
   name: string;
   spendy?: boolean;
@@ -83,6 +85,36 @@ export const ATOM_CATALOG: AtomMeta[] = [
     description: 'NIP-34 kind:1622 comment list; optional "comment" action.',
     kinds: [1622],
     writes: [{ name: 'toon_publish_unsigned' }],
+  },
+
+  // defi
+  {
+    id: 'channel-card',
+    description:
+      'Read-only: shows tracked payment channels (channelId, nonce, cumulative ' +
+      'amount). Optional "open" action pre-opens a channel.',
+    kinds: [],
+    writes: [{ name: OPEN_CHANNEL_TOOL }],
+    propsSchema: { destination: 'string (optional ILP destination for "open")' },
+  },
+  {
+    id: 'swap-form',
+    description:
+      'Interactive: collects swap params and fires a cross-asset swap. Spendy.',
+    writes: [{ name: SWAP_TOOL, spendy: true }],
+    propsSchema: {
+      destination: 'string (mill ILP destination)',
+      millPubkey: 'string (mill 64-char hex Nostr pubkey)',
+      pair: 'SwapPair ({ from, to, rate, … })',
+      chainRecipient: 'string (payout address on pair.to.chain)',
+      label: 'string (submit button label)',
+    },
+  },
+  {
+    id: 'settlement-receipt',
+    description:
+      'Read-only render of a SwapResponse / SwapClaim[] (target amount, chain ' +
+      'claim, channelId, tx/claim id, nonce). No writes.',
   },
 
   // fallback

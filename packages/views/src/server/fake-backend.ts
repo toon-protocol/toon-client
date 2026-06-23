@@ -10,6 +10,8 @@ import { type NostrEvent, type NostrFilter } from '../types.js';
 import {
   type AppBackend,
   type PublishResult,
+  type SwapRequest,
+  type SwapResponse,
   type UploadResult,
 } from './backend.js';
 
@@ -116,6 +118,47 @@ export class FakeBackend implements AppBackend {
       ev({ id, kind, pubkey: SELF, content: req.caption ?? '', tags: mediaTags, created_at: ++this.clock })
     );
     return Promise.resolve({ eventId: id, url, txId, channelId: 'fake-channel', nonce: this.seq });
+  }
+
+  /**
+   * Pre-open a payment channel. Deterministic id so the example renders the
+   * same receipt every time. No keys, no settlement — the real daemon (#16)
+   * delegates to `control-client.openChannel`.
+   */
+  openChannel(req: { destination?: string }): Promise<{ channelId: string }> {
+    const channelId = `fake-channel-${++this.seq}${req.destination ? `-${req.destination}` : ''}`;
+    return Promise.resolve({ channelId });
+  }
+
+  /**
+   * Run a swap. Returns a canned `SwapResponse` with one `SwapClaim` derived
+   * deterministically from the request (rate applied to the source amount) so
+   * the settlement receipt is reproducible. No signing happens here.
+   */
+  swap(req: SwapRequest): Promise<SwapResponse> {
+    const seq = ++this.seq;
+    const rate = Number.parseFloat(req.pair.rate) || 1;
+    const source = req.amount;
+    const target = String(Math.floor((Number.parseFloat(source) || 0) * rate));
+    const claim: SwapResponse['claims'][number] = {
+      sourceAmount: source,
+      targetAmount: target,
+      claim: Buffer.from(`fake-claim-${seq}`).toString('base64'),
+      channelId: `fake-target-channel-${seq}`,
+      recipient: req.chainRecipient,
+      millSignerAddress: '0x000000000000000000000000000000000000dEaD',
+      claimId: `fake-claim-id-${seq}`,
+      nonce: String(seq),
+      cumulativeAmount: target,
+    };
+    return Promise.resolve({
+      accepted: true,
+      packetsAccepted: req.packetCount ?? 1,
+      claims: [claim],
+      cumulativeSource: source,
+      cumulativeTarget: target,
+      state: 'completed',
+    });
   }
 
   /** Test helper: total events currently in the store. */
