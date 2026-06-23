@@ -34,6 +34,7 @@ import {
   PUBLISH_TOOL,
   QUERY_TOOL,
   RENDER_TOOL,
+  STATUS_TOOL,
   SWAP_TOOL,
   UPLOAD_TOOL,
   WRITE_TOOLS,
@@ -126,6 +127,26 @@ export function registerToonApps(server: McpServer, opts: RegisterToonAppsOption
     async (args: { filter: Record<string, unknown> }) => {
       const events = await opts.backend.query(args.filter as NostrFilter);
       return result(`${events.length} event(s).`, { events });
+    }
+  );
+
+  // toon_status — free read: the current pay-to-write fee + settlement chain.
+  // The confirm UX pulls the fee from here (never hardcoded); when the real
+  // daemon backend (#16) is wired, the same UI shows the live fee/chain.
+  server.registerTool(
+    STATUS_TOOL,
+    {
+      description:
+        'Free read: report the current pay-to-write fee (feePerEvent) and ' +
+        'settlement chain. Used by the confirm UX to show the fee being paid.',
+      inputSchema: {},
+    },
+    async () => {
+      const status = await opts.backend.status();
+      return result(
+        `Fee ${status.feePerEvent}${status.asset ? ` ${status.asset}` : ''} per event on ${status.settlementChain}.`,
+        { ...status }
+      );
     }
   );
 

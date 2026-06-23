@@ -21,8 +21,8 @@ import {
   defaultAtomForKind,
   fallbackAtomFor,
 } from './atoms/registry.js';
-import { type AtomAction } from './atoms/types.js';
-import { QUERY_TOOL, WRITE_TOOLS } from './tool-names.js';
+import { type ActionOutcome, type AtomAction, type AtomStatus } from './atoms/types.js';
+import { QUERY_TOOL, STATUS_TOOL, WRITE_TOOLS } from './tool-names.js';
 
 // Re-export so existing importers (and tests) can keep importing from the runtime.
 export { QUERY_TOOL, WRITE_TOOLS } from './tool-names.js';
@@ -54,7 +54,7 @@ function useBind(bind: ViewBind | undefined, bridge: ViewBridge): NostrEvent[] {
 function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAction> {
   const actions: Record<string, AtomAction> = {};
   for (const [name, ref] of Object.entries(node.actions ?? {})) {
-    actions[name] = async (runtimeArgs) => {
+    actions[name] = async (runtimeArgs): Promise<ActionOutcome> => {
       const args: Record<string, unknown> = { ...(ref.args ?? {}), ...(runtimeArgs ?? {}) };
       if (ref.spendy) {
         const label = ref.confirmLabel ?? 'This action spends to publish. Continue?';
@@ -66,7 +66,7 @@ function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAc
         const ok = await confirmFn(label);
         if (!ok) {
           bridge.notifyModel(`Action "${name}" cancelled.`);
-          return false;
+          return { ok: false, error: 'cancelled' };
         }
         args['spendy'] = true;
       }
@@ -74,7 +74,19 @@ function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAc
       bridge.notifyModel(
         res.ok ? `Action "${name}" completed.` : `Action "${name}" failed: ${res.error ?? 'unknown'}`
       );
-      return res.ok;
+      // Surface the real published id so atoms can render an accurate receipt.
+      // The publish/upload tools return `{ eventId, … }` as `structuredContent`,
+      // which the bridge carries on `ToolOutcome.data`.
+      const eventId =
+        res.data && typeof res.data === 'object' && 'eventId' in res.data
+          ? String((res.data as { eventId: unknown }).eventId)
+          : undefined;
+      return {
+        ok: res.ok,
+        ...(eventId ? { eventId } : {}),
+        ...(res.data !== undefined ? { data: res.data } : {}),
+        ...(res.error ? { error: res.error } : {}),
+      };
     };
   }
   return actions;
@@ -95,10 +107,25 @@ function EventAtom({ event }: { event: NostrEvent }): ReactNode {
   );
 }
 
+/** Read the live pay-to-write status (`toon_status`) for the fee-confirm UX. */
+function buildReadStatus(bridge: ViewBridge): () => Promise<AtomStatus> {
+  return async () => {
+    const res = await bridge.callTool(STATUS_TOOL, {});
+    const data = (res.data ?? {}) as Partial<AtomStatus>;
+    return {
+      feePerEvent: typeof data.feePerEvent === 'string' ? data.feePerEvent : '0',
+      settlementChain:
+        typeof data.settlementChain === 'string' ? data.settlementChain : 'unknown',
+      ...(typeof data.asset === 'string' ? { asset: data.asset } : {}),
+    };
+  };
+}
+
 function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): ReactNode {
   const atom = ATOMS.get(node.atom) ?? fallbackAtomFor();
   const events = useBind(node.bind, bridge);
   const actions = useMemo(() => buildActions(node, bridge), [node, bridge]);
+  const readStatus = useMemo(() => buildReadStatus(bridge), [bridge]);
 
   if (node.bind?.kindAuto) {
     return <>{events.map((e) => <EventAtom key={e.id} event={e} />)}</>;
@@ -110,6 +137,7 @@ function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): Rea
       events={events}
       props={node.props ?? {}}
       actions={actions}
+      readStatus={readStatus}
       renderEvent={(e) => <EventAtom key={e.id} event={e} />}
     >
       {node.children?.map((child, i) => <NodeView key={i} node={child} bridge={bridge} />)}

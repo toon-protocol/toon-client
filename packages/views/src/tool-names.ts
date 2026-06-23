@@ -19,6 +19,8 @@ export const UPLOAD_TOOL = 'toon_upload_media';
 export const OPEN_CHANNEL_TOOL = 'toon_open_channel';
 /** Spendy: run a cross-asset swap; daemon signs the source claim, returns a target claim. */
 export const SWAP_TOOL = 'toon_swap';
+/** Read-only: report the current pay-to-write fee + settlement chain (no payment). */
+export const STATUS_TOOL = 'toon_status';
 
 /** The single MCP-app UI resource the host renders. */
 export const APP_RESOURCE_URI = 'ui://toon/app';

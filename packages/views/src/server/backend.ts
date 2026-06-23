@@ -15,6 +15,27 @@ export interface AppReadBackend {
   query(filter: NostrFilter): Promise<NostrEvent[]>;
 }
 
+/**
+ * Read-only pay-to-write status. The confirm UX shows the live fee + settlement
+ * chain pulled from here (never hardcoded). A structural subset of the daemon's
+ * `StatusResponse` — only the fields the UI needs. The `FakeBackend` returns a
+ * deterministic stub; the real `DaemonAppBackend` (#16) maps the live daemon
+ * `feePerEvent` / `settlementChain`, with no atom/ViewSpec change.
+ */
+export interface AppStatus {
+  /** Per-event fee in base (micro) units, as a decimal string. */
+  feePerEvent: string;
+  /** The chain family a paid write settles on (e.g. `'base'`, `'evm'`). */
+  settlementChain: string;
+  /** Optional human-readable asset code for the fee (e.g. `'USDC'`). */
+  asset?: string;
+}
+
+/** Read-only status side: report the current fee + settlement chain. */
+export interface AppStatusBackend {
+  status(): Promise<AppStatus>;
+}
+
 export interface PublishResult {
   eventId: string;
   channelId?: string;
@@ -133,4 +154,8 @@ export interface AppDefiBackend {
   swap(req: SwapRequest): Promise<SwapResponse>;
 }
 
-export interface AppBackend extends AppReadBackend, AppWriteBackend, AppDefiBackend {}
+export interface AppBackend
+  extends AppReadBackend,
+    AppWriteBackend,
+    AppDefiBackend,
+    AppStatusBackend {}
