@@ -33,6 +33,30 @@ export function feedView(): ViewSpec {
   };
 }
 
+/**
+ * The headline pay-to-write journey: a `pay-confirm` atom that previews the
+ * note, shows the live fee + settlement chain (pulled from `toon_status`), and
+ * on Confirm fires `toon_publish_unsigned` and renders the receipt with the real
+ * eventId — "the message is the money". Below it, the live note feed so the
+ * just-posted note shows up.
+ */
+export function payToWriteView(): ViewSpec {
+  return {
+    title: 'Pay to write',
+    root: {
+      atom: 'stack',
+      children: [
+        {
+          atom: 'pay-confirm',
+          props: { label: 'Pay to post' },
+          actions: { confirm: { tool: PUBLISH_TOOL, args: { kind: 1 } } },
+        },
+        { atom: 'note-card', bind: { query: buildFeedFilter(undefined, 50), kindAuto: true } },
+      ],
+    },
+  };
+}
+
 /** A profile page: header + follow button + that author's notes. */
 export function profileView(pubkey: string): ViewSpec {
   return {
@@ -139,6 +163,7 @@ export interface ExampleView {
 /** Concrete examples (with placeholder ids) for the agent to pattern-match on. */
 export const EXAMPLE_VIEWSPECS: ExampleView[] = [
   { name: 'feed', description: 'Social feed with a post composer.', spec: feedView() },
+  { name: 'pay-to-write', description: 'Compose → confirm fee/chain → publish → receipt (the message is the money).', spec: payToWriteView() },
   { name: 'profile', description: 'A profile header, follow button, and the author’s notes.', spec: profileView('<pubkey-hex>') },
   { name: 'thread', description: 'A note with its replies and a reply composer.', spec: threadView('<root-event-id>') },
   { name: 'forge', description: 'Tabbed repos + issues (NIP-34).', spec: forgeView('<owner-pubkey>', '<repo-id>') },

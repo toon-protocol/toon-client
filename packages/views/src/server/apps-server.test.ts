@@ -52,6 +52,7 @@ describe('TOON apps MCP server (fake-backed)', () => {
         'toon_upload_media',
         'toon_open_channel',
         'toon_swap',
+        'toon_status',
       ])
     );
     const render = tools.find((t) => t.name === 'toon_render');
@@ -64,6 +65,15 @@ describe('TOON apps MCP server (fake-backed)', () => {
     const atoms = structured(res)['atoms'] as { id: string }[];
     expect(atoms.some((a) => a.id === 'note-card')).toBe(true);
     expect(atoms.some((a) => a.id === 'generic-event')).toBe(true);
+  });
+
+  it('toon_status returns the fee + settlement chain (deterministic stub)', async () => {
+    const res = await client.callTool({ name: 'toon_status', arguments: {} });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    const sc = structured(res);
+    expect(sc['feePerEvent']).toBe('1');
+    expect(sc['settlementChain']).toBe('base');
+    expect(sc['asset']).toBe('USDC');
   });
 
   it('toon_query reads seeded events from the fake relay', async () => {

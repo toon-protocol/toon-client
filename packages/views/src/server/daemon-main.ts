@@ -35,6 +35,7 @@ import {
   type DaemonPublishUnsignedRequest,
   type DaemonQueryRequest,
   type DaemonQueryResponse,
+  type DaemonStatusResponse,
   type DaemonUploadMediaRequest,
   type DaemonUploadMediaResponse,
 } from './daemon-backend.js';
@@ -124,7 +125,46 @@ function makeControl(baseUrl: string): DaemonControl {
     return json as T;
   }
 
+  async function get<T>(path: string): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(`${root}${path}`, { signal: controller.signal });
+    } catch (err) {
+      throw new DaemonUnreachableError(root, err);
+    } finally {
+      clearTimeout(timer);
+    }
+    const text = await res.text();
+    const json = text ? (JSON.parse(text) as unknown) : undefined;
+    if (!res.ok) {
+      const e = (json ?? {}) as { error?: string; detail?: string };
+      throw new Error(
+        `${path} failed (HTTP ${res.status}): ${e.error ?? 'unknown'}${
+          e.detail ? ` — ${e.detail}` : ''
+        }`
+      );
+    }
+    return json as T;
+  }
+
   return {
+    // GET /status returns the daemon `StatusResponse`; map the fields the
+    // confirm UX needs. `settlementChain` is reported directly; `feePerEvent`
+    // is the daemon's configured per-event fee (default '1' if not surfaced).
+    status: async (): Promise<DaemonStatusResponse> => {
+      const s = await get<{
+        settlementChain?: string;
+        feePerEvent?: string;
+        asset?: string;
+      }>('/status');
+      return {
+        feePerEvent: s.feePerEvent ?? '1',
+        settlementChain: s.settlementChain ?? 'unknown',
+        ...(s.asset ? { asset: s.asset } : {}),
+      };
+    },
     query: (b: DaemonQueryRequest) =>
       post<DaemonQueryResponse>('/query', b),
     publishUnsigned: (b: DaemonPublishUnsignedRequest) =>

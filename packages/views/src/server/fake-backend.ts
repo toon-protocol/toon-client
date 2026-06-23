@@ -9,6 +9,7 @@
 import { type NostrEvent, type NostrFilter } from '../types.js';
 import {
   type AppBackend,
+  type AppStatus,
   type PublishResult,
   type SwapRequest,
   type SwapResponse,
@@ -71,6 +72,15 @@ export class FakeBackend implements AppBackend {
   private seq = 0;
   /** Fixed base so ids/timestamps are deterministic across a session. */
   private clock = 1_700_001_000;
+
+  /**
+   * Deterministic pay-to-write status stub. The confirm UX renders this fee +
+   * chain so its snapshot is stable; the real daemon (#16) returns live values
+   * with no UI change. No payment, no network.
+   */
+  status(): Promise<AppStatus> {
+    return Promise.resolve({ feePerEvent: '1', settlementChain: 'base', asset: 'USDC' });
+  }
 
   query(filter: NostrFilter): Promise<NostrEvent[]> {
     const out = this.events

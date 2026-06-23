@@ -10,6 +10,7 @@ import {
   type DaemonPublishUnsignedRequest,
   type DaemonQueryRequest,
   type DaemonQueryResponse,
+  type DaemonStatusResponse,
   type DaemonUploadMediaRequest,
   type DaemonUploadMediaResponse,
 } from './daemon-backend.js';
@@ -42,6 +43,10 @@ class FakeDaemonControl implements DaemonControl {
       sig: 'sig',
     },
   ];
+
+  status(): Promise<DaemonStatusResponse> {
+    return Promise.resolve({ feePerEvent: '7', settlementChain: 'evm', asset: 'USDC' });
+  }
 
   query(body: DaemonQueryRequest): Promise<DaemonQueryResponse> {
     this.queries.push(body);
@@ -140,6 +145,14 @@ describe('DaemonAppBackend (daemon-backed apps surface)', () => {
         'toon_upload_media',
       ])
     );
+  });
+
+  it('toon_status maps the daemon status onto AppStatus', async () => {
+    const res = await client.callTool({ name: 'toon_status', arguments: {} });
+    const sc = structured(res);
+    expect(sc['feePerEvent']).toBe('7');
+    expect(sc['settlementChain']).toBe('evm');
+    expect(sc['asset']).toBe('USDC');
   });
 
   it('toon_query forwards the filter to control.query and returns its events', async () => {

@@ -57,6 +57,16 @@ export const ATOM_CATALOG: AtomMeta[] = [
     writes: [{ name: 'toon_publish_unsigned' }],
     propsSchema: { placeholder: 'string', label: 'string' },
   },
+  {
+    id: 'pay-confirm',
+    description:
+      'Pay-to-write moment: compose a note, then a confirm step shows the live ' +
+      'fee + settlement chain (from toon_status) with Confirm/Cancel. Confirm ' +
+      'fires the "confirm" action (toon_publish_unsigned) and renders a receipt ' +
+      'with the published eventId — "the message is the money".',
+    writes: [{ name: 'toon_publish_unsigned' }],
+    propsSchema: { placeholder: 'string', label: 'string (compose button label)' },
+  },
 
   // media
   {

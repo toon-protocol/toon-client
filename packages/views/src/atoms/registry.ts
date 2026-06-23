@@ -52,4 +52,4 @@ export function fallbackAtomFor(): Atom {
 }
 
 export { GENERIC_ATOM_ID };
-export { type Atom, type AtomRenderProps, type AtomAction } from './types.js';
+export { type Atom, type AtomRenderProps, type AtomAction, type ActionOutcome } from './types.js';

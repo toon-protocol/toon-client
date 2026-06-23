@@ -15,6 +15,7 @@
 import { type NostrEvent, type NostrFilter } from '../types.js';
 import {
   type AppBackend,
+  type AppStatus,
   type PublishResult,
   type SwapRequest,
   type SwapResponse,
@@ -59,6 +60,18 @@ export interface DaemonUploadMediaResponse extends DaemonPublishResponse {
 }
 
 /**
+ * Read-only pay-to-write status from the daemon. A structural subset of the
+ * client-mcp `StatusResponse` — only the fields the confirm UX needs. The
+ * fetch-based control in {@link ./daemon-main daemon-main.ts} maps the daemon's
+ * `/status` response onto this shape.
+ */
+export interface DaemonStatusResponse {
+  feePerEvent: string;
+  settlementChain: string;
+  asset?: string;
+}
+
+/**
  * Minimal structural control-plane port the {@link DaemonAppBackend} needs.
  *
  * Intentionally a structural subset of the client-mcp `ControlClient`: that
@@ -67,6 +80,7 @@ export interface DaemonUploadMediaResponse extends DaemonPublishResponse {
  * tolerated — only the fields mapped below are read.
  */
 export interface DaemonControl {
+  status(): Promise<DaemonStatusResponse>;
   query(body: DaemonQueryRequest): Promise<DaemonQueryResponse>;
   publishUnsigned(
     body: DaemonPublishUnsignedRequest
@@ -85,6 +99,16 @@ export interface DaemonControl {
  */
 export class DaemonAppBackend implements AppBackend {
   constructor(private readonly control: DaemonControl) {}
+
+  /** Read-only fee/chain — no payment. Maps the daemon status onto `AppStatus`. */
+  async status(): Promise<AppStatus> {
+    const res = await this.control.status();
+    return {
+      feePerEvent: res.feePerEvent,
+      settlementChain: res.settlementChain,
+      ...(res.asset ? { asset: res.asset } : {}),
+    };
+  }
 
   /** Free read — no payment. Maps `QueryResponse.events` → `NostrEvent[]`. */
   async query(filter: NostrFilter): Promise<NostrEvent[]> {

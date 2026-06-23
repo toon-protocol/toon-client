@@ -44,8 +44,8 @@ const ChannelCard: FC<AtomRenderProps> = ({ props, actions }) => {
     setBusy(true);
     try {
       const args = destination ? { destination } : {};
-      const ok = await actions['open'](args);
-      setOpened(ok === false ? null : 'opened');
+      const outcome = await actions['open'](args);
+      setOpened(outcome?.ok === false ? null : 'opened');
     } finally {
       setBusy(false);
     }
@@ -106,9 +106,10 @@ const SwapForm: FC<AtomRenderProps> = ({ props, actions }) => {
     setBusy(true);
     setDone(null);
     try {
-      const ok = await actions['swap']({ amount: value });
-      setDone(ok === false ? 'fail' : 'ok');
-      if (ok !== false) setAmount('');
+      const outcome = await actions['swap']({ amount: value });
+      const failed = outcome?.ok === false;
+      setDone(failed ? 'fail' : 'ok');
+      if (!failed) setAmount('');
     } finally {
       setBusy(false);
     }
