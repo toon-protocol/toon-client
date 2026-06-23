@@ -13,6 +13,7 @@ import { mediaAtoms } from './media.js';
 import { forgeAtoms } from './forge.js';
 import { interactiveAtoms } from './interactive.js';
 import { defiAtoms } from './defi.js';
+import { onboardAtoms } from './onboard.js';
 import { fallbackAtom, GENERIC_ATOM_ID } from './fallback.js';
 
 const ALL_ATOMS: Atom[] = [
@@ -22,6 +23,7 @@ const ALL_ATOMS: Atom[] = [
   ...forgeAtoms,
   ...interactiveAtoms,
   ...defiAtoms,
+  ...onboardAtoms,
   fallbackAtom,
 ];
 

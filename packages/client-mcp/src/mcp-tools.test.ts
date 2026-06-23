@@ -177,7 +177,7 @@ describe('dispatchTool', () => {
       publish: vi
         .fn()
         .mockRejectedValue(
-          new ControlApiError('bootstrapping', 503, true, 'anon coming up')
+          new ControlApiError('bootstrapping', 503, true, 'BTP coming up')
         ),
     });
     const res = await dispatchTool(client, 'toon_publish', {

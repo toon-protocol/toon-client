@@ -46,12 +46,6 @@ interface ToonClientState {
   runtimeClient: IlpClient;
   peersDiscovered: number;
   btpClient?: BtpRuntimeClient;
-  /**
-   * Teardown for a managed `anon` SOCKS5h proxy auto-started during start()
-   * for a `.anyone` btpUrl. Present only when the SDK launched its own daemon;
-   * `stop()` invokes it so the proxy does not outlive the client.
-   */
-  stopManagedProxy?: () => Promise<void>;
 }
 
 /**
@@ -296,13 +290,8 @@ export class ToonClient {
       // Initialize HTTP mode components
       const initialization = await initializeHttpMode(this.config);
 
-      const {
-        bootstrapService,
-        discoveryTracker,
-        runtimeClient,
-        btpClient,
-        stopManagedProxy,
-      } = initialization;
+      const { bootstrapService, discoveryTracker, runtimeClient, btpClient } =
+        initialization;
 
       // Wire claim signer to bootstrap service if we have channel manager
       if (this.channelManager) {
@@ -459,7 +448,6 @@ export class ToonClient {
         runtimeClient,
         peersDiscovered: bootstrapResults.length,
         btpClient: btpClient ?? undefined,
-        ...(stopManagedProxy ? { stopManagedProxy } : {}),
       };
 
       return {
@@ -517,12 +505,8 @@ export class ToonClient {
       const destination =
         options?.destination ?? this.config.destinationAddress;
 
-      if (!this.state.btpClient) {
-        throw new ToonClientError(
-          'BTP client required for publishing. Configure btpUrl.',
-          'NO_BTP_CLIENT'
-        );
-      }
+      // Resolve the active paid-write transport (proxy ILP-over-HTTP or BTP).
+      const transport = this.getClaimTransport();
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let claimMessage: any;
@@ -558,7 +542,7 @@ export class ToonClient {
         );
       }
 
-      const response = await this.state.btpClient.sendIlpPacketWithClaim(
+      const response = await transport.sendIlpPacketWithClaim(
         {
           destination,
           amount,
@@ -655,7 +639,7 @@ export class ToonClient {
    *       matching `destination`,
    *   (c) neither -> throw MISSING_CLAIM.
    *
-   * @throws {ToonClientError} INVALID_STATE / NO_BTP_CLIENT / MISSING_CLAIM
+   * @throws {ToonClientError} INVALID_STATE / NO_ILP_TRANSPORT / MISSING_CLAIM
    */
   async sendSwapPacket(params: {
     destination: string;
@@ -670,12 +654,7 @@ export class ToonClient {
         'INVALID_STATE'
       );
     }
-    if (!this.state.btpClient) {
-      throw new ToonClientError(
-        'BTP client required for sending swap packets. Configure btpUrl.',
-        'NO_BTP_CLIENT'
-      );
-    }
+    const transport = this.getClaimTransport();
 
     const claimMessage = await this.resolveClaimForDestination(
       params.destination,
@@ -683,7 +662,7 @@ export class ToonClient {
       params.claim
     );
 
-    return this.state.btpClient.sendIlpPacketWithClaim(
+    return transport.sendIlpPacketWithClaim(
       {
         destination: params.destination,
         amount: String(params.amount),
@@ -723,6 +702,66 @@ export class ToonClient {
       return signer.buildClaimMessage(claim, this.getPublicKey());
     }
     return EvmSigner.buildClaimMessage(claim, this.getPublicKey());
+  }
+
+  /**
+   * Resolve the ILP transport for a paid (claim-bearing) write.
+   *
+   * The connector is a payment-proxy: paid writes carry an ILP PREPARE plus the
+   * signed payment-channel claim. Either transport speaks the SAME claim
+   * contract — the BTP `payment-channel-claim` protocolData entry and the
+   * ILP-over-HTTP `ILP-Payment-Channel-Claim` header serialize the same claim
+   * JSON — so we route through whichever transport is ACTIVE rather than
+   * hard-requiring BTP.
+   *
+   * Selection (mirrors `modes/http.ts` runtime-client precedence):
+   *   1. `runtimeClient` when it implements `sendIlpPacketWithClaim` — this is
+   *      the HttpIlpClient (proxy `POST /ilp`) when a `proxyUrl`/
+   *      `connectorHttpEndpoint` is configured, else the BtpRuntimeClient.
+   *   2. `btpClient` as an explicit fallback (always present when `btpUrl` is set).
+   *
+   * The level-3 `HttpRuntimeClient` (connector-admin HTTP, no `btpUrl` AND no
+   * proxy) does NOT implement `sendIlpPacketWithClaim`; in that case there is no
+   * paid-write transport and we throw a clear, actionable error.
+   *
+   * @throws {ToonClientError} NO_ILP_TRANSPORT when no active transport can send
+   *   a packet+claim.
+   */
+  private getClaimTransport(): {
+    sendIlpPacketWithClaim(
+      params: {
+        destination: string;
+        amount: string;
+        data: string;
+        timeout?: number;
+      },
+      claim: unknown
+    ): Promise<IlpSendResult>;
+  } {
+    const state = this.state;
+    if (!state) {
+      throw new ToonClientError(
+        'Client not started. Call start() first.',
+        'INVALID_STATE'
+      );
+    }
+    const candidates: (IlpClient | BtpRuntimeClient | undefined)[] = [
+      state.runtimeClient,
+      state.btpClient,
+    ];
+    for (const candidate of candidates) {
+      if (
+        candidate &&
+        typeof (candidate as IlpClient).sendIlpPacketWithClaim === 'function'
+      ) {
+        return candidate as ReturnType<ToonClient['getClaimTransport']>;
+      }
+    }
+    throw new ToonClientError(
+      'No ILP transport for paid writes. Configure `proxyUrl`/`connectorHttpEndpoint` ' +
+        '(route through the connector proxy over ILP-over-HTTP) or `btpUrl` (BTP socket).',
+      'NO_ILP_TRANSPORT'
+    );
   }
 
   /**
@@ -957,15 +996,10 @@ export class ToonClient {
         'MISSING_CLAIM'
       );
     }
-    if (!this.state.btpClient) {
-      throw new ToonClientError(
-        'BTP client required for sending payments. Configure btpUrl.',
-        'NO_BTP_CLIENT'
-      );
-    }
+    const transport = this.getClaimTransport();
 
     const claimMessage = this.buildClaimMessageForProof(params.claim);
-    return this.state.btpClient.sendIlpPacketWithClaim(
+    return transport.sendIlpPacketWithClaim(
       ilpParams,
       claimMessage as unknown as Record<string, unknown>
     );
@@ -985,18 +1019,10 @@ export class ToonClient {
       throw new ToonClientError('Client not started', 'INVALID_STATE');
     }
 
-    const stopManagedProxy = this.state.stopManagedProxy;
     try {
       // Disconnect BTP client if connected
       if (this.state.btpClient) {
         await this.state.btpClient.disconnect();
-      }
-
-      // Tear down a managed `anon` proxy this client auto-started (.anyone host
-      // with no explicit proxy). Best-effort — a proxy stop failure must not
-      // mask a clean disconnect. No-op when the SDK did not launch a proxy.
-      if (stopManagedProxy) {
-        await stopManagedProxy();
       }
 
       // Clear state

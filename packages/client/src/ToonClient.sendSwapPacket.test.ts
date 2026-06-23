@@ -40,9 +40,11 @@ describe('ToonClient.sendSwapPacket (Story 12.5 AC-3)', () => {
     });
   });
 
-  it('throws NO_BTP_CLIENT when BTP client is absent', async () => {
+  it('throws NO_ILP_TRANSPORT when no active transport can send a packet+claim', async () => {
     const client = new ToonClient(baseConfig());
-    // Inject a started state with no btpClient.
+    // Inject a started state with no claim-capable transport: the runtimeClient
+    // is the level-3 HttpRuntimeClient (no sendIlpPacketWithClaim) and there is
+    // no BTP socket.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (client as any).state = {
       bootstrapService: {},
@@ -60,7 +62,7 @@ describe('ToonClient.sendSwapPacket (Story 12.5 AC-3)', () => {
       })
     ).rejects.toMatchObject({
       name: 'ToonClientError',
-      code: 'NO_BTP_CLIENT',
+      code: 'NO_ILP_TRANSPORT',
     });
   });
 

@@ -6,6 +6,7 @@ import {
   buildSettlementInfo,
   applyNetworkPresets,
   getNetworkStatus,
+  proxyIlpEndpoint,
 } from './config.js';
 import { ValidationError } from './errors.js';
 import type { ToonClientConfig } from './types.js';
@@ -63,19 +64,40 @@ describe('validateConfig', () => {
   });
 
   describe('connectorUrl validation (AC: 4)', () => {
-    it('should throw error when connectorUrl is missing', () => {
+    it('should throw error when neither connectorUrl nor proxyUrl is set', () => {
       const config = createValidConfig({ connectorUrl: undefined });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
-      expect(() => validateConfig(config)).toThrow('connectorUrl is required');
+      expect(() => validateConfig(config)).toThrow(
+        'connectorUrl (or proxyUrl) is required'
+      );
     });
 
-    it('should throw error with example when connectorUrl is missing', () => {
+    it('should throw error with example when no HTTP edge is set', () => {
       const config = createValidConfig({ connectorUrl: undefined });
 
       expect(() => validateConfig(config)).toThrow(
-        'connectorUrl is required for HTTP mode. Example: "http://localhost:8080"'
+        'connectorUrl (or proxyUrl) is required for HTTP mode. Example: "http://localhost:8080"'
       );
+    });
+
+    it('should accept a proxyUrl in place of connectorUrl', () => {
+      const config = createValidConfig({
+        connectorUrl: undefined,
+        proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      });
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('should reject a non-HTTP proxyUrl / faucetUrl', () => {
+      expect(() =>
+        validateConfig(
+          createValidConfig({ proxyUrl: 'ws://proxy.example' })
+        )
+      ).toThrow('Invalid proxyUrl');
+      expect(() =>
+        validateConfig(createValidConfig({ faucetUrl: 'not-a-url' }))
+      ).toThrow('Invalid faucetUrl');
     });
 
     it('should accept valid HTTP connectorUrl', () => {
@@ -506,6 +528,69 @@ describe('applyDefaults', () => {
     // Both should be auto-generated, and evmPrivateKey should be the same key
     expect(result.secretKey).toHaveLength(32);
     expect(result.evmPrivateKey).toBe(result.secretKey);
+  });
+
+  describe('connector-proxy (devnet) derivation', () => {
+    const proxyConfig = (proxyUrl: string): ToonClientConfig => {
+      const c = createMinimalConfig();
+      delete (c as { connectorUrl?: string }).connectorUrl;
+      return { ...c, proxyUrl, destinationAddress: 'g.proxy' };
+    };
+
+    it('derives connectorHttpEndpoint (POST /ilp) from proxyUrl', () => {
+      const result = applyDefaults(
+        proxyConfig('https://proxy.devnet.toonprotocol.dev')
+      );
+      expect(result.connectorHttpEndpoint).toBe(
+        'https://proxy.devnet.toonprotocol.dev/ilp'
+      );
+    });
+
+    it('does NOT auto-derive a btpUrl when an HTTP/proxy transport is set', () => {
+      const result = applyDefaults(
+        proxyConfig('https://proxy.devnet.toonprotocol.dev')
+      );
+      expect(result.btpUrl).toBeUndefined();
+    });
+
+    it('satisfies connectorUrl from the proxy base when connectorUrl is unset', () => {
+      const result = applyDefaults(
+        proxyConfig('https://proxy.devnet.toonprotocol.dev/')
+      );
+      expect(result.connectorUrl).toBe(
+        'https://proxy.devnet.toonprotocol.dev'
+      );
+    });
+
+    it('lets an explicit connectorHttpEndpoint win over proxyUrl derivation', () => {
+      const result = applyDefaults({
+        ...proxyConfig('https://proxy.devnet.toonprotocol.dev'),
+        connectorHttpEndpoint: 'https://explicit.example/ilp',
+      });
+      expect(result.connectorHttpEndpoint).toBe('https://explicit.example/ilp');
+    });
+  });
+});
+
+describe('proxyIlpEndpoint', () => {
+  it('appends /ilp to a bare base URL', () => {
+    expect(proxyIlpEndpoint('https://proxy.example')).toBe(
+      'https://proxy.example/ilp'
+    );
+  });
+  it('is idempotent when the URL already ends in /ilp', () => {
+    expect(proxyIlpEndpoint('https://proxy.example/ilp')).toBe(
+      'https://proxy.example/ilp'
+    );
+  });
+  it('strips a trailing slash before appending', () => {
+    expect(proxyIlpEndpoint('https://proxy.example/')).toBe(
+      'https://proxy.example/ilp'
+    );
+  });
+  it('returns undefined for empty input', () => {
+    expect(proxyIlpEndpoint(undefined)).toBeUndefined();
+    expect(proxyIlpEndpoint('')).toBeUndefined();
   });
 });
 
