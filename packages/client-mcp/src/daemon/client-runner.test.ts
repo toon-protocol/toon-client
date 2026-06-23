@@ -14,6 +14,7 @@ import {
   InvalidPayloadError,
   NotReadyError,
   PublishRejectedError,
+  TargetError,
   type ToonClientLike,
 } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
@@ -29,6 +30,7 @@ function makeConfig(
   return {
     httpPort: 8787,
     relayUrl: 'ws://relay.test',
+    hasUplink: true,
     destination: 'g.townhouse.town',
     feePerEvent: 1n,
     chain: 'evm',
@@ -782,5 +784,123 @@ describe('ClientRunner multi-target', () => {
     await expect(runner.removeApex('ws://apex.test/btp')).rejects.toThrow(
       /default/i
     );
+  });
+});
+
+// ── Proxy-mode (no BTP) negotiation + lazy channel open + read-only (#69) ─────
+describe('ClientRunner — proxy mode (#69)', () => {
+  let prevHome: string | undefined;
+  let prevProxy: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'toon-runner-proxy-'));
+    prevHome = process.env['TOON_CLIENT_HOME'];
+    prevProxy = process.env['TOON_CLIENT_PROXY_URL'];
+    process.env['TOON_CLIENT_HOME'] = tmpDir;
+  });
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env['TOON_CLIENT_HOME'];
+    else process.env['TOON_CLIENT_HOME'] = prevHome;
+    if (prevProxy === undefined) delete process.env['TOON_CLIENT_PROXY_URL'];
+    else process.env['TOON_CLIENT_PROXY_URL'] = prevProxy;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** A proxy-mode config: no btpUrl, a synthesized apex negotiation, proxy set. */
+  function proxyConfig(): ResolvedDaemonConfig {
+    return makeConfig({
+      hasUplink: true,
+      proxyUrl: 'https://proxy.test',
+      destination: 'g.proxy.relay',
+      apexChannelStorePath: join(tmpDir, 'apex-channels.json'),
+      apex: {
+        destination: 'g.proxy.relay',
+        peerId: 'relay',
+        chain: 'evm',
+        chainKey: 'evm:devnet:31337',
+        chainId: 31337,
+        settlementAddress: '0xConnectorSettle',
+        tokenAddress: '0xUSDC',
+        tokenNetwork: '0xTokenNetwork',
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      toonClientConfig: { proxyUrl: 'https://proxy.test' } as any,
+    });
+  }
+
+  it('injects the apex negotiation in proxy mode WITHOUT a BTP socket', async () => {
+    const client = new FakeClient();
+    const openSpy = vi.spyOn(client, 'openChannel');
+    const runner = new ClientRunner({
+      config: proxyConfig(),
+      createClient: () => client,
+      createRelay: fakeRelay,
+    });
+    await runner.bootstrap();
+    expect(runner.isReady()).toBe(true);
+    // Negotiation injected under the apex peerId (last ILP segment "relay").
+    expect(client.peerNegotiations.get('relay')).toMatchObject({
+      chainType: 'evm',
+      chainId: 31337,
+      settlementAddress: '0xConnectorSettle',
+      tokenNetwork: '0xTokenNetwork',
+    });
+    // Channel open is DEFERRED at bootstrap (fund-after-start flow).
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+
+  it('opens the channel lazily on first publish and persists it (proxy mode)', async () => {
+    const client = new FakeClient();
+    const openSpy = vi.spyOn(client, 'openChannel');
+    const runner = new ClientRunner({
+      config: proxyConfig(),
+      createClient: () => client,
+      createRelay: fakeRelay,
+    });
+    await runner.bootstrap();
+    const res = await runner.publish({ event: { id: 'evt-proxy' } as NostrEvent });
+    expect(openSpy).toHaveBeenCalledTimes(1); // opened on first write
+    expect(res.channelId).toBe('chan-1');
+    expect(res.nonce).toBe(1);
+    // Persisted for restart-resume, keyed by (destination|chain).
+    const saved = JSON.parse(
+      readFileSync(join(tmpDir, 'apex-channels.json'), 'utf8')
+    );
+    expect(saved['g.proxy.relay|evm'].channelId).toBe('chan-1');
+    expect(saved['g.proxy.relay|evm'].context).toMatchObject({
+      chainType: 'evm',
+      chainId: 31337,
+      recipient: '0xConnectorSettle',
+    });
+    // A second publish reuses the channel (no second open).
+    await runner.publish({ event: { id: 'evt2' } as NostrEvent });
+    expect(openSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('read-only daemon (no uplink) serves reads but rejects writes (#69)', async () => {
+    const client = new FakeClient();
+    const runner = new ClientRunner({
+      config: makeConfig({
+        hasUplink: false,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        toonClientConfig: {} as any,
+      }),
+      createClient: () => client,
+      createRelay: fakeRelay,
+    });
+    runner.start();
+    // No apex bootstrap is kicked off in read-only mode.
+    await runner.bootstrap();
+    expect(runner.isBootstrapping()).toBe(false);
+    // Reads still work (subscribe returns a sub id, no uplink needed).
+    const sub = runner.subscribe({ filters: { kinds: [1] } });
+    expect(sub.subId).toBeTruthy();
+    // Writes are rejected with an actionable "configure an uplink" message.
+    await expect(
+      runner.publish({ event: { id: 'e' } as NostrEvent })
+    ).rejects.toBeInstanceOf(TargetError);
+    await expect(
+      runner.openChannel()
+    ).rejects.toThrow(/read-only|uplink/i);
   });
 });

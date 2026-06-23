@@ -278,6 +278,9 @@ export class ClientRunner {
 
   /** Await the default apex's bootstrap (kicking it off if not already running). */
   bootstrap(): Promise<void> {
+    // Read-only daemon (no proxy/BTP uplink): never bootstrap an apex — there is
+    // no write transport and FREE reads run off the relay subscription (#69).
+    if (!this.config.hasUplink) return Promise.resolve();
     const apex = this.apexes.get(this.defaultBtpUrl);
     if (!apex) return Promise.resolve();
     return this.bootstrapApex(apex);
@@ -442,14 +445,32 @@ export class ClientRunner {
   private async doBootstrapApex(apex: ApexConnection): Promise<void> {
     apex.bootstrapping = true;
     try {
+      // PROXY mode (no BTP discovery): if no negotiation was supplied via config,
+      // discover the apex's settlement params from its kind:10032 on the default
+      // relay before opening the channel (#69). Config-supplied negotiation wins.
+      // In BTP mode the legacy bootstrap path handles discovery, so skip this.
+      if (!apex.negotiation && this.config.proxyUrl) {
+        await this.discoverApexNegotiation(apex);
+      }
       await apex.client.start();
       this.injectApexNegotiation(apex);
-      apex.apexChannelId = await this.openOrResumeApexChannel(apex);
+      // PROXY mode: resume a previously-opened channel up front, else DEFER the
+      // on-chain open to the first write / `POST /channels` so the wallet can be
+      // funded AFTER the daemon starts (the fund→open→publish demo flow, #69).
+      // The apex is "ready" once negotiation is in place — `openChannel` /
+      // `publish` open lazily and idempotently via the ChannelManager.
+      // BTP mode keeps the historical eager open at bootstrap.
+      const deferOpen = Boolean(this.config.proxyUrl);
+      apex.apexChannelId = await this.openOrResumeApexChannel(apex, {
+        resumeOnly: deferOpen,
+      });
       this.routeChildPeersThroughApexChannel(apex);
       apex.ready = true;
       apex.lastError = undefined;
       this.log(
-        `[runner] apex ${apex.btpUrl} ready; channel ${apex.apexChannelId}`
+        `[runner] apex ${apex.btpUrl || apex.destination} ready; channel ${
+          apex.apexChannelId ?? '(deferred — open on first write)'
+        }`
       );
     } catch (err) {
       apex.lastError = err instanceof Error ? err.message : String(err);
@@ -603,8 +624,17 @@ export class ClientRunner {
 
   // ── Channel / negotiation helpers (per-apex) ───────────────────────────────
 
-  /** Open the apex channel — or, on a restart, RESUME the existing one. */
-  private async openOrResumeApexChannel(apex: ApexConnection): Promise<string> {
+  /**
+   * Open the apex channel — or, on a restart, RESUME the existing one.
+   *
+   * With `resumeOnly`, only a persisted channel is resumed (no on-chain open);
+   * returns undefined when none exists so the caller can defer the open to the
+   * first write (funded-after-start demo flow, #69).
+   */
+  private async openOrResumeApexChannel(
+    apex: ApexConnection,
+    opts: { resumeOnly?: boolean } = {}
+  ): Promise<string | undefined> {
     const { destination, chain } = apex;
     const { apexChannelStorePath } = this.config;
     const saved = loadApexChannel(apexChannelStorePath, destination, chain);
@@ -624,10 +654,26 @@ export class ClientRunner {
       return saved.channelId;
     }
 
+    if (opts.resumeOnly) return undefined;
+
     const channelId = await apex.client.openChannel(destination);
-    if (apex.negotiation) {
-      const a = apex.negotiation;
-      saveApexChannel(apexChannelStorePath, destination, chain, {
+    this.persistApexChannel(apex, channelId);
+    return channelId;
+  }
+
+  /**
+   * Persist a (lazily- or eagerly-) opened apex channel so a restart RESUMES it
+   * (tracked, no re-deposit) rather than opening a second on-chain channel.
+   * No-op when the apex carries no negotiation (nothing to key the store on).
+   */
+  private persistApexChannel(apex: ApexConnection, channelId: string): void {
+    const a = apex.negotiation;
+    if (!a) return;
+    saveApexChannel(
+      this.config.apexChannelStorePath,
+      apex.destination,
+      apex.chain,
+      {
         channelId,
         context: {
           chainType: a.chain,
@@ -636,9 +682,38 @@ export class ClientRunner {
           ...(a.tokenAddress ? { tokenAddress: a.tokenAddress } : {}),
           recipient: a.settlementAddress,
         },
-      });
+      }
+    );
+  }
+
+  /**
+   * Discover the apex's settlement negotiation from its kind:10032 on the
+   * default relay and attach it to the apex (proxy-mode fallback when no config
+   * negotiation was supplied, #69). Throws ApexDiscoveryError on timeout/missing
+   * settlement params so the apex's `lastError` reports exactly what is missing.
+   */
+  private async discoverApexNegotiation(apex: ApexConnection): Promise<void> {
+    const relay = this.relays.get(this.defaultRelayUrl);
+    if (!relay) {
+      throw new TargetError(
+        `Cannot discover apex "${apex.destination}": default relay ` +
+          `${this.defaultRelayUrl} is not registered.`
+      );
     }
-    return channelId;
+    relay.start();
+    const discovered = await discoverApex({
+      relay,
+      ilpAddress: apex.destination,
+      chain: apex.chain,
+      ...(apex.childPeers.length > 0 ? { childPeers: apex.childPeers } : {}),
+    });
+    apex.negotiation = discovered.negotiation;
+    if (discovered.apexChildPeers) apex.childPeers = discovered.apexChildPeers;
+    this.log(
+      `[runner] discovered apex negotiation for "${apex.destination}" ` +
+        `(chain ${discovered.negotiation.chainKey}, settle ` +
+        `${discovered.negotiation.settlementAddress})`
+    );
   }
 
   /** Inject the apex settlement negotiation directly into its ToonClient. */
@@ -780,8 +855,16 @@ export class ClientRunner {
   async publish(req: PublishRequest): Promise<PublishResponse> {
     const apex = this.selectApex(req.btpUrl);
     this.assertApexReady(apex);
-    const channelId =
-      apex.apexChannelId ?? (await apex.client.openChannel(req.destination));
+    // Lazily open the apex channel on first paid write (deferred at bootstrap so
+    // the wallet can be funded after start, #69) and persist it for resume.
+    let channelId = apex.apexChannelId;
+    if (!channelId) {
+      channelId = await apex.client.openChannel(req.destination);
+      if (!req.destination || req.destination === apex.destination) {
+        apex.apexChannelId = channelId;
+        this.persistApexChannel(apex, channelId);
+      }
+    }
     const fee = req.fee !== undefined ? BigInt(req.fee) : apex.feePerEvent;
     const claim = await apex.client.signBalanceProof(channelId, fee);
     const result = await apex.client.publishEvent(req.event, {
@@ -930,7 +1013,10 @@ export class ClientRunner {
       destination ?? apex.destination
     );
     if (!destination || destination === apex.destination) {
+      const firstOpen = apex.apexChannelId !== channelId;
       apex.apexChannelId = channelId;
+      // Persist the (possibly lazily-opened) apex channel for restart-resume.
+      if (firstOpen) this.persistApexChannel(apex, channelId);
     }
     return { channelId };
   }
@@ -1049,10 +1135,19 @@ export class ClientRunner {
   }
 
   private assertApexReady(apex: ApexConnection): void {
+    // FREE reads need no uplink; a write does. Reject early with an actionable
+    // message rather than letting the apex sit forever un-bootstrapped (#69).
+    if (!this.config.hasUplink) {
+      throw new TargetError(
+        'No write uplink configured — this daemon is read-only. Set ' +
+          'TOON_CLIENT_PROXY_URL (connector proxy) or TOON_CLIENT_BTP_URL to ' +
+          'enable paid writes.'
+      );
+    }
     if (!apex.ready) {
       throw new NotReadyError(
         apex.bootstrapping
-          ? 'Apex is still bootstrapping (BTP session coming up) — retry shortly.'
+          ? 'Apex is still bootstrapping (transport/channel coming up) — retry shortly.'
           : (apex.lastError ?? 'Apex is not ready.')
       );
     }

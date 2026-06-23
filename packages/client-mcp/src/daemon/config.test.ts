@@ -55,9 +55,14 @@ describe('daemon config', () => {
     expect(readConfigFile('/nonexistent/toon-client/config.json')).toEqual({});
   });
 
-  it('resolveConfig requires a btpUrl or proxyUrl', () => {
-    expect(() => resolveConfig({ mnemonic: MNEMONIC })).toThrow(/btpUrl/);
-    expect(() => resolveConfig({ mnemonic: MNEMONIC })).toThrow(/PROXY_URL/);
+  it('resolves read-only (no uplink) with hasUplink=false — reads need none (#69)', () => {
+    const cfg = resolveConfig({ mnemonic: MNEMONIC });
+    expect(cfg.hasUplink).toBe(false);
+    // A read-only daemon still builds a usable ToonClientConfig (relay reads),
+    // with a dummy connectorUrl satisfying validateConfig (no proxy/BTP).
+    expect(cfg.toonClientConfig.btpUrl).toBeUndefined();
+    expect(cfg.proxyUrl).toBeUndefined();
+    expect(cfg.apex).toBeUndefined();
   });
 
   it('proxyUrl satisfies the uplink requirement (no btpUrl needed)', () => {
@@ -66,6 +71,7 @@ describe('daemon config', () => {
       proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
       destination: 'g.proxy',
     });
+    expect(cfg.hasUplink).toBe(true);
     expect(cfg.proxyUrl).toBe('https://proxy.devnet.toonprotocol.dev');
     expect(cfg.destination).toBe('g.proxy');
     // No BTP socket is configured on the proxy path.
@@ -75,6 +81,75 @@ describe('daemon config', () => {
     ).toBe('https://proxy.devnet.toonprotocol.dev');
     // connectorUrl is NOT injected as a dummy when proxyUrl is present.
     expect(cfg.toonClientConfig.connectorUrl).toBeUndefined();
+  });
+
+  it('proxy mode synthesizes an apex negotiation from settlement config (#69)', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      destination: 'g.proxy.relay',
+      chain: 'evm',
+      settlementAddresses: {
+        'evm:devnet:31337': '0x51d35a8a80377d0e70c226dc7abb97e200c68f04',
+      },
+      tokenNetworks: {
+        'evm:devnet:31337': '0xCafac3dD18aC6c6e92c921884f9E4176737C052c',
+      },
+      preferredTokens: {
+        'evm:devnet:31337': '0x5FbDB2315678afecb367f032d93F642f64180aa3',
+      },
+    });
+    const a = cfg.apex;
+    expect(a).toBeDefined();
+    if (!a) throw new Error('expected synthesized apex negotiation');
+    expect(a.peerId).toBe('relay'); // last segment of g.proxy.relay
+    expect(a.destination).toBe('g.proxy.relay');
+    expect(a.chain).toBe('evm');
+    expect(a.chainKey).toBe('evm:devnet:31337');
+    expect(a.chainId).toBe(31337);
+    expect(a.settlementAddress).toBe(
+      '0x51d35a8a80377d0e70c226dc7abb97e200c68f04'
+    );
+    expect(a.tokenNetwork).toBe(
+      '0xCafac3dD18aC6c6e92c921884f9E4176737C052c'
+    );
+    expect(a.tokenAddress).toBe(
+      '0x5FbDB2315678afecb367f032d93F642f64180aa3'
+    );
+  });
+
+  it('proxy mode WITHOUT a settlement address defers to discovery (no apex)', () => {
+    // No counterparty address → cannot synthesize; the runner falls back to
+    // live kind:10032 discovery rather than fabricating an address (#69).
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      destination: 'g.proxy.relay',
+      chain: 'evm',
+    });
+    expect(cfg.hasUplink).toBe(true);
+    expect(cfg.apex).toBeUndefined();
+  });
+
+  it('explicit file.apex overrides the synthesized proxy negotiation', () => {
+    const explicit = {
+      destination: 'g.proxy.relay',
+      peerId: 'relay',
+      chain: 'evm' as const,
+      chainKey: 'evm:devnet:31337',
+      chainId: 31337,
+      settlementAddress: '0xExplicitConnectorAddr',
+    };
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      destination: 'g.proxy.relay',
+      apex: explicit,
+      settlementAddresses: {
+        'evm:devnet:31337': '0xSynthesizedAddrShouldLose',
+      },
+    });
+    expect(cfg.apex?.settlementAddress).toBe('0xExplicitConnectorAddr');
   });
 
   it('TOON_CLIENT_PROXY_URL / FAUCET_URL / DESTINATION env overrides', () => {
