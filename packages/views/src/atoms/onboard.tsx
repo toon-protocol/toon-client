@@ -1,23 +1,16 @@
 /**
- * Onboarding atom — a get-started card for new TOON clients.
- *
- * Presentational: driven entirely by its ViewSpec `props` (no event parsing).
- * Walks a new user through claiming an identity and opening a payment channel,
- * then offers an optional `publish` action to publish their initial kind:0
- * profile (wired by the runtime to `toon_publish_unsigned`).
+ * Onboarding atom — get-started card for new TOON clients.
+ * Walks through identity, payment channel, and first publish.
  */
 import { type FC } from 'react';
-import { cn } from '../lib/cn.js';
+import { Button } from '@/components/ui/button.js';
+import { MonoId } from '@/components/mono-id.js';
 import { type Atom, type AtomRenderProps } from './types.js';
 
-function shortPk(pk: string): string {
-  return pk.length > 12 ? `${pk.slice(0, 8)}…${pk.slice(-4)}` : pk;
-}
-
 const DEFAULT_STEPS = [
-  'Claim your identity (one mnemonic, multi-chain).',
+  'Claim your identity — one mnemonic, every chain.',
   'Open a payment channel to a TOON apex.',
-  'Publish your first event — reads stay free.',
+  'Publish your first event. Reads stay free.',
 ];
 
 const OnboardCard: FC<AtomRenderProps> = ({ props, actions }) => {
@@ -28,33 +21,28 @@ const OnboardCard: FC<AtomRenderProps> = ({ props, actions }) => {
   const label = typeof props['label'] === 'string' ? props['label'] : 'Publish profile';
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-border p-4">
-      <div>
+    <div className="rounded-lg border border-border bg-card p-5">
+      <div className="mb-4">
         <div className="font-semibold">Get started with TOON</div>
         {pubkey ? (
-          <div className="truncate text-xs text-muted-foreground">{shortPk(pubkey)}</div>
+          <MonoId value={pubkey} className="mt-0.5 text-muted-foreground" />
         ) : null}
       </div>
-      <ol className="flex flex-col gap-1.5 text-sm text-muted-foreground">
+      <ol className="mb-4 flex flex-col gap-2">
         {steps.map((step, i) => (
-          <li key={i} className="flex gap-2">
-            <span className="font-medium text-foreground">{i + 1}.</span>
-            <span>{step}</span>
+          <li key={i} className="flex gap-3 text-sm">
+            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
+              {i + 1}
+            </span>
+            <span className="text-muted-foreground">{step}</span>
           </li>
         ))}
       </ol>
       {actions['publish'] ? (
         <div className="flex justify-end">
-          <button
-            type="button"
-            className={cn(
-              'rounded-md px-3 py-1 text-sm font-medium',
-              'bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50'
-            )}
-            onClick={() => void actions['publish']?.()}
-          >
+          <Button size="sm" onClick={() => void actions['publish']?.()}>
             {label}
-          </button>
+          </Button>
         </div>
       ) : null}
     </div>
