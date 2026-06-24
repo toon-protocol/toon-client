@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "toon",
+  "owner": {
+    "name": "Jonathan Green",
+    "email": "dev.jonathan.green@gmail.com"
+  },
+  "description": "TOON Protocol — pay-to-write Nostr over Interledger. One-step install of the toon-client skill + the toon-mcp MCP server.",
+  "plugins": [
+    {
+      "name": "toon",
+      "source": "./toon-plugin",
+      "description": "TOON Protocol client for Claude: pay-to-write publishing, free reads, payment channels, and swaps. Bundles the toon-client skill and the toon-mcp MCP server (run via npx @toon-protocol/client-mcp).",
+      "homepage": "https://github.com/toon-protocol/toon-client/tree/main/toon-plugin",
+      "repository": "https://github.com/toon-protocol/toon-client",
+      "license": "MIT",
+      "keywords": ["toon", "nostr", "interledger", "ilp", "mcp", "pay-to-write"]
+    }
+  ]
+}
