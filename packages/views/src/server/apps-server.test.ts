@@ -60,11 +60,14 @@ describe('TOON apps MCP server (fake-backed)', () => {
     expect(meta?.ui?.resourceUri).toBe(APP_RESOURCE_URI);
   });
 
-  it('toon_atoms returns the atom catalog', async () => {
+  it('toon_atoms returns the atom catalog in structuredContent and JSON text', async () => {
     const res = await client.callTool({ name: 'toon_atoms', arguments: {} });
     const atoms = structured(res)['atoms'] as { id: string }[];
     expect(atoms.some((a) => a.id === 'note-card')).toBe(true);
     expect(atoms.some((a) => a.id === 'generic-event')).toBe(true);
+    const text = (res as { content?: { text?: string }[] }).content?.[0]?.text ?? '';
+    const parsed = JSON.parse(text) as { atoms: { id: string }[] };
+    expect(parsed.atoms.some((a) => a.id === 'note-card')).toBe(true);
   });
 
   it('toon_status returns the fee + settlement chain (deterministic stub)', async () => {

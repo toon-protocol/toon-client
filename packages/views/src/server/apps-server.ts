@@ -88,7 +88,10 @@ export function registerToonApps(server: McpServer, opts: RegisterToonAppsOption
         'example ViewSpecs, for composing a view to pass to ' + RENDER_TOOL + '.',
       inputSchema: {},
     },
-    () => result('atom catalog', { atoms: ATOM_CATALOG, examples: EXAMPLE_VIEWSPECS })
+    () => {
+      const atomsPayload = { atoms: ATOM_CATALOG, examples: EXAMPLE_VIEWSPECS };
+      return result(JSON.stringify(atomsPayload, null, 2), atomsPayload);
+    }
   );
 
   // toon_render — agent composes a ViewSpec; it rides back as the tool result and

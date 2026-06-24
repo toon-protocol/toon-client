@@ -497,11 +497,10 @@ export async function dispatchTool(
         return ok(
           await client.uploadMedia(args as unknown as UploadMediaRequest)
         );
-      case 'toon_atoms':
-        return okStructured('Atom vocabulary + example ViewSpecs.', {
-          atoms: ATOM_CATALOG,
-          examples: EXAMPLE_VIEWSPECS,
-        });
+      case 'toon_atoms': {
+        const atomsPayload = { atoms: ATOM_CATALOG, examples: EXAMPLE_VIEWSPECS };
+        return okStructured(JSON.stringify(atomsPayload, null, 2), atomsPayload);
+      }
       case 'toon_render': {
         const check = validateViewSpec(args['spec'], {
           allowedAtoms: CATALOG_ATOM_IDS,

@@ -295,11 +295,13 @@ describe('dispatchTool', () => {
     expect(removeApex).toHaveBeenCalledWith({ btpUrl: 'ws://a/btp' });
   });
 
-  it('toon_atoms returns the atom catalog as structuredContent', async () => {
+  it('toon_atoms returns the atom catalog as structuredContent and JSON text', async () => {
     const res = await dispatchTool(stubClient({}), 'toon_atoms', {});
     expect(res.isError).toBeFalsy();
     const atoms = res.structuredContent?.['atoms'] as { id: string }[];
     expect(atoms.some((a) => a.id === 'note-card')).toBe(true);
+    const parsed = JSON.parse(res.content[0]!.text) as { atoms: { id: string }[] };
+    expect(parsed.atoms.some((a) => a.id === 'note-card')).toBe(true);
   });
 
   it('toon_render validates and echoes a ViewSpec', async () => {
