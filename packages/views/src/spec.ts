@@ -185,6 +185,12 @@ export function validateViewSpec(
       if (!isPlainObject(bind)) {
         errors.push(`${path}.bind: must be an object`);
       } else {
+        const KNOWN_BIND_KEYS = new Set(['query', 'eventId', 'kindAuto']);
+        for (const key of Object.keys(bind)) {
+          if (!KNOWN_BIND_KEYS.has(key)) {
+            errors.push(`${path}.bind.${key}: unknown bind key (use "query" for a NIP-01 filter)`);
+          }
+        }
         if (bind['query'] !== undefined) validateFilter(bind['query'], `${path}.bind.query`, errors);
         if (bind['eventId'] !== undefined && typeof bind['eventId'] !== 'string') {
           errors.push(`${path}.bind.eventId: must be a string`);
