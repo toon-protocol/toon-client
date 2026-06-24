@@ -40,6 +40,7 @@ export { UI_RENDERER_KIND, UI_TAG, MIME_A2UI, MIME_MCP_APP } from './constants.j
 export {
   parseUiCoordinate,
   getUiCoordinate,
+  buildUiCoordinate,
   selectLatestAddressable,
 } from '@toon-protocol/core';
 export type { UiCoordinate } from '@toon-protocol/core';
@@ -65,3 +66,22 @@ export type {
   McpUiDecision,
   GenerativeDecision,
 } from './types.js';
+
+// Branch 4 — generative fallback + optional kind:31036 publish-back (#92).
+export {
+  GenerativeFallbackRenderer,
+  deterministicGenerator,
+  renderDeterministicHtml,
+  buildRendererEventTemplate,
+  publishBackCoordinate,
+} from './generative.js';
+export type {
+  GeneratedRenderer,
+  GenerateContext,
+  RendererGenerator,
+  RendererSigner,
+  RendererPublisher,
+  PublishBackOptions,
+  GenerativeFallbackOptions,
+  GenerativeFallbackResult,
+} from './generative.js';

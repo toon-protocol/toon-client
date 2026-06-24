@@ -9,8 +9,17 @@
  * mime-type selectors below are owned locally (core does not export them).
  */
 
-// `UI_RENDERER_KIND` and `UI_TAG` now come from core — re-exported, not mirrored.
-export { UI_RENDERER_KIND, UI_TAG } from '@toon-protocol/core';
+// `UI_RENDERER_KIND`, `UI_TAG`, and the `UiCoordinate` helpers now come from
+// core — re-exported, not mirrored.
+export {
+  UI_RENDERER_KIND,
+  UI_TAG,
+  buildUiCoordinate,
+  parseUiCoordinate,
+  getUiCoordinate,
+  selectLatestAddressable,
+  type UiCoordinate,
+} from '@toon-protocol/core';
 
 /**
  * The `m` (mimeType) tag value selecting **branch 2** — A2UI, medium trust.
