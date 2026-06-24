@@ -76,6 +76,7 @@ export {
 
 // Utilities
 export { withRetry, type RetryOptions } from './utils/index.js';
+export { buildStoreWriteEnvelope } from './utils/store-envelope.js';
 
 // Config validation (for advanced use cases)
 export {
