@@ -400,6 +400,31 @@ export interface TargetsResponse {
   apexes: ApexTargetStatus[];
 }
 
+/**
+ * `POST /fund-wallet` — drip devnet test funds to a chain address from the
+ * daemon's configured faucet. Both fields are optional: `chain` defaults to the
+ * active settlement chain and `address` to this client's own address on that
+ * chain, so a no-arg call funds the caller's own wallet.
+ */
+export interface FundWalletRequest {
+  /** Chain to fund (default: the active settlement chain). */
+  chain?: SettlementChain;
+  /** Address to fund (default: this client's own address for `chain`). */
+  address?: string;
+}
+
+/** `POST /fund-wallet` result. */
+export interface FundWalletResponse {
+  /** The chain that was funded. */
+  chain: SettlementChain;
+  /** The address that was funded. */
+  address: string;
+  /** The faucet base URL the drip was requested from. */
+  faucetUrl: string;
+  /** Raw parsed JSON body from the faucet (shape is faucet-defined). */
+  response: unknown;
+}
+
 /** Uniform error envelope returned with non-2xx responses. */
 export interface ErrorResponse {
   error: string;

@@ -359,6 +359,31 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'toon_fund_wallet',
+    description:
+      'Drip devnet test funds to a wallet from the configured faucet (EVM: ' +
+      'ETH + USDC, Solana: SOL + USDC, Mina: native MINA + USDC). With no ' +
+      "arguments it funds THIS client's own address on the active settlement " +
+      'chain — the usual "fund me before I open a channel / pay for writes" ' +
+      'step. Requires a faucet to be configured on the daemon.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chain: {
+          type: 'string',
+          enum: ['evm', 'solana', 'mina'],
+          description: 'Chain to fund (default: the active settlement chain).',
+        },
+        address: {
+          type: 'string',
+          description:
+            "Address to fund (default: this client's own address for the chain).",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'toon_targets',
     description:
       'List every registered target: relays (read sources, with connection + ' +
@@ -595,6 +620,17 @@ export async function dispatchTool(
         };
         return ok(await client.httpFetchPaid(req));
       }
+      case 'toon_fund_wallet':
+        return ok(
+          await client.fundWallet({
+            ...(typeof args['chain'] === 'string'
+              ? { chain: args['chain'] as SettlementChain }
+              : {}),
+            ...(typeof args['address'] === 'string'
+              ? { address: args['address'] }
+              : {}),
+          })
+        );
       case 'toon_targets':
         return ok(await client.targets());
       case 'toon_add_relay':

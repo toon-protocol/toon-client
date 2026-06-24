@@ -72,15 +72,21 @@ describe('fundWallet (devnet faucet)', () => {
     await expect(fundWallet(FAUCET, '', 'evm')).rejects.toThrow(/address/);
   });
 
-  it('throws a clear deferred error for solana and mina (WS3)', async () => {
-    const fetchImpl = mockJsonFetch({});
-    await expect(
-      fundWallet(FAUCET, 'SoLaddr', 'solana', { fetchImpl })
-    ).rejects.toThrow(/deferred \(WS3\)/);
-    await expect(
-      fundWallet(FAUCET, 'B62addr', 'mina', { fetchImpl })
-    ).rejects.toThrow(/deferred \(WS3\)/);
-    // No network call should have been attempted for deferred chains.
-    expect(fetchImpl).not.toHaveBeenCalled();
+  it('POSTs the address to the chain-specific path for solana and mina', async () => {
+    const solFetch = mockJsonFetch({ success: true });
+    const solResult = await fundWallet(FAUCET, 'SoLaddr', 'solana', {
+      fetchImpl: solFetch,
+    });
+    const [solUrl, solInit] = (solFetch as unknown as ReturnType<typeof vi.fn>)
+      .mock.calls[0];
+    expect(solUrl).toBe(`${FAUCET}/api/solana/request`);
+    expect(JSON.parse(solInit.body as string)).toEqual({ address: 'SoLaddr' });
+    expect(solResult.chain).toBe('solana');
+
+    const minaFetch = mockJsonFetch({ success: true });
+    await fundWallet(FAUCET, 'B62addr', 'mina', { fetchImpl: minaFetch });
+    const [minaUrl] = (minaFetch as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(minaUrl).toBe(`${FAUCET}/api/mina/request`);
   });
 });
