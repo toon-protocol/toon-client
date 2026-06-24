@@ -156,3 +156,24 @@ export {
   type VaultData,
   type EncryptedKeystore,
 } from './keys/index.js';
+
+// NIP-on-TOON render dispatch (render trust gradient: native / A2UI / mcp-ui /
+// generative). Branch 1 (native registry) is wired; branches 2/3/4 route to
+// marked decisions for sibling tickets (#89/#90/#92). See toon-meta#58.
+export {
+  renderDispatch,
+  resolveRendererMime,
+  KindRegistry,
+  UI_RENDERER_KIND,
+  UI_TAG,
+  MIME_A2UI,
+  MIME_MCP_APP,
+  type DispatchInput,
+  type RenderBranch,
+  type RenderTrust,
+  type RenderDecision,
+  type NativeDecision,
+  type A2uiDecision,
+  type McpUiDecision,
+  type GenerativeDecision,
+} from './render/index.js';
