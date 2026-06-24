@@ -116,6 +116,13 @@ export interface DaemonConfigFile {
 export interface ResolvedDaemonConfig {
   httpPort: number;
   relayUrl: string;
+  /**
+   * Whether a write uplink (proxy or BTP) is configured. FREE reads work
+   * without one; a write attempt with `hasUplink === false` is rejected at the
+   * control plane with a clear "configure an uplink" error (issue #69). Reads
+   * (`subscribe`/`query`/`getEvents`) never consult this.
+   */
+  hasUplink: boolean;
   /** Connector-proxy base URL (devnet payment-proxy), when configured. */
   proxyUrl?: string;
   /** Devnet faucet base URL, when configured. */
@@ -209,16 +216,12 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const faucetUrl = process.env['TOON_CLIENT_FAUCET_URL'] ?? file.faucetUrl;
   const btpUrl = process.env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl;
 
-  // Exactly one HTTP/ILP uplink is required: a connector PROXY (devnet
-  // ILP-over-HTTP, no BTP socket) OR a BTP url. The proxy path makes btpUrl
-  // optional — paid writes route through `POST /ilp` via HttpIlpClient.
-  if (!btpUrl && !proxyUrl) {
-    throw new Error(
-      'No uplink configured. Set TOON_CLIENT_PROXY_URL (connector proxy, ' +
-        'ILP-over-HTTP) or TOON_CLIENT_BTP_URL (BTP socket), or add `proxyUrl`/' +
-        '`btpUrl` to the config file.'
-    );
-  }
+  // A write uplink is OPTIONAL at resolve time: FREE relay reads need none.
+  // A connector PROXY (devnet ILP-over-HTTP, no BTP socket) OR a BTP url enables
+  // paid writes; with neither, the daemon still starts read-only and rejects a
+  // write attempt at the control plane (issue #69). When only a proxy is set,
+  // paid writes route through `POST /ilp` via HttpIlpClient.
+  const hasUplink = Boolean(btpUrl || proxyUrl);
   const relayUrl =
     process.env['TOON_CLIENT_RELAY_URL'] ??
     file.relayUrl ??
@@ -239,7 +242,15 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const chain = (process.env['TOON_CLIENT_CHAIN'] ??
     file.chain ??
     'evm') as SettlementChain;
-  const apex = file.apexChains?.[chain] ?? file.apex;
+  // Negotiation precedence: explicit per-chain → explicit single apex → a
+  // proxy-mode negotiation synthesized from the flat settlement config. The last
+  // one lets a proxy-only daemon settle paid writes WITHOUT a manual `apex`
+  // block or a relay kind:10032 announcement (issue #69) — the runner falls back
+  // to live kind:10032 discovery when this returns undefined.
+  const apex =
+    file.apexChains?.[chain] ??
+    file.apex ??
+    buildProxyApexNegotiation(file, chain, destination);
 
   const channelStorePath =
     file.channelStorePath ?? join(configDir(), 'channels.json');
@@ -283,15 +294,87 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   return {
     httpPort,
     relayUrl,
+    hasUplink,
     ...(proxyUrl ? { proxyUrl } : {}),
     ...(faucetUrl ? { faucetUrl } : {}),
     destination,
     feePerEvent,
-    apex,
+    ...(apex ? { apex } : {}),
     ...(file.apexChildPeers ? { apexChildPeers: file.apexChildPeers } : {}),
     chain,
     apexChannelStorePath,
     toonClientConfig,
     network,
+  };
+}
+
+/**
+ * Default negotiated chain-key for a settlement family when none is configured
+ * and none can be discovered. EVM carries `evm:<network>:<chainId>`; the devnet
+ * Anvil chain is 31337. Solana/Mina carry no numeric id.
+ */
+function defaultChainKey(chain: SettlementChain, chainId: number): string {
+  switch (chain) {
+    case 'evm':
+      return `evm:devnet:${chainId}`;
+    case 'solana':
+      return 'solana:devnet';
+    case 'mina':
+      return 'mina:devnet';
+  }
+}
+
+/**
+ * Synthesize an apex negotiation for PROXY mode from the flat settlement config
+ * (`settlementAddresses` / `tokenNetworks` / `preferredTokens`). Returns
+ * undefined unless a proxy uplink AND the apex's settlement (receive) address
+ * for the active chain are configured — the connector's on-chain counterparty
+ * is REQUIRED to open a channel and is never fabricated (issue #69). When it
+ * returns undefined the runner falls back to live kind:10032 discovery.
+ *
+ * The chainKey is taken from the first key in `settlementAddresses`/`tokenNetworks`
+ * matching the chain family, else a sensible devnet default.
+ */
+function buildProxyApexNegotiation(
+  file: DaemonConfigFile,
+  chain: SettlementChain,
+  destination: string
+): ApexNegotiationConfig | undefined {
+  const proxyUrl = process.env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl;
+  if (!proxyUrl) return undefined;
+
+  const settlementAddresses = file.settlementAddresses ?? {};
+  // Prefer a chainKey that already carries settlement info for this family.
+  const familyKeys = (rec: Record<string, string>): string[] =>
+    Object.keys(rec).filter((k) => k.split(':')[0] === chain);
+  const chainKey =
+    familyKeys(settlementAddresses)[0] ??
+    familyKeys(file.tokenNetworks ?? {})[0] ??
+    familyKeys(file.preferredTokens ?? {})[0];
+
+  // Without an explicit settlementAddress entry there is no on-chain
+  // counterparty to open against — defer to relay discovery rather than guess.
+  if (!chainKey) return undefined;
+  const settlementAddress = settlementAddresses[chainKey];
+  if (!settlementAddress) return undefined;
+
+  const parts = chainKey.split(':');
+  const chainId =
+    chain === 'evm' && parts.length >= 3 ? Number(parts[2] ?? 0) : 0;
+  const peerId = destination.split('.').at(-1) ?? destination;
+
+  return {
+    destination,
+    peerId,
+    chain,
+    chainKey: chainKey || defaultChainKey(chain, chainId),
+    chainId,
+    settlementAddress,
+    ...(file.preferredTokens?.[chainKey]
+      ? { tokenAddress: file.preferredTokens[chainKey] }
+      : {}),
+    ...(file.tokenNetworks?.[chainKey]
+      ? { tokenNetwork: file.tokenNetworks[chainKey] }
+      : {}),
   };
 }

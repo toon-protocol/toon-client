@@ -114,6 +114,7 @@ function config(): ResolvedDaemonConfig {
   return {
     httpPort: 0,
     relayUrl: 'ws://relay.test',
+    hasUplink: true,
     destination: 'g.townhouse.town',
     feePerEvent: 1n,
     chain: 'evm',

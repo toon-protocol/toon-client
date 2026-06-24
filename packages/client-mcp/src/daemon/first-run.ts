@@ -139,13 +139,14 @@ export async function scaffoldFirstRun(
     // Fresh install: surface the transport knobs with guidance.
     updated = {
       _help: CONFIG_HELP,
+      proxyUrl: '',
       btpUrl: '',
       relayUrl: 'ws://localhost:7100',
       ...updated,
     } as DaemonConfigFile;
     changed = true;
     log(
-      `[toon-clientd] wrote starter config at ${configPath} — set "btpUrl" to your apex before publishing.`
+      `[toon-clientd] wrote starter config at ${configPath} — set "proxyUrl" (connector proxy, ILP-over-HTTP) or "btpUrl" (BTP) to your apex before publishing.`
     );
   }
 
