@@ -9,6 +9,8 @@
 export { renderDispatch, resolveRendererMime } from './dispatch.js';
 export type { DispatchInput } from './dispatch.js';
 export { KindRegistry } from './KindRegistry.js';
+export { resolveUiCoordinate, resolveUiRenderer } from './resolveRenderer.js';
+export type { ResolvedCoordinate } from './resolveRenderer.js';
 export {
   UI_RENDERER_KIND,
   UI_TAG,
