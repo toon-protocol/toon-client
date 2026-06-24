@@ -65,6 +65,33 @@ export type ValidationResult =
 const DEFAULT_MAX_DEPTH = 32;
 const DEFAULT_MAX_NODES = 500;
 
+function editDistance(a: string, b: string): number {
+  const n = b.length;
+  const row: number[] = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]!;
+    row[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const tmp = row[j]!;
+      row[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, row[j - 1]!, row[j]!);
+      prev = tmp;
+    }
+  }
+  return row[n]!;
+}
+
+function nearestAtom(name: string, allowed: ReadonlySet<string>): string | undefined {
+  if (name.length > 64) return undefined; // no real atom name exceeds this; avoid O(m×n) on untrusted input
+  const lower = name.toLowerCase();
+  let best: string | undefined;
+  let bestDist = Infinity;
+  for (const id of allowed) {
+    const d = editDistance(lower, id.toLowerCase());
+    if (d < bestDist) { bestDist = d; best = id; }
+  }
+  return bestDist <= Math.floor(name.length / 2) ? best : undefined;
+}
+
 const FILTER_ARRAY_KEYS = new Set([
   'kinds',
   'authors',
@@ -171,7 +198,15 @@ export function validateViewSpec(
     if (typeof node['atom'] !== 'string') {
       errors.push(`${path}.atom: must be a string`);
     } else if (!allowedAtoms.has(node['atom'])) {
-      errors.push(`${path}.atom: unknown atom "${node['atom']}"`);
+      const atomName = node['atom'] as string;
+      const suggestion = nearestAtom(atomName, allowedAtoms);
+      const hint = suggestion ? ` Did you mean "${suggestion}"?` : '';
+      const validList = [...allowedAtoms].join(', ');
+      errors.push(
+        `${path}.atom: unknown atom "${atomName}".${hint}\n` +
+          `  Valid atoms: ${validList}.\n` +
+          `  See toon_atoms for full vocabulary.`
+      );
     }
 
     if (node['props'] !== undefined) {
