@@ -1,8 +1,10 @@
 /** Interactive atoms that hold local UI state (composer, tabs, pay-confirm). */
 import { Children, useEffect, useState, type FC } from 'react';
+import { Button } from '@/components/ui/button.js';
+import { Textarea } from '@/components/ui/textarea.js';
+import { MonoId } from '@/components/mono-id.js';
 import { type Atom, type AtomRenderProps, type AtomStatus } from './types.js';
 
-/** A text composer that publishes a note (kind:1) via its `post` action. */
 const Composer: FC<AtomRenderProps> = ({ props, actions }) => {
   const [text, setText] = useState('');
   const placeholder =
@@ -17,33 +19,26 @@ const Composer: FC<AtomRenderProps> = ({ props, actions }) => {
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
-      <textarea
+    <div className="flex flex-col gap-2">
+      <Textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={placeholder}
         rows={3}
-        className="w-full resize-none rounded-md border border-input bg-background p-2 text-sm outline-none focus:ring-2 focus:ring-ring"
       />
       <div className="flex justify-end">
-        <button
-          type="button"
+        <Button
+          size="sm"
           disabled={!text.trim() || !actions['post']}
           onClick={submit}
-          className="rounded-md bg-primary px-3 py-1 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
           {label}
-        </button>
+        </Button>
       </div>
     </div>
   );
 };
 
-/**
- * Tabbed container. `props.labels: string[]` names the tabs; each child node is
- * one tab panel (in order). Lets the agent compose a multi-section journey
- * (e.g. Feed / Profile / Forge) in one view.
- */
 const Tabs: FC<AtomRenderProps> = ({ props, children }) => {
   const labels = Array.isArray(props['labels'])
     ? (props['labels'] as unknown[]).map(String)
@@ -52,17 +47,17 @@ const Tabs: FC<AtomRenderProps> = ({ props, children }) => {
   const [active, setActive] = useState(0);
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex gap-1 border-b border-border">
+    <div className="flex flex-col gap-4">
+      <div className="flex gap-0 border-b border-border">
         {panels.map((_, i) => (
           <button
             key={i}
             type="button"
             onClick={() => setActive(i)}
             className={
-              'px-3 py-1.5 text-sm font-medium ' +
+              'px-4 py-2 text-sm font-medium transition-colors ' +
               (i === active
-                ? 'border-b-2 border-primary text-foreground'
+                ? '-mb-px border-b-2 border-primary text-foreground'
                 : 'text-muted-foreground hover:text-foreground')
             }
           >
@@ -75,19 +70,6 @@ const Tabs: FC<AtomRenderProps> = ({ props, children }) => {
   );
 };
 
-/**
- * The flagship pay-to-write moment: "sending a message and sending money are the
- * same action." A single atom holding the state machine
- *
- *   idle → confirming (preview + live fee + chain + Confirm/Cancel)
- *        → publishing → receipt (real eventId + fee paid + "message = money")
- *
- * The fee + settlement chain are fetched live via `readStatus` (`toon_status`),
- * never hardcoded — against the fake backend it shows the stub fee; against the
- * real daemon (#16) the same UI shows the live fee with no change here. The
- * publish itself fires the wired `confirm` action (`toon_publish_unsigned`); the
- * receipt renders the `eventId` the runtime surfaces back on the outcome.
- */
 type PayPhase = 'idle' | 'confirming' | 'publishing' | 'receipt';
 
 const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
@@ -102,20 +84,13 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
   const [eventId, setEventId] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 
-  // Fetch the live fee/chain when entering the confirm step (never hardcoded).
   useEffect(() => {
     if (phase !== 'confirming' || status || statusError || !readStatus) return;
     let cancelled = false;
     void readStatus()
-      .then((s) => {
-        if (!cancelled) setStatus(s);
-      })
-      .catch(() => {
-        if (!cancelled) setStatusError(true);
-      });
-    return () => {
-      cancelled = true;
-    };
+      .then((s) => { if (!cancelled) setStatus(s); })
+      .catch(() => { if (!cancelled) setStatusError(true); });
+    return () => { cancelled = true; };
   }, [phase, status, statusError, readStatus]);
 
   const review = (): void => {
@@ -124,9 +99,7 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
     setPhase('confirming');
   };
 
-  const cancel = (): void => {
-    setPhase('idle');
-  };
+  const cancel = (): void => setPhase('idle');
 
   const confirm = async (): Promise<void> => {
     const value = text.trim();
@@ -153,32 +126,24 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
 
   const feeLabel = status
     ? `${status.feePerEvent}${status.asset ? ` ${status.asset}` : ''}`
-    : statusError
-      ? 'unavailable'
-      : '…';
+    : statusError ? 'unavailable' : '…';
   const chainLabel = status ? status.settlementChain : statusError ? 'unknown' : '…';
 
   if (phase === 'receipt') {
     return (
-      <div className="flex flex-col gap-2 rounded-lg border border-primary/40 bg-primary/5 p-3">
-        <div className="text-sm font-semibold text-primary">Posted — and paid.</div>
-        <p className="text-xs text-muted-foreground">The message is the money.</p>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+      <div className="rounded-lg border-l-2 border-primary bg-primary/5 p-4">
+        <div className="mb-1 font-semibold text-primary">Posted — and paid.</div>
+        <p className="mb-3 text-xs text-muted-foreground">The message is the money.</p>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
           <dt className="text-muted-foreground">Event</dt>
-          <dd className="break-all font-mono">{eventId ?? '—'}</dd>
+          <dd>{eventId ? <MonoId value={eventId} prefixLen={12} suffixLen={6} /> : '—'}</dd>
           <dt className="text-muted-foreground">Fee paid</dt>
-          <dd>
-            {feeLabel} on {chainLabel}
-          </dd>
+          <dd>{feeLabel} on {chainLabel}</dd>
         </dl>
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={reset}
-            className="rounded-md border border-border px-3 py-1 text-sm hover:bg-muted"
-          >
+        <div className="mt-3 flex justify-end">
+          <Button variant="outline" size="sm" onClick={reset}>
             Post another
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -187,60 +152,47 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
   if (phase === 'confirming' || phase === 'publishing') {
     const publishing = phase === 'publishing';
     return (
-      <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
-        <div className="text-sm font-semibold">Confirm pay-to-write</div>
-        <blockquote className="whitespace-pre-wrap rounded-md border-l-2 border-primary/50 bg-muted/40 p-2 text-sm">
+      <div className="flex flex-col gap-3 rounded-lg border-l-2 border-ring bg-card p-4">
+        <div className="font-semibold text-sm">Confirm pay-to-write</div>
+        <blockquote className="whitespace-pre-wrap rounded-md border-l-2 border-primary/40 bg-muted/50 px-3 py-2 text-sm">
           {text}
         </blockquote>
-        <div className="text-xs text-muted-foreground">
-          Sending this message pays <span className="font-medium text-foreground">{feeLabel}</span>{' '}
-          per event, settling on <span className="font-medium text-foreground">{chainLabel}</span>.
-          The message is the money.
-        </div>
+        <p className="text-xs text-muted-foreground">
+          Sending this message pays{' '}
+          <span className="font-medium text-foreground">{feeLabel}</span> per event, settling on{' '}
+          <span className="font-medium text-foreground">{chainLabel}</span>. The message is the money.
+        </p>
         {failed ? (
-          <div className="text-xs text-destructive">Publish failed: {failed}</div>
+          <p className="text-xs text-destructive">Publish failed: {failed}</p>
         ) : null}
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            disabled={publishing}
-            onClick={cancel}
-            className="rounded-md border border-border px-3 py-1 text-sm hover:bg-muted disabled:opacity-50"
-          >
+          <Button variant="outline" size="sm" disabled={publishing} onClick={cancel}>
             Cancel
-          </button>
-          <button
-            type="button"
-            disabled={publishing || statusError}
-            onClick={() => void confirm()}
-            className="rounded-md bg-primary px-3 py-1 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-          >
+          </Button>
+          <Button size="sm" disabled={publishing || statusError} onClick={() => void confirm()}>
             {publishing ? 'Publishing…' : 'Confirm & pay'}
-          </button>
+          </Button>
         </div>
       </div>
     );
   }
 
-  // idle — compose
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
-      <textarea
+    <div className="flex flex-col gap-2">
+      <Textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={placeholder}
         rows={3}
-        className="w-full resize-none rounded-md border border-input bg-background p-2 text-sm outline-none focus:ring-2 focus:ring-ring"
       />
       <div className="flex justify-end">
-        <button
-          type="button"
+        <Button
+          size="sm"
           disabled={!text.trim() || !actions['confirm']}
           onClick={review}
-          className="rounded-md bg-primary px-3 py-1 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
           {label}
-        </button>
+        </Button>
       </div>
     </div>
   );

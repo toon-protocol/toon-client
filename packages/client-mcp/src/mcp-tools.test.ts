@@ -28,6 +28,7 @@ describe('TOOL_DEFINITIONS', () => {
         'toon_swap',
         'toon_http_fetch_paid',
         'toon_subscribe',
+        'toon_fund_wallet',
         'toon_targets',
         'toon_add_relay',
         'toon_remove_relay',
@@ -275,6 +276,27 @@ describe('dispatchTool', () => {
     const res = await dispatchTool(stubClient({ targets }), 'toon_targets', {});
     expect(res.isError).toBeFalsy();
     expect(JSON.parse(res.content[0]!.text).relays).toHaveLength(1);
+  });
+
+  it('toon_fund_wallet forwards an empty body when no args (fund self)', async () => {
+    const fundWallet = vi
+      .fn()
+      .mockResolvedValue({ chain: 'evm', address: '0xabc', faucetUrl: 'u', response: {} });
+    const res = await dispatchTool(stubClient({ fundWallet }), 'toon_fund_wallet', {});
+    expect(res.isError).toBeFalsy();
+    expect(fundWallet).toHaveBeenCalledWith({});
+    expect(JSON.parse(res.content[0]!.text).chain).toBe('evm');
+  });
+
+  it('toon_fund_wallet forwards chain + address when provided', async () => {
+    const fundWallet = vi
+      .fn()
+      .mockResolvedValue({ chain: 'solana', address: 'So1', faucetUrl: 'u', response: {} });
+    await dispatchTool(stubClient({ fundWallet }), 'toon_fund_wallet', {
+      chain: 'solana',
+      address: 'So1',
+    });
+    expect(fundWallet).toHaveBeenCalledWith({ chain: 'solana', address: 'So1' });
   });
 
   it('toon_add_relay forwards the relayUrl', async () => {

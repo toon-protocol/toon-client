@@ -21,6 +21,7 @@ import type {
   AddApexRequest,
   AddRelayRequest,
   EventsQuery,
+  FundWalletRequest,
   HttpFetchPaidRequest,
   OpenChannelRequest,
   PublishRequest,
@@ -179,6 +180,14 @@ export function registerRoutes(
       }
     }
   );
+
+  app.post<{ Body: FundWalletRequest }>('/fund-wallet', async (req, reply) => {
+    try {
+      return await runner.fundWallet(req.body ?? {});
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
 
   app.get('/targets', async () => runner.getTargets());
 

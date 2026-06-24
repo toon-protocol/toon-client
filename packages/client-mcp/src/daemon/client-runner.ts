@@ -22,6 +22,7 @@ import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
 import { decodeEventFromToon } from '@toon-protocol/core';
 import type { ToonClientConfig } from '@toon-protocol/client';
+import { fundWallet as faucetFund, type FaucetChain } from '@toon-protocol/client';
 import { streamSwap } from '@toon-protocol/sdk/swap';
 import { RelaySubscription } from '../relay-subscription.js';
 import type {
@@ -31,6 +32,8 @@ import type {
   ChannelsResponse,
   ChainStatus,
   EventsResponse,
+  FundWalletRequest,
+  FundWalletResponse,
   HttpFetchPaidRequest,
   HttpFetchPaidResponse,
   NostrFilter,
@@ -804,7 +807,7 @@ export class ClientRunner {
       bootstrapping: apex?.bootstrapping ?? false,
       ready: apex?.ready ?? false,
       settlementChain: this.config.chain,
-      feePerEvent: this.config.feePerEvent.toString(),
+      feePerEvent: (apex?.feePerEvent ?? this.config.feePerEvent).toString(),
       identity: {
         nostrPubkey: safe(() => client?.getPublicKey()) ?? '',
         evmAddress: safe(() => client?.getEvmAddress()),
@@ -824,6 +827,42 @@ export class ClientRunner {
       ...(network ? { network } : {}),
       ...(apex?.lastError ? { lastError: apex.lastError } : {}),
     };
+  }
+
+  /**
+   * Drip devnet test funds to a wallet from the configured faucet. Defaults the
+   * chain to the active settlement chain and the address to this client's own
+   * address on that chain, so a no-arg call funds the caller's own wallet
+   * (the typical "fund me before I open a channel" flow). The daemon holds the
+   * faucet URL + the keys, so the MCP caller never needs either.
+   */
+  async fundWallet(req: FundWalletRequest = {}): Promise<FundWalletResponse> {
+    const faucetUrl = this.config.faucetUrl;
+    if (!faucetUrl) {
+      throw new InvalidPayloadError(
+        'no faucet configured — set faucetUrl in the daemon config (or the ' +
+          'TOON_CLIENT_FAUCET_URL env var) to fund wallets.'
+      );
+    }
+    const chain: FaucetChain = req.chain ?? this.config.chain;
+    const client = this.defaultApex()?.client;
+    const address =
+      req.address ??
+      safe(() =>
+        chain === 'evm'
+          ? client?.getEvmAddress()
+          : chain === 'solana'
+            ? client?.getSolanaAddress()
+            : client?.getMinaAddress()
+      );
+    if (!address) {
+      throw new InvalidPayloadError(
+        `no ${chain} address available to fund — pass an explicit address ` +
+          `(this client has no ${chain} key configured).`
+      );
+    }
+    const { response } = await faucetFund(faucetUrl, address, chain);
+    return { chain, address, faucetUrl, response };
   }
 
   /** Full registry of relay + apex targets with per-target status. */

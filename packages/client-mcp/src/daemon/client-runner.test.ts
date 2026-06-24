@@ -204,6 +204,11 @@ describe('ClientRunner', () => {
     expect(runner.getStatus().ready).toBe(true);
   });
 
+  it('getStatus includes feePerEvent from config', () => {
+    const status = runner.getStatus();
+    expect(status.feePerEvent).toBe('1');
+  });
+
   it('injects the apex negotiation into the ToonClient', async () => {
     await runner.bootstrap();
     expect(client.peerNegotiations.get('town')).toMatchObject({

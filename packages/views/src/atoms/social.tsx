@@ -1,35 +1,37 @@
 /** Social atoms — NIP-01 profile/note, NIP-25 reactions, NIP-02 follow. */
 import { type FC } from 'react';
-import { cn } from '../lib/cn.js';
+import { Button } from '@/components/ui/button.js';
+import { Badge } from '@/components/ui/badge.js';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.js';
+import { MonoId } from '@/components/mono-id.js';
 import { parseProfile, parseNote, parseReaction } from '../parsers/social.js';
 import { type Atom, type AtomRenderProps } from './types.js';
 
-function shortPk(pk: string): string {
-  return pk.length > 12 ? `${pk.slice(0, 8)}…${pk.slice(-4)}` : pk;
+function displayName(pubkey: string): string {
+  return pubkey.slice(0, 2).toUpperCase();
 }
 
 const ProfileHeader: FC<AtomRenderProps> = ({ events }) => {
   const profile = events.map(parseProfile).find((p) => p !== null) ?? null;
   if (!profile) return null;
-  const name = profile.displayName ?? profile.name ?? shortPk(profile.pubkey);
+  const name =
+    profile.displayName ?? profile.name ?? profile.pubkey;
+  const initials = displayName(profile.pubkey);
   return (
     <div className="flex items-center gap-3">
-      {profile.picture ? (
-        <img
-          src={profile.picture}
-          alt={name}
-          className="h-12 w-12 rounded-full object-cover"
-        />
-      ) : (
-        <div className="h-12 w-12 rounded-full bg-muted" />
-      )}
-      <div className="min-w-0">
-        <div className="truncate font-semibold">{name}</div>
+      <Avatar className="h-11 w-11">
+        <AvatarImage src={profile.picture} alt={name} />
+        <AvatarFallback className="text-xs font-semibold">{initials}</AvatarFallback>
+      </Avatar>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-semibold leading-tight">{name}</div>
         {profile.nip05 ? (
           <div className="truncate text-xs text-muted-foreground">{profile.nip05}</div>
-        ) : null}
+        ) : (
+          <MonoId value={profile.pubkey} className="text-muted-foreground" />
+        )}
         {profile.about ? (
-          <div className="line-clamp-2 text-sm text-muted-foreground">{profile.about}</div>
+          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{profile.about}</p>
         ) : null}
       </div>
     </div>
@@ -40,28 +42,29 @@ const NoteCard: FC<AtomRenderProps> = ({ events, actions }) => {
   const notes = events.map(parseNote).filter((n) => n !== null);
   if (notes.length === 0) return null;
   return (
-    <>
+    <div className="flex flex-col divide-y divide-border">
       {notes.map((note) => (
-        <article key={note.eventId} className="flex flex-col gap-2 border-b border-border py-3">
-          <header className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">{shortPk(note.authorPubkey)}</span>
-            {note.isReply ? <span className="rounded bg-muted px-1">reply</span> : null}
+        <article key={note.eventId} className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0">
+          <header className="flex items-center gap-2">
+            <MonoId value={note.authorPubkey} />
+            {note.isReply ? (
+              <Badge variant="secondary" className="text-[10px]">reply</Badge>
+            ) : null}
           </header>
-          <p className="whitespace-pre-wrap break-words text-sm">{note.content}</p>
+          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{note.content}</p>
           {actions['reply'] ? (
-            <div>
-              <button
-                type="button"
-                className="text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => void actions['reply']?.({ parentId: note.eventId })}
-              >
-                Reply
-              </button>
-            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="self-start h-6 px-0 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => void actions['reply']?.({ parentId: note.eventId })}
+            >
+              Reply
+            </Button>
           ) : null}
         </article>
       ))}
-    </>
+    </div>
   );
 };
 
@@ -74,20 +77,21 @@ const ReactionBar: FC<AtomRenderProps> = ({ events, actions }) => {
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-1.5">
       {[...counts.entries()].map(([emoji, n]) => (
-        <span key={emoji} className="rounded-full bg-muted px-2 py-0.5 text-xs">
+        <Badge key={emoji} variant="secondary">
           {emoji} {n}
-        </span>
+        </Badge>
       ))}
       {actions['react'] ? (
-        <button
-          type="button"
-          className="rounded-full border border-border px-2 py-0.5 text-xs hover:bg-muted"
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-6 rounded-full px-2 text-xs"
           onClick={() => void actions['react']?.({ content: '+' })}
         >
           + React
-        </button>
+        </Button>
       ) : null}
     </div>
   );
@@ -96,17 +100,13 @@ const ReactionBar: FC<AtomRenderProps> = ({ events, actions }) => {
 const FollowButton: FC<AtomRenderProps> = ({ props, actions }) => {
   const label = typeof props['label'] === 'string' ? props['label'] : 'Follow';
   return (
-    <button
-      type="button"
+    <Button
       disabled={!actions['follow']}
-      className={cn(
-        'rounded-md px-3 py-1 text-sm font-medium',
-        'bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50'
-      )}
+      size="sm"
       onClick={() => void actions['follow']?.()}
     >
       {label}
-    </button>
+    </Button>
   );
 };
 

@@ -1,6 +1,7 @@
 /** Layout atoms — the agent's arrangement vocabulary. */
 import { type FC } from 'react';
-import { cn } from '../lib/cn.js';
+import { cn } from '@/lib/utils.js';
+import { Separator } from '@/components/ui/separator.js';
 import { type Atom, type AtomRenderProps } from './types.js';
 
 const Stack: FC<AtomRenderProps> = ({ props, children }) => {
@@ -12,11 +13,14 @@ const Stack: FC<AtomRenderProps> = ({ props, children }) => {
 const Section: FC<AtomRenderProps> = ({ props, children }) => {
   const title = typeof props['title'] === 'string' ? props['title'] : undefined;
   return (
-    <section className="flex flex-col gap-2">
+    <section className="flex flex-col gap-3">
       {title ? (
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          {title}
-        </h2>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+            {title}
+          </span>
+          <Separator className="flex-1" />
+        </div>
       ) : null}
       {children}
     </section>

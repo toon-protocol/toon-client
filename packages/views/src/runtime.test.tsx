@@ -263,6 +263,38 @@ describe('ViewSpecRenderer', () => {
     });
   });
 
+  it('pay-confirm: shows "unavailable" when toon_status returns no feePerEvent', async () => {
+    const bridge: ViewBridge = {
+      async callTool(name) {
+        if (name === QUERY_TOOL) return { ok: true, events: [] };
+        if (name === STATUS_TOOL) return { ok: true, data: { settlementChain: 'evm' } };
+        return { ok: true };
+      },
+      notifyModel() {},
+      onSpec() { return () => {}; },
+    };
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'pay-confirm',
+            actions: { confirm: { tool: 'toon_publish_unsigned', args: { kind: 1 } } },
+          },
+        }}
+      />
+    );
+    const textarea = (await screen.findByPlaceholderText(/what's happening/i)) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'test' } });
+    fireEvent.click(screen.getByText(/pay to post/i));
+    await waitFor(() => expect(screen.getByText(/confirm pay-to-write/i)).toBeTruthy());
+    // fee shown as 'unavailable', not '0'
+    await waitFor(() => expect(screen.getByText(/unavailable/i)).toBeTruthy());
+    // Confirm button must still be clickable (atom disables on error via statusError path)
+    // — the point is that '0' is NOT shown
+    expect(screen.queryByText(/\b0\b/)).toBeNull();
+  });
+
   it('pay-confirm: Cancel fires no publish and returns to compose', async () => {
     const { bridge, calls } = mockBridge([]);
     render(
