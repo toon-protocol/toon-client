@@ -169,10 +169,14 @@ describe('control-plane routes', () => {
   describe('when ready', () => {
     beforeEach(() => build(true));
 
-    it('GET /status returns ready', async () => {
+    it('GET /status returns ready and feePerEvent', async () => {
       const res = await app.inject({ method: 'GET', url: '/status' });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ ready: true, bootstrapping: false });
+      expect(res.json()).toMatchObject({
+        ready: true,
+        bootstrapping: false,
+        feePerEvent: '1',
+      });
     });
 
     it('POST /publish returns eventId + nonce', async () => {

@@ -112,6 +112,8 @@ function buildReadStatus(bridge: ViewBridge): () => Promise<AtomStatus> {
   return async () => {
     const res = await bridge.callTool(STATUS_TOOL, {});
     const data = (res.data ?? {}) as Partial<AtomStatus>;
+    // Throw so the atom catches it as statusError=true and disables Confirm — never
+    // silently show '0' for a non-zero charge.
     if (typeof data.feePerEvent !== 'string' || !data.feePerEvent) {
       throw new Error('fee unavailable');
     }

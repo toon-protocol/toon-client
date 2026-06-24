@@ -169,7 +169,7 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
           <Button variant="outline" size="sm" disabled={publishing} onClick={cancel}>
             Cancel
           </Button>
-          <Button size="sm" disabled={publishing} onClick={() => void confirm()}>
+          <Button size="sm" disabled={publishing || statusError} onClick={() => void confirm()}>
             {publishing ? 'Publishing…' : 'Confirm & pay'}
           </Button>
         </div>
