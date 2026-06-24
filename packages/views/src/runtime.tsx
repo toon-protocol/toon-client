@@ -112,8 +112,11 @@ function buildReadStatus(bridge: ViewBridge): () => Promise<AtomStatus> {
   return async () => {
     const res = await bridge.callTool(STATUS_TOOL, {});
     const data = (res.data ?? {}) as Partial<AtomStatus>;
+    if (typeof data.feePerEvent !== 'string' || !data.feePerEvent) {
+      throw new Error('fee unavailable');
+    }
     return {
-      feePerEvent: typeof data.feePerEvent === 'string' ? data.feePerEvent : '0',
+      feePerEvent: data.feePerEvent,
       settlementChain:
         typeof data.settlementChain === 'string' ? data.settlementChain : 'unknown',
       ...(typeof data.asset === 'string' ? { asset: data.asset } : {}),
