@@ -16,10 +16,12 @@
  * for the sibling tickets to consume (#89 A2UI, #90 mcp-ui + consent, #92
  * generative). This module does NOT render — it returns a {@link RenderDecision}.
  *
- * The `ui`-tag → `kind:31036` *resolution* lives outside this function (it is the
- * toon#36 spike; the helpers `parseUiCoordinate` / `selectLatestAddressable` are
- * not yet in the published `@toon-protocol/core`). The dispatch therefore takes
- * the already-resolved renderer event via {@link DispatchInput.renderer}.
+ * The `ui`-tag → `kind:31036` *resolution* lives outside this function — see
+ * {@link resolveUiRenderer} in `./resolveRenderer.js`, which parses the `ui`
+ * coordinate (via core's `getUiCoordinate` / `parseUiCoordinate`), picks the
+ * latest addressable `kind:31036` (`selectLatestAddressable`), and re-verifies
+ * its signature before trusting it. The dispatch takes the already-resolved
+ * renderer event via {@link DispatchInput.renderer}.
  */
 
 import type { NostrEvent } from 'nostr-tools/pure';
