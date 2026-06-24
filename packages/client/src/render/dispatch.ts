@@ -28,6 +28,11 @@ import type { NostrEvent } from 'nostr-tools/pure';
 import { MIME_A2UI, MIME_MCP_APP, UI_RENDERER_KIND } from './constants.js';
 import type { KindRegistry } from './KindRegistry.js';
 import type { RenderDecision } from './types.js';
+import {
+  verifyRendererTrust,
+  type RendererPinStore,
+  type SwapRejection,
+} from './swap-defense.js';
 
 /** Read the first value of the named tag, or `undefined`. */
 function tagValue(event: NostrEvent, name: string): string | undefined {
@@ -41,7 +46,9 @@ function tagValue(event: NostrEvent, name: string): string | undefined {
  *
  * The `m` tag is the format selector that picks the branch + trust tier.
  */
-export function resolveRendererMime(renderer: NostrEvent | undefined): string | undefined {
+export function resolveRendererMime(
+  renderer: NostrEvent | undefined
+): string | undefined {
   if (!renderer || renderer.kind !== UI_RENDERER_KIND) return undefined;
   return tagValue(renderer, 'm');
 }
@@ -95,4 +102,82 @@ export function renderDispatch<C>(
   // Branch 4 — no (recognised) renderer → generative fallback, low trust.
   // [STUB: generative fallback + kind:31036 publish-back in #92]
   return { branch: 'generative', trust: 'low', event };
+}
+
+/** Input to {@link guardedRenderDispatch}. */
+export interface GuardedDispatchInput {
+  /** The decoded event the client wants to render. */
+  event: NostrEvent;
+  /**
+   * The candidate `kind:31036` renderer(s) fetched for the event's `ui`
+   * coordinate, *unfiltered*. The swap-defense guard selects the winner
+   * deterministically and verifies it; the caller does NOT pre-select. Pass an
+   * empty array (or omit) when no renderer was resolved.
+   */
+  candidates?: readonly NostrEvent[];
+}
+
+/** Why {@link guardedRenderDispatch} fell back to a safe branch. */
+export interface DispatchGuardInfo {
+  /** A renderer was refused by the swap-defense guard. */
+  rejected: SwapRejection;
+}
+
+/**
+ * Dispatch with the **renderer-swap defense** (toon-client#91) interposed.
+ *
+ * This is the secure entry point: it runs {@link verifyRendererTrust} over the
+ * raw candidate renderers *before* {@link renderDispatch} can pick a strategy,
+ * and **fails closed** on any violation (wrong-author, bad signature,
+ * trust-downgrading swap, high-trust id change):
+ *
+ *   - Known kind → branch 1 (native) regardless of renderers. The guard still
+ *     runs so a *high-trust* renderer swap is detected, but a known kind always
+ *     has the native component to fall back to, so the result is branch 1.
+ *   - Unknown kind, renderer **approved** → normal {@link renderDispatch} with the
+ *     single verified renderer (branches 2/3).
+ *   - Unknown kind, renderer **refused** or none → branch 4 (generative). We do
+ *     NOT pass the suspect renderer through; the user gets the safe fallback.
+ *
+ * @returns the {@link RenderDecision} plus, when a renderer was refused, the
+ * {@link DispatchGuardInfo} describing why (for logging / UX "renderer refused").
+ */
+export function guardedRenderDispatch<C>(
+  input: GuardedDispatchInput,
+  registry: KindRegistry<C>,
+  pins: RendererPinStore
+): { decision: RenderDecision<C>; guard?: DispatchGuardInfo } {
+  const { event } = input;
+  const candidates = input.candidates ?? [];
+
+  // Known kind: branch 1 wins. Still run the guard so a high-trust swap is
+  // observed/pinned, but the safe fall-back for a known kind is its native
+  // component, so the decision is branch 1 either way.
+  if (registry.has(event.kind)) {
+    const guarded = verifyRendererTrust({ event, candidates, registry, pins });
+    const decision = renderDispatch({ event }, registry);
+    return guarded.ok
+      ? { decision }
+      : { decision, guard: { rejected: guarded } };
+  }
+
+  // Unknown kind with no candidates: nothing to guard → generative fallback.
+  if (candidates.length === 0) {
+    return { decision: renderDispatch({ event }, registry) };
+  }
+
+  // Unknown kind with candidates: the guard must approve a renderer before it
+  // can select a strategy. Fail closed to generative on refusal.
+  const guarded = verifyRendererTrust({ event, candidates, registry, pins });
+  if (!guarded.ok) {
+    return {
+      decision: renderDispatch({ event }, registry),
+      guard: { rejected: guarded },
+    };
+  }
+
+  // Approved: dispatch with ONLY the verified, author-bound renderer.
+  return {
+    decision: renderDispatch({ event, renderer: guarded.renderer }, registry),
+  };
 }
