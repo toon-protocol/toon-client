@@ -41,6 +41,25 @@ function mockBridge(
 }
 
 describe('ViewSpecRenderer', () => {
+  it('note-card with bind.query renders all matching events', async () => {
+    const { bridge } = mockBridge([
+      evt({ kind: 1, id: 'n1', content: 'first note' }),
+      evt({ kind: 1, id: 'n2', content: 'second note' }),
+      evt({ kind: 1, id: 'n3', content: 'third note' }),
+    ]);
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: { atom: 'note-card', bind: { query: { kinds: [1] } } },
+        }}
+      />
+    );
+    expect(await screen.findByText('first note')).toBeTruthy();
+    expect(screen.getByText('second note')).toBeTruthy();
+    expect(screen.getByText('third note')).toBeTruthy();
+  });
+
   it('renders a kindAuto feed via the kind default atom', async () => {
     const { bridge } = mockBridge([evt({ kind: 1, id: 'n1', content: 'hello world' })]);
     render(

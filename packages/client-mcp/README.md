@@ -68,6 +68,10 @@ npx -y -p @toon-protocol/client-mcp toon-mcp       # MCP stdio server
 npx -y -p @toon-protocol/client-mcp toon-clientd   # daemon
 ```
 
+> **Trying the public devnet?** See [docs/devnet-mcp-quickstart.md](../../docs/devnet-mcp-quickstart.md)
+> for a known-good, end-to-end-verified proxy-mode config (the explicit settlement maps the core
+> devnet preset still omits), faucet funding, and the Windows/WSL bridge.
+
 ## First run (zero-config onboarding)
 
 On the **first** `toon-clientd run`/`start` (including the auto-spawn from

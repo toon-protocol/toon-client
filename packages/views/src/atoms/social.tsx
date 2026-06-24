@@ -37,27 +37,31 @@ const ProfileHeader: FC<AtomRenderProps> = ({ events }) => {
 };
 
 const NoteCard: FC<AtomRenderProps> = ({ events, actions }) => {
-  const note = events.map(parseNote).find((n) => n !== null) ?? null;
-  if (!note) return null;
+  const notes = events.map(parseNote).filter((n) => n !== null);
+  if (notes.length === 0) return null;
   return (
-    <article className="flex flex-col gap-2 border-b border-border py-3">
-      <header className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span className="font-medium text-foreground">{shortPk(note.authorPubkey)}</span>
-        {note.isReply ? <span className="rounded bg-muted px-1">reply</span> : null}
-      </header>
-      <p className="whitespace-pre-wrap break-words text-sm">{note.content}</p>
-      {actions['reply'] ? (
-        <div>
-          <button
-            type="button"
-            className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => void actions['reply']?.({ parentId: note.eventId })}
-          >
-            Reply
-          </button>
-        </div>
-      ) : null}
-    </article>
+    <>
+      {notes.map((note) => (
+        <article key={note.eventId} className="flex flex-col gap-2 border-b border-border py-3">
+          <header className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">{shortPk(note.authorPubkey)}</span>
+            {note.isReply ? <span className="rounded bg-muted px-1">reply</span> : null}
+          </header>
+          <p className="whitespace-pre-wrap break-words text-sm">{note.content}</p>
+          {actions['reply'] ? (
+            <div>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => void actions['reply']?.({ parentId: note.eventId })}
+              >
+                Reply
+              </button>
+            </div>
+          ) : null}
+        </article>
+      ))}
+    </>
   );
 };
 

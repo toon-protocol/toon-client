@@ -81,6 +81,14 @@ describe('validateViewSpec', () => {
     expect(res.ok).toBe(false);
   });
 
+  it('rejects unknown bind keys (e.g. "filter" instead of "query")', () => {
+    const res = validate({
+      root: { atom: 'note-card', bind: { filter: { kinds: [1] } } },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.errors.join()).toContain('unknown bind key');
+  });
+
   it('rejects a non-string confirmLabel', () => {
     const res = validate({
       root: {
