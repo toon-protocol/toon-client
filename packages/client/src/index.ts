@@ -174,6 +174,7 @@ export {
   MIME_MCP_APP,
   parseUiCoordinate,
   getUiCoordinate,
+  buildUiCoordinate,
   selectLatestAddressable,
   // Renderer-swap defense (toon-client#91).
   verifyRendererTrust,
@@ -184,6 +185,12 @@ export {
   classifyIntent,
   buildConsentRequest,
   type ResolvedCoordinate,
+  // Branch 4 — generative fallback + optional kind:31036 publish-back (#92).
+  GenerativeFallbackRenderer,
+  deterministicGenerator,
+  renderDeterministicHtml,
+  buildRendererEventTemplate,
+  publishBackCoordinate,
   type DispatchInput,
   type GuardedDispatchInput,
   type DispatchGuardInfo,
@@ -206,4 +213,12 @@ export {
   type IntentClassification,
   type ConsentRequest,
   type ConsentDecision,
+  type GeneratedRenderer,
+  type GenerateContext,
+  type RendererGenerator,
+  type RendererSigner,
+  type RendererPublisher,
+  type PublishBackOptions,
+  type GenerativeFallbackOptions,
+  type GenerativeFallbackResult,
 } from './render/index.js';
