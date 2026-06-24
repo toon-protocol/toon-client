@@ -158,8 +158,9 @@ export {
 } from './keys/index.js';
 
 // NIP-on-TOON render dispatch (render trust gradient: native / A2UI / mcp-ui /
-// generative). Branch 1 (native registry) is wired; branches 2/3/4 route to
-// marked decisions for sibling tickets (#89/#90/#92). See toon-meta#58.
+// generative). Branch 1 (native registry) is wired; branch 3 (#90) adds the
+// consent invariant; branches 2/4 route to marked decisions for sibling tickets
+// (#89/#92). See toon-meta#58.
 export {
   renderDispatch,
   resolveRendererMime,
@@ -178,6 +179,10 @@ export {
   verifyRendererTrust,
   isTrustDowngrade,
   RendererPinStore,
+  // Branch 3 consent invariant (#90).
+  extractUiResource,
+  classifyIntent,
+  buildConsentRequest,
   type ResolvedCoordinate,
   type DispatchInput,
   type GuardedDispatchInput,
@@ -196,4 +201,9 @@ export {
   type A2uiDecision,
   type McpUiDecision,
   type GenerativeDecision,
+  type UiResource,
+  type WidgetIntent,
+  type IntentClassification,
+  type ConsentRequest,
+  type ConsentDecision,
 } from './render/index.js';

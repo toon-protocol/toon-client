@@ -327,12 +327,18 @@ importers:
       '@fontsource-variable/geist':
         specifier: ^5.2.9
         version: 5.2.9
+      '@mcp-ui/client':
+        specifier: ^7.1.1
+        version: 7.1.1(react-dom@19.2.7)(react@19.2.7)
       '@modelcontextprotocol/ext-apps':
         specifier: ^1.7.4
         version: 1.7.4(@modelcontextprotocol/sdk@1.29.0)(react-dom@19.2.7)(react@19.2.7)(zod@3.25.76)
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0
+      '@toon-protocol/client':
+        specifier: workspace:*
+        version: link:../client
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -3554,6 +3560,22 @@ packages:
       globby: 11.1.0
       read-yaml-file: 1.1.0
     dev: true
+
+  /@mcp-ui/client@7.1.1(react-dom@19.2.7)(react@19.2.7):
+    resolution: {integrity: sha512-Yy0q3YFl6WmcHRW0pRwD2F+Fs9Y/TFm1xpBpkuqvS1IRBaGGgc7PvkB0nvrKTqO6QZm+MufObfQM+oxo8mmLFw==}
+    peerDependencies:
+      react: ^18 || ^19
+      react-dom: ^18 || ^19
+    dependencies:
+      '@modelcontextprotocol/ext-apps': 1.7.4(@modelcontextprotocol/sdk@1.29.0)(react-dom@19.2.7)(react@19.2.7)(zod@3.25.76)
+      '@modelcontextprotocol/sdk': 1.29.0
+      react: 19.2.7
+      react-dom: 19.2.7(react@19.2.7)
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - '@cfworker/json-schema'
+      - supports-color
+    dev: false
 
   /@metamask/eth-json-rpc-provider@1.0.1:
     resolution: {integrity: sha512-whiUMPlAOrVGmX8aKYVPvlKyG4CpQXiNNyt74vE1xb5sPvmx5oA7B/kOi/JdBvhGQq97U1/AVdXEdk2zkP8qyA==}
