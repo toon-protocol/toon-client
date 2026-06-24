@@ -46,13 +46,19 @@ describe('TOOL_DEFINITIONS', () => {
 });
 
 describe('dispatchTool', () => {
-  it('toon_status returns the daemon status as JSON text', async () => {
+  it('toon_status returns the daemon status as JSON text and structuredContent', async () => {
     const client = stubClient({
-      status: vi.fn().mockResolvedValue({ ready: true, bootstrapping: false }),
+      status: vi.fn().mockResolvedValue({
+        ready: true,
+        bootstrapping: false,
+        feePerEvent: '1000',
+        settlementChain: 'evm',
+      }),
     });
     const res = await dispatchTool(client, 'toon_status', {});
     expect(res.isError).toBeFalsy();
     expect(JSON.parse(res.content[0]!.text)).toMatchObject({ ready: true });
+    expect(res.structuredContent).toMatchObject({ feePerEvent: '1000', settlementChain: 'evm' });
   });
 
   it('toon_identity projects the identity subset from status', async () => {

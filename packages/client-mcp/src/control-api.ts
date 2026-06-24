@@ -35,6 +35,10 @@ export interface StatusResponse {
   ready: boolean;
   /** The active settlement chain for paid writes to the apex. */
   settlementChain: SettlementChain;
+  /** Per-event fee in base (micro) units, as a decimal string. */
+  feePerEvent: string;
+  /** Human-readable asset code for the fee (e.g. 'USDC'), when known. */
+  asset?: string;
   identity: {
     nostrPubkey: string;
     evmAddress?: string;
