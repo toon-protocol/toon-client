@@ -211,7 +211,7 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
           </button>
           <button
             type="button"
-            disabled={publishing}
+            disabled={publishing || statusError}
             onClick={() => void confirm()}
             className="rounded-md bg-primary px-3 py-1 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >

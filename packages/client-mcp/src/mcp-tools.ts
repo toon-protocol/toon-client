@@ -477,8 +477,10 @@ export async function dispatchTool(
 ): Promise<ToolResult> {
   try {
     switch (name) {
-      case 'toon_status':
-        return ok(await client.status());
+      case 'toon_status': {
+        const s = await client.status();
+        return okStructured(JSON.stringify(s, null, 2), s as unknown as Record<string, unknown>);
+      }
       case 'toon_identity': {
         const s = await client.status();
         return ok({

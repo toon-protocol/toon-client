@@ -46,13 +46,38 @@ describe('TOOL_DEFINITIONS', () => {
 });
 
 describe('dispatchTool', () => {
-  it('toon_status returns the daemon status as JSON text', async () => {
+  it('toon_status returns the daemon status as JSON text and structuredContent with fee', async () => {
     const client = stubClient({
-      status: vi.fn().mockResolvedValue({ ready: true, bootstrapping: false }),
+      status: vi.fn().mockResolvedValue({
+        ready: true,
+        bootstrapping: false,
+        settlementChain: 'evm',
+        feePerEvent: '1000',
+      }),
     });
     const res = await dispatchTool(client, 'toon_status', {});
     expect(res.isError).toBeFalsy();
     expect(JSON.parse(res.content[0]!.text)).toMatchObject({ ready: true });
+    expect(res.structuredContent).toMatchObject({
+      feePerEvent: '1000',
+      settlementChain: 'evm',
+      ready: true,
+      bootstrapping: false,
+    });
+  });
+
+  it('toon_status forwards optional asset in structuredContent', async () => {
+    const client = stubClient({
+      status: vi.fn().mockResolvedValue({
+        ready: true,
+        bootstrapping: false,
+        settlementChain: 'evm',
+        feePerEvent: '500',
+        asset: 'USDC',
+      }),
+    });
+    const res = await dispatchTool(client, 'toon_status', {});
+    expect(res.structuredContent).toMatchObject({ feePerEvent: '500', asset: 'USDC' });
   });
 
   it('toon_identity projects the identity subset from status', async () => {

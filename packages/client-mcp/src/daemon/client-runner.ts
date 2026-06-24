@@ -804,6 +804,7 @@ export class ClientRunner {
       bootstrapping: apex?.bootstrapping ?? false,
       ready: apex?.ready ?? false,
       settlementChain: this.config.chain,
+      feePerEvent: this.config.feePerEvent.toString(),
       identity: {
         nostrPubkey: safe(() => client?.getPublicKey()) ?? '',
         evmAddress: safe(() => client?.getEvmAddress()),

@@ -35,6 +35,10 @@ export interface StatusResponse {
   ready: boolean;
   /** The active settlement chain for paid writes to the apex. */
   settlementChain: SettlementChain;
+  /** Configured per-write fee in base (micro) units — what the channel advances per paid event. */
+  feePerEvent: string;
+  /** Optional human-readable asset code for the fee (e.g. `'USDC'`). */
+  asset?: string;
   identity: {
     nostrPubkey: string;
     evmAddress?: string;
