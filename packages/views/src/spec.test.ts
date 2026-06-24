@@ -35,10 +35,31 @@ describe('validateViewSpec', () => {
     expect(validate({ title: 'x' }).ok).toBe(false);
   });
 
-  it('rejects unknown atom ids', () => {
+  it('rejects unknown atom ids and lists valid atoms', () => {
     const res = validate({ root: { atom: 'evil-atom' } });
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.errors.join()).toContain('unknown atom');
+    if (!res.ok) {
+      const msg = res.errors.join('\n');
+      expect(msg).toContain('unknown atom "evil-atom"');
+      expect(msg).toContain('Valid atoms:');
+      expect(msg).toContain('See toon_atoms for full vocabulary');
+      // every allowed atom should appear in the list
+      for (const id of ATOMS) expect(msg).toContain(id);
+    }
+  });
+
+  it('suggests a near-miss atom via edit distance', () => {
+    // 'stak' is 1 edit away from 'stack'
+    const res = validate({ root: { atom: 'stak' } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.errors.join('\n')).toContain('Did you mean "stack"');
+  });
+
+  it('omits suggestion when no atom is close enough', () => {
+    // 'text' has edit distance > floor(4/2)=2 from all test atoms
+    const res = validate({ root: { atom: 'text' } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.errors.join('\n')).not.toContain('Did you mean');
   });
 
   it('rejects disallowed write tools', () => {
