@@ -12,6 +12,8 @@ import type {
   ErrorResponse,
   EventsQuery,
   EventsResponse,
+  FundWalletRequest,
+  FundWalletResponse,
   HttpFetchPaidRequest,
   HttpFetchPaidResponse,
   OpenChannelRequest,
@@ -160,6 +162,10 @@ export class ControlClient {
 
   removeApex(body: RemoveApexRequest): Promise<TargetsResponse> {
     return this.request<TargetsResponse>('DELETE', '/apex', body);
+  }
+
+  fundWallet(body: FundWalletRequest = {}): Promise<FundWalletResponse> {
+    return this.request<FundWalletResponse>('POST', '/fund-wallet', body);
   }
 
   private async request<T>(

@@ -6,12 +6,12 @@
  *
  *   EVM     `POST {faucetUrl}/api/request`        body `{ address }` → 100 ETH + 10k USDC
  *   Solana  `POST {faucetUrl}/api/solana/request` body `{ address }` → SOL + USDC
- *   Mina    `POST {faucetUrl}/api/mina/request`   body `{ address }` → native MINA only
+ *   Mina    `POST {faucetUrl}/api/mina/request`   body `{ address }` → native MINA + USDC
  *
  * Devnet edge (today): `https://faucet.devnet.toonprotocol.dev`.
  *
- * EVM is implemented fully. Solana/Mina are deferred to a later milestone (WS3)
- * and throw a clear error so callers don't silently assume funding happened.
+ * All three chains are live on the deployed faucet — the request shape is
+ * identical (`{ address }`); only the path differs.
  */
 
 import { NetworkError } from './errors.js';
@@ -55,8 +55,8 @@ function faucetPath(chain: FaucetChain): string {
  * @param faucetUrl - Faucet base URL, e.g. `https://faucet.devnet.toonprotocol.dev`.
  *   A trailing `/` is tolerated.
  * @param address - The chain address to fund (EVM 0x address, Solana base58, etc).
- * @param chain - `'evm'` (implemented) | `'solana'` | `'mina'` (deferred — throw).
- * @throws {Error} If `faucetUrl`/`address` is missing, or the chain is deferred.
+ * @param chain - `'evm'` | `'solana'` | `'mina'` (all live on the devnet faucet).
+ * @throws {Error} If `faucetUrl` or `address` is missing.
  * @throws {NetworkError} On transport failure or a non-2xx faucet response.
  */
 export async function fundWallet(
@@ -70,14 +70,6 @@ export async function fundWallet(
   }
   if (!address) {
     throw new Error('fundWallet: address is required');
-  }
-
-  // Solana/Mina faucet flows are deferred (WS3). Fail loudly rather than
-  // pretend a drip happened.
-  if (chain === 'solana' || chain === 'mina') {
-    throw new Error(
-      `fundWallet: ${chain} faucet funding is deferred (WS3) — not yet implemented`
-    );
   }
 
   const base = faucetUrl.replace(/\/+$/, '');
