@@ -81,6 +81,7 @@ function editDistance(a: string, b: string): number {
 }
 
 function nearestAtom(name: string, allowed: ReadonlySet<string>): string | undefined {
+  if (name.length > 64) return undefined; // no real atom name exceeds this; avoid O(m×n) on untrusted input
   const lower = name.toLowerCase();
   let best: string | undefined;
   let bestDist = Infinity;

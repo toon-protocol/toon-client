@@ -62,6 +62,13 @@ describe('validateViewSpec', () => {
     if (!res.ok) expect(res.errors.join('\n')).not.toContain('Did you mean');
   });
 
+  it('omits suggestion for atom names longer than 64 chars (DoS guard)', () => {
+    const longName = 'A'.repeat(65);
+    const res = validate({ root: { atom: longName } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.errors.join('\n')).not.toContain('Did you mean');
+  });
+
   it('rejects disallowed write tools', () => {
     const res = validate({
       root: { atom: 'note-card', actions: { x: { tool: 'rm_rf_everything' } } },
