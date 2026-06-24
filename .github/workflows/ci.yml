@@ -6,6 +6,36 @@ on:
     branches: [main]
 
 jobs:
+  changeset:
+    name: Changeset check
+    runs-on: ubuntu-latest
+    # Only meaningful on PRs; push-to-main runs after merge so skip there.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require changeset when publishable packages change
+        run: |
+          PUBLISHABLE="packages/client packages/client-mcp packages/views"
+          changed=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          needs_changeset=false
+          for pkg in $PUBLISHABLE; do
+            if echo "$changed" | grep -q "^${pkg}/"; then
+              needs_changeset=true
+              break
+            fi
+          done
+          if [ "$needs_changeset" = "true" ]; then
+            new_changesets=$(echo "$changed" | grep -c "^\.changeset/.*\.md$" || true)
+            if [ "$new_changesets" -eq 0 ]; then
+              echo "::error::This PR modifies a publishable package but includes no changeset."
+              echo "Run 'pnpm changeset' and commit the generated .changeset/*.md file."
+              exit 1
+            fi
+          fi
+
   build:
     runs-on: ubuntu-latest
     steps:
