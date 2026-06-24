@@ -9,6 +9,7 @@ import type {
 import type { NetworkFamilyStatus } from '@toon-protocol/core';
 import { validateConfig, applyDefaults, getNetworkStatus } from './config.js';
 import { toBase64 } from './utils/binary.js';
+import { buildStoreWriteEnvelope } from './utils/store-envelope.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import { ToonClientError } from './errors.js';
@@ -490,7 +491,9 @@ export class ToonClient {
     }
 
     try {
-      // Encode event to TOON format
+      // Encode event to TOON format. This is used ONLY to PRICE the write
+      // (basePricePerByte * encoded size); the bytes sent on the wire are the
+      // HTTP store-write envelope built below.
       const toonData = this.config.toonEncoder(event);
 
       // Calculate payment amount: basePricePerByte * encoded size.
@@ -500,6 +503,16 @@ export class ToonClient {
         options?.ilpAmount !== undefined
           ? String(options.ilpAmount)
           : String(BigInt(toonData.length) * basePricePerByte);
+
+      // The deployed connector is a payment-proxy: it terminates the paid write
+      // as HTTP-in-ILP, decoding the ILP PREPARE `data` as a literal HTTP/1.1
+      // request and reverse-proxying it to the relay store's `POST /write`. The
+      // wire data must therefore be a full HTTP request envelope carrying the
+      // signed event as `{"event": <event object>}` JSON — NOT the bare TOON
+      // bytes (those make the proxy reject with F01 - malformed request-line).
+      // See utils/store-envelope.ts. `sendSwapPacket` (Mill swaps) is a separate
+      // surface with a raw-TOON contract and is intentionally NOT wrapped here.
+      const writeData = buildStoreWriteEnvelope(event);
 
       // Use provided destination or fall back to config default
       const destination =
@@ -546,9 +559,7 @@ export class ToonClient {
         {
           destination,
           amount,
-          data: toBase64(
-            toonData instanceof Uint8Array ? toonData : new Uint8Array(toonData)
-          ),
+          data: toBase64(writeData),
         },
         claimMessage
       );

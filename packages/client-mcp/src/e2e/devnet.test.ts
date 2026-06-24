@@ -16,9 +16,11 @@ describe('devnet e2e wiring', () => {
     else process.env['TOON_DEVNET_E2E'] = saved;
   });
 
-  it('exposes the deployed devnet endpoints (proxy → /ilp, g.proxy, chain 31337)', () => {
+  it('exposes the deployed devnet endpoints (proxy → /ilp, g.proxy.relay.store, chain 31337)', () => {
     expect(DEVNET.proxyUrl).toBe('https://proxy.devnet.toonprotocol.dev');
-    expect(DEVNET.destination).toBe('g.proxy');
+    // The bare `g.proxy` apex F02s ("No route"); the routable store address is
+    // `g.proxy.relay.store`.
+    expect(DEVNET.destination).toBe('g.proxy.relay.store');
     expect(DEVNET.relayUrl).toBe('wss://relay-ws.devnet.toonprotocol.dev');
     expect(DEVNET.faucetUrl).toBe('https://faucet.devnet.toonprotocol.dev');
     expect(DEVNET.evmChainId).toBe(31337);
@@ -28,7 +30,7 @@ describe('devnet e2e wiring', () => {
   it('builds a daemon env that routes writes through the proxy (no BTP)', () => {
     const env = devnetDaemonEnv();
     expect(env['TOON_CLIENT_PROXY_URL']).toBe(DEVNET.proxyUrl);
-    expect(env['TOON_CLIENT_DESTINATION']).toBe('g.proxy');
+    expect(env['TOON_CLIENT_DESTINATION']).toBe('g.proxy.relay.store');
     expect(env['TOON_CLIENT_BTP_URL']).toBeUndefined();
   });
 

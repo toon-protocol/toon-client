@@ -33,8 +33,12 @@ export const DEVNET = {
   proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
   /** Faucet base — `POST /api/request` (EVM), `/api/solana/request`, `/api/mina/request`. */
   faucetUrl: 'https://faucet.devnet.toonprotocol.dev',
-  /** Apex ILP destination on the deployed edge. */
-  destination: 'g.proxy',
+  /**
+   * Apex ILP destination on the deployed edge — the relay store behind the
+   * payment-proxy. The bare `g.proxy` apex F02s ("No route"); the routable
+   * store address is `g.proxy.relay.store`.
+   */
+  destination: 'g.proxy.relay.store',
   /** EVM (Anvil) chain id. */
   evmChainId: 31337,
   /** EVM RPC. */
