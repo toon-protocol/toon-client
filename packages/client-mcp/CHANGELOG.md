@@ -1,5 +1,26 @@
 # @toon-protocol/client-mcp
 
+## 0.4.0
+
+### Minor Changes
+
+- 28ba334: Add a `toon_fund_wallet` MCP tool that drips devnet test funds to a wallet from the configured faucet. With no arguments it funds the client's own address on the active settlement chain (the usual "fund me before I open a channel" step); `chain` and `address` can be overridden. It's backed by a new `/fund-wallet` control-plane route on `toon-clientd` (the daemon holds the faucet URL + keys, so the MCP caller needs neither).
+
+  Also enables Solana and Mina in the `fundWallet` client helper. They were previously gated behind a "deferred (WS3)" throw; the deployed devnet faucet now drips all three chains (EVM ETH+USDC, Solana SOL+USDC, Mina native+USDC) with an identical `{ address }` request shape.
+
+### Patch Changes
+
+- 7d9b1db: Fix note-card bind producing empty render; reject unknown bind keys
+
+  Two bugs caused an empty white container when using `note-card` with a NIP-01 filter bind:
+
+  1. `validateViewSpec` silently accepted unknown `bind` keys (e.g. `filter` instead of the correct `query`), so the wrong key passed validation, was ignored at runtime, and resolved to zero events.
+  2. `NoteCard` used `.find()` so only the first event rendered even when a query returned many events.
+
+  `client-mcp` is bumped so the updated views bundle (with both fixes) is republished.
+
+- 7962d71: Fix `toon_status` to surface `feePerEvent` via `okStructured()` so pay-confirm shows the real fee instead of zero.
+
 ## 0.3.1
 
 ### Patch Changes
