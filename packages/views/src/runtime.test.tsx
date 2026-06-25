@@ -295,7 +295,7 @@ describe('ViewSpecRenderer', () => {
     expect(screen.queryByText(/\b0\b/)).toBeNull();
   });
 
-  it('pay-confirm: Cancel fires no publish and returns to compose', async () => {
+  it('pay-confirm: Back fires no publish and returns to compose', async () => {
     const { bridge, calls } = mockBridge([]);
     render(
       <ViewSpecRenderer
@@ -314,7 +314,7 @@ describe('ViewSpecRenderer', () => {
     fireEvent.click(screen.getByText(/pay to post/i));
     await waitFor(() => expect(screen.getByText(/confirm pay-to-write/i)).toBeTruthy());
 
-    fireEvent.click(screen.getByText(/cancel/i));
+    fireEvent.click(screen.getByText(/back/i));
     // back to compose; nothing published
     await waitFor(() => expect(screen.getByPlaceholderText(/what's happening/i)).toBeTruthy());
     expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeUndefined();

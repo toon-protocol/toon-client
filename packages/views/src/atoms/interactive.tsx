@@ -1,9 +1,53 @@
 /** Interactive atoms that hold local UI state (composer, tabs, pay-confirm). */
-import { Children, useEffect, useState, type FC } from 'react';
+import { Children, useEffect, useState, type FC, type ReactNode } from 'react';
+import { ArrowLeft, CircleCheck, Coins, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Textarea } from '@/components/ui/textarea.js';
 import { MonoId } from '@/components/mono-id.js';
 import { type Atom, type AtomRenderProps, type AtomStatus } from './types.js';
+import { byteLength } from './social-ui.js';
+
+/**
+ * The shared composer surface: an auto-sizing textarea over a footer toolbar
+ * that carries the byte counter (TOON fees scale with encoded bytes) and the
+ * primary action. Used by both the free `composer` and the paid `pay-confirm`
+ * idle phase so the two read as the same control.
+ */
+const ComposerSurface: FC<{
+  value: string;
+  onChange: (next: string) => void;
+  placeholder: string;
+  actionLabel: string;
+  actionIcon?: ReactNode;
+  disabled: boolean;
+  onSubmit: () => void;
+}> = ({ value, onChange, placeholder, actionLabel, actionIcon, disabled, onSubmit }) => {
+  const bytes = byteLength(value);
+  return (
+    <div className="rounded-xl border border-border bg-card focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30">
+      <Textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        rows={3}
+        className="min-h-20 resize-none border-0 bg-transparent px-3.5 pt-3.5 text-base focus-visible:border-0 focus-visible:ring-0 md:text-sm"
+      />
+      <div className="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
+        <span
+          className="font-mono text-xs text-muted-foreground tabular-nums"
+          aria-label={`${bytes} bytes, the unit pay-to-write fees scale with`}
+          title="Fees scale with encoded bytes"
+        >
+          {bytes} {bytes === 1 ? 'byte' : 'bytes'}
+        </span>
+        <Button size="sm" disabled={disabled} onClick={onSubmit}>
+          {actionIcon}
+          {actionLabel}
+        </Button>
+      </div>
+    </div>
+  );
+};
 
 const Composer: FC<AtomRenderProps> = ({ props, actions }) => {
   const [text, setText] = useState('');
@@ -19,23 +63,14 @@ const Composer: FC<AtomRenderProps> = ({ props, actions }) => {
   };
 
   return (
-    <div className="flex flex-col gap-2">
-      <Textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder={placeholder}
-        rows={3}
-      />
-      <div className="flex justify-end">
-        <Button
-          size="sm"
-          disabled={!text.trim() || !actions['post']}
-          onClick={submit}
-        >
-          {label}
-        </Button>
-      </div>
-    </div>
+    <ComposerSurface
+      value={text}
+      onChange={setText}
+      placeholder={placeholder}
+      actionLabel={label}
+      disabled={!text.trim() || !actions['post']}
+      onSubmit={submit}
+    />
   );
 };
 
@@ -88,9 +123,15 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
     if (phase !== 'confirming' || status || statusError || !readStatus) return;
     let cancelled = false;
     void readStatus()
-      .then((s) => { if (!cancelled) setStatus(s); })
-      .catch(() => { if (!cancelled) setStatusError(true); });
-    return () => { cancelled = true; };
+      .then((s) => {
+        if (!cancelled) setStatus(s);
+      })
+      .catch(() => {
+        if (!cancelled) setStatusError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [phase, status, statusError, readStatus]);
 
   const review = (): void => {
@@ -126,21 +167,31 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
 
   const feeLabel = status
     ? `${status.feePerEvent}${status.asset ? ` ${status.asset}` : ''}`
-    : statusError ? 'unavailable' : '…';
+    : statusError
+      ? 'unavailable'
+      : '…';
   const chainLabel = status ? status.settlementChain : statusError ? 'unknown' : '…';
+  const bytes = byteLength(text.trim());
 
   if (phase === 'receipt') {
     return (
-      <div className="rounded-lg border-l-2 border-primary bg-primary/5 p-4">
-        <div className="mb-1 font-semibold text-primary">Posted — and paid.</div>
-        <p className="mb-3 text-xs text-muted-foreground">The message is the money.</p>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+      <div className="overflow-hidden rounded-xl border border-primary/30 bg-card">
+        <div className="flex items-center gap-2.5 border-b border-primary/20 bg-primary/5 px-4 py-3">
+          <CircleCheck aria-hidden="true" className="size-5 text-primary" />
+          <div>
+            <div className="font-semibold leading-tight">Posted — and paid</div>
+            <p className="text-xs text-muted-foreground">The message is the money.</p>
+          </div>
+        </div>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 px-4 py-3 text-xs">
           <dt className="text-muted-foreground">Event</dt>
           <dd>{eventId ? <MonoId value={eventId} prefixLen={12} suffixLen={6} /> : '—'}</dd>
           <dt className="text-muted-foreground">Fee paid</dt>
-          <dd>{feeLabel} on {chainLabel}</dd>
+          <dd className="font-medium">
+            {feeLabel} on {chainLabel}
+          </dd>
         </dl>
-        <div className="mt-3 flex justify-end">
+        <div className="flex justify-end border-t border-border px-4 py-2.5">
           <Button variant="outline" size="sm" onClick={reset}>
             Post another
           </Button>
@@ -152,25 +203,53 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
   if (phase === 'confirming' || phase === 'publishing') {
     const publishing = phase === 'publishing';
     return (
-      <div className="flex flex-col gap-3 rounded-lg border-l-2 border-ring bg-card p-4">
-        <div className="font-semibold text-sm">Confirm pay-to-write</div>
-        <blockquote className="whitespace-pre-wrap rounded-md border-l-2 border-primary/40 bg-muted/50 px-3 py-2 text-sm">
-          {text}
-        </blockquote>
-        <p className="text-xs text-muted-foreground">
-          Sending this message pays{' '}
-          <span className="font-medium text-foreground">{feeLabel}</span> per event, settling on{' '}
-          <span className="font-medium text-foreground">{chainLabel}</span>. The message is the money.
-        </p>
-        {failed ? (
-          <p className="text-xs text-destructive">Publish failed: {failed}</p>
-        ) : null}
-        <div className="flex justify-end gap-2">
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
+        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+          <Coins aria-hidden="true" className="size-4 text-primary" />
+          <span className="text-sm font-semibold">Confirm pay-to-write</span>
+        </div>
+        <div className="flex flex-col gap-3 px-4 py-3">
+          <blockquote className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border-l-2 border-primary/40 bg-muted/50 px-3 py-2 text-sm">
+            {text}
+          </blockquote>
+          <dl className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs">
+            <div className="flex items-center gap-1.5">
+              <dt className="text-muted-foreground">Fee</dt>
+              <dd className="font-medium tabular-nums">{feeLabel}</dd>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <dt className="text-muted-foreground">Settles on</dt>
+              <dd className="font-medium">{chainLabel}</dd>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <dt className="text-muted-foreground">Size</dt>
+              <dd className="font-mono font-medium tabular-nums">{bytes} bytes</dd>
+            </div>
+          </dl>
+          <p className="text-xs text-muted-foreground">
+            Posting pays the fee above per event. The message is the money.
+          </p>
+          {failed ? (
+            <p className="text-xs text-destructive">Publish failed: {failed}</p>
+          ) : null}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-border px-4 py-2.5">
           <Button variant="outline" size="sm" disabled={publishing} onClick={cancel}>
-            Cancel
+            <ArrowLeft aria-hidden="true" />
+            Back
           </Button>
           <Button size="sm" disabled={publishing || statusError} onClick={() => void confirm()}>
-            {publishing ? 'Publishing…' : 'Confirm & pay'}
+            {publishing ? (
+              <>
+                <Loader2 aria-hidden="true" className="animate-spin" />
+                Publishing…
+              </>
+            ) : (
+              <>
+                <Coins aria-hidden="true" />
+                Confirm &amp; pay
+              </>
+            )}
           </Button>
         </div>
       </div>
@@ -178,23 +257,15 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <Textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder={placeholder}
-        rows={3}
-      />
-      <div className="flex justify-end">
-        <Button
-          size="sm"
-          disabled={!text.trim() || !actions['confirm']}
-          onClick={review}
-        >
-          {label}
-        </Button>
-      </div>
-    </div>
+    <ComposerSurface
+      value={text}
+      onChange={setText}
+      placeholder={placeholder}
+      actionLabel={label}
+      actionIcon={<Coins aria-hidden="true" />}
+      disabled={!text.trim() || !actions['confirm']}
+      onSubmit={review}
+    />
   );
 };
 
