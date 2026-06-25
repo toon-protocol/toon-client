@@ -1,7 +1,12 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  // `src/render/index.ts` is a separate, browser-safe subpath entry (the
+  // NIP-on-TOON render trust gradient): it pulls only `@toon-protocol/core`'s pure
+  // `ui` helpers + nostr-tools, none of the client's Node-only channel/transport
+  // code. `@toon-protocol/views` imports `@toon-protocol/client/render` for the
+  // iframe app bundle, so it must stay its own tree-shakeable entry point.
+  entry: ['src/index.ts', 'src/render/index.ts'],
   format: ['esm'],
   dts: true,
   sourcemap: true,

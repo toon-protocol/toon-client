@@ -40,6 +40,16 @@
 export const BRANCH3_SANDBOX_PERMISSIONS = 'allow-scripts' as const;
 
 /**
+ * The default cross-origin mcp-ui sandbox proxy URL. `@mcp-ui/client`'s
+ * `AppRenderer` loads this opaque-origin proxy HTML to host the widget iframe, so
+ * the widget runs in a foreign origin it cannot escape (no `allow-same-origin`).
+ *
+ * This is the canonical mcp-ui hosted proxy; a host that self-hosts the proxy can
+ * pass its own `URL` to {@link import('./SandboxedAppRenderer.js').SandboxedAppRenderer}.
+ */
+export const DEFAULT_MCP_UI_SANDBOX_URL = 'https://sandbox.mcpui.dev' as const;
+
+/**
  * The iframe `sandbox` tokens, as a frozen array, for assertion in tests and
  * for callers that prefer a list over the space-joined string.
  */

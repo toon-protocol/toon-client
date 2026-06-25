@@ -24,7 +24,7 @@
  */
 
 import { type FC } from 'react';
-import { type ConsentRequest, type ConsentDecision } from '@toon-protocol/client';
+import { type ConsentRequest, type ConsentDecision } from '@toon-protocol/client/render';
 import { Button } from '@/components/ui/button.js';
 import { Badge } from '@/components/ui/badge.js';
 import { Separator } from '@/components/ui/separator.js';
