@@ -20,4 +20,10 @@ describe('example ViewSpecs', () => {
       expect.arrayContaining(['feed', 'profile', 'thread', 'forge', 'media', 'swap'])
     );
   });
+
+  it('includes the non-event render examples (status dashboard + generic info)', () => {
+    const names = EXAMPLE_VIEWSPECS.map((e) => e.name);
+    expect(names).toContain('client-status');
+    expect(names).toContain('info');
+  });
 });

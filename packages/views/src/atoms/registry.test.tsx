@@ -31,6 +31,14 @@ describe('atom registry / catalog sync', () => {
   it('falls back to generic for unknown kinds', () => {
     expect(defaultAtomForKind(999999).id).toBe(GENERIC_ATOM_ID);
   });
+
+  it('registers the content primitives + client-status (kind-less, non-event)', () => {
+    for (const id of ['heading', 'text', 'stat', 'key-value', 'badge', 'client-status']) {
+      expect(ATOM_IDS.has(id), `missing atom ${id}`).toBe(true);
+      // they declare no kinds, so they must never claim a default-kind slot
+      expect(ATOMS.get(id)?.kinds).toBeUndefined();
+    }
+  });
 });
 
 describe('buildKindRegistry (branch-1 native registry for the render gradient)', () => {

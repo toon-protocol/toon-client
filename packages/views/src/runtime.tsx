@@ -251,11 +251,23 @@ function buildReadStatus(bridge: ViewBridge): () => Promise<AtomStatus> {
     if (typeof data.feePerEvent !== 'string' || !data.feePerEvent) {
       throw new Error('fee unavailable');
     }
+    // Pass the richer daemon-health fields through verbatim (additive over the
+    // fee/chain the pay-confirm receipt needs) so the client-status dashboard can
+    // render uptime / relay / transport / per-chain readiness / identity from
+    // this same single read seam — atoms never call the bridge directly.
     return {
       feePerEvent: data.feePerEvent,
       settlementChain:
         typeof data.settlementChain === 'string' ? data.settlementChain : 'unknown',
       ...(typeof data.asset === 'string' ? { asset: data.asset } : {}),
+      ...(typeof data.uptimeMs === 'number' ? { uptimeMs: data.uptimeMs } : {}),
+      ...(typeof data.ready === 'boolean' ? { ready: data.ready } : {}),
+      ...(typeof data.bootstrapping === 'boolean' ? { bootstrapping: data.bootstrapping } : {}),
+      ...(data.identity && typeof data.identity === 'object' ? { identity: data.identity } : {}),
+      ...(data.transport && typeof data.transport === 'object' ? { transport: data.transport } : {}),
+      ...(data.relay && typeof data.relay === 'object' ? { relay: data.relay } : {}),
+      ...(Array.isArray(data.network) ? { network: data.network } : {}),
+      ...(typeof data.lastError === 'string' ? { lastError: data.lastError } : {}),
     };
   };
 }
