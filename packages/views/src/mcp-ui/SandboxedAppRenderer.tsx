@@ -35,7 +35,7 @@ import {
   type ConsentDecision,
   type ConsentRequest,
   type UiResource,
-} from '@toon-protocol/client';
+} from '@toon-protocol/client/render';
 import { ConsentPrompt } from './ConsentPrompt.js';
 import { assertSafeSandbox, BRANCH3_SANDBOX_PERMISSIONS } from './sandbox.js';
 

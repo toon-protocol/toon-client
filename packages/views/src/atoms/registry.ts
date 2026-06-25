@@ -6,6 +6,7 @@
  * + an atom here, and both the MCP-app and rig surfaces light up.
  */
 
+import { KindRegistry } from '@toon-protocol/client/render';
 import { type Atom } from './types.js';
 import { layoutAtoms } from './layout.js';
 import { socialAtoms } from './social.js';
@@ -51,6 +52,30 @@ export function defaultAtomForKind(kind: number): Atom {
 /** The generic fallback atom (used for unknown kinds / invalid nodes). */
 export function fallbackAtomFor(): Atom {
   return fallbackAtom;
+}
+
+/**
+ * Build the branch-1 native-component {@link KindRegistry} from the catalog's
+ * atom→kind metadata — the `KindRegistry<Atom>` the render trust gradient
+ * (`guardedRenderDispatch`) consults first. A hit is branch 1 (a known kind,
+ * full trust → render the atom natively); a miss falls through to the
+ * unknown-kind branches (A2UI / mcp-ui / generative).
+ *
+ * Each atom is registered under every kind it declares in {@link Atom.kinds},
+ * first-registered-wins (matching {@link KIND_DEFAULT}) so the same atom resolves
+ * for a kind here as via {@link defaultAtomForKind}. The generic fallback atom is
+ * deliberately NOT registered: an unknown kind must miss the registry so the
+ * gradient can route it, not be silently swallowed as "native".
+ */
+export function buildKindRegistry(): KindRegistry<Atom> {
+  const registry = new KindRegistry<Atom>();
+  for (const atom of ALL_ATOMS) {
+    if (atom === fallbackAtom) continue;
+    for (const kind of atom.kinds ?? []) {
+      if (!registry.has(kind)) registry.register(kind, atom);
+    }
+  }
+  return registry;
 }
 
 export { GENERIC_ATOM_ID };
