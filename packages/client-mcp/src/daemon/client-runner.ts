@@ -920,8 +920,13 @@ export class ClientRunner {
     }
     const fee = req.fee !== undefined ? BigInt(req.fee) : apex.feePerEvent;
     const claim = await apex.client.signBalanceProof(channelId, fee);
+    // Relay writes default to the configured publish destination (e.g.
+    // g.proxy.relay) — NOT the apex anchor, which on the devnet proxy is
+    // g.proxy.relay.store and would forward a /write to the store (→ 404). An
+    // explicit per-call destination still wins. The claim is pre-signed on the
+    // apex channel, so the destination is pure routing (settlement is unaffected).
     const result = await apex.client.publishEvent(req.event, {
-      ...(req.destination ? { destination: req.destination } : {}),
+      destination: req.destination ?? this.config.publishDestination,
       claim,
       ilpAmount: fee,
     });
@@ -969,8 +974,13 @@ export class ClientRunner {
     }
     const blobData = new Uint8Array(Buffer.from(req.dataBase64, 'base64'));
     const fee = req.fee !== undefined ? BigInt(req.fee) : apex.feePerEvent;
+    // Blob storage terminates at the store/DVM backend (POST /store → Arweave),
+    // so it routes to the configured store destination (e.g. g.proxy.store),
+    // defaulting to `destination` for back-compat. This makes uploads work via
+    // the default apex without the caller hand-passing a store `btpUrl`.
     const upload = await apex.client.uploadBlob({
       blobData,
+      destination: this.config.storeDestination,
       ...(req.mime ? { contentType: req.mime } : {}),
       ilpAmount: fee,
     });

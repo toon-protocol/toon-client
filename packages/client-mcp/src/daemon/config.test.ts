@@ -13,6 +13,8 @@ const ENV_KEYS = [
   'TOON_CLIENT_NETWORK',
   'TOON_CLIENT_CHAIN',
   'TOON_CLIENT_DESTINATION',
+  'TOON_CLIENT_PUBLISH_DESTINATION',
+  'TOON_CLIENT_STORE_DESTINATION',
   'TOON_CLIENT_KEYSTORE_PASSWORD',
 ];
 
@@ -168,6 +170,42 @@ describe('daemon config', () => {
     expect(
       (cfg.toonClientConfig as Record<string, unknown>)['faucetUrl']
     ).toBe('https://env-faucet');
+  });
+
+  it('publishDestination / storeDestination fall back to destination when unset', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      destination: 'g.proxy.relay.store',
+    });
+    expect(cfg.publishDestination).toBe('g.proxy.relay.store');
+    expect(cfg.storeDestination).toBe('g.proxy.relay.store');
+  });
+
+  it('publishDestination / storeDestination use explicit file values', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      destination: 'g.proxy.relay.store',
+      publishDestination: 'g.proxy.relay',
+      storeDestination: 'g.proxy.store',
+    });
+    expect(cfg.publishDestination).toBe('g.proxy.relay');
+    expect(cfg.storeDestination).toBe('g.proxy.store');
+  });
+
+  it('TOON_CLIENT_PUBLISH_DESTINATION / STORE_DESTINATION env overrides win over file', () => {
+    process.env['TOON_CLIENT_PUBLISH_DESTINATION'] = 'g.env.relay';
+    process.env['TOON_CLIENT_STORE_DESTINATION'] = 'g.env.store';
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      destination: 'g.proxy.relay.store',
+      publishDestination: 'g.file.relay',
+      storeDestination: 'g.file.store',
+    });
+    expect(cfg.publishDestination).toBe('g.env.relay');
+    expect(cfg.storeDestination).toBe('g.env.store');
   });
 
   it('still injects a dummy connectorUrl on the BTP-only path', () => {

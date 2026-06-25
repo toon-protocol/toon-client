@@ -116,6 +116,8 @@ function config(): ResolvedDaemonConfig {
     relayUrl: 'ws://relay.test',
     hasUplink: true,
     destination: 'g.townhouse.town',
+    publishDestination: 'g.townhouse.town',
+    storeDestination: 'g.townhouse.town',
     feePerEvent: 1n,
     chain: 'evm',
     apexChannelStorePath: join(
