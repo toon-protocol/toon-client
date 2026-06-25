@@ -43,7 +43,16 @@ export const ATOM_CATALOG: AtomMeta[] = [
 
   // social
   { id: 'profile-header', description: 'NIP-01 kind:0 profile header (avatar, name, nip05, bio).', kinds: [0] },
-  { id: 'note-card', description: 'NIP-01 kind:1 text note; optional "reply" action.', kinds: [1] },
+  {
+    id: 'note-card',
+    description:
+      'NIP-01 kind:1 text note, rendered as an X-style post (author header with ' +
+      'a Follow button, body + inline media, action bar). Optional "reply" ' +
+      '(kind:1), "react"/Like (kind:7 "+"), and "follow" (kind:3) actions — all ' +
+      'paid writes via toon_publish_unsigned.',
+    kinds: [1],
+    writes: [{ name: 'toon_publish_unsigned' }],
+  },
   { id: 'reaction-bar', description: 'NIP-25 kind:7 reaction counts; optional "react" action.', kinds: [7] },
   {
     id: 'follow-button',

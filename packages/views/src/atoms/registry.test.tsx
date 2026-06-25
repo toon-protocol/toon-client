@@ -32,6 +32,15 @@ describe('atom registry / catalog sync', () => {
     expect(defaultAtomForKind(999999).id).toBe(GENERIC_ATOM_ID);
   });
 
+  it('advertises note-card as a writer (Like/Follow/Reply via toon_publish_unsigned)', () => {
+    // The catalog feeds `toon_atoms` + the ViewSpec validator, so the reply/
+    // react(Like)/follow actions are only allowed on note-card if it declares
+    // the publish write here and in the React registry (kept in sync).
+    const meta = ATOM_CATALOG.find((a) => a.id === 'note-card');
+    expect(meta?.writes?.map((w) => w.name)).toContain('toon_publish_unsigned');
+    expect(ATOMS.get('note-card')?.writes?.map((w) => w.name)).toContain('toon_publish_unsigned');
+  });
+
   it('registers the content primitives + client-status (kind-less, non-event)', () => {
     for (const id of ['heading', 'text', 'stat', 'key-value', 'badge', 'client-status']) {
       expect(ATOM_IDS.has(id), `missing atom ${id}`).toBe(true);

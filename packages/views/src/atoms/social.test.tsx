@@ -145,7 +145,7 @@ describe('NoteCard — feed presentation', () => {
     vi.restoreAllMocks();
   });
 
-  it('wires Reply + React to the existing action names with the targeted ids', () => {
+  it('wires Reply + Like (heart) to the existing action names with the targeted ids', () => {
     const reply = vi.fn();
     const react = vi.fn();
     render(
@@ -156,24 +156,57 @@ describe('NoteCard — feed presentation', () => {
       />
     );
     fireEvent.click(screen.getByRole('button', { name: /reply/i }));
-    fireEvent.click(screen.getByRole('button', { name: /react/i }));
+    fireEvent.click(screen.getByRole('button', { name: /like this note/i }));
     expect(reply).toHaveBeenCalledWith({ parentId: 'note-9' });
+    // "React" is surfaced to the user as "Like" but still fires the `react` action.
     expect(react).toHaveBeenCalledWith({ content: '+' });
   });
 
-  it('shows the reaction count from kind:7 events targeting the note', () => {
+  it('shows the like (reaction) count from kind:7 events targeting the note', () => {
     const note = evt({ kind: 1, id: 'note-x', content: 'popular' });
     const r1 = evt({ kind: 7, id: 'r1', content: '+', tags: [['e', 'note-x']] });
     const r2 = evt({ kind: 7, id: 'r2', content: '🔥', tags: [['e', 'note-x']] });
     render(<NoteCard {...defaultProps} actions={{ react: vi.fn() }} events={[note, r1, r2]} />);
-    const reactBtn = screen.getByRole('button', { name: /react/i });
-    expect(reactBtn.textContent).toContain('2');
+    const likeBtn = screen.getByRole('button', { name: /like this note/i });
+    expect(likeBtn.textContent).toContain('2');
+  });
+
+  it('toggles the heart optimistically and bumps the count on like', () => {
+    const note = evt({ kind: 1, id: 'note-x', content: 'popular' });
+    const r1 = evt({ kind: 7, id: 'r1', content: '+', tags: [['e', 'note-x']] });
+    render(<NoteCard {...defaultProps} actions={{ react: vi.fn() }} events={[note, r1]} />);
+    const likeBtn = screen.getByRole('button', { name: /like this note/i });
+    expect(likeBtn.getAttribute('aria-pressed')).toBe('false');
+    expect(likeBtn.textContent).toContain('1');
+    fireEvent.click(likeBtn);
+    const liked = screen.getByRole('button', { name: /liked this note/i });
+    expect(liked.getAttribute('aria-pressed')).toBe('true');
+    expect(liked.textContent).toContain('2');
+  });
+
+  it('renders a Follow button that publishes a kind:3 follow of the author', () => {
+    const follow = vi.fn();
+    render(
+      <NoteCard
+        {...defaultProps}
+        actions={{ follow }}
+        events={[evt({ kind: 1, id: 'note-7', pubkey: 'author-pk', content: 'gm' })]}
+      />
+    );
+    const followBtn = screen.getByRole('button', { name: /follow this author/i });
+    fireEvent.click(followBtn);
+    // The component supplies the author's pubkey as a `p` tag; the runtime merges
+    // it over the spec's static kind:3 publish args (NIP-02 follow list).
+    expect(follow).toHaveBeenCalledWith({ tags: [['p', 'author-pk']] });
+    // Optimistic toggle flips the label to "Following".
+    expect(screen.getByRole('button', { name: /following this author/i })).toBeTruthy();
   });
 
   it('omits the engagement footer when no actions are wired', () => {
     render(<NoteCard {...defaultProps} events={[evt({ kind: 1, content: 'static' })]} />);
     expect(screen.queryByRole('button', { name: /reply/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /react/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /like this note/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /follow this author/i })).toBeNull();
   });
 });
 
