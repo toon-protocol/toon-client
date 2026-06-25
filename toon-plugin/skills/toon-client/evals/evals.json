@@ -12,6 +12,15 @@
     { "query": "How do I swap tokens via a TOON mill?", "should_trigger": true },
     { "query": "The toon tool says it is bootstrapping, what do I do?", "should_trigger": true },
     { "query": "How does pay-to-write work with payment channel claims on TOON?", "should_trigger": true },
+    { "query": "How do I render the latest notes as a feed UI on TOON?", "should_trigger": true },
+    { "query": "Use toon_atoms and toon_render to show me a TOON profile", "should_trigger": true },
+    { "query": "How do I attach an image to a TOON post?", "should_trigger": true },
+    { "query": "Upload a picture to Arweave and post it on TOON with toon_upload", "should_trigger": true },
+    { "query": "What is kind:31036 and the render trust gradient on TOON?", "should_trigger": true },
+    { "query": "How does a TOON client render an unknown event kind (open-world UI)?", "should_trigger": true },
+    { "query": "How do I query TOON events to fill in a rendered view?", "should_trigger": true },
+    { "query": "Add another relay and apex to my TOON client", "should_trigger": true },
+    { "query": "Fund my devnet TOON wallet so I can pay for writes", "should_trigger": true },
     { "query": "How do I deploy a container to Akash?", "should_trigger": false },
     { "query": "How do I write a unit test in vitest?", "should_trigger": false },
     { "query": "How do I create a badge definition with NIP-58?", "should_trigger": false },
@@ -80,6 +89,54 @@
         "Response reports the values from the tool result rather than inventing them",
         "Response correctly distinguishes nonce (watermark) from cumulativeAmount (spend)",
         "Response treats channel balances as the user's financial state"
+      ]
+    },
+    {
+      "id": "render-feed",
+      "prompt": "Render the latest kind:1 notes as a feed UI in the host for me.",
+      "expected_output": "Call toon_atoms first to learn the atom vocabulary and ViewSpec grammar, then compose a ViewSpec (e.g. a stack with a composer/pay-confirm and a note-card bound via a kindAuto query for kind:1) and pass it to toon_render, which renders the ui://toon/app bundle. Rendering is free; only the writes the atoms fire (post/follow) are paid.",
+      "rubric": {
+        "correct": "Calls toon_atoms then toon_render with a valid ViewSpec using catalog atoms (e.g. note-card with a kind:1 bind); notes rendering is free while atom writes are paid.",
+        "acceptable": "Uses toon_render with a ViewSpec but skips toon_atoms or omits the free-render/paid-write distinction.",
+        "incorrect": "Invents a rendering tool, hand-writes HTML, uses an atom not in the catalog, or treats rendering itself as a paid write."
+      },
+      "assertions": [
+        "Response calls toon_atoms to learn the atom vocabulary before composing a view",
+        "Response calls toon_render with a ViewSpec of catalog atoms (e.g. note-card bound to a kind:1 query)",
+        "Response notes the view renders as ui://toon/app in the host",
+        "Response notes rendering is free while the writes its atoms fire are paid"
+      ]
+    },
+    {
+      "id": "upload-image",
+      "prompt": "Attach this image to a post on TOON.",
+      "expected_output": "Use toon_upload_media with the base64 image bytes (and mime); it uploads to Arweave via the kind:5094 DVM and then publishes a media event (default kind 1063, or 20 for a picture / 1 with NIP-92 imeta) referencing the Arweave URL. This is a paid two-step write that advances the channel nonce. Report the returned eventId/URL from the result.",
+      "rubric": {
+        "correct": "Uses toon_upload_media with base64 bytes; notes it uploads to Arweave then publishes a media event and that it is a paid write; reads eventId/URL from the result.",
+        "acceptable": "Uses toon_upload_media but omits the Arweave/two-step or paid nuance.",
+        "incorrect": "Uses toon_publish with a fabricated image URL, invents an upload mechanism, or ignores that it costs a fee."
+      },
+      "assertions": [
+        "Response uses toon_upload_media (not a fabricated URL via toon_publish)",
+        "Response notes it uploads bytes to Arweave then publishes a media event",
+        "Response notes the upload is a paid write that advances the channel nonce",
+        "Response reads the resulting eventId / Arweave URL from the tool result"
+      ]
+    },
+    {
+      "id": "render-gradient",
+      "prompt": "What is kind:31036 and how does the TOON render trust gradient handle an unknown event kind?",
+      "expected_output": "Explain that a kind is an open component-catalog key, so the client forks on 'do I know this kind?': known kind -> native atom (full trust); unknown kind -> resolve the event's ui tag to an addressable kind:31036 renderer authored by the event author (d = target kind), re-verify its signature, and select a branch by the renderer's m (mimeType) tag: application/a2ui+json -> branch 2 (A2UI, medium), text/html;profile=mcp-app -> branch 3 (sandboxed mcp-ui, low); no renderer -> branch 4 generative fallback (low). A swap-defense guard fails closed; a client can publish kind:31036 renderers (including generated ones) back.",
+      "rubric": {
+        "correct": "Describes the four branches keyed on known-kind; explains kind:31036 as an addressable, author-bound renderer selected by its m tag; mentions signature re-verify / fail-closed guard and that renderers can be published back.",
+        "acceptable": "Describes the gradient and kind:31036 but misses the m-tag branch selector or the author-binding/verification.",
+        "incorrect": "Invents a different rendering mechanism, claims unknown kinds error out, or says any provider can publish a renderer for someone else's event."
+      },
+      "assertions": [
+        "Response describes the four-branch gradient keyed on whether the client knows the kind",
+        "Response explains kind:31036 as an addressable renderer (d = target kind) authored by the event author",
+        "Response says the renderer's m (mimeType) tag selects the branch (a2ui+json -> A2UI, text/html;profile=mcp-app -> sandboxed mcp-ui)",
+        "Response notes the client re-verifies the renderer signature / fails closed and can publish kind:31036 renderers back"
       ]
     }
   ]

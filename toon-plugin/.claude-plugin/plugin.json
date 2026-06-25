@@ -1,7 +1,7 @@
 {
   "name": "toon",
-  "description": "TOON Protocol client for Claude — pay-to-write Nostr over Interledger. Bundles the toon-client skill and the toon-mcp MCP server (publish, free reads, payment channels, swaps).",
-  "version": "0.1.0",
+  "description": "TOON Protocol client for Claude — pay-to-write Nostr over Interledger. Bundles the toon-client skill and the toon-mcp MCP server (publish, free reads, media uploads, in-host generative UI + render trust gradient, payment channels, swaps).",
+  "version": "0.2.0",
   "author": {
     "name": "Jonathan Green",
     "email": "dev.jonathan.green@gmail.com"
