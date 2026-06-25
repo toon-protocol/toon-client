@@ -401,12 +401,14 @@ describe('ClientRunner', () => {
       kind: 20,
     });
     expect(res.txId).toBe('tx-abc');
-    expect(res.url).toBe('https://arweave.net/tx-abc');
+    // Primary gateway is ar.io; the others travel as `fallback` mirrors.
+    expect(res.url).toBe('https://ar-io.dev/tx-abc');
     expect(client.lastSigned?.kind).toBe(20);
-    expect(client.lastSigned?.tags?.[0]?.[0]).toBe('imeta');
-    expect(client.lastSigned?.tags?.[0]?.[1]).toContain(
-      'https://arweave.net/tx-abc'
-    );
+    const imeta = client.lastSigned?.tags?.[0] ?? [];
+    expect(imeta[0]).toBe('imeta');
+    expect(imeta[1]).toBe('url https://ar-io.dev/tx-abc');
+    expect(imeta).toContain('fallback https://arweave.net/tx-abc');
+    expect(imeta).toContain('fallback https://permagate.io/tx-abc');
   });
 
   it('uploadMedia surfaces a DVM upload failure as PublishRejectedError', async () => {
