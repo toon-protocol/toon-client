@@ -102,7 +102,22 @@ async function main(): Promise<void> {
 
   const server = new Server(
     { name: 'toon-client', version: '0.1.0' },
-    { capabilities: { tools: {}, resources: {} } }
+    {
+      capabilities: { tools: {}, resources: {} },
+      // Travels to EVERY host in the `initialize` result (incl. claude.ai chat,
+      // which never loads the Claude Code skill). Keep the render-first policy
+      // here so it governs all surfaces, not just Claude Code.
+      instructions:
+        'TOON is pay-to-write Nostr over Interledger; reads are free, writes ' +
+        'are paid. RENDERING IS THE DEFAULT SURFACE: when the user asks to ' +
+        'see/show/open/view/browse/render TOON events, profiles, feeds, ' +
+        'threads, channels, or balances, call toon_atoms then toon_render ' +
+        '(ui://toon/app) — do NOT route TOON data to a generic ' +
+        'HTML/SVG/chart/widget tool or dump it as text. Always call toon_atoms ' +
+        'before toon_render. Writes (post/like/follow/upload/swap) spend a ' +
+        'payment-channel claim; surface the fee and confirm before paying. ' +
+        'Fall back to text only on explicit request or render failure.',
+    }
   );
 
   const appHtml = loadAppHtml();
