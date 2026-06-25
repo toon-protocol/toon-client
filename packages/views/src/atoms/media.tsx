@@ -1,12 +1,38 @@
 /** Media atoms — NIP-68/71 posts + NIP-94 files (read), and the spendy uploader. */
 import { useRef, useState, type FC } from 'react';
 import { type MediaVariant, parseMediaPost, parseFileMetadata, parseInlineMedia } from '../parsers/media.js';
+import { arweaveGatewayCandidates } from '../parsers/arweave.js';
 import { type NostrEvent } from '../types.js';
 import { type Atom, type AtomRenderProps } from './types.js';
 
 function isVideo(variant: MediaVariant): boolean {
   return variant.mime?.startsWith('video/') ?? false;
 }
+
+/**
+ * Render one media variant, re-pointing Arweave-addressable URLs through the
+ * gateway-preference list and falling through to the next gateway (then the
+ * publisher's own `imeta` mirrors) when a source fails to load.
+ */
+const MediaVariantView: FC<{ variant: MediaVariant }> = ({ variant }) => {
+  const candidates = arweaveGatewayCandidates(variant.url, variant.fallbacks);
+  const [idx, setIdx] = useState(0);
+  const src = candidates[idx] ?? variant.url;
+  const onError = (): void =>
+    setIdx((i) => (i + 1 < candidates.length ? i + 1 : i));
+
+  return isVideo(variant) ? (
+    // eslint-disable-next-line jsx-a11y/media-has-caption
+    <video src={src} controls className="max-h-96 w-full rounded-md" onError={onError} />
+  ) : (
+    <img
+      src={src}
+      alt={variant.alt ?? ''}
+      className="max-h-96 w-full rounded-md object-contain"
+      onError={onError}
+    />
+  );
+};
 
 /** Collect renderable media variants from any supported event. */
 function variantsFor(event: NostrEvent): { variants: MediaVariant[]; video: boolean } {
@@ -27,19 +53,9 @@ export const InlineMediaList: FC<{ variants: MediaVariant[] }> = ({ variants }) 
   if (variants.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">
-      {variants.map((v, i) =>
-        isVideo(v) ? (
-          // eslint-disable-next-line jsx-a11y/media-has-caption
-          <video key={i} src={v.url} controls className="max-h-96 w-full rounded-md" />
-        ) : (
-          <img
-            key={i}
-            src={v.url}
-            alt={v.alt ?? ''}
-            className="max-h-96 w-full rounded-md object-contain"
-          />
-        )
-      )}
+      {variants.map((v, i) => (
+        <MediaVariantView key={i} variant={v} />
+      ))}
     </div>
   );
 };

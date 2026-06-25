@@ -987,12 +987,12 @@ export class ClientRunner {
     if (!upload.success || !upload.txId) {
       throw new PublishRejectedError(upload.error ?? 'blob upload rejected');
     }
-    const url = `${ARWEAVE_GATEWAY}/${upload.txId}`;
+    const { url, fallbacks } = arweaveUrls(upload.txId);
     const kind = req.kind ?? 1063;
     const signed = await apex.client.signEvent({
       kind,
       created_at: nowSeconds(),
-      tags: this.buildMediaTags(kind, url, req),
+      tags: this.buildMediaTags(kind, url, fallbacks, req),
       content: req.caption ?? '',
     });
     // Step 1 (blob storage) goes through `req.btpUrl` — which may be a store/DVM
@@ -1052,20 +1052,34 @@ export class ClientRunner {
     return latest;
   }
 
-  /** Tags for a published media event referencing an Arweave URL. */
+  /**
+   * Tags for a published media event referencing an Arweave URL. `url` is the
+   * primary gateway; `fallbacks` are mirror URLs for the same tx id on other
+   * gateways, emitted so readers can fail over if the primary is unreachable.
+   */
   private buildMediaTags(
     kind: number,
     url: string,
+    fallbacks: string[],
     req: UploadMediaRequest
   ): string[][] {
     const mime = req.mime ?? 'application/octet-stream';
     const extra = normalizeTags(req.tags);
     if (kind === 1063) {
-      // NIP-94 file metadata: separate url/m tags.
-      return [['url', url], ['m', mime], ...extra];
+      // NIP-94 file metadata: separate url/m tags, mirrors as `fallback` tags.
+      return [
+        ['url', url],
+        ['m', mime],
+        ...fallbacks.map((f) => ['fallback', f]),
+        ...extra,
+      ];
     }
-    // NIP-68/71 picture/video + NIP-92 inline note: a single `imeta` tag.
-    return [['imeta', `url ${url}`, `m ${mime}`], ...extra];
+    // NIP-68/71 picture/video + NIP-92 inline note: a single `imeta` tag with
+    // the primary `url` first and the remaining gateways as `fallback` mirrors.
+    return [
+      ['imeta', `url ${url}`, `m ${mime}`, ...fallbacks.map((f) => `fallback ${f}`)],
+      ...extra,
+    ];
   }
 
   /** Open (or return) a payment channel on the selected (or default) apex. */
@@ -1254,12 +1268,23 @@ export class InvalidPayloadError extends Error {
 }
 
 /**
- * Arweave gateway used to construct media URLs from uploaded blob tx ids.
- * Uses the ar.io gateway (the project's canonical gateway — see `rig`
- * ARWEAVE_GATEWAYS index 0) so media renders in feed/UI components and AR.IO
- * indexes Turbo/Irys bundles immediately.
+ * Ordered Arweave gateways for stamping published media URLs (primary first,
+ * the rest emitted as `fallback` mirrors). Mirrors the read-side list in
+ * `@toon-protocol/views` (`parsers/arweave.ts`) and `@toon-protocol/rig`
+ * (`web/arweave-client.ts`) — kept in sync by hand. ar.io leads; readers may
+ * re-point, but the stamped primary should match the read-side preference.
  */
-const ARWEAVE_GATEWAY = 'https://ar-io.dev';
+const ARWEAVE_GATEWAYS = [
+  'https://ar-io.dev',
+  'https://arweave.net',
+  'https://permagate.io',
+];
+
+/** Primary URL + fallback mirror URLs for an uploaded Arweave tx id. */
+function arweaveUrls(txId: string): { url: string; fallbacks: string[] } {
+  const [url, ...fallbacks] = ARWEAVE_GATEWAYS.map((g) => `${g}/${txId}`);
+  return { url: url ?? `https://ar-io.dev/${txId}`, fallbacks };
+}
 
 /** Current time in whole seconds (Nostr `created_at` unit). */
 function nowSeconds(): number {
