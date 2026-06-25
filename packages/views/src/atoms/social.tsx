@@ -4,7 +4,10 @@ import { Button } from '@/components/ui/button.js';
 import { Badge } from '@/components/ui/badge.js';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.js';
 import { MonoId } from '@/components/mono-id.js';
-import { parseProfile, parseNote, parseReaction } from '../parsers/social.js';
+import { parseProfile, parseNote, parseReaction, type NoteMetadata } from '../parsers/social.js';
+import { parseInlineMedia } from '../parsers/media.js';
+import { type NostrEvent } from '../types.js';
+import { InlineMediaList } from './media.js';
 import { type Atom, type AtomRenderProps } from './types.js';
 
 function displayName(pubkey: string): string {
@@ -39,31 +42,37 @@ const ProfileHeader: FC<AtomRenderProps> = ({ events }) => {
 };
 
 const NoteCard: FC<AtomRenderProps> = ({ events, actions }) => {
-  const notes = events.map(parseNote).filter((n) => n !== null);
-  if (notes.length === 0) return null;
+  const noteItems = events
+    .map((event) => ({ event, note: parseNote(event) }))
+    .filter((item): item is { event: NostrEvent; note: NoteMetadata } => item.note !== null);
+  if (noteItems.length === 0) return null;
   return (
     <div className="flex flex-col divide-y divide-border">
-      {notes.map((note) => (
-        <article key={note.eventId} className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0">
-          <header className="flex items-center gap-2">
-            <MonoId value={note.authorPubkey} />
-            {note.isReply ? (
-              <Badge variant="secondary" className="text-[10px]">reply</Badge>
+      {noteItems.map(({ event, note }) => {
+        const media = parseInlineMedia(event);
+        return (
+          <article key={note.eventId} className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0">
+            <header className="flex items-center gap-2">
+              <MonoId value={note.authorPubkey} />
+              {note.isReply ? (
+                <Badge variant="secondary" className="text-[10px]">reply</Badge>
+              ) : null}
+            </header>
+            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{note.content}</p>
+            {media.length > 0 ? <InlineMediaList variants={media} /> : null}
+            {actions['reply'] ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="self-start h-6 px-0 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => void actions['reply']?.({ parentId: note.eventId })}
+              >
+                Reply
+              </Button>
             ) : null}
-          </header>
-          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{note.content}</p>
-          {actions['reply'] ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="self-start h-6 px-0 text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => void actions['reply']?.({ parentId: note.eventId })}
-            >
-              Reply
-            </Button>
-          ) : null}
-        </article>
-      ))}
+          </article>
+        );
+      })}
     </div>
   );
 };
