@@ -14,7 +14,11 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { loadKeystore } from '@toon-protocol/client';
-import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/core';
+import {
+  encodeEventToToon,
+  decodeEventFromToon,
+  GenesisPeerLoader,
+} from '@toon-protocol/core';
 import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import type { ToonClientConfig } from '@toon-protocol/client';
 import type { SettlementChain } from '../control-api.js';
@@ -71,20 +75,24 @@ export interface DaemonConfigFile {
   faucetUrl?: string;
   /** Town relay WS URL for FREE reads. */
   relayUrl?: string;
-  /** Default ILP publish destination. Default `g.townhouse.town`. */
+  /**
+   * Apex CHANNEL ANCHOR (settlement peer). Defaults to the genesis seed apex's
+   * ILP anchor (core's `genesis-peers.json`); its last segment becomes the apex
+   * `peerId` the channel keys under. This is NOT a write route — see
+   * `publishDestination`/`storeDestination`.
+   */
   destination?: string;
   /**
-   * Default ILP destination for PUBLISHES (relay writes → `POST /write`). Falls
-   * back to `destination` when unset. On the devnet proxy set `g.proxy.relay`
-   * (the relay terminate route) — NOT `g.proxy.relay.store`, which the apex
-   * forwards to the store and which 404s a `/write`. Env:
-   * `TOON_CLIENT_PUBLISH_DESTINATION`.
+   * ILP route for PUBLISHES (relay writes → `POST /write`). When unset it is
+   * DERIVED from the `…​.relay.store` anchor (`g.proxy.relay.store` →
+   * `g.proxy.relay`) — never the bare anchor, which the apex forwards to the
+   * store and which 404s a `/write`. Env: `TOON_CLIENT_PUBLISH_DESTINATION`.
    */
   publishDestination?: string;
   /**
-   * Default ILP destination for UPLOADS (kind:5094 blob → `POST /store` →
-   * Arweave). Falls back to `destination` when unset. On the devnet proxy set
-   * `g.proxy.store`. Env: `TOON_CLIENT_STORE_DESTINATION`.
+   * ILP route for UPLOADS (kind:5094 blob → `POST /store` → Arweave). When unset
+   * it is DERIVED from the `…​.relay.store` anchor (`g.proxy.relay.store` →
+   * `g.proxy.store`). Env: `TOON_CLIENT_STORE_DESTINATION`.
    */
   storeDestination?: string;
   /** Default fee per paid write, base units. Default `1`. */
@@ -252,6 +260,26 @@ function parseCsvEnv(value: string | undefined): string[] | undefined {
   return items.length ? items : undefined;
 }
 
+/**
+ * Derive the publish/upload ROUTES from the apex channel anchor. Behind the
+ * devnet proxy the anchor follows `<base>.relay.store` (e.g. `g.proxy.relay.store`):
+ * publishes terminate at the relay (`<base>.relay`) and uploads at the store
+ * (`<base>.store`). Routing the bare anchor as a publish forwards the `/write`
+ * to the store backend → HTTP 404. Anchors that don't match the convention fall
+ * back to the anchor unchanged (back-compat for non-proxy / custom topologies).
+ */
+function deriveRouteDestinations(anchor: string): {
+  publish: string;
+  store: string;
+} {
+  const segs = anchor.split('.');
+  if (segs.at(-1) === 'store' && segs.at(-2) === 'relay') {
+    const base = segs.slice(0, -2).join('.'); // e.g. g.proxy
+    return { publish: `${base}.relay`, store: `${base}.store` };
+  }
+  return { publish: anchor, store: anchor };
+}
+
 export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const mnemonic = resolveMnemonic(file);
 
@@ -265,9 +293,17 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   // write attempt at the control plane (issue #69). When only a proxy is set,
   // paid writes route through `POST /ilp` via HttpIlpClient.
   const hasUplink = Boolean(btpUrl || proxyUrl);
+  // Network defaults are bootstrapped from the committed genesis peer list
+  // (`@toon-protocol/core` → discovery/genesis-peers.json) — the seed apex's
+  // relay + ILP anchor — rather than hardcoded per-network literals here. The
+  // seed is a pointer; the apex's kind:10032 announcement organically
+  // distributes the rest. Env/file values still win; the trailing literals are
+  // last-resort fallbacks for an empty genesis list.
+  const genesisSeed = GenesisPeerLoader.loadGenesisPeers()[0];
   const relayUrl =
     process.env['TOON_CLIENT_RELAY_URL'] ??
     file.relayUrl ??
+    genesisSeed?.relayUrl ??
     'ws://localhost:7100';
   const httpPort = Number(
     process.env['TOON_CLIENT_HTTP_PORT'] ?? file.httpPort ?? 8787
@@ -275,18 +311,23 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const destination =
     process.env['TOON_CLIENT_DESTINATION'] ??
     file.destination ??
+    genesisSeed?.ilpAddress ??
     'g.townhouse.town';
   // Publishes (relay writes) and uploads (store/Arweave) terminate at DIFFERENT
-  // backends behind the proxy and so route to different ILP destinations. Both
-  // default to `destination` for backward-compat with single-destination configs.
+  // backends behind the proxy and so route to different ILP destinations. When
+  // not set explicitly they're DERIVED from the channel anchor (see
+  // deriveRouteDestinations) — NOT reused verbatim, which would forward a
+  // `/write` to the store backend and 404. This makes a single-`destination`
+  // config (old or auto-discovered) publish correctly with zero extra keys.
+  const routes = deriveRouteDestinations(destination);
   const publishDestination =
     process.env['TOON_CLIENT_PUBLISH_DESTINATION'] ??
     file.publishDestination ??
-    destination;
+    routes.publish;
   const storeDestination =
     process.env['TOON_CLIENT_STORE_DESTINATION'] ??
     file.storeDestination ??
-    destination;
+    routes.store;
   const feePerEvent = BigInt(file.feePerEvent ?? '1');
   const arweaveGateways =
     parseCsvEnv(process.env['TOON_CLIENT_ARWEAVE_GATEWAYS']) ??
