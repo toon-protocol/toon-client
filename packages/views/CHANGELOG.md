@@ -1,5 +1,11 @@
 # @toon-protocol/views
 
+## 0.3.0
+
+### Minor Changes
+
+- 188ffa0: Render inline media (NIP-92 imeta) in kind:1 notes — NoteCard now displays attached images/videos beneath the note text via a shared InlineMediaList.
+
 ## 0.2.0
 
 ### Minor Changes
