@@ -10,6 +10,7 @@ import type { NetworkFamilyStatus } from '@toon-protocol/core';
 import { validateConfig, applyDefaults, getNetworkStatus } from './config.js';
 import { toBase64 } from './utils/binary.js';
 import { buildStoreWriteEnvelope } from './utils/store-envelope.js';
+import { parseFulfillHttp } from './utils/fulfill-http.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import { ToonClientError } from './errors.js';
@@ -569,6 +570,27 @@ export class ToonClient {
           success: false,
           error: `Event rejected: ${response.code} - ${response.message}`,
         };
+      }
+
+      // The connector is a payment-proxy: an ACCEPTED ILP FULFILL only means
+      // the PAYMENT cleared, not that the relay STORE persisted the event. The
+      // FULFILL `data` carries the relay's verbatim HTTP/1.1 response, so a
+      // write can FAIL (e.g. `HTTP/1.1 404 Not Found`) inside a successful
+      // FULFILL. Parse the envelope and fail the publish on a non-2xx status so
+      // we never report a fake `eventId` for a write that did not persist.
+      //
+      // DEFENSIVE: if the FULFILL data is not HTTP-enveloped (legacy / non-proxy
+      // relays may return bare data), `isHttp` is false and we preserve the
+      // prior behavior (treat an accepted FULFILL as success).
+      if (response.data) {
+        const httpResult = parseFulfillHttp(response.data);
+        if (httpResult.isHttp && (httpResult.status < 200 || httpResult.status >= 300)) {
+          const detail = httpResult.body ? ` - ${httpResult.body}` : '';
+          return {
+            success: false,
+            error: `Write failed: relay returned HTTP ${httpResult.status} ${httpResult.statusText}`.trimEnd() + detail,
+          };
+        }
       }
 
       return {

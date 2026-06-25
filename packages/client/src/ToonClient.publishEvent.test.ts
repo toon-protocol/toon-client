@@ -118,6 +118,96 @@ describe('ToonClient.publishEvent claim delivery mechanism (Story 50.3 AC#1)', (
     });
   });
 
+  // --- Bug 1: a non-2xx HTTP-over-ILP FULFILL must FAIL the publish ----------
+
+  /** base64 of a full HTTP/1.1 response message (the FULFILL `data` shape). */
+  function httpFulfill(status: number, statusText: string, body: string): string {
+    const head =
+      `HTTP/1.1 ${status} ${statusText}\r\n` +
+      `content-length: ${Buffer.byteLength(body, 'utf-8')}\r\n` +
+      `\r\n`;
+    return Buffer.from(head + body, 'utf-8').toString('base64');
+  }
+
+  it('FAILS the publish (no fake eventId) when the FULFILL HTTP status is non-2xx', async () => {
+    const client = new ToonClient(baseConfig());
+
+    // ACCEPTED ILP FULFILL whose `data` decodes to a 404 — payment cleared but
+    // the relay did NOT persist the event. Must NOT report success.
+    const sendIlpPacketWithClaim = vi.fn(async () => ({
+      accepted: true,
+      data: httpFulfill(404, 'Not Found', '404 Not Found'),
+    }));
+
+    // Real-ish channel-manager spy: the explicit-claim path does not re-sign, so
+    // signBalanceProof must never run here — asserting it is not called confirms
+    // the failed write does not advance the nonce watermark beyond what the
+    // caller already signed (nonce semantics match the REJECT path).
+    const signBalanceProof = vi.fn();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: {},
+      runtimeClient: {},
+      peersDiscovered: 0,
+      btpClient: { sendIlpPacketWithClaim },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).channelManager = { signBalanceProof, isTracking: () => false };
+
+    const result = await client.publishEvent(makeEvent(), { claim: makeProof() });
+
+    expect(result.success).toBe(false);
+    expect(result.eventId).toBeUndefined();
+    expect(result.error).toMatch(/404/);
+    // No re-signing on the explicit-claim failure path → no extra nonce burn.
+    expect(signBalanceProof).not.toHaveBeenCalled();
+  });
+
+  it('SUCCEEDS when the FULFILL HTTP status is 2xx', async () => {
+    const client = new ToonClient(baseConfig());
+    const sendIlpPacketWithClaim = vi.fn(async () => ({
+      accepted: true,
+      data: httpFulfill(200, 'OK', 'ok'),
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: {},
+      runtimeClient: {},
+      peersDiscovered: 0,
+      btpClient: { sendIlpPacketWithClaim },
+    };
+
+    const result = await client.publishEvent(makeEvent(), { claim: makeProof() });
+    expect(result.success).toBe(true);
+    expect(result.eventId).toBe(makeEvent().id);
+  });
+
+  it('preserves success for a non-HTTP FULFILL (legacy / non-proxy relays)', async () => {
+    const client = new ToonClient(baseConfig());
+    // Bare, non-HTTP base64 payload — must not be treated as a failed write.
+    const sendIlpPacketWithClaim = vi.fn(async () => ({
+      accepted: true,
+      data: Buffer.from('ack:1', 'utf-8').toString('base64'),
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: {},
+      runtimeClient: {},
+      peersDiscovered: 0,
+      btpClient: { sendIlpPacketWithClaim },
+    };
+
+    const result = await client.publishEvent(makeEvent(), { claim: makeProof() });
+    expect(result.success).toBe(true);
+    expect(result.eventId).toBe(makeEvent().id);
+  });
+
   it('honors an explicit ilpAmount override while still attaching the claim inline', async () => {
     const client = new ToonClient(baseConfig());
 

@@ -77,6 +77,11 @@ export {
 // Utilities
 export { withRetry, type RetryOptions } from './utils/index.js';
 export { buildStoreWriteEnvelope } from './utils/store-envelope.js';
+export {
+  parseFulfillHttp,
+  parseFulfillHttpBytes,
+  type ParsedFulfillHttp,
+} from './utils/fulfill-http.js';
 
 // Config validation (for advanced use cases)
 export {

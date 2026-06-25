@@ -9,13 +9,21 @@
  *
  * ## FULFILL data contract
  *
- * For a successful single-packet (non-chunked) blob upload, the DVM provider
- * returns the Arweave transaction ID as a **UTF-8 string, base64-encoded** in
- * the ILP FULFILL `data` field (the connector validates that FULFILL data is
- * base64). An Arweave tx ID is a 43-character base64url string (32 raw bytes).
+ * The deployed connector is a payment-proxy (HTTP-in-ILP): a successful blob
+ * upload returns the DVM's verbatim **HTTP/1.1 response message** in the ILP
+ * FULFILL `data` field. For a single-packet (non-chunked) upload the body is a
+ * JSON object:
  *
- * So the decode is:
- *   `txId = utf8(base64decode(result.data))`
+ *   HTTP/1.1 200 OK\r\n
+ *   content-length: 189\r\n
+ *   \r\n
+ *   {"accept":true,"txId":"<43-char base64url>","data":"<base64 of txId>",...}
+ *
+ * We parse the HTTP envelope, fail on a non-2xx status (or `accept:false`), and
+ * read the Arweave tx ID from `txId` (falling back to base64-decoding `data`).
+ * An Arweave tx ID is a 43-character base64url string (32 raw bytes). A legacy
+ * fallback still accepts a bare `base64(utf8(txId))` FULFILL (no HTTP envelope)
+ * so non-proxy providers do not regress. See {@link extractArweaveTxId}.
  *
  * See `packages/sdk/src/arweave/arweave-dvm-handler.ts` for the server side and
  * `packages/client/tests/e2e/docker-arweave-dvm-e2e.test.ts` for the reference
@@ -31,6 +39,7 @@
 import type { NostrEvent } from 'nostr-tools/pure';
 import { buildBlobStorageRequest } from '@toon-protocol/core';
 import { fromBase64, decodeUtf8 } from './utils/binary.js';
+import { parseFulfillHttp } from './utils/fulfill-http.js';
 import type { ToonClient } from './ToonClient.js';
 import type { SignedBalanceProof } from './types.js';
 
@@ -171,18 +180,18 @@ export async function requestBlobStorage(
     return {
       success: false,
       eventId: event.id,
-      error: 'FULFILL contained no data; expected base64-encoded Arweave tx ID',
+      error: 'FULFILL contained no data; expected an HTTP response with the Arweave tx ID',
     };
   }
 
-  // FULFILL data contract: base64(utf8(arweaveTxId)).
-  const txId = decodeUtf8(fromBase64(result.data));
-
-  if (!ARWEAVE_TX_ID_REGEX.test(txId)) {
+  let txId: string;
+  try {
+    txId = extractArweaveTxId(result.data);
+  } catch (error) {
     return {
       success: false,
       eventId: event.id,
-      error: `Decoded FULFILL data is not a valid Arweave tx ID: "${txId}"`,
+      error: error instanceof Error ? error.message : String(error),
     };
   }
 
@@ -191,4 +200,89 @@ export async function requestBlobStorage(
     txId,
     eventId: event.id,
   };
+}
+
+/**
+ * Extract the Arweave tx ID from the FULFILL `data` of a successful blob upload.
+ *
+ * The deployed payment-proxy returns the DVM's verbatim HTTP/1.1 response inside
+ * the FULFILL `data`. For a successful single-packet upload that response is:
+ *
+ *   HTTP/1.1 200 OK\r\n
+ *   content-length: 189\r\n
+ *   \r\n
+ *   {"accept":true,"txId":"<43-char base64url>","data":"<base64 of txId>",...}
+ *
+ * We parse the HTTP envelope, fail on a non-2xx status or `accept:false`, then
+ * read `txId` (preferred) from the JSON body — falling back to base64-decoding
+ * the `data` field when `txId` is absent.
+ *
+ * LEGACY FALLBACK: older / non-proxy providers returned the bare tx ID as
+ * `base64(utf8(txId))` directly in the FULFILL data (no HTTP envelope). When the
+ * payload is not HTTP-enveloped we preserve that original decode so non-HTTP
+ * FULFILLs do not regress.
+ *
+ * @throws {Error} If the response is non-2xx, `accept:false`, the body is not
+ *   parseable JSON, or no valid Arweave tx ID can be extracted.
+ */
+function extractArweaveTxId(base64Data: string): string {
+  const http = parseFulfillHttp(base64Data);
+
+  // Legacy / non-HTTP FULFILL: bare base64(utf8(txId)).
+  if (!http.isHttp) {
+    const legacy = decodeUtf8(fromBase64(base64Data));
+    if (!ARWEAVE_TX_ID_REGEX.test(legacy)) {
+      throw new Error(
+        `Decoded FULFILL data is not a valid Arweave tx ID: "${legacy}"`
+      );
+    }
+    return legacy;
+  }
+
+  if (http.status < 200 || http.status >= 300) {
+    const detail = http.body ? ` - ${http.body}` : '';
+    throw new Error(
+      `Blob upload failed: DVM returned HTTP ${http.status} ${http.statusText}`.trimEnd() +
+        detail
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(http.body);
+  } catch {
+    throw new Error(
+      `Blob upload response body was not valid JSON: "${http.body}"`
+    );
+  }
+
+  const body = parsed as {
+    accept?: boolean;
+    txId?: unknown;
+    data?: unknown;
+    error?: unknown;
+  };
+
+  if (body.accept === false) {
+    const reason =
+      typeof body.error === 'string' ? `: ${body.error}` : '';
+    throw new Error(`Blob upload rejected by DVM (accept:false)${reason}`);
+  }
+
+  // Preferred: explicit txId field.
+  if (typeof body.txId === 'string' && ARWEAVE_TX_ID_REGEX.test(body.txId)) {
+    return body.txId;
+  }
+
+  // Fallback: base64-encoded tx id in the `data` field.
+  if (typeof body.data === 'string' && body.data.length > 0) {
+    const decoded = decodeUtf8(fromBase64(body.data));
+    if (ARWEAVE_TX_ID_REGEX.test(decoded)) {
+      return decoded;
+    }
+  }
+
+  throw new Error(
+    `Blob upload response did not contain a valid Arweave tx ID: "${http.body}"`
+  );
 }
