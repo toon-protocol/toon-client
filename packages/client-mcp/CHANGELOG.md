@@ -1,5 +1,33 @@
 # @toon-protocol/client-mcp
 
+## 0.6.0
+
+### Minor Changes
+
+- 44da9c9: Rename the `toon_upload_media` MCP tool to `toon_upload` and generalize it from media-only to any blob.
+
+  The tool still does the spendy two-step upload (base64 bytes → Arweave via the kind:5094 store/DVM over `POST /store`, then sign+publish a referencing event), but its description and naming no longer imply media: the reference event `kind` defaults to 1063 (NIP-94; 20=picture, 21/22=video, 1=note w/ NIP-92 imeta) and can be set to suit any blob type. Callers using the old `toon_upload_media` name must switch to `toon_upload`.
+
+### Patch Changes
+
+- fec8793: Extract the Arweave gateway preference list into a single shared package `@toon-protocol/arweave` (was hand-duplicated in `views`, `rig`, and `client-mcp`).
+
+  - New private, zero-dep `@toon-protocol/arweave` owns `ARWEAVE_GATEWAYS` + `arweaveTxId` / `arweaveUrls` / `arweaveGatewayCandidates`; `client-mcp` inlines it via tsup `noExternal` so the published bundle keeps zero `@toon-protocol/*` runtime deps.
+  - `client-mcp`: upload-side gateway list is now configurable via `TOON_CLIENT_ARWEAVE_GATEWAYS` (comma-separated) > config file > shared default, threaded into `uploadMedia`.
+  - `views`: media render imports the shared package (`parsers/arweave.ts` removed); the sandboxed-app CSP `connect`/`resource` domains default to the full gateway list (was `arweave.net` only, which would block ar.io media in the iframe).
+  - `rig`: re-exports the shared list/timeout (importers unchanged).
+
+- 39beb37: Tolerate the 2-part `evm:{chainId}` chain-key form some connectors advertise (e.g. `evm:31337`), not only the canonical 3-part `evm:{network}:{chainId}`.
+
+  `parseChainId` (`OnChainChannelClient`) and the chainId-from-chainKey parsing in `ToonClient` (peer negotiations + `getChainContext`), `client-mcp/config`, and `apex-discovery` now accept both forms. A mis-parsed 2-part key previously produced `chainId: 0`, which the store connector rejects ("Invalid chainId").
+
+- ca5711c: Split the daemon's write destination so relay publishes and store uploads route to the correct backend. Adds resolved `publishDestination` (relay writes → `POST /write`) and `storeDestination` (kind:5094 blob → `POST /store`) config fields — plus `TOON_CLIENT_PUBLISH_DESTINATION` / `TOON_CLIENT_STORE_DESTINATION` env overrides — each falling back to `destination` for backward-compat. `publish` (and `uploadMedia`'s NIP-94 reference event) default to `publishDestination`; the blob defaults to `storeDestination`, so uploads work via the default apex without the caller hand-passing a store `btpUrl`. An explicit per-call `destination` still wins; settlement is unchanged (pure ILP routing on the pre-signed apex claim).
+- 2bdb1b5: Fix `toon_upload` against a discovered store/DVM apex (e.g. `g.proxy.store`), which failed at several independent points on the payment path:
+
+  - **No route to destination (F02):** `deriveApexClientConfig` now derives a per-apex `proxyUrl` from the apex `btpUrl`, so paid packets POST to the discovered apex's connector instead of the default (relay) connector, which has no route to the store's ILP prefix.
+  - **Wrong apex for the ref event:** `uploadMedia` now publishes the NIP-94 reference event through the default (relay) apex rather than the upload's `btpUrl`, since a store/DVM apex only serves `POST /store`.
+  - **ar.io gateway:** media URLs and the views CSP default to `https://ar-io.dev` (the canonical gateway) so uploaded media renders; `arweave.net` is retained in the CSP for back-compat.
+
 ## 0.5.3
 
 ### Patch Changes
