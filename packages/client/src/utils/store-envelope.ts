@@ -29,20 +29,27 @@
 import type { NostrEvent } from 'nostr-tools/pure';
 import { encodeUtf8 } from './binary.js';
 
-/** Request-line + headers the deployed store accepts (proven against devnet). */
-const REQUEST_LINE = 'POST /write HTTP/1.1';
+/** Default request-target + headers the deployed store accepts (proven against
+ * devnet). The relay's paid-write surface is `POST /write`; the Arweave store
+ * (DVM) backend is `POST /store` — same `{ event }` body, different target. */
+const DEFAULT_REQUEST_TARGET = '/write';
 const HEADERS = ['Host: relay', 'Content-Type: application/json'];
 
 /**
- * Wrap a signed Nostr event in the `POST /write` HTTP envelope the deployed
- * payment-proxy reverse-proxies to the relay store.
+ * Wrap a signed Nostr event in the HTTP envelope the deployed payment-proxy
+ * reverse-proxies to its backend. Defaults to the relay's `POST /write`; pass
+ * `requestTarget: '/store'` for the Arweave store/DVM backend.
  *
  * @param event - A finalized (signed) Nostr event — passed through to the store
  *   as the JSON `event` field verbatim (the store re-verifies the signature).
+ * @param requestTarget - HTTP request-target the proxy replays (default `/write`).
  * @returns The envelope bytes to use as the ILP PREPARE `data`.
  */
-export function buildStoreWriteEnvelope(event: NostrEvent): Uint8Array {
+export function buildStoreWriteEnvelope(
+  event: NostrEvent,
+  requestTarget: string = DEFAULT_REQUEST_TARGET
+): Uint8Array {
   const body = JSON.stringify({ event });
-  const head = [REQUEST_LINE, ...HEADERS].join('\r\n');
+  const head = [`POST ${requestTarget} HTTP/1.1`, ...HEADERS].join('\r\n');
   return encodeUtf8(head + '\r\n\r\n' + body);
 }

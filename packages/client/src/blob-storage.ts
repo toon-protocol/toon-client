@@ -166,6 +166,8 @@ export async function requestBlobStorage(
     destination: params.destination,
     claim: params.claim,
     ilpAmount: params.ilpAmount,
+    // The store/DVM backend serves POST /store (not the relay's /write).
+    proxyPath: '/store',
   });
 
   if (!result.success) {
