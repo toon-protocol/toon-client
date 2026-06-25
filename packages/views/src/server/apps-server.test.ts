@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import { registerToonApps } from './apps-server.js';
 import { FakeBackend } from './fake-backend.js';
 import { APP_RESOURCE_URI } from '../tool-names.js';
@@ -38,6 +39,21 @@ describe('TOON apps MCP server (fake-backed)', () => {
     const content = read.contents[0] as { mimeType?: string; text?: string };
     expect(content.mimeType).toBe('text/html;profile=mcp-app');
     expect(content.text).toContain('<div id="root">');
+  });
+
+  it('iframe CSP allows every Arweave gateway the media renderer can emit', async () => {
+    // Regression for #127: media-embed renders <img>/<video> at the gateway
+    // preference list (ar-io.dev primary, with fallbacks). An arweave.net-only
+    // CSP silently blocked those origins so images never loaded. The default must
+    // stay in lockstep with ARWEAVE_GATEWAYS — the renderer's source of truth.
+    const list = await client.listResources();
+    const app = list.resources.find((r) => r.uri === APP_RESOURCE_URI);
+    const csp = (app?._meta as { ui?: { csp?: { resourceDomains?: string[]; connectDomains?: string[] } } })
+      ?.ui?.csp;
+    for (const gateway of ARWEAVE_GATEWAYS) {
+      expect(csp?.resourceDomains).toContain(gateway);
+      expect(csp?.connectDomains).toContain(gateway);
+    }
   });
 
   it('lists the generative-UI tools (toon_render carries _meta.ui.resourceUri)', async () => {
