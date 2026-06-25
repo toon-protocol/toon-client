@@ -1,5 +1,15 @@
 # @toon-protocol/client
 
+## 0.14.2
+
+### Patch Changes
+
+- 39beb37: Tolerate the 2-part `evm:{chainId}` chain-key form some connectors advertise (e.g. `evm:31337`), not only the canonical 3-part `evm:{network}:{chainId}`.
+
+  `parseChainId` (`OnChainChannelClient`) and the chainId-from-chainKey parsing in `ToonClient` (peer negotiations + `getChainContext`), `client-mcp/config`, and `apex-discovery` now accept both forms. A mis-parsed 2-part key previously produced `chainId: 0`, which the store connector rejects ("Invalid chainId").
+
+- 5bfae71: Restore the `POST /store` request-target for blob uploads. `buildStoreWriteEnvelope` again accepts a `requestTarget` (default `/write`), `publishEvent` threads a `proxyPath` option through to it, and `requestBlobStorage` passes `/store`. Without this, kind:5094 blob uploads emitted `POST /write` and the Arweave store backend (which serves `/store` + `/health` only) returned 404. Adds a `store-envelope` regression test covering both targets.
+
 ## 0.14.1
 
 ### Patch Changes
