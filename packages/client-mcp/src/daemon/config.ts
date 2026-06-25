@@ -359,11 +359,8 @@ function buildProxyApexNegotiation(
   if (!settlementAddress) return undefined;
 
   const parts = chainKey.split(':');
-  // Accept both 3-part `evm:{network}:{chainId}` and 2-part `evm:{chainId}`.
   const chainId =
-    chain === 'evm' && parts.length >= 2
-      ? Number(parts[2] ?? parts[1] ?? 0)
-      : 0;
+    chain === 'evm' && parts.length >= 3 ? Number(parts[2] ?? 0) : 0;
   const peerId = destination.split('.').at(-1) ?? destination;
 
   return {

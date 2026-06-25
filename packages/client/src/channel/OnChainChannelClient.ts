@@ -219,14 +219,12 @@ export class OnChainChannelClient implements ConnectorChannelClient {
    */
   private parseChainId(chain: string): number {
     const parts = chain.split(':');
-    if (parts.length < 2) {
+    if (parts.length < 3) {
       throw new Error(
-        `Invalid chain format: "${chain}". Expected "evm:{network}:{chainId}" or "evm:{chainId}".`
+        `Invalid chain format: "${chain}". Expected "evm:{network}:{chainId}".`
       );
     }
-    // Accept both the canonical 3-part `evm:{network}:{chainId}` and the 2-part
-    // `evm:{chainId}` form some connectors advertise (e.g. `evm:31337`).
-    const chainIdStr = parts.length >= 3 ? parts[2] : parts[1];
+    const chainIdStr = parts[2];
     if (!chainIdStr) {
       throw new Error(
         `Invalid chain format: "${chain}". Expected "evm:{network}:{chainId}".`
