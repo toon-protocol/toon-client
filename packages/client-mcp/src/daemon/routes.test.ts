@@ -232,7 +232,7 @@ describe('control-plane routes', () => {
       });
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({
-        url: 'https://arweave.net/tx-routes',
+        url: 'https://ar-io.dev/tx-routes',
         txId: 'tx-routes',
       });
     });

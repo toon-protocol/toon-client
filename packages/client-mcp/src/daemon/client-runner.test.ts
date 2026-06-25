@@ -401,11 +401,11 @@ describe('ClientRunner', () => {
       kind: 20,
     });
     expect(res.txId).toBe('tx-abc');
-    expect(res.url).toBe('https://arweave.net/tx-abc');
+    expect(res.url).toBe('https://ar-io.dev/tx-abc');
     expect(client.lastSigned?.kind).toBe(20);
     expect(client.lastSigned?.tags?.[0]?.[0]).toBe('imeta');
     expect(client.lastSigned?.tags?.[0]?.[1]).toContain(
-      'https://arweave.net/tx-abc'
+      'https://ar-io.dev/tx-abc'
     );
   });
 
