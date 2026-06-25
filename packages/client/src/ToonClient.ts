@@ -325,7 +325,13 @@ export class ToonClient {
         if (result.negotiatedChain && result.settlementAddress) {
           const chainType = result.negotiatedChain.split(':')[0] ?? 'evm';
           const parts = result.negotiatedChain.split(':');
-          const chainId = parts.length >= 3 ? parseInt(parts[2] ?? '0', 10) : 0;
+          // Accept 3-part `evm:{network}:{chainId}` and 2-part `evm:{chainId}`.
+          const chainId =
+            parts.length >= 3
+              ? parseInt(parts[2] ?? '0', 10)
+              : parts.length >= 2
+                ? parseInt(parts[1] ?? '0', 10)
+                : 0;
           const r = result as typeof result & {
             tokenAddress?: string;
             tokenNetwork?: string;
@@ -361,7 +367,11 @@ export class ToonClient {
             const peerAddr = peerInfo.settlementAddresses?.[matchedChain];
             const parts = matchedChain.split(':');
             const chainId =
-              parts.length >= 3 ? parseInt(parts[2] ?? '0', 10) : 0;
+              parts.length >= 3
+                ? parseInt(parts[2] ?? '0', 10)
+                : parts.length >= 2
+                  ? parseInt(parts[1] ?? '0', 10)
+                  : 0;
             if (peerAddr) {
               this.peerNegotiations.set(result.registeredPeerId, {
                 chain: matchedChain,
@@ -974,7 +984,9 @@ export class ToonClient {
     | undefined {
     if (!negotiatedChain) return undefined;
     const parts = negotiatedChain.split(':');
-    const chainIdPart = parts.length >= 3 ? parts[2] : undefined;
+    // Accept 3-part `evm:{network}:{chainId}` and 2-part `evm:{chainId}`.
+    const chainIdPart =
+      parts.length >= 3 ? parts[2] : parts.length >= 2 ? parts[1] : undefined;
     const numericChainId =
       chainIdPart !== undefined ? parseInt(chainIdPart, 10) : NaN;
     if (isNaN(numericChainId)) return undefined;
