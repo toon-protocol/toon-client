@@ -492,6 +492,9 @@ export class ToonClient {
       destination?: string;
       claim?: SignedBalanceProof;
       ilpAmount?: bigint;
+      /** HTTP request-target the payment-proxy replays (default '/write', the
+       *  relay; use '/store' for the Arweave store/DVM backend). */
+      proxyPath?: string;
     }
   ): Promise<PublishEventResult> {
     if (!this.state) {
@@ -523,7 +526,7 @@ export class ToonClient {
       // bytes (those make the proxy reject with F01 - malformed request-line).
       // See utils/store-envelope.ts. `sendSwapPacket` (Mill swaps) is a separate
       // surface with a raw-TOON contract and is intentionally NOT wrapped here.
-      const writeData = buildStoreWriteEnvelope(event);
+      const writeData = buildStoreWriteEnvelope(event, options?.proxyPath);
 
       // Use provided destination or fall back to config default
       const destination =
