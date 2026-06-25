@@ -27,17 +27,23 @@ let tmpDir: string;
 function makeConfig(
   overrides: Partial<ResolvedDaemonConfig> = {}
 ): ResolvedDaemonConfig {
-  return {
+  const base = {
     httpPort: 8787,
     relayUrl: 'ws://relay.test',
     hasUplink: true,
     destination: 'g.townhouse.town',
     feePerEvent: 1n,
-    chain: 'evm',
+    chain: 'evm' as const,
     apexChannelStorePath: join(tmpDir, 'apex-channels.json'),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     toonClientConfig: { btpUrl: 'ws://apex.test/btp' } as any,
     ...overrides,
+  };
+  // Mirror resolveConfig: publish/store destinations fall back to `destination`.
+  return {
+    ...base,
+    publishDestination: overrides.publishDestination ?? base.destination,
+    storeDestination: overrides.storeDestination ?? base.destination,
   };
 }
 
@@ -80,12 +86,18 @@ class FakeClient implements ToonClientLike {
     | undefined {
     return { evm: 'configured', solana: 'unconfigured', mina: 'unconfigured' };
   }
-  async publishEvent(event: NostrEvent): Promise<{
+  /** Records the destination passed on the last publishEvent call. */
+  lastPublishDest?: string;
+  async publishEvent(
+    event: NostrEvent,
+    options?: { destination?: string }
+  ): Promise<{
     success: boolean;
     eventId?: string;
     data?: string;
     error?: string;
   }> {
+    this.lastPublishDest = options?.destination;
     return this.publishImpl(event);
   }
   async signBalanceProof(channelId: string, amount: bigint): Promise<unknown> {
@@ -114,12 +126,15 @@ class FakeClient implements ToonClientLike {
     eventId?: string;
     error?: string;
   }> = async () => ({ success: true, txId: 'tx-abc', eventId: 'blob-evt' });
-  async uploadBlob(): Promise<{
+  /** Records the destination passed on the last uploadBlob call. */
+  lastUploadDest?: string;
+  async uploadBlob(params?: { destination?: string }): Promise<{
     success: boolean;
     txId?: string;
     eventId?: string;
     error?: string;
   }> {
+    this.lastUploadDest = params?.destination;
     return this.uploadImpl();
   }
   async openChannel(): Promise<string> {
@@ -415,6 +430,60 @@ describe('ClientRunner', () => {
     await expect(
       runner.uploadMedia({ dataBase64: 'AAAA' })
     ).rejects.toBeInstanceOf(PublishRejectedError);
+  });
+
+  // ── Split write destinations (publish → relay, upload → store) ──────────────
+  const splitApex = {
+    destination: 'g.proxy.relay.store',
+    peerId: 'store',
+    chain: 'evm' as const,
+    chainKey: 'evm:base:84532',
+    chainId: 84532,
+    settlementAddress: '0xapex',
+    tokenNetwork: '0xtn',
+  };
+  function splitRunner(c: FakeClient): ClientRunner {
+    return new ClientRunner({
+      config: makeConfig({
+        destination: 'g.proxy.relay.store',
+        publishDestination: 'g.proxy.relay',
+        storeDestination: 'g.proxy.store',
+        apex: splitApex,
+      }),
+      createClient: () => c,
+      createRelay: fakeRelay,
+    });
+  }
+
+  it('publish routes to publishDestination by default (not the apex anchor)', async () => {
+    const c = new FakeClient();
+    const r = splitRunner(c);
+    await r.bootstrap();
+    await r.publish({ event: { id: 'evtA' } as NostrEvent });
+    expect(c.lastPublishDest).toBe('g.proxy.relay');
+  });
+
+  it('publish honors an explicit per-call destination over the default', async () => {
+    const c = new FakeClient();
+    const r = splitRunner(c);
+    await r.bootstrap();
+    await r.publish({
+      event: { id: 'evtB' } as NostrEvent,
+      destination: 'g.custom.dest',
+    });
+    expect(c.lastPublishDest).toBe('g.custom.dest');
+  });
+
+  it('uploadMedia sends the blob to storeDestination and the reference event to publishDestination', async () => {
+    const c = new FakeClient();
+    const r = splitRunner(c);
+    await r.bootstrap();
+    await r.uploadMedia({
+      dataBase64: Buffer.from('img').toString('base64'),
+      kind: 20,
+    });
+    expect(c.lastUploadDest).toBe('g.proxy.store'); // blob → store backend
+    expect(c.lastPublishDest).toBe('g.proxy.relay'); // NIP-94 ref event → relay
   });
 
   it('lists channels with nonce watermark and cumulative amount', async () => {

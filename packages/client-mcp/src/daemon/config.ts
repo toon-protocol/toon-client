@@ -72,6 +72,20 @@ export interface DaemonConfigFile {
   relayUrl?: string;
   /** Default ILP publish destination. Default `g.townhouse.town`. */
   destination?: string;
+  /**
+   * Default ILP destination for PUBLISHES (relay writes → `POST /write`). Falls
+   * back to `destination` when unset. On the devnet proxy set `g.proxy.relay`
+   * (the relay terminate route) — NOT `g.proxy.relay.store`, which the apex
+   * forwards to the store and which 404s a `/write`. Env:
+   * `TOON_CLIENT_PUBLISH_DESTINATION`.
+   */
+  publishDestination?: string;
+  /**
+   * Default ILP destination for UPLOADS (kind:5094 blob → `POST /store` →
+   * Arweave). Falls back to `destination` when unset. On the devnet proxy set
+   * `g.proxy.store`. Env: `TOON_CLIENT_STORE_DESTINATION`.
+   */
+  storeDestination?: string;
   /** Default fee per paid write, base units. Default `1`. */
   feePerEvent?: string;
   /** Channel nonce-watermark persistence file. Default `<dir>/channels.json`. */
@@ -128,6 +142,10 @@ export interface ResolvedDaemonConfig {
   /** Devnet faucet base URL, when configured. */
   faucetUrl?: string;
   destination: string;
+  /** Resolved default destination for relay-write publishes (falls back to `destination`). */
+  publishDestination: string;
+  /** Resolved default destination for store/Arweave uploads (falls back to `destination`). */
+  storeDestination: string;
   feePerEvent: bigint;
   apex?: ApexNegotiationConfig;
   /** Apex child peers reached via the same apex channel (e.g. dvm, mill). */
@@ -233,6 +251,17 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     process.env['TOON_CLIENT_DESTINATION'] ??
     file.destination ??
     'g.townhouse.town';
+  // Publishes (relay writes) and uploads (store/Arweave) terminate at DIFFERENT
+  // backends behind the proxy and so route to different ILP destinations. Both
+  // default to `destination` for backward-compat with single-destination configs.
+  const publishDestination =
+    process.env['TOON_CLIENT_PUBLISH_DESTINATION'] ??
+    file.publishDestination ??
+    destination;
+  const storeDestination =
+    process.env['TOON_CLIENT_STORE_DESTINATION'] ??
+    file.storeDestination ??
+    destination;
   const feePerEvent = BigInt(file.feePerEvent ?? '1');
   const network = (process.env['TOON_CLIENT_NETWORK'] ?? file.network) as
     | ToonClientConfig['network']
@@ -298,6 +327,8 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     ...(proxyUrl ? { proxyUrl } : {}),
     ...(faucetUrl ? { faucetUrl } : {}),
     destination,
+    publishDestination,
+    storeDestination,
     feePerEvent,
     ...(apex ? { apex } : {}),
     ...(file.apexChildPeers ? { apexChildPeers: file.apexChildPeers } : {}),
