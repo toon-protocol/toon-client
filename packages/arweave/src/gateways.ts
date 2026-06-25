@@ -1,16 +1,15 @@
 /**
- * Arweave gateway redundancy for media rendering.
+ * Arweave gateway redundancy — single source of truth.
  *
- * Media bytes are content-addressed by Arweave tx id, so every gateway serves the
- * same bytes. Publishers stamp whatever gateway they happened to use into the
- * `imeta` `url` (our own upload path hardcodes `arweave.net`); to avoid a hard
- * dependency on a single gateway we re-point Arweave-addressable URLs to an
- * ordered preference list and let the renderer fall through to the next gateway
- * on error.
+ * Media bytes are content-addressed by Arweave tx id, so every gateway serves
+ * the same bytes. This module owns the ordered gateway preference list and the
+ * URL helpers used on BOTH sides of the wire:
+ *   - upload (client-mcp daemon): stamp a primary `url` + `fallback` mirrors.
+ *   - render (views/rig browser): re-point imeta URLs + fail over on error.
  *
- * NOTE: `ARWEAVE_GATEWAYS` mirrors the list in `@toon-protocol/rig`
- * (`web/arweave-client.ts`). It is duplicated by hand because `views` is a
- * dependency of `rig` and cannot import back from it. Keep the two in sync.
+ * Previously hand-duplicated in `views`, `rig`, and `client-mcp`; those now all
+ * import from here. The default list can be overridden per call (e.g. from a
+ * daemon env var) — pass `gateways` to the helpers.
  */
 
 /** Ordered Arweave gateways to try (primary first, then fallbacks). */
@@ -18,13 +17,17 @@ export const ARWEAVE_GATEWAYS = [
   'https://ar-io.dev',
   'https://arweave.net',
   'https://permagate.io',
-];
+] as const;
+
+/** Timeout for individual Arweave fetch requests in milliseconds. */
+export const ARWEAVE_FETCH_TIMEOUT_MS = 15000;
 
 /** Arweave transaction IDs are 43-character base64url strings. */
 const TX_ID_RE = /^[a-zA-Z0-9_-]{43}$/;
 
-/** Hosts we recognize as Arweave gateways (path- or sandbox-subdomain-addressed). */
-const ARWEAVE_HOST_RE = /(^|\.)(arweave\.net|ar-io\.dev|permagate\.io|g8way\.io|ar\.io)$/i;
+/** Hosts recognized as Arweave gateways (path-addressed). */
+const ARWEAVE_HOST_RE =
+  /(^|\.)(arweave\.net|ar-io\.dev|permagate\.io|g8way\.io|ar\.io)$/i;
 
 /**
  * Extract an Arweave tx id from a media URL, or null if it is not
@@ -58,18 +61,34 @@ export function arweaveTxId(rawUrl: string): string | null {
 }
 
 /**
+ * Primary URL + fallback mirror URLs for an Arweave tx id, one per gateway in
+ * preference order. Used by the upload path to stamp `imeta` `url` + `fallback`.
+ */
+export function arweaveUrls(
+  txId: string,
+  gateways: readonly string[] = ARWEAVE_GATEWAYS
+): { url: string; fallbacks: string[] } {
+  const all = (gateways.length ? gateways : ARWEAVE_GATEWAYS).map(
+    (g) => `${g}/${txId}`
+  );
+  const [url, ...fallbacks] = all;
+  return { url: url ?? `${ARWEAVE_GATEWAYS[0]}/${txId}`, fallbacks };
+}
+
+/**
  * Ordered candidate URLs for a media URL. Arweave-addressable URLs expand to the
  * full gateway-preference list (primary first); anything else is returned
  * unchanged. `extraFallbacks` (e.g. publisher-supplied `imeta` mirrors) are
- * appended last, de-duplicated.
+ * appended last, de-duplicated. Used by the render path to fail over on error.
  */
 export function arweaveGatewayCandidates(
   rawUrl: string,
-  extraFallbacks: string[] = []
+  extraFallbacks: string[] = [],
+  gateways: readonly string[] = ARWEAVE_GATEWAYS
 ): string[] {
   const txId = arweaveTxId(rawUrl);
   const candidates = txId
-    ? ARWEAVE_GATEWAYS.map((g) => `${g}/${txId}`)
+    ? (gateways.length ? gateways : ARWEAVE_GATEWAYS).map((g) => `${g}/${txId}`)
     : [rawUrl];
   const seen = new Set(candidates);
   for (const f of extraFallbacks) {

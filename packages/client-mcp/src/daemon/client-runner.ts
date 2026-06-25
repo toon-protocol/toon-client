@@ -21,6 +21,7 @@
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
 import { decodeEventFromToon } from '@toon-protocol/core';
+import { arweaveUrls } from '@toon-protocol/arweave';
 import type { ToonClientConfig } from '@toon-protocol/client';
 import { fundWallet as faucetFund, type FaucetChain } from '@toon-protocol/client';
 import { streamSwap } from '@toon-protocol/sdk/swap';
@@ -987,7 +988,7 @@ export class ClientRunner {
     if (!upload.success || !upload.txId) {
       throw new PublishRejectedError(upload.error ?? 'blob upload rejected');
     }
-    const { url, fallbacks } = arweaveUrls(upload.txId);
+    const { url, fallbacks } = arweaveUrls(upload.txId, this.config.arweaveGateways);
     const kind = req.kind ?? 1063;
     const signed = await apex.client.signEvent({
       kind,
@@ -1265,25 +1266,6 @@ export class InvalidPayloadError extends Error {
     super(message);
     this.name = 'InvalidPayloadError';
   }
-}
-
-/**
- * Ordered Arweave gateways for stamping published media URLs (primary first,
- * the rest emitted as `fallback` mirrors). Mirrors the read-side list in
- * `@toon-protocol/views` (`parsers/arweave.ts`) and `@toon-protocol/rig`
- * (`web/arweave-client.ts`) — kept in sync by hand. ar.io leads; readers may
- * re-point, but the stamped primary should match the read-side preference.
- */
-const ARWEAVE_GATEWAYS = [
-  'https://ar-io.dev',
-  'https://arweave.net',
-  'https://permagate.io',
-];
-
-/** Primary URL + fallback mirror URLs for an uploaded Arweave tx id. */
-function arweaveUrls(txId: string): { url: string; fallbacks: string[] } {
-  const [url, ...fallbacks] = ARWEAVE_GATEWAYS.map((g) => `${g}/${txId}`);
-  return { url: url ?? `https://ar-io.dev/${txId}`, fallbacks };
 }
 
 /** Current time in whole seconds (Nostr `created_at` unit). */

@@ -16,6 +16,7 @@ const ENV_KEYS = [
   'TOON_CLIENT_PUBLISH_DESTINATION',
   'TOON_CLIENT_STORE_DESTINATION',
   'TOON_CLIENT_KEYSTORE_PASSWORD',
+  'TOON_CLIENT_ARWEAVE_GATEWAYS',
 ];
 
 describe('daemon config', () => {
@@ -65,6 +66,33 @@ describe('daemon config', () => {
     expect(cfg.toonClientConfig.btpUrl).toBeUndefined();
     expect(cfg.proxyUrl).toBeUndefined();
     expect(cfg.apex).toBeUndefined();
+  });
+
+  it('arweaveGateways defaults to the shared ar.io-first list', () => {
+    const cfg = resolveConfig({ mnemonic: MNEMONIC });
+    expect(cfg.arweaveGateways).toEqual([
+      'https://ar-io.dev',
+      'https://arweave.net',
+      'https://permagate.io',
+    ]);
+  });
+
+  it('TOON_CLIENT_ARWEAVE_GATEWAYS env overrides (comma-split, trimmed)', () => {
+    process.env['TOON_CLIENT_ARWEAVE_GATEWAYS'] =
+      ' https://my.gw , https://backup.gw ';
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      arweaveGateways: ['https://ignored.gw'],
+    });
+    expect(cfg.arweaveGateways).toEqual(['https://my.gw', 'https://backup.gw']);
+  });
+
+  it('falls back to the config-file arweaveGateways when no env is set', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      arweaveGateways: ['https://file.gw'],
+    });
+    expect(cfg.arweaveGateways).toEqual(['https://file.gw']);
   });
 
   it('proxyUrl satisfies the uplink requirement (no btpUrl needed)', () => {
