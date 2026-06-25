@@ -1,9 +1,10 @@
 /** Social atoms — NIP-01 profile/note, NIP-25 reactions, NIP-02 follow. */
-import { type FC } from 'react';
-import { Heart, MessageCircle } from 'lucide-react';
+import { type FC, type ReactNode, useState } from 'react';
+import { Heart, MessageCircle, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Badge } from '@/components/ui/badge.js';
 import { MonoId } from '@/components/mono-id.js';
+import { cn } from '@/lib/utils.js';
 import {
   parseProfile,
   parseNote,
@@ -39,6 +40,44 @@ const ProfileHeader: FC<AtomRenderProps> = ({ events }) => {
   );
 };
 
+/**
+ * One X-style action: an icon + optional count, rendered as a quiet muted
+ * button that accents on hover/focus (and stays accented while `active`). Counts
+ * sit to the right of the icon, X-style. `accent` tints the hover/active state
+ * so Like reads rose while Reply/etc. settle on the foreground.
+ */
+const ActionButton: FC<{
+  label: string;
+  icon: ReactNode;
+  text: string;
+  count?: number;
+  active?: boolean;
+  accent?: 'foreground' | 'rose';
+  onClick: () => void;
+}> = ({ label, icon, text, count, active = false, accent = 'foreground', onClick }) => {
+  const accentClass =
+    accent === 'rose'
+      ? cn('hover:text-rose-500 focus-visible:text-rose-500', active && 'text-rose-500')
+      : cn('hover:text-foreground focus-visible:text-foreground', active && 'text-foreground');
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      aria-label={label}
+      aria-pressed={active}
+      className={cn('h-8 gap-1.5 px-2 text-xs text-muted-foreground transition-colors', accentClass)}
+      onClick={onClick}
+    >
+      {icon}
+      <span>{text}</span>
+      {typeof count === 'number' && count > 0 ? (
+        <span className="tabular-nums">{count}</span>
+      ) : null}
+    </Button>
+  );
+};
+
 /** A single feed item: identity row, note body, inline media, engagement. */
 const NoteRow: FC<{
   event: NostrEvent;
@@ -51,6 +90,25 @@ const NoteRow: FC<{
   const displayName = profile?.displayName ?? profile?.name;
   const reply = actions['reply'];
   const react = actions['react'];
+  const follow = actions['follow'];
+
+  // Pay-to-write actions settle a channel fee per event. We toggle optimistically
+  // for a snappy feel; the publish itself is routed through the paid write path.
+  const [liked, setLiked] = useState(false);
+  const [followed, setFollowed] = useState(false);
+
+  const onLike = (): void => {
+    if (!react) return;
+    setLiked((v) => !v);
+    void react({ content: '+' });
+  };
+  const onFollow = (): void => {
+    if (!follow) return;
+    setFollowed(true);
+    void follow({ tags: [['p', note.authorPubkey]] });
+  };
+
+  const likeCount = reactionCount + (liked ? 1 : 0);
 
   return (
     <article className="group/note flex gap-3 px-1 py-3 transition-colors first:pt-0 last:pb-0 hover:bg-muted/30">
@@ -60,20 +118,44 @@ const NoteRow: FC<{
         picture={profile?.picture}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <header className="flex items-baseline gap-2">
-          {displayName ? (
-            <span className="truncate font-semibold leading-tight">{displayName}</span>
-          ) : (
-            <MonoId value={note.authorPubkey} />
-          )}
-          {note.isReply ? (
-            <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">
-              reply
-            </Badge>
+        <header className="flex items-center gap-1.5">
+          <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+            {displayName ? (
+              <>
+                <span className="truncate font-semibold leading-tight text-foreground">
+                  {displayName}
+                </span>
+                <MonoId value={note.authorPubkey} className="shrink-0 text-muted-foreground" />
+              </>
+            ) : (
+              <MonoId value={note.authorPubkey} className="text-muted-foreground" />
+            )}
+            <span aria-hidden="true" className="text-muted-foreground">
+              ·
+            </span>
+            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+              {relativeTime(note.createdAt)}
+            </span>
+            {note.isReply ? (
+              <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">
+                reply
+              </Badge>
+            ) : null}
+          </div>
+          {follow ? (
+            <Button
+              type="button"
+              variant={followed ? 'secondary' : 'outline'}
+              size="sm"
+              aria-label={followed ? 'Following this author' : 'Follow this author'}
+              aria-pressed={followed}
+              className="h-7 shrink-0 rounded-full px-3 text-xs font-semibold"
+              onClick={onFollow}
+            >
+              <UserPlus aria-hidden="true" />
+              {followed ? 'Following' : 'Follow'}
+            </Button>
           ) : null}
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
-            {relativeTime(note.createdAt)}
-          </span>
         </header>
 
         {note.content ? (
@@ -89,35 +171,38 @@ const NoteRow: FC<{
         ) : null}
 
         {reply || react ? (
-          <footer className="mt-1 flex items-center gap-1 text-muted-foreground">
+          <footer className="-ml-2 mt-1 flex items-center gap-6">
             {reply ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label="Reply to this note"
-                className="h-7 gap-1.5 px-2 text-xs hover:text-foreground"
+              <ActionButton
+                label="Reply to this note"
+                icon={<MessageCircle aria-hidden="true" />}
+                text="Reply"
                 onClick={() => void reply({ parentId: note.eventId })}
-              >
-                <MessageCircle aria-hidden="true" />
-                Reply
-              </Button>
+              />
             ) : null}
             {react ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label="React to this note"
-                className="h-7 gap-1.5 px-2 text-xs hover:text-foreground"
-                onClick={() => void react({ content: '+' })}
-              >
-                <Heart aria-hidden="true" />
-                React
-                {reactionCount > 0 ? (
-                  <span className="tabular-nums">{reactionCount}</span>
-                ) : null}
-              </Button>
+              <ActionButton
+                label={liked ? 'Liked this note' : 'Like this note'}
+                icon={
+                  <Heart
+                    aria-hidden="true"
+                    className={liked ? 'fill-current' : undefined}
+                  />
+                }
+                text="Like"
+                count={likeCount}
+                active={liked}
+                accent="rose"
+                onClick={onLike}
+              />
             ) : null}
           </footer>
+        ) : null}
+
+        {react || follow ? (
+          <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+            Like and follow are paid writes — each spends the per-event channel fee.
+          </p>
         ) : null}
       </div>
     </article>
@@ -208,7 +293,14 @@ const FollowButton: FC<AtomRenderProps> = ({ props, actions }) => {
 
 export const socialAtoms: Atom[] = [
   { id: 'profile-header', kinds: [0], Component: ProfileHeader },
-  { id: 'note-card', kinds: [1], Component: NoteCard },
+  {
+    id: 'note-card',
+    kinds: [1],
+    // reply (kind:1), react/like (kind:7) and follow (kind:3) all publish via
+    // the unsigned-publish tool; the runtime supplies the kind + tags per action.
+    writes: [{ name: 'toon_publish_unsigned' }],
+    Component: NoteCard,
+  },
   { id: 'reaction-bar', kinds: [7], Component: ReactionBar },
   {
     id: 'follow-button',
