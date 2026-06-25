@@ -1,5 +1,51 @@
 # @toon-protocol/views
 
+## 0.2.0
+
+### Minor Changes
+
+- bddc54d: Add branch 2 of the NIP-on-TOON render trust gradient: the A2UI declarative renderer (toon-meta#58).
+
+  `A2UIRenderer` renders an unknown Nostr kind at **medium trust** through the client's own audited A2UI "Basic" catalog — never provider code. Per the branch-2 binding convention, the resolved `kind:31036` renderer's `content` is the A2UI `surfaceUpdate` (the durable template) and the decoded TOON event is fed in as the `dataModelUpdate` (the bound data); component props bind via `{ path: "/…" }` JSON Pointers into the event-derived data model.
+
+  **Standard-catalog-only invariant:** `validateA2uiRenderer` is the medium-trust gate. Only the curated Basic catalog (`Text`, `Heading`, `Image`, `Icon`, `Row`, `Column`, `List`, `Card`, `Divider`) is rendered; any custom component **or** any client-defined behavior (`onClick`/`action`/validators/etc.) REFUSES and signals a drop to branch 3 (sandboxed mcp-ui) via the `A2uiGateRefuse.fallback` result — the renderer never renders a refused surface. The `["a2ui", "<version>"]` tag is checked; an unsupported version falls through gracefully (branch 1/4).
+
+  Consumes the branch-2 `A2uiDecision` from `@toon-protocol/client`'s `renderDispatch` (#88); does not change the dispatch contract. Branches 3/4 + renderer-swap defense remain #90/#91/#92.
+
+- 4f51ba1: Add branch 3 of the NIP-on-TOON render trust gradient: the sandboxed mcp-ui `AppRenderer` and the load-bearing **consent invariant** (toon-meta#58, toon-client#90). **Security-sensitive — see the PR for the threat model.**
+
+  **Branch 3 (low trust).** When an unknown kind resolves to a `kind:31036` renderer tagged `m: text/html;profile=mcp-app`, the raw widget HTML is extracted (`extractUiResource` in `@toon-protocol/client`) and rendered inside a hardened, sandboxed iframe via `@mcp-ui/client`'s `AppRenderer` (`SandboxedAppRenderer` in `@toon-protocol/views`). The iframe `sandbox` attribute is overridden to **`allow-scripts` only** — notably _without_ `allow-same-origin` — so the widget runs in an opaque origin and can never reach the host DOM, storage, or the consent surface. `assertSafeSandbox` is a defensive guard against re-enabling any escape token.
+
+  **Consent invariant.** A sandboxed widget may only _request_ an action; it may never _perform_ one or paint the authorization UI. Every `tools/call` the widget requests is classified by the trusted client (`classifyIntent`, default-deny: only a tiny read-only allowlist auto-forwards). Anything state-changing surfaces a host-rendered `ConsentPrompt` drawn **outside** the iframe, using only the client's own audited primitives. The prompt is **non-themeable by construction**: its sole input (`ConsentRequest`) carries no styling/markup field — only a tool name, plain (text-rendered, never `dangerouslySetInnerHTML`) arguments, and a client-fixed `trust: 'low'` that a widget cannot escalate. The action is performed only on an explicit user grant; a denial returns an error to the widget and performs nothing.
+
+  `@toon-protocol/client` gains the framework-agnostic consent module (`extractUiResource`, `classifyIntent`, `buildConsentRequest`, and the `UiResource`/`WidgetIntent`/`ConsentRequest`/`ConsentDecision` types); `@toon-protocol/views` gains the React `SandboxedAppRenderer` + `ConsentPrompt` and the sandbox-hardening helpers. Consumes the branch-3 `McpUiDecision` from `renderDispatch` (#88) and accepts the `fallback: 'mcp-ui'` hand-off from the branch-2 A2UI renderer (#89); the dispatch contract is unchanged. Renderer-swap defense and branch 4 remain #91/#92.
+
+- 25d0473: Wire the NIP-on-TOON render trust gradient into the live app render path (toon-meta#58). The gradient was previously dead code; it is now the real render path for every incoming event.
+
+  **`@toon-protocol/views` — the gradient is now the live event render path.**
+
+  - `buildKindRegistry()` (in `atoms/registry.ts`) builds the branch-1 `KindRegistry<Atom>` from the catalog's atom→kind metadata — the registry `guardedRenderDispatch` consults first. The generic fallback atom is deliberately not registered, so an unknown kind misses and falls through to the unknown-kind branches.
+  - A new renderer resolver (`render/resolve.tsx`): `useRenderDecision(event, bridge, registry, pins)` runs the gradient per event. Known kinds short-circuit to branch 1 (native) with no relay round-trip; for an unknown kind with a `ui` coordinate it fetches candidate `kind:31036` renderers over the bridge — `toon_query { kinds: [31036], '#d': [targetKind], authors: [eventAuthor] }` — and drives `guardedRenderDispatch` once they arrive (async loading state). `rendererQueryFilter(event)` is exported.
+  - `runtime.tsx`'s `EventAtom` (the kindAuto / feed render seam) now switches on the `RenderDecision`: `native` → the atom component (full trust, today's behaviour); `a2ui` → `A2UIRenderer` (medium, with generative fall-through on a gate refusal); `mcp-ui` → `SandboxedAppRenderer` with the host-rendered consent prompt (low); `generative` → `GenerativeFallbackRenderer` (low, deterministic generator; no model is wired in the app and publish-back stays off). Dispatch goes through `guardedRenderDispatch` (not bare `renderDispatch`), so author-binding + signature + anti-swap pinning apply; a session-scoped `RendererPinStore` is seeded at app scope. The explicit atom-by-id ViewSpec path (`NodeView`) is unchanged.
+
+  **`@toon-protocol/client` — browser-safe `./render` subpath.**
+
+  - Adds a `@toon-protocol/client/render` export (and a second tsup entry) exposing just the render trust gradient — pure dispatch + swap-defense + branch helpers that depend only on `@toon-protocol/core`'s `ui` helpers and `nostr-tools`. The views app bundle imports this subpath instead of the package root so the client's Node-only channel/transport code never enters the iframe bundle. No behaviour change to existing `@toon-protocol/client` consumers.
+
+  **`@toon-protocol/client-mcp` — reship the rebuilt bundle.**
+
+  - client-mcp copies `@toon-protocol/views`' prebuilt `dist/app/index.html` into its own `dist/app` at build time and serves it at `ui://toon/app`. A patch bump so a published client-mcp reships the rebuilt, gradient-wired app bundle.
+
+### Patch Changes
+
+- Updated dependencies [4f51ba1]
+- Updated dependencies [c22d655]
+- Updated dependencies [c8efd64]
+- Updated dependencies [93a712a]
+- Updated dependencies [5bbabfa]
+- Updated dependencies [25d0473]
+  - @toon-protocol/client@0.14.0
+
 ## 0.1.2
 
 ### Patch Changes
