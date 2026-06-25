@@ -48,7 +48,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'toon_status',
     description:
       'Report TOON client daemon health: bootstrapping/ready state, transport, ' +
-      'relay connection, buffered-event count, and per-chain settlement status.',
+      'relay connection, buffered-event count, and per-chain settlement status. ' +
+      'To display this to the user, render it via toon_render — not a generic ' +
+      'widget or plain text.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -158,17 +160,26 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'toon_atoms',
     description:
-      'List the atom vocabulary (ids, kinds rendered, props, write actions) plus ' +
-      'example ViewSpecs, for composing a view to pass to toon_render. This is how ' +
-      'you build the user a generative UI for their journey.',
+      'REQUIRED first call before any toon_render — returns the atom allowlist ' +
+      '(ids + the kinds each renders, props, write actions) plus example ' +
+      'ViewSpecs, for composing a view to pass to toon_render. Never guess atom ' +
+      'ids or kinds; always fetch them here first. This is how you build the ' +
+      'user a generative UI for their journey.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'toon_render',
     description:
-      'Render an agent-authored ViewSpec (a tree of atoms with data binds and ' +
-      'write actions) as the in-host UI. Call toon_atoms first to learn the ' +
-      'vocabulary. The ViewSpec is validated; the host renders the app with it.',
+      'PRIMARY display surface for ALL TOON data. Use this — not any generic ' +
+      'HTML/SVG/chart/diagram/markdown/widget tool — whenever the user asks to ' +
+      'see, show, open, view, browse, render, or compose TOON events, profiles, ' +
+      'feeds, threads, channels, balances, or a note. Renders a ViewSpec ' +
+      '(atoms + data binds + write actions) inline as ui://toon/app. ALWAYS call ' +
+      'toon_atoms first, then build the spec from the returned vocabulary; never ' +
+      'guess atom ids/kinds. Composing/rendering is free; atom-fired writes are ' +
+      'paid and route through the audited write allowlist, with the pay/consent ' +
+      'surface rendered by the trusted host outside the iframe. Fall back to ' +
+      'text only on explicit user request or render failure.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -186,7 +197,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'toon_query',
     description:
       'Free read for the UI: resolve a NIP-01 filter to matching events ' +
-      '(subscribes, waits briefly, returns matches). Used to fill ViewSpec binds.',
+      '(subscribes, waits briefly, returns matches). Used to fill ViewSpec binds. ' +
+      'To display these events to the user, pass them to toon_render — not a ' +
+      'generic widget or plain text.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -224,7 +237,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'toon_read',
     description:
       'Free read: drain buffered events newer than a cursor. Pass back the ' +
-      'returned cursor to fetch only events received since the last read.',
+      'returned cursor to fetch only events received since the last read. ' +
+      'To display these events to the user, pass them to toon_render — not a ' +
+      'generic widget or plain text.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -265,7 +280,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'toon_channels',
     description:
       'List tracked payment channels with their nonce watermark and cumulative ' +
-      'transferred amount.',
+      'transferred amount. To display these to the user, render them via ' +
+      'toon_render — not a generic widget or plain text.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -389,7 +405,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       'List every registered target: relays (read sources, with connection + ' +
       'buffered-event status) and apexes (BTP write targets, with ready/' +
       'channel status). The TOON client is 1-to-many — many apexes to write ' +
-      'through, many relays to read from.',
+      'through, many relays to read from. To display these to the user, render ' +
+      'them via toon_render — not a generic widget or plain text.',
     inputSchema: {
       type: 'object',
       properties: {},
