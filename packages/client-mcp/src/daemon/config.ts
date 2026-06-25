@@ -15,6 +15,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { loadKeystore } from '@toon-protocol/client';
 import { encodeEventToToon, decodeEventFromToon } from '@toon-protocol/core';
+import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import type { ToonClientConfig } from '@toon-protocol/client';
 import type { SettlementChain } from '../control-api.js';
 
@@ -125,6 +126,13 @@ export interface DaemonConfigFile {
   solanaChannel?: ToonClientConfig['solanaChannel'];
   /** Mina on-chain payment-channel params (required when `chain` is mina). */
   minaChannel?: ToonClientConfig['minaChannel'];
+  /**
+   * Ordered Arweave gateways (primary first) used to stamp uploaded-media URLs:
+   * the primary becomes the `imeta` `url`, the rest become `fallback` mirrors.
+   * Default: the shared `ARWEAVE_GATEWAYS` (ar.io → arweave.net → permagate.io).
+   * Env override: `TOON_CLIENT_ARWEAVE_GATEWAYS` (comma-separated).
+   */
+  arweaveGateways?: string[];
 }
 
 export interface ResolvedDaemonConfig {
@@ -157,6 +165,13 @@ export interface ResolvedDaemonConfig {
   /** Fully-built config for the `ToonClient` constructor. */
   toonClientConfig: ToonClientConfig;
   network?: string;
+  /**
+   * Ordered Arweave gateways for stamping uploaded-media URLs (primary first).
+   * Always populated by `resolveConfig` (default = shared `ARWEAVE_GATEWAYS`);
+   * optional only so manually-built configs (tests) may omit it — consumers
+   * fall back to the shared default when it is absent.
+   */
+  arweaveGateways?: string[];
 }
 
 /**
@@ -227,6 +242,16 @@ export function resolveMnemonic(file: DaemonConfigFile): string {
  *   TOON_CLIENT_RELAY_URL, TOON_CLIENT_HTTP_PORT, TOON_CLIENT_NETWORK,
  *   TOON_CLIENT_DESTINATION.
  */
+/** Parse a comma-separated env value into a trimmed, non-empty list (or undefined). */
+function parseCsvEnv(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const items = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return items.length ? items : undefined;
+}
+
 export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const mnemonic = resolveMnemonic(file);
 
@@ -263,6 +288,10 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     file.storeDestination ??
     destination;
   const feePerEvent = BigInt(file.feePerEvent ?? '1');
+  const arweaveGateways =
+    parseCsvEnv(process.env['TOON_CLIENT_ARWEAVE_GATEWAYS']) ??
+    file.arweaveGateways ??
+    [...ARWEAVE_GATEWAYS];
   const network = (process.env['TOON_CLIENT_NETWORK'] ?? file.network) as
     | ToonClientConfig['network']
     | undefined;
@@ -336,6 +365,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     apexChannelStorePath,
     toonClientConfig,
     network,
+    arweaveGateways,
   };
 }
 

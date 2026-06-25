@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { arweaveTxId, arweaveGatewayCandidates, ARWEAVE_GATEWAYS } from './arweave.js';
+import {
+  arweaveTxId,
+  arweaveUrls,
+  arweaveGatewayCandidates,
+  ARWEAVE_GATEWAYS,
+} from './gateways.js';
 
 /** A syntactically valid 43-char base64url Arweave tx id. */
 const TX = 'A'.repeat(40) + '_-z';
@@ -14,7 +19,6 @@ describe('arweaveTxId', () => {
   });
 
   it('does NOT decode a sandbox subdomain (case-sensitive id, lower-cased host)', () => {
-    // The path carries the canonical id; the lower-cased host would corrupt it.
     expect(arweaveTxId(`https://${TX}.ar-io.dev/`)).toBeNull();
   });
 
@@ -32,6 +36,30 @@ describe('arweaveTxId', () => {
 
   it('returns null for a non-URL string', () => {
     expect(arweaveTxId('not a url')).toBeNull();
+  });
+});
+
+describe('arweaveUrls', () => {
+  it('returns ar.io primary with the other gateways as fallbacks', () => {
+    const { url, fallbacks } = arweaveUrls(TX);
+    expect(url).toBe(`https://ar-io.dev/${TX}`);
+    expect(fallbacks).toEqual([
+      `https://arweave.net/${TX}`,
+      `https://permagate.io/${TX}`,
+    ]);
+  });
+
+  it('honors a custom gateway list (primary first)', () => {
+    const { url, fallbacks } = arweaveUrls(TX, [
+      'https://my.gw',
+      'https://backup.gw',
+    ]);
+    expect(url).toBe(`https://my.gw/${TX}`);
+    expect(fallbacks).toEqual([`https://backup.gw/${TX}`]);
+  });
+
+  it('falls back to the default list when given an empty override', () => {
+    expect(arweaveUrls(TX, []).url).toBe(`https://ar-io.dev/${TX}`);
   });
 });
 
@@ -56,5 +84,12 @@ describe('arweaveGatewayCandidates', () => {
       ...ARWEAVE_GATEWAYS.map((g) => `${g}/${TX}`),
       'https://mirror.example/x.png',
     ]);
+  });
+
+  it('honors a custom gateway list when expanding', () => {
+    const out = arweaveGatewayCandidates(`https://arweave.net/${TX}`, [], [
+      'https://my.gw',
+    ]);
+    expect(out).toEqual([`https://my.gw/${TX}`]);
   });
 });

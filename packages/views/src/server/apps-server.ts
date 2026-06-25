@@ -23,6 +23,7 @@ import {
   registerAppTool,
   RESOURCE_MIME_TYPE,
 } from '@modelcontextprotocol/ext-apps/server';
+import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import { ATOM_CATALOG, CATALOG_ATOM_IDS } from '../catalog.js';
 import { EXAMPLE_VIEWSPECS } from '../examples.js';
 import { validateViewSpec } from '../spec.js';
@@ -63,16 +64,11 @@ function errorResult(text: string): CallToolResult {
 
 /** Register the `ui://toon/app` resource + the generative-UI tools. */
 export function registerToonApps(server: McpServer, opts: RegisterToonAppsOptions): void {
-  // ar.io is the canonical media gateway (see client-runner ARWEAVE_GATEWAY);
-  // keep arweave.net so existing tx URLs still resolve.
-  const connect = opts.cspDomains?.connect ?? [
-    'https://ar-io.dev',
-    'https://arweave.net',
-  ];
-  const resource = opts.cspDomains?.resource ?? [
-    'https://ar-io.dev',
-    'https://arweave.net',
-  ];
+  // Default the sandboxed-app CSP to the full gateway preference list so media
+  // served from the primary (ar.io) and its fallbacks all load. A single
+  // gateway here would block the others the render path fails over to.
+  const connect = opts.cspDomains?.connect ?? [...ARWEAVE_GATEWAYS];
+  const resource = opts.cspDomains?.resource ?? [...ARWEAVE_GATEWAYS];
 
   registerAppResource(
     server,
