@@ -1,5 +1,71 @@
 # @toon-protocol/client
 
+## 0.14.0
+
+### Minor Changes
+
+- 4f51ba1: Add branch 3 of the NIP-on-TOON render trust gradient: the sandboxed mcp-ui `AppRenderer` and the load-bearing **consent invariant** (toon-meta#58, toon-client#90). **Security-sensitive — see the PR for the threat model.**
+
+  **Branch 3 (low trust).** When an unknown kind resolves to a `kind:31036` renderer tagged `m: text/html;profile=mcp-app`, the raw widget HTML is extracted (`extractUiResource` in `@toon-protocol/client`) and rendered inside a hardened, sandboxed iframe via `@mcp-ui/client`'s `AppRenderer` (`SandboxedAppRenderer` in `@toon-protocol/views`). The iframe `sandbox` attribute is overridden to **`allow-scripts` only** — notably _without_ `allow-same-origin` — so the widget runs in an opaque origin and can never reach the host DOM, storage, or the consent surface. `assertSafeSandbox` is a defensive guard against re-enabling any escape token.
+
+  **Consent invariant.** A sandboxed widget may only _request_ an action; it may never _perform_ one or paint the authorization UI. Every `tools/call` the widget requests is classified by the trusted client (`classifyIntent`, default-deny: only a tiny read-only allowlist auto-forwards). Anything state-changing surfaces a host-rendered `ConsentPrompt` drawn **outside** the iframe, using only the client's own audited primitives. The prompt is **non-themeable by construction**: its sole input (`ConsentRequest`) carries no styling/markup field — only a tool name, plain (text-rendered, never `dangerouslySetInnerHTML`) arguments, and a client-fixed `trust: 'low'` that a widget cannot escalate. The action is performed only on an explicit user grant; a denial returns an error to the widget and performs nothing.
+
+  `@toon-protocol/client` gains the framework-agnostic consent module (`extractUiResource`, `classifyIntent`, `buildConsentRequest`, and the `UiResource`/`WidgetIntent`/`ConsentRequest`/`ConsentDecision` types); `@toon-protocol/views` gains the React `SandboxedAppRenderer` + `ConsentPrompt` and the sandbox-hardening helpers. Consumes the branch-3 `McpUiDecision` from `renderDispatch` (#88) and accepts the `fallback: 'mcp-ui'` hand-off from the branch-2 A2UI renderer (#89); the dispatch contract is unchanged. Renderer-swap defense and branch 4 remain #91/#92.
+
+- c22d655: Add branch 4 of the NIP-on-TOON render trust gradient — the generative fallback + optional `kind:31036` publish-back (toon-meta#58, closes #92).
+
+  When a kind is unknown _and_ no resolvable `kind:31036` renderer exists, `GenerativeFallbackRenderer` produces a best-effort, low-trust rendering of the event's shape. The model call is abstracted behind an injectable `RendererGenerator` seam — the host wires its own provider/keys/prompt; this package imports no LLM SDK. A dependency-free `deterministicGenerator` is the default and falls in automatically if an injected model generator throws, so branch 4 always renders _something_.
+
+  Optional **publish-back** republishes the generated renderer as a `kind:31036` addressable event (`d` = target kind, `m` = renderer mimeType, coordinate `31036:<author-pubkey>:<targetKind>`) so the next client has a "known" renderer — branch 4 slowly feeds branch 1. Publish-back is **off by default** and a guarded capability: it only fires when the host passes `publish: { enabled: true, signer, publisher }`. The published renderer is marked curation-pending (`t=generative-fallback`); the namespacing/curation policy is an open epic question and is intentionally not built here.
+
+  Note: `buildUiCoordinate` (and the renderer kind / `ui` tag / coordinate helpers) are imported from `@toon-protocol/core@^1.6.0`, re-exported through `render/constants.ts`. No local mirror.
+
+- c8efd64: Adopt `@toon-protocol/core@^1.6.0` and wire `ui` → `kind:31036` renderer resolution (toon-meta#58).
+
+  The `UI_RENDERER_KIND` (31036) and `UI_TAG` (`ui`) constants mirrored locally in `src/render/constants.ts` for the dispatch skeleton (#88) are now re-exported from the published `@toon-protocol/core` instead; only the render-branch mime selectors (`MIME_A2UI`, `MIME_MCP_APP`), which core does not own, remain local.
+
+  New resolution seam (`src/render/resolveRenderer.ts`) — the piece `renderDispatch` deliberately left out — built on core's pure helpers (`getUiCoordinate` / `parseUiCoordinate` / `selectLatestAddressable`):
+
+  - `resolveUiCoordinate(event)` computes the renderer coordinate. Per the toon#36 decisions the renderer-author pubkey is the **event author**, so the `ui` tag may carry just the bare target kind; a full `31036:<pubkey>:<kind>` coordinate is also accepted but only when its pubkey equals the event author (no third-party renderers).
+  - `resolveUiRenderer(event, candidates)` filters the caller-supplied `kind:31036` candidates to that coordinate, picks the latest addressable one (NIP-33 latest-wins), and **re-verifies its signature** with `verifyEvent` before returning it — an unverified renderer is dropped and never reaches the dispatch.
+
+  The relay query that produces `candidates` stays the caller's responsibility, and `renderDispatch`'s contract is unchanged — resolution feeds it.
+
+- 93a712a: Add the kind-keyed render dispatch skeleton + branch-1 native-component registry for the NIP-on-TOON render trust gradient (toon-meta#58).
+
+  `renderDispatch(input, registry)` forks on one question — _do I know this kind?_ — and returns a `RenderDecision` naming the branch and trust tier: branch 1 (known kind → native component, full trust) is wired through the new generic `KindRegistry<C>` (`register`/`lookup`/`has`); branches 2 (A2UI), 3 (sandboxed mcp-ui) and 4 (generative fallback) are routed to clearly-marked decisions for the sibling tickets (#89/#90/#92) to implement. The `m` (mimeType) tag of a resolved `kind:31036` renderer selects the unknown-kind branch (`application/a2ui+json` → branch 2, `text/html;profile=mcp-app` → branch 3).
+
+  Note: the `UI_RENDERER_KIND`/`UI_TAG`/`UiCoordinate` helpers are mirrored locally until they ship in a published `@toon-protocol/core` (blocked on toon#36); the `ui`-tag → `kind:31036` resolution lives outside the dispatch, which consumes an already-resolved renderer.
+
+- 5bbabfa: Add the renderer-swap defense — a fail-closed security guard around render dispatch for the NIP-on-TOON render trust gradient (toon-client#91, toon-meta#58).
+
+  A `kind:31036` renderer is _addressable_: the coordinate `31036:<author-pubkey>:<targetKind>` can later resolve to a different event/`id`. Because the resolved renderer selects both the render strategy and the trust tier, a malicious 31036 that gets selected can attack the user. The new `verifyRendererTrust(...)` guard runs between renderer resolution and `renderDispatch`, and refuses (fails closed — the caller drops to native for known kinds, generative for unknown kinds) on any violation:
+
+  - **Author binding** — the resolved 31036's `pubkey` (and the `ui` coordinate's author segment) MUST equal the event author (the authoritative renderer author per toon#36); cross-author substitution is rejected.
+  - **Signature verification** — the 31036 signature is re-verified (`verifyEvent`) before it can select a strategy; tampered/unsigned renderers are rejected (and a throwing verifier fails closed).
+  - **Deterministic selection** — candidate revisions are collapsed with `selectLatestAddressable` (latest `created_at`, lowest-`id` tiebreak, NIP-01), so selection is not attacker-race-controllable.
+  - **Anti-swap pinning + downgrade detection** — the chosen renderer `id`/trust tier is pinned per coordinate in a `RendererPinStore`; a later differing `id` is a detected swap. A trust-lowering swap is refused; for high-trust (branch-1 known) kinds _any_ `id` change is refused and falls back to the native component. The pin store can be seeded from config to allowlist a high-trust renderer by `event.id`.
+
+  Adds `guardedRenderDispatch(...)` as the secure entry point that wires the guard around `renderDispatch` and never passes a suspect renderer through.
+
+  The `UiCoordinate` helpers (`getUiCoordinate` / `selectLatestAddressable` / `UiCoordinate`) are imported directly from `@toon-protocol/core@1.6.0` (the dep bump landed in #97, which also dropped the local `constants.ts` mirror). The guard shares those primitives with the `resolveUiRenderer` resolver (#97) — so the two agree bit-for-bit on coordinate selection and signature acceptance — and layers the anti-swap pin store plus granular fail-closed rejection reasons on top, rather than re-deriving resolution as a parallel copy.
+
+- 25d0473: Wire the NIP-on-TOON render trust gradient into the live app render path (toon-meta#58). The gradient was previously dead code; it is now the real render path for every incoming event.
+
+  **`@toon-protocol/views` — the gradient is now the live event render path.**
+
+  - `buildKindRegistry()` (in `atoms/registry.ts`) builds the branch-1 `KindRegistry<Atom>` from the catalog's atom→kind metadata — the registry `guardedRenderDispatch` consults first. The generic fallback atom is deliberately not registered, so an unknown kind misses and falls through to the unknown-kind branches.
+  - A new renderer resolver (`render/resolve.tsx`): `useRenderDecision(event, bridge, registry, pins)` runs the gradient per event. Known kinds short-circuit to branch 1 (native) with no relay round-trip; for an unknown kind with a `ui` coordinate it fetches candidate `kind:31036` renderers over the bridge — `toon_query { kinds: [31036], '#d': [targetKind], authors: [eventAuthor] }` — and drives `guardedRenderDispatch` once they arrive (async loading state). `rendererQueryFilter(event)` is exported.
+  - `runtime.tsx`'s `EventAtom` (the kindAuto / feed render seam) now switches on the `RenderDecision`: `native` → the atom component (full trust, today's behaviour); `a2ui` → `A2UIRenderer` (medium, with generative fall-through on a gate refusal); `mcp-ui` → `SandboxedAppRenderer` with the host-rendered consent prompt (low); `generative` → `GenerativeFallbackRenderer` (low, deterministic generator; no model is wired in the app and publish-back stays off). Dispatch goes through `guardedRenderDispatch` (not bare `renderDispatch`), so author-binding + signature + anti-swap pinning apply; a session-scoped `RendererPinStore` is seeded at app scope. The explicit atom-by-id ViewSpec path (`NodeView`) is unchanged.
+
+  **`@toon-protocol/client` — browser-safe `./render` subpath.**
+
+  - Adds a `@toon-protocol/client/render` export (and a second tsup entry) exposing just the render trust gradient — pure dispatch + swap-defense + branch helpers that depend only on `@toon-protocol/core`'s `ui` helpers and `nostr-tools`. The views app bundle imports this subpath instead of the package root so the client's Node-only channel/transport code never enters the iframe bundle. No behaviour change to existing `@toon-protocol/client` consumers.
+
+  **`@toon-protocol/client-mcp` — reship the rebuilt bundle.**
+
+  - client-mcp copies `@toon-protocol/views`' prebuilt `dist/app/index.html` into its own `dist/app` at build time and serves it at `ui://toon/app`. A patch bump so a published client-mcp reships the rebuilt, gradient-wired app bundle.
+
 ## 0.13.0
 
 ### Minor Changes
