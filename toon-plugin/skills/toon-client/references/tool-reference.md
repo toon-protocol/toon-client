@@ -35,6 +35,11 @@ free.
 
 ## Rendering (free to render; atom writes are paid)
 
+Rendering is the **default surface for display requests** (see/show/open/view/
+browse a feed, profile, channels, balances, swap): call `toon_atoms` then
+`toon_render` — do not reply with a text list unless the user asks for text or
+the host can't render.
+
 | Tool | Purpose | Key params | Paid? |
 |---|---|---|---|
 | `toon_atoms` | List the atom vocabulary (ids, kinds rendered, props, write actions) + example ViewSpecs. Call first to compose a view. | — | free |
