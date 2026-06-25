@@ -13,6 +13,8 @@
     { "query": "The toon tool says it is bootstrapping, what do I do?", "should_trigger": true },
     { "query": "How does pay-to-write work with payment channel claims on TOON?", "should_trigger": true },
     { "query": "How do I render the latest notes as a feed UI on TOON?", "should_trigger": true },
+    { "query": "Show me kind:1 events on TOON", "should_trigger": true },
+    { "query": "Open toon and show my feed", "should_trigger": true },
     { "query": "Use toon_atoms and toon_render to show me a TOON profile", "should_trigger": true },
     { "query": "How do I attach an image to a TOON post?", "should_trigger": true },
     { "query": "Upload a picture to Arweave and post it on TOON with toon_upload", "should_trigger": true },
@@ -105,6 +107,38 @@
         "Response calls toon_render with a ViewSpec of catalog atoms (e.g. note-card bound to a kind:1 query)",
         "Response notes the view renders as ui://toon/app in the host",
         "Response notes rendering is free while the writes its atoms fire are paid"
+      ]
+    },
+    {
+      "id": "render-first-show-events",
+      "prompt": "Show me kind:1 events.",
+      "expected_output": "This is a display request, so render it rather than replying with a text list. Call toon_atoms first to learn the vocabulary, then compose a ViewSpec (a stack with a note-card bound via a kind:1 query) and call toon_render so the host paints ui://toon/app. A one-line caption is fine, but the rendered view is the response — do not deliberate between text and rendering or dump the events as a prose/markdown list.",
+      "rubric": {
+        "correct": "Calls toon_atoms then toon_render with a kind:1-bound note-card ViewSpec; renders by default without offering a text list; at most a one-line caption.",
+        "acceptable": "Renders via toon_atoms + toon_render but also adds an unnecessary text summary of the events.",
+        "incorrect": "Replies with a text/markdown list of events, merely offers to render, or deliberates between text and rendering instead of rendering."
+      },
+      "assertions": [
+        "Response renders by default: calls toon_atoms then toon_render for this display request",
+        "Response does NOT reply with a plain-text or markdown list of the events",
+        "Response does not deliberate between rendering and text or merely offer to render",
+        "Response binds a catalog atom (e.g. note-card) to a kind:1 query rather than guessing atom ids"
+      ]
+    },
+    {
+      "id": "render-first-open-feed",
+      "prompt": "Open toon and show my feed.",
+      "expected_output": "Check toon_status, then treat this as a display request: call toon_atoms to learn the vocabulary and toon_render to paint a feed ViewSpec (e.g. a stack with a composer/pay-confirm plus note-cards bound to a kind:1 query) inline as ui://toon/app. Render by default; only fall back to a text list if the user asks for text or the host cannot render (and say so).",
+      "rubric": {
+        "correct": "Renders the feed via toon_atoms + toon_render by default; only falls back to text on explicit request or render failure, and says so when it does.",
+        "acceptable": "Renders via toon_atoms + toon_render but also re-lists the feed contents as text.",
+        "incorrect": "Returns the feed as a text list, only offers to render, or picks text over rendering for this display request."
+      },
+      "assertions": [
+        "Response renders the feed via toon_atoms + toon_render rather than returning a text list",
+        "Response treats see/show/open as a render-by-default display request",
+        "Response only falls back to text if the user asks for text or rendering is unavailable, and says so when falling back",
+        "Response calls toon_atoms before composing the ViewSpec (no guessed atom ids/kinds)"
       ]
     },
     {

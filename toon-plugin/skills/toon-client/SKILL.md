@@ -81,6 +81,35 @@ or share an npub). It never returns private keys. On devnet, `toon_fund_wallet`
 drips test funds (ETH/SOL/MINA + USDC) to your own address so you can open a
 channel and pay for writes — the usual "fund me first" step before publishing.
 
+## Rendering is the default surface
+
+**The generative UI is the product; a text dump is the fallback, not the
+default.** When the user asks to **see / show / open / browse / view / display**
+events, a profile, a feed, a thread, channels, balances, or a swap → **render it
+with `toon_atoms` → `toon_render`.** Do **not** reply with a text list of events,
+and do **not** deliberate between "render or describe in text" — for any display
+request, **rendering wins.** Examples that mean "render it": "show me kind:1
+events", "open toon", "I want a feed", "show my profile", "let me browse the
+channel", "view my balances". Render first; don't merely offer to.
+
+Rules of the road:
+
+- **Always call `toon_atoms` first** to get the real atom vocabulary (ids,
+  kinds, props, write actions) before composing a ViewSpec. Never guess or
+  brute-force atom ids or kinds — bind to what the catalog actually exposes.
+- **Then call `toon_render`** with a ViewSpec built from catalog atoms. The host
+  paints it inline as `ui://toon/app`. Composing and rendering are **free**.
+- **Fall back to text only** when the user *explicitly* asks for raw text/JSON,
+  or when rendering is unavailable/failed in the host — and when you fall back,
+  **say so** ("the host can't render here, so here's the text").
+- After rendering, a **one-line caption** is fine ("Here's your kind:1 feed"),
+  but the **rendered view is the primary response** — not a re-listing of its
+  contents in prose.
+
+See **Rendering & the agent UI** below for the ViewSpec grammar and atom
+catalog. This policy governs *display* requests; pure write requests ("publish a
+note") and one-shot lookups the user explicitly wants as text are unaffected.
+
 ## Publishing (paid)
 
 There are two write paths:
@@ -143,12 +172,15 @@ promptly if you expect high volume.
 
 TOON ships an in-host **generative UI**: the agent composes a **ViewSpec** (a
 tree of atoms with data binds and write actions) and the host renders it inline
-as `ui://toon/app`. Use this when the user wants to *see* a feed, profile,
-thread, forge, or swap panel rather than read raw JSON.
+as `ui://toon/app`. This is the **default response to any display request** —
+see **Rendering is the default surface** above for when to render (always, for
+see/show/open/view/browse) versus fall back to text (only on explicit text
+requests or render failure).
 
 1. `toon_atoms()` — list the atom vocabulary (ids, the kinds each atom renders,
    its props, and which write tools it can fire) plus ready-made example
-   ViewSpecs. Always call this first to learn the grammar.
+   ViewSpecs. **Always call this first** to learn the grammar — never guess atom
+   ids or kinds.
 2. Compose a `ViewSpec` — `{ title?, root: ViewNode }`, where a `ViewNode` is
    `{ atom, props?, children?, bind?, actions? }`. `bind` carries a NIP-01
    `query` (filled via `toon_query`) and an optional `kindAuto` flag (route each
@@ -295,9 +327,11 @@ should behave here, differently from a free Nostr relay:
   and economy — cost scales with encoded byte size. The same applies to
   rendered-UI actions and SPENDY atoms: a `media-uploader` or `swap-form` action
   spends just like a direct publish.
-- **Reads are free, so prefer reading first.** Use `toon_query` /
-  `toon_subscribe` / `toon_read` to check whether something already exists before
-  paying to publish it again.
+- **Reads are free, so read before you pay.** This is a *payment-economics* rule,
+  not a "describe it in text" rule: use `toon_query` / `toon_subscribe` /
+  `toon_read` to check whether something already exists before paying to publish
+  it again. When a read backs a display request, its results **fill a rendered
+  view's data binds** (`toon_render`) — they are not a substitute for rendering.
 - **The daemon holds the user's keys; the agent does not.** Treat addresses and
   channel balances as the user's financial state — report them faithfully, never
   invent them, and flag anything that looks like unexpected spend (a nonce
