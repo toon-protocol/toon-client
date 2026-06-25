@@ -3,7 +3,9 @@
   "version": "0.1.2",
   "description": "Shared TOON kind→atom registry, NIP parsers, ViewSpec composition runtime, and MCP-app iframe bundle. Consumed by rig and the toon-mcp apps surface.",
   "type": "module",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
