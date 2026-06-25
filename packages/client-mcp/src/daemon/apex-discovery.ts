@@ -178,7 +178,11 @@ function mapAnnouncement(
     chain: family,
     chainKey,
     // EVM chainKeys are `evm:<network>:<chainId>`; non-EVM carry no numeric id.
-    chainId: family === 'evm' ? Number(chainKey.split(':')[2] ?? 0) : 0,
+    // Tolerate the 2-part `evm:<chainId>` form some connectors advertise.
+    chainId:
+      family === 'evm'
+        ? Number(chainKey.split(':')[2] ?? chainKey.split(':')[1] ?? 0)
+        : 0,
     settlementAddress,
     ...(info.preferredTokens?.[chainKey]
       ? { tokenAddress: info.preferredTokens[chainKey] }
