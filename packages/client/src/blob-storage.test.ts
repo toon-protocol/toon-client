@@ -19,9 +19,25 @@ function mockClient(result: PublishEventResult): {
   return { client, publishEvent };
 }
 
-/** base64(utf8(txId)) — the FULFILL data contract for single-packet uploads. */
+/**
+ * LEGACY FULFILL data: bare `base64(utf8(txId))` (no HTTP envelope). Still
+ * supported via the non-HTTP fallback path.
+ */
 function fulfillData(txId: string): string {
   return Buffer.from(txId, 'utf-8').toString('base64');
+}
+
+/**
+ * HTTP-over-ILP FULFILL data: a full HTTP/1.1 response carrying the DVM's JSON
+ * body, base64-encoded (the shape `IlpSendResult.data` carries from the proxy).
+ */
+function httpFulfill(status: number, statusText: string, body: string): string {
+  const head =
+    `HTTP/1.1 ${status} ${statusText}\r\n` +
+    `content-type: application/json\r\n` +
+    `content-length: ${Buffer.byteLength(body, 'utf-8')}\r\n` +
+    `\r\n`;
+  return Buffer.from(head + body, 'utf-8').toString('base64');
 }
 
 describe('requestBlobStorage', () => {
@@ -170,5 +186,84 @@ describe('requestBlobStorage', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/not a valid Arweave tx ID/i);
+  });
+
+  // --- Bug 2: HTTP-over-ILP FULFILL envelope ---------------------------------
+
+  it('extracts txId from a 200 HTTP-over-ILP store FULFILL JSON body', async () => {
+    const body = JSON.stringify({
+      accept: true,
+      txId: TX_ID,
+      data: Buffer.from(TX_ID, 'utf-8').toString('base64'),
+      payer: '0xpayer',
+      amount: '189',
+      chain: 'arweave',
+    });
+    const { client } = mockClient({
+      success: true,
+      eventId: 'evt',
+      data: httpFulfill(200, 'OK', body),
+    });
+
+    const result = await requestBlobStorage(client, secretKey, {
+      blobData: new TextEncoder().encode('payload'),
+      bid: '70',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.txId).toBe(TX_ID);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('falls back to base64 `data` field when JSON body has no txId', async () => {
+    const body = JSON.stringify({
+      accept: true,
+      data: Buffer.from(TX_ID, 'utf-8').toString('base64'),
+    });
+    const { client } = mockClient({
+      success: true,
+      data: httpFulfill(200, 'OK', body),
+    });
+
+    const result = await requestBlobStorage(client, secretKey, {
+      blobData: new Uint8Array([1]),
+      bid: '10',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.txId).toBe(TX_ID);
+  });
+
+  it('errors on a non-2xx HTTP-over-ILP store FULFILL', async () => {
+    const { client } = mockClient({
+      success: true,
+      data: httpFulfill(404, 'Not Found', '404 Not Found'),
+    });
+
+    const result = await requestBlobStorage(client, secretKey, {
+      blobData: new Uint8Array([1]),
+      bid: '10',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/404/);
+    expect(result.txId).toBeUndefined();
+  });
+
+  it('errors on an accept:false store FULFILL', async () => {
+    const body = JSON.stringify({ accept: false, error: 'insufficient bid' });
+    const { client } = mockClient({
+      success: true,
+      data: httpFulfill(200, 'OK', body),
+    });
+
+    const result = await requestBlobStorage(client, secretKey, {
+      blobData: new Uint8Array([1]),
+      bid: '10',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/accept:false/i);
+    expect(result.error).toMatch(/insufficient bid/i);
   });
 });
