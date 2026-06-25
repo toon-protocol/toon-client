@@ -22,10 +22,8 @@ function variantsFor(event: NostrEvent): { variants: MediaVariant[]; video: bool
   return { variants: parseInlineMedia(event), video: false };
 }
 
-const MediaEmbed: FC<AtomRenderProps> = ({ events }) => {
-  const event = events[0];
-  if (!event) return null;
-  const { variants } = variantsFor(event);
+/** Renders a list of NIP-92 media variants (image → img, video → video). */
+export const InlineMediaList: FC<{ variants: MediaVariant[] }> = ({ variants }) => {
   if (variants.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">
@@ -44,6 +42,13 @@ const MediaEmbed: FC<AtomRenderProps> = ({ events }) => {
       )}
     </div>
   );
+};
+
+const MediaEmbed: FC<AtomRenderProps> = ({ events }) => {
+  const event = events[0];
+  if (!event) return null;
+  const { variants } = variantsFor(event);
+  return <InlineMediaList variants={variants} />;
 };
 
 const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
