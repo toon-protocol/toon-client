@@ -200,14 +200,26 @@ describe('daemon config', () => {
     ).toBe('https://env-faucet');
   });
 
-  it('publishDestination / storeDestination fall back to destination when unset', () => {
+  it('publishDestination / storeDestination are DERIVED from the .relay.store anchor when unset', () => {
     const cfg = resolveConfig({
       mnemonic: MNEMONIC,
       proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
       destination: 'g.proxy.relay.store',
     });
-    expect(cfg.publishDestination).toBe('g.proxy.relay.store');
-    expect(cfg.storeDestination).toBe('g.proxy.relay.store');
+    // The bare anchor would forward a /write to the store backend → 404; routes
+    // must split to the relay (publish) and store (upload) terminate addresses.
+    expect(cfg.publishDestination).toBe('g.proxy.relay');
+    expect(cfg.storeDestination).toBe('g.proxy.store');
+  });
+
+  it('route derivation falls back to the anchor for non-.relay.store destinations', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.test:3000/btp',
+      destination: 'g.custom.apex',
+    });
+    expect(cfg.publishDestination).toBe('g.custom.apex');
+    expect(cfg.storeDestination).toBe('g.custom.apex');
   });
 
   it('publishDestination / storeDestination use explicit file values', () => {
@@ -252,6 +264,9 @@ describe('daemon config', () => {
     });
     expect(cfg.httpPort).toBe(8787);
     expect(cfg.relayUrl).toBe('ws://localhost:7100');
+    // No file/env destination and an empty bundled genesis list → last-resort
+    // fallback. Once core ships a seeded genesis-peers.json this resolves to the
+    // seed apex's ILP anchor instead.
     expect(cfg.destination).toBe('g.townhouse.town');
     expect(cfg.feePerEvent).toBe(1n);
     expect(cfg.toonClientConfig.btpUrl).toBe('ws://apex.test:3000/btp');
