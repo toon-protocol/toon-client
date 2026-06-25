@@ -77,6 +77,11 @@ export {
 // Utilities
 export { withRetry, type RetryOptions } from './utils/index.js';
 export { buildStoreWriteEnvelope } from './utils/store-envelope.js';
+export {
+  parseFulfillHttp,
+  parseFulfillHttpBytes,
+  type ParsedFulfillHttp,
+} from './utils/fulfill-http.js';
 
 // Config validation (for advanced use cases)
 export {
@@ -158,17 +163,49 @@ export {
 } from './keys/index.js';
 
 // NIP-on-TOON render dispatch (render trust gradient: native / A2UI / mcp-ui /
-// generative). Branch 1 (native registry) is wired; branches 2/3/4 route to
-// marked decisions for sibling tickets (#89/#90/#92). See toon-meta#58.
+// generative). Branch 1 (native registry) is wired; branch 3 (#90) adds the
+// consent invariant; branches 2/4 route to marked decisions for sibling tickets
+// (#89/#92). See toon-meta#58.
 export {
   renderDispatch,
   resolveRendererMime,
+  resolveUiCoordinate,
+  resolveUiRenderer,
+  guardedRenderDispatch,
   KindRegistry,
   UI_RENDERER_KIND,
   UI_TAG,
   MIME_A2UI,
   MIME_MCP_APP,
+  parseUiCoordinate,
+  getUiCoordinate,
+  buildUiCoordinate,
+  selectLatestAddressable,
+  // Renderer-swap defense (toon-client#91).
+  verifyRendererTrust,
+  isTrustDowngrade,
+  RendererPinStore,
+  // Branch 3 consent invariant (#90).
+  extractUiResource,
+  classifyIntent,
+  buildConsentRequest,
+  type ResolvedCoordinate,
+  // Branch 4 — generative fallback + optional kind:31036 publish-back (#92).
+  GenerativeFallbackRenderer,
+  deterministicGenerator,
+  renderDeterministicHtml,
+  buildRendererEventTemplate,
+  publishBackCoordinate,
   type DispatchInput,
+  type GuardedDispatchInput,
+  type DispatchGuardInfo,
+  type UiCoordinate,
+  type SwapDecision,
+  type SwapApproval,
+  type SwapRejection,
+  type SwapRejectionReason,
+  type RendererPin,
+  type VerifyRendererInput,
   type RenderBranch,
   type RenderTrust,
   type RenderDecision,
@@ -176,4 +213,17 @@ export {
   type A2uiDecision,
   type McpUiDecision,
   type GenerativeDecision,
+  type UiResource,
+  type WidgetIntent,
+  type IntentClassification,
+  type ConsentRequest,
+  type ConsentDecision,
+  type GeneratedRenderer,
+  type GenerateContext,
+  type RendererGenerator,
+  type RendererSigner,
+  type RendererPublisher,
+  type PublishBackOptions,
+  type GenerativeFallbackOptions,
+  type GenerativeFallbackResult,
 } from './render/index.js';

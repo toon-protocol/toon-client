@@ -34,15 +34,56 @@ export type AtomAction = (
   runtimeArgs?: Record<string, unknown>
 ) => ActionOutcome | void | Promise<ActionOutcome | void>;
 
+/** Per-chain settlement readiness, mirrored from the daemon `toon_status`. */
+export interface AtomChainStatus {
+  chain: string;
+  ready: boolean;
+  detail?: string;
+}
+
 /**
- * The current pay-to-write status, as surfaced by the `toon_status` tool. Atoms
- * that show a fee (e.g. the pay-confirm receipt) read it via
- * {@link AtomRenderProps.readStatus} rather than hardcoding it.
+ * The current daemon + pay-to-write status, as surfaced by the `toon_status`
+ * tool. Atoms that show a fee (e.g. the pay-confirm receipt) read the
+ * `feePerEvent`/`settlementChain`/`asset` fields via
+ * {@link AtomRenderProps.readStatus} rather than hardcoding them; the richer
+ * fields below let the `client-status` dashboard render the whole daemon health
+ * snapshot (ready state, uptime, relay, transport, per-chain readiness,
+ * identity) from the same single read seam. All non-fee fields are optional so
+ * older render paths / minimal stubs keep working.
  */
 export interface AtomStatus {
   feePerEvent: string;
   settlementChain: string;
   asset?: string;
+  /** Daemon process uptime, ms. */
+  uptimeMs?: number;
+  /** True once a channel is open and the client can publish. */
+  ready?: boolean;
+  /** True while the BTP session / channel are still coming up. */
+  bootstrapping?: boolean;
+  /** Identity: Nostr pubkey (hex) + optional per-chain addresses. */
+  identity?: {
+    nostrPubkey?: string;
+    evmAddress?: string;
+    solanaAddress?: string;
+    minaAddress?: string;
+  };
+  /** Write transport (BTP) summary. */
+  transport?: {
+    type?: string;
+    btpUrl?: string;
+  };
+  /** Read-relay connection summary. */
+  relay?: {
+    url?: string;
+    connected?: boolean;
+    buffered?: number;
+    subscriptions?: string[];
+  };
+  /** Per-chain settlement readiness, when a network tier is configured. */
+  network?: AtomChainStatus[];
+  /** Last non-fatal bootstrap error, if any. */
+  lastError?: string;
 }
 
 export interface AtomRenderProps {

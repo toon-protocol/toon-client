@@ -44,6 +44,30 @@ describe('TOOL_DEFINITIONS', () => {
       expect(typeof t.description).toBe('string');
     }
   });
+
+  it('carries the render-first policy in descriptions for non-skill hosts', () => {
+    const byName = (n: string) =>
+      TOOL_DEFINITIONS.find((t) => t.name === n)!.description;
+
+    // toon_render claims the display surface and beats generic widgets.
+    expect(byName('toon_render')).toMatch(/PRIMARY display surface/);
+    expect(byName('toon_render')).toMatch(/HTML\/SVG\/chart/);
+    expect(byName('toon_render')).toMatch(/toon_atoms first/);
+
+    // toon_atoms is an imperative precursor.
+    expect(byName('toon_atoms')).toMatch(/REQUIRED first call before any toon_render/);
+
+    // Read/status tools nudge display routing through toon_render.
+    for (const n of [
+      'toon_status',
+      'toon_query',
+      'toon_channels',
+      'toon_targets',
+      'toon_read',
+    ]) {
+      expect(byName(n)).toMatch(/toon_render/);
+    }
+  });
 });
 
 describe('dispatchTool', () => {

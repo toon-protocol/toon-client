@@ -584,8 +584,21 @@ export class ClientRunner {
     destination: string
   ): ToonClientConfig {
     const base = this.config.toonClientConfig;
+    // A DISCOVERED apex (e.g. the store DVM at `wss://proxy.store…:443`) lives on
+    // a different connector than the default `proxyUrl`. In direct/HTTP transport
+    // every paid packet POSTs to `proxyUrl`, so without a per-apex override the
+    // discovered apex's packets go to the DEFAULT connector — which has no route
+    // to its ILP prefix (F02 "No route to destination"). Derive the apex's own
+    // HTTP `/ilp` base from its BTP url so its packets reach the right connector.
+    const derivedProxyUrl = btpUrl
+      .replace(/^wss:\/\//, 'https://')
+      .replace(/^ws:\/\//, 'http://')
+      .replace(/:443(\/|$)/, '$1')
+      .replace(/\/btp\/?$/, '')
+      .replace(/\/$/, '');
     return {
       ...base,
+      ...(derivedProxyUrl ? { proxyUrl: derivedProxyUrl } : {}),
       btpUrl,
       destinationAddress: destination,
       // Distinct nonce-watermark store per apex so parallel ChannelManagers in
@@ -972,10 +985,13 @@ export class ClientRunner {
       tags: this.buildMediaTags(kind, url, fallbacks, req),
       content: req.caption ?? '',
     });
+    // Step 1 (blob storage) goes through `req.btpUrl` — which may be a store/DVM
+    // apex (g.proxy.store) that only serves POST /store. The NIP-94 reference
+    // event is a normal Nostr write, so it must publish through a RELAY apex, not
+    // the DVM. Omit `btpUrl` so it routes via the default (relay) apex.
     const pub = await this.publish({
       event: signed,
       ...(req.fee ? { fee: req.fee } : {}),
-      ...(req.btpUrl ? { btpUrl: req.btpUrl } : {}),
     });
     return { ...pub, url, txId: upload.txId };
   }
@@ -1241,7 +1257,6 @@ export class InvalidPayloadError extends Error {
   }
 }
 
-/** Arweave gateway used to construct media URLs from uploaded blob tx ids. */
 /**
  * Ordered Arweave gateways for stamping published media URLs (primary first,
  * the rest emitted as `fallback` mirrors). Mirrors the read-side list in

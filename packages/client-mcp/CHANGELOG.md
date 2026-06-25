@@ -1,5 +1,107 @@
 # @toon-protocol/client-mcp
 
+## 0.5.3
+
+### Patch Changes
+
+- 68e1a59: Parse the HTTP-over-ILP response carried in an ILP FULFILL packet's `data` on the paid-write and blob-upload paths.
+
+  The deployed connector is a payment-proxy: an accepted ILP FULFILL only means the payment cleared — the FULFILL `data` carries the relay/DVM's verbatim HTTP/1.1 response, so a write can fail inside a successful FULFILL.
+
+  - **Publish (`ToonClient.publishEvent`):** previously reported `success` with a real `eventId` for ANY accepted FULFILL, even when the embedded HTTP status was `404 Not Found` and the event never persisted. It now parses the FULFILL envelope and fails the publish on a non-2xx status (no fake `eventId`).
+  - **Blob upload (`ToonClient.uploadBlob` / `requestBlobStorage`):** previously base64-decoded the WHOLE FULFILL data as a bare Arweave tx id, erroring on the real `HTTP/1.1 200 OK ... {"accept":true,"txId":"…"}` body. It now parses the HTTP envelope, JSON-decodes the body, and reads `txId` (falling back to base64-decoding `data`), failing on non-2xx or `accept:false`.
+
+  A shared `parseFulfillHttp` helper backs both paths and falls back to prior behavior for non-HTTP-enveloped FULFILLs (no regression for legacy/non-proxy relays). The MCP daemon's `upload-media` path now surfaces these upload failures instead of returning a fake tx id.
+
+## 0.5.2
+
+### Patch Changes
+
+- 9aef6b9: Redesign `note-card` as an X-style post with clear Like and Follow affordances.
+
+  - **Header row** now reads like an X post: avatar → display name (bold) ·
+    `@handle`/npub (muted, via MonoId) · "·" · relative timestamp, with a compact
+    **Follow** button (outline pill) on the right for the author.
+  - **Action bar** is an X-style left-aligned icon row: **Reply**
+    (speech-bubble) → `reply`; **Like** (lucide `Heart`, with the live reaction
+    count) → the existing `react` action publishing kind:7 `"+"` — the "React"
+    label is now surfaced as **Like**, and the heart fills + tints accent on an
+    optimistic toggle. Repost stays an icon-less no-op tracked in #103 (kind:6
+    publishing is out of scope here).
+  - **Follow** is a new action on `note-card`: it publishes a NIP-02 kind:3
+    follow list adding the author's pubkey, by passing `tags: [['p', author]]`
+    as a runtime arg that the runtime merges over the spec's static publish args
+    (mirrors `follow-button`). The button toggles to "Following" optimistically.
+  - Like and Follow are paid writes; a subtle footnote notes that each action
+    spends the per-event channel fee. No heavy pay-confirm is forced for a like.
+  - `note-card` now declares the `toon_publish_unsigned` write in both the React
+    registry and the catalog (so `toon_atoms` advertises it and the ViewSpec
+    validator allows reply/react/follow); description/propsSchema updated. Atom id
+    and registered kind (1) are unchanged; built on the existing shadcn/OKLCH
+    tokens + lucide-react with no new deps.
+
+  `client-mcp` reships the refreshed app bundle that includes the redesigned card.
+
+## 0.5.1
+
+### Patch Changes
+
+- f188433: Add a status dashboard + generic content atoms so the agent can render
+  non-event data (daemon status, write targets, balances, identity) instead of
+  falling back to plain text.
+
+  - New generic content primitives — `heading`, `text`, `stat`, `key-value`,
+    `badge` — props-driven (no event kinds), so any structured data composes from
+    the atom vocabulary.
+  - New `client-status` dashboard atom: reads live `toon_status` via the existing
+    `readStatus()` seam and renders ready/bootstrapping state, uptime, settlement
+    chain + fee, relay (url/connected/buffered/subscriptions), transport,
+    per-chain readiness, and identity (npub + chain addresses); handles the
+    loading/unavailable states gracefully.
+  - New example ViewSpecs (`client-status`, `info`) so the agent learns the
+    render-first pattern for non-event surfaces.
+
+  `client-mcp` ships a refreshed app bundle that includes the new atoms.
+
+## 0.5.0
+
+### Minor Changes
+
+- a0903d6: Move the render-first policy onto the MCP server itself so it reaches every host — including claude.ai chat, which never loads the Claude Code plugin skill and only sees tool descriptions + the server `instructions` field.
+
+  - `toon_render` description rewritten to claim the PRIMARY display surface for all TOON data, explicitly beating generic HTML/SVG/chart/widget tools, naming the trigger verbs (see/show/open/view/browse/render/compose), and mandating an atoms-first flow.
+  - Server `instructions` set on the `Server` options in `mcp.ts` (returned in the `initialize` result) with a condensed render-first policy.
+  - Read/status tools (`toon_status`, `toon_query`, `toon_channels`, `toon_targets`, `toon_read`) gained a one-line nudge to display results via `toon_render` rather than a generic widget or plain text.
+  - `toon_atoms` strengthened to an imperative precursor: REQUIRED first call before any `toon_render`; never guess atom ids/kinds.
+
+  Descriptions/instructions only — no tool behavior, params, handlers, or ViewSpec validation changed. Complements the Claude Code skill render-first policy (PR #110).
+
+## 0.4.2
+
+### Patch Changes
+
+- 1db36cb: Polished social feed + composer UI. NoteCard is now a real feed item — identity avatar (profile picture, else a deterministic gradient fallback with npub initials), display name (joined from kind:0 profile binds, else MonoId npub), a relative timestamp, the note body, inline media, and an engagement footer (Reply + React with live reaction counts) wired to the existing `reply`/`react` actions. The composer and pay-confirm atoms get a card surface with an auto-sizing textarea and a footer toolbar that surfaces a UTF-8 byte counter (TOON fees scale with encoded bytes); the pay-to-write flow keeps its idle→confirm→publishing→receipt phases, now restyled so the confirm step clearly shows fee + settlement chain + size and the receipt reads as a success state. Built on the existing shadcn/OKLCH tokens and lucide-react — no new deps; the atom contract, registered kinds, and inline-media rendering are unchanged. (client-mcp serves the refreshed app bundle.)
+
+## 0.4.1
+
+### Patch Changes
+
+- 25d0473: Wire the NIP-on-TOON render trust gradient into the live app render path (toon-meta#58). The gradient was previously dead code; it is now the real render path for every incoming event.
+
+  **`@toon-protocol/views` — the gradient is now the live event render path.**
+
+  - `buildKindRegistry()` (in `atoms/registry.ts`) builds the branch-1 `KindRegistry<Atom>` from the catalog's atom→kind metadata — the registry `guardedRenderDispatch` consults first. The generic fallback atom is deliberately not registered, so an unknown kind misses and falls through to the unknown-kind branches.
+  - A new renderer resolver (`render/resolve.tsx`): `useRenderDecision(event, bridge, registry, pins)` runs the gradient per event. Known kinds short-circuit to branch 1 (native) with no relay round-trip; for an unknown kind with a `ui` coordinate it fetches candidate `kind:31036` renderers over the bridge — `toon_query { kinds: [31036], '#d': [targetKind], authors: [eventAuthor] }` — and drives `guardedRenderDispatch` once they arrive (async loading state). `rendererQueryFilter(event)` is exported.
+  - `runtime.tsx`'s `EventAtom` (the kindAuto / feed render seam) now switches on the `RenderDecision`: `native` → the atom component (full trust, today's behaviour); `a2ui` → `A2UIRenderer` (medium, with generative fall-through on a gate refusal); `mcp-ui` → `SandboxedAppRenderer` with the host-rendered consent prompt (low); `generative` → `GenerativeFallbackRenderer` (low, deterministic generator; no model is wired in the app and publish-back stays off). Dispatch goes through `guardedRenderDispatch` (not bare `renderDispatch`), so author-binding + signature + anti-swap pinning apply; a session-scoped `RendererPinStore` is seeded at app scope. The explicit atom-by-id ViewSpec path (`NodeView`) is unchanged.
+
+  **`@toon-protocol/client` — browser-safe `./render` subpath.**
+
+  - Adds a `@toon-protocol/client/render` export (and a second tsup entry) exposing just the render trust gradient — pure dispatch + swap-defense + branch helpers that depend only on `@toon-protocol/core`'s `ui` helpers and `nostr-tools`. The views app bundle imports this subpath instead of the package root so the client's Node-only channel/transport code never enters the iframe bundle. No behaviour change to existing `@toon-protocol/client` consumers.
+
+  **`@toon-protocol/client-mcp` — reship the rebuilt bundle.**
+
+  - client-mcp copies `@toon-protocol/views`' prebuilt `dist/app/index.html` into its own `dist/app` at build time and serves it at `ui://toon/app`. A patch bump so a published client-mcp reships the rebuilt, gradient-wired app bundle.
+
 ## 0.4.0
 
 ### Minor Changes

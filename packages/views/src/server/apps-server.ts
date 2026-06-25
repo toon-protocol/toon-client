@@ -63,8 +63,16 @@ function errorResult(text: string): CallToolResult {
 
 /** Register the `ui://toon/app` resource + the generative-UI tools. */
 export function registerToonApps(server: McpServer, opts: RegisterToonAppsOptions): void {
-  const connect = opts.cspDomains?.connect ?? ['https://arweave.net'];
-  const resource = opts.cspDomains?.resource ?? ['https://arweave.net'];
+  // ar.io is the canonical media gateway (see client-runner ARWEAVE_GATEWAY);
+  // keep arweave.net so existing tx URLs still resolve.
+  const connect = opts.cspDomains?.connect ?? [
+    'https://ar-io.dev',
+    'https://arweave.net',
+  ];
+  const resource = opts.cspDomains?.resource ?? [
+    'https://ar-io.dev',
+    'https://arweave.net',
+  ];
 
   registerAppResource(
     server,

@@ -10,6 +10,7 @@ import type { NetworkFamilyStatus } from '@toon-protocol/core';
 import { validateConfig, applyDefaults, getNetworkStatus } from './config.js';
 import { toBase64 } from './utils/binary.js';
 import { buildStoreWriteEnvelope } from './utils/store-envelope.js';
+import { parseFulfillHttp } from './utils/fulfill-http.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import { ToonClientError } from './errors.js';
@@ -324,7 +325,13 @@ export class ToonClient {
         if (result.negotiatedChain && result.settlementAddress) {
           const chainType = result.negotiatedChain.split(':')[0] ?? 'evm';
           const parts = result.negotiatedChain.split(':');
-          const chainId = parts.length >= 3 ? parseInt(parts[2] ?? '0', 10) : 0;
+          // Accept 3-part `evm:{network}:{chainId}` and 2-part `evm:{chainId}`.
+          const chainId =
+            parts.length >= 3
+              ? parseInt(parts[2] ?? '0', 10)
+              : parts.length >= 2
+                ? parseInt(parts[1] ?? '0', 10)
+                : 0;
           const r = result as typeof result & {
             tokenAddress?: string;
             tokenNetwork?: string;
@@ -360,7 +367,11 @@ export class ToonClient {
             const peerAddr = peerInfo.settlementAddresses?.[matchedChain];
             const parts = matchedChain.split(':');
             const chainId =
-              parts.length >= 3 ? parseInt(parts[2] ?? '0', 10) : 0;
+              parts.length >= 3
+                ? parseInt(parts[2] ?? '0', 10)
+                : parts.length >= 2
+                  ? parseInt(parts[1] ?? '0', 10)
+                  : 0;
             if (peerAddr) {
               this.peerNegotiations.set(result.registeredPeerId, {
                 chain: matchedChain,
@@ -569,6 +580,27 @@ export class ToonClient {
           success: false,
           error: `Event rejected: ${response.code} - ${response.message}`,
         };
+      }
+
+      // The connector is a payment-proxy: an ACCEPTED ILP FULFILL only means
+      // the PAYMENT cleared, not that the relay STORE persisted the event. The
+      // FULFILL `data` carries the relay's verbatim HTTP/1.1 response, so a
+      // write can FAIL (e.g. `HTTP/1.1 404 Not Found`) inside a successful
+      // FULFILL. Parse the envelope and fail the publish on a non-2xx status so
+      // we never report a fake `eventId` for a write that did not persist.
+      //
+      // DEFENSIVE: if the FULFILL data is not HTTP-enveloped (legacy / non-proxy
+      // relays may return bare data), `isHttp` is false and we preserve the
+      // prior behavior (treat an accepted FULFILL as success).
+      if (response.data) {
+        const httpResult = parseFulfillHttp(response.data);
+        if (httpResult.isHttp && (httpResult.status < 200 || httpResult.status >= 300)) {
+          const detail = httpResult.body ? ` - ${httpResult.body}` : '';
+          return {
+            success: false,
+            error: `Write failed: relay returned HTTP ${httpResult.status} ${httpResult.statusText}`.trimEnd() + detail,
+          };
+        }
       }
 
       return {
@@ -952,7 +984,9 @@ export class ToonClient {
     | undefined {
     if (!negotiatedChain) return undefined;
     const parts = negotiatedChain.split(':');
-    const chainIdPart = parts.length >= 3 ? parts[2] : undefined;
+    // Accept 3-part `evm:{network}:{chainId}` and 2-part `evm:{chainId}`.
+    const chainIdPart =
+      parts.length >= 3 ? parts[2] : parts.length >= 2 ? parts[1] : undefined;
     const numericChainId =
       chainIdPart !== undefined ? parseInt(chainIdPart, 10) : NaN;
     if (isNaN(numericChainId)) return undefined;
