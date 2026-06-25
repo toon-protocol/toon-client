@@ -86,7 +86,7 @@ export const ATOM_CATALOG: AtomMeta[] = [
   {
     id: 'media-uploader',
     description: 'Upload media to Arweave then publish a media event. Spendy.',
-    writes: [{ name: 'toon_upload_media', spendy: true }],
+    writes: [{ name: 'toon_upload', spendy: true }],
     propsSchema: { label: 'string' },
   },
 

@@ -22,7 +22,7 @@ describe('TOOL_DEFINITIONS', () => {
         'toon_publish_unsigned',
         'toon_query',
         'toon_render',
-        'toon_upload_media',
+        'toon_upload',
         'toon_read',
         'toon_status',
         'toon_swap',

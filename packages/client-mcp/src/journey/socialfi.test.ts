@@ -184,7 +184,7 @@ describe('socialFiJourney', () => {
     await runJourney(socialFiJourney({ pubkey: TEST_PUBKEY }), client);
 
     // The actual upload is user-initiated via the panel action; the auto-call
-    // must never touch the spend-path toon_upload_media tool.
+    // must never touch the spend-path toon_upload tool.
     expect(uploadMedia).not.toHaveBeenCalled();
     expect(status).toHaveBeenCalledTimes(2); // step 1 (onboard) + step 5 (dvm-upload probe)
   });

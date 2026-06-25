@@ -65,7 +65,7 @@ describe('TOON apps MCP server (fake-backed)', () => {
         'toon_render',
         'toon_query',
         'toon_publish_unsigned',
-        'toon_upload_media',
+        'toon_upload',
         'toon_open_channel',
         'toon_swap',
         'toon_status',
@@ -132,9 +132,9 @@ describe('TOON apps MCP server (fake-backed)', () => {
     expect(after.some((e) => e.content === 'posted from the UI')).toBe(true);
   });
 
-  it('toon_upload_media uploads then publishes a referencing event', async () => {
+  it('toon_upload uploads then publishes a referencing event', async () => {
     const res = await client.callTool({
-      name: 'toon_upload_media',
+      name: 'toon_upload',
       arguments: { dataBase64: Buffer.from('img').toString('base64'), mime: 'image/png', kind: 20 },
     });
     const sc = structured(res);

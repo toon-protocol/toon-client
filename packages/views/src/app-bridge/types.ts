@@ -23,7 +23,7 @@ export interface ToolOutcome {
 export interface ViewBridge {
   /**
    * Invoke a server tool over the host bridge. Reads (`toon_read`) are free;
-   * writes (`toon_publish_unsigned`, `toon_upload_media`) are gated host-side
+   * writes (`toon_publish_unsigned`, `toon_upload`) are gated host-side
    * (server-raised elicitation for spendy actions).
    */
   callTool(name: string, args: Record<string, unknown>): Promise<ToolOutcome>;

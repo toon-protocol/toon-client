@@ -168,7 +168,7 @@ describe('ViewSpecRenderer', () => {
           root: {
             atom: 'media-uploader',
             actions: {
-              upload: { tool: 'toon_upload_media', args: { kind: 20 }, spendy: true },
+              upload: { tool: 'toon_upload', args: { kind: 20 }, spendy: true },
             },
           },
         }}
@@ -184,7 +184,7 @@ describe('ViewSpecRenderer', () => {
     expect(screen.queryByText(/uploaded successfully/i)).toBeNull();
   });
 
-  it('MediaUploader picks a file, base64-encodes it, and fires toon_upload_media', async () => {
+  it('MediaUploader picks a file, base64-encodes it, and fires toon_upload', async () => {
     const { bridge, calls } = mockBridge([], async () => true);
     const { container } = render(
       <ViewSpecRenderer
@@ -193,7 +193,7 @@ describe('ViewSpecRenderer', () => {
           root: {
             atom: 'media-uploader',
             actions: {
-              upload: { tool: 'toon_upload_media', args: { kind: 20 }, spendy: true },
+              upload: { tool: 'toon_upload', args: { kind: 20 }, spendy: true },
             },
           },
         }}
@@ -208,10 +208,10 @@ describe('ViewSpecRenderer', () => {
     fireEvent.change(inputEl);
 
     await waitFor(() => {
-      expect(calls.find((c) => c.name === 'toon_upload_media')).toBeTruthy();
+      expect(calls.find((c) => c.name === 'toon_upload')).toBeTruthy();
     });
 
-    const call = calls.find((c) => c.name === 'toon_upload_media');
+    const call = calls.find((c) => c.name === 'toon_upload');
     expect(typeof call?.args['dataBase64']).toBe('string');
     expect(call?.args['mime']).toBe('image/png');
     // base64 of 'img-content'

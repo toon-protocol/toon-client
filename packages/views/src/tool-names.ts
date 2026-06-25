@@ -14,7 +14,7 @@ export const RENDER_TOOL = 'toon_render';
 /** Pay-to-write: daemon signs + publishes the supplied event shell. */
 export const PUBLISH_TOOL = 'toon_publish_unsigned';
 /** Spendy: upload media to Arweave then publish a referencing event. */
-export const UPLOAD_TOOL = 'toon_upload_media';
+export const UPLOAD_TOOL = 'toon_upload';
 /** Pre-open a payment channel (daemon signs/settles; UI never holds keys). */
 export const OPEN_CHANNEL_TOOL = 'toon_open_channel';
 /** Spendy: run a cross-asset swap; daemon signs the source claim, returns a target claim. */

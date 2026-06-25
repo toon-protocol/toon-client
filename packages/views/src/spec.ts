@@ -21,7 +21,7 @@ export interface ViewBind {
   kindAuto?: boolean;
 }
 
-/** Binds a UI affordance to a write tool call (always `toon_publish_unsigned` / `toon_upload_media`). */
+/** Binds a UI affordance to a write tool call (always `toon_publish_unsigned` / `toon_upload`). */
 export interface WriteActionRef {
   /** Tool name to invoke. */
   tool: string;
