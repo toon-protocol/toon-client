@@ -8,15 +8,11 @@
  * No Node.js APIs — browser-compatible only.
  */
 
-/** Ordered list of Arweave gateways to try (primary first, then fallbacks). */
-export const ARWEAVE_GATEWAYS = [
-  'https://ar-io.dev',
-  'https://arweave.net',
-  'https://permagate.io',
-];
-
-/** Timeout for individual Arweave fetch requests in milliseconds. */
-export const ARWEAVE_FETCH_TIMEOUT_MS = 15000;
+// Gateway list + fetch timeout are owned by @toon-protocol/arweave (the single
+// source of truth shared with views + client-mcp); re-exported here so existing
+// rig importers keep their `../arweave-client.js` path.
+export { ARWEAVE_GATEWAYS, ARWEAVE_FETCH_TIMEOUT_MS } from '@toon-protocol/arweave';
+import { ARWEAVE_GATEWAYS, ARWEAVE_FETCH_TIMEOUT_MS } from '@toon-protocol/arweave';
 
 /** Maximum number of entries in the SHA-to-txId cache to prevent unbounded memory growth. */
 const SHA_CACHE_MAX_SIZE = 10000;

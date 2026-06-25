@@ -1,7 +1,7 @@
 /** Media atoms — NIP-68/71 posts + NIP-94 files (read), and the spendy uploader. */
 import { useRef, useState, type FC } from 'react';
 import { type MediaVariant, parseMediaPost, parseFileMetadata, parseInlineMedia } from '../parsers/media.js';
-import { arweaveGatewayCandidates } from '../parsers/arweave.js';
+import { arweaveGatewayCandidates } from '@toon-protocol/arweave';
 import { type NostrEvent } from '../types.js';
 import { type Atom, type AtomRenderProps } from './types.js';
 

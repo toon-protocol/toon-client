@@ -35,6 +35,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@toon-protocol/arweave": "workspace:*",
     "@fontsource-variable/geist": "^5.2.9",
     "@mcp-ui/client": "^7.1.1",
     "@modelcontextprotocol/ext-apps": "^1.7.4",

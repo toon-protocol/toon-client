@@ -45,6 +45,7 @@ export default defineConfig({
   // runtime version-skew between what the inlined client expects and whatever
   // the consumer's tree resolves (same rationale as townhouse's tsup config).
   noExternal: [
+    '@toon-protocol/arweave',
     '@toon-protocol/client',
     '@toon-protocol/core',
     // The swap path (toon_swap → streamSwap) is inlined; the arweave/turbo-sdk

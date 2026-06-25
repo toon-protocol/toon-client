@@ -426,6 +426,38 @@ describe('ClientRunner', () => {
     expect(imeta).toContain('fallback https://permagate.io/tx-abc');
   });
 
+  it('uploadMedia honors a custom config.arweaveGateways list', async () => {
+    const c = new FakeClient();
+    const r = new ClientRunner({
+      config: makeConfig({
+        apex: {
+          destination: 'g.townhouse.town',
+          peerId: 'town',
+          chain: 'evm',
+          chainKey: 'evm:base:84532',
+          chainId: 84532,
+          settlementAddress: '0xapex',
+          tokenAddress: '0xusdc',
+          tokenNetwork: '0xtn',
+        },
+        arweaveGateways: ['https://my.gw', 'https://backup.gw'],
+      }),
+      createClient: () => c,
+      createRelay: fakeRelay,
+    });
+    await r.bootstrap();
+    const res = await r.uploadMedia({
+      dataBase64: Buffer.from('x').toString('base64'),
+      mime: 'image/png',
+      kind: 20,
+    });
+    expect(res.url).toBe('https://my.gw/tx-abc');
+    const imeta = c.lastSigned?.tags?.[0] ?? [];
+    expect(imeta[1]).toBe('url https://my.gw/tx-abc');
+    expect(imeta).toContain('fallback https://backup.gw/tx-abc');
+    expect(imeta).not.toContain('fallback https://arweave.net/tx-abc');
+  });
+
   it('uploadMedia surfaces a DVM upload failure as PublishRejectedError', async () => {
     await runner.bootstrap();
     client.uploadImpl = async () => ({ success: false, error: 'F99 dvm down' });
