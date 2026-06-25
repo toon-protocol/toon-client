@@ -142,7 +142,7 @@ describe('DaemonAppBackend (daemon-backed apps surface)', () => {
         'toon_render',
         'toon_query',
         'toon_publish_unsigned',
-        'toon_upload_media',
+        'toon_upload',
       ])
     );
   });
@@ -186,9 +186,9 @@ describe('DaemonAppBackend (daemon-backed apps surface)', () => {
     expect(after.some((e) => e.content === 'posted from the UI')).toBe(true);
   });
 
-  it('toon_upload_media delegates to control.uploadMedia and maps UploadResult', async () => {
+  it('toon_upload delegates to control.uploadMedia and maps UploadResult', async () => {
     const res = await client.callTool({
-      name: 'toon_upload_media',
+      name: 'toon_upload',
       arguments: { dataBase64: Buffer.from('img').toString('base64'), mime: 'image/png', kind: 20 },
     });
     const sc = structured(res);

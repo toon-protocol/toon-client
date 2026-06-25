@@ -56,7 +56,7 @@ profile are present. Report the published event ids.`,
     when: 'full',
     tools: [...READ, T('upload_media')],
     goal: `Store leg. Upload a TINY media blob (a few bytes, e.g. a small text or 1x1 PNG
-as base64) via toon_upload_media, then read it back and CONFIRM an Arweave URL / tx id was
+as base64) via toon_upload, then read it back and CONFIRM an Arweave URL / tx id was
 returned and the media event is retrievable. Report the URL/tx.`,
   },
   {

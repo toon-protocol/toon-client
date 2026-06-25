@@ -3,7 +3,7 @@ import { validateViewSpec, type ViewSpec } from './spec.js';
 import { buildFeedFilter } from './filters.js';
 
 const ATOMS = ['stack', 'note-card', 'profile-header', 'generic-event'];
-const TOOLS = ['toon_publish_unsigned', 'toon_upload_media'];
+const TOOLS = ['toon_publish_unsigned', 'toon_upload'];
 
 function validate(input: unknown) {
   return validateViewSpec(input, { allowedAtoms: ATOMS, allowedTools: TOOLS });

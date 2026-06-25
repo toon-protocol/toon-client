@@ -132,12 +132,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: 'toon_upload_media',
+    name: 'toon_upload',
     description:
-      'Pay-to-write media (SPENDY, two-step): upload base64 bytes to Arweave via ' +
-      'the kind:5094 blob-storage DVM, then sign+publish a media event ' +
-      '(default kind:1063 NIP-94; 20=picture, 21/22=video, 1=note w/ NIP-92 imeta) ' +
-      'referencing the resulting Arweave URL. Single-packet only.',
+      'Pay-to-write upload (SPENDY, two-step): upload base64 bytes of ANY blob to ' +
+      'Arweave via the kind:5094 store/DVM (POST /store through the connector), then ' +
+      'sign+publish an event referencing the resulting Arweave URL. The reference ' +
+      'event kind defaults to 1063 (NIP-94 media; 20=picture, 21/22=video, 1=note w/ ' +
+      'NIP-92 imeta) — set `kind` to suit any blob type. Single-packet only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -537,7 +538,7 @@ export async function dispatchTool(
         return ok(
           await client.publishUnsigned(args as unknown as PublishUnsignedRequest)
         );
-      case 'toon_upload_media':
+      case 'toon_upload':
         return ok(
           await client.uploadMedia(args as unknown as UploadMediaRequest)
         );

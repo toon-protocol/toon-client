@@ -142,7 +142,7 @@ export const mediaAtoms: Atom[] = [
   { id: 'media-embed', kinds: [20, 21, 22, 1063], Component: MediaEmbed },
   {
     id: 'media-uploader',
-    writes: [{ name: 'toon_upload_media', spendy: true }],
+    writes: [{ name: 'toon_upload', spendy: true }],
     Component: MediaUploader,
   },
 ];

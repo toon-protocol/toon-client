@@ -8,7 +8,7 @@
  *      result, and the tool's `_meta.ui.resourceUri` makes the host render the
  *      app bundle with it)
  *   3. iframe → `toon_query(filter)`  (free reads, fed into atoms)
- *   4. iframe → `toon_publish_unsigned` / `toon_upload_media`  (writes)
+ *   4. iframe → `toon_publish_unsigned` / `toon_upload`  (writes)
  *   5. iframe → updateModelContext → agent composes the next ViewSpec
  *
  * ViewSpecs are model-authored → validated here (server side) before they are
@@ -176,7 +176,7 @@ export function registerToonApps(server: McpServer, opts: RegisterToonAppsOption
     }
   );
 
-  // toon_upload_media — spendy two-step write (upload → publish referencing it).
+  // toon_upload — spendy two-step write (upload → publish referencing it).
   server.registerTool(
     UPLOAD_TOOL,
     {

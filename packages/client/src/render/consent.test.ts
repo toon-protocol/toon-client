@@ -78,7 +78,7 @@ describe('classifyIntent — the consent gate (default-deny)', () => {
     expect(classifyIntent(intent('toon_publish'))).toBe('requires-consent');
     expect(classifyIntent(intent('toon_swap'))).toBe('requires-consent');
     expect(classifyIntent(intent('toon_open_channel'))).toBe('requires-consent');
-    expect(classifyIntent(intent('toon_upload_media'))).toBe('requires-consent');
+    expect(classifyIntent(intent('toon_upload'))).toBe('requires-consent');
   });
 
   it('default-denies an unknown / spoofed tool name', () => {
