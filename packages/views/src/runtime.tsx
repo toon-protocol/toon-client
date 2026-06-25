@@ -33,7 +33,7 @@ import { useRenderDecision } from './render/resolve.js';
 import { A2UIRenderer } from './a2ui/A2UIRenderer.js';
 import { SandboxedAppRenderer } from './mcp-ui/SandboxedAppRenderer.js';
 import { DEFAULT_MCP_UI_SANDBOX_URL } from './mcp-ui/sandbox.js';
-import { QUERY_TOOL, STATUS_TOOL, WRITE_TOOLS } from './tool-names.js';
+import { PUBLISH_TOOL, QUERY_TOOL, STATUS_TOOL, WRITE_TOOLS } from './tool-names.js';
 
 /**
  * Session-scoped render-gradient state. Built once per bundle load:
@@ -79,55 +79,125 @@ function useBind(bind: ViewBind | undefined, bridge: ViewBridge): NostrEvent[] {
   return events;
 }
 
+/**
+ * Wire a single write action to the bridge: a callable that merges runtime args
+ * over the static base args, runs the spendy confirm gate when asked, fires the
+ * tool, notifies the model, and projects the result into an {@link ActionOutcome}
+ * (carrying the published `eventId`). Shared by the explicit-ViewSpec path
+ * ({@link buildActions}) and the kindAuto default-engagement path
+ * ({@link buildDefaultEventActions}) so both behave identically.
+ */
+function wireAction(
+  name: string,
+  tool: string,
+  baseArgs: Record<string, unknown>,
+  bridge: ViewBridge,
+  opts: { spendy?: boolean; confirmLabel?: string } = {}
+): AtomAction {
+  return async (runtimeArgs): Promise<ActionOutcome> => {
+    const args: Record<string, unknown> = { ...baseArgs, ...(runtimeArgs ?? {}) };
+    if (opts.spendy) {
+      const label = opts.confirmLabel ?? 'This action spends to publish. Continue?';
+      // Fallback is browser-only; auto-approves in Worker/SSR environments where window is absent.
+      const confirmFn =
+        bridge.confirm ??
+        ((msg: string) =>
+          Promise.resolve(typeof window !== 'undefined' ? !!window.confirm(msg) : true));
+      const ok = await confirmFn(label);
+      if (!ok) {
+        bridge.notifyModel(`Action "${name}" cancelled.`);
+        return { ok: false, error: 'cancelled' };
+      }
+      args['spendy'] = true;
+    }
+    const res = await bridge.callTool(tool, args);
+    bridge.notifyModel(
+      res.ok ? `Action "${name}" completed.` : `Action "${name}" failed: ${res.error ?? 'unknown'}`
+    );
+    // Surface the real published id so atoms can render an accurate receipt.
+    // The publish/upload tools return `{ eventId, … }` as `structuredContent`,
+    // which the bridge carries on `ToolOutcome.data`.
+    const eventId =
+      res.data && typeof res.data === 'object' && 'eventId' in res.data
+        ? String((res.data as { eventId: unknown }).eventId)
+        : undefined;
+    return {
+      ok: res.ok,
+      ...(eventId ? { eventId } : {}),
+      ...(res.data !== undefined ? { data: res.data } : {}),
+      ...(res.error ? { error: res.error } : {}),
+    };
+  };
+}
+
 function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAction> {
   const actions: Record<string, AtomAction> = {};
   for (const [name, ref] of Object.entries(node.actions ?? {})) {
-    actions[name] = async (runtimeArgs): Promise<ActionOutcome> => {
-      const args: Record<string, unknown> = { ...(ref.args ?? {}), ...(runtimeArgs ?? {}) };
-      if (ref.spendy) {
-        const label = ref.confirmLabel ?? 'This action spends to publish. Continue?';
-        // Fallback is browser-only; auto-approves in Worker/SSR environments where window is absent.
-        const confirmFn =
-          bridge.confirm ??
-          ((msg: string) =>
-            Promise.resolve(typeof window !== 'undefined' ? !!window.confirm(msg) : true));
-        const ok = await confirmFn(label);
-        if (!ok) {
-          bridge.notifyModel(`Action "${name}" cancelled.`);
-          return { ok: false, error: 'cancelled' };
-        }
-        args['spendy'] = true;
-      }
-      const res = await bridge.callTool(ref.tool, args);
-      bridge.notifyModel(
-        res.ok ? `Action "${name}" completed.` : `Action "${name}" failed: ${res.error ?? 'unknown'}`
-      );
-      // Surface the real published id so atoms can render an accurate receipt.
-      // The publish/upload tools return `{ eventId, … }` as `structuredContent`,
-      // which the bridge carries on `ToolOutcome.data`.
-      const eventId =
-        res.data && typeof res.data === 'object' && 'eventId' in res.data
-          ? String((res.data as { eventId: unknown }).eventId)
-          : undefined;
-      return {
-        ok: res.ok,
-        ...(eventId ? { eventId } : {}),
-        ...(res.data !== undefined ? { data: res.data } : {}),
-        ...(res.error ? { error: res.error } : {}),
-      };
-    };
+    const opts: { spendy?: boolean; confirmLabel?: string } = {};
+    if (ref.spendy !== undefined) opts.spendy = ref.spendy;
+    if (ref.confirmLabel !== undefined) opts.confirmLabel = ref.confirmLabel;
+    actions[name] = wireAction(name, ref.tool, ref.args ?? {}, bridge, opts);
   }
   return actions;
+}
+
+/**
+ * Default engagement actions for an event auto-rendered in a kindAuto feed,
+ * where there is no ViewSpec node to declare them. We derive the correct NIP
+ * tags from the event itself so a feed card is interactive out of the box:
+ *
+ *   - `react` (NIP-25 kind:7 Like) → `+` reacting to `['e', id] ['p', author]`
+ *   - `follow` (NIP-02 kind:3)     → add `['p', author]` (daemon merges the
+ *                                     pubkey into the existing contact list)
+ *   - `reply`  (NIP-01 kind:1)     → reply tagged `['e', id, '', 'reply']
+ *                                     ['p', author]`; the card supplies the body
+ *                                     text as a runtime arg.
+ *
+ * These mirror the args an agent would write into a ViewSpec, so the atom fires
+ * the same actions whether it was hand-composed or auto-rendered. The atom still
+ * gates on which keys exist, so kinds without an engagement UI just ignore them.
+ */
+function buildDefaultEventActions(
+  event: NostrEvent,
+  bridge: ViewBridge
+): Record<string, AtomAction> {
+  const author = event.pubkey;
+  return {
+    react: wireAction(
+      'react',
+      PUBLISH_TOOL,
+      { kind: 7, content: '+', tags: [['e', event.id], ['p', author]] },
+      bridge
+    ),
+    follow: wireAction(
+      'follow',
+      PUBLISH_TOOL,
+      { kind: 3, tags: [['p', author]] },
+      bridge
+    ),
+    reply: wireAction(
+      'reply',
+      PUBLISH_TOOL,
+      { kind: 1, tags: [['e', event.id, '', 'reply'], ['p', author]] },
+      bridge
+    ),
+  };
 }
 
 /** Render an event with a resolved branch-1 native atom (full trust). */
 function NativeEvent({ atom, event, bridge }: { atom: Atom; event: NostrEvent; bridge: ViewBridge }): ReactNode {
   const Component = atom.Component;
+  // kindAuto feeds have no ViewSpec node, so the atom would otherwise get no
+  // actions and render read-only. Supply event-derived default engagement
+  // actions (Like/Follow/Reply) so feed cards are interactive out of the box;
+  // the atom self-gates on which keys it uses, so kinds without an engagement UI
+  // simply ignore them.
+  const actions = useMemo(() => buildDefaultEventActions(event, bridge), [event, bridge]);
   return (
     <Component
       events={[event]}
       props={{}}
-      actions={{}}
+      actions={actions}
       renderEvent={(e) => <EventAtom key={e.id} event={e} bridge={bridge} />}
     >
       {null}

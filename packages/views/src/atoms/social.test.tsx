@@ -145,21 +145,38 @@ describe('NoteCard — feed presentation', () => {
     vi.restoreAllMocks();
   });
 
-  it('wires Reply + Like (heart) to the existing action names with the targeted ids', () => {
-    const reply = vi.fn();
+  it('fires the Like (heart) action with the reaction content', () => {
     const react = vi.fn();
     render(
       <NoteCard
         {...defaultProps}
-        actions={{ reply, react }}
+        actions={{ react }}
         events={[evt({ kind: 1, id: 'note-9', content: 'react to me' })]}
       />
     );
-    fireEvent.click(screen.getByRole('button', { name: /reply/i }));
     fireEvent.click(screen.getByRole('button', { name: /like this note/i }));
-    expect(reply).toHaveBeenCalledWith({ parentId: 'note-9' });
-    // "React" is surfaced to the user as "Like" but still fires the `react` action.
+    // "React" is surfaced to the user as "Like" but still fires the `react` action;
+    // the targeted note's NIP-25 e/p tags come from the runtime's base args.
     expect(react).toHaveBeenCalledWith({ content: '+' });
+  });
+
+  it('Reply opens an inline composer and publishes the typed reply body', () => {
+    const reply = vi.fn();
+    render(
+      <NoteCard
+        {...defaultProps}
+        actions={{ reply }}
+        events={[evt({ kind: 1, id: 'note-9', pubkey: 'author-pk', content: 'reply to me' })]}
+      />
+    );
+    // The Reply button toggles the composer rather than publishing an empty note.
+    expect(screen.queryByLabelText('Reply text')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /reply to this note/i }));
+    const box = screen.getByLabelText('Reply text');
+    fireEvent.change(box, { target: { value: 'nice post' } });
+    fireEvent.click(screen.getByRole('button', { name: /^reply$/i }));
+    // Body goes as a runtime arg; the kind:1 e/p reply tags come from base args.
+    expect(reply).toHaveBeenCalledWith({ content: 'nice post', parentId: 'note-9' });
   });
 
   it('shows the like (reaction) count from kind:7 events targeting the note', () => {

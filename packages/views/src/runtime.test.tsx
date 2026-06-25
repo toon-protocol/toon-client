@@ -73,6 +73,45 @@ describe('ViewSpecRenderer', () => {
     expect(await screen.findByText('hello world')).toBeTruthy();
   });
 
+  it('gives kindAuto feed cards default Like/Follow actions with event-derived NIP tags', async () => {
+    const { bridge, calls } = mockBridge([
+      evt({ kind: 1, id: 'note-7', pubkey: 'author-pk', content: 'gm feed' }),
+    ]);
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'stack',
+            children: [{ atom: 'note-card', bind: { query: { kinds: [1] }, kindAuto: true } }],
+          },
+        }}
+      />
+    );
+    // The auto-rendered card is interactive even though no ViewSpec node declared actions.
+    fireEvent.click(await screen.findByRole('button', { name: /like this note/i }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeTruthy()
+    );
+    // Like → NIP-25 kind:7 "+" tagging the note id + author, derived by the runtime.
+    const like = calls.find((c) => c.name === 'toon_publish_unsigned');
+    expect(like?.args['kind']).toBe(7);
+    expect(like?.args['content']).toBe('+');
+    expect(like?.args['tags']).toEqual([
+      ['e', 'note-7'],
+      ['p', 'author-pk'],
+    ]);
+
+    // Follow → NIP-02 kind:3 adding the author's pubkey.
+    fireEvent.click(screen.getByRole('button', { name: /follow this author/i }));
+    await waitFor(() =>
+      expect(calls.filter((c) => c.name === 'toon_publish_unsigned').length).toBeGreaterThan(1)
+    );
+    const follow = calls.filter((c) => c.name === 'toon_publish_unsigned')[1];
+    expect(follow?.args['kind']).toBe(3);
+    expect(follow?.args['tags']).toEqual([['p', 'author-pk']]);
+  });
+
   it('fires a write action through the bridge with the right tool', async () => {
     const { bridge, calls } = mockBridge([
       evt({ kind: 1621, id: 'i1', tags: [['subject', 'Broken thing']], content: 'details' }),

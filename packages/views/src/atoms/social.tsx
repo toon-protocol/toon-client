@@ -3,6 +3,7 @@ import { type FC, type ReactNode, useState } from 'react';
 import { Heart, MessageCircle, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Badge } from '@/components/ui/badge.js';
+import { Textarea } from '@/components/ui/textarea.js';
 import { MonoId } from '@/components/mono-id.js';
 import { cn } from '@/lib/utils.js';
 import {
@@ -96,16 +97,31 @@ const NoteRow: FC<{
   // for a snappy feel; the publish itself is routed through the paid write path.
   const [liked, setLiked] = useState(false);
   const [followed, setFollowed] = useState(false);
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyText, setReplyText] = useState('');
+  const [sending, setSending] = useState(false);
 
   const onLike = (): void => {
     if (!react) return;
     setLiked((v) => !v);
+    // The runtime supplies the NIP-25 e/p tags for the targeted note; we only
+    // need to assert the reaction content.
     void react({ content: '+' });
   };
   const onFollow = (): void => {
     if (!follow) return;
     setFollowed(true);
     void follow({ tags: [['p', note.authorPubkey]] });
+  };
+  const onSendReply = (): void => {
+    const text = replyText.trim();
+    if (!reply || text.length === 0 || sending) return;
+    setSending(true);
+    void Promise.resolve(reply({ content: text, parentId: note.eventId })).finally(() => {
+      setSending(false);
+      setReplyText('');
+      setReplyOpen(false);
+    });
   };
 
   const likeCount = reactionCount + (liked ? 1 : 0);
@@ -174,10 +190,11 @@ const NoteRow: FC<{
           <footer className="-ml-2 mt-1 flex items-center gap-6">
             {reply ? (
               <ActionButton
-                label="Reply to this note"
+                label={replyOpen ? 'Close reply' : 'Reply to this note'}
                 icon={<MessageCircle aria-hidden="true" />}
                 text="Reply"
-                onClick={() => void reply({ parentId: note.eventId })}
+                active={replyOpen}
+                onClick={() => setReplyOpen((v) => !v)}
               />
             ) : null}
             {react ? (
@@ -199,9 +216,52 @@ const NoteRow: FC<{
           </footer>
         ) : null}
 
-        {react || follow ? (
+        {reply && replyOpen ? (
+          <div className="mt-1.5 flex flex-col gap-1.5">
+            <Textarea
+              autoFocus
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
+              placeholder="Post your reply…"
+              aria-label="Reply text"
+              rows={2}
+              className="min-h-[2.5rem] text-sm"
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                  e.preventDefault();
+                  onSendReply();
+                }
+              }}
+            />
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-3 text-xs"
+                onClick={() => {
+                  setReplyOpen(false);
+                  setReplyText('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 px-3 text-xs font-semibold"
+                disabled={replyText.trim().length === 0 || sending}
+                onClick={onSendReply}
+              >
+                {sending ? 'Posting…' : 'Reply'}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {reply || react || follow ? (
           <p className="mt-0.5 text-[10px] text-muted-foreground/70">
-            Like and follow are paid writes — each spends the per-event channel fee.
+            Like, reply, and follow are paid writes — each spends the per-event channel fee.
           </p>
         ) : null}
       </div>
