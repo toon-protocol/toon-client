@@ -142,6 +142,52 @@ export const ATOM_CATALOG: AtomMeta[] = [
     },
   },
 
+  // content — generic, props-driven primitives for ANY structured (non-event)
+  // data: daemon status, write targets, balances, identity. Compose these inside
+  // layout atoms instead of falling back to plain text. No event kinds.
+  {
+    id: 'heading',
+    description: 'A heading/title for a section of arbitrary content.',
+    propsSchema: { text: 'string', level: '1 | 2 | 3 (heading level, default 1)' },
+  },
+  {
+    id: 'text',
+    description: 'A paragraph / label of plain text.',
+    propsSchema: { text: 'string', muted: 'boolean (render dimmed, optional)' },
+  },
+  {
+    id: 'stat',
+    description: 'A labeled metric (KPI) with an optional status colour.',
+    propsSchema: {
+      label: 'string',
+      value: 'string | number',
+      tone: "'default' | 'success' | 'warn' | 'danger' (optional)",
+    },
+  },
+  {
+    id: 'key-value',
+    description: 'A definition list of aligned label → value rows (for details / identity / targets).',
+    propsSchema: { rows: '{ label: string, value: string | number }[]' },
+  },
+  {
+    id: 'badge',
+    description: 'A small status pill.',
+    propsSchema: {
+      label: 'string',
+      tone: "'default' | 'success' | 'warn' | 'danger' (optional)",
+    },
+  },
+
+  // status — daemon health dashboard
+  {
+    id: 'client-status',
+    description:
+      'Daemon status dashboard: reads live toon_status and renders the ready/' +
+      'bootstrapping state (badge), uptime, settlement chain + fee, relay (url, ' +
+      'connected, buffered, subscriptions), transport, per-chain readiness, and ' +
+      'identity (npub + chain addresses). No props; use to answer "show me my status".',
+  },
+
   // fallback
   { id: 'generic-event', description: 'Fallback: decoded JSON + tags for any kind without a bespoke atom.' },
 ];

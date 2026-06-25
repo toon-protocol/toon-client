@@ -172,6 +172,52 @@ export function swapView(): ViewSpec {
   };
 }
 
+/**
+ * Daemon status dashboard: a single `client-status` atom. It reads the live
+ * `toon_status` itself (no bind/props), so this is the answer to "show me my
+ * status" — render this instead of falling back to plain text.
+ */
+export function clientStatusView(): ViewSpec {
+  return {
+    title: 'Client status',
+    root: { atom: 'client-status' },
+  };
+}
+
+/**
+ * A generic info view composed from content primitives — the pattern for
+ * rendering ANY non-event structured data (targets, identity, balances). Here:
+ * a heading, an aligned label→value list, and a status badge. Swap the rows for
+ * whatever the agent has in hand.
+ */
+export function infoView(): ViewSpec {
+  return {
+    title: 'Identity',
+    root: {
+      atom: 'card',
+      children: [
+        {
+          atom: 'stack',
+          children: [
+            { atom: 'heading', props: { text: 'Identity', level: 2 } },
+            {
+              atom: 'key-value',
+              props: {
+                rows: [
+                  { label: 'npub', value: 'npub1<…>' },
+                  { label: 'EVM', value: '0x<…>' },
+                  { label: 'Settlement', value: 'evm' },
+                ],
+              },
+            },
+            { atom: 'badge', props: { label: 'ready', tone: 'success' } },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 export interface ExampleView {
   name: string;
   description: string;
@@ -188,4 +234,6 @@ export const EXAMPLE_VIEWSPECS: ExampleView[] = [
   { name: 'media', description: 'Media gallery with an uploader.', spec: mediaView() },
   { name: 'onboard', description: 'Get-started card + the new user’s profile header.', spec: onboardView('<pubkey-hex>') },
   { name: 'swap', description: 'Open a channel, run a swap, show the settlement receipt.', spec: swapView() },
+  { name: 'client-status', description: 'Daemon health dashboard (ready/relay/chains/identity) from live toon_status — answers "show me my status".', spec: clientStatusView() },
+  { name: 'info', description: 'Generic info view from content primitives (heading + key-value + badge) — the pattern for any non-event data.', spec: infoView() },
 ];
