@@ -9,11 +9,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
-  useApp,
-  useHostStyleVariables,
-  useHostFonts,
-} from '@modelcontextprotocol/ext-apps/react';
+import { useApp } from '@modelcontextprotocol/ext-apps/react';
 import { createExtAppsBridge } from './app-bridge/ext-apps-bridge.js';
 import { type ViewBridge } from './app-bridge/types.js';
 import { ViewSpecRenderer } from './runtime.js';
@@ -33,10 +29,11 @@ export function ToonApp(): ReactNode {
     appInfo: { name: 'toon-views', version: '0.1.0' },
     capabilities: {},
   });
-  // Adopt the host's theme variables + fonts so the UI matches the surrounding
-  // chat; our globals.css provides the fallback when there's no host context.
-  useHostStyleVariables(app);
-  useHostFonts(app);
+  // Render TOON's own theme (globals.css: jade primary + cool-slate palette +
+  // Geist Mono ledger type) regardless of host, so the in-chat app matches the
+  // standalone views gallery. We intentionally do NOT adopt the host's style
+  // variables/fonts — doing so let Claude Desktop's palette/fonts override the
+  // TOON tokens and made the render look like generic chat chrome.
   const bridge = useMemo(() => (app ? createExtAppsBridge(app) : null), [app]);
 
   if (error) return <div className="p-4 text-sm">Failed to connect: {error.message}</div>;
