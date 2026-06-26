@@ -13,7 +13,7 @@ description: Act as a TOON Protocol client from a Claude agent (Desktop or Code)
   trust gradient ("what is kind:31036?", "render trust gradient", "open-world
   UI", "how does the client render an unknown kind?"), channel and balance
   management ("how do I open a payment channel?", "how do I check my channel
-  nonce/balance?", toon_open_channel, toon_channels, nonce watermark), mill swaps
+  nonce/balance?", toon_open_channel, toon_channels, nonce watermark), swaps
   ("how do I swap tokens on TOON?", toon_swap, multi-chain swap), paid HTTP
   ("toon_http_fetch_paid", x402/402 pay-and-retry), faucet/funding
   ("toon_fund_wallet", drip devnet funds), target management ("toon_targets",
@@ -268,13 +268,13 @@ accretes permissionlessly, the same way the kind vocabulary does.
   cumulative transferred amount. Use this to confirm a publish advanced the
   nonce or to inspect spend.
 
-## Mill swaps (multi-chain)
+## Swaps (multi-chain)
 
-`toon_swap({ destination, amount, millPubkey, pair, chainRecipient, packetCount? })`
-pays a mill peer `amount` of asset A and receives asset B plus a signed
+`toon_swap({ destination, amount, swapPubkey, pair, chainRecipient, packetCount? })`
+pays a swap peer `amount` of asset A and receives asset B plus a signed
 target-chain claim. It builds the NIP-59 gift-wrapped kind:20032 swap rumor;
 `pair` is the swap pair (from kind:10032 discovery), `chainRecipient` is your
-payout address on `pair.to.chain`, and the mill must be routed via the apex's
+payout address on `pair.to.chain`, and the swap peer must be routed via the apex's
 child peers. Returns the decrypted target-chain claim(s) + settlement metadata.
 
 ## Paid HTTP (x402)

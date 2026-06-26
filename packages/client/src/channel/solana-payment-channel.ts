@@ -14,7 +14,7 @@
  *   2. The 48-byte balance-proof message the connector verifies the Ed25519
  *      signature over: `channel_pda(32) || nonce(8 LE) || transferredAmount(8 LE)`.
  *      NOTE: this is NOT the swap-claim `balanceProofHashSolana` shape used by the
- *      Mill ↔ sender wire / SDK `verifyEd25519Signature`; the connector's on-chain
+ *      swap peer ↔ sender wire / SDK `verifyEd25519Signature`; the connector's on-chain
  *      payment-channel verifier (`solana-payment-channel-provider.verifyBalanceProof`)
  *      verifies this raw 48-byte message, un-hashed.
  *   3. The `initialize_channel` (+ `deposit`) instructions, built and submitted

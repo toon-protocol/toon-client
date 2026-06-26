@@ -163,17 +163,17 @@ describe('dispatchTool', () => {
       rate: '1.0',
     };
     await dispatchTool(client, 'toon_swap', {
-      destination: 'g.toon.mill',
+      destination: 'g.toon.swap',
       amount: 100,
-      millPubkey: 'cd'.repeat(32),
+      swapPubkey: 'cd'.repeat(32),
       pair,
       chainRecipient: 'SoLrecipient',
       packetCount: 2,
     });
     expect(swap).toHaveBeenCalledWith({
-      destination: 'g.toon.mill',
+      destination: 'g.toon.swap',
       amount: '100',
-      millPubkey: 'cd'.repeat(32),
+      swapPubkey: 'cd'.repeat(32),
       pair,
       chainRecipient: 'SoLrecipient',
       packetCount: 2,
@@ -349,12 +349,12 @@ describe('dispatchTool', () => {
     await dispatchTool(stubClient({ addApex }), 'toon_add_apex', {
       ilpAddress: 'g.x.town',
       relayUrl: 'ws://r',
-      childPeers: ['store', 'mill'],
+      childPeers: ['store', 'swap'],
     });
     expect(addApex).toHaveBeenCalledWith({
       ilpAddress: 'g.x.town',
       relayUrl: 'ws://r',
-      childPeers: ['store', 'mill'],
+      childPeers: ['store', 'swap'],
     });
   });
 

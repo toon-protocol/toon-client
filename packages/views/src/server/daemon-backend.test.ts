@@ -211,9 +211,9 @@ describe('DaemonAppBackend (daemon-backed apps surface)', () => {
     expect(ctrl.opens).toEqual([{ destination: 'g.proxy.relay' }]);
 
     const req: SwapRequest = {
-      destination: 'g.proxy.mill',
+      destination: 'g.proxy.swap',
       amount: '1000',
-      millPubkey: 'ab'.repeat(32),
+      swapPubkey: 'ab'.repeat(32),
       pair: {
         from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:31337' },
         to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },

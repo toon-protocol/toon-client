@@ -89,12 +89,12 @@ export interface SwapPair {
 
 /** Parameters for a cross-asset swap (subset of the daemon's `SwapRequest`). */
 export interface SwapRequest {
-  /** Mill peer ILP destination (e.g. `g.proxy.mill`). */
+  /** Swap peer ILP destination (e.g. `g.proxy.swap`). */
   destination: string;
   /** Total source-asset amount to swap, in source micro-units (decimal string). */
   amount: string;
-  /** Mill's 64-char lowercase hex Nostr pubkey (NIP-59 gift-wrap recipient). */
-  millPubkey: string;
+  /** Swap peer's 64-char lowercase hex Nostr pubkey (NIP-59 gift-wrap recipient). */
+  swapPubkey: string;
   /** The swap pair to execute. */
   pair: SwapPair;
   /** Sender's payout address on `pair.to.chain`. */
@@ -113,11 +113,11 @@ export interface SwapClaim {
   claim: string;
   /** Target-chain channel id (real on-chain id, or a dev placeholder). */
   channelId?: string;
-  /** Sender's payout address echoed by the mill. */
+  /** Sender's payout address echoed by the swap peer. */
   recipient?: string;
-  /** Mill's on-chain signer address. */
-  millSignerAddress?: string;
-  /** Mill-side claim id. */
+  /** Swap peer's on-chain signer address. */
+  swapSignerAddress?: string;
+  /** Swap-side claim id. */
   claimId?: string;
   /** Balance-proof nonce on the target channel (decimal). */
   nonce?: string;
@@ -129,7 +129,7 @@ export interface SwapClaim {
 export interface SwapResponse {
   /** True when at least one packet FULFILLed with a usable claim. */
   accepted: boolean;
-  /** Number of packets the mill FULFILLed. */
+  /** Number of packets the swap peer FULFILLed. */
   packetsAccepted: number;
   /** Per-packet accumulated claims (settlement metadata + signed claim). */
   claims: SwapClaim[];
@@ -139,7 +139,7 @@ export interface SwapResponse {
   cumulativeTarget: string;
   /** Final stream state. */
   state: 'completed' | 'failed' | 'stopped';
-  /** First rejection code from the mill, if any (e.g. `F99`). */
+  /** First rejection code from the swap peer, if any (e.g. `F99`). */
   code?: string;
   /** First rejection message, if any. */
   message?: string;

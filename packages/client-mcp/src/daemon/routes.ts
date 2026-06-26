@@ -148,13 +148,13 @@ export function registerRoutes(
       !body ||
       !body.destination ||
       body.amount === undefined ||
-      !body.millPubkey ||
+      !body.swapPubkey ||
       !body.pair ||
       !body.chainRecipient
     ) {
       return sendError(reply, 400, 'invalid_swap', {
         detail:
-          'body.destination, amount, millPubkey, pair, and chainRecipient are required.',
+          'body.destination, amount, swapPubkey, pair, and chainRecipient are required.',
       });
     }
     try {

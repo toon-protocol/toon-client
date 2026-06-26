@@ -150,7 +150,7 @@ describe('TOON apps MCP server (fake-backed)', () => {
   it('toon_open_channel returns a channelId', async () => {
     const res = await client.callTool({
       name: 'toon_open_channel',
-      arguments: { destination: 'g.proxy.mill' },
+      arguments: { destination: 'g.proxy.swap' },
     });
     expect((res as { isError?: boolean }).isError).toBeFalsy();
     expect(String(structured(res)['channelId'])).toContain('fake-channel');
@@ -160,9 +160,9 @@ describe('TOON apps MCP server (fake-backed)', () => {
     const res = await client.callTool({
       name: 'toon_swap',
       arguments: {
-        destination: 'g.proxy.mill',
+        destination: 'g.proxy.swap',
         amount: '1000000',
-        millPubkey: 'a'.repeat(64),
+        swapPubkey: 'a'.repeat(64),
         pair: {
           from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:31337' },
           to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },

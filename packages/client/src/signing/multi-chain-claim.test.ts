@@ -9,10 +9,10 @@
  *   `solana-payment-channel-provider.verifyBalanceProof` does (reconstruct the
  *   48-byte message + Ed25519-verify against the base58 signer pubkey). This is
  *   the message the apex's `verifySolanaClaim` path checks when the client pays
- *   a payment-channel claim — NOT the Mill ↔ sender swap-claim shape
+ *   a payment-channel claim — NOT the swap peer ↔ sender swap-claim shape
  *   (`balanceProofHashSolana`, SDK `verifyEd25519Signature`).
  * - **Mina** now signs the connector's PAYMENT-CHANNEL proof (Poseidon
- *   commitment + Pallas Schnorr), a different message from the Mill↔sender
+ *   commitment + Pallas Schnorr), a different message from the swap peer↔sender
  *   swap-claim shape; its full connector-contract conformance lives in
  *   `mina-signer.test.ts`. This file keeps only a minimal wire-shape cross-check.
  *
@@ -186,7 +186,7 @@ describe('multi-chain balance-proof claims verify against the SDK oracle', () =>
 
   // Mina now signs the connector's PAYMENT-CHANNEL proof (Poseidon commitment +
   // Pallas Schnorr over [commitment, nonce, Poseidon(zkApp.x)]) — a different
-  // message + format from the Mill↔sender swap-claim shape this file's verifier
+  // message + format from the swap peer↔sender swap-claim shape this file's verifier
   // helpers cover. Its connector-contract conformance + commitment/Schnorr
   // parity are pinned in `mina-signer.test.ts`. We keep a minimal cross-check
   // here that the emitted claim is the new payment-channel wire shape (carries

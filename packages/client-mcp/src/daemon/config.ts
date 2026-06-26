@@ -123,9 +123,9 @@ export interface DaemonConfigFile {
    */
   apexChains?: Partial<Record<SettlementChain, ApexNegotiationConfig>>;
   /**
-   * Additional apex CHILD peers (last ILP segment, e.g. `["store","mill"]`)
+   * Additional apex CHILD peers (last ILP segment, e.g. `["store","swap"]`)
    * reachable via the SAME apex channel — used when publishing/swapping to
-   * `g.proxy.store` / `g.proxy.mill`. The runner injects the apex
+   * `g.proxy.store` / `g.proxy.swap`. The runner injects the apex
    * negotiation under each and points it at the open apex channel (no extra
    * on-chain channel). The apex `peerId` itself is always handled.
    */
@@ -176,7 +176,7 @@ export interface ResolvedDaemonConfig {
   storeDestination: string;
   feePerEvent: bigint;
   apex?: ApexNegotiationConfig;
-  /** Apex child peers reached via the same apex channel (e.g. store, mill). */
+  /** Apex child peers reached via the same apex channel (e.g. store, swap). */
   apexChildPeers?: string[];
   /** The active settlement chain for paid writes. */
   chain: SettlementChain;

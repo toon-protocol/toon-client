@@ -51,7 +51,7 @@ the host can't render.
 |---|---|---|---|
 | `toon_open_channel` | Open (or return the existing) payment channel for a destination. Channels open lazily on first publish. | `destination?` | free |
 | `toon_channels` | List tracked channels with nonce watermark + cumulative transferred amount. | — | free |
-| `toon_swap` | Pay a mill peer asset A for asset B + a signed target-chain claim (NIP-59 gift-wrapped kind:20032). | `destination`, `amount`, `millPubkey`, `pair`, `chainRecipient` (required), `packetCount?` | **paid** |
+| `toon_swap` | Pay a swap peer asset A for asset B + a signed target-chain claim (NIP-59 gift-wrapped kind:20032). | `destination`, `amount`, `swapPubkey`, `pair`, `chainRecipient` (required), `packetCount?` | **paid** |
 
 ## Paid HTTP & funding
 

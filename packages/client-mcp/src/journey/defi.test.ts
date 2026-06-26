@@ -16,9 +16,9 @@ const swapPair = {
 };
 
 const opts: DeFiJourneyOpts = {
-  destination: 'g.proxy.mill',
+  destination: 'g.proxy.swap',
   amount: '1000000',
-  millPubkey: 'a'.repeat(64),
+  swapPubkey: 'a'.repeat(64),
   pair: swapPair,
   chainRecipient: '0x1234567890123456789012345678901234567890',
 };
@@ -79,7 +79,7 @@ describe('deFiJourney', () => {
     expect(swap).toHaveBeenCalledWith({
       destination: opts.destination,
       amount: opts.amount,
-      millPubkey: opts.millPubkey,
+      swapPubkey: opts.swapPubkey,
       pair: opts.pair,
       chainRecipient: opts.chainRecipient,
     });

@@ -756,7 +756,7 @@ export class ClientRunner {
     this.log(`[runner] injected apex negotiation for peer "${a.peerId}"`);
   }
 
-  /** Route apex CHILD peers (store/mill) through the SAME apex payment channel. */
+  /** Route apex CHILD peers (store/swap) through the SAME apex payment channel. */
   private routeChildPeersThroughApexChannel(apex: ApexConnection): void {
     const a = apex.negotiation;
     if (!a || !apex.apexChannelId || apex.childPeers.length === 0) return;
@@ -1132,7 +1132,7 @@ export class ClientRunner {
     return { channels };
   }
 
-  /** Swap source→target asset against a mill peer via the selected apex. */
+  /** Swap source→target asset against a swap peer via the selected apex. */
   async swap(req: SwapRequest): Promise<SwapResponse> {
     const apex = this.selectApex(req.btpUrl);
     this.assertApexReady(apex);
@@ -1141,7 +1141,7 @@ export class ClientRunner {
       client: apex.client as unknown as Parameters<
         typeof streamSwap
       >[0]['client'],
-      millPubkey: req.millPubkey,
+      millPubkey: req.swapPubkey,
       millIlpAddress: req.destination,
       pair: req.pair,
       senderSecretKey,
@@ -1160,7 +1160,7 @@ export class ClientRunner {
         ...(c.channelId ? { channelId: c.channelId } : {}),
         ...(c.recipient ? { recipient: c.recipient } : {}),
         ...(c.millSignerAddress
-          ? { millSignerAddress: c.millSignerAddress }
+          ? { swapSignerAddress: c.millSignerAddress }
           : {}),
         ...(c.claimId ? { claimId: c.claimId } : {}),
         ...(c.nonce ? { nonce: c.nonce } : {}),

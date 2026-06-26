@@ -224,13 +224,13 @@ export function registerToonApps(server: McpServer, opts: RegisterToonAppsOption
     SWAP_TOOL,
     {
       description:
-        'Spendy: run a cross-asset swap via a mill peer. The backend signs the ' +
+        'Spendy: run a cross-asset swap via a swap peer. The backend signs the ' +
         'source-asset claim against the open channel and returns the signed ' +
         'target-chain claim(s) + settlement metadata. UI actions target this tool.',
       inputSchema: {
         destination: z.string(),
         amount: z.string(),
-        millPubkey: z.string(),
+        swapPubkey: z.string(),
         pair: z.object({
           from: z.object({
             assetCode: z.string(),

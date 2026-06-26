@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // swap() streams via the SDK; mock the boundary so route wiring tests don't need
-// a real mill. The mock returns a single accepted claim.
+// a real swap peer. The mock returns a single accepted claim.
 vi.mock('@toon-protocol/sdk/swap', () => ({
   streamSwap: vi.fn().mockResolvedValue({
     state: 'completed',
@@ -297,9 +297,9 @@ describe('control-plane routes', () => {
         method: 'POST',
         url: '/swap',
         payload: {
-          destination: 'g.toon.mill',
+          destination: 'g.toon.swap',
           amount: '10',
-          millPubkey: 'cd'.repeat(32),
+          swapPubkey: 'cd'.repeat(32),
           pair: {
             from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
             to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
@@ -321,11 +321,11 @@ describe('control-plane routes', () => {
       expect(res.statusCode).toBe(400);
     });
 
-    it('POST /swap rejects a missing pair/millPubkey/chainRecipient with 400', async () => {
+    it('POST /swap rejects a missing pair/swapPubkey/chainRecipient with 400', async () => {
       const res = await app.inject({
         method: 'POST',
         url: '/swap',
-        payload: { destination: 'g.toon.mill', amount: '10' },
+        payload: { destination: 'g.toon.swap', amount: '10' },
       });
       expect(res.statusCode).toBe(400);
     });

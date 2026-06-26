@@ -166,7 +166,7 @@ async function deriveMinaKey(
   const keyBytes = new Uint8Array(child.privateKey);
 
   // Clamp the top 2 bits so the scalar is within the Pallas base-field order
-  // (matches @toon-protocol/mill's `deriveMillKeys`). Without this, the raw
+  // (matches @toon-protocol/swap's `deriveSwapKeys`). Without this, the raw
   // BIP-32 child scalar can exceed the field order and mina-signer rejects it.
   keyBytes[0] = (keyBytes[0] ?? 0) & 0x3f;
 

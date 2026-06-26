@@ -21,7 +21,7 @@ import { buildBalanceProofMessage } from '../channel/solana-payment-channel.js';
  * is what makes a client-issued Solana payment-channel claim (paying the apex
  * to write) acceptable on connector 3.9.0.
  *
- * NOTE: this is a DIFFERENT message from the Mill ↔ sender swap-claim wire
+ * NOTE: this is a DIFFERENT message from the swap peer ↔ sender swap-claim wire
  * contract (`balanceProofHashSolana`, SDK `verifyEd25519Signature`). The client
  * here is paying a payment-channel claim to the apex, not issuing a swap claim,
  * so it must sign the connector's on-chain payment-channel message. `channelId`

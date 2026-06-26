@@ -31,7 +31,7 @@
  * `Signature.create` / `.verify`, so the off-chain signature MUST be produced
  * with the Mina `'devnet'` network id (NOT `'mainnet'`).
  *
- * This is DISTINCT from the Mill ↔ sender swap-claim wire contract
+ * This is DISTINCT from the swap peer ↔ sender swap-claim wire contract
  * (`balanceProofFieldsMina` in `@toon-protocol/core` — a Schnorr signature over
  * `[minaHashToField(channelId), amount, nonce, minaHashToField(recipient)]`).
  * That format is unchanged; this module is the separate payment-channel path

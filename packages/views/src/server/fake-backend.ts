@@ -156,7 +156,7 @@ export class FakeBackend implements AppBackend {
       claim: Buffer.from(`fake-claim-${seq}`).toString('base64'),
       channelId: `fake-target-channel-${seq}`,
       recipient: req.chainRecipient,
-      millSignerAddress: '0x000000000000000000000000000000000000dEaD',
+      swapSignerAddress: '0x000000000000000000000000000000000000dEaD',
       claimId: `fake-claim-id-${seq}`,
       nonce: String(seq),
       cumulativeAmount: target,
