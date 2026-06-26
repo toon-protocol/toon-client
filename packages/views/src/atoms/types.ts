@@ -11,11 +11,20 @@ import { type FC, type ReactNode } from 'react';
 import { type NostrEvent } from '../types.js';
 
 /**
+ * Sentinel `error` value a wired spendy action returns when the user/host
+ * DECLINES the consent prompt (vs. a real tool/leg failure). This is benign and
+ * user-initiated — atoms must not render it as a failure. Shared by the runtime
+ * (which produces it) and atoms (which special-case it in their UX).
+ */
+export const SPENDY_CANCELLED = 'cancelled';
+
+/**
  * Outcome of a wired write action, surfaced from the runtime so atoms can render
  * a receipt with the real published `eventId`. A trimmed projection of the
  * bridge's `ToolOutcome`: `ok` is `false` when the action was declined (spendy
  * confirm) or the tool reported failure; `eventId` / `data` carry the publish
- * response (`structuredContent`) on success.
+ * response (`structuredContent`) on success. A decline sets `error` to
+ * {@link SPENDY_CANCELLED} (benign) rather than a tool error string.
  */
 export interface ActionOutcome {
   ok: boolean;

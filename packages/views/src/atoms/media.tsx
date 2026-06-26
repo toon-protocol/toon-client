@@ -4,7 +4,7 @@ import { ImagePlus, Loader2 } from 'lucide-react';
 import { type MediaVariant, parseMediaPost, parseFileMetadata, parseInlineMedia } from '../parsers/media.js';
 import { arweaveGatewayCandidates } from '@toon-protocol/arweave';
 import { type NostrEvent } from '../types.js';
-import { type Atom, type AtomRenderProps } from './types.js';
+import { type Atom, type AtomRenderProps, SPENDY_CANCELLED } from './types.js';
 
 function isVideo(variant: MediaVariant): boolean {
   return variant.mime?.startsWith('video/') ?? false;
@@ -85,11 +85,13 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
   const [busy, setBusy] = useState(false);
   const [uploadedOk, setUploadedOk] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [cancelled, setCancelled] = useState(false);
 
   const handleFile = async (file: File): Promise<void> => {
     setBusy(true);
     setUploadedOk(false);
     setUploadError(null);
+    setCancelled(false);
     try {
       const buf = await new Promise<ArrayBuffer>((resolve, reject) => {
         const reader = new FileReader();
@@ -106,12 +108,19 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
       const dataBase64 = btoa(binary);
       const outcome = await actions['upload']?.({ dataBase64, mime: file.type || undefined });
       if (outcome?.ok === false) {
-        // Surface the real underlying error so the failing leg (Arweave upload
-        // vs. post-upload kind:20 publish) is diagnosable from the UI; the
-        // daemon labels each leg in its error text. Keep the recognizable
-        // "Upload failed" affordance as a prefix, degrading gracefully to it
-        // alone when no error string is present.
-        setUploadError(uploadErrorMessage(outcome.error));
+        if (outcome.error === SPENDY_CANCELLED) {
+          // The user/host DECLINED the spend at the consent prompt — benign and
+          // user-initiated, not an upload failure. Surface it neutrally (no
+          // bytes were ever uploaded) rather than as a scary "Upload failed".
+          setCancelled(true);
+        } else {
+          // A real leg failure: surface the underlying error so the failing leg
+          // (Arweave upload vs. post-upload kind:20 publish) is diagnosable from
+          // the UI; the daemon labels each leg in its error text. Keep the
+          // recognizable "Upload failed" affordance as a prefix, degrading
+          // gracefully to it alone when no error string is present.
+          setUploadError(uploadErrorMessage(outcome.error));
+        }
       } else {
         setUploadedOk(true);
       }
@@ -159,6 +168,9 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
       </button>
       {uploadedOk && (
         <p className="text-xs text-muted-foreground">Uploaded successfully.</p>
+      )}
+      {cancelled && (
+        <p className="text-xs text-muted-foreground">Upload cancelled — nothing was published or paid.</p>
       )}
       {uploadError && (
         <p className="text-xs text-destructive whitespace-pre-wrap break-words">{uploadError}</p>

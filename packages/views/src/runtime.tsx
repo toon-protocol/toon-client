@@ -35,7 +35,9 @@ import {
   type AtomStatus,
   type AtomChannel,
   type AtomBalance,
+  SPENDY_CANCELLED,
 } from './atoms/types.js';
+import { ConsentProvider, useConsentGate, type ConsentGate } from './spendy-consent.js';
 import { useRenderDecision } from './render/resolve.js';
 import { A2UIRenderer } from './a2ui/A2UIRenderer.js';
 import { SandboxedAppRenderer } from './mcp-ui/SandboxedAppRenderer.js';
@@ -159,22 +161,27 @@ function getProfileResolver(
   return resolver;
 }
 
-function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAction> {
+function buildActions(
+  node: ViewNode,
+  bridge: ViewBridge,
+  consentGate: ConsentGate
+): Record<string, AtomAction> {
   const actions: Record<string, AtomAction> = {};
   for (const [name, ref] of Object.entries(node.actions ?? {})) {
     actions[name] = async (runtimeArgs): Promise<ActionOutcome> => {
       const args: Record<string, unknown> = { ...(ref.args ?? {}), ...(runtimeArgs ?? {}) };
       if (ref.spendy) {
         const label = ref.confirmLabel ?? 'This action spends to publish. Continue?';
-        // Fallback is browser-only; auto-approves in Worker/SSR environments where window is absent.
-        const confirmFn =
-          bridge.confirm ??
-          ((msg: string) =>
-            Promise.resolve(typeof window !== 'undefined' ? !!window.confirm(msg) : true));
+        // Consent for a spend is a RENDERED prompt, not `window.confirm`: the app
+        // runs in a host iframe sandboxed without `allow-modals`, where
+        // `window.confirm` is suppressed (returns false) and silently
+        // auto-rejects every spend (toon-client#170). Prefer the bridge's
+        // injected confirm (tests/host), else the in-iframe consent modal.
+        const confirmFn = bridge.confirm ?? consentGate;
         const ok = await confirmFn(label);
         if (!ok) {
           bridge.notifyModel(`Action "${name}" cancelled.`);
-          return { ok: false, error: 'cancelled' };
+          return { ok: false, error: SPENDY_CANCELLED };
         }
         args['spendy'] = true;
       }
@@ -374,7 +381,11 @@ function buildReadBalances(bridge: ViewBridge): () => Promise<AtomBalance[]> {
 function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): ReactNode {
   const atom = ATOMS.get(node.atom) ?? fallbackAtomFor();
   const events = useBind(node.bind, bridge);
-  const actions = useMemo(() => buildActions(node, bridge), [node, bridge]);
+  const consentGate = useConsentGate();
+  const actions = useMemo(
+    () => buildActions(node, bridge, consentGate),
+    [node, bridge, consentGate]
+  );
   const readStatus = useMemo(() => buildReadStatus(bridge), [bridge]);
   const readChannels = useMemo(() => buildReadChannels(bridge), [bridge]);
   const readBalances = useMemo(() => buildReadBalances(bridge), [bridge]);
@@ -427,5 +438,11 @@ export function ViewSpecRenderer({
     [spec]
   );
   if (!result.ok) return <InvalidSpec errors={result.errors} />;
-  return <NodeView node={result.spec.root} bridge={bridge} />;
+  // Wrap in the consent provider so spendy actions await a rendered prompt
+  // (the host iframe blocks `window.confirm`; see consent-prompt.tsx).
+  return (
+    <ConsentProvider>
+      <NodeView node={result.spec.root} bridge={bridge} />
+    </ConsentProvider>
+  );
 }
