@@ -33,8 +33,26 @@ export interface FundWalletResult {
 export interface FundWalletOptions {
   /** Custom fetch implementation (for testing / custom transports). */
   fetchImpl?: typeof fetch;
-  /** Request timeout in milliseconds (default: 30000). */
+  /**
+   * Request timeout in milliseconds. Defaults to {@link defaultFaucetTimeout}
+   * for the chain (fast 30s for evm/solana, a longer 120s for the slow-settling
+   * mina faucet).
+   */
   timeout?: number;
+}
+
+/**
+ * Default faucet request timeout (ms) for a chain.
+ *
+ * EVM and Solana faucets respond in a few seconds, so 30s is plenty. The Mina
+ * faucet sends native MINA *and* mints USDC on a chain that settles much more
+ * slowly: the drip routinely succeeds server-side (the faucet logs
+ * `✅ Mina faucet request completed`) but takes well over 30s to answer the
+ * HTTP request, so a flat 30s budget makes the client give up on a request that
+ * actually worked. Give mina a much longer budget.
+ */
+export function defaultFaucetTimeout(chain: FaucetChain): number {
+  return chain === 'mina' ? 120000 : 30000;
 }
 
 /** Map a chain to its faucet request path. */
@@ -75,7 +93,7 @@ export async function fundWallet(
   const base = faucetUrl.replace(/\/+$/, '');
   const url = `${base}${faucetPath(chain)}`;
   const fetchImpl = options.fetchImpl ?? fetch;
-  const timeout = options.timeout ?? 30000;
+  const timeout = options.timeout ?? defaultFaucetTimeout(chain);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);

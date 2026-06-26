@@ -8,6 +8,7 @@ const ENV_KEYS = [
   'TOON_CLIENT_BTP_URL',
   'TOON_CLIENT_PROXY_URL',
   'TOON_CLIENT_FAUCET_URL',
+  'TOON_CLIENT_FAUCET_TIMEOUT_MS',
   'TOON_CLIENT_RELAY_URL',
   'TOON_CLIENT_HTTP_PORT',
   'TOON_CLIENT_NETWORK',
@@ -198,6 +199,20 @@ describe('daemon config', () => {
     expect(
       (cfg.toonClientConfig as Record<string, unknown>)['faucetUrl']
     ).toBe('https://env-faucet');
+  });
+
+  it('faucetTimeoutMs is unset by default (faucet picks a chain-aware default)', () => {
+    const cfg = resolveConfig({ mnemonic: MNEMONIC });
+    expect(cfg.faucetTimeoutMs).toBeUndefined();
+  });
+
+  it('faucetTimeoutMs comes from the file and is overridden by the env var', () => {
+    const fromFile = resolveConfig({ mnemonic: MNEMONIC, faucetTimeoutMs: 90000 });
+    expect(fromFile.faucetTimeoutMs).toBe(90000);
+
+    process.env['TOON_CLIENT_FAUCET_TIMEOUT_MS'] = '150000';
+    const fromEnv = resolveConfig({ mnemonic: MNEMONIC, faucetTimeoutMs: 90000 });
+    expect(fromEnv.faucetTimeoutMs).toBe(150000);
   });
 
   it('publishDestination / storeDestination are DERIVED from the .relay.store anchor when unset', () => {
