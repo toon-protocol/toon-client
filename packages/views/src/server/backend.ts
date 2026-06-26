@@ -36,6 +36,55 @@ export interface AppStatusBackend {
   status(): Promise<AppStatus>;
 }
 
+/**
+ * One tracked payment channel. A structural subset of the daemon's `ChannelInfo`
+ * — `availableBalance` (= `depositTotal − cumulativeAmount`) is the spendable
+ * figure the wallet/channel-list atoms show.
+ */
+export interface ChannelView {
+  channelId: string;
+  nonce: number;
+  cumulativeAmount: string;
+  depositTotal?: string;
+  availableBalance?: string;
+}
+
+/** One on-chain wallet token balance, per configured chain. */
+export interface BalanceView {
+  /** Chain family (`'evm'` | `'solana'` | `'mina'`). */
+  chain: string;
+  /** The wallet address holding the balance. */
+  address: string;
+  /** Token amount in base (micro) units, decimal string. */
+  amount: string;
+  /** Human asset code, e.g. `'USDC'`. */
+  asset?: string;
+  /** Decimal places for `amount`, when known. */
+  assetScale?: number;
+}
+
+/** Faucet outcome (devnet drip) echoed back for the receipt. */
+export interface FundWalletView {
+  chain: string;
+  address: string;
+  faucetUrl?: string;
+}
+
+/**
+ * Read-only wallet side: tracked channels (with available balance) + on-chain
+ * wallet balances. The `FakeBackend` returns deterministic stubs; the real
+ * `DaemonAppBackend` maps the live daemon `/channels` + `/balances`.
+ */
+export interface AppWalletReadBackend {
+  channels(): Promise<{ channels: ChannelView[] }>;
+  balances(): Promise<{ balances: BalanceView[] }>;
+}
+
+/** Devnet faucet side: drip test funds to a wallet (receives funds; not spendy). */
+export interface AppFaucetBackend {
+  fundWallet(req: { chain?: string; address?: string }): Promise<FundWalletView>;
+}
+
 export interface PublishResult {
   eventId: string;
   channelId?: string;
@@ -158,4 +207,6 @@ export interface AppBackend
   extends AppReadBackend,
     AppWriteBackend,
     AppDefiBackend,
-    AppStatusBackend {}
+    AppStatusBackend,
+    AppWalletReadBackend,
+    AppFaucetBackend {}

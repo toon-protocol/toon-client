@@ -5,7 +5,10 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { registerToonApps } from './apps-server.js';
 import {
   DaemonAppBackend,
+  type DaemonBalancesResponse,
+  type DaemonChannelsResponse,
   type DaemonControl,
+  type DaemonFundWalletResponse,
   type DaemonPublishResponse,
   type DaemonPublishUnsignedRequest,
   type DaemonQueryRequest,
@@ -107,6 +110,31 @@ class FakeDaemonControl implements DaemonControl {
       cumulativeSource: body.amount,
       cumulativeTarget: body.amount,
       state: 'completed',
+    });
+  }
+
+  readonly funds: { chain?: string; address?: string }[] = [];
+
+  channels(): Promise<{ channels: DaemonChannelsResponse['channels'] }> {
+    return Promise.resolve({
+      channels: [
+        { channelId: 'chan-1', nonce: 2, cumulativeAmount: '3', depositTotal: '10', availableBalance: '7' },
+      ],
+    });
+  }
+
+  balances(): Promise<{ balances: DaemonBalancesResponse['balances'] }> {
+    return Promise.resolve({
+      balances: [{ chain: 'evm', address: '0xabc', amount: '1000', asset: 'USDC', assetScale: 6 }],
+    });
+  }
+
+  fundWallet(body: { chain?: string; address?: string }): Promise<DaemonFundWalletResponse> {
+    this.funds.push(body);
+    return Promise.resolve({
+      chain: body.chain ?? 'evm',
+      address: body.address ?? '0xself',
+      faucetUrl: 'https://faucet.test',
     });
   }
 }

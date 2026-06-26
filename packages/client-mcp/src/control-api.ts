@@ -208,6 +208,10 @@ export interface ChannelInfo {
   channelId: string;
   nonce: number;
   cumulativeAmount: string;
+  /** On-chain collateral locked in the channel, base (micro) units, decimal. */
+  depositTotal?: string;
+  /** Spendable balance = depositTotal − cumulativeAmount (clamped ≥ 0), decimal. */
+  availableBalance?: string;
 }
 
 /** `GET /channels` — list tracked channels with nonce watermarks. */

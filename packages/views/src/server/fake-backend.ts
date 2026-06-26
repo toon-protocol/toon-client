@@ -10,6 +10,9 @@ import { type NostrEvent, type NostrFilter } from '../types.js';
 import {
   type AppBackend,
   type AppStatus,
+  type BalanceView,
+  type ChannelView,
+  type FundWalletView,
   type PublishResult,
   type SwapRequest,
   type SwapResponse,
@@ -168,6 +171,38 @@ export class FakeBackend implements AppBackend {
       cumulativeSource: source,
       cumulativeTarget: target,
       state: 'completed',
+    });
+  }
+
+  /**
+   * Tracked channels with deterministic balances so the wallet/channel-list
+   * atoms render stably. available = depositTotal − cumulativeAmount.
+   */
+  channels(): Promise<{ channels: ChannelView[] }> {
+    return Promise.resolve({
+      channels: [
+        { channelId: 'fake-channel-1', nonce: 12, cumulativeAmount: '4500000', depositTotal: '10000000', availableBalance: '5500000' },
+        { channelId: 'fake-channel-2', nonce: 3, cumulativeAmount: '800000', depositTotal: '2000000', availableBalance: '1200000' },
+      ],
+    });
+  }
+
+  /** Deterministic per-chain wallet balances (USDC, micro-units). */
+  balances(): Promise<{ balances: BalanceView[] }> {
+    return Promise.resolve({
+      balances: [
+        { chain: 'evm', address: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F', amount: '125500000', asset: 'USDC', assetScale: 6 },
+        { chain: 'solana', address: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', amount: '48200000', asset: 'USDC', assetScale: 6 },
+      ],
+    });
+  }
+
+  /** Canned faucet drip echo (devnet). */
+  fundWallet(req: { chain?: string; address?: string }): Promise<FundWalletView> {
+    return Promise.resolve({
+      chain: req.chain ?? 'evm',
+      address: req.address ?? '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+      faucetUrl: 'https://faucet.devnet.toonprotocol.dev',
     });
   }
 

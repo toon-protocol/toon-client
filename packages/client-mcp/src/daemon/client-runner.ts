@@ -115,6 +115,7 @@ export interface ToonClientLike {
   getTrackedChannels(): string[];
   getChannelNonce(channelId: string): number;
   getChannelCumulativeAmount(channelId: string): bigint;
+  getChannelDepositTotal(channelId: string): bigint;
   sendSwapPacket(params: {
     destination: string;
     amount: bigint;
@@ -1135,12 +1136,17 @@ export class ClientRunner {
       for (const channelId of apex.client.getTrackedChannels()) {
         if (seen.has(channelId)) continue;
         seen.add(channelId);
+        const cumulative = apex.client.getChannelCumulativeAmount(channelId);
+        const depositTotal = apex.client.getChannelDepositTotal(channelId);
+        // Available (spendable) balance = locked collateral − cumulative spent.
+        // Clamp at 0 so an over-spend estimate never surfaces as negative.
+        const available = depositTotal > cumulative ? depositTotal - cumulative : 0n;
         channels.push({
           channelId,
           nonce: apex.client.getChannelNonce(channelId),
-          cumulativeAmount: apex.client
-            .getChannelCumulativeAmount(channelId)
-            .toString(),
+          cumulativeAmount: cumulative.toString(),
+          depositTotal: depositTotal.toString(),
+          availableBalance: available.toString(),
         });
       }
     }

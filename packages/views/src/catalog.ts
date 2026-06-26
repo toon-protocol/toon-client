@@ -8,7 +8,7 @@
  * `@toon-protocol/client-mcp` never imports the React bundle.
  */
 
-import { OPEN_CHANNEL_TOOL, SWAP_TOOL } from './tool-names.js';
+import { FUND_WALLET_TOOL, OPEN_CHANNEL_TOOL, SWAP_TOOL } from './tool-names.js';
 
 export interface AtomWriteMeta {
   name: string;
@@ -208,6 +208,62 @@ export const ATOM_CATALOG: AtomMeta[] = [
       'bootstrapping state (badge), uptime, settlement chain + fee, relay (url, ' +
       'connected, buffered, subscriptions), transport, per-chain readiness, and ' +
       'identity (npub + chain addresses). No props; use to answer "show me my status".',
+  },
+
+  // wallet — manage wallets + payment channels (live reads from toon_balances /
+  // toon_channels; faucet via toon_fund_wallet). No key material in the UI.
+  {
+    id: 'wallet-overview',
+    description:
+      'Wallet dashboard: per-chain address (with copy-to-share) from the live ' +
+      'identity, enriched with on-chain token balance (toon_balances) when ' +
+      'available. Optional devnet "Fund" action drips faucet test funds (receives, ' +
+      'not a spend). Use to answer "show my wallet" / "what is my address".',
+    writes: [{ name: FUND_WALLET_TOOL }],
+  },
+  {
+    id: 'channel-list',
+    description:
+      'Live list of tracked payment channels (read from toon_channels): channelId, ' +
+      'nonce watermark, and available (spendable) balance / locked deposit. The ' +
+      'read variant of channel-card; use to answer "show my channels".',
+  },
+
+  // loading — placeholders the agent renders WHILE it works out the real view.
+  // Render one of these as a first toon_render, then replace with the finished
+  // ViewSpec once the journey is resolved. No data binds, no kinds.
+  {
+    id: 'skeleton',
+    description:
+      'Pulsing placeholder silhouette to render while the real view loads. ' +
+      'Use as an immediate first render, then replace with the finished view.',
+    propsSchema: {
+      variant: "'lines' | 'avatar' | 'card' (default 'lines')",
+      lines: 'number (line count for the lines variant, default 3)',
+      width: 'string (optional max-width, e.g. "24rem")',
+    },
+  },
+  {
+    id: 'loading',
+    description:
+      'A spinner with an optional status line. Set `message` to narrate what ' +
+      'you are doing (e.g. "Resolving balances…") while you compute the real view.',
+    propsSchema: {
+      message: 'string (status line, optional)',
+      size: "'sm' | 'md' | 'lg' (optional)",
+    },
+  },
+  {
+    id: 'progress-steps',
+    description:
+      'A numbered stepper for a multi-step journey (e.g. Close → Wait → Settle). ' +
+      'Steps before `active` show as done, `active` is highlighted, later steps ' +
+      'are pending; mark a failed step with `error`.',
+    propsSchema: {
+      steps: 'string[] (step labels in order)',
+      active: 'number (0-based index of the current step)',
+      error: 'number (0-based index of a failed step, optional)',
+    },
   },
 
   // fallback
