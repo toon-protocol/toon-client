@@ -36,6 +36,10 @@ import type {
   BalancesResponse,
   ChannelDepositRequest,
   ChannelDepositResponse,
+  CloseChannelRequest,
+  CloseChannelResponse,
+  SettleChannelRequest,
+  SettleChannelResponse,
   ChannelsResponse,
   ChainStatus,
   EventsResponse,
@@ -127,6 +131,12 @@ export interface ToonClientLike {
     channelId: string,
     amount: string
   ): Promise<{ channelId: string; txHash?: string; depositTotal: string }>;
+  closeChannel(
+    channelId: string
+  ): Promise<{ channelId: string; txHash?: string; closedAt: string; settleableAt: string }>;
+  settleChannel(channelId: string): Promise<{ channelId: string; txHash?: string }>;
+  getChannelCloseState(channelId: string): 'open' | 'closing' | 'settleable' | 'settled';
+  getSettleableAt(channelId: string): bigint | undefined;
   sendSwapPacket(params: {
     destination: string;
     amount: bigint;
@@ -1186,12 +1196,15 @@ export class ClientRunner {
         // Available (spendable) balance = locked collateral − cumulative spent.
         // Clamp at 0 so an over-spend estimate never surfaces as negative.
         const available = depositTotal > cumulative ? depositTotal - cumulative : 0n;
+        const settleableAt = apex.client.getSettleableAt(channelId);
         channels.push({
           channelId,
           nonce: apex.client.getChannelNonce(channelId),
           cumulativeAmount: cumulative.toString(),
           depositTotal: depositTotal.toString(),
           availableBalance: available.toString(),
+          closeState: apex.client.getChannelCloseState(channelId),
+          ...(settleableAt !== undefined ? { settleableAt: settleableAt.toString() } : {}),
         });
       }
     }
@@ -1216,12 +1229,36 @@ export class ClientRunner {
    * the client signs its own on-chain tx.
    */
   async depositToChannel(req: ChannelDepositRequest): Promise<ChannelDepositResponse> {
+    return this.withTrackingApex(req.channelId, (client) =>
+      client.depositToChannel(req.channelId, req.amount)
+    );
+  }
+
+  /** Close a channel to begin the settlement grace period (withdraw, step 1). */
+  async closeChannel(req: CloseChannelRequest): Promise<CloseChannelResponse> {
+    return this.withTrackingApex(req.channelId, (client) => client.closeChannel(req.channelId));
+  }
+
+  /**
+   * Settle a closed channel to release collateral (withdraw, step 2). The client
+   * enforces the `now >= settleableAt` guard and throws a retryable error if
+   * called early; `mapError` maps that to HTTP 425.
+   */
+  async settleChannel(req: SettleChannelRequest): Promise<SettleChannelResponse> {
+    return this.withTrackingApex(req.channelId, (client) => client.settleChannel(req.channelId));
+  }
+
+  /** Run `fn` against the apex client that tracks `channelId`, else throw. */
+  private async withTrackingApex<T>(
+    channelId: string,
+    fn: (client: ApexConnection['client']) => Promise<T>
+  ): Promise<T> {
     for (const apex of this.apexes.values()) {
-      if (apex.client.getTrackedChannels().includes(req.channelId)) {
-        return apex.client.depositToChannel(req.channelId, req.amount);
+      if (apex.client.getTrackedChannels().includes(channelId)) {
+        return fn(apex.client);
       }
     }
-    throw new Error(`Channel "${req.channelId}" is not tracked by any apex.`);
+    throw new Error(`Channel "${channelId}" is not tracked by any apex.`);
   }
 
   /** Swap source→target asset against a swap peer via the selected apex. */

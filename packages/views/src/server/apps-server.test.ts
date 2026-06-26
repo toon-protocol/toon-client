@@ -73,6 +73,8 @@ describe('TOON apps MCP server (fake-backed)', () => {
         'toon_balances',
         'toon_fund_wallet',
         'toon_channel_deposit',
+        'toon_channel_close',
+        'toon_channel_settle',
       ])
     );
     const render = tools.find((t) => t.name === 'toon_render');
@@ -224,5 +226,25 @@ describe('TOON apps MCP server (fake-backed)', () => {
     expect(sc['channelId']).toBe('fake-channel-1');
     // fake-backend: 10_000_000 base + 5_000_000 delta.
     expect(sc['depositTotal']).toBe('15000000');
+  });
+
+  it('toon_channel_close returns closedAt + settleableAt', async () => {
+    const res = await client.callTool({
+      name: 'toon_channel_close',
+      arguments: { channelId: 'fake-channel-1' },
+    });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    const sc = structured(res);
+    expect(sc['channelId']).toBe('fake-channel-1');
+    expect(sc['settleableAt']).toBeTruthy();
+  });
+
+  it('toon_channel_settle returns a tx', async () => {
+    const res = await client.callTool({
+      name: 'toon_channel_settle',
+      arguments: { channelId: 'fake-channel-1' },
+    });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    expect(structured(res)['channelId']).toBe('fake-channel-1');
   });
 });

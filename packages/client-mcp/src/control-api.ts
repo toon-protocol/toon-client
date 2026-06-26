@@ -224,6 +224,10 @@ export interface ChannelInfo {
   depositTotal?: string;
   /** Spendable balance = depositTotal − cumulativeAmount (clamped ≥ 0), decimal. */
   availableBalance?: string;
+  /** Where the channel sits in the withdraw journey. */
+  closeState?: 'open' | 'closing' | 'settleable' | 'settled';
+  /** Unix SECONDS the channel becomes settleable, when closing. */
+  settleableAt?: string;
 }
 
 /** `GET /channels` — list tracked channels with nonce watermarks. */
@@ -264,6 +268,30 @@ export interface ChannelDepositResponse {
   txHash?: string;
   /** New on-chain deposit total after the deposit, base units, decimal. */
   depositTotal: string;
+}
+
+/** `POST /channels/close` — begin the settlement grace period (withdraw, step 1). */
+export interface CloseChannelRequest {
+  channelId: string;
+}
+
+export interface CloseChannelResponse {
+  channelId: string;
+  txHash?: string;
+  /** Unix SECONDS when close was initiated. */
+  closedAt: string;
+  /** Unix SECONDS the channel becomes settleable (closedAt + settlementTimeout). */
+  settleableAt: string;
+}
+
+/** `POST /channels/settle` — release collateral after the grace period (step 2). */
+export interface SettleChannelRequest {
+  channelId: string;
+}
+
+export interface SettleChannelResponse {
+  channelId: string;
+  txHash?: string;
 }
 
 /**

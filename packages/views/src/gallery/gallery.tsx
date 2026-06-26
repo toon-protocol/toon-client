@@ -21,7 +21,15 @@ import {
   buildCommentFilter,
   buildPRListFilter,
 } from '../filters.js';
-import { OPEN_CHANNEL_TOOL, SWAP_TOOL, PUBLISH_TOOL, FUND_WALLET_TOOL, CHANNEL_DEPOSIT_TOOL } from '../tool-names.js';
+import {
+  OPEN_CHANNEL_TOOL,
+  SWAP_TOOL,
+  PUBLISH_TOOL,
+  FUND_WALLET_TOOL,
+  CHANNEL_DEPOSIT_TOOL,
+  CHANNEL_CLOSE_TOOL,
+  CHANNEL_SETTLE_TOOL,
+} from '../tool-names.js';
 import { PK, CHANNELS, SWAP_PAIR, SETTLEMENT_RECEIPT } from './fixtures.js';
 
 const bridge = createMockBridge();
@@ -47,6 +55,20 @@ const EXTRA: { name: string; description: string; spec: ViewSpec }[] = [
     spec: {
       title: 'Deposit',
       root: { atom: 'deposit-form', actions: { deposit: { tool: CHANNEL_DEPOSIT_TOOL, spendy: true } } },
+    },
+  },
+  {
+    name: 'withdraw-flow',
+    description: 'Close → wait → settle. Stepper + live countdown; Settle gated until settleable.',
+    spec: {
+      title: 'Withdraw',
+      root: {
+        atom: 'withdraw-flow',
+        actions: {
+          close: { tool: CHANNEL_CLOSE_TOOL, spendy: true },
+          settle: { tool: CHANNEL_SETTLE_TOOL, spendy: true },
+        },
+      },
     },
   },
   {

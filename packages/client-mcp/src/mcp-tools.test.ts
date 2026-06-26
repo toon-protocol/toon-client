@@ -16,7 +16,9 @@ describe('TOOL_DEFINITIONS', () => {
       [
         'toon_atoms',
         'toon_balances',
+        'toon_channel_close',
         'toon_channel_deposit',
+        'toon_channel_settle',
         'toon_channels',
         'toon_identity',
         'toon_open_channel',
@@ -202,6 +204,24 @@ describe('dispatchTool', () => {
     const res = await dispatchTool(client, 'toon_channel_deposit', { channelId: 'c1', amount: '500000' });
     expect(depositToChannel).toHaveBeenCalledWith({ channelId: 'c1', amount: '500000' });
     expect(JSON.parse(res.content[0]!.text)).toEqual({ channelId: 'c1', txHash: '0xdep', depositTotal: '1500000' });
+  });
+
+  it('toon_channel_close forwards the channelId', async () => {
+    const closeChannel = vi
+      .fn()
+      .mockResolvedValue({ channelId: 'c1', txHash: '0xc', closedAt: '1000', settleableAt: '2000' });
+    const client = stubClient({ closeChannel });
+    const res = await dispatchTool(client, 'toon_channel_close', { channelId: 'c1' });
+    expect(closeChannel).toHaveBeenCalledWith({ channelId: 'c1' });
+    expect(JSON.parse(res.content[0]!.text)).toMatchObject({ channelId: 'c1', settleableAt: '2000' });
+  });
+
+  it('toon_channel_settle forwards the channelId', async () => {
+    const settleChannel = vi.fn().mockResolvedValue({ channelId: 'c1', txHash: '0xs' });
+    const client = stubClient({ settleChannel });
+    const res = await dispatchTool(client, 'toon_channel_settle', { channelId: 'c1' });
+    expect(settleChannel).toHaveBeenCalledWith({ channelId: 'c1' });
+    expect(JSON.parse(res.content[0]!.text)).toMatchObject({ channelId: 'c1', txHash: '0xs' });
   });
 
   it('toon_http_fetch_paid forwards inputs and returns { status, headers, body }', async () => {

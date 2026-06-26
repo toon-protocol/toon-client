@@ -14,6 +14,8 @@ import {
   BALANCES_TOOL,
   FUND_WALLET_TOOL,
   CHANNEL_DEPOSIT_TOOL,
+  CHANNEL_CLOSE_TOOL,
+  CHANNEL_SETTLE_TOOL,
 } from '../tool-names.js';
 import {
   PROFILES,
@@ -114,6 +116,16 @@ export function createMockBridge(opts: MockBridgeOptions = {}): ViewBridge {
         const { channelId, amount } = args as { channelId?: string; amount?: string };
         const depositTotal = String(10_000_000n + BigInt(amount || '0'));
         return { ok: true, data: { channelId: channelId ?? '', txHash: '0xfakedeposit', depositTotal } };
+      }
+      if (name === CHANNEL_CLOSE_TOOL) {
+        const { channelId } = args as { channelId?: string };
+        // settleableAt a few seconds out so the gallery shows the live countdown.
+        const settleableAt = String(Math.floor(Date.now() / 1000) + 5);
+        return { ok: true, data: { channelId: channelId ?? '', txHash: '0xfakeclose', closedAt: String(Math.floor(Date.now() / 1000)), settleableAt } };
+      }
+      if (name === CHANNEL_SETTLE_TOOL) {
+        const { channelId } = args as { channelId?: string };
+        return { ok: true, data: { channelId: channelId ?? '', txHash: '0xfakesettle' } };
       }
       // Writes (publish/upload/open-channel/swap): pretend success after a beat
       // so the optimistic UI + receipt phases render.

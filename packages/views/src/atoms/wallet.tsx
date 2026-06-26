@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input.js';
 import { Spinner } from '@/components/ui/spinner.js';
 import { MonoId } from '@/components/mono-id.js';
 import { CopyButton } from '@/components/copy-button.js';
+import { Stepper } from './loading.js';
 import {
   type Atom,
   type AtomRenderProps,
@@ -382,10 +383,181 @@ const DepositForm: FC<AtomRenderProps> = ({ readChannels, actions }) => {
   );
 };
 
+// ── withdraw-flow ────────────────────────────────────────────────────────────
+
+const WITHDRAW_STEPS = ['Close channel', 'Wait for timeout', 'Settle'];
+
+/** mm:ss for a remaining-seconds countdown. */
+function mmss(totalSec: number): string {
+  const s = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, '0')}`;
+}
+
+type CloseState = 'open' | 'closing' | 'settleable' | 'settled';
+
+const WithdrawFlow: FC<AtomRenderProps> = ({ readChannels, actions }) => {
+  const [channels, setChannels] = useState<AtomChannel[]>([]);
+  const [channelId, setChannelId] = useState('');
+  // Optimistic override after a close/settle action (readChannels is the
+  // authoritative source but doesn't auto-refresh between actions).
+  const [override, setOverride] = useState<{ closeState?: CloseState; settleableAt?: string }>({});
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  const [busy, setBusy] = useState<null | 'close' | 'settle'>(null);
+  const [error, setError] = useState<string | null>(null);
+  const close = actions['close'];
+  const settle = actions['settle'];
+
+  useEffect(() => {
+    if (!readChannels) return;
+    let cancelled = false;
+    void readChannels()
+      .then((c) => {
+        if (cancelled) return;
+        setChannels(c);
+        const first = c[0];
+        if (first) setChannelId((prev) => prev || first.channelId);
+      })
+      .catch(() => {
+        /* selector stays empty */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [readChannels]);
+
+  // Tick the clock so the countdown + settle gate update live.
+  useEffect(() => {
+    const t = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Reset the optimistic override when the user switches channels.
+  useEffect(() => setOverride({}), [channelId]);
+
+  const channel = channels.find((c) => c.channelId === channelId);
+  const rawState = (override.closeState ?? channel?.closeState ?? 'open') as CloseState;
+  const settleableAt = override.settleableAt ?? channel?.settleableAt;
+  const settleableSec = settleableAt !== undefined ? Number(settleableAt) : undefined;
+  const elapsed = settleableSec !== undefined && nowSec >= settleableSec;
+  // A 'closing' channel whose grace period has elapsed is effectively settleable.
+  const state: CloseState = rawState === 'closing' && elapsed ? 'settleable' : rawState;
+  const activeStep = state === 'open' ? 0 : state === 'closing' ? 1 : state === 'settleable' ? 2 : 3;
+  const remaining = settleableSec !== undefined ? settleableSec - nowSec : 0;
+
+  const onClose = async (): Promise<void> => {
+    if (!channelId || !close) return;
+    setError(null);
+    setBusy('close');
+    const outcome = await close({ channelId });
+    if (!outcome || outcome.ok === false) {
+      setError(outcome?.error ?? 'Close failed.');
+      setBusy(null);
+      return;
+    }
+    const data = (outcome.data ?? {}) as { settleableAt?: string };
+    setOverride({ closeState: 'closing', settleableAt: data.settleableAt });
+    setBusy(null);
+  };
+
+  const onSettle = async (): Promise<void> => {
+    if (!channelId || !settle) return;
+    setError(null);
+    setBusy('settle');
+    const outcome = await settle({ channelId });
+    if (!outcome || outcome.ok === false) {
+      // Retryable (called a hair early) — keep the gate, let the countdown catch up.
+      setError(outcome?.error ?? 'Not settleable yet — try again in a moment.');
+      setBusy(null);
+      return;
+    }
+    setOverride((o) => ({ ...o, closeState: 'settled' }));
+    setBusy(null);
+  };
+
+  if (state === 'settled') {
+    return (
+      <CardShell icon={<Landmark aria-hidden="true" className="size-4" />} title="Withdraw">
+        <div className="flex flex-col gap-3 py-1">
+          <Stepper steps={WITHDRAW_STEPS} active={3} />
+          <p className="text-sm">
+            Settled — collateral released from <MonoId value={channelId} className="text-foreground" />.
+          </p>
+        </div>
+      </CardShell>
+    );
+  }
+
+  return (
+    <CardShell icon={<Landmark aria-hidden="true" className="size-4" />} title="Withdraw">
+      <div className="flex flex-col gap-3 py-1">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">Channel</span>
+          <select
+            value={channelId}
+            onChange={(e) => setChannelId(e.target.value)}
+            disabled={!!busy || channels.length === 0}
+            className="h-9 rounded-md border border-input bg-transparent px-3 font-mono text-xs focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-50"
+          >
+            {channels.length === 0 ? <option value="">No open channels</option> : null}
+            {channels.map((c) => (
+              <option key={c.channelId} value={c.channelId}>
+                {c.channelId.length > 22 ? `${c.channelId.slice(0, 12)}…${c.channelId.slice(-6)}` : c.channelId}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <Stepper steps={WITHDRAW_STEPS} active={activeStep} />
+
+        {state === 'closing' ? (
+          <p className="text-xs text-muted-foreground">
+            Settleable in{' '}
+            <span className="font-mono font-medium text-foreground tabular-nums">{mmss(remaining)}</span>{' '}
+            — the settlement grace period must elapse before collateral is released.
+          </p>
+        ) : null}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] text-muted-foreground/70">
+            Withdraw is two signed on-chain txs (close, then settle).
+          </span>
+          {state === 'open' ? (
+            <Button size="sm" disabled={busy === 'close' || !channelId || !close} onClick={() => void onClose()}>
+              <Coins aria-hidden="true" />
+              {busy === 'close' ? 'Closing…' : 'Close'}
+              <span className="ml-1 text-[10px] opacity-70">(pays)</span>
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              disabled={busy === 'settle' || state !== 'settleable' || !settle}
+              onClick={() => void onSettle()}
+            >
+              <Coins aria-hidden="true" />
+              {busy === 'settle' ? 'Settling…' : 'Settle'}
+              <span className="ml-1 text-[10px] opacity-70">(pays)</span>
+            </Button>
+          )}
+        </div>
+      </div>
+    </CardShell>
+  );
+};
+
 export const walletAtoms: Atom[] = [
   { id: 'wallet-overview', writes: [{ name: 'toon_fund_wallet' }], Component: WalletOverview },
   { id: 'channel-list', Component: ChannelList },
   { id: 'deposit-form', writes: [{ name: 'toon_channel_deposit', spendy: true }], Component: DepositForm },
+  {
+    id: 'withdraw-flow',
+    writes: [
+      { name: 'toon_channel_close', spendy: true },
+      { name: 'toon_channel_settle', spendy: true },
+    ],
+    Component: WithdrawFlow,
+  },
 ];
 
 // Exported for unit tests.

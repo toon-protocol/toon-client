@@ -17,7 +17,13 @@ import {
   type DaemonUploadMediaRequest,
   type DaemonUploadMediaResponse,
 } from './daemon-backend.js';
-import { type ChannelDepositView, type SwapRequest, type SwapResponse } from './backend.js';
+import {
+  type ChannelCloseView,
+  type ChannelDepositView,
+  type ChannelSettleView,
+  type SwapRequest,
+  type SwapResponse,
+} from './backend.js';
 import { type NostrEvent, type NostrFilter } from '../types.js';
 
 const APP_HTML = '<!doctype html><html><body><div id="root"></div></body></html>';
@@ -143,6 +149,14 @@ class FakeDaemonControl implements DaemonControl {
   depositToChannel(body: { channelId: string; amount: string }): Promise<ChannelDepositView> {
     this.deposits.push(body);
     return Promise.resolve({ channelId: body.channelId, txHash: '0xdep', depositTotal: '12000000' });
+  }
+
+  closeChannel(body: { channelId: string }): Promise<ChannelCloseView> {
+    return Promise.resolve({ channelId: body.channelId, txHash: '0xclose', closedAt: '900', settleableAt: '1000' });
+  }
+
+  settleChannel(body: { channelId: string }): Promise<ChannelSettleView> {
+    return Promise.resolve({ channelId: body.channelId, txHash: '0xsettle' });
   }
 }
 

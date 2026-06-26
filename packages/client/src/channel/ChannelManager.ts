@@ -27,6 +27,10 @@ interface ChannelTracking {
    * (#223).
    */
   depositTotal?: bigint;
+  /** Withdraw flow (unix SECONDS): set when close is initiated / becomes settleable / settled. */
+  closedAt?: bigint;
+  settleableAt?: bigint;
+  settledAt?: bigint;
 }
 
 export interface ChannelManagerConfig {
@@ -240,6 +244,11 @@ export class ChannelManager {
           tokenAddress: chainContext?.tokenAddress,
           recipient: chainContext?.recipient,
           depositTotal: chainContext?.depositTotal,
+          // Resume the withdraw-flow timers so a daemon restart mid-grace
+          // doesn't strand funds (the gate can't be evaluated without them).
+          ...(persisted.closedAt !== undefined ? { closedAt: persisted.closedAt } : {}),
+          ...(persisted.settleableAt !== undefined ? { settleableAt: persisted.settleableAt } : {}),
+          ...(persisted.settledAt !== undefined ? { settledAt: persisted.settledAt } : {}),
         });
         return;
       }
@@ -281,13 +290,8 @@ export class ChannelManager {
     tracking.nonce += 1;
     tracking.cumulativeAmount += additionalAmount;
 
-    // Persist updated state
-    if (this.store) {
-      this.store.save(channelId, {
-        nonce: tracking.nonce,
-        cumulativeAmount: tracking.cumulativeAmount,
-      });
-    }
+    // Persist updated state (preserving any withdraw-flow timers).
+    this.persist(channelId);
 
     // Route to appropriate signer for non-EVM chains
     const signer = this.chainSigners.get(tracking.chainType);
@@ -398,6 +402,65 @@ export class ChannelManager {
       throw new Error(`Channel "${channelId}" is not being tracked.`);
     }
     tracking.depositTotal = total;
+  }
+
+  /** Persist a channel's full nonce/amount + withdraw-timer state to the store. */
+  private persist(channelId: string): void {
+    if (!this.store) return;
+    const t = this.channels.get(channelId);
+    if (!t) return;
+    this.store.save(channelId, {
+      nonce: t.nonce,
+      cumulativeAmount: t.cumulativeAmount,
+      ...(t.closedAt !== undefined ? { closedAt: t.closedAt } : {}),
+      ...(t.settleableAt !== undefined ? { settleableAt: t.settleableAt } : {}),
+      ...(t.settledAt !== undefined ? { settledAt: t.settledAt } : {}),
+    });
+  }
+
+  /**
+   * Record that a channel was closed (withdraw flow): stores `closedAt` +
+   * `settleableAt` (unix SECONDS) so the grace timer survives a daemon restart.
+   */
+  setChannelClosed(channelId: string, closedAt: bigint, settleableAt: bigint): void {
+    const tracking = this.channels.get(channelId);
+    if (!tracking) {
+      throw new Error(`Channel "${channelId}" is not being tracked.`);
+    }
+    tracking.closedAt = closedAt;
+    tracking.settleableAt = settleableAt;
+    this.persist(channelId);
+  }
+
+  /** Record that a channel was settled (collateral released). */
+  setChannelSettled(channelId: string, settledAt: bigint): void {
+    const tracking = this.channels.get(channelId);
+    if (!tracking) {
+      throw new Error(`Channel "${channelId}" is not being tracked.`);
+    }
+    tracking.settledAt = settledAt;
+    this.persist(channelId);
+  }
+
+  /** The `settleableAt` timestamp (unix seconds) for a closed channel, if set. */
+  getSettleableAt(channelId: string): bigint | undefined {
+    return this.channels.get(channelId)?.settleableAt;
+  }
+
+  /**
+   * Where a channel sits in the withdraw journey, from the tracked timers:
+   * `open` (never closed) → `closing` (closed, grace not elapsed) →
+   * `settleable` (grace elapsed) → `settled`. `nowSec` is injectable for tests.
+   */
+  getChannelCloseState(
+    channelId: string,
+    nowSec = BigInt(Math.floor(Date.now() / 1000))
+  ): 'open' | 'closing' | 'settleable' | 'settled' {
+    const t = this.channels.get(channelId);
+    if (!t || t.closedAt === undefined) return 'open';
+    if (t.settledAt !== undefined) return 'settled';
+    if (t.settleableAt !== undefined && nowSec >= t.settleableAt) return 'settleable';
+    return 'closing';
   }
 
   /**

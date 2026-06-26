@@ -32,7 +32,9 @@ import {
   APP_RESOURCE_URI,
   ATOMS_TOOL,
   BALANCES_TOOL,
+  CHANNEL_CLOSE_TOOL,
   CHANNEL_DEPOSIT_TOOL,
+  CHANNEL_SETTLE_TOOL,
   CHANNELS_TOOL,
   FUND_WALLET_TOOL,
   OPEN_CHANNEL_TOOL,
@@ -334,6 +336,38 @@ export function registerToonApps(server: McpServer, opts: RegisterToonAppsOption
     async (args: { channelId: string; amount: string }) => {
       const res = await opts.backend.depositToChannel(args);
       return result(`Deposited into ${res.channelId}; new total ${res.depositTotal}.`, { ...res });
+    }
+  );
+
+  // toon_channel_close — spendy: begin the settlement grace period (withdraw 1).
+  server.registerTool(
+    CHANNEL_CLOSE_TOOL,
+    {
+      description:
+        'Spendy: close a payment channel to begin the settlement grace period ' +
+        '(withdraw, step 1). The backend signs on-chain; the UI never holds keys. ' +
+        'Returns closedAt + settleableAt — settle once now ≥ settleableAt.',
+      inputSchema: { channelId: z.string() },
+    },
+    async (args: { channelId: string }) => {
+      const res = await opts.backend.closeChannel(args);
+      return result(`Closed ${res.channelId}; settleable at ${res.settleableAt}.`, { ...res });
+    }
+  );
+
+  // toon_channel_settle — spendy: release collateral after the grace period (2).
+  server.registerTool(
+    CHANNEL_SETTLE_TOOL,
+    {
+      description:
+        'Spendy: settle a closed channel after its grace period to release ' +
+        'collateral (withdraw, step 2). Fails as retryable if called before ' +
+        'settleableAt. The backend signs on-chain.',
+      inputSchema: { channelId: z.string() },
+    },
+    async (args: { channelId: string }) => {
+      const res = await opts.backend.settleChannel(args);
+      return result(`Settled ${res.channelId}.`, { ...res });
     }
   );
 }

@@ -720,4 +720,61 @@ describe('OnChainChannelClient', () => {
       ).rejects.toThrow(/context/i);
     });
   });
+
+  describe('closeChannel / settleChannel (EVM)', () => {
+    // Open an EVM channel so channelContext is populated, then clear the mocks.
+    async function openEvmChannel(): Promise<string> {
+      mockReadContract.mockResolvedValueOnce(0n);
+      mockWriteContract.mockResolvedValueOnce('0xapprove');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+      mockWriteContract.mockResolvedValueOnce('0xopen');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({
+        logs: [{ topics: ['0xev', TEST_CHANNEL_ID, '0xp1', '0xp2'], data: '0x' }],
+      });
+      mockWriteContract.mockResolvedValueOnce('0xdeposit');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+      const res = await client.openChannel({
+        peerId: 'p',
+        chain: TEST_CHAIN,
+        token: TEST_TOKEN,
+        tokenNetwork: TEST_TOKEN_NETWORK,
+        peerAddress: TEST_PEER_ADDRESS,
+        initialDeposit: '100000',
+        settlementTimeout: 86400,
+      });
+      vi.clearAllMocks();
+      return res.channelId!;
+    }
+
+    it('close writes closeChannel and computes settleableAt from the channels() view', async () => {
+      const channelId = await openEvmChannel();
+      mockWriteContract.mockResolvedValueOnce('0xclose');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+      // channels() view: [settlementTimeout=100, state=2 (closed), closedAt=1000, ...]
+      mockReadContract.mockResolvedValueOnce([100n, 2, 1000n, 900n, '0xa', '0xb']);
+
+      const out = await client.closeChannel(channelId);
+
+      expect((mockWriteContract.mock.calls[0]![0] as { functionName: string }).functionName).toBe('closeChannel');
+      expect(out.closedAt).toBe(1000n);
+      expect(out.settlementTimeout).toBe(100n);
+      expect(out.settleableAt).toBe(1100n); // closedAt + settlementTimeout
+    });
+
+    it('settle writes settleChannel', async () => {
+      const channelId = await openEvmChannel();
+      mockWriteContract.mockResolvedValueOnce('0xsettle');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+
+      const out = await client.settleChannel(channelId);
+
+      expect(out.txHash).toBe('0xsettle');
+      expect((mockWriteContract.mock.calls[0]![0] as { functionName: string }).functionName).toBe('settleChannel');
+    });
+
+    it('close/settle throw for an unknown channel', async () => {
+      await expect(client.closeChannel('0xunknown')).rejects.toThrow(/context/i);
+      await expect(client.settleChannel('0xunknown')).rejects.toThrow(/context/i);
+    });
+  });
 });

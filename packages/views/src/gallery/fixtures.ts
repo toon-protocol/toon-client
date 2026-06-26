@@ -241,8 +241,10 @@ export const STATUS = {
 
 /** Live wallet-read fixtures (toon_channels / toon_balances seams). */
 export const WALLET_CHANNELS = [
-  { channelId: '0xCH4NN3L00aa11bb22cc33dd44ee55ff', nonce: 42, cumulativeAmount: '4500000', depositTotal: '10000000', availableBalance: '5500000' },
-  { channelId: '0xCH4NN3L99zz88yy77xx66ww55vv44uu', nonce: 7, cumulativeAmount: '800000', depositTotal: '2000000', availableBalance: '1200000' },
+  { channelId: '0xCH4NN3L00aa11bb22cc33dd44ee55ff', nonce: 42, cumulativeAmount: '4500000', depositTotal: '10000000', availableBalance: '5500000', closeState: 'open' as const },
+  // Already settleable (settleableAt in the past) so the withdraw-flow shows the
+  // enabled Settle state when this channel is selected.
+  { channelId: '0xCH4NN3L99zz88yy77xx66ww55vv44uu', nonce: 7, cumulativeAmount: '800000', depositTotal: '2000000', availableBalance: '1200000', closeState: 'settleable' as const, settleableAt: '1000' },
 ];
 export const WALLET_BALANCES = [
   { chain: 'evm', address: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F', amount: '125500000', asset: 'USDC', assetScale: 6 },

@@ -12,7 +12,7 @@
  *
  * All colour rides the design tokens, so light/dark are handled for free.
  */
-import { type FC } from 'react';
+import { type FC, type ReactNode } from 'react';
 import { Check, X } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton.js';
 import { Spinner } from '@/components/ui/spinner.js';
@@ -103,13 +103,20 @@ type StepState = 'done' | 'active' | 'pending' | 'error';
 /**
  * A vertical numbered stepper. `active` is the 0-based current step; steps
  * before it read as done (check), the active one is ringed, later ones are
- * muted. An optional `error` index marks a failed step.
+ * muted. An optional `error` index marks a failed step. Exported so the
+ * withdraw flow (and other multi-step journeys) can reuse the exact visual.
  */
-const ProgressSteps: FC<AtomRenderProps> = ({ props }) => {
-  const steps = Array.isArray(props['steps']) ? (props['steps'] as unknown[]).map((s) => str(s)) : [];
+export function Stepper({
+  steps,
+  active,
+  error = -1,
+}: {
+  steps: string[];
+  active: number;
+  error?: number;
+}): ReactNode {
   if (steps.length === 0) return null;
-  const active = Math.max(0, int(props['active'], 0));
-  const errorIdx = typeof props['error'] === 'number' ? Math.trunc(props['error']) : -1;
+  const errorIdx = error;
 
   const stateOf = (i: number): StepState => {
     if (i === errorIdx) return 'error';
@@ -170,6 +177,14 @@ const ProgressSteps: FC<AtomRenderProps> = ({ props }) => {
       })}
     </ol>
   );
+}
+
+/** The `progress-steps` atom: parses ViewSpec props and renders the {@link Stepper}. */
+const ProgressSteps: FC<AtomRenderProps> = ({ props }) => {
+  const steps = Array.isArray(props['steps']) ? (props['steps'] as unknown[]).map((s) => str(s)) : [];
+  const active = Math.max(0, int(props['active'], 0));
+  const error = typeof props['error'] === 'number' ? Math.trunc(props['error']) : undefined;
+  return <Stepper steps={steps} active={active} {...(error !== undefined ? { error } : {})} />;
 };
 
 export const loadingAtoms: Atom[] = [

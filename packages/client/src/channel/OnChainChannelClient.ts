@@ -48,6 +48,20 @@ const TOKEN_NETWORK_ABI = [
     outputs: [],
   },
   {
+    name: 'closeChannel',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'channelId', type: 'bytes32' }],
+    outputs: [],
+  },
+  {
+    name: 'settleChannel',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'channelId', type: 'bytes32' }],
+    outputs: [],
+  },
+  {
     name: 'channels',
     type: 'function',
     stateMutability: 'view',
@@ -405,6 +419,119 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     });
     await publicClient.waitForTransactionReceipt({ hash: depositHash });
     return { txHash: depositHash, depositTotal: newTotal };
+  }
+
+  /**
+   * Close a channel to begin the settlement grace period. Dispatches by the
+   * channel's cached chain context. EVM `closeChannel` is unilateral (channelId
+   * only); after it confirms we read the `channels()` view for the AUTHORITATIVE
+   * `closedAt` + `settlementTimeout` (block-timestamp seconds) and compute
+   * `settleableAt = closedAt + settlementTimeout`. Solana/Mina are follow-ups.
+   */
+  async closeChannel(
+    channelId: string
+  ): Promise<{ txHash?: string; closedAt: bigint; settlementTimeout: bigint; settleableAt: bigint }> {
+    const ctx = this.channelContext.get(channelId);
+    if (!ctx) {
+      throw new Error(
+        `No on-chain context for channel "${channelId}" — it must be opened by this client first.`
+      );
+    }
+    const chainPrefix = ctx.chain.split(':')[0];
+    if (chainPrefix === 'solana' || chainPrefix === 'mina') {
+      throw new Error(
+        `Close on ${chainPrefix} is not yet supported (EVM today; Solana/Mina follow-up).`
+      );
+    }
+    const { publicClient, walletClient } = this.createClients(ctx.chain);
+    const tokenNetworkAddr = ctx.tokenNetworkAddress as Hex;
+    const closeHash = await walletClient.writeContract({
+      address: tokenNetworkAddr,
+      abi: TOKEN_NETWORK_ABI,
+      functionName: 'closeChannel',
+      args: [channelId as Hex],
+    });
+    await publicClient.waitForTransactionReceipt({ hash: closeHash });
+
+    const info = await this.readEvmChannel(publicClient, tokenNetworkAddr, channelId);
+    return {
+      txHash: closeHash,
+      closedAt: info.closedAt,
+      settlementTimeout: info.settlementTimeout,
+      settleableAt: info.closedAt + info.settlementTimeout,
+    };
+  }
+
+  /**
+   * Settle a closed channel after its grace period to release collateral. EVM
+   * `settleChannel` is unilateral (channelId only); the contract itself reverts
+   * before `closedAt + settlementTimeout`, so an early call surfaces as a tx
+   * revert here — but the caller (ToonClient/daemon) enforces the time guard
+   * BEFORE spending gas. Solana/Mina are follow-ups.
+   */
+  async settleChannel(channelId: string): Promise<{ txHash?: string }> {
+    const ctx = this.channelContext.get(channelId);
+    if (!ctx) {
+      throw new Error(
+        `No on-chain context for channel "${channelId}" — it must be opened by this client first.`
+      );
+    }
+    const chainPrefix = ctx.chain.split(':')[0];
+    if (chainPrefix === 'solana' || chainPrefix === 'mina') {
+      throw new Error(
+        `Settle on ${chainPrefix} is not yet supported (EVM today; Solana/Mina follow-up).`
+      );
+    }
+    const { publicClient, walletClient } = this.createClients(ctx.chain);
+    const settleHash = await walletClient.writeContract({
+      address: ctx.tokenNetworkAddress as Hex,
+      abi: TOKEN_NETWORK_ABI,
+      functionName: 'settleChannel',
+      args: [channelId as Hex],
+    });
+    await publicClient.waitForTransactionReceipt({ hash: settleHash });
+    return { txHash: settleHash };
+  }
+
+  /**
+   * Read the EVM channel's close-relevant fields so a restarted daemon can
+   * recompute the grace timer from chain (chain is authoritative). EVM-only.
+   */
+  async getChannelCloseInfo(channelId: string): Promise<{
+    status: ChannelState['status'];
+    closedAt: bigint;
+    settlementTimeout: bigint;
+    settleableAt: bigint;
+  }> {
+    const ctx = this.channelContext.get(channelId);
+    if (!ctx) throw new Error(`No on-chain context for channel "${channelId}".`);
+    const chainPrefix = ctx.chain.split(':')[0];
+    if (chainPrefix === 'solana' || chainPrefix === 'mina') {
+      throw new Error(`getChannelCloseInfo on ${chainPrefix} is not supported.`);
+    }
+    const { publicClient } = this.createClients(ctx.chain);
+    const info = await this.readEvmChannel(publicClient, ctx.tokenNetworkAddress as Hex, channelId);
+    return {
+      status: STATE_MAP[info.state] ?? 'open',
+      closedAt: info.closedAt,
+      settlementTimeout: info.settlementTimeout,
+      settleableAt: info.closedAt + info.settlementTimeout,
+    };
+  }
+
+  /** Read + destructure the EVM `channels(bytes32)` view. */
+  private async readEvmChannel(
+    publicClient: ReturnType<OnChainChannelClient['createClients']>['publicClient'],
+    tokenNetworkAddr: Hex,
+    channelId: string
+  ): Promise<{ settlementTimeout: bigint; state: number; closedAt: bigint }> {
+    const res = (await publicClient.readContract({
+      address: tokenNetworkAddr,
+      abi: TOKEN_NETWORK_ABI,
+      functionName: 'channels',
+      args: [channelId as Hex],
+    })) as readonly [bigint, number, bigint, bigint, string, string];
+    return { settlementTimeout: res[0], state: Number(res[1]), closedAt: res[2] };
   }
 
   /**
