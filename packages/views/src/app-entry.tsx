@@ -21,15 +21,14 @@ function ViewHost({ bridge }: { bridge: ViewBridge }): ReactNode {
   if (spec == null) {
     return <div className="p-4 text-sm text-muted-foreground">Waiting for a view…</div>;
   }
-  // Present the view as the gallery does: a rounded, bordered panel on a faintly
-  // tinted page, capped to a comfortable reading width and centered. Without this
-  // the app just fills the iframe edge-to-edge as a square slab and the
-  // self-framing atom cards bleed into the corners.
+  // Render on a TRANSPARENT background so the host's own (rounded) message
+  // container shows through — no opaque slab with square corners boxing the
+  // view in. We only inset the content (padding) and cap it to a comfortable
+  // reading width; the atoms are self-framing rounded cards, so they read
+  // correctly straight on the host surface.
   return (
-    <div className="bg-muted/30 p-3 sm:p-4">
-      <div className="mx-auto max-w-2xl overflow-hidden rounded-xl border border-border bg-background p-4 shadow-sm">
-        <ViewSpecRenderer spec={spec} bridge={bridge} />
-      </div>
+    <div className="mx-auto max-w-2xl p-3 sm:p-4">
+      <ViewSpecRenderer spec={spec} bridge={bridge} />
     </div>
   );
 }
