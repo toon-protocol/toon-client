@@ -196,8 +196,10 @@ describe('ViewSpecRenderer', () => {
     expect(call?.args['kind']).toBe(3);
   });
 
-  it('MediaUploader — spendy confirm cancelled — shows upload-failed, not success', async () => {
-    const { bridge } = mockBridge([], async () => false);
+  it('MediaUploader — spendy consent declined — shows a benign cancel note, NOT upload-failed', async () => {
+    // A declined consent prompt is user-initiated and benign: no bytes were
+    // uploaded, so it must not be rendered as an "Upload failed" error (#170).
+    const { bridge, calls } = mockBridge([], async () => false);
     const { container } = render(
       <ViewSpecRenderer
         bridge={bridge}
@@ -217,8 +219,75 @@ describe('ViewSpecRenderer', () => {
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
 
-    await waitFor(() => expect(screen.getByText(/upload failed/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/upload cancelled/i)).toBeTruthy());
+    expect(screen.queryByText(/upload failed/i)).toBeNull();
     expect(screen.queryByText(/uploaded successfully/i)).toBeNull();
+    // Declined upstream of the daemon: the upload tool never ran.
+    expect(calls.find((c) => c.name === 'toon_upload')).toBeUndefined();
+  });
+
+  it('spendy action with no bridge.confirm — renders an in-iframe consent prompt (not window.confirm)', async () => {
+    // The real ext-apps bridge provides no `confirm`, and the host iframe blocks
+    // `window.confirm`. The runtime must render its own consent prompt and only
+    // fire the spendy tool after the user confirms it (#170).
+    const { bridge, calls } = mockBridge([]); // no confirmFn injected
+    const { container } = render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'media-uploader',
+            actions: {
+              upload: { tool: 'toon_upload', args: { kind: 20 }, spendy: true },
+            },
+          },
+        }}
+      />
+    );
+
+    const inputEl = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
+    Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
+    fireEvent.change(inputEl);
+
+    // A rendered consent dialog appears — the tool has NOT fired yet.
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toBeTruthy();
+    expect(calls.find((c) => c.name === 'toon_upload')).toBeUndefined();
+
+    // Confirming the prompt fires the spendy tool with the spendy flag set.
+    fireEvent.click(screen.getByText(/confirm & pay/i));
+    await waitFor(() => expect(calls.find((c) => c.name === 'toon_upload')).toBeTruthy());
+    expect(calls.find((c) => c.name === 'toon_upload')?.args['spendy']).toBe(true);
+  });
+
+  it('in-iframe consent prompt — Cancel declines the spend (benign), tool never fires', async () => {
+    const { bridge, calls } = mockBridge([]); // no confirmFn injected
+    const { container } = render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'media-uploader',
+            actions: {
+              upload: { tool: 'toon_upload', args: { kind: 20 }, spendy: true },
+            },
+          },
+        }}
+      />
+    );
+
+    const inputEl = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
+    Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
+    fireEvent.change(inputEl);
+
+    await screen.findByRole('dialog');
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(screen.getByText(/upload cancelled/i)).toBeTruthy());
+    expect(screen.queryByText(/upload failed/i)).toBeNull();
+    expect(calls.find((c) => c.name === 'toon_upload')).toBeUndefined();
   });
 
   it('MediaUploader surfaces the underlying leg error, not just a generic message', async () => {
