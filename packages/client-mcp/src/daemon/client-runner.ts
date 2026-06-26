@@ -985,10 +985,13 @@ export class ClientRunner {
     }
     const blobData = new Uint8Array(Buffer.from(req.dataBase64, 'base64'));
     const fee = req.fee !== undefined ? BigInt(req.fee) : apex.feePerEvent;
+    // ── Leg 1: Arweave blob upload ──────────────────────────────────────────
     // Blob storage terminates at the store/DVM backend (POST /store → Arweave),
-    // so it routes to the configured store destination (e.g. g.proxy.store),
-    // defaulting to `destination` for back-compat. This makes uploads work via
-    // the default apex without the caller hand-passing a store `btpUrl`.
+    // so it routes to the configured store destination (e.g. g.proxy.store,
+    // derived from the `….relay.store` anchor by #143). This makes uploads work
+    // via the default apex without the caller hand-passing a store `btpUrl`. A
+    // failure here is distinct from the kind:1-equivalent publish below; label
+    // it so the UI/agent can tell the upload leg apart from the publish leg.
     const upload = await apex.client.uploadBlob({
       blobData,
       destination: this.config.storeDestination,
@@ -996,7 +999,9 @@ export class ClientRunner {
       ilpAmount: fee,
     });
     if (!upload.success || !upload.txId) {
-      throw new PublishRejectedError(upload.error ?? 'blob upload rejected');
+      throw new PublishRejectedError(
+        `Arweave upload leg failed (store ${this.config.storeDestination}): ${upload.error ?? 'blob upload rejected'}`
+      );
     }
     const { url, fallbacks } = arweaveUrls(upload.txId, this.config.arweaveGateways);
     const kind = req.kind ?? 1063;
@@ -1006,14 +1011,24 @@ export class ClientRunner {
       tags: this.buildMediaTags(kind, url, fallbacks, req),
       content: req.caption ?? '',
     });
-    // Step 1 (blob storage) goes through `req.btpUrl` — which may be a store/DVM
-    // apex (g.proxy.store) that only serves POST /store. The NIP-94 reference
-    // event is a normal Nostr write, so it must publish through a RELAY apex, not
-    // the DVM. Omit `btpUrl` so it routes via the default (relay) apex.
-    const pub = await this.publish({
-      event: signed,
-      ...(req.fee ? { fee: req.fee } : {}),
-    });
+    // ── Leg 2: publish the NIP-94/NIP-68 reference event ────────────────────
+    // The reference event is a normal Nostr write, so it must publish through a
+    // RELAY apex, not the store/DVM. `this.publish` routes it to the configured
+    // publish destination (e.g. g.proxy.relay) — the exact path #143 made kind:1
+    // work. Omit `btpUrl` so it uses the default (relay) apex. Label any failure
+    // here as the post-upload publish leg (the blob already stored OK).
+    let pub: PublishResponse;
+    try {
+      pub = await this.publish({
+        event: signed,
+        ...(req.fee ? { fee: req.fee } : {}),
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new PublishRejectedError(
+        `kind:${kind} publish leg failed after upload (blob stored at ${url}): ${detail}`
+      );
+    }
     return { ...pub, url, txId: upload.txId };
   }
 

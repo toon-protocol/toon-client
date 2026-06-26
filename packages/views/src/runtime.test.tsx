@@ -184,6 +184,43 @@ describe('ViewSpecRenderer', () => {
     expect(screen.queryByText(/uploaded successfully/i)).toBeNull();
   });
 
+  it('MediaUploader surfaces the underlying leg error, not just a generic message', async () => {
+    // The daemon labels which leg failed (Arweave upload vs. post-upload
+    // publish); the uploader must propagate that string so it's diagnosable.
+    const legError =
+      'Arweave upload leg failed (store g.proxy.store): Event rejected: F02 - no route';
+    const bridge: ViewBridge = {
+      async callTool(name) {
+        if (name === 'toon_upload') return { ok: false, error: legError };
+        return { ok: true };
+      },
+      notifyModel() {},
+      onSpec() {
+        return () => {};
+      },
+    };
+    const { container } = render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'media-uploader',
+            actions: { upload: { tool: 'toon_upload', args: { kind: 20 } } },
+          },
+        }}
+      />
+    );
+
+    const inputEl = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
+    Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
+    fireEvent.change(inputEl);
+
+    await waitFor(() => expect(screen.getByText(/Arweave upload leg failed/i)).toBeTruthy());
+    expect(screen.getByText(/F02 - no route/i)).toBeTruthy();
+    expect(screen.queryByText(/uploaded successfully/i)).toBeNull();
+  });
+
   it('MediaUploader picks a file, base64-encodes it, and fires toon_upload', async () => {
     const { bridge, calls } = mockBridge([], async () => true);
     const { container } = render(
