@@ -375,6 +375,19 @@ export class ChannelManager {
   }
 
   /**
+   * Gets the on-chain deposit total (collateral locked at open / via deposits)
+   * for a tracked channel, or `0n` when none was captured. The available
+   * (spendable) balance is `depositTotal - cumulativeAmount`.
+   */
+  getDepositTotal(channelId: string): bigint {
+    const tracking = this.channels.get(channelId);
+    if (!tracking) {
+      throw new Error(`Channel "${channelId}" is not being tracked.`);
+    }
+    return tracking.depositTotal ?? 0n;
+  }
+
+  /**
    * Gets all tracked channel IDs.
    */
   getTrackedChannels(): string[] {

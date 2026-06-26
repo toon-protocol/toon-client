@@ -942,6 +942,15 @@ export class ToonClient {
   }
 
   /**
+   * Gets the on-chain deposit total (locked collateral) for a tracked channel.
+   * The available (spendable) balance is this minus the cumulative spent amount.
+   */
+  getChannelDepositTotal(channelId: string): bigint {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    return this.channelManager.getDepositTotal(channelId);
+  }
+
+  /**
    * Resolves an ILP destination address to a peer ID.
    * Convention: destination "g.toon.peer1" → peerId "peer1" (last segment).
    * Falls back to first known peer if no match.

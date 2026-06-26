@@ -97,6 +97,9 @@ class FakeClient implements ToonClientLike {
   getChannelCumulativeAmount(): bigint {
     return BigInt(this.nonce);
   }
+  getChannelDepositTotal(): bigint {
+    return 1_000_000n;
+  }
   async sendSwapPacket(): Promise<{ accepted: boolean }> {
     return { accepted: true };
   }
@@ -288,7 +291,13 @@ describe('control-plane routes', () => {
     it('GET /channels lists the tracked channel', async () => {
       const res = await app.inject({ method: 'GET', url: '/channels' });
       expect(res.json().channels).toEqual([
-        { channelId: 'chan-1', nonce: 0, cumulativeAmount: '0' },
+        {
+          channelId: 'chan-1',
+          nonce: 0,
+          cumulativeAmount: '0',
+          depositTotal: '1000000',
+          availableBalance: '1000000',
+        },
       ]);
     });
 

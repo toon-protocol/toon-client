@@ -69,6 +69,9 @@ describe('TOON apps MCP server (fake-backed)', () => {
         'toon_open_channel',
         'toon_swap',
         'toon_status',
+        'toon_channels',
+        'toon_balances',
+        'toon_fund_wallet',
       ])
     );
     const render = tools.find((t) => t.name === 'toon_render');
@@ -180,5 +183,33 @@ describe('TOON apps MCP server (fake-backed)', () => {
     expect(claims.length).toBe(1);
     expect(claims[0]?.targetAmount).toBe('1000000');
     expect(String(claims[0]?.channelId)).toContain('fake-target-channel');
+  });
+
+  it('toon_channels lists channels with available balance', async () => {
+    const res = await client.callTool({ name: 'toon_channels', arguments: {} });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    const channels = structured(res)['channels'] as Array<Record<string, string>>;
+    expect(channels.length).toBeGreaterThan(0);
+    expect(channels[0]).toMatchObject({
+      channelId: expect.any(String),
+      cumulativeAmount: expect.any(String),
+      depositTotal: expect.any(String),
+      availableBalance: expect.any(String),
+    });
+  });
+
+  it('toon_balances returns per-chain wallet balances', async () => {
+    const res = await client.callTool({ name: 'toon_balances', arguments: {} });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    const balances = structured(res)['balances'] as Array<Record<string, unknown>>;
+    expect(balances.length).toBeGreaterThan(0);
+    expect(balances[0]).toMatchObject({ chain: expect.any(String), address: expect.any(String), amount: expect.any(String) });
+  });
+
+  it('toon_fund_wallet echoes the funded chain + address', async () => {
+    const res = await client.callTool({ name: 'toon_fund_wallet', arguments: { chain: 'solana' } });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    expect(structured(res)['chain']).toBe('solana');
+    expect(structured(res)['address']).toBeTruthy();
   });
 });

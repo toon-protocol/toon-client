@@ -16,6 +16,9 @@ import { type NostrEvent, type NostrFilter } from '../types.js';
 import {
   type AppBackend,
   type AppStatus,
+  type BalanceView,
+  type ChannelView,
+  type FundWalletView,
   type PublishResult,
   type SwapRequest,
   type SwapResponse,
@@ -79,6 +82,23 @@ export interface DaemonStatusResponse {
  * would form a cycle). Extra response fields (e.g. `data` on a publish) are
  * tolerated — only the fields mapped below are read.
  */
+/** Tracked-channel list from the daemon `/channels` (structural subset). */
+export interface DaemonChannelsResponse {
+  channels: ChannelView[];
+}
+
+/** On-chain wallet balances from the daemon `/balances` (structural subset). */
+export interface DaemonBalancesResponse {
+  balances: BalanceView[];
+}
+
+/** Faucet drip result from the daemon `/fund-wallet` (structural subset). */
+export interface DaemonFundWalletResponse {
+  chain: string;
+  address: string;
+  faucetUrl?: string;
+}
+
 export interface DaemonControl {
   status(): Promise<DaemonStatusResponse>;
   query(body: DaemonQueryRequest): Promise<DaemonQueryResponse>;
@@ -90,6 +110,9 @@ export interface DaemonControl {
   ): Promise<DaemonUploadMediaResponse>;
   openChannel(body: { destination?: string }): Promise<{ channelId: string }>;
   swap(body: SwapRequest): Promise<SwapResponse>;
+  channels(): Promise<DaemonChannelsResponse>;
+  balances(): Promise<DaemonBalancesResponse>;
+  fundWallet(body: { chain?: string; address?: string }): Promise<DaemonFundWalletResponse>;
 }
 
 /**
@@ -166,5 +189,25 @@ export class DaemonAppBackend implements AppBackend {
   /** Run a cross-asset swap. All signing/settlement happens daemon-side. */
   async swap(req: SwapRequest): Promise<SwapResponse> {
     return this.control.swap(req);
+  }
+
+  /** Free read: tracked channels with nonce + cumulative + available balance. */
+  async channels(): Promise<{ channels: ChannelView[] }> {
+    return this.control.channels();
+  }
+
+  /** Free read: on-chain wallet token balances per configured chain. */
+  async balances(): Promise<{ balances: BalanceView[] }> {
+    return this.control.balances();
+  }
+
+  /** Devnet faucet drip. Receives funds (not spendy); daemon picks the address. */
+  async fundWallet(req: { chain?: string; address?: string }): Promise<FundWalletView> {
+    const res = await this.control.fundWallet(req);
+    return {
+      chain: res.chain,
+      address: res.address,
+      ...(res.faucetUrl ? { faucetUrl: res.faucetUrl } : {}),
+    };
   }
 }

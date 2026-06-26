@@ -31,6 +31,9 @@ import { type NostrFilter } from '../types.js';
 import {
   APP_RESOURCE_URI,
   ATOMS_TOOL,
+  BALANCES_TOOL,
+  CHANNELS_TOOL,
+  FUND_WALLET_TOOL,
   OPEN_CHANNEL_TOOL,
   PUBLISH_TOOL,
   QUERY_TOOL,
@@ -258,6 +261,59 @@ export function registerToonApps(server: McpServer, opts: RegisterToonAppsOption
           : `Swap ${res.state}${res.message ? `: ${res.message}` : ''}.`,
         { ...res }
       );
+    }
+  );
+
+  // toon_channels — free read: tracked channels with nonce, cumulative spent,
+  // locked deposit, and available (spendable) balance. Powers the channel-list /
+  // wallet atoms.
+  server.registerTool(
+    CHANNELS_TOOL,
+    {
+      description:
+        'Free read: list tracked payment channels with their nonce watermark, ' +
+        'cumulative spent, locked deposit total, and available (spendable) ' +
+        'balance. Render via toon_render (wallet / channel-list atoms), not text.',
+      inputSchema: {},
+    },
+    async () => {
+      const res = await opts.backend.channels();
+      return result(`${res.channels.length} channel(s).`, { ...res });
+    }
+  );
+
+  // toon_balances — free read: on-chain wallet token balances per chain.
+  server.registerTool(
+    BALANCES_TOOL,
+    {
+      description:
+        'Free read: on-chain wallet token balances for each configured chain ' +
+        '(chain, address, amount, asset). Render via toon_render (wallet atom).',
+      inputSchema: {},
+    },
+    async () => {
+      const res = await opts.backend.balances();
+      return result(`${res.balances.length} balance(s).`, { ...res });
+    }
+  );
+
+  // toon_fund_wallet — devnet faucet drip. A write-class action (it changes
+  // wallet funds) but it RECEIVES funds, so it is not spendy.
+  server.registerTool(
+    FUND_WALLET_TOOL,
+    {
+      description:
+        'Devnet only: drip faucet test funds to a wallet. Defaults to the ' +
+        "client's own address for the active settlement chain. Receives funds " +
+        '(not a spend). Returns { chain, address, faucetUrl }.',
+      inputSchema: {
+        chain: z.enum(['evm', 'solana', 'mina']).optional(),
+        address: z.string().optional(),
+      },
+    },
+    async (args: { chain?: string; address?: string }) => {
+      const res = await opts.backend.fundWallet(args);
+      return result(`Requested faucet funds for ${res.chain} ${res.address}.`, { ...res });
     }
   );
 }
