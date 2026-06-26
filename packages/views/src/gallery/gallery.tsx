@@ -10,7 +10,7 @@
  * `.dark` class so the Playwright loop can capture both themes.
  */
 import { createRoot } from 'react-dom/client';
-import { type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import '../globals.css';
 import { ViewSpecRenderer } from '../runtime.js';
 import { EXAMPLE_VIEWSPECS } from '../examples.js';
@@ -106,14 +106,67 @@ function Panel({ name, description, spec }: { name: string; description: string;
   );
 }
 
+type ThemeMode = 'light' | 'dark';
+
+const THEME_KEY = 'toon-gallery-theme';
+
+/** Toggle the `.dark` class the atoms' tokens key off of, and remember it. */
+function applyTheme(mode: ThemeMode): void {
+  document.documentElement.classList.toggle('dark', mode === 'dark');
+  document.documentElement.style.colorScheme = mode;
+  try {
+    localStorage.setItem(THEME_KEY, mode);
+  } catch {
+    /* private mode / storage disabled — fine, just don't persist */
+  }
+}
+
+/** Segmented light/dark switch for previewing both themes live. */
+function ThemeToggle(): ReactNode {
+  const [mode, setMode] = useState<ThemeMode>(
+    document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+  );
+  const select = (m: ThemeMode): void => {
+    applyTheme(m);
+    setMode(m);
+  };
+  return (
+    <div
+      role="group"
+      aria-label="Theme"
+      className="inline-flex overflow-hidden rounded-lg border border-border text-xs font-medium"
+    >
+      {(['light', 'dark'] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          onClick={() => select(m)}
+          aria-pressed={mode === m}
+          className={
+            'px-3 py-1.5 capitalize transition-colors ' +
+            (mode === m
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-background text-muted-foreground hover:text-foreground')
+          }
+        >
+          {m}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Gallery(): ReactNode {
   return (
     <div className="min-h-screen bg-muted/30 text-foreground">
-      <header className="border-b border-border bg-background/80 px-6 py-4 backdrop-blur">
-        <h1 className="text-lg font-semibold tracking-tight">TOON atom gallery</h1>
-        <p className="text-sm text-muted-foreground">
-          Every atom, rendered through the real runtime + fixture bridge. Dev-only.
-        </p>
+      <header className="flex items-center justify-between gap-4 border-b border-border bg-background/80 px-6 py-4 backdrop-blur">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">TOON atom gallery</h1>
+          <p className="text-sm text-muted-foreground">
+            Every atom, rendered through the real runtime + fixture bridge. Dev-only.
+          </p>
+        </div>
+        <ThemeToggle />
       </header>
       <main className="mx-auto grid max-w-[1400px] grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-5 p-6">
         {ALL_PANELS.map((p) => (
@@ -124,9 +177,21 @@ function Gallery(): ReactNode {
   );
 }
 
-// `?theme=dark` flips the class the atoms' tokens key off of.
+// Initial theme: `?theme=light|dark` wins (for the Playwright loop / deep links),
+// otherwise fall back to the last toggle saved in localStorage.
 const params = new URLSearchParams(window.location.search);
-if (params.get('theme') === 'dark') document.documentElement.classList.add('dark');
+const savedTheme = (() => {
+  try {
+    return localStorage.getItem(THEME_KEY);
+  } catch {
+    return null;
+  }
+})();
+const initialTheme = params.get('theme') ?? savedTheme;
+if (initialTheme === 'dark') {
+  document.documentElement.classList.add('dark');
+  document.documentElement.style.colorScheme = 'dark';
+}
 
 const root = document.getElementById('root');
 if (root) createRoot(root).render(<Gallery />);
