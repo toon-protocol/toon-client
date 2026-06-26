@@ -1,5 +1,25 @@
 # @toon-protocol/client-mcp
 
+## 0.8.0
+
+### Minor Changes
+
+- 83eb81b: Rename legacy vocabulary: the swap-peer node concept is now consistently called "swap" across all packages (part of #134).
+
+  `SwapRequest.millPubkey` → `swapPubkey`, `SwapClaim.millSignerAddress` → `swapSignerAddress`, `TOON_MILL_PUBKEY` env var → `TOON_SWAP_PUBKEY`, ILP address segments updated (e.g. `g.townhouse.swap`), and all prose/doc references updated.
+
+### Patch Changes
+
+- 0bca511: Purge legacy `townhouse` vocabulary: replace `g.townhouse.town` default destination with `g.proxy`, update `g.townhouse.mill`/`g.townhouse.dvm` example addresses to `g.proxy.mill`/`g.proxy.dvm`, and remove all remaining `townhouse` references from source, docs, and tests.
+- 9a917f5: Rename non-NIP-90 `dvm` vocabulary to `store` across the repo (issue #139).
+- 6c18a4b: Surface the real media-upload error instead of a generic "Upload failed." The
+  `media-uploader` atom now renders the underlying error string from the action
+  outcome (degrading to a generic message only when none is present), and the
+  daemon's `uploadMedia` labels which of the two legs failed — the Arweave blob
+  upload (`store` destination) vs. the post-upload kind:20/1063 reference-event
+  publish (`relay` destination) — so the failing leg is diagnosable from the UI
+  without a behavioral change to the upload itself (#148).
+
 ## 0.7.1
 
 ### Patch Changes

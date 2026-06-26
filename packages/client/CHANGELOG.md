@@ -1,5 +1,15 @@
 # @toon-protocol/client
 
+## 0.14.4
+
+### Patch Changes
+
+- 83eb81b: Rename legacy vocabulary: the swap-peer node concept is now consistently called "swap" across all packages (part of #134).
+
+  `SwapRequest.millPubkey` → `swapPubkey`, `SwapClaim.millSignerAddress` → `swapSignerAddress`, `TOON_MILL_PUBKEY` env var → `TOON_SWAP_PUBKEY`, ILP address segments updated (e.g. `g.townhouse.swap`), and all prose/doc references updated.
+
+- 9a917f5: Rename non-NIP-90 `dvm` vocabulary to `store` across the repo (issue #139).
+
 ## 0.14.3
 
 ### Patch Changes

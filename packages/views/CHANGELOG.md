@@ -1,5 +1,31 @@
 # @toon-protocol/views
 
+## 0.8.0
+
+### Minor Changes
+
+- 83eb81b: Rename legacy vocabulary: the swap-peer node concept is now consistently called "swap" across all packages (part of #134).
+
+  `SwapRequest.millPubkey` → `swapPubkey`, `SwapClaim.millSignerAddress` → `swapSignerAddress`, `TOON_MILL_PUBKEY` env var → `TOON_SWAP_PUBKEY`, ILP address segments updated (e.g. `g.townhouse.swap`), and all prose/doc references updated.
+
+- d0b1055: Add a `profile-editor` atom that composes/updates a NIP-01 kind:0 profile from input fields (`name`, `display_name`, `picture` URL, `about`, optional `nip05`), serializes them into the kind:0 `content` JSON, and publishes via `toon_publish_unsigned` (`{ kind: 0, content }`) through the normal pay-to-write confirm flow. Bind a kind:0 event to pre-fill the form — unknown metadata fields (banner, lud16, …) are preserved on republish. Registered in the atom catalog/registry and surfaced as a `profile-editor` example view (editor + live `profile-header`).
+
+### Patch Changes
+
+- 801949d: Resolve feed note avatars. A feed bind queries `kinds:[1]` only, so `NoteCard` could never join the author's kind:0 from its own events and every note fell back to the placeholder avatar. Add a runtime-wired `resolveProfile` seam (a lazy, session-cached free read for an author's kind:0, mirroring the existing `readStatus` seam so atoms still never touch the bridge); `NoteCard` now pulls the author's profile on demand and shows their display name + picture, while authors with no kind:0 still degrade to the deterministic placeholder.
+- 98f9e74: Sort bound events by `created_at` before rendering so feeds are deterministically newest-first regardless of relay return order or how buffered + streamed events merge. Ties break on `id` for a stable order. Adds a per-bind `sort` option (`'desc'` default, `'asc'` opt-in) so threads can render replies oldest-first.
+- 9a917f5: Rename non-NIP-90 `dvm` vocabulary to `store` across the repo (issue #139).
+- 6c18a4b: Surface the real media-upload error instead of a generic "Upload failed." The
+  `media-uploader` atom now renders the underlying error string from the action
+  outcome (degrading to a generic message only when none is present), and the
+  daemon's `uploadMedia` labels which of the two legs failed — the Arweave blob
+  upload (`store` destination) vs. the post-upload kind:20/1063 reference-event
+  publish (`relay` destination) — so the failing leg is diagnosable from the UI
+  without a behavioral change to the upload itself (#148).
+- Updated dependencies [83eb81b]
+- Updated dependencies [9a917f5]
+  - @toon-protocol/client@0.14.4
+
 ## 0.7.1
 
 ### Patch Changes
