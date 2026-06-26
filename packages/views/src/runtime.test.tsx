@@ -73,6 +73,43 @@ describe('ViewSpecRenderer', () => {
     expect(await screen.findByText('hello world')).toBeTruthy();
   });
 
+  it('sorts a feed newest-first regardless of relay return order', async () => {
+    // Relay returns these out of order; render must be reverse-chronological.
+    const { bridge } = mockBridge([
+      evt({ kind: 1, id: 'b', created_at: 100, content: 'older note' }),
+      evt({ kind: 1, id: 'a', created_at: 300, content: 'newest note' }),
+      evt({ kind: 1, id: 'c', created_at: 200, content: 'middle note' }),
+    ]);
+    const { container } = render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{ root: { atom: 'note-card', bind: { query: { kinds: [1] } } } }}
+      />
+    );
+    await screen.findByText('newest note');
+    const text = container.textContent ?? '';
+    expect(text.indexOf('newest note')).toBeLessThan(text.indexOf('middle note'));
+    expect(text.indexOf('middle note')).toBeLessThan(text.indexOf('older note'));
+  });
+
+  it('sort:"asc" renders a bind oldest-first, ties stable on id', async () => {
+    const { bridge } = mockBridge([
+      evt({ kind: 1, id: 'z', created_at: 100, content: 'second by id tie' }),
+      evt({ kind: 1, id: 'a', created_at: 100, content: 'first by id tie' }),
+      evt({ kind: 1, id: 'y', created_at: 50, content: 'oldest note' }),
+    ]);
+    const { container } = render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{ root: { atom: 'note-card', bind: { query: { kinds: [1] }, sort: 'asc' } } }}
+      />
+    );
+    await screen.findByText('oldest note');
+    const text = container.textContent ?? '';
+    expect(text.indexOf('oldest note')).toBeLessThan(text.indexOf('first by id tie'));
+    expect(text.indexOf('first by id tie')).toBeLessThan(text.indexOf('second by id tie'));
+  });
+
   it('fires a write action through the bridge with the right tool', async () => {
     const { bridge, calls } = mockBridge([
       evt({ kind: 1621, id: 'i1', tags: [['subject', 'Broken thing']], content: 'details' }),

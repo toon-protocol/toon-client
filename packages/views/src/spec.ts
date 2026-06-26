@@ -19,6 +19,13 @@ export interface ViewBind {
   eventId?: string;
   /** Render the bound event(s) via their kind's default atom. */
   kindAuto?: boolean;
+  /**
+   * Order events by `created_at` before rendering. Defaults to `'desc'`
+   * (newest-first) so feeds are reverse-chronological; threads can opt into
+   * `'asc'` (oldest-first). Ties break on `id` for a stable, deterministic
+   * order regardless of relay return order or buffered/streamed merge.
+   */
+  sort?: 'asc' | 'desc';
 }
 
 /** Binds a UI affordance to a write tool call (always `toon_publish_unsigned` / `toon_upload`). */
@@ -220,7 +227,7 @@ export function validateViewSpec(
       if (!isPlainObject(bind)) {
         errors.push(`${path}.bind: must be an object`);
       } else {
-        const KNOWN_BIND_KEYS = new Set(['query', 'eventId', 'kindAuto']);
+        const KNOWN_BIND_KEYS = new Set(['query', 'eventId', 'kindAuto', 'sort']);
         for (const key of Object.keys(bind)) {
           if (!KNOWN_BIND_KEYS.has(key)) {
             errors.push(`${path}.bind.${key}: unknown bind key (use "query" for a NIP-01 filter)`);
@@ -232,6 +239,9 @@ export function validateViewSpec(
         }
         if (bind['kindAuto'] !== undefined && typeof bind['kindAuto'] !== 'boolean') {
           errors.push(`${path}.bind.kindAuto: must be a boolean`);
+        }
+        if (bind['sort'] !== undefined && bind['sort'] !== 'asc' && bind['sort'] !== 'desc') {
+          errors.push(`${path}.bind.sort: must be "asc" or "desc"`);
         }
       }
     }

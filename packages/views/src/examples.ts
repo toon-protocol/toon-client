@@ -84,7 +84,8 @@ export function threadView(rootId: string): ViewSpec {
       atom: 'stack',
       children: [
         { atom: 'note-card', bind: { query: buildEventByIdFilter([rootId]), kindAuto: true } },
-        { atom: 'note-card', bind: { query: buildCommentFilter([rootId]), kindAuto: true } },
+        // Replies read oldest-first so the conversation flows top-to-bottom.
+        { atom: 'note-card', bind: { query: buildCommentFilter([rootId]), kindAuto: true, sort: 'asc' } },
         {
           atom: 'composer',
           props: { placeholder: 'Reply…', label: 'Reply' },

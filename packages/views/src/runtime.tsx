@@ -55,9 +55,30 @@ const GENERATIVE_FALLBACK = new GenerativeFallbackRenderer();
 // Re-export so existing importers (and tests) can keep importing from the runtime.
 export { QUERY_TOOL, WRITE_TOOLS } from './tool-names.js';
 
+/**
+ * Order events deterministically by `created_at` (ties break on `id`) so render
+ * order never depends on relay return order or how buffered + streamed events
+ * happen to merge. Default `'desc'` gives reverse-chronological feeds
+ * (newest-first); `'asc'` gives oldest-first for threads. The base comparator is
+ * ascending and stable; `'desc'` reverses it so the tie-break stays consistent.
+ */
+function sortEvents(events: readonly NostrEvent[], dir: 'asc' | 'desc' = 'desc'): NostrEvent[] {
+  const ascending = [...events].sort((a, b) =>
+    a.created_at !== b.created_at
+      ? a.created_at - b.created_at
+      : a.id < b.id
+        ? -1
+        : a.id > b.id
+          ? 1
+          : 0
+  );
+  return dir === 'asc' ? ascending : ascending.reverse();
+}
+
 function useBind(bind: ViewBind | undefined, bridge: ViewBridge): NostrEvent[] {
   const [events, setEvents] = useState<NostrEvent[]>([]);
   const bindKey = bind ? JSON.stringify(bind) : '';
+  const sortDir = bind?.sort ?? 'desc';
 
   useEffect(() => {
     const filter = bind?.query ?? (bind?.eventId ? { ids: [bind.eventId] } : undefined);
@@ -67,7 +88,7 @@ function useBind(bind: ViewBind | undefined, bridge: ViewBridge): NostrEvent[] {
     }
     let cancelled = false;
     void bridge.callTool(QUERY_TOOL, { filter }).then((res) => {
-      if (!cancelled && res.events) setEvents(res.events);
+      if (!cancelled && res.events) setEvents(sortEvents(res.events, sortDir));
     });
     return () => {
       cancelled = true;
