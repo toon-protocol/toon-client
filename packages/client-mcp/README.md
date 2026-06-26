@@ -111,7 +111,7 @@ can supply your own via env or an imported keystore.
   // settlement address directly (mirrors the docker entrypoint):
   "apex": {
     "destination": "g.proxy",
-    "peerId": "town",
+    "peerId": "proxy",
     "chain": "evm",
     "chainKey": "evm:base:84532",
     "chainId": 84532,

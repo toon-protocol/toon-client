@@ -328,7 +328,7 @@ describe('daemon config', () => {
     const apexChains = {
       evm: {
         destination: 'g.proxy',
-        peerId: 'town',
+        peerId: 'proxy',
         chain: 'evm' as const,
         chainKey: 'evm:base:84532',
         chainId: 84532,
@@ -336,7 +336,7 @@ describe('daemon config', () => {
       },
       solana: {
         destination: 'g.proxy',
-        peerId: 'town',
+        peerId: 'proxy',
         chain: 'solana' as const,
         chainKey: 'solana:devnet',
         chainId: 0,
