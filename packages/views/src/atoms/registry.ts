@@ -15,6 +15,7 @@ import { forgeAtoms } from './forge.js';
 import { interactiveAtoms } from './interactive.js';
 import { defiAtoms } from './defi.js';
 import { onboardAtoms } from './onboard.js';
+import { profileEditorAtoms } from './profile-editor.js';
 import { contentAtoms } from './content.js';
 import { statusAtoms } from './status.js';
 import { fallbackAtom, GENERIC_ATOM_ID } from './fallback.js';
@@ -27,6 +28,7 @@ const ALL_ATOMS: Atom[] = [
   ...interactiveAtoms,
   ...defiAtoms,
   ...onboardAtoms,
+  ...profileEditorAtoms,
   ...contentAtoms,
   ...statusAtoms,
   fallbackAtom,

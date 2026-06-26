@@ -152,6 +152,29 @@ export function onboardView(pubkey: string): ViewSpec {
   };
 }
 
+/**
+ * A profile editor: input fields for name/picture/about (pre-filled from the
+ * user's existing kind:0, when bound) that publish an updated kind:0 via a
+ * pay-to-write confirm, with the live header below so the change shows up.
+ */
+export function profileEditorView(pubkey: string): ViewSpec {
+  return {
+    title: 'Edit profile',
+    root: {
+      atom: 'stack',
+      children: [
+        {
+          atom: 'profile-editor',
+          props: { label: 'Save profile' },
+          bind: { query: buildProfileFilter([pubkey]) },
+          actions: { publish: { tool: PUBLISH_TOOL, args: { kind: 0 } } },
+        },
+        { atom: 'profile-header', bind: { query: buildProfileFilter([pubkey]) } },
+      ],
+    },
+  };
+}
+
 /** A DeFi panel: pre-open a channel, run a swap, show the settlement receipt. */
 export function swapView(): ViewSpec {
   return {
@@ -233,6 +256,7 @@ export const EXAMPLE_VIEWSPECS: ExampleView[] = [
   { name: 'forge', description: 'Tabbed repos + issues (NIP-34).', spec: forgeView('<owner-pubkey>', '<repo-id>') },
   { name: 'media', description: 'Media gallery with an uploader.', spec: mediaView() },
   { name: 'onboard', description: 'Get-started card + the new user’s profile header.', spec: onboardView('<pubkey-hex>') },
+  { name: 'profile-editor', description: 'Edit name/picture/about → publish kind:0 via pay-to-write (pre-fills from the bound profile).', spec: profileEditorView('<pubkey-hex>') },
   { name: 'swap', description: 'Open a channel, run a swap, show the settlement receipt.', spec: swapView() },
   { name: 'client-status', description: 'Daemon health dashboard (ready/relay/chains/identity) from live toon_status — answers "show me my status".', spec: clientStatusView() },
   { name: 'info', description: 'Generic info view from content primitives (heading + key-value + badge) — the pattern for any non-event data.', spec: infoView() },
