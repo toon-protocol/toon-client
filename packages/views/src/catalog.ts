@@ -150,6 +150,19 @@ export const ATOM_CATALOG: AtomMeta[] = [
       label: 'string (optional publish-profile button label)',
     },
   },
+  {
+    id: 'profile-editor',
+    description:
+      'Edit/create a NIP-01 kind:0 profile: input fields for name, display_name, ' +
+      'picture (URL), about, and nip05, serialized into the kind:0 content JSON ' +
+      'and published via toon_publish_unsigned ({ kind: 0, content }) through a ' +
+      'pay-to-write confirm. Bind a kind:0 event to pre-fill the form (unknown ' +
+      'fields are preserved on republish). The "publish" action fires the write.',
+    writes: [{ name: 'toon_publish_unsigned' }],
+    propsSchema: {
+      label: 'string (optional save-button label)',
+    },
+  },
 
   // content — generic, props-driven primitives for ANY structured (non-event)
   // data: daemon status, write targets, balances, identity. Compose these inside
