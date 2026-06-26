@@ -145,16 +145,18 @@ const ClientStatus: FC<AtomRenderProps> = ({ readStatus }) => {
               {relay ? (
                 <>
                   <Row label="Relay">
-                    <span className="inline-flex items-center gap-1.5">
+                    <span className="flex min-w-0 items-center justify-end gap-1.5">
                       <Radio
                         aria-hidden="true"
                         className={
                           relay.connected
-                            ? 'size-3.5 text-emerald-500'
-                            : 'size-3.5 text-muted-foreground'
+                            ? 'size-3.5 shrink-0 text-primary'
+                            : 'size-3.5 shrink-0 text-muted-foreground'
                         }
                       />
-                      <span className="font-mono text-xs">{relay.url ?? '—'}</span>
+                      <span className="truncate font-mono text-xs" title={relay.url ?? undefined}>
+                        {relay.url ?? '—'}
+                      </span>
                     </span>
                   </Row>
                   <Row label="Connection">
@@ -168,12 +170,17 @@ const ClientStatus: FC<AtomRenderProps> = ({ readStatus }) => {
               ) : null}
               {status.transport ? (
                 <Row label="Transport">
-                  {status.transport.type ?? 'direct'}
-                  {status.transport.btpUrl ? (
-                    <span className="ml-1 font-mono text-xs text-muted-foreground">
-                      {status.transport.btpUrl}
-                    </span>
-                  ) : null}
+                  <span className="flex min-w-0 items-baseline justify-end gap-1.5">
+                    <span className="shrink-0">{status.transport.type ?? 'direct'}</span>
+                    {status.transport.btpUrl ? (
+                      <span
+                        className="truncate font-mono text-xs text-muted-foreground"
+                        title={status.transport.btpUrl}
+                      >
+                        {status.transport.btpUrl}
+                      </span>
+                    ) : null}
+                  </span>
                 </Row>
               ) : null}
             </dl>

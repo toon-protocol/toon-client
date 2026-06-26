@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -38,76 +39,89 @@
   --radius-xl: calc(var(--radius) * 1.4);
   --font-heading: var(--font-sans);
   --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  /* The "ledger" face: every unit of value (fees, bytes, ids, npub, nonces,
+     amounts) is set in this tuned mono — the typographic signature. */
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'SFMono-Regular', Menlo, monospace;
 }
 
+/*
+ * Palette — cool slate-tinted neutrals (paper + ink, never pure 0-chroma gray)
+ * with a single confident jade primary that carries "value": it threads through
+ * the action buttons AND the pay-to-write tints (border-primary / bg-primary/5 /
+ * text-primary), so the payment moments read as branded for free. Jade stays
+ * jade in both themes (we don't flip primary to white in dark) so the receipt
+ * keeps its identity. It's deliberately muted, not acid, so it coexists with the
+ * full-spectrum per-identity avatar gradients.
+ */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --radius: 0.5rem;
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
+  --background: oklch(0.985 0.004 250);
+  --foreground: oklch(0.205 0.02 262);
+  --card: oklch(1 0.002 250);
+  --card-foreground: oklch(0.205 0.02 262);
+  --primary: oklch(0.52 0.11 168);
+  --primary-foreground: oklch(0.99 0.012 168);
+  --secondary: oklch(0.96 0.008 250);
+  --secondary-foreground: oklch(0.255 0.02 262);
+  --muted: oklch(0.965 0.006 250);
+  --muted-foreground: oklch(0.505 0.022 258);
+  --accent: oklch(0.955 0.016 178);
+  --accent-foreground: oklch(0.30 0.05 178);
+  --destructive: oklch(0.585 0.205 24);
+  --destructive-foreground: oklch(0.99 0.01 24);
+  --border: oklch(0.915 0.007 255);
+  --input: oklch(0.915 0.007 255);
+  --ring: oklch(0.60 0.10 168);
+  --radius: 0.625rem;
+  --popover: oklch(1 0.002 250);
+  --popover-foreground: oklch(0.205 0.02 262);
 }
 
 /* Dark mode — system preference (standalone) and explicit .dark class (inside Claude). */
+/* Dark — cool ink, lifted cards, jade kept as the brand accent (not flipped). */
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --destructive-foreground: oklch(0.985 0 0);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
+    --background: oklch(0.17 0.012 262);
+    --foreground: oklch(0.965 0.005 250);
+    --card: oklch(0.212 0.014 262);
+    --card-foreground: oklch(0.965 0.005 250);
+    --primary: oklch(0.70 0.125 168);
+    --primary-foreground: oklch(0.18 0.03 168);
+    --secondary: oklch(0.268 0.014 262);
+    --secondary-foreground: oklch(0.965 0.005 250);
+    --muted: oklch(0.262 0.014 262);
+    --muted-foreground: oklch(0.705 0.018 256);
+    --accent: oklch(0.30 0.03 178);
+    --accent-foreground: oklch(0.92 0.03 178);
+    --destructive: oklch(0.70 0.19 22);
+    --destructive-foreground: oklch(0.16 0.02 22);
+    --border: oklch(0.97 0.01 250 / 10%);
+    --input: oklch(0.97 0.01 250 / 14%);
+    --ring: oklch(0.70 0.10 168);
+    --popover: oklch(0.212 0.014 262);
+    --popover-foreground: oklch(0.965 0.005 250);
   }
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.17 0.012 262);
+  --foreground: oklch(0.965 0.005 250);
+  --card: oklch(0.212 0.014 262);
+  --card-foreground: oklch(0.965 0.005 250);
+  --primary: oklch(0.70 0.125 168);
+  --primary-foreground: oklch(0.18 0.03 168);
+  --secondary: oklch(0.268 0.014 262);
+  --secondary-foreground: oklch(0.965 0.005 250);
+  --muted: oklch(0.262 0.014 262);
+  --muted-foreground: oklch(0.705 0.018 256);
+  --accent: oklch(0.30 0.03 178);
+  --accent-foreground: oklch(0.92 0.03 178);
+  --destructive: oklch(0.70 0.19 22);
+  --destructive-foreground: oklch(0.16 0.02 22);
+  --border: oklch(0.97 0.01 250 / 10%);
+  --input: oklch(0.97 0.01 250 / 14%);
+  --ring: oklch(0.70 0.10 168);
+  --popover: oklch(0.212 0.014 262);
+  --popover-foreground: oklch(0.965 0.005 250);
 }
 
 @layer base {
@@ -117,5 +131,18 @@
   body {
     margin: 0;
     @apply bg-background text-foreground font-sans;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  /* Headings carry the personality — tighten tracking as weight goes up. */
+  h1, h2, h3 {
+    letter-spacing: -0.014em;
+  }
+  /* The ledger signature: value set in mono reads as a tabular entry, slightly
+     condensed, never loose. Applies wherever an atom reaches for `font-mono`
+     (fees, byte counts, ids/npub via MonoId, nonces, settlement amounts). */
+  .font-mono {
+    font-feature-settings: 'tnum' 1, 'cv01' 1, 'ss01' 1;
+    letter-spacing: -0.01em;
   }
 }

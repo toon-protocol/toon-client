@@ -31,7 +31,7 @@ const OnboardCard: FC<AtomRenderProps> = ({ props, actions }) => {
       <ol className="mb-4 flex flex-col gap-2">
         {steps.map((step, i) => (
           <li key={i} className="flex gap-3 text-sm">
-            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
+            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 font-mono text-xs font-semibold text-primary ring-1 ring-inset ring-primary/20">
               {i + 1}
             </span>
             <span className="text-muted-foreground">{step}</span>

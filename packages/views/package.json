@@ -32,14 +32,16 @@
     "demo:apps:daemon": "node dist/server/daemon-main.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "gallery": "vite --port 5180 --strictPort",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@toon-protocol/arweave": "workspace:*",
     "@fontsource-variable/geist": "^5.2.9",
+    "@fontsource-variable/geist-mono": "^5.2.8",
     "@mcp-ui/client": "^7.1.1",
     "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@toon-protocol/arweave": "workspace:*",
     "@toon-protocol/client": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
