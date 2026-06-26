@@ -21,14 +21,15 @@ function ViewHost({ bridge }: { bridge: ViewBridge }): ReactNode {
   if (spec == null) {
     return <div className="p-4 text-sm text-muted-foreground">Waiting for a view…</div>;
   }
-  // Inset the view from the iframe edges. Atoms are self-framing cards
-  // (`rounded-xl border bg-card`); with zero padding they bleed to the edges and
-  // their borders/rounded corners get clipped, so the render reads as a flat
-  // edge-to-edge list instead of the carded layout the gallery shows. This `p-4`
-  // mirrors the gallery panel's inner padding.
+  // Present the view as the gallery does: a rounded, bordered panel on a faintly
+  // tinted page, capped to a comfortable reading width and centered. Without this
+  // the app just fills the iframe edge-to-edge as a square slab and the
+  // self-framing atom cards bleed into the corners.
   return (
-    <div className="p-4">
-      <ViewSpecRenderer spec={spec} bridge={bridge} />
+    <div className="bg-muted/30 p-3 sm:p-4">
+      <div className="mx-auto max-w-2xl overflow-hidden rounded-xl border border-border bg-background p-4 shadow-sm">
+        <ViewSpecRenderer spec={spec} bridge={bridge} />
+      </div>
     </div>
   );
 }
