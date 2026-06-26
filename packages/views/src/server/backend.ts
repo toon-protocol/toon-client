@@ -47,6 +47,10 @@ export interface ChannelView {
   cumulativeAmount: string;
   depositTotal?: string;
   availableBalance?: string;
+  /** Where the channel sits in the withdraw journey. */
+  closeState?: 'open' | 'closing' | 'settleable' | 'settled';
+  /** Unix SECONDS the channel becomes settleable, when closing. */
+  settleableAt?: string;
 }
 
 /** One on-chain wallet token balance, per configured chain. */
@@ -93,9 +97,27 @@ export interface ChannelDepositView {
   depositTotal: string;
 }
 
-/** Spendy channel side: deposit additional collateral into an open channel. */
+/** Result of a channel close (withdraw step 1) — the grace timer. */
+export interface ChannelCloseView {
+  channelId: string;
+  txHash?: string;
+  /** Unix SECONDS when close was initiated. */
+  closedAt: string;
+  /** Unix SECONDS the channel becomes settleable. */
+  settleableAt: string;
+}
+
+/** Result of a channel settle (withdraw step 2). */
+export interface ChannelSettleView {
+  channelId: string;
+  txHash?: string;
+}
+
+/** Spendy channel side: deposit / close / settle collateral on an open channel. */
 export interface AppChannelWriteBackend {
   depositToChannel(req: { channelId: string; amount: string }): Promise<ChannelDepositView>;
+  closeChannel(req: { channelId: string }): Promise<ChannelCloseView>;
+  settleChannel(req: { channelId: string }): Promise<ChannelSettleView>;
 }
 
 export interface PublishResult {

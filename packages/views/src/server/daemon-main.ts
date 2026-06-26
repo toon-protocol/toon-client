@@ -42,7 +42,13 @@ import {
   type DaemonUploadMediaRequest,
   type DaemonUploadMediaResponse,
 } from './daemon-backend.js';
-import { type ChannelDepositView, type SwapRequest, type SwapResponse } from './backend.js';
+import {
+  type ChannelCloseView,
+  type ChannelDepositView,
+  type ChannelSettleView,
+  type SwapRequest,
+  type SwapResponse,
+} from './backend.js';
 
 function loadAppHtml(): string {
   // Compiled to dist/server/daemon-main.js; the bundle is at dist/app/index.html.
@@ -183,6 +189,8 @@ function makeControl(baseUrl: string): DaemonControl {
       post<DaemonFundWalletResponse>('/fund-wallet', b),
     depositToChannel: (b: { channelId: string; amount: string }) =>
       post<ChannelDepositView>('/channels/deposit', b),
+    closeChannel: (b: { channelId: string }) => post<ChannelCloseView>('/channels/close', b),
+    settleChannel: (b: { channelId: string }) => post<ChannelSettleView>('/channels/settle', b),
   };
 }
 

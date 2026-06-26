@@ -11,6 +11,10 @@ import type {
   BalancesResponse,
   ChannelDepositRequest,
   ChannelDepositResponse,
+  CloseChannelRequest,
+  CloseChannelResponse,
+  SettleChannelRequest,
+  SettleChannelResponse,
   ChannelsResponse,
   ErrorResponse,
   EventsQuery,
@@ -141,6 +145,14 @@ export class ControlClient {
 
   depositToChannel(body: ChannelDepositRequest): Promise<ChannelDepositResponse> {
     return this.request<ChannelDepositResponse>('POST', '/channels/deposit', body);
+  }
+
+  closeChannel(body: CloseChannelRequest): Promise<CloseChannelResponse> {
+    return this.request<CloseChannelResponse>('POST', '/channels/close', body);
+  }
+
+  settleChannel(body: SettleChannelRequest): Promise<SettleChannelResponse> {
+    return this.request<SettleChannelResponse>('POST', '/channels/settle', body);
   }
 
   swap(body: SwapRequest): Promise<SwapResponse> {

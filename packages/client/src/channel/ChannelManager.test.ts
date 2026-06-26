@@ -4,7 +4,7 @@ import { deriveFullIdentity } from '@toon-protocol/core';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { MinaSigner } from '../signing/mina-signer.js';
 import { ChannelManager } from './ChannelManager.js';
-import type { ChannelStore } from './ChannelStore.js';
+import type { ChannelStore, ChannelStoreEntry } from './ChannelStore.js';
 import { loadMinaPaymentChannelBindings } from './mina-payment-channel.js';
 
 // A deterministic 12-word test mnemonic (BIP-39) for Mina identity derivation.
@@ -149,6 +149,71 @@ describe('ChannelManager', () => {
 
     it('throws for an untracked channel', () => {
       expect(() => manager.setDepositTotal('0x' + 'ff'.repeat(32), 1n)).toThrow('not being tracked');
+    });
+  });
+
+  describe('withdraw close-state', () => {
+    it('setChannelClosed sets closing → settleable by the clock; settle marks settled', () => {
+      manager.trackChannel(CHANNEL_ID);
+      expect(manager.getChannelCloseState(CHANNEL_ID, 0n)).toBe('open');
+      manager.setChannelClosed(CHANNEL_ID, 1000n, 2000n);
+      expect(manager.getSettleableAt(CHANNEL_ID)).toBe(2000n);
+      // Before the grace elapses → closing; after → settleable.
+      expect(manager.getChannelCloseState(CHANNEL_ID, 1500n)).toBe('closing');
+      expect(manager.getChannelCloseState(CHANNEL_ID, 2000n)).toBe('settleable');
+      manager.setChannelSettled(CHANNEL_ID, 2100n);
+      expect(manager.getChannelCloseState(CHANNEL_ID, 3000n)).toBe('settled');
+    });
+
+    it('persists + resumes close timers across a store reload (restart safety)', () => {
+      const store = new (class {
+        data = new Map<string, ChannelStoreEntry>();
+        save(id: string, e: ChannelStoreEntry): void {
+          this.data.set(id, e);
+        }
+        load(id: string): ChannelStoreEntry | undefined {
+          return this.data.get(id);
+        }
+        list(): string[] {
+          return [...this.data.keys()];
+        }
+        delete(id: string): void {
+          this.data.delete(id);
+        }
+      })();
+      const m1 = new ChannelManager(signer, store);
+      m1.trackChannel(CHANNEL_ID);
+      m1.setChannelClosed(CHANNEL_ID, 1000n, 2000n);
+
+      // Fresh manager (simulated restart) resumes the timer from the store.
+      const m2 = new ChannelManager(signer, store);
+      m2.trackChannel(CHANNEL_ID);
+      expect(m2.getSettleableAt(CHANNEL_ID)).toBe(2000n);
+      expect(m2.getChannelCloseState(CHANNEL_ID, 1500n)).toBe('closing');
+    });
+
+    it('signBalanceProof after close does NOT drop the close timers', async () => {
+      const store = new (class {
+        data = new Map<string, ChannelStoreEntry>();
+        save(id: string, e: ChannelStoreEntry): void {
+          this.data.set(id, e);
+        }
+        load(id: string): ChannelStoreEntry | undefined {
+          return this.data.get(id);
+        }
+        list(): string[] {
+          return [...this.data.keys()];
+        }
+        delete(id: string): void {
+          this.data.delete(id);
+        }
+      })();
+      const m = new ChannelManager(signer, store);
+      m.trackChannel(CHANNEL_ID, { chainId: 31337, tokenNetworkAddress: '0x' + '11'.repeat(20) });
+      m.setChannelClosed(CHANNEL_ID, 1000n, 2000n);
+      await m.signBalanceProof(CHANNEL_ID, 100n);
+      // The persisted entry must still carry the close timers.
+      expect(store.data.get(CHANNEL_ID)?.settleableAt).toBe(2000n);
     });
   });
 

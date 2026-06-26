@@ -107,6 +107,10 @@ export interface AtomChannel {
   cumulativeAmount: string;
   depositTotal?: string;
   availableBalance?: string;
+  /** Where the channel sits in the withdraw journey (open→closing→settleable→settled). */
+  closeState?: 'open' | 'closing' | 'settleable' | 'settled';
+  /** Unix SECONDS the channel becomes settleable, when closing. */
+  settleableAt?: string;
 }
 
 /**

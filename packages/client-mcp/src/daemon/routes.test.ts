@@ -110,6 +110,27 @@ class FakeClient implements ToonClientLike {
   ): Promise<{ channelId: string; txHash?: string; depositTotal: string }> {
     return { channelId, txHash: '0xdeposit', depositTotal: String(1_000_000n + BigInt(amount)) };
   }
+  closeStateValue: 'open' | 'closing' | 'settleable' | 'settled' = 'open';
+  settleableAtValue?: bigint;
+  settleError?: Error;
+  async closeChannel(
+    channelId: string
+  ): Promise<{ channelId: string; txHash?: string; closedAt: string; settleableAt: string }> {
+    this.closeStateValue = 'closing';
+    this.settleableAtValue = 2000n;
+    return { channelId, txHash: '0xclose', closedAt: '1000', settleableAt: '2000' };
+  }
+  async settleChannel(channelId: string): Promise<{ channelId: string; txHash?: string }> {
+    if (this.settleError) throw this.settleError;
+    this.closeStateValue = 'settled';
+    return { channelId, txHash: '0xsettle' };
+  }
+  getChannelCloseState(): 'open' | 'closing' | 'settleable' | 'settled' {
+    return this.closeStateValue;
+  }
+  getSettleableAt(): bigint | undefined {
+    return this.settleableAtValue;
+  }
   async sendSwapPacket(): Promise<{ accepted: boolean }> {
     return { accepted: true };
   }
@@ -330,6 +351,7 @@ describe('control-plane routes', () => {
           cumulativeAmount: '0',
           depositTotal: '1000000',
           availableBalance: '1000000',
+          closeState: 'open',
         },
       ]);
     });
@@ -350,6 +372,30 @@ describe('control-plane routes', () => {
         txHash: '0xdeposit',
         depositTotal: '1500000', // mock base 1_000_000 + delta 500_000
       });
+    });
+
+    it('POST /channels/close returns closedAt + settleableAt', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/channels/close',
+        payload: { channelId: 'chan-1' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ channelId: 'chan-1', closedAt: '1000', settleableAt: '2000' });
+    });
+
+    it('POST /channels/settle too-early returns 425 retryable', async () => {
+      client.settleError = Object.assign(new Error('not settleable yet'), {
+        name: 'SettleTooEarlyError',
+        retryable: true,
+      });
+      const res = await app.inject({
+        method: 'POST',
+        url: '/channels/settle',
+        payload: { channelId: 'chan-1' },
+      });
+      expect(res.statusCode).toBe(425);
+      expect(res.json()).toMatchObject({ error: 'settle_too_early', retryable: true });
     });
 
     it('POST /swap forwards to the client', async () => {

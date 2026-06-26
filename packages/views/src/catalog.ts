@@ -236,6 +236,18 @@ export const ATOM_CATALOG: AtomMeta[] = [
       'toon_channel_deposit. Shows the new deposit total on success. EVM today.',
     writes: [{ name: 'toon_channel_deposit', spendy: true }],
   },
+  {
+    id: 'withdraw-flow',
+    description:
+      'Withdraw collateral from a channel: close → wait the settlement grace ' +
+      'period → settle. A stepper + live countdown to settleableAt; Settle stays ' +
+      'disabled until the grace period elapses. Two spendy signed on-chain txs ' +
+      '(toon_channel_close, toon_channel_settle). EVM today.',
+    writes: [
+      { name: 'toon_channel_close', spendy: true },
+      { name: 'toon_channel_settle', spendy: true },
+    ],
+  },
 
   // loading — placeholders the agent renders WHILE it works out the real view.
   // Render one of these as a first toon_render, then replace with the finished

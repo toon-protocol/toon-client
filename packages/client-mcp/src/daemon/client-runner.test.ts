@@ -167,6 +167,25 @@ class FakeClient implements ToonClientLike {
     const cur = this.channels[channelId]?.depositTotal ?? 0n;
     return { channelId, txHash: '0xdep', depositTotal: String(cur + BigInt(amount)) };
   }
+  closeStateValue: 'open' | 'closing' | 'settleable' | 'settled' = 'open';
+  settleableAtValue?: bigint;
+  async closeChannel(
+    channelId: string
+  ): Promise<{ channelId: string; txHash?: string; closedAt: string; settleableAt: string }> {
+    this.closeStateValue = 'closing';
+    this.settleableAtValue = 2000n;
+    return { channelId, txHash: '0xclose', closedAt: '1000', settleableAt: '2000' };
+  }
+  async settleChannel(channelId: string): Promise<{ channelId: string; txHash?: string }> {
+    this.closeStateValue = 'settled';
+    return { channelId, txHash: '0xsettle' };
+  }
+  getChannelCloseState(): 'open' | 'closing' | 'settleable' | 'settled' {
+    return this.closeStateValue;
+  }
+  getSettleableAt(): bigint | undefined {
+    return this.settleableAtValue;
+  }
   async sendSwapPacket(): Promise<{ accepted: boolean; data?: string }> {
     return { accepted: true, data: 'c3dhcA==' };
   }
@@ -622,6 +641,7 @@ describe('ClientRunner', () => {
         cumulativeAmount: '5',
         depositTotal: '100',
         availableBalance: '95',
+        closeState: 'open',
       },
     ]);
   });

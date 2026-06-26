@@ -138,3 +138,43 @@ describe('deposit-form', () => {
     expect(await screen.findByText(/insufficient funds/i)).toBeTruthy();
   });
 });
+
+describe('withdraw-flow', () => {
+  const farFuture = String(Math.floor(Date.now() / 1000) + 3600);
+  const closing: AtomChannel = { channelId: '0xCH', nonce: 1, cumulativeAmount: '0', closeState: 'closing', settleableAt: farFuture };
+  const settleable: AtomChannel = { channelId: '0xCH', nonce: 1, cumulativeAmount: '0', closeState: 'settleable', settleableAt: '1000' };
+  const open: AtomChannel = { channelId: '0xCH', nonce: 1, cumulativeAmount: '0', closeState: 'open' };
+
+  it('shows Close for an open channel', async () => {
+    const Withdraw = byId('withdraw-flow');
+    render(<Withdraw {...base} props={{}} actions={{ close: vi.fn(), settle: vi.fn() }} readChannels={() => Promise.resolve([open])} />);
+    expect(await screen.findByRole('button', { name: /Close/i })).toBeTruthy();
+  });
+
+  it('gates Settle (disabled + countdown) while closing', async () => {
+    const Withdraw = byId('withdraw-flow');
+    render(<Withdraw {...base} props={{}} actions={{ close: vi.fn(), settle: vi.fn() }} readChannels={() => Promise.resolve([closing])} />);
+    const settleBtn = (await screen.findByRole('button', { name: /Settle/i })) as HTMLButtonElement;
+    expect(settleBtn.disabled).toBe(true);
+    expect(screen.getByText(/Settleable in/i)).toBeTruthy();
+  });
+
+  it('enables Settle when settleable and shows the receipt on success', async () => {
+    const Withdraw = byId('withdraw-flow');
+    const settle = vi.fn(() => Promise.resolve({ ok: true, data: {} }));
+    render(<Withdraw {...base} props={{}} actions={{ close: vi.fn(), settle }} readChannels={() => Promise.resolve([settleable])} />);
+    const settleBtn = (await screen.findByRole('button', { name: /Settle/i })) as HTMLButtonElement;
+    expect(settleBtn.disabled).toBe(false);
+    fireEvent.click(settleBtn);
+    await waitFor(() => expect(settle).toHaveBeenCalledWith({ channelId: '0xCH' }));
+    expect(await screen.findByText(/collateral released/i)).toBeTruthy();
+  });
+
+  it('keeps the gate on a retryable settle failure', async () => {
+    const Withdraw = byId('withdraw-flow');
+    const settle = vi.fn(() => Promise.resolve({ ok: false, error: 'not settleable yet' }));
+    render(<Withdraw {...base} props={{}} actions={{ close: vi.fn(), settle }} readChannels={() => Promise.resolve([settleable])} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Settle/i }));
+    expect(await screen.findByText(/not settleable yet/i)).toBeTruthy();
+  });
+});

@@ -17,7 +17,9 @@ import {
   type AppBackend,
   type AppStatus,
   type BalanceView,
+  type ChannelCloseView,
   type ChannelDepositView,
+  type ChannelSettleView,
   type ChannelView,
   type FundWalletView,
   type PublishResult,
@@ -115,6 +117,8 @@ export interface DaemonControl {
   balances(): Promise<DaemonBalancesResponse>;
   fundWallet(body: { chain?: string; address?: string }): Promise<DaemonFundWalletResponse>;
   depositToChannel(body: { channelId: string; amount: string }): Promise<ChannelDepositView>;
+  closeChannel(body: { channelId: string }): Promise<ChannelCloseView>;
+  settleChannel(body: { channelId: string }): Promise<ChannelSettleView>;
 }
 
 /**
@@ -216,5 +220,15 @@ export class DaemonAppBackend implements AppBackend {
   /** Spendy: deposit additional collateral into an open channel (daemon signs). */
   async depositToChannel(req: { channelId: string; amount: string }): Promise<ChannelDepositView> {
     return this.control.depositToChannel(req);
+  }
+
+  /** Spendy: close a channel to begin the settlement grace period (withdraw). */
+  async closeChannel(req: { channelId: string }): Promise<ChannelCloseView> {
+    return this.control.closeChannel(req);
+  }
+
+  /** Spendy: settle a closed channel to release collateral (withdraw step 2). */
+  async settleChannel(req: { channelId: string }): Promise<ChannelSettleView> {
+    return this.control.settleChannel(req);
   }
 }

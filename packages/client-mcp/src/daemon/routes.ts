@@ -24,6 +24,8 @@ import type {
   FundWalletRequest,
   HttpFetchPaidRequest,
   ChannelDepositRequest,
+  CloseChannelRequest,
+  SettleChannelRequest,
   OpenChannelRequest,
   PublishRequest,
   PublishUnsignedRequest,
@@ -151,6 +153,22 @@ export function registerRoutes(
   app.post<{ Body: ChannelDepositRequest }>('/channels/deposit', async (req, reply) => {
     try {
       return await runner.depositToChannel(req.body);
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
+
+  app.post<{ Body: CloseChannelRequest }>('/channels/close', async (req, reply) => {
+    try {
+      return await runner.closeChannel(req.body);
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
+
+  app.post<{ Body: SettleChannelRequest }>('/channels/settle', async (req, reply) => {
+    try {
+      return await runner.settleChannel(req.body);
     } catch (err) {
       return mapError(reply, err);
     }
@@ -303,6 +321,11 @@ function mapError(reply: FastifyReply, err: unknown): FastifyReply {
           retryable: true,
         })
       : sendError(reply, 502, 'discovery_failed', { detail: err.message });
+  }
+  // Settle called before the grace period elapsed — retryable (the UI polls
+  // until `now >= settleableAt`). The client throws a tagged error; 425 Too Early.
+  if (err instanceof Error && (err as { name?: string }).name === 'SettleTooEarlyError') {
+    return sendError(reply, 425, 'settle_too_early', { detail: err.message, retryable: true });
   }
   return sendError(reply, 500, 'internal_error', {
     detail: err instanceof Error ? err.message : String(err),

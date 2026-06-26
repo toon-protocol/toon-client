@@ -3,6 +3,12 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 export interface ChannelStoreEntry {
   nonce: number;
   cumulativeAmount: bigint;
+  /** Unix SECONDS when close was initiated (withdraw flow). */
+  closedAt?: bigint;
+  /** Unix SECONDS the channel becomes settleable (= closedAt + settlementTimeout). */
+  settleableAt?: bigint;
+  /** Unix SECONDS the channel was settled (collateral released). */
+  settledAt?: bigint;
 }
 
 /**
@@ -19,6 +25,10 @@ interface JsonEntry {
   nonce: number;
   /** Stored as string to preserve bigint precision */
   cumulativeAmount: string;
+  /** Withdraw-flow timers, string-encoded SECONDS (bigint precision). */
+  closedAt?: string;
+  settleableAt?: string;
+  settledAt?: string;
 }
 
 /**
@@ -37,6 +47,9 @@ export class JsonFileChannelStore implements ChannelStore {
     data[channelId] = {
       nonce: tracking.nonce,
       cumulativeAmount: tracking.cumulativeAmount.toString(),
+      ...(tracking.closedAt !== undefined ? { closedAt: tracking.closedAt.toString() } : {}),
+      ...(tracking.settleableAt !== undefined ? { settleableAt: tracking.settleableAt.toString() } : {}),
+      ...(tracking.settledAt !== undefined ? { settledAt: tracking.settledAt.toString() } : {}),
     };
     this.writeFile(data);
   }
@@ -48,6 +61,9 @@ export class JsonFileChannelStore implements ChannelStore {
     return {
       nonce: entry.nonce,
       cumulativeAmount: BigInt(entry.cumulativeAmount),
+      ...(entry.closedAt !== undefined ? { closedAt: BigInt(entry.closedAt) } : {}),
+      ...(entry.settleableAt !== undefined ? { settleableAt: BigInt(entry.settleableAt) } : {}),
+      ...(entry.settledAt !== undefined ? { settledAt: BigInt(entry.settledAt) } : {}),
     };
   }
 

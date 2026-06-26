@@ -333,6 +333,33 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'toon_channel_close',
+    description:
+      'Close a payment channel to begin the settlement grace period (withdraw, ' +
+      'step 1). Spends on-chain. EVM today. Returns closedAt + settleableAt; the ' +
+      'channel can be settled (collateral released) once now ≥ settleableAt.',
+    inputSchema: {
+      type: 'object',
+      properties: { channelId: { type: 'string', description: 'The channel to close.' } },
+      required: ['channelId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_channel_settle',
+    description:
+      'Settle a closed channel after its grace period to release collateral ' +
+      '(withdraw, step 2). Fails as RETRYABLE if called before settleableAt — ' +
+      'poll toon_channels for closeState and retry once it is "settleable". Spends ' +
+      'on-chain. EVM today.',
+    inputSchema: {
+      type: 'object',
+      properties: { channelId: { type: 'string', description: 'The closed channel to settle.' } },
+      required: ['channelId'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'toon_swap',
     description:
       'Pay a swap peer (asset A) to receive asset B plus a signed target-chain ' +
@@ -661,6 +688,10 @@ export async function dispatchTool(
             amount: String(args['amount'] ?? ''),
           })
         );
+      case 'toon_channel_close':
+        return ok(await client.closeChannel({ channelId: String(args['channelId'] ?? '') }));
+      case 'toon_channel_settle':
+        return ok(await client.settleChannel({ channelId: String(args['channelId'] ?? '') }));
       case 'toon_swap':
         return ok(
           await client.swap({

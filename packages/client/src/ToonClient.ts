@@ -990,6 +990,65 @@ export class ToonClient {
   }
 
   /**
+   * Close a channel to begin the settlement grace period (first half of
+   * withdraw). Records `closedAt`/`settleableAt` (unix seconds) on the tracked
+   * channel — persisted, so the grace timer survives a daemon restart. Spends
+   * on-chain. EVM today; Solana/Mina are follow-ups.
+   */
+  async closeChannel(
+    channelId: string
+  ): Promise<{ channelId: string; txHash?: string; closedAt: string; settleableAt: string }> {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    if (!this.onChainChannelClient) {
+      throw new Error('On-chain channel client not configured (no chainRpcUrls).');
+    }
+    const r = await this.onChainChannelClient.closeChannel(channelId);
+    this.channelManager.setChannelClosed(channelId, r.closedAt, r.settleableAt);
+    return {
+      channelId,
+      ...(r.txHash ? { txHash: r.txHash } : {}),
+      closedAt: r.closedAt.toString(),
+      settleableAt: r.settleableAt.toString(),
+    };
+  }
+
+  /**
+   * Settle a closed channel to release collateral (second half of withdraw).
+   * THE time guard: never settle before `settleableAt`. A too-early call throws
+   * a retryable error (carrying the remaining seconds) BEFORE spending gas — the
+   * contract would revert anyway. Spends on-chain. EVM today.
+   */
+  async settleChannel(channelId: string): Promise<{ channelId: string; txHash?: string }> {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    if (!this.onChainChannelClient) {
+      throw new Error('On-chain channel client not configured (no chainRpcUrls).');
+    }
+    const settleableAt = this.channelManager.getSettleableAt(channelId);
+    if (settleableAt === undefined) {
+      throw new Error(`Channel "${channelId}" is not closed; call closeChannel first.`);
+    }
+    const nowSec = BigInt(Math.floor(Date.now() / 1000));
+    if (nowSec < settleableAt) {
+      const remaining = settleableAt - nowSec;
+      throw Object.assign(
+        new Error(
+          `Channel "${channelId}" is not settleable yet — ${remaining}s remain (settleable at ${settleableAt}).`
+        ),
+        { name: 'SettleTooEarlyError', retryable: true, settleableAt: settleableAt.toString() }
+      );
+    }
+    const r = await this.onChainChannelClient.settleChannel(channelId);
+    this.channelManager.setChannelSettled(channelId, nowSec);
+    return { channelId, ...(r.txHash ? { txHash: r.txHash } : {}) };
+  }
+
+  /** Where a tracked channel sits in the withdraw journey. */
+  getChannelCloseState(channelId: string): 'open' | 'closing' | 'settleable' | 'settled' {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    return this.channelManager.getChannelCloseState(channelId);
+  }
+
+  /**
    * Read the on-chain settlement-token balance of this client's OWN wallet on
    * each configured chain (EVM token, Solana SPL, native MINA). A free read — no
    * signing, no payment. Best-effort per chain: a chain whose config is absent or

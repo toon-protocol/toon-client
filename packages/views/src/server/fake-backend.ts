@@ -11,7 +11,9 @@ import {
   type AppBackend,
   type AppStatus,
   type BalanceView,
+  type ChannelCloseView,
   type ChannelDepositView,
+  type ChannelSettleView,
   type ChannelView,
   type FundWalletView,
   type PublishResult,
@@ -180,10 +182,13 @@ export class FakeBackend implements AppBackend {
    * atoms render stably. available = depositTotal − cumulativeAmount.
    */
   channels(): Promise<{ channels: ChannelView[] }> {
+    // fake-channel-1 is already settleable (settleableAt in the past) and -2 is
+    // open, so the withdraw-flow / channel-list atoms render every state without
+    // waiting on a real grace period.
     return Promise.resolve({
       channels: [
-        { channelId: 'fake-channel-1', nonce: 12, cumulativeAmount: '4500000', depositTotal: '10000000', availableBalance: '5500000' },
-        { channelId: 'fake-channel-2', nonce: 3, cumulativeAmount: '800000', depositTotal: '2000000', availableBalance: '1200000' },
+        { channelId: 'fake-channel-1', nonce: 12, cumulativeAmount: '4500000', depositTotal: '10000000', availableBalance: '5500000', closeState: 'settleable', settleableAt: '1000' },
+        { channelId: 'fake-channel-2', nonce: 3, cumulativeAmount: '800000', depositTotal: '2000000', availableBalance: '1200000', closeState: 'open' },
       ],
     });
   }
@@ -215,6 +220,21 @@ export class FakeBackend implements AppBackend {
       txHash: `0xfakedeposit${++this.seq}`,
       depositTotal: String(10_000_000n + delta),
     });
+  }
+
+  /** Close stub: settleableAt = a fixed past second so the gallery is instantly settleable. */
+  closeChannel(req: { channelId: string }): Promise<ChannelCloseView> {
+    return Promise.resolve({
+      channelId: req.channelId,
+      txHash: `0xfakeclose${++this.seq}`,
+      closedAt: '900',
+      settleableAt: '1000',
+    });
+  }
+
+  /** Settle stub: echoes a tx. */
+  settleChannel(req: { channelId: string }): Promise<ChannelSettleView> {
+    return Promise.resolve({ channelId: req.channelId, txHash: `0xfakesettle${++this.seq}` });
   }
 
   /** Test helper: total events currently in the store. */
