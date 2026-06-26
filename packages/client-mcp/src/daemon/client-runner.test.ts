@@ -154,6 +154,9 @@ class FakeClient implements ToonClientLike {
   getChannelDepositTotal(channelId: string): bigint {
     return this.channels[channelId]?.depositTotal ?? 0n;
   }
+  async getBalances(): Promise<{ chain: string; address: string; amount: string }[]> {
+    return [{ chain: 'evm', address: '0xself', amount: '5000000', asset: 'USDC', assetScale: 6 }];
+  }
   async sendSwapPacket(): Promise<{ accepted: boolean; data?: string }> {
     return { accepted: true, data: 'c3dhcA==' };
   }
