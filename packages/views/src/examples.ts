@@ -30,11 +30,12 @@ export function feedView(): ViewSpec {
         {
           atom: 'note-card',
           bind: { query: buildFeedFilter(undefined, 50), kindAuto: true },
-          // Surface the engagement affordances NoteRow already supports. Each is
-          // a paid write (kind:1 reply, kind:7 like, kind:3 follow) routed
-          // through the unsigned-publish → pay-to-write flow.
+          // Surface the engagement affordances NoteRow supports. Each is a paid
+          // write (kind:7 like, kind:3 follow) routed through the
+          // unsigned-publish → pay-to-write flow. Reply is intentionally omitted
+          // until there's a reply-composer — firing it bare would publish an
+          // empty note.
           actions: {
-            reply: { tool: PUBLISH_TOOL, args: { kind: 1 } },
             react: {
               tool: PUBLISH_TOOL,
               args: { kind: 7 },

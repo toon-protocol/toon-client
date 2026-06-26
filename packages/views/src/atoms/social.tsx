@@ -148,6 +148,47 @@ function renderNoteContent(text: string): ReactNode {
   return out;
 }
 
+/**
+ * The author's profile, revealed inline when their avatar/name is clicked.
+ * This is where Follow lives — off the per-row header so the feed stays clean.
+ */
+const AuthorProfileCard: FC<{
+  pubkey: string;
+  displayName: string | undefined;
+  profile: ProfileMetadata | undefined;
+  follow: AtomRenderProps['actions'][string] | undefined;
+  followed: boolean;
+  onFollow: () => void;
+}> = ({ pubkey, displayName, profile, follow, followed, onFollow }) => (
+  <div className="mt-1 flex items-start gap-3 rounded-lg border border-border bg-muted/40 p-3">
+    <IdentityAvatar pubkey={pubkey} name={displayName} picture={profile?.picture} size="lg" />
+    <div className="min-w-0 flex-1">
+      <div className="truncate font-semibold leading-tight">{displayName ?? 'Unknown author'}</div>
+      {profile?.nip05 ? (
+        <div className="truncate text-xs text-muted-foreground">{profile.nip05}</div>
+      ) : (
+        <MonoId value={pubkey} className="text-muted-foreground" />
+      )}
+      {profile?.about ? (
+        <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">{profile.about}</p>
+      ) : null}
+    </div>
+    {follow ? (
+      <Button
+        type="button"
+        variant={followed ? 'secondary' : 'default'}
+        size="sm"
+        aria-pressed={followed}
+        className="h-8 shrink-0 rounded-full px-3 text-xs font-semibold"
+        onClick={onFollow}
+      >
+        <UserPlus aria-hidden="true" />
+        {followed ? 'Following' : 'Follow'}
+      </Button>
+    ) : null}
+  </div>
+);
+
 /** A single feed item: identity row, note body, inline media, engagement. */
 const NoteRow: FC<{
   event: NostrEvent;
@@ -168,6 +209,9 @@ const NoteRow: FC<{
   // for a snappy feel; the publish itself is routed through the paid write path.
   const [liked, setLiked] = useState(false);
   const [followed, setFollowed] = useState(false);
+  // Follow lives in the author's profile (revealed by clicking the avatar/name),
+  // not as a per-row button — keeps the feed scannable.
+  const [showProfile, setShowProfile] = useState(false);
 
   const onLike = (): void => {
     if (!react) return;
@@ -184,14 +228,23 @@ const NoteRow: FC<{
 
   return (
     <article className="group/note flex gap-3 px-1 py-3 transition-colors first:pt-0 last:pb-0 hover:bg-muted/30">
-      <IdentityAvatar
-        pubkey={note.authorPubkey}
-        name={displayName}
-        picture={profile?.picture}
-      />
+      <button
+        type="button"
+        onClick={() => setShowProfile((v) => !v)}
+        aria-expanded={showProfile}
+        aria-label={`View ${displayName ?? 'author'}'s profile`}
+        className="shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <IdentityAvatar pubkey={note.authorPubkey} name={displayName} picture={profile?.picture} />
+      </button>
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <header className="flex items-center gap-1.5">
-          <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+        <header className="flex min-w-0 items-baseline gap-1.5">
+          <button
+            type="button"
+            onClick={() => setShowProfile((v) => !v)}
+            aria-expanded={showProfile}
+            className="flex min-w-0 items-baseline gap-1.5 text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
             {displayName ? (
               <>
                 <span className="truncate font-semibold leading-tight text-foreground">
@@ -202,33 +255,30 @@ const NoteRow: FC<{
             ) : (
               <MonoId value={note.authorPubkey} className="text-muted-foreground" />
             )}
-            <span aria-hidden="true" className="text-muted-foreground">
-              ·
-            </span>
-            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-              {relativeTime(note.createdAt)}
-            </span>
-            {note.isReply ? (
-              <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">
-                reply
-              </Badge>
-            ) : null}
-          </div>
-          {follow ? (
-            <Button
-              type="button"
-              variant={followed ? 'secondary' : 'outline'}
-              size="sm"
-              aria-label={followed ? 'Following this author' : 'Follow this author'}
-              aria-pressed={followed}
-              className="h-7 shrink-0 rounded-full px-3 text-xs font-semibold"
-              onClick={onFollow}
-            >
-              <UserPlus aria-hidden="true" />
-              {followed ? 'Following' : 'Follow'}
-            </Button>
+          </button>
+          <span aria-hidden="true" className="text-muted-foreground">
+            ·
+          </span>
+          <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+            {relativeTime(note.createdAt)}
+          </span>
+          {note.isReply ? (
+            <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">
+              reply
+            </Badge>
           ) : null}
         </header>
+
+        {showProfile ? (
+          <AuthorProfileCard
+            pubkey={note.authorPubkey}
+            displayName={displayName}
+            profile={profile}
+            follow={follow}
+            followed={followed}
+            onFollow={onFollow}
+          />
+        ) : null}
 
         {note.content ? (
           <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">

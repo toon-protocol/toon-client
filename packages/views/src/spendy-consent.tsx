@@ -81,7 +81,14 @@ export const ConsentProvider: FC<{ children: ReactNode }> = ({ children }) => {
           role="dialog"
           aria-modal="true"
           aria-label="Confirm spend"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm"
+          // Anchor the prompt to the TOP of the iframe, not vertically centered.
+          // The host gives MCP apps a tall fixed-height iframe (no auto-resize),
+          // so a centered overlay lands in the middle of a long feed — below the
+          // visible window, forcing the user to scroll to find it. Top-anchoring
+          // keeps it where the composer/first notes sit, which is usually in
+          // view. (The fuller fix is a host-native or inline-at-action consent;
+          // tracked as a follow-up.)
+          className="fixed inset-0 z-50 flex items-start justify-center bg-background/80 p-4 pt-6 backdrop-blur-sm"
         >
           <div className="w-full max-w-sm overflow-hidden rounded-xl border border-border bg-card shadow-lg">
             <div className="flex items-center gap-2 border-b border-border px-4 py-3">
