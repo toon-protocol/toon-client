@@ -73,9 +73,12 @@ export function registerRoutes(
 
   app.post<{ Body: UploadMediaRequest }>('/upload-media', async (req, reply) => {
     const body = req.body;
-    if (!body || typeof body.dataBase64 !== 'string' || body.dataBase64 === '') {
+    const hasData = typeof body?.dataBase64 === 'string' && body.dataBase64 !== '';
+    const hasPath = typeof body?.filePath === 'string' && body.filePath !== '';
+    if (!body || (!hasData && !hasPath)) {
       return sendError(reply, 400, 'invalid_media', {
-        detail: 'body.dataBase64 (base64-encoded media bytes) is required.',
+        detail:
+          'body.dataBase64 (base64-encoded media bytes) or body.filePath (absolute path) is required.',
       });
     }
     try {

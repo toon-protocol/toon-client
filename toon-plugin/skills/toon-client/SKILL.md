@@ -137,10 +137,13 @@ before retrying.
 
 ## Media (paid)
 
-`toon_upload_media({ dataBase64, mime?, kind?, caption?, tags?, fee?, btpUrl? })`
-is the two-step, SPENDY path for attaching an image or video. It uploads the
-base64 bytes to **Arweave** via the kind:5094 blob-storage DVM (the store DVM),
-then signs and publishes a media event referencing the resulting Arweave URL.
+`toon_upload_media({ filePath | dataBase64, mime?, kind?, caption?, tags?, fee?, btpUrl? })`
+is the two-step, SPENDY path for attaching an image or video. Supply the bytes
+as EXACTLY ONE of `filePath` (an absolute path the daemon reads off disk —
+preferred, keeps the payload out of the model context) or `dataBase64` (inline
+base64). It uploads the bytes to **Arweave** via the kind:5094 blob-storage DVM
+(the store DVM), then signs and publishes a media event referencing the
+resulting Arweave URL.
 Default kind is 1063 (NIP-94); use 20 for a picture, 21/22 for video, or 1 for a
 note with a NIP-92 `imeta` tag. Single-packet only (one upload per call). Returns
 the published media event (with its eventId, nonce, and the Arweave URL).

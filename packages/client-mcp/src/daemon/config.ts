@@ -12,7 +12,7 @@
 
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { loadKeystore } from '@toon-protocol/client';
 import {
   encodeEventToToon,
@@ -147,6 +147,14 @@ export interface DaemonConfigFile {
    * Env override: `TOON_CLIENT_ARWEAVE_GATEWAYS` (comma-separated).
    */
   arweaveGateways?: string[];
+  /**
+   * Optional allowed-root for `toon_upload`'s `filePath` reads. When set, a
+   * supplied `filePath` is resolved and rejected unless it lies inside this
+   * directory — bounding which filesystem locations the daemon will read on an
+   * agent's behalf. When unset, any absolute path is read (the path is still
+   * resolved). Env override: `TOON_CLIENT_UPLOAD_ROOT`.
+   */
+  uploadAllowedRoot?: string;
 }
 
 export interface ResolvedDaemonConfig {
@@ -192,6 +200,11 @@ export interface ResolvedDaemonConfig {
    * fall back to the shared default when it is absent.
    */
   arweaveGateways?: string[];
+  /**
+   * Resolved allowed-root for `toon_upload` `filePath` reads, when configured.
+   * Absent means no boundary (any absolute path is read, still resolved).
+   */
+  uploadAllowedRoot?: string;
 }
 
 /**
@@ -350,6 +363,9 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     parseCsvEnv(process.env['TOON_CLIENT_ARWEAVE_GATEWAYS']) ??
     file.arweaveGateways ??
     [...ARWEAVE_GATEWAYS];
+  const uploadRoot =
+    process.env['TOON_CLIENT_UPLOAD_ROOT'] ?? file.uploadAllowedRoot;
+  const uploadAllowedRoot = uploadRoot ? resolve(uploadRoot) : undefined;
   const network = (process.env['TOON_CLIENT_NETWORK'] ?? file.network) as
     | ToonClientConfig['network']
     | undefined;
@@ -425,6 +441,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     toonClientConfig,
     network,
     arweaveGateways,
+    ...(uploadAllowedRoot ? { uploadAllowedRoot } : {}),
   };
 }
 

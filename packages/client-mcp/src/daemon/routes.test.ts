@@ -25,6 +25,7 @@ vi.mock('@toon-protocol/sdk/swap', () => ({
     packetsScheduled: 1,
   }),
 }));
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -253,6 +254,29 @@ describe('control-plane routes', () => {
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBe('invalid_media');
+    });
+
+    it('POST /upload-media accepts a filePath read off disk', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'toon-routes-upload-'));
+      const path = join(dir, 'pic.bin');
+      writeFileSync(path, Buffer.from('disk-bytes'));
+      const res = await app.inject({
+        method: 'POST',
+        url: '/upload-media',
+        payload: { filePath: path, mime: 'image/png', kind: 20 },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ url: 'https://ar-io.dev/tx-routes', txId: 'tx-routes' });
+    });
+
+    it('POST /upload-media rejects supplying BOTH dataBase64 and filePath with 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/upload-media',
+        payload: { dataBase64: Buffer.from('x').toString('base64'), filePath: '/tmp/x.bin' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('invalid_payload');
     });
 
     it('POST /query returns matching events (empty buffer → [])', async () => {
