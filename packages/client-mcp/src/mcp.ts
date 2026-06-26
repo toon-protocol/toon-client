@@ -23,6 +23,7 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import { APP_RESOURCE_URI } from '@toon-protocol/views';
+import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import { ControlClient } from './control-client.js';
 import { dispatchTool, TOOL_DEFINITIONS } from './mcp-tools.js';
 
@@ -127,9 +128,23 @@ async function main(): Promise<void> {
   }));
 
   // The MCP-app UI resource the host renders for toon_render results.
+  //
+  // CSP: the rendered feed/uploader shows media stored on Arweave. Without an
+  // explicit `resourceDomains`, the host iframe's default `img-src`/`media-src`
+  // blocks those gateways and images never load (toon-client#127). Advertise the
+  // Arweave gateways as both resource (img/media/static) and connect origins.
+  // Per the ext-apps spec the host reads `_meta.ui.csp` from the `resources/read`
+  // content item, with the `resources/list` entry as fallback — so set it on both.
+  const APP_CSP = {
+    csp: {
+      resourceDomains: [...ARWEAVE_GATEWAYS],
+      connectDomains: [...ARWEAVE_GATEWAYS],
+    },
+  };
+
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
-      { uri: APP_RESOURCE_URI, name: 'TOON', mimeType: APP_MIME },
+      { uri: APP_RESOURCE_URI, name: 'TOON', mimeType: APP_MIME, _meta: { ui: APP_CSP } },
     ],
   }));
 
@@ -138,7 +153,9 @@ async function main(): Promise<void> {
       throw new Error(`Unknown resource: ${request.params.uri}`);
     }
     return {
-      contents: [{ uri: APP_RESOURCE_URI, mimeType: APP_MIME, text: appHtml }],
+      contents: [
+        { uri: APP_RESOURCE_URI, mimeType: APP_MIME, text: appHtml, _meta: { ui: APP_CSP } },
+      ],
     };
   });
 
