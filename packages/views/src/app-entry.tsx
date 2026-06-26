@@ -21,7 +21,16 @@ function ViewHost({ bridge }: { bridge: ViewBridge }): ReactNode {
   if (spec == null) {
     return <div className="p-4 text-sm text-muted-foreground">Waiting for a view…</div>;
   }
-  return <ViewSpecRenderer spec={spec} bridge={bridge} />;
+  // Inset the view from the iframe edges. Atoms are self-framing cards
+  // (`rounded-xl border bg-card`); with zero padding they bleed to the edges and
+  // their borders/rounded corners get clipped, so the render reads as a flat
+  // edge-to-edge list instead of the carded layout the gallery shows. This `p-4`
+  // mirrors the gallery panel's inner padding.
+  return (
+    <div className="p-4">
+      <ViewSpecRenderer spec={spec} bridge={bridge} />
+    </div>
+  );
 }
 
 export function ToonApp(): ReactNode {
