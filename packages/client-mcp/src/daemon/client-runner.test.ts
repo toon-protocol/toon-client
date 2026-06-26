@@ -190,7 +190,7 @@ describe('ClientRunner', () => {
       config: makeConfig({
         apex: {
           destination: 'g.proxy',
-          peerId: 'town',
+          peerId: 'proxy',
           chain: 'evm',
           chainKey: 'evm:base:84532',
           chainId: 84532,
@@ -226,7 +226,7 @@ describe('ClientRunner', () => {
 
   it('injects the apex negotiation into the ToonClient', async () => {
     await runner.bootstrap();
-    expect(client.peerNegotiations.get('town')).toMatchObject({
+    expect(client.peerNegotiations.get('proxy')).toMatchObject({
       chainType: 'evm',
       settlementAddress: '0xapex',
       tokenNetwork: '0xtn',
@@ -246,7 +246,7 @@ describe('ClientRunner', () => {
       config: makeConfig({
         apex: {
           destination: 'g.proxy',
-          peerId: 'town',
+          peerId: 'proxy',
           chain: 'evm',
           chainKey: 'evm:base:84532',
           chainId: 84532,
@@ -325,7 +325,7 @@ describe('ClientRunner', () => {
       config: makeConfig({
         apex: {
           destination: 'g.proxy',
-          peerId: 'town',
+          peerId: 'proxy',
           chain: 'evm',
           chainKey: 'evm:base:84532',
           chainId: 84532,
@@ -432,7 +432,7 @@ describe('ClientRunner', () => {
       config: makeConfig({
         apex: {
           destination: 'g.proxy',
-          peerId: 'town',
+          peerId: 'proxy',
           chain: 'evm',
           chainKey: 'evm:base:84532',
           chainId: 84532,

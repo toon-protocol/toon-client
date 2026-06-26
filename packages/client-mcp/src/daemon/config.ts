@@ -27,7 +27,7 @@ import type { SettlementChain } from '../control-api.js';
 export interface ApexNegotiationConfig {
   /** ILP destination address, e.g. `g.proxy`. */
   destination: string;
-  /** Peer id key used in the negotiation map (last ILP segment, e.g. `town`). */
+  /** Peer id key used in the negotiation map (last ILP segment, e.g. `proxy`). */
   peerId: string;
   /** Settlement chain family. */
   chain: SettlementChain;

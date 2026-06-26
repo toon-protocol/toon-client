@@ -304,10 +304,9 @@ See [examples/client-example/](../../examples/client-example/) for standalone cl
 ## Related Packages
 
 - **[@toon-protocol/core](../core/)** — Core protocol (peer discovery, bootstrap, `buildBlobStorageRequest`)
-- **[@toon-protocol/relay](../relay/)** — Nostr relay with ILP payment gating (`encodeEventToToon` / `decodeEventFromToon`)
+- **[@toon-protocol/relay](../relay/)** — Operator product running the apex connector plus town/mill/dvm nodes; also exports `encodeEventToToon` / `decodeEventFromToon` for event encoding
 - **[@toon-protocol/sdk](../sdk/)** — Higher-level helpers including `streamSwap()` for multi-chain swaps via a **mill**
 - **[@toon-protocol/bls](../bls/)** — Business Logic Server (pricing, validation, storage)
-- **[@toon-protocol/relay](../relay/)** — The operator product that runs the apex + town/mill/dvm nodes you pay
 
 ---
 
