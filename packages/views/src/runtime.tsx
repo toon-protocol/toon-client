@@ -201,13 +201,23 @@ function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAc
 }
 
 /** Render an event with a resolved branch-1 native atom (full trust). */
-function NativeEvent({ atom, event, bridge }: { atom: Atom; event: NostrEvent; bridge: ViewBridge }): ReactNode {
+function NativeEvent({
+  atom,
+  event,
+  bridge,
+  actions = {},
+}: {
+  atom: Atom;
+  event: NostrEvent;
+  bridge: ViewBridge;
+  actions?: Record<string, AtomAction>;
+}): ReactNode {
   const Component = atom.Component;
   return (
     <Component
       events={[event]}
       props={{}}
-      actions={{}}
+      actions={actions}
       resolveProfile={getProfileResolver(bridge)}
       renderEvent={(e) => <EventAtom key={e.id} event={e} bridge={bridge} />}
     >
@@ -264,7 +274,15 @@ function bridgePerformTool(
  * 2/3/4 render through the resolved `kind:31036` renderer (A2UI / sandboxed
  * mcp-ui) or the generative fallback — guarded by the swap-defense + consent.
  */
-function EventAtom({ event, bridge }: { event: NostrEvent; bridge: ViewBridge }): ReactNode {
+function EventAtom({
+  event,
+  bridge,
+  actions,
+}: {
+  event: NostrEvent;
+  bridge: ViewBridge;
+  actions?: Record<string, AtomAction>;
+}): ReactNode {
   const { decision, loading } = useRenderDecision(event, bridge, KIND_REGISTRY, RENDERER_PINS);
   const performTool = useMemo(() => bridgePerformTool(bridge), [bridge]);
 
@@ -274,7 +292,9 @@ function EventAtom({ event, bridge }: { event: NostrEvent; bridge: ViewBridge })
 
   switch (decision.branch) {
     case 'native':
-      return <NativeEvent atom={decision.component} event={event} bridge={bridge} />;
+      return (
+        <NativeEvent atom={decision.component} event={event} bridge={bridge} actions={actions} />
+      );
     case 'a2ui':
       // Branch 2: medium trust. On a gate refusal the renderer signals fallback;
       // drop to the generative branch (per the gate's signal) so a refused A2UI
@@ -380,7 +400,15 @@ function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): Rea
   const readBalances = useMemo(() => buildReadBalances(bridge), [bridge]);
 
   if (node.bind?.kindAuto) {
-    return <>{events.map((e) => <EventAtom key={e.id} event={e} bridge={bridge} />)}</>;
+    // Thread the feed node's actions (reply/react/follow) to each natively
+    // rendered event so per-note engagement surfaces in kindAuto feeds.
+    return (
+      <>
+        {events.map((e) => (
+          <EventAtom key={e.id} event={e} bridge={bridge} actions={actions} />
+        ))}
+      </>
+    );
   }
 
   const Component = atom.Component;

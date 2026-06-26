@@ -79,7 +79,10 @@ export const IdentityAvatar: FC<{
   const colors = avatarColorsFor(pubkey);
   const label = name ?? pubkey;
   return (
-    <Avatar size={size} className={cn('shrink-0', className)}>
+    <Avatar
+      size={size}
+      className={cn('shrink-0 ring-1 ring-inset ring-white/10', className)}
+    >
       {picture ? <AvatarImage src={picture} alt={`${label} avatar`} /> : null}
       <AvatarFallback
         className="font-semibold tracking-tight"

@@ -106,6 +106,48 @@ function useAuthorProfile(
   return seeded ?? fetched;
 }
 
+// Matches, in priority order: URLs, #hashtags, nostr:/npub mentions, @handles.
+const RICH_TOKEN_RE =
+  /(https?:\/\/[^\s]+)|(#[\p{L}\p{N}_]+)|((?:nostr:)?npub1[0-9a-z]+)|(@[\p{L}\p{N}_]+)/giu;
+
+/**
+ * Render note text with #hashtags, @/npub mentions and URLs lifted into the
+ * jade accent (URLs are real links). Built as React nodes — no HTML injection —
+ * and plain segments stay strings so `whitespace-pre-wrap` keeps newlines.
+ */
+function renderNoteContent(text: string): ReactNode {
+  const out: ReactNode[] = [];
+  let last = 0;
+  let key = 0;
+  RICH_TOKEN_RE.lastIndex = 0;
+  for (let m = RICH_TOKEN_RE.exec(text); m !== null; m = RICH_TOKEN_RE.exec(text)) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const tok = m[0];
+    if (m[1]) {
+      out.push(
+        <a
+          key={key++}
+          href={tok}
+          target="_blank"
+          rel="noopener noreferrer nofollow"
+          className="break-all text-primary underline-offset-2 hover:underline"
+        >
+          {tok}
+        </a>,
+      );
+    } else {
+      out.push(
+        <span key={key++} className="font-medium text-primary">
+          {tok}
+        </span>,
+      );
+    }
+    last = m.index + tok.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
 /** A single feed item: identity row, note body, inline media, engagement. */
 const NoteRow: FC<{
   event: NostrEvent;
@@ -190,7 +232,7 @@ const NoteRow: FC<{
 
         {note.content ? (
           <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">
-            {note.content}
+            {renderNoteContent(note.content)}
           </p>
         ) : null}
 
@@ -229,11 +271,6 @@ const NoteRow: FC<{
           </footer>
         ) : null}
 
-        {react || follow ? (
-          <p className="mt-0.5 text-[10px] text-muted-foreground/70">
-            Like and follow are paid writes — each spends the per-event channel fee.
-          </p>
-        ) : null}
       </div>
     </article>
   );

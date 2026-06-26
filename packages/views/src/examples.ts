@@ -27,7 +27,28 @@ export function feedView(): ViewSpec {
       atom: 'stack',
       children: [
         { atom: 'composer', actions: { post: { tool: PUBLISH_TOOL, args: { kind: 1 } } } },
-        { atom: 'note-card', bind: { query: buildFeedFilter(undefined, 50), kindAuto: true } },
+        {
+          atom: 'note-card',
+          bind: { query: buildFeedFilter(undefined, 50), kindAuto: true },
+          // Surface the engagement affordances NoteRow already supports. Each is
+          // a paid write (kind:1 reply, kind:7 like, kind:3 follow) routed
+          // through the unsigned-publish → pay-to-write flow.
+          actions: {
+            reply: { tool: PUBLISH_TOOL, args: { kind: 1 } },
+            react: {
+              tool: PUBLISH_TOOL,
+              args: { kind: 7 },
+              spendy: true,
+              confirmLabel: 'Like settles a per-event channel fee. Continue?',
+            },
+            follow: {
+              tool: PUBLISH_TOOL,
+              args: { kind: 3 },
+              spendy: true,
+              confirmLabel: 'Follow settles a per-event channel fee. Continue?',
+            },
+          },
+        },
       ],
     },
   };
