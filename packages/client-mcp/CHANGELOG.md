@@ -1,5 +1,29 @@
 # @toon-protocol/client-mcp
 
+## 0.8.3
+
+### Patch Changes
+
+- 5838b79: Add wallet + loading/placeholder atoms to the MCP UI.
+
+  - Loading atoms (`skeleton`, `loading`, `progress-steps`) the agent can render
+    immediately while it works out the real journey.
+  - `wallet-overview` (per-chain address with copy-to-share + on-chain balance
+    enrichment + devnet faucet) and `channel-list` (live tracked channels with
+    available/deposit balance), backed by new read seams.
+  - New free-read tools `toon_channels` (now enriched with `depositTotal` +
+    `availableBalance`) and `toon_balances`, plus the `toon_fund_wallet` faucet
+    action wired into the apps surface. Client exposes `getChannelDepositTotal`.
+
+- 5838b79: Read live on-chain wallet balances (`toon_balances`).
+
+  Adds a read-only `WalletBalanceReader` (EVM ERC-20 `balanceOf` via viem; Solana
+  SPL via `getTokenAccountsByOwner`; native MINA via GraphQL) and
+  `ToonClient.getBalances()` — best-effort per chain, no signing or payment. Wires
+  it end-to-end through the daemon: `GET /balances`, `ControlClient.balances()`,
+  and the `toon_balances` MCP tool. The `wallet-overview` atom's balances now
+  resolve live (it already worked from the identity addresses).
+
 ## 0.8.2
 
 ### Patch Changes
