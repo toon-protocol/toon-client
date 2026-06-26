@@ -1,5 +1,7 @@
 # @toon-protocol/client-mcp
 
+## 0.9.0
+
 ## 0.8.3
 
 ### Patch Changes
