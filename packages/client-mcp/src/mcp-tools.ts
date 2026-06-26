@@ -477,7 +477,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Child peers via this apex’s channel (e.g. ["dvm","mill"]).',
+            'Child peers via this apex’s channel (e.g. ["store","mill"]).',
         },
         feePerEvent: {
           type: 'string',

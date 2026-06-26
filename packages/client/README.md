@@ -2,7 +2,7 @@
 
 The **client library** for TOON Protocol — _pay-to-write Nostr over Interledger (ILP)_. Use it to **pay for and publish** writes to a network of service nodes. **Reads are free; writes cost a signed EIP-712 payment-channel claim** against an on-chain deposit.
 
-> **`client` vs `relay`.** This package (`@toon-protocol/client`) is what an _app or end user_ uses to **pay** and publish. It does **not** run any relay or node. The nodes are operated separately by **`@toon-protocol/relay`** (the operator product, which runs an _apex_ connector plus `town` / `mill` / `dvm` children). Don't confuse the **client** (pays) with **relay** (operates), or **`town`** (a single Nostr-relay node) with **relay** (the whole operator stack).
+> **`client` vs `relay`.** This package (`@toon-protocol/client`) is what an _app or end user_ uses to **pay** and publish. It does **not** run any relay or node. The nodes are operated separately by **`@toon-protocol/relay`** (the operator product, which runs an _apex_ connector plus `town` / `mill` / `store` children). Don't confuse the **client** (pays) with **relay** (operates), or **`town`** (a single Nostr-relay node) with **relay** (the whole operator stack).
 
 ## Which call pays which node
 
@@ -11,7 +11,7 @@ Every write is an ILP packet carrying a signed payment-channel claim. The client
 | Client call                       | Node type | What it does                                                                                                                                              |
 | --------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `client.publishEvent(event)`      | **town**  | Publish a Nostr event (e.g. `kind:1`) to the relay.                                                                                                       |
-| `requestBlobStorage(client, …)`   | **dvm**   | NIP-90 compute/storage. Builds and publishes a `kind:5094` event that uploads a blob to Arweave — the job request **is** the payment — and decodes the Arweave tx ID from the FULFILL response. |
+| `requestBlobStorage(client, …)`   | **store** | NIP-90 compute/storage. Builds and publishes a `kind:5094` event that uploads a blob to Arweave — the job request **is** the payment — and decodes the Arweave tx ID from the FULFILL response. |
 | `client.sendSwapPacket(…)`        | **mill**  | Multi-chain token swap (low-level). Most callers use the higher-level `streamSwap()` from `@toon-protocol/sdk`, which is built on `sendSwapPacket`.       |
 
 ## What It Does
@@ -173,7 +173,7 @@ console.log('Mina:  ', client.getMinaAddress());   // base58, after start() (nee
 
 ## Uploading a blob to a DVM (Arweave storage)
 
-To store a blob permanently on Arweave, pay a **dvm** node with a `kind:5094` NIP-90 request. The `requestBlobStorage` helper builds the signed event, publishes it through your `ToonClient` (reusing its claim/channel plumbing), and decodes the Arweave transaction ID from the FULFILL response:
+To store a blob permanently on Arweave, pay a **store** node with a `kind:5094` NIP-90 request. The `requestBlobStorage` helper builds the signed event, publishes it through your `ToonClient` (reusing its claim/channel plumbing), and decodes the Arweave transaction ID from the FULFILL response:
 
 ```typescript
 import { ToonClient, requestBlobStorage } from '@toon-protocol/client';
@@ -183,7 +183,7 @@ const result = await requestBlobStorage(client, secretKey, {
   blobData: new Uint8Array([1, 2, 3, 4]),
   contentType: 'application/octet-stream',
   ilpAmount: 50_000n, // USDC micro-units; also used as the event's `bid` if `bid` is omitted
-  destination: 'g.toon.peer1', // the DVM's ILP address (defaults to the client's destinationAddress)
+  destination: 'g.toon.peer1', // the store node's ILP address (defaults to the client's destinationAddress)
 });
 
 if (result.success) {
@@ -304,7 +304,7 @@ See [examples/client-example/](../../examples/client-example/) for standalone cl
 ## Related Packages
 
 - **[@toon-protocol/core](../core/)** — Core protocol (peer discovery, bootstrap, `buildBlobStorageRequest`)
-- **[@toon-protocol/relay](../relay/)** — Operator product running the apex connector plus town/mill/dvm nodes; also exports `encodeEventToToon` / `decodeEventFromToon` for event encoding
+- **[@toon-protocol/relay](../relay/)** — Operator product running the apex connector plus town/mill/store nodes; also exports `encodeEventToToon` / `decodeEventFromToon` for event encoding
 - **[@toon-protocol/sdk](../sdk/)** — Higher-level helpers including `streamSwap()` for multi-chain swaps via a **mill**
 - **[@toon-protocol/bls](../bls/)** — Business Logic Server (pricing, validation, storage)
 

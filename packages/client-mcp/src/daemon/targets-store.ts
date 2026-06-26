@@ -27,7 +27,7 @@ export interface PersistedApexTarget {
   btpUrl: string;
   /** Settlement negotiation, discovered from the apex's kind:10032 announcement. */
   negotiation: ApexNegotiationConfig;
-  /** Child peers reached via this apex's channel (e.g. `["dvm","mill"]`). */
+  /** Child peers reached via this apex's channel (e.g. `["store","mill"]`). */
   apexChildPeers?: string[];
   /** Per-write fee override (base units). Falls back to the daemon default. */
   feePerEvent?: string;

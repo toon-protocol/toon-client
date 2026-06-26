@@ -68,13 +68,13 @@ describe('discoverApex', () => {
       relay,
       ilpAddress: 'g.proxy',
       chain: 'evm',
-      childPeers: ['dvm', 'mill'],
+      childPeers: ['store', 'mill'],
       timeoutMs: 1000,
       pollMs: 10,
     });
 
     expect(result.btpUrl).toBe('ws://apex.example/btp');
-    expect(result.apexChildPeers).toEqual(['dvm', 'mill']);
+    expect(result.apexChildPeers).toEqual(['store', 'mill']);
     expect(result.negotiation).toMatchObject({
       destination: 'g.proxy',
       peerId: 'proxy',

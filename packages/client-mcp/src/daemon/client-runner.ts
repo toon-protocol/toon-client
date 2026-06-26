@@ -756,7 +756,7 @@ export class ClientRunner {
     this.log(`[runner] injected apex negotiation for peer "${a.peerId}"`);
   }
 
-  /** Route apex CHILD peers (dvm/mill) through the SAME apex payment channel. */
+  /** Route apex CHILD peers (store/mill) through the SAME apex payment channel. */
   private routeChildPeersThroughApexChannel(apex: ApexConnection): void {
     const a = apex.negotiation;
     if (!a || !apex.apexChannelId || apex.childPeers.length === 0) return;
