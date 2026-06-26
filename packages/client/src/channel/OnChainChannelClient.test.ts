@@ -591,4 +591,77 @@ describe('OnChainChannelClient', () => {
       expect(mockOpenMinaChannelOnChain).not.toHaveBeenCalled();
     });
   });
+
+  describe('depositToChannel (EVM)', () => {
+    // Open an EVM channel first so channelContext (chain + tokenNetwork + token)
+    // is populated for the standalone deposit.
+    async function openEvmChannel(): Promise<string> {
+      mockReadContract.mockResolvedValueOnce(0n); // allowance → approve
+      mockWriteContract.mockResolvedValueOnce('0xapprove');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+      mockWriteContract.mockResolvedValueOnce('0xopen');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({
+        logs: [{ topics: ['0xev', TEST_CHANNEL_ID, '0xp1', '0xp2'], data: '0x' }],
+      });
+      mockWriteContract.mockResolvedValueOnce('0xdeposit');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+      const res = await client.openChannel({
+        peerId: 'p',
+        chain: TEST_CHAIN,
+        token: TEST_TOKEN,
+        tokenNetwork: TEST_TOKEN_NETWORK,
+        peerAddress: TEST_PEER_ADDRESS,
+        initialDeposit: '100000',
+        settlementTimeout: 86400,
+      });
+      vi.clearAllMocks();
+      return res.channelId!;
+    }
+
+    it('submits setTotalDeposit with current + delta (cumulative)', async () => {
+      const channelId = await openEvmChannel();
+      mockReadContract.mockResolvedValueOnce(10n ** 30n); // allowance ample → no approve
+      mockWriteContract.mockResolvedValueOnce('0xdep');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+
+      const out = await client.depositToChannel(channelId, 50_000n, { currentDeposit: 100_000n });
+
+      expect(out.depositTotal).toBe(150_000n);
+      // Only the setTotalDeposit write (allowance was sufficient → no approve).
+      expect(mockWriteContract).toHaveBeenCalledTimes(1);
+      const call = mockWriteContract.mock.calls[0]![0] as {
+        functionName: string;
+        args: unknown[];
+      };
+      expect(call.functionName).toBe('setTotalDeposit');
+      expect(call.args[2]).toBe(150_000n); // current 100k + delta 50k
+    });
+
+    it('approves the token-network when allowance is short', async () => {
+      const channelId = await openEvmChannel();
+      mockReadContract.mockResolvedValueOnce(0n); // allowance short → approve
+      mockWriteContract.mockResolvedValueOnce('0xapprove');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+      mockWriteContract.mockResolvedValueOnce('0xdep');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+
+      await client.depositToChannel(channelId, 50_000n, { currentDeposit: 0n });
+
+      // approve + setTotalDeposit
+      expect(mockWriteContract).toHaveBeenCalledTimes(2);
+      expect((mockWriteContract.mock.calls[0]![0] as { functionName: string }).functionName).toBe('approve');
+      expect((mockWriteContract.mock.calls[1]![0] as { functionName: string }).functionName).toBe('setTotalDeposit');
+    });
+
+    it('rejects a non-positive amount', async () => {
+      const channelId = await openEvmChannel();
+      await expect(client.depositToChannel(channelId, 0n, { currentDeposit: 0n })).rejects.toThrow(/positive/i);
+    });
+
+    it('rejects an unknown channel (no on-chain context)', async () => {
+      await expect(
+        client.depositToChannel('0xunknown', 1n, { currentDeposit: 0n })
+      ).rejects.toThrow(/context/i);
+    });
+  });
 });

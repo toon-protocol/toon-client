@@ -32,6 +32,7 @@ import {
   APP_RESOURCE_URI,
   ATOMS_TOOL,
   BALANCES_TOOL,
+  CHANNEL_DEPOSIT_TOOL,
   CHANNELS_TOOL,
   FUND_WALLET_TOOL,
   OPEN_CHANNEL_TOOL,
@@ -314,6 +315,25 @@ export function registerToonApps(server: McpServer, opts: RegisterToonAppsOption
     async (args: { chain?: string; address?: string }) => {
       const res = await opts.backend.fundWallet(args);
       return result(`Requested faucet funds for ${res.chain} ${res.address}.`, { ...res });
+    }
+  );
+
+  // toon_channel_deposit — spendy: add on-chain collateral to an open channel.
+  server.registerTool(
+    CHANNEL_DEPOSIT_TOOL,
+    {
+      description:
+        'Spendy: deposit additional collateral into an open payment channel. ' +
+        '`amount` is the delta to add (base micro-units). The backend signs the ' +
+        'on-chain tx; the UI never holds keys. Returns the new deposit total.',
+      inputSchema: {
+        channelId: z.string(),
+        amount: z.string(),
+      },
+    },
+    async (args: { channelId: string; amount: string }) => {
+      const res = await opts.backend.depositToChannel(args);
+      return result(`Deposited into ${res.channelId}; new total ${res.depositTotal}.`, { ...res });
     }
   );
 }

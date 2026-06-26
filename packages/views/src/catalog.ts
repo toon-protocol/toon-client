@@ -228,6 +228,14 @@ export const ATOM_CATALOG: AtomMeta[] = [
       'nonce watermark, and available (spendable) balance / locked deposit. The ' +
       'read variant of channel-card; use to answer "show my channels".',
   },
+  {
+    id: 'deposit-form',
+    description:
+      'Deposit additional on-chain collateral into an open channel: pick a channel ' +
+      '(from toon_channels) + an amount, then a spendy signed deposit via ' +
+      'toon_channel_deposit. Shows the new deposit total on success. EVM today.',
+    writes: [{ name: 'toon_channel_deposit', spendy: true }],
+  },
 
   // loading — placeholders the agent renders WHILE it works out the real view.
   // Render one of these as a first toon_render, then replace with the finished

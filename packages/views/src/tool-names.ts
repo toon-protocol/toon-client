@@ -27,6 +27,8 @@ export const CHANNELS_TOOL = 'toon_channels';
 export const BALANCES_TOOL = 'toon_balances';
 /** Devnet: drip faucet test funds to a wallet address (receives funds; not spendy). */
 export const FUND_WALLET_TOOL = 'toon_fund_wallet';
+/** Spendy: deposit additional collateral into an open payment channel (on-chain). */
+export const CHANNEL_DEPOSIT_TOOL = 'toon_channel_deposit';
 
 /** The single MCP-app UI resource the host renders. */
 export const APP_RESOURCE_URI = 'ui://toon/app';
@@ -40,4 +42,6 @@ export const WRITE_TOOLS: ReadonlySet<string> = new Set([
   // Devnet faucet — a write-class action (it mutates wallet funds) but `spendy:
   // false` since it *receives* funds; routed here so the validator permits it.
   FUND_WALLET_TOOL,
+  // Channel deposit — spendy (moves on-chain collateral).
+  CHANNEL_DEPOSIT_TOOL,
 ]);

@@ -9,6 +9,8 @@ import type {
   AddApexResponse,
   AddRelayRequest,
   BalancesResponse,
+  ChannelDepositRequest,
+  ChannelDepositResponse,
   ChannelsResponse,
   ErrorResponse,
   EventsQuery,
@@ -135,6 +137,10 @@ export class ControlClient {
 
   balances(): Promise<BalancesResponse> {
     return this.request<BalancesResponse>('GET', '/balances');
+  }
+
+  depositToChannel(body: ChannelDepositRequest): Promise<ChannelDepositResponse> {
+    return this.request<ChannelDepositResponse>('POST', '/channels/deposit', body);
   }
 
   swap(body: SwapRequest): Promise<SwapResponse> {

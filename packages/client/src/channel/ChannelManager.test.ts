@@ -139,6 +139,19 @@ describe('ChannelManager', () => {
     });
   });
 
+  describe('getDepositTotal / setDepositTotal', () => {
+    it('defaults to 0n and updates via the setter', () => {
+      manager.trackChannel(CHANNEL_ID);
+      expect(manager.getDepositTotal(CHANNEL_ID)).toBe(0n);
+      manager.setDepositTotal(CHANNEL_ID, 150_000n);
+      expect(manager.getDepositTotal(CHANNEL_ID)).toBe(150_000n);
+    });
+
+    it('throws for an untracked channel', () => {
+      expect(() => manager.setDepositTotal('0x' + 'ff'.repeat(32), 1n)).toThrow('not being tracked');
+    });
+  });
+
   describe('session resume with initial values', () => {
     it('should continue from initial nonce and amount', async () => {
       manager.trackChannel(CHANNEL_ID, undefined, 10, 50000n);

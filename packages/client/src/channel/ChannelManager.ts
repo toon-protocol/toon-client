@@ -388,6 +388,19 @@ export class ChannelManager {
   }
 
   /**
+   * Update the tracked on-chain deposit total after a successful deposit, so the
+   * available balance (`depositTotal - cumulativeAmount`) reflects the new
+   * collateral on the next read.
+   */
+  setDepositTotal(channelId: string, total: bigint): void {
+    const tracking = this.channels.get(channelId);
+    if (!tracking) {
+      throw new Error(`Channel "${channelId}" is not being tracked.`);
+    }
+    tracking.depositTotal = total;
+  }
+
+  /**
    * Gets all tracked channel IDs.
    */
   getTrackedChannels(): string[] {

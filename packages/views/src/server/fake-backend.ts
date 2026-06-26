@@ -11,6 +11,7 @@ import {
   type AppBackend,
   type AppStatus,
   type BalanceView,
+  type ChannelDepositView,
   type ChannelView,
   type FundWalletView,
   type PublishResult,
@@ -203,6 +204,16 @@ export class FakeBackend implements AppBackend {
       chain: req.chain ?? 'evm',
       address: req.address ?? '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
       faucetUrl: 'https://faucet.devnet.toonprotocol.dev',
+    });
+  }
+
+  /** Deposit stub: echoes a new total = a fixed base + the deposited delta. */
+  depositToChannel(req: { channelId: string; amount: string }): Promise<ChannelDepositView> {
+    const delta = BigInt(req.amount || '0');
+    return Promise.resolve({
+      channelId: req.channelId,
+      txHash: `0xfakedeposit${++this.seq}`,
+      depositTotal: String(10_000_000n + delta),
     });
   }
 
