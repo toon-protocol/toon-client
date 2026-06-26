@@ -219,6 +219,25 @@ export interface ChannelsResponse {
   channels: ChannelInfo[];
 }
 
+/** One on-chain wallet token balance, per configured chain. */
+export interface BalanceInfo {
+  /** Chain family (`'evm'` | `'solana'` | `'mina'`). */
+  chain: string;
+  /** The wallet address holding the balance. */
+  address: string;
+  /** Token amount in base (micro) units, decimal string. */
+  amount: string;
+  /** Human asset code, e.g. `'USDC'` / `'MINA'`, when resolved. */
+  asset?: string;
+  /** Token decimal places, when resolved. */
+  assetScale?: number;
+}
+
+/** `GET /balances` — on-chain wallet balances per configured chain. */
+export interface BalancesResponse {
+  balances: BalanceInfo[];
+}
+
 /**
  * `POST /swap` — pay asset A to a swap peer, receive asset B + a signed
  * target-chain claim. The daemon builds the NIP-59 gift-wrapped kind:20032 swap

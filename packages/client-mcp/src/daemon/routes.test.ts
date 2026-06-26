@@ -100,6 +100,9 @@ class FakeClient implements ToonClientLike {
   getChannelDepositTotal(): bigint {
     return 1_000_000n;
   }
+  async getBalances(): Promise<{ chain: string; address: string; amount: string }[]> {
+    return [{ chain: 'evm', address: '0xself', amount: '5000000' }];
+  }
   async sendSwapPacket(): Promise<{ accepted: boolean }> {
     return { accepted: true };
   }
@@ -299,6 +302,11 @@ describe('control-plane routes', () => {
           availableBalance: '1000000',
         },
       ]);
+    });
+
+    it('GET /balances returns the wallet balances', async () => {
+      const res = await app.inject({ method: 'GET', url: '/balances' });
+      expect(res.json().balances).toEqual([{ chain: 'evm', address: '0xself', amount: '5000000' }]);
     });
 
     it('POST /swap forwards to the client', async () => {

@@ -15,6 +15,7 @@ describe('TOOL_DEFINITIONS', () => {
     expect(TOOL_DEFINITIONS.map((t) => t.name).sort()).toEqual(
       [
         'toon_atoms',
+        'toon_balances',
         'toon_channels',
         'toon_identity',
         'toon_open_channel',
@@ -177,6 +178,18 @@ describe('dispatchTool', () => {
       pair,
       chainRecipient: 'SoLrecipient',
       packetCount: 2,
+    });
+  });
+
+  it('toon_balances returns the wallet balances', async () => {
+    const balances = vi
+      .fn()
+      .mockResolvedValue({ balances: [{ chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 }] });
+    const client = stubClient({ balances });
+    const res = await dispatchTool(client, 'toon_balances', {});
+    expect(balances).toHaveBeenCalled();
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      balances: [{ chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 }],
     });
   });
 

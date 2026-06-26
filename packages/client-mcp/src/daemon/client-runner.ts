@@ -30,6 +30,8 @@ import type {
   AddApexRequest,
   AddApexResponse,
   ApexTargetStatus,
+  BalanceInfo,
+  BalancesResponse,
   ChannelsResponse,
   ChainStatus,
   EventsResponse,
@@ -116,6 +118,7 @@ export interface ToonClientLike {
   getChannelNonce(channelId: string): number;
   getChannelCumulativeAmount(channelId: string): bigint;
   getChannelDepositTotal(channelId: string): bigint;
+  getBalances(): Promise<BalanceInfo[]>;
   sendSwapPacket(params: {
     destination: string;
     amount: bigint;
@@ -1151,6 +1154,18 @@ export class ClientRunner {
       }
     }
     return { channels };
+  }
+
+  /**
+   * On-chain wallet balances. The wallet is identity-level (same keys across
+   * apexes), so read from the first available apex's client; per-chain reads are
+   * best-effort inside the client (a failing chain is simply omitted).
+   */
+  async getBalances(): Promise<BalancesResponse> {
+    const apex = this.apexes.values().next().value;
+    if (!apex) return { balances: [] };
+    const balances = (await apex.client.getBalances()) as BalanceInfo[];
+    return { balances };
   }
 
   /** Swap source→target asset against a swap peer via the selected apex. */

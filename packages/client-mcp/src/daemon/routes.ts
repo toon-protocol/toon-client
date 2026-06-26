@@ -142,6 +142,8 @@ export function registerRoutes(
 
   app.get('/channels', async () => runner.getChannels());
 
+  app.get('/balances', async () => runner.getBalances());
+
   app.post<{ Body: SwapRequest }>('/swap', async (req, reply) => {
     const body = req.body;
     if (
