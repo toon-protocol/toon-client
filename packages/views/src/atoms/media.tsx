@@ -67,17 +67,28 @@ const MediaEmbed: FC<AtomRenderProps> = ({ events }) => {
   return <InlineMediaList variants={variants} />;
 };
 
+/**
+ * Compose the uploader's error line: the recognizable "Upload failed" label,
+ * suffixed with the real underlying error (the daemon labels which leg —
+ * Arweave upload vs. post-upload publish — failed) when one is present. Falls
+ * back to the bare label when no diagnostic string is available.
+ */
+function uploadErrorMessage(detail?: string): string {
+  const trimmed = detail?.trim();
+  return trimmed ? `Upload failed: ${trimmed}` : 'Upload failed.';
+}
+
 const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
   const label = typeof props['label'] === 'string' ? props['label'] : 'Upload media';
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [uploadedOk, setUploadedOk] = useState(false);
-  const [uploadError, setUploadError] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const handleFile = async (file: File): Promise<void> => {
     setBusy(true);
     setUploadedOk(false);
-    setUploadError(false);
+    setUploadError(null);
     try {
       const buf = await new Promise<ArrayBuffer>((resolve, reject) => {
         const reader = new FileReader();
@@ -94,12 +105,19 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
       const dataBase64 = btoa(binary);
       const outcome = await actions['upload']?.({ dataBase64, mime: file.type || undefined });
       if (outcome?.ok === false) {
-        setUploadError(true);
+        // Surface the real underlying error so the failing leg (Arweave upload
+        // vs. post-upload kind:20 publish) is diagnosable from the UI; the
+        // daemon labels each leg in its error text. Keep the recognizable
+        // "Upload failed" affordance as a prefix, degrading gracefully to it
+        // alone when no error string is present.
+        setUploadError(uploadErrorMessage(outcome.error));
       } else {
         setUploadedOk(true);
       }
-    } catch {
-      setUploadError(true);
+    } catch (err) {
+      setUploadError(
+        uploadErrorMessage(err instanceof Error ? err.message : String(err))
+      );
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = '';
@@ -132,7 +150,7 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
         <p className="text-xs text-muted-foreground">Uploaded successfully.</p>
       )}
       {uploadError && (
-        <p className="text-xs text-destructive">Upload failed.</p>
+        <p className="text-xs text-destructive whitespace-pre-wrap break-words">{uploadError}</p>
       )}
     </div>
   );
