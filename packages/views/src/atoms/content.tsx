@@ -85,7 +85,7 @@ const KeyValue: FC<AtomRenderProps> = ({ props }) => {
       {rows.map((row, i) => (
         <div key={i} className="contents">
           <dt className="text-muted-foreground">{row.label}</dt>
-          <dd className="min-w-0 break-words text-right font-medium tabular-nums">{row.value}</dd>
+          <dd className="min-w-0 break-words text-right font-mono text-[0.8125rem] font-medium">{row.value}</dd>
         </div>
       ))}
     </dl>

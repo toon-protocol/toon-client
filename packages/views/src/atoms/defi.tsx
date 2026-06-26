@@ -54,13 +54,13 @@ const ChannelCard: FC<AtomRenderProps> = ({ props, actions }) => {
           {channels.map((c, i) => (
             <li
               key={c.channelId ?? i}
-              className="flex items-baseline justify-between border-l-2 border-border pl-2"
+              className="flex items-baseline justify-between gap-3 border-l-2 border-primary/40 pl-2.5"
             >
               <MonoId value={c.channelId ?? '—'} />
-              <span className="text-xs text-muted-foreground">
-                nonce <span className="font-medium text-foreground">{c.nonce ?? 0}</span>
-                {' · '}
-                {c.cumulativeAmount ?? '0'}
+              <span className="shrink-0 text-xs text-muted-foreground">
+                nonce <span className="font-mono font-medium text-foreground">{c.nonce ?? 0}</span>
+                <span aria-hidden="true"> · </span>
+                <span className="font-mono text-foreground">{c.cumulativeAmount ?? '0'}</span>
               </span>
             </li>
           ))}
@@ -115,13 +115,15 @@ const SwapForm: FC<AtomRenderProps> = ({ props, actions }) => {
       <div className="mb-3">
         {pair?.from?.assetCode && pair?.to?.assetCode ? (
           <div className="flex items-baseline gap-2">
-            <span className="font-semibold">
+            <span className="font-mono font-semibold">
               {pair.from.assetCode}
-              <span className="mx-1.5 text-muted-foreground">→</span>
+              <span className="mx-1.5 font-sans text-muted-foreground">→</span>
               {pair.to.assetCode}
             </span>
             {pair.rate ? (
-              <span className="text-xs text-muted-foreground">@ {pair.rate}</span>
+              <span className="text-xs text-muted-foreground">
+                @ <span className="font-mono">{pair.rate}</span>
+              </span>
             ) : null}
           </div>
         ) : (
@@ -194,7 +196,7 @@ const SettlementReceipt: FC<AtomRenderProps> = ({ props }) => {
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="mb-3 flex items-baseline justify-between">
         <span className="font-semibold text-sm">Settlement receipt</span>
-        <Badge variant={succeeded ? 'secondary' : 'destructive'}>
+        <Badge variant={succeeded ? 'default' : 'destructive'}>
           {receipt.state ?? (succeeded ? 'completed' : 'failed')}
         </Badge>
       </div>
