@@ -186,6 +186,7 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
           {result?.url ? (
             <>
               {result.mime?.startsWith('video/') ? (
+                // eslint-disable-next-line jsx-a11y/media-has-caption
                 <video src={result.url} controls className="max-h-72 w-full rounded-md" />
               ) : (
                 <img
