@@ -1,5 +1,53 @@
 # @toon-protocol/views
 
+## 0.10.0
+
+### Minor Changes
+
+- 9073156: Polish the MCP feed render to match the gallery and surface engagement:
+
+  - Frame the app view in a rounded, bordered panel on a faintly tinted page,
+    capped to a reading width and centered (was an edge-to-edge square slab).
+  - Surface per-note **reply / like / follow** in `feedView` — and thread feed-node
+    actions through the `kindAuto` render path (`NodeView → EventAtom →
+NativeEvent`), which previously hard-coded `actions={{}}` so engagement never
+    appeared in feeds. Like/follow are `spendy` (fee-confirm) paid writes.
+  - Rich-text note bodies: `#hashtags`, `@`/`npub` mentions and URLs lift into the
+    jade accent (URLs are real links), built as React nodes (no HTML injection).
+  - Compact the empty composer, and give placeholder avatars a subtle ring.
+
+### Patch Changes
+
+- 24dad85: Fix the media uploader auto-rejecting every upload with `Upload failed:
+cancelled` (toon-client#170).
+
+  A spendy write (`media-uploader`'s `toon_upload`) was gated by the runtime
+  through `window.confirm`. But the TOON app runs inside a host-controlled iframe
+  sandboxed WITHOUT `allow-modals`, so `window.confirm()` is suppressed by the
+  browser and returns `false` immediately — the consent prompt never rendered and
+  the spend was silently auto-rejected _upstream_ of the daemon, before any bytes
+  reached `uploadMedia`. The bare `cancelled` was then flattened into `Upload
+failed: cancelled`. (Adjacent non-spendy writes — the kind:1 composer,
+  `pay-confirm` — were unaffected because they confirm via rendered in-iframe UI,
+  not `window.confirm`.)
+
+  - **Wiring:** spendy consent is now a RENDERED React prompt (`spendy-consent.tsx`
+    `ConsentProvider`), mounted by `ViewSpecRenderer` and awaited by the action
+    runtime — so it works inside the no-`allow-modals` host iframe and never
+    silently auto-rejects. (The ext-apps host exposes no native consent/elicit
+    primitive to wire instead.) This also fixes the same latent bug in the spendy
+    `swap-form`.
+  - **UX:** a declined consent (`SPENDY_CANCELLED`) is now surfaced as a benign
+    "Upload cancelled — nothing was published or paid." note rather than a scary
+    "Upload failed", distinguishing a user/host cancel from a real Arweave/publish
+    leg failure.
+
+  (Co-releases `@toon-protocol/client-mcp` via the fixed group so the baked app
+  bundle is republished — a views-only release would not reach Claude Desktop.)
+
+- Updated dependencies [b56fefb]
+  - @toon-protocol/client@0.14.7
+
 ## 0.9.1
 
 ### Patch Changes
