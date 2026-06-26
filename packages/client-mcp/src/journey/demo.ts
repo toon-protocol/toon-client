@@ -165,9 +165,9 @@ export async function runCapstoneDemo(
  *
  * Env:
  *   TOON_DAEMON_URL    daemon control-plane base URL (default http://127.0.0.1:8787)
- *   TOON_SWAP_DEST     mill ILP destination (e.g. g.proxy.mill)
+ *   TOON_SWAP_DEST     swap ILP destination (e.g. g.proxy.swap)
  *   TOON_SWAP_AMOUNT   source-asset amount, micro-units (e.g. 1000000)
- *   TOON_MILL_PUBKEY   mill 64-char hex Nostr pubkey
+ *   TOON_SWAP_PUBKEY   swap peer 64-char hex Nostr pubkey
  *   TOON_CHAIN_RECIPIENT  payout address on the target chain
  *   TOON_SWAP_PAIR     JSON SwapPair ({ from, to, rate, ... })
  *   TOON_SOCIALFI_PUBKEY  optional: seed panel bind-queries before onboard surfaces it
@@ -177,14 +177,14 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
 
   const destination = env['TOON_SWAP_DEST'];
   const amount = env['TOON_SWAP_AMOUNT'];
-  const millPubkey = env['TOON_MILL_PUBKEY'];
+  const swapPubkey = env['TOON_SWAP_PUBKEY'];
   const chainRecipient = env['TOON_CHAIN_RECIPIENT'];
   const pairRaw = env['TOON_SWAP_PAIR'];
 
-  if (!destination || !amount || !millPubkey || !chainRecipient || !pairRaw) {
+  if (!destination || !amount || !swapPubkey || !chainRecipient || !pairRaw) {
     console.error(
       '[capstone] missing required env: TOON_SWAP_DEST, TOON_SWAP_AMOUNT, ' +
-        'TOON_MILL_PUBKEY, TOON_CHAIN_RECIPIENT, TOON_SWAP_PAIR are all required ' +
+        'TOON_SWAP_PUBKEY, TOON_CHAIN_RECIPIENT, TOON_SWAP_PAIR are all required ' +
         'for the live DeFi leg. See the module header for the full env contract.'
     );
     return 2;
@@ -203,7 +203,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
 
   return runCapstoneDemo(client, {
     ...(socialFiPubkey ? { socialFi: { pubkey: socialFiPubkey } } : {}),
-    deFi: { destination, amount, millPubkey, chainRecipient, pair },
+    deFi: { destination, amount, swapPubkey, chainRecipient, pair },
   });
 }
 

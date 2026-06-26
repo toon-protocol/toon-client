@@ -292,26 +292,26 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'toon_swap',
     description:
-      'Pay a mill peer (asset A) to receive asset B plus a signed target-chain ' +
+      'Pay a swap peer (asset A) to receive asset B plus a signed target-chain ' +
       'claim. Builds the NIP-59 gift-wrapped kind:20032 swap rumor and streams ' +
       'it; the source-asset claim is signed against the open apex channel (the ' +
-      'mill must be routed via apexChildPeers). Returns the accumulated, ' +
+      'swap peer must be routed via apexChildPeers). Returns the accumulated, ' +
       'decrypted target-chain claim(s) and settlement metadata.',
     inputSchema: {
       type: 'object',
       properties: {
         destination: {
           type: 'string',
-          description: 'Mill peer ILP destination (e.g. g.proxy.mill).',
+          description: 'Swap peer ILP destination (e.g. g.proxy.swap).',
         },
         amount: {
           type: 'string',
           description: 'Total source-asset amount to swap, source micro-units.',
         },
-        millPubkey: {
+        swapPubkey: {
           type: 'string',
           description:
-            "Mill's 64-char lowercase hex Nostr pubkey (gift-wrap recipient).",
+            "Swap peer's 64-char lowercase hex Nostr pubkey (gift-wrap recipient).",
         },
         pair: {
           type: 'object',
@@ -332,7 +332,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       required: [
         'destination',
         'amount',
-        'millPubkey',
+        'swapPubkey',
         'pair',
         'chainRecipient',
       ],
@@ -477,7 +477,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Child peers via this apex’s channel (e.g. ["store","mill"]).',
+            'Child peers via this apex’s channel (e.g. ["store","swap"]).',
         },
         feePerEvent: {
           type: 'string',
@@ -614,7 +614,7 @@ export async function dispatchTool(
           await client.swap({
             destination: String(args['destination']),
             amount: String(args['amount']),
-            millPubkey: String(args['millPubkey']),
+            swapPubkey: String(args['swapPubkey']),
             pair: args['pair'] as SwapRequest['pair'],
             chainRecipient: String(args['chainRecipient']),
             ...(typeof args['packetCount'] === 'number'

@@ -18,6 +18,6 @@ Run from this package dir, e.g.:
 node scripts/dvm-upload.mjs
 ```
 
-See also `packages/sdk/scripts/` for the mill swap exercise scripts
-(`mill-swap.mjs` EVM→Solana, `mill-swap-mina.mjs` EVM→Mina), which build the
+See also `packages/sdk/scripts/` for the swap exercise scripts
+(`swap.mjs` EVM→Solana, `swap-mina.mjs` EVM→Mina), which build the
 gift-wrapped kind:20032 rumor and drive the daemon `/swap` endpoint.

@@ -51,7 +51,7 @@ The `toon-client` MCP server exposes **8 tools**:
 | `toon_read({subId?,cursor?,limit?})` | `GET /events` | drain buffered events by cursor (free) |
 | `toon_open_channel({destination?})` | `POST /channels` | `openChannel` (pre-open / fetch a channel) |
 | `toon_channels` | `GET /channels` | `getTrackedChannels` + nonce watermark + cumulative spend |
-| `toon_swap(destination,amount,{toonData?})` | `POST /swap` | `sendSwapPacket` (mill swap) |
+| `toon_swap(destination,amount,{toonData?})` | `POST /swap` | `sendSwapPacket` (swap peer swap) |
 
 ## Install
 
@@ -231,7 +231,7 @@ The agent runs:
    ```
 
 Other common calls: **`toon_open_channel`** to pre-open a channel before a burst
-of publishes, and **`toon_swap({ destination, amount })`** to pay a mill peer and
+of publishes, and **`toon_swap({ destination, amount })`** to pay a swap peer and
 receive a target-chain claim.
 
 > **CLI equivalent** (handy for scripting/debugging — the MCP tools map 1:1 to

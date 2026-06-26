@@ -3,12 +3,12 @@ import type { ChannelsResponse, SwapRequest, SwapResponse } from '../control-api
 import type { JourneyPlan } from './types.js';
 
 export interface DeFiJourneyOpts {
-  /** ILP destination used for both channel open and the swap (e.g. mill peer). */
+  /** ILP destination used for both channel open and the swap (e.g. swap peer). */
   destination: string;
   /** Total source-asset amount to swap, in source micro-units. */
   amount: string;
-  /** Mill's 64-char lowercase hex Nostr pubkey (gift-wrap recipient). */
-  millPubkey: string;
+  /** Swap peer's 64-char lowercase hex Nostr pubkey (gift-wrap recipient). */
+  swapPubkey: string;
   /** Swap pair from kind:10032 discovery or operator-supplied. */
   pair: SwapRequest['pair'];
   /** Sender's payout address on the target chain. */
@@ -53,7 +53,7 @@ export function deFiJourney(opts: DeFiJourneyOpts): JourneyPlan {
           const args: Record<string, unknown> = {
             destination: opts.destination,
             amount: opts.amount,
-            millPubkey: opts.millPubkey,
+            swapPubkey: opts.swapPubkey,
             pair: opts.pair,
             chainRecipient: opts.chainRecipient,
           };

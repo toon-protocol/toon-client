@@ -122,8 +122,8 @@ export const ATOM_CATALOG: AtomMeta[] = [
       'Interactive: collects swap params and fires a cross-asset swap. Spendy.',
     writes: [{ name: SWAP_TOOL, spendy: true }],
     propsSchema: {
-      destination: 'string (mill ILP destination)',
-      millPubkey: 'string (mill 64-char hex Nostr pubkey)',
+      destination: 'string (swap peer ILP destination)',
+      swapPubkey: 'string (swap peer 64-char hex Nostr pubkey)',
       pair: 'SwapPair ({ from, to, rate, … })',
       chainRecipient: 'string (payout address on pair.to.chain)',
       label: 'string (submit button label)',

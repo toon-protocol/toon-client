@@ -9,7 +9,7 @@
     { "query": "How do I check my TOON payment channel nonce and balance?", "should_trigger": true },
     { "query": "How do I open a payment channel on TOON?", "should_trigger": true },
     { "query": "Am I connected to the TOON network? What is my TOON address?", "should_trigger": true },
-    { "query": "How do I swap tokens via a TOON mill?", "should_trigger": true },
+    { "query": "How do I swap tokens via a TOON swap peer?", "should_trigger": true },
     { "query": "The toon tool says it is bootstrapping, what do I do?", "should_trigger": true },
     { "query": "How does pay-to-write work with payment channel claims on TOON?", "should_trigger": true },
     { "query": "How do I render the latest notes as a feed UI on TOON?", "should_trigger": true },

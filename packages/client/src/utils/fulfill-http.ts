@@ -23,7 +23,7 @@
  * dependency-free helper that returns the status code + raw body string, which
  * is all the publish/upload paths need.
  *
- * DEFENSIVE: not every FULFILL is HTTP-enveloped (e.g. Mill-swap raw-TOON
+ * DEFENSIVE: not every FULFILL is HTTP-enveloped (e.g. swap peer raw-TOON
  * FULFILLs go through `sendSwapPacket`, not these paths). If the decoded data
  * does not begin with an `HTTP/<v>` status line, `isHttp` is `false` and the
  * caller should fall back to its prior (non-HTTP) interpretation rather than

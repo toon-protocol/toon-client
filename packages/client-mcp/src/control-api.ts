@@ -216,22 +216,22 @@ export interface ChannelsResponse {
 }
 
 /**
- * `POST /swap` — pay asset A to a mill peer, receive asset B + a signed
+ * `POST /swap` — pay asset A to a swap peer, receive asset B + a signed
  * target-chain claim. The daemon builds the NIP-59 gift-wrapped kind:20032 swap
  * rumor and streams it via SDK `streamSwap`, signing the source-asset claim
- * against the open apex channel (the mill peer must be routed via
+ * against the open apex channel (the swap peer must be routed via
  * `apexChildPeers`).
  */
 export interface SwapRequest {
-  /** Mill peer ILP destination (e.g. `g.proxy.mill`). */
+  /** Swap peer ILP destination (e.g. `g.proxy.swap`). */
   destination: string;
   /** Total source-asset amount to swap, in source micro-units. */
   amount: string;
-  /** Mill's 64-char lowercase hex Nostr pubkey (NIP-59 gift-wrap recipient). */
-  millPubkey: string;
+  /** Swap peer's 64-char lowercase hex Nostr pubkey (NIP-59 gift-wrap recipient). */
+  swapPubkey: string;
   /**
    * The swap pair to execute — from kind:10032 discovery, or operator-supplied
-   * when the mill announces pairs to a relay other than the town relay.
+   * when the swap peer announces pairs to a relay other than the town relay.
    */
   pair: SwapPair;
   /**
@@ -243,7 +243,7 @@ export interface SwapRequest {
   packetCount?: number;
   /**
    * Which apex to settle the source-asset claim through (default: the
-   * config-seeded apex). The mill must be a child peer of this apex.
+   * config-seeded apex). The swap peer must be a child peer of this apex.
    */
   btpUrl?: string;
 }
@@ -258,11 +258,11 @@ export interface SwapClaim {
   claim: string;
   /** Target-chain channel id (real on-chain id, or a dev placeholder). */
   channelId?: string;
-  /** Sender's payout address echoed by the mill. */
+  /** Sender's payout address echoed by the swap peer. */
   recipient?: string;
-  /** Mill's on-chain signer address. */
-  millSignerAddress?: string;
-  /** Mill-side claim id. */
+  /** Swap peer's on-chain signer address. */
+  swapSignerAddress?: string;
+  /** Swap-side claim id. */
   claimId?: string;
   /** Balance-proof nonce on the target channel (decimal). */
   nonce?: string;
@@ -273,7 +273,7 @@ export interface SwapClaim {
 export interface SwapResponse {
   /** True when at least one packet FULFILLed with a usable claim. */
   accepted: boolean;
-  /** Number of packets the mill FULFILLed. */
+  /** Number of packets the swap peer FULFILLed. */
   packetsAccepted: number;
   /** Per-packet accumulated claims (settlement metadata + signed claim). */
   claims: SwapClaim[];
@@ -283,7 +283,7 @@ export interface SwapResponse {
   cumulativeTarget: string;
   /** Final stream state. */
   state: 'completed' | 'failed' | 'stopped';
-  /** First rejection code from the mill, if any (e.g. `F99`). */
+  /** First rejection code from the swap peer, if any (e.g. `F99`). */
   code?: string;
   /** First rejection message, if any. */
   message?: string;
@@ -352,7 +352,7 @@ export interface AddApexRequest {
   pubkey?: string;
   /** Preferred settlement chain family; defaults to the apex's first chain. */
   chain?: SettlementChain;
-  /** Child peers reached via this apex's channel (e.g. `["store","mill"]`). */
+  /** Child peers reached via this apex's channel (e.g. `["store","swap"]`). */
   childPeers?: string[];
   /** Per-write fee override (base units) for this apex. */
   feePerEvent?: string;

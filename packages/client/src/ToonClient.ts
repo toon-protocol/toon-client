@@ -524,7 +524,7 @@ export class ToonClient {
       // wire data must therefore be a full HTTP request envelope carrying the
       // signed event as `{"event": <event object>}` JSON — NOT the bare TOON
       // bytes (those make the proxy reject with F01 - malformed request-line).
-      // See utils/store-envelope.ts. `sendSwapPacket` (Mill swaps) is a separate
+      // See utils/store-envelope.ts. `sendSwapPacket` (swap peer swaps) is a separate
       // surface with a raw-TOON contract and is intentionally NOT wrapped here.
       const writeData = buildStoreWriteEnvelope(event, options?.proxyPath);
 
@@ -674,7 +674,7 @@ export class ToonClient {
   }
 
   /**
-   * Sends a raw swap ILP packet (Story 12.5) to a Mill peer with an attached
+   * Sends a raw swap ILP packet (Story 12.5) to a swap peer with an attached
    * balance-proof claim. This is a lower-level surface than `publishEvent`:
    * it forwards the raw `IlpSendResult` so the sender (`streamSwap()`) can
    * decode FULFILL metadata itself.

@@ -77,7 +77,7 @@ function deriveMinaSalt(zkAppAddress: string, nonce: number): bigint {
  * off-chain `verifyBalanceProof` accepts EITHER, so off-chain store/FULFILL works
  * in both cases — only on-chain settle requires the participant form.
  *
- * NOTE: this is a DIFFERENT message + format from the Mill ↔ sender swap-claim
+ * NOTE: this is a DIFFERENT message + format from the swap peer ↔ sender swap-claim
  * wire contract (`balanceProofFieldsMina` in `@toon-protocol/core`, verified by
  * the SDK's `verifyMinaSignature`). The client here pays a payment-channel claim
  * to the apex, so it signs the connector's on-chain payment-channel scheme; the

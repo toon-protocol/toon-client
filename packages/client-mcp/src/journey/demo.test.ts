@@ -41,9 +41,9 @@ const swapPair = {
 };
 
 const deFiOpts: DeFiJourneyOpts = {
-  destination: 'g.proxy.mill',
+  destination: 'g.proxy.swap',
   amount: '1000000',
-  millPubkey: 'b'.repeat(64),
+  swapPubkey: 'b'.repeat(64),
   pair: swapPair,
   chainRecipient: '0x1234567890123456789012345678901234567890',
 };
@@ -163,7 +163,7 @@ describe('runCapstoneDemo (dry run, mocked ControlClient)', () => {
     expect(swap).toHaveBeenCalledWith({
       destination: deFiOpts.destination,
       amount: deFiOpts.amount,
-      millPubkey: deFiOpts.millPubkey,
+      swapPubkey: deFiOpts.swapPubkey,
       pair: deFiOpts.pair,
       chainRecipient: deFiOpts.chainRecipient,
     });
@@ -211,7 +211,7 @@ describe('runCapstoneDemo (dry run, mocked ControlClient)', () => {
   it('halts on a tool error and exits non-zero with no receipt', async () => {
     const { client, swap } = makeClient();
     // Make the DeFi swap fail so the journey halts mid-DeFi.
-    swap.mockRejectedValueOnce(new Error('mill unreachable'));
+    swap.mockRejectedValueOnce(new Error('swap peer unreachable'));
     const logger = captureLogger();
     const code = await runCapstoneDemo(client, CAPSTONE_OPTS, logger);
 
@@ -266,9 +266,9 @@ describe('main (env-driven CLI, dry)', () => {
   it('returns exit code 2 when TOON_SWAP_PAIR is not valid JSON', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const code = await main({
-      TOON_SWAP_DEST: 'g.proxy.mill',
+      TOON_SWAP_DEST: 'g.proxy.swap',
       TOON_SWAP_AMOUNT: '1000000',
-      TOON_MILL_PUBKEY: 'b'.repeat(64),
+      TOON_SWAP_PUBKEY: 'b'.repeat(64),
       TOON_CHAIN_RECIPIENT: '0xabc',
       TOON_SWAP_PAIR: '{not json',
     });

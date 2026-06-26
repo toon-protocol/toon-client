@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Mock the SDK swap boundary so swap() can be unit-tested without a real mill
+// Mock the SDK swap boundary so swap() can be unit-tested without a real swap peer
 // (a faithful fake would have to unwrap the gift wrap + encrypt a FULFILL to the
 // ephemeral key generated inside swap()).
 vi.mock('@toon-protocol/sdk/swap', () => ({ streamSwap: vi.fn() }));
@@ -254,7 +254,7 @@ describe('ClientRunner', () => {
           tokenAddress: '0xusdc',
           tokenNetwork: '0xtn',
         },
-        apexChildPeers: ['store', 'mill'],
+        apexChildPeers: ['store', 'swap'],
       }),
       createClient: () => childClient,
       createRelay: fakeRelay,
@@ -262,7 +262,7 @@ describe('ClientRunner', () => {
     await r.bootstrap();
 
     // Each child gets the apex negotiation injected...
-    for (const peer of ['store', 'mill']) {
+    for (const peer of ['store', 'swap']) {
       expect(childClient.peerNegotiations.get(peer)).toMatchObject({
         chainType: 'evm',
         settlementAddress: '0xapex',
@@ -278,7 +278,7 @@ describe('ClientRunner', () => {
   it('skips child-peer routing when none are configured (back-compat)', async () => {
     await runner.bootstrap();
     expect(client.peerNegotiations.has('store')).toBe(false);
-    expect(client.peerNegotiations.has('mill')).toBe(false);
+    expect(client.peerNegotiations.has('swap')).toBe(false);
   });
 
   it('persists the apex channelId after first open', async () => {
@@ -575,16 +575,16 @@ describe('ClientRunner', () => {
     } as unknown as Awaited<ReturnType<typeof streamSwap>>);
 
     const res = await runner.swap({
-      destination: 'g.proxy.mill',
+      destination: 'g.proxy.swap',
       amount: '1000',
-      millPubkey: 'cd'.repeat(32),
+      swapPubkey: 'cd'.repeat(32),
       pair,
       chainRecipient: 'SoLrecipient',
     });
 
     // streamSwap got the request params (default single packet).
     const arg = vi.mocked(streamSwap).mock.calls[0]![0];
-    expect(arg.millIlpAddress).toBe('g.proxy.mill');
+    expect(arg.millIlpAddress).toBe('g.proxy.swap');
     expect(arg.millPubkey).toBe('cd'.repeat(32));
     expect(arg.totalAmount).toBe(1000n);
     expect(arg.chainRecipient).toBe('SoLrecipient');
@@ -601,12 +601,12 @@ describe('ClientRunner', () => {
       claim: Buffer.from([1, 2, 3, 4]).toString('base64'),
       channelId: '1111',
       recipient: 'SoLrecipient',
-      millSignerAddress: 'MILLsigner',
+      swapSignerAddress: 'MILLsigner',
       claimId: 'claim-1',
     });
   });
 
-  it('swap surfaces a mill rejection (no claims) as not-accepted', async () => {
+  it('swap surfaces a swap peer rejection (no claims) as not-accepted', async () => {
     await runner.bootstrap();
     const pair = {
       from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
@@ -633,9 +633,9 @@ describe('ClientRunner', () => {
     } as unknown as Awaited<ReturnType<typeof streamSwap>>);
 
     const res = await runner.swap({
-      destination: 'g.proxy.mill',
+      destination: 'g.proxy.swap',
       amount: '1000',
-      millPubkey: 'cd'.repeat(32),
+      swapPubkey: 'cd'.repeat(32),
       pair,
       chainRecipient: 'SoLrecipient',
     });
