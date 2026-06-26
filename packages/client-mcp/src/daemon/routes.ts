@@ -23,6 +23,7 @@ import type {
   EventsQuery,
   FundWalletRequest,
   HttpFetchPaidRequest,
+  ChannelDepositRequest,
   OpenChannelRequest,
   PublishRequest,
   PublishUnsignedRequest,
@@ -143,6 +144,14 @@ export function registerRoutes(
   app.get('/channels', async () => runner.getChannels());
 
   app.get('/balances', async () => runner.getBalances());
+
+  app.post<{ Body: ChannelDepositRequest }>('/channels/deposit', async (req, reply) => {
+    try {
+      return await runner.depositToChannel(req.body);
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
 
   app.post<{ Body: SwapRequest }>('/swap', async (req, reply) => {
     const body = req.body;

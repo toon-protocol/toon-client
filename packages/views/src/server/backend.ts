@@ -85,6 +85,19 @@ export interface AppFaucetBackend {
   fundWallet(req: { chain?: string; address?: string }): Promise<FundWalletView>;
 }
 
+/** Result of a channel deposit (added collateral), echoed for the receipt. */
+export interface ChannelDepositView {
+  channelId: string;
+  txHash?: string;
+  /** New on-chain deposit total after the deposit, base units, decimal. */
+  depositTotal: string;
+}
+
+/** Spendy channel side: deposit additional collateral into an open channel. */
+export interface AppChannelWriteBackend {
+  depositToChannel(req: { channelId: string; amount: string }): Promise<ChannelDepositView>;
+}
+
 export interface PublishResult {
   eventId: string;
   channelId?: string;
@@ -209,4 +222,5 @@ export interface AppBackend
     AppDefiBackend,
     AppStatusBackend,
     AppWalletReadBackend,
-    AppFaucetBackend {}
+    AppFaucetBackend,
+    AppChannelWriteBackend {}

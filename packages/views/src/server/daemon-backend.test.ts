@@ -17,7 +17,7 @@ import {
   type DaemonUploadMediaRequest,
   type DaemonUploadMediaResponse,
 } from './daemon-backend.js';
-import { type SwapRequest, type SwapResponse } from './backend.js';
+import { type ChannelDepositView, type SwapRequest, type SwapResponse } from './backend.js';
 import { type NostrEvent, type NostrFilter } from '../types.js';
 
 const APP_HTML = '<!doctype html><html><body><div id="root"></div></body></html>';
@@ -136,6 +136,13 @@ class FakeDaemonControl implements DaemonControl {
       address: body.address ?? '0xself',
       faucetUrl: 'https://faucet.test',
     });
+  }
+
+  readonly deposits: { channelId: string; amount: string }[] = [];
+
+  depositToChannel(body: { channelId: string; amount: string }): Promise<ChannelDepositView> {
+    this.deposits.push(body);
+    return Promise.resolve({ channelId: body.channelId, txHash: '0xdep', depositTotal: '12000000' });
   }
 }
 

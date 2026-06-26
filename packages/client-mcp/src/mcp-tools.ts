@@ -303,6 +303,23 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'toon_channel_deposit',
+    description:
+      'Deposit additional collateral into an open payment channel. `amount` is ' +
+      'the delta to add (base micro-units). Spends on-chain (the client signs its ' +
+      'own tx). EVM is supported today; Solana/Mina are coming. Returns the new ' +
+      'deposit total.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        channelId: { type: 'string', description: 'The channel to deposit into.' },
+        amount: { type: 'string', description: 'Delta to add, base micro-units (decimal string).' },
+      },
+      required: ['channelId', 'amount'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'toon_swap',
     description:
       'Pay a swap peer (asset A) to receive asset B plus a signed target-chain ' +
@@ -624,6 +641,13 @@ export async function dispatchTool(
         return ok(await client.channels());
       case 'toon_balances':
         return ok(await client.balances());
+      case 'toon_channel_deposit':
+        return ok(
+          await client.depositToChannel({
+            channelId: String(args['channelId'] ?? ''),
+            amount: String(args['amount'] ?? ''),
+          })
+        );
       case 'toon_swap':
         return ok(
           await client.swap({

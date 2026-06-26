@@ -7,7 +7,14 @@
  */
 import { type ViewBridge, type ToolOutcome } from '../app-bridge/types.js';
 import { type NostrEvent, type NostrFilter } from '../types.js';
-import { QUERY_TOOL, STATUS_TOOL, CHANNELS_TOOL, BALANCES_TOOL, FUND_WALLET_TOOL } from '../tool-names.js';
+import {
+  QUERY_TOOL,
+  STATUS_TOOL,
+  CHANNELS_TOOL,
+  BALANCES_TOOL,
+  FUND_WALLET_TOOL,
+  CHANNEL_DEPOSIT_TOOL,
+} from '../tool-names.js';
 import {
   PROFILES,
   NOTES,
@@ -102,6 +109,11 @@ export function createMockBridge(opts: MockBridgeOptions = {}): ViewBridge {
       if (name === FUND_WALLET_TOOL) {
         const chain = (args as { chain?: string }).chain ?? 'evm';
         return { ok: true, data: { chain, address: '0xfaucet', faucetUrl: 'https://faucet.devnet.toonprotocol.dev' } };
+      }
+      if (name === CHANNEL_DEPOSIT_TOOL) {
+        const { channelId, amount } = args as { channelId?: string; amount?: string };
+        const depositTotal = String(10_000_000n + BigInt(amount || '0'));
+        return { ok: true, data: { channelId: channelId ?? '', txHash: '0xfakedeposit', depositTotal } };
       }
       // Writes (publish/upload/open-channel/swap): pretend success after a beat
       // so the optimistic UI + receipt phases render.

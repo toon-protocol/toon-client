@@ -21,7 +21,7 @@ import {
   buildCommentFilter,
   buildPRListFilter,
 } from '../filters.js';
-import { OPEN_CHANNEL_TOOL, SWAP_TOOL, PUBLISH_TOOL, FUND_WALLET_TOOL } from '../tool-names.js';
+import { OPEN_CHANNEL_TOOL, SWAP_TOOL, PUBLISH_TOOL, FUND_WALLET_TOOL, CHANNEL_DEPOSIT_TOOL } from '../tool-names.js';
 import { PK, CHANNELS, SWAP_PAIR, SETTLEMENT_RECEIPT } from './fixtures.js';
 
 const bridge = createMockBridge();
@@ -40,6 +40,14 @@ const EXTRA: { name: string; description: string; spec: ViewSpec }[] = [
     name: 'channel-list',
     description: 'Live tracked channels with nonce + available / deposit balance.',
     spec: { title: 'Channels', root: { atom: 'channel-list' } },
+  },
+  {
+    name: 'deposit-form',
+    description: 'Pick a channel + amount → spendy on-chain deposit (EVM).',
+    spec: {
+      title: 'Deposit',
+      root: { atom: 'deposit-form', actions: { deposit: { tool: CHANNEL_DEPOSIT_TOOL, spendy: true } } },
+    },
   },
   {
     name: 'skeleton',

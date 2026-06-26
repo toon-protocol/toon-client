@@ -16,6 +16,7 @@ describe('TOOL_DEFINITIONS', () => {
       [
         'toon_atoms',
         'toon_balances',
+        'toon_channel_deposit',
         'toon_channels',
         'toon_identity',
         'toon_open_channel',
@@ -191,6 +192,16 @@ describe('dispatchTool', () => {
     expect(JSON.parse(res.content[0]!.text)).toEqual({
       balances: [{ chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 }],
     });
+  });
+
+  it('toon_channel_deposit forwards channelId + amount', async () => {
+    const depositToChannel = vi
+      .fn()
+      .mockResolvedValue({ channelId: 'c1', txHash: '0xdep', depositTotal: '1500000' });
+    const client = stubClient({ depositToChannel });
+    const res = await dispatchTool(client, 'toon_channel_deposit', { channelId: 'c1', amount: '500000' });
+    expect(depositToChannel).toHaveBeenCalledWith({ channelId: 'c1', amount: '500000' });
+    expect(JSON.parse(res.content[0]!.text)).toEqual({ channelId: 'c1', txHash: '0xdep', depositTotal: '1500000' });
   });
 
   it('toon_http_fetch_paid forwards inputs and returns { status, headers, body }', async () => {

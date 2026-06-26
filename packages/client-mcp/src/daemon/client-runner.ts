@@ -32,6 +32,8 @@ import type {
   ApexTargetStatus,
   BalanceInfo,
   BalancesResponse,
+  ChannelDepositRequest,
+  ChannelDepositResponse,
   ChannelsResponse,
   ChainStatus,
   EventsResponse,
@@ -119,6 +121,10 @@ export interface ToonClientLike {
   getChannelCumulativeAmount(channelId: string): bigint;
   getChannelDepositTotal(channelId: string): bigint;
   getBalances(): Promise<BalanceInfo[]>;
+  depositToChannel(
+    channelId: string,
+    amount: string
+  ): Promise<{ channelId: string; txHash?: string; depositTotal: string }>;
   sendSwapPacket(params: {
     destination: string;
     amount: bigint;
@@ -1166,6 +1172,20 @@ export class ClientRunner {
     if (!apex) return { balances: [] };
     const balances = (await apex.client.getBalances()) as BalanceInfo[];
     return { balances };
+  }
+
+  /**
+   * Deposit additional collateral into an open channel. Routes to the apex whose
+   * client tracks the channel (each apex client opens/tracks its own channels);
+   * the client signs its own on-chain tx.
+   */
+  async depositToChannel(req: ChannelDepositRequest): Promise<ChannelDepositResponse> {
+    for (const apex of this.apexes.values()) {
+      if (apex.client.getTrackedChannels().includes(req.channelId)) {
+        return apex.client.depositToChannel(req.channelId, req.amount);
+      }
+    }
+    throw new Error(`Channel "${req.channelId}" is not tracked by any apex.`);
   }
 
   /** Swap source→target asset against a swap peer via the selected apex. */

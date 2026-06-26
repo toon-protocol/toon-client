@@ -103,6 +103,12 @@ class FakeClient implements ToonClientLike {
   async getBalances(): Promise<{ chain: string; address: string; amount: string }[]> {
     return [{ chain: 'evm', address: '0xself', amount: '5000000' }];
   }
+  async depositToChannel(
+    channelId: string,
+    amount: string
+  ): Promise<{ channelId: string; txHash?: string; depositTotal: string }> {
+    return { channelId, txHash: '0xdeposit', depositTotal: String(1_000_000n + BigInt(amount)) };
+  }
   async sendSwapPacket(): Promise<{ accepted: boolean }> {
     return { accepted: true };
   }
@@ -307,6 +313,19 @@ describe('control-plane routes', () => {
     it('GET /balances returns the wallet balances', async () => {
       const res = await app.inject({ method: 'GET', url: '/balances' });
       expect(res.json().balances).toEqual([{ chain: 'evm', address: '0xself', amount: '5000000' }]);
+    });
+
+    it('POST /channels/deposit adds the delta and returns the new total', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/channels/deposit',
+        payload: { channelId: 'chan-1', amount: '500000' },
+      });
+      expect(res.json()).toEqual({
+        channelId: 'chan-1',
+        txHash: '0xdeposit',
+        depositTotal: '1500000', // mock base 1_000_000 + delta 500_000
+      });
     });
 
     it('POST /swap forwards to the client', async () => {

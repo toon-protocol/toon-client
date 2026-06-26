@@ -72,6 +72,7 @@ describe('TOON apps MCP server (fake-backed)', () => {
         'toon_channels',
         'toon_balances',
         'toon_fund_wallet',
+        'toon_channel_deposit',
       ])
     );
     const render = tools.find((t) => t.name === 'toon_render');
@@ -211,5 +212,17 @@ describe('TOON apps MCP server (fake-backed)', () => {
     expect((res as { isError?: boolean }).isError).toBeFalsy();
     expect(structured(res)['chain']).toBe('solana');
     expect(structured(res)['address']).toBeTruthy();
+  });
+
+  it('toon_channel_deposit returns the new deposit total', async () => {
+    const res = await client.callTool({
+      name: 'toon_channel_deposit',
+      arguments: { channelId: 'fake-channel-1', amount: '5000000' },
+    });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    const sc = structured(res);
+    expect(sc['channelId']).toBe('fake-channel-1');
+    // fake-backend: 10_000_000 base + 5_000_000 delta.
+    expect(sc['depositTotal']).toBe('15000000');
   });
 });

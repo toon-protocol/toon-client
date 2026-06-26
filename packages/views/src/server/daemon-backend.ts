@@ -17,6 +17,7 @@ import {
   type AppBackend,
   type AppStatus,
   type BalanceView,
+  type ChannelDepositView,
   type ChannelView,
   type FundWalletView,
   type PublishResult,
@@ -113,6 +114,7 @@ export interface DaemonControl {
   channels(): Promise<DaemonChannelsResponse>;
   balances(): Promise<DaemonBalancesResponse>;
   fundWallet(body: { chain?: string; address?: string }): Promise<DaemonFundWalletResponse>;
+  depositToChannel(body: { channelId: string; amount: string }): Promise<ChannelDepositView>;
 }
 
 /**
@@ -209,5 +211,10 @@ export class DaemonAppBackend implements AppBackend {
       address: res.address,
       ...(res.faucetUrl ? { faucetUrl: res.faucetUrl } : {}),
     };
+  }
+
+  /** Spendy: deposit additional collateral into an open channel (daemon signs). */
+  async depositToChannel(req: { channelId: string; amount: string }): Promise<ChannelDepositView> {
+    return this.control.depositToChannel(req);
   }
 }

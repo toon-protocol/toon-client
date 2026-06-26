@@ -23,6 +23,7 @@ import {
   type PeerNegotiation,
 } from './channel/ChannelManager.js';
 import { JsonFileChannelStore } from './channel/ChannelStore.js';
+import type { OnChainChannelClient } from './channel/OnChainChannelClient.js';
 import {
   readEvmTokenBalance,
   readSolanaTokenBalance,
@@ -112,6 +113,8 @@ export class ToonClient {
    */
   private minaPrivateKey?: string;
   private channelManager?: ChannelManager;
+  /** Concrete on-chain client, kept so deposit/withdraw can reach chain methods. */
+  private onChainChannelClient?: OnChainChannelClient;
   private readonly peerNegotiations = new Map<string, PeerNegotiation>();
 
   /**
@@ -407,6 +410,7 @@ export class ToonClient {
 
       // Wire on-chain channel client into ChannelManager for lazy opens
       if (this.channelManager && initialization.onChainChannelClient) {
+        this.onChainChannelClient = initialization.onChainChannelClient;
         this.channelManager.setChannelClient(
           initialization.onChainChannelClient
         );
@@ -954,6 +958,35 @@ export class ToonClient {
   getChannelDepositTotal(channelId: string): bigint {
     if (!this.channelManager) throw new Error('ChannelManager not initialized');
     return this.channelManager.getDepositTotal(channelId);
+  }
+
+  /**
+   * Deposit additional collateral into an open channel. `amount` is the delta to
+   * add (base units, decimal string or bigint). The daemon signs its own tx; no
+   * key material leaves the client. Reads the current tracked deposit, performs
+   * the on-chain deposit, updates the tracked total, and returns the new total.
+   * EVM is live; Solana/Mina deposit lands in a follow-up.
+   */
+  async depositToChannel(
+    channelId: string,
+    amount: string | bigint
+  ): Promise<{ channelId: string; txHash?: string; depositTotal: string }> {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    if (!this.onChainChannelClient) {
+      throw new Error('On-chain channel client not configured (no chainRpcUrls).');
+    }
+    const delta = BigInt(amount);
+    if (delta <= 0n) throw new Error('Deposit amount must be positive.');
+    const currentDeposit = this.channelManager.getDepositTotal(channelId);
+    const result = await this.onChainChannelClient.depositToChannel(channelId, delta, {
+      currentDeposit,
+    });
+    this.channelManager.setDepositTotal(channelId, result.depositTotal);
+    return {
+      channelId,
+      ...(result.txHash ? { txHash: result.txHash } : {}),
+      depositTotal: result.depositTotal.toString(),
+    };
   }
 
   /**

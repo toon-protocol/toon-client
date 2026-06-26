@@ -104,3 +104,37 @@ describe('channel-list', () => {
     expect(await screen.findByText(/No channels open yet/i)).toBeTruthy();
   });
 });
+
+describe('deposit-form', () => {
+  const channels: AtomChannel[] = [
+    { channelId: '0xCH4NN3L00aa11bb22cc33dd44ee55ff', nonce: 1, cumulativeAmount: '0', depositTotal: '10000000', availableBalance: '10000000' },
+  ];
+
+  it('deposits the entered amount and shows the new total', async () => {
+    const DepositForm = byId('deposit-form');
+    const deposit = vi.fn(() => Promise.resolve({ ok: true, data: { depositTotal: '15000000' } }));
+    render(
+      <DepositForm {...base} props={{}} actions={{ deposit }} readChannels={() => Promise.resolve(channels)} />
+    );
+    // Channel auto-selected; enter an amount and submit.
+    const input = await screen.findByPlaceholderText('1000000');
+    fireEvent.change(input, { target: { value: '5000000' } });
+    fireEvent.click(screen.getByRole('button', { name: /Deposit/i }));
+    await waitFor(() =>
+      expect(deposit).toHaveBeenCalledWith({ channelId: channels[0]!.channelId, amount: '5000000' })
+    );
+    expect(await screen.findByText(/New deposit total/i)).toBeTruthy();
+    expect(screen.getByText('15')).toBeTruthy(); // 15000000 micro → 15
+  });
+
+  it('surfaces a deposit failure without a receipt', async () => {
+    const DepositForm = byId('deposit-form');
+    const deposit = vi.fn(() => Promise.resolve({ ok: false, error: 'insufficient funds' }));
+    render(
+      <DepositForm {...base} props={{}} actions={{ deposit }} readChannels={() => Promise.resolve(channels)} />
+    );
+    fireEvent.change(await screen.findByPlaceholderText('1000000'), { target: { value: '5000000' } });
+    fireEvent.click(screen.getByRole('button', { name: /Deposit/i }));
+    expect(await screen.findByText(/insufficient funds/i)).toBeTruthy();
+  });
+});

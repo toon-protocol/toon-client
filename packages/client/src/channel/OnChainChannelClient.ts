@@ -178,7 +178,7 @@ export class OnChainChannelClient implements ConnectorChannelClient {
   private minaConfig?: MinaChannelConfig;
   private readonly channelContext = new Map<
     string,
-    { chain: string; tokenNetworkAddress: string }
+    { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
   >();
 
   constructor(config: OnChainChannelClientConfig) {
@@ -290,6 +290,84 @@ export class OnChainChannelClient implements ConnectorChannelClient {
 
     // EVM path (default)
     return this.openEvmChannel(params);
+  }
+
+  /**
+   * Deposit additional collateral into an already-open channel. `amount` is the
+   * DELTA to add (base units). Dispatches by the channel's cached chain context;
+   * `currentDeposit` is the channel's current locked total (tracked off-chain by
+   * the caller) — required for EVM, whose `setTotalDeposit` takes the new
+   * cumulative total, not a delta. Returns the new on-chain deposit total.
+   *
+   * Non-custodial: the client deposits its OWN funds and signs its OWN tx.
+   * EVM is live; Solana/Mina deposit extraction is a follow-up (PR B.1).
+   */
+  async depositToChannel(
+    channelId: string,
+    amount: bigint,
+    opts: { currentDeposit: bigint }
+  ): Promise<{ txHash?: string; depositTotal: bigint }> {
+    if (amount <= 0n) throw new Error('Deposit amount must be positive.');
+    const ctx = this.channelContext.get(channelId);
+    if (!ctx) {
+      throw new Error(
+        `No on-chain context for channel "${channelId}" — it must be opened by this client first.`
+      );
+    }
+    const chainPrefix = ctx.chain.split(':')[0];
+    if (chainPrefix === 'solana' || chainPrefix === 'mina') {
+      throw new Error(
+        `Deposit on ${chainPrefix} is not yet supported (EVM only; follow-up PR adds it).`
+      );
+    }
+    return this.depositEvm(channelId, amount, opts.currentDeposit, ctx);
+  }
+
+  /**
+   * EVM deposit: approve the token-network for the delta if the allowance is
+   * short, then `setTotalDeposit(channelId, participant, current + delta)` —
+   * the contract takes the new cumulative total, so we add the delta to the
+   * caller-supplied current locked amount.
+   */
+  private async depositEvm(
+    channelId: string,
+    amount: bigint,
+    currentDeposit: bigint,
+    ctx: { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
+  ): Promise<{ txHash: string; depositTotal: bigint }> {
+    const { publicClient, walletClient } = this.createClients(ctx.chain);
+    const tokenNetworkAddr = ctx.tokenNetworkAddress as Hex;
+    const myAddress = this.evmSigner.address as Hex;
+    const newTotal = currentDeposit + amount;
+
+    // Approve the additional collateral if the current allowance can't cover it.
+    if (ctx.tokenAddress) {
+      const tokenAddr = ctx.tokenAddress as Hex;
+      const allowance = await publicClient.readContract({
+        address: tokenAddr,
+        abi: ERC20_ABI,
+        functionName: 'allowance',
+        args: [myAddress, tokenNetworkAddr],
+      });
+      if ((allowance as bigint) < amount) {
+        const approveHash = await walletClient.writeContract({
+          address: tokenAddr,
+          abi: ERC20_ABI,
+          functionName: 'approve',
+          args: [tokenNetworkAddr, maxUint256],
+        });
+        await publicClient.waitForTransactionReceipt({ hash: approveHash });
+      }
+    }
+
+    const depositHash = await walletClient.writeContract({
+      address: tokenNetworkAddr,
+      abi: TOKEN_NETWORK_ABI,
+      functionName: 'setTotalDeposit',
+      args: [channelId as Hex, myAddress, newTotal],
+    });
+    await publicClient.waitForTransactionReceipt({ hash: depositHash });
+    return { txHash: depositHash, depositTotal: newTotal };
   }
 
   /**
@@ -548,10 +626,12 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       throw new Error('Failed to extract channelId from ChannelOpened event');
     }
 
-    // Cache context for getChannelState
+    // Cache context for getChannelState + later deposits (the token address is
+    // needed to approve additional collateral on a standalone deposit).
     this.channelContext.set(channelId, {
       chain,
       tokenNetworkAddress: tokenNetwork,
+      ...(params.token ? { tokenAddress: params.token } : {}),
     });
 
     // Deposit initial funds if specified

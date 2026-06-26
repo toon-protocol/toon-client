@@ -14,6 +14,7 @@
 import { useEffect, useState, type FC, type ReactNode } from 'react';
 import { Wallet, Landmark, Coins } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
+import { Input } from '@/components/ui/input.js';
 import { Spinner } from '@/components/ui/spinner.js';
 import { MonoId } from '@/components/mono-id.js';
 import { CopyButton } from '@/components/copy-button.js';
@@ -268,9 +269,123 @@ const ChannelList: FC<AtomRenderProps> = ({ readChannels }) => {
   );
 };
 
+// ── deposit-form ─────────────────────────────────────────────────────────────
+
+type DepositPhase = 'idle' | 'depositing' | 'receipt';
+
+const DepositForm: FC<AtomRenderProps> = ({ readChannels, actions }) => {
+  const [channels, setChannels] = useState<AtomChannel[]>([]);
+  const [channelId, setChannelId] = useState('');
+  const [amount, setAmount] = useState('');
+  const [phase, setPhase] = useState<DepositPhase>('idle');
+  const [depositTotal, setDepositTotal] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const deposit = actions['deposit'];
+
+  useEffect(() => {
+    if (!readChannels) return;
+    let cancelled = false;
+    void readChannels()
+      .then((c) => {
+        if (cancelled) return;
+        setChannels(c);
+        const first = c[0];
+        if (first) setChannelId((prev) => prev || first.channelId);
+      })
+      .catch(() => {
+        /* selector simply stays empty */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [readChannels]);
+
+  const submit = async (): Promise<void> => {
+    const value = amount.trim();
+    if (!channelId || !value || !deposit) return;
+    setError(null);
+    setPhase('depositing');
+    const outcome = await deposit({ channelId, amount: value });
+    if (!outcome || outcome.ok === false) {
+      setError(outcome?.error ?? 'Deposit failed.');
+      setPhase('idle');
+      return;
+    }
+    const data = (outcome.data ?? {}) as { depositTotal?: string };
+    setDepositTotal(data.depositTotal ?? null);
+    setPhase('receipt');
+  };
+
+  if (phase === 'receipt') {
+    return (
+      <CardShell icon={<Coins aria-hidden="true" className="size-4" />} title="Deposit">
+        <div className="flex flex-col gap-2 py-1">
+          <p className="text-sm">Collateral added to <MonoId value={channelId} className="text-foreground" />.</p>
+          {depositTotal ? (
+            <p className="text-xs text-muted-foreground">
+              New deposit total{' '}
+              <span className="font-mono font-semibold text-foreground">{formatUnits(depositTotal)}</span>
+            </p>
+          ) : null}
+          <div className="flex justify-end">
+            <Button variant="outline" size="sm" onClick={() => { setPhase('idle'); setAmount(''); }}>
+              Deposit more
+            </Button>
+          </div>
+        </div>
+      </CardShell>
+    );
+  }
+
+  const busy = phase === 'depositing';
+  return (
+    <CardShell icon={<Coins aria-hidden="true" className="size-4" />} title="Deposit collateral">
+      <div className="flex flex-col gap-3 py-1">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">Channel</span>
+          <select
+            value={channelId}
+            onChange={(e) => setChannelId(e.target.value)}
+            disabled={busy || channels.length === 0}
+            className="h-9 rounded-md border border-input bg-transparent px-3 font-mono text-xs focus-visible:border-ring focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-50"
+          >
+            {channels.length === 0 ? <option value="">No open channels</option> : null}
+            {channels.map((c) => (
+              <option key={c.channelId} value={c.channelId}>
+                {c.channelId.length > 22 ? `${c.channelId.slice(0, 12)}…${c.channelId.slice(-6)}` : c.channelId}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">Amount (micro-units)</span>
+          <Input
+            type="text"
+            inputMode="numeric"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ''))}
+            placeholder="1000000"
+            disabled={busy}
+          />
+        </label>
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] text-muted-foreground/70">Adds on-chain collateral — a paid, signed transaction.</span>
+          <Button size="sm" disabled={busy || !channelId || !amount.trim() || !deposit} onClick={() => void submit()}>
+            <Coins aria-hidden="true" />
+            {busy ? 'Depositing…' : 'Deposit'}
+            <span className="ml-1 text-[10px] opacity-70">(pays)</span>
+          </Button>
+        </div>
+      </div>
+    </CardShell>
+  );
+};
+
 export const walletAtoms: Atom[] = [
   { id: 'wallet-overview', writes: [{ name: 'toon_fund_wallet' }], Component: WalletOverview },
   { id: 'channel-list', Component: ChannelList },
+  { id: 'deposit-form', writes: [{ name: 'toon_channel_deposit', spendy: true }], Component: DepositForm },
 ];
 
 // Exported for unit tests.

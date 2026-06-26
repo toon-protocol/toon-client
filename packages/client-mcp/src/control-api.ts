@@ -238,6 +238,22 @@ export interface BalancesResponse {
   balances: BalanceInfo[];
 }
 
+/** `POST /channels/deposit` — add collateral to an open channel. */
+export interface ChannelDepositRequest {
+  /** The channel to deposit into. */
+  channelId: string;
+  /** Delta to add, base (micro) units, decimal string. */
+  amount: string;
+}
+
+export interface ChannelDepositResponse {
+  channelId: string;
+  /** On-chain tx hash / signature, when the chain returns one. */
+  txHash?: string;
+  /** New on-chain deposit total after the deposit, base units, decimal. */
+  depositTotal: string;
+}
+
 /**
  * `POST /swap` — pay asset A to a swap peer, receive asset B + a signed
  * target-chain claim. The daemon builds the NIP-59 gift-wrapped kind:20032 swap
