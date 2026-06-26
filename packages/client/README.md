@@ -2,11 +2,11 @@
 
 The **client library** for TOON Protocol — _pay-to-write Nostr over Interledger (ILP)_. Use it to **pay for and publish** writes to a network of service nodes. **Reads are free; writes cost a signed EIP-712 payment-channel claim** against an on-chain deposit.
 
-> **`client` vs `townhouse`.** This package (`@toon-protocol/client`) is what an _app or end user_ uses to **pay** and publish. It does **not** run any relay or node. The nodes are operated separately by **`@toon-protocol/townhouse`** (the operator product, which runs an _apex_ connector plus `town` / `mill` / `dvm` children). Don't confuse the **client** (pays) with **townhouse** (operates), or **`town`** (a single Nostr-relay node) with **townhouse** (the whole operator stack).
+> **`client` vs `relay`.** This package (`@toon-protocol/client`) is what an _app or end user_ uses to **pay** and publish. It does **not** run any relay or node. The nodes are operated separately by **`@toon-protocol/relay`** (the operator product, which runs an _apex_ connector plus `town` / `mill` / `dvm` children). Don't confuse the **client** (pays) with **relay** (operates), or **`town`** (a single Nostr-relay node) with **relay** (the whole operator stack).
 
 ## Which call pays which node
 
-Every write is an ILP packet carrying a signed payment-channel claim. The client reaches all node types **through a townhouse apex** (`g.townhouse`): the apex validates the claim, takes its fee, and forwards the packet to the destination node, which returns FULFILL (accepted) or REJECT. The method you call determines which node type you pay:
+Every write is an ILP packet carrying a signed payment-channel claim. The client reaches all node types **through a relay apex** (`g.proxy`): the apex validates the claim, takes its fee, and forwards the packet to the destination node, which returns FULFILL (accepted) or REJECT. The method you call determines which node type you pay:
 
 | Client call                       | Node type | What it does                                                                                                                                              |
 | --------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -21,7 +21,7 @@ This client handles:
 - **ILP Micropayments**: Pay to publish Nostr events (reads are free)
 - **Payment Channels**: Automatic on-chain channel creation with off-chain settlement via signed balance proofs
 - **Unified Identity**: One Nostr key = one EVM address (both secp256k1, derived automatically) — or a single BIP-39 **mnemonic** to derive a full multi-chain identity
-- **Multi-Chain Settlement**: Sign payment-channel claims on EVM (EIP-712), Solana (Ed25519), and Mina (Pallas) from one mnemonic. A Townhouse apex validates the claim and redeems it on-chain on the matching chain (EVM/Solana credit the recipient; Mina redeems each claim on-chain with recipient credit-at-close deferred — see [Multi-Chain Settlement notes](#identity--multi-chain-settlement))
+- **Multi-Chain Settlement**: Sign payment-channel claims on EVM (EIP-712), Solana (Ed25519), and Mina (Pallas) from one mnemonic. A relay apex validates the claim and redeems it on-chain on the matching chain (EVM/Solana credit the recipient; Mina redeems each claim on-chain with recipient credit-at-close deferred — see [Multi-Chain Settlement notes](#identity--multi-chain-settlement))
 - **Multi-Hop Routing**: Publish to any destination address (`destination` / `destinationAddress`), not just your direct peer
 - **Network Bootstrap**: Automatically discover and register with ILP peers via NIP-02 follow lists
 - **TOON Encoding**: Native binary format for agent-friendly event encoding
@@ -41,7 +41,7 @@ pnpm add mina-signer
 
 - **Node.js ≥ 20** — these packages are ESM.
 - **A TOON apex to pay.** You don't run any node yourself; you connect to a running
-  [`@toon-protocol/townhouse`](https://www.npmjs.com/package/@toon-protocol/townhouse) apex (or any
+  [`@toon-protocol/relay`](https://www.npmjs.com/package/@toon-protocol/relay) apex (or any
   TOON connector) and pay it. From its operator you need:
   - a **connector endpoint** — an HTTP `connectorUrl` and/or a BTP WebSocket `btpUrl`;
   - a **settlement-chain RPC URL** and a **funded key** on that chain, so the client can open a
@@ -167,7 +167,7 @@ console.log('Mina:  ', client.getMinaAddress());   // base58, after start() (nee
 - **Mina is optional**: it requires the `mina-signer` peer dependency (see Installation). Without it, the client still works for Nostr/EVM/Solana and `getMinaAddress()` returns `undefined`.
 - **Security**: JavaScript strings can't be zeroed from memory, so a `mnemonic` may linger in the heap. For high-security contexts, derive keys yourself (e.g. via `KeyManager`) and pass a pre-derived `secretKey`.
 - **Per-chain claim formats.** Each publish carries a balance-proof claim in the format that destination chain's connector verifier expects — EVM via EIP-712, Solana as a raw Ed25519 message over the on-chain payment-channel message (`channel_pda ‖ nonce ‖ transferredAmount`), Mina as a Pallas-Schnorr claim over a Poseidon `balanceCommitment`. `ToonClient` selects the right signer for the negotiated channel automatically; you do not pick the format. Canonical layouts live in `@toon-protocol/core` (`packages/core/src/settlement/`) so client signers and connector verifiers cannot drift.
-- **On-chain redemption is automatic, and driven by the apex — not the client.** You sign off-chain claims; the Townhouse apex validates them, fulfills, and (once a per-channel threshold is crossed) submits the on-chain redemption itself. EVM and Solana credit the recipient on-chain (Solana at channel close, `SETTLE_CHANNEL`). On **Mina** each paid publish redeems on-chain (`claimFromChannel`, the apex co-signs the counterparty signature; the zkApp nonce and balance commitment advance), and **the recipient's tokens are credited at channel close** via the Story 34.4 fund-custody zkApp (`@toon-protocol/connector` ≥3.10.0): the deposit is escrowed on the zkApp account and `settle()` drains it to the participants (recipient + depositor refund). Verified against `@toon-protocol/connector` 3.10.0.
+- **On-chain redemption is automatic, and driven by the apex — not the client.** You sign off-chain claims; the relay apex validates them, fulfills, and (once a per-channel threshold is crossed) submits the on-chain redemption itself. EVM and Solana credit the recipient on-chain (Solana at channel close, `SETTLE_CHANNEL`). On **Mina** each paid publish redeems on-chain (`claimFromChannel`, the apex co-signs the counterparty signature; the zkApp nonce and balance commitment advance), and **the recipient's tokens are credited at channel close** via the Story 34.4 fund-custody zkApp (`@toon-protocol/connector` ≥3.10.0): the deposit is escrowed on the zkApp account and `settle()` drains it to the participants (recipient + depositor refund). Verified against `@toon-protocol/connector` 3.10.0.
 
 ---
 
@@ -239,7 +239,7 @@ await client.publishEvent(event, { claim });
 2. **Channel Creation**: Opens an on-chain payment channel on the negotiated chain — using your derived EVM address (EVM), the Ed25519 channel PDA (Solana), or the deployed zkApp account (Mina) when the matching `solanaChannel` / `minaChannel` config is provided
 3. **Off-chain Payments**: Signed balance proofs (chain-appropriate format) settle payments off-chain
 4. **Auto-tracking**: ChannelManager automatically tracks channels and increments nonces
-5. **On-chain redemption**: A Townhouse apex auto-redeems claims on-chain once a per-channel threshold is crossed (see [Multi-Chain Settlement](#identity--multi-chain-settlement) for the EVM/Solana/Mina specifics and the Mina credit-at-close deferral)
+5. **On-chain redemption**: A relay apex auto-redeems claims on-chain once a per-channel threshold is crossed (see [Multi-Chain Settlement](#identity--multi-chain-settlement) for the EVM/Solana/Mina specifics and the Mina credit-at-close deferral)
 
 ### Using a Separate EVM Key (Advanced)
 
@@ -304,10 +304,9 @@ See [examples/client-example/](../../examples/client-example/) for standalone cl
 ## Related Packages
 
 - **[@toon-protocol/core](../core/)** — Core protocol (peer discovery, bootstrap, `buildBlobStorageRequest`)
-- **[@toon-protocol/relay](../relay/)** — Nostr relay with ILP payment gating (`encodeEventToToon` / `decodeEventFromToon`)
+- **[@toon-protocol/relay](../relay/)** — Operator product running the apex connector plus town/mill/dvm nodes; also exports `encodeEventToToon` / `decodeEventFromToon` for event encoding
 - **[@toon-protocol/sdk](../sdk/)** — Higher-level helpers including `streamSwap()` for multi-chain swaps via a **mill**
 - **[@toon-protocol/bls](../bls/)** — Business Logic Server (pricing, validation, storage)
-- **[@toon-protocol/townhouse](../townhouse/)** — The operator product that runs the apex + town/mill/dvm nodes you pay
 
 ---
 

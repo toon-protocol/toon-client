@@ -31,7 +31,7 @@ function makeConfig(
     httpPort: 8787,
     relayUrl: 'ws://relay.test',
     hasUplink: true,
-    destination: 'g.townhouse.town',
+    destination: 'g.proxy',
     feePerEvent: 1n,
     chain: 'evm' as const,
     apexChannelStorePath: join(tmpDir, 'apex-channels.json'),
@@ -189,8 +189,8 @@ describe('ClientRunner', () => {
     runner = new ClientRunner({
       config: makeConfig({
         apex: {
-          destination: 'g.townhouse.town',
-          peerId: 'town',
+          destination: 'g.proxy',
+          peerId: 'proxy',
           chain: 'evm',
           chainKey: 'evm:base:84532',
           chainId: 84532,
@@ -226,7 +226,7 @@ describe('ClientRunner', () => {
 
   it('injects the apex negotiation into the ToonClient', async () => {
     await runner.bootstrap();
-    expect(client.peerNegotiations.get('town')).toMatchObject({
+    expect(client.peerNegotiations.get('proxy')).toMatchObject({
       chainType: 'evm',
       settlementAddress: '0xapex',
       tokenNetwork: '0xtn',
@@ -245,8 +245,8 @@ describe('ClientRunner', () => {
     const r = new ClientRunner({
       config: makeConfig({
         apex: {
-          destination: 'g.townhouse.town',
-          peerId: 'town',
+          destination: 'g.proxy',
+          peerId: 'proxy',
           chain: 'evm',
           chainKey: 'evm:base:84532',
           chainId: 84532,
@@ -286,8 +286,8 @@ describe('ClientRunner', () => {
     const saved = JSON.parse(
       readFileSync(join(tmpDir, 'apex-channels.json'), 'utf8')
     );
-    expect(saved['g.townhouse.town|evm'].channelId).toBe('chan-1');
-    expect(saved['g.townhouse.town|evm'].context).toMatchObject({
+    expect(saved['g.proxy|evm'].channelId).toBe('chan-1');
+    expect(saved['g.proxy|evm'].context).toMatchObject({
       chainType: 'evm',
       chainId: 84532,
       recipient: '0xapex',
@@ -299,7 +299,7 @@ describe('ClientRunner', () => {
     writeFileSync(
       join(tmpDir, 'apex-channels.json'),
       JSON.stringify({
-        'g.townhouse.town|evm': {
+        'g.proxy|evm': {
           channelId: 'existing-chan',
           context: {
             chainType: 'evm',
@@ -324,8 +324,8 @@ describe('ClientRunner', () => {
     const r = new ClientRunner({
       config: makeConfig({
         apex: {
-          destination: 'g.townhouse.town',
-          peerId: 'town',
+          destination: 'g.proxy',
+          peerId: 'proxy',
           chain: 'evm',
           chainKey: 'evm:base:84532',
           chainId: 84532,
@@ -431,8 +431,8 @@ describe('ClientRunner', () => {
     const r = new ClientRunner({
       config: makeConfig({
         apex: {
-          destination: 'g.townhouse.town',
-          peerId: 'town',
+          destination: 'g.proxy',
+          peerId: 'proxy',
           chain: 'evm',
           chainKey: 'evm:base:84532',
           chainId: 84532,
@@ -575,7 +575,7 @@ describe('ClientRunner', () => {
     } as unknown as Awaited<ReturnType<typeof streamSwap>>);
 
     const res = await runner.swap({
-      destination: 'g.townhouse.mill',
+      destination: 'g.proxy.mill',
       amount: '1000',
       millPubkey: 'cd'.repeat(32),
       pair,
@@ -584,7 +584,7 @@ describe('ClientRunner', () => {
 
     // streamSwap got the request params (default single packet).
     const arg = vi.mocked(streamSwap).mock.calls[0]![0];
-    expect(arg.millIlpAddress).toBe('g.townhouse.mill');
+    expect(arg.millIlpAddress).toBe('g.proxy.mill');
     expect(arg.millPubkey).toBe('cd'.repeat(32));
     expect(arg.totalAmount).toBe(1000n);
     expect(arg.chainRecipient).toBe('SoLrecipient');
@@ -633,7 +633,7 @@ describe('ClientRunner', () => {
     } as unknown as Awaited<ReturnType<typeof streamSwap>>);
 
     const res = await runner.swap({
-      destination: 'g.townhouse.mill',
+      destination: 'g.proxy.mill',
       amount: '1000',
       millPubkey: 'cd'.repeat(32),
       pair,

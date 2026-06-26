@@ -84,7 +84,7 @@ export function applyNetworkPresets(
 
 /**
  * Returns per-chain settlement readiness for the configured `network` tier,
- * mirroring the townhouse node's status. Returns `undefined` when `network` is
+ * mirroring the relay node's status. Returns `undefined` when `network` is
  * unset or `'custom'` (no preset tier to report on).
  */
 export function getNetworkStatus(

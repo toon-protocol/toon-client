@@ -24,7 +24,7 @@ import type { SettlementChain } from '../control-api.js';
 export interface DiscoverApexParams {
   /** A started relay subscription to query for the apex's kind:10032. */
   relay: RelaySubscription;
-  /** ILP address of the apex to match (e.g. `g.townhouse.town`). */
+  /** ILP address of the apex to match (e.g. `g.proxy`). */
   ilpAddress: string;
   /** Optional apex Nostr pubkey to narrow the REQ filter (64-char hex). */
   pubkey?: string;
@@ -109,7 +109,7 @@ export async function discoverApex(
 /**
  * Whether a kind:10032 event announces the target apex's ILP address. When a
  * `pubkey` is given it must also match the event author — multiple nodes can
- * advertise the same ILP address (e.g. `g.townhouse.town`), so the pubkey is how
+ * advertise the same ILP address (e.g. `g.proxy`), so the pubkey is how
  * the caller disambiguates which one to add. (Buffer-wide scanning means we can
  * no longer rely on the REQ's `authors` filter to do this for us.)
  */

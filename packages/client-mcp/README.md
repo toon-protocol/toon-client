@@ -104,14 +104,14 @@ can supply your own via env or an imported keystore.
   "keystorePath": "~/.toon-client/keystore.json",
   "btpUrl": "ws://<apex-host>:3000/btp",
   "relayUrl": "ws://<relay-host>:7100",       // free reads
-  "destination": "g.townhouse.town",
+  "destination": "g.proxy",
   "feePerEvent": "1",
   "httpPort": 8787,
   // Direct-apex mode: bootstrap finds 0 peers, so name the apex's
   // settlement address directly (mirrors the docker entrypoint):
   "apex": {
-    "destination": "g.townhouse.town",
-    "peerId": "town",
+    "destination": "g.proxy",
+    "peerId": "proxy",
     "chain": "evm",
     "chainKey": "evm:base:84532",
     "chainId": 84532,
@@ -271,7 +271,7 @@ The integration suite lives in `src/__integration__/`.
 
 This package is **published to npm automatically by CI/CD**, in lockstep with the
 repo's release tag (the same `vX.Y.Z` semantic-release cuts for
-`@toon-protocol/townhouse`). On a release, `publish-townhouse-images.yml` builds
+`@toon-protocol/relay`). On a release, `publish-relay-images.yml` builds
 this package, sets its version to the tag, and runs
 `pnpm --filter @toon-protocol/client-mcp publish --access public`.
 

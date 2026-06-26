@@ -282,7 +282,7 @@ describe('daemon config', () => {
     // No file/env destination and an empty bundled genesis list → last-resort
     // fallback. Once core ships a seeded genesis-peers.json this resolves to the
     // seed apex's ILP anchor instead.
-    expect(cfg.destination).toBe('g.townhouse.town');
+    expect(cfg.destination).toBe('g.proxy');
     expect(cfg.feePerEvent).toBe(1n);
     expect(cfg.toonClientConfig.btpUrl).toBe('ws://apex.test:3000/btp');
     // The legacy anon/HS transport overlay is gone — no transport knobs survive.
@@ -327,16 +327,16 @@ describe('daemon config', () => {
   it('selects the apex negotiation for the active chain from apexChains', () => {
     const apexChains = {
       evm: {
-        destination: 'g.townhouse.town',
-        peerId: 'town',
+        destination: 'g.proxy',
+        peerId: 'proxy',
         chain: 'evm' as const,
         chainKey: 'evm:base:84532',
         chainId: 84532,
         settlementAddress: '0xevm',
       },
       solana: {
-        destination: 'g.townhouse.town',
-        peerId: 'town',
+        destination: 'g.proxy',
+        peerId: 'proxy',
         chain: 'solana' as const,
         chainKey: 'solana:devnet',
         chainId: 0,

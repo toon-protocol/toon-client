@@ -38,12 +38,12 @@ export default defineConfig({
     // `socks-proxy-agent` factory; provide it in the ESM output.
     js: `import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);`,
   },
-  // ── Bundling strategy (mirrors @toon-protocol/townhouse) ──────────────────
+  // ── Bundling strategy (mirrors @toon-protocol/relay) ─────────────────────
   // The published package must carry ZERO `@toon-protocol/*` runtime deps (those
   // workspace packages are not on npm). So INLINE them — and the crypto libs
   // they use — into dist at BUILD time. Bundling @noble/@scure too avoids a
   // runtime version-skew between what the inlined client expects and whatever
-  // the consumer's tree resolves (same rationale as townhouse's tsup config).
+  // the consumer's tree resolves (same rationale as relay's tsup config).
   noExternal: [
     '@toon-protocol/arweave',
     '@toon-protocol/client',
