@@ -20,6 +20,7 @@ import type { EvmSigner } from '../signing/evm-signer.js';
 import {
   openSolanaChannel as openSolanaChannelOnChain,
   getChannelAccountState as getSolanaChannelAccountState,
+  depositSolanaChannel,
 } from './solana-payment-channel.js';
 import { openMinaChannelOnChain } from './mina-channel-open.js';
 
@@ -315,12 +316,48 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       );
     }
     const chainPrefix = ctx.chain.split(':')[0];
-    if (chainPrefix === 'solana' || chainPrefix === 'mina') {
-      throw new Error(
-        `Deposit on ${chainPrefix} is not yet supported (EVM only; follow-up PR adds it).`
-      );
+    if (chainPrefix === 'solana') {
+      return this.depositSolana(channelId, amount, opts.currentDeposit);
+    }
+    if (chainPrefix === 'mina') {
+      throw new Error('Deposit on mina is not yet supported (EVM + Solana today; Mina follow-up).');
     }
     return this.depositEvm(channelId, amount, opts.currentDeposit, ctx);
+  }
+
+  /**
+   * Solana deposit: fire the standalone `deposit` instruction against the channel
+   * vault. Incremental on-chain (the program adds `amount`), so the new total is
+   * the caller-tracked current plus the delta. Requires the funded payer token
+   * account (the funded ATA) from the Solana channel config.
+   */
+  private async depositSolana(
+    channelId: string,
+    amount: bigint,
+    currentDeposit: bigint
+  ): Promise<{ txHash: string; depositTotal: bigint }> {
+    if (!this.solanaConfig) {
+      throw new Error('Solana channel config not set — cannot deposit.');
+    }
+    const cfg = this.solanaConfig;
+    const payerTokenAccount = cfg.deposit?.payerTokenAccount;
+    if (!payerTokenAccount) {
+      throw new Error(
+        'Solana deposit requires solanaConfig.deposit.payerTokenAccount (the funded SPL token account).'
+      );
+    }
+    const payerSeed = cfg.keypair.slice(0, 32);
+    const payerPubkey = base58Encode(new Uint8Array(ed25519.getPublicKey(payerSeed)));
+    const { depositTxSignature } = await depositSolanaChannel({
+      rpcUrl: cfg.rpcUrl,
+      programId: cfg.programId,
+      channelPDA: channelId,
+      payerSeed,
+      payerPubkey,
+      payerTokenAccount,
+      amount,
+    });
+    return { txHash: depositTxSignature, depositTotal: currentDeposit + amount };
   }
 
   /**

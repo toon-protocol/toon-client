@@ -446,6 +446,62 @@ describe('OnChainChannelClient', () => {
         })
       ).rejects.toThrow(/token mint/i);
     });
+
+    function depositClient(): OnChainChannelClient {
+      return new OnChainChannelClient({
+        evmSigner: signer,
+        chainRpcUrls: {},
+        solanaConfig: {
+          rpcUrl: 'http://localhost:8899',
+          keypair: seed,
+          programId: PROGRAM_ID,
+          tokenMint: TOKEN_MINT,
+          // amount 0 → open doesn't deposit; payerTokenAccount enables a later deposit.
+          deposit: { amount: '0', payerTokenAccount: APEX_PUBKEY },
+        },
+      });
+    }
+
+    it('depositToChannel fires a deposit tx and returns current + delta', async () => {
+      mockRpc(false);
+      const c = depositClient();
+      const { channelId } = await c.openChannel({
+        peerId: 'apex',
+        chain: SOLANA_CHAIN,
+        token: TOKEN_MINT,
+        peerAddress: APEX_PUBKEY,
+      });
+      fetchMock.mockClear();
+
+      const out = await c.depositToChannel(channelId, 100n, { currentDeposit: 500n });
+
+      expect(out.txHash).toBe('tx-signature-stub');
+      expect(out.depositTotal).toBe(600n); // incremental: 500 + 100
+      const sent = fetchMock.mock.calls.some(
+        (call) =>
+          (JSON.parse((call[1] as RequestInit).body as string) as { method: string }).method ===
+          'sendTransaction'
+      );
+      expect(sent).toBe(true);
+    });
+
+    it('depositToChannel throws when no funded token account is configured', async () => {
+      mockRpc(false);
+      const c = new OnChainChannelClient({
+        evmSigner: signer,
+        chainRpcUrls: {},
+        solanaConfig: { rpcUrl: 'http://localhost:8899', keypair: seed, programId: PROGRAM_ID, tokenMint: TOKEN_MINT },
+      });
+      const { channelId } = await c.openChannel({
+        peerId: 'apex',
+        chain: SOLANA_CHAIN,
+        token: TOKEN_MINT,
+        peerAddress: APEX_PUBKEY,
+      });
+      await expect(c.depositToChannel(channelId, 100n, { currentDeposit: 0n })).rejects.toThrow(
+        /payerTokenAccount|token account/i
+      );
+    });
   });
 
   // ── Mina channel (Phase-2 Stage 3 + on-chain open) ──────────────────────────
