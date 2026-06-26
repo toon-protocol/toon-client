@@ -122,6 +122,7 @@ export {
 // Devnet faucet helper
 export {
   fundWallet,
+  defaultFaucetTimeout,
   type FaucetChain,
   type FundWalletResult,
   type FundWalletOptions,

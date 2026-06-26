@@ -875,7 +875,17 @@ export class ClientRunner {
           `(this client has no ${chain} key configured).`
       );
     }
-    const { response } = await faucetFund(faucetUrl, address, chain);
+    // Timeout is chain-aware by default (mina settles far slower than the 30s
+    // evm/solana budget and otherwise times out on a request that succeeds
+    // server-side); an explicit faucetTimeoutMs overrides it.
+    const { response } = await faucetFund(
+      faucetUrl,
+      address,
+      chain,
+      this.config.faucetTimeoutMs !== undefined
+        ? { timeout: this.config.faucetTimeoutMs }
+        : {}
+    );
     return { chain, address, faucetUrl, response };
   }
 

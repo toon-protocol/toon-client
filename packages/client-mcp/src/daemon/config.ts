@@ -73,6 +73,12 @@ export interface DaemonConfigFile {
    * override: `TOON_CLIENT_FAUCET_URL`.
    */
   faucetUrl?: string;
+  /**
+   * Faucet HTTP request timeout in milliseconds. When set it overrides the
+   * chain-aware default (fast 30s for evm/solana, 120s for the slow-settling
+   * mina faucet). Env override: `TOON_CLIENT_FAUCET_TIMEOUT_MS`.
+   */
+  faucetTimeoutMs?: number;
   /** Town relay WS URL for FREE reads. */
   relayUrl?: string;
   /**
@@ -157,6 +163,12 @@ export interface ResolvedDaemonConfig {
   proxyUrl?: string;
   /** Devnet faucet base URL, when configured. */
   faucetUrl?: string;
+  /**
+   * Explicit faucet HTTP request timeout (ms), when configured. Overrides the
+   * chain-aware default. When absent, {@link fundWallet} picks the per-chain
+   * default (longer for mina).
+   */
+  faucetTimeoutMs?: number;
   destination: string;
   /** Resolved default destination for relay-write publishes (falls back to `destination`). */
   publishDestination: string;
@@ -285,6 +297,11 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
 
   const proxyUrl = process.env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl;
   const faucetUrl = process.env['TOON_CLIENT_FAUCET_URL'] ?? file.faucetUrl;
+  const faucetTimeoutEnv = process.env['TOON_CLIENT_FAUCET_TIMEOUT_MS'];
+  const faucetTimeoutMs =
+    faucetTimeoutEnv && Number.isFinite(Number(faucetTimeoutEnv))
+      ? Number(faucetTimeoutEnv)
+      : file.faucetTimeoutMs;
   const btpUrl = process.env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl;
 
   // A write uplink is OPTIONAL at resolve time: FREE relay reads need none.
@@ -396,6 +413,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     hasUplink,
     ...(proxyUrl ? { proxyUrl } : {}),
     ...(faucetUrl ? { faucetUrl } : {}),
+    ...(faucetTimeoutMs !== undefined ? { faucetTimeoutMs } : {}),
     destination,
     publishDestination,
     storeDestination,

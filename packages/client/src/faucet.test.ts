@@ -1,6 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fundWallet } from './faucet.js';
+import { fundWallet, defaultFaucetTimeout } from './faucet.js';
 import { NetworkError } from './errors.js';
+
+/** A `fetch` that immediately aborts as if the request timed out. */
+function abortingFetch(): typeof fetch {
+  return vi.fn(async () => {
+    const err = new Error('aborted');
+    err.name = 'AbortError';
+    throw err;
+  }) as unknown as typeof fetch;
+}
 
 const EVM_ADDR = '0x1234567890123456789012345678901234567890';
 const FAUCET = 'https://faucet.devnet.toonprotocol.dev';
@@ -88,5 +97,32 @@ describe('fundWallet (devnet faucet)', () => {
     const [minaUrl] = (minaFetch as unknown as ReturnType<typeof vi.fn>).mock
       .calls[0];
     expect(minaUrl).toBe(`${FAUCET}/api/mina/request`);
+  });
+
+  it('uses a chain-aware default timeout (30s evm/solana, 120s mina)', () => {
+    expect(defaultFaucetTimeout('evm')).toBe(30000);
+    expect(defaultFaucetTimeout('solana')).toBe(30000);
+    expect(defaultFaucetTimeout('mina')).toBe(120000);
+  });
+
+  it('reports the longer mina default in a timeout NetworkError', async () => {
+    await expect(
+      fundWallet(FAUCET, 'B62addr', 'mina', { fetchImpl: abortingFetch() })
+    ).rejects.toThrow(/timed out after 120000ms/);
+  });
+
+  it('reports the 30s default in a timeout NetworkError for evm', async () => {
+    await expect(
+      fundWallet(FAUCET, EVM_ADDR, 'evm', { fetchImpl: abortingFetch() })
+    ).rejects.toThrow(/timed out after 30000ms/);
+  });
+
+  it('honours an explicit timeout override', async () => {
+    await expect(
+      fundWallet(FAUCET, 'B62addr', 'mina', {
+        fetchImpl: abortingFetch(),
+        timeout: 5000,
+      })
+    ).rejects.toThrow(/timed out after 5000ms/);
   });
 });
