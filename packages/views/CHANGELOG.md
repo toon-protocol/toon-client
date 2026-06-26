@@ -1,5 +1,16 @@
 # @toon-protocol/views
 
+## 0.10.1
+
+### Patch Changes
+
+- 1afc5c8: Render the MCP app on a transparent page so the host's own (rounded) message
+  container shows through, instead of an opaque slab with square corners boxing the
+  view in. Drops the bg-tinted framed panel — keeps only inset padding + a
+  reading-width cap; the atoms are self-framing rounded cards. The standalone
+  gallery is unaffected (it keeps globals.css's body paint; the app overrides it in
+  `main.tsx`).
+
 ## 0.10.0
 
 ### Minor Changes
