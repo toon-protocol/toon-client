@@ -1,5 +1,11 @@
 # @toon-protocol/views
 
+## 0.8.1
+
+### Patch Changes
+
+- 623bb8e: Refresh the views atom theme (cool-tinted palette + jade primary + Geist Mono ledger typography) and add a dev-only visual gallery harness.
+
 ## 0.8.0
 
 ### Minor Changes
