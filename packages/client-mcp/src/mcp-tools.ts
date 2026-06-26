@@ -302,7 +302,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         destination: {
           type: 'string',
-          description: 'Mill peer ILP destination (e.g. g.townhouse.mill).',
+          description: 'Mill peer ILP destination (e.g. g.proxy.mill).',
         },
         amount: {
           type: 'string',
@@ -457,7 +457,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         ilpAddress: {
           type: 'string',
-          description: 'ILP address of the apex (e.g. g.townhouse.town).',
+          description: 'ILP address of the apex (e.g. g.proxy).',
         },
         relayUrl: {
           type: 'string',

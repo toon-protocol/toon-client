@@ -1,7 +1,7 @@
 /**
  * Node-only encrypted mnemonic keystore for @toon-protocol/client.
  *
- * Mirrors the Townhouse node wallet crypto (`packages/townhouse/src/wallet/
+ * Mirrors the relay node wallet crypto (`packages/relay/src/wallet/
  * crypto.ts`): a BIP-39 mnemonic is encrypted at rest with scrypt (KDF) +
  * AES-256-GCM (authenticated encryption), serialized as JSON, and written to
  * disk with mode 0o600. Decryption requires the operator password; a wrong
@@ -44,7 +44,7 @@ const AUTH_TAG_LEN = 16;
 
 /**
  * Encrypted keystore file format (JSON, all binary fields base64-encoded).
- * Wire-compatible with Townhouse's `EncryptedWallet`.
+ * Wire-compatible with the relay node's `EncryptedWallet`.
  */
 export interface EncryptedKeystore {
   /** scrypt salt (base64). */
@@ -240,7 +240,7 @@ export function loadKeystore(path: string, password: string): string {
 
 /**
  * Serialize and write an encrypted keystore to disk with mode 0o600
- * (owner read/write only), mirroring the Townhouse wallet file permissions.
+ * (owner read/write only), mirroring the relay node wallet file permissions.
  */
 export function writeKeystoreFile(
   path: string,

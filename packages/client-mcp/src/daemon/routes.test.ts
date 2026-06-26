@@ -115,9 +115,9 @@ function config(): ResolvedDaemonConfig {
     httpPort: 0,
     relayUrl: 'ws://relay.test',
     hasUplink: true,
-    destination: 'g.townhouse.town',
-    publishDestination: 'g.townhouse.town',
-    storeDestination: 'g.townhouse.town',
+    destination: 'g.proxy',
+    publishDestination: 'g.proxy',
+    storeDestination: 'g.proxy',
     feePerEvent: 1n,
     chain: 'evm',
     apexChannelStorePath: join(

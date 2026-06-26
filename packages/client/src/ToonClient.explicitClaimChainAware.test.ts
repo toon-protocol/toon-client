@@ -45,7 +45,7 @@ function baseConfig() {
   return {
     secretKey: SECRET_KEY,
     connectorUrl: 'http://localhost:9999',
-    destinationAddress: 'g.townhouse.town',
+    destinationAddress: 'g.proxy',
     ilpInfo: {
       pubkey: '0'.repeat(64),
       ilpAddress: 'g.toon.test',
@@ -62,7 +62,7 @@ function makeEvent(): NostrEvent {
     created_at: 1_700_000_000,
     kind: 1,
     tags: [],
-    content: 'hello townhouse',
+    content: 'hello relay',
     sig: 'b'.repeat(128),
   } as unknown as NostrEvent;
 }

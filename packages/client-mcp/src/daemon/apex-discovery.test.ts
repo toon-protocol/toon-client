@@ -60,13 +60,13 @@ describe('discoverApex', () => {
     open();
     emit([
       'EVENT',
-      'apex-discovery-g.townhouse.town',
-      announcement('g.townhouse.town'),
+      'apex-discovery-g.proxy',
+      announcement('g.proxy'),
     ]);
 
     const result = await discoverApex({
       relay,
-      ilpAddress: 'g.townhouse.town',
+      ilpAddress: 'g.proxy',
       chain: 'evm',
       childPeers: ['dvm', 'mill'],
       timeoutMs: 1000,
@@ -76,8 +76,8 @@ describe('discoverApex', () => {
     expect(result.btpUrl).toBe('ws://apex.example/btp');
     expect(result.apexChildPeers).toEqual(['dvm', 'mill']);
     expect(result.negotiation).toMatchObject({
-      destination: 'g.townhouse.town',
-      peerId: 'town',
+      destination: 'g.proxy',
+      peerId: 'proxy',
       chain: 'evm',
       chainKey: 'evm:base:84532',
       chainId: 84532,
@@ -92,12 +92,12 @@ describe('discoverApex', () => {
     open();
     emit([
       'EVENT',
-      'apex-discovery-g.townhouse.town',
-      announcement('g.townhouse.town'),
+      'apex-discovery-g.proxy',
+      announcement('g.proxy'),
     ]);
     const result = await discoverApex({
       relay,
-      ilpAddress: 'g.townhouse.town',
+      ilpAddress: 'g.proxy',
       timeoutMs: 1000,
       pollMs: 10,
     });
@@ -111,10 +111,10 @@ describe('discoverApex', () => {
     // de-dups by event.id, so a fresh discovery REQ would never see a replay. The
     // buffer-wide scan must still find it.
     relay.subscribe([{ kinds: [10032] }], 'pre-existing-sub');
-    emit(['EVENT', 'pre-existing-sub', announcement('g.townhouse.town')]);
+    emit(['EVENT', 'pre-existing-sub', announcement('g.proxy')]);
     const result = await discoverApex({
       relay,
-      ilpAddress: 'g.townhouse.town',
+      ilpAddress: 'g.proxy',
       timeoutMs: 1000,
       pollMs: 10,
     });
@@ -124,14 +124,14 @@ describe('discoverApex', () => {
   it('disambiguates same-ilpAddress announcements by pubkey', async () => {
     const { relay, open, emit } = controllableRelay();
     open();
-    // Two nodes advertise g.townhouse.town with different btpEndpoints/pubkeys.
-    const a = announcement('g.townhouse.town'); // pubkey 'b'*64, btp ws://apex.example/btp
+    // Two nodes advertise g.proxy with different btpEndpoints/pubkeys.
+    const a = announcement('g.proxy'); // pubkey 'b'*64, btp ws://apex.example/btp
     const b: NostrEvent = {
-      ...announcement('g.townhouse.town'),
+      ...announcement('g.proxy'),
       id: 'f'.repeat(64),
       pubkey: '9'.repeat(64),
       content: JSON.stringify({
-        ilpAddress: 'g.townhouse.town',
+        ilpAddress: 'g.proxy',
         btpEndpoint: 'ws://other.example/btp',
         assetCode: 'USD',
         assetScale: 6,
@@ -143,7 +143,7 @@ describe('discoverApex', () => {
     emit(['EVENT', 'sub-x', b]);
     const result = await discoverApex({
       relay,
-      ilpAddress: 'g.townhouse.town',
+      ilpAddress: 'g.proxy',
       pubkey: '9'.repeat(64), // target node b
       timeoutMs: 1000,
       pollMs: 10,
@@ -171,13 +171,13 @@ describe('discoverApex', () => {
     // A valid announcement, but its expiration tag is in the past → the apex
     // stopped re-publishing (offline). Discovery must NOT match it (issue #261).
     const expired: NostrEvent = {
-      ...announcement('g.townhouse.town'),
+      ...announcement('g.proxy'),
       tags: [['expiration', '1']], // unix second 1 — long past
     };
-    emit(['EVENT', 'apex-discovery-g.townhouse.town', expired]);
+    emit(['EVENT', 'apex-discovery-g.proxy', expired]);
     const err = await discoverApex({
       relay,
-      ilpAddress: 'g.townhouse.town',
+      ilpAddress: 'g.proxy',
       timeoutMs: 120,
       pollMs: 20,
     }).catch((e) => e);

@@ -69,8 +69,7 @@ const CONFIG_HELP = {
   relayUrl:
     'Town relay WebSocket URL for FREE reads. Default ws://localhost:7100.',
   destination:
-    'Default ILP publish destination (apex address). Default g.townhouse.town; ' +
-    'set to g.proxy for the deployed devnet proxy.',
+    'Default ILP publish destination (apex address). Default g.proxy.',
   keystorePath:
     'Auto-generated encrypted identity. Do not hand-edit; back up your seed phrase.',
 };

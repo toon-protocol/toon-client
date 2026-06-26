@@ -194,7 +194,7 @@ export interface ToonClientConfig {
    * preferred tokens, EVM TokenNetwork addresses, and the Solana/Mina channel
    * params (programId / zkApp) — from the shared core presets
    * (`resolveClientNetwork`), so the caller no longer hand-wires every address.
-   * This is the client-side mirror of the townhouse node's `network` selector;
+   * This is the client-side mirror of the relay node's `network` selector;
    * both resolve the SAME deployed contracts.
    *
    * Precedence: any explicit per-chain field (`supportedChains`,

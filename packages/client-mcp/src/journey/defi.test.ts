@@ -16,7 +16,7 @@ const swapPair = {
 };
 
 const opts: DeFiJourneyOpts = {
-  destination: 'g.townhouse.mill',
+  destination: 'g.proxy.mill',
   amount: '1000000',
   millPubkey: 'a'.repeat(64),
   pair: swapPair,

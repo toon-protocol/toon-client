@@ -33,7 +33,7 @@ export {
 export { isPrfSupported, hashCredentialId } from './PasskeyAuth.js';
 
 // Node-only encrypted mnemonic keystore (scrypt + AES-256-GCM).
-// Mirrors the townhouse node wallet; guarded against browser use at runtime.
+// Mirrors the relay node wallet; guarded against browser use at runtime.
 export {
   encryptMnemonic,
   decryptMnemonic,

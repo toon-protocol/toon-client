@@ -89,7 +89,7 @@ export interface SwapPair {
 
 /** Parameters for a cross-asset swap (subset of the daemon's `SwapRequest`). */
 export interface SwapRequest {
-  /** Mill peer ILP destination (e.g. `g.townhouse.mill`). */
+  /** Mill peer ILP destination (e.g. `g.proxy.mill`). */
   destination: string;
   /** Total source-asset amount to swap, in source micro-units (decimal string). */
   amount: string;

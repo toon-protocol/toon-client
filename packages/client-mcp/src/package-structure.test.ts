@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 /**
- * Publishability guard (mirrors @toon-protocol/townhouse's package-structure
+ * Publishability guard (mirrors @toon-protocol/relay's package-structure
  * test). The published package must be self-contained: its `@toon-protocol/*`
  * workspace deps are BUNDLED into dist at build time (see tsup.config.ts
  * `noExternal`), so they must NOT appear as runtime dependencies — those

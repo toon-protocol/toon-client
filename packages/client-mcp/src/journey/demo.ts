@@ -165,7 +165,7 @@ export async function runCapstoneDemo(
  *
  * Env:
  *   TOON_DAEMON_URL    daemon control-plane base URL (default http://127.0.0.1:8787)
- *   TOON_SWAP_DEST     mill ILP destination (e.g. g.townhouse.mill)
+ *   TOON_SWAP_DEST     mill ILP destination (e.g. g.proxy.mill)
  *   TOON_SWAP_AMOUNT   source-asset amount, micro-units (e.g. 1000000)
  *   TOON_MILL_PUBKEY   mill 64-char hex Nostr pubkey
  *   TOON_CHAIN_RECIPIENT  payout address on the target chain

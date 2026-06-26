@@ -25,7 +25,7 @@ import type { SettlementChain } from '../control-api.js';
 
 /** Apex/town settlement parameters injected as a peer negotiation. */
 export interface ApexNegotiationConfig {
-  /** ILP destination address, e.g. `g.townhouse.town`. */
+  /** ILP destination address, e.g. `g.proxy`. */
   destination: string;
   /** Peer id key used in the negotiation map (last ILP segment, e.g. `town`). */
   peerId: string;
@@ -125,7 +125,7 @@ export interface DaemonConfigFile {
   /**
    * Additional apex CHILD peers (last ILP segment, e.g. `["dvm","mill"]`)
    * reachable via the SAME apex channel — used when publishing/swapping to
-   * `g.townhouse.dvm` / `g.townhouse.mill`. The runner injects the apex
+   * `g.proxy.dvm` / `g.proxy.mill`. The runner injects the apex
    * negotiation under each and points it at the open apex channel (no extra
    * on-chain channel). The apex `peerId` itself is always handled.
    */
@@ -329,7 +329,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     process.env['TOON_CLIENT_DESTINATION'] ??
     file.destination ??
     genesisSeed?.ilpAddress ??
-    'g.townhouse.town';
+    'g.proxy';
   // Publishes (relay writes) and uploads (store/Arweave) terminate at DIFFERENT
   // backends behind the proxy and so route to different ILP destinations. When
   // not set explicitly they're DERIVED from the channel anchor (see

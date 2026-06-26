@@ -150,7 +150,7 @@ describe('TOON apps MCP server (fake-backed)', () => {
   it('toon_open_channel returns a channelId', async () => {
     const res = await client.callTool({
       name: 'toon_open_channel',
-      arguments: { destination: 'g.townhouse.mill' },
+      arguments: { destination: 'g.proxy.mill' },
     });
     expect((res as { isError?: boolean }).isError).toBeFalsy();
     expect(String(structured(res)['channelId'])).toContain('fake-channel');
@@ -160,7 +160,7 @@ describe('TOON apps MCP server (fake-backed)', () => {
     const res = await client.callTool({
       name: 'toon_swap',
       arguments: {
-        destination: 'g.townhouse.mill',
+        destination: 'g.proxy.mill',
         amount: '1000000',
         millPubkey: 'a'.repeat(64),
         pair: {

@@ -29,7 +29,7 @@ function baseConfig() {
   return {
     secretKey: SECRET_KEY,
     connectorUrl: 'http://localhost:9999',
-    destinationAddress: 'g.townhouse.town',
+    destinationAddress: 'g.proxy',
     ilpInfo: {
       pubkey: '0'.repeat(64),
       ilpAddress: 'g.toon.test',
@@ -47,7 +47,7 @@ function makeEvent(): NostrEvent {
     created_at: 1_700_000_000,
     kind: 1,
     tags: [],
-    content: 'hello townhouse',
+    content: 'hello relay',
     sig: 'b'.repeat(128),
   } as unknown as NostrEvent;
 }
@@ -104,8 +104,8 @@ describe('ToonClient.publishEvent claim delivery mechanism (Story 50.3 AC#1)', (
     const [ilpParams, claimMessage] =
       sendIlpPacketWithClaim.mock.calls[0] ?? [];
 
-    // The PREPARE targets the configured townhouse destination.
-    expect(ilpParams).toMatchObject({ destination: 'g.townhouse.town' });
+    // The PREPARE targets the configured apex destination.
+    expect(ilpParams).toMatchObject({ destination: 'g.proxy' });
 
     // The claim message carried inline is the EVM claim derived from the proof,
     // matching the connector's `payment-channel-claim` validator expectations.

@@ -10,7 +10,7 @@ Prereq: a configured + running daemon (`~/.toon-client/config.json`, then
 
 | Script | What it does |
 | --- | --- |
-| `dvm-upload.mjs` | Builds a kind:5094 Arweave-blob DVM job and POSTs it via `/publish` to `g.townhouse.dvm`; prints the FULFILL Arweave txid. |
+| `dvm-upload.mjs` | Builds a kind:5094 Arweave-blob DVM job and POSTs it via `/publish` to `g.proxy.dvm`; prints the FULFILL Arweave txid. |
 
 Run from this package dir, e.g.:
 

@@ -223,7 +223,7 @@ export interface ChannelsResponse {
  * `apexChildPeers`).
  */
 export interface SwapRequest {
-  /** Mill peer ILP destination (e.g. `g.townhouse.mill`). */
+  /** Mill peer ILP destination (e.g. `g.proxy.mill`). */
   destination: string;
   /** Total source-asset amount to swap, in source micro-units. */
   amount: string;
@@ -341,7 +341,7 @@ export interface RemoveRelayRequest {
  * hand-supplies chain/settlement details.
  */
 export interface AddApexRequest {
-  /** ILP address of the apex to add (e.g. `g.townhouse.town`). */
+  /** ILP address of the apex to add (e.g. `g.proxy`). */
   ilpAddress: string;
   /**
    * Relay to discover the apex's `kind:10032` on. If it isn't already a read

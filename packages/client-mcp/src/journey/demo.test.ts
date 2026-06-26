@@ -41,7 +41,7 @@ const swapPair = {
 };
 
 const deFiOpts: DeFiJourneyOpts = {
-  destination: 'g.townhouse.mill',
+  destination: 'g.proxy.mill',
   amount: '1000000',
   millPubkey: 'b'.repeat(64),
   pair: swapPair,
@@ -266,7 +266,7 @@ describe('main (env-driven CLI, dry)', () => {
   it('returns exit code 2 when TOON_SWAP_PAIR is not valid JSON', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const code = await main({
-      TOON_SWAP_DEST: 'g.townhouse.mill',
+      TOON_SWAP_DEST: 'g.proxy.mill',
       TOON_SWAP_AMOUNT: '1000000',
       TOON_MILL_PUBKEY: 'b'.repeat(64),
       TOON_CHAIN_RECIPIENT: '0xabc',
