@@ -29,8 +29,8 @@ const ComposerSurface: FC<{
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        rows={3}
-        className="min-h-20 resize-none border-0 bg-transparent px-3.5 pt-3.5 text-base focus-visible:border-0 focus-visible:ring-0 md:text-sm"
+        rows={2}
+        className="min-h-14 resize-none border-0 bg-transparent px-3.5 pt-3.5 text-base focus-visible:border-0 focus-visible:ring-0 md:text-sm"
       />
       <div className="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
         <span
