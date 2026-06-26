@@ -104,6 +104,16 @@ export interface AtomRenderProps {
    * never call the bridge directly, so this is the single read seam for the fee.
    */
   readStatus?: () => Promise<AtomStatus>;
+  /**
+   * Resolve an author's kind:0 profile event by pubkey, lazily and cached for
+   * the session. A feed bind only carries the notes (`kinds:[1]`), so an atom
+   * cannot find the author's metadata in its own `events`; this seam lets it
+   * pull the kind:0 on demand. Returns the newest kind:0 for the pubkey, or
+   * `null` when the author has never published one. Wired to the bridge by the
+   * runtime (atoms never call the bridge directly); `undefined` only in older
+   * render paths / tests that don't provide it.
+   */
+  resolveProfile?: (pubkey: string) => Promise<NostrEvent | null>;
 }
 
 /** A registered atom. */

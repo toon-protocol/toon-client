@@ -1,5 +1,5 @@
 /** Social atoms — NIP-01 profile/note, NIP-25 reactions, NIP-02 follow. */
-import { type FC, type ReactNode, useState } from 'react';
+import { type FC, type ReactNode, useEffect, useState } from 'react';
 import { Heart, MessageCircle, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Badge } from '@/components/ui/badge.js';
@@ -78,14 +78,44 @@ const ActionButton: FC<{
   );
 };
 
+/**
+ * Resolve an author's kind:0 profile. A profile already joined from the bind's
+ * own events (`seeded`) wins immediately; otherwise — the feed case, where the
+ * bind carries only `kinds:[1]` — we lazily pull the author's kind:0 via the
+ * runtime-wired `resolveProfile` seam. Authors with no kind:0 stay `undefined`,
+ * so the avatar/name degrade to the deterministic placeholder.
+ */
+function useAuthorProfile(
+  pubkey: string,
+  seeded: ProfileMetadata | undefined,
+  resolveProfile: AtomRenderProps['resolveProfile']
+): ProfileMetadata | undefined {
+  const [fetched, setFetched] = useState<ProfileMetadata | undefined>(undefined);
+  useEffect(() => {
+    if (seeded || !resolveProfile) return;
+    let cancelled = false;
+    void resolveProfile(pubkey).then((profileEvent) => {
+      if (cancelled || !profileEvent) return;
+      const parsed = parseProfile(profileEvent);
+      if (parsed) setFetched(parsed);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [pubkey, seeded, resolveProfile]);
+  return seeded ?? fetched;
+}
+
 /** A single feed item: identity row, note body, inline media, engagement. */
 const NoteRow: FC<{
   event: NostrEvent;
   note: NoteMetadata;
   profile: ProfileMetadata | undefined;
+  resolveProfile: AtomRenderProps['resolveProfile'];
   reactionCount: number;
   actions: AtomRenderProps['actions'];
-}> = ({ event, note, profile, reactionCount, actions }) => {
+}> = ({ event, note, profile: seededProfile, resolveProfile, reactionCount, actions }) => {
+  const profile = useAuthorProfile(note.authorPubkey, seededProfile, resolveProfile);
   const media = parseInlineMedia(event);
   const displayName = profile?.displayName ?? profile?.name;
   const reply = actions['reply'];
@@ -209,7 +239,7 @@ const NoteRow: FC<{
   );
 };
 
-const NoteCard: FC<AtomRenderProps> = ({ events, actions }) => {
+const NoteCard: FC<AtomRenderProps> = ({ events, actions, resolveProfile }) => {
   const noteItems = events
     .map((event) => ({ event, note: parseNote(event) }))
     .filter((item): item is { event: NostrEvent; note: NoteMetadata } => item.note !== null);
@@ -243,6 +273,7 @@ const NoteCard: FC<AtomRenderProps> = ({ events, actions }) => {
           event={event}
           note={note}
           profile={profiles.get(note.authorPubkey)}
+          resolveProfile={resolveProfile}
           reactionCount={reactionCounts.get(note.eventId) ?? 0}
           actions={actions}
         />

@@ -132,6 +132,34 @@ describe('NoteCard — feed presentation', () => {
     expect(screen.queryByText('{')).toBeNull();
   });
 
+  it('lazily resolves an author kind:0 via resolveProfile when none is in the bind', async () => {
+    const profileEvent = evt({
+      kind: 0,
+      pubkey: 'author-pk',
+      content: JSON.stringify({ display_name: 'Nakamoto', picture: 'https://x/p.png' }),
+    });
+    const resolveProfile = vi.fn().mockResolvedValue(profileEvent);
+    const note = evt({ kind: 1, id: 'n1', pubkey: 'author-pk', content: 'gm' });
+    // Feed bind carries only the kind:1 note — no kind:0 to join from `events`.
+    render(<NoteCard {...defaultProps} resolveProfile={resolveProfile} events={[note]} />);
+    expect(resolveProfile).toHaveBeenCalledWith('author-pk');
+    // The lazily-fetched profile replaces the placeholder once it resolves.
+    expect(await screen.findByText('Nakamoto')).toBeTruthy();
+  });
+
+  it('degrades to the placeholder when resolveProfile finds no kind:0', async () => {
+    const resolveProfile = vi.fn().mockResolvedValue(null);
+    render(
+      <NoteCard
+        {...defaultProps}
+        resolveProfile={resolveProfile}
+        events={[evt({ kind: 1, content: 'hi', pubkey: 'npub1abcdef' })]}
+      />
+    );
+    // No kind:0 → initials fallback derived from the pubkey, as before.
+    expect(await screen.findByText('AB')).toBeTruthy();
+  });
+
   it('renders a relative timestamp for the note', () => {
     const now = 1_000_000_000;
     vi.spyOn(Date, 'now').mockReturnValue(now * 1000);
