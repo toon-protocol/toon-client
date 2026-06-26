@@ -634,31 +634,73 @@ export async function openSolanaChannel(
 
   let depositTxSignature: string | undefined;
   if (params.deposit && params.deposit.amount > 0n) {
-    // deposit: discriminator(8) + amount(8 LE)
-    const depositData = new Uint8Array(16);
-    depositData.set(IX_DEPOSIT, 0);
-    writeU64LE(depositData, 8, params.deposit.amount);
-
-    depositTxSignature = await buildAndSendTransaction(rpcUrl, payer, [
-      {
-        programId,
-        keys: [
-          { pubkey: payerPubkey, isSigner: true, isWritable: false },
-          {
-            pubkey: params.deposit.payerTokenAccount,
-            isSigner: false,
-            isWritable: true,
-          },
-          { pubkey: vaultPDA, isSigner: false, isWritable: true },
-          { pubkey: channelPDA, isSigner: false, isWritable: true },
-          { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-        ],
-        data: depositData,
-      },
-    ]);
+    ({ depositTxSignature } = await depositSolanaChannel({
+      rpcUrl,
+      programId,
+      channelPDA,
+      payerSeed,
+      payerPubkey,
+      payerTokenAccount: params.deposit.payerTokenAccount,
+      amount: params.deposit.amount,
+    }));
   }
 
   return { channelPDA, opened: true, initTxSignature, depositTxSignature };
+}
+
+export interface DepositSolanaChannelParams {
+  rpcUrl: string;
+  programId: string;
+  /** The channel PDA (base58) — the Solana channel id. */
+  channelPDA: string;
+  /** Ed25519 signing seed (32 bytes) of the payer. */
+  payerSeed: Uint8Array;
+  /** Payer public key (base58). */
+  payerPubkey: string;
+  /** Funded SPL token account (ATA, base58) the collateral is pulled from. */
+  payerTokenAccount: string;
+  /** Delta to deposit (base units). The on-chain `deposit` ix adds this amount. */
+  amount: bigint;
+}
+
+/**
+ * Deposit additional collateral into an existing on-chain Solana channel — the
+ * standalone `deposit` instruction (discriminator + amount LE), the same one the
+ * open flow fires post-init. Incremental: the program adds `amount` to the
+ * channel vault. Returns the deposit tx signature.
+ */
+export async function depositSolanaChannel(
+  params: DepositSolanaChannelParams
+): Promise<{ depositTxSignature: string }> {
+  const { rpcUrl, programId, channelPDA, payerSeed, payerPubkey, payerTokenAccount, amount } =
+    params;
+  if (amount <= 0n) throw new Error('Solana deposit amount must be positive.');
+
+  const payer: Signer = {
+    publicKey: padTo32(base58Decode(payerPubkey)),
+    privateKey: payerSeed,
+  };
+  const { pda: vaultPDA } = deriveVaultPDA(channelPDA, programId);
+
+  // deposit: discriminator(8) + amount(8 LE)
+  const depositData = new Uint8Array(16);
+  depositData.set(IX_DEPOSIT, 0);
+  writeU64LE(depositData, 8, amount);
+
+  const depositTxSignature = await buildAndSendTransaction(rpcUrl, payer, [
+    {
+      programId,
+      keys: [
+        { pubkey: payerPubkey, isSigner: true, isWritable: false },
+        { pubkey: payerTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: vaultPDA, isSigner: false, isWritable: true },
+        { pubkey: channelPDA, isSigner: false, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      data: depositData,
+    },
+  ]);
+  return { depositTxSignature };
 }
 
 // Internal helpers exported for unit tests (parity assertions).
