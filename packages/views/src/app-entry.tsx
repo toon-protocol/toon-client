@@ -9,11 +9,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
-  useApp,
-  useHostStyleVariables,
-  useHostFonts,
-} from '@modelcontextprotocol/ext-apps/react';
+import { useApp } from '@modelcontextprotocol/ext-apps/react';
 import { createExtAppsBridge } from './app-bridge/ext-apps-bridge.js';
 import { type ViewBridge } from './app-bridge/types.js';
 import { ViewSpecRenderer } from './runtime.js';
@@ -25,7 +21,16 @@ function ViewHost({ bridge }: { bridge: ViewBridge }): ReactNode {
   if (spec == null) {
     return <div className="p-4 text-sm text-muted-foreground">Waiting for a view…</div>;
   }
-  return <ViewSpecRenderer spec={spec} bridge={bridge} />;
+  // Inset the view from the iframe edges. Atoms are self-framing cards
+  // (`rounded-xl border bg-card`); with zero padding they bleed to the edges and
+  // their borders/rounded corners get clipped, so the render reads as a flat
+  // edge-to-edge list instead of the carded layout the gallery shows. This `p-4`
+  // mirrors the gallery panel's inner padding.
+  return (
+    <div className="p-4">
+      <ViewSpecRenderer spec={spec} bridge={bridge} />
+    </div>
+  );
 }
 
 export function ToonApp(): ReactNode {
@@ -33,10 +38,36 @@ export function ToonApp(): ReactNode {
     appInfo: { name: 'toon-views', version: '0.1.0' },
     capabilities: {},
   });
-  // Adopt the host's theme variables + fonts so the UI matches the surrounding
-  // chat; our globals.css provides the fallback when there's no host context.
-  useHostStyleVariables(app);
-  useHostFonts(app);
+  // Keep TOON's own theme (globals.css: jade primary + cool-slate palette +
+  // Geist Mono ledger type) and only FOLLOW the host's light/dark preference.
+  // We deliberately do NOT adopt the host's style variables or fonts — that let
+  // Claude Desktop's palette/fonts override the TOON tokens and made the render
+  // look like generic chat chrome. Instead we mirror the host theme onto our
+  // own `.dark` class so the views dark palette engages inside (dark) Claude,
+  // matching the gallery's dark mode. Falls back to the OS preference when the
+  // host doesn't report a theme (e.g. standalone).
+  useEffect(() => {
+    if (!app) return;
+    const apply = (theme?: 'light' | 'dark'): void => {
+      const resolved =
+        theme ??
+        (window.matchMedia?.('(prefers-color-scheme: dark)').matches
+          ? 'dark'
+          : 'light');
+      const root = document.documentElement;
+      root.classList.toggle('dark', resolved === 'dark');
+      root.style.colorScheme = resolved;
+    };
+    apply(app.getHostContext()?.theme);
+    const prev = app.onhostcontextchanged;
+    app.onhostcontextchanged = (ctx) => {
+      apply(app.getHostContext()?.theme);
+      prev?.(ctx);
+    };
+    return () => {
+      app.onhostcontextchanged = prev;
+    };
+  }, [app]);
   const bridge = useMemo(() => (app ? createExtAppsBridge(app) : null), [app]);
 
   if (error) return <div className="p-4 text-sm">Failed to connect: {error.message}</div>;
