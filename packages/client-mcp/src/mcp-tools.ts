@@ -134,15 +134,27 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'toon_upload',
     description:
-      'Pay-to-write upload (SPENDY, two-step): upload base64 bytes of ANY blob to ' +
+      'Pay-to-write upload (SPENDY, two-step): upload the bytes of ANY blob to ' +
       'Arweave via the kind:5094 store/DVM (POST /store through the connector), then ' +
-      'sign+publish an event referencing the resulting Arweave URL. The reference ' +
-      'event kind defaults to 1063 (NIP-94 media; 20=picture, 21/22=video, 1=note w/ ' +
-      'NIP-92 imeta) — set `kind` to suit any blob type. Single-packet only.',
+      'sign+publish an event referencing the resulting Arweave URL. Supply the bytes ' +
+      'as EXACTLY ONE of `filePath` (an absolute path the daemon reads off disk — ' +
+      'preferred, keeps the payload out of the model context) or `dataBase64` (inline ' +
+      'base64). The reference event kind defaults to 1063 (NIP-94 media; 20=picture, ' +
+      '21/22=video, 1=note w/ NIP-92 imeta) — set `kind` to suit any blob type. ' +
+      'Single-packet only.',
     inputSchema: {
       type: 'object',
       properties: {
-        dataBase64: { type: 'string', description: 'Base64-encoded media bytes.' },
+        filePath: {
+          type: 'string',
+          description:
+            'Absolute path the daemon reads to source the bytes off disk (preferred; ' +
+            'mutually exclusive with dataBase64). Bounded by an optional configured upload root.',
+        },
+        dataBase64: {
+          type: 'string',
+          description: 'Inline base64-encoded media bytes (mutually exclusive with filePath).',
+        },
         mime: { type: 'string', description: "MIME type (default 'application/octet-stream')." },
         kind: { type: 'number', description: 'Media event kind (default 1063).' },
         caption: { type: 'string', description: 'Caption/content for the media event.' },
@@ -154,7 +166,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         fee: { type: 'string', description: 'Optional fee override (base units).' },
         btpUrl: { type: 'string', description: 'Which apex to publish through (default: config-seeded).' },
       },
-      required: ['dataBase64'],
+      // Exactly one of filePath | dataBase64 is required; enforced in the daemon
+      // (ClientRunner.uploadMedia) since JSON Schema can't express one-of-required cleanly here.
       additionalProperties: false,
     },
   },

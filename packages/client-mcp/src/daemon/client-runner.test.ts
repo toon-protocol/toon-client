@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // ephemeral key generated inside swap()).
 vi.mock('@toon-protocol/sdk/swap', () => ({ streamSwap: vi.fn() }));
 import { streamSwap } from '@toon-protocol/sdk/swap';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
@@ -128,13 +128,16 @@ class FakeClient implements ToonClientLike {
   }> = async () => ({ success: true, txId: 'tx-abc', eventId: 'blob-evt' });
   /** Records the destination passed on the last uploadBlob call. */
   lastUploadDest?: string;
-  async uploadBlob(params?: { destination?: string }): Promise<{
+  /** Records the blob bytes passed on the last uploadBlob call. */
+  lastUploadBytes?: Uint8Array;
+  async uploadBlob(params?: { destination?: string; blobData?: Uint8Array }): Promise<{
     success: boolean;
     txId?: string;
     eventId?: string;
     error?: string;
   }> {
     this.lastUploadDest = params?.destination;
+    this.lastUploadBytes = params?.blobData;
     return this.uploadImpl();
   }
   async openChannel(): Promise<string> {
@@ -477,6 +480,79 @@ describe('ClientRunner', () => {
     await expect(
       runner.uploadMedia({ dataBase64: 'AAAA' })
     ).rejects.toBeInstanceOf(PublishRejectedError);
+  });
+
+  it('uploadMedia reads bytes from filePath instead of inline base64', async () => {
+    await runner.bootstrap();
+    const path = join(tmpDir, 'pic.bin');
+    const bytes = Buffer.from('file-bytes-on-disk');
+    writeFileSync(path, bytes);
+    const res = await runner.uploadMedia({ filePath: path, mime: 'image/png', kind: 20 });
+    expect(res.txId).toBe('tx-abc');
+    // The store leg received exactly the on-disk bytes (no base64 round-trip).
+    expect(client.lastUploadBytes).toBeInstanceOf(Uint8Array);
+    expect(Buffer.from(client.lastUploadBytes!)).toEqual(bytes);
+  });
+
+  it('uploadMedia rejects supplying BOTH dataBase64 and filePath', async () => {
+    await runner.bootstrap();
+    const path = join(tmpDir, 'both.bin');
+    writeFileSync(path, Buffer.from('x'));
+    await expect(
+      runner.uploadMedia({
+        dataBase64: Buffer.from('x').toString('base64'),
+        filePath: path,
+      })
+    ).rejects.toBeInstanceOf(InvalidPayloadError);
+  });
+
+  it('uploadMedia rejects supplying NEITHER dataBase64 nor filePath', async () => {
+    await runner.bootstrap();
+    await expect(runner.uploadMedia({ kind: 20 })).rejects.toBeInstanceOf(
+      InvalidPayloadError
+    );
+  });
+
+  it('uploadMedia surfaces an unreadable filePath as InvalidPayloadError', async () => {
+    await runner.bootstrap();
+    await expect(
+      runner.uploadMedia({ filePath: join(tmpDir, 'does-not-exist.bin') })
+    ).rejects.toBeInstanceOf(InvalidPayloadError);
+  });
+
+  it('uploadMedia enforces a configured uploadAllowedRoot for filePath', async () => {
+    const c = new FakeClient();
+    const allowedRoot = join(tmpDir, 'allowed');
+    const r = new ClientRunner({
+      config: makeConfig({
+        apex: {
+          destination: 'g.proxy',
+          peerId: 'proxy',
+          chain: 'evm',
+          chainKey: 'evm:base:84532',
+          chainId: 84532,
+          settlementAddress: '0xapex',
+          tokenAddress: '0xusdc',
+          tokenNetwork: '0xtn',
+        },
+        uploadAllowedRoot: allowedRoot,
+      }),
+      createClient: () => c,
+      createRelay: fakeRelay,
+    });
+    await r.bootstrap();
+    // Outside the root → rejected.
+    const outside = join(tmpDir, 'outside.bin');
+    writeFileSync(outside, Buffer.from('x'));
+    await expect(r.uploadMedia({ filePath: outside })).rejects.toBeInstanceOf(
+      InvalidPayloadError
+    );
+    // Inside the root → accepted.
+    mkdirSync(allowedRoot, { recursive: true });
+    const inside = join(allowedRoot, 'ok.bin');
+    writeFileSync(inside, Buffer.from('inside-bytes'));
+    const res = await r.uploadMedia({ filePath: inside });
+    expect(res.txId).toBe('tx-abc');
   });
 
   // ── Split write destinations (publish → relay, upload → store) ──────────────

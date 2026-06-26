@@ -23,7 +23,7 @@ free.
 |---|---|---|---|
 | `toon_publish` | Publish a **fully-signed** Nostr event; signs a payment-channel claim and forwards over BTP. | `event` (required), `destination?`, `fee?`, `btpUrl?` | **paid** |
 | `toon_publish_unsigned` | Publish without holding a key: supply the event shell; the daemon signs it (merging latest tags for replaceable kinds 0/3). The path UI atoms use. | `kind` (required), `content?`, `tags?`, `destination?`, `fee?`, `btpUrl?` | **paid** |
-| `toon_upload_media` | Two-step media write: upload base64 bytes to Arweave via the kind:5094 DVM, then publish a media event referencing the URL (default kind 1063; 20 picture, 21/22 video, 1 note+imeta). Single-packet. | `dataBase64` (required), `mime?`, `kind?`, `caption?`, `tags?`, `fee?`, `btpUrl?` | **paid** |
+| `toon_upload_media` | Two-step media write: upload bytes to Arweave via the kind:5094 DVM, then publish a media event referencing the URL (default kind 1063; 20 picture, 21/22 video, 1 note+imeta). Single-packet. | `filePath` \| `dataBase64` (exactly one required; `filePath` is an absolute path read off disk, preferred), `mime?`, `kind?`, `caption?`, `tags?`, `fee?`, `btpUrl?` | **paid** |
 
 ## Reads (free)
 

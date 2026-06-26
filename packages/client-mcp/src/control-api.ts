@@ -117,8 +117,20 @@ export interface PublishUnsignedRequest {
  * `requestBlobStorage`).
  */
 export interface UploadMediaRequest {
-  /** Base64-encoded media bytes. */
-  dataBase64: string;
+  /**
+   * Base64-encoded media bytes. Mutually exclusive with `filePath`: supply
+   * EXACTLY ONE. Inline base64 streams the whole payload through the model
+   * context — prefer `filePath` for anything but tiny blobs.
+   */
+  dataBase64?: string;
+  /**
+   * Absolute path the daemon `fs.readFile`s to source the media bytes off disk
+   * (avoids materializing base64 as a tool argument). Mutually exclusive with
+   * `dataBase64`: supply EXACTLY ONE. The path is resolved and, when an upload
+   * root is configured (`TOON_CLIENT_UPLOAD_ROOT` / `uploadAllowedRoot`), must
+   * resolve inside it.
+   */
+  filePath?: string;
   /** MIME type (default 'application/octet-stream'). */
   mime?: string;
   /**

@@ -18,6 +18,8 @@
  * tools surface "retry".
  */
 
+import { readFile } from 'node:fs/promises';
+import { resolve, sep } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
 import { decodeEventFromToon } from '@toon-protocol/core';
@@ -990,10 +992,20 @@ export class ClientRunner {
   async uploadMedia(req: UploadMediaRequest): Promise<UploadMediaResponse> {
     const apex = this.selectApex(req.btpUrl);
     this.assertApexReady(apex);
-    if (typeof req.dataBase64 !== 'string' || req.dataBase64 === '') {
-      throw new InvalidPayloadError('dataBase64 (base64 media bytes) is required.');
+    // Source the bytes from EXACTLY ONE of inline base64 or an on-disk path.
+    // `filePath` lets agent callers skip materializing the whole payload as a
+    // tool argument (it never touches the model context); `dataBase64` stays for
+    // back-compat. Both-or-neither is a payload error.
+    const hasData = typeof req.dataBase64 === 'string' && req.dataBase64 !== '';
+    const hasPath = typeof req.filePath === 'string' && req.filePath !== '';
+    if (hasData === hasPath) {
+      throw new InvalidPayloadError(
+        'exactly one of dataBase64 (base64 media bytes) | filePath (absolute path) is required.'
+      );
     }
-    const blobData = new Uint8Array(Buffer.from(req.dataBase64, 'base64'));
+    const blobData = hasPath
+      ? await this.readUploadFile(req.filePath as string)
+      : new Uint8Array(Buffer.from(req.dataBase64 as string, 'base64'));
     const fee = req.fee !== undefined ? BigInt(req.fee) : apex.feePerEvent;
     // ── Leg 1: Arweave blob upload ──────────────────────────────────────────
     // Blob storage terminates at the store/DVM backend (POST /store → Arweave),
@@ -1040,6 +1052,30 @@ export class ClientRunner {
       );
     }
     return { ...pub, url, txId: upload.txId };
+  }
+
+  /**
+   * Read media bytes off disk for an upload `filePath`. The path is resolved
+   * and, when an `uploadAllowedRoot` is configured, must resolve inside it —
+   * bounding which filesystem locations the daemon reads on an agent's behalf.
+   * A missing/unreadable file (or an out-of-bounds path) surfaces as an
+   * `InvalidPayloadError` (HTTP 400), not an unhandled crash.
+   */
+  private async readUploadFile(filePath: string): Promise<Uint8Array> {
+    const resolved = resolve(filePath);
+    const root = this.config.uploadAllowedRoot;
+    if (root && resolved !== root && !resolved.startsWith(root + sep)) {
+      throw new InvalidPayloadError(
+        `filePath must resolve inside the configured upload root (${root}).`
+      );
+    }
+    try {
+      const buf = await readFile(resolved);
+      return new Uint8Array(buf);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new InvalidPayloadError(`failed to read filePath ${resolved}: ${detail}`);
+    }
   }
 
   /** Validate + assemble a signable event template (with replaceable merge). */
