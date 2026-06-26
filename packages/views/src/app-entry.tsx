@@ -29,11 +29,36 @@ export function ToonApp(): ReactNode {
     appInfo: { name: 'toon-views', version: '0.1.0' },
     capabilities: {},
   });
-  // Render TOON's own theme (globals.css: jade primary + cool-slate palette +
-  // Geist Mono ledger type) regardless of host, so the in-chat app matches the
-  // standalone views gallery. We intentionally do NOT adopt the host's style
-  // variables/fonts — doing so let Claude Desktop's palette/fonts override the
-  // TOON tokens and made the render look like generic chat chrome.
+  // Keep TOON's own theme (globals.css: jade primary + cool-slate palette +
+  // Geist Mono ledger type) and only FOLLOW the host's light/dark preference.
+  // We deliberately do NOT adopt the host's style variables or fonts — that let
+  // Claude Desktop's palette/fonts override the TOON tokens and made the render
+  // look like generic chat chrome. Instead we mirror the host theme onto our
+  // own `.dark` class so the views dark palette engages inside (dark) Claude,
+  // matching the gallery's dark mode. Falls back to the OS preference when the
+  // host doesn't report a theme (e.g. standalone).
+  useEffect(() => {
+    if (!app) return;
+    const apply = (theme?: 'light' | 'dark'): void => {
+      const resolved =
+        theme ??
+        (window.matchMedia?.('(prefers-color-scheme: dark)').matches
+          ? 'dark'
+          : 'light');
+      const root = document.documentElement;
+      root.classList.toggle('dark', resolved === 'dark');
+      root.style.colorScheme = resolved;
+    };
+    apply(app.getHostContext()?.theme);
+    const prev = app.onhostcontextchanged;
+    app.onhostcontextchanged = (ctx) => {
+      apply(app.getHostContext()?.theme);
+      prev?.(ctx);
+    };
+    return () => {
+      app.onhostcontextchanged = prev;
+    };
+  }, [app]);
   const bridge = useMemo(() => (app ? createExtAppsBridge(app) : null), [app]);
 
   if (error) return <div className="p-4 text-sm">Failed to connect: {error.message}</div>;
