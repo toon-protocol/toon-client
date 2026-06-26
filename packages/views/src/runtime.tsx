@@ -79,6 +79,58 @@ function useBind(bind: ViewBind | undefined, bridge: ViewBridge): NostrEvent[] {
   return events;
 }
 
+/**
+ * Lazy, session-cached author-profile resolver.
+ *
+ * A feed bind queries `kinds:[1]` only, so the note atoms never receive the
+ * authors' kind:0 metadata in their own `events`. This seam lets an atom pull an
+ * author's kind:0 on demand (a free read), keeping atoms off the bridge. The
+ * per-pubkey promise is memoized so a feed of N notes by the same author issues
+ * one query, and a missing profile resolves to `null` (the placeholder path).
+ */
+function makeProfileResolver(
+  bridge: ViewBridge
+): (pubkey: string) => Promise<NostrEvent | null> {
+  const cache = new Map<string, Promise<NostrEvent | null>>();
+  return (pubkey) => {
+    const hit = cache.get(pubkey);
+    if (hit) return hit;
+    const pending = bridge
+      .callTool(QUERY_TOOL, { filter: { kinds: [0], authors: [pubkey] } })
+      .then((res) => {
+        let latest: NostrEvent | null = null;
+        for (const e of res.events ?? []) {
+          if (e.kind === 0 && (latest === null || e.created_at > latest.created_at)) {
+            latest = e;
+          }
+        }
+        return latest;
+      })
+      .catch(() => null);
+    cache.set(pubkey, pending);
+    return pending;
+  };
+}
+
+/**
+ * One resolver (and thus one profile cache) per bridge/session, shared across
+ * every atom and every per-event `kindAuto` render so the cache actually hits.
+ */
+const PROFILE_RESOLVERS = new WeakMap<
+  ViewBridge,
+  (pubkey: string) => Promise<NostrEvent | null>
+>();
+function getProfileResolver(
+  bridge: ViewBridge
+): (pubkey: string) => Promise<NostrEvent | null> {
+  let resolver = PROFILE_RESOLVERS.get(bridge);
+  if (!resolver) {
+    resolver = makeProfileResolver(bridge);
+    PROFILE_RESOLVERS.set(bridge, resolver);
+  }
+  return resolver;
+}
+
 function buildActions(node: ViewNode, bridge: ViewBridge): Record<string, AtomAction> {
   const actions: Record<string, AtomAction> = {};
   for (const [name, ref] of Object.entries(node.actions ?? {})) {
@@ -128,6 +180,7 @@ function NativeEvent({ atom, event, bridge }: { atom: Atom; event: NostrEvent; b
       events={[event]}
       props={{}}
       actions={{}}
+      resolveProfile={getProfileResolver(bridge)}
       renderEvent={(e) => <EventAtom key={e.id} event={e} bridge={bridge} />}
     >
       {null}
@@ -289,6 +342,7 @@ function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): Rea
       props={node.props ?? {}}
       actions={actions}
       readStatus={readStatus}
+      resolveProfile={getProfileResolver(bridge)}
       renderEvent={(e) => <EventAtom key={e.id} event={e} bridge={bridge} />}
     >
       {node.children?.map((child, i) => <NodeView key={i} node={child} bridge={bridge} />)}
