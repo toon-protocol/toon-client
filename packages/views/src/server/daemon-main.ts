@@ -30,7 +30,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { registerToonApps } from './apps-server.js';
 import {
   DaemonAppBackend,
+  type DaemonBalancesResponse,
+  type DaemonChannelsResponse,
   type DaemonControl,
+  type DaemonFundWalletResponse,
   type DaemonPublishResponse,
   type DaemonPublishUnsignedRequest,
   type DaemonQueryRequest,
@@ -174,6 +177,10 @@ function makeControl(baseUrl: string): DaemonControl {
     openChannel: (b: { destination?: string }) =>
       post<{ channelId: string }>('/channels', b),
     swap: (b: SwapRequest) => post<SwapResponse>('/swap', b),
+    channels: () => get<DaemonChannelsResponse>('/channels'),
+    balances: () => get<DaemonBalancesResponse>('/balances'),
+    fundWallet: (b: { chain?: string; address?: string }) =>
+      post<DaemonFundWalletResponse>('/fund-wallet', b),
   };
 }
 

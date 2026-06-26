@@ -52,7 +52,7 @@ class FakeClient implements ToonClientLike {
   peerNegotiations = new Map<string, unknown>();
   started = false;
   stopped = false;
-  channels: Record<string, { nonce: number; cumulative: bigint }> = {};
+  channels: Record<string, { nonce: number; cumulative: bigint; depositTotal?: bigint }> = {};
   startImpl: () => Promise<void> = async () => {};
   publishImpl: (e: NostrEvent) => Promise<{
     success: boolean;
@@ -150,6 +150,12 @@ class FakeClient implements ToonClientLike {
   }
   getChannelCumulativeAmount(channelId: string): bigint {
     return this.channels[channelId]?.cumulative ?? 0n;
+  }
+  getChannelDepositTotal(channelId: string): bigint {
+    return this.channels[channelId]?.depositTotal ?? 0n;
+  }
+  async getBalances(): Promise<{ chain: string; address: string; amount: string }[]> {
+    return [{ chain: 'evm', address: '0xself', amount: '5000000', asset: 'USDC', assetScale: 6 }];
   }
   async sendSwapPacket(): Promise<{ accepted: boolean; data?: string }> {
     return { accepted: true, data: 'c3dhcA==' };
@@ -520,12 +526,20 @@ describe('ClientRunner', () => {
     expect(c.lastPublishDest).toBe('g.proxy.relay'); // NIP-94 ref event → relay
   });
 
-  it('lists channels with nonce watermark and cumulative amount', async () => {
+  it('lists channels with nonce, cumulative, deposit total + available balance', async () => {
     await runner.bootstrap();
     await runner.publish({ event: { id: 'e1' } as NostrEvent, fee: '5' });
+    // Collateral locked at open; available = deposit − cumulative spent.
+    client.channels['chan-1']!.depositTotal = 100n;
     const { channels } = runner.getChannels();
     expect(channels).toEqual([
-      { channelId: 'chan-1', nonce: 1, cumulativeAmount: '5' },
+      {
+        channelId: 'chan-1',
+        nonce: 1,
+        cumulativeAmount: '5',
+        depositTotal: '100',
+        availableBalance: '95',
+      },
     ]);
   });
 

@@ -86,6 +86,37 @@ export interface AtomStatus {
   lastError?: string;
 }
 
+/**
+ * One tracked payment channel, as surfaced by the `toon_channels` read seam
+ * ({@link AtomRenderProps.readChannels}). `availableBalance` (= depositTotal −
+ * cumulativeAmount) is the spendable figure the wallet / channel-list atoms show.
+ * All amounts are base (micro) units as decimal strings.
+ */
+export interface AtomChannel {
+  channelId: string;
+  nonce: number;
+  cumulativeAmount: string;
+  depositTotal?: string;
+  availableBalance?: string;
+}
+
+/**
+ * One on-chain wallet token balance, as surfaced by the `toon_balances` read
+ * seam ({@link AtomRenderProps.readBalances}).
+ */
+export interface AtomBalance {
+  /** Chain family (`'evm'` | `'solana'` | `'mina'`). */
+  chain: string;
+  /** The wallet address holding the balance. */
+  address: string;
+  /** Token amount in base (micro) units, decimal string. */
+  amount: string;
+  /** Human asset code, e.g. `'USDC'`. */
+  asset?: string;
+  /** Decimal places for `amount`, when known. */
+  assetScale?: number;
+}
+
 export interface AtomRenderProps {
   /** Events resolved from the node's `bind` (empty when there is no binding). */
   events: NostrEvent[];
@@ -104,6 +135,18 @@ export interface AtomRenderProps {
    * never call the bridge directly, so this is the single read seam for the fee.
    */
   readStatus?: () => Promise<AtomStatus>;
+  /**
+   * Fetch the tracked payment channels (`toon_channels`) — channelId, nonce,
+   * cumulative spent, locked deposit, and available (spendable) balance. Wired
+   * to the bridge by the runtime; `undefined` only in older render paths / tests.
+   */
+  readChannels?: () => Promise<AtomChannel[]>;
+  /**
+   * Fetch the on-chain wallet token balances (`toon_balances`) per configured
+   * chain. Wired to the bridge by the runtime; `undefined` only in older render
+   * paths / tests that don't provide it.
+   */
+  readBalances?: () => Promise<AtomBalance[]>;
   /**
    * Resolve an author's kind:0 profile event by pubkey, lazily and cached for
    * the session. A feed bind only carries the notes (`kinds:[1]`), so an atom

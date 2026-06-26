@@ -28,12 +28,19 @@ import {
   buildKindRegistry,
   fallbackAtomFor,
 } from './atoms/registry.js';
-import { type Atom, type ActionOutcome, type AtomAction, type AtomStatus } from './atoms/types.js';
+import {
+  type Atom,
+  type ActionOutcome,
+  type AtomAction,
+  type AtomStatus,
+  type AtomChannel,
+  type AtomBalance,
+} from './atoms/types.js';
 import { useRenderDecision } from './render/resolve.js';
 import { A2UIRenderer } from './a2ui/A2UIRenderer.js';
 import { SandboxedAppRenderer } from './mcp-ui/SandboxedAppRenderer.js';
 import { DEFAULT_MCP_UI_SANDBOX_URL } from './mcp-ui/sandbox.js';
-import { QUERY_TOOL, STATUS_TOOL, WRITE_TOOLS } from './tool-names.js';
+import { BALANCES_TOOL, CHANNELS_TOOL, QUERY_TOOL, STATUS_TOOL, WRITE_TOOLS } from './tool-names.js';
 
 /**
  * Session-scoped render-gradient state. Built once per bundle load:
@@ -346,11 +353,31 @@ function buildReadStatus(bridge: ViewBridge): () => Promise<AtomStatus> {
   };
 }
 
+/** Read the tracked payment channels (`toon_channels`) for the wallet atoms. */
+function buildReadChannels(bridge: ViewBridge): () => Promise<AtomChannel[]> {
+  return async () => {
+    const res = await bridge.callTool(CHANNELS_TOOL, {});
+    const data = (res.data ?? {}) as { channels?: AtomChannel[] };
+    return Array.isArray(data.channels) ? data.channels : [];
+  };
+}
+
+/** Read on-chain wallet balances (`toon_balances`) for the wallet atom. */
+function buildReadBalances(bridge: ViewBridge): () => Promise<AtomBalance[]> {
+  return async () => {
+    const res = await bridge.callTool(BALANCES_TOOL, {});
+    const data = (res.data ?? {}) as { balances?: AtomBalance[] };
+    return Array.isArray(data.balances) ? data.balances : [];
+  };
+}
+
 function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): ReactNode {
   const atom = ATOMS.get(node.atom) ?? fallbackAtomFor();
   const events = useBind(node.bind, bridge);
   const actions = useMemo(() => buildActions(node, bridge), [node, bridge]);
   const readStatus = useMemo(() => buildReadStatus(bridge), [bridge]);
+  const readChannels = useMemo(() => buildReadChannels(bridge), [bridge]);
+  const readBalances = useMemo(() => buildReadBalances(bridge), [bridge]);
 
   if (node.bind?.kindAuto) {
     return <>{events.map((e) => <EventAtom key={e.id} event={e} bridge={bridge} />)}</>;
@@ -363,6 +390,8 @@ function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): Rea
       props={node.props ?? {}}
       actions={actions}
       readStatus={readStatus}
+      readChannels={readChannels}
+      readBalances={readBalances}
       resolveProfile={getProfileResolver(bridge)}
       renderEvent={(e) => <EventAtom key={e.id} event={e} bridge={bridge} />}
     >

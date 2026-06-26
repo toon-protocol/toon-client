@@ -24,6 +24,12 @@ import {
 } from './channel/ChannelManager.js';
 import { JsonFileChannelStore } from './channel/ChannelStore.js';
 import {
+  readEvmTokenBalance,
+  readSolanaTokenBalance,
+  readMinaBalance,
+  type WalletBalance,
+} from './balance/WalletBalanceReader.js';
+import {
   requestBlobStorage,
   type RequestBlobStorageResult,
 } from './blob-storage.js';
@@ -939,6 +945,72 @@ export class ToonClient {
   getChannelCumulativeAmount(channelId: string): bigint {
     if (!this.channelManager) throw new Error('ChannelManager not initialized');
     return this.channelManager.getCumulativeAmount(channelId);
+  }
+
+  /**
+   * Gets the on-chain deposit total (locked collateral) for a tracked channel.
+   * The available (spendable) balance is this minus the cumulative spent amount.
+   */
+  getChannelDepositTotal(channelId: string): bigint {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    return this.channelManager.getDepositTotal(channelId);
+  }
+
+  /**
+   * Read the on-chain settlement-token balance of this client's OWN wallet on
+   * each configured chain (EVM token, Solana SPL, native MINA). A free read — no
+   * signing, no payment. Best-effort per chain: a chain whose config is absent or
+   * whose RPC read fails is omitted rather than failing the whole result, so the
+   * wallet view degrades gracefully. Available after `start()` (Solana/Mina keys
+   * are derived there).
+   */
+  async getBalances(): Promise<WalletBalance[]> {
+    const out: WalletBalance[] = [];
+
+    // EVM: read the settlement token (preferredTokens) for the first EVM chain
+    // that has both an RPC URL and a token address.
+    const evmAddress = this.getEvmAddress();
+    const rpcUrls = this.config.chainRpcUrls;
+    const tokens = this.config.preferredTokens;
+    if (evmAddress && rpcUrls && tokens) {
+      const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
+      const chainKey = chainKeys.find((c) => c.startsWith('evm') && rpcUrls[c] && tokens[c]);
+      const rpcUrl = chainKey ? rpcUrls[chainKey] : undefined;
+      const tokenAddress = chainKey ? tokens[chainKey] : undefined;
+      if (chainKey && rpcUrl && tokenAddress) {
+        try {
+          out.push(await readEvmTokenBalance({ rpcUrl, chainKey, tokenAddress, owner: evmAddress }));
+        } catch {
+          /* best-effort: drop EVM on read failure */
+        }
+      }
+    }
+
+    // Solana: SPL balance of the negotiated token mint.
+    const solAddress = this.getSolanaAddress();
+    const sol = this.config.solanaChannel;
+    if (solAddress && sol?.rpcUrl && sol.tokenMint) {
+      try {
+        out.push(
+          await readSolanaTokenBalance({ rpcUrl: sol.rpcUrl, mint: sol.tokenMint, owner: solAddress })
+        );
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    // Mina: native MINA balance via GraphQL.
+    const minaAddress = this.getMinaAddress();
+    const mina = this.config.minaChannel;
+    if (minaAddress && mina?.graphqlUrl) {
+      try {
+        out.push(await readMinaBalance({ graphqlUrl: mina.graphqlUrl, owner: minaAddress }));
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    return out;
   }
 
   /**

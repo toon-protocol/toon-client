@@ -18,6 +18,8 @@ import { onboardAtoms } from './onboard.js';
 import { profileEditorAtoms } from './profile-editor.js';
 import { contentAtoms } from './content.js';
 import { statusAtoms } from './status.js';
+import { loadingAtoms } from './loading.js';
+import { walletAtoms } from './wallet.js';
 import { fallbackAtom, GENERIC_ATOM_ID } from './fallback.js';
 
 const ALL_ATOMS: Atom[] = [
@@ -31,6 +33,8 @@ const ALL_ATOMS: Atom[] = [
   ...profileEditorAtoms,
   ...contentAtoms,
   ...statusAtoms,
+  ...loadingAtoms,
+  ...walletAtoms,
   fallbackAtom,
 ];
 

@@ -21,13 +21,55 @@ import {
   buildCommentFilter,
   buildPRListFilter,
 } from '../filters.js';
-import { OPEN_CHANNEL_TOOL, SWAP_TOOL, PUBLISH_TOOL } from '../tool-names.js';
+import { OPEN_CHANNEL_TOOL, SWAP_TOOL, PUBLISH_TOOL, FUND_WALLET_TOOL } from '../tool-names.js';
 import { PK, CHANNELS, SWAP_PAIR, SETTLEMENT_RECEIPT } from './fixtures.js';
 
 const bridge = createMockBridge();
 
 /** Extra specs covering atoms the reference examples don't surface. */
 const EXTRA: { name: string; description: string; spec: ViewSpec }[] = [
+  {
+    name: 'wallet-overview',
+    description: 'Per-chain address (copy-to-share) + live balance + devnet faucet.',
+    spec: {
+      title: 'Wallet',
+      root: { atom: 'wallet-overview', actions: { fund: { tool: FUND_WALLET_TOOL } } },
+    },
+  },
+  {
+    name: 'channel-list',
+    description: 'Live tracked channels with nonce + available / deposit balance.',
+    spec: { title: 'Channels', root: { atom: 'channel-list' } },
+  },
+  {
+    name: 'skeleton',
+    description: 'Pulsing placeholders (lines / avatar / card) for the loading state.',
+    spec: {
+      title: 'Skeleton',
+      root: {
+        atom: 'stack',
+        props: { gap: 4 },
+        children: [
+          { atom: 'skeleton', props: { variant: 'avatar' } },
+          { atom: 'skeleton', props: { variant: 'lines', lines: 3 } },
+          { atom: 'skeleton', props: { variant: 'card' } },
+        ],
+      },
+    },
+  },
+  {
+    name: 'loading',
+    description: 'Spinner + agent-set status line.',
+    spec: { title: 'Loading', root: { atom: 'loading', props: { message: 'Resolving balances…' } } },
+  },
+  {
+    name: 'progress-steps',
+    description: 'Numbered stepper for multi-step journeys (active mid-flow).',
+    spec: {
+      title: 'Progress',
+      root: { atom: 'progress-steps', props: { steps: ['Close channel', 'Wait for timeout', 'Settle'], active: 1 } },
+    },
+  },
   {
     name: 'reaction-bar',
     description: 'NIP-25 reactions aggregated into emoji pills (kind:7).',

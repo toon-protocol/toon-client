@@ -8,6 +8,7 @@ import type {
   AddApexRequest,
   AddApexResponse,
   AddRelayRequest,
+  BalancesResponse,
   ChannelsResponse,
   ErrorResponse,
   EventsQuery,
@@ -130,6 +131,10 @@ export class ControlClient {
 
   channels(): Promise<ChannelsResponse> {
     return this.request<ChannelsResponse>('GET', '/channels');
+  }
+
+  balances(): Promise<BalancesResponse> {
+    return this.request<BalancesResponse>('GET', '/balances');
   }
 
   swap(body: SwapRequest): Promise<SwapResponse> {

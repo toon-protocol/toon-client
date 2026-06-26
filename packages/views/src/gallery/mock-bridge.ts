@@ -7,7 +7,7 @@
  */
 import { type ViewBridge, type ToolOutcome } from '../app-bridge/types.js';
 import { type NostrEvent, type NostrFilter } from '../types.js';
-import { QUERY_TOOL, STATUS_TOOL } from '../tool-names.js';
+import { QUERY_TOOL, STATUS_TOOL, CHANNELS_TOOL, BALANCES_TOOL, FUND_WALLET_TOOL } from '../tool-names.js';
 import {
   PROFILES,
   NOTES,
@@ -20,6 +20,8 @@ import {
   PRS,
   COMMENTS,
   STATUS,
+  WALLET_CHANNELS,
+  WALLET_BALANCES,
   profileFor,
 } from './fixtures.js';
 
@@ -90,6 +92,16 @@ export function createMockBridge(opts: MockBridgeOptions = {}): ViewBridge {
       if (name === STATUS_TOOL) {
         if (!status) return { ok: false, error: 'status unavailable' };
         return { ok: true, data: status };
+      }
+      if (name === CHANNELS_TOOL) {
+        return { ok: true, data: { channels: WALLET_CHANNELS } };
+      }
+      if (name === BALANCES_TOOL) {
+        return { ok: true, data: { balances: WALLET_BALANCES } };
+      }
+      if (name === FUND_WALLET_TOOL) {
+        const chain = (args as { chain?: string }).chain ?? 'evm';
+        return { ok: true, data: { chain, address: '0xfaucet', faucetUrl: 'https://faucet.devnet.toonprotocol.dev' } };
       }
       // Writes (publish/upload/open-channel/swap): pretend success after a beat
       // so the optimistic UI + receipt phases render.

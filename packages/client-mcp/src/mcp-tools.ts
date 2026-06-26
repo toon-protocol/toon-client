@@ -280,9 +280,22 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'toon_channels',
     description:
-      'List tracked payment channels with their nonce watermark and cumulative ' +
-      'transferred amount. To display these to the user, render them via ' +
-      'toon_render — not a generic widget or plain text.',
+      'List tracked payment channels with their nonce watermark, cumulative ' +
+      'transferred amount, locked deposit, and available (spendable) balance. To ' +
+      'display these to the user, render them via toon_render — not a generic ' +
+      'widget or plain text.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_balances',
+    description:
+      'Read on-chain wallet token balances for each configured chain (EVM token, ' +
+      'Solana SPL, native MINA). Free read, no payment. To display these to the ' +
+      'user, render them via toon_render (the wallet atom) — not plain text.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -609,6 +622,8 @@ export async function dispatchTool(
         );
       case 'toon_channels':
         return ok(await client.channels());
+      case 'toon_balances':
+        return ok(await client.balances());
       case 'toon_swap':
         return ok(
           await client.swap({

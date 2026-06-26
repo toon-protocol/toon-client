@@ -239,6 +239,17 @@ export const STATUS = {
   ],
 };
 
+/** Live wallet-read fixtures (toon_channels / toon_balances seams). */
+export const WALLET_CHANNELS = [
+  { channelId: '0xCH4NN3L00aa11bb22cc33dd44ee55ff', nonce: 42, cumulativeAmount: '4500000', depositTotal: '10000000', availableBalance: '5500000' },
+  { channelId: '0xCH4NN3L99zz88yy77xx66ww55vv44uu', nonce: 7, cumulativeAmount: '800000', depositTotal: '2000000', availableBalance: '1200000' },
+];
+export const WALLET_BALANCES = [
+  { chain: 'evm', address: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F', amount: '125500000', asset: 'USDC', assetScale: 6 },
+  { chain: 'solana', address: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', amount: '48200000', asset: 'USDC', assetScale: 6 },
+  { chain: 'mina', address: 'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im4oG6', amount: '0', asset: 'MINA', assetScale: 9 },
+];
+
 /** Channel / swap fixtures for the DeFi atoms (props-driven). */
 export const CHANNELS = [
   { channelId: '0xCH4NN3L00aa11bb22cc33dd44ee55ff', nonce: 42, cumulativeAmount: '12.5000 USDC' },

@@ -97,6 +97,12 @@ class FakeClient implements ToonClientLike {
   getChannelCumulativeAmount(): bigint {
     return BigInt(this.nonce);
   }
+  getChannelDepositTotal(): bigint {
+    return 1_000_000n;
+  }
+  async getBalances(): Promise<{ chain: string; address: string; amount: string }[]> {
+    return [{ chain: 'evm', address: '0xself', amount: '5000000' }];
+  }
   async sendSwapPacket(): Promise<{ accepted: boolean }> {
     return { accepted: true };
   }
@@ -288,8 +294,19 @@ describe('control-plane routes', () => {
     it('GET /channels lists the tracked channel', async () => {
       const res = await app.inject({ method: 'GET', url: '/channels' });
       expect(res.json().channels).toEqual([
-        { channelId: 'chan-1', nonce: 0, cumulativeAmount: '0' },
+        {
+          channelId: 'chan-1',
+          nonce: 0,
+          cumulativeAmount: '0',
+          depositTotal: '1000000',
+          availableBalance: '1000000',
+        },
       ]);
+    });
+
+    it('GET /balances returns the wallet balances', async () => {
+      const res = await app.inject({ method: 'GET', url: '/balances' });
+      expect(res.json().balances).toEqual([{ chain: 'evm', address: '0xself', amount: '5000000' }]);
     });
 
     it('POST /swap forwards to the client', async () => {

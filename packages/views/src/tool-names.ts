@@ -21,6 +21,12 @@ export const OPEN_CHANNEL_TOOL = 'toon_open_channel';
 export const SWAP_TOOL = 'toon_swap';
 /** Read-only: report the current pay-to-write fee + settlement chain (no payment). */
 export const STATUS_TOOL = 'toon_status';
+/** Read-only: list tracked payment channels with nonce + cumulative + available balance. */
+export const CHANNELS_TOOL = 'toon_channels';
+/** Read-only: on-chain wallet token balances per configured chain. */
+export const BALANCES_TOOL = 'toon_balances';
+/** Devnet: drip faucet test funds to a wallet address (receives funds; not spendy). */
+export const FUND_WALLET_TOOL = 'toon_fund_wallet';
 
 /** The single MCP-app UI resource the host renders. */
 export const APP_RESOURCE_URI = 'ui://toon/app';
@@ -31,4 +37,7 @@ export const WRITE_TOOLS: ReadonlySet<string> = new Set([
   UPLOAD_TOOL,
   OPEN_CHANNEL_TOOL,
   SWAP_TOOL,
+  // Devnet faucet — a write-class action (it mutates wallet funds) but `spendy:
+  // false` since it *receives* funds; routed here so the validator permits it.
+  FUND_WALLET_TOOL,
 ]);

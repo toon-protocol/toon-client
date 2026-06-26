@@ -208,11 +208,34 @@ export interface ChannelInfo {
   channelId: string;
   nonce: number;
   cumulativeAmount: string;
+  /** On-chain collateral locked in the channel, base (micro) units, decimal. */
+  depositTotal?: string;
+  /** Spendable balance = depositTotal − cumulativeAmount (clamped ≥ 0), decimal. */
+  availableBalance?: string;
 }
 
 /** `GET /channels` — list tracked channels with nonce watermarks. */
 export interface ChannelsResponse {
   channels: ChannelInfo[];
+}
+
+/** One on-chain wallet token balance, per configured chain. */
+export interface BalanceInfo {
+  /** Chain family (`'evm'` | `'solana'` | `'mina'`). */
+  chain: string;
+  /** The wallet address holding the balance. */
+  address: string;
+  /** Token amount in base (micro) units, decimal string. */
+  amount: string;
+  /** Human asset code, e.g. `'USDC'` / `'MINA'`, when resolved. */
+  asset?: string;
+  /** Token decimal places, when resolved. */
+  assetScale?: number;
+}
+
+/** `GET /balances` — on-chain wallet balances per configured chain. */
+export interface BalancesResponse {
+  balances: BalanceInfo[];
 }
 
 /**
