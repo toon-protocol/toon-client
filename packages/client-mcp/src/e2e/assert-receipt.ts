@@ -83,8 +83,8 @@ interface SolanaConnection {
 interface SolanaTx {
   meta: {
     err: unknown;
-    preTokenBalances?: Array<SolanaTokenBalance> | null;
-    postTokenBalances?: Array<SolanaTokenBalance> | null;
+    preTokenBalances?: SolanaTokenBalance[] | null;
+    postTokenBalances?: SolanaTokenBalance[] | null;
   } | null;
 }
 
@@ -205,7 +205,7 @@ export async function assertMinaReceipt(opts: MinaReceiptOpts): Promise<void> {
       transactionStatus?: string;
       payment?: { amount?: string; receiver?: { publicKey?: string } };
     };
-    errors?: Array<{ message: string }>;
+    errors?: { message: string }[];
   };
 
   if (json.errors && json.errors.length > 0) {

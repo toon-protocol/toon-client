@@ -90,14 +90,14 @@ export interface DaemonConfigFile {
   destination?: string;
   /**
    * ILP route for PUBLISHES (relay writes → `POST /write`). When unset it is
-   * DERIVED from the `…​.relay.store` anchor (`g.proxy.relay.store` →
+   * DERIVED from the `….relay.store` anchor (`g.proxy.relay.store` →
    * `g.proxy.relay`) — never the bare anchor, which the apex forwards to the
    * store and which 404s a `/write`. Env: `TOON_CLIENT_PUBLISH_DESTINATION`.
    */
   publishDestination?: string;
   /**
    * ILP route for UPLOADS (kind:5094 blob → `POST /store` → Arweave). When unset
-   * it is DERIVED from the `…​.relay.store` anchor (`g.proxy.relay.store` →
+   * it is DERIVED from the `….relay.store` anchor (`g.proxy.relay.store` →
    * `g.proxy.store`). Env: `TOON_CLIENT_STORE_DESTINATION`.
    */
   storeDestination?: string;

@@ -121,7 +121,7 @@ describe('socialFiJourney', () => {
     const followStep = result.steps.find((s) => s.stepId === 'follow');
     expect(followStep).toBeDefined();
     const viewSpec = followStep!.panel.structuredContent?.['viewSpec'] as {
-      root: { children: Array<{ actions?: { follow?: { args?: { tags?: string[][] } } } }> };
+      root: { children: { actions?: { follow?: { args?: { tags?: string[][] } } } }[] };
     };
     const followButtonActions = viewSpec.root.children[0]?.actions?.follow;
     expect(followButtonActions?.args?.tags).toEqual([['p', TEST_PUBKEY]]);
@@ -154,7 +154,7 @@ describe('socialFiJourney', () => {
     const noteStep = result.steps.find((s) => s.stepId === 'publish-note');
     expect(noteStep).toBeDefined();
     const viewSpec = noteStep!.panel.structuredContent?.['viewSpec'] as {
-      root: { children: Array<{ bind?: { query?: { authors?: string[] } } }> };
+      root: { children: { bind?: { query?: { authors?: string[] } } }[] };
     };
     expect(viewSpec.root.children[1]?.bind?.query?.authors).toEqual([TEST_PUBKEY]);
   });
@@ -170,7 +170,7 @@ describe('socialFiJourney', () => {
     const uploadStep = result.steps.find((s) => s.stepId === 'store-upload');
     expect(uploadStep).toBeDefined();
     const viewSpec = uploadStep!.panel.structuredContent?.['viewSpec'] as {
-      root: { children: Array<{ bind?: { query?: { authors?: string[] } } }> };
+      root: { children: { bind?: { query?: { authors?: string[] } } }[] };
     };
     expect(viewSpec.root.children[1]?.bind?.query?.authors).toEqual([TEST_PUBKEY]);
   });

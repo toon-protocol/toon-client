@@ -96,7 +96,7 @@ describe('deFiJourney', () => {
     const { client } = makeClient();
     const result = await runJourney(deFiJourney(opts), client);
 
-    type SpecRoot = { root: { children: { atom: string }[] } };
+    interface SpecRoot { root: { children: { atom: string }[] } }
     const spec1 = result.steps[0]!.panel.structuredContent?.['viewSpec'] as SpecRoot;
     const spec2 = result.steps[1]!.panel.structuredContent?.['viewSpec'] as SpecRoot;
     const spec3 = result.steps[2]!.panel.structuredContent?.['viewSpec'] as SpecRoot;
@@ -110,7 +110,7 @@ describe('deFiJourney', () => {
     const { client } = makeClient();
     const result = await runJourney(deFiJourney(opts), client);
 
-    type ReceiptSpec = { root: { children: { atom: string; props: Record<string, unknown> }[] } };
+    interface ReceiptSpec { root: { children: { atom: string; props: Record<string, unknown> }[] } }
     const spec = result.steps[2]!.panel.structuredContent?.['viewSpec'] as ReceiptSpec;
     const props = spec.root.children[0]!.props;
 

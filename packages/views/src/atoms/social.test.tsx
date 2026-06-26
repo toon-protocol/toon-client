@@ -212,7 +212,7 @@ describe('NoteCard — feed presentation', () => {
     expect(liked.textContent).toContain('2');
   });
 
-  it('renders a Follow button that publishes a kind:3 follow of the author', () => {
+  it('reveals the author profile with a Follow button that publishes a kind:3 follow', () => {
     const follow = vi.fn();
     render(
       <NoteCard
@@ -221,13 +221,15 @@ describe('NoteCard — feed presentation', () => {
         events={[evt({ kind: 1, id: 'note-7', pubkey: 'author-pk', content: 'gm' })]}
       />
     );
-    const followBtn = screen.getByRole('button', { name: /follow this author/i });
+    // Follow now lives in the click-to-reveal author profile, not the row header.
+    fireEvent.click(screen.getByRole('button', { name: /view author's profile/i }));
+    const followBtn = screen.getByRole('button', { name: /^follow$/i });
     fireEvent.click(followBtn);
     // The component supplies the author's pubkey as a `p` tag; the runtime merges
     // it over the spec's static kind:3 publish args (NIP-02 follow list).
     expect(follow).toHaveBeenCalledWith({ tags: [['p', 'author-pk']] });
     // Optimistic toggle flips the label to "Following".
-    expect(screen.getByRole('button', { name: /following this author/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^following$/i })).toBeTruthy();
   });
 
   it('omits the engagement footer when no actions are wired', () => {

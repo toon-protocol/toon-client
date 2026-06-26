@@ -72,6 +72,7 @@ export type ValidationResult =
 const DEFAULT_MAX_DEPTH = 32;
 const DEFAULT_MAX_NODES = 500;
 
+/* eslint-disable @typescript-eslint/no-non-null-assertion -- bounded array indices in a hot loop */
 function editDistance(a: string, b: string): number {
   const n = b.length;
   const row: number[] = Array.from({ length: n + 1 }, (_, j) => j);
@@ -86,6 +87,7 @@ function editDistance(a: string, b: string): number {
   }
   return row[n]!;
 }
+/* eslint-enable @typescript-eslint/no-non-null-assertion */
 
 function nearestAtom(name: string, allowed: ReadonlySet<string>): string | undefined {
   if (name.length > 64) return undefined; // no real atom name exceeds this; avoid O(m×n) on untrusted input

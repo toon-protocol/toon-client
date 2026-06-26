@@ -1,6 +1,7 @@
 /** Media atoms — NIP-68/71 posts + NIP-94 files (read), and the spendy uploader. */
 import { useRef, useState, type FC } from 'react';
-import { ImagePlus, Loader2 } from 'lucide-react';
+import { Check, ImagePlus, Loader2 } from 'lucide-react';
+import { CopyButton } from '../components/copy-button.js';
 import { type MediaVariant, parseMediaPost, parseFileMetadata, parseInlineMedia } from '../parsers/media.js';
 import { arweaveGatewayCandidates } from '@toon-protocol/arweave';
 import { type NostrEvent } from '../types.js';
@@ -23,7 +24,6 @@ const MediaVariantView: FC<{ variant: MediaVariant }> = ({ variant }) => {
     setIdx((i) => (i + 1 < candidates.length ? i + 1 : i));
 
   return isVideo(variant) ? (
-    // eslint-disable-next-line jsx-a11y/media-has-caption
     <video src={src} controls className="max-h-96 w-full rounded-md" onError={onError} />
   ) : (
     <img
@@ -84,12 +84,14 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [uploadedOk, setUploadedOk] = useState(false);
+  const [result, setResult] = useState<{ url?: string; mime?: string } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [cancelled, setCancelled] = useState(false);
 
   const handleFile = async (file: File): Promise<void> => {
     setBusy(true);
     setUploadedOk(false);
+    setResult(null);
     setUploadError(null);
     setCancelled(false);
     try {
@@ -122,6 +124,14 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
           setUploadError(uploadErrorMessage(outcome.error));
         }
       } else {
+        // Echo the publish receipt: the Arweave URL (from `uploadMedia`'s
+        // `{ url, txId, eventId }`) so the UI shows the media + a copyable link,
+        // not just "completed".
+        const data = (outcome?.data ?? {}) as { url?: unknown };
+        setResult({
+          url: typeof data.url === 'string' ? data.url : undefined,
+          mime: file.type || undefined,
+        });
         setUploadedOk(true);
       }
     } catch (err) {
@@ -167,7 +177,38 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
         </span>
       </button>
       {uploadedOk && (
-        <p className="text-xs text-muted-foreground">Uploaded successfully.</p>
+        <div className="mt-1 flex flex-col gap-2 rounded-lg border border-border bg-muted/30 p-3">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
+            <Check aria-hidden="true" className="size-3.5" />
+            Uploaded &amp; published to Arweave
+          </div>
+          {result?.url ? (
+            <>
+              {result.mime?.startsWith('video/') ? (
+                <video src={result.url} controls className="max-h-72 w-full rounded-md" />
+              ) : (
+                <img
+                  src={result.url}
+                  alt="Uploaded media"
+                  className="max-h-72 w-full rounded-md object-contain"
+                />
+              )}
+              <div className="flex items-center gap-2">
+                <a
+                  href={result.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-w-0 flex-1 truncate font-mono text-xs text-primary underline-offset-2 hover:underline"
+                >
+                  {result.url}
+                </a>
+                <CopyButton value={result.url} label="Copy media URL" />
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">Uploaded successfully.</p>
+          )}
+        </div>
       )}
       {cancelled && (
         <p className="text-xs text-muted-foreground">Upload cancelled — nothing was published or paid.</p>

@@ -81,6 +81,7 @@ function fakeIlpClient(result: { accepted: boolean; data?: string; code?: string
     sendIlpPacketWithClaim,
     sendIlpPacket,
     upgradeToBtp,
+    // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- inline cast in a test mock
   } as unknown as import('./HttpIlpClient.js').HttpIlpClient;
   return { client, sendIlpPacketWithClaim, upgradeToBtp };
 }
