@@ -317,7 +317,7 @@ export class Http402Client {
           claim as Record<string, unknown>
         );
       } finally {
-        await btp.disconnect().catch(() => {});
+        await btp.disconnect().catch(() => undefined);
       }
     }
     if (choice.kind === 'btp') {

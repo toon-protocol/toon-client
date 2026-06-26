@@ -41,7 +41,9 @@ export interface ActionOutcome {
  * or `void` if the call site doesn't read it. */
 export type AtomAction = (
   runtimeArgs?: Record<string, unknown>
-) => ActionOutcome | void | Promise<ActionOutcome | void>;
+) =>
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- an action may legitimately return nothing
+  ActionOutcome | void | Promise<ActionOutcome | void>;
 
 /** Per-chain settlement readiness, mirrored from the daemon `toon_status`. */
 export interface AtomChainStatus {

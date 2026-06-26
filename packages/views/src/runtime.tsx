@@ -103,7 +103,6 @@ function useBind(bind: ViewBind | undefined, bridge: ViewBridge): NostrEvent[] {
       cancelled = true;
     };
     // bindKey captures the (serialized) bind; bridge is stable for a session.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bindKey, bridge]);
 
   return events;

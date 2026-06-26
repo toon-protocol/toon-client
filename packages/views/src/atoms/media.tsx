@@ -24,7 +24,6 @@ const MediaVariantView: FC<{ variant: MediaVariant }> = ({ variant }) => {
     setIdx((i) => (i + 1 < candidates.length ? i + 1 : i));
 
   return isVideo(variant) ? (
-    // eslint-disable-next-line jsx-a11y/media-has-caption
     <video src={src} controls className="max-h-96 w-full rounded-md" onError={onError} />
   ) : (
     <img
@@ -186,7 +185,6 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
           {result?.url ? (
             <>
               {result.mime?.startsWith('video/') ? (
-                // eslint-disable-next-line jsx-a11y/media-has-caption
                 <video src={result.url} controls className="max-h-72 w-full rounded-md" />
               ) : (
                 <img

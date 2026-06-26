@@ -191,7 +191,7 @@ describe('TOON apps MCP server (fake-backed)', () => {
   it('toon_channels lists channels with available balance', async () => {
     const res = await client.callTool({ name: 'toon_channels', arguments: {} });
     expect((res as { isError?: boolean }).isError).toBeFalsy();
-    const channels = structured(res)['channels'] as Array<Record<string, string>>;
+    const channels = structured(res)['channels'] as Record<string, string>[];
     expect(channels.length).toBeGreaterThan(0);
     expect(channels[0]).toMatchObject({
       channelId: expect.any(String),
@@ -204,7 +204,7 @@ describe('TOON apps MCP server (fake-backed)', () => {
   it('toon_balances returns per-chain wallet balances', async () => {
     const res = await client.callTool({ name: 'toon_balances', arguments: {} });
     expect((res as { isError?: boolean }).isError).toBeFalsy();
-    const balances = structured(res)['balances'] as Array<Record<string, unknown>>;
+    const balances = structured(res)['balances'] as Record<string, unknown>[];
     expect(balances.length).toBeGreaterThan(0);
     expect(balances[0]).toMatchObject({ chain: expect.any(String), address: expect.any(String), amount: expect.any(String) });
   });
