@@ -365,9 +365,9 @@ describe('daemon config', () => {
     const withChildren = resolveConfig({
       mnemonic: MNEMONIC,
       btpUrl: 'ws://apex/btp',
-      apexChildPeers: ['dvm', 'mill'],
+      apexChildPeers: ['store', 'mill'],
     });
-    expect(withChildren.apexChildPeers).toEqual(['dvm', 'mill']);
+    expect(withChildren.apexChildPeers).toEqual(['store', 'mill']);
 
     const without = resolveConfig({
       mnemonic: MNEMONIC,

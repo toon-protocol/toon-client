@@ -254,7 +254,7 @@ describe('ClientRunner', () => {
           tokenAddress: '0xusdc',
           tokenNetwork: '0xtn',
         },
-        apexChildPeers: ['dvm', 'mill'],
+        apexChildPeers: ['store', 'mill'],
       }),
       createClient: () => childClient,
       createRelay: fakeRelay,
@@ -262,7 +262,7 @@ describe('ClientRunner', () => {
     await r.bootstrap();
 
     // Each child gets the apex negotiation injected...
-    for (const peer of ['dvm', 'mill']) {
+    for (const peer of ['store', 'mill']) {
       expect(childClient.peerNegotiations.get(peer)).toMatchObject({
         chainType: 'evm',
         settlementAddress: '0xapex',
@@ -277,7 +277,7 @@ describe('ClientRunner', () => {
 
   it('skips child-peer routing when none are configured (back-compat)', async () => {
     await runner.bootstrap();
-    expect(client.peerNegotiations.has('dvm')).toBe(false);
+    expect(client.peerNegotiations.has('store')).toBe(false);
     expect(client.peerNegotiations.has('mill')).toBe(false);
   });
 
@@ -458,9 +458,9 @@ describe('ClientRunner', () => {
     expect(imeta).not.toContain('fallback https://arweave.net/tx-abc');
   });
 
-  it('uploadMedia surfaces a DVM upload failure as PublishRejectedError', async () => {
+  it('uploadMedia surfaces a store upload failure as PublishRejectedError', async () => {
     await runner.bootstrap();
-    client.uploadImpl = async () => ({ success: false, error: 'F99 dvm down' });
+    client.uploadImpl = async () => ({ success: false, error: 'F99 store down' });
     await expect(
       runner.uploadMedia({ dataBase64: 'AAAA' })
     ).rejects.toBeInstanceOf(PublishRejectedError);

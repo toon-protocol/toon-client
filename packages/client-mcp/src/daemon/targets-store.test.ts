@@ -24,7 +24,7 @@ const apex: PersistedApexTarget = {
     chainId: 84532,
     settlementAddress: '0xabc',
   },
-  apexChildPeers: ['dvm'],
+  apexChildPeers: ['store'],
 };
 
 beforeEach(() => {

@@ -30,7 +30,7 @@ export interface DiscoverApexParams {
   pubkey?: string;
   /** Preferred settlement chain family; defaults to the first supported chain. */
   chain?: SettlementChain;
-  /** Child peers reached via this apex's channel (e.g. `["dvm","mill"]`). */
+  /** Child peers reached via this apex's channel (e.g. `["store","mill"]`). */
   childPeers?: string[];
   /** Max time to wait for the announcement, ms. Default 15000. */
   timeoutMs?: number;

@@ -5,7 +5,7 @@ import { buildBlobStorageRequest } from '@toon-protocol/core';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 
 const DAEMON = 'http://127.0.0.1:8787';
-const DEST = 'g.townhouse.dvm';
+const DEST = 'g.townhouse.store';
 
 const blob = Buffer.from(
   `TOON client-mcp live DVM exercise — issue #197\n` +

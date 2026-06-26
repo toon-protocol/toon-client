@@ -42,7 +42,7 @@ describe('socialFiJourney', () => {
     const plan = socialFiJourney({ pubkey: TEST_PUBKEY });
     expect(plan.id).toBe('socialfi');
     const ids = plan.steps.map((s) => s.id);
-    expect(ids).toEqual(['onboard', 'publish-profile', 'publish-note', 'follow', 'dvm-upload']);
+    expect(ids).toEqual(['onboard', 'publish-profile', 'publish-note', 'follow', 'store-upload']);
   });
 
   it('completes the full sequence with mocked ControlClient', async () => {
@@ -67,7 +67,7 @@ describe('socialFiJourney', () => {
     const client = stubClient({ status, publishUnsigned, uploadMedia });
     await runJourney(socialFiJourney({ pubkey: TEST_PUBKEY }), client);
 
-    // status is called by step 1 (onboard) and step 5 (dvm-upload auto-probe)
+    // status is called by step 1 (onboard) and step 5 (store-upload auto-probe)
     expect(status).toHaveBeenCalledTimes(2);
   });
 
@@ -159,7 +159,7 @@ describe('socialFiJourney', () => {
     expect(viewSpec.root.children[1]?.bind?.query?.authors).toEqual([TEST_PUBKEY]);
   });
 
-  it('step 5 (dvm-upload) renderPanel bind query uses state-threaded pubkey when opts is omitted', async () => {
+  it('step 5 (store-upload) renderPanel bind query uses state-threaded pubkey when opts is omitted', async () => {
     const status = vi.fn().mockResolvedValue(fakeStatus);
     const publishUnsigned = vi.fn().mockResolvedValue(fakePublishResponse);
     const uploadMedia = vi.fn().mockResolvedValue(fakeUploadResponse);
@@ -167,7 +167,7 @@ describe('socialFiJourney', () => {
     const client = stubClient({ status, publishUnsigned, uploadMedia });
     const result = await runJourney(socialFiJourney(), client); // no opts — must read pubkey from state
 
-    const uploadStep = result.steps.find((s) => s.stepId === 'dvm-upload');
+    const uploadStep = result.steps.find((s) => s.stepId === 'store-upload');
     expect(uploadStep).toBeDefined();
     const viewSpec = uploadStep!.panel.structuredContent?.['viewSpec'] as {
       root: { children: Array<{ bind?: { query?: { authors?: string[] } } }> };
@@ -175,7 +175,7 @@ describe('socialFiJourney', () => {
     expect(viewSpec.root.children[1]?.bind?.query?.authors).toEqual([TEST_PUBKEY]);
   });
 
-  it('step 5 (dvm-upload) auto-calls toon_status (read-only), not uploadMedia', async () => {
+  it('step 5 (store-upload) auto-calls toon_status (read-only), not uploadMedia', async () => {
     const status = vi.fn().mockResolvedValue(fakeStatus);
     const publishUnsigned = vi.fn().mockResolvedValue(fakePublishResponse);
     const uploadMedia = vi.fn().mockResolvedValue(fakeUploadResponse);
@@ -186,7 +186,7 @@ describe('socialFiJourney', () => {
     // The actual upload is user-initiated via the panel action; the auto-call
     // must never touch the spend-path toon_upload tool.
     expect(uploadMedia).not.toHaveBeenCalled();
-    expect(status).toHaveBeenCalledTimes(2); // step 1 (onboard) + step 5 (dvm-upload probe)
+    expect(status).toHaveBeenCalledTimes(2); // step 1 (onboard) + step 5 (store-upload probe)
   });
 
   it('every step panel passes validateViewSpec', async () => {

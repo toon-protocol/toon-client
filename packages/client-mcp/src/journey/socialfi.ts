@@ -16,7 +16,7 @@ function pubkeyFromState(state: JourneyState, fallback?: string): string {
 /**
  * The canonical five-step SocialFi journey:
  * onboard → publish profile (kind:0) → publish note (kind:1) → follow (kind:3)
- * → DVM media upload (kind:1063) with media-embed read-back.
+ * → Store media upload (kind:1063) with media-embed read-back.
  *
  * Pass `opts.pubkey` to seed the panel bind-queries with the user's pubkey
  * without waiting for the onboard step to surface it; the follow step's
@@ -120,11 +120,11 @@ export function socialFiJourney(opts?: { pubkey?: string }): JourneyPlan {
         },
       },
 
-      // ── Step 5: DVM upload (kind:1063) + media-embed read-back ──────────────
+      // ── Step 5: Store upload (kind:1063) + media-embed read-back ──────────────
       // Use toon_status (read-only) for the auto-call; the actual upload is
       // user-initiated via the panel's media-uploader action (spendy, confirmed).
       {
-        id: 'dvm-upload',
+        id: 'store-upload',
         toolName: 'toon_status',
         buildInput: () => ({}),
         renderPanel: (_data, state) => ({

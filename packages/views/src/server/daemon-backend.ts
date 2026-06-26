@@ -45,7 +45,7 @@ export interface DaemonPublishResponse {
   nonce: number;
 }
 
-/** Upload bytes to Arweave (blob DVM), then sign+publish a referencing event. */
+/** Upload bytes to Arweave (blob store), then sign+publish a referencing event. */
 export interface DaemonUploadMediaRequest {
   dataBase64: string;
   mime?: string;
@@ -134,7 +134,7 @@ export class DaemonAppBackend implements AppBackend {
     };
   }
 
-  /** Two-step spendy write: Arweave upload (DVM) then sign+publish reference. */
+  /** Two-step spendy write: Arweave upload (store) then sign+publish reference. */
   async uploadMedia(req: {
     dataBase64: string;
     mime?: string;

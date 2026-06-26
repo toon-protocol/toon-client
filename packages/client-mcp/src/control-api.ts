@@ -352,7 +352,7 @@ export interface AddApexRequest {
   pubkey?: string;
   /** Preferred settlement chain family; defaults to the apex's first chain. */
   chain?: SettlementChain;
-  /** Child peers reached via this apex's channel (e.g. `["dvm","mill"]`). */
+  /** Child peers reached via this apex's channel (e.g. `["store","mill"]`). */
   childPeers?: string[];
   /** Per-write fee override (base units) for this apex. */
   feePerEvent?: string;

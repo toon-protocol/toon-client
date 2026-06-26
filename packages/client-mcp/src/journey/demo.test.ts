@@ -133,7 +133,7 @@ describe('capstoneJourney', () => {
       'publish-profile',
       'publish-note',
       'follow',
-      'dvm-upload',
+      'store-upload',
       'open-channel',
       'swap',
       'settlement-receipt',
@@ -154,7 +154,7 @@ describe('runCapstoneDemo (dry run, mocked ControlClient)', () => {
       makeClient();
     await runCapstoneDemo(client, CAPSTONE_OPTS, captureLogger());
 
-    // SocialFi leg: onboard + dvm-upload probe both hit status (2x); 3 publishes; no spend-upload.
+    // SocialFi leg: onboard + store-upload probe both hit status (2x); 3 publishes; no spend-upload.
     expect(status).toHaveBeenCalledTimes(2);
     expect(publishUnsigned).toHaveBeenCalledTimes(3);
     expect(uploadMedia).not.toHaveBeenCalled();
@@ -180,7 +180,7 @@ describe('runCapstoneDemo (dry run, mocked ControlClient)', () => {
       'publish-profile',
       'publish-note',
       'follow',
-      'dvm-upload',
+      'store-upload',
       'open-channel',
       'swap',
       'settlement-receipt',

@@ -349,12 +349,12 @@ describe('dispatchTool', () => {
     await dispatchTool(stubClient({ addApex }), 'toon_add_apex', {
       ilpAddress: 'g.x.town',
       relayUrl: 'ws://r',
-      childPeers: ['dvm', 'mill'],
+      childPeers: ['store', 'mill'],
     });
     expect(addApex).toHaveBeenCalledWith({
       ilpAddress: 'g.x.town',
       relayUrl: 'ws://r',
-      childPeers: ['dvm', 'mill'],
+      childPeers: ['store', 'mill'],
     });
   });
 
