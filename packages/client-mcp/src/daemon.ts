@@ -57,7 +57,19 @@ async function runForeground(): Promise<void> {
     logger: log,
   });
 
-  const app = Fastify({ logger: false });
+  const app = Fastify({
+    logger: false,
+    // Keep idle keep-alive sockets open longer than the MCP-side undici client
+    // would ever pool one (its keepAliveMaxTimeout default is 600s). The client
+    // calls this localhost control plane infrequently, so with Node's default
+    // 5s keep-alive the daemon was reaping sockets the client still held —
+    // causing the next request to fail with ECONNRESET ("daemon not reachable")
+    // until a retry opened a fresh socket (toon-client#186). Outliving the
+    // client's pool removes that race for non-retried (POST) requests too; the
+    // client-side retry covers the residual. Localhost-only listener, so a
+    // long-lived idle socket is harmless.
+    keepAliveTimeout: 650_000,
+  });
   registerRoutes(app, runner);
 
   // Begin bootstrap (non-blocking) before listening so /status is immediately

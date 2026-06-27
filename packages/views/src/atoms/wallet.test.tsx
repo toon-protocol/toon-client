@@ -83,6 +83,46 @@ describe('wallet-overview', () => {
     render(<Wallet {...base} props={{}} readStatus={() => Promise.reject(new Error('boom'))} />);
     await waitFor(() => expect(screen.getByText(/No wallet addresses/i)).toBeTruthy());
   });
+
+  it('shows an error + retry state when the balance read rejects, and retries', async () => {
+    const Wallet = byId('wallet-overview');
+    // Reject once (persistent failure, post-retry), then succeed on manual retry.
+    const readBalances = vi
+      .fn<[], Promise<AtomBalance[]>>()
+      .mockRejectedValueOnce(new Error('daemon not reachable'))
+      .mockResolvedValueOnce(balances);
+    render(
+      <Wallet {...base} props={{}} readStatus={() => Promise.resolve(status)} readBalances={readBalances} />
+    );
+    // Addresses still render; balances surface as an error with a retry.
+    expect(await screen.findByText('EVM')).toBeTruthy();
+    expect(await screen.findByText(/temporarily unavailable/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Retry/i }));
+    expect(await screen.findByText('125.5')).toBeTruthy();
+    expect(readBalances).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives the Fund button feedback and re-reads balances on success', async () => {
+    const Wallet = byId('wallet-overview');
+    const fund = vi.fn(() => Promise.resolve({ ok: true }));
+    const readBalances = vi.fn(() => Promise.resolve(balances));
+    render(
+      <Wallet
+        {...base}
+        props={{}}
+        actions={{ fund }}
+        readStatus={() => Promise.resolve(status)}
+        readBalances={readBalances}
+      />
+    );
+    await screen.findByText('EVM');
+    expect(readBalances).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Fund' })[0]!);
+    expect(fund).toHaveBeenCalledWith({ chain: 'evm' });
+    // Settles into a confirmation label and triggers a balance refresh.
+    expect(await screen.findByRole('button', { name: /Requested/i })).toBeTruthy();
+    await waitFor(() => expect(readBalances).toHaveBeenCalledTimes(2));
+  });
 });
 
 describe('channel-list', () => {

@@ -191,7 +191,49 @@ export class ControlClient {
     return this.request<FundWalletResponse>('POST', '/fund-wallet', body);
   }
 
+  /**
+   * Whether an HTTP method is safe to transparently retry. Idempotent reads
+   * (GET) and deletes can be replayed verbatim; a mutating POST cannot — the
+   * daemon may have already applied it before the socket failed, so retrying
+   * risks a double publish/fund/deposit.
+   */
+  private static isIdempotent(method: string): boolean {
+    return method === 'GET' || method === 'DELETE';
+  }
+
   private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown
+  ): Promise<T> {
+    // Transparently retry idempotent requests on a transient connection failure.
+    // The MCP server is long-lived and calls the daemon infrequently, so a
+    // pooled keep-alive socket can be reaped by the daemon between calls; the
+    // next request reuses the now-dead socket and fails with ECONNRESET /
+    // "socket hang up", surfacing as `DaemonUnreachableError` even though the
+    // daemon is up. A fresh socket on retry succeeds — this is the root cause of
+    // the intermittent "daemon not reachable" on `toon_balances` (toon-client
+    // #186). A genuine ECONNREFUSED (daemon mid-restart) benefits from the same
+    // brief retry. Timeouts are NOT retried here (a slow handler is classified
+    // as a `ControlApiError` 504 below, not a connection failure).
+    const attempts = ControlClient.isIdempotent(method) ? 3 : 1;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        return await this.attemptOnce<T>(method, path, body);
+      } catch (err) {
+        lastErr = err;
+        if (attempt < attempts && err instanceof DaemonUnreachableError) {
+          await new Promise((r) => setTimeout(r, 50 * attempt));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
+  }
+
+  private async attemptOnce<T>(
     method: string,
     path: string,
     body?: unknown
@@ -208,6 +250,17 @@ export class ControlClient {
         signal: controller.signal,
       });
     } catch (err) {
+      // A request WE aborted is a timeout (the daemon is reachable but the
+      // handler is slow — e.g. a hung on-chain balance read), NOT an unreachable
+      // daemon. Classify it as a retryable 504 so callers surface "retry"
+      // instead of the misleading "the daemon failed to start — check the log".
+      if (controller.signal.aborted) {
+        throw new ControlApiError(
+          `control request ${method} ${path} timed out after ${this.timeoutMs}ms`,
+          504,
+          true
+        );
+      }
       throw new DaemonUnreachableError(this.baseUrl, err);
     } finally {
       clearTimeout(timer);
