@@ -154,6 +154,35 @@ describe('wallet-overview', () => {
     expect(screen.getByText(/Drip submitted/i)).toBeTruthy();
   });
 
+  it('clears the "Submitted" button once the funded chain balance changes', async () => {
+    const Wallet = byId('wallet-overview');
+    const fund = vi.fn(() => Promise.resolve({ ok: true, data: { status: 'pending' } }));
+    const funded: AtomBalance[] = balances.map((b) =>
+      b.chain === 'evm' ? { ...b, amount: '10125500000' } : b
+    );
+    // First read = pre-fund balance (captured as baseline); after refreshNonce
+    // bumps, the re-read returns the changed (drip-landed) balance.
+    const readBalances = vi
+      .fn()
+      .mockResolvedValueOnce(balances)
+      .mockResolvedValue(funded);
+    const { rerender } = render(
+      <Wallet {...base} props={{}} actions={{ fund }} readStatus={() => Promise.resolve(status)} readBalances={readBalances} refreshNonce={0} />
+    );
+    await screen.findByText('EVM');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Fund' })[0]!);
+    await screen.findByRole('button', { name: /Submitted/i });
+    // Runtime bumps the refresh signal → re-read returns the new balance → the
+    // transient "Submitted" state falls back to "Fund".
+    rerender(
+      <Wallet {...base} props={{}} actions={{ fund }} readStatus={() => Promise.resolve(status)} readBalances={readBalances} refreshNonce={1} />
+    );
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: 'Fund' }).length).toBeGreaterThan(0)
+    );
+    expect(screen.queryByRole('button', { name: /Submitted/i })).toBeNull();
+  });
+
   it('re-reads balances when refreshNonce bumps (post-write refresh signal)', async () => {
     const Wallet = byId('wallet-overview');
     const readBalances = vi.fn(() => Promise.resolve(balances));

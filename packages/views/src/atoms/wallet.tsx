@@ -11,7 +11,7 @@
  * runtime-wired `readBalances` / `readChannels` seams, and the faucet fires the
  * wired `fund` action. No key material lives here.
  */
-import { useEffect, useState, type FC, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FC, type ReactNode } from 'react';
 import { Wallet, Landmark, Coins, Check, RotateCw } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Input } from '@/components/ui/input.js';
@@ -138,7 +138,36 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
   // Bump to force a balance re-read (manual retry button).
   const [balReload, setBalReload] = useState(0);
   const [funding, setFunding] = useState<Record<string, FundState>>({});
+  // Per-chain balance amount captured when a fund was submitted, so we can clear
+  // the "Submitted ✓" state the moment that chain's balance actually changes
+  // (the drip landed). And a fallback timer per chain so a drip that never moves
+  // the balance (e.g. a failed Solana faucet) doesn't park on "Submitted" forever.
+  const fundBaselineRef = useRef<Record<string, string>>({});
+  const fundTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const fund = actions['fund'];
+
+  const clearFunding = (chain: string): void => {
+    const t = fundTimersRef.current[chain];
+    if (t) {
+      clearTimeout(t);
+      delete fundTimersRef.current[chain];
+    }
+    delete fundBaselineRef.current[chain];
+    setFunding((f) => {
+      if (!(chain in f)) return f;
+      const next = { ...f };
+      delete next[chain];
+      return next;
+    });
+  };
+
+  // Clear all fund timers on unmount.
+  useEffect(() => {
+    const timers = fundTimersRef.current;
+    return () => {
+      for (const t of Object.values(timers)) clearTimeout(t);
+    };
+  }, []);
   // After ANY successful write in the view (including this wallet's faucet
   // `fund`, which flows through the runtime action wrapper → onMutated), re-read
   // balances immediately and again across the drip-settlement marks. This folds
@@ -171,6 +200,27 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
         if (cancelled) return;
         setBalances(b);
         setBalState('ok');
+        // Reset any "Submitted ✓" button whose chain balance has now changed
+        // from the value captured at fund time — i.e. the drip landed and the UI
+        // updated, so the transient feedback should fall back to the idle "Fund".
+        setFunding((prev) => {
+          let next = prev;
+          for (const [ch, st] of Object.entries(prev)) {
+            if (st !== 'submitted') continue;
+            const newAmt = b.find((x) => x.chain === ch)?.amount;
+            if (newAmt !== undefined && newAmt !== fundBaselineRef.current[ch]) {
+              if (next === prev) next = { ...prev };
+              delete next[ch];
+              const t = fundTimersRef.current[ch];
+              if (t) {
+                clearTimeout(t);
+                delete fundTimersRef.current[ch];
+              }
+              delete fundBaselineRef.current[ch];
+            }
+          }
+          return next;
+        });
       })
       // The read seam retries the flaky control plane and only rejects on a
       // persistent failure (toon-client#186) — surface it as an error/retry
@@ -184,6 +234,10 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
 
   const onFund = async (chain: string): Promise<void> => {
     if (!fund) return;
+    // Snapshot the pre-fund balance so we can detect when the drip actually
+    // lands and clear the "Submitted" state at that point.
+    fundBaselineRef.current[chain] =
+      balances.find((b) => b.chain === chain)?.amount ?? '';
     setFunding((f) => ({ ...f, [chain]: 'funding' }));
     const outcome = await fund({ chain });
     // `fund` may resolve to void (older paths) — treat that as success. With the
@@ -192,7 +246,19 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
     setFunding((f) => ({ ...f, [chain]: ok ? 'submitted' : 'error' }));
     // No bespoke re-poll here: a successful `fund` bumps the view's refreshNonce
     // (via the runtime action wrapper → onMutated), which drives the staggered
-    // balance re-read through `refreshTick` / WALLET_REFRESH_DELAYS above.
+    // balance re-read through `refreshTick` / WALLET_REFRESH_DELAYS above; the
+    // re-read clears "Submitted" once this chain's balance changes.
+    if (ok) {
+      // Fallback: if the balance never moves (e.g. a faucet drip that fails to
+      // settle), don't park on "Submitted" forever — reset shortly after the
+      // last refresh mark.
+      const prev = fundTimersRef.current[chain];
+      if (prev) clearTimeout(prev);
+      fundTimersRef.current[chain] = setTimeout(
+        () => clearFunding(chain),
+        WALLET_REFRESH_DELAYS[WALLET_REFRESH_DELAYS.length - 1]! + 5_000
+      );
+    }
   };
 
   const retryBalances = (): void => setBalReload((n) => n + 1);
