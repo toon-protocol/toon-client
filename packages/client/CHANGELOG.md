@@ -1,5 +1,11 @@
 # @toon-protocol/client
 
+## 0.14.9
+
+### Patch Changes
+
+- cb2362b: Rename legacy `town` node-type label to `relay` in comments, docs, and config keys.
+
 ## 0.14.8
 
 ### Patch Changes
