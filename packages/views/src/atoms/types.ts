@@ -172,6 +172,14 @@ export interface AtomRenderProps {
    * render paths / tests that don't provide it.
    */
   resolveProfile?: (pubkey: string) => Promise<NostrEvent | null>;
+  /**
+   * Monotonic refresh signal, bumped by the runtime after every SUCCESSFUL write
+   * action in the view. Read-bearing atoms fold it (via `useRefreshTick`) into
+   * their read `useEffect` deps so balances / channels / status / feed re-fetch
+   * IN PLACE after a mutation, with no re-render from the agent. `undefined` in
+   * older render paths / tests; treated as "no refresh yet" (mount read only).
+   */
+  refreshNonce?: number;
 }
 
 /** A registered atom. */

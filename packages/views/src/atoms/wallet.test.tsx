@@ -128,7 +128,7 @@ describe('wallet-overview', () => {
     expect(screen.queryByText(/temporarily unavailable/i)).toBeNull();
   });
 
-  it('gives the Fund button feedback and re-reads balances on submit', async () => {
+  it('gives the Fund button submitted feedback on a successful drip', async () => {
     const Wallet = byId('wallet-overview');
     // The async drip resolves to a 'pending' submit, surfaced as ok:true.
     const fund = vi.fn(() => Promise.resolve({ ok: true, data: { status: 'pending' } }));
@@ -146,10 +146,40 @@ describe('wallet-overview', () => {
     expect(readBalances).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getAllByRole('button', { name: 'Fund' })[0]!);
     expect(fund).toHaveBeenCalledWith({ chain: 'evm' });
-    // Settles into a "submitted" label, shows the async drip note, and triggers
-    // an immediate balance refresh (further re-polls are scheduled on a timer).
+    // Settles into a "submitted" label and shows the async drip note. The actual
+    // balance re-poll is now driven by the runtime's refreshNonce (the fund
+    // action flows through the runtime wrapper → onMutated), not bespoke here —
+    // exercised by the refreshNonce test below + the runtime integration test.
     expect(await screen.findByRole('button', { name: /Submitted/i })).toBeTruthy();
     expect(screen.getByText(/Drip submitted/i)).toBeTruthy();
+  });
+
+  it('re-reads balances when refreshNonce bumps (post-write refresh signal)', async () => {
+    const Wallet = byId('wallet-overview');
+    const readBalances = vi.fn(() => Promise.resolve(balances));
+    const { rerender } = render(
+      <Wallet
+        {...base}
+        props={{}}
+        readStatus={() => Promise.resolve(status)}
+        readBalances={readBalances}
+        refreshNonce={0}
+      />
+    );
+    await screen.findByText('125.5');
+    expect(readBalances).toHaveBeenCalledTimes(1);
+    // The runtime bumps refreshNonce after a successful write — the wallet must
+    // re-read balances in place (the immediate re-read; later drip-settlement
+    // re-reads are scheduled on timers).
+    rerender(
+      <Wallet
+        {...base}
+        props={{}}
+        readStatus={() => Promise.resolve(status)}
+        readBalances={readBalances}
+        refreshNonce={1}
+      />
+    );
     await waitFor(() => expect(readBalances).toHaveBeenCalledTimes(2));
   });
 });

@@ -11,7 +11,7 @@
  * runtime-wired `readBalances` / `readChannels` seams, and the faucet fires the
  * wired `fund` action. No key material lives here.
  */
-import { useEffect, useRef, useState, type FC, type ReactNode } from 'react';
+import { useEffect, useState, type FC, type ReactNode } from 'react';
 import { Wallet, Landmark, Coins, Check, RotateCw } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Input } from '@/components/ui/input.js';
@@ -19,6 +19,7 @@ import { Spinner } from '@/components/ui/spinner.js';
 import { MonoId } from '@/components/mono-id.js';
 import { CopyButton } from '@/components/copy-button.js';
 import { Stepper } from './loading.js';
+import { useRefreshTick } from './use-refresh.js';
 import {
   type Atom,
   type AtomRenderProps,
@@ -26,6 +27,15 @@ import {
   type AtomChannel,
   type AtomStatus,
 } from './types.js';
+
+/**
+ * Wallet refresh cadence: re-read balances ~1.5s after a successful write, then
+ * again at the faucet-drip settlement marks. The drip settles AFTER the submit
+ * returns (EVM/Solana ~30s, Mina ~1–2 min), so the later marks let the new
+ * balance light up without a manual refresh. Module-level so the dep array stays
+ * stable across renders.
+ */
+const WALLET_REFRESH_DELAYS = [1500, 15_000, 45_000, 90_000] as const;
 
 /** Human chain label for the per-chain rows. */
 const CHAIN_LABEL: Record<string, string> = {
@@ -121,24 +131,20 @@ type BalanceState = 'loading' | 'ok' | 'error';
  */
 type FundState = 'funding' | 'submitted' | 'error';
 
-const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions }) => {
+const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions, refreshNonce }) => {
   const [identity, setIdentity] = useState<AtomStatus['identity'] | null | undefined>(undefined);
   const [balances, setBalances] = useState<AtomBalance[]>([]);
   const [balState, setBalState] = useState<BalanceState>(readBalances ? 'loading' : 'ok');
-  // Bump to force a balance re-read (manual retry + post-fund refresh).
+  // Bump to force a balance re-read (manual retry button).
   const [balReload, setBalReload] = useState(0);
   const [funding, setFunding] = useState<Record<string, FundState>>({});
   const fund = actions['fund'];
-  // Post-submit balance re-poll timers (the async drip settles after the call
-  // returns) — cleared on unmount so we never setState on a gone component.
-  const pollTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  useEffect(
-    () => () => {
-      pollTimers.current.forEach(clearTimeout);
-      pollTimers.current = [];
-    },
-    []
-  );
+  // After ANY successful write in the view (including this wallet's faucet
+  // `fund`, which flows through the runtime action wrapper → onMutated), re-read
+  // balances immediately and again across the drip-settlement marks. This folds
+  // the old bespoke post-fund re-poll into the shared refresh mechanism, so the
+  // wrapper's onMutated drives it and the timers self-clean on bump/unmount.
+  const refreshTick = useRefreshTick(refreshNonce, WALLET_REFRESH_DELAYS);
 
   // Addresses come from the live status identity (always available); balances
   // are an optional enrichment that may be absent until the reader is wired.
@@ -173,7 +179,8 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
     return () => {
       cancelled = true;
     };
-  }, [readBalances, balReload]);
+    // balReload = manual retry; refreshTick = post-write refresh (incl. fund drip).
+  }, [readBalances, balReload, refreshTick]);
 
   const onFund = async (chain: string): Promise<void> => {
     if (!fund) return;
@@ -183,17 +190,9 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
     // async drip the call now returns a 'pending' submit, not a settled balance.
     const ok = !outcome || outcome.ok !== false;
     setFunding((f) => ({ ...f, [chain]: ok ? 'submitted' : 'error' }));
-    // The drip settles AFTER the submit returns (EVM/Solana ~30s, Mina ~1-2 min),
-    // so re-read balances now and then a few more times so the new balance lights
-    // up without a manual refresh.
-    if (ok) {
-      setBalReload((n) => n + 1);
-      for (const delay of [15_000, 45_000, 90_000]) {
-        pollTimers.current.push(
-          setTimeout(() => setBalReload((n) => n + 1), delay)
-        );
-      }
-    }
+    // No bespoke re-poll here: a successful `fund` bumps the view's refreshNonce
+    // (via the runtime action wrapper → onMutated), which drives the staggered
+    // balance re-read through `refreshTick` / WALLET_REFRESH_DELAYS above.
   };
 
   const retryBalances = (): void => setBalReload((n) => n + 1);
@@ -308,9 +307,12 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
 
 // ── channel-list ─────────────────────────────────────────────────────────────
 
-const ChannelList: FC<AtomRenderProps> = ({ readChannels }) => {
+const ChannelList: FC<AtomRenderProps> = ({ readChannels, refreshNonce }) => {
   const [channels, setChannels] = useState<AtomChannel[] | null>(null);
   const [error, setError] = useState(false);
+  // Re-read channels after a successful write (open/deposit/close/settle):
+  // immediate + a short settlement delay.
+  const refreshTick = useRefreshTick(refreshNonce);
 
   useEffect(() => {
     if (!readChannels) {
@@ -324,7 +326,7 @@ const ChannelList: FC<AtomRenderProps> = ({ readChannels }) => {
     return () => {
       cancelled = true;
     };
-  }, [readChannels]);
+  }, [readChannels, refreshTick]);
 
   return (
     <CardShell
@@ -379,7 +381,7 @@ const ChannelList: FC<AtomRenderProps> = ({ readChannels }) => {
 
 type DepositPhase = 'idle' | 'depositing' | 'receipt';
 
-const DepositForm: FC<AtomRenderProps> = ({ readChannels, actions }) => {
+const DepositForm: FC<AtomRenderProps> = ({ readChannels, actions, refreshNonce }) => {
   const [channels, setChannels] = useState<AtomChannel[]>([]);
   const [channelId, setChannelId] = useState('');
   const [amount, setAmount] = useState('');
@@ -387,6 +389,8 @@ const DepositForm: FC<AtomRenderProps> = ({ readChannels, actions }) => {
   const [depositTotal, setDepositTotal] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const deposit = actions['deposit'];
+  // Refresh the channel selector after a successful write elsewhere in the view.
+  const refreshTick = useRefreshTick(refreshNonce);
 
   useEffect(() => {
     if (!readChannels) return;
@@ -404,7 +408,7 @@ const DepositForm: FC<AtomRenderProps> = ({ readChannels, actions }) => {
     return () => {
       cancelled = true;
     };
-  }, [readChannels]);
+  }, [readChannels, refreshTick]);
 
   const submit = async (): Promise<void> => {
     const value = amount.trim();
@@ -501,17 +505,20 @@ function mmss(totalSec: number): string {
 
 type CloseState = 'open' | 'closing' | 'settleable' | 'settled';
 
-const WithdrawFlow: FC<AtomRenderProps> = ({ readChannels, actions }) => {
+const WithdrawFlow: FC<AtomRenderProps> = ({ readChannels, actions, refreshNonce }) => {
   const [channels, setChannels] = useState<AtomChannel[]>([]);
   const [channelId, setChannelId] = useState('');
-  // Optimistic override after a close/settle action (readChannels is the
-  // authoritative source but doesn't auto-refresh between actions).
+  // Optimistic override after a close/settle action gives instant feedback; the
+  // refreshNonce-driven re-read below then reconciles with authoritative state.
   const [override, setOverride] = useState<{ closeState?: CloseState; settleableAt?: string }>({});
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const [busy, setBusy] = useState<null | 'close' | 'settle'>(null);
   const [error, setError] = useState<string | null>(null);
   const close = actions['close'];
   const settle = actions['settle'];
+  // Re-read channels after a successful close/settle so the flow reflects the
+  // authoritative on-chain state, not just the optimistic override.
+  const refreshTick = useRefreshTick(refreshNonce);
 
   useEffect(() => {
     if (!readChannels) return;
@@ -529,7 +536,7 @@ const WithdrawFlow: FC<AtomRenderProps> = ({ readChannels, actions }) => {
     return () => {
       cancelled = true;
     };
-  }, [readChannels]);
+  }, [readChannels, refreshTick]);
 
   // Tick the clock so the countdown + settle gate update live.
   useEffect(() => {

@@ -467,6 +467,110 @@ describe('ViewSpecRenderer', () => {
     await waitFor(() => expect(screen.getByPlaceholderText(/what's happening/i)).toBeTruthy());
     expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeUndefined();
   });
+
+  // ── post-action auto-refresh (refreshNonce) ────────────────────────────────
+
+  /** A bridge whose status carries an identity (so the wallet renders Fund). */
+  function walletBridge(fundOk: boolean): {
+    bridge: ViewBridge;
+    count: (name: string) => number;
+  } {
+    const calls: string[] = [];
+    const bridge: ViewBridge = {
+      async callTool(name) {
+        calls.push(name);
+        if (name === STATUS_TOOL)
+          return {
+            ok: true,
+            data: { feePerEvent: '1', settlementChain: 'base', identity: { evmAddress: '0xabc' } },
+          };
+        if (name === BALANCES_TOOL)
+          return {
+            ok: true,
+            data: { balances: [{ chain: 'evm', address: '0xabc', amount: '1000000', asset: 'USDC', assetScale: 6 }] },
+          };
+        // The fund action result (success or failure under test).
+        return fundOk ? { ok: true, data: { status: 'pending' } } : { ok: false, error: 'faucet down' };
+      },
+      notifyModel() {},
+      onSpec() {
+        return () => {};
+      },
+    };
+    return { bridge, count: (name) => calls.filter((c) => c === name).length };
+  }
+
+  it('a SUCCESSFUL action bumps the refresh signal — the read seam re-fetches', async () => {
+    const { bridge, count } = walletBridge(true);
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: { atom: 'wallet-overview', actions: { fund: { tool: 'toon_fund_wallet' } } },
+        }}
+      />
+    );
+    // Initial mount read of balances.
+    await screen.findByText('EVM');
+    await waitFor(() => expect(count(BALANCES_TOOL)).toBe(1));
+    // Fund succeeds → onMutated → refreshNonce bump → balances re-read in place.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Fund' })[0]!);
+    await waitFor(() => expect(count(BALANCES_TOOL)).toBeGreaterThanOrEqual(2));
+  });
+
+  it('a FAILED action does NOT bump the refresh signal — no re-fetch', async () => {
+    const { bridge, count } = walletBridge(false);
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: { atom: 'wallet-overview', actions: { fund: { tool: 'toon_fund_wallet' } } },
+        }}
+      />
+    );
+    await screen.findByText('EVM');
+    await waitFor(() => expect(count(BALANCES_TOOL)).toBe(1));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Fund' })[0]!);
+    // The failed fund surfaces a Retry-fund label; balances must NOT have re-read.
+    await screen.findByRole('button', { name: /Retry fund/i });
+    expect(count(BALANCES_TOOL)).toBe(1);
+  });
+
+  it('a successful action re-queries a bound feed (post/react/follow refresh)', async () => {
+    let queries = 0;
+    const bridge: ViewBridge = {
+      async callTool(name, args) {
+        if (name === QUERY_TOOL) {
+          // Count only the feed bind read (kinds:[1]), not profile (kinds:[0]) lookups.
+          const filter = (args as { filter?: { kinds?: number[] } }).filter;
+          if (filter?.kinds?.includes(1)) queries++;
+          return { ok: true, events: [evt({ kind: 1, id: 'n1', content: 'gm' })] };
+        }
+        return { ok: true, data: { eventId: 'new-event' } };
+      },
+      notifyModel() {},
+      onSpec() {
+        return () => {};
+      },
+    };
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'note-card',
+            bind: { query: { kinds: [1] } },
+            actions: { react: { tool: 'toon_publish_unsigned', args: { kind: 7 } } },
+          },
+        }}
+      />
+    );
+    await screen.findByText('gm');
+    await waitFor(() => expect(queries).toBe(1));
+    // Fire the wired react/like action → onMutated → useBind re-queries the feed.
+    fireEvent.click(screen.getByRole('button', { name: /like this note/i }));
+    await waitFor(() => expect(queries).toBeGreaterThanOrEqual(2));
+  });
 });
 
 // ── toon_balances contract guard (#200) ─────────────────────────────────────
