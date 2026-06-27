@@ -86,7 +86,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         destination: {
           type: 'string',
           description:
-            'Optional ILP destination override (default: the apex/town).',
+            'Optional ILP destination override (default: the apex/relay).',
         },
         fee: {
           type: 'string',
@@ -227,7 +227,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'toon_subscribe',
     description:
-      'Free read: register a persistent town-relay subscription with NIP-01 ' +
+      'Free read: register a persistent relay subscription with NIP-01 ' +
       'filter(s). Returns a subscription id to drain with toon_read.',
     inputSchema: {
       type: 'object',

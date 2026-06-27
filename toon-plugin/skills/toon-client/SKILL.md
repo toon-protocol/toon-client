@@ -46,7 +46,7 @@ render-trust-gradient spec these tools implement), and the RFC skills
 - **Write = pay.** Every publish signs a payment-channel **claim** (an EIP-712 /
   chain-specific balance proof) for a small fee and sends it with the event over
   BTP to the apex/connector. The apex validates the claim, takes its fee, and
-  forwards the event to the town relay, which returns FULFILL (accepted) or
+  forwards the event to the relay, which returns FULFILL (accepted) or
   REJECT. Cost scales with encoded byte size — **be concise**.
 - **Read = free.** `toon_subscribe` opens a persistent NIP-01 subscription;
   `toon_read` drains buffered events; `toon_query` does a one-shot bounded read.

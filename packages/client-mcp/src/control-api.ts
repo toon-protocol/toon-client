@@ -67,7 +67,7 @@ export interface StatusResponse {
 export interface PublishRequest {
   /** A fully-signed Nostr event (id + sig present). */
   event: NostrEvent;
-  /** ILP destination override (default: the configured apex/town address). */
+  /** ILP destination override (default: the configured apex/relay address). */
   destination?: string;
   /** Fee override in base units. Defaults to the daemon's configured fee. */
   fee?: string;
@@ -102,7 +102,7 @@ export interface PublishUnsignedRequest {
   content?: string;
   /** Event tags (array of string arrays). */
   tags?: string[][];
-  /** ILP destination override (default: the configured apex/town address). */
+  /** ILP destination override (default: the configured apex/relay address). */
   destination?: string;
   /** Fee override in base units. Defaults to the daemon's configured fee. */
   fee?: string;
@@ -310,7 +310,7 @@ export interface SwapRequest {
   swapPubkey: string;
   /**
    * The swap pair to execute — from kind:10032 discovery, or operator-supplied
-   * when the swap peer announces pairs to a relay other than the town relay.
+   * when the swap peer announces pairs to a relay other than the default relay.
    */
   pair: SwapPair;
   /**

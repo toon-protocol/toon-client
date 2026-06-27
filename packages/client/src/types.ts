@@ -44,7 +44,7 @@ export interface SolanaChannelClientOptions {
  * the connector's `Poseidon([balA,balB,salt]) / Poseidon(zkApp.x)` commitment
  * (verified field-by-field against the connector's o1js verify). A
  * Mina-denominated paid publish is ACCEPTED at `validateClaimMessage` and the
- * apex FULFILLs to town. On-chain SETTLE remains gated for non-EVM dynamic
+ * apex FULFILLs to relay. On-chain SETTLE remains gated for non-EVM dynamic
  * hidden-service peers by connector#88 (`No chain configured for peer`).
  * `zkAppAddress` must be a REAL deployed payment-channel zkApp the apex's Mina
  * provider can resolve on-chain (the e2e harness deploys it deterministically).

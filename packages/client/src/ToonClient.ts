@@ -1201,7 +1201,7 @@ export class ToonClient {
     };
 
     // Require claim + BTP — plain sendIlpPacket is only valid for
-    // node-to-node forwarding (town.ts), not client-to-node.
+    // node-to-node forwarding (relay.ts), not client-to-node.
     if (!params.claim) {
       throw new ToonClientError(
         'Signed balance proof required. Call signBalanceProof() first.',

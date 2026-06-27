@@ -1,9 +1,9 @@
 /**
- * Persistent town-relay Nostr-WS subscription — the read half of the TOON
+ * Persistent relay Nostr-WS subscription — the read half of the TOON
  * client, which `@toon-protocol/client` does not provide (its bootstrap only
  * issues one-shot WS queries and `DiscoveryTracker` is passive).
  *
- * Reads are FREE: this opens a long-lived NIP-01 connection to the town relay,
+ * Reads are FREE: this opens a long-lived NIP-01 connection to the relay,
  * keeps a bounded ring buffer of received events (de-duplicated by `event.id`),
  * and lets callers drain new events via a monotonic cursor. It auto-reconnects
  * with exponential backoff and re-issues every active REQ on reconnect.
@@ -33,7 +33,7 @@ export interface MinimalWebSocket {
 export type WebSocketFactory = (url: string) => MinimalWebSocket;
 
 export interface RelaySubscriptionOptions {
-  /** Town relay WS URL, e.g. `ws://localhost:7100`. */
+  /** Relay WS URL, e.g. `ws://localhost:7100`. */
   relayUrl: string;
   /** Max events retained in the ring buffer (oldest evicted). Default 5000. */
   bufferSize?: number;

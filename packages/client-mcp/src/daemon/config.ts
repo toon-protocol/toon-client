@@ -23,7 +23,7 @@ import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import type { ToonClientConfig } from '@toon-protocol/client';
 import type { SettlementChain } from '../control-api.js';
 
-/** Apex/town settlement parameters injected as a peer negotiation. */
+/** Apex/relay settlement parameters injected as a peer negotiation. */
 export interface ApexNegotiationConfig {
   /** ILP destination address, e.g. `g.proxy`. */
   destination: string;
@@ -79,7 +79,7 @@ export interface DaemonConfigFile {
    * mina faucet). Env override: `TOON_CLIENT_FAUCET_TIMEOUT_MS`.
    */
   faucetTimeoutMs?: number;
-  /** Town relay WS URL for FREE reads. */
+  /** Relay WS URL for FREE reads. */
   relayUrl?: string;
   /**
    * Apex CHANNEL ANCHOR (settlement peer). Defaults to the genesis seed apex's
