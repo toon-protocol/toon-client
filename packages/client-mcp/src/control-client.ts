@@ -140,7 +140,11 @@ export class ControlClient {
   }
 
   balances(): Promise<BalancesResponse> {
-    return this.request<BalancesResponse>('GET', '/balances');
+    // On-chain balance reads can be slow on devnet RPCs. Cap this read well
+    // below the default 35s so the wallet card resolves (or shows its Retry
+    // state) in a few seconds instead of spinning — the read seam retries, so
+    // the effective bound stays modest.
+    return this.request<BalancesResponse>('GET', '/balances', undefined, { timeoutMs: 12_000 });
   }
 
   depositToChannel(body: ChannelDepositRequest): Promise<ChannelDepositResponse> {
@@ -204,7 +208,8 @@ export class ControlClient {
   private async request<T>(
     method: string,
     path: string,
-    body?: unknown
+    body?: unknown,
+    opts?: { timeoutMs?: number }
   ): Promise<T> {
     // Transparently retry idempotent requests on a transient connection failure.
     // The MCP server is long-lived and calls the daemon infrequently, so a
@@ -220,7 +225,7 @@ export class ControlClient {
     let lastErr: unknown;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
-        return await this.attemptOnce<T>(method, path, body);
+        return await this.attemptOnce<T>(method, path, body, opts?.timeoutMs);
       } catch (err) {
         lastErr = err;
         if (attempt < attempts && err instanceof DaemonUnreachableError) {
@@ -236,11 +241,12 @@ export class ControlClient {
   private async attemptOnce<T>(
     method: string,
     path: string,
-    body?: unknown
+    body?: unknown,
+    timeoutMs = this.timeoutMs
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
@@ -256,7 +262,7 @@ export class ControlClient {
       // instead of the misleading "the daemon failed to start — check the log".
       if (controller.signal.aborted) {
         throw new ControlApiError(
-          `control request ${method} ${path} timed out after ${this.timeoutMs}ms`,
+          `control request ${method} ${path} timed out after ${timeoutMs}ms`,
           504,
           true
         );

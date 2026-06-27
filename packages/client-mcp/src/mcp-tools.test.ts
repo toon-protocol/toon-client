@@ -184,16 +184,27 @@ describe('dispatchTool', () => {
     });
   });
 
-  it('toon_balances returns the wallet balances', async () => {
-    const balances = vi
-      .fn()
-      .mockResolvedValue({ balances: [{ chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 }] });
+  it('toon_balances returns the wallet balances as structuredContent (iframe seam)', async () => {
+    const payload = {
+      balances: [{ chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 }],
+    };
+    const balances = vi.fn().mockResolvedValue(payload);
     const client = stubClient({ balances });
     const res = await dispatchTool(client, 'toon_balances', {});
     expect(balances).toHaveBeenCalled();
-    expect(JSON.parse(res.content[0]!.text)).toEqual({
-      balances: [{ chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 }],
-    });
+    expect(JSON.parse(res.content[0]!.text)).toEqual(payload);
+    // The MCP-app bridge only surfaces `structuredContent` as ToolOutcome.data;
+    // without it the wallet-overview card shows no balance/USDC (#186).
+    expect(res.structuredContent).toEqual(payload);
+  });
+
+  it('toon_channels returns the channels as structuredContent (iframe seam)', async () => {
+    const payload = { channels: [{ channelId: 'c1', nonce: 3, cumulativeAmount: '3000' }] };
+    const channels = vi.fn().mockResolvedValue(payload);
+    const client = stubClient({ channels });
+    const res = await dispatchTool(client, 'toon_channels', {});
+    expect(channels).toHaveBeenCalled();
+    expect(res.structuredContent).toEqual(payload);
   });
 
   it('toon_channel_deposit forwards channelId + amount', async () => {
