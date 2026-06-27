@@ -51,6 +51,7 @@ jobs:
       - run: pnpm -r build
 
       - name: Create Release PR or publish to npm
+        id: changesets
         uses: changesets/action@v1
         with:
           version: pnpm changeset version
@@ -58,3 +59,44 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # When a new client-mcp version is actually published, package it as a
+      # Claude Desktop extension (.mcpb) and attach it to the GitHub Release that
+      # changesets created for the `@toon-protocol/client-mcp@<version>` tag.
+      # Same server as the Claude Code plugin — this is the Desktop install path.
+      # Gated on `published` so it never runs on a plain Release-PR-update push.
+      - name: Build & attach Desktop extension (.mcpb)
+        if: steps.changesets.outputs.published == 'true' && contains(steps.changesets.outputs.publishedPackages, '@toon-protocol/client-mcp')
+        env:
+          PUBLISHED: ${{ steps.changesets.outputs.publishedPackages }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(echo "$PUBLISHED" | jq -r '.[] | select(.name=="@toon-protocol/client-mcp") | .version')
+          if [ -z "$VERSION" ]; then echo "client-mcp not in published set; skipping"; exit 0; fi
+          echo "Packaging .mcpb for @toon-protocol/client-mcp@$VERSION"
+          OUT="toon-$VERSION.mcpb"
+          # dist/ is already built by the `pnpm -r build` step above.
+          node packages/client-mcp/scripts/build-mcpb.mjs --out "$OUT"
+          TAG="@toon-protocol/client-mcp@$VERSION"
+          # changesets opens the Release for this tag; wait briefly for it to
+          # appear, then attach the asset (create the Release if it's absent).
+          for i in 1 2 3 4 5; do
+            gh release view "$TAG" >/dev/null 2>&1 && break
+            echo "waiting for release $TAG ($i/5)…"; sleep 5
+          done
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$OUT" --clobber
+          else
+            gh release create "$TAG" "$OUT" \
+              --title "$TAG" \
+              --notes "Claude Desktop extension (.mcpb) for client-mcp $VERSION — install via Settings → Extensions → Advanced → Install Extension."
+          fi
+
+      - name: Upload .mcpb as workflow artifact
+        if: steps.changesets.outputs.published == 'true' && contains(steps.changesets.outputs.publishedPackages, '@toon-protocol/client-mcp')
+        uses: actions/upload-artifact@v4
+        with:
+          name: toon-mcpb
+          path: toon-*.mcpb
+          if-no-files-found: warn

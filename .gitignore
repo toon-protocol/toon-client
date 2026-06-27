@@ -4,6 +4,10 @@ node_modules/
 # Build output
 dist/
 
+# Generated Claude Desktop extension bundles (built in CI on publish)
+dist-mcpb/
+*.mcpb
+
 # Turbo
 .turbo/
 

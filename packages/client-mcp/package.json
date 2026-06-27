@@ -27,6 +27,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "mcpb": "node scripts/build-mcpb.mjs",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:coverage": "vitest run --coverage",
