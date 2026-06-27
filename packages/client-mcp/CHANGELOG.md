@@ -1,5 +1,11 @@
 # @toon-protocol/client-mcp
 
+## 0.10.7
+
+### Patch Changes
+
+- 4eeb9e5: Add a stable, version-less download URL for the Claude Desktop extension (`releases/download/mcpb-latest/toon.mcpb`) and a Desktop install section to the README.
+
 ## 0.10.6
 
 ### Patch Changes
