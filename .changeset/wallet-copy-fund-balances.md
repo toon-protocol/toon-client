@@ -47,3 +47,6 @@ just the symptom:
   payloads into `structuredContent`, fixing the whole class. (The model still
   saw the text, which is why balances "read zero" in chat but never reached the
   card.)
+- **Balance read no longer long-spins.** On-chain reads can be slow on devnet
+  RPCs; the balance read is now capped at 12s (vs the 35s default) so the wallet
+  card resolves — or shows its Retry state — in a few seconds instead of spinning.
