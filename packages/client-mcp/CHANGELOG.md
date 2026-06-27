@@ -1,5 +1,11 @@
 # @toon-protocol/client-mcp
 
+## 0.10.5
+
+### Patch Changes
+
+- db1a8c8: Package the client-mcp server as a Claude Desktop extension (`.mcpb`) and build it automatically on every publish. The same server that ships to Claude Code via the plugin now installs one-click on Claude Desktop (Settings → Extensions). Build locally with `pnpm --filter @toon-protocol/client-mcp mcpb`.
+
 ## 0.10.4
 
 ### Patch Changes

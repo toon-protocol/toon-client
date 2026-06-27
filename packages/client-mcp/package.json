@@ -1,6 +1,6 @@
 {
   "name": "@toon-protocol/client-mcp",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "description": "Always-on local daemon + MCP server letting a Claude agent (Desktop or Code) act as a TOON Protocol client: pay-to-write publishing, free reads, channel/balance management, and swaps.",
   "license": "MIT",
   "author": "Jonathan Green",
