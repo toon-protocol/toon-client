@@ -19,6 +19,7 @@ import type {
   ErrorResponse,
   EventsQuery,
   EventsResponse,
+  FundStatusResponse,
   FundWalletRequest,
   FundWalletResponse,
   HttpFetchPaidRequest,
@@ -31,6 +32,7 @@ import type {
   QueryResponse,
   RemoveApexRequest,
   RemoveRelayRequest,
+  SettlementChain,
   StatusResponse,
   SubscribeRequest,
   SubscribeResponse,
@@ -192,16 +194,22 @@ export class ControlClient {
   }
 
   fundWallet(body: FundWalletRequest = {}): Promise<FundWalletResponse> {
-    // The faucet is chain-aware. The Mina faucet mints native MINA + USDC on a
-    // slow-settling chain and can take up to ~120s to answer — the daemon waits
-    // `defaultFaucetTimeout('mina')` = 120s server-side — while evm/solana
-    // answer within ~30s. This control request must OUT-WAIT the daemon's faucet
-    // budget; the default 35s aborts a still-working mina drip and surfaces a
-    // misleading relay/apex timeout (#199-class). Give mina 130s, others 40s.
-    const timeoutMs = body.chain === 'mina' ? 130_000 : 40_000;
+    // The drip is ASYNC: the daemon launches the faucet call in the background
+    // and returns a 'pending' snapshot immediately, so this request resolves
+    // fast regardless of chain. (Previously this had to out-wait the daemon's
+    // chain-aware faucet budget — up to ~120s for Mina — which strained the
+    // control + host timeouts; #199-class.) Poll `fundStatus` / re-read balances
+    // for the terminal state.
     return this.request<FundWalletResponse>('POST', '/fund-wallet', body, {
-      timeoutMs,
+      timeoutMs: 40_000,
     });
+  }
+
+  fundStatus(chain?: SettlementChain): Promise<FundStatusResponse> {
+    const path = chain
+      ? `/fund-wallet/status?chain=${encodeURIComponent(chain)}`
+      : '/fund-wallet/status';
+    return this.request<FundStatusResponse>('GET', path);
   }
 
   /**

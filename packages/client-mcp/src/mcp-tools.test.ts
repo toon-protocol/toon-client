@@ -33,6 +33,7 @@ describe('TOOL_DEFINITIONS', () => {
         'toon_http_fetch_paid',
         'toon_subscribe',
         'toon_fund_wallet',
+        'toon_fund_status',
         'toon_targets',
         'toon_add_relay',
         'toon_remove_relay',
@@ -406,24 +407,56 @@ describe('dispatchTool', () => {
   });
 
   it('toon_fund_wallet forwards an empty body when no args (fund self)', async () => {
-    const fundWallet = vi
-      .fn()
-      .mockResolvedValue({ chain: 'evm', address: '0xabc', faucetUrl: 'u', response: {} });
+    const fundWallet = vi.fn().mockResolvedValue({
+      chain: 'evm',
+      address: '0xabc',
+      faucetUrl: 'u',
+      status: 'pending',
+      startedAt: 1,
+    });
     const res = await dispatchTool(stubClient({ fundWallet }), 'toon_fund_wallet', {});
     expect(res.isError).toBeFalsy();
     expect(fundWallet).toHaveBeenCalledWith({});
-    expect(JSON.parse(res.content[0]!.text).chain).toBe('evm');
+    // Async submit: the text is a human message; the snapshot rides on
+    // structuredContent (the iframe seam), not the JSON text body.
+    expect(res.content[0]!.text).toMatch(/Drip submitted for evm to 0xabc/);
+    expect(res.structuredContent).toMatchObject({ chain: 'evm', status: 'pending' });
   });
 
   it('toon_fund_wallet forwards chain + address when provided', async () => {
-    const fundWallet = vi
-      .fn()
-      .mockResolvedValue({ chain: 'solana', address: 'So1', faucetUrl: 'u', response: {} });
+    const fundWallet = vi.fn().mockResolvedValue({
+      chain: 'solana',
+      address: 'So1',
+      faucetUrl: 'u',
+      status: 'pending',
+      startedAt: 1,
+    });
     await dispatchTool(stubClient({ fundWallet }), 'toon_fund_wallet', {
       chain: 'solana',
       address: 'So1',
     });
     expect(fundWallet).toHaveBeenCalledWith({ chain: 'solana', address: 'So1' });
+  });
+
+  it('toon_fund_status returns the tracked drip jobs', async () => {
+    const fundStatus = vi.fn().mockResolvedValue({
+      jobs: [
+        { chain: 'mina', address: 'B62', faucetUrl: 'u', status: 'success', startedAt: 1, finishedAt: 2 },
+      ],
+    });
+    const res = await dispatchTool(stubClient({ fundStatus }), 'toon_fund_status', {
+      chain: 'mina',
+    });
+    expect(res.isError).toBeFalsy();
+    expect(fundStatus).toHaveBeenCalledWith('mina');
+    expect(JSON.parse(res.content[0]!.text).jobs).toHaveLength(1);
+    expect(res.structuredContent).toMatchObject({ jobs: expect.any(Array) });
+  });
+
+  it('toon_fund_status forwards no chain when omitted (all jobs)', async () => {
+    const fundStatus = vi.fn().mockResolvedValue({ jobs: [] });
+    await dispatchTool(stubClient({ fundStatus }), 'toon_fund_status', {});
+    expect(fundStatus).toHaveBeenCalledWith(undefined);
   });
 
   it('toon_add_relay forwards the relayUrl', async () => {

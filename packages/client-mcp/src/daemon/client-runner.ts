@@ -43,6 +43,7 @@ import type {
   ChannelsResponse,
   ChainStatus,
   EventsResponse,
+  FundStatusResponse,
   FundWalletRequest,
   FundWalletResponse,
   HttpFetchPaidRequest,
@@ -227,6 +228,13 @@ const BALANCES_READ_TIMEOUT_MS = 5_000;
 /** Bounded retry for a transient provider stall on a balance read (#199). */
 const BALANCES_READ_ATTEMPTS = 2;
 
+/**
+ * In-memory record of one background faucet drip. Structurally identical to the
+ * wire {@link FundWalletResponse} snapshot the daemon returns, so a job can be
+ * handed back verbatim.
+ */
+type FundJob = FundWalletResponse;
+
 export class ClientRunner {
   private readonly config: ResolvedDaemonConfig;
   private readonly createClient: CreateClient;
@@ -252,6 +260,14 @@ export class ClientRunner {
   private readonly apexes = new Map<string, ApexConnection>();
   /** Relay read targets, keyed by relayUrl. */
   private readonly relays = new Map<string, RelaySubscription>();
+
+  /**
+   * Async faucet drip jobs, keyed by chain. A drip is launched in the background
+   * (the Mina faucet legitimately takes ~75s — longer than the MCP host's ~60s
+   * tool-call budget) and its terminal state is observed via {@link getFundStatus}
+   * / re-reading balances rather than by blocking the caller.
+   */
+  private readonly fundJobs = new Map<FaucetChain, FundJob>();
 
   /** Runner-level merged read buffer across all relays (de-duped by event.id). */
   private merged: MergedEvent[] = [];
@@ -898,7 +914,7 @@ export class ClientRunner {
    * (the typical "fund me before I open a channel" flow). The daemon holds the
    * faucet URL + the keys, so the MCP caller never needs either.
    */
-  async fundWallet(req: FundWalletRequest = {}): Promise<FundWalletResponse> {
+  fundWallet(req: FundWalletRequest = {}): FundWalletResponse {
     const faucetUrl = this.config.faucetUrl;
     if (!faucetUrl) {
       throw new InvalidPayloadError(
@@ -923,18 +939,78 @@ export class ClientRunner {
           `(this client has no ${chain} key configured).`
       );
     }
+
+    // Idempotent: a drip already in flight for this chain returns its snapshot
+    // rather than launching a second faucet call (a re-click / poll mustn't
+    // double-drip).
+    const existing = this.fundJobs.get(chain);
+    if (existing && existing.status === 'pending') {
+      return { ...existing };
+    }
+
+    // The drip is ASYNC: launch the faucet call in the background and return a
+    // 'pending' snapshot immediately. The Mina faucet mints native MINA + USDC
+    // on a slow-settling chain and legitimately takes ~75s — longer than the MCP
+    // host's ~60s tool-call budget and the control client's wire timeout — so a
+    // blocking call surfaces a working drip as a misleading relay/apex timeout
+    // (#199-class). The daemon happily waits the full chain-aware faucet budget
+    // in the background; the caller observes the result via getFundStatus /
+    // re-reading balances.
+    const job: FundJob = {
+      chain,
+      address,
+      faucetUrl,
+      status: 'pending',
+      startedAt: Date.now(),
+    };
+    this.fundJobs.set(chain, job);
+
     // Timeout is chain-aware by default (mina settles far slower than the 30s
     // evm/solana budget and otherwise times out on a request that succeeds
     // server-side); an explicit faucetTimeoutMs overrides it.
-    const { response } = await faucetFund(
+    void faucetFund(
       faucetUrl,
       address,
       chain,
       this.config.faucetTimeoutMs !== undefined
         ? { timeout: this.config.faucetTimeoutMs }
         : {}
-    );
-    return { chain, address, faucetUrl, response };
+    )
+      .then(({ response }) => {
+        job.status = 'success';
+        job.response = response;
+        job.finishedAt = Date.now();
+        this.log(`[runner] faucet drip succeeded: ${chain} → ${address}`);
+      })
+      .catch((err: unknown) => {
+        // The background promise must never become an unhandled rejection.
+        try {
+          job.status = 'error';
+          job.error = errMsg(err);
+          job.finishedAt = Date.now();
+          this.log(
+            `[runner] faucet drip failed: ${chain} → ${address}: ${errMsg(err)}`
+          );
+        } catch {
+          // Swallow — recording the failure must not itself reject.
+        }
+      });
+
+    return { ...job };
+  }
+
+  /**
+   * Snapshots of tracked faucet drip jobs — all of them, or just the one for
+   * `chain`. Lets a caller poll for the terminal state of an async drip without
+   * re-dripping.
+   */
+  getFundStatus(chain?: FaucetChain): FundStatusResponse {
+    const jobs = chain
+      ? this.fundJobs.has(chain)
+        ? [{ ...this.fundJobs.get(chain)! }]
+        : []
+      : [...this.fundJobs.values()].map((j) => ({ ...j }));
+    return { jobs };
   }
 
   /** Full registry of relay + apex targets with per-target status. */

@@ -128,9 +128,10 @@ describe('wallet-overview', () => {
     expect(screen.queryByText(/temporarily unavailable/i)).toBeNull();
   });
 
-  it('gives the Fund button feedback and re-reads balances on success', async () => {
+  it('gives the Fund button feedback and re-reads balances on submit', async () => {
     const Wallet = byId('wallet-overview');
-    const fund = vi.fn(() => Promise.resolve({ ok: true }));
+    // The async drip resolves to a 'pending' submit, surfaced as ok:true.
+    const fund = vi.fn(() => Promise.resolve({ ok: true, data: { status: 'pending' } }));
     const readBalances = vi.fn(() => Promise.resolve(balances));
     render(
       <Wallet
@@ -145,8 +146,10 @@ describe('wallet-overview', () => {
     expect(readBalances).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getAllByRole('button', { name: 'Fund' })[0]!);
     expect(fund).toHaveBeenCalledWith({ chain: 'evm' });
-    // Settles into a confirmation label and triggers a balance refresh.
-    expect(await screen.findByRole('button', { name: /Requested/i })).toBeTruthy();
+    // Settles into a "submitted" label, shows the async drip note, and triggers
+    // an immediate balance refresh (further re-polls are scheduled on a timer).
+    expect(await screen.findByRole('button', { name: /Submitted/i })).toBeTruthy();
+    expect(screen.getByText(/Drip submitted/i)).toBeTruthy();
     await waitFor(() => expect(readBalances).toHaveBeenCalledTimes(2));
   });
 });

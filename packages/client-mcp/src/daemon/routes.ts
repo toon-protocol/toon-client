@@ -33,6 +33,7 @@ import type {
   QueryRequest,
   RemoveApexRequest,
   RemoveRelayRequest,
+  SettlementChain,
   SubscribeRequest,
   SwapRequest,
   UploadMediaRequest,
@@ -222,11 +223,18 @@ export function registerRoutes(
 
   app.post<{ Body: FundWalletRequest }>('/fund-wallet', async (req, reply) => {
     try {
-      return await runner.fundWallet(req.body ?? {});
+      // Returns immediately with a 'pending' snapshot — the drip runs async in
+      // the daemon (the Mina faucet outlasts the host's tool-call timeout).
+      return runner.fundWallet(req.body ?? {});
     } catch (err) {
       return mapError(reply, err);
     }
   });
+
+  app.get<{ Querystring: { chain?: SettlementChain } }>(
+    '/fund-wallet/status',
+    async (req) => runner.getFundStatus(req.query?.chain)
+  );
 
   app.get('/targets', async () => runner.getTargets());
 

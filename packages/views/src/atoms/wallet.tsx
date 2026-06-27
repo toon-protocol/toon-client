@@ -11,7 +11,7 @@
  * runtime-wired `readBalances` / `readChannels` seams, and the faucet fires the
  * wired `fund` action. No key material lives here.
  */
-import { useEffect, useState, type FC, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FC, type ReactNode } from 'react';
 import { Wallet, Landmark, Coins, Check, RotateCw } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Input } from '@/components/ui/input.js';
@@ -113,8 +113,13 @@ const CardShell: FC<{ icon: ReactNode; title: string; action?: ReactNode; childr
 
 /** Lifecycle of the optional on-chain balance enrichment. */
 type BalanceState = 'loading' | 'ok' | 'error';
-/** Per-chain faucet-drip feedback so the Fund button isn't a silent no-op. */
-type FundState = 'funding' | 'done' | 'error';
+/**
+ * Per-chain faucet-drip feedback so the Fund button isn't a silent no-op. The
+ * drip is ASYNC: `'funding'` is the brief submit, `'submitted'` means the daemon
+ * accepted it and balances are now polling (the Mina faucet settles in ~1-2 min,
+ * past the host's tool-call timeout), `'error'` is a rejected submit.
+ */
+type FundState = 'funding' | 'submitted' | 'error';
 
 const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions }) => {
   const [identity, setIdentity] = useState<AtomStatus['identity'] | null | undefined>(undefined);
@@ -124,6 +129,16 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
   const [balReload, setBalReload] = useState(0);
   const [funding, setFunding] = useState<Record<string, FundState>>({});
   const fund = actions['fund'];
+  // Post-submit balance re-poll timers (the async drip settles after the call
+  // returns) — cleared on unmount so we never setState on a gone component.
+  const pollTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(
+    () => () => {
+      pollTimers.current.forEach(clearTimeout);
+      pollTimers.current = [];
+    },
+    []
+  );
 
   // Addresses come from the live status identity (always available); balances
   // are an optional enrichment that may be absent until the reader is wired.
@@ -164,11 +179,21 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
     if (!fund) return;
     setFunding((f) => ({ ...f, [chain]: 'funding' }));
     const outcome = await fund({ chain });
-    // `fund` may resolve to void (older paths) — treat that as success.
+    // `fund` may resolve to void (older paths) — treat that as success. With the
+    // async drip the call now returns a 'pending' submit, not a settled balance.
     const ok = !outcome || outcome.ok !== false;
-    setFunding((f) => ({ ...f, [chain]: ok ? 'done' : 'error' }));
-    // A successful drip changes the on-chain balance — re-read it.
-    if (ok) setBalReload((n) => n + 1);
+    setFunding((f) => ({ ...f, [chain]: ok ? 'submitted' : 'error' }));
+    // The drip settles AFTER the submit returns (EVM/Solana ~30s, Mina ~1-2 min),
+    // so re-read balances now and then a few more times so the new balance lights
+    // up without a manual refresh.
+    if (ok) {
+      setBalReload((n) => n + 1);
+      for (const delay of [15_000, 45_000, 90_000]) {
+        pollTimers.current.push(
+          setTimeout(() => setBalReload((n) => n + 1), delay)
+        );
+      }
+    }
   };
 
   const retryBalances = (): void => setBalReload((n) => n + 1);
@@ -231,15 +256,15 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
                       >
                         {fundState === 'funding' ? (
                           <Spinner size="sm" />
-                        ) : fundState === 'done' ? (
+                        ) : fundState === 'submitted' ? (
                           <Check aria-hidden="true" className="text-primary" />
                         ) : (
                           <Coins aria-hidden="true" />
                         )}
                         {fundState === 'funding'
-                          ? 'Funding…'
-                          : fundState === 'done'
-                            ? 'Requested'
+                          ? 'Submitting…'
+                          : fundState === 'submitted'
+                            ? 'Submitted'
                             : fundState === 'error'
                               ? 'Retry fund'
                               : 'Fund'}
@@ -266,6 +291,11 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
             Retry
           </Button>
         </div>
+      ) : null}
+      {Object.values(funding).some((s) => s === 'submitted') ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Drip submitted — balances updating… (Mina can take 1–2 min to settle.)
+        </p>
       ) : null}
       {fund ? (
         <p className="mt-2 text-[10px] text-muted-foreground/70">

@@ -471,6 +471,25 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'toon_fund_status',
+    description:
+      'Check the status of async faucet drips submitted via toon_fund_wallet. ' +
+      'Each job reports `status` (`pending` | `success` | `error`), the chain/' +
+      'address, and timestamps — so an agent can poll for settlement without ' +
+      're-dripping. With no `chain` it returns every tracked job.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chain: {
+          type: 'string',
+          enum: ['evm', 'solana', 'mina'],
+          description: 'Only report the drip job for this chain (default: all).',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'toon_targets',
     description:
       'List every registered target: relays (read sources, with connection + ' +
@@ -728,16 +747,31 @@ export async function dispatchTool(
         };
         return ok(await client.httpFetchPaid(req));
       }
-      case 'toon_fund_wallet':
+      case 'toon_fund_wallet': {
+        // The drip is async: the daemon returns a 'pending' snapshot immediately
+        // (the Mina faucet settles in ~75s, past the host's tool-call timeout).
+        const job = await client.fundWallet({
+          ...(typeof args['chain'] === 'string'
+            ? { chain: args['chain'] as SettlementChain }
+            : {}),
+          ...(typeof args['address'] === 'string'
+            ? { address: args['address'] }
+            : {}),
+        });
+        return okStructured(
+          `Drip submitted for ${job.chain} to ${job.address}. Funds appear in ` +
+            `balances once the faucet settles (EVM/Solana ~30s, Mina ~1-2 min). ` +
+            `Re-check with toon_balances, or poll toon_fund_status.`,
+          job as unknown as Record<string, unknown>
+        );
+      }
+      case 'toon_fund_status':
         return ok(
-          await client.fundWallet({
-            ...(typeof args['chain'] === 'string'
-              ? { chain: args['chain'] as SettlementChain }
-              : {}),
-            ...(typeof args['address'] === 'string'
-              ? { address: args['address'] }
-              : {}),
-          })
+          await client.fundStatus(
+            typeof args['chain'] === 'string'
+              ? (args['chain'] as SettlementChain)
+              : undefined
+          )
         );
       case 'toon_targets':
         return ok(await client.targets());
