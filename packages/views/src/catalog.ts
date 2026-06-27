@@ -86,13 +86,20 @@ export const ATOM_CATALOG: AtomMeta[] = [
   {
     id: 'media-uploader',
     description:
-      'Upload ANY file (image, video, pdf, audio, archive, …) to Arweave then ' +
-      'publish a reference event — kind:20 for images, 21 for video, 1063 ' +
-      '(NIP-94 file metadata) for everything else (chosen automatically from the ' +
-      'file MIME). Provides an in-app file picker. Spendy. Use this whenever the ' +
-      'user wants to upload or post a file/picture; no URL needed.',
+      'Compose & publish a media POST: pick a file (image, video, pdf, audio, …) ' +
+      'via the in-app picker, preview it, add an OPTIONAL caption/text, then ' +
+      'Publish — uploads to Arweave and publishes a reference event in one paid ' +
+      'write. The caption becomes the event content, so an image/video + text is ' +
+      'a real post (kind:20 picture, 21 video, 1063 NIP-94 file for everything ' +
+      'else — chosen automatically from the MIME). Spendy. This IS the ' +
+      'post-with-media path; use it whenever the user wants to post/upload a ' +
+      'picture, video, or file with or without a caption. No URL needed.',
     writes: [{ name: 'toon_upload', spendy: true }],
-    propsSchema: { label: 'string', accept: "string (optional MIME filter, e.g. 'image/*'; default any)" },
+    propsSchema: {
+      label: 'string',
+      accept: "string (optional MIME filter, e.g. 'image/*'; default any)",
+      captionPlaceholder: 'string (optional placeholder for the caption field)',
+    },
   },
 
   // forge

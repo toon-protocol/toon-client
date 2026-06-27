@@ -223,6 +223,7 @@ describe('ViewSpecRenderer', () => {
     const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
 
     await waitFor(() => expect(screen.getByText(/upload cancelled/i)).toBeTruthy());
     expect(screen.queryByText(/upload failed/i)).toBeNull();
@@ -254,6 +255,7 @@ describe('ViewSpecRenderer', () => {
     const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
 
     // A rendered consent dialog appears — the tool has NOT fired yet.
     const dialog = await screen.findByRole('dialog');
@@ -286,6 +288,7 @@ describe('ViewSpecRenderer', () => {
     const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
 
     await screen.findByRole('dialog');
     fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
@@ -326,6 +329,7 @@ describe('ViewSpecRenderer', () => {
     const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
 
     await waitFor(() => expect(screen.getByText(/Arweave upload leg failed/i)).toBeTruthy());
     expect(screen.getByText(/F02 - no route/i)).toBeTruthy();
@@ -354,6 +358,7 @@ describe('ViewSpecRenderer', () => {
     const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
 
     await waitFor(() => {
       expect(calls.find((c) => c.name === 'toon_upload')).toBeTruthy();
