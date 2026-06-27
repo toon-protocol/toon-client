@@ -93,7 +93,7 @@ function nip94KindForMime(mime: string | undefined): number {
 
 /** Convert file bytes to base64 for the `dataBase64` upload arg (chunked to
  * avoid a huge spread call on large buffers). */
-function bytesToBase64(buf: ArrayBuffer): string {
+export function bytesToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
   let binary = '';
   const chunk = 8192;

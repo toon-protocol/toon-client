@@ -62,9 +62,20 @@ export const ATOM_CATALOG: AtomMeta[] = [
   },
   {
     id: 'composer',
-    description: 'Text composer that publishes a note (kind:1) via its "post" action.',
-    writes: [{ name: 'toon_publish_unsigned' }],
-    propsSchema: { placeholder: 'string', label: 'string' },
+    description:
+      'The DEFAULT post composer: write a kind:1 note and OPTIONALLY attach one ' +
+      'media/file (paperclip) — text-only posts publish via the "post" action ' +
+      '(toon_publish_unsigned); a post WITH media publishes via the "upload" ' +
+      'action (toon_upload, kind:1) so the file is carried as NIP-92 imeta and ' +
+      'renders inline in the feed. Wire BOTH actions. Use this for "make a post" ' +
+      '(with or without a picture/video); use media-uploader only when the user ' +
+      'just wants to upload a file with no note.',
+    writes: [{ name: 'toon_publish_unsigned' }, { name: 'toon_upload', spendy: true }],
+    propsSchema: {
+      placeholder: 'string',
+      label: 'string',
+      accept: "string (optional MIME filter for the attach picker, e.g. 'image/*')",
+    },
   },
   {
     id: 'pay-confirm',
