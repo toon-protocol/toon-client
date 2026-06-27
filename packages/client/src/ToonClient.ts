@@ -1059,14 +1059,25 @@ export class ToonClient {
   async getBalances(): Promise<WalletBalance[]> {
     const out: WalletBalance[] = [];
 
-    // EVM: read the settlement token (preferredTokens) for the first EVM chain
-    // that has both an RPC URL and a token address.
+    // EVM: read the settlement token (preferredTokens) for the client's
+    // settlement chain. `supportedChains` is a union with the network PRESET
+    // first (see applyDefaults), so the preset's primary EVM chain (e.g.
+    // base-sepolia on devnet) sorts ahead of an explicitly-configured chain
+    // like `evm:anvil:31337`. Picking the FIRST evm key would read the preset
+    // chain's token — a different contract with a 0 balance — even though the
+    // faucet funds, and channels live on, the settlement chain. So prefer the
+    // evm key that is the actual settlement chain (present in
+    // `settlementAddresses`), falling back to the first usable evm chain.
     const evmAddress = this.getEvmAddress();
     const rpcUrls = this.config.chainRpcUrls;
     const tokens = this.config.preferredTokens;
     if (evmAddress && rpcUrls && tokens) {
       const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
-      const chainKey = chainKeys.find((c) => c.startsWith('evm') && rpcUrls[c] && tokens[c]);
+      const usableEvm = (c: string): boolean =>
+        c.startsWith('evm') && Boolean(rpcUrls[c]) && Boolean(tokens[c]);
+      const settlementKeys = Object.keys(this.config.settlementAddresses ?? {});
+      const chainKey =
+        settlementKeys.find((c) => usableEvm(c)) ?? chainKeys.find(usableEvm);
       const rpcUrl = chainKey ? rpcUrls[chainKey] : undefined;
       const tokenAddress = chainKey ? tokens[chainKey] : undefined;
       if (chainKey && rpcUrl && tokenAddress) {
