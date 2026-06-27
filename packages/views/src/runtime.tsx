@@ -391,9 +391,23 @@ function buildReadChannels(bridge: ViewBridge): () => Promise<AtomChannel[]> {
 /** Read on-chain wallet balances (`toon_balances`) for the wallet atom. */
 function buildReadBalances(bridge: ViewBridge): () => Promise<AtomBalance[]> {
   return async () => {
-    const res = await bridge.callTool(BALANCES_TOOL, {});
-    const data = (res.data ?? {}) as { balances?: AtomBalance[] };
-    return Array.isArray(data.balances) ? data.balances : [];
+    // The local HTTP control plane behind `toon_balances` can transiently refuse
+    // on :8787 while the websocket transport is healthy — it succeeds on
+    // immediate retry (toon-client#186). Retry a couple of times before giving
+    // up, and THROW on persistent failure so the wallet atom can show an
+    // error/retry state instead of a blank card (which is indistinguishable from
+    // a real zero balance). `callTool` never throws — it reports `{ ok:false }`.
+    let lastError = 'Balances are unavailable.';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await bridge.callTool(BALANCES_TOOL, {});
+      if (res.ok) {
+        const data = (res.data ?? {}) as { balances?: AtomBalance[] };
+        return Array.isArray(data.balances) ? data.balances : [];
+      }
+      lastError = res.error ?? lastError;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 200));
+    }
+    throw new Error(lastError);
   };
 }
 

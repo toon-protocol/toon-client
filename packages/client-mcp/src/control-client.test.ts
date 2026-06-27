@@ -92,6 +92,59 @@ describe('ControlClient', () => {
     );
   });
 
+  it('retries an idempotent GET on a transient connection failure (stale keep-alive socket)', async () => {
+    // First call mimics ECONNRESET on a reaped keep-alive socket; retry on a
+    // fresh socket succeeds (toon-client#186).
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('socket hang up'))
+      .mockResolvedValueOnce(jsonResponse({ ready: true, bootstrapping: false }));
+    const client = new ControlClient({
+      baseUrl: 'http://127.0.0.1:8787',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const status = await client.status();
+    expect(status.ready).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT retry a mutating POST on a connection failure (no double-publish)', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error('socket hang up'));
+    const client = new ControlClient({
+      baseUrl: 'http://127.0.0.1:8787',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client.publish({ event: { id: 'e1' } as any })
+    ).rejects.toBeInstanceOf(DaemonUnreachableError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies a timeout as a retryable 504, not an unreachable daemon', async () => {
+    // A handler that never responds until we abort (e.g. a hung on-chain read).
+    const fetchImpl = vi.fn(
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError'))
+          );
+        })
+    );
+    const client = new ControlClient({
+      baseUrl: 'http://127.0.0.1:8787',
+      timeoutMs: 10,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(client.status()).rejects.toMatchObject({
+      name: 'ControlApiError',
+      status: 504,
+      retryable: true,
+    });
+    // 504 is not a connection failure, so it is not transparently retried.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('ping() returns false when daemon is down, true when reachable', async () => {
     const down = new ControlClient({
       baseUrl: 'http://127.0.0.1:8787',

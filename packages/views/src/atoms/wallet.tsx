@@ -12,7 +12,7 @@
  * wired `fund` action. No key material lives here.
  */
 import { useEffect, useState, type FC, type ReactNode } from 'react';
-import { Wallet, Landmark, Coins } from 'lucide-react';
+import { Wallet, Landmark, Coins, Check, RotateCw } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Input } from '@/components/ui/input.js';
 import { Spinner } from '@/components/ui/spinner.js';
@@ -111,9 +111,18 @@ const CardShell: FC<{ icon: ReactNode; title: string; action?: ReactNode; childr
 
 // ── wallet-overview ──────────────────────────────────────────────────────────
 
+/** Lifecycle of the optional on-chain balance enrichment. */
+type BalanceState = 'loading' | 'ok' | 'error';
+/** Per-chain faucet-drip feedback so the Fund button isn't a silent no-op. */
+type FundState = 'funding' | 'done' | 'error';
+
 const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions }) => {
   const [identity, setIdentity] = useState<AtomStatus['identity'] | null | undefined>(undefined);
   const [balances, setBalances] = useState<AtomBalance[]>([]);
+  const [balState, setBalState] = useState<BalanceState>(readBalances ? 'loading' : 'ok');
+  // Bump to force a balance re-read (manual retry + post-fund refresh).
+  const [balReload, setBalReload] = useState(0);
+  const [funding, setFunding] = useState<Record<string, FundState>>({});
   const fund = actions['fund'];
 
   // Addresses come from the live status identity (always available); balances
@@ -135,15 +144,34 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
   useEffect(() => {
     if (!readBalances) return;
     let cancelled = false;
+    setBalState('loading');
     void readBalances()
-      .then((b) => !cancelled && setBalances(b))
-      .catch(() => {
-        /* balances are best-effort; absence is not an error */
-      });
+      .then((b) => {
+        if (cancelled) return;
+        setBalances(b);
+        setBalState('ok');
+      })
+      // The read seam retries the flaky control plane and only rejects on a
+      // persistent failure (toon-client#186) — surface it as an error/retry
+      // state rather than a blank card that looks like a real zero balance.
+      .catch(() => !cancelled && setBalState('error'));
     return () => {
       cancelled = true;
     };
-  }, [readBalances]);
+  }, [readBalances, balReload]);
+
+  const onFund = async (chain: string): Promise<void> => {
+    if (!fund) return;
+    setFunding((f) => ({ ...f, [chain]: 'funding' }));
+    const outcome = await fund({ chain });
+    // `fund` may resolve to void (older paths) — treat that as success.
+    const ok = !outcome || outcome.ok !== false;
+    setFunding((f) => ({ ...f, [chain]: ok ? 'done' : 'error' }));
+    // A successful drip changes the on-chain balance — re-read it.
+    if (ok) setBalReload((n) => n + 1);
+  };
+
+  const retryBalances = (): void => setBalReload((n) => n + 1);
 
   const rows = identity ? buildRows(identity, balances) : [];
 
@@ -155,43 +183,76 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
         <p className="py-2 text-sm text-muted-foreground">No wallet addresses configured yet.</p>
       ) : (
         <ul className="flex flex-col divide-y divide-border">
-          {rows.map((row) => (
-            <li key={`${row.chain}:${row.address}`} className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0">
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  {CHAIN_LABEL[row.chain] ?? row.chain}
-                </span>
-                {row.balance ? (
-                  <span className="font-mono text-sm font-semibold tabular-nums">
-                    {formatUnits(row.balance.amount, row.balance.assetScale ?? 6)}
-                    {row.balance.asset ? (
-                      <span className="ml-1 text-xs font-normal text-muted-foreground">{row.balance.asset}</span>
-                    ) : null}
+          {rows.map((row) => {
+            const fundState = funding[row.chain];
+            return (
+              <li key={`${row.chain}:${row.address}`} className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {CHAIN_LABEL[row.chain] ?? row.chain}
                   </span>
-                ) : null}
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <MonoId value={row.address} prefixLen={10} suffixLen={6} className="text-muted-foreground" />
-                <div className="flex items-center gap-0.5">
-                  <CopyButton value={row.address} label={`Copy ${CHAIN_LABEL[row.chain] ?? row.chain} address`} />
-                  {fund ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-                      onClick={() => void fund({ chain: row.chain })}
-                    >
-                      <Coins aria-hidden="true" />
-                      Fund
-                    </Button>
+                  {row.balance ? (
+                    <span className="font-mono text-sm font-semibold tabular-nums">
+                      {formatUnits(row.balance.amount, row.balance.assetScale ?? 6)}
+                      {row.balance.asset ? (
+                        <span className="ml-1 text-xs font-normal text-muted-foreground">{row.balance.asset}</span>
+                      ) : null}
+                    </span>
+                  ) : balState === 'loading' ? (
+                    <Spinner size="sm" />
                   ) : null}
                 </div>
-              </div>
-            </li>
-          ))}
+                <div className="flex items-center justify-between gap-2">
+                  <MonoId value={row.address} prefixLen={10} suffixLen={6} className="text-muted-foreground" />
+                  <div className="flex items-center gap-0.5">
+                    <CopyButton value={row.address} label={`Copy ${CHAIN_LABEL[row.chain] ?? row.chain} address`} />
+                    {fund ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={fundState === 'funding'}
+                        className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                        onClick={() => void onFund(row.chain)}
+                      >
+                        {fundState === 'funding' ? (
+                          <Spinner size="sm" />
+                        ) : fundState === 'done' ? (
+                          <Check aria-hidden="true" className="text-primary" />
+                        ) : (
+                          <Coins aria-hidden="true" />
+                        )}
+                        {fundState === 'funding'
+                          ? 'Funding…'
+                          : fundState === 'done'
+                            ? 'Requested'
+                            : fundState === 'error'
+                              ? 'Retry fund'
+                              : 'Fund'}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
+      {balState === 'error' ? (
+        <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5">
+          <span className="text-xs text-muted-foreground">Balances are temporarily unavailable.</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1 px-2 text-xs"
+            onClick={retryBalances}
+          >
+            <RotateCw aria-hidden="true" />
+            Retry
+          </Button>
+        </div>
+      ) : null}
       {fund ? (
         <p className="mt-2 text-[10px] text-muted-foreground/70">
           “Fund” requests devnet test funds from the faucet — it receives, it doesn’t spend.
