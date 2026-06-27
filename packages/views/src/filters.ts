@@ -56,9 +56,14 @@ export function buildProfileFilter(pubkeys: string[]): NostrFilter {
   return { kinds: [0], authors: pubkeys };
 }
 
-/** kind:1 text-note feed, optionally scoped to authors. */
+/**
+ * Social feed, optionally scoped to authors: kind:1 text notes plus inline media
+ * — NIP-68 pictures (20) / video (21,22) and NIP-94 file metadata (1063). The
+ * feed binds with `kindAuto`, so each kind renders via its own atom (note-card
+ * for kind:1, media-embed for the media kinds), interleaved newest-first.
+ */
 export function buildFeedFilter(authors?: string[], limit = 100): NostrFilter {
-  const f: NostrFilter = { kinds: [1], limit };
+  const f: NostrFilter = { kinds: [1, 20, 21, 22, 1063], limit };
   if (authors && authors.length > 0) f.authors = authors;
   return f;
 }
