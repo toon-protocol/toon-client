@@ -192,7 +192,16 @@ export class ControlClient {
   }
 
   fundWallet(body: FundWalletRequest = {}): Promise<FundWalletResponse> {
-    return this.request<FundWalletResponse>('POST', '/fund-wallet', body);
+    // The faucet is chain-aware. The Mina faucet mints native MINA + USDC on a
+    // slow-settling chain and can take up to ~120s to answer — the daemon waits
+    // `defaultFaucetTimeout('mina')` = 120s server-side — while evm/solana
+    // answer within ~30s. This control request must OUT-WAIT the daemon's faucet
+    // budget; the default 35s aborts a still-working mina drip and surfaces a
+    // misleading relay/apex timeout (#199-class). Give mina 130s, others 40s.
+    const timeoutMs = body.chain === 'mina' ? 130_000 : 40_000;
+    return this.request<FundWalletResponse>('POST', '/fund-wallet', body, {
+      timeoutMs,
+    });
   }
 
   /**

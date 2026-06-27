@@ -785,6 +785,17 @@ export async function dispatchTool(
           `unaffected. Retry shortly.`
       );
     }
+    // A 504 on a fund request is the faucet being slow (the mina faucet settles
+    // in ~75s), NOT the relay/apex. The drip may still land server-side — point
+    // at the faucet and tell the user to re-check balances, not to chase the
+    // relay (#199-class attribution on the /fund-wallet path).
+    if (e instanceof ControlApiError && e.status === 504 && name === 'toon_fund_wallet') {
+      return err(
+        `${e.detail ?? e.message} — the faucet drip did not return in time (the ` +
+          `mina faucet settles slowly); the relay and apex are unaffected. The ` +
+          `funds may still land — re-check balances shortly, or retry.`
+      );
+    }
     // Any other 504 is a retryable apex-discovery timeout — give a
     // discovery-specific hint rather than the daemon-bootstrapping one.
     if (e instanceof ControlApiError && e.status === 504) {
