@@ -93,6 +93,21 @@ jobs:
               --notes "Claude Desktop extension (.mcpb) for client-mcp $VERSION — install via Settings → Extensions → Advanced → Install Extension."
           fi
 
+          # Maintain a stable, version-less download URL by re-pointing the
+          # `mcpb-latest` release at this build. The ugly auto-tag
+          # (`@toon-protocol/client-mcp@<ver>`) keeps the pinned/versioned asset;
+          # this gives a clean permanent link:
+          #   …/releases/download/mcpb-latest/toon.mcpb
+          # `--latest=false` so it never steals the repo's "Latest" badge from
+          # the real version releases.
+          cp "$OUT" toon.mcpb
+          gh release delete mcpb-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create mcpb-latest toon.mcpb \
+            --target "$GITHUB_SHA" \
+            --latest=false \
+            --title "TOON Desktop extension — latest" \
+            --notes "Always the newest client-mcp .mcpb (currently $VERSION). Stable download: https://github.com/${GITHUB_REPOSITORY}/releases/download/mcpb-latest/toon.mcpb — install via Claude Desktop → Settings → Extensions → Advanced → Install Extension."
+
       - name: Upload .mcpb as workflow artifact
         if: steps.changesets.outputs.published == 'true' && contains(steps.changesets.outputs.publishedPackages, '@toon-protocol/client-mcp')
         uses: actions/upload-artifact@v4
