@@ -1,7 +1,7 @@
 /**
  * Discover an apex's settlement negotiation by reading its `kind:10032`
  * (`ILP_PEER_INFO_KIND`) announcement off a relay, rather than making the caller
- * hand-supply chain/settlement params. An apex (town node) publishes its
+ * hand-supply chain/settlement params. An apex (relay node) publishes its
  * `IlpPeerInfo` — `btpEndpoint`, `supportedChains`, `settlementAddresses`,
  * `preferredTokens`, `tokenNetworks` — to its relay; this module subscribes for
  * it, parses via core's `parseIlpPeerInfo`, and maps it onto the daemon's

@@ -45,7 +45,7 @@ export interface DaemonHarnessOpts {
    * daemon may stay bootstrapping against it. Default: a dummy `ws://` URL.
    */
   btpUrl?: string;
-  /** Town relay WS URL for free reads. Default: `ws://localhost:7100`. */
+  /** Relay WS URL for free reads. Default: `ws://localhost:7100`. */
   relayUrl?: string;
   /** Control-plane HTTP port. Default: a free port picked by the harness. */
   httpPort?: number;

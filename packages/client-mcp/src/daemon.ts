@@ -3,7 +3,7 @@
  * `toon-clientd` — the always-on, detached TOON client daemon. It owns the two
  * long-lived connections that cannot live in an ephemeral agent session:
  *   • a BTP session to the apex/connector (paid writes), and
- *   • a persistent town-relay Nostr-WS subscription (free reads),
+ *   • a persistent relay Nostr-WS subscription (free reads),
  * plus the payment channels (with a persisted nonce watermark) and the signer.
  *
  * Subcommands:

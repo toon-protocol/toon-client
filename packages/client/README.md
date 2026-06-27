@@ -2,7 +2,7 @@
 
 The **client library** for TOON Protocol — _pay-to-write Nostr over Interledger (ILP)_. Use it to **pay for and publish** writes to a network of service nodes. **Reads are free; writes cost a signed EIP-712 payment-channel claim** against an on-chain deposit.
 
-> **`client` vs `relay`.** This package (`@toon-protocol/client`) is what an _app or end user_ uses to **pay** and publish. It does **not** run any relay or node. The nodes are operated separately by **`@toon-protocol/relay`** (the operator product, which runs an _apex_ connector plus `town` / `swap` / `store` children). Don't confuse the **client** (pays) with **relay** (operates), or **`town`** (a single Nostr-relay node) with **relay** (the whole operator stack).
+> **`client` vs `relay`.** This package (`@toon-protocol/client`) is what an _app or end user_ uses to **pay** and publish. It does **not** run any relay or node. The nodes are operated separately by **`@toon-protocol/relay`** (the operator product, which runs an _apex_ connector plus `relay` / `swap` / `store` children). Don't confuse the **client** (pays) with **`@toon-protocol/relay`** (operates a node cluster), or the **relay** child node (a single Nostr-WS node) with the full **relay** operator stack.
 
 ## Which call pays which node
 
@@ -10,7 +10,7 @@ Every write is an ILP packet carrying a signed payment-channel claim. The client
 
 | Client call                       | Node type | What it does                                                                                                                                              |
 | --------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `client.publishEvent(event)`      | **town**  | Publish a Nostr event (e.g. `kind:1`) to the relay.                                                                                                       |
+| `client.publishEvent(event)`      | **relay** | Publish a Nostr event (e.g. `kind:1`) to the relay.                                                                                                       |
 | `requestBlobStorage(client, …)`   | **store** | NIP-90 compute/storage. Builds and publishes a `kind:5094` event that uploads a blob to Arweave — the job request **is** the payment — and decodes the Arweave tx ID from the FULFILL response. |
 | `client.sendSwapPacket(…)`        | **swap**  | Multi-chain token swap (low-level). Most callers use the higher-level `streamSwap()` from `@toon-protocol/sdk`, which is built on `sendSwapPacket`.       |
 
@@ -304,7 +304,7 @@ See [examples/client-example/](../../examples/client-example/) for standalone cl
 ## Related Packages
 
 - **[@toon-protocol/core](../core/)** — Core protocol (peer discovery, bootstrap, `buildBlobStorageRequest`)
-- **[@toon-protocol/relay](../relay/)** — Operator product running the apex connector plus town/swap/store nodes; also exports `encodeEventToToon` / `decodeEventFromToon` for event encoding
+- **[@toon-protocol/relay](../relay/)** — Operator product running the apex connector plus relay/swap/store nodes; also exports `encodeEventToToon` / `decodeEventFromToon` for event encoding
 - **[@toon-protocol/sdk](../sdk/)** — Higher-level helpers including `streamSwap()` for multi-chain swaps via a **swap**
 - **[@toon-protocol/bls](../bls/)** — Business Logic Server (pricing, validation, storage)
 

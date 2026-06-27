@@ -67,7 +67,7 @@ const CONFIG_HELP = {
     'BTP WebSocket URL of the apex/connector for paid writes. Optional when ' +
     '`proxyUrl` is set.',
   relayUrl:
-    'Town relay WebSocket URL for FREE reads. Default ws://localhost:7100.',
+    'Relay WebSocket URL for FREE reads. Default ws://localhost:7100.',
   destination:
     'Default ILP publish destination (apex address). Default g.proxy.',
   keystorePath:

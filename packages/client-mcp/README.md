@@ -9,7 +9,7 @@ with the host under the server name **`toon-client`** (this is the name that
 appears in Claude's MCP server list and in the `initialize` handshake;
 `mcpServers.toon` in config is just your local alias). The two long-lived
 connections that can't live in an ephemeral agent session — a **BTP** session
-(paid writes via the connector/apex) and a **town-relay Nostr-WS** subscription
+(paid writes via the connector/apex) and a **relay Nostr-WS** subscription
 (free reads) — live in
 an **always-on detached daemon** (`toon-clientd`). The MCP server is a thin
 stdio proxy that auto-spawns the daemon and never holds chain keys.
@@ -27,14 +27,14 @@ Claude (Desktop / Code)
         ▼
    toon-mcp  ──HTTP──▶  toon-clientd (detached, always-on)
                           ├─ ToonClient: BTP session + payment channels + signer
-                          └─ RelaySubscription: persistent town-relay Nostr-WS
+                          └─ RelaySubscription: persistent relay Nostr-WS
 ```
 
 ## Architecture
 
 | Layer | Bin / module | Responsibility |
 |---|---|---|
-| **Daemon** | `toon-clientd` | Owns one `ToonClient` (BTP + channels + mnemonic keystore + network targeting) **plus** a persistent town-relay subscription. Loopback HTTP control API, single-instance PID lock, channel nonce-watermark persistence, graceful shutdown. |
+| **Daemon** | `toon-clientd` | Owns one `ToonClient` (BTP + channels + mnemonic keystore + network targeting) **plus** a persistent relay subscription. Loopback HTTP control API, single-instance PID lock, channel nonce-watermark persistence, graceful shutdown. |
 | **MCP server** | `toon-mcp` | `@modelcontextprotocol/sdk` stdio server. Maps tools → daemon HTTP; auto-spawns the daemon detached if down; reports "bootstrapping — retry" while the BTP session comes up; holds no keys. |
 | **Skill** | `.claude/skills/toon-client/` | Teaches the agent pay-to-write / free-read / settlement semantics. |
 
