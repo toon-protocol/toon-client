@@ -1,0 +1,30 @@
+{
+  "manifest_version": "0.3",
+  "name": "toon",
+  "display_name": "TOON Protocol",
+  "version": "__VERSION__",
+  "description": "Act as a TOON Protocol client from Claude: pay-to-write Nostr over Interledger — publish, free reads, payment channels, swaps, and rendered feeds.",
+  "long_description": "TOON is pay-to-write Nostr over Interledger: reads are free, writes spend a payment-channel claim. This extension runs the `toon-mcp` stdio server, which auto-spawns a local `toon-clientd` daemon (held in your home directory) to manage chain keys and payment channels. Tools cover publishing, reading/subscribing, channel & balance management, multi-chain swaps, and rendering TOON events, feeds, profiles, and threads into an interactive UI. No configuration required — an identity is generated on first run.",
+  "author": {
+    "name": "Jonathan Green",
+    "email": "dev.jonathan.green@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/toon-protocol/toon-client"
+  },
+  "homepage": "https://github.com/toon-protocol/toon-client/tree/main/packages/client-mcp",
+  "documentation": "https://github.com/toon-protocol/toon-client/tree/main/packages/client-mcp#readme",
+  "support": "https://github.com/toon-protocol/toon-client/issues",
+  "license": "MIT",
+  "keywords": ["toon", "nostr", "interledger", "ilp", "pay-to-write", "mcp", "agent"],
+  "server": {
+    "type": "node",
+    "entry_point": "node_modules/@toon-protocol/client-mcp/dist/mcp.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/node_modules/@toon-protocol/client-mcp/dist/mcp.js"],
+      "env": {}
+    }
+  }
+}
