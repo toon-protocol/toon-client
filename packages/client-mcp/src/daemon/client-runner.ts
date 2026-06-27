@@ -234,6 +234,18 @@ export class ClientRunner {
   private readonly log: (msg: string) => void;
   private readonly targetsPath?: string;
 
+  /**
+   * Identity-level chain-read client. Reading your OWN on-chain wallet balance is
+   * a pure (wallet keys + chain RPC) operation that has nothing to do with the
+   * ILP/payment peer, so it lives at the daemon level rather than inside an apex.
+   * Built once from the daemon's own `toonClientConfig` (the same keys + chain
+   * RPC config every apex shares) and REUSED as the default apex's client, so a
+   * funded apex's `start()` (which derives Solana/Mina keys) also benefits this
+   * reader. `getBalances` uses it directly, so balances work even with zero
+   * apexes registered (follow-up to #199/#200).
+   */
+  private readonly identityClient: ToonClientLike;
+
   private readonly startedAt = Date.now();
 
   /** Apex write targets, keyed by btpUrl. */
@@ -283,9 +295,13 @@ export class ClientRunner {
     // started/bootstrapped) so `bootstrap()` works standalone (the daemon and
     // tests both rely on constructing then awaiting bootstrap()).
     this.registerRelay(this.defaultRelayUrl);
+    // Build the identity-level read client ONCE and reuse it as the default
+    // apex's client (same keys + chain RPC config), so on-chain balance reads
+    // never depend on an apex existing.
+    this.identityClient = this.createClient(this.config.toonClientConfig);
     const defaultApex = this.makeApex({
       btpUrl: this.defaultBtpUrl,
-      client: this.createClient(this.config.toonClientConfig),
+      client: this.identityClient,
       ...(this.config.apex ? { negotiation: this.config.apex } : {}),
       childPeers: this.config.apexChildPeers ?? [],
       destination: this.config.destination,
@@ -1223,8 +1239,11 @@ export class ClientRunner {
 
   /**
    * On-chain wallet balances. The wallet is identity-level (same keys across
-   * apexes), so read from the first available apex's client; per-chain reads are
-   * best-effort inside the client (a failing chain is simply omitted).
+   * apexes), so this reads from the daemon's {@link identityClient} — NOT an apex
+   * — and therefore works even with zero apexes / no payment peer configured
+   * (reading your own balance is a pure wallet-keys + chain-RPC operation).
+   * Per-chain reads are best-effort inside the client (a failing chain is simply
+   * omitted).
    *
    * Each underlying read hits per-chain RPC providers that can stall
    * indefinitely on devnet (a provider being `detail: "configured"` in
@@ -1236,13 +1255,11 @@ export class ClientRunner {
    * stalled" error instead of hanging.
    */
   async getBalances(): Promise<BalancesResponse> {
-    const apex = this.apexes.values().next().value;
-    if (!apex) return { balances: [] };
     let lastErr: unknown;
     for (let attempt = 1; attempt <= BALANCES_READ_ATTEMPTS; attempt++) {
       try {
         const balances = (await withTimeout(
-          apex.client.getBalances(),
+          this.identityClient.getBalances(),
           BALANCES_READ_TIMEOUT_MS,
           `chain balance read timed out after ${BALANCES_READ_TIMEOUT_MS}ms`
         )) as BalanceInfo[];

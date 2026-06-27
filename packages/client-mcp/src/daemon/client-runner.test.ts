@@ -654,6 +654,20 @@ describe('ClientRunner', () => {
     expect(res.balances[0]).toMatchObject({ chain: 'evm', address: '0xself', amount: '5000000' });
   });
 
+  it('getBalances reads the identity-level wallet even with zero apexes registered', async () => {
+    // Reading your own on-chain balance is a pure wallet-keys + chain-RPC
+    // operation — it must not depend on any payment peer. Drop every apex
+    // (including the default) and prove balances still come back.
+    (runner as unknown as { apexes: Map<string, unknown> }).apexes.clear();
+    const res = await runner.getBalances();
+    expect(Array.isArray(res.balances)).toBe(true);
+    expect(res.balances[0]).toMatchObject({
+      chain: 'evm',
+      address: '0xself',
+      amount: '5000000',
+    });
+  });
+
   it('getBalances fast-fails a stalled provider read, attributing the balances handler not relay/apex (#199)', async () => {
     await runner.bootstrap();
     // A provider that always rejects exercises the bounded-retry → fast-fail
