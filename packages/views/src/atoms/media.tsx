@@ -1,6 +1,6 @@
 /** Media atoms — NIP-68/71 posts + NIP-94 files (read), and the spendy uploader. */
 import { useRef, useState, type FC } from 'react';
-import { Check, ImagePlus, Loader2 } from 'lucide-react';
+import { Check, FileUp, FileText, Loader2 } from 'lucide-react';
 import { CopyButton } from '../components/copy-button.js';
 import { type MediaVariant, parseMediaPost, parseFileMetadata, parseInlineMedia } from '../parsers/media.js';
 import { arweaveGatewayCandidates } from '@toon-protocol/arweave';
@@ -79,8 +79,22 @@ function uploadErrorMessage(detail?: string): string {
   return trimmed ? `Upload failed: ${trimmed}` : 'Upload failed.';
 }
 
+/**
+ * The publish kind for an uploaded file's MIME: NIP-68 picture (20) for images,
+ * NIP-71 video (21) for video, NIP-94 generic file metadata (1063) for anything
+ * else (pdf, audio, archives, …). Passed as a runtime arg so it overrides the
+ * spec's static `kind` — one uploader handles any file type correctly.
+ */
+function nip94KindForMime(mime: string | undefined): number {
+  if (mime?.startsWith('image/')) return 20;
+  if (mime?.startsWith('video/')) return 21;
+  return 1063;
+}
+
 const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
-  const label = typeof props['label'] === 'string' ? props['label'] : 'Upload media';
+  const label = typeof props['label'] === 'string' ? props['label'] : 'Upload a file';
+  // Default to accepting ANY file; a spec may restrict via `accept` (e.g. "image/*").
+  const accept = typeof props['accept'] === 'string' ? props['accept'] : undefined;
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [uploadedOk, setUploadedOk] = useState(false);
@@ -108,7 +122,11 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
         binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
       }
       const dataBase64 = btoa(binary);
-      const outcome = await actions['upload']?.({ dataBase64, mime: file.type || undefined });
+      const outcome = await actions['upload']?.({
+        dataBase64,
+        mime: file.type || undefined,
+        kind: nip94KindForMime(file.type),
+      });
       if (outcome?.ok === false) {
         if (outcome.error === SPENDY_CANCELLED) {
           // The user/host DECLINED the spend at the consent prompt — benign and
@@ -149,7 +167,7 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
       <input
         ref={inputRef}
         type="file"
-        accept="image/*,video/*"
+        {...(accept ? { accept } : {})}
         className="sr-only"
         disabled={busy || !actions['upload']}
         onChange={(e) => {
@@ -166,14 +184,14 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
         {busy ? (
           <Loader2 aria-hidden="true" className="size-6 animate-spin text-muted-foreground" />
         ) : (
-          <ImagePlus
+          <FileUp
             aria-hidden="true"
             className="size-6 text-muted-foreground transition-colors group-hover:text-primary"
           />
         )}
         <span className="text-sm font-medium">{busy ? 'Uploading…' : label}</span>
         <span className="text-xs text-muted-foreground">
-          Image or video · <span className="text-primary/80">pays to publish</span>
+          Any file · <span className="text-primary/80">pays to publish</span>
         </span>
       </button>
       {uploadedOk && (
@@ -184,14 +202,19 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
           </div>
           {result?.url ? (
             <>
-              {result.mime?.startsWith('video/') ? (
-                <video src={result.url} controls className="max-h-72 w-full rounded-md" />
-              ) : (
+              {result.mime?.startsWith('image/') ? (
                 <img
                   src={result.url}
-                  alt="Uploaded media"
+                  alt="Uploaded image"
                   className="max-h-72 w-full rounded-md object-contain"
                 />
+              ) : result.mime?.startsWith('video/') ? (
+                <video src={result.url} controls className="max-h-72 w-full rounded-md" />
+              ) : (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <FileText aria-hidden="true" className="size-4 shrink-0" />
+                  <span className="truncate">{result.mime ?? 'file'} stored on Arweave</span>
+                </div>
               )}
               <div className="flex items-center gap-2">
                 <a
@@ -202,7 +225,7 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
                 >
                   {result.url}
                 </a>
-                <CopyButton value={result.url} label="Copy media URL" />
+                <CopyButton value={result.url} label="Copy file URL" />
               </div>
             </>
           ) : (

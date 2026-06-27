@@ -115,7 +115,14 @@ async function main(): Promise<void> {
         'threads, channels, or balances, call toon_atoms then toon_render ' +
         '(ui://toon/app) — do NOT route TOON data to a generic ' +
         'HTML/SVG/chart/widget tool or dump it as text. Always call toon_atoms ' +
-        'before toon_render. Writes (post/like/follow/upload/swap) spend a ' +
+        'before toon_render. On ANY intent to upload media or post/publish a ' +
+        'picture/video/image (e.g. "I want to upload", "publish an image", ' +
+        '"post a photo"), your FIRST action is toon_atoms then toon_render with ' +
+        'the media view (media-uploader atom). The uploader has an in-app FILE ' +
+        'PICKER, so do NOT ask whether a file is attached, where the image is, ' +
+        'or for a URL, and do NOT recount upload-path history or known issues — ' +
+        'just render the uploader and let the user pick a file. Writes ' +
+        '(post/like/follow/upload/swap) spend a ' +
         'payment-channel claim; surface the fee and confirm before paying. ' +
         'Fall back to text only on explicit request or render failure.',
     }
