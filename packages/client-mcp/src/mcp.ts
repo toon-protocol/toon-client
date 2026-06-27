@@ -135,10 +135,24 @@ async function main(): Promise<void> {
   // Arweave gateways as both resource (img/media/static) and connect origins.
   // Per the ext-apps spec the host reads `_meta.ui.csp` from the `resources/read`
   // content item, with the `resources/list` entry as fallback — so set it on both.
+  //
+  // CRUCIAL: ar.io / arweave.net gateways serve a 302 from the apex
+  // (`https://arweave.net/<txId>`) to a per-tx SANDBOX SUBDOMAIN
+  // (`https://<base32>.arweave.net/<txId>`). CSP `img-src` is checked against the
+  // REDIRECT TARGET, so an apex-only allowlist still blocks the image. Allow both
+  // the apex (initial request) and a wildcard subdomain (where the bytes load).
+  const arweaveCspDomains = ARWEAVE_GATEWAYS.flatMap((gateway) => {
+    try {
+      const host = new URL(gateway).host;
+      return [gateway, `https://*.${host}`];
+    } catch {
+      return [gateway];
+    }
+  });
   const APP_CSP = {
     csp: {
-      resourceDomains: [...ARWEAVE_GATEWAYS],
-      connectDomains: [...ARWEAVE_GATEWAYS],
+      resourceDomains: arweaveCspDomains,
+      connectDomains: arweaveCspDomains,
     },
   };
 
