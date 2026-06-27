@@ -965,17 +965,16 @@ export class ClientRunner {
     };
     this.fundJobs.set(chain, job);
 
-    // Timeout is chain-aware by default (mina settles far slower than the 30s
-    // evm/solana budget and otherwise times out on a request that succeeds
-    // server-side); an explicit faucetTimeoutMs overrides it.
-    void faucetFund(
-      faucetUrl,
-      address,
-      chain,
-      this.config.faucetTimeoutMs !== undefined
-        ? { timeout: this.config.faucetTimeoutMs }
-        : {}
-    )
+    // The drip runs in the BACKGROUND, so there is no caller to protect from a
+    // slow faucet — use a GENEROUS timeout. The faucet client default (30s for
+    // evm/solana) is tuned for a synchronous call and falsely aborts a drip that
+    // succeeds server-side a bit later: e.g. a loaded EVM faucet answers >30s but
+    // the tx still lands, so the job would report `error` while the balance
+    // actually went up — causing a misleading failure + double-fund risk. Await
+    // the real outcome instead (config `faucetTimeoutMs` still overrides).
+    const faucetTimeout =
+      this.config.faucetTimeoutMs ?? (chain === 'mina' ? 130_000 : 90_000);
+    void faucetFund(faucetUrl, address, chain, { timeout: faucetTimeout })
       .then(({ response }) => {
         job.status = 'success';
         job.response = response;
@@ -985,11 +984,19 @@ export class ClientRunner {
       .catch((err: unknown) => {
         // The background promise must never become an unhandled rejection.
         try {
-          job.status = 'error';
-          job.error = errMsg(err);
+          const msg = errMsg(err);
+          // A timeout is NOT a definitive failure — the on-chain drip may still
+          // settle after the client gives up (observed on EVM). Mark it as a
+          // distinct, non-terminal-sounding state and advise re-checking
+          // balances before re-funding, rather than asserting it failed.
+          const timedOut = /timed out|timeout|aborted/i.test(msg);
+          job.status = timedOut ? 'timeout' : 'error';
+          job.error = timedOut
+            ? `${msg} — the on-chain drip may still have settled; re-check balances before re-funding.`
+            : msg;
           job.finishedAt = Date.now();
           this.log(
-            `[runner] faucet drip failed: ${chain} → ${address}: ${errMsg(err)}`
+            `[runner] faucet drip ${timedOut ? 'timed out' : 'failed'}: ${chain} → ${address}: ${msg}`
           );
         } catch {
           // Swallow — recording the failure must not itself reject.

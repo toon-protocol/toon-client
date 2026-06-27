@@ -1251,6 +1251,17 @@ describe('ClientRunner — async faucet drip jobs', () => {
     expect(typeof job.finishedAt).toBe('number');
   });
 
+  it('marks a faucet TIMEOUT as status "timeout" (not "error") since the drip may still land', async () => {
+    const d = deferred<{ response: unknown }>();
+    vi.mocked(faucetFund).mockReturnValue(d.promise);
+    runner.fundWallet();
+    d.reject(new Error('Faucet request timed out after 30000ms'));
+    await flush();
+    const job = runner.getFundStatus('evm').jobs[0]!;
+    expect(job.status).toBe('timeout');
+    expect(job.error).toMatch(/re-check balances/i);
+  });
+
   it('is idempotent while pending: a second call does not launch a second drip', () => {
     vi.mocked(faucetFund).mockReturnValue(deferred<{ response: unknown }>().promise);
     const first = runner.fundWallet();

@@ -509,8 +509,13 @@ export interface FundWalletResponse {
   address: string;
   /** The faucet base URL the drip was requested from. */
   faucetUrl: string;
-  /** Lifecycle of the background drip. */
-  status: 'pending' | 'success' | 'error';
+  /**
+   * Lifecycle of the background drip. `'timeout'` is distinct from `'error'`:
+   * the faucet client gave up but the on-chain drip MAY still have settled
+   * (observed on a loaded EVM faucet) — treat it as "uncertain, re-check
+   * balances", not a definitive failure, to avoid a misleading double-fund.
+   */
+  status: 'pending' | 'success' | 'error' | 'timeout';
   /** Unix ms the drip was submitted. */
   startedAt: number;
   /** Unix ms the drip settled or failed (absent while `'pending'`). */
