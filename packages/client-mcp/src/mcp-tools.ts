@@ -794,7 +794,21 @@ export async function dispatchTool(
 }
 
 function ok(data: unknown): ToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+  const result: ToolResult = {
+    content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+  };
+  // Mirror object payloads into `structuredContent`. The MCP-app iframe bridge
+  // only surfaces `structuredContent` as `ToolOutcome.data` (a text-only result
+  // gives the atoms `undefined`), so the read seams (`toon_balances`,
+  // `toon_channels`) and every write receipt (`eventId`, `depositTotal`,
+  // `settleableAt`, …) depend on it. Without this, `wallet-overview` renders
+  // addresses but no balance/USDC — the headline #186 symptom — and deposit /
+  // withdraw / publish receipts come back blank. Arrays/primitives aren't valid
+  // `structuredContent` objects, so only plain objects are mirrored.
+  if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
+    result.structuredContent = data as Record<string, unknown>;
+  }
+  return result;
 }
 
 /** Result carrying machine-readable `structuredContent` for the MCP-app iframe. */

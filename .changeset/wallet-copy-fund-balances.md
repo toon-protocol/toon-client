@@ -37,3 +37,13 @@ just the symptom:
   client aborts on its own timeout (e.g. a hung on-chain balance read) is now a
   retryable `504`, so the surfaced message says "retry" instead of "the daemon
   failed to start — check the log".
+- **The real reason the wallet showed no balance: tool results carried no
+  `structuredContent`.** The MCP-app iframe bridge only surfaces a tool's
+  `structuredContent` as `ToolOutcome.data`; `toon_balances` / `toon_channels`
+  (and every write receipt) returned text-only, so the atoms' read seams got
+  `undefined` → `wallet-overview` rendered addresses but no balance/USDC and no
+  error (indistinguishable from an empty read), and deposit/withdraw/publish
+  receipts came back blank. The `ok()` tool-result helper now mirrors object
+  payloads into `structuredContent`, fixing the whole class. (The model still
+  saw the text, which is why balances "read zero" in chat but never reached the
+  card.)
