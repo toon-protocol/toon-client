@@ -207,6 +207,54 @@ describe('dispatchTool', () => {
     expect(res.structuredContent).toEqual(payload);
   });
 
+  it('toon_balances always emits structuredContent.balances as a populated array for a non-empty read (#200)', async () => {
+    const row = { chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 };
+    const balances = vi.fn().mockResolvedValue({ balances: [row] });
+    const res = await dispatchTool(stubClient({ balances }), 'toon_balances', {});
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toBeDefined();
+    const got = res.structuredContent?.['balances'];
+    expect(Array.isArray(got)).toBe(true);
+    expect((got as unknown[]).length).toBe(1);
+    expect((got as unknown[])[0]).toEqual(row);
+  });
+
+  it('toon_balances wraps a bare-array regression so structuredContent is never dropped (#200)', async () => {
+    // If client.balances() ever regresses to returning a BARE ARRAY, the
+    // tool boundary must still wrap it as { balances: [...] } so ok() does not
+    // silently drop structuredContent (its Array.isArray guard).
+    const row = { chain: 'solana', address: 'So1', amount: '1000', asset: 'USDC', assetScale: 6 };
+    const balances = vi.fn().mockResolvedValue([row]);
+    const res = await dispatchTool(stubClient({ balances }), 'toon_balances', {});
+    expect(res.structuredContent).toEqual({ balances: [row] });
+    expect(Array.isArray(res.structuredContent?.['balances'])).toBe(true);
+  });
+
+  it('toon_channels wraps a bare-array regression so structuredContent is never dropped (#200)', async () => {
+    const row = { channelId: 'c1', nonce: 3, cumulativeAmount: '3000' };
+    const channels = vi.fn().mockResolvedValue([row]);
+    const res = await dispatchTool(stubClient({ channels }), 'toon_channels', {});
+    expect(res.structuredContent).toEqual({ channels: [row] });
+    expect(Array.isArray(res.structuredContent?.['channels'])).toBe(true);
+  });
+
+  it('toon_balances 504 names the control plane / balances handler, not relay/apex (#199)', async () => {
+    const balances = vi
+      .fn()
+      .mockRejectedValue(
+        new ControlApiError(
+          'balances_unavailable',
+          504,
+          true,
+          'the balances control handler\'s chain RPC/provider read did not return'
+        )
+      );
+    const res = await dispatchTool(stubClient({ balances }), 'toon_balances', {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toMatch(/balances control plane|balances handler|GET \/balances/);
+    expect(res.content[0]!.text).not.toMatch(/retry once the relay is reachable and the apex is online/);
+  });
+
   it('toon_channel_deposit forwards channelId + amount', async () => {
     const depositToChannel = vi
       .fn()

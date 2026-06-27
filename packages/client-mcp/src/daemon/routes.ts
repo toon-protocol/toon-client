@@ -11,6 +11,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type { ClientRunner } from './client-runner.js';
 import {
+  BalancesUnavailableError,
   InvalidPayloadError,
   NotReadyError,
   PublishRejectedError,
@@ -148,7 +149,13 @@ export function registerRoutes(
 
   app.get('/channels', async () => runner.getChannels());
 
-  app.get('/balances', async () => runner.getBalances());
+  app.get('/balances', async (_req, reply) => {
+    try {
+      return await runner.getBalances();
+    } catch (err) {
+      return mapError(reply, err);
+    }
+  });
 
   app.post<{ Body: ChannelDepositRequest }>('/channels/deposit', async (req, reply) => {
     try {
@@ -306,6 +313,14 @@ function mapError(reply: FastifyReply, err: unknown): FastifyReply {
   }
   if (err instanceof PublishRejectedError) {
     return sendError(reply, 502, 'rejected', { detail: err.message });
+  }
+  if (err instanceof BalancesUnavailableError) {
+    // The chain RPC/provider behind the balances handler stalled — retryable,
+    // and attributed to the balances handler, NOT the relay/apex (#199).
+    return sendError(reply, 504, 'balances_unavailable', {
+      detail: err.message,
+      retryable: true,
+    });
   }
   if (err instanceof TargetError) {
     // 404 for "no such target", 400 otherwise — both are caller-fixable.

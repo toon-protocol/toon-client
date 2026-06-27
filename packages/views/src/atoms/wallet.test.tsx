@@ -102,6 +102,32 @@ describe('wallet-overview', () => {
     expect(readBalances).toHaveBeenCalledTimes(2);
   });
 
+  it('shows unavailable + Retry when the seam is wired but no row carries a balance (#200 defense-in-depth)', async () => {
+    const Wallet = byId('wallet-overview');
+    // Seam resolves 'ok' but with zero balance rows for the configured chains —
+    // a shape mismatch that slipped through as []. Must NOT render a silent blank.
+    const readBalances = vi
+      .fn<[], Promise<AtomBalance[]>>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(balances);
+    render(
+      <Wallet {...base} props={{}} readStatus={() => Promise.resolve(status)} readBalances={readBalances} />
+    );
+    expect(await screen.findByText('EVM')).toBeTruthy();
+    expect(await screen.findByText(/temporarily unavailable/i)).toBeTruthy();
+    // Retry recovers to real balances.
+    fireEvent.click(screen.getByRole('button', { name: /Retry/i }));
+    expect(await screen.findByText('125.5')).toBeTruthy();
+    expect(readBalances).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT flag unavailable when the balance seam is not wired (addresses-only mode)', async () => {
+    const Wallet = byId('wallet-overview');
+    render(<Wallet {...base} props={{}} readStatus={() => Promise.resolve(status)} />);
+    expect(await screen.findByText('EVM')).toBeTruthy();
+    expect(screen.queryByText(/temporarily unavailable/i)).toBeNull();
+  });
+
   it('gives the Fund button feedback and re-reads balances on success', async () => {
     const Wallet = byId('wallet-overview');
     const fund = vi.fn(() => Promise.resolve({ ok: true }));

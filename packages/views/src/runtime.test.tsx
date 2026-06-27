@@ -1,8 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
-import { ViewSpecRenderer, QUERY_TOOL } from './runtime.js';
-import { STATUS_TOOL } from './tool-names.js';
-import { type ViewBridge } from './app-bridge/types.js';
+import {
+  ViewSpecRenderer,
+  QUERY_TOOL,
+  buildReadBalances,
+  parseBalancesPayload,
+} from './runtime.js';
+import { STATUS_TOOL, BALANCES_TOOL } from './tool-names.js';
+import { type ToolOutcome, type ViewBridge } from './app-bridge/types.js';
 import { type NostrEvent } from './types.js';
 
 afterEach(cleanup);
@@ -461,5 +466,103 @@ describe('ViewSpecRenderer', () => {
     // back to compose; nothing published
     await waitFor(() => expect(screen.getByPlaceholderText(/what's happening/i)).toBeTruthy());
     expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeUndefined();
+  });
+});
+
+// ── toon_balances contract guard (#200) ─────────────────────────────────────
+
+describe('parseBalancesPayload', () => {
+  it('accepts the `{ balances: [...] }` contract', () => {
+    const balances = [{ chain: 'evm', address: '0x1', amount: '5' }];
+    expect(parseBalancesPayload({ balances })).toEqual(balances);
+  });
+
+  it('accepts a legitimately empty wallet `{ balances: [] }`', () => {
+    expect(parseBalancesPayload({ balances: [] })).toEqual([]);
+  });
+
+  it('THROWS on missing structuredContent (undefined)', () => {
+    expect(() => parseBalancesPayload(undefined)).toThrow();
+  });
+
+  it('THROWS on a bare array (not the object contract)', () => {
+    expect(() => parseBalancesPayload([{ chain: 'evm', address: '0x1', amount: '5' }])).toThrow();
+  });
+
+  it('THROWS on a non-object primitive (e.g. text-only result)', () => {
+    expect(() => parseBalancesPayload('balances: none')).toThrow();
+  });
+
+  it('THROWS when the `balances` key is missing / not an array (version skew)', () => {
+    expect(() => parseBalancesPayload({})).toThrow();
+    expect(() => parseBalancesPayload({ balances: { evm: '5' } })).toThrow();
+  });
+});
+
+describe('buildReadBalances', () => {
+  function bridgeReturning(...responses: ToolOutcome[]): {
+    bridge: ViewBridge;
+    calls: number;
+  } {
+    let calls = 0;
+    const bridge: ViewBridge = {
+      async callTool(name) {
+        if (name !== BALANCES_TOOL) return { ok: true };
+        const res = responses[Math.min(calls, responses.length - 1)]!;
+        calls++;
+        return res;
+      },
+      notifyModel() {},
+      onSpec() {
+        return () => {};
+      },
+    };
+    return {
+      bridge,
+      get calls() {
+        return calls;
+      },
+    };
+  }
+
+  it('returns the balances on a valid `{ balances: [...] }` success', async () => {
+    const balances = [{ chain: 'evm', address: '0x1', amount: '5' }];
+    const h = bridgeReturning({ ok: true, data: { balances } });
+    await expect(buildReadBalances(h.bridge)()).resolves.toEqual(balances);
+    expect(h.calls).toBe(1);
+  });
+
+  it('returns [] for a valid empty wallet `{ balances: [] }`', async () => {
+    const h = bridgeReturning({ ok: true, data: { balances: [] } });
+    await expect(buildReadBalances(h.bridge)()).resolves.toEqual([]);
+  });
+
+  it('THROWS (no silent []) on a successful call with NO structuredContent', async () => {
+    const h = bridgeReturning({ ok: true });
+    await expect(buildReadBalances(h.bridge)()).rejects.toThrow();
+    // Contract violation fails fast — no inter-attempt retry storm.
+    expect(h.calls).toBe(1);
+  });
+
+  it('THROWS (no silent []) on a bare-array payload (contract violation)', async () => {
+    const h = bridgeReturning({ ok: true, data: [{ chain: 'evm', address: '0x1', amount: '5' }] });
+    await expect(buildReadBalances(h.bridge)()).rejects.toThrow();
+    expect(h.calls).toBe(1);
+  });
+
+  it('retries a transient `{ ok:false }` refuse, then succeeds (#186)', async () => {
+    const balances = [{ chain: 'evm', address: '0x1', amount: '5' }];
+    const h = bridgeReturning(
+      { ok: false, error: 'ECONNREFUSED' },
+      { ok: true, data: { balances } }
+    );
+    await expect(buildReadBalances(h.bridge)()).resolves.toEqual(balances);
+    expect(h.calls).toBe(2);
+  });
+
+  it('THROWS the last error after persistent `{ ok:false }` (e.g. a timeout, #199)', async () => {
+    const h = bridgeReturning({ ok: false, error: 'aborted: timeout' });
+    await expect(buildReadBalances(h.bridge)()).rejects.toThrow(/timeout/);
+    expect(h.calls).toBe(3);
   });
 });

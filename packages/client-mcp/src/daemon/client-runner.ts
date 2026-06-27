@@ -217,6 +217,16 @@ interface MergedEvent {
 
 const MERGED_BUFFER = 5000;
 
+/**
+ * Per-attempt bound for an on-chain balance read, kept WELL under the control
+ * client's `/balances` timeout (12s) so a stalled provider fast-fails inside the
+ * daemon instead of letting the whole control request hang to the wire timeout
+ * (#199). With {@link BALANCES_READ_ATTEMPTS} the worst case stays under 12s.
+ */
+const BALANCES_READ_TIMEOUT_MS = 5_000;
+/** Bounded retry for a transient provider stall on a balance read (#199). */
+const BALANCES_READ_ATTEMPTS = 2;
+
 export class ClientRunner {
   private readonly config: ResolvedDaemonConfig;
   private readonly createClient: CreateClient;
@@ -1215,12 +1225,38 @@ export class ClientRunner {
    * On-chain wallet balances. The wallet is identity-level (same keys across
    * apexes), so read from the first available apex's client; per-chain reads are
    * best-effort inside the client (a failing chain is simply omitted).
+   *
+   * Each underlying read hits per-chain RPC providers that can stall
+   * indefinitely on devnet (a provider being `detail: "configured"` in
+   * toon_status means it is WIRED, not that its RPC is live). A stall here used
+   * to block the whole control request until the client aborted, surfacing as a
+   * misleading "relay/apex unreachable" timeout (#199). Bound each attempt well
+   * under the control-plane timeout and retry once so a single transient
+   * provider stall FAST-FAILS with an honest "balances handler / provider
+   * stalled" error instead of hanging.
    */
   async getBalances(): Promise<BalancesResponse> {
     const apex = this.apexes.values().next().value;
     if (!apex) return { balances: [] };
-    const balances = (await apex.client.getBalances()) as BalanceInfo[];
-    return { balances };
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= BALANCES_READ_ATTEMPTS; attempt++) {
+      try {
+        const balances = (await withTimeout(
+          apex.client.getBalances(),
+          BALANCES_READ_TIMEOUT_MS,
+          `chain balance read timed out after ${BALANCES_READ_TIMEOUT_MS}ms`
+        )) as BalanceInfo[];
+        return { balances };
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw new BalancesUnavailableError(
+      `the balances control handler's chain RPC/provider read did not return ` +
+        `(${BALANCES_READ_ATTEMPTS} attempts, ${BALANCES_READ_TIMEOUT_MS}ms each) — ` +
+        `the on-chain provider stalled, not the relay or apex. Retry shortly.`,
+      lastErr instanceof Error ? lastErr.message : undefined
+    );
   }
 
   /**
@@ -1407,6 +1443,23 @@ export class InvalidPayloadError extends Error {
   }
 }
 
+/**
+ * Thrown when the on-chain balance read stalls past its per-call provider
+ * timeout (after the bounded retry). Retryable, and explicitly attributed to the
+ * balances handler / chain provider — NOT the relay/apex — so the user-facing
+ * message names the real failing subsystem (#199). Maps to HTTP 504.
+ */
+export class BalancesUnavailableError extends Error {
+  readonly retryable = true;
+  /** The underlying provider error message, when one was captured. */
+  readonly providerError?: string;
+  constructor(message: string, providerError?: string) {
+    super(message);
+    this.name = 'BalancesUnavailableError';
+    if (providerError !== undefined) this.providerError = providerError;
+  }
+}
+
 /** Current time in whole seconds (Nostr `created_at` unit). */
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -1415,6 +1468,28 @@ function nowSeconds(): number {
 /** Resolve after `ms` (bounded wait for relay delivery in `query`). */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Race a promise against a timeout, rejecting with `message` if it does not
+ * settle in `ms`. The underlying work is NOT cancelled (it may complete in the
+ * background) — this just bounds how long the caller waits, so a stalled chain
+ * RPC fast-fails instead of blocking the control request (#199).
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 }
 
 /** NIP-01 filter match (kinds/authors/ids/since/until + `#<letter>` tag filters). */

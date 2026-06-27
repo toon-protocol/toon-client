@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import {
+  BalancesUnavailableError,
   ClientRunner,
   InvalidPayloadError,
   NotReadyError,
@@ -644,6 +645,27 @@ describe('ClientRunner', () => {
         closeState: 'open',
       },
     ]);
+  });
+
+  it('getBalances wraps the client read into the { balances: [...] } wire shape (#200)', async () => {
+    await runner.bootstrap();
+    const res = await runner.getBalances();
+    expect(Array.isArray(res.balances)).toBe(true);
+    expect(res.balances[0]).toMatchObject({ chain: 'evm', address: '0xself', amount: '5000000' });
+  });
+
+  it('getBalances fast-fails a stalled provider read, attributing the balances handler not relay/apex (#199)', async () => {
+    await runner.bootstrap();
+    // A provider that always rejects exercises the bounded-retry → fast-fail
+    // path without waiting the full per-attempt timeout.
+    vi.spyOn(client, 'getBalances').mockRejectedValue(new Error('RPC ECONNRESET'));
+    await expect(runner.getBalances()).rejects.toBeInstanceOf(BalancesUnavailableError);
+    const err = await runner.getBalances().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BalancesUnavailableError);
+    expect((err as BalancesUnavailableError).retryable).toBe(true);
+    expect((err as Error).message).toMatch(/provider|balances control handler/);
+    // Attribution clears the relay/apex rather than blaming them.
+    expect((err as Error).message).toMatch(/not the relay or apex/);
   });
 
   it('maps getNetworkStatus into per-chain ChainStatus[]', async () => {

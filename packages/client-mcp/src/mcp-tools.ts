@@ -678,9 +678,16 @@ export async function dispatchTool(
           )
         );
       case 'toon_channels':
-        return ok(await client.channels());
+        // Enforce the wire contract at the daemon boundary: ALWAYS emit a plain
+        // `{ channels: [...] }` object so `ok()` mirrors it into
+        // `structuredContent`. A bare-array regression would otherwise be
+        // silently dropped (Array.isArray guard in `ok`) → blank UI (#200).
+        return ok(wrapList('channels', await client.channels()));
       case 'toon_balances':
-        return ok(await client.balances());
+        // Same wire contract as toon_channels: always `{ balances: [...] }` so
+        // `structuredContent.balances` is never dropped, even if
+        // `client.balances()` regresses to a bare array (#200).
+        return ok(wrapList('balances', await client.balances()));
       case 'toon_channel_deposit':
         return ok(
           await client.depositToChannel({
@@ -767,8 +774,19 @@ export async function dispatchTool(
         return err(`Unknown tool: ${name}`);
     }
   } catch (e) {
-    // A 504 is a retryable apex-discovery timeout — give a discovery-specific
-    // hint rather than the daemon-bootstrapping one.
+    // A 504 on a balance read is the `:8787` balances handler stalling on a
+    // chain RPC/provider — NOT the relay/apex (#199). Name the real failing
+    // subsystem and do not assert relay/apex is the probable cause; toon_status
+    // stays `ready` throughout and the read succeeds on retry.
+    if (e instanceof ControlApiError && e.status === 504 && name === 'toon_balances') {
+      return err(
+        `${e.detail ?? e.message} — the balances control plane (:8787 GET ` +
+          `/balances) stalled reading on-chain balances; the relay and apex are ` +
+          `unaffected. Retry shortly.`
+      );
+    }
+    // Any other 504 is a retryable apex-discovery timeout — give a
+    // discovery-specific hint rather than the daemon-bootstrapping one.
     if (e instanceof ControlApiError && e.status === 504) {
       return err(
         `${e.detail ?? e.message} — retry once the relay is reachable and the apex is online.`
@@ -791,6 +809,25 @@ export async function dispatchTool(
     }
     return err(e instanceof Error ? e.message : String(e));
   }
+}
+
+/**
+ * Normalize a list-shaped read into the wire-contract object the MCP-app iframe
+ * depends on: `{ [key]: [...] }`. Accepts either the already-wrapped object
+ * (pass-through, no double-wrap) or a bare array (defensive — wraps it), so the
+ * read seam ALWAYS yields a plain object `ok()` mirrors into `structuredContent`
+ * rather than a bare array it would silently drop (#200).
+ */
+function wrapList(
+  key: 'balances' | 'channels',
+  res: unknown
+): Record<string, unknown> {
+  if (Array.isArray(res)) return { [key]: res };
+  if (res !== null && typeof res === 'object') {
+    const existing = (res as Record<string, unknown>)[key];
+    if (Array.isArray(existing)) return res as Record<string, unknown>;
+  }
+  return { [key]: [] };
 }
 
 function ok(data: unknown): ToolResult {

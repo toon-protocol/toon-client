@@ -63,6 +63,8 @@ const GENERATIVE_FALLBACK = new GenerativeFallbackRenderer();
 
 // Re-export so existing importers (and tests) can keep importing from the runtime.
 export { QUERY_TOOL, WRITE_TOOLS } from './tool-names.js';
+// Exported for unit tests (the `toon_balances` contract guard, see #200).
+export { buildReadBalances, parseBalancesPayload };
 
 /**
  * Order events deterministically by `created_at` (ties break on `id`) so render
@@ -388,6 +390,34 @@ function buildReadChannels(bridge: ViewBridge): () => Promise<AtomChannel[]> {
   };
 }
 
+/**
+ * Validate the `toon_balances` wire contract and project it to the atom's
+ * `AtomBalance[]`.
+ *
+ * The contract (shared with the daemon) is a plain OBJECT
+ * `{ balances: AtomBalance[] }` carried via the MCP `structuredContent` →
+ * `ToolOutcome.data`. A missing payload (no `structuredContent`), a non-object,
+ * a bare array, or a missing / non-array `balances` key is a CONTRACT VIOLATION
+ * — a daemon↔views version skew or a transport that dropped the structured
+ * content — and must `throw` so it drives the wallet atom's error/retry path.
+ *
+ * The bug (#200): collapsing any of those violations into the same `[]` as a
+ * legitimate empty balance list renders a silent blank card that's
+ * indistinguishable from a real zero balance, with no retry. Only a genuine
+ * `{ balances: [] }` (an empty wallet) is a valid success that returns `[]`.
+ */
+function parseBalancesPayload(data: unknown): AtomBalance[] {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    // Missing structuredContent (`undefined`), a bare array, or a primitive.
+    throw new Error('Balances response had an unexpected shape.');
+  }
+  const balances = (data as { balances?: unknown }).balances;
+  if (!Array.isArray(balances)) {
+    throw new Error('Balances response was missing the "balances" list.');
+  }
+  return balances as AtomBalance[];
+}
+
 /** Read on-chain wallet balances (`toon_balances`) for the wallet atom. */
 function buildReadBalances(bridge: ViewBridge): () => Promise<AtomBalance[]> {
   return async () => {
@@ -401,8 +431,12 @@ function buildReadBalances(bridge: ViewBridge): () => Promise<AtomBalance[]> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const res = await bridge.callTool(BALANCES_TOOL, {});
       if (res.ok) {
-        const data = (res.data ?? {}) as { balances?: AtomBalance[] };
-        return Array.isArray(data.balances) ? data.balances : [];
+        // A SUCCESSFUL call must satisfy the `{ balances: [...] }` contract.
+        // This is a SHAPE failure, not a transient transport refuse, so fail
+        // fast (no inter-attempt retry) — a version skew won't fix itself, and
+        // failing fast avoids amplifying a slow (35s) timeout that resolved
+        // `ok` with no structuredContent into 3×35s of spinner (#199).
+        return parseBalancesPayload(res.data);
       }
       lastError = res.error ?? lastError;
       if (attempt < 2) await new Promise((r) => setTimeout(r, 200));

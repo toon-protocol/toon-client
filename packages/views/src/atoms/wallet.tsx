@@ -175,6 +175,20 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
 
   const rows = identity ? buildRows(identity, balances) : [];
 
+  // Defense in depth (#200): even when `readBalances` resolved `'ok'`, a shape
+  // mismatch that slipped through as an empty list would leave every value cell
+  // blank — indistinguishable from a real zero balance, with no retry. If the
+  // balance seam IS wired and we have address rows but NONE carries a balance,
+  // treat it as unavailable (show the retry banner) rather than a silent blank.
+  // When the seam isn't wired (`readBalances` undefined) the addresses-only card
+  // is the intended degraded mode, so don't flag it.
+  const balancesUnavailable =
+    !!readBalances &&
+    balState === 'ok' &&
+    rows.length > 0 &&
+    !rows.some((r) => r.balance);
+  const showBalanceError = balState === 'error' || balancesUnavailable;
+
   return (
     <CardShell icon={<Wallet aria-hidden="true" className="size-4" />} title="Wallet">
       {identity === undefined ? (
@@ -238,7 +252,7 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
           })}
         </ul>
       )}
-      {balState === 'error' ? (
+      {showBalanceError ? (
         <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5">
           <span className="text-xs text-muted-foreground">Balances are temporarily unavailable.</span>
           <Button
