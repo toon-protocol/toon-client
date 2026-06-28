@@ -44,6 +44,18 @@ export const ATOM_CATALOG: AtomMeta[] = [
   // social
   { id: 'profile-header', description: 'NIP-01 kind:0 profile header (avatar, name, nip05, bio).', kinds: [0] },
   {
+    id: 'feed-list',
+    description:
+      'A bounded, scannable FEED/timeline slice: binds a kinds:[1] query and ' +
+      'reuses note-card rows (reply/like, Follow in the author popover). Adds a ' +
+      '"Load more" footer that pages older notes via a free toon_query, and — ' +
+      'where the host supports it — an "Open timeline" that expands to a ' +
+      'fullscreen scrolling timeline. Use for "show my feed/timeline/home". ' +
+      'Prefer this over a bare note-card when the user wants to browse a feed.',
+    kinds: [],
+    writes: [{ name: 'toon_publish_unsigned' }],
+  },
+  {
     id: 'note-card',
     description:
       'NIP-01 kind:1 text note, rendered as an X-style post (author header with ' +

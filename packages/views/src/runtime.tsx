@@ -38,6 +38,8 @@ import {
   SPENDY_CANCELLED,
 } from './atoms/types.js';
 import { ConsentProvider, useConsentGate, type ConsentGate } from './spendy-consent.js';
+import { SurfaceProvider, useSurface } from './surface.js';
+import { type NostrFilterLike } from './paging.js';
 import { useRenderDecision } from './render/resolve.js';
 import { A2UIRenderer } from './a2ui/A2UIRenderer.js';
 import { SandboxedAppRenderer } from './mcp-ui/SandboxedAppRenderer.js';
@@ -379,6 +381,15 @@ function McpUiBranch({
   );
 }
 
+/** A free paginated read seam (`toon_query`) for feed "load more". */
+function buildQuery(bridge: ViewBridge): (filter: NostrFilterLike) => Promise<NostrEvent[]> {
+  return async (filter) => {
+    const res = await bridge.callTool(QUERY_TOOL, { filter });
+    // A load-more failure is non-fatal: return [] so the feed keeps its pages.
+    return res.ok ? (res.events ?? []) : [];
+  };
+}
+
 /** Read the live pay-to-write status (`toon_status`) for the fee-confirm UX. */
 function buildReadStatus(bridge: ViewBridge): () => Promise<AtomStatus> {
   return async () => {
@@ -497,6 +508,8 @@ function NodeView({
   const readStatus = useMemo(() => buildReadStatus(bridge), [bridge]);
   const readChannels = useMemo(() => buildReadChannels(bridge), [bridge]);
   const readBalances = useMemo(() => buildReadBalances(bridge), [bridge]);
+  const loadMore = useMemo(() => buildQuery(bridge), [bridge]);
+  const surface = useSurface();
 
   if (node.bind?.kindAuto) {
     // Thread the feed node's actions (reply/react/follow) to each natively
@@ -524,6 +537,9 @@ function NodeView({
       refreshNonce={refreshNonce}
       resolveProfile={getProfileResolver(bridge)}
       renderEvent={(e) => <EventAtom key={e.id} event={e} bridge={bridge} />}
+      bind={node.bind}
+      loadMore={loadMore}
+      surface={surface}
     >
       {node.children?.map((child, i) => (
         <NodeView key={i} node={child} bridge={bridge} refreshNonce={refreshNonce} onMutated={onMutated} />
@@ -572,8 +588,10 @@ export function ViewSpecRenderer({
   // Wrap in the consent provider so spendy actions await a rendered prompt
   // (the host iframe blocks `window.confirm`; see consent-prompt.tsx).
   return (
-    <ConsentProvider readStatus={readStatus}>
-      <NodeView node={result.spec.root} bridge={bridge} refreshNonce={refreshNonce} onMutated={onMutated} />
-    </ConsentProvider>
+    <SurfaceProvider bridge={bridge}>
+      <ConsentProvider readStatus={readStatus}>
+        <NodeView node={result.spec.root} bridge={bridge} refreshNonce={refreshNonce} onMutated={onMutated} />
+      </ConsentProvider>
+    </SurfaceProvider>
   );
 }

@@ -10,6 +10,7 @@ import { KindRegistry } from '@toon-protocol/client/render';
 import { type Atom } from './types.js';
 import { layoutAtoms } from './layout.js';
 import { socialAtoms } from './social.js';
+import { feedAtoms } from './feed.js';
 import { mediaAtoms } from './media.js';
 import { forgeAtoms } from './forge.js';
 import { interactiveAtoms } from './interactive.js';
@@ -25,6 +26,7 @@ import { fallbackAtom, GENERIC_ATOM_ID } from './fallback.js';
 const ALL_ATOMS: Atom[] = [
   ...layoutAtoms,
   ...socialAtoms,
+  ...feedAtoms,
   ...mediaAtoms,
   ...forgeAtoms,
   ...interactiveAtoms,

@@ -8,7 +8,15 @@
  * the capability, so nothing assumes fullscreen/pip exists.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type FC,
+  type ReactNode,
+} from 'react';
 import { type DisplayMode, type ViewBridge } from './app-bridge/types.js';
 
 export interface DisplayModeControl {
@@ -58,4 +66,33 @@ export function useDisplayMode(bridge: ViewBridge): DisplayModeControl {
     canPip: state.available.includes('pip'),
     request,
   };
+}
+
+/** The inline-only fallback used when no {@link SurfaceProvider} is mounted. */
+const INLINE_ONLY: DisplayModeControl = {
+  mode: 'inline',
+  available: [],
+  canFullscreen: false,
+  canPip: false,
+  request: async () => {},
+};
+
+const SurfaceContext = createContext<DisplayModeControl>(INLINE_ONLY);
+
+/**
+ * Computes surface-mode state ONCE per view and shares it via context, so the
+ * many atoms in a view read it cheaply instead of each subscribing to the host
+ * (which would chain N handlers onto the single host-context callback).
+ */
+export const SurfaceProvider: FC<{ bridge: ViewBridge; children: ReactNode }> = ({
+  bridge,
+  children,
+}) => {
+  const control = useDisplayMode(bridge);
+  return <SurfaceContext.Provider value={control}>{children}</SurfaceContext.Provider>;
+};
+
+/** Read the view's surface-mode control (inline-only when no provider is mounted). */
+export function useSurface(): DisplayModeControl {
+  return useContext(SurfaceContext);
 }
