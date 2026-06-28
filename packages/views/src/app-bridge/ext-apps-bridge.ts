@@ -43,6 +43,17 @@ export function createExtAppsBridge(app: App): ViewBridge {
         const outcome: ToolOutcome = { ok: result.isError !== true };
         const events = extractEvents(structured);
         if (events) outcome.events = events;
+        // `data` is populated ONLY from `structuredContent`. A tool call that
+        // resolved without `isError` but carried no `structuredContent` is
+        // suspicious (a daemon↔views skew or a transport that dropped the
+        // structured payload), but the bridge is tool-agnostic — it can't know
+        // which tools are required to return structured data (`toon_read`
+        // carries `events`, not `structuredContent`). So we deliberately leave
+        // `data` as `undefined` rather than fabricate `{}`, keeping the
+        // missing-structuredContent case DISTINGUISHABLE downstream: each read
+        // seam validates its own wire contract (e.g. `parseBalancesPayload` in
+        // the runtime treats `undefined` as a contract violation → error/retry,
+        // not a silent empty list). See toon-client#200.
         if (structured !== undefined) outcome.data = structured;
         if (result.isError === true) outcome.error = firstText(result) ?? 'tool error';
         return outcome;

@@ -11,7 +11,7 @@
  * runtime-wired `readBalances` / `readChannels` seams, and the faucet fires the
  * wired `fund` action. No key material lives here.
  */
-import { useEffect, useState, type FC, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FC, type ReactNode } from 'react';
 import { Wallet, Landmark, Coins, Check, RotateCw } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Input } from '@/components/ui/input.js';
@@ -19,6 +19,7 @@ import { Spinner } from '@/components/ui/spinner.js';
 import { MonoId } from '@/components/mono-id.js';
 import { CopyButton } from '@/components/copy-button.js';
 import { Stepper } from './loading.js';
+import { useRefreshTick } from './use-refresh.js';
 import {
   type Atom,
   type AtomRenderProps,
@@ -26,6 +27,15 @@ import {
   type AtomChannel,
   type AtomStatus,
 } from './types.js';
+
+/**
+ * Wallet refresh cadence: re-read balances ~1.5s after a successful write, then
+ * again at the faucet-drip settlement marks. The drip settles AFTER the submit
+ * returns (EVM/Solana ~30s, Mina ~1–2 min), so the later marks let the new
+ * balance light up without a manual refresh. Module-level so the dep array stays
+ * stable across renders.
+ */
+const WALLET_REFRESH_DELAYS = [1500, 15_000, 45_000, 90_000] as const;
 
 /** Human chain label for the per-chain rows. */
 const CHAIN_LABEL: Record<string, string> = {
@@ -113,17 +123,57 @@ const CardShell: FC<{ icon: ReactNode; title: string; action?: ReactNode; childr
 
 /** Lifecycle of the optional on-chain balance enrichment. */
 type BalanceState = 'loading' | 'ok' | 'error';
-/** Per-chain faucet-drip feedback so the Fund button isn't a silent no-op. */
-type FundState = 'funding' | 'done' | 'error';
+/**
+ * Per-chain faucet-drip feedback so the Fund button isn't a silent no-op. The
+ * drip is ASYNC: `'funding'` is the brief submit, `'submitted'` means the daemon
+ * accepted it and balances are now polling (the Mina faucet settles in ~1-2 min,
+ * past the host's tool-call timeout), `'error'` is a rejected submit.
+ */
+type FundState = 'funding' | 'submitted' | 'error';
 
-const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions }) => {
+const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions, refreshNonce }) => {
   const [identity, setIdentity] = useState<AtomStatus['identity'] | null | undefined>(undefined);
   const [balances, setBalances] = useState<AtomBalance[]>([]);
   const [balState, setBalState] = useState<BalanceState>(readBalances ? 'loading' : 'ok');
-  // Bump to force a balance re-read (manual retry + post-fund refresh).
+  // Bump to force a balance re-read (manual retry button).
   const [balReload, setBalReload] = useState(0);
   const [funding, setFunding] = useState<Record<string, FundState>>({});
+  // Per-chain balance amount captured when a fund was submitted, so we can clear
+  // the "Submitted ✓" state the moment that chain's balance actually changes
+  // (the drip landed). And a fallback timer per chain so a drip that never moves
+  // the balance (e.g. a failed Solana faucet) doesn't park on "Submitted" forever.
+  const fundBaselineRef = useRef<Record<string, string>>({});
+  const fundTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const fund = actions['fund'];
+
+  const clearFunding = (chain: string): void => {
+    const t = fundTimersRef.current[chain];
+    if (t) {
+      clearTimeout(t);
+      delete fundTimersRef.current[chain];
+    }
+    delete fundBaselineRef.current[chain];
+    setFunding((f) => {
+      if (!(chain in f)) return f;
+      const next = { ...f };
+      delete next[chain];
+      return next;
+    });
+  };
+
+  // Clear all fund timers on unmount.
+  useEffect(() => {
+    const timers = fundTimersRef.current;
+    return () => {
+      for (const t of Object.values(timers)) clearTimeout(t);
+    };
+  }, []);
+  // After ANY successful write in the view (including this wallet's faucet
+  // `fund`, which flows through the runtime action wrapper → onMutated), re-read
+  // balances immediately and again across the drip-settlement marks. This folds
+  // the old bespoke post-fund re-poll into the shared refresh mechanism, so the
+  // wrapper's onMutated drives it and the timers self-clean on bump/unmount.
+  const refreshTick = useRefreshTick(refreshNonce, WALLET_REFRESH_DELAYS);
 
   // Addresses come from the live status identity (always available); balances
   // are an optional enrichment that may be absent until the reader is wired.
@@ -150,6 +200,27 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
         if (cancelled) return;
         setBalances(b);
         setBalState('ok');
+        // Reset any "Submitted ✓" button whose chain balance has now changed
+        // from the value captured at fund time — i.e. the drip landed and the UI
+        // updated, so the transient feedback should fall back to the idle "Fund".
+        setFunding((prev) => {
+          let next = prev;
+          for (const [ch, st] of Object.entries(prev)) {
+            if (st !== 'submitted') continue;
+            const newAmt = b.find((x) => x.chain === ch)?.amount;
+            if (newAmt !== undefined && newAmt !== fundBaselineRef.current[ch]) {
+              if (next === prev) next = { ...prev };
+              delete next[ch];
+              const t = fundTimersRef.current[ch];
+              if (t) {
+                clearTimeout(t);
+                delete fundTimersRef.current[ch];
+              }
+              delete fundBaselineRef.current[ch];
+            }
+          }
+          return next;
+        });
       })
       // The read seam retries the flaky control plane and only rejects on a
       // persistent failure (toon-client#186) — surface it as an error/retry
@@ -158,22 +229,55 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
     return () => {
       cancelled = true;
     };
-  }, [readBalances, balReload]);
+    // balReload = manual retry; refreshTick = post-write refresh (incl. fund drip).
+  }, [readBalances, balReload, refreshTick]);
 
   const onFund = async (chain: string): Promise<void> => {
     if (!fund) return;
+    // Snapshot the pre-fund balance so we can detect when the drip actually
+    // lands and clear the "Submitted" state at that point.
+    fundBaselineRef.current[chain] =
+      balances.find((b) => b.chain === chain)?.amount ?? '';
     setFunding((f) => ({ ...f, [chain]: 'funding' }));
     const outcome = await fund({ chain });
-    // `fund` may resolve to void (older paths) — treat that as success.
+    // `fund` may resolve to void (older paths) — treat that as success. With the
+    // async drip the call now returns a 'pending' submit, not a settled balance.
     const ok = !outcome || outcome.ok !== false;
-    setFunding((f) => ({ ...f, [chain]: ok ? 'done' : 'error' }));
-    // A successful drip changes the on-chain balance — re-read it.
-    if (ok) setBalReload((n) => n + 1);
+    setFunding((f) => ({ ...f, [chain]: ok ? 'submitted' : 'error' }));
+    // No bespoke re-poll here: a successful `fund` bumps the view's refreshNonce
+    // (via the runtime action wrapper → onMutated), which drives the staggered
+    // balance re-read through `refreshTick` / WALLET_REFRESH_DELAYS above; the
+    // re-read clears "Submitted" once this chain's balance changes.
+    if (ok) {
+      // Fallback: if the balance never moves (e.g. a faucet drip that fails to
+      // settle), don't park on "Submitted" forever — reset shortly after the
+      // last refresh mark.
+      const prev = fundTimersRef.current[chain];
+      if (prev) clearTimeout(prev);
+      fundTimersRef.current[chain] = setTimeout(
+        () => clearFunding(chain),
+        WALLET_REFRESH_DELAYS[WALLET_REFRESH_DELAYS.length - 1]! + 5_000
+      );
+    }
   };
 
   const retryBalances = (): void => setBalReload((n) => n + 1);
 
   const rows = identity ? buildRows(identity, balances) : [];
+
+  // Defense in depth (#200): even when `readBalances` resolved `'ok'`, a shape
+  // mismatch that slipped through as an empty list would leave every value cell
+  // blank — indistinguishable from a real zero balance, with no retry. If the
+  // balance seam IS wired and we have address rows but NONE carries a balance,
+  // treat it as unavailable (show the retry banner) rather than a silent blank.
+  // When the seam isn't wired (`readBalances` undefined) the addresses-only card
+  // is the intended degraded mode, so don't flag it.
+  const balancesUnavailable =
+    !!readBalances &&
+    balState === 'ok' &&
+    rows.length > 0 &&
+    !rows.some((r) => r.balance);
+  const showBalanceError = balState === 'error' || balancesUnavailable;
 
   return (
     <CardShell icon={<Wallet aria-hidden="true" className="size-4" />} title="Wallet">
@@ -217,15 +321,15 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
                       >
                         {fundState === 'funding' ? (
                           <Spinner size="sm" />
-                        ) : fundState === 'done' ? (
+                        ) : fundState === 'submitted' ? (
                           <Check aria-hidden="true" className="text-primary" />
                         ) : (
                           <Coins aria-hidden="true" />
                         )}
                         {fundState === 'funding'
-                          ? 'Funding…'
-                          : fundState === 'done'
-                            ? 'Requested'
+                          ? 'Submitting…'
+                          : fundState === 'submitted'
+                            ? 'Submitted'
                             : fundState === 'error'
                               ? 'Retry fund'
                               : 'Fund'}
@@ -238,7 +342,7 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
           })}
         </ul>
       )}
-      {balState === 'error' ? (
+      {showBalanceError ? (
         <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5">
           <span className="text-xs text-muted-foreground">Balances are temporarily unavailable.</span>
           <Button
@@ -253,6 +357,11 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
           </Button>
         </div>
       ) : null}
+      {Object.values(funding).some((s) => s === 'submitted') ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Drip submitted — balances updating… (Mina can take 1–2 min to settle.)
+        </p>
+      ) : null}
       {fund ? (
         <p className="mt-2 text-[10px] text-muted-foreground/70">
           “Fund” requests devnet test funds from the faucet — it receives, it doesn’t spend.
@@ -264,9 +373,12 @@ const WalletOverview: FC<AtomRenderProps> = ({ readStatus, readBalances, actions
 
 // ── channel-list ─────────────────────────────────────────────────────────────
 
-const ChannelList: FC<AtomRenderProps> = ({ readChannels }) => {
+const ChannelList: FC<AtomRenderProps> = ({ readChannels, refreshNonce }) => {
   const [channels, setChannels] = useState<AtomChannel[] | null>(null);
   const [error, setError] = useState(false);
+  // Re-read channels after a successful write (open/deposit/close/settle):
+  // immediate + a short settlement delay.
+  const refreshTick = useRefreshTick(refreshNonce);
 
   useEffect(() => {
     if (!readChannels) {
@@ -280,7 +392,7 @@ const ChannelList: FC<AtomRenderProps> = ({ readChannels }) => {
     return () => {
       cancelled = true;
     };
-  }, [readChannels]);
+  }, [readChannels, refreshTick]);
 
   return (
     <CardShell
@@ -335,7 +447,7 @@ const ChannelList: FC<AtomRenderProps> = ({ readChannels }) => {
 
 type DepositPhase = 'idle' | 'depositing' | 'receipt';
 
-const DepositForm: FC<AtomRenderProps> = ({ readChannels, actions }) => {
+const DepositForm: FC<AtomRenderProps> = ({ readChannels, actions, refreshNonce }) => {
   const [channels, setChannels] = useState<AtomChannel[]>([]);
   const [channelId, setChannelId] = useState('');
   const [amount, setAmount] = useState('');
@@ -343,6 +455,8 @@ const DepositForm: FC<AtomRenderProps> = ({ readChannels, actions }) => {
   const [depositTotal, setDepositTotal] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const deposit = actions['deposit'];
+  // Refresh the channel selector after a successful write elsewhere in the view.
+  const refreshTick = useRefreshTick(refreshNonce);
 
   useEffect(() => {
     if (!readChannels) return;
@@ -360,7 +474,7 @@ const DepositForm: FC<AtomRenderProps> = ({ readChannels, actions }) => {
     return () => {
       cancelled = true;
     };
-  }, [readChannels]);
+  }, [readChannels, refreshTick]);
 
   const submit = async (): Promise<void> => {
     const value = amount.trim();
@@ -457,17 +571,20 @@ function mmss(totalSec: number): string {
 
 type CloseState = 'open' | 'closing' | 'settleable' | 'settled';
 
-const WithdrawFlow: FC<AtomRenderProps> = ({ readChannels, actions }) => {
+const WithdrawFlow: FC<AtomRenderProps> = ({ readChannels, actions, refreshNonce }) => {
   const [channels, setChannels] = useState<AtomChannel[]>([]);
   const [channelId, setChannelId] = useState('');
-  // Optimistic override after a close/settle action (readChannels is the
-  // authoritative source but doesn't auto-refresh between actions).
+  // Optimistic override after a close/settle action gives instant feedback; the
+  // refreshNonce-driven re-read below then reconciles with authoritative state.
   const [override, setOverride] = useState<{ closeState?: CloseState; settleableAt?: string }>({});
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const [busy, setBusy] = useState<null | 'close' | 'settle'>(null);
   const [error, setError] = useState<string | null>(null);
   const close = actions['close'];
   const settle = actions['settle'];
+  // Re-read channels after a successful close/settle so the flow reflects the
+  // authoritative on-chain state, not just the optimistic override.
+  const refreshTick = useRefreshTick(refreshNonce);
 
   useEffect(() => {
     if (!readChannels) return;
@@ -485,7 +602,7 @@ const WithdrawFlow: FC<AtomRenderProps> = ({ readChannels, actions }) => {
     return () => {
       cancelled = true;
     };
-  }, [readChannels]);
+  }, [readChannels, refreshTick]);
 
   // Tick the clock so the countdown + settle gate update live.
   useEffect(() => {

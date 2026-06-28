@@ -1,8 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
-import { ViewSpecRenderer, QUERY_TOOL } from './runtime.js';
-import { STATUS_TOOL } from './tool-names.js';
-import { type ViewBridge } from './app-bridge/types.js';
+import {
+  ViewSpecRenderer,
+  QUERY_TOOL,
+  buildReadBalances,
+  parseBalancesPayload,
+} from './runtime.js';
+import { STATUS_TOOL, BALANCES_TOOL } from './tool-names.js';
+import { type ToolOutcome, type ViewBridge } from './app-bridge/types.js';
 import { type NostrEvent } from './types.js';
 
 afterEach(cleanup);
@@ -218,6 +223,7 @@ describe('ViewSpecRenderer', () => {
     const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
 
     await waitFor(() => expect(screen.getByText(/upload cancelled/i)).toBeTruthy());
     expect(screen.queryByText(/upload failed/i)).toBeNull();
@@ -249,6 +255,7 @@ describe('ViewSpecRenderer', () => {
     const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
 
     // A rendered consent dialog appears — the tool has NOT fired yet.
     const dialog = await screen.findByRole('dialog');
@@ -281,6 +288,7 @@ describe('ViewSpecRenderer', () => {
     const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
 
     await screen.findByRole('dialog');
     fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
@@ -321,6 +329,7 @@ describe('ViewSpecRenderer', () => {
     const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
 
     await waitFor(() => expect(screen.getByText(/Arweave upload leg failed/i)).toBeTruthy());
     expect(screen.getByText(/F02 - no route/i)).toBeTruthy();
@@ -349,6 +358,7 @@ describe('ViewSpecRenderer', () => {
     const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
     Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
     fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
 
     await waitFor(() => {
       expect(calls.find((c) => c.name === 'toon_upload')).toBeTruthy();
@@ -461,5 +471,207 @@ describe('ViewSpecRenderer', () => {
     // back to compose; nothing published
     await waitFor(() => expect(screen.getByPlaceholderText(/what's happening/i)).toBeTruthy());
     expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeUndefined();
+  });
+
+  // ── post-action auto-refresh (refreshNonce) ────────────────────────────────
+
+  /** A bridge whose status carries an identity (so the wallet renders Fund). */
+  function walletBridge(fundOk: boolean): {
+    bridge: ViewBridge;
+    count: (name: string) => number;
+  } {
+    const calls: string[] = [];
+    const bridge: ViewBridge = {
+      async callTool(name) {
+        calls.push(name);
+        if (name === STATUS_TOOL)
+          return {
+            ok: true,
+            data: { feePerEvent: '1', settlementChain: 'base', identity: { evmAddress: '0xabc' } },
+          };
+        if (name === BALANCES_TOOL)
+          return {
+            ok: true,
+            data: { balances: [{ chain: 'evm', address: '0xabc', amount: '1000000', asset: 'USDC', assetScale: 6 }] },
+          };
+        // The fund action result (success or failure under test).
+        return fundOk ? { ok: true, data: { status: 'pending' } } : { ok: false, error: 'faucet down' };
+      },
+      notifyModel() {},
+      onSpec() {
+        return () => {};
+      },
+    };
+    return { bridge, count: (name) => calls.filter((c) => c === name).length };
+  }
+
+  it('a SUCCESSFUL action bumps the refresh signal — the read seam re-fetches', async () => {
+    const { bridge, count } = walletBridge(true);
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: { atom: 'wallet-overview', actions: { fund: { tool: 'toon_fund_wallet' } } },
+        }}
+      />
+    );
+    // Initial mount read of balances.
+    await screen.findByText('EVM');
+    await waitFor(() => expect(count(BALANCES_TOOL)).toBe(1));
+    // Fund succeeds → onMutated → refreshNonce bump → balances re-read in place.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Fund' })[0]!);
+    await waitFor(() => expect(count(BALANCES_TOOL)).toBeGreaterThanOrEqual(2));
+  });
+
+  it('a FAILED action does NOT bump the refresh signal — no re-fetch', async () => {
+    const { bridge, count } = walletBridge(false);
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: { atom: 'wallet-overview', actions: { fund: { tool: 'toon_fund_wallet' } } },
+        }}
+      />
+    );
+    await screen.findByText('EVM');
+    await waitFor(() => expect(count(BALANCES_TOOL)).toBe(1));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Fund' })[0]!);
+    // The failed fund surfaces a Retry-fund label; balances must NOT have re-read.
+    await screen.findByRole('button', { name: /Retry fund/i });
+    expect(count(BALANCES_TOOL)).toBe(1);
+  });
+
+  it('a successful action re-queries a bound feed (post/react/follow refresh)', async () => {
+    let queries = 0;
+    const bridge: ViewBridge = {
+      async callTool(name, args) {
+        if (name === QUERY_TOOL) {
+          // Count only the feed bind read (kinds:[1]), not profile (kinds:[0]) lookups.
+          const filter = (args as { filter?: { kinds?: number[] } }).filter;
+          if (filter?.kinds?.includes(1)) queries++;
+          return { ok: true, events: [evt({ kind: 1, id: 'n1', content: 'gm' })] };
+        }
+        return { ok: true, data: { eventId: 'new-event' } };
+      },
+      notifyModel() {},
+      onSpec() {
+        return () => {};
+      },
+    };
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'note-card',
+            bind: { query: { kinds: [1] } },
+            actions: { react: { tool: 'toon_publish_unsigned', args: { kind: 7 } } },
+          },
+        }}
+      />
+    );
+    await screen.findByText('gm');
+    await waitFor(() => expect(queries).toBe(1));
+    // Fire the wired react/like action → onMutated → useBind re-queries the feed.
+    fireEvent.click(screen.getByRole('button', { name: /like this note/i }));
+    await waitFor(() => expect(queries).toBeGreaterThanOrEqual(2));
+  });
+});
+
+// ── toon_balances contract guard (#200) ─────────────────────────────────────
+
+describe('parseBalancesPayload', () => {
+  it('accepts the `{ balances: [...] }` contract', () => {
+    const balances = [{ chain: 'evm', address: '0x1', amount: '5' }];
+    expect(parseBalancesPayload({ balances })).toEqual(balances);
+  });
+
+  it('accepts a legitimately empty wallet `{ balances: [] }`', () => {
+    expect(parseBalancesPayload({ balances: [] })).toEqual([]);
+  });
+
+  it('THROWS on missing structuredContent (undefined)', () => {
+    expect(() => parseBalancesPayload(undefined)).toThrow();
+  });
+
+  it('THROWS on a bare array (not the object contract)', () => {
+    expect(() => parseBalancesPayload([{ chain: 'evm', address: '0x1', amount: '5' }])).toThrow();
+  });
+
+  it('THROWS on a non-object primitive (e.g. text-only result)', () => {
+    expect(() => parseBalancesPayload('balances: none')).toThrow();
+  });
+
+  it('THROWS when the `balances` key is missing / not an array (version skew)', () => {
+    expect(() => parseBalancesPayload({})).toThrow();
+    expect(() => parseBalancesPayload({ balances: { evm: '5' } })).toThrow();
+  });
+});
+
+describe('buildReadBalances', () => {
+  function bridgeReturning(...responses: ToolOutcome[]): {
+    bridge: ViewBridge;
+    calls: number;
+  } {
+    let calls = 0;
+    const bridge: ViewBridge = {
+      async callTool(name) {
+        if (name !== BALANCES_TOOL) return { ok: true };
+        const res = responses[Math.min(calls, responses.length - 1)]!;
+        calls++;
+        return res;
+      },
+      notifyModel() {},
+      onSpec() {
+        return () => {};
+      },
+    };
+    return {
+      bridge,
+      get calls() {
+        return calls;
+      },
+    };
+  }
+
+  it('returns the balances on a valid `{ balances: [...] }` success', async () => {
+    const balances = [{ chain: 'evm', address: '0x1', amount: '5' }];
+    const h = bridgeReturning({ ok: true, data: { balances } });
+    await expect(buildReadBalances(h.bridge)()).resolves.toEqual(balances);
+    expect(h.calls).toBe(1);
+  });
+
+  it('returns [] for a valid empty wallet `{ balances: [] }`', async () => {
+    const h = bridgeReturning({ ok: true, data: { balances: [] } });
+    await expect(buildReadBalances(h.bridge)()).resolves.toEqual([]);
+  });
+
+  it('THROWS (no silent []) on a successful call with NO structuredContent', async () => {
+    const h = bridgeReturning({ ok: true });
+    await expect(buildReadBalances(h.bridge)()).rejects.toThrow();
+    // Contract violation fails fast — no inter-attempt retry storm.
+    expect(h.calls).toBe(1);
+  });
+
+  it('THROWS (no silent []) on a bare-array payload (contract violation)', async () => {
+    const h = bridgeReturning({ ok: true, data: [{ chain: 'evm', address: '0x1', amount: '5' }] });
+    await expect(buildReadBalances(h.bridge)()).rejects.toThrow();
+    expect(h.calls).toBe(1);
+  });
+
+  it('retries a transient `{ ok:false }` refuse, then succeeds (#186)', async () => {
+    const balances = [{ chain: 'evm', address: '0x1', amount: '5' }];
+    const h = bridgeReturning(
+      { ok: false, error: 'ECONNREFUSED' },
+      { ok: true, data: { balances } }
+    );
+    await expect(buildReadBalances(h.bridge)()).resolves.toEqual(balances);
+    expect(h.calls).toBe(2);
+  });
+
+  it('THROWS the last error after persistent `{ ok:false }` (e.g. a timeout, #199)', async () => {
+    const h = bridgeReturning({ ok: false, error: 'aborted: timeout' });
+    await expect(buildReadBalances(h.bridge)()).rejects.toThrow(/timeout/);
+    expect(h.calls).toBe(3);
   });
 });

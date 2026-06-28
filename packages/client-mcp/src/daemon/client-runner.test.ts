@@ -5,11 +5,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // ephemeral key generated inside swap()).
 vi.mock('@toon-protocol/sdk/swap', () => ({ streamSwap: vi.fn() }));
 import { streamSwap } from '@toon-protocol/sdk/swap';
+// Mock only the faucet boundary so async fundWallet jobs run without a real
+// faucet; every other `@toon-protocol/client` export is preserved.
+vi.mock('@toon-protocol/client', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@toon-protocol/client')>();
+  return { ...actual, fundWallet: vi.fn() };
+});
+import { fundWallet as faucetFund } from '@toon-protocol/client';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import {
+  BalancesUnavailableError,
   ClientRunner,
   InvalidPayloadError,
   NotReadyError,
@@ -646,6 +655,41 @@ describe('ClientRunner', () => {
     ]);
   });
 
+  it('getBalances wraps the client read into the { balances: [...] } wire shape (#200)', async () => {
+    await runner.bootstrap();
+    const res = await runner.getBalances();
+    expect(Array.isArray(res.balances)).toBe(true);
+    expect(res.balances[0]).toMatchObject({ chain: 'evm', address: '0xself', amount: '5000000' });
+  });
+
+  it('getBalances reads the identity-level wallet even with zero apexes registered', async () => {
+    // Reading your own on-chain balance is a pure wallet-keys + chain-RPC
+    // operation — it must not depend on any payment peer. Drop every apex
+    // (including the default) and prove balances still come back.
+    (runner as unknown as { apexes: Map<string, unknown> }).apexes.clear();
+    const res = await runner.getBalances();
+    expect(Array.isArray(res.balances)).toBe(true);
+    expect(res.balances[0]).toMatchObject({
+      chain: 'evm',
+      address: '0xself',
+      amount: '5000000',
+    });
+  });
+
+  it('getBalances fast-fails a stalled provider read, attributing the balances handler not relay/apex (#199)', async () => {
+    await runner.bootstrap();
+    // A provider that always rejects exercises the bounded-retry → fast-fail
+    // path without waiting the full per-attempt timeout.
+    vi.spyOn(client, 'getBalances').mockRejectedValue(new Error('RPC ECONNRESET'));
+    await expect(runner.getBalances()).rejects.toBeInstanceOf(BalancesUnavailableError);
+    const err = await runner.getBalances().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BalancesUnavailableError);
+    expect((err as BalancesUnavailableError).retryable).toBe(true);
+    expect((err as Error).message).toMatch(/provider|balances control handler/);
+    // Attribution clears the relay/apex rather than blaming them.
+    expect((err as Error).message).toMatch(/not the relay or apex/);
+  });
+
   it('maps getNetworkStatus into per-chain ChainStatus[]', async () => {
     await runner.bootstrap();
     const net = runner.getStatus().network;
@@ -1127,5 +1171,143 @@ describe('ClientRunner — proxy mode (#69)', () => {
     await expect(
       runner.openChannel()
     ).rejects.toThrow(/read-only|uplink/i);
+  });
+});
+
+describe('ClientRunner — async faucet drip jobs', () => {
+  let runner: ClientRunner;
+  let prevHome: string | undefined;
+  /** A promise whose resolve/reject we control to drive the background job. */
+  function deferred<T>(): {
+    promise: Promise<T>;
+    resolve: (v: T) => void;
+    reject: (e: unknown) => void;
+  } {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+  /** Flush microtasks so the background .then/.catch can update the job. */
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'toon-runner-fund-'));
+    prevHome = process.env['TOON_CLIENT_HOME'];
+    process.env['TOON_CLIENT_HOME'] = tmpDir;
+    vi.mocked(faucetFund).mockReset();
+    runner = new ClientRunner({
+      config: makeConfig({ faucetUrl: 'http://faucet.test' }),
+      createClient: () => new FakeClient(),
+      createRelay: fakeRelay,
+    });
+  });
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env['TOON_CLIENT_HOME'];
+    else process.env['TOON_CLIENT_HOME'] = prevHome;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns a pending snapshot immediately and does not block on the faucet', () => {
+    // A never-settling faucet — the call must still return synchronously-fast.
+    vi.mocked(faucetFund).mockReturnValue(deferred<{ response: unknown }>().promise);
+    const snap = runner.fundWallet();
+    expect(snap.status).toBe('pending');
+    expect(snap.chain).toBe('evm');
+    expect(snap.address).toBe('0xabc');
+    expect(snap.faucetUrl).toBe('http://faucet.test');
+    expect(typeof snap.startedAt).toBe('number');
+    expect(snap.finishedAt).toBeUndefined();
+    expect(vi.mocked(faucetFund)).toHaveBeenCalledTimes(1);
+  });
+
+  it('transitions pending → success when the faucet resolves', async () => {
+    const d = deferred<{ response: unknown }>();
+    vi.mocked(faucetFund).mockReturnValue(d.promise);
+    runner.fundWallet();
+    expect(runner.getFundStatus('evm').jobs[0]!.status).toBe('pending');
+    d.resolve({ response: { ok: true, faucet: 'drip' } });
+    await flush();
+    const job = runner.getFundStatus('evm').jobs[0]!;
+    expect(job.status).toBe('success');
+    expect(job.response).toEqual({ ok: true, faucet: 'drip' });
+    expect(typeof job.finishedAt).toBe('number');
+    expect(job.error).toBeUndefined();
+  });
+
+  it('transitions pending → error when the faucet rejects (no unhandled rejection)', async () => {
+    const d = deferred<{ response: unknown }>();
+    vi.mocked(faucetFund).mockReturnValue(d.promise);
+    runner.fundWallet();
+    d.reject(new Error('faucet 500'));
+    await flush();
+    const job = runner.getFundStatus('evm').jobs[0]!;
+    expect(job.status).toBe('error');
+    expect(job.error).toMatch(/faucet 500/);
+    expect(typeof job.finishedAt).toBe('number');
+  });
+
+  it('marks a faucet TIMEOUT as status "timeout" (not "error") since the drip may still land', async () => {
+    const d = deferred<{ response: unknown }>();
+    vi.mocked(faucetFund).mockReturnValue(d.promise);
+    runner.fundWallet();
+    d.reject(new Error('Faucet request timed out after 30000ms'));
+    await flush();
+    const job = runner.getFundStatus('evm').jobs[0]!;
+    expect(job.status).toBe('timeout');
+    expect(job.error).toMatch(/re-check balances/i);
+  });
+
+  it('is idempotent while pending: a second call does not launch a second drip', () => {
+    vi.mocked(faucetFund).mockReturnValue(deferred<{ response: unknown }>().promise);
+    const first = runner.fundWallet();
+    const second = runner.fundWallet();
+    expect(vi.mocked(faucetFund)).toHaveBeenCalledTimes(1);
+    expect(second.status).toBe('pending');
+    expect(second.startedAt).toBe(first.startedAt);
+  });
+
+  it('allows a fresh drip once the previous one settled', async () => {
+    const d1 = deferred<{ response: unknown }>();
+    vi.mocked(faucetFund).mockReturnValueOnce(d1.promise);
+    runner.fundWallet();
+    d1.resolve({ response: {} });
+    await flush();
+    expect(runner.getFundStatus('evm').jobs[0]!.status).toBe('success');
+    // A second call after settlement re-drips (status no longer 'pending').
+    vi.mocked(faucetFund).mockReturnValueOnce(deferred<{ response: unknown }>().promise);
+    runner.fundWallet();
+    expect(vi.mocked(faucetFund)).toHaveBeenCalledTimes(2);
+    expect(runner.getFundStatus('evm').jobs[0]!.status).toBe('pending');
+  });
+
+  it('getFundStatus returns all jobs, or just the requested chain', () => {
+    vi.mocked(faucetFund).mockReturnValue(deferred<{ response: unknown }>().promise);
+    runner.fundWallet({ chain: 'evm' });
+    runner.fundWallet({ chain: 'solana', address: 'So1' });
+    expect(runner.getFundStatus().jobs).toHaveLength(2);
+    expect(runner.getFundStatus('solana').jobs).toHaveLength(1);
+    expect(runner.getFundStatus('solana').jobs[0]!.address).toBe('So1');
+    expect(runner.getFundStatus('mina').jobs).toHaveLength(0);
+  });
+
+  it('throws when no faucet is configured', () => {
+    const noFaucet = new ClientRunner({
+      config: makeConfig(),
+      createClient: () => new FakeClient(),
+      createRelay: fakeRelay,
+    });
+    expect(() => noFaucet.fundWallet()).toThrow(InvalidPayloadError);
+  });
+
+  it('throws when no address is resolvable for the chain', () => {
+    // FakeClient has no solana/mina address and none is passed.
+    expect(() => runner.fundWallet({ chain: 'mina' })).toThrow(
+      InvalidPayloadError
+    );
   });
 });

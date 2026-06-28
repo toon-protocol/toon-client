@@ -1,11 +1,12 @@
 /** Interactive atoms that hold local UI state (composer, tabs, pay-confirm). */
-import { Children, useEffect, useState, type FC, type ReactNode } from 'react';
-import { ArrowLeft, CircleCheck, Coins, Loader2 } from 'lucide-react';
+import { Children, useEffect, useRef, useState, type FC, type ReactNode } from 'react';
+import { ArrowLeft, CircleCheck, Coins, Loader2, Paperclip, X } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Textarea } from '@/components/ui/textarea.js';
 import { MonoId } from '@/components/mono-id.js';
-import { type Atom, type AtomRenderProps, type AtomStatus } from './types.js';
+import { type Atom, type AtomRenderProps, type AtomStatus, SPENDY_CANCELLED } from './types.js';
 import { byteLength } from './social-ui.js';
+import { bytesToBase64 } from './media.js';
 
 /**
  * The shared composer surface: an auto-sizing textarea over a footer toolbar
@@ -21,10 +22,15 @@ const ComposerSurface: FC<{
   actionIcon?: ReactNode;
   disabled: boolean;
   onSubmit: () => void;
-}> = ({ value, onChange, placeholder, actionLabel, actionIcon, disabled, onSubmit }) => {
+  /** Optional staged-media preview rendered above the textarea. */
+  preview?: ReactNode;
+  /** Optional footer-left control (e.g. an attach-media button). */
+  attach?: ReactNode;
+}> = ({ value, onChange, placeholder, actionLabel, actionIcon, disabled, onSubmit, preview, attach }) => {
   const bytes = byteLength(value);
   return (
     <div className="rounded-xl border border-border bg-card focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30">
+      {preview ? <div className="px-3 pt-3">{preview}</div> : null}
       <Textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -33,13 +39,16 @@ const ComposerSurface: FC<{
         className="min-h-14 resize-none border-0 bg-transparent px-3.5 pt-3.5 text-base focus-visible:border-0 focus-visible:ring-0 md:text-sm"
       />
       <div className="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
-        <span
-          className="font-mono text-xs text-muted-foreground tabular-nums"
-          aria-label={`${bytes} bytes, the unit pay-to-write fees scale with`}
-          title="Fees scale with encoded bytes"
-        >
-          {bytes} {bytes === 1 ? 'byte' : 'bytes'}
-        </span>
+        <div className="flex items-center gap-2">
+          {attach}
+          <span
+            className="font-mono text-xs text-muted-foreground tabular-nums"
+            aria-label={`${bytes} bytes, the unit pay-to-write fees scale with`}
+            title="Fees scale with encoded bytes"
+          >
+            {bytes} {bytes === 1 ? 'byte' : 'bytes'}
+          </span>
+        </div>
         <Button size="sm" disabled={disabled} onClick={onSubmit}>
           {actionIcon}
           {actionLabel}
@@ -51,26 +60,147 @@ const ComposerSurface: FC<{
 
 const Composer: FC<AtomRenderProps> = ({ props, actions }) => {
   const [text, setText] = useState('');
+  const [staged, setStaged] = useState<{ file: File; previewUrl: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const placeholder =
     typeof props['placeholder'] === 'string' ? props['placeholder'] : "What's happening?";
   const label = typeof props['label'] === 'string' ? props['label'] : 'Post';
+  const accept = typeof props['accept'] === 'string' ? props['accept'] : undefined;
+  // A text post can OPTIONALLY carry media: attach a file and it publishes via
+  // toon_upload as a kind:1 note with NIP-92 imeta (rendered inline by the feed),
+  // instead of a bare text note via toon_publish_unsigned. Pure uploads use the
+  // dedicated `media-uploader` atom instead.
+  const canAttach = !!actions['upload'];
+  const value = text.trim();
 
-  const submit = (): void => {
-    const value = text.trim();
+  useEffect(() => {
+    const url = staged?.previewUrl;
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [staged]);
+
+  const stageFile = (file: File): void => {
+    setStaged((prev) => {
+      if (prev) URL.revokeObjectURL(prev.previewUrl);
+      return { file, previewUrl: URL.createObjectURL(file) };
+    });
+    setError(null);
+  };
+  const clearStaged = (): void => {
+    setStaged((prev) => {
+      if (prev) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+    if (inputRef.current) inputRef.current.value = '';
+  };
+
+  const submit = async (): Promise<void> => {
+    if (busy) return;
+    setError(null);
+    if (staged) {
+      if (!actions['upload']) return;
+      setBusy(true);
+      try {
+        const dataBase64 = bytesToBase64(await staged.file.arrayBuffer());
+        // kind:1 → the daemon publishes a note carrying the uploaded media as
+        // NIP-92 imeta; the caption (post text) becomes the note content.
+        const outcome = await actions['upload']({
+          kind: 1,
+          dataBase64,
+          mime: staged.file.type || undefined,
+          ...(value ? { caption: value } : {}),
+        });
+        if (!outcome || outcome.ok !== false) {
+          setText('');
+          clearStaged();
+        } else if (outcome.error !== SPENDY_CANCELLED) {
+          // Keep the staged file + text so the user can retry; a declined spend
+          // is benign and silent.
+          setError(outcome.error ?? 'Post failed.');
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    // Text-only post: optimistic clear (fire-and-forget), as before.
     if (!value || !actions['post']) return;
     void actions['post']({ content: value });
     setText('');
   };
 
+  const canSubmit =
+    !busy && (staged ? !!actions['upload'] : !!value && !!actions['post']);
+  const isImage = staged?.file.type.startsWith('image/') ?? false;
+  const isVideo = staged?.file.type.startsWith('video/') ?? false;
+
+  const preview = staged ? (
+    <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/20 p-2">
+      {isImage ? (
+        <img src={staged.previewUrl} alt="" className="size-12 shrink-0 rounded object-cover" />
+      ) : isVideo ? (
+        <video src={staged.previewUrl} className="size-12 shrink-0 rounded object-cover" />
+      ) : (
+        <Paperclip aria-hidden="true" className="size-5 shrink-0 text-muted-foreground" />
+      )}
+      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{staged.file.name}</span>
+      <button
+        type="button"
+        disabled={busy}
+        aria-label="Remove attachment"
+        className="shrink-0 rounded-md p-1 text-muted-foreground hover:text-foreground disabled:opacity-50"
+        onClick={clearStaged}
+      >
+        <X aria-hidden="true" className="size-3.5" />
+      </button>
+    </div>
+  ) : undefined;
+
+  const attach = canAttach ? (
+    <button
+      type="button"
+      disabled={busy}
+      aria-label="Attach media or file"
+      title="Attach media or file"
+      className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-primary disabled:opacity-50"
+      onClick={() => inputRef.current?.click()}
+    >
+      <Paperclip aria-hidden="true" className="size-4" />
+    </button>
+  ) : undefined;
+
   return (
-    <ComposerSurface
-      value={text}
-      onChange={setText}
-      placeholder={placeholder}
-      actionLabel={label}
-      disabled={!text.trim() || !actions['post']}
-      onSubmit={submit}
-    />
+    <div className="flex flex-col gap-1">
+      <input
+        ref={inputRef}
+        type="file"
+        {...(accept ? { accept } : {})}
+        className="sr-only"
+        disabled={busy}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) stageFile(file);
+        }}
+      />
+      <ComposerSurface
+        value={text}
+        onChange={setText}
+        placeholder={placeholder}
+        actionLabel={busy ? 'Posting…' : label}
+        disabled={!canSubmit}
+        onSubmit={() => void submit()}
+        {...(preview ? { preview } : {})}
+        {...(attach ? { attach } : {})}
+      />
+      {error ? (
+        <p className="px-1 text-xs text-destructive whitespace-pre-wrap break-words">{error}</p>
+      ) : null}
+    </div>
   );
 };
 
@@ -270,7 +400,11 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
 };
 
 export const interactiveAtoms: Atom[] = [
-  { id: 'composer', writes: [{ name: 'toon_publish_unsigned' }], Component: Composer },
+  {
+    id: 'composer',
+    writes: [{ name: 'toon_publish_unsigned' }, { name: 'toon_upload', spendy: true }],
+    Component: Composer,
+  },
   { id: 'tabs', Component: Tabs },
   { id: 'pay-confirm', writes: [{ name: 'toon_publish_unsigned' }], Component: PayConfirm },
 ];

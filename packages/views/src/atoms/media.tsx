@@ -1,6 +1,6 @@
 /** Media atoms — NIP-68/71 posts + NIP-94 files (read), and the spendy uploader. */
-import { useRef, useState, type FC } from 'react';
-import { Check, FileUp, FileText, Loader2 } from 'lucide-react';
+import { useEffect, useRef, useState, type FC } from 'react';
+import { Check, FileUp, FileText, Loader2, X } from 'lucide-react';
 import { CopyButton } from '../components/copy-button.js';
 import { type MediaVariant, parseMediaPost, parseFileMetadata, parseInlineMedia } from '../parsers/media.js';
 import { arweaveGatewayCandidates } from '@toon-protocol/arweave';
@@ -91,47 +91,89 @@ function nip94KindForMime(mime: string | undefined): number {
   return 1063;
 }
 
+/** Convert file bytes to base64 for the `dataBase64` upload arg (chunked to
+ * avoid a huge spread call on large buffers). */
+export function bytesToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
 const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
   const label = typeof props['label'] === 'string' ? props['label'] : 'Upload a file';
   // Default to accepting ANY file; a spec may restrict via `accept` (e.g. "image/*").
   const accept = typeof props['accept'] === 'string' ? props['accept'] : undefined;
+  const captionPlaceholder =
+    typeof props['captionPlaceholder'] === 'string'
+      ? props['captionPlaceholder']
+      : 'Add a caption… (optional)';
   const inputRef = useRef<HTMLInputElement>(null);
+  // A post is a two-step compose: pick a file (staged + previewed), optionally
+  // write a caption, then Publish (the paid write). This lets the user review +
+  // caption before paying, and threads the caption into the kind:20/21 content.
+  const [staged, setStaged] = useState<{ file: File; previewUrl: string } | null>(null);
+  const [caption, setCaption] = useState('');
   const [busy, setBusy] = useState(false);
   const [uploadedOk, setUploadedOk] = useState(false);
   const [result, setResult] = useState<{ url?: string; mime?: string } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [cancelled, setCancelled] = useState(false);
 
-  const handleFile = async (file: File): Promise<void> => {
-    setBusy(true);
+  // Revoke the object URL when the staged file changes or on unmount.
+  useEffect(() => {
+    const url = staged?.previewUrl;
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [staged]);
+
+  const stageFile = (file: File): void => {
+    setStaged((prev) => {
+      if (prev) URL.revokeObjectURL(prev.previewUrl);
+      return { file, previewUrl: URL.createObjectURL(file) };
+    });
     setUploadedOk(false);
     setResult(null);
     setUploadError(null);
     setCancelled(false);
+  };
+
+  const clearStaged = (): void => {
+    setStaged((prev) => {
+      if (prev) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+    setCaption('');
+    if (inputRef.current) inputRef.current.value = '';
+  };
+
+  const publish = async (): Promise<void> => {
+    if (!staged) return;
+    const { file } = staged;
+    setBusy(true);
+    setUploadError(null);
+    setCancelled(false);
     try {
-      const buf = await new Promise<ArrayBuffer>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as ArrayBuffer);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsArrayBuffer(file);
-      });
-      const bytes = new Uint8Array(buf);
-      let binary = '';
-      const chunk = 8192;
-      for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-      }
-      const dataBase64 = btoa(binary);
+      const dataBase64 = bytesToBase64(await file.arrayBuffer());
+      const text = caption.trim();
       const outcome = await actions['upload']?.({
         dataBase64,
         mime: file.type || undefined,
         kind: nip94KindForMime(file.type),
+        // The caption becomes the kind:20/21 event content — an image/video with
+        // text is a *post*, not a bare file. Omitted when empty (image-only post).
+        ...(text ? { caption: text } : {}),
       });
       if (outcome?.ok === false) {
         if (outcome.error === SPENDY_CANCELLED) {
           // The user/host DECLINED the spend at the consent prompt — benign and
           // user-initiated, not an upload failure. Surface it neutrally (no
-          // bytes were ever uploaded) rather than as a scary "Upload failed".
+          // bytes were ever uploaded) and KEEP the staged file + caption so they
+          // can retry without re-picking.
           setCancelled(true);
         } else {
           // A real leg failure: surface the underlying error so the failing leg
@@ -144,13 +186,14 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
       } else {
         // Echo the publish receipt: the Arweave URL (from `uploadMedia`'s
         // `{ url, txId, eventId }`) so the UI shows the media + a copyable link,
-        // not just "completed".
+        // not just "completed". Clear the compose state — the post is published.
         const data = (outcome?.data ?? {}) as { url?: unknown };
         setResult({
           url: typeof data.url === 'string' ? data.url : undefined,
           mime: file.type || undefined,
         });
         setUploadedOk(true);
+        clearStaged();
       }
     } catch (err) {
       setUploadError(
@@ -158,42 +201,100 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
       );
     } finally {
       setBusy(false);
-      if (inputRef.current) inputRef.current.value = '';
     }
   };
 
+  const disabled = busy || !actions['upload'];
+  const stagedIsImage = staged?.file.type.startsWith('image/') ?? false;
+  const stagedIsVideo = staged?.file.type.startsWith('video/') ?? false;
+
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-2">
       <input
         ref={inputRef}
         type="file"
         {...(accept ? { accept } : {})}
         className="sr-only"
-        disabled={busy || !actions['upload']}
+        disabled={disabled}
         onChange={(e) => {
           const file = e.target.files?.[0];
-          if (file) void handleFile(file);
+          if (file) stageFile(file);
         }}
       />
-      <button
-        type="button"
-        disabled={busy || !actions['upload']}
-        className="group flex flex-col items-center gap-2 rounded-xl border border-dashed border-border bg-muted/30 px-4 py-7 text-center transition-colors hover:border-primary/50 hover:bg-accent/40 focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-50"
-        onClick={() => inputRef.current?.click()}
-      >
-        {busy ? (
-          <Loader2 aria-hidden="true" className="size-6 animate-spin text-muted-foreground" />
-        ) : (
+      {!staged ? (
+        <button
+          type="button"
+          disabled={disabled}
+          className="group flex flex-col items-center gap-2 rounded-xl border border-dashed border-border bg-muted/30 px-4 py-7 text-center transition-colors hover:border-primary/50 hover:bg-accent/40 focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-50"
+          onClick={() => inputRef.current?.click()}
+        >
           <FileUp
             aria-hidden="true"
             className="size-6 text-muted-foreground transition-colors group-hover:text-primary"
           />
-        )}
-        <span className="text-sm font-medium">{busy ? 'Uploading…' : label}</span>
-        <span className="text-xs text-muted-foreground">
-          Any file · <span className="text-primary/80">pays to publish</span>
-        </span>
-      </button>
+          <span className="text-sm font-medium">{label}</span>
+          <span className="text-xs text-muted-foreground">
+            Image, video, or any file · <span className="text-primary/80">pays to publish</span>
+          </span>
+        </button>
+      ) : (
+        <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/20 p-3">
+          {/* Media preview */}
+          {stagedIsImage ? (
+            <img
+              src={staged.previewUrl}
+              alt="Selected media preview"
+              className="max-h-72 w-full rounded-md object-contain"
+            />
+          ) : stagedIsVideo ? (
+            <video src={staged.previewUrl} controls className="max-h-72 w-full rounded-md" />
+          ) : (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <FileText aria-hidden="true" className="size-4 shrink-0" />
+              <span className="truncate">{staged.file.name}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span className="truncate">{staged.file.name}</span>
+            <button
+              type="button"
+              disabled={busy}
+              className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 hover:text-foreground disabled:opacity-50"
+              onClick={() => {
+                clearStaged();
+                inputRef.current?.click();
+              }}
+            >
+              <X aria-hidden="true" className="size-3" /> change
+            </button>
+          </div>
+          {/* Caption → kind:20/21 content */}
+          <textarea
+            value={caption}
+            disabled={busy}
+            onChange={(e) => setCaption(e.target.value)}
+            placeholder={captionPlaceholder}
+            rows={2}
+            className="w-full resize-none rounded-md border border-border bg-background px-2.5 py-1.5 text-sm focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-50"
+          />
+          <button
+            type="button"
+            disabled={disabled}
+            className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/40 disabled:opacity-50"
+            onClick={() => void publish()}
+          >
+            {busy ? (
+              <>
+                <Loader2 aria-hidden="true" className="size-4 animate-spin" /> Publishing…
+              </>
+            ) : (
+              <>
+                <FileUp aria-hidden="true" className="size-4" /> Publish post · pays to publish
+              </>
+            )}
+          </button>
+        </div>
+      )}
       {uploadedOk && (
         <div className="mt-1 flex flex-col gap-2 rounded-lg border border-border bg-muted/30 p-3">
           <div className="flex items-center gap-1.5 text-xs font-medium text-primary">

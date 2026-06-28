@@ -471,6 +471,25 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'toon_fund_status',
+    description:
+      'Check the status of async faucet drips submitted via toon_fund_wallet. ' +
+      'Each job reports `status` (`pending` | `success` | `error`), the chain/' +
+      'address, and timestamps — so an agent can poll for settlement without ' +
+      're-dripping. With no `chain` it returns every tracked job.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chain: {
+          type: 'string',
+          enum: ['evm', 'solana', 'mina'],
+          description: 'Only report the drip job for this chain (default: all).',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'toon_targets',
     description:
       'List every registered target: relays (read sources, with connection + ' +
@@ -678,9 +697,16 @@ export async function dispatchTool(
           )
         );
       case 'toon_channels':
-        return ok(await client.channels());
+        // Enforce the wire contract at the daemon boundary: ALWAYS emit a plain
+        // `{ channels: [...] }` object so `ok()` mirrors it into
+        // `structuredContent`. A bare-array regression would otherwise be
+        // silently dropped (Array.isArray guard in `ok`) → blank UI (#200).
+        return ok(wrapList('channels', await client.channels()));
       case 'toon_balances':
-        return ok(await client.balances());
+        // Same wire contract as toon_channels: always `{ balances: [...] }` so
+        // `structuredContent.balances` is never dropped, even if
+        // `client.balances()` regresses to a bare array (#200).
+        return ok(wrapList('balances', await client.balances()));
       case 'toon_channel_deposit':
         return ok(
           await client.depositToChannel({
@@ -721,16 +747,31 @@ export async function dispatchTool(
         };
         return ok(await client.httpFetchPaid(req));
       }
-      case 'toon_fund_wallet':
+      case 'toon_fund_wallet': {
+        // The drip is async: the daemon returns a 'pending' snapshot immediately
+        // (the Mina faucet settles in ~75s, past the host's tool-call timeout).
+        const job = await client.fundWallet({
+          ...(typeof args['chain'] === 'string'
+            ? { chain: args['chain'] as SettlementChain }
+            : {}),
+          ...(typeof args['address'] === 'string'
+            ? { address: args['address'] }
+            : {}),
+        });
+        return okStructured(
+          `Drip submitted for ${job.chain} to ${job.address}. Funds appear in ` +
+            `balances once the faucet settles (EVM/Solana ~30s, Mina ~1-2 min). ` +
+            `Re-check with toon_balances, or poll toon_fund_status.`,
+          job as unknown as Record<string, unknown>
+        );
+      }
+      case 'toon_fund_status':
         return ok(
-          await client.fundWallet({
-            ...(typeof args['chain'] === 'string'
-              ? { chain: args['chain'] as SettlementChain }
-              : {}),
-            ...(typeof args['address'] === 'string'
-              ? { address: args['address'] }
-              : {}),
-          })
+          await client.fundStatus(
+            typeof args['chain'] === 'string'
+              ? (args['chain'] as SettlementChain)
+              : undefined
+          )
         );
       case 'toon_targets':
         return ok(await client.targets());
@@ -767,8 +808,30 @@ export async function dispatchTool(
         return err(`Unknown tool: ${name}`);
     }
   } catch (e) {
-    // A 504 is a retryable apex-discovery timeout — give a discovery-specific
-    // hint rather than the daemon-bootstrapping one.
+    // A 504 on a balance read is the `:8787` balances handler stalling on a
+    // chain RPC/provider — NOT the relay/apex (#199). Name the real failing
+    // subsystem and do not assert relay/apex is the probable cause; toon_status
+    // stays `ready` throughout and the read succeeds on retry.
+    if (e instanceof ControlApiError && e.status === 504 && name === 'toon_balances') {
+      return err(
+        `${e.detail ?? e.message} — the balances control plane (:8787 GET ` +
+          `/balances) stalled reading on-chain balances; the relay and apex are ` +
+          `unaffected. Retry shortly.`
+      );
+    }
+    // A 504 on a fund request is the faucet being slow (the mina faucet settles
+    // in ~75s), NOT the relay/apex. The drip may still land server-side — point
+    // at the faucet and tell the user to re-check balances, not to chase the
+    // relay (#199-class attribution on the /fund-wallet path).
+    if (e instanceof ControlApiError && e.status === 504 && name === 'toon_fund_wallet') {
+      return err(
+        `${e.detail ?? e.message} — the faucet drip did not return in time (the ` +
+          `mina faucet settles slowly); the relay and apex are unaffected. The ` +
+          `funds may still land — re-check balances shortly, or retry.`
+      );
+    }
+    // Any other 504 is a retryable apex-discovery timeout — give a
+    // discovery-specific hint rather than the daemon-bootstrapping one.
     if (e instanceof ControlApiError && e.status === 504) {
       return err(
         `${e.detail ?? e.message} — retry once the relay is reachable and the apex is online.`
@@ -791,6 +854,25 @@ export async function dispatchTool(
     }
     return err(e instanceof Error ? e.message : String(e));
   }
+}
+
+/**
+ * Normalize a list-shaped read into the wire-contract object the MCP-app iframe
+ * depends on: `{ [key]: [...] }`. Accepts either the already-wrapped object
+ * (pass-through, no double-wrap) or a bare array (defensive — wraps it), so the
+ * read seam ALWAYS yields a plain object `ok()` mirrors into `structuredContent`
+ * rather than a bare array it would silently drop (#200).
+ */
+function wrapList(
+  key: 'balances' | 'channels',
+  res: unknown
+): Record<string, unknown> {
+  if (Array.isArray(res)) return { [key]: res };
+  if (res !== null && typeof res === 'object') {
+    const existing = (res as Record<string, unknown>)[key];
+    if (Array.isArray(existing)) return res as Record<string, unknown>;
+  }
+  return { [key]: [] };
 }
 
 function ok(data: unknown): ToolResult {

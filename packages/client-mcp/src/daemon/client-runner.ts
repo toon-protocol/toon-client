@@ -43,6 +43,7 @@ import type {
   ChannelsResponse,
   ChainStatus,
   EventsResponse,
+  FundStatusResponse,
   FundWalletRequest,
   FundWalletResponse,
   HttpFetchPaidRequest,
@@ -217,6 +218,23 @@ interface MergedEvent {
 
 const MERGED_BUFFER = 5000;
 
+/**
+ * Per-attempt bound for an on-chain balance read, kept WELL under the control
+ * client's `/balances` timeout (12s) so a stalled provider fast-fails inside the
+ * daemon instead of letting the whole control request hang to the wire timeout
+ * (#199). With {@link BALANCES_READ_ATTEMPTS} the worst case stays under 12s.
+ */
+const BALANCES_READ_TIMEOUT_MS = 5_000;
+/** Bounded retry for a transient provider stall on a balance read (#199). */
+const BALANCES_READ_ATTEMPTS = 2;
+
+/**
+ * In-memory record of one background faucet drip. Structurally identical to the
+ * wire {@link FundWalletResponse} snapshot the daemon returns, so a job can be
+ * handed back verbatim.
+ */
+type FundJob = FundWalletResponse;
+
 export class ClientRunner {
   private readonly config: ResolvedDaemonConfig;
   private readonly createClient: CreateClient;
@@ -224,12 +242,32 @@ export class ClientRunner {
   private readonly log: (msg: string) => void;
   private readonly targetsPath?: string;
 
+  /**
+   * Identity-level chain-read client. Reading your OWN on-chain wallet balance is
+   * a pure (wallet keys + chain RPC) operation that has nothing to do with the
+   * ILP/payment peer, so it lives at the daemon level rather than inside an apex.
+   * Built once from the daemon's own `toonClientConfig` (the same keys + chain
+   * RPC config every apex shares) and REUSED as the default apex's client, so a
+   * funded apex's `start()` (which derives Solana/Mina keys) also benefits this
+   * reader. `getBalances` uses it directly, so balances work even with zero
+   * apexes registered (follow-up to #199/#200).
+   */
+  private readonly identityClient: ToonClientLike;
+
   private readonly startedAt = Date.now();
 
   /** Apex write targets, keyed by btpUrl. */
   private readonly apexes = new Map<string, ApexConnection>();
   /** Relay read targets, keyed by relayUrl. */
   private readonly relays = new Map<string, RelaySubscription>();
+
+  /**
+   * Async faucet drip jobs, keyed by chain. A drip is launched in the background
+   * (the Mina faucet legitimately takes ~75s — longer than the MCP host's ~60s
+   * tool-call budget) and its terminal state is observed via {@link getFundStatus}
+   * / re-reading balances rather than by blocking the caller.
+   */
+  private readonly fundJobs = new Map<FaucetChain, FundJob>();
 
   /** Runner-level merged read buffer across all relays (de-duped by event.id). */
   private merged: MergedEvent[] = [];
@@ -273,9 +311,13 @@ export class ClientRunner {
     // started/bootstrapped) so `bootstrap()` works standalone (the daemon and
     // tests both rely on constructing then awaiting bootstrap()).
     this.registerRelay(this.defaultRelayUrl);
+    // Build the identity-level read client ONCE and reuse it as the default
+    // apex's client (same keys + chain RPC config), so on-chain balance reads
+    // never depend on an apex existing.
+    this.identityClient = this.createClient(this.config.toonClientConfig);
     const defaultApex = this.makeApex({
       btpUrl: this.defaultBtpUrl,
-      client: this.createClient(this.config.toonClientConfig),
+      client: this.identityClient,
       ...(this.config.apex ? { negotiation: this.config.apex } : {}),
       childPeers: this.config.apexChildPeers ?? [],
       destination: this.config.destination,
@@ -872,7 +914,7 @@ export class ClientRunner {
    * (the typical "fund me before I open a channel" flow). The daemon holds the
    * faucet URL + the keys, so the MCP caller never needs either.
    */
-  async fundWallet(req: FundWalletRequest = {}): Promise<FundWalletResponse> {
+  fundWallet(req: FundWalletRequest = {}): FundWalletResponse {
     const faucetUrl = this.config.faucetUrl;
     if (!faucetUrl) {
       throw new InvalidPayloadError(
@@ -897,18 +939,85 @@ export class ClientRunner {
           `(this client has no ${chain} key configured).`
       );
     }
-    // Timeout is chain-aware by default (mina settles far slower than the 30s
-    // evm/solana budget and otherwise times out on a request that succeeds
-    // server-side); an explicit faucetTimeoutMs overrides it.
-    const { response } = await faucetFund(
-      faucetUrl,
-      address,
+
+    // Idempotent: a drip already in flight for this chain returns its snapshot
+    // rather than launching a second faucet call (a re-click / poll mustn't
+    // double-drip).
+    const existing = this.fundJobs.get(chain);
+    if (existing && existing.status === 'pending') {
+      return { ...existing };
+    }
+
+    // The drip is ASYNC: launch the faucet call in the background and return a
+    // 'pending' snapshot immediately. The Mina faucet mints native MINA + USDC
+    // on a slow-settling chain and legitimately takes ~75s — longer than the MCP
+    // host's ~60s tool-call budget and the control client's wire timeout — so a
+    // blocking call surfaces a working drip as a misleading relay/apex timeout
+    // (#199-class). The daemon happily waits the full chain-aware faucet budget
+    // in the background; the caller observes the result via getFundStatus /
+    // re-reading balances.
+    const job: FundJob = {
       chain,
-      this.config.faucetTimeoutMs !== undefined
-        ? { timeout: this.config.faucetTimeoutMs }
-        : {}
-    );
-    return { chain, address, faucetUrl, response };
+      address,
+      faucetUrl,
+      status: 'pending',
+      startedAt: Date.now(),
+    };
+    this.fundJobs.set(chain, job);
+
+    // The drip runs in the BACKGROUND, so there is no caller to protect from a
+    // slow faucet — use a GENEROUS timeout. The faucet client default (30s for
+    // evm/solana) is tuned for a synchronous call and falsely aborts a drip that
+    // succeeds server-side a bit later: e.g. a loaded EVM faucet answers >30s but
+    // the tx still lands, so the job would report `error` while the balance
+    // actually went up — causing a misleading failure + double-fund risk. Await
+    // the real outcome instead (config `faucetTimeoutMs` still overrides).
+    const faucetTimeout =
+      this.config.faucetTimeoutMs ?? (chain === 'mina' ? 130_000 : 90_000);
+    void faucetFund(faucetUrl, address, chain, { timeout: faucetTimeout })
+      .then(({ response }) => {
+        job.status = 'success';
+        job.response = response;
+        job.finishedAt = Date.now();
+        this.log(`[runner] faucet drip succeeded: ${chain} → ${address}`);
+      })
+      .catch((err: unknown) => {
+        // The background promise must never become an unhandled rejection.
+        try {
+          const msg = errMsg(err);
+          // A timeout is NOT a definitive failure — the on-chain drip may still
+          // settle after the client gives up (observed on EVM). Mark it as a
+          // distinct, non-terminal-sounding state and advise re-checking
+          // balances before re-funding, rather than asserting it failed.
+          const timedOut = /timed out|timeout|aborted/i.test(msg);
+          job.status = timedOut ? 'timeout' : 'error';
+          job.error = timedOut
+            ? `${msg} — the on-chain drip may still have settled; re-check balances before re-funding.`
+            : msg;
+          job.finishedAt = Date.now();
+          this.log(
+            `[runner] faucet drip ${timedOut ? 'timed out' : 'failed'}: ${chain} → ${address}: ${msg}`
+          );
+        } catch {
+          // Swallow — recording the failure must not itself reject.
+        }
+      });
+
+    return { ...job };
+  }
+
+  /**
+   * Snapshots of tracked faucet drip jobs — all of them, or just the one for
+   * `chain`. Lets a caller poll for the terminal state of an async drip without
+   * re-dripping.
+   */
+  getFundStatus(chain?: FaucetChain): FundStatusResponse {
+    const jobs = chain
+      ? this.fundJobs.has(chain)
+        ? [{ ...this.fundJobs.get(chain)! }]
+        : []
+      : [...this.fundJobs.values()].map((j) => ({ ...j }));
+    return { jobs };
   }
 
   /** Full registry of relay + apex targets with per-target status. */
@@ -1213,14 +1322,41 @@ export class ClientRunner {
 
   /**
    * On-chain wallet balances. The wallet is identity-level (same keys across
-   * apexes), so read from the first available apex's client; per-chain reads are
-   * best-effort inside the client (a failing chain is simply omitted).
+   * apexes), so this reads from the daemon's {@link identityClient} — NOT an apex
+   * — and therefore works even with zero apexes / no payment peer configured
+   * (reading your own balance is a pure wallet-keys + chain-RPC operation).
+   * Per-chain reads are best-effort inside the client (a failing chain is simply
+   * omitted).
+   *
+   * Each underlying read hits per-chain RPC providers that can stall
+   * indefinitely on devnet (a provider being `detail: "configured"` in
+   * toon_status means it is WIRED, not that its RPC is live). A stall here used
+   * to block the whole control request until the client aborted, surfacing as a
+   * misleading "relay/apex unreachable" timeout (#199). Bound each attempt well
+   * under the control-plane timeout and retry once so a single transient
+   * provider stall FAST-FAILS with an honest "balances handler / provider
+   * stalled" error instead of hanging.
    */
   async getBalances(): Promise<BalancesResponse> {
-    const apex = this.apexes.values().next().value;
-    if (!apex) return { balances: [] };
-    const balances = (await apex.client.getBalances()) as BalanceInfo[];
-    return { balances };
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= BALANCES_READ_ATTEMPTS; attempt++) {
+      try {
+        const balances = (await withTimeout(
+          this.identityClient.getBalances(),
+          BALANCES_READ_TIMEOUT_MS,
+          `chain balance read timed out after ${BALANCES_READ_TIMEOUT_MS}ms`
+        )) as BalanceInfo[];
+        return { balances };
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw new BalancesUnavailableError(
+      `the balances control handler's chain RPC/provider read did not return ` +
+        `(${BALANCES_READ_ATTEMPTS} attempts, ${BALANCES_READ_TIMEOUT_MS}ms each) — ` +
+        `the on-chain provider stalled, not the relay or apex. Retry shortly.`,
+      lastErr instanceof Error ? lastErr.message : undefined
+    );
   }
 
   /**
@@ -1407,6 +1543,23 @@ export class InvalidPayloadError extends Error {
   }
 }
 
+/**
+ * Thrown when the on-chain balance read stalls past its per-call provider
+ * timeout (after the bounded retry). Retryable, and explicitly attributed to the
+ * balances handler / chain provider — NOT the relay/apex — so the user-facing
+ * message names the real failing subsystem (#199). Maps to HTTP 504.
+ */
+export class BalancesUnavailableError extends Error {
+  readonly retryable = true;
+  /** The underlying provider error message, when one was captured. */
+  readonly providerError?: string;
+  constructor(message: string, providerError?: string) {
+    super(message);
+    this.name = 'BalancesUnavailableError';
+    if (providerError !== undefined) this.providerError = providerError;
+  }
+}
+
 /** Current time in whole seconds (Nostr `created_at` unit). */
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -1415,6 +1568,28 @@ function nowSeconds(): number {
 /** Resolve after `ms` (bounded wait for relay delivery in `query`). */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Race a promise against a timeout, rejecting with `message` if it does not
+ * settle in `ms`. The underlying work is NOT cancelled (it may complete in the
+ * background) — this just bounds how long the caller waits, so a stalled chain
+ * RPC fast-fails instead of blocking the control request (#199).
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 }
 
 /** NIP-01 filter match (kinds/authors/ids/since/until + `#<letter>` tag filters). */

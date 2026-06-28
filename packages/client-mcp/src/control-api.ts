@@ -492,16 +492,43 @@ export interface FundWalletRequest {
   address?: string;
 }
 
-/** `POST /fund-wallet` result. */
+/**
+ * `POST /fund-wallet` result — a snapshot of an ASYNC faucet drip job.
+ *
+ * The drip is non-blocking: `POST /fund-wallet` launches the faucet call in the
+ * daemon background and returns immediately with `status: 'pending'`. This avoids
+ * the MCP host's ~60s tool-call timeout surfacing a still-working Mina drip
+ * (which legitimately settles in ~75s, native MINA + USDC) as a misleading
+ * relay/apex timeout (#199-class). Poll `GET /fund-wallet/status` (or just
+ * re-read balances) to observe the terminal `'success'` / `'error'` state.
+ */
 export interface FundWalletResponse {
-  /** The chain that was funded. */
+  /** The chain being funded. */
   chain: SettlementChain;
-  /** The address that was funded. */
+  /** The address being funded. */
   address: string;
   /** The faucet base URL the drip was requested from. */
   faucetUrl: string;
-  /** Raw parsed JSON body from the faucet (shape is faucet-defined). */
-  response: unknown;
+  /**
+   * Lifecycle of the background drip. `'timeout'` is distinct from `'error'`:
+   * the faucet client gave up but the on-chain drip MAY still have settled
+   * (observed on a loaded EVM faucet) — treat it as "uncertain, re-check
+   * balances", not a definitive failure, to avoid a misleading double-fund.
+   */
+  status: 'pending' | 'success' | 'error' | 'timeout';
+  /** Unix ms the drip was submitted. */
+  startedAt: number;
+  /** Unix ms the drip settled or failed (absent while `'pending'`). */
+  finishedAt?: number;
+  /** Raw parsed JSON body from the faucet on success (shape is faucet-defined). */
+  response?: unknown;
+  /** Error message on failure. */
+  error?: string;
+}
+
+/** `GET /fund-wallet/status` result — snapshots of tracked drip jobs. */
+export interface FundStatusResponse {
+  jobs: FundWalletResponse[];
 }
 
 /** Uniform error envelope returned with non-2xx responses. */

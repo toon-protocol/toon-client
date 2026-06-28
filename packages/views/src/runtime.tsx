@@ -7,7 +7,7 @@
  * degrade to the generic fallback — never crash, never `eval`.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   extractUiResource,
   GenerativeFallbackRenderer,
@@ -43,6 +43,7 @@ import { A2UIRenderer } from './a2ui/A2UIRenderer.js';
 import { SandboxedAppRenderer } from './mcp-ui/SandboxedAppRenderer.js';
 import { DEFAULT_MCP_UI_SANDBOX_URL } from './mcp-ui/sandbox.js';
 import { BALANCES_TOOL, CHANNELS_TOOL, QUERY_TOOL, STATUS_TOOL, WRITE_TOOLS } from './tool-names.js';
+import { useRefreshTick } from './atoms/use-refresh.js';
 
 /**
  * Session-scoped render-gradient state. Built once per bundle load:
@@ -63,6 +64,8 @@ const GENERATIVE_FALLBACK = new GenerativeFallbackRenderer();
 
 // Re-export so existing importers (and tests) can keep importing from the runtime.
 export { QUERY_TOOL, WRITE_TOOLS } from './tool-names.js';
+// Exported for unit tests (the `toon_balances` contract guard, see #200).
+export { buildReadBalances, parseBalancesPayload };
 
 /**
  * Order events deterministically by `created_at` (ties break on `id`) so render
@@ -84,10 +87,18 @@ function sortEvents(events: readonly NostrEvent[], dir: 'asc' | 'desc' = 'desc')
   return dir === 'asc' ? ascending : ascending.reverse();
 }
 
-function useBind(bind: ViewBind | undefined, bridge: ViewBridge): NostrEvent[] {
+function useBind(
+  bind: ViewBind | undefined,
+  bridge: ViewBridge,
+  refreshNonce?: number
+): NostrEvent[] {
   const [events, setEvents] = useState<NostrEvent[]>([]);
   const bindKey = bind ? JSON.stringify(bind) : '';
   const sortDir = bind?.sort ?? 'desc';
+  // Re-query the feed after a successful write (post/react/follow): immediate +
+  // a short settlement delay so relay-propagated events that land a beat later
+  // still appear without the agent re-rendering.
+  const refreshTick = useRefreshTick(refreshNonce);
 
   useEffect(() => {
     const filter = bind?.query ?? (bind?.eventId ? { ids: [bind.eventId] } : undefined);
@@ -102,8 +113,9 @@ function useBind(bind: ViewBind | undefined, bridge: ViewBridge): NostrEvent[] {
     return () => {
       cancelled = true;
     };
-    // bindKey captures the (serialized) bind; bridge is stable for a session.
-  }, [bindKey, bridge]);
+    // bindKey captures the (serialized) bind; bridge is stable for a session;
+    // refreshTick re-runs the query after a successful mutation.
+  }, [bindKey, bridge, refreshTick]);
 
   return events;
 }
@@ -163,7 +175,8 @@ function getProfileResolver(
 function buildActions(
   node: ViewNode,
   bridge: ViewBridge,
-  consentGate: ConsentGate
+  consentGate: ConsentGate,
+  onMutated?: () => void
 ): Record<string, AtomAction> {
   const actions: Record<string, AtomAction> = {};
   for (const [name, ref] of Object.entries(node.actions ?? {})) {
@@ -188,6 +201,13 @@ function buildActions(
       bridge.notifyModel(
         res.ok ? `Action "${name}" completed.` : `Action "${name}" failed: ${res.error ?? 'unknown'}`
       );
+      // On a SUCCESSFUL write, bump the view's refresh signal so read-bearing
+      // atoms (balances/channels/status/feed) re-fetch in place. A declined
+      // spendy confirm returns early above (no refresh); a tool FAILURE has
+      // `res.ok === false`, so stale data is never re-read on a no-op. Funding
+      // returns `status:'pending'` with `ok===true` — still a valid refresh;
+      // the settlement-delayed re-poll (useRefreshTick) catches the late drip.
+      if (res.ok) onMutated?.();
       // Surface the real published id so atoms can render an accurate receipt.
       // The publish/upload tools return `{ eventId, … }` as `structuredContent`,
       // which the bridge carries on `ToolOutcome.data`.
@@ -388,6 +408,34 @@ function buildReadChannels(bridge: ViewBridge): () => Promise<AtomChannel[]> {
   };
 }
 
+/**
+ * Validate the `toon_balances` wire contract and project it to the atom's
+ * `AtomBalance[]`.
+ *
+ * The contract (shared with the daemon) is a plain OBJECT
+ * `{ balances: AtomBalance[] }` carried via the MCP `structuredContent` →
+ * `ToolOutcome.data`. A missing payload (no `structuredContent`), a non-object,
+ * a bare array, or a missing / non-array `balances` key is a CONTRACT VIOLATION
+ * — a daemon↔views version skew or a transport that dropped the structured
+ * content — and must `throw` so it drives the wallet atom's error/retry path.
+ *
+ * The bug (#200): collapsing any of those violations into the same `[]` as a
+ * legitimate empty balance list renders a silent blank card that's
+ * indistinguishable from a real zero balance, with no retry. Only a genuine
+ * `{ balances: [] }` (an empty wallet) is a valid success that returns `[]`.
+ */
+function parseBalancesPayload(data: unknown): AtomBalance[] {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    // Missing structuredContent (`undefined`), a bare array, or a primitive.
+    throw new Error('Balances response had an unexpected shape.');
+  }
+  const balances = (data as { balances?: unknown }).balances;
+  if (!Array.isArray(balances)) {
+    throw new Error('Balances response was missing the "balances" list.');
+  }
+  return balances as AtomBalance[];
+}
+
 /** Read on-chain wallet balances (`toon_balances`) for the wallet atom. */
 function buildReadBalances(bridge: ViewBridge): () => Promise<AtomBalance[]> {
   return async () => {
@@ -401,8 +449,12 @@ function buildReadBalances(bridge: ViewBridge): () => Promise<AtomBalance[]> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const res = await bridge.callTool(BALANCES_TOOL, {});
       if (res.ok) {
-        const data = (res.data ?? {}) as { balances?: AtomBalance[] };
-        return Array.isArray(data.balances) ? data.balances : [];
+        // A SUCCESSFUL call must satisfy the `{ balances: [...] }` contract.
+        // This is a SHAPE failure, not a transient transport refuse, so fail
+        // fast (no inter-attempt retry) — a version skew won't fix itself, and
+        // failing fast avoids amplifying a slow (35s) timeout that resolved
+        // `ok` with no structuredContent into 3×35s of spinner (#199).
+        return parseBalancesPayload(res.data);
       }
       lastError = res.error ?? lastError;
       if (attempt < 2) await new Promise((r) => setTimeout(r, 200));
@@ -411,13 +463,25 @@ function buildReadBalances(bridge: ViewBridge): () => Promise<AtomBalance[]> {
   };
 }
 
-function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): ReactNode {
+function NodeView({
+  node,
+  bridge,
+  refreshNonce,
+  onMutated,
+}: {
+  node: ViewNode;
+  bridge: ViewBridge;
+  /** View-wide refresh signal (bumped after a successful write). */
+  refreshNonce?: number;
+  /** Bump the view-wide refresh signal. Stable for the session. */
+  onMutated?: () => void;
+}): ReactNode {
   const atom = ATOMS.get(node.atom) ?? fallbackAtomFor();
-  const events = useBind(node.bind, bridge);
+  const events = useBind(node.bind, bridge, refreshNonce);
   const consentGate = useConsentGate();
   const actions = useMemo(
-    () => buildActions(node, bridge, consentGate),
-    [node, bridge, consentGate]
+    () => buildActions(node, bridge, consentGate, onMutated),
+    [node, bridge, consentGate, onMutated]
   );
   const readStatus = useMemo(() => buildReadStatus(bridge), [bridge]);
   const readChannels = useMemo(() => buildReadChannels(bridge), [bridge]);
@@ -425,7 +489,9 @@ function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): Rea
 
   if (node.bind?.kindAuto) {
     // Thread the feed node's actions (reply/react/follow) to each natively
-    // rendered event so per-note engagement surfaces in kindAuto feeds.
+    // rendered event so per-note engagement surfaces in kindAuto feeds. A
+    // per-note action bumps this view's refreshNonce → useBind re-queries the
+    // feed above, so the engagement shows in place.
     return (
       <>
         {events.map((e) => (
@@ -444,10 +510,13 @@ function NodeView({ node, bridge }: { node: ViewNode; bridge: ViewBridge }): Rea
       readStatus={readStatus}
       readChannels={readChannels}
       readBalances={readBalances}
+      refreshNonce={refreshNonce}
       resolveProfile={getProfileResolver(bridge)}
       renderEvent={(e) => <EventAtom key={e.id} event={e} bridge={bridge} />}
     >
-      {node.children?.map((child, i) => <NodeView key={i} node={child} bridge={bridge} />)}
+      {node.children?.map((child, i) => (
+        <NodeView key={i} node={child} bridge={bridge} refreshNonce={refreshNonce} onMutated={onMutated} />
+      ))}
     </Component>
   );
 }
@@ -478,12 +547,20 @@ export function ViewSpecRenderer({
     () => validateViewSpec(spec, { allowedAtoms: ATOM_IDS, allowedTools: WRITE_TOOLS }),
     [spec]
   );
+  // View-wide refresh signal: bumped after every successful write action so
+  // read-bearing atoms (balances/channels/status) and feeds re-fetch in place,
+  // with no re-render from the agent. `onMutated` is stable (the integer nonce
+  // drives re-fetch, not this callback), so it never re-runs reads on render.
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const onMutated = useCallback(() => setRefreshNonce((n) => n + 1), []);
+  // useMemo above guarantees `result` is referentially stable across renders, so
+  // an early return is safe to place after these hooks.
   if (!result.ok) return <InvalidSpec errors={result.errors} />;
   // Wrap in the consent provider so spendy actions await a rendered prompt
   // (the host iframe blocks `window.confirm`; see consent-prompt.tsx).
   return (
     <ConsentProvider>
-      <NodeView node={result.spec.root} bridge={bridge} />
+      <NodeView node={result.spec.root} bridge={bridge} refreshNonce={refreshNonce} onMutated={onMutated} />
     </ConsentProvider>
   );
 }

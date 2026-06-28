@@ -62,9 +62,20 @@ export const ATOM_CATALOG: AtomMeta[] = [
   },
   {
     id: 'composer',
-    description: 'Text composer that publishes a note (kind:1) via its "post" action.',
-    writes: [{ name: 'toon_publish_unsigned' }],
-    propsSchema: { placeholder: 'string', label: 'string' },
+    description:
+      'The DEFAULT post composer: write a kind:1 note and OPTIONALLY attach one ' +
+      'media/file (paperclip) — text-only posts publish via the "post" action ' +
+      '(toon_publish_unsigned); a post WITH media publishes via the "upload" ' +
+      'action (toon_upload, kind:1) so the file is carried as NIP-92 imeta and ' +
+      'renders inline in the feed. Wire BOTH actions. Use this for "make a post" ' +
+      '(with or without a picture/video); use media-uploader only when the user ' +
+      'just wants to upload a file with no note.',
+    writes: [{ name: 'toon_publish_unsigned' }, { name: 'toon_upload', spendy: true }],
+    propsSchema: {
+      placeholder: 'string',
+      label: 'string',
+      accept: "string (optional MIME filter for the attach picker, e.g. 'image/*')",
+    },
   },
   {
     id: 'pay-confirm',
@@ -86,13 +97,20 @@ export const ATOM_CATALOG: AtomMeta[] = [
   {
     id: 'media-uploader',
     description:
-      'Upload ANY file (image, video, pdf, audio, archive, …) to Arweave then ' +
-      'publish a reference event — kind:20 for images, 21 for video, 1063 ' +
-      '(NIP-94 file metadata) for everything else (chosen automatically from the ' +
-      'file MIME). Provides an in-app file picker. Spendy. Use this whenever the ' +
-      'user wants to upload or post a file/picture; no URL needed.',
+      'Compose & publish a media POST: pick a file (image, video, pdf, audio, …) ' +
+      'via the in-app picker, preview it, add an OPTIONAL caption/text, then ' +
+      'Publish — uploads to Arweave and publishes a reference event in one paid ' +
+      'write. The caption becomes the event content, so an image/video + text is ' +
+      'a real post (kind:20 picture, 21 video, 1063 NIP-94 file for everything ' +
+      'else — chosen automatically from the MIME). Spendy. This IS the ' +
+      'post-with-media path; use it whenever the user wants to post/upload a ' +
+      'picture, video, or file with or without a caption. No URL needed.',
     writes: [{ name: 'toon_upload', spendy: true }],
-    propsSchema: { label: 'string', accept: "string (optional MIME filter, e.g. 'image/*'; default any)" },
+    propsSchema: {
+      label: 'string',
+      accept: "string (optional MIME filter, e.g. 'image/*'; default any)",
+      captionPlaceholder: 'string (optional placeholder for the caption field)',
+    },
   },
 
   // forge

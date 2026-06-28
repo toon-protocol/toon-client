@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { interactiveAtoms } from './interactive.js';
 
 afterEach(cleanup);
@@ -38,6 +38,33 @@ describe('Composer', () => {
   it('disables the action when empty', () => {
     render(<Composer {...base} actions={{ post: vi.fn() }} />);
     expect(screen.getByRole('button', { name: /post/i })).toHaveProperty('disabled', true);
+  });
+
+  it('posts WITH attached media via the upload action as a kind:1 note (caption = text)', async () => {
+    const post = vi.fn();
+    const upload = vi.fn(() => Promise.resolve({ ok: true }));
+    const { container } = render(<Composer {...base} actions={{ post, upload }} />);
+    fireEvent.change(screen.getByPlaceholderText(/what's happening/i), {
+      target: { value: 'my caption' },
+    });
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['imgbytes'], 'pic.png', { type: 'image/png' });
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    fireEvent.change(input);
+    await screen.findByText('pic.png'); // staged preview
+    fireEvent.click(screen.getByRole('button', { name: /post/i }));
+    await waitFor(() => expect(upload).toHaveBeenCalledTimes(1));
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 1, caption: 'my caption', mime: 'image/png' })
+    );
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('only offers attach when the upload action is wired', () => {
+    const { rerender } = render(<Composer {...base} actions={{ post: vi.fn() }} />);
+    expect(screen.queryByLabelText(/attach media/i)).toBeNull();
+    rerender(<Composer {...base} actions={{ post: vi.fn(), upload: vi.fn() }} />);
+    expect(screen.getByLabelText(/attach media/i)).toBeTruthy();
   });
 });
 

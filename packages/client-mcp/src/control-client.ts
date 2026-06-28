@@ -19,6 +19,7 @@ import type {
   ErrorResponse,
   EventsQuery,
   EventsResponse,
+  FundStatusResponse,
   FundWalletRequest,
   FundWalletResponse,
   HttpFetchPaidRequest,
@@ -31,6 +32,7 @@ import type {
   QueryResponse,
   RemoveApexRequest,
   RemoveRelayRequest,
+  SettlementChain,
   StatusResponse,
   SubscribeRequest,
   SubscribeResponse,
@@ -192,7 +194,22 @@ export class ControlClient {
   }
 
   fundWallet(body: FundWalletRequest = {}): Promise<FundWalletResponse> {
-    return this.request<FundWalletResponse>('POST', '/fund-wallet', body);
+    // The drip is ASYNC: the daemon launches the faucet call in the background
+    // and returns a 'pending' snapshot immediately, so this request resolves
+    // fast regardless of chain. (Previously this had to out-wait the daemon's
+    // chain-aware faucet budget — up to ~120s for Mina — which strained the
+    // control + host timeouts; #199-class.) Poll `fundStatus` / re-read balances
+    // for the terminal state.
+    return this.request<FundWalletResponse>('POST', '/fund-wallet', body, {
+      timeoutMs: 40_000,
+    });
+  }
+
+  fundStatus(chain?: SettlementChain): Promise<FundStatusResponse> {
+    const path = chain
+      ? `/fund-wallet/status?chain=${encodeURIComponent(chain)}`
+      : '/fund-wallet/status';
+    return this.request<FundStatusResponse>('GET', path);
   }
 
   /**

@@ -33,6 +33,7 @@ describe('TOOL_DEFINITIONS', () => {
         'toon_http_fetch_paid',
         'toon_subscribe',
         'toon_fund_wallet',
+        'toon_fund_status',
         'toon_targets',
         'toon_add_relay',
         'toon_remove_relay',
@@ -207,6 +208,54 @@ describe('dispatchTool', () => {
     expect(res.structuredContent).toEqual(payload);
   });
 
+  it('toon_balances always emits structuredContent.balances as a populated array for a non-empty read (#200)', async () => {
+    const row = { chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 };
+    const balances = vi.fn().mockResolvedValue({ balances: [row] });
+    const res = await dispatchTool(stubClient({ balances }), 'toon_balances', {});
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toBeDefined();
+    const got = res.structuredContent?.['balances'];
+    expect(Array.isArray(got)).toBe(true);
+    expect((got as unknown[]).length).toBe(1);
+    expect((got as unknown[])[0]).toEqual(row);
+  });
+
+  it('toon_balances wraps a bare-array regression so structuredContent is never dropped (#200)', async () => {
+    // If client.balances() ever regresses to returning a BARE ARRAY, the
+    // tool boundary must still wrap it as { balances: [...] } so ok() does not
+    // silently drop structuredContent (its Array.isArray guard).
+    const row = { chain: 'solana', address: 'So1', amount: '1000', asset: 'USDC', assetScale: 6 };
+    const balances = vi.fn().mockResolvedValue([row]);
+    const res = await dispatchTool(stubClient({ balances }), 'toon_balances', {});
+    expect(res.structuredContent).toEqual({ balances: [row] });
+    expect(Array.isArray(res.structuredContent?.['balances'])).toBe(true);
+  });
+
+  it('toon_channels wraps a bare-array regression so structuredContent is never dropped (#200)', async () => {
+    const row = { channelId: 'c1', nonce: 3, cumulativeAmount: '3000' };
+    const channels = vi.fn().mockResolvedValue([row]);
+    const res = await dispatchTool(stubClient({ channels }), 'toon_channels', {});
+    expect(res.structuredContent).toEqual({ channels: [row] });
+    expect(Array.isArray(res.structuredContent?.['channels'])).toBe(true);
+  });
+
+  it('toon_balances 504 names the control plane / balances handler, not relay/apex (#199)', async () => {
+    const balances = vi
+      .fn()
+      .mockRejectedValue(
+        new ControlApiError(
+          'balances_unavailable',
+          504,
+          true,
+          'the balances control handler\'s chain RPC/provider read did not return'
+        )
+      );
+    const res = await dispatchTool(stubClient({ balances }), 'toon_balances', {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toMatch(/balances control plane|balances handler|GET \/balances/);
+    expect(res.content[0]!.text).not.toMatch(/retry once the relay is reachable and the apex is online/);
+  });
+
   it('toon_channel_deposit forwards channelId + amount', async () => {
     const depositToChannel = vi
       .fn()
@@ -358,24 +407,56 @@ describe('dispatchTool', () => {
   });
 
   it('toon_fund_wallet forwards an empty body when no args (fund self)', async () => {
-    const fundWallet = vi
-      .fn()
-      .mockResolvedValue({ chain: 'evm', address: '0xabc', faucetUrl: 'u', response: {} });
+    const fundWallet = vi.fn().mockResolvedValue({
+      chain: 'evm',
+      address: '0xabc',
+      faucetUrl: 'u',
+      status: 'pending',
+      startedAt: 1,
+    });
     const res = await dispatchTool(stubClient({ fundWallet }), 'toon_fund_wallet', {});
     expect(res.isError).toBeFalsy();
     expect(fundWallet).toHaveBeenCalledWith({});
-    expect(JSON.parse(res.content[0]!.text).chain).toBe('evm');
+    // Async submit: the text is a human message; the snapshot rides on
+    // structuredContent (the iframe seam), not the JSON text body.
+    expect(res.content[0]!.text).toMatch(/Drip submitted for evm to 0xabc/);
+    expect(res.structuredContent).toMatchObject({ chain: 'evm', status: 'pending' });
   });
 
   it('toon_fund_wallet forwards chain + address when provided', async () => {
-    const fundWallet = vi
-      .fn()
-      .mockResolvedValue({ chain: 'solana', address: 'So1', faucetUrl: 'u', response: {} });
+    const fundWallet = vi.fn().mockResolvedValue({
+      chain: 'solana',
+      address: 'So1',
+      faucetUrl: 'u',
+      status: 'pending',
+      startedAt: 1,
+    });
     await dispatchTool(stubClient({ fundWallet }), 'toon_fund_wallet', {
       chain: 'solana',
       address: 'So1',
     });
     expect(fundWallet).toHaveBeenCalledWith({ chain: 'solana', address: 'So1' });
+  });
+
+  it('toon_fund_status returns the tracked drip jobs', async () => {
+    const fundStatus = vi.fn().mockResolvedValue({
+      jobs: [
+        { chain: 'mina', address: 'B62', faucetUrl: 'u', status: 'success', startedAt: 1, finishedAt: 2 },
+      ],
+    });
+    const res = await dispatchTool(stubClient({ fundStatus }), 'toon_fund_status', {
+      chain: 'mina',
+    });
+    expect(res.isError).toBeFalsy();
+    expect(fundStatus).toHaveBeenCalledWith('mina');
+    expect(JSON.parse(res.content[0]!.text).jobs).toHaveLength(1);
+    expect(res.structuredContent).toMatchObject({ jobs: expect.any(Array) });
+  });
+
+  it('toon_fund_status forwards no chain when omitted (all jobs)', async () => {
+    const fundStatus = vi.fn().mockResolvedValue({ jobs: [] });
+    await dispatchTool(stubClient({ fundStatus }), 'toon_fund_status', {});
+    expect(fundStatus).toHaveBeenCalledWith(undefined);
   });
 
   it('toon_add_relay forwards the relayUrl', async () => {

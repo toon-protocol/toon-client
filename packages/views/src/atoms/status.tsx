@@ -14,6 +14,7 @@ import { Activity, Loader2, Radio } from 'lucide-react';
 import { Badge } from '@/components/ui/badge.js';
 import { Separator } from '@/components/ui/separator.js';
 import { MonoId } from '@/components/mono-id.js';
+import { useRefreshTick } from './use-refresh.js';
 import { type Atom, type AtomRenderProps, type AtomStatus } from './types.js';
 
 /** Format an uptime in ms as a compact human string (e.g. "1d 2h", "5m"). */
@@ -50,10 +51,14 @@ const ChainBadge: FC<{ chain: string; ready: boolean; detail?: string }> = ({
   </Badge>
 );
 
-const ClientStatus: FC<AtomRenderProps> = ({ readStatus }) => {
+const ClientStatus: FC<AtomRenderProps> = ({ readStatus, refreshNonce }) => {
   const [status, setStatus] = useState<AtomStatus | null>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Re-read the daemon/relay status after a successful write (e.g. opening a
+  // channel flips `ready`, publishing changes buffered counts): immediate + a
+  // short settlement delay so the dashboard reflects the new state in place.
+  const refreshTick = useRefreshTick(refreshNonce);
 
   useEffect(() => {
     if (!readStatus) {
@@ -78,7 +83,7 @@ const ClientStatus: FC<AtomRenderProps> = ({ readStatus }) => {
     return () => {
       cancelled = true;
     };
-  }, [readStatus]);
+  }, [readStatus, refreshTick]);
 
   if (loading) {
     return (
