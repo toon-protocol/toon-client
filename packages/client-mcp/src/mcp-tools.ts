@@ -49,8 +49,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description:
       'Report TOON client daemon health: bootstrapping/ready state, transport, ' +
       'relay connection, buffered-event count, and per-chain settlement status. ' +
-      'To display this to the user, render it via toon_render — not a generic ' +
-      'widget or plain text.',
+      'NOT a render prerequisite — do NOT call this to "check health" before a ' +
+      'read-only render; render directly and let the UI surface daemon state. ' +
+      'Reach for it only when a write reports bootstrapping or the user asks ' +
+      'about connection/health. To display this to the user, render it via ' +
+      'toon_render — not a generic widget or plain text.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -61,7 +64,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'toon_identity',
     description:
       "Return this client's public identity (Nostr pubkey + EVM/Solana/Mina " +
-      'addresses). Never returns private keys.',
+      'addresses). Never returns private keys. Not needed before read-only ' +
+      'renders; relevant only to confirm which key will sign a paid write.',
     inputSchema: {
       type: 'object',
       properties: {},

@@ -138,6 +138,15 @@ export interface ToonClientLike {
   settleChannel(channelId: string): Promise<{ channelId: string; txHash?: string }>;
   getChannelCloseState(channelId: string): 'open' | 'closing' | 'settleable' | 'settled';
   getSettleableAt(channelId: string): bigint | undefined;
+  /**
+   * Re-read a resumed channel's on-chain deposit (persisted state omits it).
+   * Optional so lightweight fakes need not implement it; the real ToonClient
+   * does. Best-effort — callers await + catch.
+   */
+  rehydrateChannelDeposit?(
+    channelId: string,
+    opts: { chain: string; tokenNetworkAddress: string }
+  ): Promise<bigint | undefined>;
   sendSwapPacket(params: {
     destination: string;
     amount: bigint;
@@ -729,9 +738,21 @@ export class ClientRunner {
 
     if (saved && cm && typeof cm.trackChannel === 'function') {
       cm.trackChannel(saved.channelId, saved.context);
-      this.log(
-        `[runner] resumed apex channel ${saved.channelId} (tracked, no re-deposit)`
-      );
+      // Persisted channel state omits the on-chain deposit, so re-read it from
+      // chain — otherwise the wallet shows 0 spendable on a funded channel.
+      if (saved.context.chainType === 'evm') {
+        await apex.client
+          .rehydrateChannelDeposit?.(saved.channelId, {
+            chain: `evm:${saved.context.chainId}`,
+            tokenNetworkAddress: saved.context.tokenNetworkAddress,
+          })
+          .catch((err) =>
+            this.log(
+              `[runner] deposit re-hydrate for ${saved.channelId} failed: ${errMsg(err)}`
+            )
+          );
+      }
+      this.log(`[runner] resumed apex channel ${saved.channelId} (deposit re-read)`);
       return saved.channelId;
     }
 

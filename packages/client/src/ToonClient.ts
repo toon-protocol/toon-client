@@ -1048,6 +1048,38 @@ export class ToonClient {
     return this.channelManager.getChannelCloseState(channelId);
   }
 
+  getSettleableAt(channelId: string): bigint | undefined {
+    if (!this.channelManager) throw new Error('ChannelManager not initialized');
+    return this.channelManager.getSettleableAt(channelId);
+  }
+
+  /**
+   * Re-hydrate a RESUMED channel's on-chain deposit. Persisted channel state
+   * omits `depositTotal`, so after a daemon restart the tracked deposit is `0`
+   * and the wallet shows 0 spendable even though real collateral is locked
+   * on-chain. Read the participant's `deposit` from the `participants` mapping
+   * and update the tracked total so `depositTotal - cumulativeAmount` is right.
+   * Best-effort by caller (await + catch); returns the on-chain deposit, or
+   * `undefined` when it can't be read (no channel manager / on-chain client /
+   * EVM address).
+   */
+  async rehydrateChannelDeposit(
+    channelId: string,
+    opts: { chain: string; tokenNetworkAddress: string }
+  ): Promise<bigint | undefined> {
+    if (!this.channelManager || !this.onChainChannelClient) return undefined;
+    const participant = this.getEvmAddress();
+    if (!participant) return undefined;
+    const { deposit } = await this.onChainChannelClient.readEvmParticipantState({
+      chain: opts.chain,
+      tokenNetworkAddress: opts.tokenNetworkAddress,
+      channelId,
+      participant,
+    });
+    this.channelManager.setDepositTotal(channelId, deposit);
+    return deposit;
+  }
+
   /**
    * Read the on-chain settlement-token balance of this client's OWN wallet on
    * each configured chain (EVM token, Solana SPL, native MINA). A free read — no

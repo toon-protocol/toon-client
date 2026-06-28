@@ -65,11 +65,17 @@ The full set of paid (SPENDY) tools is `toon_publish`, `toon_publish_unsigned`,
 remote returns 402). Everything else — reads, status, targets, channel listing,
 rendering, and the devnet faucet — is free.
 
-## First call: check status
+## Status is lazy, not a preflight
 
-Always start with `toon_status`. The daemon's first bootstrap pays a one-time
-anon-proxy + BTP warm-up (~30–90s). While it comes up, write tools return a
-"still bootstrapping — retry shortly" message. `toon_status` reports:
+**Do not open every TOON interaction with `toon_status`.** Reads and renders
+don't need it — go straight to the work (for display requests that means
+`toon_atoms` → `toon_render`; see below). Reach for `toon_status` only when:
+
+- a **write** comes back "still bootstrapping — retry shortly" (the daemon's
+  first bootstrap pays a one-time anon-proxy + BTP warm-up, ~30–90s), or
+- the user **explicitly** asks about connection / health / readiness.
+
+When you do call it, `toon_status` reports:
 
 - `bootstrapping` / `ready` — whether paid writes can go through yet,
 - `identity` — your Nostr pubkey + EVM/Solana/Mina addresses,
@@ -77,9 +83,11 @@ anon-proxy + BTP warm-up (~30–90s). While it comes up, write tools return a
 - `network` — per-chain settlement readiness.
 
 `toon_identity` returns just the public addresses (e.g. to fund a testnet wallet
-or share an npub). It never returns private keys. On devnet, `toon_fund_wallet`
-drips test funds (ETH/SOL/MINA + USDC) to your own address so you can open a
-channel and pay for writes — the usual "fund me first" step before publishing.
+or share an npub). It never returns private keys, and is **not** needed before a
+read-only render — reach for it only to confirm which key will sign a paid
+write. On devnet, `toon_fund_wallet` drips test funds (ETH/SOL/MINA + USDC) to
+your own address so you can open a channel and pay for writes; it submits an
+async job — poll `toon_fund_status` for settlement rather than re-dripping.
 
 ## Rendering is the default surface
 
@@ -91,6 +99,12 @@ and do **not** deliberate between "render or describe in text" — for any displ
 request, **rendering wins.** Examples that mean "render it": "show me kind:1
 events", "open toon", "I want a feed", "show my profile", "let me browse the
 channel", "view my balances". Render first; don't merely offer to.
+
+**No ceremony before the render.** The rendered card *is* the response. Do not
+precede it with `toon_status`, `toon_identity`, or `toon_balances` "to be safe,"
+and do not narrate the tool calls or write a status report — for a read-only
+view the whole trace is `toon_atoms` → `toon_render` and at most a one-line
+caption. Daemon/identity state surfaces inside the rendered UI; let it.
 
 Rules of the road:
 
