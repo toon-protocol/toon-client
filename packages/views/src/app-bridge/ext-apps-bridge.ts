@@ -13,7 +13,7 @@
 import { type App } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { type NostrEvent } from '../types.js';
-import { type ToolOutcome, type ViewBridge } from './types.js';
+import { type DisplayMode, type ToolOutcome, type ViewBridge } from './types.js';
 
 function extractEvents(structured: unknown): NostrEvent[] | undefined {
   if (
@@ -73,6 +73,33 @@ export function createExtAppsBridge(app: App): ViewBridge {
       };
       return () => {
         app.ontoolresult = undefined;
+      };
+    },
+
+    availableDisplayModes(): DisplayMode[] {
+      return app.getHostContext()?.availableDisplayModes ?? [];
+    },
+
+    displayMode(): DisplayMode {
+      return app.getHostContext()?.displayMode ?? 'inline';
+    },
+
+    async requestDisplayMode(mode): Promise<DisplayMode> {
+      const result = await app.requestDisplayMode({ mode });
+      return result.mode;
+    },
+
+    onHostContextChanged(cb): () => void {
+      // `onhostcontextchanged` is a single settable callback, so CHAIN over any
+      // existing handler (e.g. app-entry's theme follower) rather than clobber
+      // it, and restore the prior handler on unsubscribe — matching app-entry.
+      const prev = app.onhostcontextchanged;
+      app.onhostcontextchanged = (ctx) => {
+        cb();
+        prev?.(ctx);
+      };
+      return () => {
+        app.onhostcontextchanged = prev;
       };
     },
   };
