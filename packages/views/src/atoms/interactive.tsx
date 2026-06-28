@@ -247,6 +247,7 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
   const [status, setStatus] = useState<AtomStatus | null>(null);
   const [statusError, setStatusError] = useState(false);
   const [eventId, setEventId] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<{ feePaid?: string; balanceAfter?: string } | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 
   useEffect(() => {
@@ -282,6 +283,10 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
       setPhase('confirming');
       return;
     }
+    // Prefer the TRUTHFUL fee the daemon actually charged (PublishResponse.feePaid)
+    // over the pre-write per-event estimate; surface the post-write balance too.
+    const data = (outcome.data ?? {}) as { feePaid?: string; channelBalanceAfter?: string };
+    setReceipt({ feePaid: data.feePaid, balanceAfter: data.channelBalanceAfter });
     setEventId(outcome.eventId ?? null);
     setPhase('receipt');
   };
@@ -291,16 +296,21 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
     setStatus(null);
     setStatusError(false);
     setEventId(null);
+    setReceipt(null);
     setFailed(null);
     setPhase('idle');
   };
 
+  const assetSuffix = status?.asset ? ` ${status.asset}` : '';
   const feeLabel = status
-    ? `${status.feePerEvent}${status.asset ? ` ${status.asset}` : ''}`
+    ? `${status.feePerEvent}${assetSuffix}`
     : statusError
       ? 'unavailable'
       : '…';
   const chainLabel = status ? status.settlementChain : statusError ? 'unknown' : '…';
+  // The receipt shows what was actually charged; fall back to the estimate only
+  // if the daemon didn't report a fee (older daemon).
+  const paidLabel = receipt?.feePaid ? `${receipt.feePaid}${assetSuffix}` : feeLabel;
   const bytes = byteLength(text.trim());
 
   if (phase === 'receipt') {
@@ -318,8 +328,17 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
           <dd>{eventId ? <MonoId value={eventId} prefixLen={12} suffixLen={6} /> : '—'}</dd>
           <dt className="text-muted-foreground">Fee paid</dt>
           <dd className="font-medium">
-            {feeLabel} on {chainLabel}
+            {paidLabel} on {chainLabel}
           </dd>
+          {receipt?.balanceAfter ? (
+            <>
+              <dt className="text-muted-foreground">Balance</dt>
+              <dd className="font-medium tabular-nums">
+                {receipt.balanceAfter}
+                {assetSuffix} left
+              </dd>
+            </>
+          ) : null}
         </dl>
         <div className="flex justify-end border-t border-border px-4 py-2.5">
           <Button variant="outline" size="sm" onClick={reset}>
@@ -357,7 +376,9 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
             </div>
           </dl>
           <p className="text-xs text-muted-foreground">
-            Posting pays the fee above per event. The message is the money.
+            Posting pays the fee above per event. <span className="text-foreground/80">
+              This is permanent</span> — the note is broadcast to relays and can't be
+            unpublished, and the fee is non-refundable. The message is the money.
           </p>
           {failed ? (
             <p className="text-xs text-destructive">Publish failed: {failed}</p>

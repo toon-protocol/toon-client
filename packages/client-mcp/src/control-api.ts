@@ -87,6 +87,17 @@ export interface PublishResponse {
   channelId: string;
   /** Channel nonce after this publish (advances by one per paid write). */
   nonce: number;
+  /**
+   * The fee actually paid for this write, in base (micro) units, as a decimal
+   * string. The truthful amount the claim advanced by — surface this in
+   * receipts / text fallback instead of re-reading the per-event estimate.
+   */
+  feePaid: string;
+  /**
+   * Available (spendable) channel balance after this write, base units, when
+   * known. Lets a receipt / non-rendering host report the post-write balance.
+   */
+  channelBalanceAfter?: string;
 }
 
 /**

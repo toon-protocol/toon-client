@@ -96,7 +96,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description:
       'Pay-to-write: publish a fully-signed Nostr event to the TOON network. ' +
       'Signs an off-chain payment-channel claim and forwards it over BTP. ' +
-      'Returns the event id, channel id, and the advanced channel nonce.',
+      'Returns the event id, channel id, the advanced channel nonce, and the ' +
+      'fee paid. PAID + IRREVERSIBLE: on a text-only host, quote the fee via ' +
+      'toon_status and confirm with the user before calling.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -135,7 +137,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       'content, tags) and the daemon signs it with the held Nostr key, signs the ' +
       'payment-channel claim, and forwards over BTP. For replaceable kinds ' +
       '(0 profile, 3 follow list) the daemon merges the latest known tags first. ' +
-      'This is the path MCP-app UI actions use so the iframe never signs.',
+      'This is the path MCP-app UI actions use so the iframe never signs. ' +
+      'PAID + IRREVERSIBLE: on a text-only host, quote the fee via toon_status ' +
+      'and confirm with the user before calling.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -164,7 +168,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       'preferred, keeps the payload out of the model context) or `dataBase64` (inline ' +
       'base64). The reference event kind defaults to 1063 (NIP-94 media; 20=picture, ' +
       '21/22=video, 1=note w/ NIP-92 imeta) — set `kind` to suit any blob type. ' +
-      'Single-packet only.',
+      'Single-packet only. PAID + IRREVERSIBLE (pays for both the upload and the ' +
+      'reference event): on a text-only host, quote the fee via toon_status and ' +
+      'confirm with the user before calling.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -389,7 +395,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       'claim. Builds the NIP-59 gift-wrapped kind:20032 swap rumor and streams ' +
       'it; the source-asset claim is signed against the open apex channel (the ' +
       'swap peer must be routed via apexChildPeers). Returns the accumulated, ' +
-      'decrypted target-chain claim(s) and settlement metadata.',
+      'decrypted target-chain claim(s) and settlement metadata. PAID + ' +
+      'IRREVERSIBLE: on a text-only host, confirm the amount with the user ' +
+      'before calling.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -130,6 +130,12 @@ async function main(): Promise<void> {
         'just render the uploader and let the user pick a file. Writes ' +
         '(post/like/follow/upload/swap) spend a ' +
         'payment-channel claim; surface the fee and confirm before paying. ' +
+        'When rendering, the trusted host shows the pay/consent surface. When ' +
+        'you CANNOT render (a text-only host), you MUST first call toon_status ' +
+        'to quote the exact fee + asset, tell the user the fee and that the ' +
+        'write is permanent and non-refundable (events cannot be unpublished), ' +
+        'and get explicit confirmation before calling any paid write ' +
+        '(toon_publish, toon_publish_unsigned, toon_upload, toon_swap). ' +
         'Fall back to text only on explicit request or render failure.',
     }
   );
