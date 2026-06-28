@@ -76,6 +76,17 @@ const TOKEN_NETWORK_ABI = [
     ],
   },
   {
+    name: 'participants',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ type: 'bytes32' }, { type: 'address' }],
+    outputs: [
+      { name: 'deposit', type: 'uint256' },
+      { name: 'nonce', type: 'uint256' },
+      { name: 'transferredAmount', type: 'uint256' },
+    ],
+  },
+  {
     name: 'ChannelOpened',
     type: 'event',
     inputs: [
@@ -532,6 +543,29 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       args: [channelId as Hex],
     })) as readonly [bigint, number, bigint, bigint, string, string];
     return { settlementTimeout: res[0], state: Number(res[1]), closedAt: res[2] };
+  }
+
+  /**
+   * Read a participant's on-chain channel state — `deposit` (locked collateral),
+   * `nonce`, and `transferredAmount` — straight from the `participants` mapping.
+   * Takes the chain + token-network explicitly so it works for a channel that
+   * was RESUMED from disk (no in-memory `channelContext` yet), which is exactly
+   * when the daemon needs to re-hydrate the deposit it doesn't persist.
+   */
+  async readEvmParticipantState(opts: {
+    chain: string;
+    tokenNetworkAddress: string;
+    channelId: string;
+    participant: string;
+  }): Promise<{ deposit: bigint; nonce: bigint; transferredAmount: bigint }> {
+    const { publicClient } = this.createClients(opts.chain);
+    const res = (await publicClient.readContract({
+      address: opts.tokenNetworkAddress as Hex,
+      abi: TOKEN_NETWORK_ABI,
+      functionName: 'participants',
+      args: [opts.channelId as Hex, opts.participant as Hex],
+    })) as readonly [bigint, bigint, bigint];
+    return { deposit: res[0], nonce: res[1], transferredAmount: res[2] };
   }
 
   /**

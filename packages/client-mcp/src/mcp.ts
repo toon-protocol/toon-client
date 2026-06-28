@@ -115,7 +115,13 @@ async function main(): Promise<void> {
         'threads, channels, or balances, call toon_atoms then toon_render ' +
         '(ui://toon/app) — do NOT route TOON data to a generic ' +
         'HTML/SVG/chart/widget tool or dump it as text. Always call toon_atoms ' +
-        'before toon_render. On ANY intent to upload media or post/publish a ' +
+        'before toon_render. The rendered card IS the response: for read-only ' +
+        'views (feeds, profiles, threads, channels, balances, wallet) go ' +
+        'STRAIGHT toon_atoms → toon_render — do NOT precede a render with ' +
+        'daemon-health (toon_status), identity (toon_identity), or balance ' +
+        'preflight, and do NOT narrate the tool calls or write a status ' +
+        'report; at most a one-line caption after. On ANY intent to upload ' +
+        'media or post/publish a ' +
         'picture/video/image (e.g. "I want to upload", "publish an image", ' +
         '"post a photo"), your FIRST action is toon_atoms then toon_render with ' +
         'the media view (media-uploader atom). The uploader has an in-app FILE ' +
