@@ -29,7 +29,10 @@ const ComposerSurface: FC<{
 }> = ({ value, onChange, placeholder, actionLabel, actionIcon, disabled, onSubmit, preview, attach }) => {
   const bytes = byteLength(value);
   return (
-    <div className="rounded-xl border border-border bg-card focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30">
+    // Inherit the host surface (no opaque slab): a bordered, faintly-lifted input
+    // that the focus ring defines — not a painted card that reads as a separate
+    // widget against the transparent feed below it.
+    <div className="rounded-xl border border-border bg-muted/20 focus-within:border-ring focus-within:bg-transparent focus-within:ring-3 focus-within:ring-ring/30">
       {preview ? <div className="px-3 pt-3">{preview}</div> : null}
       <Textarea
         value={value}
@@ -38,16 +41,20 @@ const ComposerSurface: FC<{
         rows={2}
         className="min-h-14 resize-none border-0 bg-transparent px-3.5 pt-3.5 text-base focus-visible:border-0 focus-visible:ring-0 md:text-sm"
       />
-      <div className="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
+      <div className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="flex items-center gap-2">
           {attach}
-          <span
-            className="font-mono text-xs text-muted-foreground tabular-nums"
-            aria-label={`${bytes} bytes, the unit pay-to-write fees scale with`}
-            title="Fees scale with encoded bytes"
-          >
-            {bytes} {bytes === 1 ? 'byte' : 'bytes'}
-          </span>
+          {/* The byte counter is fee-relevant only once there's content — hide it
+              at rest so the composer doesn't read as a debug tool ("0 bytes"). */}
+          {bytes > 0 ? (
+            <span
+              className="font-mono text-xs text-muted-foreground tabular-nums"
+              aria-label={`${bytes} bytes, the unit pay-to-write fees scale with`}
+              title="Fees scale with encoded bytes"
+            >
+              {bytes} {bytes === 1 ? 'byte' : 'bytes'}
+            </span>
+          ) : null}
         </div>
         <Button size="sm" disabled={disabled} onClick={onSubmit}>
           {actionIcon}

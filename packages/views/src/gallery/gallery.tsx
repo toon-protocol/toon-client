@@ -37,6 +37,33 @@ const bridge = createMockBridge();
 /** Extra specs covering atoms the reference examples don't surface. */
 const EXTRA: { name: string; description: string; spec: ViewSpec }[] = [
   {
+    name: 'feed-list (+ composer)',
+    description: 'Browsable timeline slice with a composer on top — the "show my feed" view.',
+    spec: {
+      title: 'Feed',
+      root: {
+        atom: 'stack',
+        props: { gap: 3 },
+        children: [
+          {
+            atom: 'composer',
+            props: { placeholder: "What's happening?", label: 'Post' },
+            actions: { post: { tool: PUBLISH_TOOL, args: { kind: 1 } } },
+          },
+          {
+            atom: 'feed-list',
+            bind: { query: { kinds: [1] }, sort: 'desc' },
+            actions: {
+              reply: { tool: PUBLISH_TOOL, args: { kind: 1 } },
+              react: { tool: PUBLISH_TOOL, args: { kind: 7 } },
+              follow: { tool: PUBLISH_TOOL, args: { kind: 3 } },
+            },
+          },
+        ],
+      },
+    },
+  },
+  {
     name: 'wallet-overview',
     description: 'Per-chain address (copy-to-share) + live balance + devnet faucet.',
     spec: {
