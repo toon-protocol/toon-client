@@ -11,7 +11,10 @@ import { type Atom } from './types.js';
 import { layoutAtoms } from './layout.js';
 import { socialAtoms } from './social.js';
 import { feedAtoms } from './feed.js';
+import { threadAtoms } from './thread-view.js';
 import { mediaAtoms } from './media.js';
+import { mediaGalleryAtoms } from './media-gallery.js';
+import { liveTickerAtoms } from './live-ticker.js';
 import { forgeAtoms } from './forge.js';
 import { interactiveAtoms } from './interactive.js';
 import { defiAtoms } from './defi.js';
@@ -27,7 +30,10 @@ const ALL_ATOMS: Atom[] = [
   ...layoutAtoms,
   ...socialAtoms,
   ...feedAtoms,
+  ...threadAtoms,
   ...mediaAtoms,
+  ...mediaGalleryAtoms,
+  ...liveTickerAtoms,
   ...forgeAtoms,
   ...interactiveAtoms,
   ...defiAtoms,
