@@ -26,11 +26,30 @@ import type {
   UploadMediaRequest,
 } from './control-api.js';
 
+/**
+ * MCP behavioural hints (per the spec's `ToolAnnotations`). Hosts read these to
+ * decide what to auto-run vs gate: free reads can skip approval, paid/irreversible
+ * writes get a confirmation prompt. All hints are advisory, so a host MUST NOT
+ * relax its own gating based on them — but a compliant host CAN use them to gate.
+ */
+export interface ToolAnnotations {
+  /** Does not mutate state — the host may run it without a write prompt. */
+  readOnlyHint?: boolean;
+  /** May perform irreversible/destructive updates (paid writes; channel close). */
+  destructiveHint?: boolean;
+  /** Repeated calls with the same args have no additional effect. */
+  idempotentHint?: boolean;
+  /** Touches an external/open world (relays, chains, the wider web). */
+  openWorldHint?: boolean;
+}
+
 /** A JSON-Schema-described MCP tool. */
 export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** Behavioural hints for the host (read-only vs paid/destructive write). */
+  annotations?: ToolAnnotations;
   /** MCP-apps metadata, e.g. `{ ui: { resourceUri } }` linking a UI resource. */
   _meta?: Record<string, unknown>;
 }
@@ -599,6 +618,77 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
 ];
+
+// --- Tool annotations -------------------------------------------------------
+// Behavioural hints the host uses to gate writes and auto-run reads. Kept in one
+// place so the read/write split is auditable at a glance and stays consistent
+// with the UI-fireable WRITE_TOOLS set (asserted at load below). Reads that touch
+// relays/chains are flagged openWorld; paid/irreversible writes are destructive.
+const READ_LOCAL: ToolAnnotations = { readOnlyHint: true };
+const READ_NET: ToolAnnotations = { readOnlyHint: true, openWorldHint: true };
+const PAID_WRITE: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: true,
+};
+const ONCHAIN_WRITE: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  openWorldHint: true,
+};
+const CONFIG_WRITE: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+};
+
+const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
+  // free reads — local daemon state
+  toon_status: READ_LOCAL,
+  toon_identity: READ_LOCAL,
+  toon_atoms: READ_LOCAL,
+  toon_render: READ_LOCAL,
+  toon_channels: READ_LOCAL,
+  toon_targets: READ_LOCAL,
+  // free reads — touch relays / chains
+  toon_query: READ_NET,
+  toon_subscribe: READ_NET,
+  toon_read: READ_NET,
+  toon_balances: READ_NET,
+  toon_fund_status: READ_NET,
+  // paid, irreversible writes (signed event broadcast + spent channel claim)
+  toon_publish: PAID_WRITE,
+  toon_publish_unsigned: PAID_WRITE,
+  toon_upload: PAID_WRITE,
+  toon_swap: PAID_WRITE,
+  // on-chain channel ops
+  toon_open_channel: { ...ONCHAIN_WRITE, idempotentHint: true }, // returns the existing channel if open
+  toon_channel_deposit: ONCHAIN_WRITE,
+  toon_channel_settle: ONCHAIN_WRITE,
+  toon_channel_close: { ...ONCHAIN_WRITE, destructiveHint: true }, // begins the irreversible settlement
+  toon_http_fetch_paid: ONCHAIN_WRITE, // pays on 402, then returns the resource
+  // receives faucet funds — mutates balances, but not a spend
+  toon_fund_wallet: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  // reversible, persisted config edits
+  toon_add_relay: CONFIG_WRITE,
+  toon_remove_relay: CONFIG_WRITE,
+  toon_add_apex: { ...CONFIG_WRITE, openWorldHint: true }, // discovers the apex's kind:10032 off a relay
+  toon_remove_apex: CONFIG_WRITE,
+};
+
+// Attach annotations and fail fast on drift: every tool must be classified, and
+// every UI-fireable write (WRITE_TOOLS) must be non-read-only so hosts gate it.
+for (const def of TOOL_DEFINITIONS) {
+  const annotations = TOOL_ANNOTATIONS[def.name];
+  if (!annotations) throw new Error(`mcp-tools: missing annotations for tool ${def.name}`);
+  def.annotations = annotations;
+}
+for (const name of WRITE_TOOLS) {
+  if (TOOL_ANNOTATIONS[name]?.readOnlyHint !== false) {
+    throw new Error(`mcp-tools: WRITE_TOOLS member ${name} must be annotated readOnlyHint:false`);
+  }
+}
 
 /**
  * Dispatch an MCP tool call to the daemon control plane. Always resolves with a
