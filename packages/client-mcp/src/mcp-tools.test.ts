@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { dispatchTool, TOOL_DEFINITIONS } from './mcp-tools.js';
+import { dispatchTool, summarizeEvents, TOOL_DEFINITIONS } from './mcp-tools.js';
+import type { NostrEvent } from 'nostr-tools/pure';
 import { WRITE_TOOLS } from '@toon-protocol/views';
 import { ControlApiError, DaemonUnreachableError } from './control-client.js';
 import type { ControlClient } from './control-client.js';
@@ -559,5 +560,68 @@ describe('dispatchTool', () => {
     });
     expect(query).toHaveBeenCalledWith({ filters: { kinds: [1] }, timeoutMs: 50 });
     expect((res.structuredContent?.['events'] as unknown[]).length).toBe(1);
+  });
+
+  it('toon_query text carries a decision-sufficient note summary for text-only hosts', async () => {
+    const note: NostrEvent = {
+      id: 'n1',
+      pubkey: 'ab'.repeat(32),
+      created_at: 1_700_000_000,
+      kind: 1,
+      tags: [],
+      content: 'gm from the timeline',
+      sig: 's',
+    };
+    const query = vi.fn().mockResolvedValue({ events: [note] });
+    const res = await dispatchTool(stubClient({ query }), 'toon_query', {
+      filter: { kinds: [1] },
+    });
+    const text = res.content[0]!.text;
+    // Author (abbreviated), an ISO timestamp, and the content excerpt — enough to
+    // reason about the feed without rendering the card.
+    expect(text).toMatch(/1 event\(s\) — 1 note/);
+    expect(text).toMatch(/abababab…abab/);
+    expect(text).toMatch(/2023-11-/);
+    expect(text).toMatch(/gm from the timeline/);
+  });
+
+  it('toon_read text summarizes events and surfaces the drain cursor', async () => {
+    const events = vi.fn().mockResolvedValue({
+      events: [
+        { id: 'n1', pubkey: 'cd'.repeat(32), created_at: 1_700_000_000, kind: 1, tags: [], content: 'hello', sig: 's' },
+      ],
+      cursor: 42,
+      hasMore: true,
+    });
+    const res = await dispatchTool(stubClient({ events }), 'toon_read', { limit: 1 });
+    expect(res.content[0]!.text).toMatch(/cursor 42/);
+    expect(res.structuredContent).toMatchObject({ cursor: 42, hasMore: true });
+  });
+
+  it('toon_render text names the composed atoms for a text-only host', async () => {
+    const spec = { title: 'Feed', root: { atom: 'stack', children: [{ atom: 'note-card' }] } };
+    const res = await dispatchTool(stubClient({}), 'toon_render', { spec });
+    expect(res.content[0]!.text).toMatch(/atoms: stack, note-card/);
+    expect(res.content[0]!.text).toMatch(/toon_query \/ toon_read/);
+  });
+});
+
+describe('summarizeEvents', () => {
+  it('tallies reaction likes against the note they target', () => {
+    const note: NostrEvent = {
+      id: 'note1', pubkey: 'aa'.repeat(32), created_at: 1_700_000_000, kind: 1, tags: [], content: 'hi', sig: 's',
+    };
+    const like = (id: string): NostrEvent => ({
+      id, pubkey: 'bb'.repeat(32), created_at: 1_700_000_001, kind: 7, tags: [['e', 'note1']], content: '+', sig: 's',
+    });
+    const text = summarizeEvents([note, like('r1'), like('r2')]);
+    expect(text).toMatch(/2 reactions/);
+    expect(text).toMatch(/2 likes/); // tallied onto the note line
+  });
+
+  it('is robust to empty input and to partial wire events', () => {
+    expect(summarizeEvents([])).toBe('No matching events.');
+    // A bare event missing pubkey/created_at/content must not throw.
+    expect(() => summarizeEvents([{ id: 'e', kind: 1 } as unknown as NostrEvent])).not.toThrow();
   });
 });

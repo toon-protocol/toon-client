@@ -13,6 +13,7 @@ import {
   APP_RESOURCE_URI,
   validateViewSpec,
 } from '@toon-protocol/views';
+import type { NostrEvent } from 'nostr-tools/pure';
 import { ControlApiError, DaemonUnreachableError } from './control-client.js';
 import type { ControlClient } from './control-client.js';
 import type {
@@ -745,8 +746,16 @@ export async function dispatchTool(
         if (!check.ok) {
           return err(`Invalid ViewSpec:\n- ${check.errors.join('\n- ')}`);
         }
+        // Decision-sufficient text for a NON-RENDERING host: name the view and
+        // the atoms it composes, and point at the free reads that carry the
+        // actual data — so a text-only host isn't left with an opaque "rendering"
+        // line it cannot act on (MCP-Apps text-fallback requirement).
+        const atomIds = [...new Set(collectAtomIds(check.spec.root))];
+        const title = check.spec.title ? `: ${check.spec.title}` : '';
         return okStructured(
-          `Rendering view${check.spec.title ? `: ${check.spec.title}` : ''}.`,
+          `Rendering view${title} (atoms: ${atomIds.join(', ') || 'none'}). ` +
+            `This is a UI card for a rendering host; a text-only host should read ` +
+            `the underlying data via toon_query / toon_read.`,
           { viewSpec: check.spec }
         );
       }
@@ -757,9 +766,11 @@ export async function dispatchTool(
             ? { timeoutMs: args['timeoutMs'] }
             : {}),
         });
-        return okStructured(`${res.events.length} event(s).`, {
-          events: res.events,
-        });
+        // Carry a decision-sufficient TEXT summary (author/time/excerpt/counts)
+        // alongside structuredContent: a NON-RENDERING host sees only the text,
+        // so a bare "N event(s)." would strand it with no way to reason about
+        // the feed/thread it just read (MCP-Apps text-fallback requirement).
+        return okStructured(summarizeEvents(res.events), { events: res.events });
       }
       case 'toon_subscribe':
         return ok(
@@ -773,23 +784,28 @@ export async function dispatchTool(
               : {}),
           })
         );
-      case 'toon_read':
-        return ok(
-          await client.events({
-            ...(typeof args['subId'] === 'string'
-              ? { subId: args['subId'] }
-              : {}),
-            ...(typeof args['cursor'] === 'number'
-              ? { cursor: args['cursor'] }
-              : {}),
-            ...(typeof args['limit'] === 'number'
-              ? { limit: args['limit'] }
-              : {}),
-            ...(typeof args['relayUrl'] === 'string'
-              ? { relayUrl: args['relayUrl'] }
-              : {}),
-          })
-        );
+      case 'toon_read': {
+        const res = await client.events({
+          ...(typeof args['subId'] === 'string' ? { subId: args['subId'] } : {}),
+          ...(typeof args['cursor'] === 'number' ? { cursor: args['cursor'] } : {}),
+          ...(typeof args['limit'] === 'number' ? { limit: args['limit'] } : {}),
+          ...(typeof args['relayUrl'] === 'string'
+            ? { relayUrl: args['relayUrl'] }
+            : {}),
+        });
+        // Same text-fallback contract as toon_query: a readable summary for
+        // text-only hosts, plus the cursor so the agent can drain the next page;
+        // the full `{ events, cursor, hasMore }` rides structuredContent for the
+        // iframe.
+        const cursorNote = res.hasMore
+          ? ` More available — read again with cursor ${res.cursor}.`
+          : ` Cursor ${res.cursor}.`;
+        return okStructured(summarizeEvents(res.events) + cursorNote, {
+          events: res.events,
+          cursor: res.cursor,
+          hasMore: res.hasMore,
+        });
+      }
       case 'toon_open_channel':
         return ok(
           await client.openChannel(
@@ -1005,4 +1021,103 @@ function okStructured(
 
 function err(message: string): ToolResult {
   return { content: [{ type: 'text', text: message }], isError: true };
+}
+
+/** Human label for a Nostr event kind, for the text fallback. */
+function kindLabel(kind: number): string {
+  switch (kind) {
+    case 0:
+      return 'profile';
+    case 1:
+      return 'note';
+    case 3:
+      return 'follow list';
+    case 7:
+      return 'reaction';
+    case 20:
+    case 21:
+    case 22:
+      return 'media';
+    case 1063:
+      return 'file';
+    default:
+      return `kind:${kind}`;
+  }
+}
+
+/** Abbreviate a 64-char hex id/pubkey to `head…tail` for readable text. */
+function shortHex(value: string): string {
+  return value.length > 14 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
+}
+
+/** Collapse whitespace and clip content to a single, bounded excerpt line. */
+function excerpt(content: string, max = 140): string {
+  const oneLine = content.replace(/\s+/g, ' ').trim();
+  if (!oneLine) return '';
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+}
+
+/**
+ * A compact, decision-sufficient TEXT rendering of a set of Nostr events for
+ * NON-RENDERING hosts, which see ONLY `content[].text` (never structuredContent).
+ * Per the MCP-Apps spec every UI-feeding read must ALSO return readable text, so
+ * the agent can reason about a feed/thread/profile even when it can't render the
+ * card. Notes surface author/time/excerpt + like counts (NIP-25 `e`-tag tally);
+ * other kinds get a typed one-liner. Bounded to `max` lines so a large page
+ * stays readable. Exported for direct unit testing.
+ */
+export function summarizeEvents(events: NostrEvent[], max = 20): string {
+  if (events.length === 0) return 'No matching events.';
+
+  // Tally reactions per targeted note (NIP-25 `e` tag) so a note line can show
+  // its like count — the engagement signal a feed card would render. Defensive
+  // against partial event objects (some come straight off the wire).
+  const eTag = (e: NostrEvent): string | undefined =>
+    (Array.isArray(e.tags) ? e.tags : []).find((t) => t[0] === 'e')?.[1];
+  const likes = new Map<string, number>();
+  for (const e of events) {
+    if (e.kind !== 7) continue;
+    const target = eTag(e);
+    if (target) likes.set(target, (likes.get(target) ?? 0) + 1);
+  }
+
+  const kindCounts = new Map<string, number>();
+  for (const e of events) {
+    const label = kindLabel(e.kind);
+    kindCounts.set(label, (kindCounts.get(label) ?? 0) + 1);
+  }
+  const breakdown = [...kindCounts.entries()]
+    .map(([label, n]) => `${n} ${label}${n === 1 ? '' : 's'}`)
+    .join(', ');
+
+  const lines = events.slice(0, max).map((e) => {
+    const who = `by ${shortHex(e.pubkey ?? '?')}`;
+    const when = Number.isFinite(e.created_at)
+      ? new Date(e.created_at * 1000).toISOString()
+      : 'unknown time';
+    if (e.kind === 7) {
+      const target = eTag(e);
+      const emoji = excerpt(e.content ?? '') || '+';
+      return `• reaction "${emoji}" ${who}${target ? ` → ${shortHex(target)}` : ''}`;
+    }
+    const body = excerpt(e.content ?? '');
+    const likeCount = likes.get(e.id) ?? 0;
+    const likeSuffix = likeCount > 0 ? ` · ${likeCount} like${likeCount === 1 ? '' : 's'}` : '';
+    const bodySuffix = body ? ` · "${body}"` : '';
+    return `• ${kindLabel(e.kind)} ${who} · ${when}${bodySuffix}${likeSuffix}`;
+  });
+
+  const more = events.length > max ? `\n…and ${events.length - max} more.` : '';
+  return `${events.length} event(s) — ${breakdown}.\n${lines.join('\n')}${more}`;
+}
+
+/** Recursively collect every atom id referenced by a ViewSpec node tree. */
+function collectAtomIds(node: unknown): string[] {
+  if (!node || typeof node !== 'object') return [];
+  const n = node as { atom?: unknown; children?: unknown };
+  const ids: string[] = typeof n.atom === 'string' ? [n.atom] : [];
+  if (Array.isArray(n.children)) {
+    for (const child of n.children) ids.push(...collectAtomIds(child));
+  }
+  return ids;
 }

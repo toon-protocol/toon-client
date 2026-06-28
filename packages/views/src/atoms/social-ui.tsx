@@ -7,6 +7,7 @@
 import { type FC } from 'react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.js';
 import { cn } from '@/lib/utils.js';
+import { gatewayMediaSrc } from './media.js';
 
 /** A small fnv-1a hash → 32-bit unsigned int, stable for a given string. */
 function hashString(value: string): number {
@@ -78,12 +79,17 @@ export const IdentityAvatar: FC<{
 }> = ({ pubkey, name, picture, className, size = 'lg' }) => {
   const colors = avatarColorsFor(pubkey);
   const label = name ?? pubkey;
+  // A profile `picture` is an arbitrary user-supplied origin the iframe CSP
+  // blocks; re-point an Arweave-addressable one onto a CSP-allowed gateway origin
+  // so it loads. A non-Arweave origin is passed through unchanged — CSP blocks it
+  // and the AvatarImage load failure degrades to the deterministic initials below.
+  const pictureSrc = picture ? gatewayMediaSrc(picture) : undefined;
   return (
     <Avatar
       size={size}
       className={cn('shrink-0 ring-1 ring-inset ring-white/10', className)}
     >
-      {picture ? <AvatarImage src={picture} alt={`${label} avatar`} /> : null}
+      {pictureSrc ? <AvatarImage src={pictureSrc} alt={`${label} avatar`} /> : null}
       <AvatarFallback
         className="font-semibold tracking-tight"
         style={{
