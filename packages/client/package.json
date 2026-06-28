@@ -1,6 +1,6 @@
 {
   "name": "@toon-protocol/client",
-  "version": "0.14.10",
+  "version": "0.14.11",
   "description": "TOON client for ILP-gated Nostr publishing with multi-hop routing and payment channels",
   "license": "MIT",
   "author": "Jonathan Green",

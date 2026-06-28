@@ -1,5 +1,12 @@
 # @toon-protocol/rig
 
+## 0.2.28
+
+### Patch Changes
+
+- Updated dependencies [b243c10]
+  - @toon-protocol/views@0.12.0
+
 ## 0.2.27
 
 ### Patch Changes
