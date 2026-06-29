@@ -411,8 +411,16 @@ describe('ClientRunner', () => {
     expect(res.eventId).toBe('evt1');
     expect(res.channelId).toBe('chan-1');
     expect(res.nonce).toBe(1);
+    // Reports the truthful fee paid (the configured per-event fee, 1n).
+    expect(res.feePaid).toBe('1');
     const res2 = await runner.publish({ event: { id: 'evt2' } as NostrEvent });
     expect(res2.nonce).toBe(2);
+  });
+
+  it('publish reports the fee override as feePaid', async () => {
+    await runner.bootstrap();
+    const res = await runner.publish({ event: { id: 'e' } as NostrEvent, fee: '5' });
+    expect(res.feePaid).toBe('5');
   });
 
   it('publish surfaces a relay rejection as PublishRejectedError', async () => {
@@ -460,6 +468,9 @@ describe('ClientRunner', () => {
       kind: 20,
     });
     expect(res.txId).toBe('tx-abc');
+    // An upload pays twice (blob leg + reference-event leg), so feePaid is the
+    // sum of both legs — here 2 × the configured per-event fee (1n).
+    expect(res.feePaid).toBe('2');
     // Primary gateway is ar.io; the others travel as `fallback` mirrors.
     expect(res.url).toBe('https://ar-io.dev/tx-abc');
     expect(client.lastSigned?.kind).toBe(20);

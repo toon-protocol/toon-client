@@ -1101,7 +1101,23 @@ export class ClientRunner {
       ...(result.data !== undefined ? { data: result.data } : {}),
       channelId,
       nonce: apex.client.getChannelNonce(channelId),
+      feePaid: fee.toString(),
+      channelBalanceAfter: this.channelAvailable(apex, channelId),
     };
+  }
+
+  /**
+   * Available (spendable) balance for a channel after a write — locked collateral
+   * minus cumulative spent, clamped at 0. Same math as {@link getChannels}; used
+   * to report a truthful post-write balance in publish/upload receipts. Returns
+   * undefined if the channel isn't tracked on this apex (balance unknown).
+   */
+  private channelAvailable(apex: ApexConnection, channelId: string): string | undefined {
+    if (!apex.client.getTrackedChannels().includes(channelId)) return undefined;
+    const cumulative = apex.client.getChannelCumulativeAmount(channelId);
+    const depositTotal = apex.client.getChannelDepositTotal(channelId);
+    const available = depositTotal > cumulative ? depositTotal - cumulative : 0n;
+    return available.toString();
   }
 
   /**
@@ -1191,7 +1207,11 @@ export class ClientRunner {
         `kind:${kind} publish leg failed after upload (blob stored at ${url}): ${detail}`
       );
     }
-    return { ...pub, url, txId: upload.txId };
+    // An upload pays TWICE — the blob (leg 1) and the reference event (leg 2) —
+    // so the truthful total is the sum, not just the publish leg's fee. The
+    // post-write balance from the (last) publish leg is already current.
+    const feePaid = (fee + BigInt(pub.feePaid)).toString();
+    return { ...pub, feePaid, url, txId: upload.txId };
   }
 
   /**

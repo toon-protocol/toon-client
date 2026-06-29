@@ -42,7 +42,15 @@ import { useRenderDecision } from './render/resolve.js';
 import { A2UIRenderer } from './a2ui/A2UIRenderer.js';
 import { SandboxedAppRenderer } from './mcp-ui/SandboxedAppRenderer.js';
 import { DEFAULT_MCP_UI_SANDBOX_URL } from './mcp-ui/sandbox.js';
-import { BALANCES_TOOL, CHANNELS_TOOL, QUERY_TOOL, STATUS_TOOL, WRITE_TOOLS } from './tool-names.js';
+import {
+  BALANCES_TOOL,
+  CHANNELS_TOOL,
+  PUBLISH_TOOL,
+  QUERY_TOOL,
+  STATUS_TOOL,
+  UPLOAD_TOOL,
+  WRITE_TOOLS,
+} from './tool-names.js';
 import { useRefreshTick } from './atoms/use-refresh.js';
 
 /**
@@ -190,7 +198,10 @@ function buildActions(
         // auto-rejects every spend (toon-client#170). Prefer the bridge's
         // injected confirm (tests/host), else the in-iframe consent modal.
         const confirmFn = bridge.confirm ?? consentGate;
-        const ok = await confirmFn(label);
+        // Per-event writes (publish/upload) show the live pay-to-write fee in the
+        // prompt; swaps/channel ops carry their own amount in the label instead.
+        const showWriteFee = ref.tool === PUBLISH_TOOL || ref.tool === UPLOAD_TOOL;
+        const ok = await confirmFn(label, { showWriteFee });
         if (!ok) {
           bridge.notifyModel(`Action "${name}" cancelled.`);
           return { ok: false, error: SPENDY_CANCELLED };
@@ -553,13 +564,15 @@ export function ViewSpecRenderer({
   // drives re-fetch, not this callback), so it never re-runs reads on render.
   const [refreshNonce, setRefreshNonce] = useState(0);
   const onMutated = useCallback(() => setRefreshNonce((n) => n + 1), []);
+  // The consent modal reads the live fee/chain so spendy prompts are specific.
+  const readStatus = useMemo(() => buildReadStatus(bridge), [bridge]);
   // useMemo above guarantees `result` is referentially stable across renders, so
   // an early return is safe to place after these hooks.
   if (!result.ok) return <InvalidSpec errors={result.errors} />;
   // Wrap in the consent provider so spendy actions await a rendered prompt
   // (the host iframe blocks `window.confirm`; see consent-prompt.tsx).
   return (
-    <ConsentProvider>
+    <ConsentProvider readStatus={readStatus}>
       <NodeView node={result.spec.root} bridge={bridge} refreshNonce={refreshNonce} onMutated={onMutated} />
     </ConsentProvider>
   );

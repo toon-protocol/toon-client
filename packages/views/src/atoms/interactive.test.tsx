@@ -90,5 +90,29 @@ describe('PayConfirm', () => {
     expect(await screen.findByText(/confirm pay-to-write/i)).toBeTruthy();
     expect(await screen.findByText(/1 USDC/)).toBeTruthy();
     expect(screen.getByText('base')).toBeTruthy();
+    // The confirm step warns the write is irreversible.
+    expect(screen.getByText(/permanent/i)).toBeTruthy();
+  });
+
+  it('receipt shows the truthful fee paid + balance from the publish response', async () => {
+    const readStatus = vi
+      .fn()
+      .mockResolvedValue({ feePerEvent: '1', asset: 'USDC', settlementChain: 'base' });
+    // The daemon charged 7 (not the per-event estimate of 1) and left 93.
+    const confirm = vi.fn().mockResolvedValue({
+      ok: true,
+      eventId: 'evt-123',
+      data: { eventId: 'evt-123', feePaid: '7', channelBalanceAfter: '93' },
+    });
+    render(<PayConfirm {...base} actions={{ confirm }} readStatus={readStatus} />);
+    fireEvent.change(screen.getByPlaceholderText(/what's happening/i), {
+      target: { value: 'gm' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /pay to post/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /confirm & pay/i }));
+    expect(await screen.findByText(/Posted/i)).toBeTruthy();
+    // Reflects the ACTUAL charge, not the estimate.
+    expect(screen.getByText('7 USDC on base')).toBeTruthy();
+    expect(screen.getByText('93 USDC left')).toBeTruthy();
   });
 });

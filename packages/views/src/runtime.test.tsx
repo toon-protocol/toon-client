@@ -201,6 +201,33 @@ describe('ViewSpecRenderer', () => {
     expect(call?.args['kind']).toBe(3);
   });
 
+  it('rendered spendy consent is specific — shows fee, chain, and irreversibility', async () => {
+    // No injected confirm → the in-iframe ConsentProvider modal renders, which
+    // reads toon_status (mockBridge returns fee 1 / base / USDC).
+    const { bridge, calls } = mockBridge([]);
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'follow-button',
+            actions: { follow: { tool: 'toon_publish_unsigned', args: { kind: 3 }, spendy: true } },
+          },
+        }}
+      />
+    );
+    fireEvent.click(await screen.findByRole('button'));
+    // The prompt names the concrete spend, not just a label.
+    expect(await screen.findByText(/non-refundable/i)).toBeTruthy();
+    expect(await screen.findByText('1 USDC')).toBeTruthy(); // pay-to-write fee surfaced
+    expect(screen.getByText('base')).toBeTruthy(); // settlement chain
+    // Approving pays.
+    fireEvent.click(screen.getByRole('button', { name: /Confirm & pay/i }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeTruthy()
+    );
+  });
+
   it('MediaUploader — spendy consent declined — shows a benign cancel note, NOT upload-failed', async () => {
     // A declined consent prompt is user-initiated and benign: no bytes were
     // uploaded, so it must not be rendered as an "Upload failed" error (#170).
