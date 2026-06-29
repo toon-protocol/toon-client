@@ -1,11 +1,12 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 import {
   ViewSpecRenderer,
   QUERY_TOOL,
   buildReadBalances,
   parseBalancesPayload,
 } from './runtime.js';
+import { ENGAGEMENT_BUDGET_EVENTS } from './engagement-budget.js';
 import { STATUS_TOOL, BALANCES_TOOL } from './tool-names.js';
 import { type ToolOutcome, type ViewBridge } from './app-bridge/types.js';
 import { type NostrEvent } from './types.js';
@@ -201,9 +202,16 @@ describe('ViewSpecRenderer', () => {
     expect(call?.args['kind']).toBe(3);
   });
 
-  it('rendered spendy consent is specific — shows fee, chain, and irreversibility', async () => {
-    // No injected confirm → the in-iframe ConsentProvider modal renders, which
-    // reads toon_status (mockBridge returns fee 1 / base / USDC).
+  // ── engagement spend-budget (like/follow/repost) ──────────────────────────
+
+  /** Count of publish (engagement) writes that actually reached the bridge. */
+  const pubCount = (calls: { name: string }[]): number =>
+    calls.filter((c) => c.name === 'toon_publish_unsigned').length;
+
+  it('engagement (follow) — first action prompts a one-time budget, then debits silently', async () => {
+    // No injected confirm → the in-iframe gates apply. Follow (kind:3) is a cheap
+    // engagement micro-write, so it routes through the SESSION BUDGET, not the
+    // per-action consent.
     const { bridge, calls } = mockBridge([]);
     render(
       <ViewSpecRenderer
@@ -216,16 +224,92 @@ describe('ViewSpecRenderer', () => {
         }}
       />
     );
-    fireEvent.click(await screen.findByRole('button'));
-    // The prompt names the concrete spend, not just a label.
-    expect(await screen.findByText(/non-refundable/i)).toBeTruthy();
-    expect(await screen.findByText('1 USDC')).toBeTruthy(); // pay-to-write fee surfaced
-    expect(screen.getByText('base')).toBeTruthy(); // settlement chain
-    // Approving pays.
-    fireEvent.click(screen.getByRole('button', { name: /Confirm & pay/i }));
-    await waitFor(() =>
-      expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeTruthy()
+    // First engagement → the one-time budget-consent prompt (NOT "Confirm spend").
+    fireEvent.click(await screen.findByRole('button', { name: /follow/i }));
+    const dialog = await screen.findByRole('dialog', { name: /engagement budget/i });
+    expect(within(dialog).getByText(/likes & follows/i)).toBeTruthy();
+    // Nothing published until the allowance is approved.
+    expect(pubCount(calls)).toBe(0);
+
+    // Approve the allowance → THIS follow proceeds (debited) with the spendy flag.
+    fireEvent.click(within(dialog).getByRole('button', { name: /^allow$/i }));
+    await waitFor(() => expect(pubCount(calls)).toBe(1));
+
+    // A SECOND follow debits SILENTLY — no second modal, tool fires straight away.
+    fireEvent.click(screen.getByRole('button', { name: /follow/i }));
+    await waitFor(() => expect(pubCount(calls)).toBe(2));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    const lastFollow = calls.filter((c) => c.name === 'toon_publish_unsigned').at(-1);
+    expect(lastFollow?.args['spendy']).toBe(true);
+  });
+
+  it('engagement budget — exhaustion re-prompts to top up (no silent spend past the allowance)', async () => {
+    const { bridge, calls } = mockBridge([]);
+    render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'follow-button',
+            actions: { follow: { tool: 'toon_publish_unsigned', args: { kind: 3 }, spendy: true } },
+          },
+        }}
+      />
     );
+    // Authorize on the first engagement (fee 1 → allowance covers E engagements).
+    fireEvent.click(await screen.findByRole('button', { name: /follow/i }));
+    fireEvent.click(
+      within(await screen.findByRole('dialog')).getByRole('button', { name: /^allow$/i })
+    );
+    await waitFor(() => expect(pubCount(calls)).toBe(1));
+
+    // Spend the rest of the allowance silently (no modal between).
+    for (let i = 1; i < ENGAGEMENT_BUDGET_EVENTS; i++) {
+      fireEvent.click(screen.getByRole('button', { name: /follow/i }));
+      await waitFor(() => expect(pubCount(calls)).toBe(i + 1));
+      expect(screen.queryByRole('dialog')).toBeNull();
+    }
+    expect(pubCount(calls)).toBe(ENGAGEMENT_BUDGET_EVENTS);
+
+    // Budget now exhausted → the next engagement RE-PROMPTS (top-up); it does not
+    // spend until re-authorized.
+    fireEvent.click(screen.getByRole('button', { name: /follow/i }));
+    expect(await screen.findByText(/used up/i)).toBeTruthy();
+    expect(pubCount(calls)).toBe(ENGAGEMENT_BUDGET_EVENTS);
+  });
+
+  it('non-engagement spend (toon_upload) still uses the per-action consent, not the budget', async () => {
+    // Upload (kind:20 media) is a BIG write, not engagement — it keeps the
+    // specific per-action consent ("Confirm spend" + live fee/chain), never the
+    // silent budget.
+    const { bridge, calls } = mockBridge([]); // no injected confirm
+    const { container } = render(
+      <ViewSpecRenderer
+        bridge={bridge}
+        spec={{
+          root: {
+            atom: 'media-uploader',
+            actions: { upload: { tool: 'toon_upload', args: { kind: 20 }, spendy: true } },
+          },
+        }}
+      />
+    );
+    const inputEl = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['img-content'], 'photo.png', { type: 'image/png' });
+    Object.defineProperty(inputEl, 'files', { value: [file], configurable: true });
+    fireEvent.change(inputEl);
+    fireEvent.click(await screen.findByRole('button', { name: /Publish/i }));
+
+    // The per-action consent dialog — NOT the engagement-budget prompt.
+    const dialog = await screen.findByRole('dialog', { name: /confirm spend/i });
+    expect(screen.queryByRole('dialog', { name: /engagement budget/i })).toBeNull();
+    // It names the concrete spend (live fee + settlement chain + irreversibility).
+    expect(within(dialog).getByText(/non-refundable/i)).toBeTruthy();
+    expect(await screen.findByText('1 USDC')).toBeTruthy();
+    expect(screen.getByText('base')).toBeTruthy();
+    // Approving pays.
+    fireEvent.click(within(dialog).getByRole('button', { name: /Confirm & pay/i }));
+    await waitFor(() => expect(calls.find((c) => c.name === 'toon_upload')).toBeTruthy());
   });
 
   it('MediaUploader — spendy consent declined — shows a benign cancel note, NOT upload-failed', async () => {

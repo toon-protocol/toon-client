@@ -1,6 +1,6 @@
 /** Social atoms — NIP-01 profile/note, NIP-25 reactions, NIP-02 follow. */
 import { type FC, type ReactNode, useEffect, useState } from 'react';
-import { Heart, MessageCircle, UserPlus } from 'lucide-react';
+import { Coins, Heart, MessageCircle, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
 import { Badge } from '@/components/ui/badge.js';
 import { MonoId } from '@/components/mono-id.js';
@@ -17,6 +17,7 @@ import { type NostrEvent } from '../types.js';
 import { InlineMediaList } from './media.js';
 import { type Atom, type AtomRenderProps } from './types.js';
 import { IdentityAvatar, relativeTime } from './social-ui.js';
+import { useEngagementBudget } from '../engagement-budget.js';
 
 const ProfileHeader: FC<AtomRenderProps> = ({ events }) => {
   const profile = events.map(parseProfile).find((p) => p !== null) ?? null;
@@ -75,6 +76,32 @@ const ActionButton: FC<{
         <span className="tabular-nums">{count}</span>
       ) : null}
     </Button>
+  );
+};
+
+/**
+ * A subtle "remaining budget" affordance for the engagement bar. Likes/follows
+ * debit a pre-authorized session allowance silently; this surfaces what's left
+ * and lets the user top it up. It reads the budget via context (never the
+ * bridge) and renders nothing until the user has authorized an allowance — so
+ * before the first engagement, and on hosts/tests with no budget provider, the
+ * bar stays clean.
+ */
+const EngagementBudgetMeter: FC = () => {
+  const { authorized, remaining, asset, requestTopUp } = useEngagementBudget();
+  if (!authorized) return null;
+  const suffix = asset ? ` ${asset}` : '';
+  return (
+    <button
+      type="button"
+      onClick={requestTopUp}
+      aria-label={`Engagement budget: ${remaining}${suffix} left. Tap to top up.`}
+      title="Likes & follows budget — tap to top up"
+      className="ml-auto inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <Coins aria-hidden="true" className="size-3" />
+      <span className="tabular-nums">{`${remaining}${suffix} left`}</span>
+    </button>
   );
 };
 
@@ -318,6 +345,7 @@ const NoteRow: FC<{
                 onClick={onLike}
               />
             ) : null}
+            <EngagementBudgetMeter />
           </footer>
         ) : null}
 

@@ -38,6 +38,11 @@ import {
   SPENDY_CANCELLED,
 } from './atoms/types.js';
 import { ConsentProvider, useConsentGate, type ConsentGate } from './spendy-consent.js';
+import {
+  BudgetProvider,
+  useEngagementGate,
+  type EngagementGate,
+} from './engagement-budget.js';
 import { SurfaceProvider, useSurface } from './surface.js';
 import { type NostrFilterLike } from './paging.js';
 import { useRenderDecision } from './render/resolve.js';
@@ -182,10 +187,27 @@ function getProfileResolver(
   return resolver;
 }
 
+/**
+ * Event kinds that count as cheap ENGAGEMENT micro-writes: NIP-02 follow
+ * (kind:3), NIP-18 repost (kind:6) and NIP-25 reaction/like (kind:7). These all
+ * publish via `toon_publish_unsigned` — the same tool as compose (kind:1) and
+ * profile-edit (kind:0) — so engagement can't be told apart by TOOL NAME. It's
+ * the action SEMANTICS (the event kind) that mark it, so the budget is scoped by
+ * the published kind rather than the tool: compose/profile-edit stay per-action
+ * consent, while like/follow/repost flow through the session budget gate.
+ */
+const ENGAGEMENT_KINDS: ReadonlySet<number> = new Set([3, 6, 7]);
+
+/** True if a spendy publish is a cheap engagement micro-write (like/follow/repost). */
+function isEngagementWrite(tool: string, args: Record<string, unknown>): boolean {
+  return tool === PUBLISH_TOOL && typeof args['kind'] === 'number' && ENGAGEMENT_KINDS.has(args['kind']);
+}
+
 function buildActions(
   node: ViewNode,
   bridge: ViewBridge,
   consentGate: ConsentGate,
+  engagementGate: EngagementGate,
   onMutated?: () => void
 ): Record<string, AtomAction> {
   const actions: Record<string, AtomAction> = {};
@@ -200,10 +222,18 @@ function buildActions(
         // auto-rejects every spend (toon-client#170). Prefer the bridge's
         // injected confirm (tests/host), else the in-iframe consent modal.
         const confirmFn = bridge.confirm ?? consentGate;
+        // Cheap engagement micro-writes (like/follow/repost) go through the
+        // pre-authorized SESSION BUDGET instead of a per-action prompt: the user
+        // approves a small allowance once, then these debit silently until it's
+        // spent. Bigger writes (compose/upload/swap/channel ops) keep per-action
+        // consent. A host-injected `confirm` is the host's own gate and always
+        // wins; the budget is an in-iframe concept, so it only applies when there
+        // is no injected confirm.
+        const gate = !bridge.confirm && isEngagementWrite(ref.tool, args) ? engagementGate : confirmFn;
         // Per-event writes (publish/upload) show the live pay-to-write fee in the
         // prompt; swaps/channel ops carry their own amount in the label instead.
         const showWriteFee = ref.tool === PUBLISH_TOOL || ref.tool === UPLOAD_TOOL;
-        const ok = await confirmFn(label, { showWriteFee });
+        const ok = await gate(label, { showWriteFee });
         if (!ok) {
           bridge.notifyModel(`Action "${name}" cancelled.`);
           return { ok: false, error: SPENDY_CANCELLED };
@@ -501,9 +531,10 @@ function NodeView({
   const atom = ATOMS.get(node.atom) ?? fallbackAtomFor();
   const events = useBind(node.bind, bridge, refreshNonce);
   const consentGate = useConsentGate();
+  const engagementGate = useEngagementGate();
   const actions = useMemo(
-    () => buildActions(node, bridge, consentGate, onMutated),
-    [node, bridge, consentGate, onMutated]
+    () => buildActions(node, bridge, consentGate, engagementGate, onMutated),
+    [node, bridge, consentGate, engagementGate, onMutated]
   );
   const readStatus = useMemo(() => buildReadStatus(bridge), [bridge]);
   const readChannels = useMemo(() => buildReadChannels(bridge), [bridge]);
@@ -590,7 +621,13 @@ export function ViewSpecRenderer({
   return (
     <SurfaceProvider bridge={bridge}>
       <ConsentProvider readStatus={readStatus}>
-        <NodeView node={result.spec.root} bridge={bridge} refreshNonce={refreshNonce} onMutated={onMutated} />
+        {/* Engagement micro-writes (like/follow/repost) debit a session budget
+            instead of prompting per-action; BudgetProvider sits inside the
+            consent provider so it can fall back to per-action consent and reuses
+            the same status read seam. */}
+        <BudgetProvider readStatus={readStatus}>
+          <NodeView node={result.spec.root} bridge={bridge} refreshNonce={refreshNonce} onMutated={onMutated} />
+        </BudgetProvider>
       </ConsentProvider>
     </SurfaceProvider>
   );
