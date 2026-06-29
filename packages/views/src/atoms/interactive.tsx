@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea.js';
 import { MonoId } from '@/components/mono-id.js';
 import { type Atom, type AtomRenderProps, type AtomStatus, SPENDY_CANCELLED } from './types.js';
 import { byteLength } from './social-ui.js';
-import { bytesToBase64 } from './media.js';
+import { bytesToBase64, RelayConfirmation, usePublishConfirmation } from './media.js';
 
 /**
  * The shared composer surface: an auto-sizing textarea over a footer toolbar
@@ -237,7 +237,7 @@ const Tabs: FC<AtomRenderProps> = ({ props, children }) => {
 
 type PayPhase = 'idle' | 'confirming' | 'publishing' | 'receipt';
 
-const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
+const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus, loadMore }) => {
   const placeholder =
     typeof props['placeholder'] === 'string' ? props['placeholder'] : "What's happening?";
   const label = typeof props['label'] === 'string' ? props['label'] : 'Pay to post';
@@ -249,6 +249,11 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
   const [eventId, setEventId] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<{ feePaid?: string; balanceAfter?: string } | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  // Optimistic pending→confirmed: once published, poll the free read seam for the
+  // event id and flip to "confirmed" when a relay serves it back. A slow/absent
+  // read stays "pending (unconfirmed)" — never a false "failed" (the message was
+  // already paid for + broadcast).
+  const confirmState = usePublishConfirmation(eventId, loadMore);
 
   useEffect(() => {
     if (phase !== 'confirming' || status || statusError || !readStatus) return;
@@ -326,6 +331,10 @@ const PayConfirm: FC<AtomRenderProps> = ({ props, actions, readStatus }) => {
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 px-4 py-3 text-xs">
           <dt className="text-muted-foreground">Event</dt>
           <dd>{eventId ? <MonoId value={eventId} prefixLen={12} suffixLen={6} /> : '—'}</dd>
+          <dt className="text-muted-foreground">Status</dt>
+          <dd>
+            <RelayConfirmation state={confirmState} />
+          </dd>
           <dt className="text-muted-foreground">Fee paid</dt>
           <dd className="font-medium">
             {paidLabel} on {chainLabel}

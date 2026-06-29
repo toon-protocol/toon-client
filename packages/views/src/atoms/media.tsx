@@ -1,6 +1,6 @@
 /** Media atoms — NIP-68/71 posts + NIP-94 files (read), and the spendy uploader. */
 import { useEffect, useRef, useState, type FC } from 'react';
-import { Check, FileUp, FileText, Loader2, X } from 'lucide-react';
+import { Check, Clock, FileUp, FileText, Loader2, X } from 'lucide-react';
 import { CopyButton } from '../components/copy-button.js';
 import { type MediaVariant, parseMediaPost, parseFileMetadata, parseInlineMedia } from '../parsers/media.js';
 import { arweaveGatewayCandidates } from '@toon-protocol/arweave';
@@ -10,6 +10,106 @@ import { type Atom, type AtomRenderProps, SPENDY_CANCELLED } from './types.js';
 function isVideo(variant: MediaVariant): boolean {
   return variant.mime?.startsWith('video/') ?? false;
 }
+
+/**
+ * The CSP-safe `src` for a possibly-Arweave media/avatar URL. The MCP-app iframe
+ * CSP only allows declared origins (the Arweave/ar.io gateways advertised by
+ * client-mcp `arweaveCspDomains`), so an arbitrary remote origin is blocked.
+ * `arweaveGatewayCandidates` re-points an Arweave-addressable URL (ar://… or a
+ * recognized gateway/path) onto the preferred gateway origin (which IS in the
+ * CSP allowlist); a non-Arweave URL is returned unchanged (it will be CSP-blocked
+ * and degrade to the component's own fallback — e.g. the avatar initials). Single
+ * source of truth shared by the feed media, the uploader receipt, and avatars.
+ */
+export function gatewayMediaSrc(url: string): string {
+  return arweaveGatewayCandidates(url)[0] ?? url;
+}
+
+/**
+ * Optimistic relay-confirmation state for a just-published event:
+ *  - `pending`     — published, polling a relay to observe it.
+ *  - `confirmed`   — observed on a relay (the write is durable + readable).
+ *  - `unconfirmed` — not seen within the confirm window; STILL pending, not
+ *                    failed (the devnet relay double-JSON-encodes EVENT payloads,
+ *                    so absence via a read is never proof of failure).
+ */
+export type ConfirmState = 'pending' | 'confirmed' | 'unconfirmed';
+
+/**
+ * Drive the optimistic pending→confirmed transition for a published event id by
+ * polling the FREE read seam (`toon_query` via `loadMore`) for that id. We rely
+ * on the runtime read seam — never a hand-rolled WS reader — because the devnet
+ * relay serves EVENT payloads as DOUBLE-JSON-encoded strings, which a naive
+ * reader false-negatives as "missing"; the seam decodes them correctly. Absence
+ * is treated as "still pending" (keep polling), and a confirm-window timeout
+ * settles on `unconfirmed` (pending, just not observed yet) — NEVER a false
+ * "failed". With no `loadMore` seam (older render paths / tests) we stay
+ * optimistically `pending`.
+ */
+export function usePublishConfirmation(
+  eventId: string | null,
+  loadMore: AtomRenderProps['loadMore'],
+  timeoutMs = 8000,
+  intervalMs = 1200,
+): ConfirmState {
+  const [state, setState] = useState<ConfirmState>('pending');
+  useEffect(() => {
+    if (!eventId) return;
+    setState('pending');
+    if (!loadMore) return; // no read seam → stay optimistically pending
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = Date.now() + timeoutMs;
+    const poll = async (): Promise<void> => {
+      let seen = false;
+      try {
+        const events = await loadMore({ ids: [eventId], limit: 1 });
+        seen = events.some((e) => e.id === eventId);
+      } catch {
+        // A read failure is non-fatal — treat as "still pending" and keep trying.
+      }
+      if (cancelled) return;
+      if (seen) {
+        setState('confirmed');
+        return;
+      }
+      if (Date.now() >= deadline) {
+        setState('unconfirmed');
+        return;
+      }
+      timer = setTimeout(() => void poll(), intervalMs);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [eventId, loadMore, timeoutMs, intervalMs]);
+  return state;
+}
+
+/** Inline relay-confirmation indicator for a publish receipt (pending/confirmed/unconfirmed). */
+export const RelayConfirmation: FC<{ state: ConfirmState }> = ({ state }) => {
+  if (state === 'confirmed') {
+    return (
+      <span className="inline-flex items-center gap-1 text-primary">
+        <Check aria-hidden="true" className="size-3.5" /> Confirmed on a relay
+      </span>
+    );
+  }
+  if (state === 'unconfirmed') {
+    return (
+      <span className="inline-flex items-center gap-1 text-muted-foreground">
+        <Clock aria-hidden="true" className="size-3.5" /> Pending — not yet seen on a relay
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-muted-foreground">
+      <Loader2 aria-hidden="true" className="size-3.5 animate-spin" /> Confirming on a relay…
+    </span>
+  );
+};
 
 /**
  * Render one media variant, re-pointing Arweave-addressable URLs through the
@@ -103,7 +203,7 @@ export function bytesToBase64(buf: ArrayBuffer): string {
   return btoa(binary);
 }
 
-const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
+const MediaUploader: FC<AtomRenderProps> = ({ props, actions, loadMore }) => {
   const label = typeof props['label'] === 'string' ? props['label'] : 'Upload a file';
   // Default to accepting ANY file; a spec may restrict via `accept` (e.g. "image/*").
   const accept = typeof props['accept'] === 'string' ? props['accept'] : undefined;
@@ -120,8 +220,12 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
   const [busy, setBusy] = useState(false);
   const [uploadedOk, setUploadedOk] = useState(false);
   const [result, setResult] = useState<{ url?: string; mime?: string } | null>(null);
+  const [publishedEventId, setPublishedEventId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [cancelled, setCancelled] = useState(false);
+  // Optimistic relay confirmation for the published media event (pending until a
+  // free read observes it; never flips to "failed" on a slow/absent read).
+  const confirmState = usePublishConfirmation(publishedEventId, loadMore);
 
   // Revoke the object URL when the staged file changes or on unmount.
   useEffect(() => {
@@ -138,6 +242,7 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
     });
     setUploadedOk(false);
     setResult(null);
+    setPublishedEventId(null);
     setUploadError(null);
     setCancelled(false);
   };
@@ -189,9 +294,15 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
         // not just "completed". Clear the compose state — the post is published.
         const data = (outcome?.data ?? {}) as { url?: unknown };
         setResult({
-          url: typeof data.url === 'string' ? data.url : undefined,
+          // Route the receipt preview through the gateway: the daemon already
+          // stamps a gateway URL, but normalizing here keeps it CSP-safe even if
+          // an `ar://`/apex URL ever slips through.
+          url: typeof data.url === 'string' ? gatewayMediaSrc(data.url) : undefined,
           mime: file.type || undefined,
         });
+        // Track the published event id so we can optimistically confirm it landed
+        // on a relay (free read); falls back to pending if no id is returned.
+        setPublishedEventId(outcome?.eventId ?? null);
         setUploadedOk(true);
         clearStaged();
       }
@@ -297,9 +408,12 @@ const MediaUploader: FC<AtomRenderProps> = ({ props, actions }) => {
       )}
       {uploadedOk && (
         <div className="mt-1 flex flex-col gap-2 rounded-lg border border-border bg-muted/30 p-3">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
-            <Check aria-hidden="true" className="size-3.5" />
-            Uploaded &amp; published to Arweave
+          <div className="flex items-center justify-between gap-2 text-xs font-medium">
+            <span className="flex items-center gap-1.5 text-primary">
+              <Check aria-hidden="true" className="size-3.5" />
+              Uploaded &amp; published to Arweave
+            </span>
+            <RelayConfirmation state={confirmState} />
           </div>
           {result?.url ? (
             <>
