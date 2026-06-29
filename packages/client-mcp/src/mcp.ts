@@ -12,6 +12,7 @@
 
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -142,8 +143,26 @@ async function main(): Promise<void> {
 
   const appHtml = loadAppHtml();
 
+  // CACHE-BUST the UI resource. Hosts (Claude Desktop) PREFETCH and CACHE the
+  // `ui://` template keyed by its URI and do not re-fetch it across server
+  // restarts — so a rebuilt bundle is never picked up while the URI is constant
+  // (toon-client iframe stays stale until a reinstall). Version the URI by a hash
+  // of the bundle: every rebuild yields a new URI the host has never cached, so
+  // it fetches fresh; an unchanged bundle keeps the same URI (no needless churn).
+  const appVersion = createHash('sha256').update(appHtml).digest('hex').slice(0, 12);
+  const versionedUri = `${APP_RESOURCE_URI}?v=${appVersion}`;
+  log(`serving ui resource ${versionedUri} (${appHtml.length} bytes)`);
+
+  // Point toon_render's `_meta.ui.resourceUri` at the versioned URI so the host
+  // fetches THIS build's bundle, not a cached one. Other tools pass through.
+  const toolsWithVersionedUi = TOOL_DEFINITIONS.map((t) => {
+    const ui = (t._meta?.['ui'] ?? undefined) as { resourceUri?: string } | undefined;
+    if (!ui?.resourceUri) return t;
+    return { ...t, _meta: { ...t._meta, ui: { ...ui, resourceUri: versionedUri } } };
+  });
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOL_DEFINITIONS,
+    tools: toolsWithVersionedUi,
   }));
 
   // The MCP-app UI resource the host renders for toon_render results.
@@ -177,17 +196,19 @@ async function main(): Promise<void> {
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
-      { uri: APP_RESOURCE_URI, name: 'TOON', mimeType: APP_MIME, _meta: { ui: APP_CSP } },
+      { uri: versionedUri, name: 'TOON', mimeType: APP_MIME, _meta: { ui: APP_CSP } },
     ],
   }));
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    if (request.params.uri !== APP_RESOURCE_URI) {
+    // Accept the versioned URI and the bare base (in case a host strips the
+    // `?v=` query before re-reading) — both resolve to this build's bundle.
+    if (!request.params.uri.startsWith(APP_RESOURCE_URI)) {
       throw new Error(`Unknown resource: ${request.params.uri}`);
     }
     return {
       contents: [
-        { uri: APP_RESOURCE_URI, mimeType: APP_MIME, text: appHtml, _meta: { ui: APP_CSP } },
+        { uri: request.params.uri, mimeType: APP_MIME, text: appHtml, _meta: { ui: APP_CSP } },
       ],
     };
   });
