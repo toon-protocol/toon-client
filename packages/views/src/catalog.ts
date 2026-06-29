@@ -56,6 +56,21 @@ export const ATOM_CATALOG: AtomMeta[] = [
     writes: [{ name: 'toon_publish_unsigned' }],
   },
   {
+    id: 'thread-view',
+    description:
+      'A focused CONVERSATION/THREAD view reconstructed from NIP-10 e/p tags: ' +
+      'binds a kinds:[1] query for the root + its replies and shows the focused ' +
+      'note, its single direct parent (context), and a bounded slice of direct ' +
+      'replies, reusing note-card rows. Adds a "View full thread (N)" affordance ' +
+      'that — where the host supports it — expands to a fullscreen depth-capped ' +
+      'reply tree (deep chains collapse to "continue thread"). Use for "show this ' +
+      'thread/conversation/replies". Pass an optional `focusId` to pin a specific ' +
+      'note as the focus (defaults to the thread root).',
+    kinds: [],
+    writes: [{ name: 'toon_publish_unsigned' }],
+    propsSchema: { focusId: 'string (optional event id to focus; default = thread root)' },
+  },
+  {
     id: 'note-card',
     description:
       'NIP-01 kind:1 text note, rendered as an X-style post (author header with ' +
@@ -107,6 +122,16 @@ export const ATOM_CATALOG: AtomMeta[] = [
     kinds: [20, 21, 22, 1063],
   },
   {
+    id: 'media-gallery',
+    description:
+      'An Album-style responsive GRID of media events (NIP-68 pictures, NIP-71 ' +
+      'videos, NIP-94 files, or any note with NIP-92 imeta): one tile per event, ' +
+      'tapping a tile opens a fullscreen lightbox with prev/next paging. Every ' +
+      'image has alt text. Use for "show my photos/media/gallery" or to render a ' +
+      'collection of images/videos as a grid rather than a vertical feed.',
+    kinds: [],
+  },
+  {
     id: 'media-uploader',
     description:
       'Compose & publish a media POST: pick a file (image, video, pdf, audio, …) ' +
@@ -123,6 +148,18 @@ export const ATOM_CATALOG: AtomMeta[] = [
       accept: "string (optional MIME filter, e.g. 'image/*'; default any)",
       captionPlaceholder: 'string (optional placeholder for the caption field)',
     },
+  },
+  {
+    id: 'live-ticker',
+    description:
+      'A compact, always-on TICKER of new posts / mentions intended for the ' +
+      "host's Picture-in-Picture surface. Where the host supports PiP it offers a " +
+      '"Go live" affordance that pops the ticker into the parallel PiP surface; ' +
+      'on an inline-only host it degrades to a static snapshot of recent items ' +
+      'plus a "Refresh" button that re-queries the base filter. The item list is ' +
+      'an aria-live region. Bind a kinds:[1] (or mentions) query; use for "keep an ' +
+      'eye on mentions / new posts" or a live notifications strip.',
+    kinds: [],
   },
 
   // forge
