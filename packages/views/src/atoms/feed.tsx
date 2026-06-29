@@ -24,8 +24,8 @@ import { mergePage, nextPageFilter, type NostrFilterLike } from '../paging.js';
 import { type Atom, type AtomRenderProps } from './types.js';
 import { NoteCard } from './social.js';
 
-/** Notes shown inline before "Load more" (bounded so it fits the host card). */
-const INLINE_CAP = 6;
+/** Notes shown inline before "Load more" — a short preview; browse via fullscreen. */
+const INLINE_CAP = 4;
 /** Notes revealed/fetched per "Load more" press. */
 const PAGE_SIZE = 5;
 
@@ -71,8 +71,11 @@ const FeedList: FC<AtomRenderProps> = (props) => {
     }
   };
 
+  // Inline only previews a short slice; "Load more" reveals the rest in place.
   const canLoadMore = hasHiddenLoaded || (Boolean(loadMore) && !exhausted && !isFullscreen);
   const canOpenTimeline = Boolean(surface?.canFullscreen) && !isFullscreen;
+  // The inline card is more than just the preview slice (more loaded or fetchable).
+  const hasMore = all.length > shown.length || (Boolean(loadMore) && !exhausted);
 
   if (all.length === 0) {
     return (
@@ -84,32 +87,33 @@ const FeedList: FC<AtomRenderProps> = (props) => {
 
   return (
     <div className="flex flex-col">
+      {/* Header — anchored ABOVE the notes so "Open timeline" is reachable without
+          scrolling the feed. Desktop gives a fixed-height iframe that scrolls its
+          overflow, so a long feed belongs in the host's fullscreen surface; the
+          inline view stays a short preview. */}
+      {canOpenTimeline ? (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {all.length} post{all.length === 1 ? '' : 's'}
+            {hasMore ? '+' : ''}
+          </span>
+          <Button variant="outline" size="sm" onClick={() => void surface?.request('fullscreen')}>
+            <Maximize2 aria-hidden="true" className="size-4" />
+            Open timeline
+          </Button>
+        </div>
+      ) : null}
       <NoteCard {...props} events={shown} />
-      {canLoadMore || canOpenTimeline ? (
-        <footer className="mt-2 flex items-center justify-between gap-2">
-          {canLoadMore ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={() => void onLoadMore()}
-            >
-              {busy ? (
-                <Loader2 aria-hidden="true" className="size-4 animate-spin" />
-              ) : (
-                <ListPlus aria-hidden="true" className="size-4" />
-              )}
-              Load more
-            </Button>
-          ) : (
-            <span />
-          )}
-          {canOpenTimeline ? (
-            <Button variant="ghost" size="sm" onClick={() => void surface?.request('fullscreen')}>
-              <Maximize2 aria-hidden="true" className="size-4" />
-              Open timeline
-            </Button>
-          ) : null}
+      {canLoadMore ? (
+        <footer className="mt-2 flex">
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => void onLoadMore()}>
+            {busy ? (
+              <Loader2 aria-hidden="true" className="size-4 animate-spin" />
+            ) : (
+              <ListPlus aria-hidden="true" className="size-4" />
+            )}
+            Load more
+          </Button>
         </footer>
       ) : null}
     </div>
