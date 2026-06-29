@@ -1,5 +1,24 @@
 # @toon-protocol/client-mcp
 
+## 0.12.1
+
+### Patch Changes
+
+- 6fe9d0d: Add MCP tool annotations (`readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint`) to every tool so MCP-Apps hosts can auto-run free reads and gate paid/irreversible writes. Free reads are read-only (relay/chain readers flagged open-world); `toon_publish`/`toon_publish_unsigned`/`toon_upload`/`toon_swap` are destructive writes; `toon_channel_close` is destructive, `toon_open_channel` idempotent; config edits are reversible. A load-time guard keeps the matrix consistent with the UI-fireable `WRITE_TOOLS` set.
+- c0cb407: Polish the paid-write loop and harden cross-host rendering (Phase 2.4–2.6).
+
+  - **Optimistic pending → confirmed.** After a successful paid publish, the receipt shows the note as "pending" and flips to "confirmed" once a relay serves the event back, polled via the free `toon_query` read seam (`usePublishConfirmation`/`RelayConfirmation`). A slow/absent read stays "pending (unconfirmed)" — never a false "failed" (the message was paid and broadcast). This deliberately relies on the read seam rather than a hand-rolled WS reader, which would false-negative on the devnet relay's double-JSON-encoded EVENT payloads.
+  - **Media via Arweave gateway for CSP.** The MCP-app iframe CSP only allows the declared Arweave/ar.io gateway origins, so `gatewayMediaSrc` re-points Arweave-addressable media/avatar URLs onto a CSP-allowlisted gateway origin; arbitrary non-Arweave origins are left unchanged (they degrade rather than breaking the CSP).
+  - **Text fallback for non-rendering hosts.** `toon_query`/`toon_read` now carry a decision-sufficient text summary (author · time · excerpt · counts) alongside `structuredContent`, and the render path names the view in text — so a text-only host that can't render the `ui://` card still gets readable, actionable content.
+
+- 49a2e31: Make pay-to-write consent truthful and specific, and survive non-rendering hosts.
+
+  - **Truthful fee:** `PublishResponse`/`UploadMediaResponse` now carry `feePaid` (the amount actually charged — uploads sum both the blob and reference-event legs) and `channelBalanceAfter`. The `pay-confirm` receipt shows the real fee + remaining balance instead of re-reading the per-event estimate, and the confirm step warns the write is permanent.
+  - **Specific spendy consent:** the in-iframe consent modal (used by upload/swap/channel ops) reads `toon_status` and surfaces the settlement chain, the pay-to-write fee (for per-event writes), and an explicit non-refundable / irreversible warning — no more bare label.
+  - **Cross-surface consent:** server `instructions` and the paid-write tool descriptions now direct a text-only host to quote the exact fee via `toon_status` and confirm the irreversible write before calling.
+
+- ae0191b: Cache-bust the `ui://toon/app` resource by versioning its URI with a hash of the bundle. Hosts (Claude Desktop) prefetch and cache the UI template keyed by its URI and do not re-fetch it across server restarts — so a rebuilt bundle was never picked up and the iframe stayed stale indefinitely. The server now derives `ui://toon/app?v=<bundle-hash>` at startup and uses it for `resources/list`, `resources/read`, and `toon_render`'s `_meta.ui.resourceUri`; every rebuild yields a new URI the host has never cached (forcing a fresh fetch), while an unchanged bundle keeps the same URI. `resources/read` also accepts the bare base URI in case a host strips the query.
+
 ## 0.12.0
 
 ### Minor Changes
