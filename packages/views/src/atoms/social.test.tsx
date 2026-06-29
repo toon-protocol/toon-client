@@ -190,6 +190,23 @@ describe('NoteCard — feed presentation', () => {
     expect(react).toHaveBeenCalledWith({ content: '+' });
   });
 
+  it('caps the inline row at two actions (Reply + Like); Follow stays in the popover', () => {
+    // Even with reply + react + follow ALL wired, the always-visible row shows
+    // only two actions — MCP-app cards cap at two, so Follow lives behind the
+    // author popover rather than as a third inline button.
+    render(
+      <NoteCard
+        {...defaultProps}
+        actions={{ reply: vi.fn(), react: vi.fn(), follow: vi.fn() }}
+        events={[evt({ kind: 1, id: 'note-cap', pubkey: 'pk', content: 'gm' })]}
+      />
+    );
+    expect(screen.getByRole('button', { name: /reply/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /like this note/i })).toBeTruthy();
+    // Follow is not a third inline action — it only appears after opening the popover.
+    expect(screen.queryByRole('button', { name: /^follow$/i })).toBeNull();
+  });
+
   it('shows the like (reaction) count from kind:7 events targeting the note', () => {
     const note = evt({ kind: 1, id: 'note-x', content: 'popular' });
     const r1 = evt({ kind: 7, id: 'r1', content: '+', tags: [['e', 'note-x']] });

@@ -9,6 +9,9 @@
 
 import { type FC, type ReactNode } from 'react';
 import { type NostrEvent } from '../types.js';
+import { type ViewBind } from '../spec.js';
+import { type NostrFilterLike } from '../paging.js';
+import { type DisplayModeControl } from '../surface.js';
 
 /**
  * Sentinel `error` value a wired spendy action returns when the user/host
@@ -180,6 +183,24 @@ export interface AtomRenderProps {
    * older render paths / tests; treated as "no refresh yet" (mount read only).
    */
   refreshNonce?: number;
+  /**
+   * The node's `bind`, when present — lets a feed atom read its base query
+   * filter to page backward (the initial page is already in `events`). Wired by
+   * the runtime; `undefined` for unbound atoms / older render paths.
+   */
+  bind?: ViewBind;
+  /**
+   * Free paginated read seam (`toon_query`) for "load more": resolve a NIP-01
+   * filter to events. Atoms never call the bridge directly, so a feed pages via
+   * this. `undefined` in older render paths / tests that don't provide it.
+   */
+  loadMore?: (filter: NostrFilterLike) => Promise<NostrEvent[]>;
+  /**
+   * The view's surface-mode control (current mode + feature detection + a
+   * `request` to switch). Defaults to inline-only when the host lacks the
+   * capability, so a feed only offers "Open timeline" when `canFullscreen`.
+   */
+  surface?: DisplayModeControl;
 }
 
 /** A registered atom. */

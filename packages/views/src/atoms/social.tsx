@@ -326,7 +326,12 @@ const NoteRow: FC<{
   );
 };
 
-const NoteCard: FC<AtomRenderProps> = ({ events, actions, resolveProfile }) => {
+/**
+ * Renders bound notes as a divided list of X-style rows. Exported so the
+ * `feed-list` atom can reuse the row rendering and wrap it with pagination /
+ * fullscreen chrome rather than re-implement note rows.
+ */
+export const NoteCard: FC<AtomRenderProps> = ({ events, actions, resolveProfile }) => {
   const noteItems = events
     .map((event) => ({ event, note: parseNote(event) }))
     .filter((item): item is { event: NostrEvent; note: NoteMetadata } => item.note !== null);
