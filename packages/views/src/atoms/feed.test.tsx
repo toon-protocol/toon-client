@@ -36,6 +36,18 @@ describe('feed-list', () => {
     expect(screen.getByText(/no posts yet/i)).toBeTruthy();
   });
 
+  it('caps the inline render and reveals the rest on "Load more" (no fetch)', async () => {
+    // 9 bound notes, inline cap is 6 → only 6 render until "Load more".
+    const events = Array.from({ length: 9 }, (_, i) => note(`n${i}`, 900 - i * 100));
+    const loadMore = vi.fn(async () => []);
+    render(<FeedList {...baseProps({ events, loadMore })} />);
+    expect(screen.getAllByText(/^note n\d$/)).toHaveLength(6);
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+    // Revealed from already-loaded notes — no network fetch needed.
+    await waitFor(() => expect(screen.getAllByText(/^note n\d$/)).toHaveLength(9));
+    expect(loadMore).not.toHaveBeenCalled();
+  });
+
   it('pages backward via `until` and appends, de-duping overlaps', async () => {
     // The next page overlaps on n1 (already shown) and adds n3.
     const loadMore = vi.fn(async () => [note('n1', 300), note('n3', 100)]);
