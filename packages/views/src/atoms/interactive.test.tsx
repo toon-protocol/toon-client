@@ -15,9 +15,10 @@ const base = {
 };
 
 describe('Composer', () => {
-  it('shows a live byte counter that reflects encoded bytes', () => {
+  it('shows a live byte counter once there is content (hidden at rest)', () => {
     render(<Composer {...base} actions={{ post: vi.fn() }} />);
-    expect(screen.getByText('0 bytes')).toBeTruthy();
+    // Hidden at rest so the composer doesn't read as a debug tool ("0 bytes").
+    expect(screen.queryByText(/\bbytes?\b/)).toBeNull();
     fireEvent.change(screen.getByPlaceholderText(/what's happening/i), {
       target: { value: 'gm🚀' },
     });

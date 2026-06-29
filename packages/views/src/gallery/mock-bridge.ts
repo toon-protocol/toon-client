@@ -92,7 +92,22 @@ export interface MockBridgeOptions {
 export function createMockBridge(opts: MockBridgeOptions = {}): ViewBridge {
   const status = opts.status === undefined ? STATUS : opts.status;
   let counter = 0;
+  // Advertise a fullscreen surface (like Claude Desktop) so feed/thread atoms
+  // render their "Open timeline" affordance and we can exercise the mode switch.
+  let mode: 'inline' | 'fullscreen' | 'pip' = 'inline';
+  const ctxListeners = new Set<() => void>();
   return {
+    availableDisplayModes: () => ['inline', 'fullscreen'],
+    displayMode: () => mode,
+    async requestDisplayMode(next) {
+      mode = next;
+      ctxListeners.forEach((cb) => cb());
+      return mode;
+    },
+    onHostContextChanged(cb) {
+      ctxListeners.add(cb);
+      return () => ctxListeners.delete(cb);
+    },
     async callTool(name, args): Promise<ToolOutcome> {
       if (name === QUERY_TOOL) {
         const filter = (args as { filter?: NostrFilter }).filter;
