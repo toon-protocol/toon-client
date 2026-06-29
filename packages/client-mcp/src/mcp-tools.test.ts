@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { dispatchTool, TOOL_DEFINITIONS } from './mcp-tools.js';
+import { WRITE_TOOLS } from '@toon-protocol/views';
 import { ControlApiError, DaemonUnreachableError } from './control-client.js';
 import type { ControlClient } from './control-client.js';
 
@@ -71,6 +72,33 @@ describe('TOOL_DEFINITIONS', () => {
       'toon_read',
     ]) {
       expect(byName(n)).toMatch(/toon_render/);
+    }
+  });
+
+  it('annotates every tool so hosts can gate writes and auto-run reads', () => {
+    const ann = (n: string) =>
+      TOOL_DEFINITIONS.find((t) => t.name === n)!.annotations;
+
+    // Every tool is classified (the module also asserts this at load).
+    for (const t of TOOL_DEFINITIONS) {
+      expect(t.annotations, `${t.name} missing annotations`).toBeDefined();
+    }
+
+    // Free reads are read-only; paid/irreversible writes are destructive writes.
+    for (const n of ['toon_status', 'toon_query', 'toon_read', 'toon_balances', 'toon_render']) {
+      expect(ann(n)?.readOnlyHint, n).toBe(true);
+    }
+    for (const n of ['toon_publish', 'toon_publish_unsigned', 'toon_upload', 'toon_swap']) {
+      expect(ann(n)?.readOnlyHint, n).toBe(false);
+      expect(ann(n)?.destructiveHint, n).toBe(true);
+    }
+    // Closing a channel is irreversible; opening one is idempotent.
+    expect(ann('toon_channel_close')?.destructiveHint).toBe(true);
+    expect(ann('toon_open_channel')?.idempotentHint).toBe(true);
+
+    // Every UI-fireable write must be non-read-only so hosts gate it.
+    for (const name of WRITE_TOOLS) {
+      expect(ann(name)?.readOnlyHint, name).toBe(false);
     }
   });
 });
