@@ -1,5 +1,58 @@
 # @toon-protocol/views
 
+## 0.12.1
+
+### Patch Changes
+
+- 74a79ca: Add surface-mode + feed-pagination capability to the view runtime (the foundation for fullscreen feeds/threads and "load more").
+
+  - `ViewBridge` gains optional, feature-detected display-mode methods (`availableDisplayModes`, `displayMode`, `requestDisplayMode`, `onHostContextChanged`), wired to the ext-apps `App` host context. The `onHostContextChanged` subscription chains over the existing handler so it never clobbers theme following.
+  - New `useDisplayMode` hook exposes `{ mode, available, canFullscreen, canPip, request }`, reactive to host-context changes and degrading to inline-only on hosts (and the mock bridge) without the capability.
+  - New `nextPageFilter`/`mergePage` helpers page a feed backward in time via a free `toon_query` (NIP-01 `until`), de-duping by id — the load-more primitive for the upcoming `feed-list` atom.
+
+- 4b0d0d2: Add a pre-authorized engagement spend-budget so cheap social micro-writes don't prompt per-action.
+
+  Likes (kind:7), follows (kind:3) and reposts (kind:6) each settle a payment-channel claim, which makes the full per-action consent modal far too heavy for high-frequency actions. The user now approves a small allowance ONCE per session; engagement micro-writes then debit a local counter silently until it runs out, at which point we re-prompt to top up. Bigger writes (compose/post, upload, swap, channel ops) keep their per-action consent.
+
+  - New `BudgetProvider` / `useEngagementGate` / `useEngagementBudget` (`engagement-budget.tsx`), layered over `ConsentProvider`: a one-time "allow up to X {asset}" prompt on the first engagement, a session-only debit counter (never persisted, so a stale reload can't keep spending), and a top-up re-prompt on exhaustion. It reuses the same `toon_status` fee/asset read seam and falls back to the per-action consent when the fee is unavailable.
+  - The runtime routes a spendy publish through the budget gate only when it's an engagement kind (3/6/7) — scoped by event semantics, not tool name, since like/follow/repost share `toon_publish_unsigned` with compose/profile-edit. A host-injected `confirm` still wins. `BudgetProvider` is mounted in `ViewSpecRenderer` alongside `ConsentProvider`.
+  - `note-card`'s engagement bar gains a subtle "remaining budget" affordance (with a tap-to-top-up control) once an allowance is authorized.
+
+- d0b5f78: Polish the composer so it reads as part of the feed surface, not a pasted-in widget.
+
+  - Drop the opaque `bg-card` slab for a faint `bg-muted/20` fill that goes transparent on focus, with the jade focus ring defining the input — inheriting the host surface instead of painting a heavy box against the transparent feed.
+  - Hide the byte counter at rest (it's fee-relevant only once there's content), so the composer no longer shows a developer-y "0 bytes". The counter returns as soon as you type.
+
+  Affects both the free `composer` and the `pay-confirm` idle phase (shared `ComposerSurface`). Adds a `feed-list (+ composer)` panel to the dev gallery for visual iteration.
+
+  Also make `feed-list` PAGINATED instead of scroll/append. Claude Desktop gives the app a fixed-height iframe and scrolls the overflow rather than growing to content (verified live: it reports no `maxHeight` and does not size to the page), so any append-style feed grew into an internal scrollbar. feed-list now shows one bounded page (`PAGE_SIZE = 5`) with Newer/Older buttons that REPLACE the page — the rendered height stays roughly constant, so there is no internal scroll. Older pages are fetched on demand via a free `toon_query` (NIP-01 `until`); already-fetched pages page back instantly. The dev gallery's mock bridge advertises a fullscreen surface so other atoms' display-mode affordances can still be exercised.
+
+- 432eca3: Add a `feed-list` atom: a bounded, scannable timeline slice that respects MCP-app host rules (no in-iframe infinite scroll).
+
+  - Reuses `note-card` rows and adds a **"Load more"** footer that pages older notes via a free, de-duped `toon_query` (the host-blessed alternative to infinite scroll), plus an **"Open timeline"** that escalates to the host's fullscreen surface when one is available — and simply doesn't render on inline-only hosts.
+  - Wires the runtime so atoms receive their `bind`, a `loadMore` paginated-query seam, and a `surface` display-mode control (provided once per view via context, so atoms read it cheaply instead of each subscribing to the host).
+  - Adds a regression guard that `note-card`'s inline row caps at two actions (Reply + Like); Follow stays in the author popover.
+
+- c0cb407: Polish the paid-write loop and harden cross-host rendering (Phase 2.4–2.6).
+
+  - **Optimistic pending → confirmed.** After a successful paid publish, the receipt shows the note as "pending" and flips to "confirmed" once a relay serves the event back, polled via the free `toon_query` read seam (`usePublishConfirmation`/`RelayConfirmation`). A slow/absent read stays "pending (unconfirmed)" — never a false "failed" (the message was paid and broadcast). This deliberately relies on the read seam rather than a hand-rolled WS reader, which would false-negative on the devnet relay's double-JSON-encoded EVENT payloads.
+  - **Media via Arweave gateway for CSP.** The MCP-app iframe CSP only allows the declared Arweave/ar.io gateway origins, so `gatewayMediaSrc` re-points Arweave-addressable media/avatar URLs onto a CSP-allowlisted gateway origin; arbitrary non-Arweave origins are left unchanged (they degrade rather than breaking the CSP).
+  - **Text fallback for non-rendering hosts.** `toon_query`/`toon_read` now carry a decision-sufficient text summary (author · time · excerpt · counts) alongside `structuredContent`, and the render path names the view in text — so a text-only host that can't render the `ui://` card still gets readable, actionable content.
+
+- 5d7f58c: Add three composed atoms: `thread-view`, `media-gallery`, and `live-ticker`.
+
+  - **`thread-view`** — a focused conversation reconstructed from NIP-10 `e`/`p` thread tags over the bound notes. Inline it shows the focused note, its single direct parent (context), and a bounded slice of up to three direct replies (reusing `note-card` rows), plus a "View full thread (N)" affordance that escalates to the host's fullscreen surface when one is available. Fullscreen renders the whole reply tree with indentation capped at four levels; deeper chains collapse to a "continue thread →" button that re-roots them at the margin.
+  - **`media-gallery`** — an Album-style responsive grid of media events (NIP-68/71/94 + NIP-92 `imeta`), one tile per event with gateway-fallback loading and guaranteed alt text; tapping a tile opens an in-component lightbox (full media via the shared embed) with prev/next paging.
+  - **`live-ticker`** — a compact new-posts/mentions ticker for Picture-in-Picture. It feature-detects PiP: when `surface.canPip` it offers a "Go live" affordance (`surface.request('pip')`), otherwise it degrades to an inline snapshot plus a "Refresh" button that re-queries the base filter via the free `loadMore` seam. The item list is an `aria-live="polite"` region.
+
+  All three are registered in both the pure catalog and the React registry (kept in sync by `registry.test.tsx`).
+
+- 49a2e31: Make pay-to-write consent truthful and specific, and survive non-rendering hosts.
+
+  - **Truthful fee:** `PublishResponse`/`UploadMediaResponse` now carry `feePaid` (the amount actually charged — uploads sum both the blob and reference-event legs) and `channelBalanceAfter`. The `pay-confirm` receipt shows the real fee + remaining balance instead of re-reading the per-event estimate, and the confirm step warns the write is permanent.
+  - **Specific spendy consent:** the in-iframe consent modal (used by upload/swap/channel ops) reads `toon_status` and surfaces the settlement chain, the pay-to-write fee (for per-event writes), and an explicit non-refundable / irreversible warning — no more bare label.
+  - **Cross-surface consent:** server `instructions` and the paid-write tool descriptions now direct a text-only host to quote the exact fee via `toon_status` and confirm the irreversible write before calling.
+
 ## 0.12.0
 
 ### Minor Changes
