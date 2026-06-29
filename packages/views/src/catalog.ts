@@ -46,12 +46,12 @@ export const ATOM_CATALOG: AtomMeta[] = [
   {
     id: 'feed-list',
     description:
-      'A bounded, scannable FEED/timeline slice: binds a kinds:[1] query and ' +
-      'reuses note-card rows (reply/like, Follow in the author popover). Adds a ' +
-      '"Load more" footer that pages older notes via a free toon_query, and — ' +
-      'where the host supports it — an "Open timeline" that expands to a ' +
-      'fullscreen scrolling timeline. Use for "show my feed/timeline/home". ' +
-      'Prefer this over a bare note-card when the user wants to browse a feed.',
+      'A PAGINATED FEED/timeline: binds a kinds:[1] query and reuses note-card ' +
+      'rows (reply/like, Follow in the author popover). Shows one bounded page ' +
+      'with Newer/Older buttons that REPLACE the page (no internal scrollbar — ' +
+      'hosts give a fixed-height card, so the feed pages instead of growing). ' +
+      'Older pages are fetched on demand via a free toon_query. Use for "show ' +
+      'my feed/timeline/home"; prefer this over a bare note-card for browsing a feed.',
     kinds: [],
     writes: [{ name: 'toon_publish_unsigned' }],
   },
