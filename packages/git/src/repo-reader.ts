@@ -73,6 +73,33 @@ export interface ReadObjectsResult {
   missing: string[];
 }
 
+/** One object from `rev-list --objects`: SHA plus the path it was reached by. */
+export interface ObjectWithPath {
+  /** Full 40-hex SHA-1. */
+  sha: string;
+  /**
+   * Path the object was first reached by (blobs and non-root trees);
+   * `undefined` for commits, root trees, and tag objects.
+   */
+  path?: string;
+}
+
+/** One object's metadata from `cat-file --batch-check`. */
+export interface ObjectStat {
+  sha: string;
+  type: GitObjectType;
+  /** Object body size in bytes (content only, no envelope header). */
+  size: number;
+}
+
+/** Result of {@link GitRepoReader.statObjects}. */
+export interface StatObjectsResult {
+  /** Stats found, in input order (minus missing ones). */
+  objects: ObjectStat[];
+  /** Requested SHAs not present in the repository. */
+  missing: string[];
+}
+
 /** Error from a git child process, carrying exit code and stderr. */
 export class GitError extends Error {
   constructor(
@@ -305,6 +332,19 @@ export class GitRepoReader {
    * would otherwise die on them.
    */
   async objectsBetween(want: string[], have: string[]): Promise<string[]> {
+    const objects = await this.objectsBetweenWithPaths(want, have);
+    return objects.map((o) => o.sha);
+  }
+
+  /**
+   * Like {@link objectsBetween} but keeps the path each object was reached
+   * by (`rev-list --objects` emits `<sha> <path>` for blobs and non-root
+   * trees) — used by push planning to report actionable oversize errors.
+   */
+  async objectsBetweenWithPaths(
+    want: string[],
+    have: string[]
+  ): Promise<ObjectWithPath[]> {
     for (const w of want) assertRevision(w, 'want');
     for (const h of have) assertRevision(h, 'have');
     if (want.length === 0) return [];
@@ -316,14 +356,22 @@ export class GitRepoReader {
     args.push('--'); // nothing user-supplied can become a pathspec
     const { stdout } = await this.git(args);
 
-    const shas: string[] = [];
+    const objects: ObjectWithPath[] = [];
     for (const line of stdout.split('\n')) {
       if (!line) continue;
       // `--objects` lines are `<sha>` or `<sha> <path>`.
       const spaceIdx = line.indexOf(' ');
-      shas.push(spaceIdx === -1 ? line : line.slice(0, spaceIdx));
+      if (spaceIdx === -1) {
+        objects.push({ sha: line });
+      } else {
+        const path = line.slice(spaceIdx + 1);
+        objects.push({
+          sha: line.slice(0, spaceIdx),
+          ...(path ? { path } : {}),
+        });
+      }
     }
-    return shas;
+    return objects;
   }
 
   /** Run git feeding `input` on stdin; resolves collected stdout bytes. */
@@ -377,6 +425,48 @@ export class GitRepoReader {
       if (line.endsWith(' missing')) missing.push(line.slice(0, -' missing'.length));
     }
     return { missing };
+  }
+
+  /**
+   * Object metadata (type + body size) for a batch of SHAs via one
+   * `cat-file --batch-check` pass — no bodies are read. Missing objects are
+   * reported, not thrown.
+   */
+  async statObjects(shas: string[]): Promise<StatObjectsResult> {
+    for (const sha of shas) assertFullSha(sha, 'sha');
+    if (shas.length === 0) return { objects: [], missing: [] };
+
+    const stdout = await this.runWithStdin(
+      ['cat-file', '--batch-check'],
+      shas.join('\n') + '\n'
+    );
+
+    const objects: ObjectStat[] = [];
+    const missing: string[] = [];
+    for (const line of stdout.toString('utf-8').split('\n')) {
+      if (!line) continue;
+      if (line.endsWith(' missing')) {
+        missing.push(line.slice(0, -' missing'.length));
+        continue;
+      }
+      const [sha, type, sizeStr] = line.split(' ');
+      const size = Number.parseInt(sizeStr ?? '', 10);
+      if (
+        !sha ||
+        !type ||
+        !OBJECT_TYPES.has(type) ||
+        !Number.isSafeInteger(size) ||
+        size < 0
+      ) {
+        throw new GitError(
+          `unexpected cat-file --batch-check line: ${JSON.stringify(line)}`,
+          undefined,
+          ''
+        );
+      }
+      objects.push({ sha, type: type as GitObjectType, size });
+    }
+    return { objects, missing };
   }
 
   /**
