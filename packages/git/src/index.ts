@@ -3,9 +3,10 @@
  *
  * Pure builders for git objects (blob/tree/commit/tag with SHA-1 envelope
  * hashing) and NIP-34 events (repo announcement/refs, issues, comments,
- * patches, statuses). No network, signing, or payment code lives here —
- * repo reading, remote state, push planning, and publishing arrive in the
- * follow-up tickets of epic toon-client#222.
+ * patches, statuses), plus GitRepoReader (execFile git plumbing for reading
+ * a local repo). No network, signing, or payment code lives here — remote
+ * state, push planning, and publishing arrive in the follow-up tickets of
+ * epic toon-client#222.
  */
 
 export {
@@ -31,3 +32,5 @@ export {
   type StatusKind,
   type UnsignedEvent,
 } from './nip34-events.js';
+
+export { GitError, GitRepoReader, type GitRef, type ReadGitObject, type ReadObjectsResult, type RepoRefs } from './repo-reader.js';
