@@ -3,15 +3,15 @@ import { resolve } from 'path';
 
 export default defineConfig({
   resolve: {
+    // Alias only packages that live in THIS workspace so tests run against
+    // source. @toon-protocol/{core,relay,bls,sdk} moved out of the repo and
+    // are plain npm deps now — stale aliases to their old packages/* paths
+    // broke resolution (Cannot find module), so they must resolve normally
+    // from each package's node_modules.
     alias: {
-      '@toon-protocol/core/toon': resolve(__dirname, 'packages/core/src/toon/index.ts'),
-      '@toon-protocol/core/nip34': resolve(__dirname, 'packages/core/src/nip34/index.ts'),
-      '@toon-protocol/core': resolve(__dirname, 'packages/core/src/index.ts'),
       '@toon-protocol/arweave': resolve(__dirname, 'packages/arweave/src/index.ts'),
-      '@toon-protocol/relay': resolve(__dirname, 'packages/relay/src/index.ts'),
-      '@toon-protocol/bls': resolve(__dirname, 'packages/bls/src/index.ts'),
-      '@toon-protocol/sdk': resolve(__dirname, 'packages/sdk/src/index.ts'),
       '@toon-protocol/client': resolve(__dirname, 'packages/client/src/index.ts'),
+      '@toon-protocol/git': resolve(__dirname, 'packages/git/src/index.ts'),
     },
   },
   test: {
