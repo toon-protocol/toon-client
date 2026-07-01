@@ -179,6 +179,53 @@ describe('objectsBetween', () => {
   });
 });
 
+describe('objectsBetweenWithPaths', () => {
+  it('keeps reach paths for blobs and trees, none for commits', async () => {
+    const objects = await reader.objectsBetweenWithPaths([commit2], []);
+    const bySha = new Map(objects.map((o) => [o.sha, o]));
+    expect(bySha.get(commit1)?.path).toBeUndefined();
+    expect(bySha.get(commit2)?.path).toBeUndefined();
+    expect(bySha.get(binaryBlobSha)?.path).toBe('blob.bin');
+    const deepBlob = objects.find((o) => o.path === 'src/deep/util.ts');
+    expect(deepBlob).toBeDefined();
+    // Same SHA set as the path-less variant.
+    const shas = await reader.objectsBetween([commit2], []);
+    expect(objects.map((o) => o.sha)).toEqual(shas);
+  });
+});
+
+describe('statObjects (cat-file --batch-check)', () => {
+  it('returns type + body size without reading bodies, reports missing', async () => {
+    const { objects, missing } = await reader.statObjects([
+      binaryBlobSha,
+      commit2,
+      NON_EXISTENT_SHA,
+    ]);
+    expect(missing).toEqual([NON_EXISTENT_SHA]);
+    expect(objects).toHaveLength(2);
+    expect(objects[0]).toEqual({
+      sha: binaryBlobSha,
+      type: 'blob',
+      size: binaryContent.length,
+    });
+    expect(objects[1]?.sha).toBe(commit2);
+    expect(objects[1]?.type).toBe('commit');
+  });
+
+  it('rejects non-full-SHA input before spawning git', async () => {
+    await expect(reader.statObjects(['main'])).rejects.toThrow(
+      /full 40-hex SHA-1/
+    );
+  });
+
+  it('returns empty results for empty input', async () => {
+    await expect(reader.statObjects([])).resolves.toEqual({
+      objects: [],
+      missing: [],
+    });
+  });
+});
+
 describe('readObjects (cat-file --batch)', () => {
   it('streams a binary body split across chunks, byte-identical', async () => {
     const { objects, missing } = await reader.readObjects([binaryBlobSha]);
