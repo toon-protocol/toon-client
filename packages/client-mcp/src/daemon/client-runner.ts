@@ -1374,7 +1374,7 @@ export class ClientRunner {
    * toon_status means it is WIRED, not that its RPC is live). A stall here used
    * to block the whole control request until the client aborted, surfacing as a
    * misleading "relay/apex unreachable" timeout (#199). Bound each attempt well
-   * under the control-plane timeout and retry once so a single transient
+   * under the control API timeout and retry once so a single transient
    * provider stall FAST-FAILS with an honest "balances handler / provider
    * stalled" error instead of hanging.
    */

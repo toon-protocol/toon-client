@@ -105,7 +105,7 @@ export interface DaemonConfigFile {
   feePerEvent?: string;
   /** Channel nonce-watermark persistence file. Default `<dir>/channels.json`. */
   channelStorePath?: string;
-  /** Localhost control-plane port. Default 8787. */
+  /** Localhost control API port. Default 8787. */
   httpPort?: number;
   /**
    * Active settlement chain for paid writes to the apex. A single daemon settles
@@ -163,7 +163,7 @@ export interface ResolvedDaemonConfig {
   /**
    * Whether a write uplink (proxy or BTP) is configured. FREE reads work
    * without one; a write attempt with `hasUplink === false` is rejected at the
-   * control plane with a clear "configure an uplink" error (issue #69). Reads
+   * control API with a clear "configure an uplink" error (issue #69). Reads
    * (`subscribe`/`query`/`getEvents`) never consult this.
    */
   hasUplink: boolean;
@@ -320,7 +320,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   // A write uplink is OPTIONAL at resolve time: FREE relay reads need none.
   // A connector PROXY (devnet ILP-over-HTTP, no BTP socket) OR a BTP url enables
   // paid writes; with neither, the daemon still starts read-only and rejects a
-  // write attempt at the control plane (issue #69). When only a proxy is set,
+  // write attempt at the control API (issue #69). When only a proxy is set,
   // paid writes route through `POST /ilp` via HttpIlpClient.
   const hasUplink = Boolean(btpUrl || proxyUrl);
   // Network defaults are bootstrapped from the committed genesis peer list

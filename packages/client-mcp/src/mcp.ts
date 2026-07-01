@@ -62,7 +62,7 @@ function log(msg: string): void {
   console.error(`[toon-mcp] ${msg}`);
 }
 
-/** Resolve the daemon control-plane URL without needing the mnemonic. */
+/** Resolve the daemon control API URL without needing the mnemonic. */
 function controlPlaneUrl(): string {
   const file = readConfigFile(
     process.env['TOON_CLIENT_CONFIG'] ?? defaultConfigPath()
@@ -75,7 +75,7 @@ function controlPlaneUrl(): string {
 
 /**
  * Make sure the daemon is up: if the lock shows it running, return; otherwise
- * spawn it detached and wait until the control plane is reachable. Best-effort
+ * spawn it detached and wait until the control API is reachable. Best-effort
  * — failures surface as readable tool errors rather than crashing the server.
  */
 async function ensureDaemon(url: string): Promise<void> {
@@ -85,7 +85,7 @@ async function ensureDaemon(url: string): Promise<void> {
   log('daemon not running — spawning detached');
   try {
     const pid = spawnDaemonDetached();
-    log(`spawned toon-clientd (pid ${pid}); waiting for control plane`);
+    log(`spawned toon-clientd (pid ${pid}); waiting for control API`);
     await waitForReady(url, 20_000);
   } catch (err) {
     log(

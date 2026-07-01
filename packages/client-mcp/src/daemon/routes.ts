@@ -1,5 +1,5 @@
 /**
- * Fastify route registration for the `toon-clientd` control plane. Each route
+ * Fastify route registration for the `toon-clientd` control API. Each route
  * is a thin adapter: parse/validate the request, call the `ClientRunner`, map
  * errors to the uniform `ErrorResponse` envelope.
  *

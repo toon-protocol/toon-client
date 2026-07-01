@@ -8,7 +8,7 @@
  *   2. drives ONE read-only / chain-free tool (`toon_channels`) to completion.
  *
  * Read-only: no on-chain funds, no chain calls — only the daemon's local
- * control-plane state.
+ * control API state.
  *
  * GATING — skips cleanly unless BOTH hold (so the default suite / CI never
  * needs a credential and the test stays `describe.skip`):

@@ -268,7 +268,7 @@ describe('dispatchTool', () => {
     expect(Array.isArray(res.structuredContent?.['channels'])).toBe(true);
   });
 
-  it('toon_balances 504 names the control plane / balances handler, not relay/apex (#199)', async () => {
+  it('toon_balances 504 names the control API / balances handler, not relay/apex (#199)', async () => {
     const balances = vi
       .fn()
       .mockRejectedValue(
@@ -281,7 +281,7 @@ describe('dispatchTool', () => {
       );
     const res = await dispatchTool(stubClient({ balances }), 'toon_balances', {});
     expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toMatch(/balances control plane|balances handler|GET \/balances/);
+    expect(res.content[0]!.text).toMatch(/balances control API|balances handler|GET \/balances/);
     expect(res.content[0]!.text).not.toMatch(/retry once the relay is reachable and the apex is online/);
   });
 

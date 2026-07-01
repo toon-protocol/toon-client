@@ -1,5 +1,5 @@
 /**
- * Thin HTTP client for the `toon-clientd` localhost control plane. Used by the
+ * Thin HTTP client for the `toon-clientd` localhost control API. Used by the
  * MCP server (and any other caller) to drive the daemon without holding any
  * chain keys or long-lived connections itself.
  */

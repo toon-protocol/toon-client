@@ -3,7 +3,7 @@
  *
  * `toon-mcp` is a stdio MCP server (bin `toon-mcp` → `dist/mcp.js`). On startup
  * it AUTO-SPAWNS the `toon-clientd` daemon detached and proxies every tool call
- * to the daemon's Fastify control plane over HTTP. So this harness does NOT
+ * to the daemon's Fastify control API over HTTP. So this harness does NOT
  * spawn two processes itself — it points the Claude Agent SDK at the single
  * `toon-mcp` stdio command, and `toon-mcp` brings the daemon up.
  *
@@ -22,7 +22,7 @@
  *
  * This harness is read-only / chain-free: it drives only the no-funds tools
  * (e.g. `toon_channels`). The daemon may stay "bootstrapping" with a dummy BTP
- * URL — that is fine for the read-only control-plane tools.
+ * URL — that is fine for the read-only control API tools.
  */
 
 import { createServer } from 'node:net';
@@ -65,7 +65,7 @@ export interface DaemonHarness {
   >;
   /** The isolated `TOON_CLIENT_HOME` for this run. */
   home: string;
-  /** The free control-plane port handed to the daemon. */
+  /** The free control API port handed to the daemon. */
   httpPort: number;
   /**
    * Runs a no-op query, returning the `mcp__toon__*` tool names the agent sees

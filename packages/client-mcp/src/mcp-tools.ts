@@ -1,6 +1,6 @@
 /**
  * MCP tool definitions + dispatch. The MCP server is a thin proxy: each tool
- * maps to a `toon-clientd` control-plane call. This module is the testable core
+ * maps to a `toon-clientd` control API call. This module is the testable core
  * (no stdio / SDK transport) so the tool→HTTP mapping and the
  * "bootstrapping — retry" handling can be unit-tested directly.
  */
@@ -700,7 +700,7 @@ for (const name of WRITE_TOOLS) {
 }
 
 /**
- * Dispatch an MCP tool call to the daemon control plane. Always resolves with a
+ * Dispatch an MCP tool call to the daemon control API. Always resolves with a
  * `ToolResult` (errors are encoded as `isError: true` text, not thrown, so the
  * agent sees a readable message). A retryable error (daemon still
  * bootstrapping) yields a clear "retry shortly" message.
@@ -932,7 +932,7 @@ export async function dispatchTool(
     // stays `ready` throughout and the read succeeds on retry.
     if (e instanceof ControlApiError && e.status === 504 && name === 'toon_balances') {
       return err(
-        `${e.detail ?? e.message} — the balances control plane (:8787 GET ` +
+        `${e.detail ?? e.message} — the balances control API (:8787 GET ` +
           `/balances) stalled reading on-chain balances; the relay and apex are ` +
           `unaffected. Retry shortly.`
       );
