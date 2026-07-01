@@ -4,6 +4,7 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Encode } from '@toon-protocol/core';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { OnChainChannelClient } from './OnChainChannelClient.js';
+import { ChannelFundingError } from '../errors.js';
 import { deriveChannelPDA } from './solana-payment-channel.js';
 
 // Mock viem module
@@ -230,6 +231,75 @@ describe('OnChainChannelClient', () => {
           peerAddress: TEST_PEER_ADDRESS,
         })
       ).rejects.toThrow('Failed to extract channelId');
+    });
+
+    it('remaps an insufficient-gas revert into an actionable ChannelFundingError (#65)', async () => {
+      // The openChannel tx reverts because the wallet has no native gas — the
+      // exact raw viem string reported on devnet.
+      const viemErr = new Error(
+        'The total cost (gas * gas fee + value) of executing this transaction ' +
+          'exceeds the balance of the account.'
+      );
+      mockWriteContract.mockRejectedValueOnce(viemErr);
+
+      let thrown: unknown;
+      try {
+        await client.openChannel({
+          peerId: 'test-peer',
+          chain: TEST_CHAIN,
+          tokenNetwork: TEST_TOKEN_NETWORK,
+          peerAddress: TEST_PEER_ADDRESS,
+          initialDeposit: '0',
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeInstanceOf(ChannelFundingError);
+      const funding = thrown as ChannelFundingError;
+      // Names the wallet, the chain FAMILY (evm, not the full slug), and remedy.
+      expect(funding.message).toContain(signer.address);
+      expect(funding.message).toContain('no gas on evm ');
+      expect(funding.message).toContain('toon_fund_wallet');
+      expect(funding.code).toBe('CHANNEL_FUNDING');
+      expect(funding.retryable).toBe(true);
+      // Original viem error preserved for debugging.
+      expect(funding.cause).toBe(viemErr);
+    });
+
+    it('remaps an insufficient-gas revert on the approve leg too (#65)', async () => {
+      // Allowance 0 → approve runs first and reverts for lack of gas.
+      mockReadContract.mockResolvedValueOnce(0n);
+      mockWriteContract.mockRejectedValueOnce(
+        new Error('insufficient funds for gas * price + value')
+      );
+
+      await expect(
+        client.openChannel({
+          peerId: 'test-peer',
+          chain: TEST_CHAIN,
+          token: TEST_TOKEN,
+          tokenNetwork: TEST_TOKEN_NETWORK,
+          peerAddress: TEST_PEER_ADDRESS,
+          initialDeposit: '100000',
+        })
+      ).rejects.toBeInstanceOf(ChannelFundingError);
+    });
+
+    it('does NOT remap unrelated channel-open errors (#65)', async () => {
+      mockWriteContract.mockRejectedValueOnce(
+        new Error('execution reverted: channel already exists')
+      );
+
+      const promise = client.openChannel({
+        peerId: 'test-peer',
+        chain: TEST_CHAIN,
+        tokenNetwork: TEST_TOKEN_NETWORK,
+        peerAddress: TEST_PEER_ADDRESS,
+        initialDeposit: '0',
+      });
+      await expect(promise).rejects.toThrow('channel already exists');
+      await expect(promise).rejects.not.toBeInstanceOf(ChannelFundingError);
     });
   });
 

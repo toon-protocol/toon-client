@@ -17,6 +17,7 @@ import type {
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Encode } from '@toon-protocol/core';
 import type { EvmSigner } from '../signing/evm-signer.js';
+import { ChannelFundingError, isInsufficientGasError } from '../errors.js';
 import {
   openSolanaChannel as openSolanaChannelOnChain,
   getChannelAccountState as getSolanaChannelAccountState,
@@ -737,14 +738,40 @@ export class OnChainChannelClient implements ConnectorChannelClient {
   }
 
   /**
-   * Opens an EVM payment channel on-chain.
+   * Opens an EVM payment channel on-chain, remapping the one-time
+   * insufficient-native-gas revert into an actionable {@link ChannelFundingError}
+   * so callers surface "fund the wallet" instead of the raw viem
+   * "...exceeds the balance of the account" string (toon-meta#65). Only the gas
+   * case is remapped; every other error propagates unchanged.
+   */
+  private async openEvmChannel(
+    params: OpenChannelParams
+  ): Promise<OpenChannelResult> {
+    try {
+      return await this.openEvmChannelUnchecked(params);
+    } catch (err) {
+      if (!isInsufficientGasError(err)) throw err;
+      // `chain` is a CAIP-ish id (e.g. "evm:anvil:31337"); surface just the
+      // family so the remedy reads "no gas on evm", not the full slug.
+      const chainFamily = params.chain.split(':')[0] || params.chain;
+      throw new ChannelFundingError(
+        `Settlement wallet ${this.evmSigner.address} has no gas on ` +
+          `${chainFamily} to open a payment channel. Run toon_fund_wallet ` +
+          `(or fund the wallet) and retry.`,
+        err instanceof Error ? err : undefined
+      );
+    }
+  }
+
+  /**
+   * Raw EVM channel-open (no gas-error remapping — see {@link openEvmChannel}).
    *
    * 1. Approve token spend if needed
    * 2. Call TokenNetwork.openChannel()
    * 3. Extract channelId from ChannelOpened event
    * 4. Deposit initial funds if specified
    */
-  private async openEvmChannel(
+  private async openEvmChannelUnchecked(
     params: OpenChannelParams
   ): Promise<OpenChannelResult> {
     const {

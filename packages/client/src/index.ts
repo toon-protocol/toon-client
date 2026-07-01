@@ -17,6 +17,8 @@ export {
   NetworkError,
   ConnectorError,
   ValidationError,
+  ChannelFundingError,
+  isInsufficientGasError,
 } from './errors.js';
 
 // HTTP Adapters

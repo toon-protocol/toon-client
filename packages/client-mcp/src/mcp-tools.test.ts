@@ -370,6 +370,25 @@ describe('dispatchTool', () => {
     expect(res.content[0]!.text).toMatch(/still bootstrapping/);
   });
 
+  it('surfaces the actionable gas remedy on a 402, not the bootstrapping hint (#65)', async () => {
+    // A 402 is flagged retryable-after-funding, so it MUST be handled before the
+    // generic retryable "still bootstrapping" branch or the remedy is masked.
+    const detail =
+      'Settlement wallet 0x1 has no gas on evm to open a payment channel. ' +
+      'Run toon_fund_wallet (or fund the wallet) and retry.';
+    const client = stubClient({
+      publish: vi
+        .fn()
+        .mockRejectedValue(new ControlApiError('insufficient_gas', 402, true, detail)),
+    });
+    const res = await dispatchTool(client, 'toon_publish', {
+      event: { id: 'e' },
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toBe(detail);
+    expect(res.content[0]!.text).not.toMatch(/still bootstrapping/);
+  });
+
   it('reports an unreachable daemon clearly', async () => {
     const client = stubClient({
       status: vi

@@ -955,6 +955,14 @@ export async function dispatchTool(
         `${e.detail ?? e.message} — retry once the relay is reachable and the apex is online.`
       );
     }
+    // A 402 is the one-time on-chain channel OPEN failing for lack of native gas
+    // (#65). The `detail` is already the actionable "fund the wallet and retry"
+    // message — surface it verbatim. Must precede the generic retryable branch
+    // below, or the gas remedy is masked by the "still bootstrapping" hint even
+    // though this error is flagged retryable-after-funding.
+    if (e instanceof ControlApiError && e.status === 402) {
+      return err(e.detail ?? e.message);
+    }
     if (e instanceof ControlApiError && e.retryable) {
       return err(
         `TOON client is still bootstrapping (the BTP session can take a few ` +
