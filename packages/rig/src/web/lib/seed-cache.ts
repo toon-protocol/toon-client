@@ -1,3 +1,4 @@
+import { shaCacheKey } from '@toon-protocol/arweave';
 import { seedShaCache } from '../arweave-client.js';
 import type { RepoRefs } from '../nip34-parsers.js';
 
@@ -11,7 +12,7 @@ export function seedFromRefs(refs: RepoRefs, repoId: string): void {
   if (refs.arweaveMap.size === 0) return;
   const reformatted: [string, string][] = [];
   for (const [sha, txId] of refs.arweaveMap) {
-    reformatted.push([`${sha}:${repoId}`, txId]);
+    reformatted.push([shaCacheKey(sha, repoId), txId]);
   }
   seedShaCache(reformatted);
 }

@@ -9,74 +9,23 @@
  */
 
 // Gateway list + fetch timeout are owned by @toon-protocol/arweave (the single
-// source of truth shared with views + client-mcp); re-exported here so existing
-// rig importers keep their `../arweave-client.js` path.
-export { ARWEAVE_GATEWAYS, ARWEAVE_FETCH_TIMEOUT_MS } from '@toon-protocol/arweave';
-import { ARWEAVE_GATEWAYS, ARWEAVE_FETCH_TIMEOUT_MS } from '@toon-protocol/arweave';
-
-/** Maximum number of entries in the SHA-to-txId cache to prevent unbounded memory growth. */
-const SHA_CACHE_MAX_SIZE = 10000;
-
-/** In-memory cache for SHA-to-txId resolution. Bounded to prevent memory leaks. */
-const shaToTxIdCache = new Map<string, string>();
-
-/**
- * Validate a git SHA-1 hash format (40-character hex string).
- */
-function isValidGitSha(sha: string): boolean {
-  return /^[0-9a-f]{40}$/i.test(sha);
-}
-
-/**
- * Sanitize a string for safe inclusion in a GraphQL query.
- * Removes characters that could break out of a GraphQL string literal,
- * including backticks which some GraphQL parsers may interpret.
- */
-function sanitizeGraphQLValue(value: string): string {
-  // eslint-disable-next-line no-control-regex -- intentional: strip control chars for GraphQL safety
-  return value.replace(/["\\\n\r\u0000-\u001f`]/g, '');
-}
-
-/**
- * Clear the SHA-to-txId cache. Used for test isolation.
- */
-export function clearShaCache(): void {
-  shaToTxIdCache.clear();
-}
-
-/**
- * Pre-seed the SHA-to-txId cache with known mappings.
- *
- * Used when txId mappings are available from relay events (e.g., kind:30618
- * `arweave` tags) to avoid the GraphQL indexing delay after Turbo/Irys uploads.
- *
- * @param mappings - Map of "sha:repo" cache keys to Arweave transaction IDs
- */
-export function seedShaCache(
-  mappings: Map<string, string> | [string, string][]
-): void {
-  const entries = mappings instanceof Map ? mappings.entries() : mappings;
-  for (const [key, txId] of entries) {
-    if (shaToTxIdCache.size >= SHA_CACHE_MAX_SIZE) {
-      const firstKey = shaToTxIdCache.keys().next().value;
-      if (firstKey !== undefined) {
-        shaToTxIdCache.delete(firstKey);
-      }
-    }
-    shaToTxIdCache.set(key, txId);
-  }
-}
-
-/** Arweave transaction IDs are 43-character base64url strings. */
-const ARWEAVE_TX_ID_RE = /^[a-zA-Z0-9_-]{43}$/;
-
-/**
- * Validate an Arweave transaction ID format.
- * Arweave tx IDs are 43-character base64url-encoded strings.
- */
-function isValidArweaveTxId(txId: string): boolean {
-  return ARWEAVE_TX_ID_RE.test(txId);
-}
+// source of truth shared with views + client-mcp); the Git-SHA → txId GraphQL
+// resolver (resolveGitSha / seedShaCache / clearShaCache) moved there too so
+// the Node write path (@toon-protocol/git) shares ONE implementation (#225).
+// Everything is re-exported here so existing rig importers keep their
+// `../arweave-client.js` path.
+export {
+  ARWEAVE_GATEWAYS,
+  ARWEAVE_FETCH_TIMEOUT_MS,
+  clearShaCache,
+  resolveGitSha,
+  seedShaCache,
+} from '@toon-protocol/arweave';
+import {
+  ARWEAVE_GATEWAYS,
+  ARWEAVE_FETCH_TIMEOUT_MS,
+  isValidArweaveTxId,
+} from '@toon-protocol/arweave';
 
 /**
  * Fetch a raw object from an Arweave gateway by transaction ID.
@@ -114,84 +63,4 @@ export async function fetchArweaveObject(
   }
 
   return null;
-}
-
-/**
- * Resolve a git SHA to an Arweave transaction ID via GraphQL.
- *
- * Queries the Arweave GraphQL endpoint for transactions tagged with
- * the given Git-SHA and Repo values. Results are cached in-memory.
- *
- * @param sha - Git object SHA-1 hash (hex)
- * @param repo - Repository identifier (matches d tag)
- * @returns Arweave transaction ID, or null if not found
- */
-export async function resolveGitSha(
-  sha: string,
-  repo: string
-): Promise<string | null> {
-  // Validate SHA format to prevent injection of arbitrary strings into GraphQL
-  if (!isValidGitSha(sha)) {
-    return null;
-  }
-
-  const cacheKey = `${sha}:${repo}`;
-  const cached = shaToTxIdCache.get(cacheKey);
-  if (cached !== undefined) {
-    return cached;
-  }
-
-  const safeSha = sanitizeGraphQLValue(sha);
-  const safeRepo = sanitizeGraphQLValue(repo);
-  const query = `query {
-  transactions(tags: [
-    { name: "Git-SHA", values: ["${safeSha}"] },
-    { name: "Repo", values: ["${safeRepo}"] }
-  ]) {
-    edges { node { id } }
-  }
-}`;
-
-  try {
-    const response = await fetch('https://arweave.net/graphql', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
-      signal: AbortSignal.timeout(ARWEAVE_FETCH_TIMEOUT_MS),
-    });
-
-    if (!response.ok) {
-      return null;
-    }
-
-    const json = (await response.json()) as {
-      data?: {
-        transactions?: {
-          edges?: { node?: { id?: string } }[];
-        };
-      };
-    };
-
-    const edges = json.data?.transactions?.edges;
-    if (!edges || edges.length === 0) {
-      return null;
-    }
-
-    const txId = edges[0]?.node?.id;
-    if (!txId || !isValidArweaveTxId(txId)) {
-      return null;
-    }
-
-    // Evict oldest entries if cache exceeds max size
-    if (shaToTxIdCache.size >= SHA_CACHE_MAX_SIZE) {
-      const firstKey = shaToTxIdCache.keys().next().value;
-      if (firstKey !== undefined) {
-        shaToTxIdCache.delete(firstKey);
-      }
-    }
-    shaToTxIdCache.set(cacheKey, txId);
-    return txId;
-  } catch {
-    return null;
-  }
 }
