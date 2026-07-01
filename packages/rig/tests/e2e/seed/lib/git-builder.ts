@@ -1,16 +1,31 @@
 /**
  * Git object construction and Arweave upload utilities for E2E seed scripts.
  *
- * Ports createGitBlob, createGitTree, createGitCommit from socialverse-agent-alice-git-push.ts
- * and adds SHA-to-txId tracking for incremental delta uploads.
+ * The pure builders (createGitBlob/Tree/Commit, GitObject, envelope hashing,
+ * MAX_OBJECT_SIZE) were promoted to `@toon-protocol/git` (#223) and are
+ * re-exported here so seed scripts keep working unchanged. The upload/network
+ * helpers below (uploadGitObject, waitForArweaveIndex, shaMap tracking) stay
+ * in the seed lib until they're superseded by the Publisher (#226).
  *
  * AC-1.2: Git Builder
  */
 
-import { createHash } from 'crypto';
 import { finalizeEvent } from 'nostr-tools/pure';
 import type { ToonClient, SignedBalanceProof } from '@toon-protocol/client';
+import {
+  MAX_OBJECT_SIZE,
+  createGitBlob,
+  createGitCommit,
+  createGitTree,
+  type GitObject,
+} from '@toon-protocol/git';
 import { PEER1_DESTINATION } from './constants.js';
+
+// ---------------------------------------------------------------------------
+// Promoted pure builders (re-exported from @toon-protocol/git)
+// ---------------------------------------------------------------------------
+
+export { createGitBlob, createGitCommit, createGitTree, type GitObject };
 
 // ---------------------------------------------------------------------------
 // Types
@@ -18,103 +33,14 @@ import { PEER1_DESTINATION } from './constants.js';
 
 export type ShaToTxIdMap = Record<string, string>;
 
-export interface GitObject {
-  /** SHA-1 hex digest computed over full git envelope */
-  sha: string;
-  /** Full git object (header + null + content) */
-  buffer: Buffer;
-  /** Body only (content after the null byte) — this is what gets uploaded */
-  body: Buffer;
-}
-
 export interface UploadResult {
   sha: string;
   txId: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
-// Git object construction
-// ---------------------------------------------------------------------------
-
-/**
- * Construct a git blob object and compute its SHA-1.
- *
- * Format: blob <size>\0<content>
- * SHA is over the full envelope; body is content only (for upload).
- */
-export function createGitBlob(content: string): GitObject {
-  const contentBuf = Buffer.from(content, 'utf-8');
-  const header = Buffer.from(`blob ${contentBuf.length}\0`);
-  const fullObject = Buffer.concat([header, contentBuf]);
-  const sha = createHash('sha1').update(fullObject).digest('hex');
-  return { sha, buffer: fullObject, body: contentBuf };
-}
-
-/**
- * Construct a git tree object from sorted entries.
- *
- * Format: tree <size>\0<entries>
- * Each entry: <mode> <name>\0<20-byte-raw-sha1>
- * Entries MUST be sorted by name (byte-wise).
- */
-export function createGitTree(
-  entries: { mode: string; name: string; sha: string }[]
-): GitObject {
-  // Git sorts tree entries by raw byte order (NOT locale-aware)
-  const sorted = [...entries].sort((a, b) =>
-    a.name < b.name ? -1 : a.name > b.name ? 1 : 0
-  );
-
-  const entryBuffers: Buffer[] = [];
-  for (const entry of sorted) {
-    const modeAndName = Buffer.from(`${entry.mode} ${entry.name}\0`);
-    // Raw 20-byte SHA-1 (NOT hex)
-    const rawSha = Buffer.from(entry.sha, 'hex');
-    entryBuffers.push(Buffer.concat([modeAndName, rawSha]));
-  }
-
-  const entriesContent = Buffer.concat(entryBuffers);
-  const header = Buffer.from(`tree ${entriesContent.length}\0`);
-  const fullObject = Buffer.concat([header, entriesContent]);
-  const sha = createHash('sha1').update(fullObject).digest('hex');
-  return { sha, buffer: fullObject, body: entriesContent };
-}
-
-/**
- * Construct a git commit object.
- *
- * Format: commit <size>\0tree <tree-sha>\n[parent ...]\nauthor ...\ncommitter ...\n\n<message>
- * Tree/parent SHAs are hex-encoded (40 chars) in commits, unlike tree entries.
- */
-export function createGitCommit(opts: {
-  treeSha: string;
-  parentSha?: string;
-  authorName: string;
-  authorPubkey: string;
-  message: string;
-  timestamp: number;
-}): GitObject {
-  const lines = [
-    `tree ${opts.treeSha}`,
-    ...(opts.parentSha ? [`parent ${opts.parentSha}`] : []),
-    `author ${opts.authorName} <${opts.authorPubkey}@nostr> ${opts.timestamp} +0000`,
-    `committer ${opts.authorName} <${opts.authorPubkey}@nostr> ${opts.timestamp} +0000`,
-    '',
-    opts.message,
-  ];
-  const contentStr = lines.join('\n');
-  const contentBuf = Buffer.from(contentStr, 'utf-8');
-  const header = Buffer.from(`commit ${contentBuf.length}\0`);
-  const fullObject = Buffer.concat([header, contentBuf]);
-  const sha = createHash('sha1').update(fullObject).digest('hex');
-  return { sha, buffer: fullObject, body: contentBuf };
-}
-
-// ---------------------------------------------------------------------------
 // Upload
 // ---------------------------------------------------------------------------
-
-const MAX_OBJECT_SIZE = 95 * 1024; // 95KB safety margin from 100KB free tier
 
 /**
  * Upload a git object to Arweave via kind:5094 DVM.
