@@ -274,7 +274,7 @@ receive a target-chain claim.
   results**, never private keys.
 - A single-instance PID lock prevents two daemons from racing the channel nonce
   watermark (which would corrupt the payment proof).
-- The control plane binds `127.0.0.1` only (no auth layer — it never leaves
+- The control API binds `127.0.0.1` only (no auth layer — it never leaves
   loopback).
 
 ## Tests

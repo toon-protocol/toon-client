@@ -501,7 +501,7 @@ describe('Story 10.8: Push 08 -- Merge PR & Close Issue', () => {
       ],
       issues: [
         { eventId: 'issue1-event-id', title: 'Issue #1', authorPubkey: 'a'.repeat(64), labels: ['enhancement', 'networking'] },
-        { eventId: 'issue2-event-id', title: 'Issue #2', authorPubkey: 'b'.repeat(64), labels: ['bug', 'forge-ui'] },
+        { eventId: 'issue2-event-id', title: 'Issue #2', authorPubkey: 'b'.repeat(64), labels: ['bug', 'rig-ui'] },
       ],
       comments: [
         { eventId: 'c1-id', issueEventId: 'issue1-event-id', authorPubkey: 'b'.repeat(64), body: 'comment 1' },

@@ -61,7 +61,7 @@ async function runForeground(): Promise<void> {
     logger: false,
     // Keep idle keep-alive sockets open longer than the MCP-side undici client
     // would ever pool one (its keepAliveMaxTimeout default is 600s). The client
-    // calls this localhost control plane infrequently, so with Node's default
+    // calls this localhost control API infrequently, so with Node's default
     // 5s keep-alive the daemon was reaping sockets the client still held —
     // causing the next request to fail with ECONNRESET ("daemon not reachable")
     // until a retry opened a fresh socket (toon-client#186). Outliving the
@@ -97,7 +97,7 @@ async function runForeground(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
-/** Spawn the daemon detached and wait until the control plane responds. */
+/** Spawn the daemon detached and wait until the control API responds. */
 async function start(): Promise<void> {
   const config = loadResolvedConfig();
   const url = baseUrl(config);

@@ -95,32 +95,6 @@ export {
   proxyIlpEndpoint,
 } from './config.js';
 
-// Pet DVM Utilities
-export {
-  filterPetDvmProviders,
-  buildPetInteractionRequest,
-  parsePetInteractionResult,
-  parsePetInteractionEvent,
-  // Pet Marketplace Utilities (Story 11-14)
-  buildPetListingEvent,
-  parsePetListing,
-  filterPetListings,
-  buildPetPurchaseRequest,
-  type PetDvmProvider,
-  type PetInteractionRequestParams,
-  type PetInteractionResultData,
-  type PetInteractionEventData,
-  type InteractionResultContent,
-  type UnsignedNostrEvent,
-  type StatValues,
-  type ProofStatus,
-  // Pet Marketplace Types (Story 11-14)
-  type PetListingParams,
-  type PetListing,
-  type PetListingFilterOptions,
-  type PetPurchaseRequestParams,
-} from './pet/index.js';
-
 // Devnet faucet helper
 export {
   fundWallet,

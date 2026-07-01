@@ -83,7 +83,7 @@ describe('Story 10.7: Push 07 -- Issues, Labels, Conversations', () => {
   // AC-7.1: buildIssue produces correct kind:1621 for Issue #2
   // -------------------------------------------------------------------------
 
-  it('[P0] AC-7.1: buildIssue for Issue #2 produces kind:1621 with correct a tag, subject tag, and t tags for bug and forge-ui', async () => {
+  it('[P0] AC-7.1: buildIssue for Issue #2 produces kind:1621 with correct a tag, subject tag, and t tags for bug and rig-ui', async () => {
     const { buildIssue } = await import('../lib/event-builders.js');
     const push01 = await import('../push-01-init.js');
 
@@ -94,7 +94,7 @@ describe('Story 10.7: Push 07 -- Issues, Labels, Conversations', () => {
       push01.REPO_ID,
       'Fix deep path navigation bug',
       'Navigation breaks when traversing directories deeper than 3 levels.',
-      ['bug', 'forge-ui']
+      ['bug', 'rig-ui']
     );
 
     // kind:1621
@@ -114,7 +114,7 @@ describe('Story 10.7: Push 07 -- Issues, Labels, Conversations', () => {
     const tTags = event.tags.filter((t) => t[0] === 't');
     expect(tTags).toHaveLength(2);
     expect(tTags[0]![1]).toBe('bug');
-    expect(tTags[1]![1]).toBe('forge-ui');
+    expect(tTags[1]![1]).toBe('rig-ui');
   });
 
   // -------------------------------------------------------------------------
@@ -193,7 +193,7 @@ describe('Story 10.7: Push 07 -- Issues, Labels, Conversations', () => {
     expect(source).toContain('enhancement');
     expect(source).toContain('networking');
     expect(source).toContain('bug');
-    expect(source).toContain('forge-ui');
+    expect(source).toContain('rig-ui');
   });
 
   // -------------------------------------------------------------------------
@@ -658,7 +658,7 @@ describe('Story 10.7: Push 07 -- Issues, Labels, Conversations', () => {
       push01.REPO_ID,
       'Fix deep path navigation bug',
       'Navigation breaks when traversing directories deeper than 3 levels.',
-      ['bug', 'forge-ui']
+      ['bug', 'rig-ui']
     );
 
     // p tag = owner pubkey (same as Issue #1 test verifies)

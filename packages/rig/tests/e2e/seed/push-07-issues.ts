@@ -4,7 +4,7 @@
  * Publishes 2 kind:1621 issue events with labels and multi-client
  * comment threads (kind:1622):
  * - Issue #1: WebSocket reconnection (Alice, enhancement + networking labels)
- * - Issue #2: Deep path navigation (Bob, bug + forge-ui labels)
+ * - Issue #2: Deep path navigation (Bob, bug + rig-ui labels)
  *
  * Comment threads:
  * - Issue #1: Bob, Alice, Charlie (3 comments)
@@ -107,7 +107,7 @@ export async function runPush07(
     REPO_ID,
     'Fix deep path navigation bug',
     'Navigation breaks when traversing directories deeper than 3 levels.',
-    ['bug', 'forge-ui']
+    ['bug', 'rig-ui']
   );
   const issue2Signed = finalizeEvent(issue2Unsigned, bobSecretKey);
 
@@ -246,7 +246,7 @@ export async function runPush07(
         eventId: issue2EventId,
         title: 'Fix deep path navigation bug',
         authorPubkey: issue2Signed.pubkey,
-        labels: ['bug', 'forge-ui'],
+        labels: ['bug', 'rig-ui'],
       },
     ],
     comments: [

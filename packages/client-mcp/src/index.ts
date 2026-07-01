@@ -2,7 +2,7 @@
  * `@toon-protocol/client-mcp` — library surface.
  *
  * The package ships two bins (`toon-clientd`, `toon-mcp`); this entry exposes
- * the reusable pieces for embedding / testing: the control-plane contract, the
+ * the reusable pieces for embedding / testing: the control API contract, the
  * HTTP control client, the persistent relay subscription, the daemon runner,
  * and the MCP tool definitions.
  */

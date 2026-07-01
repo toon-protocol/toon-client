@@ -164,7 +164,7 @@ export async function runCapstoneDemo(
  * live daemon. See module header for the live-run prerequisites.
  *
  * Env:
- *   TOON_DAEMON_URL    daemon control-plane base URL (default http://127.0.0.1:8787)
+ *   TOON_DAEMON_URL    daemon control API base URL (default http://127.0.0.1:8787)
  *   TOON_SWAP_DEST     swap ILP destination (e.g. g.proxy.swap)
  *   TOON_SWAP_AMOUNT   source-asset amount, micro-units (e.g. 1000000)
  *   TOON_SWAP_PUBKEY   swap peer 64-char hex Nostr pubkey

@@ -1,21 +1,10 @@
 /**
  * @toon-protocol/rig
  *
- * Git forge rig for TOON - NIP-34 based code collaboration.
- * Stub: Will be implemented as part of the rig epic.
+ * Decentralized control plane for TOON Protocol — a browser-only static SPA
+ * that interprets TOON events (NIP-34 git is its first surface, not a GitHub
+ * clone). There is no rig server: writes happen via external TOON clients
+ * paying ILP. The SPA lives in ./web; seed tooling lives in ../tests/e2e/seed.
  */
 
-export interface RigConfig {
-  mnemonic: string;
-  relayUrl: string;
-  httpPort?: number;
-  repoDir?: string;
-}
-
-/**
- * Starts the rig server.
- * Stub implementation -- will be filled in when the rig is implemented.
- */
-export async function startRig(_config: RigConfig): Promise<void> {
-  throw new Error('startRig is not yet implemented');
-}
+export {};

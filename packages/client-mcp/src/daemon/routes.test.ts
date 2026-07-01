@@ -182,7 +182,7 @@ const signedEvent = (id: string): NostrEvent => ({
   sig: 'sig',
 });
 
-describe('control-plane routes', () => {
+describe('control API routes', () => {
   let app: FastifyInstance;
   let runner: ClientRunner;
   let client: FakeClient;

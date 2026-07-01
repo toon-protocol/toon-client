@@ -130,7 +130,7 @@ export function defaultDaemonEntry(): string {
 }
 
 /**
- * Poll the control plane until the daemon answers `GET /status`, up to
+ * Poll the control API until the daemon answers `GET /status`, up to
  * `timeoutMs`. Resolves true once reachable (NOT necessarily done
  * bootstrapping — the BTP session can take a moment; callers surface
  * `bootstrapping`).

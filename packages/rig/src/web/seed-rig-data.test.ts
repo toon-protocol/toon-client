@@ -1,4 +1,4 @@
-// Structural guard: forge data seeding into the Arweave SHA cache.
+// Structural guard: rig data seeding into the Arweave SHA cache.
 // Ensures seedFromRefs correctly reformats sha→txId mappings so that
 // resolveGitSha() can satisfy lookups from relay events without a GraphQL round-trip.
 
