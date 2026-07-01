@@ -86,7 +86,9 @@ class FakeClient implements ToonClientLike {
   }> {
     return { success: true, txId: 'tx-routes', eventId: 'blob-evt' };
   }
+  openChannelError?: unknown;
   async openChannel(): Promise<string> {
+    if (this.openChannelError) throw this.openChannelError;
     return 'chan-1';
   }
   getTrackedChannels(): string[] {
@@ -396,6 +398,39 @@ describe('control-plane routes', () => {
       });
       expect(res.statusCode).toBe(425);
       expect(res.json()).toMatchObject({ error: 'settle_too_early', retryable: true });
+    });
+
+    it('POST /channels maps a settlement-gas revert to 402 insufficient_gas (#65)', async () => {
+      // The client tags the first-write channel-open gas revert; routes matches
+      // it by name (no client-package import), like SettleTooEarlyError above.
+      client.openChannelError = Object.assign(
+        new Error(
+          'Settlement wallet 0x1 has no gas on evm to open a payment channel. ' +
+            'Run toon_fund_wallet (or fund the wallet) and retry.'
+        ),
+        { name: 'ChannelFundingError', retryable: true }
+      );
+      const res = await app.inject({ method: 'POST', url: '/channels', payload: {} });
+      expect(res.statusCode).toBe(402);
+      expect(res.json()).toMatchObject({ error: 'insufficient_gas', retryable: true });
+      expect(res.json().detail).toContain('toon_fund_wallet');
+    });
+
+    it('POST /channels surfaces a gas revert nested in a cause chain as 402 (#65)', async () => {
+      // On the upload/publish path the tagged error is wrapped in a
+      // ToonClientError('Failed to publish event'); the mapper must walk the
+      // `cause` chain to find the actionable message.
+      const funding = Object.assign(new Error('Settlement wallet 0x1 has no gas on evm — fund it.'), {
+        name: 'ChannelFundingError',
+      });
+      client.openChannelError = Object.assign(new Error('Failed to publish event'), {
+        name: 'ToonClientError',
+        cause: funding,
+      });
+      const res = await app.inject({ method: 'POST', url: '/channels', payload: {} });
+      expect(res.statusCode).toBe(402);
+      expect(res.json()).toMatchObject({ error: 'insufficient_gas', retryable: true });
+      expect(res.json().detail).toContain('fund it');
     });
 
     it('POST /swap forwards to the client', async () => {

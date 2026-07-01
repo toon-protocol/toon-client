@@ -350,9 +350,38 @@ function mapError(reply: FastifyReply, err: unknown): FastifyReply {
   if (err instanceof Error && (err as { name?: string }).name === 'SettleTooEarlyError') {
     return sendError(reply, 425, 'settle_too_early', { detail: err.message, retryable: true });
   }
+  // First-write channel OPEN reverted because the settlement wallet has no
+  // native gas (toon-meta#65). The client throws a tagged `ChannelFundingError`
+  // with an actionable "fund the wallet" message; on the upload path it is
+  // wrapped in a `ToonClientError('Failed to publish event')`, so walk the
+  // `cause` chain. 402 Payment Required — caller-fixable + retryable once funded.
+  const funding = findChannelFundingError(err);
+  if (funding) {
+    return sendError(reply, 402, 'insufficient_gas', {
+      detail: funding.message,
+      retryable: true,
+    });
+  }
   return sendError(reply, 500, 'internal_error', {
     detail: err instanceof Error ? err.message : String(err),
   });
+}
+
+/**
+ * Walk an error's `cause` chain and return the first `ChannelFundingError`
+ * (matched by name to avoid a hard import of the client package). The client
+ * tags the gas-revert error and `publishEvent` wraps it one level deep on the
+ * upload path, so the actionable message can be nested.
+ */
+function findChannelFundingError(err: unknown): Error | undefined {
+  let cur: unknown = err;
+  for (let i = 0; i < 10 && cur != null; i++) {
+    if (cur instanceof Error && (cur as { name?: string }).name === 'ChannelFundingError') {
+      return cur;
+    }
+    cur = cur instanceof Error ? (cur as { cause?: unknown }).cause : undefined;
+  }
+  return undefined;
 }
 
 function sendError(
