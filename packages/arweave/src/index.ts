@@ -5,3 +5,11 @@ export {
   arweaveUrls,
   arweaveGatewayCandidates,
 } from './gateways.js';
+
+export {
+  clearShaCache,
+  isValidArweaveTxId,
+  resolveGitSha,
+  seedShaCache,
+  shaCacheKey,
+} from './git-sha.js';
