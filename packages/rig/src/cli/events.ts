@@ -1,5 +1,8 @@
 /**
- * The single-event `rig` subcommands (#231): issue / comment / pr / status.
+ * The single-event `rig` subcommands (#231): issue / comment / pr, where
+ * `pr` nests `create` and `status` (#250 moved the NIP-34 status publish
+ * from top-level `rig status` to `rig pr status` — bare `rig status` now
+ * passes through to `git status`).
  *
  * One shared pipeline behind four thin arg-parsers, mirroring `rig push`
  * (./push.ts) exactly: repo addressing from the `toon.*` git config keys
@@ -126,7 +129,7 @@ Options:
                            on the issue/patch)
 ${COMMON_FLAGS_USAGE}`;
 
-export const PR_USAGE = `Usage: rig pr create --title <title> (--range <range> | --patch-file <path>) [options]
+export const PR_CREATE_USAGE = `Usage: rig pr create --title <title> (--range <range> | --patch-file <path>) [options]
 
 Publish a patch (kind:1617) whose content is REAL \`git format-patch\` output —
 a paid publish; writes are permanent and non-refundable. --range runs
@@ -144,16 +147,21 @@ Options:
   --branch <name>      branch name (t tag)
 ${COMMON_FLAGS_USAGE}`;
 
-export const STATUS_USAGE = `Usage: rig status <target-event-id> <open|applied|closed|draft> [options]
+export const PR_STATUS_USAGE = `Usage: rig pr status <target-event-id> <open|applied|closed|draft> [options]
 
 Set the status of an issue or patch — a paid publish; writes are permanent
 and non-refundable. Publishes kind:1630 (open), 1631 (applied), 1632
 (closed), or 1633 (draft) against the 64-char hex id of the target event,
 with the repo a-tag attached so readers can scope a status stream to the
-repository.
+repository. (This command was \`rig status\` before v2 — bare \`rig status\`
+now passes through to \`git status\`.)
 
 Options:
 ${COMMON_FLAGS_USAGE}`;
+
+export const PR_USAGE = `${PR_CREATE_USAGE}
+
+${PR_STATUS_USAGE}`;
 
 // ---------------------------------------------------------------------------
 // Shared flag parsing
@@ -213,7 +221,7 @@ function pickCommon(values: Record<string, unknown>): CommonFlags {
 // Shared publish pipeline
 // ---------------------------------------------------------------------------
 
-type EventCommand = 'issue' | 'comment' | 'pr' | 'status';
+type EventCommand = 'issue' | 'comment' | 'pr' | 'pr status';
 
 interface RunEventOptions {
   command: EventCommand;
@@ -567,26 +575,40 @@ export function extractPatchShas(patchText: string): string[] {
   return [...patchText.matchAll(PATCH_FROM_RE)].map((m) => m[1] as string);
 }
 
-/** Run `rig pr …`; returns the process exit code. */
+/** Run `rig pr …` (nested dispatch: create | status); returns the exit code. */
 export async function runPr(
   args: string[],
   deps: EventCommandDeps
 ): Promise<number> {
   const { io } = deps;
   const [sub, ...rest] = args;
-  if (sub === '--help' || sub === '-h' || sub === 'help') {
-    io.out(PR_USAGE);
-    return 0;
+  switch (sub) {
+    case 'create':
+      return runPrCreate(rest, deps);
+    case 'status':
+      return runPrStatus(rest, deps);
+    case '--help':
+    case '-h':
+    case 'help':
+      io.out(PR_USAGE);
+      return 0;
+    default:
+      io.err(
+        sub === undefined
+          ? 'missing subcommand: rig pr <create|status>'
+          : `unknown rig pr subcommand: ${sub}`
+      );
+      io.err(PR_USAGE);
+      return 2;
   }
-  if (sub !== 'create') {
-    io.err(
-      sub === undefined
-        ? 'missing subcommand: rig pr create'
-        : `unknown rig pr subcommand: ${sub}`
-    );
-    io.err(PR_USAGE);
-    return 2;
-  }
+}
+
+/** `rig pr create` — kind:1617 patch publish. */
+async function runPrCreate(
+  rest: string[],
+  deps: EventCommandDeps
+): Promise<number> {
+  const { io } = deps;
 
   let flags: CommonFlags;
   let title: string;
@@ -607,7 +629,7 @@ export async function runPr(
     });
     flags = pickCommon(values);
     if (flags.help) {
-      io.out(PR_USAGE);
+      io.out(PR_CREATE_USAGE);
       return 0;
     }
     if (values.title === undefined || values.title === '') {
@@ -622,7 +644,7 @@ export async function runPr(
     branch = values.branch;
   } catch (err) {
     io.err(err instanceof Error ? err.message : String(err));
-    io.err(PR_USAGE);
+    io.err(PR_CREATE_USAGE);
     return 2;
   }
 
@@ -674,7 +696,7 @@ export async function runPr(
 }
 
 // ---------------------------------------------------------------------------
-// rig status
+// rig pr status (top-level `rig status` before #250 — now git's)
 // ---------------------------------------------------------------------------
 
 /** NIP-34 status kinds by wire value (mirrors the daemon's mapping). */
@@ -689,8 +711,8 @@ function isStatusValue(value: string): value is GitStatusValue {
   return Object.hasOwn(STATUS_KIND_BY_VALUE, value);
 }
 
-/** Run `rig status …`; returns the process exit code. */
-export async function runStatus(
+/** `rig pr status` — kind:1630-1633 status publish. */
+async function runPrStatus(
   args: string[],
   deps: EventCommandDeps
 ): Promise<number> {
@@ -707,7 +729,7 @@ export async function runStatus(
     });
     flags = pickCommon(values);
     if (flags.help) {
-      io.out(STATUS_USAGE);
+      io.out(PR_STATUS_USAGE);
       return 0;
     }
     if (positionals.length !== 2) {
@@ -726,12 +748,12 @@ export async function runStatus(
     status = rawStatus;
   } catch (err) {
     io.err(err instanceof Error ? err.message : String(err));
-    io.err(STATUS_USAGE);
+    io.err(PR_STATUS_USAGE);
     return 2;
   }
 
   return runEvent({
-    command: 'status',
+    command: 'pr status',
     flags,
     deps,
     actionLabel: `status ${status} on ${targetEventId.slice(0, 8)}…`,
