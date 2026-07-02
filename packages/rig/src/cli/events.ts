@@ -298,6 +298,8 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
       env,
       cwd: deps.cwd,
       warn: (line) => io.err(line),
+      // Relay-origin for #264 network bootstrap (announce discovery).
+      ...(relaysUsed[0] !== undefined ? { relayUrl: relaysUsed[0] } : {}),
     });
     const identity = identityReport(standaloneCtx);
     const fee = (await standaloneCtx.publisher.getFeeRates()).eventFee.toString();

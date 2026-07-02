@@ -49,7 +49,7 @@
   "dependencies": {
     "@toon-format/toon": "^1.0.0",
     "@toon-protocol/client": "workspace:^",
-    "@toon-protocol/core": "^1.6.0"
+    "@toon-protocol/core": "^2.0.1"
   },
   "devDependencies": {
     "@toon-protocol/arweave": "workspace:*",

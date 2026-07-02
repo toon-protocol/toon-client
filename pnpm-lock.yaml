@@ -252,8 +252,8 @@ importers:
         specifier: workspace:^
         version: link:../client
       '@toon-protocol/core':
-        specifier: ^1.6.0
-        version: 1.6.0(@toon-protocol/connector@3.13.0)(typescript@5.9.3)
+        specifier: ^2.0.1
+        version: 2.0.1(typescript@5.9.3)
     devDependencies:
       '@toon-protocol/arweave':
         specifier: workspace:*
@@ -8526,6 +8526,62 @@ packages:
       - typescript
       - uploadthing
       - utf-8-validate
+
+  /@toon-protocol/core@2.0.1(typescript@5.9.3):
+    resolution: {integrity: sha512-SyHKdJd3G2vgkuBT0HWMaAuJ+TmJZpTgyxM1OSljATKSdYzK0ztokcHYV1hI7mVsXyXqqIv3lRDMoskDNuh3Ew==}
+    peerDependencies:
+      '@toon-protocol/connector': '>=3.3.3'
+    peerDependenciesMeta:
+      '@toon-protocol/connector':
+        optional: true
+    dependencies:
+      '@ardrive/turbo-sdk': 1.42.0(typescript@5.9.3)
+      '@noble/hashes': 2.2.0
+      '@scure/bip32': 2.2.0
+      '@scure/bip39': 2.2.0
+      '@toon-format/toon': 1.4.0
+      arweave: 1.15.7
+      nostr-tools: 2.23.5(typescript@5.9.3)
+      simple-git: 3.36.0
+      ws: 8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
+    transitivePeerDependencies:
+      - '@azure/app-configuration'
+      - '@azure/cosmos'
+      - '@azure/data-tables'
+      - '@azure/identity'
+      - '@azure/keyvault-secrets'
+      - '@azure/storage-blob'
+      - '@capacitor/preferences'
+      - '@deno/kv'
+      - '@netlify/blobs'
+      - '@planetscale/database'
+      - '@react-native-async-storage/async-storage'
+      - '@solana/sysvars'
+      - '@tanstack/query-core'
+      - '@tanstack/react-query'
+      - '@types/react'
+      - '@upstash/redis'
+      - '@vercel/blob'
+      - '@vercel/functions'
+      - '@vercel/kv'
+      - aws4fetch
+      - bufferutil
+      - db0
+      - debug
+      - encoding
+      - expo-auth-session
+      - expo-crypto
+      - expo-web-browser
+      - fastestsmallesttextencoderdecoder
+      - immer
+      - ioredis
+      - react
+      - react-native
+      - supports-color
+      - typescript
+      - uploadthing
+      - utf-8-validate
+    dev: false
 
   /@toon-protocol/mina-zkapp@0.1.1:
     resolution: {integrity: sha512-N0i40O6PzoBM05IMGZ2G6MB5n7U4VjNTimmAEx8A3ABdaGz9oedFuKZF0eJkEV5v1glOLIy4yvVU/LUOHhre9Q==}

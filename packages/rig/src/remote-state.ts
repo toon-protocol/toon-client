@@ -48,10 +48,11 @@ export interface NostrEvent {
 }
 
 /** NIP-01 subscription filter (only the fields this module sends). */
-interface NostrFilter {
+export interface NostrFilter {
   kinds?: number[];
   authors?: string[];
   '#d'?: string[];
+  limit?: number;
 }
 
 /**
@@ -174,8 +175,9 @@ function decodeEventPayload(payload: unknown): NostrEvent | null {
 /**
  * Query one relay: send a REQ, collect EVENTs until EOSE, then CLOSE.
  * Mirrors rig's `queryRelay` (partial results on timeout / early close).
+ * Exported for reuse by the network-bootstrap discovery (kind:10032).
  */
-function queryRelay(
+export function queryRelay(
   relayUrl: string,
   filter: NostrFilter,
   timeoutMs: number,

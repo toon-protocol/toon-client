@@ -167,6 +167,18 @@ export interface StandalonePublisherOptions {
    * lazily every run, record nothing.
    */
   channelMap?: ChannelMapStore;
+  /**
+   * Per-chain settlement parameters to BACK-FILL into the client's peer
+   * negotiations after start (#264/#260): peers whose kind:10032 announce
+   * carries no `tokenNetworks`/`preferredTokens` negotiate with those fields
+   * empty, and the on-chain channel open then fails ("tokenNetwork address
+   * is required"). Values here never override what a peer DID announce —
+   * they only fill gaps, keyed by the negotiated chain id.
+   */
+  negotiationFallbacks?: {
+    tokenNetworks?: Record<string, string>;
+    preferredTokens?: Record<string, string>;
+  };
   /** Sink for non-fatal channel-persistence warnings (default: stderr). */
   warn?: (line: string) => void;
 }
@@ -354,6 +366,9 @@ export class StandalonePublisher implements Publisher {
   private readonly channelMap: ChannelMapStore | undefined;
   /** ILP anchor the channel is keyed by in the map (peer/apex destination). */
   private readonly channelAnchor: string | undefined;
+  private readonly negotiationFallbacks:
+    | StandalonePublisherOptions['negotiationFallbacks']
+    | undefined;
   private readonly warn: (line: string) => void;
 
   private lock: NonceLock | undefined;
@@ -398,6 +413,7 @@ export class StandalonePublisher implements Publisher {
     this.fetchImpl = options.fetchImpl;
     this.channelMap = options.channelMap;
     this.channelAnchor = anchor;
+    this.negotiationFallbacks = options.negotiationFallbacks;
     this.warn =
       options.warn ?? ((line) => process.stderr.write(`${line}\n`));
   }
@@ -465,10 +481,45 @@ export class StandalonePublisher implements Publisher {
       if (this.client.isStarted?.() !== true) {
         await this.client.start();
       }
+      // #264: back-fill negotiation gaps as soon as the client's bootstrap
+      // negotiation exists — before any channel open (start()) or recorded-
+      // channel operation reads them.
+      this.applyNegotiationFallbacks();
     } catch (err) {
       this.lock.release();
       this.lock = undefined;
       throw err;
+    }
+  }
+
+  /**
+   * Back-fill negotiated peer metadata the announce did not carry
+   * (#264/#260 root cause 3): after the client's bootstrap negotiation, any
+   * peer negotiation missing `tokenNetwork`/`tokenAddress` gets the derived
+   * per-chain fallback for its negotiated chain, BEFORE the lazy channel
+   * open reads them. Announced values are never overridden.
+   */
+  private applyNegotiationFallbacks(): void {
+    const fallbacks = this.negotiationFallbacks;
+    if (!fallbacks) return;
+    const negotiations = channelInternals(this.client).peerNegotiations;
+    if (!negotiations) {
+      this.warn(
+        'rig: settlement fallbacks configured but the client does not ' +
+          'expose negotiation internals — on-chain channel opening may fail ' +
+          'if the peer announced no TokenNetwork'
+      );
+      return;
+    }
+    for (const negotiation of negotiations.values()) {
+      if (!negotiation.tokenNetwork) {
+        const tokenNetwork = fallbacks.tokenNetworks?.[negotiation.chain];
+        if (tokenNetwork) negotiation.tokenNetwork = tokenNetwork;
+      }
+      if (!negotiation.tokenAddress) {
+        const tokenAddress = fallbacks.preferredTokens?.[negotiation.chain];
+        if (tokenAddress) negotiation.tokenAddress = tokenAddress;
+      }
     }
   }
 
