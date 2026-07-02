@@ -57,9 +57,15 @@ rig pr status <event-id> applied                             # kind:1631
                                                              # (bare `rig status` is git's)
 ```
 
+### Strict `--json` stdout (machine consumers)
+
+With `--json`, stdout carries **exactly one JSON document** — everything human-facing (identity reports, deprecation nudges, migration hints, chain-selection rationales, discovery warnings, progress lines, even stray `console.log` output from dependencies) is routed to stderr, so `rig <command> --json | jq` always parses. Errors emit one machine envelope (`{"error": "<code>", "detail": …}`) on stdout with the human detail on stderr and a non-zero exit; runs that fail before producing output (usage errors, pre-payment refusals) still emit a backstop error envelope. `--json` is a per-subcommand flag on the commands rig owns, **not** a global rig flag — see the passthrough note below.
+
 ### Git passthrough
 
 Any subcommand rig does not own is executed as `git <args...>` verbatim: the exact argv tail is handed to the system git with `stdio: 'inherit'` (interactive commands, pagers, colors, and prompts work), and git's exit code is rig's exit code (a child killed by a signal maps to the shell convention 128+N). rig-owned verbs always take precedence — in particular `rig push` is the TOON transport and shadows `git push`; plain-git pushes remain available by calling `git push` directly. If no system git is installed, passthrough fails with a clear error (exit 127).
+
+The passthrough is exempt from the `--json` contract: `rig status --json` runs `git status --json` (git rejects the flag), and flags before the subcommand (`rig --json status`) are not rig's either — the whole argv passes through to git untouched.
 
 ### Identity
 

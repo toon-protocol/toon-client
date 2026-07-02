@@ -52,6 +52,9 @@ function makeHarness(
   const io: CliIo = {
     out: (line) => out.push(line),
     err: (line) => err.push(line),
+    // The machine document lands in the same `out` stream the pre-#265
+    // assertions read (production routes it to the real stdout).
+    emitJson: (payload) => out.push(JSON.stringify(payload, null, 2)),
     isInteractive: options.isInteractive ?? false,
     confirm: async (question) => {
       options.onConfirm?.(question);

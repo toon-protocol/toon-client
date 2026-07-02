@@ -23,7 +23,7 @@
 
 import { parseArgs } from 'node:util';
 import {
-  describeError,
+  emitCliError,
   InvalidRelayUrlError,
   MultiUrlRemoteError,
   NoOriginConfiguredError,
@@ -194,7 +194,7 @@ Commands:
   list                     list remote names + URLs (the default subcommand)
 
 Options:
-  --json                   machine-readable output (list)
+  --json                   machine-readable envelope (all subcommands)
   -h, --help               show this help`;
 
 /** Deps subset `rig remote` needs (free — no publisher, no identity). */
@@ -286,7 +286,7 @@ export async function runRemote(
       case 'list': {
         const remotes = await listGitRemotes(repoRoot);
         if (json) {
-          io.out(JSON.stringify({ command: 'remote', remotes }, null, 2));
+          io.emitJson({ command: 'remote', remotes });
           return 0;
         }
         if (remotes.length === 0) {
@@ -317,20 +317,31 @@ export async function runRemote(
         const [name, url] = rest as [string, string];
         const existing = await getGitRemoteUrls(repoRoot, name);
         if (existing.length > 0) {
-          io.err(
+          const detail =
             `remote ${JSON.stringify(name)} already exists ` +
-              `(${existing.join(', ')}) — nothing changed. Point it ` +
-              `somewhere else with \`git remote set-url ${name} <relay-url>\`, ` +
-              `or \`rig remote remove ${name}\` first.`
-          );
+            `(${existing.join(', ')}) — nothing changed. Point it ` +
+            `somewhere else with \`git remote set-url ${name} <relay-url>\`, ` +
+            `or \`rig remote remove ${name}\` first.`;
+          if (json) {
+            io.emitJson({
+              command: 'remote',
+              error: 'remote_exists',
+              detail,
+              remote: name,
+              urls: existing,
+            });
+          }
+          io.err(detail);
           return 1;
         }
         await addGitRemote(repoRoot, name, url);
-        io.out(`Added remote ${name} → ${url}`);
+        if (!json) io.out(`Added remote ${name} → ${url}`);
         if (name === 'origin') {
-          io.out(
-            '`rig push` and the event commands now publish here by default.'
-          );
+          if (!json) {
+            io.out(
+              '`rig push` and the event commands now publish here by default.'
+            );
+          }
           const toonConfig = await readToonConfig(repoRoot);
           if (toonConfig.relays.length > 0) {
             io.err(
@@ -341,6 +352,9 @@ export async function runRemote(
             );
           }
         }
+        if (json) {
+          io.emitJson({ command: 'remote', action: 'add', name, url });
+        }
         return 0;
       }
 
@@ -348,14 +362,26 @@ export async function runRemote(
         const name = rest[0] as string;
         const existing = await getGitRemoteUrls(repoRoot, name);
         if (existing.length === 0) {
-          io.err(
+          const detail =
             `no remote named ${JSON.stringify(name)} — ` +
-              '`rig remote list` shows configured remotes.'
-          );
+            '`rig remote list` shows configured remotes.';
+          if (json) {
+            io.emitJson({
+              command: 'remote',
+              error: 'unknown_remote',
+              detail,
+              remote: name,
+            });
+          }
+          io.err(detail);
           return 1;
         }
         await removeGitRemote(repoRoot, name);
-        io.out(`Removed remote ${name}`);
+        if (json) {
+          io.emitJson({ command: 'remote', action: 'remove', name });
+        } else {
+          io.out(`Removed remote ${name}`);
+        }
         return 0;
       }
 
@@ -364,12 +390,6 @@ export async function runRemote(
         return 2;
     }
   } catch (err) {
-    const described = describeError(err, 'remote');
-    if (json) {
-      io.out(JSON.stringify({ command: 'remote', ...described.json }, null, 2));
-    } else {
-      for (const line of described.lines) io.err(line);
-    }
-    return 1;
+    return emitCliError(io, json, 'remote', err);
   }
 }

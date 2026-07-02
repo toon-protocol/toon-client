@@ -16,6 +16,7 @@ import {
 } from '../push.js';
 import { GitError } from '../repo-reader.js';
 import { MissingIdentityError } from './identity.js';
+import type { CliIo } from './output.js';
 
 /** Normalized error description: terminal lines + `--json` envelope. */
 export interface DescribedError {
@@ -290,4 +291,23 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
     lines: [`rig ${command} failed: ${message}`],
     json: { error: 'error', detail: message },
   };
+}
+
+/**
+ * The one command-error emitter (#265): the machine envelope (tagged with
+ * the command name) goes to stdout via `emitJson` when `--json` is active,
+ * and the human-facing lines ALWAYS go to stderr — so JSON consumers get the
+ * parseable envelope while a human tailing stderr still sees the detail.
+ * Returns the exit code (always 1) so callers can `return emitCliError(…)`.
+ */
+export function emitCliError(
+  io: CliIo,
+  json: boolean,
+  command: string,
+  err: unknown
+): 1 {
+  const described = describeError(err, command);
+  if (json) io.emitJson({ command, ...described.json });
+  for (const line of described.lines) io.err(line);
+  return 1;
 }

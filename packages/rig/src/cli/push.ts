@@ -37,7 +37,7 @@ import {
   type GitEstimateResponse,
   type GitPushResponse,
 } from '../routes.js';
-import { describeError, UnconfiguredRepoAddressError } from './errors.js';
+import { emitCliError, UnconfiguredRepoAddressError } from './errors.js';
 import { listGitRemotes, readToonConfig, resolveRepoRoot } from './git-config.js';
 import type { IdentitySourceKind } from './identity.js';
 import { resolveRelays, singleRelayRefusal } from './remote.js';
@@ -47,17 +47,13 @@ import type { LoadStandalone, StandaloneContext } from './standalone-context.js'
 // Dependency seam (real wiring in rig.ts; tests inject fakes)
 // ---------------------------------------------------------------------------
 
-/** Terminal I/O seam. */
-export interface CliIo {
-  /** Write one line to stdout. */
-  out(line: string): void;
-  /** Write one line to stderr. */
-  err(line: string): void;
-  /** True when stdin+stdout are TTYs (interactive confirm possible). */
-  isInteractive: boolean;
-  /** Ask a y/N question; resolves true on explicit yes. */
-  confirm(question: string): Promise<boolean>;
-}
+/**
+ * Terminal I/O seam — lives in ./output.ts since #265 (the strict `--json`
+ * stdout layer); re-exported here because every command module historically
+ * imports it from push.ts.
+ */
+export type { CliIo } from './output.js';
+import type { CliIo } from './output.js';
 
 export interface PushDeps {
   io: CliIo;
@@ -374,9 +370,14 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
     const upToDate = plan.refUpdates.every((u) => u.kind === 'up-to-date');
     if (upToDate) {
       if (flags.json) {
-        io.out(
-          jsonOut({ command: 'push', repoId, identity, executed: false, upToDate: true, plan })
-        );
+        io.emitJson({
+          command: 'push',
+          repoId,
+          identity,
+          executed: false,
+          upToDate: true,
+          plan,
+        } satisfies PushJsonOutput);
       } else {
         io.out('Everything up-to-date — nothing to push (and nothing paid).');
       }
@@ -390,17 +391,15 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
     }
     if (!flags.yes) {
       if (flags.json) {
-        io.out(
-          jsonOut({
-            command: 'push',
-            repoId,
-            identity,
-            executed: false,
-            upToDate: false,
-            plan,
-            hint: 'estimate only — re-run with --yes to upload and publish (permanent, non-refundable)',
-          })
-        );
+        io.emitJson({
+          command: 'push',
+          repoId,
+          identity,
+          executed: false,
+          upToDate: false,
+          plan,
+          hint: 'estimate only — re-run with --yes to upload and publish (permanent, non-refundable)',
+        } satisfies PushJsonOutput);
         return 0;
       }
       if (!io.isInteractive) {
@@ -431,21 +430,21 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
 
     // ── Receipts ────────────────────────────────────────────────────────────
     if (flags.json) {
-      io.out(
-        jsonOut({ command: 'push', repoId, identity, executed: true, upToDate: false, plan, result })
-      );
+      io.emitJson({
+        command: 'push',
+        repoId,
+        identity,
+        executed: true,
+        upToDate: false,
+        plan,
+        result,
+      } satisfies PushJsonOutput);
     } else {
       for (const line of renderResult(result)) io.out(line);
     }
     return 0;
   } catch (err) {
-    const described = describeError(err);
-    if (flags.json) {
-      io.out(JSON.stringify({ command: 'push', ...described.json }, null, 2));
-    } else {
-      for (const line of described.lines) io.err(line);
-    }
-    return 1;
+    return emitCliError(io, flags.json, 'push', err);
   } finally {
     if (standaloneCtx) {
       try {
@@ -455,8 +454,4 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
       }
     }
   }
-}
-
-function jsonOut(output: PushJsonOutput): string {
-  return JSON.stringify(output, null, 2);
 }

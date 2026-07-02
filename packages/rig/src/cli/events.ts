@@ -49,7 +49,7 @@ import {
   type GitRepoAddr,
   type GitStatusValue,
 } from '../routes.js';
-import { describeError, UnconfiguredRepoAddressError } from './errors.js';
+import { emitCliError, UnconfiguredRepoAddressError } from './errors.js';
 import { readToonConfig, resolveRepoRoot, type ToonRepoConfig } from './git-config.js';
 import {
   defaultLoadStandalone,
@@ -319,17 +319,15 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
     }
     if (!flags.yes) {
       if (flags.json) {
-        io.out(
-          jsonOut({
-            command,
-            repoAddr: addr,
-            identity,
-            kind: event.kind,
-            executed: false,
-            feeEstimate: fee,
-            hint: 'estimate only — re-run with --yes to publish (permanent, non-refundable)',
-          })
-        );
+        io.emitJson({
+          command,
+          repoAddr: addr,
+          identity,
+          kind: event.kind,
+          executed: false,
+          feeEstimate: fee,
+          hint: 'estimate only — re-run with --yes to publish (permanent, non-refundable)',
+        } satisfies EventJsonOutput);
         return 0;
       }
       if (!io.isInteractive) {
@@ -354,29 +352,21 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
 
     // ── Receipts ────────────────────────────────────────────────────────────
     if (flags.json) {
-      io.out(
-        jsonOut({
-          command,
-          repoAddr: addr,
-          identity,
-          kind: result.kind,
-          executed: true,
-          feeEstimate: fee,
-          result,
-        })
-      );
+      io.emitJson({
+        command,
+        repoAddr: addr,
+        identity,
+        kind: result.kind,
+        executed: true,
+        feeEstimate: fee,
+        result,
+      } satisfies EventJsonOutput);
     } else {
       for (const line of renderEventReceipt(action, result)) io.out(line);
     }
     return 0;
   } catch (err) {
-    const described = describeError(err, command);
-    if (flags.json) {
-      io.out(JSON.stringify({ command, ...described.json }, null, 2));
-    } else {
-      for (const line of described.lines) io.err(line);
-    }
-    return 1;
+    return emitCliError(io, flags.json, command, err);
   } finally {
     if (standaloneCtx) {
       try {
@@ -386,10 +376,6 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
       }
     }
   }
-}
-
-function jsonOut(output: EventJsonOutput): string {
-  return JSON.stringify(output, null, 2);
 }
 
 // ---------------------------------------------------------------------------

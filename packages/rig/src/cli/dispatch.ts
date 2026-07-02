@@ -11,6 +11,13 @@
  *
  * The NIP-34 status publish that used to be `rig status` lives at
  * `rig pr status` since #250 (BREAKING) — bare `rig status` is git's.
+ *
+ * `--json` (#265) follows the same ownership boundary: it is a flag OF the
+ * owned subcommands, never a global rig flag. `rig --json status` starts
+ * with a verb rig does not own (`--json`), so the WHOLE argv passes through
+ * to git verbatim — rig neither consumes the flag nor applies the strict
+ * stdout contract to git's inherited stdio. The owned-verb list is pinned to
+ * ./output.ts's RIG_OWNED_VERBS (strict-json.test.ts keeps them in sync).
  */
 
 import { createRequire } from 'node:module';
@@ -65,7 +72,14 @@ Run \`rig <command> --help\` for a rig command's flags. \`rig init\`,
 free; push/issue/comment/pr are paid writes — permanent and non-refundable —
 and channel open/close/settle are on-chain wallet transactions; each states
 what it will spend and asks for confirmation before doing so (--yes skips,
---json emits machine output).`;
+--json emits machine output).
+
+With --json, stdout carries exactly ONE JSON document (everything human-facing
+goes to stderr), so \`rig <command> --json | jq\` always parses. --json is a
+per-subcommand flag on the commands rig owns, NOT a global rig flag: it does
+not apply to the git passthrough (\`rig status --json\` runs
+\`git status --json\`), and flags placed before the subcommand
+(\`rig --json status\`) pass through to git untouched.`;
 
 /** Dispatch deps: the event-command deps plus an injectable git runner. */
 export interface DispatchDeps extends EventCommandDeps {

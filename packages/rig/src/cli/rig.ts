@@ -15,17 +15,41 @@
  *                               drip; wallet + channel balances
  *
  * Everything else is `git <argv...>` verbatim: `rig status` runs git status.
+ *
+ * STRICT `--json` STDOUT (#265): when a rig-owned command runs with `--json`,
+ * stdout carries exactly one JSON document — the process-level stdout guard
+ * reroutes every other write (including dependencies' `console.log`) to
+ * stderr, the io layer sends human lines to stderr, and the post-dispatch
+ * backstop emits an error envelope for paths that bailed before emitting.
+ * The git passthrough is exempt: it inherits stdio verbatim (./output.ts).
+ * The enforcement matrix in ./strict-json.test.ts mirrors this composition.
  */
 
 import { createInterface } from 'node:readline/promises';
 import { dispatch } from './dispatch.js';
-import type { CliIo } from './push.js';
+import {
+  isJsonInvocation,
+  makeCliIo,
+  redirectStdoutToStderr,
+  type RigIo,
+} from './output.js';
 
-/** Real terminal I/O: stdout lines, stderr lines, readline y/N confirm. */
-function makeIo(): CliIo {
-  return {
-    out: (line) => process.stdout.write(`${line}\n`),
-    err: (line) => process.stderr.write(`${line}\n`),
+/** Real terminal I/O: stdout/stderr sinks + readline y/N confirm. */
+function makeIo(jsonMode: boolean): RigIo {
+  // In --json mode, patch process.stdout FIRST — before any command (or its
+  // dynamically imported dependencies) can write — and keep the only real
+  // stdout writer for the machine document.
+  const guard = jsonMode ? redirectStdoutToStderr() : undefined;
+  return makeCliIo({
+    jsonMode,
+    writeStdout: guard
+      ? guard.write
+      : (text) => {
+          process.stdout.write(text);
+        },
+    writeStderr: (text) => {
+      process.stderr.write(text);
+    },
     isInteractive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
     confirm: async (question) => {
       const rl = createInterface({
@@ -39,21 +63,26 @@ function makeIo(): CliIo {
         rl.close();
       }
     },
-  };
+  });
 }
 
-dispatch(process.argv.slice(2), {
-  io: makeIo(),
+const argv = process.argv.slice(2);
+const io = makeIo(isJsonInvocation(argv));
+
+dispatch(argv, {
+  io,
   env: process.env,
   cwd: process.cwd(),
 }).then(
   (code) => {
+    io.ensureSingleJsonDoc(code);
     process.exitCode = code;
   },
   (err: unknown) => {
     process.stderr.write(
       `rig: unexpected error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`
     );
+    io.ensureSingleJsonDoc(1);
     process.exitCode = 1;
   }
 );
