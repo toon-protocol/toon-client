@@ -55,7 +55,7 @@ import {
   type UnsignedEvent,
   type UploadReceipt,
   type GitObjectUpload,
-} from '@toon-protocol/git';
+} from '@toon-protocol/rig';
 import { streamSwap } from '@toon-protocol/sdk/swap';
 import { RelaySubscription } from '../relay-subscription.js';
 import type {
@@ -245,7 +245,7 @@ export interface ClientRunnerDeps {
   targetsPath?: string;
   /**
    * Test seams for the `/git/*` pipeline (default: the real
-   * @toon-protocol/git implementations). `fetchRemoteState` opens relay
+   * @toon-protocol/rig implementations). `fetchRemoteState` opens relay
    * WebSockets, so tests inject a canned reader instead of hitting the network.
    */
   gitDeps?: {
@@ -1582,7 +1582,7 @@ export class ClientRunner {
   // ── Git write path (/git/*, epic #222 ticket #227) ────────────────────────
 
   /**
-   * The daemon `Publisher` implementation (see @toon-protocol/git) for one
+   * The daemon `Publisher` implementation (see @toon-protocol/rig) for one
    * apex. Maps the interface onto the runner's production paid-write
    * machinery:
    *

@@ -543,7 +543,7 @@ export interface FundStatusResponse {
 }
 
 // ── Git write path (`/git/*`) — the daemon surface of the Rig push pipeline
-//    (epic #222, ticket #227). Planning/execution live in @toon-protocol/git;
+//    (epic #222, ticket #227). Planning/execution live in @toon-protocol/rig;
 //    these are the JSON wire shapes (bigints as decimal strings, Maps as
 //    plain records). ─────────────────────────────────────────────────────────
 
@@ -581,7 +581,7 @@ export interface GitEstimateRequest {
   announcement?: { name?: string; description?: string };
 }
 
-/** One planned ref update (wire shape of @toon-protocol/git `RefUpdate`). */
+/** One planned ref update (wire shape of @toon-protocol/rig `RefUpdate`). */
 export interface GitRefUpdate {
   refname: string;
   localSha: string;

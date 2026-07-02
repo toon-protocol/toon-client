@@ -18,7 +18,7 @@ jobs:
 
       - name: Require changeset when publishable packages change
         run: |
-          PUBLISHABLE="packages/client packages/client-mcp packages/views"
+          PUBLISHABLE="packages/client packages/client-mcp packages/views packages/rig"
           changed=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
           needs_changeset=false
           for pkg in $PUBLISHABLE; do

@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
-import { MAX_OBJECT_SIZE, type RemoteState } from '@toon-protocol/git';
+import { MAX_OBJECT_SIZE, type RemoteState } from '@toon-protocol/rig';
 import { registerRoutes } from './routes.js';
 import { ClientRunner, type ToonClientLike } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
