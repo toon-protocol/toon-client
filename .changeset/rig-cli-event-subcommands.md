@@ -1,5 +1,0 @@
----
-'@toon-protocol/git': minor
----
-
-`rig issue|comment|pr|status` subcommands (#231): single NIP-34 event publishes over the same two publisher modes as push — daemon (`POST /git/issue|comment|patch|status`) and standalone (local builders + the nonce-guarded embedded publisher, with the pre-pay single-relay guard). Repo addressing (`30617:<owner>:<repoId>`) resolves from the `toon.*` git config keys `rig push` persists, with `--repo-id`/`--owner` overrides and an actionable error when unconfigured. `rig pr create --range` publishes REAL `git format-patch --stdout` output as the kind:1617 content (one event per series; commit/parent-commit tags derived from the patch itself; `--patch-file` publishes verbatim). All four quote the per-event fee (daemon `/status` `feePerEvent` or standalone fee rates) behind the same confirm gate as push (`--yes`, non-TTY refusal, `--json` estimate). Also exports the single-event `/git/*` wire types (`GitRepoAddr`, `Git{Issue,Comment,Patch,Status}Request`, `GitEventResponse`) + `serializeEventReceipt` from `routes.ts`, and adds `GitRepoReader.commitParents`.
