@@ -5,6 +5,7 @@ import { hexToNpub } from '../npub.js';
 import { resolveDefaultRef } from '../ref-resolver.js';
 import { shortRefName } from '@/lib/ref-utils';
 import { BranchSelector } from '@/components/branch-selector';
+import { PushInstructions } from '@/components/push-instructions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useEffect, useMemo } from 'react';
 import type { RepoMetadata, RepoRefs } from '../nip34-parsers.js';
@@ -119,16 +120,25 @@ export function RepoLayout() {
         ))}
       </nav>
 
-      {/* Branch selector — shown on code/tree/blob views */}
-      {activeTab === 'code' && refs && (
-        <BranchSelector
-          refs={refs}
-          currentRef={resolvedBranch}
-          onSelect={(fullRef) => {
-            const short = shortRefName(fullRef);
-            navigate(`/${ownerNpub}/${repo}/tree/${short}`);
-          }}
-        />
+      {/* Branch selector + push hand-off — shown on code/tree/blob views.
+          PushInstructions renders even for a refs-less (announced but never
+          pushed) repo — that's exactly when the setup snippet matters most. */}
+      {activeTab === 'code' && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {refs ? (
+            <BranchSelector
+              refs={refs}
+              currentRef={resolvedBranch}
+              onSelect={(fullRef) => {
+                const short = shortRefName(fullRef);
+                navigate(`/${ownerNpub}/${repo}/tree/${short}`);
+              }}
+            />
+          ) : (
+            <div />
+          )}
+          <PushInstructions metadata={metadata} />
+        </div>
       )}
 
       <Outlet context={{ metadata, refs, owner: ownerNpub, repo } satisfies RepoContext} />
