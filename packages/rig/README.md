@@ -6,7 +6,11 @@ Git-to-TOON write path core — build git objects and NIP-34 events for the Rig 
 | --- | --- | --- |
 | `rig init` | rig (free) | one-shot repo setup: identity + `toon.*` git config |
 | `rig remote add/remove/list` | rig (free) | relays as REAL git remotes (`origin` = default publish target) |
+| `rig clone <relay-url> <owner>/<repo-id> [dir]` | rig (free) | bootstrap a repo from TOON: relay state + SHA-verified Arweave objects → a real, push-capable git repository. Shadows `git clone` |
+| `rig fetch [remote]` | rig (free) | download the missing object delta + update `refs/remotes/<remote>/*` (no merge — `rig merge origin/main`). Shadows `git fetch` |
 | `rig push [remote] [refspecs...]` | rig (paid) | the TOON push: Arweave upload + NIP-34 refs publish. Shadows `git push` — plain-git pushes stay available by running `git push` directly |
+| `rig issue list` / `rig issue show <id>` | rig (free) | the repo's issues + comments from the terminal (state derived from kind:1630-1633, latest wins) |
+| `rig pr list` / `rig pr show <id>` | rig (free) | the repo's patches/PRs; `show` prints the full patch text (pipe it to `git am`) |
 | `rig issue create` | rig (paid) | file an issue (kind:1621) |
 | `rig comment <root-event-id>` | rig (paid) | comment (kind:1622) on an issue/patch |
 | `rig pr create` | rig (paid) | publish a patch (kind:1617) from real `git format-patch` |
@@ -56,6 +60,41 @@ rig pr create --title "Add feature" --range main..feature    # kind:1617 with
 rig pr status <event-id> applied                             # kind:1631
                                                              # (bare `rig status` is git's)
 ```
+
+### The second contributor (reads are FREE)
+
+Someone published a repo on TOON? You can pick it up with **nothing
+configured** — no identity, no wallet, no channel. Reads are free:
+
+```sh
+npm install -g @toon-protocol/rig
+
+# 1. clone — relay state + SHA-verified Arweave objects → a real git repo
+#    (owner as npub1… or 64-char hex; dir defaults to the repo id)
+rig clone wss://relay.example npub1…/their-repo
+cd their-repo                # toon.* config + origin remote already set
+
+# 2. read the tracker from the terminal
+rig issue list               # issues + derived state (latest status wins)
+rig issue show <event-id>    # one issue + its comments
+rig pr list --state open     # patches/PRs
+rig pr show <event-id> --json | jq -r .pr.content | git am   # apply a patch
+
+# 3. stay current — fetch downloads only the missing delta
+rig fetch                    # updates refs/remotes/origin/*, like git fetch
+rig merge origin/main        # integrating is plain git (passthrough)
+
+# 4. ready to contribute back? writes are paid — add an identity + funds:
+export RIG_MNEMONIC="abandon abandon … about"
+rig fund                     # devnet faucet drip
+rig issue create --title "found a bug" --body "details"      # kind:1621
+rig push                     # or publish commits (your own repos)
+```
+
+Note: freshly pushed objects can take **10-20 minutes** to become fetchable
+from Arweave gateways — `rig clone`/`rig fetch` right after a push reports
+the missing SHAs honestly; retry after propagation. A failed clone never
+leaves a partial repository behind.
 
 ### Strict `--json` stdout (machine consumers)
 
@@ -122,6 +161,12 @@ The single-event subcommands follow the same paid-write discipline as push — t
 
 `--repo-id`/`--owner` override the git config address (use `--owner` for repos you don't own).
 
+### Cloning & fetching (free reads, #278)
+
+`rig clone <relay-url> <owner>/<repo-id> [dir]` reconstructs the repository from public data alone: the kind:30618 `arweave` sha→txId map drives parallel downloads across the gateway fallback chain (SHAs the map misses resolve via the Arweave GraphQL `Git-SHA` tag index), **every body is verified against its SHA-1 before it is written** (verification doubles as object-type discovery; corrupt/tampered content is rejected), and the repository is materialized through git's own plumbing — `git hash-object -w --stdin -t <type>` (written SHA re-checked), `git update-ref`, HEAD from the 30618 symref, checked-out worktree. Everything happens in a temp dir moved into place on success, so a failed clone never leaves a partial repo. `rig fetch [remote]` is the same pipeline as a delta: only locally-missing objects are downloaded, and `refs/remotes/<remote>/*` (tags → `refs/tags/*`) move with a `git fetch`-style report.
+
+`rig issue list|show` and `rig pr list|show` are pure relay reads (kind:1621/1617 by the repo `#a` tag; state from kind:1630-1633, latest wins; kind:1622 comments under `show`), tolerant of the devnet relay's non-canonical EVENT payload encodings.
+
 ## Library
 
 No signing or payment code lives in the core — that stays behind the `Publisher` seam:
@@ -129,7 +174,9 @@ No signing or payment code lives in the core — that stays behind the `Publishe
 - `objects.ts` — git object construction with SHA-1 envelope hashing: `createGitBlob`, `createGitTree`, `createGitCommit`, `createGitTag` (annotated tags), the `GitObject`/`GitObjectType` types, `hashGitObject`, and the `MAX_OBJECT_SIZE` (95KB) upload guard constant.
 - `nip34-events.ts` — NIP-34 event builders returning `UnsignedEvent` (caller signs and publishes): `buildRepoAnnouncement` (30617), `buildRepoRefs` (30618, incl. `arweave` sha→txId tags), `buildIssue` (1621), `buildComment` (1622), `buildPatch` (1617, optional real `git format-patch` content), `buildStatus` (1630–1633).
 - `repo-reader.ts` — `GitRepoReader`, read-only local-repo access via injection-safe `execFile` git plumbing: `listRefs`, `objectsBetween`(+`WithPaths`), `readObjects`, `statObjects`, `isAncestor`, `formatPatch`, `resolveRef`.
-- `remote-state.ts` — `fetchRemoteState`, the "what does the remote have?" reader: kind:30617/30618 relay fetch (NIP-33 latest-wins across a plural relay list) + `resolveMissing` Arweave GraphQL Git-SHA fallback.
+- `remote-state.ts` — `fetchRemoteState`, the "what does the remote have?" reader: kind:30617/30618 relay fetch (NIP-33 latest-wins across a plural relay list) + `resolveMissing` Arweave GraphQL Git-SHA fallback; `queryRelay` (tolerant NIP-01 REQ→EOSE) is exported for other readers.
+- `object-fetch.ts` / `read-pipeline.ts` / `materialize.ts` (#278) — the read path: `fetchTxBytes`/`downloadGitObjects` (gateway fallback + concurrency cap + SHA-1 verification-as-type-discovery, `ObjectIntegrityError` on mismatch), `referencedShas`/`walkClosure` (object-graph closure, gitlink-aware), `collectRepoObjects` (the clone/fetch collection engine separating fatal gaps from unreachable ones), and `writeGitObject(s)`/`updateRef`/`setHeadSymref` (git plumbing writers with hostile-refname gating).
+- `npub.ts` — dependency-free bech32 `npubToHex`/`hexToNpub`/`ownerToHex` (NIP-19 pubkey addressing for `rig clone`).
 - `publisher.ts` — the `Publisher` interface (paid transport seam): `getFeeRates`, `uploadGitObject`, `publishEvent`. Implemented by the daemon (#227) and the standalone embedded client (#228).
 - `push.ts` — `planPush` (ref classification, object delta minus known sha→txId hints, oversize hard error, fee estimate) and `executePush` (uploads ref tips last, then ONE cumulative kind:30618 merging the full arweave map, kind:30617 first on first push; crash-resume safe via content-addressed skip).
 - `routes.ts` — the JSON wire shapes of the daemon's `/git/*` control routes (bigints as decimal strings, Maps as records) + the matching `serializePushPlan`/`serializePushResult` helpers, shared with `@toon-protocol/client-mcp` (the daemon keeps these routes; only the CLI stopped using them).

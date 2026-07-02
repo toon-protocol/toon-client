@@ -37,7 +37,41 @@ export {
 } from './nip34-events.js';
 
 export { GitError, GitRepoReader, type GitRef, type ObjectStat, type ObjectWithPath, type ReadGitObject, type ReadObjectsResult, type RepoRefs, type StatObjectsResult } from './repo-reader.js';
-export { fetchRemoteState, type FetchRemoteStateOptions, type NostrEvent, type RemoteState, type WebSocketFactory, type WebSocketLike } from './remote-state.js';
+export { fetchRemoteState, queryRelay, type FetchRemoteStateOptions, type NostrEvent, type NostrFilter, type RemoteState, type WebSocketFactory, type WebSocketLike } from './remote-state.js';
+
+// The #278 read path: gateway download + verification, closure walking, the
+// clone/fetch collection engine, and repo materialization via git plumbing.
+export {
+  DEFAULT_CONCURRENCY,
+  ObjectIntegrityError,
+  downloadGitObjects,
+  fetchTxBytes,
+  referencedShas,
+  verifyObjectBody,
+  walkClosure,
+  type ClosureResult,
+  type DownloadOptions,
+  type DownloadResult,
+  type FetchLike,
+  type FetchedObject,
+  type GatewayFetchOptions,
+} from './object-fetch.js';
+export {
+  collectRepoObjects,
+  missingObjectsMessage,
+  type CollectRepoObjectsOptions,
+  type CollectRepoObjectsResult,
+  type MissingObject,
+} from './read-pipeline.js';
+export {
+  ObjectWriteMismatchError,
+  isSafeRefname,
+  setHeadSymref,
+  updateRef,
+  writeGitObject,
+  writeGitObjects,
+} from './materialize.js';
+export { hexToNpub, npubToHex, ownerToHex } from './npub.js';
 
 export {
   type FeeRates,

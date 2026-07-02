@@ -47,11 +47,16 @@ export interface NostrEvent {
   sig: string;
 }
 
-/** NIP-01 subscription filter (only the fields this module sends). */
+/** NIP-01 subscription filter (only the fields rig's readers send). */
 export interface NostrFilter {
+  ids?: string[];
   kinds?: number[];
   authors?: string[];
   '#d'?: string[];
+  /** Repo address tag filter, e.g. `30617:<owner>:<repoId>` (#278 tracker). */
+  '#a'?: string[];
+  /** Event-reference tag filter (#278 tracker: statuses + comments). */
+  '#e'?: string[];
   limit?: number;
 }
 
