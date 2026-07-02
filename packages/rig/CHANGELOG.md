@@ -1,5 +1,40 @@
 # @toon-protocol/rig
 
+## 2.2.0
+
+### Minor Changes
+
+- dff1e0c: Kill the ~32s fixed bootstrap tax on paid rig commands (#279): daemon-as-accelerator delegation + a standalone topology cache.
+
+  - **Daemon delegation (automatic fast path)**: when a running `toon-clientd` on the loopback control port holds the SAME identity, paid write commands (`push`, `issue`, `comment`, `pr create`, `pr status`) now delegate to its `/git/*` routes instead of refusing with `DaemonIdentityConflictError` — the daemon owns the channel watermark (one writer, the original safety goal) and its bootstrap is warm. Identity is confirmed against `GET /status` before anything is sent. A daemon on a different identity, or no daemon, runs standalone exactly as before. The chosen path prints on stderr and appears in `--json` envelopes as `"path": "daemon" | "standalone"`. `rig fund` / `rig balance` / `rig channel …` have no daemon route and stay standalone (channel mutations still refuse under a same-identity daemon).
+  - **Standalone topology cache**: the resolved #264 network topology (kind:10032 announce discovery, payment-peer pick, settlement-chain selection incl. funded-chain probes) is persisted under `TOON_CLIENT_HOME` keyed by relay + identity + explicit config, TTL 15 min (`RIG_TOPOLOGY_TTL_MS` overrides; `0` disables). A cached topology that fails to bootstrap is invalidated and re-resolved live in-process. Claim watermarks and the channel map are never cached — writes still resume from the persisted cumulative.
+  - **Happy-path trim**: the on-chain deposit re-read on channel resume is skipped when the channel-map record already carries `depositTotal` (accounting state only, not the claim watermark).
+  - **Exit-hang fix (the actual bulk of the 32s)**: instrumentation showed the paid work completes in ~2s — the remaining ~30s was the CLI process failing to exit because the embedded client leaves a keep-alive socket holding the event loop. The `rig` bin now flushes stdio and exits as soon as dispatch resolves (all work is awaited by then). Measured on live devnet: ~32s → ~1.8s cold standalone, ~1.6s warm (cache hit), ~0.5s daemon-delegated.
+
+- cbb631c: The rig CLI read path (#278) — the multi-player half of the forge, all FREE (relay WS reads + Arweave gateway downloads; no payments, no channel, no identity needed). `rig clone <relay-url> <owner-npub-or-hex>/<repo-id> [dir]` bootstraps a repository from TOON: fetches the kind:30617/30618 state, downloads every object the refs need from the gateway fallback chain (parallel with a concurrency cap; SHAs missing from the `arweave` map resolve through the GraphQL Git-SHA resolver), verifies EVERY body against its SHA-1 (verification doubles as type discovery — content matching no git envelope type is rejected, never written), and materializes a real repository via git plumbing (`hash-object -w --stdin -t <type>` with the written SHA re-checked, `update-ref`, HEAD symref, checked-out worktree) — atomically: everything lands in a temp dir and moves into place only on success, and gateway propagation lag (10-20 min for fresh pushes) is an honest error listing the missing SHAs. Clones are immediately push/pull-capable: toon.repoid/toon.owner, the relay as the `origin` remote, remote-tracking refs, and upstream config all land like `git clone`. `rig fetch [remote]` runs the same pipeline against an existing repo — downloads only the missing delta, updates `refs/remotes/<remote>/*` (tags to `refs/tags/*`), and reports movements `git fetch`-style (new/fast-forward/forced); no merge (`rig merge origin/main` via the git passthrough). `rig issue list|show <id>` and `rig pr list|show <id>` read the tracker from the terminal: kind:1621/1617 scoped by the repo `#a` tag, state derived from kind:1630-1633 status events (latest wins; `--state` filters), kind:1622 comments under `show`, and `pr show` prints the full `format-patch` text for `git am` piping — all tolerant of the devnet relay's non-canonical EVENT serialization, all under the strict `--json` stdout contract. `clone` and `fetch` are rig-owned verbs now (they shadow `git clone`/`git fetch` exactly like `rig push` shadows `git push`; the plain git commands stay available by calling git directly).
+
+### Patch Changes
+
+- 671c2fc: `rig fund` UX remediation + CLI polish (#280):
+
+  - **`rig fund` names the right knob first.** On a `custom`/unset network
+    without a faucet, the guidance now leads with `TOON_CLIENT_NETWORK=devnet`
+    (the actual fix for the shared devnet — no faucet URL needed) and frames
+    `TOON_CLIENT_FAUCET_URL` as the self-hosted-network override. When a
+    configured relay/proxy/BTP origin is under `*.devnet.toonprotocol.dev`, the
+    message says so explicitly.
+  - **Calm stderr on paid commands.** The embedded client's expected
+    `[Bootstrap] Announce failed … 402 Payment Required` x402 dump is reframed
+    as one plain-language info line (harmless, the command continues); repeats
+    are dropped, non-402 announce failures still pass through. Internal issue
+    numbers are gone from user-facing warnings.
+  - **`rig pr create --body <text>` / `--body-file <path>`.** The PR
+    description rides in a dedicated `description` tag on the kind:1617 event —
+    never in the content, which stays pure `git format-patch` output so
+    `git am` keeps applying it (git's patch-format detection hard-fails on
+    leading prose). `rig pr show` renders the body as its own section and
+    carries it in the `--json` envelope.
+
 ## 2.1.0
 
 ### Minor Changes
