@@ -234,7 +234,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: 'string',
           description:
             'Repository identifier (NIP-34 `d` tag). Default: the basename ' +
-            'of repoPath.',
+            'of repoPath with any trailing `.git` stripped (so /repos/demo, ' +
+            '/repos/demo/.git and /repos/demo.git all derive "demo").',
         },
         refspecs: {
           type: 'array',
@@ -971,7 +972,7 @@ export async function dispatchTool(
           repoId:
             typeof args['repoId'] === 'string' && args['repoId'] !== ''
               ? args['repoId']
-              : basename(String(args['repoPath'] ?? '')),
+              : defaultRepoId(String(args['repoPath'] ?? '')),
           ...(Array.isArray(args['refspecs'])
             ? { refspecs: (args['refspecs'] as unknown[]).map(String) }
             : {}),
@@ -1353,6 +1354,24 @@ function wrapList(
     if (Array.isArray(existing)) return res as Record<string, unknown>;
   }
   return { [key]: [] };
+}
+
+/**
+ * Default NIP-34 repoId for a repoPath: the basename with any trailing `.git`
+ * stripped, so a worktree's `.git` dir (`/repos/demo/.git`) and a bare repo
+ * (`/repos/demo.git`) both derive `demo` — never the literal `".git"`, which
+ * would collide every such repo pushed by the same identity onto one paid,
+ * irreversible `a`-tag address.
+ */
+function defaultRepoId(repoPath: string): string {
+  const trimmed = repoPath.replace(/[/\\]+$/, '');
+  const base = basename(trimmed);
+  if (base === '.git') {
+    return basename(trimmed.slice(0, -'.git'.length).replace(/[/\\]+$/, ''));
+  }
+  return base.length > '.git'.length && base.endsWith('.git')
+    ? base.slice(0, -'.git'.length)
+    : base;
 }
 
 /** Flattened NIP-34 repo address from the toon_git_* tool args. */

@@ -726,6 +726,51 @@ describe('dispatchTool toon_git_*', () => {
     });
   });
 
+  it('strips a trailing .git segment when defaulting repoId (never ".git")', async () => {
+    const gitEstimate = vi.fn().mockResolvedValue(plan);
+    const client = stubClient({ gitEstimate });
+    // repoPath pointing at a worktree's .git dir must derive the repo name,
+    // not the literal ".git" (which would collide every such repo on one
+    // paid, irreversible a-tag address).
+    await dispatchTool(client, 'toon_git_push', {
+      repoPath: '/home/me/repos/demo/.git',
+      dry_run: true,
+    });
+    expect(gitEstimate).toHaveBeenLastCalledWith({
+      repoPath: '/home/me/repos/demo/.git',
+      repoId: 'demo',
+    });
+    // Bare repo conventionally named reponame.git → "reponame".
+    await dispatchTool(client, 'toon_git_push', {
+      repoPath: '/srv/git/demo.git',
+      dry_run: true,
+    });
+    expect(gitEstimate).toHaveBeenLastCalledWith({
+      repoPath: '/srv/git/demo.git',
+      repoId: 'demo',
+    });
+    // Trailing slashes don't change the derivation.
+    await dispatchTool(client, 'toon_git_push', {
+      repoPath: '/home/me/repos/demo/.git/',
+      dry_run: true,
+    });
+    expect(gitEstimate).toHaveBeenLastCalledWith({
+      repoPath: '/home/me/repos/demo/.git/',
+      repoId: 'demo',
+    });
+    // A directory literally named ".git" at basename with no parent repo name
+    // still never yields ".git"; a hidden-style name like ".gitconfig-repo"
+    // or a repo actually named with a non-suffix ".git" is left intact.
+    await dispatchTool(client, 'toon_git_push', {
+      repoPath: '/repos/demo.github',
+      dry_run: true,
+    });
+    expect(gitEstimate).toHaveBeenLastCalledWith({
+      repoPath: '/repos/demo.github',
+      repoId: 'demo.github',
+    });
+  });
+
   it('refuses a real push without confirm:true (dry_run-first gating)', async () => {
     const gitEstimate = vi.fn();
     const gitPush = vi.fn();
