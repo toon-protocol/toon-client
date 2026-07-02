@@ -4,7 +4,7 @@
  * `--json`). The CLI is standalone-only (#248), so everything here is either
  * a local planner error, an identity/config-chain error, or a tagged error
  * surfaced from the embedded publisher (matched by name — those classes live
- * behind the optional `@toon-protocol/client` dynamic import).
+ * behind the lazy `@toon-protocol/client` dynamic import).
  */
 
 import { MAX_OBJECT_SIZE } from '../objects.js';

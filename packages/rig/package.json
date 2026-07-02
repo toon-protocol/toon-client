@@ -48,19 +48,11 @@
   },
   "dependencies": {
     "@toon-format/toon": "^1.0.0",
-    "@toon-protocol/arweave": "workspace:*",
+    "@toon-protocol/client": "workspace:^",
     "@toon-protocol/core": "^1.6.0"
   },
-  "peerDependencies": {
-    "@toon-protocol/client": "^0.15.0"
-  },
-  "peerDependenciesMeta": {
-    "@toon-protocol/client": {
-      "optional": true
-    }
-  },
   "devDependencies": {
-    "@toon-protocol/client": "workspace:*",
+    "@toon-protocol/arweave": "workspace:*",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
     "tsup": "^8.0.0",

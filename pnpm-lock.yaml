@@ -248,16 +248,16 @@ importers:
       '@toon-format/toon':
         specifier: ^1.0.0
         version: 1.4.0
-      '@toon-protocol/arweave':
-        specifier: workspace:*
-        version: link:../arweave
+      '@toon-protocol/client':
+        specifier: workspace:^
+        version: link:../client
       '@toon-protocol/core':
         specifier: ^1.6.0
         version: 1.6.0(@toon-protocol/connector@3.13.0)(typescript@5.9.3)
     devDependencies:
-      '@toon-protocol/client':
+      '@toon-protocol/arweave':
         specifier: workspace:*
-        version: link:../client
+        version: link:../arweave
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43

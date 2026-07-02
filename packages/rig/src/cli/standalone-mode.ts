@@ -19,9 +19,9 @@
  *   - defaults bootstrap from the committed genesis peer seed
  *     (`@toon-protocol/core` GenesisPeerLoader)
  *
- * This module statically imports the OPTIONAL `@toon-protocol/client` peer
- * dependency, so it must only ever be reached through the dynamic import in
- * `push.ts` (see `./standalone-context.ts`).
+ * This module statically imports `@toon-protocol/client` (heavy: viem,
+ * noble, nostr-tools), so it must only ever be reached through the dynamic
+ * import in `push.ts` (see `./standalone-context.ts`).
  */
 
 import { readFileSync } from 'node:fs';

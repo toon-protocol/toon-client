@@ -69,8 +69,8 @@ export interface PushDeps {
 
 /**
  * Default standalone factory (shared by every paid command). Dynamic import:
- * `standalone-mode` (and its optional `@toon-protocol/client` peer
- * dependency) only loads once a command actually needs to sign or pay.
+ * `standalone-mode` (and its `@toon-protocol/client` dependency) only loads
+ * once a command actually needs to sign or pay.
  */
 export const defaultLoadStandalone: LoadStandalone = async (options) => {
   const mod = await import('./standalone-mode.js');

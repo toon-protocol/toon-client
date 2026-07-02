@@ -23,10 +23,10 @@
  * to any repo file) and never printed — callers report only the SOURCE and
  * the derived pubkey.
  *
- * Key derivation and keystore decryption live in the OPTIONAL
- * `@toon-protocol/client` peer dependency, loaded via dynamic import so this
- * module can be statically imported by every command without dragging the
- * client into runs that fail earlier (usage errors, missing git repo, …).
+ * Key derivation and keystore decryption live in the `@toon-protocol/client`
+ * dependency, loaded via dynamic import so this module can be statically
+ * imported by every command without dragging the client into runs that fail
+ * earlier (usage errors, missing git repo, …).
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -234,7 +234,11 @@ function resolveMnemonicSource(
   throw new MissingIdentityError(configPath);
 }
 
-/** Load the optional client peer dependency, with a clear error when absent. */
+/**
+ * Load the client key helpers. `@toon-protocol/client` is a regular runtime
+ * dependency (#259); the import stays dynamic purely so commands that fail
+ * earlier never pay its startup cost.
+ */
 async function loadClientKeys(): Promise<{
   loadKeystore(path: string, password: string): string;
   deriveNostrKeyFromMnemonic(
@@ -242,15 +246,7 @@ async function loadClientKeys(): Promise<{
     accountIndex?: number
   ): { secretKey: Uint8Array; pubkey: string };
 }> {
-  try {
-    return await import('@toon-protocol/client');
-  } catch (err) {
-    throw new Error(
-      'identity derivation needs the optional peer dependency ' +
-        '@toon-protocol/client — install it (`npm i @toon-protocol/client`) ' +
-        `and re-run (${err instanceof Error ? err.message : String(err)})`
-    );
-  }
+  return await import('@toon-protocol/client');
 }
 
 /**

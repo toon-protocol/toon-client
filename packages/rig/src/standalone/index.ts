@@ -1,9 +1,9 @@
 /**
  * `@toon-protocol/rig/standalone` — the standalone embedded Publisher (#228).
  *
- * Separate subpath entry so the core package stays dependency-light: only
- * this entry needs `@toon-protocol/client` (an OPTIONAL peer dependency —
- * install it to use standalone mode; the daemon-backed Publisher in
+ * Separate subpath entry so the core package stays light at import time:
+ * only this entry needs `@toon-protocol/client` (a regular runtime
+ * dependency since #259; the daemon-backed Publisher in
  * `@toon-protocol/client-mcp` (#227) needs none of this).
  */
 
