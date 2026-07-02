@@ -1,0 +1,5 @@
+---
+'@toon-protocol/rig': patch
+---
+
+Strict `--json` stdout (#265, closes the #260 addendum): when `--json` is set on a rig-owned command, stdout carries exactly one parseable JSON document — a machine-readable guarantee for agent consumers (`rig … --json | jq`). A process-level stdout guard reroutes every stray write (including dependencies' `console.log`, e.g. the embedded client's `[Bootstrap] …` lines) to stderr; the io layer sends all human chatter (identity reports, deprecation nudges, migration hints, chain-selection rationales, discovery warnings) to stderr; errors emit one machine envelope on stdout plus human detail on stderr with a non-zero exit; and a backstop envelope covers paths that bail before emitting (usage errors, pre-payment refusals). `rig remote add/remove` gain proper `--json` envelopes. The git passthrough is exempt and documented as such (`rig status --json` is `git status --json`; `rig --json status` passes through untouched). An enforcement matrix test runs every rig-owned command in `--json` mode and asserts the single-document guarantee, with the noisy paths exercised deliberately.

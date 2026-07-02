@@ -25,7 +25,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { describeError } from './errors.js';
+import { emitCliError } from './errors.js';
 import { resolveIdentity } from './identity.js';
 import type { CliIo, IdentityReport } from './push.js';
 import { renderIdentityLine } from './render.js';
@@ -198,21 +198,15 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
         'the chain your channels settle on), or set TOON_CLIENT_FAUCET_URL / ' +
         'the faucetUrl config field if this network has one.';
       if (json) {
-        io.out(
-          JSON.stringify(
-            {
-              command: 'fund',
-              identity,
-              funded: false,
-              network: network ?? null,
-              chain,
-              addresses,
-              guidance,
-            } satisfies FundJson,
-            null,
-            2
-          )
-        );
+        io.emitJson({
+          command: 'fund',
+          identity,
+          funded: false,
+          network: network ?? null,
+          chain,
+          addresses,
+          guidance,
+        } satisfies FundJson);
         return 0;
       }
       io.out(renderIdentityLine(identity));
@@ -252,22 +246,16 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
     });
 
     if (json) {
-      io.out(
-        JSON.stringify(
-          {
-            command: 'fund',
-            identity,
-            funded: true,
-            network: network ?? null,
-            chain,
-            address,
-            faucetUrl,
-            response,
-          } satisfies FundJson,
-          null,
-          2
-        )
-      );
+      io.emitJson({
+        command: 'fund',
+        identity,
+        funded: true,
+        network: network ?? null,
+        chain,
+        address,
+        faucetUrl,
+        response,
+      } satisfies FundJson);
       return 0;
     }
     io.out(`Faucet drip succeeded: ${chain} → ${address}`);
@@ -275,12 +263,6 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
     io.out('Re-check with `rig balance` (a drip can take a few blocks to land).');
     return 0;
   } catch (err) {
-    const described = describeError(err, 'fund');
-    if (json) {
-      io.out(JSON.stringify({ command: 'fund', ...described.json }, null, 2));
-    } else {
-      for (const line of described.lines) io.err(line);
-    }
-    return 1;
+    return emitCliError(io, json, 'fund', err);
   }
 }

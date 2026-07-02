@@ -56,6 +56,9 @@ function makeDeps(cwd = repoDir): Harness {
       io: {
         out: (line) => out.push(line),
         err: (line) => err.push(line),
+        // The machine document lands in the same `out` stream the pre-#265
+        // assertions read (production routes it to the real stdout).
+        emitJson: (payload) => out.push(JSON.stringify(payload, null, 2)),
         isInteractive: false,
         confirm: async () => false,
       },

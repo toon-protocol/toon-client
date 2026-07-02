@@ -36,7 +36,7 @@ import {
   type ChannelMapRecord,
   type WatermarkEntry,
 } from '../standalone/channel-map.js';
-import { describeError } from './errors.js';
+import { emitCliError } from './errors.js';
 import {
   defaultLoadStandalone,
   identityReport,
@@ -172,9 +172,7 @@ function runChannelList(args: string[], deps: ChannelDeps): number {
     const rows = records.map((record) => describeChannel(record, store));
 
     if (json) {
-      io.out(
-        JSON.stringify({ command: 'channel list', channels: rows }, null, 2)
-      );
+      io.emitJson({ command: 'channel list', channels: rows });
       return 0;
     }
     if (rows.length === 0) {
@@ -195,13 +193,7 @@ function runChannelList(args: string[], deps: ChannelDeps): number {
     }
     return 0;
   } catch (err) {
-    const described = describeError(err, 'channel list');
-    if (json) {
-      io.out(JSON.stringify({ command: 'channel list', ...described.json }, null, 2));
-    } else {
-      for (const line of described.lines) io.err(line);
-    }
-    return 1;
+    return emitCliError(io, json, 'channel list', err);
   }
 }
 
@@ -407,15 +399,13 @@ async function runChannelOpen(
       'Proceed with on-chain channel open? [y/N] '
     );
     if (gate === 'json-plan') {
-      io.out(
-        jsonOut<ChannelOpenJson>({
-          command: 'channel open',
-          identity,
-          executed: false,
-          plan,
-          hint: 'plan only — re-run with --yes to open (on-chain: locks collateral and spends gas)',
-        })
-      );
+      io.emitJson({
+        command: 'channel open',
+        identity,
+        executed: false,
+        plan,
+        hint: 'plan only — re-run with --yes to open (on-chain: locks collateral and spends gas)',
+      } satisfies ChannelOpenJson);
       return 0;
     }
     if (gate !== 'proceed') return gate;
@@ -425,24 +415,22 @@ async function runChannelOpen(
     );
 
     if (json) {
-      io.out(
-        jsonOut<ChannelOpenJson>({
-          command: 'channel open',
-          identity,
-          executed: true,
-          plan,
-          result: {
-            channelId: outcome.channelId,
-            resumed: outcome.resumed,
-            destination: outcome.destination,
-            chain: outcome.chain ?? null,
-            peerId: outcome.peerId ?? null,
-            depositTotal: outcome.depositTotal ?? null,
-            depositAdded: outcome.depositAdded ?? null,
-            depositTxHash: outcome.depositTxHash ?? null,
-          },
-        })
-      );
+      io.emitJson({
+        command: 'channel open',
+        identity,
+        executed: true,
+        plan,
+        result: {
+          channelId: outcome.channelId,
+          resumed: outcome.resumed,
+          destination: outcome.destination,
+          chain: outcome.chain ?? null,
+          peerId: outcome.peerId ?? null,
+          depositTotal: outcome.depositTotal ?? null,
+          depositAdded: outcome.depositAdded ?? null,
+          depositTxHash: outcome.depositTxHash ?? null,
+        },
+      } satisfies ChannelOpenJson);
       return 0;
     }
     io.out(
@@ -462,7 +450,7 @@ async function runChannelOpen(
     }
     return 0;
   } catch (err) {
-    return emitError(io, json, 'channel open', err);
+    return emitCliError(io, json, 'channel open', err);
   } finally {
     await stopQuietly(ctx);
   }
@@ -630,15 +618,13 @@ async function runChannelWithdrawStep(
       `Proceed with on-chain channel ${step}? [y/N] `
     );
     if (gate === 'json-plan') {
-      io.out(
-        jsonOut<WithdrawJson>({
-          command,
-          identity,
-          executed: false,
-          channelId,
-          hint: `plan only — re-run with --yes to ${step} (on-chain transaction)`,
-        })
-      );
+      io.emitJson({
+        command,
+        identity,
+        executed: false,
+        channelId,
+        hint: `plan only — re-run with --yes to ${step} (on-chain transaction)`,
+      } satisfies WithdrawJson);
       return 0;
     }
     if (gate !== 'proceed') return gate;
@@ -647,19 +633,17 @@ async function runChannelWithdrawStep(
     if (step === 'close') {
       const result = await loaded.money.closeChannel(record);
       if (json) {
-        io.out(
-          jsonOut<WithdrawJson>({
-            command,
-            identity,
-            executed: true,
-            channelId,
-            result: {
-              txHash: result.txHash ?? null,
-              closedAt: result.closedAt,
-              settleableAt: result.settleableAt,
-            },
-          })
-        );
+        io.emitJson({
+          command,
+          identity,
+          executed: true,
+          channelId,
+          result: {
+            txHash: result.txHash ?? null,
+            closedAt: result.closedAt,
+            settleableAt: result.settleableAt,
+          },
+        } satisfies WithdrawJson);
         return 0;
       }
       io.out(
@@ -679,15 +663,13 @@ async function runChannelWithdrawStep(
 
     const result = await loaded.money.settleChannel(record);
     if (json) {
-      io.out(
-        jsonOut<WithdrawJson>({
-          command,
-          identity,
-          executed: true,
-          channelId,
-          result: { txHash: result.txHash ?? null },
-        })
-      );
+      io.emitJson({
+        command,
+        identity,
+        executed: true,
+        channelId,
+        result: { txHash: result.txHash ?? null },
+      } satisfies WithdrawJson);
       return 0;
     }
     io.out(
@@ -697,7 +679,7 @@ async function runChannelWithdrawStep(
     );
     return 0;
   } catch (err) {
-    return emitError(io, json, command, err);
+    return emitCliError(io, json, command, err);
   } finally {
     await stopQuietly(ctx);
   }
@@ -707,21 +689,6 @@ async function runChannelWithdrawStep(
 // Small shared helpers
 // ---------------------------------------------------------------------------
 
-function emitError(
-  io: CliIo,
-  json: boolean,
-  command: string,
-  err: unknown
-): number {
-  const described = describeError(err, command);
-  if (json) {
-    io.out(JSON.stringify({ command, ...described.json }, null, 2));
-  } else {
-    for (const line of described.lines) io.err(line);
-  }
-  return 1;
-}
-
 async function stopQuietly(ctx: StandaloneContext | undefined): Promise<void> {
   if (!ctx) return;
   try {
@@ -729,8 +696,4 @@ async function stopQuietly(ctx: StandaloneContext | undefined): Promise<void> {
   } catch {
     // best-effort teardown
   }
-}
-
-function jsonOut<T>(output: T): string {
-  return JSON.stringify(output, null, 2);
 }

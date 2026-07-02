@@ -21,7 +21,7 @@ import {
   resolveChannelPaths,
 } from '../standalone/channel-map.js';
 import type { WalletBalanceInfo } from '../standalone/money.js';
-import { describeError } from './errors.js';
+import { emitCliError } from './errors.js';
 import {
   defaultLoadStandalone,
   identityReport,
@@ -135,13 +135,12 @@ export async function runBalance(
       });
 
     if (json) {
-      io.out(
-        JSON.stringify(
-          { command: 'balance', identity, wallet, channels } satisfies BalanceJson,
-          null,
-          2
-        )
-      );
+      io.emitJson({
+        command: 'balance',
+        identity,
+        wallet,
+        channels,
+      } satisfies BalanceJson);
       return 0;
     }
 
@@ -178,13 +177,7 @@ export async function runBalance(
     }
     return 0;
   } catch (err) {
-    const described = describeError(err, 'balance');
-    if (json) {
-      io.out(JSON.stringify({ command: 'balance', ...described.json }, null, 2));
-    } else {
-      for (const line of described.lines) io.err(line);
-    }
-    return 1;
+    return emitCliError(io, json, 'balance', err);
   } finally {
     if (ctx) {
       try {

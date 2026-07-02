@@ -25,7 +25,7 @@
 
 import { basename } from 'node:path';
 import { parseArgs } from 'node:util';
-import { describeError, NotAGitRepositoryError } from './errors.js';
+import { emitCliError, NotAGitRepositoryError } from './errors.js';
 import {
   addGitRemote,
   listGitRemotes,
@@ -211,7 +211,7 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
         migratedToonRelay,
         changed,
       };
-      io.out(JSON.stringify(output, null, 2));
+      io.emitJson(output);
       return 0;
     }
 
@@ -274,12 +274,6 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
     }
     return 0;
   } catch (err) {
-    const described = describeError(err, 'init');
-    if (flags.json) {
-      io.out(JSON.stringify({ command: 'init', ...described.json }, null, 2));
-    } else {
-      for (const line of described.lines) io.err(line);
-    }
-    return 1;
+    return emitCliError(io, flags.json, 'init', err);
   }
 }
