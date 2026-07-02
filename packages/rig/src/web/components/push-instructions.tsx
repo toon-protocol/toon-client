@@ -44,6 +44,24 @@ function legacyCopy(value: string): boolean {
 }
 
 /**
+ * Neutralize a value for interpolation into the copy-paste shell snippet.
+ *
+ * `repoId` is the kind:30617 `d` tag — raw, attacker-publishable event content
+ * with no charset guarantee — and the snippet is pasted straight into a
+ * terminal, so an embedded newline would smuggle an extra executable line
+ * into the clipboard (command injection via paste). Control characters are
+ * stripped outright (they are never legitimate in a repo id, pubkey, or relay
+ * URL), and anything outside a conservative safe charset is single-quoted
+ * with `'` → `'\''` escaping so the shell treats it as one literal word.
+ */
+function shellQuote(value: string): string {
+  // eslint-disable-next-line no-control-regex -- stripping control chars is the point
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, '');
+  if (/^[A-Za-z0-9._:/@-]+$/.test(cleaned)) return cleaned;
+  return `'${cleaned.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * The paste-and-run setup commands for contributing to a specific repo with
  * the `rig` CLI: install `@toon-protocol/git`, persist the repo's `a`-tag
  * addressing (`30617:<owner>:<repoId>`) as the `toon.*` git config keys the
@@ -58,9 +76,9 @@ export function buildPushSnippet(
 ): string {
   return [
     'npm i -g @toon-protocol/git',
-    `git config toon.repoid ${repoId}`,
-    `git config toon.owner ${ownerPubkey}`,
-    `git config toon.relay ${relayUrl}`,
+    `git config toon.repoid ${shellQuote(repoId)}`,
+    `git config toon.owner ${shellQuote(ownerPubkey)}`,
+    `git config toon.relay ${shellQuote(relayUrl)}`,
     'rig push',
   ].join('\n');
 }

