@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
- * `rig` — the Git-to-TOON CLI shipped by `@toon-protocol/rig` (epic #222).
+ * `rig` — the Git-to-TOON CLI shipped by `@toon-protocol/rig` (epic #222;
+ * standalone-only since #248).
  *
  * Subcommands:
+ *   init                        one-shot repo setup (identity + toon.* git config)
  *   push                        estimate → confirm → execute (#229)
  *   issue | comment | pr | status   single NIP-34 event publishes (#231)
  */
@@ -15,6 +17,7 @@ import {
   runStatus,
   type EventCommandDeps,
 } from './events.js';
+import { runInit } from './init.js';
 import { runPush, PUSH_USAGE, type CliIo } from './push.js';
 
 const USAGE = `rig — push git repos to TOON (pay-to-write Nostr + Arweave)
@@ -22,6 +25,8 @@ const USAGE = `rig — push git repos to TOON (pay-to-write Nostr + Arweave)
 Usage: rig <command> [options]
 
 Commands:
+  init                       set up this repo: resolve your identity
+                             (RIG_MNEMONIC) and write the toon.* git config
   push [refspecs...]         plan, price, confirm, and execute a paid push
   issue create               file an issue (kind:1621) against a repo
   comment <root-event-id>    comment (kind:1622) on an issue or patch
@@ -30,9 +35,10 @@ Commands:
   status <event-id> <state>  set an issue/patch status (kind:1630-1633):
                              open | applied | closed | draft
 
-Run \`rig <command> --help\` for the command's flags. All writes are paid,
-permanent, and non-refundable; each command quotes its fee and asks for
-confirmation before spending (--yes skips, --json emits machine output).`;
+Run \`rig <command> --help\` for the command's flags. \`rig init\` is free;
+all other commands are paid writes — permanent and non-refundable; each
+quotes its fee and asks for confirmation before spending (--yes skips,
+--json emits machine output).`;
 
 /** Real terminal I/O: stdout lines, stderr lines, readline y/N confirm. */
 function makeIo(): CliIo {
@@ -62,10 +68,11 @@ async function main(): Promise<number> {
     io,
     env: process.env,
     cwd: process.cwd(),
-    fetchImpl: fetch,
   };
 
   switch (command) {
+    case 'init':
+      return runInit(rest, deps);
     case 'push':
       return runPush(rest, deps);
     case 'issue':

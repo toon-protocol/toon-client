@@ -1,12 +1,10 @@
 /**
- * Error UX for the `rig` commands: map structured planner/daemon errors to
- * actionable terminal output (and a machine-readable envelope for `--json`).
- *
- * The daemon and standalone paths surface the SAME failures in different
- * clothing — HTTP envelopes (409 `non_fast_forward`, 413 `oversize_objects`,
- * 503 `bootstrapping`, 402 `insufficient_gas`) vs. thrown planner errors
- * (`NonFastForwardError`, `OversizeObjectsError`) — so both are normalized
- * here to one rendering per failure class.
+ * Error UX for the `rig` commands: map structured planner/publisher errors
+ * to actionable terminal output (and a machine-readable envelope for
+ * `--json`). The CLI is standalone-only (#248), so everything here is either
+ * a local planner error, an identity/config-chain error, or a tagged error
+ * surfaced from the embedded publisher (matched by name — those classes live
+ * behind the optional `@toon-protocol/client` dynamic import).
  */
 
 import { MAX_OBJECT_SIZE } from '../objects.js';
@@ -17,12 +15,11 @@ import {
   type RejectedRefUpdate,
 } from '../push.js';
 import { GitError } from '../repo-reader.js';
-import { DaemonRouteError, DaemonUnreachableError } from './daemon.js';
-import { NoPublisherError } from './mode.js';
+import { MissingIdentityError } from './identity.js';
 
 /** Normalized error description: terminal lines + `--json` envelope. */
 export interface DescribedError {
-  /** Stable machine code (mirrors the daemon envelope's `error` field). */
+  /** Stable machine code. */
   code: string;
   /** Human-facing lines (message first, remediation after). */
   lines: string[];
@@ -30,17 +27,10 @@ export interface DescribedError {
   json: Record<string, unknown>;
 }
 
-const FUNDING_REMEDIATION = (command: string): string[] => [
-  'Remediation:',
-  '  • fund the settlement wallet: run the toon_fund_wallet MCP tool (devnet faucet), or send gas/tokens to the wallet yourself',
-  '  • open (or top up) a payment channel: toon_open_channel / toon_channel_deposit',
-  `  • then re-run rig ${command}`,
-];
-
 /**
- * The single-event subcommands (issue/comment/pr/status) could not resolve
- * the NIP-34 repo address (`30617:<ownerPubkey>:<repoId>`) from flags or the
- * `toon.*` git config keys `rig push` persists.
+ * A command could not resolve the NIP-34 repo address
+ * (`30617:<ownerPubkey>:<repoId>`) from flags or the `toon.*` git config
+ * keys `rig init` writes.
  */
 export class UnconfiguredRepoAddressError extends Error {
   constructor(
@@ -49,12 +39,24 @@ export class UnconfiguredRepoAddressError extends Error {
   ) {
     super(
       `no ${missing} configured — this command addresses the repo as ` +
-        '30617:<ownerPubkey>:<repoId>. Run `rig push` once inside the repo ' +
-        '(it persists toon.repoid/toon.owner/toon.relay to git config), or ' +
+        '30617:<ownerPubkey>:<repoId>. Run `rig init` once inside the repo ' +
+        '(it writes toon.repoid/toon.owner to the local git config), or ' +
         `pass ${missing === 'repository id' ? '--repo-id <id>' : '--owner <pubkey>'} ` +
         "explicitly (use --owner for repos you don't own)."
     );
     this.name = 'UnconfiguredRepoAddressError';
+  }
+}
+
+/** A rig command ran outside any git repository. */
+export class NotAGitRepositoryError extends Error {
+  constructor(cwd: string) {
+    super(
+      `not a git repository: ${cwd}\n` +
+        'rig works inside an existing repo — create one first with `git init` ' +
+        '(rig never runs it for you), then re-run.'
+    );
+    this.name = 'NotAGitRepositoryError';
   }
 }
 
@@ -81,61 +83,11 @@ function oversizeLines(objects: OversizeObject[]): string[] {
   ];
 }
 
-function fromDaemonEnvelope(err: DaemonRouteError, command: string): DescribedError {
-  const { envelope, status } = err;
-  const json: Record<string, unknown> = { ...envelope, status };
-  switch (envelope.error) {
-    case 'non_fast_forward': {
-      const refs = Array.isArray(envelope['refs'])
-        ? (envelope['refs'] as RejectedRefUpdate[])
-        : [];
-      return { code: 'non_fast_forward', lines: nonFastForwardLines(refs), json };
-    }
-    case 'oversize_objects': {
-      const objects = Array.isArray(envelope['objects'])
-        ? (envelope['objects'] as OversizeObject[])
-        : [];
-      return { code: 'oversize_objects', lines: oversizeLines(objects), json };
-    }
-    case 'bootstrapping':
-      return {
-        code: 'bootstrapping',
-        lines: [
-          `toon-clientd is still bootstrapping: ${envelope.detail ?? 'transport/channel coming up'}`,
-          'Retry in a few seconds. If it never becomes ready, check the toon-clientd logs.',
-        ],
-        json,
-      };
-    case 'insufficient_gas':
-      return {
-        code: 'insufficient_gas',
-        lines: [
-          `Payment failed: ${envelope.detail ?? 'the settlement wallet cannot fund the channel'}`,
-          ...FUNDING_REMEDIATION(command),
-        ],
-        json,
-      };
-    default:
-      return {
-        code: envelope.error,
-        lines: [
-          `rig ${command} failed (${envelope.error}, HTTP ${status})` +
-            (envelope.detail ? `: ${envelope.detail}` : ''),
-          ...(envelope.retryable ? ['This error is retryable — try again shortly.'] : []),
-        ],
-        json,
-      };
-  }
-}
-
 /**
  * Normalize any command-path error for rendering. `command` names the rig
- * subcommand for the generic "rig <command> failed" lines and the funding
- * remediation's re-run hint.
+ * subcommand for the generic "rig <command> failed" lines.
  */
 export function describeError(err: unknown, command = 'push'): DescribedError {
-  if (err instanceof DaemonRouteError) return fromDaemonEnvelope(err, command);
-
   if (err instanceof UnconfiguredRepoAddressError) {
     return {
       code: 'unconfigured_repo_address',
@@ -143,18 +95,18 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
       json: { error: 'unconfigured_repo_address', detail: err.message },
     };
   }
-  if (err instanceof DaemonUnreachableError) {
+  if (err instanceof NotAGitRepositoryError) {
     return {
-      code: 'daemon_unreachable',
-      lines: [err.message],
-      json: { error: 'daemon_unreachable', detail: err.message },
+      code: 'not_a_git_repository',
+      lines: err.message.split('\n'),
+      json: { error: 'not_a_git_repository', detail: err.message },
     };
   }
-  if (err instanceof NoPublisherError) {
+  if (err instanceof MissingIdentityError) {
     return {
-      code: 'no_publisher',
+      code: 'missing_identity',
       lines: err.message.split('\n'),
-      json: { error: 'no_publisher', detail: err.message },
+      json: { error: 'missing_identity', detail: err.message },
     };
   }
   if (err instanceof NonFastForwardError) {
@@ -190,15 +142,18 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
   if (name === 'DaemonIdentityConflictError') {
     return {
       code: 'daemon_identity_conflict',
-      lines: [message, 'Re-run without --standalone (or with --daemon) to push through the running daemon.'],
+      lines: [
+        message,
+        'Stop the toon-clientd daemon (or publish through its toon_git_* MCP tools) and re-run.',
+      ],
       json: { error: 'daemon_identity_conflict', detail: message },
     };
   }
-  if (name === 'MissingMnemonicError' || name === 'MissingUplinkError') {
+  if (name === 'MissingUplinkError') {
     return {
-      code: name === 'MissingMnemonicError' ? 'missing_mnemonic' : 'missing_uplink',
+      code: 'missing_uplink',
       lines: [message],
-      json: { error: 'standalone_unavailable', detail: message },
+      json: { error: 'missing_uplink', detail: message },
     };
   }
 

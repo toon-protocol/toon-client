@@ -26,11 +26,22 @@ function refLine(update: GitRefUpdate): string {
   return `  ${update.refname}  ${arrow}  (${update.kind})`;
 }
 
+/**
+ * One-line identity report: derived pubkey + which chain tier supplied the
+ * mnemonic (never the phrase itself).
+ */
+export function renderIdentityLine(identity: {
+  pubkey: string;
+  sourceLabel: string;
+}): string {
+  return `Identity: ${identity.pubkey} (from ${identity.sourceLabel})`;
+}
+
 /** The pre-push confirm table (refs, objects, itemized fees, warning). */
-export function renderPlan(plan: GitEstimateResponse, mode: string): string[] {
+export function renderPlan(plan: GitEstimateResponse): string[] {
   const lines: string[] = [];
   lines.push(
-    `Push plan for repo "${plan.repoId}" (${mode} mode)` +
+    `Push plan for repo "${plan.repoId}"` +
       (plan.announceNeeded ? ' — first push, will announce (kind:30617)' : '')
   );
   lines.push('Refs:');
@@ -70,13 +81,15 @@ export function renderEventPlan(opts: {
   /** e.g. `issue "Fix the flux" (kind:1621)`. */
   action: string;
   addr: GitRepoAddr;
-  mode: string;
+  /** Active identity (source + derived pubkey). */
+  identity: { pubkey: string; sourceLabel: string };
   /** Per-event fee (base units, decimal string), when known. */
   fee?: string;
 }): string[] {
   return [
-    `Publish ${opts.action} (${opts.mode} mode)`,
+    `Publish ${opts.action}`,
     `Repo: 30617:${opts.addr.ownerPubkey}:${opts.addr.repoId}`,
+    renderIdentityLine(opts.identity),
     `Fee: ${feeLabel(opts.fee)}. Writes are permanent and non-refundable.`,
   ];
 }

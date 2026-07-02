@@ -1,16 +1,17 @@
 /**
- * Real standalone mode for `rig push`: build an embedded, nonce-guarded
- * {@link StandalonePublisher} from the caller's own identity and config.
+ * The embedded-client (standalone) publisher backing every paid `rig`
+ * command: build a nonce-guarded {@link StandalonePublisher} from the
+ * caller's own identity and config.
  *
- * Config resolution DUPLICATES the toon-clientd conventions
+ * Identity comes from the #248 precedence chain (`./identity.ts`:
+ * RIG_MNEMONIC env → TOON_CLIENT_MNEMONIC env alias → project `.env` →
+ * `~/.toon-client` keystore/config). The remaining config resolution
+ * DUPLICATES the toon-clientd conventions
  * (`packages/client-mcp/src/daemon/config.ts`) the same way
  * `../standalone/nonce-guard.ts` does — this package must not import
  * `@toon-protocol/client-mcp` (circular; see that module's doc). Keep in sync:
  *
  *   - state dir: `TOON_CLIENT_HOME`, else `~/.toon-client`; config `config.json`
- *   - mnemonic precedence: `TOON_CLIENT_MNEMONIC` env → encrypted keystore
- *     (`keystorePath` + `TOON_CLIENT_KEYSTORE_PASSWORD`, auto-password
- *     fallback for daemon-provisioned keystores) → `mnemonic` config field
  *   - env overrides: `TOON_CLIENT_PROXY_URL`, `TOON_CLIENT_BTP_URL`,
  *     `TOON_CLIENT_RELAY_URL`, `TOON_CLIENT_DESTINATION`,
  *     `TOON_CLIENT_PUBLISH_DESTINATION`, `TOON_CLIENT_STORE_DESTINATION`,
@@ -26,7 +27,6 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { loadKeystore } from '@toon-protocol/client';
 import type { ToonClientConfig } from '@toon-protocol/client';
 import {
   GenesisPeerLoader,
@@ -35,18 +35,16 @@ import {
 } from '@toon-protocol/core';
 import { StandalonePublisher } from '../standalone/standalone-publisher.js';
 import { fetchRemoteState } from '../remote-state.js';
-import type { StandaloneContext } from './standalone-context.js';
-
-/** Duplicated daemon convention (see module doc): auto-keystore password. */
-const DEFAULT_KEYSTORE_PASSWORD = 'toon-client-default';
+import { resolveIdentity } from './identity.js';
+import type {
+  StandaloneContext,
+  StandaloneLoadOptions,
+} from './standalone-context.js';
 
 /** The subset of the shared client config file standalone mode consumes. */
 interface ClientConfigFile {
   network?: 'mainnet' | 'testnet' | 'devnet' | 'custom';
-  mnemonic?: string;
   mnemonicAccountIndex?: number;
-  keystorePath?: string;
-  keystoreAutoPassword?: boolean;
   btpUrl?: string;
   proxyUrl?: string;
   relayUrl?: string;
@@ -64,23 +62,11 @@ interface ClientConfigFile {
   minaChannel?: ToonClientConfig['minaChannel'];
 }
 
-/** No mnemonic could be resolved for standalone mode. */
-export class MissingMnemonicError extends Error {
-  constructor(configPath: string) {
-    super(
-      'standalone mode needs an identity: set TOON_CLIENT_MNEMONIC (BIP-39 ' +
-        `seed phrase), or configure ${configPath} with a mnemonic or ` +
-        'keystorePath (+ TOON_CLIENT_KEYSTORE_PASSWORD)'
-    );
-    this.name = 'MissingMnemonicError';
-  }
-}
-
-/** Standalone mode has an identity but no way to send paid writes. */
+/** An identity was resolved, but there is no way to send paid writes. */
 export class MissingUplinkError extends Error {
   constructor(configPath: string) {
     super(
-      'standalone mode has no write uplink: set TOON_CLIENT_PROXY_URL ' +
+      'no write uplink configured: set TOON_CLIENT_PROXY_URL ' +
         '(connector payment proxy) or TOON_CLIENT_BTP_URL, or add ' +
         `proxyUrl/btpUrl to ${configPath}`
     );
@@ -103,41 +89,20 @@ function readClientConfig(path: string): ClientConfigFile {
   }
 }
 
-function resolveMnemonic(
-  env: NodeJS.ProcessEnv,
-  file: ClientConfigFile,
-  configPath: string
-): string {
-  const envMnemonic = env['TOON_CLIENT_MNEMONIC'];
-  if (envMnemonic) return envMnemonic.trim();
-  if (file.keystorePath) {
-    const password =
-      env['TOON_CLIENT_KEYSTORE_PASSWORD'] ??
-      (file.keystoreAutoPassword ? DEFAULT_KEYSTORE_PASSWORD : undefined);
-    if (!password) {
-      throw new Error(
-        `keystorePath is set in ${configPath} but TOON_CLIENT_KEYSTORE_PASSWORD is not provided`
-      );
-    }
-    return loadKeystore(file.keystorePath, password);
-  }
-  if (file.mnemonic) return file.mnemonic.trim();
-  throw new MissingMnemonicError(configPath);
-}
-
 /**
- * Assemble an embedded-client standalone context: resolved config →
- * ToonClientConfig → nonce-guarded StandalonePublisher (guard + client start
- * + channel open happen lazily on the first paid call, or eagerly via the
- * publisher's own `start`).
+ * Assemble an embedded-client standalone context: resolved identity + config
+ * → ToonClientConfig → nonce-guarded StandalonePublisher (guard + client
+ * start + channel open happen lazily on the first paid call, or eagerly via
+ * the publisher's own `start`).
  */
 export async function createStandaloneContext(
-  env: NodeJS.ProcessEnv
+  options: StandaloneLoadOptions
 ): Promise<StandaloneContext> {
+  const { env } = options;
   const dir = configDir(env);
   const configPath = join(dir, 'config.json');
   const file = readClientConfig(configPath);
-  const mnemonic = resolveMnemonic(env, file, configPath);
+  const identity = await resolveIdentity(options);
 
   const proxyUrl = env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl;
   const btpUrl = env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl;
@@ -169,8 +134,8 @@ export async function createStandaloneContext(
     // dummy connectorUrl satisfies it (unused at runtime — same convention as
     // the daemon).
     ...(proxyUrl ? { proxyUrl } : { connectorUrl: 'http://127.0.0.1:1' }),
-    mnemonic,
-    mnemonicAccountIndex: file.mnemonicAccountIndex ?? 0,
+    mnemonic: identity.mnemonic,
+    mnemonicAccountIndex: identity.accountIndex,
     ilpInfo: {
       pubkey: '00'.repeat(32),
       ilpAddress: 'g.toon.client',
@@ -206,6 +171,8 @@ export async function createStandaloneContext(
 
   return {
     ownerPubkey: publisher.getPublicKey(),
+    identitySource: identity.source,
+    identitySourceLabel: identity.sourceLabel,
     publisher,
     defaultRelayUrls: [relayUrl],
     fetchRemote: (args) => fetchRemoteState(args),
