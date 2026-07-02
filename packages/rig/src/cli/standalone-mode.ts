@@ -420,8 +420,9 @@ export async function resolveNetworkTopology(
   if (network && network !== 'custom' && !file.supportedChains?.length) {
     warn(
       `rig: ignoring the "${network}" network preset for settlement — the ` +
-        'chain comes from the announce/config (#260); set supportedChains ' +
-        'explicitly to use preset chains'
+        "settlement chain comes from the payment peer's announce and your " +
+        'config, because preset chains can point at networks your wallet ' +
+        'has no funds on; set supportedChains explicitly to use preset chains'
     );
   }
 

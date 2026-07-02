@@ -106,6 +106,11 @@ export interface PRMetadata {
   commitShas: string[];
   baseBranch: string;
   status: 'open' | 'applied' | 'closed' | 'draft';
+  /**
+   * PR body from the `description` tag (`rig pr create --body`). Kept apart
+   * from `content`, which is pure `git format-patch` output for `git am`.
+   */
+  description?: string;
 }
 
 /** Parsed comment metadata from a kind:1622 event. */
@@ -143,6 +148,7 @@ export function parsePR(event: NostrEvent): PRMetadata | null {
   const title = getTagValue(event.tags, 'subject') ?? '';
   const commitShas = getTagValues(event.tags, 'commit');
   const baseBranch = getTagValue(event.tags, 'branch') ?? 'main';
+  const description = getTagValue(event.tags, 'description');
 
   return {
     eventId: event.id,
@@ -153,6 +159,7 @@ export function parsePR(event: NostrEvent): PRMetadata | null {
     commitShas,
     baseBranch,
     status: 'open',
+    ...(description !== undefined ? { description } : {}),
   };
 }
 

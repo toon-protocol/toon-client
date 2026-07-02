@@ -86,6 +86,7 @@ rig merge origin/main        # integrating is plain git (passthrough)
 
 # 4. ready to contribute back? writes are paid — add an identity + funds:
 export RIG_MNEMONIC="abandon abandon … about"
+export TOON_CLIENT_NETWORK=devnet   # shared devnet: enables `rig fund` (no faucet URL needed)
 rig fund                     # devnet faucet drip
 rig issue create --title "found a bug" --body "details"      # kind:1621
 rig push                     # or publish commits (your own repos)
@@ -187,7 +188,7 @@ The single-event subcommands follow the same paid-write discipline as push — t
 
 - `rig issue create --title <t> [--body <b> | --body-file <f> | stdin] [--label <l>]…` — kind:1621.
 - `rig comment <root-event-id> --body <b> [--parent-author <pubkey>] [--marker root|reply]` — kind:1622.
-- `rig pr create --title <t> (--range <A..B> | --patch-file <f>) [--branch <name>]` — kind:1617; `--range` runs real `git format-patch --stdout` locally and derives the `commit`/`parent-commit` tags. A multi-commit range publishes ONE event carrying the whole series (cover-letter threading is out of scope in v1).
+- `rig pr create --title <t> (--range <A..B> | --patch-file <f>) [--body <b> | --body-file <f>] [--branch <name>]` — kind:1617; `--range` runs real `git format-patch --stdout` locally and derives the `commit`/`parent-commit` tags. A multi-commit range publishes ONE event carrying the whole series (cover-letter threading is out of scope in v1). `--body`/`--body-file` attach the PR description in a dedicated `description` tag — the event content stays pure format-patch output, so `rig pr show`'s patch text still pipes straight into `git am`.
 - `rig pr status <target-event-id> <open|applied|closed|draft>` — kind:1630–1633, with the repo `a` tag attached. (This was top-level `rig status` before v2; bare `rig status` now passes through to `git status`.)
 
 `--repo-id`/`--owner` override the git config address (use `--owner` for repos you don't own).

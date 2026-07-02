@@ -172,9 +172,66 @@ describe('rig fund', () => {
     const h = makeHarness(baseEnv(), cwd);
     expect(await runFund([], h.deps)).toBe(0);
     const text = h.out.join('\n');
-    expect(text).toMatch(/no faucet on network "custom"/);
+    expect(text).toMatch(/no faucet is configured for network "custom"/);
     expect(text).toMatch(/evm\s+0x[0-9a-fA-F]{40}/);
     expect(text).toContain('Wallet addresses:');
+  });
+
+  // ── #280: the remediation must name the ACTUAL knob first ─────────────────
+
+  it('custom network: TOON_CLIENT_NETWORK=devnet is suggested before TOON_CLIENT_FAUCET_URL', async () => {
+    writeConfig({}); // fresh isolated home → network defaults to "custom"
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund([], h.deps)).toBe(0);
+    expect(h.fetchCalls).toEqual([]);
+    const text = h.out.join('\n');
+    const networkKnob = text.indexOf('TOON_CLIENT_NETWORK=devnet');
+    const faucetKnob = text.indexOf('TOON_CLIENT_FAUCET_URL');
+    expect(networkKnob).toBeGreaterThanOrEqual(0);
+    expect(faucetKnob).toBeGreaterThanOrEqual(0);
+    expect(networkKnob).toBeLessThan(faucetKnob);
+    // The faucet URL is framed as the SELF-HOSTED override, not the fix.
+    expect(text).toMatch(/self-hosted[^.]*TOON_CLIENT_FAUCET_URL/);
+  });
+
+  it('a *.devnet.toonprotocol.dev relay on a "custom" network is called out as the shared devnet', async () => {
+    writeConfig({
+      relayUrl: 'wss://relay-ws.devnet.toonprotocol.dev',
+    });
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund(['--json'], h.deps)).toBe(0);
+    expect(h.fetchCalls).toEqual([]);
+    const parsed = JSON.parse(h.out.join('\n')) as { guidance: string };
+    expect(parsed.guidance).toContain(
+      'your configured origin (wss://relay-ws.devnet.toonprotocol.dev) looks like the shared devnet'
+    );
+    expect(parsed.guidance).toContain('TOON_CLIENT_NETWORK=devnet');
+    // The shared devnet needs no faucet URL — don't send the user hunting.
+    expect(parsed.guidance).not.toContain('TOON_CLIENT_FAUCET_URL');
+  });
+
+  it('a devnet-looking TOON_CLIENT_PROXY_URL env override is sniffed too', async () => {
+    writeConfig({ network: 'custom' });
+    const h = makeHarness(
+      {
+        ...baseEnv(),
+        TOON_CLIENT_PROXY_URL: 'https://apex.devnet.toonprotocol.dev',
+      },
+      cwd
+    );
+    expect(await runFund([], h.deps)).toBe(0);
+    const text = h.out.join('\n');
+    expect(text).toContain('looks like the shared devnet');
+    expect(text).toContain('TOON_CLIENT_NETWORK=devnet');
+  });
+
+  it('a non-devnet origin does NOT trigger the shared-devnet callout', async () => {
+    writeConfig({ relayUrl: 'wss://relay.example.com' });
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund([], h.deps)).toBe(0);
+    const text = h.out.join('\n');
+    expect(text).not.toContain('looks like the shared devnet');
+    expect(text).toContain('TOON_CLIENT_NETWORK=devnet');
   });
 
   it('a non-2xx faucet response is a clear error (exit 1)', async () => {

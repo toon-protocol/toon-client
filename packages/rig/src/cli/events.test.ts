@@ -481,6 +481,107 @@ describe('rig pr create (real format-patch)', () => {
     expect(event.tags.filter((t) => t[0] === 'commit')).toHaveLength(0);
   });
 
+  it('--body rides in a description tag; content stays pure format-patch that survives git am', async () => {
+    const [first, second] = addSecondCommit(repoDir);
+    const body = 'Closes #7.\n\nWhy: the flux needed featuring.';
+    const h = deps();
+    const code = await runPr(
+      [
+        'create',
+        '--title',
+        'Add feature',
+        '--range',
+        `${first}..${second}`,
+        '--body',
+        body,
+        '--yes',
+      ],
+      h.deps
+    );
+    expect(code).toBe(0);
+    const { event } = fake.published[0] as FakeStandalone['published'][0];
+
+    // The description tag carries the body …
+    expect(event.tags).toContainEqual(['description', body]);
+    // … and the content is UNTOUCHED format-patch output: git's patch-format
+    // detection hard-fails on leading prose, so the body must never leak in.
+    expect(event.content.startsWith(`From ${second} `)).toBe(true);
+    expect(event.content).not.toContain('Closes #7');
+
+    // Round-trip proof: `git am` applies the published content verbatim.
+    const target = makeRepo();
+    try {
+      const patchPath = join(target, 'series.mbox');
+      writeFileSync(patchPath, event.content);
+      git(['am', patchPath], target);
+      expect(git(['log', '-1', '--format=%s'], target)).toBe(
+        'second: add feature'
+      );
+    } finally {
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it('--body-file reads the PR description from a file', async () => {
+    const [first, second] = addSecondCommit(repoDir);
+    const bodyPath = join(homeDir, 'pr-body.md');
+    writeFileSync(bodyPath, '## why\nbecause\n');
+    const h = deps();
+    const code = await runPr(
+      [
+        'create',
+        '--title',
+        'Add feature',
+        '--range',
+        `${first}..${second}`,
+        '--body-file',
+        bodyPath,
+        '--yes',
+      ],
+      h.deps
+    );
+    expect(code).toBe(0);
+    const { event } = fake.published[0] as FakeStandalone['published'][0];
+    expect(event.tags).toContainEqual(['description', '## why\nbecause\n']);
+  });
+
+  it('without --body no description tag is added', async () => {
+    const [first, second] = addSecondCommit(repoDir);
+    const h = deps();
+    expect(
+      await runPr(
+        ['create', '--title', 'T', '--range', `${first}..${second}`, '--yes'],
+        h.deps
+      )
+    ).toBe(0);
+    const { event } = fake.published[0] as FakeStandalone['published'][0];
+    expect(event.tags.filter((t) => t[0] === 'description')).toHaveLength(0);
+  });
+
+  it('--body and --body-file are mutually exclusive (exit 2)', async () => {
+    const h = deps();
+    expect(
+      await runPr(
+        ['create', '--title', 't', '--range', 'a..b', '--body', 'x', '--body-file', 'y'],
+        h.deps
+      )
+    ).toBe(2);
+    expect(h.err.join('\n')).toContain('--body and --body-file are mutually exclusive');
+    expect(fake.published).toHaveLength(0);
+  });
+
+  it('an empty --body is refused before anything is paid (exit 2)', async () => {
+    const h = deps();
+    expect(
+      await runPr(
+        ['create', '--title', 't', '--range', 'a..b', '--body', '  ', '--yes'],
+        h.deps
+      )
+    ).toBe(2);
+    expect(h.err.join('\n')).toContain('the PR body is empty');
+    expect(fake.published).toHaveLength(0);
+  });
+
   it('requires exactly one of --range | --patch-file (exit 2)', async () => {
     const h = deps();
     expect(await runPr(['create', '--title', 't'], h.deps)).toBe(2);
@@ -886,6 +987,27 @@ describe('daemon delegation (#279)', () => {
     expect(posts[0]?.url).toBe('http://127.0.0.1:8787/git/patch');
     expect(posts[0]?.body['patchText']).toBe(patch);
     expect(posts[0]?.body['title']).toBe('P');
+  });
+
+  it('pr create --body delegates the description to /git/patch', async () => {
+    const patch = 'From 0123456789012345678901234567890123456789 Mon Sep 17\n---\npatch body\n';
+    const patchPath = join(repoDir, 'x.patch');
+    writeFileSync(patchPath, patch);
+    const receipt = { eventId: EVENT_ID, feePaid: '7', kind: 1617 };
+    const { posts, fetchImpl } = daemonFetch(receipt);
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      probeDaemon: sameIdentityProbe(),
+      fetchImpl,
+    });
+    const code = await runPr(
+      ['create', '--title', 'P', '--patch-file', patchPath, '--body', 'the why', '--yes'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(posts[0]?.url).toBe('http://127.0.0.1:8787/git/patch');
+    expect(posts[0]?.body['description']).toBe('the why');
+    // The content the daemon publishes is still the untouched patch text.
+    expect(posts[0]?.body['patchText']).toBe(patch);
   });
 
   it('pr status delegates to POST /git/status', async () => {

@@ -74,6 +74,9 @@ interface FundConfigFile {
   faucetUrl?: string;
   faucetTimeoutMs?: number;
   chain?: string;
+  relayUrl?: string;
+  proxyUrl?: string;
+  btpUrl?: string;
 }
 
 /** `--json` envelope. */
@@ -91,6 +94,73 @@ interface FundJson {
   /** Non-devnet path: the derived wallet addresses to fund externally. */
   addresses?: { evm: string | null; solana: string | null; mina: string | null };
   guidance?: string;
+}
+
+/** Hostname suffix of every shared-devnet edge (relay, proxy, faucet …). */
+const SHARED_DEVNET_SUFFIX = '.devnet.toonprotocol.dev';
+
+/**
+ * The first configured relay/uplink URL that points at the shared devnet
+ * (`*.devnet.toonprotocol.dev`), if any. When the user's endpoints already
+ * target the shared devnet but `network` still says `custom`, the fix for a
+ * failed `rig fund` is `TOON_CLIENT_NETWORK=devnet` — NOT hunting for a
+ * faucet URL (the #280 UX-study trap). Exported for tests.
+ */
+export function sharedDevnetOrigin(
+  env: NodeJS.ProcessEnv,
+  file: FundConfigFile
+): string | undefined {
+  const candidates = [
+    env['TOON_CLIENT_RELAY_URL'] ?? file.relayUrl,
+    env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl,
+    env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl,
+  ];
+  for (const url of candidates) {
+    if (!url) continue;
+    try {
+      const { hostname } = new URL(url);
+      if (
+        hostname.endsWith(SHARED_DEVNET_SUFFIX) ||
+        hostname === SHARED_DEVNET_SUFFIX.slice(1)
+      ) {
+        return url;
+      }
+    } catch {
+      // junk URL — other commands surface that; fund only sniffs
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Remediation for `rig fund` on a network without a faucet. Orders the
+ * suggestions by likelihood (#280): the network preset FIRST — a fresh
+ * config defaults to `custom`, and on the shared devnet the whole fix is
+ * `TOON_CLIENT_NETWORK=devnet` — then the faucet-URL override for
+ * self-hosted networks, then external funding. Exported for tests.
+ */
+export function noFaucetGuidance(
+  network: string | undefined,
+  devnetOrigin: string | undefined
+): string {
+  const head = `no faucet is configured for network ${JSON.stringify(network ?? 'custom')}`;
+  const external =
+    'To fund the wallet externally instead, send the settlement token plus ' +
+    'native gas to the address below for the chain your channels settle on.';
+  if (devnetOrigin !== undefined) {
+    return (
+      `${head} — but your configured origin (${devnetOrigin}) looks like ` +
+      'the shared devnet. Set TOON_CLIENT_NETWORK=devnet (or "network": ' +
+      '"devnet" in the client config) and re-run `rig fund` — no faucet ' +
+      `URL is needed there. ${external}`
+    );
+  }
+  return (
+    `${head}. If you meant the shared devnet, set TOON_CLIENT_NETWORK=devnet ` +
+    'and re-run `rig fund` — no faucet URL is needed there. If this is a ' +
+    'self-hosted network with its own faucet, set TOON_CLIENT_FAUCET_URL ' +
+    `(or the faucetUrl config field). ${external}`
+  );
 }
 
 function readFundConfig(env: NodeJS.ProcessEnv): {
@@ -190,13 +260,9 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
       mina: derived.mina.publicKey || null,
     };
 
-    // ── No faucet on this network: clear external-funding guidance ──────────
+    // ── No faucet on this network: name the ACTUAL knob first (#280) ────────
     if (!faucetUrl) {
-      const guidance =
-        `no faucet on network ${JSON.stringify(network ?? 'custom')} — fund the wallet ` +
-        'externally (send the settlement token + native gas to the address for ' +
-        'the chain your channels settle on), or set TOON_CLIENT_FAUCET_URL / ' +
-        'the faucetUrl config field if this network has one.';
+      const guidance = noFaucetGuidance(network, sharedDevnetOrigin(env, file));
       if (json) {
         io.emitJson({
           command: 'fund',

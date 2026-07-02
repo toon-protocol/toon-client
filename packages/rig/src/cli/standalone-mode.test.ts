@@ -353,5 +353,8 @@ describe('resolveNetworkTopology — settlement', () => {
     expect(
       warnings.some((w) => w.includes('ignoring the "devnet" network preset'))
     ).toBe(true);
+    // #280: user-facing warnings explain themselves in plain language — no
+    // internal tracker numbers.
+    expect(warnings.join('\n')).not.toMatch(/#\d+/);
   });
 });

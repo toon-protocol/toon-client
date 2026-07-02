@@ -78,6 +78,23 @@ describe('nip34 parsers', () => {
     expect(parseComment(evt({ kind: 1622, tags: [] }))).toBeNull();
   });
 
+  it('surfaces the PR body from the description tag; content stays the patch text', () => {
+    const withBody = parsePR(
+      evt({
+        kind: 1617,
+        tags: [
+          ['subject', 'Add feature'],
+          ['description', 'Why: the feature was missing.'],
+        ],
+        content: 'From abc123 Mon Sep 17 00:00:00 2001\n',
+      })
+    );
+    expect(withBody?.description).toBe('Why: the feature was missing.');
+    expect(withBody?.content).toBe('From abc123 Mon Sep 17 00:00:00 2001\n');
+    // No tag → no description field (renderers fall back to the patch text).
+    expect(parsePR(evt({ kind: 1617, tags: [] }))?.description).toBeUndefined();
+  });
+
   it('resolves PR + issue status by latest event', () => {
     const status = resolvePRStatus('pr1', [
       evt({ kind: 1630, created_at: 1, tags: [['e', 'pr1']] }),

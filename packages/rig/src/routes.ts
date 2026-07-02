@@ -171,6 +171,11 @@ export interface GitPatchRequest {
   repoAddr: GitRepoAddr;
   /** Patch/PR title (`subject` tag). */
   title: string;
+  /**
+   * PR body/cover text (`description` tag). Kept OUT of the event content so
+   * `git am` still consumes the patch text verbatim (#280).
+   */
+  description?: string;
   /** Literal patch text. Mutually exclusive with `repoPath`+`range`. */
   patchText?: string;
   /** Local repository to run format-patch in. Requires `range`. */

@@ -69,6 +69,9 @@ const PRCard: FC<AtomRenderProps> = ({ events }) => {
         </Badge>
         <span className="font-medium text-sm">{pr.title || '(untitled patch)'}</span>
       </div>
+      {pr.description ? (
+        <p className="line-clamp-2 text-sm text-muted-foreground">{pr.description}</p>
+      ) : null}
       <div className="text-xs text-muted-foreground">
         {pr.commitShas.length} commit{pr.commitShas.length !== 1 ? 's' : ''} → {pr.baseBranch}
       </div>

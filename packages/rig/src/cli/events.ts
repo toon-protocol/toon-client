@@ -172,11 +172,17 @@ verbatim. A multi-commit range publishes ONE kind:1617 event carrying the
 full series text — cover-letter threading (one event per commit) is out of
 scope in v1.
 
+The PR body (--body/--body-file) is carried in a dedicated \`description\`
+tag, not in the event content — the content stays pure format-patch output so
+\`rig pr show … | git am\` keeps working.
+
 Options:
   --title <title>      patch/PR title (subject tag) [required]
   --range <range>      revision range for format-patch: <rev>, <rev>..<rev>,
                        or <rev>...<rev> (mutually exclusive with --patch-file)
   --patch-file <path>  literal patch text to publish
+  --body <text>        PR description (Markdown; description tag)
+  --body-file <path>   read the PR description from a file
   --branch <name>      branch name (t tag)
 ${COMMON_FLAGS_USAGE}`;
 
@@ -716,6 +722,8 @@ async function runPrCreate(
   let range: string | undefined;
   let patchFile: string | undefined;
   let branch: string | undefined;
+  let bodyFlag: string | undefined;
+  let bodyFile: string | undefined;
   try {
     const { values } = parseArgs({
       args: rest,
@@ -724,6 +732,8 @@ async function runPrCreate(
         title: { type: 'string' },
         range: { type: 'string' },
         'patch-file': { type: 'string' },
+        body: { type: 'string' },
+        'body-file': { type: 'string' },
         branch: { type: 'string' },
       },
       allowPositionals: false,
@@ -739,13 +749,40 @@ async function runPrCreate(
     if ((values.range === undefined) === (values['patch-file'] === undefined)) {
       throw new Error('exactly one of --range or --patch-file is required');
     }
+    if (values.body !== undefined && values['body-file'] !== undefined) {
+      throw new Error('--body and --body-file are mutually exclusive');
+    }
     title = values.title;
     range = values.range;
     patchFile = values['patch-file'];
     branch = values.branch;
+    bodyFlag = values.body;
+    bodyFile = values['body-file'];
   } catch (err) {
     io.err(err instanceof Error ? err.message : String(err));
     io.err(PR_CREATE_USAGE);
+    return 2;
+  }
+
+  // PR description (optional): --body → --body-file. Carried in the event's
+  // `description` tag — NEVER prepended to the content, which must stay pure
+  // `git format-patch` output for `git am` (leading prose hard-fails git's
+  // patch-format detection).
+  let body: string | undefined;
+  if (bodyFlag !== undefined) {
+    body = bodyFlag;
+  } else if (bodyFile !== undefined) {
+    try {
+      body = await readFile(bodyFile, 'utf-8');
+    } catch (err) {
+      io.err(
+        `cannot read --body-file ${bodyFile}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return 2;
+    }
+  }
+  if (body !== undefined && body.trim() === '') {
+    io.err('the PR body is empty — drop --body/--body-file or pass text');
     return 2;
   }
 
@@ -798,7 +835,8 @@ async function runPrCreate(
         title,
         commits,
         branch,
-        patchText
+        patchText,
+        body
       );
     },
     sendDaemon: (client, addr) => {
@@ -809,6 +847,7 @@ async function runPrCreate(
         repoAddr: addr,
         title,
         patchText: builtPatchText,
+        ...(body !== undefined ? { description: body } : {}),
         ...(builtCommits.length > 0 ? { commits: builtCommits } : {}),
         ...(branch !== undefined ? { branch } : {}),
       });

@@ -77,7 +77,7 @@ export class DaemonIdentityConflictError extends Error {
   ) {
     super(
       `toon-clientd is running with this identity (${pubkey.slice(0, 8)}…) at ` +
-        `${daemonUrl} — paid rig writes delegate to it automatically (#279), ` +
+        `${daemonUrl} — paid rig writes delegate to it automatically, ` +
         `but this operation has no daemon route (or the daemon appeared ` +
         `mid-run): stop the daemon and re-run. Two writers on one identity ` +
         `would race the payment channel's cumulative-claim watermark ` +

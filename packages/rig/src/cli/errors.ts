@@ -291,7 +291,7 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
       code: 'daemon_identity_conflict',
       lines: [
         message,
-        'Paid writes delegate to a same-identity daemon automatically (#279); ' +
+        'Paid writes delegate to a same-identity daemon automatically; ' +
           'seeing this means the daemon appeared mid-run or this operation ' +
           'has no daemon route — stop the daemon and re-run.',
       ],
