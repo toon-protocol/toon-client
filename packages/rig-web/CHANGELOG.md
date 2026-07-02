@@ -1,5 +1,11 @@
 # @toon-protocol/rig
 
+## 0.2.32
+
+### Patch Changes
+
+- @toon-protocol/views@0.13.1
+
 ## 0.2.31
 
 ### Patch Changes
