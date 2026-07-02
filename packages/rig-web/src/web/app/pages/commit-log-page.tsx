@@ -5,7 +5,9 @@ import { useCommitLog } from '@/hooks/use-commit-log';
 import { useProfileCache } from '@/hooks/use-profile-cache';
 import { parseAuthorIdent } from '../../git-objects.js';
 import { formatRelativeDate } from '../../date-utils.js';
+import { resolveDefaultRef } from '../../ref-resolver.js';
 import { resolveRefSha } from '@/lib/ref-utils';
+import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
@@ -21,8 +23,17 @@ export function CommitLogPage() {
 
   const startSha = useMemo(() => {
     if (!refs) return null;
+    // Bare /commits (no ref in the URL) falls back to the default branch —
+    // GitHub-style URLs must not require the branch segment (#277).
+    if (!ref) {
+      return (
+        resolveRefSha(metadata.defaultBranch, refs) ??
+        resolveDefaultRef(metadata, refs)?.commitSha ??
+        null
+      );
+    }
     return resolveRefSha(ref, refs) ?? null;
-  }, [refs, ref]);
+  }, [refs, ref, metadata]);
 
   const { entries, loading, error } = useCommitLog(startSha, metadata.repoId, refs);
   const { getDisplayName: _getDisplayName, requestProfiles } = useProfileCache();
@@ -97,12 +108,19 @@ export function CommitLogPage() {
                         </Avatar>
                       </TableCell>
                       <TableCell className="py-2">
-                        <Link
-                          to={`/${owner}/${repo}/commit/${entry.sha}`}
-                          className="line-clamp-1 hover:text-primary hover:underline"
-                        >
-                          {message}
-                        </Link>
+                        <span className="flex items-center gap-2">
+                          <Link
+                            to={`/${owner}/${repo}/commit/${entry.sha}`}
+                            className="line-clamp-1 hover:text-primary hover:underline"
+                          >
+                            {message}
+                          </Link>
+                          {entry.commit.parentShas.length > 1 && (
+                            <Badge variant="outline" className="shrink-0 text-[10px]">
+                              Merge
+                            </Badge>
+                          )}
+                        </span>
                       </TableCell>
                       <TableCell className="py-2 text-right font-mono text-xs text-muted-foreground">
                         <Link

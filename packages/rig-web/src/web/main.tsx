@@ -18,6 +18,7 @@ import { IssueListPage } from '@/app/pages/issue-list-page';
 import { IssueDetailPage } from '@/app/pages/issue-detail-page';
 import { PRListPage } from '@/app/pages/pr-list-page';
 import { PRDetailPage } from '@/app/pages/pr-detail-page';
+import { NotFoundPage } from '@/app/pages/not-found-page';
 import './globals.css';
 
 // The documented shareable form is `#relay=wss://…`, but HashRouter owns
@@ -41,6 +42,10 @@ createRoot(root).render(
                   <Route index element={<RepoHomePage />} />
                   <Route path="tree/:ref/*" element={<TreePage />} />
                   <Route path="blob/:ref/*" element={<BlobPage />} />
+                  {/* Bare /commits (GitHub-style URL, no branch) resolves the
+                      default branch — previously it matched NO route and the
+                      whole app white-screened (#277). */}
+                  <Route path="commits" element={<CommitLogPage />} />
                   <Route path="commits/:ref" element={<CommitLogPage />} />
                   <Route path="commit/:sha" element={<CommitDetailPage />} />
                   <Route path="blame/:ref/*" element={<BlamePage />} />
@@ -49,6 +54,9 @@ createRoot(root).render(
                   <Route path="pulls" element={<PRListPage />} />
                   <Route path="pulls/:id" element={<PRDetailPage />} />
                 </Route>
+                {/* Catch-all: unmatched URLs render an inline card with the
+                    header intact instead of an empty page (#277). */}
+                <Route path="*" element={<NotFoundPage />} />
               </Route>
             </Routes>
           </ProfileCacheProvider>

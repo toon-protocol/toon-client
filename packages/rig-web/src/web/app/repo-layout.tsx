@@ -5,6 +5,7 @@ import { hexToNpub } from '../npub.js';
 import { resolveDefaultRef } from '../ref-resolver.js';
 import { shortRefName } from '@/lib/ref-utils';
 import { BranchSelector } from '@/components/branch-selector';
+import { ErrorBoundary } from '@/components/error-boundary';
 import { PushInstructions } from '@/components/push-instructions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useEffect, useMemo } from 'react';
@@ -141,7 +142,12 @@ export function RepoLayout() {
         </div>
       )}
 
-      <Outlet context={{ metadata, refs, owner: ownerNpub, repo } satisfies RepoContext} />
+      {/* Per-tab error boundary: a crash in one tab renders an inline error
+          card instead of white-screening the app; keyed on pathname so
+          navigating to another tab resets it (#277). */}
+      <ErrorBoundary key={location.pathname}>
+        <Outlet context={{ metadata, refs, owner: ownerNpub, repo } satisfies RepoContext} />
+      </ErrorBoundary>
     </div>
   );
 }

@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { queryRelay } from '../relay-client.js';
+import type { UnparseableEvent } from '../relay-client.js';
 import type { NostrEvent, NostrFilter } from '../nip34-parsers.js';
 
 interface UseRelayResult {
   events: NostrEvent[];
+  /** EVENT frames that failed to decode — surfaced, never silently dropped */
+  unparseable: UnparseableEvent[];
   loading: boolean;
   error: Error | null;
 }
@@ -17,6 +20,7 @@ export function useRelay(
   filter: NostrFilter | null
 ): UseRelayResult {
   const [events, setEvents] = useState<NostrEvent[]>([]);
+  const [unparseable, setUnparseable] = useState<UnparseableEvent[]>([]);
   const [loading, setLoading] = useState(!!filter);
   const [error, setError] = useState<Error | null>(null);
   const filterRef = useRef(filter);
@@ -27,6 +31,7 @@ export function useRelay(
   useEffect(() => {
     if (!filterJson) {
       setEvents([]);
+      setUnparseable([]);
       setLoading(false);
       return;
     }
@@ -37,11 +42,13 @@ export function useRelay(
     setError(null);
 
     let cancelled = false;
+    const failed: UnparseableEvent[] = [];
 
-    queryRelay(relayUrl, parsed)
+    queryRelay(relayUrl, parsed, undefined, (u) => failed.push(u))
       .then((result) => {
         if (!cancelled) {
           setEvents(result);
+          setUnparseable(failed);
           setLoading(false);
         }
       })
@@ -57,5 +64,5 @@ export function useRelay(
     };
   }, [relayUrl, filterJson]);
 
-  return { events, loading, error };
+  return { events, unparseable, loading, error };
 }
