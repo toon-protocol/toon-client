@@ -337,6 +337,53 @@ describe('resolveRelays', () => {
     ).rejects.toThrow(MultiUrlRemoteError);
   });
 
+  it('refuses a mixed multi-URL origin (relay URL first) before any payment', async () => {
+    git(['remote', 'add', 'origin', 'wss://relay.example'], repoDir);
+    git(['remote', 'set-url', '--add', 'origin', 'git@github.com:a/b.git'], repoDir);
+    await expect(
+      resolveRelays({
+        relayFlags: [],
+        repoRoot: repoDir,
+        toonRelays: ['wss://legacy.example'], // must NOT silently win
+      })
+    ).rejects.toThrow(MultiUrlRemoteError);
+  });
+
+  it('refuses a mixed multi-URL origin (non-relay URL first) before any payment', async () => {
+    git(['remote', 'add', 'origin', 'git@github.com:a/b.git'], repoDir);
+    git(['remote', 'set-url', '--add', 'origin', 'wss://relay.example'], repoDir);
+    await expect(
+      resolveRelays({ relayFlags: [], repoRoot: repoDir, toonRelays: [] })
+    ).rejects.toThrow(MultiUrlRemoteError);
+  });
+
+  it('skips a multi-URL origin whose URLs are ALL non-relay (plain git mirrors)', async () => {
+    git(['remote', 'add', 'origin', 'git@github.com:a/b.git'], repoDir);
+    git(['remote', 'set-url', '--add', 'origin', 'git@gitlab.com:a/b.git'], repoDir);
+    const resolved = await resolveRelays({
+      relayFlags: [],
+      repoRoot: repoDir,
+      toonRelays: ['wss://legacy.example'],
+    });
+    expect(resolved.relays).toEqual(['wss://legacy.example']);
+    expect(resolved.source).toBe('toon.relay');
+  });
+
+  it('never mislabels a relay URL as non-relay in the no-origin error', async () => {
+    // all-non-relay multi-URL origin + no toon.relay → NoOriginConfiguredError
+    // must cite a URL that genuinely is not a relay URL.
+    git(['remote', 'add', 'origin', 'git@github.com:a/b.git'], repoDir);
+    git(['remote', 'set-url', '--add', 'origin', 'git@gitlab.com:a/b.git'], repoDir);
+    const err = await resolveRelays({
+      relayFlags: [],
+      repoRoot: repoDir,
+      toonRelays: [],
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NoOriginConfiguredError);
+    expect((err as Error).message).toContain('git@github.com:a/b.git');
+    expect((err as Error).message).not.toContain('wss://');
+  });
+
   it('falls back to deprecated toon.relay (with the migration nudge) when origin is absent', async () => {
     const resolved = await resolveRelays({
       relayFlags: [],

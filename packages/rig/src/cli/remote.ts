@@ -16,7 +16,9 @@
  *
  * A remote with multiple URLs (`git remote set-url --add` done by hand) is
  * refused BEFORE anything is fetched, uploaded, or paid: rig publishes to
- * exactly one relay per paid command (the #243 single-relay guard).
+ * exactly one relay per paid command (the #243 single-relay guard). One
+ * carve-out: a default `origin` whose URLs are ALL non-relay is a plain git
+ * remote — it is skipped like any single non-relay origin, never refused.
  */
 
 import { parseArgs } from 'node:util';
@@ -112,19 +114,27 @@ export async function resolveRelays(
     return { relays: urls, source: 'remote', remoteName: opts.remoteName };
   }
 
-  // 3. Default remote: origin — when it looks like a relay. A non-relay
-  //    origin (e.g. a GitHub clone URL) is skipped, not an error: rig shares
-  //    git's remote namespace, so pre-existing origins must not break paid
-  //    commands that can still resolve via toon.relay.
+  // 3. Default remote: origin — when it looks like a relay. A PURELY
+  //    non-relay origin (e.g. a GitHub clone URL, even one with several
+  //    mirror push URLs) is skipped, not an error: rig shares git's remote
+  //    namespace, so pre-existing git origins must not break paid commands
+  //    that can still resolve via toon.relay. But the moment ANY of a
+  //    multi-URL origin's URLs is relay-shaped, the publish target is
+  //    ambiguous — refuse before anything is fetched, uploaded, or paid
+  //    (the #243 single-relay guard).
   let nonRelayOriginUrl: string | undefined;
   if (opts.repoRoot !== undefined) {
     const urls = await getGitRemoteUrls(opts.repoRoot, 'origin');
     if (urls.length === 1 && isRelayUrl(urls[0] as string)) {
       return { relays: urls, source: 'remote', remoteName: 'origin' };
     }
-    if (urls.length > 1 && urls.every(isRelayUrl)) {
+    if (urls.length > 1 && urls.some(isRelayUrl)) {
       throw new MultiUrlRemoteError('origin', urls);
     }
+    // Reachable only when every remaining URL is non-relay (single relay URL
+    // returned above; multi-URL with any relay URL threw above), so urls[0]
+    // is guaranteed non-relay — NoOriginConfiguredError's message relies on
+    // that ("the existing origin is not a relay URL").
     if (urls.length > 0) nonRelayOriginUrl = urls[0] as string;
   }
 
