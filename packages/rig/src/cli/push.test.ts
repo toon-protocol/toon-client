@@ -67,6 +67,12 @@ interface Harness {
   confirms: string[];
 }
 
+/** Hermetic default: no daemon detected (never probes the real loopback). */
+const NO_DAEMON: NonNullable<PushDeps['probeDaemon']> = async () => ({
+  baseUrl: 'http://127.0.0.1:8787',
+  reachable: false,
+});
+
 function makeDeps(
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -74,6 +80,8 @@ function makeDeps(
     interactive?: boolean;
     answer?: boolean;
     loadStandalone?: PushDeps['loadStandalone'];
+    probeDaemon?: PushDeps['probeDaemon'];
+    fetchImpl?: PushDeps['fetchImpl'];
   } = {}
 ): Harness {
   const out: string[] = [];
@@ -95,6 +103,8 @@ function makeDeps(
     io,
     env,
     cwd,
+    probeDaemon: options.probeDaemon ?? NO_DAEMON,
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.loadStandalone
       ? { loadStandalone: options.loadStandalone }
       : {}),
@@ -398,7 +408,9 @@ describe('standalone push (Publisher seam)', () => {
     expect(fake.stopped).toBe(true);
   });
 
-  it('surfaces the nonce-guard daemon-identity conflict with the MCP hint', async () => {
+  it('surfaces the nonce-guard daemon-identity conflict with the delegation hint', async () => {
+    // Post-#279 this only fires on the probe→publish race (a daemon that
+    // appeared mid-run) — the remediation names the automatic delegation.
     const conflict = new Error('toon-clientd is running with this identity');
     conflict.name = 'DaemonIdentityConflictError';
     const h = makeDeps(env, repoDir, {
@@ -410,7 +422,7 @@ describe('standalone push (Publisher seam)', () => {
     expect(code).toBe(1);
     const text = h.err.join('\n');
     expect(text).toContain('toon-clientd is running');
-    expect(text).toContain('toon_git_*');
+    expect(text).toContain('delegate to a same-identity daemon automatically');
   });
 
   it('surfaces the missing-identity remediation from the loader', async () => {
@@ -644,5 +656,217 @@ describe('usage', () => {
     expect(text).toContain('--force');
     expect(text).toContain('rig init');
     expect(text).not.toContain('--daemon');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Daemon delegation (#279): same-identity toon-clientd → /git/estimate+push
+// ---------------------------------------------------------------------------
+
+describe('daemon delegation (#279)', () => {
+  /** Standard BIP-39 test vector phrase (public; never funded). */
+  const TEST_MNEMONIC =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+  let SELF: string;
+
+  beforeEach(async () => {
+    const { deriveNostrKeyFromMnemonic } = await import(
+      '@toon-protocol/client'
+    );
+    SELF = deriveNostrKeyFromMnemonic(TEST_MNEMONIC, 0).pubkey;
+    await writeToonConfig(repoDir, { repoId: 'demo' });
+    git(['remote', 'add', 'origin', 'wss://origin-relay.example'], repoDir);
+  });
+
+  const sameIdentityProbe = (): NonNullable<PushDeps['probeDaemon']> =>
+    async () => ({
+      baseUrl: 'http://127.0.0.1:8787',
+      reachable: true,
+      identity: SELF,
+      ready: true,
+      feePerEvent: '1',
+      relayUrl: 'wss://origin-relay.example',
+    });
+
+  function daemonPlan(overrides: Partial<GitEstimateResponse> = {}): GitEstimateResponse {
+    return {
+      repoId: 'demo',
+      refUpdates: [
+        {
+          refname: 'refs/heads/main',
+          localSha: 'a'.repeat(40),
+          remoteSha: null,
+          kind: 'create',
+        },
+      ],
+      newRefs: { 'refs/heads/main': 'a'.repeat(40) },
+      headSymref: 'refs/heads/main',
+      objects: [],
+      knownShaToTxId: {},
+      announceNeeded: true,
+      announcement: { name: 'demo', description: '' },
+      estimate: {
+        objectCount: 0,
+        totalObjectBytes: 0,
+        uploadFee: '0',
+        eventCount: 2,
+        eventFees: '2',
+        totalFee: '2',
+      },
+      ...overrides,
+    };
+  }
+
+  const daemonResult: GitPushResponse = {
+    repoId: 'demo',
+    refUpdates: daemonPlan().refUpdates,
+    uploads: [],
+    announceReceipt: { eventId: 'a1'.repeat(32), feePaid: '1' },
+    refsReceipt: { eventId: 'b2'.repeat(32), feePaid: '1' },
+    arweaveMap: {},
+    totalFeePaid: '2',
+    estimate: daemonPlan().estimate,
+  };
+
+  function daemonFetch(plan: GitEstimateResponse): {
+    posts: { url: string; body: Record<string, unknown> }[];
+    fetchImpl: typeof fetch;
+  } {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      posts.push({
+        url: u,
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      const payload = u.endsWith('/git/estimate') ? plan : daemonResult;
+      return new Response(JSON.stringify(payload), { status: 200 });
+    }) as typeof fetch;
+    return { posts, fetchImpl };
+  }
+
+  it('delegates estimate + execute to the daemon; standalone loader untouched', async () => {
+    const fake = makeStandalone(emptyRemoteState());
+    const { posts, fetchImpl } = daemonFetch(daemonPlan());
+    const h = makeDeps(
+      { ...env, RIG_MNEMONIC: TEST_MNEMONIC },
+      repoDir,
+      {
+        loadStandalone: fake.load,
+        probeDaemon: sameIdentityProbe(),
+        fetchImpl,
+      }
+    );
+    const code = await runPush(['--yes', '--json'], h.deps);
+    expect(code).toBe(0);
+
+    // The standalone path never spun up: no loader call, no publishes.
+    expect(fake.loadedWith).toHaveLength(0);
+    expect(fake.published).toHaveLength(0);
+
+    // Wire calls: estimate first, then the confirmed push, both carrying the
+    // resolved relay + expanded refspecs.
+    expect(posts.map((p) => p.url)).toEqual([
+      'http://127.0.0.1:8787/git/estimate',
+      'http://127.0.0.1:8787/git/push',
+    ]);
+    expect(posts[0]?.body['repoId']).toBe('demo');
+    expect(posts[0]?.body['refspecs']).toEqual(['refs/heads/main']);
+    expect(posts[0]?.body['relayUrls']).toEqual([
+      'wss://origin-relay.example',
+    ]);
+    expect(posts[1]?.body['confirm']).toBe(true);
+
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['path']).toBe('daemon');
+    expect(doc['executed']).toBe(true);
+    expect(doc['result']).toEqual(daemonResult);
+    expect((doc['identity'] as { pubkey: string }).pubkey).toBe(SELF);
+    expect(h.err.join('\n')).toContain('paid path: daemon');
+  });
+
+  it('daemon estimate without --yes is a pure estimate (nothing executed)', async () => {
+    const { posts, fetchImpl } = daemonFetch(daemonPlan());
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      probeDaemon: sameIdentityProbe(),
+      fetchImpl,
+    });
+    const code = await runPush(['--json'], h.deps);
+    expect(code).toBe(0);
+    expect(posts.map((p) => p.url)).toEqual([
+      'http://127.0.0.1:8787/git/estimate',
+    ]);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['path']).toBe('daemon');
+    expect(doc['executed']).toBe(false);
+    expect(doc['hint']).toContain('estimate only');
+  });
+
+  it('daemon up-to-date plan short-circuits before paying', async () => {
+    const { posts, fetchImpl } = daemonFetch(
+      daemonPlan({
+        refUpdates: [
+          {
+            refname: 'refs/heads/main',
+            localSha: 'a'.repeat(40),
+            remoteSha: 'a'.repeat(40),
+            kind: 'up-to-date',
+          },
+        ],
+      })
+    );
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      probeDaemon: sameIdentityProbe(),
+      fetchImpl,
+    });
+    const code = await runPush(['--yes'], h.deps);
+    expect(code).toBe(0);
+    expect(posts).toHaveLength(1);
+    expect(h.out.join('\n')).toContain('Everything up-to-date');
+  });
+
+  it('a daemon on a DIFFERENT identity runs the standalone path', async () => {
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      loadStandalone: fake.load,
+      probeDaemon: async () => ({
+        baseUrl: 'http://127.0.0.1:8787',
+        reachable: true,
+        identity: 'ff'.repeat(32),
+      }),
+    });
+    const code = await runPush(['--yes', '--json'], h.deps);
+    expect(code).toBe(0);
+    expect(fake.published.map((p) => p.kind)).toEqual([30617, 30618]);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['path']).toBe('standalone');
+    expect(h.err.join('\n')).toContain('different identity');
+  });
+
+  it('surfaces a daemon /git error envelope with its structured payload', async () => {
+    const fetchImpl = (async (_url: unknown) =>
+      new Response(
+        JSON.stringify({
+          error: 'non_fast_forward',
+          detail: 'remote moved',
+          refs: [
+            {
+              refname: 'refs/heads/main',
+              localSha: 'a'.repeat(40),
+              remoteSha: 'b'.repeat(40),
+            },
+          ],
+        }),
+        { status: 409 }
+      )) as typeof fetch;
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      probeDaemon: sameIdentityProbe(),
+      fetchImpl,
+    });
+    const code = await runPush(['--yes'], h.deps);
+    expect(code).toBe(1);
+    const text = h.err.join('\n');
+    expect(text).toContain('non-fast-forward');
+    expect(text).toContain('--force');
   });
 });

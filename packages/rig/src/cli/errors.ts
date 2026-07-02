@@ -15,6 +15,7 @@ import {
   type RejectedRefUpdate,
 } from '../push.js';
 import { GitError } from '../repo-reader.js';
+import { DaemonRouteError, DaemonUnreachableError } from './daemon-session.js';
 import { MissingIdentityError } from './identity.js';
 import type { CliIo } from './output.js';
 
@@ -237,6 +238,50 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
     };
   }
 
+  // Delegated-daemon path (#279): the daemon's /git/* error envelope carries
+  // the same structured payloads the local planner throws — render them
+  // identically so the two paths are indistinguishable to the user.
+  if (err instanceof DaemonRouteError) {
+    const envelope = err.envelope;
+    if (envelope.error === 'non_fast_forward' && Array.isArray(envelope['refs'])) {
+      return {
+        code: 'non_fast_forward',
+        lines: nonFastForwardLines(envelope['refs'] as RejectedRefUpdate[]),
+        json: { ...envelope },
+      };
+    }
+    if (
+      envelope.error === 'oversize_objects' &&
+      Array.isArray(envelope['objects'])
+    ) {
+      return {
+        code: 'oversize_objects',
+        lines: oversizeLines(envelope['objects'] as OversizeObject[]),
+        json: { ...envelope },
+      };
+    }
+    const retryHint =
+      envelope.retryable === true
+        ? ['The daemon reports this as retryable — re-run shortly.']
+        : [];
+    return {
+      code: envelope.error,
+      lines: [
+        `daemon rejected the operation (HTTP ${err.status}): ` +
+          (envelope.detail ?? envelope.error),
+        ...retryHint,
+      ],
+      json: { ...envelope },
+    };
+  }
+  if (err instanceof DaemonUnreachableError) {
+    return {
+      code: 'daemon_unreachable',
+      lines: err.message.split('\n'),
+      json: { error: 'daemon_unreachable', detail: err.message },
+    };
+  }
+
   // Standalone-path tagged errors (matched by name — the classes live behind
   // the optional dynamic import).
   const name = err instanceof Error ? err.name : '';
@@ -246,7 +291,9 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
       code: 'daemon_identity_conflict',
       lines: [
         message,
-        'Stop the toon-clientd daemon (or publish through its toon_git_* MCP tools) and re-run.',
+        'Paid writes delegate to a same-identity daemon automatically (#279); ' +
+          'seeing this means the daemon appeared mid-run or this operation ' +
+          'has no daemon route — stop the daemon and re-run.',
       ],
       json: { error: 'daemon_identity_conflict', detail: message },
     };

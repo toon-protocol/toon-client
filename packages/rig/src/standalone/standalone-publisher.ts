@@ -629,8 +629,14 @@ export class StandalonePublisher implements Publisher {
 
       // Persisted channel state omits the on-chain deposit — re-read it so
       // fee/balance accounting is right (EVM only; mirrors the daemon).
+      // #279 latency trim: skipped when the record already carries a
+      // depositTotal — deposits only change through rig's own flows (open
+      // --deposit / a later resume), which update the record; this is
+      // display/accounting state, not the claim watermark, so a stale value
+      // can never double-spend (the peer enforces the cumulative claim).
       if (
         record.context.chainType === 'evm' &&
+        record.depositTotal === undefined &&
         this.client.rehydrateChannelDeposit
       ) {
         try {

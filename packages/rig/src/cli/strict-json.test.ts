@@ -182,12 +182,19 @@ interface RunResult {
  * process-level stdout guard, makeCliIo, dispatch, ensureSingleJsonDoc —
  * with the real stdout/stderr captured instead of written to the terminal.
  */
+/** Hermetic default: no daemon detected (never probes the real loopback). */
+const NO_DAEMON: NonNullable<DispatchDeps['probeDaemon']> = async () => ({
+  baseUrl: 'http://127.0.0.1:8787',
+  reachable: false,
+});
+
 async function run(
   argv: string[],
   opts: {
     env?: NodeJS.ProcessEnv;
     cwd?: string;
     loadStandalone?: LoadStandalone;
+    probeDaemon?: DispatchDeps['probeDaemon'];
     runGit?: DispatchDeps['runGit'];
   } = {}
 ): Promise<RunResult> {
@@ -215,6 +222,7 @@ async function run(
       io,
       env: opts.env ?? {},
       cwd: opts.cwd ?? makeTempDir('toon-rig-json-cwd-'),
+      probeDaemon: opts.probeDaemon ?? NO_DAEMON,
       ...(opts.loadStandalone ? { loadStandalone: opts.loadStandalone } : {}),
       ...(opts.runGit ? { runGit: opts.runGit } : {}),
     });

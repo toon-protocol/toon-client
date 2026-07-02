@@ -66,6 +66,27 @@ function makeIo(jsonMode: boolean): RigIo {
   });
 }
 
+/**
+ * Exit as soon as stdio is flushed (#279). By the time dispatch resolves,
+ * every command has finished its work and awaited its teardown — but the
+ * embedded `@toon-protocol/client` can leave a keep-alive socket behind
+ * that holds the Node event loop open for ~30 more seconds. That lingering
+ * handle — not discovery or negotiation — was the bulk of the uniform
+ * "~32s per paid command" tax the #279 study measured. Nothing rig can
+ * reach unrefs it, so the one-shot CLI does what one-shot CLIs do: flush
+ * and exit.
+ */
+function exitWhenFlushed(code: number): void {
+  process.exitCode = code;
+  let pending = 2;
+  const done = (): void => {
+    pending -= 1;
+    if (pending === 0) process.exit(code);
+  };
+  process.stdout.write('', done);
+  process.stderr.write('', done);
+}
+
 const argv = process.argv.slice(2);
 const io = makeIo(isJsonInvocation(argv));
 
@@ -76,13 +97,13 @@ dispatch(argv, {
 }).then(
   (code) => {
     io.ensureSingleJsonDoc(code);
-    process.exitCode = code;
+    exitWhenFlushed(code);
   },
   (err: unknown) => {
     process.stderr.write(
       `rig: unexpected error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`
     );
     io.ensureSingleJsonDoc(1);
-    process.exitCode = 1;
+    exitWhenFlushed(1);
   }
 );

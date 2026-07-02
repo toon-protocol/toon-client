@@ -26,6 +26,17 @@
  * `../standalone/network-bootstrap.ts`. The pure resolution lives in
  * {@link resolveNetworkTopology} (unit-testable without any network).
  *
+ * TOPOLOGY CACHE (#279): the resolved topology is persisted under
+ * `TOON_CLIENT_HOME` (`../standalone/topology-cache.ts`) keyed by
+ * relay-origin + identity + an explicit-config fingerprint, with a 15-min
+ * TTL (`RIG_TOPOLOGY_TTL_MS` overrides; `0` disables). A cache hit skips
+ * announce discovery and the funded-chain probes entirely; a cached
+ * topology that then fails to BOOTSTRAP is invalidated and re-resolved
+ * live in-process ({@link TopologyRecoveringPublisher}), so staleness costs
+ * one failed attempt, never a broken run. Only paid-path resolutions
+ * (`requireUplink !== false`) are written — a free-read topology may lack
+ * an uplink and must not shadow the paid path's MissingUplinkError.
+ *
  * CORE COEXISTENCE NOTE: rig performs discovery with ITS OWN
  * `@toon-protocol/core` (^2.0.x — live genesis seed), while the embedded
  * `@toon-protocol/client` keeps its internal core (^1.6.x) for its own
@@ -47,10 +58,27 @@ import {
   decodeEventFromToon,
   encodeEventToToon,
 } from '@toon-protocol/core';
+import type {
+  FeeRates,
+  GitObjectUpload,
+  Publisher,
+  PublishReceipt,
+  UploadReceipt,
+} from '../publisher.js';
+import type { UnsignedEvent } from '../nip34-events.js';
 import {
   ChannelMapStore,
   RIG_CHANNEL_MAP_FILENAME,
+  type ChannelMapRecord,
 } from '../standalone/channel-map.js';
+import {
+  TOPOLOGY_CACHE_FILENAME,
+  TOPOLOGY_TTL_ENV,
+  TopologyCache,
+  explicitConfigFingerprint,
+  topologyCacheKey,
+  topologyCacheTtlMs,
+} from '../standalone/topology-cache.js';
 import {
   DISCOVERY_TIMEOUT_MS,
   TokenNetworkUnderivableError,
@@ -419,6 +447,141 @@ export async function resolveNetworkTopology(
 }
 
 // ---------------------------------------------------------------------------
+// Cached-topology recovery (#279)
+// ---------------------------------------------------------------------------
+
+/** Structural check for a cached {@link NetworkTopology} document. */
+function isNetworkTopology(value: unknown): value is NetworkTopology {
+  if (typeof value !== 'object' || value === null) return false;
+  const t = value as Record<string, unknown>;
+  return typeof t['destination'] === 'string' && Array.isArray(t['knownPeers']);
+}
+
+/**
+ * Start failures that must NEVER trigger a cache-invalidation retry: they
+ * are concurrency/state guards, not topology staleness — retrying would
+ * bypass exactly what they protect.
+ */
+const NON_RECOVERABLE_START_ERRORS: ReadonlySet<string> = new Set([
+  'DaemonIdentityConflictError',
+  'StandaloneLockError',
+  'ChannelMapCorruptError',
+]);
+
+/**
+ * Publisher wrapper implementing the #279 cache-invalidation contract: when
+ * the inner publisher was built from a CACHED topology and its bootstrap
+ * (`start`/`startClientOnly`) fails, the cache entry is invalidated, the
+ * topology is re-resolved LIVE, a fresh publisher replaces the inner one,
+ * and the operation proceeds — one retry, never more. Bootstrap failures
+ * are pre-payment by construction (start() completes before any claim is
+ * signed), so the retry can never double-pay. Publishers built from a live
+ * resolution get no recovery hook and fail through unchanged.
+ */
+class TopologyRecoveringPublisher implements Publisher {
+  private inner: StandalonePublisher;
+  private rebuild: (() => Promise<StandalonePublisher>) | undefined;
+  private readonly warn: (line: string) => void;
+
+  constructor(
+    inner: StandalonePublisher,
+    rebuild: (() => Promise<StandalonePublisher>) | undefined,
+    warn: (line: string) => void
+  ) {
+    this.inner = inner;
+    this.rebuild = rebuild;
+    this.warn = warn;
+  }
+
+  getPublicKey(): string {
+    return this.inner.getPublicKey();
+  }
+
+  getFeeRates(): Promise<FeeRates> {
+    return this.inner.getFeeRates();
+  }
+
+  /**
+   * Run the bootstrap step, recovering ONCE from a stale cached topology.
+   * A rebuild failure surfaces the LIVE resolution's error — that is the
+   * network's real state, strictly more actionable than the cached failure.
+   */
+  private async ensure(
+    start: (p: StandalonePublisher) => Promise<void>
+  ): Promise<StandalonePublisher> {
+    try {
+      await start(this.inner);
+      return this.inner;
+    } catch (err) {
+      const rebuild = this.rebuild;
+      this.rebuild = undefined;
+      const name = err instanceof Error ? err.name : '';
+      if (!rebuild || NON_RECOVERABLE_START_ERRORS.has(name)) throw err;
+      this.warn(
+        'rig: bootstrap with the cached network topology failed ' +
+          `(${err instanceof Error ? err.message : String(err)}) — ` +
+          'invalidating the cache and re-resolving live'
+      );
+      const fresh = await rebuild();
+      try {
+        // Failed starts release their own lock/state; stop() is idempotent.
+        await this.inner.stop();
+      } catch {
+        // best-effort teardown of the abandoned publisher
+      }
+      this.inner = fresh;
+      await start(this.inner);
+      return this.inner;
+    }
+  }
+
+  async publishEvent(
+    event: UnsignedEvent,
+    relayUrls: string[]
+  ): Promise<PublishReceipt> {
+    const p = await this.ensure((x) => x.start());
+    return p.publishEvent(event, relayUrls);
+  }
+
+  async uploadGitObject(upload: GitObjectUpload): Promise<UploadReceipt> {
+    const p = await this.ensure((x) => x.start());
+    return p.uploadGitObject(upload);
+  }
+
+  // ── money lifecycle passthroughs (#263) — same recovery contract ─────────
+
+  async openChannelExplicit(
+    opts?: Parameters<StandalonePublisher['openChannelExplicit']>[0]
+  ): ReturnType<StandalonePublisher['openChannelExplicit']> {
+    const p = await this.ensure((x) => x.start());
+    return p.openChannelExplicit(opts);
+  }
+
+  async closeRecordedChannel(
+    record: ChannelMapRecord
+  ): ReturnType<StandalonePublisher['closeRecordedChannel']> {
+    const p = await this.ensure((x) => x.startClientOnly());
+    return p.closeRecordedChannel(record);
+  }
+
+  async settleRecordedChannel(
+    record: ChannelMapRecord
+  ): ReturnType<StandalonePublisher['settleRecordedChannel']> {
+    const p = await this.ensure((x) => x.startClientOnly());
+    return p.settleRecordedChannel(record);
+  }
+
+  /** Free read on the unstarted client — no bootstrap, no recovery needed. */
+  readWalletBalances(): ReturnType<StandalonePublisher['readWalletBalances']> {
+    return this.inner.readWalletBalances();
+  }
+
+  async stop(): Promise<void> {
+    await this.inner.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Context factory
 // ---------------------------------------------------------------------------
 
@@ -475,39 +638,6 @@ export async function createStandaloneContext(
     genesisSeed?.relayUrl ??
     'ws://localhost:7100';
 
-  // ── Live announce discovery ──────────────────────────────────────────────
-  // Skipped when explicit config already pins the whole payment topology
-  // (fully-configured setups keep their zero-roundtrip start and their exact
-  // pre-#264 behavior). Discovery failure is non-fatal: warn + genesis seed.
-  const fullyExplicit =
-    Boolean(
-      (env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl) ||
-        (env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl)
-    ) &&
-    Boolean(env['TOON_CLIENT_DESTINATION'] ?? file.destination) &&
-    Boolean(file.supportedChains?.length);
-  let announce: AnnouncedPeer | undefined;
-  if (!fullyExplicit) {
-    try {
-      const peers = await discoverAnnouncedPeers(relayUrl, {
-        timeoutMs: DISCOVERY_TIMEOUT_MS,
-      });
-      announce = pickPaymentPeer(peers, genesisSeedPubkeys());
-      if (!announce) {
-        warn(
-          `rig: no payment-peer announce (kind:10032) found on ${relayUrl} — ` +
-            'falling back to the genesis peer seed'
-        );
-      }
-    } catch (err) {
-      warn(
-        `rig: announce discovery on ${relayUrl} failed ` +
-          `(${err instanceof Error ? err.message : String(err)}) — falling ` +
-          'back to the genesis peer seed'
-      );
-    }
-  }
-
   // ── Peer→channel persistence (#262) ──────────────────────────────────────
   const channelStorePath = file.channelStorePath ?? join(dir, 'channels.json');
   const channelMap = new ChannelMapStore({
@@ -515,103 +645,182 @@ export async function createStandaloneContext(
     watermarkPath: channelStorePath,
   });
 
-  // ── Topology resolution (pure; explicit > announce > genesis) ────────────
-  const topology = await resolveNetworkTopology({
-    env,
-    file,
-    configPath,
-    relayUrl,
-    announce,
-    genesisSeed,
-    identity: {
-      mnemonic: identity.mnemonic,
-      accountIndex: identity.accountIndex,
-      pubkey: identity.pubkey,
-    },
-    channelRecords: () => chainRecordsFor(channelMap, identity.pubkey),
-    ...(options.requireUplink !== undefined
-      ? { requireUplink: options.requireUplink }
-      : {}),
-    warn,
+  // ── Topology cache (#279): keyed by relay-origin + identity + explicit
+  // config; a hit skips discovery AND the pure-but-probing resolution below.
+  const cache = new TopologyCache<NetworkTopology>({
+    path: join(dir, TOPOLOGY_CACHE_FILENAME),
+    ttlMs: topologyCacheTtlMs(env),
+    validate: isNetworkTopology,
   });
+  const cacheKey = topologyCacheKey({
+    relayUrl,
+    identity: identity.pubkey,
+    fingerprint: explicitConfigFingerprint(
+      env,
+      file as Record<string, unknown>
+    ),
+  });
+
+  const resolveLiveTopology = async (): Promise<NetworkTopology> => {
+    // ── Live announce discovery ────────────────────────────────────────────
+    // Skipped when explicit config already pins the whole payment topology
+    // (fully-configured setups keep their zero-roundtrip start and their
+    // exact pre-#264 behavior). Discovery failure is non-fatal: warn +
+    // genesis seed.
+    const fullyExplicit =
+      Boolean(
+        (env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl) ||
+          (env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl)
+      ) &&
+      Boolean(env['TOON_CLIENT_DESTINATION'] ?? file.destination) &&
+      Boolean(file.supportedChains?.length);
+    let announce: AnnouncedPeer | undefined;
+    if (!fullyExplicit) {
+      try {
+        const peers = await discoverAnnouncedPeers(relayUrl, {
+          timeoutMs: DISCOVERY_TIMEOUT_MS,
+        });
+        announce = pickPaymentPeer(peers, genesisSeedPubkeys());
+        if (!announce) {
+          warn(
+            `rig: no payment-peer announce (kind:10032) found on ${relayUrl} — ` +
+              'falling back to the genesis peer seed'
+          );
+        }
+      } catch (err) {
+        warn(
+          `rig: announce discovery on ${relayUrl} failed ` +
+            `(${err instanceof Error ? err.message : String(err)}) — falling ` +
+            'back to the genesis peer seed'
+        );
+      }
+    }
+
+    // ── Topology resolution (pure; explicit > announce > genesis) ──────────
+    const resolved = await resolveNetworkTopology({
+      env,
+      file,
+      configPath,
+      relayUrl,
+      announce,
+      genesisSeed,
+      identity: {
+        mnemonic: identity.mnemonic,
+        accountIndex: identity.accountIndex,
+        pubkey: identity.pubkey,
+      },
+      channelRecords: () => chainRecordsFor(channelMap, identity.pubkey),
+      ...(options.requireUplink !== undefined
+        ? { requireUplink: options.requireUplink }
+        : {}),
+      warn,
+    });
+    // Cache only paid-path resolutions: a `requireUplink: false` free read
+    // may resolve WITHOUT an uplink, and caching that would let a later paid
+    // command skip past MissingUplinkError with a broken topology.
+    if (options.requireUplink !== false) cache.write(cacheKey, resolved);
+    return resolved;
+  };
+
+  const cached = cache.read(cacheKey);
+  if (cached) {
+    warn(
+      `rig: network topology from cache (${Math.round(cached.ageMs / 1000)}s ` +
+        `old; ${TOPOLOGY_TTL_ENV}=0 disables) — skipping announce discovery`
+    );
+  }
+  const topology = cached?.topology ?? (await resolveLiveTopology());
 
   const eventFee = BigInt(file.feePerEvent ?? '1');
 
-  const clientConfig: ToonClientConfig = {
-    // validateConfig requires connectorUrl OR proxyUrl; with BTP-only config a
-    // dummy connectorUrl satisfies it (unused at runtime — same convention as
-    // the daemon).
-    ...(topology.proxyUrl
-      ? { proxyUrl: topology.proxyUrl }
-      : { connectorUrl: 'http://127.0.0.1:1' }),
-    mnemonic: identity.mnemonic,
-    mnemonicAccountIndex: identity.accountIndex,
-    ilpInfo: {
-      pubkey: '00'.repeat(32),
-      ilpAddress: 'g.toon.client',
-      btpEndpoint: topology.btpUrl ?? '',
-      assetCode: 'USD',
-      assetScale: 6,
-    },
-    toonEncoder: encodeEventToToon,
-    toonDecoder: decodeEventFromToon,
-    ...(topology.btpUrl ? { btpUrl: topology.btpUrl, btpAuthToken: '' } : {}),
-    destinationAddress: topology.destination,
-    // The embedded client bootstraps against the known peer above; its
-    // `relayUrl` config only seeds ArDrive-merged peers, so it stays unset.
-    relayUrl: '',
-    knownPeers: topology.knownPeers,
-    channelStorePath,
-    ...(topology.supportedChains
-      ? { supportedChains: topology.supportedChains }
-      : {}),
-    ...(file.settlementAddresses
-      ? { settlementAddresses: file.settlementAddresses }
-      : {}),
-    ...(topology.preferredTokens
-      ? { preferredTokens: topology.preferredTokens }
-      : {}),
-    ...(topology.tokenNetworks
-      ? { tokenNetworks: topology.tokenNetworks }
-      : {}),
-    ...(topology.chainRpcUrls ? { chainRpcUrls: topology.chainRpcUrls } : {}),
-    ...(file.solanaChannel ? { solanaChannel: file.solanaChannel } : {}),
-    ...(file.minaChannel ? { minaChannel: file.minaChannel } : {}),
+  const buildPublisher = (topo: NetworkTopology): StandalonePublisher => {
+    const clientConfig: ToonClientConfig = {
+      // validateConfig requires connectorUrl OR proxyUrl; with BTP-only
+      // config a dummy connectorUrl satisfies it (unused at runtime — same
+      // convention as the daemon).
+      ...(topo.proxyUrl
+        ? { proxyUrl: topo.proxyUrl }
+        : { connectorUrl: 'http://127.0.0.1:1' }),
+      mnemonic: identity.mnemonic,
+      mnemonicAccountIndex: identity.accountIndex,
+      ilpInfo: {
+        pubkey: '00'.repeat(32),
+        ilpAddress: 'g.toon.client',
+        btpEndpoint: topo.btpUrl ?? '',
+        assetCode: 'USD',
+        assetScale: 6,
+      },
+      toonEncoder: encodeEventToToon,
+      toonDecoder: decodeEventFromToon,
+      ...(topo.btpUrl ? { btpUrl: topo.btpUrl, btpAuthToken: '' } : {}),
+      destinationAddress: topo.destination,
+      // The embedded client bootstraps against the known peer above; its
+      // `relayUrl` config only seeds ArDrive-merged peers, so it stays unset.
+      relayUrl: '',
+      knownPeers: topo.knownPeers,
+      channelStorePath,
+      ...(topo.supportedChains
+        ? { supportedChains: topo.supportedChains }
+        : {}),
+      ...(file.settlementAddresses
+        ? { settlementAddresses: file.settlementAddresses }
+        : {}),
+      ...(topo.preferredTokens ? { preferredTokens: topo.preferredTokens } : {}),
+      ...(topo.tokenNetworks ? { tokenNetworks: topo.tokenNetworks } : {}),
+      ...(topo.chainRpcUrls ? { chainRpcUrls: topo.chainRpcUrls } : {}),
+      ...(file.solanaChannel ? { solanaChannel: file.solanaChannel } : {}),
+      ...(file.minaChannel ? { minaChannel: file.minaChannel } : {}),
+    };
+
+    return new StandalonePublisher({
+      clientConfig,
+      eventFee,
+      channelMap,
+      warn,
+      ...(topo.publishDestination
+        ? { publishDestination: topo.publishDestination }
+        : {}),
+      ...(topo.storeDestination
+        ? { storeDestination: topo.storeDestination }
+        : {}),
+      // `rig channel open --peer` (#263): anchor the channel (and its map
+      // key) to an explicit peer destination instead of the configured
+      // default.
+      ...(options.channelDestination
+        ? { channelDestination: options.channelDestination }
+        : {}),
+      // The peer's announce does not carry TokenNetwork/token parameters, so
+      // the client's negotiation leaves them empty (#260 root cause 3) — the
+      // publisher back-fills them from the derived per-chain maps before the
+      // channel opens.
+      ...(topo.tokenNetworks || topo.preferredTokens
+        ? {
+            negotiationFallbacks: {
+              ...(topo.tokenNetworks
+                ? { tokenNetworks: topo.tokenNetworks }
+                : {}),
+              ...(topo.preferredTokens
+                ? { preferredTokens: topo.preferredTokens }
+                : {}),
+            },
+          }
+        : {}),
+    });
   };
 
-  const publisher = new StandalonePublisher({
-    clientConfig,
-    eventFee,
-    channelMap,
-    warn,
-    ...(topology.publishDestination
-      ? { publishDestination: topology.publishDestination }
-      : {}),
-    ...(topology.storeDestination
-      ? { storeDestination: topology.storeDestination }
-      : {}),
-    // `rig channel open --peer` (#263): anchor the channel (and its map key)
-    // to an explicit peer destination instead of the configured default.
-    ...(options.channelDestination
-      ? { channelDestination: options.channelDestination }
-      : {}),
-    // The peer's announce does not carry TokenNetwork/token parameters, so
-    // the client's negotiation leaves them empty (#260 root cause 3) — the
-    // publisher back-fills them from the derived per-chain maps before the
-    // channel opens.
-    ...(topology.tokenNetworks || topology.preferredTokens
-      ? {
-          negotiationFallbacks: {
-            ...(topology.tokenNetworks
-              ? { tokenNetworks: topology.tokenNetworks }
-              : {}),
-            ...(topology.preferredTokens
-              ? { preferredTokens: topology.preferredTokens }
-              : {}),
-          },
+  // Cache-sourced publishers get the #279 recovery hook: a failed bootstrap
+  // invalidates the entry, re-resolves live (which re-writes the cache), and
+  // retries once. Live-resolved publishers fail through unchanged.
+  const publisher = new TopologyRecoveringPublisher(
+    buildPublisher(topology),
+    cached
+      ? async () => {
+          cache.invalidate(cacheKey);
+          return buildPublisher(await resolveLiveTopology());
         }
-      : {}),
-  });
+      : undefined,
+    warn
+  );
 
   return {
     ownerPubkey: publisher.getPublicKey(),

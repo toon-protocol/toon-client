@@ -356,7 +356,7 @@ describe('StandalonePublisher', () => {
         DaemonIdentityConflictError
       );
       await expect(publisher.publishEvent(EVENT, [])).rejects.toThrow(
-        /use daemon mode or stop the daemon/
+        /stop the daemon and re-run/
       );
       // Never started the client, never signed a claim, took no lock.
       expect(calls.start).toBe(0);
@@ -622,16 +622,45 @@ describe('StandalonePublisher', () => {
           },
         },
       ]);
-      // Resumed deposits are re-read from chain (persisted state omits them).
-      expect(callsB.rehydrates).toEqual([
-        { channelId: '0xchannel-1', chain: 'evm:31337' },
-      ]);
+      // #279 happy-path trim: the record already carries depositTotal (run 1
+      // recorded it at open time), so NO on-chain deposit re-read happens.
+      expect(callsB.rehydrates).toEqual([]);
       // The advanced watermark was NOT clobbered by the seed.
       expect(map.readWatermark('0xchannel-1')).toEqual({
         nonce: 15,
         cumulativeAmount: '16120',
       });
       expect(map.list()).toHaveLength(1);
+      expect(warnings).toEqual([]);
+    });
+
+    it('re-reads the deposit on resume ONLY when the record lacks it (#279 trim)', async () => {
+      // Run 1: open + record, then strip depositTotal from the stored record
+      // (simulates a record written before the deposit was known).
+      const { client: clientA } = mockChannelClient();
+      const runA = buildPersistent(clientA);
+      await runA.publishEvent(EVENT, []);
+      await runA.stop();
+      const mapPath = join(stateDir, 'rig-channels.json');
+      const raw = JSON.parse(readFileSync(mapPath, 'utf8')) as {
+        channels: Record<string, { depositTotal?: string }>;
+      };
+      for (const record of Object.values(raw.channels)) {
+        delete record.depositTotal;
+      }
+      writeFileSync(mapPath, JSON.stringify(raw, null, 2));
+
+      // Run 2: the unknown deposit IS re-read from chain and recorded.
+      const { client: clientB, calls: callsB } = mockChannelClient({
+        rehydratedDeposit: 424242n,
+      });
+      const runB = buildPersistent(clientB);
+      await runB.publishEvent(EVENT, []);
+      await runB.stop();
+      expect(callsB.rehydrates).toEqual([
+        { channelId: '0xchannel-1', chain: 'evm:31337' },
+      ]);
+      expect(map.list()[0]?.depositTotal).toBe('424242');
       expect(warnings).toEqual([]);
     });
 

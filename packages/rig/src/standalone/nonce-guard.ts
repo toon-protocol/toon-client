@@ -16,6 +16,12 @@
  *  1. Daemon detection — probe the toon-clientd loopback control API
  *     (`GET /status`) and REFUSE when it reports the SAME identity. A daemon
  *     on a different identity holds different channels and is harmless.
+ *     Since #279 the CLI's paid WRITE commands never get here with a
+ *     same-identity daemon up — they delegate to its `/git/*` routes first
+ *     (`cli/daemon-session.ts`), which achieves the same one-writer goal by
+ *     handing the watermark to the daemon. This guard remains the backstop
+ *     for the probe→publish race window and for operations with no daemon
+ *     route (channel close/settle, explicit open).
  *  2. Advisory lockfile — an exclusive per-pubkey lockfile under the shared
  *     `~/.toon-client` state dir so two STANDALONE processes can't race each
  *     other (the daemon check only covers the daemon). Stale locks (dead pid)
@@ -71,8 +77,10 @@ export class DaemonIdentityConflictError extends Error {
   ) {
     super(
       `toon-clientd is running with this identity (${pubkey.slice(0, 8)}…) at ` +
-        `${daemonUrl} — use daemon mode or stop the daemon. Two writers on one ` +
-        `identity would race the payment channel's cumulative-claim watermark ` +
+        `${daemonUrl} — paid rig writes delegate to it automatically (#279), ` +
+        `but this operation has no daemon route (or the daemon appeared ` +
+        `mid-run): stop the daemon and re-run. Two writers on one identity ` +
+        `would race the payment channel's cumulative-claim watermark ` +
         `(double-charge hazard).`
     );
     this.name = 'DaemonIdentityConflictError';
