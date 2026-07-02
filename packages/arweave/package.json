@@ -1,6 +1,6 @@
 {
   "name": "@toon-protocol/arweave",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Single source of truth for the TOON Arweave gateway preference list + URL helpers (upload stamping + render fallover). Consumed by views, rig, and client-mcp.",
   "type": "module",
   "private": true,

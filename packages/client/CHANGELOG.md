@@ -1,5 +1,20 @@
 # @toon-protocol/client
 
+## 0.15.0
+
+### Minor Changes
+
+- 68a7150: Export `extractArweaveTxId` from the blob-storage helper. Callers that drive
+  `publishEvent` directly with a hand-built kind:5094 event (e.g. git-object
+  uploads carrying Git-SHA/Git-Type/Repo tags, toon-client#227) can now reuse
+  the exact FULFILL→Arweave-txId decode `requestBlobStorage` applies (HTTP
+  envelope parse, `accept:false` handling, legacy bare-base64 fallback).
+- 1ff6370: Purge pet-game era code and disambiguate "control plane" naming.
+
+  **Breaking (`@toon-protocol/client`):** the pet DVM/marketplace module (`src/pet/`) is removed along with its public exports — `filterPetDvmProviders`, `buildPetInteractionRequest`, `parsePetInteractionResult`, `parsePetInteractionEvent`, `buildPetListingEvent`, `parsePetListing`, `filterPetListings`, `buildPetPurchaseRequest`, and the associated types (`PetDvmProvider`, `PetInteractionRequestParams`, `PetInteractionResultData`, `PetInteractionEventData`, `InteractionResultContent`, `UnsignedNostrEvent`, `StatValues`, `ProofStatus`, `PetListingParams`, `PetListing`, `PetListingFilterOptions`, `PetPurchaseRequestParams`). These were orphaned helpers for the archived pet-game product; nothing in this repo consumes them.
+
+  `@toon-protocol/client-mcp`: docs/comments only — the loopback daemon HTTP surface is now consistently called the "control API" (matching the components table) instead of "control plane", which is reserved for the Rig (the browser-only decentralized control plane). No code identifiers or behavior changed.
+
 ## 0.14.12
 
 ### Patch Changes

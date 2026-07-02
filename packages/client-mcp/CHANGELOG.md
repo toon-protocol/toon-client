@@ -1,5 +1,69 @@
 # @toon-protocol/client-mcp
 
+## 0.13.0
+
+### Minor Changes
+
+- 68a7150: Daemon `/git/*` routes + Publisher implementation + ControlClient methods (#227).
+
+  The daemon is now the paid transport for the Rig write path (epic #222):
+
+  - **Routes** (loopback control API): `POST /git/estimate` (plan + price a
+    push without paying — serialized `PushPlan`, bigint fees as decimal
+    strings), `POST /git/push` (requires `confirm: true`; uploads the object
+    delta as kind:5094 store writes and publishes kind:30617/30618 — returns
+    per-step receipts + total fees), and `POST /git/issue | /git/comment |
+/git/patch | /git/status` (kind:1621/1622/1617/1630-1633 paid publishes;
+    `/git/patch` accepts literal `patchText` or `repoPath`+`range` and runs
+    real `git format-patch`). planPush's structured errors surface as clean
+    JSON: 409 `non_fast_forward` (with `refs`), 413 `oversize_objects` (with
+    per-object sha/type/size/path), 400 `git_error` for plumbing failures.
+  - **Publisher impl** in `ClientRunner`: `getFeeRates` from the apex config
+    (flat `feePerEvent` + the network per-byte upload rate), `uploadGitObject`
+    as a Git-SHA/Git-Type/Repo-tagged kind:5094 store write signed with the
+    daemon key and paid via `signBalanceProof` on the apex channel (Arweave
+    txId decoded from the FULFILL HTTP envelope), `publishEvent` through the
+    production paid publish path.
+  - **ControlClient**: matching typed `gitEstimate/gitPush/gitIssue/gitComment/
+gitPatch/gitStatus` methods (push gets a generous wire budget), and
+    `ControlApiError` now carries structured error `data` (e.g. the rejected
+    refs of a non-fast-forward).
+
+  The MCP tool surface (`toon_git_*`) lands separately in #230.
+
+- ecfcc3c: `toon_git_*` MCP tools over the daemon `/git/*` routes (#230, epic #222).
+
+  The Rig write path is now agent-drivable from any MCP host:
+
+  - **`toon_git_push`** `{repoPath, repoId?, refspecs?, force?, relayUrls?,
+dry_run?, confirm?}` — two-step by construction: `dry_run: true` hits
+    `/git/estimate` only (free) and returns the itemized plan (ref updates +
+    per-object/event fee table); a real push REQUIRES `confirm: true` and is
+    refused otherwise. The tool description mandates quoting
+    `estimate.totalFee` from a dry_run and getting explicit user confirmation
+    first — pushes are permanent and non-refundable. `repoId` defaults to the
+    basename of `repoPath`. Text responses compact the per-object manifest to
+    counts; the full plan/receipts ride `structuredContent`.
+  - **`toon_git_issue` / `toon_git_comment` / `toon_git_patch` /
+    `toon_git_status`** — single paid event publishes (kind:1621/1622/1617/
+    1630-1633) taking flattened `repoOwnerPubkey`+`repoId`; descriptions carry
+    the per-event fee-quoting + confirmation policy matching toon_publish.
+  - **Structured errors surfaced as compact JSON**: `non_fast_forward` includes
+    the rejected `refs` and a force-after-user-confirmation hint;
+    `oversize_objects` lists the offending paths/sizes and references the paid
+    blob-storage follow-up (#235); funding (402) remediation passes through
+    verbatim.
+  - All five tools are annotated as paid/destructive writes, and the server
+    `instructions` extend the paid-write confirmation policy to them.
+
+### Patch Changes
+
+- 1ff6370: Purge pet-game era code and disambiguate "control plane" naming.
+
+  **Breaking (`@toon-protocol/client`):** the pet DVM/marketplace module (`src/pet/`) is removed along with its public exports — `filterPetDvmProviders`, `buildPetInteractionRequest`, `parsePetInteractionResult`, `parsePetInteractionEvent`, `buildPetListingEvent`, `parsePetListing`, `filterPetListings`, `buildPetPurchaseRequest`, and the associated types (`PetDvmProvider`, `PetInteractionRequestParams`, `PetInteractionResultData`, `PetInteractionEventData`, `InteractionResultContent`, `UnsignedNostrEvent`, `StatValues`, `ProofStatus`, `PetListingParams`, `PetListing`, `PetListingFilterOptions`, `PetPurchaseRequestParams`). These were orphaned helpers for the archived pet-game product; nothing in this repo consumes them.
+
+  `@toon-protocol/client-mcp`: docs/comments only — the loopback daemon HTTP surface is now consistently called the "control API" (matching the components table) instead of "control plane", which is reserved for the Rig (the browser-only decentralized control plane). No code identifiers or behavior changed.
+
 ## 0.12.2
 
 ### Patch Changes
