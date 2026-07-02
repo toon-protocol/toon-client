@@ -17,9 +17,16 @@ echo 'RIG_MNEMONIC="abandon abandon … about"' >> .env
 rig init                     # default repo id = directory name
 rig init --repo-id my-repo   # or pick one
 
-# 3. push (paid)
+# 3. add your relay as an origin (free) — a REAL git remote, so
+#    `git remote -v` shows it and git tooling round-trips it
+rig remote add origin wss://relay.example
+rig remote list              # names + URLs; --json for machines
+rig remote remove origin
+
+# 4. push (paid) — defaults to the "origin" remote, exactly like git
 rig push                     # plan + price the current branch, confirm, push
 rig push main v1.0.0 --yes   # specific refs, skip the confirm prompt
+rig push staging main        # push via another configured remote
 rig push --all --tags --json # machine-readable plan/receipts (agents)
 
 # issues, comments, patches, and statuses use the same rig init config:
@@ -61,9 +68,20 @@ host path and are unaffected by the CLI.
 
 ### Pushing
 
-`rig push` uploads the object delta to Arweave (paid, content-addressed — a re-push never re-pays for known objects) and publishes the NIP-34 refs event (kind:30618; plus the kind:30617 announcement on first push). It renders the fee table (refs with classification, objects, bytes, itemized + total fee) and asks for confirmation before spending — writes are permanent and non-refundable. `--yes` skips the prompt (and is required when stdin is not a TTY); `--json` without `--yes` is a pure estimate (nothing executed). `--force` allows non-fast-forward updates; `--relay <url>` (exactly one) and `--repo-id <id>` override the defaults.
+`rig push [remote] [refspecs...]` uploads the object delta to Arweave (paid, content-addressed — a re-push never re-pays for known objects) and publishes the NIP-34 refs event (kind:30618; plus the kind:30617 announcement on first push). It renders the fee table (refs with classification, objects, bytes, itemized + total fee) and asks for confirmation before spending — writes are permanent and non-refundable. `--yes` skips the prompt (and is required when stdin is not a TTY); `--json` without `--yes` is a pure estimate (nothing executed). `--force` allows non-fast-forward updates; `--repo-id <id>` overrides the configured repo id.
 
-Repo addressing (`30617:<owner>:<repoId>`) comes from the `toon.repoid`/`toon.owner` git config keys `rig init` writes — an unconfigured repo is a clear "run `rig init`" error, and pushing never mutates git config. Relays come from `--relay`, then `git config toon.relay`, then the network default (`rig remote add origin <relay-url>` arrives in toon-client#249). Objects over 95KB are a hard error in v1 (large-object support: toon-client#235).
+Repo addressing (`30617:<owner>:<repoId>`) comes from the `toon.repoid`/`toon.owner` git config keys `rig init` writes — an unconfigured repo is a clear "run `rig init`" error, and pushing never mutates git config. Objects over 95KB are a hard error in v1 (large-object support: toon-client#235).
+
+### Relays are origins
+
+Relays are configured as **real git remotes** (`rig remote add` is `git remote add` underneath — `git remote -v` shows them, and remotes added with plain git work too, as long as the URL is `ws://`/`wss://`/`http://`/`https://`):
+
+- `rig remote add origin <relay-url>` / `rig remote remove <name>` / `rig remote list` (`--json` supported). Junk URLs are rejected at add time; an existing name is refused with a `git remote set-url` hint.
+- `rig push` publishes via `origin`; `rig push <remote> [refspecs...]` via a named remote. Git-like resolution: when the first positional matches a configured remote name it is the remote, otherwise it is a refspec and the remote defaults to `origin`. No usable remote → a clear ``no origin configured — run `rig remote add origin <relay-url>` `` error.
+- The event commands take `--remote <name>` (default `origin`).
+- `--relay <url>` stays as an **ad-hoc override** on every paid command: it bypasses the configured remotes entirely (for push, every positional is then a refspec).
+- One relay URL per remote: a remote with multiple URLs (`git remote set-url --add`) is refused **before anything is uploaded, published, or paid** — rig publishes to exactly one relay per paid command.
+- Migration from v0.1: a configured `git config toon.relay` still works as a fallback when no relay `origin` exists (paid commands print a one-line deprecation nudge), and `rig init` migrates it to a real `origin` remote automatically. The `toon.relay` key is removed in v0.3.
 
 The single-event subcommands follow the same paid-write discipline as push — the per-event fee is quoted and confirmed before publishing; `--yes` skips, `--json` without `--yes` is a free estimate:
 
@@ -85,6 +103,6 @@ No signing or payment code lives in the core — that stays behind the `Publishe
 - `publisher.ts` — the `Publisher` interface (paid transport seam): `getFeeRates`, `uploadGitObject`, `publishEvent`. Implemented by the daemon (#227) and the standalone embedded client (#228).
 - `push.ts` — `planPush` (ref classification, object delta minus known sha→txId hints, oversize hard error, fee estimate) and `executePush` (uploads ref tips last, then ONE cumulative kind:30618 merging the full arweave map, kind:30617 first on first push; crash-resume safe via content-addressed skip).
 - `routes.ts` — the JSON wire shapes of the daemon's `/git/*` control routes (bigints as decimal strings, Maps as records) + the matching `serializePushPlan`/`serializePushResult` helpers, shared with `@toon-protocol/client-mcp` (the daemon keeps these routes; only the CLI stopped using them).
-- `cli/` — the `rig` bin: `init` (#248), `push` (#229), and the single-event `issue`/`comment`/`pr`/`status` subcommands (#231), all standalone-only with the `identity.ts` resolution chain.
+- `cli/` — the `rig` bin: `init` (#248), `remote` (#249, relays as real git remotes + the shared relay resolution), `push` (#229), and the single-event `issue`/`comment`/`pr`/`status` subcommands (#231), all standalone-only with the `identity.ts` resolution chain.
 
 Pure builders promoted from the proven Rig E2E seed pipeline (`packages/rig-web/tests/e2e/seed/lib`). Part of [epic #222](https://github.com/toon-protocol/toon-client/issues/222) and [epic #246](https://github.com/toon-protocol/toon-client/issues/246).

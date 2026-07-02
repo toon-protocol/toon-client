@@ -12,8 +12,12 @@
  *      value kept on re-runs; `--repo-id` overrides) and `toon.owner` (the
  *      derived pubkey) to the repository's LOCAL git config — the mnemonic
  *      itself is never written to git config or any repo file;
- *   4. when no relay is configured, prints the follow-up step (`--relay` /
- *      `git config toon.relay` until `rig remote add origin` lands in #249).
+ *   4. reports the relay setup (#249): when the deprecated v0.1
+ *      `git config toon.relay` is set and no `origin` remote exists, it
+ *      MIGRATES the value to a real `origin` git remote (the old key stays
+ *      readable as a fallback and is removed in v0.3); when nothing is
+ *      configured it suggests `rig remote add origin <relay-url>` as the
+ *      follow-up step.
  *
  * Re-running updates and reports instead of erroring. `--json` emits a
  * machine-readable report. Free — nothing is published or paid.
@@ -22,9 +26,17 @@
 import { basename } from 'node:path';
 import { parseArgs } from 'node:util';
 import { describeError, NotAGitRepositoryError } from './errors.js';
-import { readToonConfig, resolveRepoRoot, writeToonConfig } from './git-config.js';
+import {
+  addGitRemote,
+  listGitRemotes,
+  readToonConfig,
+  resolveRepoRoot,
+  writeToonConfig,
+  type GitRemoteInfo,
+} from './git-config.js';
 import { resolveIdentity, type ResolvedIdentity } from './identity.js';
 import type { CliIo } from './push.js';
+import { isRelayUrl } from './remote.js';
 import { renderIdentityLine } from './render.js';
 
 export const INIT_USAGE = `Usage: rig init [options]
@@ -34,6 +46,11 @@ resolves your identity (RIG_MNEMONIC env → project .env → ~/.toon-client
 keystore/config), then writes toon.repoid and toon.owner to the repo's
 LOCAL git config. Re-running updates and reports; it never errors on an
 already-initialized repo. The seed phrase is never written anywhere.
+
+The follow-up step is adding a relay: \`rig remote add origin <relay-url>\`
+(a real git remote — \`git remote -v\` shows it). A deprecated v0.1
+\`git config toon.relay\` is migrated to the origin remote automatically
+when no origin exists (the old key stays readable and is removed in v0.3).
 
 Options:
   --repo-id <id>     repository id / NIP-34 d-tag (default: the existing
@@ -93,9 +110,16 @@ interface InitJsonOutput {
     sourceLabel: string;
     pubkey: string;
   };
-  /** Configured `toon.relay` values (may be empty — see `relayConfigured`). */
+  /** Deprecated `git config toon.relay` values (kept readable until v0.3). */
   relays: string[];
+  /** True when any relay source is configured (origin remote or toon.relay). */
   relayConfigured: boolean;
+  /** Configured git remotes (post-migration). */
+  remotes: GitRemoteInfo[];
+  /** The single relay URL of the `origin` remote, when it is one. */
+  origin: string | null;
+  /** True when this run migrated toon.relay to a new `origin` remote. */
+  migratedToonRelay: boolean;
   /** What this run changed in git config (false = already up to date). */
   changed: { repoId: boolean; owner: boolean };
 }
@@ -142,7 +166,33 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
     };
     await writeToonConfig(repoRoot, { repoId, owner: identity.pubkey });
 
-    // ── (d)+(e) Report ───────────────────────────────────────────────────────
+    // ── (d) Relay setup (#249): migrate toon.relay → origin remote ──────────
+    // toon.relay is the deprecated v0.1 key. When it is set, single-valued,
+    // relay-shaped, and no `origin` remote exists, adopt it as a real git
+    // remote. The old key stays readable (paid commands still fall back to
+    // it, with a nudge) and is removed in v0.3.
+    let remotes = await listGitRemotes(repoRoot);
+    let migratedToonRelay = false;
+    const legacyRelay = existing.relays[0];
+    if (
+      !remotes.some((r) => r.name === 'origin') &&
+      existing.relays.length === 1 &&
+      legacyRelay !== undefined &&
+      isRelayUrl(legacyRelay)
+    ) {
+      await addGitRemote(repoRoot, 'origin', legacyRelay);
+      migratedToonRelay = true;
+      remotes = await listGitRemotes(repoRoot);
+    }
+    const origin = remotes.find((r) => r.name === 'origin');
+    const originRelay =
+      origin !== undefined &&
+      origin.urls.length === 1 &&
+      isRelayUrl(origin.urls[0] as string)
+        ? (origin.urls[0] as string)
+        : undefined;
+
+    // ── (e) Report ───────────────────────────────────────────────────────────
     if (flags.json) {
       const output: InitJsonOutput = {
         command: 'init',
@@ -155,7 +205,10 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
           pubkey: identity.pubkey,
         },
         relays: existing.relays,
-        relayConfigured: existing.relays.length > 0,
+        relayConfigured: originRelay !== undefined || existing.relays.length > 0,
+        remotes,
+        origin: originRelay ?? null,
+        migratedToonRelay,
         changed,
       };
       io.out(JSON.stringify(output, null, 2));
@@ -174,14 +227,49 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
         (changed.owner ? '' : ' (unchanged)') +
         (existing.owner && changed.owner ? ` (was ${existing.owner})` : '')
     );
-    if (existing.relays.length > 0) {
-      io.out(`  toon.relay  = ${existing.relays.join(', ')}`);
-      io.out('Ready: `rig push` publishes this repo.');
+    if (originRelay !== undefined) {
+      io.out(
+        `  origin      = ${originRelay}` +
+          (migratedToonRelay ? ' (migrated from git config toon.relay)' : '')
+      );
+      if (migratedToonRelay) {
+        io.out(
+          'note: toon.relay is deprecated — it stays readable as a fallback ' +
+            'and is removed in v0.3; drop it now with ' +
+            '`git config --unset-all toon.relay`.'
+        );
+      }
+      io.out('Ready: `rig push` publishes this repo via remote "origin".');
+    } else if (existing.relays.length > 0) {
+      // toon.relay is set but could not be migrated (multi-valued, junk URL,
+      // or a non-relay `origin` remote already occupies the name).
+      io.out(`  toon.relay  = ${existing.relays.join(', ')} (deprecated)`);
+      io.out(
+        origin !== undefined
+          ? `The "origin" remote (${origin.urls.join(', ')}) is not a single ` +
+              'relay URL, so toon.relay stays the fallback — add the relay ' +
+              'under another name (`rig remote add toon <relay-url>`) and ' +
+              'push with `rig push toon`.'
+          : existing.relays.length > 1
+            ? `toon.relay has ${existing.relays.length} values and rig ` +
+              'publishes to one relay — migrate the right one: ' +
+              '`rig remote add origin <relay-url>`.'
+            : 'This value is not a relay URL (ws://, wss://, http://, or ' +
+              'https://) — set a real one: `rig remote add origin <relay-url>`.'
+      );
+    } else if (origin !== undefined) {
+      // The origin name is occupied by a non-relay remote (e.g. a GitHub
+      // clone) and no legacy toon.relay exists.
+      io.out(
+        `No relay configured yet — "origin" (${origin.urls.join(', ')}) is ` +
+          'not a relay URL, so add the relay under another name: ' +
+          '`rig remote add toon <relay-url>`, then `rig push toon`.'
+      );
     } else {
       io.out(
-        'No relay configured yet — pass --relay <url> to `rig push`, or set a ' +
-          'default once: `git config toon.relay <url>` ' +
-          '(`rig remote add origin <relay-url>` arrives in toon-client#249).'
+        'No relay configured yet — add one as the follow-up step: ' +
+          '`rig remote add origin <relay-url>` (a real git remote; ' +
+          '`git remote -v` shows it). One-off pushes can pass --relay <url>.'
       );
     }
     return 0;

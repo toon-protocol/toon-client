@@ -5,7 +5,10 @@
  * Covers: refspec selection, the "run `rig init` first" unconfigured error,
  * confirm gating (--yes / non-TTY / interactive), table + JSON rendering
  * (incl. the identity source report), structured error mapping, the
- * single-relay guard, and that pushing never writes git config.
+ * single-relay guard, the #249 remote resolution (origin default, named
+ * remote positional, unknown-name / no-origin errors, toon.relay fallback +
+ * nudge, multi-URL refusal before payment), and that pushing never writes
+ * git config.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -242,7 +245,10 @@ describe('unconfigured repo (rig init required)', () => {
   it('--repo-id keeps working without any git config (flag override)', async () => {
     const fake = makeStandalone(emptyRemoteState());
     const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
-    const code = await runPush(['--yes', '--repo-id', 'demo'], h.deps);
+    const code = await runPush(
+      ['--yes', '--repo-id', 'demo', '--relay', 'wss://adhoc.example'],
+      h.deps
+    );
     expect(code).toBe(0);
     expect(fake.published.map((p) => p.kind)).toEqual([30617, 30618]);
   });
@@ -251,6 +257,7 @@ describe('unconfigured repo (rig init required)', () => {
 describe('standalone push (Publisher seam)', () => {
   beforeEach(async () => {
     await writeToonConfig(repoDir, { repoId: 'demo', owner: OWNER });
+    git(['remote', 'add', 'origin', 'wss://origin-relay.example'], repoDir);
   });
 
   it('plans locally, executes through the publisher, and passes env/cwd/warn to the loader', async () => {
@@ -266,12 +273,12 @@ describe('standalone push (Publisher seam)', () => {
     expect(fake.loadedWith[0]?.cwd).toBe(repoDir);
     expect(typeof fake.loadedWith[0]?.warn).toBe('function');
 
-    // Remote state read for the standalone identity over the default relay.
+    // Remote state read for the standalone identity over the origin remote.
     expect(fake.remoteRequests).toEqual([
       {
         ownerPubkey: OWNER,
         repoId: 'demo',
-        relayUrls: ['wss://standalone-relay.example'],
+        relayUrls: ['wss://origin-relay.example'],
       },
     ]);
     // First push of one commit: commit + root tree + README blob uploaded,
@@ -344,14 +351,16 @@ describe('standalone push (Publisher seam)', () => {
     expect(text).toContain('single relay');
     expect(text).toContain('wss://one.example');
     expect(text).toContain('Nothing was uploaded or paid');
-    // Refused before ANY network or payment activity.
+    // Refused before ANY network or payment activity — the publisher (and
+    // its identity chain / nonce guard) is never even loaded.
+    expect(fake.loadedWith).toHaveLength(0);
     expect(fake.remoteRequests).toHaveLength(0);
     expect(fake.uploads).toHaveLength(0);
     expect(fake.published).toHaveLength(0);
-    expect(fake.stopped).toBe(true);
   });
 
   it('refuses a multi-valued toon.relay git config before money moves', async () => {
+    git(['remote', 'remove', 'origin'], repoDir); // fall back to toon.relay
     await writeToonConfig(repoDir, {
       relays: ['wss://one.example', 'wss://two.example'],
     });
@@ -359,7 +368,10 @@ describe('standalone push (Publisher seam)', () => {
     const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
     const code = await runPush(['--yes'], h.deps);
     expect(code).toBe(1);
-    expect(h.err.join('\n')).toContain('single relay');
+    const text = h.err.join('\n');
+    expect(text).toContain('single relay');
+    expect(text).toContain('rig remote add origin');
+    expect(fake.loadedWith).toHaveLength(0);
     expect(fake.remoteRequests).toHaveLength(0);
     expect(fake.uploads).toHaveLength(0);
     expect(fake.published).toHaveLength(0);
@@ -414,9 +426,113 @@ describe('standalone push (Publisher seam)', () => {
   });
 });
 
+describe('remote resolution (#249)', () => {
+  beforeEach(async () => {
+    await writeToonConfig(repoDir, { repoId: 'demo', owner: OWNER });
+  });
+
+  it('pushes to a named remote: `rig push <remote> <refspec>`', async () => {
+    git(['remote', 'add', 'origin', 'wss://origin-relay.example'], repoDir);
+    git(['remote', 'add', 'stage', 'wss://stage-relay.example'], repoDir);
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    const code = await runPush(['stage', 'main', '--yes'], h.deps);
+    expect(code).toBe(0);
+    // The first positional was consumed as the remote, the second as refspec.
+    expect(fake.remoteRequests[0]?.relayUrls).toEqual([
+      'wss://stage-relay.example',
+    ]);
+    expect(fake.published.map((p) => p.relayUrls)).toEqual([
+      ['wss://stage-relay.example'],
+      ['wss://stage-relay.example'],
+    ]);
+  });
+
+  it('treats a non-remote first positional as a refspec (origin default)', async () => {
+    git(['remote', 'add', 'origin', 'wss://origin-relay.example'], repoDir);
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    const code = await runPush(['main', '--yes'], h.deps);
+    expect(code).toBe(0);
+    expect(fake.remoteRequests[0]?.relayUrls).toEqual([
+      'wss://origin-relay.example',
+    ]);
+  });
+
+  it('errors when the first positional is neither a remote nor a ref', async () => {
+    git(['remote', 'add', 'origin', 'wss://origin-relay.example'], repoDir);
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    const code = await runPush(['upstream', 'main', '--yes'], h.deps);
+    expect(code).toBe(1);
+    const text = h.err.join('\n');
+    expect(text).toContain('neither a configured remote nor a local branch/tag');
+    expect(text).toContain('rig remote add upstream');
+    expect(fake.loadedWith).toHaveLength(0);
+    expect(fake.published).toHaveLength(0);
+  });
+
+  it('errors "no origin configured" when no remote resolves (before payment)', async () => {
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    const code = await runPush(['--yes'], h.deps);
+    expect(code).toBe(1);
+    const text = h.err.join('\n');
+    expect(text).toContain('no origin configured');
+    expect(text).toContain('rig remote add origin <relay-url>');
+    expect(fake.loadedWith).toHaveLength(0);
+    expect(fake.uploads).toHaveLength(0);
+    expect(fake.published).toHaveLength(0);
+  });
+
+  it('falls back to deprecated toon.relay with a one-line migration nudge', async () => {
+    await writeToonConfig(repoDir, { relays: ['wss://legacy.example'] });
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    const code = await runPush(['--yes'], h.deps);
+    expect(code).toBe(0);
+    expect(fake.published.map((p) => p.relayUrls)).toEqual([
+      ['wss://legacy.example'],
+      ['wss://legacy.example'],
+    ]);
+    const nudges = h.err.filter((l) => l.includes('toon.relay'));
+    expect(nudges).toHaveLength(1);
+    expect(nudges[0]).toContain('deprecated');
+    expect(nudges[0]).toContain('rig remote add origin wss://legacy.example');
+  });
+
+  it('refuses a multi-URL origin remote BEFORE any payment', async () => {
+    git(['remote', 'add', 'origin', 'wss://one.example'], repoDir);
+    git(['remote', 'set-url', '--add', 'origin', 'wss://two.example'], repoDir);
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    const code = await runPush(['--yes'], h.deps);
+    expect(code).toBe(1);
+    const text = h.err.join('\n');
+    expect(text).toContain('one relay URL per remote');
+    expect(text).toContain('git remote set-url origin');
+    expect(fake.loadedWith).toHaveLength(0);
+    expect(fake.uploads).toHaveLength(0);
+    expect(fake.published).toHaveLength(0);
+  });
+
+  it('--relay bypasses the configured remotes (documented ad-hoc override)', async () => {
+    git(['remote', 'add', 'origin', 'wss://origin-relay.example'], repoDir);
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    const code = await runPush(
+      ['main', '--yes', '--relay', 'wss://adhoc.example'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(fake.published[0]?.relayUrls).toEqual(['wss://adhoc.example']);
+  });
+});
+
 describe('confirm gating', () => {
   beforeEach(async () => {
     await writeToonConfig(repoDir, { repoId: 'demo', owner: OWNER });
+    git(['remote', 'add', 'origin', 'wss://origin-relay.example'], repoDir);
   });
 
   it('refuses without --yes when not a TTY', async () => {
@@ -462,6 +578,7 @@ describe('confirm gating', () => {
 describe('--json', () => {
   beforeEach(async () => {
     await writeToonConfig(repoDir, { repoId: 'demo', owner: OWNER });
+    git(['remote', 'add', 'origin', 'wss://origin-relay.example'], repoDir);
   });
 
   it('without --yes emits the plan (with identity) and does not execute', async () => {

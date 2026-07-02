@@ -1,6 +1,6 @@
 /**
- * `rig push [refspecs...]` — estimate → confirm → execute (#229, standalone
- * since #248).
+ * `rig push [remote] [refspecs...]` — estimate → confirm → execute (#229,
+ * standalone since #248, git-like remote resolution since #249).
  *
  * The CLI is STANDALONE-ONLY: it plans locally (`planPush`) and executes
  * through the embedded, nonce-guarded StandalonePublisher (loaded via dynamic
@@ -13,6 +13,13 @@
  * Repo addressing comes from the `toon.*` git config keys `rig init` writes
  * (`--repo-id` overrides); an unconfigured repo is a hard "run `rig init`
  * first" error — nothing is written as a side effect of pushing.
+ *
+ * The relay comes from the repo's git remotes (#249): when the first
+ * positional matches a configured remote name it is the push target,
+ * otherwise it is a refspec and the remote defaults to `origin`. `--relay`
+ * is an ad-hoc override that bypasses remotes (all positionals are then
+ * refspecs); the deprecated v0.1 `git config toon.relay` still works with a
+ * migration nudge. See ./remote.ts for the full resolution order.
  *
  * Money is only spent after the confirm gate: `--yes`, or an interactive
  * y/N prompt (a non-TTY session without `--yes` refuses). `--json` emits the
@@ -31,8 +38,9 @@ import {
   type GitPushResponse,
 } from '../routes.js';
 import { describeError, UnconfiguredRepoAddressError } from './errors.js';
-import { readToonConfig, resolveRepoRoot } from './git-config.js';
+import { listGitRemotes, readToonConfig, resolveRepoRoot } from './git-config.js';
 import type { IdentitySourceKind } from './identity.js';
+import { resolveRelays, singleRelayRefusal } from './remote.js';
 import type { LoadStandalone, StandaloneContext } from './standalone-context.js';
 
 // ---------------------------------------------------------------------------
@@ -92,7 +100,7 @@ export function identityReport(ctx: StandaloneContext): IdentityReport {
 // Usage
 // ---------------------------------------------------------------------------
 
-export const PUSH_USAGE = `Usage: rig push [refspecs...] [options]
+export const PUSH_USAGE = `Usage: rig push [remote] [refspecs...] [options]
 
 Push local git refs to TOON: uploads the object delta to Arweave (paid) and
 publishes the NIP-34 refs event (kind:30618; kind:30617 announce on first
@@ -102,7 +110,12 @@ The repo must be set up once with \`rig init\` (writes toon.repoid/toon.owner
 to the local git config); the identity comes from RIG_MNEMONIC (env or a
 project .env), or the ~/.toon-client keystore/config.
 
-Refspecs are branch/tag names or full refnames; default is the current branch.
+The relay is a git remote: \`rig push\` publishes via "origin" (set up with
+\`rig remote add origin <relay-url>\`); \`rig push <remote> [refspecs...]\`
+publishes via a named remote. When the first positional matches a configured
+remote name it is the remote; otherwise it is a refspec and the remote
+defaults to origin. Refspecs are branch/tag names or full refnames; default
+is the current branch.
 
 Options:
   --force            allow non-fast-forward ref updates (overwrites remote history)
@@ -111,8 +124,10 @@ Options:
   --yes              skip the fee confirmation (required when not a TTY)
   --json             machine-readable plan/receipts; without --yes it is a pure
                      estimate (nothing executed)
-  --relay <url>      relay URL (exactly one; default: git config toon.relay,
-                     then the network default)
+  --relay <url>      ad-hoc relay override (exactly one) — bypasses the
+                     configured remotes; every positional is then a refspec.
+                     The deprecated v0.1 \`git config toon.relay\` still works
+                     as a fallback, with a migration nudge
   --repo-id <id>     repository id / NIP-34 d-tag (default: git config
                      toon.repoid — run \`rig init\` to set it)
   -h, --help         show this help`;
@@ -260,19 +275,64 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
     const repoId = flags.repoId ?? toonConfig.repoId;
     if (!repoId) throw new UnconfiguredRepoAddressError('repository id');
     const reader = new GitRepoReader(repoRoot);
+
+    // ── Remote-vs-refspec resolution (git-like: `rig push [remote] [refspecs…]`)
+    // The first positional is the remote when it names a configured git
+    // remote; with --relay the remotes are bypassed and every positional is
+    // a refspec.
+    let remoteName: string | undefined;
+    let refspecArgs = flags.positionals;
+    if (flags.relay.length === 0 && refspecArgs.length > 0) {
+      const first = refspecArgs[0] as string;
+      const remoteNames = new Set(
+        (await listGitRemotes(repoRoot)).map((r) => r.name)
+      );
+      if (remoteNames.has(first)) {
+        remoteName = first;
+        refspecArgs = refspecArgs.slice(1);
+      } else {
+        // Not a remote, so it must be a refspec — distinguish a typo'd /
+        // unconfigured remote from a bad refspec with one combined error.
+        const { refs } = await reader.listRefs();
+        const known = new Set(refs.map((r) => r.refname));
+        if (
+          !known.has(first) &&
+          !known.has(`refs/heads/${first}`) &&
+          !known.has(`refs/tags/${first}`)
+        ) {
+          throw new Error(
+            `${JSON.stringify(first)} is neither a configured remote nor a ` +
+              'local branch/tag — add the relay remote ' +
+              `(\`rig remote add ${first} <relay-url>\`; \`rig remote list\` ` +
+              'shows configured remotes) or fix the refspec'
+          );
+        }
+      }
+    }
     const refspecs = await selectRefspecs(
       reader,
-      flags.positionals,
+      refspecArgs,
       flags.all,
       flags.tags
     );
-    /** Explicitly-known relays (flags → git config); undefined = default. */
-    const explicitRelays =
-      flags.relay.length > 0
-        ? flags.relay
-        : toonConfig.relays.length > 0
-          ? toonConfig.relays
-          : undefined;
+
+    // ── Relay resolution (#249: --relay > named remote > origin > toon.relay)
+    const resolved = await resolveRelays({
+      relayFlags: flags.relay,
+      remoteName,
+      repoRoot,
+      toonRelays: toonConfig.relays,
+    });
+    if (resolved.nudge !== undefined) io.err(resolved.nudge);
+    const relaysUsed = resolved.relays;
+    // StandalonePublisher publishes to exactly one relay (its publishEvent
+    // throws on >1). Multiple relays can arrive here without explicit intent
+    // (repeated --relay flags, an old multi-valued git config `toon.relay`).
+    // Refuse up front, before anything is fetched, uploaded, or paid.
+    if (relaysUsed.length > 1) {
+      io.err(singleRelayRefusal(resolved, 'Nothing was uploaded or paid.'));
+      return 1;
+    }
 
     // ── Standalone context (identity chain + nonce guard) ───────────────────
     standaloneCtx = await (deps.loadStandalone ?? defaultLoadStandalone)({
@@ -281,19 +341,6 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
       warn: (line) => io.err(line),
     });
     const identity = identityReport(standaloneCtx);
-    const relaysUsed = explicitRelays ?? standaloneCtx.defaultRelayUrls;
-    // StandalonePublisher publishes to exactly one relay (its publishEvent
-    // throws on >1). Multiple relays can arrive here without explicit intent
-    // (an old multi-valued git config `toon.relay`). Refuse up front, before
-    // anything is fetched, uploaded, or paid.
-    if (relaysUsed.length > 1) {
-      io.err(
-        `rig publishes to a single relay per push, but ${relaysUsed.length} are ` +
-          `configured (${relaysUsed.join(', ')}) — re-run with exactly one ` +
-          '--relay <url> (or trim git config toon.relay). Nothing was uploaded or paid.'
-      );
-      return 1;
-    }
 
     if (toonConfig.owner && toonConfig.owner !== identity.pubkey) {
       io.err(

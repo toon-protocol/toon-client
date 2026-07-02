@@ -1,8 +1,9 @@
 /**
- * `rig init` tests (#248): happy path, idempotent re-run, --repo-id
- * override, missing-identity remediation, not-a-git-repo hint, and the
- * --json report — against a real fixture repository and the real identity
- * chain (RIG_MNEMONIC / .env / shared config).
+ * `rig init` tests (#248, #249): happy path, idempotent re-run, --repo-id
+ * override, missing-identity remediation, not-a-git-repo hint, the
+ * toon.relay → origin-remote migration, and the --json report — against a
+ * real fixture repository and the real identity chain (RIG_MNEMONIC / .env /
+ * shared config).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -77,10 +78,9 @@ describe('rig init', () => {
     expect(text).toContain(`Identity: ${PUBKEY} (from RIG_MNEMONIC env)`);
     expect(text).toContain(`toon.repoid = ${basename(repoDir)}`);
     expect(text).toContain(`toon.owner  = ${PUBKEY}`);
-    // No relay yet → the #249 follow-up hint.
+    // No relay yet → the origins follow-up step.
     expect(text).toContain('No relay configured');
-    expect(text).toContain('git config toon.relay');
-    expect(text).toContain('#249');
+    expect(text).toContain('rig remote add origin <relay-url>');
     // The phrase itself never appears anywhere.
     expect(text).not.toContain('abandon');
     expect(h.err.join('\n')).not.toContain('abandon');
@@ -123,13 +123,61 @@ describe('rig init', () => {
     expect(h.out.join('\n')).toContain(`(was ${'cd'.repeat(32)})`);
   });
 
-  it('reports configured relays instead of the follow-up hint', async () => {
+  it('migrates a v0.1 toon.relay to a real origin remote (key kept readable)', async () => {
     await writeToonConfig(repoDir, { relays: ['wss://relay.example'] });
     const h = makeDeps({ RIG_MNEMONIC: PHRASE });
     expect(await runInit([], h.deps)).toBe(0);
+    // A REAL git remote was created from the deprecated key…
+    expect(git(['remote', 'get-url', 'origin'], repoDir)).toBe(
+      'wss://relay.example'
+    );
+    // …and the old key stays readable (fallback until v0.3).
+    expect(git(['config', '--get-all', 'toon.relay'], repoDir)).toBe(
+      'wss://relay.example'
+    );
     const text = h.out.join('\n');
-    expect(text).toContain('toon.relay  = wss://relay.example');
+    expect(text).toContain('origin      = wss://relay.example');
+    expect(text).toContain('migrated from git config toon.relay');
+    expect(text).toContain('removed in v0.3');
+    expect(text).toContain('Ready: `rig push`');
     expect(text).not.toContain('No relay configured');
+  });
+
+  it('reports an existing relay origin without migrating anything', async () => {
+    git(['remote', 'add', 'origin', 'wss://relay.example'], repoDir);
+    const h = makeDeps({ RIG_MNEMONIC: PHRASE });
+    expect(await runInit([], h.deps)).toBe(0);
+    const text = h.out.join('\n');
+    expect(text).toContain('origin      = wss://relay.example');
+    expect(text).not.toContain('migrated');
+    expect(text).toContain('Ready: `rig push`');
+    expect(text).not.toContain('No relay configured');
+  });
+
+  it('does not migrate onto an existing non-relay origin (guides instead)', async () => {
+    git(['remote', 'add', 'origin', 'git@github.com:a/b.git'], repoDir);
+    await writeToonConfig(repoDir, { relays: ['wss://relay.example'] });
+    const h = makeDeps({ RIG_MNEMONIC: PHRASE });
+    expect(await runInit([], h.deps)).toBe(0);
+    // The GitHub origin was NOT clobbered.
+    expect(git(['remote', 'get-url', 'origin'], repoDir)).toBe(
+      'git@github.com:a/b.git'
+    );
+    const text = h.out.join('\n');
+    expect(text).toContain('toon.relay  = wss://relay.example (deprecated)');
+    expect(text).toContain('rig remote add toon');
+  });
+
+  it('does not auto-migrate a multi-valued toon.relay (asks the user to pick)', async () => {
+    await writeToonConfig(repoDir, {
+      relays: ['wss://one.example', 'wss://two.example'],
+    });
+    const h = makeDeps({ RIG_MNEMONIC: PHRASE });
+    expect(await runInit([], h.deps)).toBe(0);
+    expect(git(['remote'], repoDir)).toBe('');
+    const text = h.out.join('\n');
+    expect(text).toContain('2 values');
+    expect(text).toContain('rig remote add origin <relay-url>');
   });
 
   it('resolves the identity from a project .env (source reported)', async () => {
@@ -180,6 +228,9 @@ describe('rig init', () => {
       identity: { source: 'env', sourceLabel: 'RIG_MNEMONIC env', pubkey: PUBKEY },
       relays: [],
       relayConfigured: false,
+      remotes: [],
+      origin: null,
+      migratedToonRelay: false,
       changed: { repoId: true, owner: true },
     });
     expect(JSON.stringify(parsed)).not.toContain('abandon');
@@ -190,6 +241,19 @@ describe('rig init', () => {
     expect(JSON.parse(h2.out.join('\n'))).toMatchObject({
       repoId: 'demo',
       changed: { repoId: false, owner: false },
+    });
+  });
+
+  it('--json reports the toon.relay migration', async () => {
+    await writeToonConfig(repoDir, { relays: ['wss://relay.example'] });
+    const h = makeDeps({ RIG_MNEMONIC: PHRASE });
+    expect(await runInit(['--json'], h.deps)).toBe(0);
+    expect(JSON.parse(h.out.join('\n'))).toMatchObject({
+      relays: ['wss://relay.example'],
+      relayConfigured: true,
+      remotes: [{ name: 'origin', urls: ['wss://relay.example'] }],
+      origin: 'wss://relay.example',
+      migratedToonRelay: true,
     });
   });
 

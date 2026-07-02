@@ -48,6 +48,74 @@ export class UnconfiguredRepoAddressError extends Error {
   }
 }
 
+/** A relay URL (flag, `rig remote add`, or a remote's stored URL) is junk. */
+export class InvalidRelayUrlError extends Error {
+  constructor(
+    public readonly url: string,
+    /** What was being resolved, e.g. `remote "origin"`. */
+    context: string
+  ) {
+    super(
+      `${context}: ${JSON.stringify(url)} is not a relay URL — relays are ` +
+        'ws://, wss://, http://, or https://'
+    );
+    this.name = 'InvalidRelayUrlError';
+  }
+}
+
+/** A paid command addressed a git remote that is not configured. */
+export class UnknownRemoteError extends Error {
+  constructor(public readonly remote: string) {
+    super(
+      `no remote named ${JSON.stringify(remote)} is configured — ` +
+        '`rig remote list` shows configured remotes; add it with ' +
+        `\`rig remote add ${remote} <relay-url>\``
+    );
+    this.name = 'UnknownRemoteError';
+  }
+}
+
+/**
+ * The addressed git remote carries multiple URLs (`git remote set-url --add`
+ * done by hand). rig publishes to exactly one relay per paid command, so this
+ * is refused BEFORE anything is fetched, uploaded, or paid (the #243
+ * single-relay guard, extended to remotes).
+ */
+export class MultiUrlRemoteError extends Error {
+  constructor(
+    public readonly remote: string,
+    public readonly urls: string[]
+  ) {
+    super(
+      `remote ${JSON.stringify(remote)} has ${urls.length} URLs ` +
+        `(${urls.join(', ')}) — rig supports one relay URL per remote. ` +
+        `Fix it with \`git remote set-url ${remote} <relay-url>\`. ` +
+        'Nothing was uploaded, published, or paid.'
+    );
+    this.name = 'MultiUrlRemoteError';
+  }
+}
+
+/** No relay resolved: no --relay, no usable remote, no legacy toon.relay. */
+export class NoOriginConfiguredError extends Error {
+  constructor(
+    /** URL of an existing `origin` remote that is NOT a relay, if any. */
+    nonRelayOriginUrl?: string
+  ) {
+    super(
+      'no origin configured — run `rig remote add origin <relay-url>` ' +
+        '(or pass --relay <url> for a one-off publish).' +
+        (nonRelayOriginUrl !== undefined
+          ? `\nThe existing "origin" remote (${nonRelayOriginUrl}) is not a ` +
+            'relay URL, so rig ignores it — add the relay under another ' +
+            'name (`rig remote add toon <relay-url>`) and target it ' +
+            'explicitly (`rig push toon` / `--remote toon`).'
+          : '')
+    );
+    this.name = 'NoOriginConfiguredError';
+  }
+}
+
 /** A rig command ran outside any git repository. */
 export class NotAGitRepositoryError extends Error {
   constructor(cwd: string) {
@@ -100,6 +168,39 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
       code: 'not_a_git_repository',
       lines: err.message.split('\n'),
       json: { error: 'not_a_git_repository', detail: err.message },
+    };
+  }
+  if (err instanceof InvalidRelayUrlError) {
+    return {
+      code: 'invalid_relay_url',
+      lines: err.message.split('\n'),
+      json: { error: 'invalid_relay_url', detail: err.message, url: err.url },
+    };
+  }
+  if (err instanceof UnknownRemoteError) {
+    return {
+      code: 'unknown_remote',
+      lines: err.message.split('\n'),
+      json: { error: 'unknown_remote', detail: err.message, remote: err.remote },
+    };
+  }
+  if (err instanceof MultiUrlRemoteError) {
+    return {
+      code: 'multi_url_remote',
+      lines: err.message.split('\n'),
+      json: {
+        error: 'multi_url_remote',
+        detail: err.message,
+        remote: err.remote,
+        urls: err.urls,
+      },
+    };
+  }
+  if (err instanceof NoOriginConfiguredError) {
+    return {
+      code: 'no_origin_configured',
+      lines: err.message.split('\n'),
+      json: { error: 'no_origin_configured', detail: err.message },
     };
   }
   if (err instanceof MissingIdentityError) {

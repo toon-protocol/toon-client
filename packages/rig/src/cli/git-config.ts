@@ -1,13 +1,18 @@
 /**
- * Repo-local `rig` configuration, persisted as git config keys (the
- * `rig init`-lite behavior: written after the first successful push):
+ * Repo-local `rig` configuration, persisted in git's own storage:
  *
  *   toon.repoid   NIP-34 repository identifier (`d` tag)
  *   toon.owner    repository owner's Nostr pubkey (hex) — the identity that
  *                 signs kind:30617/30618 (`a`-tag `30617:<owner>:<repoId>`)
- *   toon.relay    relay URL(s), multi-valued
+ *   toon.relay    relay URL(s), multi-valued — DEPRECATED since #249 (relays
+ *                 live in real git remotes now; the key stays readable as a
+ *                 fallback and is removed in v0.3)
  *
- * All access goes through `execFile git config` with argument arrays (same
+ * plus the REAL git remotes (`remote.<name>.url`) that #249 maps relays onto:
+ * `rig remote add origin <relay-url>` is `git remote add`, so `git remote -v`
+ * shows rig's relays and plain git tooling round-trips them.
+ *
+ * All access goes through `execFile git` with argument arrays (same
  * injection posture as GitRepoReader — never a shell).
  */
 
@@ -93,6 +98,65 @@ export async function readToonConfig(repoPath: string): Promise<ToonRepoConfig> 
   const own = owner.stdout.trim();
   if (owner.exitCode === 0 && own) config.owner = own;
   return config;
+}
+
+/** One configured git remote: its name + (possibly multiple) fetch URLs. */
+export interface GitRemoteInfo {
+  name: string;
+  urls: string[];
+}
+
+/**
+ * URLs of the git remote `name` (`remote.<name>.url`, multi-valued when
+ * `git remote set-url --add` was used). `[]` when the remote does not exist.
+ */
+export async function getGitRemoteUrls(
+  repoPath: string,
+  name: string
+): Promise<string[]> {
+  // exit 1 = key unset / invalid key — either way, no such remote.
+  const { stdout } = await git(
+    repoPath,
+    ['config', '--get-all', `remote.${name}.url`],
+    [1]
+  );
+  return stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+/** All configured git remotes with their URLs (`git remote -v` data). */
+export async function listGitRemotes(
+  repoPath: string
+): Promise<GitRemoteInfo[]> {
+  const { stdout } = await git(repoPath, ['remote']);
+  const names = stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const remotes: GitRemoteInfo[] = [];
+  for (const name of names) {
+    remotes.push({ name, urls: await getGitRemoteUrls(repoPath, name) });
+  }
+  return remotes;
+}
+
+/** `git remote add <name> <url>` — real git remote storage, never a shell. */
+export async function addGitRemote(
+  repoPath: string,
+  name: string,
+  url: string
+): Promise<void> {
+  await git(repoPath, ['remote', 'add', name, url]);
+}
+
+/** `git remote remove <name>`. */
+export async function removeGitRemote(
+  repoPath: string,
+  name: string
+): Promise<void> {
+  await git(repoPath, ['remote', 'remove', name]);
 }
 
 /**

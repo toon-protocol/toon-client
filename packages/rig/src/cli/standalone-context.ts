@@ -21,7 +21,11 @@ export interface StandaloneContext {
   identitySourceLabel: string;
   /** Paid transport (nonce-guarded StandalonePublisher in the real impl). */
   publisher: Publisher;
-  /** Relay URLs to use when neither `--relay` nor git config provides any. */
+  /**
+   * The network preset's relay URLs. Informational since #249: paid commands
+   * resolve relays from git remotes (--relay > remote > origin > toon.relay)
+   * and error with "no origin configured" instead of falling back here.
+   */
   defaultRelayUrls: string[];
   /** Read the remote NIP-34 state (kind:30617/30618 + Arweave fallback). */
   fetchRemote(args: {
