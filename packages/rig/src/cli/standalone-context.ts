@@ -50,7 +50,7 @@ export interface StandaloneLoadOptions {
   env: NodeJS.ProcessEnv;
   /** Working directory (starts the project-local `.env` walk). */
   cwd: string;
-  /** Stderr line sink (deprecated-alias warning). */
+  /** Stderr line sink (deprecated-alias warning, bootstrap rationale). */
   warn(line: string): void;
   /**
    * Channel-anchor override (`rig channel open --peer`, #263): the ILP
@@ -64,6 +64,13 @@ export interface StandaloneLoadOptions {
    * config. Default true (paid commands fail fast with MissingUplinkError).
    */
   requireUplink?: boolean;
+  /**
+   * The relay the command resolved via `rig remote` (#249) — the
+   * relay-origin the #264 network bootstrap discovers the payment peer's
+   * kind:10032 announce on. Absent for commands without a resolved relay
+   * (bootstrap then falls back to env/config/genesis-seed relay).
+   */
+  relayUrl?: string;
 }
 
 /** Factory for a {@link StandaloneContext}; injectable in tests. */

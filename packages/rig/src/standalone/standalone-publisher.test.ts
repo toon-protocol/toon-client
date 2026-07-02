@@ -937,6 +937,81 @@ describe('StandalonePublisher', () => {
         await publisher.stop();
       });
     });
+
+    // ── negotiation fallbacks (#264 / #260 root cause 3) ────────────────────
+    describe('negotiationFallbacks', () => {
+      it('back-fills tokenNetwork/tokenAddress the announce omitted, before the channel opens', async () => {
+        const bare = new Map([
+          [
+            PEER_ID,
+            {
+              ...NEGOTIATION,
+              tokenNetwork: undefined,
+              tokenAddress: undefined,
+            } as unknown as typeof NEGOTIATION,
+          ],
+        ]);
+        const { client } = mockChannelClient({ negotiations: bare });
+        const publisher = build(client, {
+          channelMap: map,
+          warn: (line) => warnings.push(line),
+          negotiationFallbacks: {
+            tokenNetworks: { 'evm:31337': '0xFALLBACKNET' },
+            preferredTokens: { 'evm:31337': '0xFALLBACKTOKEN' },
+          },
+        });
+        await publisher.publishEvent(EVENT, []);
+        await publisher.stop();
+
+        const negotiation = bare.get(PEER_ID) as unknown as {
+          tokenNetwork?: string;
+          tokenAddress?: string;
+        };
+        expect(negotiation.tokenNetwork).toBe('0xFALLBACKNET');
+        expect(negotiation.tokenAddress).toBe('0xFALLBACKTOKEN');
+        // The recorded channel carries the back-filled tokenNetwork.
+        expect(map.list()[0]?.tokenNetwork).toBe('0xFALLBACKNET');
+      });
+
+      it('never overrides values the peer DID announce', async () => {
+        const { client } = mockChannelClient();
+        const publisher = build(client, {
+          channelMap: map,
+          negotiationFallbacks: {
+            tokenNetworks: { 'evm:31337': '0xFALLBACKNET' },
+            preferredTokens: { 'evm:31337': '0xFALLBACKTOKEN' },
+          },
+        });
+        await publisher.publishEvent(EVENT, []);
+        await publisher.stop();
+        expect(map.list()[0]?.tokenNetwork).toBe(NEGOTIATION.tokenNetwork);
+      });
+
+      it('only touches the negotiated chain key', async () => {
+        const bare = new Map([
+          [
+            PEER_ID,
+            {
+              ...NEGOTIATION,
+              tokenNetwork: undefined,
+            } as unknown as typeof NEGOTIATION,
+          ],
+        ]);
+        const { client } = mockChannelClient({ negotiations: bare });
+        const publisher = build(client, {
+          channelMap: map,
+          negotiationFallbacks: {
+            tokenNetworks: { 'evm:8453': '0xOTHERCHAIN' },
+          },
+        });
+        await publisher.publishEvent(EVENT, []);
+        await publisher.stop();
+        const negotiation = bare.get(PEER_ID) as unknown as {
+          tokenNetwork?: string;
+        };
+        expect(negotiation.tokenNetwork).toBeUndefined();
+      });
+    });
   });
 });
 
