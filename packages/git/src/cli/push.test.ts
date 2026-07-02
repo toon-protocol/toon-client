@@ -22,7 +22,7 @@ import type {
   GitEstimateResponse,
   GitPushResponse,
 } from '../routes.js';
-import { readToonConfig } from './git-config.js';
+import { readToonConfig, writeToonConfig } from './git-config.js';
 import { runPush, selectRefspecs, type CliIo, type PushDeps } from './push.js';
 import { GitRepoReader } from '../repo-reader.js';
 import type { StandaloneContext } from './standalone-context.js';
@@ -670,6 +670,59 @@ describe('standalone mode (Publisher seam)', () => {
     const code = await runPush(['--yes', '--repo-id', 'demo'], h.deps);
     expect(code).toBe(0);
     expect(fake.published.map((p) => p.kind)).toEqual([30617, 30618]);
+  });
+
+  it('refuses >1 explicit --relay before fetching, uploading, or paying', async () => {
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps(env, repoDir, {
+      fetchImpl: rejectingFetch,
+      loadStandalone: async () => fake.context,
+    });
+    const code = await runPush(
+      [
+        '--standalone',
+        '--yes',
+        '--repo-id',
+        'demo',
+        '--relay',
+        'wss://one.example',
+        '--relay',
+        'wss://two.example',
+      ],
+      h.deps
+    );
+    expect(code).toBe(1);
+    const text = h.err.join('\n');
+    expect(text).toContain('single relay');
+    expect(text).toContain('wss://one.example');
+    expect(text).toContain('Nothing was uploaded or paid');
+    // Refused before ANY network or payment activity.
+    expect(fake.remoteRequests).toHaveLength(0);
+    expect(fake.uploads).toHaveLength(0);
+    expect(fake.published).toHaveLength(0);
+    expect(fake.stopped).toBe(true);
+  });
+
+  it('refuses multi-relay git config persisted by daemon mode when auto-falling back to standalone', async () => {
+    // A prior daemon-mode push can persist several relays into `toon.relay`;
+    // a later daemon outage + mnemonic auto-selects standalone with no
+    // --standalone/--relay from the user. The single-relay guard must still
+    // fire before money moves.
+    await writeToonConfig(repoDir, {
+      relays: ['wss://one.example', 'wss://two.example'],
+    });
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps(
+      { ...env, TOON_CLIENT_MNEMONIC: 'test test test' },
+      repoDir,
+      { fetchImpl: rejectingFetch, loadStandalone: async () => fake.context }
+    );
+    const code = await runPush(['--yes', '--repo-id', 'demo'], h.deps);
+    expect(code).toBe(1);
+    expect(h.err.join('\n')).toContain('single relay');
+    expect(fake.remoteRequests).toHaveLength(0);
+    expect(fake.uploads).toHaveLength(0);
+    expect(fake.published).toHaveLength(0);
   });
 
   it('maps a local non-fast-forward plan to the --force suggestion', async () => {

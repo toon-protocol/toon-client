@@ -90,7 +90,8 @@ Options:
   --yes              skip the fee confirmation (required when not a TTY)
   --json             machine-readable plan/receipts; without --yes it is a pure
                      estimate (nothing executed)
-  --relay <url>      relay URL (repeatable; default: git config toon.relay,
+  --relay <url>      relay URL (repeatable in daemon mode; standalone mode
+                     supports exactly one; default: git config toon.relay,
                      then the mode's default relay)
   --repo-id <id>     repository id / NIP-34 d-tag (default: git config
                      toon.repoid, then the repo directory name)
@@ -297,6 +298,19 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
       standaloneCtx = await (deps.loadStandalone ?? defaultLoadStandalone)(env);
       identity = standaloneCtx.ownerPubkey;
       relaysUsed ??= standaloneCtx.defaultRelayUrls;
+      // StandalonePublisher publishes to exactly one relay (its publishEvent
+      // throws on >1). Multiple relays can arrive here without explicit
+      // intent — e.g. a daemon-mode push persisted several into git config
+      // `toon.relay`, and a later daemon outage auto-selected standalone.
+      // Refuse up front, before anything is fetched, uploaded, or paid.
+      if (relaysUsed && relaysUsed.length > 1) {
+        io.err(
+          `standalone mode publishes to a single relay, but ${relaysUsed.length} are ` +
+            `configured (${relaysUsed.join(', ')}) — re-run with exactly one ` +
+            '--relay <url> (or trim git config toon.relay). Nothing was uploaded or paid.'
+        );
+        return 1;
+      }
       const remoteState = await standaloneCtx.fetchRemote({
         ownerPubkey: standaloneCtx.ownerPubkey,
         repoId,
