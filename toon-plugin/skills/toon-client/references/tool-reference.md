@@ -6,9 +6,9 @@ subscriptions; the MCP server is a stateless proxy that auto-spawns the daemon
 and holds no keys.
 
 **Paid (SPENDY)** tools spend real value from a payment channel:
-`toon_publish`, `toon_publish_unsigned`, `toon_upload_media`, `toon_swap`, and
-`toon_http_fetch_paid` (only when the remote returns 402). Everything else is
-free.
+`toon_publish`, `toon_publish_unsigned`, `toon_upload_media`, `toon_swap`,
+the `toon_git_*` writes, and `toon_http_fetch_paid` (only when the remote
+returns 402). Everything else is free.
 
 ## Status & identity
 
@@ -24,6 +24,26 @@ free.
 | `toon_publish` | Publish a **fully-signed** Nostr event; signs a payment-channel claim and forwards over BTP. | `event` (required), `destination?`, `fee?`, `btpUrl?` | **paid** |
 | `toon_publish_unsigned` | Publish without holding a key: supply the event shell; the daemon signs it (merging latest tags for replaceable kinds 0/3). The path UI atoms use. | `kind` (required), `content?`, `tags?`, `destination?`, `fee?`, `btpUrl?` | **paid** |
 | `toon_upload_media` | Two-step media write: upload bytes to Arweave via the kind:5094 DVM, then publish a media event referencing the URL (default kind 1063; 20 picture, 21/22 video, 1 note+imeta). Single-packet. | `filePath` \| `dataBase64` (exactly one required; `filePath` is an absolute path read off disk, preferred), `mime?`, `kind?`, `caption?`, `tags?`, `fee?`, `btpUrl?` | **paid** |
+
+## Git write path (NIP-34, pay-to-write)
+
+`toon_git_push` is **two-step**: always call with `dry_run: true` first (free —
+returns the plan with itemized fees), quote `estimate.totalFee` to the user and
+get explicit confirmation, then call again with `confirm: true`. Pushes and the
+single-event tools below are permanent and non-refundable; quote the per-event
+fee (`feePerEvent` via `toon_status`) before each.
+
+| Tool | Purpose | Key params | Paid? |
+|---|---|---|---|
+| `toon_git_push` | Push a local git repo to TOON: upload the object delta to Arweave (paid store) + publish kind:30618 refs (+ kind:30617 on first push). The daemon identity is the repo owner. | `repoPath` (required), `repoId?` (default: basename), `refspecs?`, `force?`, `relayUrls?`, `dry_run?`, `confirm?` | **paid** (dry_run free) |
+| `toon_git_issue` | File a kind:1621 issue against a repo. | `repoOwnerPubkey`, `repoId`, `title`, `body` (required), `labels?` | **paid** |
+| `toon_git_comment` | Comment (kind:1622) on an issue/patch. | `repoOwnerPubkey`, `repoId`, `rootEventId`, `body` (required), `parentAuthorPubkey?`, `marker?` (`root`\|`reply`) | **paid** |
+| `toon_git_patch` | Submit a kind:1617 patch (real `git format-patch` content): exactly one of `patchText` or `repoPath`+`range`. | `repoOwnerPubkey`, `repoId`, `title` (required), `patchText?`, `repoPath?`, `range?`, `branch?` | **paid** |
+| `toon_git_status` | Set issue/patch status (kind:1630-1633). | `repoOwnerPubkey`, `repoId`, `targetEventId`, `status` (`open`\|`applied`\|`closed`\|`draft`) (all required) | **paid** |
+
+Structured push errors: `non_fast_forward` (returns the rejected `refs`; re-run
+the dry_run with `force: true` and confirm with the user before force-pushing)
+and `oversize_objects` (objects over the 95KB v1 limit, with paths/sizes).
 
 ## Reads (free)
 

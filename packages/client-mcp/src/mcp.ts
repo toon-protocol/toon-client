@@ -136,7 +136,10 @@ async function main(): Promise<void> {
         'to quote the exact fee + asset, tell the user the fee and that the ' +
         'write is permanent and non-refundable (events cannot be unpublished), ' +
         'and get explicit confirmation before calling any paid write ' +
-        '(toon_publish, toon_publish_unsigned, toon_upload, toon_swap). ' +
+        '(toon_publish, toon_publish_unsigned, toon_upload, toon_swap, and ' +
+        'the toon_git_* writes). toon_git_push is two-step everywhere: ' +
+        'dry_run:true first (free fee estimate), quote estimate.totalFee and ' +
+        'get explicit user confirmation, then push with confirm:true. ' +
         'Fall back to text only on explicit request or render failure.',
     }
   );
