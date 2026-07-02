@@ -1,5 +1,13 @@
 # @toon-protocol/rig
 
+## 0.2.31
+
+### Patch Changes
+
+- Updated dependencies [3f30e36]
+  - @toon-protocol/arweave@0.2.0
+  - @toon-protocol/views@0.12.3
+
 ## 0.2.30
 
 ### Patch Changes

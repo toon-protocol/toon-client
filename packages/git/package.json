@@ -1,6 +1,6 @@
 {
   "name": "@toon-protocol/git",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Git-to-TOON write path core — build git objects and NIP-34 events for the Rig control plane",
   "license": "MIT",
   "author": "Jonathan Green",
@@ -49,7 +49,7 @@
     "@toon-protocol/core": "^1.6.0"
   },
   "peerDependencies": {
-    "@toon-protocol/client": "^0.14.12"
+    "@toon-protocol/client": "^0.15.0"
   },
   "peerDependenciesMeta": {
     "@toon-protocol/client": {
