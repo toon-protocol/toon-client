@@ -176,6 +176,7 @@ beforeEach(async () => {
   env = { TOON_CLIENT_HOME: homeDir };
   fake = makeStandalone();
   await writeToonConfig(repoDir, { repoId: 'demo', owner: CONFIG_OWNER });
+  git(['remote', 'add', 'origin', 'wss://origin-relay.example'], repoDir);
 });
 
 afterEach(() => {
@@ -202,7 +203,7 @@ describe('rig issue create', () => {
     expect(event.tags).toContainEqual(['subject', 'Fix the flux']);
     expect(event.tags).toContainEqual(['t', 'bug']);
     expect(event.tags).toContainEqual(['t', 'ui']);
-    expect(relayUrls).toEqual(['wss://standalone-relay.example']);
+    expect(relayUrls).toEqual(['wss://origin-relay.example']);
     expect(fake.stopped).toBe(true);
 
     const text = h.out.join('\n');
@@ -276,6 +277,7 @@ describe('rig issue create', () => {
 
   it('falls back to the active identity as owner when unconfigured', async () => {
     const bare = makeRepo(); // no toon.* config
+    git(['remote', 'add', 'origin', 'wss://origin-relay.example'], bare);
     try {
       const h = makeDeps(env, bare, { loadStandalone: fake.load });
       const code = await runIssue(
@@ -521,8 +523,9 @@ describe('rig status', () => {
   });
 });
 
-describe('relay selection', () => {
-  it('refuses multi-relay configs before anything is paid', async () => {
+describe('relay selection (#249)', () => {
+  it('refuses a multi-valued toon.relay before anything is paid', async () => {
+    git(['remote', 'remove', 'origin'], repoDir); // fall back to toon.relay
     await writeToonConfig(repoDir, {
       relays: ['wss://one.example', 'wss://two.example'],
     });
@@ -534,10 +537,11 @@ describe('relay selection', () => {
     expect(text).toContain('wss://one.example');
     expect(text).toContain('Nothing was published or paid');
     expect(fake.published).toHaveLength(0);
-    expect(fake.stopped).toBe(true);
+    // Refused before the publisher (identity chain / nonce guard) loaded.
+    expect(fake.stopped).toBe(false);
   });
 
-  it('an explicit single --relay overrides the config default', async () => {
+  it('an explicit single --relay overrides the configured remotes', async () => {
     const h = deps();
     const code = await runIssue(
       ['create', '--title', 't', '--body', 'b', '--yes', '--relay', 'wss://chosen.example'],
@@ -545,6 +549,74 @@ describe('relay selection', () => {
     );
     expect(code).toBe(0);
     expect(fake.published[0]?.relayUrls).toEqual(['wss://chosen.example']);
+  });
+
+  it('--remote publishes via the named git remote', async () => {
+    git(['remote', 'add', 'stage', 'wss://stage-relay.example'], repoDir);
+    const h = deps();
+    const code = await runIssue(
+      ['create', '--title', 't', '--body', 'b', '--yes', '--remote', 'stage'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(fake.published[0]?.relayUrls).toEqual(['wss://stage-relay.example']);
+  });
+
+  it('an unknown --remote errors before anything is paid', async () => {
+    const h = deps();
+    const code = await runIssue(
+      ['create', '--title', 't', '--body', 'b', '--yes', '--remote', 'nope'],
+      h.deps
+    );
+    expect(code).toBe(1);
+    const text = h.err.join('\n');
+    expect(text).toContain('no remote named "nope"');
+    expect(text).toContain('rig remote add nope');
+    expect(fake.published).toHaveLength(0);
+    expect(fake.stopped).toBe(false);
+  });
+
+  it('a multi-URL --remote is refused before anything is paid', async () => {
+    git(['remote', 'add', 'stage', 'wss://one.example'], repoDir);
+    git(['remote', 'set-url', '--add', 'stage', 'wss://two.example'], repoDir);
+    const h = deps();
+    const code = await runStatus(
+      [ROOT_EVENT, 'open', '--yes', '--remote', 'stage'],
+      h.deps
+    );
+    expect(code).toBe(1);
+    expect(h.err.join('\n')).toContain('one relay URL per remote');
+    expect(fake.published).toHaveLength(0);
+    expect(fake.stopped).toBe(false);
+  });
+
+  it('falls back to deprecated toon.relay with the migration nudge', async () => {
+    git(['remote', 'remove', 'origin'], repoDir);
+    await writeToonConfig(repoDir, { relays: ['wss://legacy.example'] });
+    const h = deps();
+    const code = await runIssue(
+      ['create', '--title', 't', '--body', 'b', '--yes'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(fake.published[0]?.relayUrls).toEqual(['wss://legacy.example']);
+    const nudges = h.err.filter((l) => l.includes('toon.relay'));
+    expect(nudges).toHaveLength(1);
+    expect(nudges[0]).toContain('deprecated');
+    expect(nudges[0]).toContain('rig remote add origin wss://legacy.example');
+  });
+
+  it('errors "no origin configured" when no relay resolves', async () => {
+    git(['remote', 'remove', 'origin'], repoDir);
+    const h = deps();
+    const code = await runIssue(
+      ['create', '--title', 't', '--body', 'b', '--yes'],
+      h.deps
+    );
+    expect(code).toBe(1);
+    expect(h.err.join('\n')).toContain('no origin configured');
+    expect(h.err.join('\n')).toContain('rig remote add origin <relay-url>');
+    expect(fake.published).toHaveLength(0);
   });
 });
 

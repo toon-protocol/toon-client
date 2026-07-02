@@ -10,8 +10,11 @@
  * (../nip34-events.ts — the same builders the toon-clientd daemon uses) and
  * pay-to-publish through the embedded, nonce-guarded StandalonePublisher
  * (#248: the CLI is standalone-only; the daemon keeps its own toon_git_* MCP
- * surface). Publishes go to a SINGLE relay; multiple configured relays are
- * refused before anything is paid (same guard as push).
+ * surface). The relay resolves like `rig push` (#249): `--remote <name>`
+ * (default: the `origin` git remote), `--relay <url>` as an ad-hoc override
+ * that bypasses remotes, deprecated `git config toon.relay` as a nudged
+ * fallback. Publishes go to a SINGLE relay; multiple configured relays and
+ * multi-URL remotes are refused before anything is paid (same guard as push).
  *
  * `rig pr create --range` runs REAL `git format-patch --stdout <range>` in
  * the local repository and publishes its output as the kind:1617 content —
@@ -51,6 +54,7 @@ import {
   type IdentityReport,
   type PushDeps,
 } from './push.js';
+import { resolveRelays, singleRelayRefusal } from './remote.js';
 import { feeLabel, renderEventPlan, renderEventReceipt } from './render.js';
 import type { StandaloneContext } from './standalone-context.js';
 
@@ -83,8 +87,11 @@ const COMMON_FLAGS_USAGE = `  --repo-id <id>       repository id / NIP-34 d-tag 
                        toon.repoid — run \`rig init\` to set it)
   --owner <pubkey>     repository owner pubkey, 64-char hex (default: git config
                        toon.owner, then the active identity)
-  --relay <url>        relay to publish to (exactly one; default: git config
-                       toon.relay, then the network default)
+  --remote <name>      publish via this configured git remote (default: the
+                       "origin" remote — \`rig remote add origin <relay-url>\`)
+  --relay <url>        ad-hoc relay override (exactly one) — bypasses the
+                       configured remotes. The deprecated v0.1 \`git config
+                       toon.relay\` still works as a fallback, with a nudge
   --yes                skip the fee confirmation (required when not a TTY)
   --json               machine-readable receipt; without --yes it is a pure
                        estimate (nothing published, exit 0)
@@ -167,6 +174,7 @@ const COMMON_OPTIONS = {
   yes: { type: 'boolean', default: false },
   json: { type: 'boolean', default: false },
   relay: { type: 'string', multiple: true },
+  remote: { type: 'string' },
   'repo-id': { type: 'string' },
   owner: { type: 'string' },
   help: { type: 'boolean', short: 'h', default: false },
@@ -176,6 +184,7 @@ interface CommonFlags {
   yes: boolean;
   json: boolean;
   relay: string[];
+  remote?: string;
   repoId?: string;
   owner?: string;
   help: boolean;
@@ -188,6 +197,8 @@ function pickCommon(values: Record<string, unknown>): CommonFlags {
     relay: Array.isArray(values['relay']) ? (values['relay'] as string[]) : [],
     help: values['help'] === true,
   };
+  const remote = values['remote'];
+  if (typeof remote === 'string') flags.remote = remote;
   const repoId = values['repo-id'];
   if (typeof repoId === 'string') flags.repoId = repoId;
   const owner = values['owner'];
@@ -245,22 +256,34 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
   let standaloneCtx: StandaloneContext | undefined;
   try {
     // ── Repo addressing (best-effort git config; flags can stand alone) ─────
+    let repoRoot: string | undefined;
     let toonConfig: ToonRepoConfig = { relays: [] };
     try {
-      toonConfig = await readToonConfig(await resolveRepoRoot(deps.cwd));
+      repoRoot = await resolveRepoRoot(deps.cwd);
+      toonConfig = await readToonConfig(repoRoot);
     } catch {
       // Not inside a git repository — --repo-id/--owner must carry the address.
     }
     const repoId = flags.repoId ?? toonConfig.repoId;
     if (!repoId) throw new UnconfiguredRepoAddressError('repository id');
 
-    /** Explicitly-known relays (flags → git config); undefined = default. */
-    const explicitRelays =
-      flags.relay.length > 0
-        ? flags.relay
-        : toonConfig.relays.length > 0
-          ? toonConfig.relays
-          : undefined;
+    // ── Relay resolution (#249: --relay > --remote > origin > toon.relay) ───
+    const resolved = await resolveRelays({
+      relayFlags: flags.relay,
+      remoteName: flags.remote,
+      repoRoot,
+      toonRelays: toonConfig.relays,
+    });
+    if (resolved.nudge !== undefined) io.err(resolved.nudge);
+    const relaysUsed = resolved.relays;
+    // Same pre-pay guard as push: StandalonePublisher publishes to exactly
+    // one relay, and multiple can arrive without explicit intent (repeated
+    // --relay flags, an old multi-valued git config `toon.relay`). Refuse
+    // before anything is paid.
+    if (relaysUsed.length > 1) {
+      io.err(singleRelayRefusal(resolved, 'Nothing was published or paid.'));
+      return 1;
+    }
 
     // ── Standalone context (identity chain + nonce guard) + per-event fee ───
     standaloneCtx = await (deps.loadStandalone ?? defaultLoadStandalone)({
@@ -269,18 +292,6 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
       warn: (line) => io.err(line),
     });
     const identity = identityReport(standaloneCtx);
-    const relaysUsed = explicitRelays ?? standaloneCtx.defaultRelayUrls;
-    // Same pre-pay guard as push: StandalonePublisher publishes to exactly
-    // one relay, and multiple can arrive without explicit intent (an old
-    // multi-valued git config `toon.relay`). Refuse before anything is paid.
-    if (relaysUsed.length > 1) {
-      io.err(
-        `rig publishes to a single relay, but ${relaysUsed.length} are ` +
-          `configured (${relaysUsed.join(', ')}) — re-run with exactly one ` +
-          '--relay <url> (or trim git config toon.relay). Nothing was published or paid.'
-      );
-      return 1;
-    }
     const fee = (await standaloneCtx.publisher.getFeeRates()).eventFee.toString();
 
     const owner = flags.owner ?? toonConfig.owner ?? identity.pubkey;

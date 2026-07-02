@@ -5,6 +5,7 @@
  *
  * Subcommands:
  *   init                        one-shot repo setup (identity + toon.* git config)
+ *   remote                      relays as git remotes (#249): add/remove/list
  *   push                        estimate → confirm → execute (#229)
  *   issue | comment | pr | status   single NIP-34 event publishes (#231)
  */
@@ -19,6 +20,7 @@ import {
 } from './events.js';
 import { runInit } from './init.js';
 import { runPush, PUSH_USAGE, type CliIo } from './push.js';
+import { runRemote } from './remote.js';
 
 const USAGE = `rig — push git repos to TOON (pay-to-write Nostr + Arweave)
 
@@ -27,7 +29,11 @@ Usage: rig <command> [options]
 Commands:
   init                       set up this repo: resolve your identity
                              (RIG_MNEMONIC) and write the toon.* git config
-  push [refspecs...]         plan, price, confirm, and execute a paid push
+  remote add <name> <url>    add a relay as a REAL git remote ("origin" is
+  remote remove <name>       the default publish target); remove/list manage
+  remote list                them — \`git remote -v\` shows the same data
+  push [remote] [refspecs...]  plan, price, confirm, and execute a paid push
+                             (defaults to the "origin" remote)
   issue create               file an issue (kind:1621) against a repo
   comment <root-event-id>    comment (kind:1622) on an issue or patch
   pr create                  publish a patch (kind:1617) with real
@@ -35,10 +41,10 @@ Commands:
   status <event-id> <state>  set an issue/patch status (kind:1630-1633):
                              open | applied | closed | draft
 
-Run \`rig <command> --help\` for the command's flags. \`rig init\` is free;
-all other commands are paid writes — permanent and non-refundable; each
-quotes its fee and asks for confirmation before spending (--yes skips,
---json emits machine output).`;
+Run \`rig <command> --help\` for the command's flags. \`rig init\` and
+\`rig remote\` are free; all other commands are paid writes — permanent and
+non-refundable; each quotes its fee and asks for confirmation before
+spending (--yes skips, --json emits machine output).`;
 
 /** Real terminal I/O: stdout lines, stderr lines, readline y/N confirm. */
 function makeIo(): CliIo {
@@ -73,6 +79,8 @@ async function main(): Promise<number> {
   switch (command) {
     case 'init':
       return runInit(rest, deps);
+    case 'remote':
+      return runRemote(rest, deps);
     case 'push':
       return runPush(rest, deps);
     case 'issue':
