@@ -28,6 +28,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./standalone": {
+      "types": "./dist/standalone/index.d.ts",
+      "import": "./dist/standalone/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -44,7 +48,16 @@
     "@toon-protocol/arweave": "workspace:*",
     "@toon-protocol/core": "^1.6.0"
   },
+  "peerDependencies": {
+    "@toon-protocol/client": "^0.14.12"
+  },
+  "peerDependenciesMeta": {
+    "@toon-protocol/client": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@toon-protocol/client": "workspace:*",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
     "tsup": "^8.0.0",

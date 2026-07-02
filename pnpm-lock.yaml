@@ -252,6 +252,9 @@ importers:
         specifier: ^1.6.0
         version: 1.6.0(@toon-protocol/connector@3.13.0)(typescript@5.9.3)
     devDependencies:
+      '@toon-protocol/client':
+        specifier: workspace:*
+        version: link:../client
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
