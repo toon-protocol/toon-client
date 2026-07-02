@@ -35,8 +35,17 @@ export function RigConfigProvider({ children }: { children: ReactNode }) {
       window.location.search.match(/[?&]relay=([^&]+)/);
     let relayUrl = DEFAULT_RELAY_URL;
     if (relayMatch) {
-      const candidate = decodeURIComponent(relayMatch[1] as string);
-      if (isValidRelayUrl(candidate)) {
+      // decodeURIComponent throws URIError on malformed percent-encoding
+      // (e.g. a stray `%` from a truncated link); an uncaught throw here
+      // would blank-page the app during initial render, so fall back to
+      // the default relay instead.
+      let candidate: string | null = null;
+      try {
+        candidate = decodeURIComponent(relayMatch[1] as string);
+      } catch {
+        candidate = null;
+      }
+      if (candidate !== null && isValidRelayUrl(candidate)) {
         relayUrl = candidate;
       }
     }

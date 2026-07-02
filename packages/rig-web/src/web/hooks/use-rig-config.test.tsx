@@ -76,6 +76,21 @@ describe('useRigConfig relay resolution', () => {
     expect(renderConfig().relayUrl).toBe(DEFAULT_RELAY);
   });
 
+  it('[P1] falls back to the default on malformed percent-encoding in the hash', () => {
+    // A stray `%` (e.g. from a truncated link) makes decodeURIComponent
+    // throw URIError; the provider must swallow it and use the default
+    // instead of blank-paging the app during initial render.
+    window.history.replaceState(null, '', '/#/?relay=wss://relay.example%');
+
+    expect(renderConfig().relayUrl).toBe(DEFAULT_RELAY);
+  });
+
+  it('[P1] falls back to the default on malformed percent-encoding in the legacy query param', () => {
+    window.history.replaceState(null, '', '/?relay=wss://relay.example%E0#/');
+
+    expect(renderConfig().relayUrl).toBe(DEFAULT_RELAY);
+  });
+
   it('[P2] injected __RIG_CONFIG__ wins over URL params', () => {
     window.__RIG_CONFIG__ = { relay: 'wss://injected.example' };
     window.history.replaceState(null, '', '/#/?relay=wss://hash.example');
