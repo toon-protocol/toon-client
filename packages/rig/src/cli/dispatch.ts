@@ -114,6 +114,7 @@ export async function dispatch(
       // argv tail goes to system git — flags, quoting, and exit code intact.
       return (deps.runGit ?? runGitPassthrough)(argv, {
         cwd: deps.cwd,
+        env: deps.env,
         err: (line) => io.err(line),
       });
   }

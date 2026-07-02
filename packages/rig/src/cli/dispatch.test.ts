@@ -138,6 +138,15 @@ describe('git passthrough dispatch', () => {
     expect(h.err).toEqual(['boom']);
   });
 
+  it('forwards deps.env to the git child (not ambient process.env)', async () => {
+    // env is the same injectable seam as cwd: a caller that supplies a
+    // sanitized environment must see the git child use IT, not process.env.
+    const h = makeHarness();
+    h.deps.env = { RIG_INJECTED_ENV: 'yes' };
+    await dispatch(['status'], h.deps);
+    expect(h.gitCalls[0]?.options?.env).toEqual({ RIG_INJECTED_ENV: 'yes' });
+  });
+
   it('the OLD rig status <event-id> <state> shape passes to git too', async () => {
     // The NIP-34 status publish lives at `rig pr status` now (#250): the old
     // top-level spelling must NOT error about event-ids — it is git's.
