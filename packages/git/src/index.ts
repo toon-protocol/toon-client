@@ -48,6 +48,22 @@ export {
 } from './publisher.js';
 
 export {
+  serializeFeeEstimate,
+  serializePushPlan,
+  serializePushResult,
+  type GitErrorEnvelope,
+  type GitEstimateRequest,
+  type GitEstimateResponse,
+  type GitFeeEstimate,
+  type GitPlannedObject,
+  type GitPublishReceipt,
+  type GitPushRequest,
+  type GitPushResponse,
+  type GitRefUpdate,
+  type GitUploadStep,
+} from './routes.js';
+
+export {
   NonFastForwardError,
   OversizeObjectsError,
   executePush,
