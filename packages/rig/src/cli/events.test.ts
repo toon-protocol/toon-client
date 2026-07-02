@@ -1,6 +1,6 @@
 /**
- * `rig issue|comment|pr|status` command tests (#231; standalone-only since
- * #248).
+ * `rig issue|comment|pr` command tests (#231; standalone-only since #248;
+ * the status publish is nested as `rig pr status` since #250).
  *
  * Same seam as the push tests: the publisher is mocked at the Publisher seam
  * (injected StandaloneContext). Covers: per-command event payloads
@@ -23,7 +23,6 @@ import {
   runComment,
   runIssue,
   runPr,
-  runStatus,
   type EventCommandDeps,
 } from './events.js';
 import { writeToonConfig } from './git-config.js';
@@ -494,10 +493,10 @@ describe('rig pr create (real format-patch)', () => {
   });
 });
 
-describe('rig status', () => {
+describe('rig pr status', () => {
   it('publishes the mapped status kind with the repo a-tag', async () => {
     const h = deps();
-    const code = await runStatus([ROOT_EVENT, 'applied', '--yes'], h.deps);
+    const code = await runPr(['status', ROOT_EVENT, 'applied', '--yes'], h.deps);
     expect(code).toBe(0);
     const { event } = fake.published[0] as FakeStandalone['published'][0];
     expect(event.kind).toBe(1631);
@@ -510,15 +509,25 @@ describe('rig status', () => {
 
   it('maps closed to kind:1632', async () => {
     const h = deps();
-    const code = await runStatus([ROOT_EVENT, 'closed', '--yes'], h.deps);
+    const code = await runPr(['status', ROOT_EVENT, 'closed', '--yes'], h.deps);
     expect(code).toBe(0);
     expect(fake.published[0]?.event.kind).toBe(1632);
   });
 
   it('validates the state word and positional count (exit 2)', async () => {
-    expect(await runStatus([ROOT_EVENT, 'merged'], deps().deps)).toBe(2);
-    expect(await runStatus([ROOT_EVENT], deps().deps)).toBe(2);
-    expect(await runStatus(['nothex', 'open'], deps().deps)).toBe(2);
+    expect(await runPr(['status', ROOT_EVENT, 'merged'], deps().deps)).toBe(2);
+    expect(await runPr(['status', ROOT_EVENT], deps().deps)).toBe(2);
+    expect(await runPr(['status', 'nothex', 'open'], deps().deps)).toBe(2);
+    expect(fake.published).toHaveLength(0);
+  });
+
+  it('rejects an unknown pr subcommand with the pr usage (exit 2)', async () => {
+    const h = deps();
+    expect(await runPr(['merge', ROOT_EVENT], h.deps)).toBe(2);
+    const text = h.err.join('\n');
+    expect(text).toContain('unknown rig pr subcommand: merge');
+    expect(text).toContain('Usage: rig pr status');
+    expect(await runPr([], deps().deps)).toBe(2);
     expect(fake.published).toHaveLength(0);
   });
 });
@@ -580,8 +589,8 @@ describe('relay selection (#249)', () => {
     git(['remote', 'add', 'stage', 'wss://one.example'], repoDir);
     git(['remote', 'set-url', '--add', 'stage', 'wss://two.example'], repoDir);
     const h = deps();
-    const code = await runStatus(
-      [ROOT_EVENT, 'open', '--yes', '--remote', 'stage'],
+    const code = await runPr(
+      ['status', ROOT_EVENT, 'open', '--yes', '--remote', 'stage'],
       h.deps
     );
     expect(code).toBe(1);
@@ -644,10 +653,10 @@ describe('error mapping', () => {
         throw new Error('publish exploded');
       },
     });
-    const code = await runStatus([ROOT_EVENT, 'open', '--json', '--yes'], h.deps);
+    const code = await runPr(['status', ROOT_EVENT, 'open', '--json', '--yes'], h.deps);
     expect(code).toBe(1);
     expect(JSON.parse(h.out.join('\n'))).toMatchObject({
-      command: 'status',
+      command: 'pr status',
       error: 'error',
       detail: 'publish exploded',
     });
@@ -662,7 +671,8 @@ describe('usage', () => {
       [runComment, ['--help'], '--parent-author'],
       [runPr, ['create', '--help'], '--patch-file'],
       [runPr, ['--help'], 'cover-letter'],
-      [runStatus, ['--help'], 'open|applied|closed|draft'],
+      [runPr, ['--help'], 'Usage: rig pr status'],
+      [runPr, ['status', '--help'], 'open|applied|closed|draft'],
     ] as const) {
       const h = deps();
       expect(await run(args as unknown as string[], h.deps)).toBe(0);
@@ -676,8 +686,8 @@ describe('usage', () => {
 
   it('rejects unknown flags (incl. the removed mode flags) with usage (exit 2)', async () => {
     const h = deps();
-    expect(await runStatus([ROOT_EVENT, 'open', '--frobnicate'], h.deps)).toBe(2);
-    expect(h.err.join('\n')).toContain('Usage: rig status');
+    expect(await runPr(['status', ROOT_EVENT, 'open', '--frobnicate'], h.deps)).toBe(2);
+    expect(h.err.join('\n')).toContain('Usage: rig pr status');
     expect(
       await runIssue(['create', '--title', 't', '--body', 'b', '--daemon'], deps().deps)
     ).toBe(2);

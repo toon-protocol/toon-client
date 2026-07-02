@@ -1,6 +1,18 @@
 # @toon-protocol/rig
 
-Git-to-TOON write path core — build git objects and NIP-34 events for the Rig control plane. Ships the **`rig`** CLI.
+Git-to-TOON write path core — build git objects and NIP-34 events for the Rig control plane. Ships the **`rig`** CLI: a 1:1 git experience with a TOON remote. rig owns a handful of TOON verbs (table below); **every other command is passed through to system `git` verbatim** — `rig status` runs `git status`, `rig add -p`, `rig commit`, `rig rebase -i`, … all behave exactly like git (same output, same prompts, same exit code).
+
+| command | owner | what it does |
+| --- | --- | --- |
+| `rig init` | rig (free) | one-shot repo setup: identity + `toon.*` git config |
+| `rig remote add/remove/list` | rig (free) | relays as REAL git remotes (`origin` = default publish target) |
+| `rig push [remote] [refspecs...]` | rig (paid) | the TOON push: Arweave upload + NIP-34 refs publish. Shadows `git push` — plain-git pushes stay available by running `git push` directly |
+| `rig issue create` | rig (paid) | file an issue (kind:1621) |
+| `rig comment <root-event-id>` | rig (paid) | comment (kind:1622) on an issue/patch |
+| `rig pr create` | rig (paid) | publish a patch (kind:1617) from real `git format-patch` |
+| `rig pr status <event-id> <state>` | rig (paid) | set issue/patch status (kind:1630–1633). **Was `rig status` before v2** |
+| `rig help` / `rig --version` | rig | usage / version |
+| everything else | **git** | executed as `git <args...>` with rig's stdio and git's exit code |
 
 ## `rig` quickstart
 
@@ -23,7 +35,13 @@ rig remote add origin wss://relay.example
 rig remote list              # names + URLs; --json for machines
 rig remote remove origin
 
-# 4. push (paid) — defaults to the "origin" remote, exactly like git
+# 4. work exactly like git — unowned commands pass through to system git:
+rig status                   # IS `git status`
+rig add -p && rig commit -m "fix"
+rig log --oneline            # pagers, colors, prompts all behave like git
+rig rebase -i HEAD~3         # interactive works (stdio is inherited)
+
+# 5. push (paid) — defaults to the "origin" remote, exactly like git
 rig push                     # plan + price the current branch, confirm, push
 rig push main v1.0.0 --yes   # specific refs, skip the confirm prompt
 rig push staging main        # push via another configured remote
@@ -35,8 +53,13 @@ echo "longer body" | rig issue create --title t --yes        # body via stdin
 rig comment <root-event-id> --body "Nice catch."             # kind:1622
 rig pr create --title "Add feature" --range main..feature    # kind:1617 with
                                                              # REAL format-patch text
-rig status <event-id> applied                                # kind:1631
+rig pr status <event-id> applied                             # kind:1631
+                                                             # (bare `rig status` is git's)
 ```
+
+### Git passthrough
+
+Any subcommand rig does not own is executed as `git <args...>` verbatim: the exact argv tail is handed to the system git with `stdio: 'inherit'` (interactive commands, pagers, colors, and prompts work), and git's exit code is rig's exit code (a child killed by a signal maps to the shell convention 128+N). rig-owned verbs always take precedence — in particular `rig push` is the TOON transport and shadows `git push`; plain-git pushes remain available by calling `git push` directly. If no system git is installed, passthrough fails with a clear error (exit 127).
 
 ### Identity
 
@@ -88,7 +111,7 @@ The single-event subcommands follow the same paid-write discipline as push — t
 - `rig issue create --title <t> [--body <b> | --body-file <f> | stdin] [--label <l>]…` — kind:1621.
 - `rig comment <root-event-id> --body <b> [--parent-author <pubkey>] [--marker root|reply]` — kind:1622.
 - `rig pr create --title <t> (--range <A..B> | --patch-file <f>) [--branch <name>]` — kind:1617; `--range` runs real `git format-patch --stdout` locally and derives the `commit`/`parent-commit` tags. A multi-commit range publishes ONE event carrying the whole series (cover-letter threading is out of scope in v1).
-- `rig status <target-event-id> <open|applied|closed|draft>` — kind:1630–1633, with the repo `a` tag attached.
+- `rig pr status <target-event-id> <open|applied|closed|draft>` — kind:1630–1633, with the repo `a` tag attached. (This was top-level `rig status` before v2; bare `rig status` now passes through to `git status`.)
 
 `--repo-id`/`--owner` override the git config address (use `--owner` for repos you don't own).
 
@@ -103,6 +126,6 @@ No signing or payment code lives in the core — that stays behind the `Publishe
 - `publisher.ts` — the `Publisher` interface (paid transport seam): `getFeeRates`, `uploadGitObject`, `publishEvent`. Implemented by the daemon (#227) and the standalone embedded client (#228).
 - `push.ts` — `planPush` (ref classification, object delta minus known sha→txId hints, oversize hard error, fee estimate) and `executePush` (uploads ref tips last, then ONE cumulative kind:30618 merging the full arweave map, kind:30617 first on first push; crash-resume safe via content-addressed skip).
 - `routes.ts` — the JSON wire shapes of the daemon's `/git/*` control routes (bigints as decimal strings, Maps as records) + the matching `serializePushPlan`/`serializePushResult` helpers, shared with `@toon-protocol/client-mcp` (the daemon keeps these routes; only the CLI stopped using them).
-- `cli/` — the `rig` bin: `init` (#248), `remote` (#249, relays as real git remotes + the shared relay resolution), `push` (#229), and the single-event `issue`/`comment`/`pr`/`status` subcommands (#231), all standalone-only with the `identity.ts` resolution chain.
+- `cli/` — the `rig` bin: `init` (#248), `remote` (#249, relays as real git remotes + the shared relay resolution), `push` (#229), the single-event `issue`/`comment`/`pr create`/`pr status` subcommands (#231, nested under `pr` since #250), and the git passthrough (#250, `dispatch.ts` + `git-passthrough.ts`), all standalone-only with the `identity.ts` resolution chain.
 
 Pure builders promoted from the proven Rig E2E seed pipeline (`packages/rig-web/tests/e2e/seed/lib`). Part of [epic #222](https://github.com/toon-protocol/toon-client/issues/222) and [epic #246](https://github.com/toon-protocol/toon-client/issues/246).
