@@ -2,19 +2,16 @@
  * The single-event `rig` subcommands (#231): issue / comment / pr / status.
  *
  * One shared pipeline behind four thin arg-parsers, mirroring `rig push`
- * (./push.ts) exactly: repo addressing from the `toon.*` git config keys the
- * first push persisted (`--repo-id`/`--owner` override; actionable error
- * when unconfigured), publisher-mode selection via ./mode.ts, a fee-quoting
- * confirm gate (`--yes` skips; a non-TTY session without it refuses;
- * `--json` without `--yes` is a pure estimate), and the same two transports:
- *
- *   daemon      POST /git/issue|comment|patch|status (the daemon builds,
- *               signs, and pays);
- *   standalone  build the NIP-34 event locally (../nip34-events.ts — the
- *               same builders the daemon uses) and pay-to-publish through
- *               the embedded, nonce-guarded StandalonePublisher. Standalone
- *               publishes to a SINGLE relay; multiple configured relays are
- *               refused before anything is paid (same guard as push).
+ * (./push.ts) exactly: repo addressing from the `toon.*` git config keys
+ * `rig init` writes (`--repo-id`/`--owner` override; actionable "run
+ * `rig init`" error when unconfigured), a fee-quoting confirm gate (`--yes`
+ * skips; a non-TTY session without it refuses; `--json` without `--yes` is a
+ * pure estimate), and ONE transport: build the NIP-34 event locally
+ * (../nip34-events.ts — the same builders the toon-clientd daemon uses) and
+ * pay-to-publish through the embedded, nonce-guarded StandalonePublisher
+ * (#248: the CLI is standalone-only; the daemon keeps its own toon_git_* MCP
+ * surface). Publishes go to a SINGLE relay; multiple configured relays are
+ * refused before anything is paid (same guard as push).
  *
  * `rig pr create --range` runs REAL `git format-patch --stdout <range>` in
  * the local repository and publishes its output as the kind:1617 content —
@@ -46,11 +43,14 @@ import {
   type GitRepoAddr,
   type GitStatusValue,
 } from '../routes.js';
-import { DaemonGitClient } from './daemon.js';
 import { describeError, UnconfiguredRepoAddressError } from './errors.js';
 import { readToonConfig, resolveRepoRoot, type ToonRepoConfig } from './git-config.js';
-import { selectMode, type PushMode } from './mode.js';
-import { defaultLoadStandalone, type PushDeps } from './push.js';
+import {
+  defaultLoadStandalone,
+  identityReport,
+  type IdentityReport,
+  type PushDeps,
+} from './push.js';
 import { feeLabel, renderEventPlan, renderEventReceipt } from './render.js';
 import type { StandaloneContext } from './standalone-context.js';
 
@@ -79,24 +79,22 @@ const defaultReadStdin = async (): Promise<string> => {
 // ---------------------------------------------------------------------------
 
 /** Flags every single-event subcommand shares (mirrors `rig push`). */
-const COMMON_FLAGS_USAGE = `  --repo-id <id>       repository id / NIP-34 d-tag (default: git config toon.repoid)
+const COMMON_FLAGS_USAGE = `  --repo-id <id>       repository id / NIP-34 d-tag (default: git config
+                       toon.repoid — run \`rig init\` to set it)
   --owner <pubkey>     repository owner pubkey, 64-char hex (default: git config
-                       toon.owner, then the active publisher identity)
-  --relay <url>        relay to publish to in standalone mode (default: git config
-                       toon.relay, then the mode's default; standalone supports
-                       exactly one relay — daemon mode publishes via its apex)
+                       toon.owner, then the active identity)
+  --relay <url>        relay to publish to (exactly one; default: git config
+                       toon.relay, then the network default)
   --yes                skip the fee confirmation (required when not a TTY)
   --json               machine-readable receipt; without --yes it is a pure
                        estimate (nothing published, exit 0)
-  --daemon             force daemon mode (toon-clientd control API)
-  --standalone         force standalone mode (embedded client from TOON_CLIENT_MNEMONIC)
   -h, --help           show this help`;
 
 export const ISSUE_USAGE = `Usage: rig issue create --title <title> [options]
 
 File an issue (kind:1621) against a TOON repo — a paid publish; writes are
 permanent and non-refundable. The repo address (30617:<owner>:<repoId>) comes
-from the toon.* git config keys \`rig push\` persists.
+from the toon.* git config keys \`rig init\` writes.
 
 Body source (exactly one): --body, --body-file, or piped stdin.
 
@@ -168,8 +166,6 @@ function assertHex64(value: string, what: string): void {
 const COMMON_OPTIONS = {
   yes: { type: 'boolean', default: false },
   json: { type: 'boolean', default: false },
-  daemon: { type: 'boolean', default: false },
-  standalone: { type: 'boolean', default: false },
   relay: { type: 'string', multiple: true },
   'repo-id': { type: 'string' },
   owner: { type: 'string' },
@@ -179,8 +175,6 @@ const COMMON_OPTIONS = {
 interface CommonFlags {
   yes: boolean;
   json: boolean;
-  daemon: boolean;
-  standalone: boolean;
   relay: string[];
   repoId?: string;
   owner?: string;
@@ -191,8 +185,6 @@ function pickCommon(values: Record<string, unknown>): CommonFlags {
   const flags: CommonFlags = {
     yes: values['yes'] === true,
     json: values['json'] === true,
-    daemon: values['daemon'] === true,
-    standalone: values['standalone'] === true,
     relay: Array.isArray(values['relay']) ? (values['relay'] as string[]) : [],
     help: values['help'] === true,
   };
@@ -220,28 +212,23 @@ interface RunEventOptions {
   actionLabel: string;
   /**
    * Build the unsigned NIP-34 event for the resolved repo address — the
-   * standalone publish payload, and the source of truth for the kind. May do
-   * real work (pr runs format-patch here), so failures land in the normal
-   * error path.
+   * publish payload, and the source of truth for the kind. May do real work
+   * (pr runs format-patch here), so failures land in the normal error path.
    */
   buildEvent: (addr: GitRepoAddr) => Promise<UnsignedEvent>;
-  /** Drive the matching daemon `/git/*` route. */
-  sendDaemon: (
-    client: DaemonGitClient,
-    addr: GitRepoAddr
-  ) => Promise<GitEventResponse>;
 }
 
 /** JSON envelope emitted by `--json` runs (agents consume this). */
 interface EventJsonOutput {
   command: EventCommand;
-  mode: PushMode;
   repoAddr: GitRepoAddr;
+  /** Active identity: source tier + derived pubkey (never the phrase). */
+  identity: IdentityReport;
   /** NIP-34 kind this command publishes. */
   kind: number;
   /** True when the paid publish ran. */
   executed: boolean;
-  /** Per-event fee (base units, decimal string), when known pre-publish. */
+  /** Per-event fee (base units, decimal string). */
   feeEstimate: string | null;
   result?: GitEventResponse;
   hint?: string;
@@ -249,12 +236,11 @@ interface EventJsonOutput {
 
 /**
  * The estimate → confirm → execute flow shared by all four subcommands.
- * Money moves only after the confirm gate, and in standalone mode only after
- * the single-relay guard.
+ * Money moves only after the confirm gate and the single-relay guard.
  */
 async function runEvent(opts: RunEventOptions): Promise<number> {
   const { command, flags, deps, actionLabel } = opts;
-  const { io, env, fetchImpl } = deps;
+  const { io, env } = deps;
 
   let standaloneCtx: StandaloneContext | undefined;
   try {
@@ -268,7 +254,7 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
     const repoId = flags.repoId ?? toonConfig.repoId;
     if (!repoId) throw new UnconfiguredRepoAddressError('repository id');
 
-    /** Explicitly-known relays (flags → git config); undefined = mode default. */
+    /** Explicitly-known relays (flags → git config); undefined = default. */
     const explicitRelays =
       flags.relay.length > 0
         ? flags.relay
@@ -276,56 +262,37 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
           ? toonConfig.relays
           : undefined;
 
-    // ── Mode selection + per-event fee ──────────────────────────────────────
-    const { mode, probe } = await selectMode({
-      daemon: flags.daemon,
-      standalone: flags.standalone,
+    // ── Standalone context (identity chain + nonce guard) + per-event fee ───
+    standaloneCtx = await (deps.loadStandalone ?? defaultLoadStandalone)({
       env,
-      fetchImpl,
+      cwd: deps.cwd,
+      warn: (line) => io.err(line),
     });
-    const daemonClient = new DaemonGitClient(probe.baseUrl, fetchImpl);
-
-    let identity: string | undefined;
-    let fee: string | undefined;
-    let relaysUsed: string[] | undefined = explicitRelays;
-    if (mode === 'daemon') {
-      identity = probe.identity;
-      fee = probe.feePerEvent;
-    } else {
-      standaloneCtx = await (deps.loadStandalone ?? defaultLoadStandalone)(env);
-      identity = standaloneCtx.ownerPubkey;
-      relaysUsed ??= standaloneCtx.defaultRelayUrls;
-      // Same pre-pay guard as push (#243 review): StandalonePublisher
-      // publishes to exactly one relay, and multiple can arrive without
-      // explicit intent (daemon-persisted git config + a later daemon outage
-      // auto-selecting standalone). Refuse before anything is paid.
-      if (relaysUsed.length > 1) {
-        io.err(
-          `standalone mode publishes to a single relay, but ${relaysUsed.length} are ` +
-            `configured (${relaysUsed.join(', ')}) — re-run with exactly one ` +
-            '--relay <url> (or trim git config toon.relay). Nothing was published or paid.'
-        );
-        return 1;
-      }
-      fee = (await standaloneCtx.publisher.getFeeRates()).eventFee.toString();
+    const identity = identityReport(standaloneCtx);
+    const relaysUsed = explicitRelays ?? standaloneCtx.defaultRelayUrls;
+    // Same pre-pay guard as push: StandalonePublisher publishes to exactly
+    // one relay, and multiple can arrive without explicit intent (an old
+    // multi-valued git config `toon.relay`). Refuse before anything is paid.
+    if (relaysUsed.length > 1) {
+      io.err(
+        `rig publishes to a single relay, but ${relaysUsed.length} are ` +
+          `configured (${relaysUsed.join(', ')}) — re-run with exactly one ` +
+          '--relay <url> (or trim git config toon.relay). Nothing was published or paid.'
+      );
+      return 1;
     }
+    const fee = (await standaloneCtx.publisher.getFeeRates()).eventFee.toString();
 
-    const owner = flags.owner ?? toonConfig.owner ?? identity;
-    if (!owner) throw new UnconfiguredRepoAddressError('repository owner');
+    const owner = flags.owner ?? toonConfig.owner ?? identity.pubkey;
     const addr: GitRepoAddr = { ownerPubkey: owner, repoId };
 
-    // Built once: the standalone publish payload AND the kind for rendering.
+    // Built once: the publish payload AND the kind for rendering.
     const event = await opts.buildEvent(addr);
     const action = `kind:${event.kind} ${actionLabel}`;
 
     // ── Confirm gate (identical semantics to `rig push`) ────────────────────
     if (!flags.json) {
-      for (const line of renderEventPlan({
-        action,
-        addr,
-        mode,
-        ...(fee !== undefined ? { fee } : {}),
-      })) {
+      for (const line of renderEventPlan({ action, addr, identity, fee })) {
         io.out(line);
       }
     }
@@ -334,11 +301,11 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
         io.out(
           jsonOut({
             command,
-            mode,
             repoAddr: addr,
+            identity,
             kind: event.kind,
             executed: false,
-            feeEstimate: fee ?? null,
+            feeEstimate: fee,
             hint: 'estimate only — re-run with --yes to publish (permanent, non-refundable)',
           })
         );
@@ -361,28 +328,19 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
     }
 
     // ── Execute ─────────────────────────────────────────────────────────────
-    let result: GitEventResponse;
-    if (mode === 'daemon') {
-      result = await opts.sendDaemon(daemonClient, addr);
-    } else {
-      if (!standaloneCtx) throw new Error('internal: standalone context missing');
-      const receipt = await standaloneCtx.publisher.publishEvent(
-        event,
-        relaysUsed ?? []
-      );
-      result = serializeEventReceipt(event.kind, receipt);
-    }
+    const receipt = await standaloneCtx.publisher.publishEvent(event, relaysUsed);
+    const result = serializeEventReceipt(event.kind, receipt);
 
     // ── Receipts ────────────────────────────────────────────────────────────
     if (flags.json) {
       io.out(
         jsonOut({
           command,
-          mode,
           repoAddr: addr,
+          identity,
           kind: result.kind,
           executed: true,
-          feeEstimate: fee ?? null,
+          feeEstimate: fee,
           result,
         })
       );
@@ -508,13 +466,6 @@ export async function runIssue(
     actionLabel: `issue ${JSON.stringify(title)}`,
     buildEvent: async (addr) =>
       buildIssue(addr.ownerPubkey, addr.repoId, title, body, labels),
-    sendDaemon: (client, addr) =>
-      client.gitIssue({
-        repoAddr: addr,
-        title,
-        body,
-        ...(labels.length > 0 ? { labels } : {}),
-      }),
   });
 }
 
@@ -590,16 +541,6 @@ export async function runComment(
         body,
         marker
       ),
-    sendDaemon: (client, addr) =>
-      client.gitComment({
-        repoAddr: addr,
-        rootEventId,
-        body,
-        marker,
-        ...(parentAuthor !== undefined
-          ? { parentAuthorPubkey: parentAuthor }
-          : {}),
-      }),
   });
 }
 
@@ -674,50 +615,41 @@ export async function runPr(
     return 2;
   }
 
-  // Lazily prepared patch content, shared by build (standalone) and send
-  // (daemon) so format-patch runs once; failures land in runEvent's error path.
-  let prepared:
-    | { patchText: string; commits: { sha: string; parentSha: string }[] }
-    | undefined;
-  const prepare = async (): Promise<NonNullable<typeof prepared>> => {
-    if (prepared) return prepared;
-    if (range !== undefined) {
-      // REAL format-patch output from the local repository (v1 publishes the
-      // whole series as ONE event; see PR_USAGE).
-      const reader = new GitRepoReader(await resolveRepoRoot(deps.cwd));
-      const patchText = await reader.formatPatch(range);
-      if (patchText === '') {
-        throw new Error(
-          `range ${JSON.stringify(range)} selects no commits — nothing to publish`
-        );
-      }
-      // commit/parent-commit tags for exactly the commits the series carries
-      // (parsed from the patch itself, so the tags can never drift from the
-      // content). Root commits have no parent and contribute no tag pair.
-      const shas = extractPatchShas(patchText);
-      const parents = await reader.commitParents(shas);
-      const commits = shas.flatMap((sha) => {
-        const parentSha = parents.get(sha)?.[0];
-        return parentSha ? [{ sha, parentSha }] : [];
-      });
-      prepared = { patchText, commits };
-    } else {
-      const patchText = await readFile(patchFile as string, 'utf-8');
-      if (patchText.trim() === '') {
-        throw new Error(`--patch-file ${patchFile} is empty — nothing to publish`);
-      }
-      prepared = { patchText, commits: [] };
-    }
-    return prepared;
-  };
-
   return runEvent({
     command: 'pr',
     flags,
     deps,
     actionLabel: `patch ${JSON.stringify(title)}`,
     buildEvent: async (addr) => {
-      const { patchText, commits } = await prepare();
+      let patchText: string;
+      let commits: { sha: string; parentSha: string }[];
+      if (range !== undefined) {
+        // REAL format-patch output from the local repository (v1 publishes
+        // the whole series as ONE event; see PR_USAGE).
+        const reader = new GitRepoReader(await resolveRepoRoot(deps.cwd));
+        patchText = await reader.formatPatch(range);
+        if (patchText === '') {
+          throw new Error(
+            `range ${JSON.stringify(range)} selects no commits — nothing to publish`
+          );
+        }
+        // commit/parent-commit tags for exactly the commits the series
+        // carries (parsed from the patch itself, so the tags can never drift
+        // from the content). Root commits have no parent and contribute no
+        // tag pair.
+        const shas = extractPatchShas(patchText);
+        const parents = await reader.commitParents(shas);
+        commits = shas.flatMap((sha) => {
+          const parentSha = parents.get(sha)?.[0];
+          return parentSha ? [{ sha, parentSha }] : [];
+        });
+      } else {
+        patchText = await readFile(patchFile as string, 'utf-8');
+        if (patchText.trim() === '') {
+          throw new Error(`--patch-file ${patchFile} is empty — nothing to publish`);
+        }
+        commits = [];
+      }
       return buildPatch(
         addr.ownerPubkey,
         addr.repoId,
@@ -726,16 +658,6 @@ export async function runPr(
         branch,
         patchText
       );
-    },
-    sendDaemon: async (client, addr) => {
-      const { patchText, commits } = await prepare();
-      return client.gitPatch({
-        repoAddr: addr,
-        title,
-        patchText,
-        ...(commits.length > 0 ? { commits } : {}),
-        ...(branch !== undefined ? { branch } : {}),
-      });
     },
   });
 }
@@ -813,7 +735,5 @@ export async function runStatus(
       ]);
       return event;
     },
-    sendDaemon: (client, addr) =>
-      client.gitStatus({ repoAddr: addr, targetEventId, status }),
   });
 }

@@ -1,13 +1,18 @@
 /**
- * `rig push [refspecs...]` — estimate → confirm → execute (#229).
+ * `rig push [refspecs...]` — estimate → confirm → execute (#229, standalone
+ * since #248).
  *
- * One flow, two publisher modes (see ./mode.ts):
- *   daemon      estimate/execute via toon-clientd `POST /git/estimate|push`
- *               (the daemon plans AND publishes; its key signs, so its
- *               identity is the repo owner);
- *   standalone  plan locally (`planPush`) and execute through the embedded,
- *               nonce-guarded StandalonePublisher (loaded via dynamic import
- *               so daemon-mode runs never need `@toon-protocol/client`).
+ * The CLI is STANDALONE-ONLY: it plans locally (`planPush`) and executes
+ * through the embedded, nonce-guarded StandalonePublisher (loaded via dynamic
+ * import so runs that fail earlier never need `@toon-protocol/client`). The
+ * identity comes from the RIG_MNEMONIC precedence chain (./identity.ts); the
+ * nonce guard still refuses when a running toon-clientd holds the same
+ * identity (cumulative-claim watermark protection) — drive the daemon through
+ * its toon_git_* MCP tools instead.
+ *
+ * Repo addressing comes from the `toon.*` git config keys `rig init` writes
+ * (`--repo-id` overrides); an unconfigured repo is a hard "run `rig init`
+ * first" error — nothing is written as a side effect of pushing.
  *
  * Money is only spent after the confirm gate: `--yes`, or an interactive
  * y/N prompt (a non-TTY session without `--yes` refuses). `--json` emits the
@@ -15,27 +20,19 @@
  * a pure estimate (plan JSON, nothing executed, exit 0).
  */
 
-import { basename } from 'node:path';
 import { parseArgs } from 'node:util';
-import { planPush, executePush, type PushPlan } from '../push.js';
-import type { RemoteState } from '../remote-state.js';
+import { planPush, executePush } from '../push.js';
 import { GitRepoReader } from '../repo-reader.js';
-import { renderPlan, renderResult } from './render.js';
+import { renderIdentityLine, renderPlan, renderResult } from './render.js';
 import {
   serializePushPlan,
   serializePushResult,
-  type GitEstimateRequest,
   type GitEstimateResponse,
   type GitPushResponse,
 } from '../routes.js';
-import { DaemonGitClient } from './daemon.js';
-import { describeError } from './errors.js';
-import {
-  readToonConfig,
-  resolveRepoRoot,
-  writeToonConfig,
-} from './git-config.js';
-import { selectMode, type PushMode } from './mode.js';
+import { describeError, UnconfiguredRepoAddressError } from './errors.js';
+import { readToonConfig, resolveRepoRoot } from './git-config.js';
+import type { IdentitySourceKind } from './identity.js';
 import type { LoadStandalone, StandaloneContext } from './standalone-context.js';
 
 // ---------------------------------------------------------------------------
@@ -58,21 +55,38 @@ export interface PushDeps {
   io: CliIo;
   env: NodeJS.ProcessEnv;
   cwd: string;
-  fetchImpl: typeof fetch;
   /** Standalone factory; defaults to the real dynamic-import loader. */
   loadStandalone?: LoadStandalone;
 }
 
 /**
- * Default standalone factory (shared with the single-event subcommands in
- * ./events.ts). Dynamic import: `standalone-mode` (and its optional
- * `@toon-protocol/client` peer dependency) only loads when standalone mode
- * is actually selected.
+ * Default standalone factory (shared by every paid command). Dynamic import:
+ * `standalone-mode` (and its optional `@toon-protocol/client` peer
+ * dependency) only loads once a command actually needs to sign or pay.
  */
-export const defaultLoadStandalone: LoadStandalone = async (env) => {
+export const defaultLoadStandalone: LoadStandalone = async (options) => {
   const mod = await import('./standalone-mode.js');
-  return mod.createStandaloneContext(env);
+  return mod.createStandaloneContext(options);
 };
+
+/** Identity report shared by every paid command's `--json` envelope. */
+export interface IdentityReport {
+  /** Derived Nostr pubkey (hex) of the active identity. */
+  pubkey: string;
+  /** Which tier of the RIG_MNEMONIC precedence chain supplied it. */
+  source: IdentitySourceKind;
+  /** Human-facing source label, e.g. `RIG_MNEMONIC env` or a file path. */
+  sourceLabel: string;
+}
+
+/** Build the identity report of a loaded standalone context. */
+export function identityReport(ctx: StandaloneContext): IdentityReport {
+  return {
+    pubkey: ctx.ownerPubkey,
+    source: ctx.identitySource,
+    sourceLabel: ctx.identitySourceLabel,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Usage
@@ -84,6 +98,10 @@ Push local git refs to TOON: uploads the object delta to Arweave (paid) and
 publishes the NIP-34 refs event (kind:30618; kind:30617 announce on first
 push). Writes are permanent and non-refundable.
 
+The repo must be set up once with \`rig init\` (writes toon.repoid/toon.owner
+to the local git config); the identity comes from RIG_MNEMONIC (env or a
+project .env), or the ~/.toon-client keystore/config.
+
 Refspecs are branch/tag names or full refnames; default is the current branch.
 
 Options:
@@ -93,13 +111,10 @@ Options:
   --yes              skip the fee confirmation (required when not a TTY)
   --json             machine-readable plan/receipts; without --yes it is a pure
                      estimate (nothing executed)
-  --relay <url>      relay URL (repeatable in daemon mode; standalone mode
-                     supports exactly one; default: git config toon.relay,
-                     then the mode's default relay)
+  --relay <url>      relay URL (exactly one; default: git config toon.relay,
+                     then the network default)
   --repo-id <id>     repository id / NIP-34 d-tag (default: git config
-                     toon.repoid, then the repo directory name)
-  --daemon           force daemon mode (toon-clientd control API)
-  --standalone       force standalone mode (embedded client from TOON_CLIENT_MNEMONIC)
+                     toon.repoid — run \`rig init\` to set it)
   -h, --help         show this help`;
 
 // ---------------------------------------------------------------------------
@@ -169,8 +184,6 @@ interface PushFlags {
   tags: boolean;
   yes: boolean;
   json: boolean;
-  daemon: boolean;
-  standalone: boolean;
   relay: string[];
   repoId?: string;
   help: boolean;
@@ -186,8 +199,6 @@ function parsePushArgs(args: string[]): PushFlags {
       tags: { type: 'boolean', default: false },
       yes: { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
-      daemon: { type: 'boolean', default: false },
-      standalone: { type: 'boolean', default: false },
       relay: { type: 'string', multiple: true },
       'repo-id': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
@@ -200,8 +211,6 @@ function parsePushArgs(args: string[]): PushFlags {
     tags: values.tags ?? false,
     yes: values.yes ?? false,
     json: values.json ?? false,
-    daemon: values.daemon ?? false,
-    standalone: values.standalone ?? false,
     relay: values.relay ?? [],
     help: values.help ?? false,
     positionals,
@@ -214,8 +223,9 @@ function parsePushArgs(args: string[]): PushFlags {
 /** JSON envelope emitted by `--json` runs (agents consume this). */
 interface PushJsonOutput {
   command: 'push';
-  mode: PushMode;
   repoId: string;
+  /** Active identity: source tier + derived pubkey (never the phrase). */
+  identity: IdentityReport;
   /** True when the paid execute step ran. */
   executed: boolean;
   /** True when every selected ref already matched the remote (no-op). */
@@ -227,7 +237,7 @@ interface PushJsonOutput {
 
 /** Run `rig push`; returns the process exit code. */
 export async function runPush(args: string[], deps: PushDeps): Promise<number> {
-  const { io, env, fetchImpl } = deps;
+  const { io, env } = deps;
 
   let flags: PushFlags;
   try {
@@ -243,20 +253,12 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
   }
 
   let standaloneCtx: StandaloneContext | undefined;
-  /** Rich standalone plan carried from estimate to execute within this run. */
-  let standalonePlan:
-    | {
-        pushPlan: PushPlan;
-        remoteState: RemoteState;
-        reader: GitRepoReader;
-        relaysUsed: string[];
-      }
-    | undefined;
   try {
-    // ── Repo + config resolution ────────────────────────────────────────────
+    // ── Repo + config resolution (rig init writes these) ────────────────────
     const repoRoot = await resolveRepoRoot(deps.cwd);
     const toonConfig = await readToonConfig(repoRoot);
-    const repoId = flags.repoId ?? toonConfig.repoId ?? basename(repoRoot);
+    const repoId = flags.repoId ?? toonConfig.repoId;
+    if (!repoId) throw new UnconfiguredRepoAddressError('repository id');
     const reader = new GitRepoReader(repoRoot);
     const refspecs = await selectRefspecs(
       reader,
@@ -264,7 +266,7 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
       flags.all,
       flags.tags
     );
-    /** Explicitly-known relays (flags → git config); undefined = mode default. */
+    /** Explicitly-known relays (flags → git config); undefined = default. */
     const explicitRelays =
       flags.relay.length > 0
         ? flags.relay
@@ -272,80 +274,60 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
           ? toonConfig.relays
           : undefined;
 
-    // ── Mode selection ──────────────────────────────────────────────────────
-    const { mode, probe } = await selectMode({
-      daemon: flags.daemon,
-      standalone: flags.standalone,
+    // ── Standalone context (identity chain + nonce guard) ───────────────────
+    standaloneCtx = await (deps.loadStandalone ?? defaultLoadStandalone)({
       env,
-      fetchImpl,
+      cwd: deps.cwd,
+      warn: (line) => io.err(line),
     });
-
-    // ── Estimate ────────────────────────────────────────────────────────────
-    let plan: GitEstimateResponse;
-    let identity: string | undefined;
-    let relaysUsed: string[] | undefined = explicitRelays;
-    const daemonClient = new DaemonGitClient(probe.baseUrl, fetchImpl);
-    const daemonRequest: GitEstimateRequest = {
-      repoPath: repoRoot,
-      repoId,
-      refspecs,
-      force: flags.force,
-      ...(explicitRelays ? { relayUrls: explicitRelays } : {}),
-    };
-
-    if (mode === 'daemon') {
-      identity = probe.identity;
-      relaysUsed ??= probe.relayUrl ? [probe.relayUrl] : undefined;
-      plan = await daemonClient.gitEstimate(daemonRequest);
-    } else {
-      standaloneCtx = await (deps.loadStandalone ?? defaultLoadStandalone)(env);
-      identity = standaloneCtx.ownerPubkey;
-      relaysUsed ??= standaloneCtx.defaultRelayUrls;
-      // StandalonePublisher publishes to exactly one relay (its publishEvent
-      // throws on >1). Multiple relays can arrive here without explicit
-      // intent — e.g. a daemon-mode push persisted several into git config
-      // `toon.relay`, and a later daemon outage auto-selected standalone.
-      // Refuse up front, before anything is fetched, uploaded, or paid.
-      if (relaysUsed && relaysUsed.length > 1) {
-        io.err(
-          `standalone mode publishes to a single relay, but ${relaysUsed.length} are ` +
-            `configured (${relaysUsed.join(', ')}) — re-run with exactly one ` +
-            '--relay <url> (or trim git config toon.relay). Nothing was uploaded or paid.'
-        );
-        return 1;
-      }
-      const remoteState = await standaloneCtx.fetchRemote({
-        ownerPubkey: standaloneCtx.ownerPubkey,
-        repoId,
-        relayUrls: relaysUsed,
-      });
-      const feeRates = await standaloneCtx.publisher.getFeeRates();
-      const pushPlan = await planPush({
-        repoReader: reader,
-        remoteState,
-        feeRates,
-        repoId,
-        refs: refspecs,
-        force: flags.force,
-      });
-      plan = serializePushPlan(pushPlan);
-      // Keep the rich plan for executePush (avoids a re-plan).
-      standalonePlan = { pushPlan, remoteState, reader, relaysUsed };
+    const identity = identityReport(standaloneCtx);
+    const relaysUsed = explicitRelays ?? standaloneCtx.defaultRelayUrls;
+    // StandalonePublisher publishes to exactly one relay (its publishEvent
+    // throws on >1). Multiple relays can arrive here without explicit intent
+    // (an old multi-valued git config `toon.relay`). Refuse up front, before
+    // anything is fetched, uploaded, or paid.
+    if (relaysUsed.length > 1) {
+      io.err(
+        `rig publishes to a single relay per push, but ${relaysUsed.length} are ` +
+          `configured (${relaysUsed.join(', ')}) — re-run with exactly one ` +
+          '--relay <url> (or trim git config toon.relay). Nothing was uploaded or paid.'
+      );
+      return 1;
     }
 
-    if (toonConfig.owner && identity && toonConfig.owner !== identity) {
+    if (toonConfig.owner && toonConfig.owner !== identity.pubkey) {
       io.err(
         `warning: git config toon.owner (${toonConfig.owner.slice(0, 8)}…) differs from ` +
-          `the active ${mode} identity (${identity.slice(0, 8)}…) — this push publishes ` +
-          "under the ACTIVE identity's repo namespace, not the configured owner's"
+          `the active identity (${identity.pubkey.slice(0, 8)}…) — this push publishes ` +
+          "under the ACTIVE identity's repo namespace, not the configured owner's. " +
+          'Re-run `rig init` to adopt the active identity.'
       );
     }
+
+    // ── Estimate (local plan) ───────────────────────────────────────────────
+    const remoteState = await standaloneCtx.fetchRemote({
+      ownerPubkey: standaloneCtx.ownerPubkey,
+      repoId,
+      relayUrls: relaysUsed,
+    });
+    const feeRates = await standaloneCtx.publisher.getFeeRates();
+    const pushPlan = await planPush({
+      repoReader: reader,
+      remoteState,
+      feeRates,
+      repoId,
+      refs: refspecs,
+      force: flags.force,
+    });
+    const plan = serializePushPlan(pushPlan);
 
     // ── Up-to-date short-circuit (never publish a no-op refs event) ─────────
     const upToDate = plan.refUpdates.every((u) => u.kind === 'up-to-date');
     if (upToDate) {
       if (flags.json) {
-        io.out(jsonOut({ command: 'push', mode, repoId, executed: false, upToDate: true, plan }));
+        io.out(
+          jsonOut({ command: 'push', repoId, identity, executed: false, upToDate: true, plan })
+        );
       } else {
         io.out('Everything up-to-date — nothing to push (and nothing paid).');
       }
@@ -354,15 +336,16 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
 
     // ── Confirm gate ────────────────────────────────────────────────────────
     if (!flags.json) {
-      for (const line of renderPlan(plan, mode)) io.out(line);
+      for (const line of renderPlan(plan)) io.out(line);
+      io.out(renderIdentityLine(identity));
     }
     if (!flags.yes) {
       if (flags.json) {
         io.out(
           jsonOut({
             command: 'push',
-            mode,
             repoId,
+            identity,
             executed: false,
             upToDate: false,
             plan,
@@ -388,44 +371,22 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
     }
 
     // ── Execute ─────────────────────────────────────────────────────────────
-    let result: GitPushResponse;
-    if (mode === 'daemon') {
-      result = await daemonClient.gitPush({ ...daemonRequest, confirm: true });
-    } else {
-      const cached = standalonePlan;
-      if (!cached || !standaloneCtx) {
-        throw new Error('internal: standalone plan cache missing');
-      }
-      const pushResult = await executePush({
-        plan: cached.pushPlan,
-        publisher: standaloneCtx.publisher,
-        remoteState: cached.remoteState,
-        repoReader: cached.reader,
-        relayUrls: cached.relaysUsed,
-      });
-      result = serializePushResult(cached.pushPlan, pushResult);
-    }
+    const pushResult = await executePush({
+      plan: pushPlan,
+      publisher: standaloneCtx.publisher,
+      remoteState,
+      repoReader: reader,
+      relayUrls: relaysUsed,
+    });
+    const result = serializePushResult(pushPlan, pushResult);
 
     // ── Receipts ────────────────────────────────────────────────────────────
     if (flags.json) {
       io.out(
-        jsonOut({ command: 'push', mode, repoId, executed: true, upToDate: false, plan, result })
+        jsonOut({ command: 'push', repoId, identity, executed: true, upToDate: false, plan, result })
       );
     } else {
       for (const line of renderResult(result)) io.out(line);
-    }
-
-    // ── rig init-lite: persist repo addressing after a successful push ──────
-    try {
-      await writeToonConfig(repoRoot, {
-        repoId,
-        ...(identity ? { owner: identity } : {}),
-        ...(relaysUsed ? { relays: relaysUsed } : {}),
-      });
-    } catch (err) {
-      io.err(
-        `warning: push succeeded but persisting git config failed: ${err instanceof Error ? err.message : String(err)}`
-      );
     }
     return 0;
   } catch (err) {

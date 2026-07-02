@@ -1,20 +1,24 @@
 /**
- * The seam between the `rig push` command and standalone (embedded-client)
- * mode. Kept in its own module WITHOUT any `@toon-protocol/client` import so
- * `push.ts` can `import type` it: the real implementation
+ * The seam between the CLI commands and the standalone (embedded-client)
+ * publisher. Kept in its own module WITHOUT any `@toon-protocol/client`
+ * import so command modules can `import type` it: the real implementation
  * (`./standalone-mode.ts`, which needs the optional client peer dependency)
- * is only ever loaded via dynamic import when standalone mode is actually
- * selected — daemon-mode runs never touch it. Tests inject a fake context
- * here (the Publisher seam).
+ * is only ever loaded via dynamic import once a command actually needs to
+ * sign or pay. Tests inject a fake context here (the Publisher seam).
  */
 
 import type { Publisher } from '../publisher.js';
 import type { RemoteState } from '../remote-state.js';
+import type { IdentitySourceKind } from './identity.js';
 
-/** Everything the push command needs from a standalone (embedded) session. */
+/** Everything a paid command needs from a standalone (embedded) session. */
 export interface StandaloneContext {
   /** Hex Nostr pubkey of the embedded identity — the repo owner. */
   ownerPubkey: string;
+  /** Where the identity's mnemonic came from (chain tier). */
+  identitySource: IdentitySourceKind;
+  /** Human-facing source label, e.g. `RIG_MNEMONIC env` or a file path. */
+  identitySourceLabel: string;
   /** Paid transport (nonce-guarded StandalonePublisher in the real impl). */
   publisher: Publisher;
   /** Relay URLs to use when neither `--relay` nor git config provides any. */
@@ -29,7 +33,16 @@ export interface StandaloneContext {
   stop(): Promise<void>;
 }
 
+/** What the standalone factory needs from the command environment. */
+export interface StandaloneLoadOptions {
+  env: NodeJS.ProcessEnv;
+  /** Working directory (starts the project-local `.env` walk). */
+  cwd: string;
+  /** Stderr line sink (deprecated-alias warning). */
+  warn(line: string): void;
+}
+
 /** Factory for a {@link StandaloneContext}; injectable in tests. */
 export type LoadStandalone = (
-  env: NodeJS.ProcessEnv
+  options: StandaloneLoadOptions
 ) => Promise<StandaloneContext>;
