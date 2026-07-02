@@ -1,6 +1,6 @@
 /**
- * Error UX for `rig push`: map structured planner/daemon errors to actionable
- * terminal output (and a machine-readable envelope for `--json`).
+ * Error UX for the `rig` commands: map structured planner/daemon errors to
+ * actionable terminal output (and a machine-readable envelope for `--json`).
  *
  * The daemon and standalone paths surface the SAME failures in different
  * clothing — HTTP envelopes (409 `non_fast_forward`, 413 `oversize_objects`,
@@ -30,12 +30,33 @@ export interface DescribedError {
   json: Record<string, unknown>;
 }
 
-const FUNDING_REMEDIATION = [
+const FUNDING_REMEDIATION = (command: string): string[] => [
   'Remediation:',
   '  • fund the settlement wallet: run the toon_fund_wallet MCP tool (devnet faucet), or send gas/tokens to the wallet yourself',
   '  • open (or top up) a payment channel: toon_open_channel / toon_channel_deposit',
-  '  • then re-run rig push',
+  `  • then re-run rig ${command}`,
 ];
+
+/**
+ * The single-event subcommands (issue/comment/pr/status) could not resolve
+ * the NIP-34 repo address (`30617:<ownerPubkey>:<repoId>`) from flags or the
+ * `toon.*` git config keys `rig push` persists.
+ */
+export class UnconfiguredRepoAddressError extends Error {
+  constructor(
+    /** Which half of the address is missing. */
+    public readonly missing: 'repository id' | 'repository owner'
+  ) {
+    super(
+      `no ${missing} configured — this command addresses the repo as ` +
+        '30617:<ownerPubkey>:<repoId>. Run `rig push` once inside the repo ' +
+        '(it persists toon.repoid/toon.owner/toon.relay to git config), or ' +
+        `pass ${missing === 'repository id' ? '--repo-id <id>' : '--owner <pubkey>'} ` +
+        "explicitly (use --owner for repos you don't own)."
+    );
+    this.name = 'UnconfiguredRepoAddressError';
+  }
+}
 
 function nonFastForwardLines(refs: RejectedRefUpdate[]): string[] {
   return [
@@ -60,7 +81,7 @@ function oversizeLines(objects: OversizeObject[]): string[] {
   ];
 }
 
-function fromDaemonEnvelope(err: DaemonRouteError): DescribedError {
+function fromDaemonEnvelope(err: DaemonRouteError, command: string): DescribedError {
   const { envelope, status } = err;
   const json: Record<string, unknown> = { ...envelope, status };
   switch (envelope.error) {
@@ -90,7 +111,7 @@ function fromDaemonEnvelope(err: DaemonRouteError): DescribedError {
         code: 'insufficient_gas',
         lines: [
           `Payment failed: ${envelope.detail ?? 'the settlement wallet cannot fund the channel'}`,
-          ...FUNDING_REMEDIATION,
+          ...FUNDING_REMEDIATION(command),
         ],
         json,
       };
@@ -98,7 +119,7 @@ function fromDaemonEnvelope(err: DaemonRouteError): DescribedError {
       return {
         code: envelope.error,
         lines: [
-          `Push failed (${envelope.error}, HTTP ${status})` +
+          `rig ${command} failed (${envelope.error}, HTTP ${status})` +
             (envelope.detail ? `: ${envelope.detail}` : ''),
           ...(envelope.retryable ? ['This error is retryable — try again shortly.'] : []),
         ],
@@ -107,10 +128,21 @@ function fromDaemonEnvelope(err: DaemonRouteError): DescribedError {
   }
 }
 
-/** Normalize any push-path error for rendering. */
-export function describeError(err: unknown): DescribedError {
-  if (err instanceof DaemonRouteError) return fromDaemonEnvelope(err);
+/**
+ * Normalize any command-path error for rendering. `command` names the rig
+ * subcommand for the generic "rig <command> failed" lines and the funding
+ * remediation's re-run hint.
+ */
+export function describeError(err: unknown, command = 'push'): DescribedError {
+  if (err instanceof DaemonRouteError) return fromDaemonEnvelope(err, command);
 
+  if (err instanceof UnconfiguredRepoAddressError) {
+    return {
+      code: 'unconfigured_repo_address',
+      lines: err.message.split('\n'),
+      json: { error: 'unconfigured_repo_address', detail: err.message },
+    };
+  }
   if (err instanceof DaemonUnreachableError) {
     return {
       code: 'daemon_unreachable',
@@ -172,7 +204,7 @@ export function describeError(err: unknown): DescribedError {
 
   return {
     code: 'error',
-    lines: [`rig push failed: ${message}`],
+    lines: [`rig ${command} failed: ${message}`],
     json: { error: 'error', detail: message },
   };
 }

@@ -3,24 +3,36 @@
  * `rig` — the Git-to-TOON CLI shipped by `@toon-protocol/git` (epic #222).
  *
  * Subcommands:
- *   push               estimate → confirm → execute (#229, this file's v1)
- *   issue|comment|pr|status   arrive in toon-client#231 — the dispatch below
- *                      is the extension point (add a case + a runX command
- *                      module beside ./push.ts).
+ *   push                        estimate → confirm → execute (#229)
+ *   issue | comment | pr | status   single NIP-34 event publishes (#231)
  */
 
 import { createInterface } from 'node:readline/promises';
-import { runPush, PUSH_USAGE, type CliIo, type PushDeps } from './push.js';
+import {
+  runComment,
+  runIssue,
+  runPr,
+  runStatus,
+  type EventCommandDeps,
+} from './events.js';
+import { runPush, PUSH_USAGE, type CliIo } from './push.js';
 
 const USAGE = `rig — push git repos to TOON (pay-to-write Nostr + Arweave)
 
 Usage: rig <command> [options]
 
 Commands:
-  push [refspecs...]   plan, price, confirm, and execute a paid push
-                       (run \`rig push --help\` for flags)
+  push [refspecs...]         plan, price, confirm, and execute a paid push
+  issue create               file an issue (kind:1621) against a repo
+  comment <root-event-id>    comment (kind:1622) on an issue or patch
+  pr create                  publish a patch (kind:1617) with real
+                             \`git format-patch\` content
+  status <event-id> <state>  set an issue/patch status (kind:1630-1633):
+                             open | applied | closed | draft
 
-Coming in toon-client#231: issue, comment, pr, status.`;
+Run \`rig <command> --help\` for the command's flags. All writes are paid,
+permanent, and non-refundable; each command quotes its fee and asks for
+confirmation before spending (--yes skips, --json emits machine output).`;
 
 /** Real terminal I/O: stdout lines, stderr lines, readline y/N confirm. */
 function makeIo(): CliIo {
@@ -46,7 +58,7 @@ function makeIo(): CliIo {
 async function main(): Promise<number> {
   const [command, ...rest] = process.argv.slice(2);
   const io = makeIo();
-  const deps: PushDeps = {
+  const deps: EventCommandDeps = {
     io,
     env: process.env,
     cwd: process.cwd(),
@@ -57,15 +69,13 @@ async function main(): Promise<number> {
     case 'push':
       return runPush(rest, deps);
     case 'issue':
+      return runIssue(rest, deps);
     case 'comment':
+      return runComment(rest, deps);
     case 'pr':
+      return runPr(rest, deps);
     case 'status':
-      io.err(
-        `rig ${command} is not implemented yet — it arrives with toon-client#231. ` +
-          'In the meantime the toon-clientd daemon serves POST /git/' +
-          `${command === 'pr' ? 'patch' : command} directly.`
-      );
-      return 1;
+      return runStatus(rest, deps);
     case 'help':
     case '--help':
     case '-h':

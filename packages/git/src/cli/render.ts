@@ -6,8 +6,10 @@
 
 import type {
   GitEstimateResponse,
+  GitEventResponse,
   GitPushResponse,
   GitRefUpdate,
+  GitRepoAddr,
 } from '../routes.js';
 
 /** Group thousands for readability: 1234567 → '1,234,567'. */
@@ -49,6 +51,49 @@ export function renderPlan(plan: GitEstimateResponse, mode: string): string[] {
   lines.push(`  events   ${est.eventCount} event(s)   ${formatNumber(est.eventFees)}`);
   lines.push(`  total    ${formatNumber(est.totalFee)}`);
   lines.push('Writes are permanent and non-refundable.');
+  return lines;
+}
+
+/** Human label for a per-event fee that may be unknown (older daemons). */
+export function feeLabel(fee: string | undefined): string {
+  return fee !== undefined
+    ? `${formatNumber(fee)} base units`
+    : "the publisher's configured per-event fee";
+}
+
+/**
+ * Pre-publish summary for the single-event subcommands
+ * (issue/comment/pr/status): what is published, against which repo address,
+ * at what fee — the confirm gate follows these lines.
+ */
+export function renderEventPlan(opts: {
+  /** e.g. `issue "Fix the flux" (kind:1621)`. */
+  action: string;
+  addr: GitRepoAddr;
+  mode: string;
+  /** Per-event fee (base units, decimal string), when known. */
+  fee?: string;
+}): string[] {
+  return [
+    `Publish ${opts.action} (${opts.mode} mode)`,
+    `Repo: 30617:${opts.addr.ownerPubkey}:${opts.addr.repoId}`,
+    `Fee: ${feeLabel(opts.fee)}. Writes are permanent and non-refundable.`,
+  ];
+}
+
+/** Receipt line for one published single-event git write. */
+export function renderEventReceipt(
+  action: string,
+  result: GitEventResponse
+): string[] {
+  const lines = [
+    `Published ${action}: ${result.eventId}  paid ${formatNumber(result.feePaid)} base units`,
+  ];
+  if (result.channelBalanceAfter !== undefined) {
+    lines.push(
+      `Channel balance after: ${formatNumber(result.channelBalanceAfter)} base units`
+    );
+  }
   return lines;
 }
 

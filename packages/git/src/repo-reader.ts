@@ -554,6 +554,38 @@ export class GitRepoReader {
   }
 
   /**
+   * Parent SHAs for a batch of commit SHAs via one
+   * `git rev-list --no-walk=unsorted --parents` pass. Root commits map to an
+   * empty array. Used to derive the kind:1617 `commit`/`parent-commit` tag
+   * pairs for exactly the commits a format-patch series carries.
+   */
+  async commitParents(shas: string[]): Promise<Map<string, string[]>> {
+    for (const sha of shas) assertFullSha(sha, 'sha');
+    if (shas.length === 0) return new Map();
+    const { stdout } = await this.git([
+      'rev-list',
+      '--no-walk=unsorted',
+      '--parents',
+      ...shas,
+      '--',
+    ]);
+    const parents = new Map<string, string[]>();
+    for (const line of stdout.split('\n')) {
+      if (!line) continue;
+      const [sha, ...rest] = line.split(' ');
+      if (!sha || !FULL_SHA_RE.test(sha) || rest.some((p) => !FULL_SHA_RE.test(p))) {
+        throw new GitError(
+          `unexpected rev-list --parents line: ${JSON.stringify(line)}`,
+          undefined,
+          ''
+        );
+      }
+      parents.set(sha, rest);
+    }
+    return parents;
+  }
+
+  /**
    * Resolve a ref/revision to a full SHA via `git rev-parse --verify`.
    * Throws {@link GitError} when the name doesn't resolve.
    */

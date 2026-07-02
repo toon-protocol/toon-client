@@ -37,6 +37,11 @@ export interface DaemonProbe {
   ready?: boolean;
   /** Daemon's default relay URL (`relay.url`), for git-config persistence. */
   relayUrl?: string;
+  /**
+   * Daemon's flat per-event publish fee (`feePerEvent`, base units, decimal
+   * string) — what the single-event subcommands quote before confirming.
+   */
+  feePerEvent?: string;
 }
 
 /** Availability of standalone mode (a mnemonic source exists). */
@@ -77,6 +82,7 @@ export async function probeDaemon(
       ready?: unknown;
       identity?: { nostrPubkey?: unknown };
       relay?: { url?: unknown };
+      feePerEvent?: unknown;
     };
     const probe: DaemonProbe = { baseUrl, reachable: true };
     const pubkey = body?.identity?.nostrPubkey;
@@ -84,6 +90,9 @@ export async function probeDaemon(
     if (typeof body?.ready === 'boolean') probe.ready = body.ready;
     if (typeof body?.relay?.url === 'string' && body.relay.url !== '') {
       probe.relayUrl = body.relay.url;
+    }
+    if (typeof body?.feePerEvent === 'string' && body.feePerEvent !== '') {
+      probe.feePerEvent = body.feePerEvent;
     }
     return probe;
   } catch {

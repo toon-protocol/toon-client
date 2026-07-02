@@ -16,6 +16,7 @@
  * `objects`, 503 `bootstrapping` / 402 `insufficient_gas` are retryable).
  */
 
+import type { PublishReceipt } from './publisher.js';
 import type { PlannedObject, PushPlan, PushResult, RefUpdate } from './push.js';
 
 /** One planned ref update (JSON-safe as-is). */
@@ -122,6 +123,104 @@ export interface GitPushResponse {
   estimate: GitFeeEstimate;
 }
 
+// ---------------------------------------------------------------------------
+// Single-event git publishes (`/git/issue|comment|patch|status`, #231)
+// ---------------------------------------------------------------------------
+
+/** NIP-34 repository address: the owner+id pair behind `a` tags. */
+export interface GitRepoAddr {
+  /** Repository owner's Nostr pubkey (64-char hex) — author of kind:30617/30618. */
+  ownerPubkey: string;
+  /** Repository identifier (NIP-34 `d` tag). */
+  repoId: string;
+}
+
+/** `POST /git/issue` — publish a kind:1621 issue against a repo. PAID. */
+export interface GitIssueRequest {
+  repoAddr: GitRepoAddr;
+  /** Issue title (`subject` tag). */
+  title: string;
+  /** Issue body (Markdown content). */
+  body: string;
+  /** Labels (`t` tags). */
+  labels?: string[];
+}
+
+/** `POST /git/comment` — publish a kind:1622 comment on an issue/patch. PAID. */
+export interface GitCommentRequest {
+  repoAddr: GitRepoAddr;
+  /** Event id of the issue or patch being commented on. */
+  rootEventId: string;
+  /** Comment body (Markdown content). */
+  body: string;
+  /**
+   * Pubkey of the TARGET event's author (NIP-34 `p` threading tag — not the
+   * comment author). Defaults to the repo owner.
+   */
+  parentAuthorPubkey?: string;
+  /** `e`-tag marker (default 'root': commenting directly on the issue/patch). */
+  marker?: 'root' | 'reply';
+}
+
+/**
+ * `POST /git/patch` — publish a kind:1617 patch. Supply EXACTLY ONE of
+ * `patchText` (literal `git format-patch` output) or `repoPath`+`range`
+ * (the daemon runs `git format-patch --stdout <range>` locally). PAID.
+ */
+export interface GitPatchRequest {
+  repoAddr: GitRepoAddr;
+  /** Patch/PR title (`subject` tag). */
+  title: string;
+  /** Literal patch text. Mutually exclusive with `repoPath`+`range`. */
+  patchText?: string;
+  /** Local repository to run format-patch in. Requires `range`. */
+  repoPath?: string;
+  /** Revision range for format-patch (`<rev>`, `<rev>..<rev>`, `<rev>...<rev>`). */
+  range?: string;
+  /** Commit/parent pairs for `commit`/`parent-commit` tags. */
+  commits?: { sha: string; parentSha: string }[];
+  /** Branch name for the `t` tag. */
+  branch?: string;
+}
+
+export type GitStatusValue = 'open' | 'applied' | 'closed' | 'draft';
+
+/** `POST /git/status` — publish a kind:1630-1633 status event. PAID. */
+export interface GitStatusRequest {
+  repoAddr: GitRepoAddr;
+  /** Event id of the issue/patch whose status is being set. */
+  targetEventId: string;
+  /** open → 1630, applied → 1631, closed → 1632, draft → 1633. */
+  status: GitStatusValue;
+  /** Pubkey of the target event's author (`p` tag), when known. */
+  targetPubkey?: string;
+}
+
+/**
+ * Response of the single-event git publishes (issue/comment/patch/status):
+ * a publish receipt plus the NIP-34 kind that was published. Daemon
+ * responses extend the full `POST /publish` receipt, so the channel fields
+ * (`channelId`/`nonce`/…) are present there; they are optional here because
+ * the CLI's standalone path publishes through the embedded client and has
+ * no channel wire shape to report.
+ */
+export interface GitEventResponse {
+  /** Event ID as accepted by the relay. */
+  eventId: string;
+  /** Fee actually paid for this publish, base units, decimal string. */
+  feePaid: string;
+  /** The NIP-34 kind that was published. */
+  kind: number;
+  /** Channel the claim was signed against (daemon responses). */
+  channelId?: string;
+  /** Channel nonce after this publish (daemon responses). */
+  nonce?: number;
+  /** FULFILL response data (base64), when the backend returned any. */
+  data?: string;
+  /** Spendable channel balance after this write, when known. */
+  channelBalanceAfter?: string;
+}
+
 /**
  * Uniform error envelope of non-2xx control-route responses. Structured
  * errors put extra fields at the top level: `non_fast_forward` (409) adds
@@ -164,6 +263,22 @@ export function serializePushPlan(plan: PushPlan): GitEstimateResponse {
     announceNeeded: plan.announceNeeded,
     announcement: plan.announcement,
     estimate: serializeFeeEstimate(plan),
+  };
+}
+
+/**
+ * Serialize a standalone {@link PublishReceipt} into the wire shape the
+ * daemon's single-event `/git/*` routes answer with, so `--json` consumers
+ * see one `GitEventResponse` shape regardless of publisher mode.
+ */
+export function serializeEventReceipt(
+  kind: number,
+  receipt: PublishReceipt
+): GitEventResponse {
+  return {
+    eventId: receipt.eventId,
+    feePaid: receipt.feePaid.toString(),
+    kind,
   };
 }
 

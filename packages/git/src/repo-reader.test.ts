@@ -323,6 +323,22 @@ describe('formatPatch', () => {
   });
 });
 
+describe('commitParents', () => {
+  it('maps commits to their parents (root commit → empty array)', async () => {
+    const parents = await reader.commitParents([commit2, commit1]);
+    expect(parents.get(commit2)).toEqual([commit1]);
+    expect(parents.get(commit1)).toEqual([]);
+  });
+
+  it('returns an empty map for no input without spawning git', async () => {
+    await expect(reader.commitParents([])).resolves.toEqual(new Map());
+  });
+
+  it('rejects non-full-SHA input before spawning git', async () => {
+    await expect(reader.commitParents(['main'])).rejects.toThrow(/full 40-hex/);
+  });
+});
+
 describe('resolveRef', () => {
   it('resolves branch, tag, HEAD, and full-ref names to SHAs', async () => {
     await expect(reader.resolveRef('main')).resolves.toBe(commit2);
