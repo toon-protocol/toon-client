@@ -9,6 +9,7 @@
  *   push                        estimate → confirm → execute (#229)
  *   issue | comment | pr        single NIP-34 event publishes (#231), incl.
  *                               `pr status` (moved from `rig status` in #250)
+ *   channel                     payment-channel holdings (#262): list
  *
  * Everything else is `git <argv...>` verbatim: `rig status` runs git status.
  */

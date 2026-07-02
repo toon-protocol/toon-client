@@ -44,18 +44,30 @@ function makeHarness(gitExitCode = 0): Harness {
 }
 
 describe('dispatch precedence (rig-owned verbs never pass through)', () => {
-  it.each([['init'], ['remote'], ['push'], ['issue'], ['comment'], ['pr']])(
-    'rig %s --help is answered by rig, not git',
-    async (verb) => {
-      const h = makeHarness();
-      expect(await dispatch([verb, '--help'], h.deps)).toBe(0);
-      expect(h.gitCalls).toHaveLength(0);
-      expect(h.out.join('\n')).toContain('rig');
-    }
-  );
+  it.each([
+    ['init'],
+    ['remote'],
+    ['push'],
+    ['issue'],
+    ['comment'],
+    ['pr'],
+    ['channel'],
+  ])('rig %s --help is answered by rig, not git', async (verb) => {
+    const h = makeHarness();
+    expect(await dispatch([verb, '--help'], h.deps)).toBe(0);
+    expect(h.gitCalls).toHaveLength(0);
+    expect(h.out.join('\n')).toContain('rig');
+  });
 
   it('owned verbs stay owned even with bad args (rig usage, no git)', async () => {
-    for (const argv of [['issue'], ['comment'], ['pr'], ['pr', 'bogus']]) {
+    for (const argv of [
+      ['issue'],
+      ['comment'],
+      ['pr'],
+      ['pr', 'bogus'],
+      ['channel'],
+      ['channel', 'bogus'],
+    ]) {
       const h = makeHarness();
       expect(await dispatch(argv, h.deps)).toBe(2);
       expect(h.gitCalls).toHaveLength(0);
@@ -69,6 +81,7 @@ describe('dispatch precedence (rig-owned verbs never pass through)', () => {
       expect(await dispatch(argv, h.deps)).toBe(0);
       const text = h.out.join('\n');
       expect(text).toContain('pr status');
+      expect(text).toContain('channel list');
       expect(text).toContain('passed through to git');
       expect(text).toContain('`rig status` runs');
       expect(text).toContain('`git status`');

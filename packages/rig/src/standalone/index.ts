@@ -18,6 +18,20 @@ export {
 } from './standalone-publisher.js';
 
 export {
+  ChannelMapCorruptError,
+  ChannelMapStore,
+  RIG_CHANNEL_MAP_FILENAME,
+  channelStatus,
+  recordKey,
+  resolveChannelPaths,
+  type ChannelMapKey,
+  type ChannelMapRecord,
+  type ChannelMapStoreOptions,
+  type PersistedChannelContext,
+  type WatermarkEntry,
+} from './channel-map.js';
+
+export {
   DEFAULT_DAEMON_PORT,
   DaemonIdentityConflictError,
   NonceLock,

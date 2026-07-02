@@ -5,12 +5,18 @@
  * and the daemon-collision / lockfile nonce guard wired into every paid op.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UnsignedEvent } from '../nip34-events.js';
 import { MAX_OBJECT_SIZE } from '../objects.js';
+import {
+  ChannelMapCorruptError,
+  ChannelMapStore,
+  type ChannelMapRecord,
+  type PersistedChannelContext,
+} from './channel-map.js';
 import { DaemonIdentityConflictError, StandaloneLockError } from './nonce-guard.js';
 import {
   StandalonePublisher,
@@ -34,9 +40,9 @@ function httpFulfill(body: string, status = 200): string {
 
 interface MockCalls {
   start: number;
-  openChannel: Array<string | undefined>;
-  claims: Array<{ channelId: string; amount: bigint }>;
-  publishes: Array<{
+  openChannel: (string | undefined)[];
+  claims: { channelId: string; amount: bigint }[];
+  publishes: {
     event: SignedNostrEvent;
     options:
       | {
@@ -46,7 +52,7 @@ interface MockCalls {
           proxyPath?: string;
         }
       | undefined;
-  }>;
+  }[];
 }
 
 function mockClient(overrides?: {
@@ -430,6 +436,311 @@ describe('StandalonePublisher', () => {
       const second = build(client2);
       await expect(second.publishEvent(EVENT, [])).resolves.toBeDefined();
       await second.stop();
+    });
+  });
+
+  // ── channel persistence (#262) ────────────────────────────────────────────
+  //
+  // A mock ToonClient with the PRIVATE internals the resume path introspects
+  // (peerNegotiations + channelManager.{trackChannel,peerChannels}), whose
+  // openChannel mirrors ensureChannel: an entry in peerChannels is returned
+  // as-is (no on-chain open); otherwise a fresh channel opens on-chain.
+  describe('channel persistence (#262)', () => {
+    const ANCHOR = 'g.proxy.relay.store';
+    const PEER_ID = 'nostr-2813187e';
+    const NEGOTIATION = {
+      chain: 'evm:31337',
+      chainType: 'evm',
+      chainId: 31337,
+      settlementAddress: '0x' + '44'.repeat(20),
+      tokenAddress: '0x' + '33'.repeat(20),
+      tokenNetwork: '0x' + '22'.repeat(20),
+    };
+
+    interface ChannelMockCalls extends MockCalls {
+      onChainOpens: number;
+      trackChannel: { channelId: string; context: PersistedChannelContext }[];
+      rehydrates: { channelId: string; chain: string }[];
+    }
+
+    /** One "process": fresh in-memory maps, shared on-disk store. */
+    function mockChannelClient(opts?: {
+      openedDeposit?: bigint;
+      rehydratedDeposit?: bigint;
+      negotiations?: Map<string, typeof NEGOTIATION>;
+    }): { client: ToonClientLike; calls: ChannelMockCalls } {
+      const peerChannels = new Map<string, string>();
+      const peerNegotiations =
+        opts?.negotiations ?? new Map([[PEER_ID, NEGOTIATION]]);
+      const calls: ChannelMockCalls = {
+        start: 0,
+        openChannel: [],
+        claims: [],
+        publishes: [],
+        onChainOpens: 0,
+        trackChannel: [],
+        rehydrates: [],
+      };
+      const { client: base } = mockClient();
+      const client = {
+        ...base,
+        isStarted: () => calls.start > 0,
+        async start() {
+          calls.start += 1;
+          return {};
+        },
+        peerNegotiations,
+        channelManager: {
+          peerChannels,
+          trackChannel(channelId: string, context: PersistedChannelContext) {
+            calls.trackChannel.push({ channelId, context });
+          },
+        },
+        async openChannel(destination?: string) {
+          calls.openChannel.push(destination);
+          const existing = peerChannels.get(PEER_ID);
+          if (existing) return existing; // ensureChannel: reuse, no on-chain
+          calls.onChainOpens += 1;
+          const channelId = `0xchannel-${calls.onChainOpens}`;
+          peerChannels.set(PEER_ID, channelId);
+          return channelId;
+        },
+        async signBalanceProof(channelId: string, amount: bigint) {
+          calls.claims.push({ channelId, amount });
+          return { nonce: calls.claims.length, amount } as never;
+        },
+        getChannelDepositTotal: () => opts?.openedDeposit ?? 100000n,
+        async rehydrateChannelDeposit(
+          channelId: string,
+          o: { chain: string; tokenNetworkAddress: string }
+        ) {
+          calls.rehydrates.push({ channelId, chain: o.chain });
+          return opts?.rehydratedDeposit ?? 100000n;
+        },
+      } as unknown as ToonClientLike;
+      return { client, calls };
+    }
+
+    let stateDir: string;
+    let map: ChannelMapStore;
+    let warnings: string[];
+
+    beforeEach(() => {
+      stateDir = mkdtempSync(join(tmpdir(), 'rig-chan-persist-'));
+      map = new ChannelMapStore({
+        mapPath: join(stateDir, 'rig-channels.json'),
+        watermarkPath: join(stateDir, 'channels.json'),
+      });
+      warnings = [];
+    });
+
+    afterEach(() => {
+      rmSync(stateDir, { recursive: true, force: true });
+    });
+
+    function buildPersistent(client: ToonClientLike): StandalonePublisher {
+      return build(client, {
+        channelMap: map,
+        warn: (line) => warnings.push(line),
+      });
+    }
+
+    it('records the first lazy open (identity+peer+chain+tokenNetwork key, context, deposit) and seeds the 0/0 watermark', async () => {
+      const { client, calls } = mockChannelClient();
+      const publisher = buildPersistent(client);
+      await publisher.publishEvent(EVENT, []);
+      await publisher.stop();
+
+      expect(calls.onChainOpens).toBe(1);
+      const records = map.list();
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        channelId: '0xchannel-1',
+        peerId: PEER_ID,
+        identity: PUBKEY,
+        destination: ANCHOR,
+        chain: 'evm:31337',
+        tokenNetwork: NEGOTIATION.tokenNetwork,
+        depositTotal: '100000',
+        context: {
+          chainType: 'evm',
+          chainId: 31337,
+          tokenNetworkAddress: NEGOTIATION.tokenNetwork,
+          tokenAddress: NEGOTIATION.tokenAddress,
+          recipient: NEGOTIATION.settlementAddress,
+        },
+      });
+      // Fresh channel's watermark seeded so a later resume can tell
+      // "never claimed" from "watermark lost".
+      expect(map.readWatermark('0xchannel-1')).toEqual({
+        nonce: 0,
+        cumulativeAmount: '0',
+      });
+      expect(warnings).toEqual([]);
+    });
+
+    it('REUSES the channel across invocations: second run resumes, zero on-chain opens', async () => {
+      // Run 1 (process A): lazy open + record.
+      const { client: clientA, calls: callsA } = mockChannelClient();
+      const runA = buildPersistent(clientA);
+      await runA.publishEvent(EVENT, []);
+      await runA.stop();
+      expect(callsA.onChainOpens).toBe(1);
+
+      // The embedded ChannelManager persisted claims meanwhile (this is what
+      // @toon-protocol/client's JsonFileChannelStore writes after signing).
+      writeFileSync(
+        join(stateDir, 'channels.json'),
+        JSON.stringify({
+          '0xchannel-1': { nonce: 15, cumulativeAmount: '16120' },
+        })
+      );
+
+      // Run 2 (process B): fresh in-memory state, same on-disk stores.
+      const { client: clientB, calls: callsB } = mockChannelClient();
+      const runB = buildPersistent(clientB);
+      await runB.publishEvent(EVENT, []);
+      await runB.stop();
+
+      // ONE channel total: run 2 resumed instead of opening on-chain.
+      expect(callsB.onChainOpens).toBe(0);
+      expect(callsB.claims).toEqual([
+        { channelId: '0xchannel-1', amount: 1n },
+      ]);
+      // trackChannel got the persisted chain context — the client rehydrates
+      // the nonce/cumulative watermark from channels.json off exactly this
+      // call (covered by @toon-protocol/client's ChannelManager tests).
+      expect(callsB.trackChannel).toEqual([
+        {
+          channelId: '0xchannel-1',
+          context: {
+            chainType: 'evm',
+            chainId: 31337,
+            tokenNetworkAddress: NEGOTIATION.tokenNetwork,
+            tokenAddress: NEGOTIATION.tokenAddress,
+            recipient: NEGOTIATION.settlementAddress,
+          },
+        },
+      ]);
+      // Resumed deposits are re-read from chain (persisted state omits them).
+      expect(callsB.rehydrates).toEqual([
+        { channelId: '0xchannel-1', chain: 'evm:31337' },
+      ]);
+      // The advanced watermark was NOT clobbered by the seed.
+      expect(map.readWatermark('0xchannel-1')).toEqual({
+        nonce: 15,
+        cumulativeAmount: '16120',
+      });
+      expect(map.list()).toHaveLength(1);
+      expect(warnings).toEqual([]);
+    });
+
+    it('a corrupt map file REFUSES the paid op before any open (never a silent duplicate)', async () => {
+      writeFileSync(join(stateDir, 'rig-channels.json'), 'not-json{');
+      const { client, calls } = mockChannelClient();
+      const publisher = buildPersistent(client);
+
+      await expect(publisher.publishEvent(EVENT, [])).rejects.toThrow(
+        ChannelMapCorruptError
+      );
+      expect(calls.openChannel).toHaveLength(0);
+      expect(calls.onChainOpens).toBe(0);
+      expect(calls.claims).toHaveLength(0);
+      await publisher.stop();
+    });
+
+    it('resuming with a MISSING watermark warns (stale-claim rejection is diagnosable) but proceeds', async () => {
+      const { client: clientA } = mockChannelClient();
+      const runA = buildPersistent(clientA);
+      await runA.publishEvent(EVENT, []);
+      await runA.stop();
+
+      // Watermark store lost (the map survived).
+      rmSync(join(stateDir, 'channels.json'));
+
+      const { client: clientB, calls: callsB } = mockChannelClient();
+      const runB = buildPersistent(clientB);
+      await runB.publishEvent(EVENT, []);
+      await runB.stop();
+
+      expect(callsB.onChainOpens).toBe(0); // still resumed — fails safe
+      expect(warnings.join('\n')).toMatch(/no local claim watermark/);
+    });
+
+    it('never resumes a closed/settled channel: opens fresh and re-records', async () => {
+      const { client: clientA } = mockChannelClient();
+      const runA = buildPersistent(clientA);
+      await runA.publishEvent(EVENT, []);
+      await runA.stop();
+
+      // Withdraw flow closed the channel (client persists the timers).
+      writeFileSync(
+        join(stateDir, 'channels.json'),
+        JSON.stringify({
+          '0xchannel-1': {
+            nonce: 15,
+            cumulativeAmount: '16120',
+            closedAt: '100',
+            settleableAt: '200',
+          },
+        })
+      );
+
+      const { client: clientB, calls: callsB } = mockChannelClient();
+      const runB = buildPersistent(clientB);
+      await runB.publishEvent(EVENT, []);
+      await runB.stop();
+
+      expect(callsB.trackChannel).toEqual([]); // no resume attempt
+      expect(callsB.onChainOpens).toBe(1); // fresh open
+      const records = map.list();
+      expect(records).toHaveLength(1); // same key → replaced
+      expect(records[0]?.channelId).toBe('0xchannel-1'); // process B's first open id
+    });
+
+    it('a rotated peer identity (recorded peerId no longer negotiated) opens fresh instead of stale claims', async () => {
+      const { client: clientA } = mockChannelClient();
+      const runA = buildPersistent(clientA);
+      await runA.publishEvent(EVENT, []);
+      await runA.stop();
+
+      const rotated = new Map([['nostr-rotated', NEGOTIATION]]);
+      const { client: clientB, calls: callsB } = mockChannelClient({
+        negotiations: rotated,
+      });
+      // Process B's openChannel keys peerChannels by PEER_ID, so a resume
+      // seed for the OLD peer id must not be found: assert no resume happened.
+      const runB = buildPersistent(clientB);
+      await runB.publishEvent(EVENT, []);
+      await runB.stop();
+
+      expect(callsB.trackChannel).toEqual([]);
+      expect(callsB.onChainOpens).toBe(1);
+    });
+
+    it('without a channelMap nothing is recorded (historical behaviour)', async () => {
+      const { client, calls } = mockChannelClient();
+      const publisher = build(client); // no channelMap
+      await publisher.publishEvent(EVENT, []);
+      await publisher.stop();
+      expect(calls.onChainOpens).toBe(1);
+      expect(map.list()).toEqual([]);
+    });
+
+    it('map records survive as human-readable JSON (schema smoke test)', async () => {
+      const { client } = mockChannelClient();
+      const publisher = buildPersistent(client);
+      await publisher.publishEvent(EVENT, []);
+      await publisher.stop();
+
+      const raw = JSON.parse(
+        readFileSync(join(stateDir, 'rig-channels.json'), 'utf8')
+      ) as { version: number; channels: Record<string, ChannelMapRecord> };
+      expect(raw.version).toBe(1);
+      const key = `${PUBKEY}|${ANCHOR}|evm:31337|${NEGOTIATION.tokenNetwork}`;
+      expect(Object.keys(raw.channels)).toEqual([key]);
+      expect(raw.channels[key]?.openedAt).toBeTruthy();
+      expect(raw.channels[key]?.lastUsedAt).toBeTruthy();
     });
   });
 });

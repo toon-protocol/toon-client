@@ -1,8 +1,8 @@
 /**
  * `rig` subcommand dispatch (#250): rig-owned verbs first, git for the rest.
  *
- * rig owns exactly: init, remote, push, issue, comment, pr, help/-h/--help,
- * and --version. EVERY other subcommand is executed as `git <argv...>`
+ * rig owns exactly: init, remote, push, issue, comment, pr, channel,
+ * help/-h/--help, and --version. EVERY other subcommand is executed as `git <argv...>`
  * verbatim (./git-passthrough.ts) — `rig status` IS `git status`, `rig add
  * -p`, `rig commit`, `rig rebase -i`, … all land in git with rig's stdio and
  * git's exit code. Owned verbs always win: `rig push` is the paid TOON push
@@ -14,6 +14,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { runChannel } from './channel.js';
 import { runComment, runIssue, runPr, type EventCommandDeps } from './events.js';
 import { runGitPassthrough, type GitRunner } from './git-passthrough.js';
 import { runInit } from './init.js';
@@ -41,6 +42,8 @@ Commands rig owns:
                              \`git format-patch\` content
   pr status <event-id> <state>  set an issue/patch status (kind:1630-1633):
                              open | applied | closed | draft
+  channel list               show the payment channels paid commands hold
+                             (free — reads local state; lifecycle cmds: #263)
 
 Any other command is passed through to git verbatim: \`rig status\` runs
 \`git status\`, and \`rig add -p\`, \`rig commit\`, \`rig log --oneline\`,
@@ -96,6 +99,8 @@ export async function dispatch(
       return runComment(rest, deps);
     case 'pr':
       return runPr(rest, deps);
+    case 'channel':
+      return runChannel(rest, deps);
     case 'help':
     case '--help':
     case '-h':
