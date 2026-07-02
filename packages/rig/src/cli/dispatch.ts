@@ -1,21 +1,23 @@
 /**
  * `rig` subcommand dispatch (#250): rig-owned verbs first, git for the rest.
  *
- * rig owns exactly: init, remote, push, issue, comment, pr, channel,
- * help/-h/--help, and --version. EVERY other subcommand is executed as `git <argv...>`
- * verbatim (./git-passthrough.ts) — `rig status` IS `git status`, `rig add
- * -p`, `rig commit`, `rig rebase -i`, … all land in git with rig's stdio and
- * git's exit code. Owned verbs always win: `rig push` is the paid TOON push
- * and shadows `git push` (plain-git pushes stay available by calling `git
- * push` directly).
+ * rig owns exactly: init, remote, push, issue, comment, pr, channel, fund,
+ * balance, help/-h/--help, and --version. EVERY other subcommand is executed
+ * as `git <argv...>` verbatim (./git-passthrough.ts) — `rig status` IS `git
+ * status`, `rig add -p`, `rig commit`, `rig rebase -i`, … all land in git
+ * with rig's stdio and git's exit code. Owned verbs always win: `rig push`
+ * is the paid TOON push and shadows `git push` (plain-git pushes stay
+ * available by calling `git push` directly).
  *
  * The NIP-34 status publish that used to be `rig status` lives at
  * `rig pr status` since #250 (BREAKING) — bare `rig status` is git's.
  */
 
 import { createRequire } from 'node:module';
+import { runBalance } from './balance.js';
 import { runChannel } from './channel.js';
 import { runComment, runIssue, runPr, type EventCommandDeps } from './events.js';
+import { runFund } from './fund.js';
 import { runGitPassthrough, type GitRunner } from './git-passthrough.js';
 import { runInit } from './init.js';
 import { runPush, PUSH_USAGE } from './push.js';
@@ -42,17 +44,28 @@ Commands rig owns:
                              \`git format-patch\` content
   pr status <event-id> <state>  set an issue/patch status (kind:1630-1633):
                              open | applied | closed | draft
+  fund                       drip devnet faucet funds to this identity's
+                             wallet (free); on other networks prints the
+                             address(es) to fund externally
+  balance                    wallet balances + payment-channel holdings
+                             (free — chain reads and local state only)
   channel list               show the payment channels paid commands hold
-                             (free — reads local state; lifecycle cmds: #263)
+                             (free — reads local state)
+  channel open               explicitly open (or resume) the channel for a
+                             peer; --deposit adds collateral (on-chain)
+  channel close <channelId>  start the settlement challenge window (on-chain)
+  channel settle <channelId> release collateral after the window (on-chain)
 
 Any other command is passed through to git verbatim: \`rig status\` runs
 \`git status\`, and \`rig add -p\`, \`rig commit\`, \`rig log --oneline\`,
 \`rig rebase -i\`, … behave exactly like git (same output, same exit code).
 
-Run \`rig <command> --help\` for a rig command's flags. \`rig init\` and
-\`rig remote\` are free; the other rig commands are paid writes — permanent
-and non-refundable; each quotes its fee and asks for confirmation before
-spending (--yes skips, --json emits machine output).`;
+Run \`rig <command> --help\` for a rig command's flags. \`rig init\`,
+\`rig remote\`, \`rig fund\`, \`rig balance\`, and \`rig channel list\` are
+free; push/issue/comment/pr are paid writes — permanent and non-refundable —
+and channel open/close/settle are on-chain wallet transactions; each states
+what it will spend and asks for confirmation before doing so (--yes skips,
+--json emits machine output).`;
 
 /** Dispatch deps: the event-command deps plus an injectable git runner. */
 export interface DispatchDeps extends EventCommandDeps {
@@ -101,6 +114,10 @@ export async function dispatch(
       return runPr(rest, deps);
     case 'channel':
       return runChannel(rest, deps);
+    case 'fund':
+      return runFund(rest, deps);
+    case 'balance':
+      return runBalance(rest, deps);
     case 'help':
     case '--help':
     case '-h':

@@ -110,7 +110,11 @@ export async function createStandaloneContext(
 
   const proxyUrl = env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl;
   const btpUrl = env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl;
-  if (!proxyUrl && !btpUrl) throw new MissingUplinkError(configPath);
+  // Free reads (`rig balance`) tolerate a missing uplink; paid commands fail
+  // fast here, before any identity lock or client start.
+  if (!proxyUrl && !btpUrl && options.requireUplink !== false) {
+    throw new MissingUplinkError(configPath);
+  }
 
   const genesisSeed = GenesisPeerLoader.loadGenesisPeers()[0];
   const relayUrl =
@@ -182,6 +186,11 @@ export async function createStandaloneContext(
     warn: (line) => options.warn(line),
     ...(publishDestination ? { publishDestination } : {}),
     ...(storeDestination ? { storeDestination } : {}),
+    // `rig channel open --peer` (#263): anchor the channel (and its map key)
+    // to an explicit peer destination instead of the configured default.
+    ...(options.channelDestination
+      ? { channelDestination: options.channelDestination }
+      : {}),
   });
 
   return {
@@ -191,6 +200,14 @@ export async function createStandaloneContext(
     publisher,
     defaultRelayUrls: [relayUrl],
     fetchRemote: (args) => fetchRemoteState(args),
+    // Money lifecycle (#263): same guard/start/channel-map machinery as the
+    // paid-write path, surfaced for fund/balance/channel open|close|settle.
+    money: {
+      openChannel: (opts) => publisher.openChannelExplicit(opts),
+      closeChannel: (record) => publisher.closeRecordedChannel(record),
+      settleChannel: (record) => publisher.settleRecordedChannel(record),
+      walletBalances: () => publisher.readWalletBalances(),
+    },
     stop: () => publisher.stop(),
   };
 }

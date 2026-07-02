@@ -52,6 +52,12 @@ import {
   type ChannelMapStore,
   type PersistedChannelContext,
 } from './channel-map.js';
+import type {
+  ChannelCloseOutcome,
+  ChannelOpenOutcome,
+  ChannelSettleOutcome,
+  WalletBalanceInfo,
+} from './money.js';
 import { checkDaemonIdentity, NonceLock } from './nonce-guard.js';
 
 // ---------------------------------------------------------------------------
@@ -96,6 +102,26 @@ export interface ToonClientLike {
     channelId: string,
     opts: { chain: string; tokenNetworkAddress: string }
   ): Promise<bigint | undefined>;
+  // ── money lifecycle (#263) — optional, matches ToonClient's surface ──────
+  /** Deposit extra collateral (base-unit delta) into an open channel. */
+  depositToChannel?(
+    channelId: string,
+    amount: string | bigint
+  ): Promise<{ channelId: string; txHash?: string; depositTotal: string }>;
+  /** Close a channel — starts the settlement challenge window (on-chain). */
+  closeChannel?(channelId: string): Promise<{
+    channelId: string;
+    txHash?: string;
+    /** Unix SECONDS, string-encoded. */
+    closedAt: string;
+    settleableAt: string;
+  }>;
+  /** Settle a closed channel after its window — releases funds (on-chain). */
+  settleChannel?(
+    channelId: string
+  ): Promise<{ channelId: string; txHash?: string }>;
+  /** Free on-chain wallet-balance read (works on an UNSTARTED client). */
+  getBalances?(): Promise<WalletBalanceInfo[]>;
 }
 
 export interface StandalonePublisherOptions {
@@ -272,6 +298,19 @@ interface ChannelInternals {
     ) => void;
     peerChannels?: Map<string, string>;
   };
+  /**
+   * The client's on-chain channel client caches per-channel chain context at
+   * OPEN time only; close/settle/deposit on a channel resumed from the map
+   * would throw "No on-chain context" without re-seeding it (#263). Same
+   * structural-cast contract as the rest of this block — keep in sync with
+   * `@toon-protocol/client`'s OnChainChannelClient.
+   */
+  onChainChannelClient?: {
+    channelContext?: Map<
+      string,
+      { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
+    >;
+  };
 }
 
 /** Best-effort access to the client's private negotiation/channel state. */
@@ -285,9 +324,15 @@ function channelInternals(client: ToonClientLike): ChannelInternals {
     c.channelManager.peerChannels instanceof Map
       ? c.channelManager
       : undefined;
+  const onChain =
+    c.onChainChannelClient &&
+    c.onChainChannelClient.channelContext instanceof Map
+      ? c.onChainChannelClient
+      : undefined;
   return {
     ...(negotiations ? { peerNegotiations: negotiations } : {}),
     ...(cm ? { channelManager: cm } : {}),
+    ...(onChain ? { onChainChannelClient: onChain } : {}),
   };
 }
 
@@ -314,6 +359,10 @@ export class StandalonePublisher implements Publisher {
   private lock: NonceLock | undefined;
   private channelId: string | undefined;
   private readyPromise: Promise<void> | undefined;
+  /** Guard + client start only (no channel) — see {@link startClientOnly}. */
+  private clientReadyPromise: Promise<void> | undefined;
+  /** True when the last start() RESUMED the recorded channel (#263). */
+  private lastOpenResumed = false;
 
   constructor(options: StandalonePublisherOptions) {
     if (options.client && options.clientConfig) {
@@ -364,7 +413,19 @@ export class StandalonePublisher implements Publisher {
    * eagerly to fail fast. Idempotent.
    */
   start(): Promise<void> {
-    this.readyPromise ??= this.doStart().catch((err: unknown) => {
+    this.readyPromise ??= (async () => {
+      await this.startClientOnly();
+      try {
+        this.channelId = await this.openOrResumeChannel();
+      } catch (err) {
+        // Release the identity lock on a failed channel open (pre-#263
+        // behaviour): nothing holds claims yet, so another process may go.
+        this.lock?.release();
+        this.lock = undefined;
+        this.clientReadyPromise = undefined;
+        throw err;
+      }
+    })().catch((err: unknown) => {
       // Let a later call retry (e.g. after the conflicting daemon stops).
       this.readyPromise = undefined;
       throw err;
@@ -372,7 +433,21 @@ export class StandalonePublisher implements Publisher {
     return this.readyPromise;
   }
 
-  private async doStart(): Promise<void> {
+  /**
+   * Run the nonce guard and start the embedded client WITHOUT touching the
+   * payment channel (#263): `channel close`/`settle` operate on a RECORDED
+   * channel and must never open a fresh one as a side effect of starting.
+   * Idempotent; `start()` layers the channel open/resume on top of this.
+   */
+  startClientOnly(): Promise<void> {
+    this.clientReadyPromise ??= this.doStartClient().catch((err: unknown) => {
+      this.clientReadyPromise = undefined;
+      throw err;
+    });
+    return this.clientReadyPromise;
+  }
+
+  private async doStartClient(): Promise<void> {
     const pubkey = this.client.getPublicKey();
 
     // Guard 1: refuse while a toon-clientd holds this identity.
@@ -390,7 +465,6 @@ export class StandalonePublisher implements Publisher {
       if (this.client.isStarted?.() !== true) {
         await this.client.start();
       }
-      this.channelId = await this.openOrResumeChannel();
     } catch (err) {
       this.lock.release();
       this.lock = undefined;
@@ -434,8 +508,10 @@ export class StandalonePublisher implements Publisher {
     const channelId = await this.client.openChannel(this.channelDestination);
 
     if (resumed && channelId === resumed.channelId) {
+      this.lastOpenResumed = true;
       map.touch(recordKey(resumed));
     } else {
+      this.lastOpenResumed = false;
       this.recordOpenedChannel(map, internals, identity, anchor, channelId);
     }
     return channelId;
@@ -600,10 +676,154 @@ export class StandalonePublisher implements Publisher {
     this.lock?.release();
     this.lock = undefined;
     this.readyPromise = undefined;
+    this.clientReadyPromise = undefined;
     this.channelId = undefined;
-    if (this.ownsClient) {
+    // Never stop a client that was never started (`ToonClient.stop()` throws
+    // INVALID_STATE) — e.g. after a free `rig balance` read (#263).
+    if (this.ownsClient && this.client.isStarted?.() !== false) {
       await this.client.stop();
     }
+  }
+
+  // ── Money lifecycle (#263) ──────────────────────────────────────────────────
+
+  /**
+   * Explicit `rig channel open`: the SAME resume-or-open path the lazy paid
+   * writes use (guard → start → resume the recorded channel or open + record
+   * a fresh one), surfaced with a receipt — plus an optional extra collateral
+   * deposit on top of the open/resume.
+   */
+  async openChannelExplicit(opts?: {
+    /** Extra collateral to deposit AFTER the open/resume (base units). */
+    deposit?: bigint;
+  }): Promise<ChannelOpenOutcome> {
+    await this.start();
+    const channelId = this.requireChannel();
+    const identity = this.client.getPublicKey();
+    const destination = this.channelAnchor ?? '';
+    const record =
+      this.channelMap && this.channelAnchor
+        ? this.channelMap
+            .listFor(identity, this.channelAnchor)
+            .find((r) => r.channelId === channelId)
+        : undefined;
+
+    const outcome: ChannelOpenOutcome = {
+      channelId,
+      resumed: this.lastOpenResumed,
+      destination,
+      ...(record ? { chain: record.chain, peerId: record.peerId } : {}),
+      ...(record?.depositTotal !== undefined
+        ? { depositTotal: record.depositTotal }
+        : {}),
+    };
+
+    if (opts?.deposit !== undefined && opts.deposit > 0n) {
+      if (!this.client.depositToChannel) {
+        throw new StandalonePublishError(
+          'this client build does not support channel deposits ' +
+            '(depositToChannel is unavailable)'
+        );
+      }
+      const deposited = await this.client.depositToChannel(
+        channelId,
+        opts.deposit
+      );
+      outcome.depositAdded = opts.deposit.toString();
+      outcome.depositTotal = deposited.depositTotal;
+      if (deposited.txHash) outcome.depositTxHash = deposited.txHash;
+      if (record) {
+        this.channelMap?.touch(recordKey(record), {
+          depositTotal: deposited.depositTotal,
+        });
+      }
+    }
+    return outcome;
+  }
+
+  /**
+   * Adopt a RECORDED channel into the running client so on-chain close/
+   * settle/deposit can act on it: `trackChannel` rehydrates the claim
+   * watermark + withdraw timers from channels.json, `peerChannels` binds the
+   * peer, and the on-chain client's context cache is re-seeded (it only
+   * learns context at open time — a resumed channel would otherwise throw
+   * "No on-chain context").
+   */
+  private adoptRecordedChannel(record: ChannelMapRecord): void {
+    const internals = channelInternals(this.client);
+    const cm = internals.channelManager;
+    if (cm?.trackChannel && cm.peerChannels) {
+      cm.trackChannel(record.channelId, record.context);
+      cm.peerChannels.set(record.peerId, record.channelId);
+    }
+    const contextCache = internals.onChainChannelClient?.channelContext;
+    if (contextCache && !contextCache.has(record.channelId)) {
+      contextCache.set(record.channelId, {
+        chain: record.chain,
+        tokenNetworkAddress: record.context.tokenNetworkAddress,
+        ...(record.context.tokenAddress
+          ? { tokenAddress: record.context.tokenAddress }
+          : {}),
+      });
+    }
+  }
+
+  /**
+   * Close a recorded channel: starts the on-chain settlement challenge
+   * window. The client persists `closedAt`/`settleableAt` into the claim
+   * watermark store, which is exactly where `rig channel list`/`balance`
+   * derive the closing/settleable/settled status from. Guard + client start,
+   * but NEVER a channel open ({@link startClientOnly}).
+   */
+  async closeRecordedChannel(
+    record: ChannelMapRecord
+  ): Promise<ChannelCloseOutcome> {
+    await this.startClientOnly();
+    if (!this.client.closeChannel) {
+      throw new StandalonePublishError(
+        'this client build does not support closing channels ' +
+          '(closeChannel is unavailable)'
+      );
+    }
+    this.adoptRecordedChannel(record);
+    const result = await this.client.closeChannel(record.channelId);
+    this.channelMap?.touch(recordKey(record));
+    return result;
+  }
+
+  /**
+   * Settle a recorded channel after its challenge window — releases the
+   * remaining collateral. The client enforces the `now >= settleableAt` time
+   * guard BEFORE spending gas (a too-early call throws its retryable
+   * SettleTooEarlyError) and persists `settledAt` into the watermark store.
+   */
+  async settleRecordedChannel(
+    record: ChannelMapRecord
+  ): Promise<ChannelSettleOutcome> {
+    await this.startClientOnly();
+    if (!this.client.settleChannel) {
+      throw new StandalonePublishError(
+        'this client build does not support settling channels ' +
+          '(settleChannel is unavailable)'
+      );
+    }
+    this.adoptRecordedChannel(record);
+    const result = await this.client.settleChannel(record.channelId);
+    this.channelMap?.touch(recordKey(record));
+    return result;
+  }
+
+  /**
+   * On-chain wallet balances for the embedded identity — a FREE read on the
+   * UNSTARTED client (no nonce guard, no uplink, no channel): the client
+   * reads the settlement chain its channels actually use (its EVM key is
+   * derived at construction; Solana/Mina keys only exist after a start, so
+   * those chains appear once a start-requiring command ran — same
+   * best-effort contract as the client's own getBalances).
+   */
+  async readWalletBalances(): Promise<WalletBalanceInfo[]> {
+    if (!this.client.getBalances) return [];
+    return await this.client.getBalances();
   }
 
   // ── Publisher ─────────────────────────────────────────────────────────────
