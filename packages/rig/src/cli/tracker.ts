@@ -321,6 +321,11 @@ interface TrackerItem {
   commitShas?: string[];
   /** kind:1617 only: `branch` tag. */
   branch?: string;
+  /**
+   * kind:1617 only: the PR body from the `description` tag (#280). Separate
+   * from `content`, which is pure `git format-patch` output for `git am`.
+   */
+  description?: string;
 }
 
 function parseTrackerItem(
@@ -343,6 +348,8 @@ function parseTrackerItem(
     item.commitShas = tagValues(event.tags, 'commit');
     const branch = tagValue(event.tags, 'branch');
     if (branch !== undefined) item.branch = branch;
+    const description = tagValue(event.tags, 'description');
+    if (description !== undefined) item.description = description;
   }
   return item;
 }
@@ -632,6 +639,13 @@ async function runShow(
       io.out(`Commits: ${item.commitShas.join(', ')}`);
     }
     if (shown.repoATag !== null) io.out(`Repo:    ${shown.repoATag}`);
+    if (item.description !== undefined) {
+      // The `description` tag (`rig pr create --body`): shown as its own
+      // section so the patch text below stays pipeable into `git am`.
+      io.out('');
+      io.out('Body:');
+      for (const line of item.description.split('\n')) io.out(line);
+    }
     io.out('');
     io.out(`${spec.bodyLabel}:`);
     for (const line of item.content.split('\n')) io.out(line);

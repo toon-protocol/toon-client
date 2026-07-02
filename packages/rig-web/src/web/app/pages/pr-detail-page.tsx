@@ -86,7 +86,10 @@ export function PRDetailPage() {
             </div>
           ) : (
             <CommentThread
-              originalContent={pr.content}
+              // The PR body (`description` tag, `rig pr create --body`) is
+              // the opening comment when present; otherwise fall back to the
+              // raw patch text as before. The diff stays in Files Changed.
+              originalContent={pr.description ?? pr.content}
               originalAuthor={pr.authorPubkey}
               originalCreatedAt={pr.createdAt}
               comments={comments}

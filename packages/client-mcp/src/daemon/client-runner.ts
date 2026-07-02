@@ -1820,7 +1820,11 @@ export class ClientRunner {
       req.title,
       req.commits ?? [],
       req.branch,
-      content
+      content,
+      // PR body → `description` tag; never the content (git am safety, #280).
+      typeof req.description === 'string' && req.description !== ''
+        ? req.description
+        : undefined
     );
     return this.gitPublishSigned(event);
   }

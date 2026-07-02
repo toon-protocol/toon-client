@@ -106,6 +106,9 @@ const EVENTS: NostrEvent[] = [
       ['subject', 'Add feature'],
       ['branch', 'feature'],
       ['commit', '9a'.repeat(20)],
+      // `rig pr create --body` (#280): the PR body rides in a description
+      // tag so `content` stays pure format-patch for `git am`.
+      ['description', 'Why: the feature was missing.'],
     ],
     content: PATCH_TEXT,
   }),
@@ -391,6 +394,20 @@ describe('rig pr list/show', () => {
     expect(text).toContain('Branch:  feature');
     expect(text).toContain(`Commits: ${'9a'.repeat(20)}`);
     expect(text).toContain('Subject: [PATCH] add feature'); // verbatim patch
+    // #280: the description tag renders as its own Body section, ABOVE the
+    // patch text (which stays verbatim below it).
+    expect(text).toContain('Body:');
+    expect(text).toContain('Why: the feature was missing.');
+    expect(text.indexOf('Why: the feature was missing.')).toBeLessThan(
+      text.indexOf('Subject: [PATCH] add feature')
+    );
+  });
+
+  it('pr show without a description tag prints no Body section', async () => {
+    const io = makeTestIo();
+    const code = await runPrShow([PR_OPEN_ID, '--relay', RELAY], makeDeps(io));
+    expect(code).toBe(0);
+    expect(io.outLines.join('\n')).not.toContain('Body:');
   });
 
   it('pr show --json carries the patch content for `git am` piping', async () => {
@@ -402,7 +419,11 @@ describe('rig pr list/show', () => {
     expect(code).toBe(0);
     expect(io.jsonDocs[0]).toMatchObject({
       command: 'pr show',
-      pr: expect.objectContaining({ content: PATCH_TEXT, status: 'applied' }),
+      pr: expect.objectContaining({
+        content: PATCH_TEXT, // untouched — pipeable into `git am`
+        status: 'applied',
+        description: 'Why: the feature was missing.',
+      }),
     });
   });
 });

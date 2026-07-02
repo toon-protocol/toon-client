@@ -211,6 +211,77 @@ export interface StdoutGuard {
  * @param realWrite Override the saved real-stdout writer (tests capture it);
  *   defaults to the unpatched `process.stdout.write`.
  */
+// ---------------------------------------------------------------------------
+// Process-level stderr calmer (third-party bootstrap noise defense, #280)
+// ---------------------------------------------------------------------------
+
+/** Handle on an installed stderr calmer. */
+export interface StderrCalmer {
+  /** Undo the patch (tests; the one-shot CLI process never needs it). */
+  restore(): void;
+}
+
+/** The embedded client's core self-announce failure log line. */
+const ANNOUNCE_FAILED_RE = /\[Bootstrap\] Announce failed/;
+/** … specifically the EXPECTED pre-payment 402 refusal (x402 challenge). */
+const ANNOUNCE_402_RE = /402|payment required/i;
+
+/**
+ * The calm reframe of the announce-402: what happened, why it is expected,
+ * and that the command is unaffected — instead of a full x402 challenge JSON
+ * dump. Exported so tests pin the exact line.
+ */
+export const ANNOUNCE_402_INFO =
+  'rig: skipped the optional identity self-announce — the payment peer ' +
+  'charges for announces and this identity has not paid for one (expected ' +
+  'on a fresh or unfunded identity); harmless, the command continues.\n';
+
+/**
+ * Reframe the embedded client's scary-but-harmless bootstrap announce noise
+ * (#280). The core's bootstrap tries a PAID self-announce and `console.warn`s
+ * the refusal — `[Bootstrap] Announce failed …: … (402 Payment Required):
+ * {…x402…}` — straight to stderr, which rig's io seam cannot reach. A
+ * first-run user reads that as their (succeeding!) push having failed.
+ *
+ * This process-level guard patches `process.stderr.write`:
+ *
+ *   - an announce-402 line becomes {@link ANNOUNCE_402_INFO} once per
+ *     process (repeats are dropped — one calm line, not one per peer);
+ *   - announce failures that are NOT the expected 402 (network errors, peer
+ *     misconfig) pass through untouched — those ARE signal;
+ *   - everything else passes through untouched.
+ *
+ * Installed unconditionally in ./rig.ts before dispatch. Composes with
+ * {@link redirectStdoutToStderr}: that guard forwards to `process.stderr.write`
+ * via a dynamic property lookup, so rerouted stdout noise is calmed too.
+ */
+export function calmBootstrapNoise(): StderrCalmer {
+  const original = process.stderr.write;
+  let reframed = false;
+  const patched = ((
+    chunk: Uint8Array | string,
+    encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+    cb?: (err?: Error | null) => void
+  ): boolean => {
+    let text = chunk;
+    if (typeof chunk === 'string' && ANNOUNCE_FAILED_RE.test(chunk)) {
+      if (ANNOUNCE_402_RE.test(chunk)) {
+        text = reframed ? '' : ANNOUNCE_402_INFO;
+        reframed = true;
+      }
+    }
+    return typeof encodingOrCb === 'function'
+      ? original.call(process.stderr, text, encodingOrCb)
+      : original.call(process.stderr, text, encodingOrCb, cb);
+  }) as typeof process.stderr.write;
+  process.stderr.write = patched;
+  return {
+    restore: () => {
+      if (process.stderr.write === patched) process.stderr.write = original;
+    },
+  };
+}
+
 export function redirectStdoutToStderr(
   realWrite?: (text: string) => void
 ): StdoutGuard {

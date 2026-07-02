@@ -28,6 +28,7 @@
 import { createInterface } from 'node:readline/promises';
 import { dispatch } from './dispatch.js';
 import {
+  calmBootstrapNoise,
   isJsonInvocation,
   makeCliIo,
   redirectStdoutToStderr,
@@ -36,6 +37,9 @@ import {
 
 /** Real terminal I/O: stdout/stderr sinks + readline y/N confirm. */
 function makeIo(jsonMode: boolean): RigIo {
+  // Reframe the embedded client's expected announce-402 stderr noise (#280)
+  // — installed for every mode, before any command code can run.
+  calmBootstrapNoise();
   // In --json mode, patch process.stdout FIRST — before any command (or its
   // dynamically imported dependencies) can write — and keep the only real
   // stdout writer for the machine document.

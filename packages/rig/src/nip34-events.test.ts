@@ -243,6 +243,38 @@ describe('buildPatch (kind:1617)', () => {
     expect(event.content).toBe('');
   });
 
+  it('carries the PR body in a description tag, never in content (#280)', () => {
+    const event = buildPatch(
+      OWNER_PUBKEY,
+      'hello-toon',
+      'Fix readme',
+      commits,
+      undefined,
+      'From abc123 Mon Sep 17 00:00:00 2001\n',
+      'Closes #7 — the why.'
+    );
+
+    expect(event.tags).toContainEqual(['description', 'Closes #7 — the why.']);
+    // Content stays pipeable into `git am`: pure format-patch text.
+    expect(event.content).toBe('From abc123 Mon Sep 17 00:00:00 2001\n');
+  });
+
+  it('omits the description tag when the description is absent or empty', () => {
+    const none = buildPatch(OWNER_PUBKEY, 'hello-toon', 'T', commits);
+    const empty = buildPatch(
+      OWNER_PUBKEY,
+      'hello-toon',
+      'T',
+      commits,
+      undefined,
+      '',
+      ''
+    );
+    for (const event of [none, empty]) {
+      expect(event.tags.filter((t) => t[0] === 'description')).toHaveLength(0);
+    }
+  });
+
   it('carries real git format-patch text when content is provided', () => {
     const patchText = [
       'From abc123 Mon Sep 17 00:00:00 2001',

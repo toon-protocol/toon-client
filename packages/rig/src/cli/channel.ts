@@ -261,7 +261,7 @@ async function loadMoneyContext(
     await ctx.stop().catch(() => undefined);
     throw new Error(
       'this standalone loader does not expose money operations — ' +
-        'channel open/close/settle need the #263 loader'
+        'channel open/close/settle need a loader with the money lifecycle'
     );
   }
   return { ctx, money };

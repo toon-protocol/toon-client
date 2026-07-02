@@ -182,6 +182,13 @@ export function buildComment(
 /**
  * Build a kind:1617 patch event.
  *
+ * The PR body/description travels in a dedicated `description` tag, NEVER in
+ * `content` (#280): `content` is real `git format-patch` output that readers
+ * pipe straight into `git am`, and git's patch-format detection hard-fails on
+ * any leading prose (verified: "Patch format detection failed."). The tag
+ * route keeps `git am` consumption intact while `rig pr show` and the
+ * rig-web/views `parsePR` renderers surface the description.
+ *
  * @param repoOwnerPubkey - Pubkey of the repository owner
  * @param repoId - Repository identifier
  * @param title - Patch/PR title (subject tag)
@@ -189,6 +196,8 @@ export function buildComment(
  * @param branchTag - Branch name for the t tag
  * @param content - Real `git format-patch` text (NIP-34 patch body); defaults
  *                  to '' for callers that only reference commits by tag
+ * @param description - PR body/cover text (`description` tag) — kept out of
+ *                      `content` so `git am` still applies it
  */
 export function buildPatch(
   repoOwnerPubkey: string,
@@ -196,13 +205,18 @@ export function buildPatch(
   title: string,
   commits: { sha: string; parentSha: string }[],
   branchTag?: string,
-  content = ''
+  content = '',
+  description?: string
 ): UnsignedEvent {
   const tags: string[][] = [
     ['a', `${REPOSITORY_ANNOUNCEMENT_KIND}:${repoOwnerPubkey}:${repoId}`],
     ['p', repoOwnerPubkey],
     ['subject', title],
   ];
+
+  if (description !== undefined && description !== '') {
+    tags.push(['description', description]);
+  }
 
   for (const commit of commits) {
     tags.push(['commit', commit.sha]);
