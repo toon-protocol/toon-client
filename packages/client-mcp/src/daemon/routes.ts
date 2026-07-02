@@ -22,7 +22,7 @@ import {
   GitError,
   NonFastForwardError,
   OversizeObjectsError,
-} from '@toon-protocol/git';
+} from '@toon-protocol/rig';
 import type {
   AddApexRequest,
   AddRelayRequest,

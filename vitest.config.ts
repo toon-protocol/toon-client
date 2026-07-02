@@ -11,7 +11,7 @@ export default defineConfig({
     alias: {
       '@toon-protocol/arweave': resolve(__dirname, 'packages/arweave/src/index.ts'),
       '@toon-protocol/client': resolve(__dirname, 'packages/client/src/index.ts'),
-      '@toon-protocol/git': resolve(__dirname, 'packages/git/src/index.ts'),
+      '@toon-protocol/rig': resolve(__dirname, 'packages/rig/src/index.ts'),
     },
   },
   test: {

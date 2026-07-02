@@ -8,7 +8,7 @@
  * state (kind:30618 `arweave` tags) to skip the GraphQL indexing delay.
  *
  * Extracted verbatim from rig's `web/arweave-client.ts` (#225) so the browser
- * SPA (rig) and the Node write path (@toon-protocol/git) share ONE resolver.
+ * SPA (rig-web) and the Node write path (@toon-protocol/rig) share ONE resolver.
  * Uses only WHATWG fetch + AbortSignal.timeout — browser and Node compatible.
  */
 
