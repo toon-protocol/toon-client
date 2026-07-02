@@ -13,11 +13,18 @@ import {
   APP_RESOURCE_URI,
   validateViewSpec,
 } from '@toon-protocol/views';
+import { basename } from 'node:path';
 import type { NostrEvent } from 'nostr-tools/pure';
 import { ControlApiError, DaemonUnreachableError } from './control-client.js';
 import type { ControlClient } from './control-client.js';
 import type {
   AddApexRequest,
+  GitEstimateRequest,
+  GitEstimateResponse,
+  GitPatchRequest,
+  GitPushResponse,
+  GitRepoAddr,
+  GitStatusValue,
   HttpFetchPaidRequest,
   NostrFilter,
   PublishRequest,
@@ -198,6 +205,222 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       },
       // Exactly one of filePath | dataBase64 is required; enforced in the daemon
       // (ClientRunner.uploadMedia) since JSON Schema can't express one-of-required cleanly here.
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_git_push',
+    description:
+      'Pay-to-write: push a local git repository to TOON (NIP-34) — uploads ' +
+      'the object delta to Arweave via the paid store and publishes the ' +
+      'cumulative kind:30618 refs event (+ kind:30617 announcement on first ' +
+      'push). The daemon identity is the repo owner. TWO-STEP, PAID + ' +
+      'IRREVERSIBLE: ALWAYS call with dry_run:true first — it plans the push ' +
+      'without paying and returns the itemized fee table (per-object upload ' +
+      'fees + event fees). Quote estimate.totalFee to the user and get their ' +
+      'explicit confirmation, THEN call again with confirm:true to execute; a ' +
+      'push without confirm:true is rejected. Uploads and events are permanent ' +
+      'and non-refundable (they cannot be unpublished).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repoPath: {
+          type: 'string',
+          description:
+            'Absolute path to the local git repository (worktree or .git dir) ' +
+            'the daemon reads with git plumbing.',
+        },
+        repoId: {
+          type: 'string',
+          description:
+            'Repository identifier (NIP-34 `d` tag). Default: the basename ' +
+            'of repoPath.',
+        },
+        refspecs: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Full refnames to push (e.g. ["refs/heads/main"]). Default: every ' +
+            'local branch and tag.',
+        },
+        force: {
+          type: 'boolean',
+          description:
+            'Allow non-fast-forward updates (default false). A forced push ' +
+            'abandons remote commits — get explicit user confirmation first.',
+        },
+        relayUrls: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Relay URLs to read remote state from and publish to (default: ' +
+            "the daemon's config-seeded relay).",
+        },
+        dry_run: {
+          type: 'boolean',
+          description:
+            'true → plan + price only (free, nothing is paid or published). ' +
+            'Required first step before any real push.',
+        },
+        confirm: {
+          type: 'boolean',
+          description:
+            'Must be literally true to execute the paid push — only after the ' +
+            'user confirmed the dry_run fee quote.',
+        },
+      },
+      required: ['repoPath'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_git_issue',
+    description:
+      'Pay-to-write: file a NIP-34 issue (kind:1621) against a TOON-hosted ' +
+      'repo. One paid event publish. PAID + IRREVERSIBLE: quote the per-event ' +
+      'fee (feePerEvent via toon_status / fee config) and confirm with the ' +
+      'user before calling — events cannot be unpublished.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repoOwnerPubkey: {
+          type: 'string',
+          description:
+            "Repository owner's Nostr pubkey (64-char hex — the author of the " +
+            'kind:30617 announcement).',
+        },
+        repoId: {
+          type: 'string',
+          description: 'Repository identifier (NIP-34 `d` tag).',
+        },
+        title: { type: 'string', description: 'Issue title (`subject` tag).' },
+        body: { type: 'string', description: 'Issue body (Markdown).' },
+        labels: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Labels (`t` tags).',
+        },
+      },
+      required: ['repoOwnerPubkey', 'repoId', 'title', 'body'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_git_comment',
+    description:
+      'Pay-to-write: comment (kind:1622) on a TOON-hosted issue or patch. One ' +
+      'paid event publish. PAID + IRREVERSIBLE: quote the per-event fee ' +
+      '(feePerEvent via toon_status / fee config) and confirm with the user ' +
+      'before calling — events cannot be unpublished.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repoOwnerPubkey: {
+          type: 'string',
+          description: "Repository owner's Nostr pubkey (64-char hex).",
+        },
+        repoId: {
+          type: 'string',
+          description: 'Repository identifier (NIP-34 `d` tag).',
+        },
+        rootEventId: {
+          type: 'string',
+          description: 'Event id of the issue or patch being commented on.',
+        },
+        body: { type: 'string', description: 'Comment body (Markdown).' },
+        parentAuthorPubkey: {
+          type: 'string',
+          description:
+            "Pubkey of the TARGET event's author (NIP-34 `p` threading tag). " +
+            'Default: the repo owner.',
+        },
+        marker: {
+          type: 'string',
+          enum: ['root', 'reply'],
+          description:
+            '`e`-tag marker (default root: commenting directly on the ' +
+            'issue/patch).',
+        },
+      },
+      required: ['repoOwnerPubkey', 'repoId', 'rootEventId', 'body'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_git_patch',
+    description:
+      'Pay-to-write: submit a patch/PR (kind:1617, real `git format-patch` ' +
+      'content) to a TOON-hosted repo. Supply EXACTLY ONE of patchText ' +
+      '(literal format-patch output) or repoPath+range (the daemon runs ' +
+      'format-patch locally). One paid event publish. PAID + IRREVERSIBLE: ' +
+      'quote the per-event fee (feePerEvent via toon_status / fee config) and ' +
+      'confirm with the user before calling — events cannot be unpublished.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repoOwnerPubkey: {
+          type: 'string',
+          description: "Repository owner's Nostr pubkey (64-char hex).",
+        },
+        repoId: {
+          type: 'string',
+          description: 'Repository identifier (NIP-34 `d` tag).',
+        },
+        title: { type: 'string', description: 'Patch/PR title (`subject` tag).' },
+        patchText: {
+          type: 'string',
+          description:
+            'Literal `git format-patch` output. Mutually exclusive with ' +
+            'repoPath+range.',
+        },
+        repoPath: {
+          type: 'string',
+          description:
+            'Local repository to run format-patch in. Requires range.',
+        },
+        range: {
+          type: 'string',
+          description:
+            'Revision range for format-patch (`<rev>`, `<rev>..<rev>`, ' +
+            '`<rev>...<rev>`).',
+        },
+        branch: { type: 'string', description: 'Branch name for the `t` tag.' },
+      },
+      required: ['repoOwnerPubkey', 'repoId', 'title'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_git_status',
+    description:
+      'Pay-to-write: set the status of a TOON-hosted issue or patch ' +
+      '(kind:1630-1633: open/applied/closed/draft). One paid event publish. ' +
+      'PAID + IRREVERSIBLE: quote the per-event fee (feePerEvent via ' +
+      'toon_status / fee config) and confirm with the user before calling — ' +
+      'events cannot be unpublished.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repoOwnerPubkey: {
+          type: 'string',
+          description: "Repository owner's Nostr pubkey (64-char hex).",
+        },
+        repoId: {
+          type: 'string',
+          description: 'Repository identifier (NIP-34 `d` tag).',
+        },
+        targetEventId: {
+          type: 'string',
+          description: 'Event id of the issue/patch whose status is being set.',
+        },
+        status: {
+          type: 'string',
+          enum: ['open', 'applied', 'closed', 'draft'],
+          description:
+            'open → kind:1630, applied → 1631, closed → 1632, draft → 1633.',
+        },
+      },
+      required: ['repoOwnerPubkey', 'repoId', 'targetEventId', 'status'],
       additionalProperties: false,
     },
   },
@@ -671,6 +894,14 @@ const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   toon_publish_unsigned: PAID_WRITE,
   toon_upload: PAID_WRITE,
   toon_swap: PAID_WRITE,
+  // paid git writes (NIP-34): push uploads objects + publishes events; the
+  // single-event tools each spend one channel claim. toon_git_push with
+  // dry_run:true is a free estimate, but the tool as a whole is a paid write.
+  toon_git_push: PAID_WRITE,
+  toon_git_issue: PAID_WRITE,
+  toon_git_comment: PAID_WRITE,
+  toon_git_patch: PAID_WRITE,
+  toon_git_status: PAID_WRITE,
   // on-chain channel ops
   toon_open_channel: { ...ONCHAIN_WRITE, idempotentHint: true }, // returns the existing channel if open
   toon_channel_deposit: ONCHAIN_WRITE,
@@ -733,6 +964,98 @@ export async function dispatchTool(
       case 'toon_upload':
         return ok(
           await client.uploadMedia(args as unknown as UploadMediaRequest)
+        );
+      case 'toon_git_push': {
+        const req: GitEstimateRequest = {
+          repoPath: String(args['repoPath'] ?? ''),
+          repoId:
+            typeof args['repoId'] === 'string' && args['repoId'] !== ''
+              ? args['repoId']
+              : basename(String(args['repoPath'] ?? '')),
+          ...(Array.isArray(args['refspecs'])
+            ? { refspecs: (args['refspecs'] as unknown[]).map(String) }
+            : {}),
+          ...(typeof args['force'] === 'boolean' ? { force: args['force'] } : {}),
+          ...(Array.isArray(args['relayUrls'])
+            ? { relayUrls: (args['relayUrls'] as unknown[]).map(String) }
+            : {}),
+        };
+        if (args['dry_run'] === true) {
+          const plan = await client.gitEstimate(req);
+          // Compact text: the per-object manifest can be thousands of entries,
+          // so the text channel carries counts + the fee table (everything the
+          // confirm quote needs); the full plan rides structuredContent.
+          return okStructured(
+            JSON.stringify(compactPushPlan(plan)) +
+              `\nQuote estimate.totalFee (base units) to the user and get ` +
+              `explicit confirmation before pushing with confirm:true — the ` +
+              `push is permanent and non-refundable.`,
+            plan as unknown as Record<string, unknown>
+          );
+        }
+        if (args['confirm'] !== true) {
+          return err(
+            `Refusing to push without confirm:true. Run toon_git_push with ` +
+              `dry_run:true first (free), quote estimate.totalFee to the user, ` +
+              `and only after their explicit confirmation call again with ` +
+              `confirm:true. Pushes are PAID, permanent, and non-refundable.`
+          );
+        }
+        const pushed = await client.gitPush({ ...req, confirm: true });
+        return okStructured(
+          JSON.stringify(compactPushResult(pushed)),
+          pushed as unknown as Record<string, unknown>
+        );
+      }
+      case 'toon_git_issue':
+        return ok(
+          await client.gitIssue({
+            repoAddr: gitRepoAddr(args),
+            title: String(args['title'] ?? ''),
+            body: String(args['body'] ?? ''),
+            ...(Array.isArray(args['labels'])
+              ? { labels: (args['labels'] as unknown[]).map(String) }
+              : {}),
+          })
+        );
+      case 'toon_git_comment':
+        return ok(
+          await client.gitComment({
+            repoAddr: gitRepoAddr(args),
+            rootEventId: String(args['rootEventId'] ?? ''),
+            body: String(args['body'] ?? ''),
+            ...(typeof args['parentAuthorPubkey'] === 'string'
+              ? { parentAuthorPubkey: args['parentAuthorPubkey'] }
+              : {}),
+            ...(args['marker'] === 'root' || args['marker'] === 'reply'
+              ? { marker: args['marker'] }
+              : {}),
+          })
+        );
+      case 'toon_git_patch': {
+        const req: GitPatchRequest = {
+          repoAddr: gitRepoAddr(args),
+          title: String(args['title'] ?? ''),
+          ...(typeof args['patchText'] === 'string'
+            ? { patchText: args['patchText'] }
+            : {}),
+          ...(typeof args['repoPath'] === 'string'
+            ? { repoPath: args['repoPath'] }
+            : {}),
+          ...(typeof args['range'] === 'string' ? { range: args['range'] } : {}),
+          ...(typeof args['branch'] === 'string'
+            ? { branch: args['branch'] }
+            : {}),
+        };
+        return ok(await client.gitPatch(req));
+      }
+      case 'toon_git_status':
+        return ok(
+          await client.gitStatus({
+            repoAddr: gitRepoAddr(args),
+            targetEventId: String(args['targetEventId'] ?? ''),
+            status: String(args['status'] ?? '') as GitStatusValue,
+          })
         );
       case 'toon_atoms': {
         const atomsPayload = { atoms: ATOM_CATALOG, examples: EXAMPLE_VIEWSPECS };
@@ -963,6 +1286,37 @@ export async function dispatchTool(
     if (e instanceof ControlApiError && e.status === 402) {
       return err(e.detail ?? e.message);
     }
+    // Structured /git/* errors carry their data on ControlApiError.data —
+    // surface it as compact JSON (agents consume these) plus an actionable hint,
+    // instead of flattening to `message: detail` and losing the refs/objects.
+    if (e instanceof ControlApiError && e.message === 'non_fast_forward') {
+      return err(
+        JSON.stringify({
+          error: 'non_fast_forward',
+          detail: e.detail,
+          refs: e.data?.['refs'] ?? [],
+          hint:
+            'The remote moved since the last known state. Re-run toon_git_push ' +
+            'with dry_run:true and force:true to preview the forced update, get ' +
+            'explicit user confirmation (a forced push abandons the remote ' +
+            'commits), then push with force:true + confirm:true.',
+        })
+      );
+    }
+    if (e instanceof ControlApiError && e.message === 'oversize_objects') {
+      return err(
+        JSON.stringify({
+          error: 'oversize_objects',
+          detail: e.detail,
+          objects: e.data?.['objects'] ?? [],
+          hint:
+            'These objects exceed the 95KB single-packet upload limit — a v1 ' +
+            'hard error (paid blob storage for larger objects is the epic #222 ' +
+            'follow-up, toon-client#235). Remove or shrink the listed paths ' +
+            '(e.g. git filter-repo) and re-run the estimate.',
+        })
+      );
+    }
     if (e instanceof ControlApiError && e.retryable) {
       return err(
         `TOON client is still bootstrapping (the BTP session can take a few ` +
@@ -999,6 +1353,41 @@ function wrapList(
     if (Array.isArray(existing)) return res as Record<string, unknown>;
   }
   return { [key]: [] };
+}
+
+/** Flattened NIP-34 repo address from the toon_git_* tool args. */
+function gitRepoAddr(args: Record<string, unknown>): GitRepoAddr {
+  return {
+    ownerPubkey: String(args['repoOwnerPubkey'] ?? ''),
+    repoId: String(args['repoId'] ?? ''),
+  };
+}
+
+/**
+ * Compact text rendering of a push plan: keep the ref updates + itemized fee
+ * table (what the confirm quote needs) but replace the per-object manifest and
+ * sha→txId map — potentially thousands of entries — with counts. The full plan
+ * rides `structuredContent`.
+ */
+function compactPushPlan(plan: GitEstimateResponse): Record<string, unknown> {
+  const { objects, knownShaToTxId, newRefs, ...rest } = plan;
+  return {
+    ...rest,
+    newRefCount: Object.keys(newRefs).length,
+    plannedObjectCount: objects.length,
+    knownOnArweaveCount: Object.keys(knownShaToTxId).length,
+  };
+}
+
+/** Same compaction for the push receipts: counts + fees, full result aside. */
+function compactPushResult(res: GitPushResponse): Record<string, unknown> {
+  const { uploads, arweaveMap, ...rest } = res;
+  return {
+    ...rest,
+    uploadCount: uploads.length,
+    skippedUploadCount: uploads.filter((u) => u.skipped).length,
+    arweaveMapSize: Object.keys(arweaveMap).length,
+  };
 }
 
 function ok(data: unknown): ToolResult {
