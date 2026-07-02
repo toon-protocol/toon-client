@@ -286,6 +286,36 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
     };
   }
 
+  // The #278 read path — matched by name (same tsup chunk-duplication
+  // rationale as above; the classes live in clone.ts / object-fetch.ts /
+  // materialize.ts).
+  if (name === 'RepoNotFoundError') {
+    return {
+      code: 'repo_not_found',
+      lines: message.split('\n'),
+      json: { error: 'repo_not_found', detail: message },
+    };
+  }
+  if (name === 'MissingRemoteObjectsError') {
+    const missing = (err as { missing?: unknown }).missing;
+    return {
+      code: 'missing_remote_objects',
+      lines: message.split('\n'),
+      json: {
+        error: 'missing_remote_objects',
+        detail: message,
+        ...(Array.isArray(missing) ? { missing } : {}),
+      },
+    };
+  }
+  if (name === 'ObjectIntegrityError' || name === 'ObjectWriteMismatchError') {
+    return {
+      code: 'object_integrity',
+      lines: message.split('\n'),
+      json: { error: 'object_integrity', detail: message },
+    };
+  }
+
   return {
     code: 'error',
     lines: [`rig ${command} failed: ${message}`],

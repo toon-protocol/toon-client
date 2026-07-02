@@ -57,16 +57,31 @@ import {
   type IdentityReport,
   type PushDeps,
 } from './push.js';
+import type { ReadSeams } from './read-seams.js';
 import { resolveRelays, singleRelayRefusal } from './remote.js';
 import { feeLabel, renderEventPlan, renderEventReceipt } from './render.js';
 import type { StandaloneContext } from './standalone-context.js';
+import {
+  ISSUE_LIST_USAGE,
+  ISSUE_SHOW_USAGE,
+  PR_LIST_USAGE,
+  PR_SHOW_USAGE,
+  runIssueList,
+  runIssueShow,
+  runPrList,
+  runPrShow,
+} from './tracker.js';
 
 // ---------------------------------------------------------------------------
 // Deps
 // ---------------------------------------------------------------------------
 
-/** Push deps plus a stdin reader (issue-body fallback); tests inject both. */
-export interface EventCommandDeps extends PushDeps {
+/**
+ * Push deps plus a stdin reader (issue-body fallback) and the #278 read-path
+ * seams (relay WebSocket / gateway fetch / SHA resolver — used by the FREE
+ * `issue list|show` and `pr list|show` subcommands); tests inject all.
+ */
+export interface EventCommandDeps extends PushDeps, ReadSeams {
   /** Read all of stdin as UTF-8 (default: the real process stdin). */
   readStdin?: () => Promise<string>;
 }
@@ -113,7 +128,11 @@ Options:
   --body <text>        issue body (Markdown)
   --body-file <path>   read the issue body from a file
   --label <label>      label (t tag); repeatable
-${COMMON_FLAGS_USAGE}`;
+${COMMON_FLAGS_USAGE}
+
+Related (FREE reads — no payment):
+  rig issue list [--state open|closed|all]   list the repo's issues
+  rig issue show <event-id>                  one issue + its comments`;
 
 export const COMMENT_USAGE = `Usage: rig comment <root-event-id> --body <text> [options]
 
@@ -161,7 +180,11 @@ ${COMMON_FLAGS_USAGE}`;
 
 export const PR_USAGE = `${PR_CREATE_USAGE}
 
-${PR_STATUS_USAGE}`;
+${PR_STATUS_USAGE}
+
+${PR_LIST_USAGE}
+
+${PR_SHOW_USAGE}`;
 
 // ---------------------------------------------------------------------------
 // Shared flag parsing
@@ -391,12 +414,19 @@ export async function runIssue(
   const [sub, ...rest] = args;
   if (sub === '--help' || sub === '-h' || sub === 'help') {
     io.out(ISSUE_USAGE);
+    io.out('');
+    io.out(ISSUE_LIST_USAGE);
+    io.out('');
+    io.out(ISSUE_SHOW_USAGE);
     return 0;
   }
+  // FREE read subcommands (#278): relay queries only, no payment path.
+  if (sub === 'list') return runIssueList(rest, deps);
+  if (sub === 'show') return runIssueShow(rest, deps);
   if (sub !== 'create') {
     io.err(
       sub === undefined
-        ? 'missing subcommand: rig issue create'
+        ? 'missing subcommand: rig issue <create|list|show>'
         : `unknown rig issue subcommand: ${sub}`
     );
     io.err(ISSUE_USAGE);
@@ -575,6 +605,11 @@ export async function runPr(
       return runPrCreate(rest, deps);
     case 'status':
       return runPrStatus(rest, deps);
+    // FREE read subcommands (#278): relay queries only, no payment path.
+    case 'list':
+      return runPrList(rest, deps);
+    case 'show':
+      return runPrShow(rest, deps);
     case '--help':
     case '-h':
     case 'help':
@@ -583,7 +618,7 @@ export async function runPr(
     default:
       io.err(
         sub === undefined
-          ? 'missing subcommand: rig pr <create|status>'
+          ? 'missing subcommand: rig pr <create|status|list|show>'
           : `unknown rig pr subcommand: ${sub}`
       );
       io.err(PR_USAGE);

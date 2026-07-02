@@ -30,6 +30,14 @@ import type { RemoteState } from '../remote-state.js';
 import { dispatch, type DispatchDeps } from './dispatch.js';
 import { writeToonConfig } from './git-config.js';
 import {
+  filterEvents,
+  makeMockGateway,
+  makeMockRelayFactory,
+  repoStateEvents,
+  storeFromObjects,
+} from './read-testkit.js';
+import type { ReadSeams } from './read-seams.js';
+import {
   isJsonInvocation,
   makeCliIo,
   redirectStdoutToStderr,
@@ -189,6 +197,8 @@ async function run(
     cwd?: string;
     loadStandalone?: LoadStandalone;
     runGit?: DispatchDeps['runGit'];
+    /** #278 read-path seams (mock relay / gateway / resolver). */
+    seams?: ReadSeams;
   } = {}
 ): Promise<RunResult> {
   const stdoutChunks: string[] = [];
@@ -217,6 +227,7 @@ async function run(
       cwd: opts.cwd ?? makeTempDir('toon-rig-json-cwd-'),
       ...(opts.loadStandalone ? { loadStandalone: opts.loadStandalone } : {}),
       ...(opts.runGit ? { runGit: opts.runGit } : {}),
+      ...(opts.seams ?? {}),
     });
     io.ensureSingleJsonDoc(code);
     return {
@@ -498,6 +509,169 @@ describe('strict --json stdout: every rig-owned command emits exactly one JSON d
     expect(doc).toMatchObject({ command: 'balance' });
     expect(result.stderr).toContain('[Bootstrap]');
     expect(result.stdout).not.toContain('[Bootstrap]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The #278 read path: clone / fetch / issue list|show / pr list|show
+// ---------------------------------------------------------------------------
+
+describe('strict --json stdout: the #278 read commands', () => {
+  const RELAY = 'wss://relay.test.example';
+
+  /** A real source repo + mock relay/gateway seams serving it. */
+  function makeReadWorld(): { seams: ReadSeams; srcDir: string } {
+    const srcDir = makeRepo();
+    const { announce, refsEvent, objects } = repoStateEvents({
+      repoDir: srcDir,
+      owner: OWNER,
+      repoId: 'demo',
+    });
+    const issue = {
+      id: '11'.repeat(32),
+      pubkey: OWNER,
+      created_at: 1500,
+      kind: 1621,
+      tags: [
+        ['a', `30617:${OWNER}:demo`],
+        ['subject', 'An issue'],
+      ],
+      content: 'body',
+      sig: 'f2'.repeat(64),
+    };
+    const events = [announce, refsEvent, issue];
+    const gateway = makeMockGateway(storeFromObjects(objects));
+    return {
+      srcDir,
+      seams: {
+        webSocketFactory: makeMockRelayFactory((filter) =>
+          filterEvents(events, filter)
+        ),
+        fetchFn: gateway.fetchFn,
+        resolveSha: async () => null,
+      },
+    };
+  }
+
+  it('clone --json emits one envelope (success)', async () => {
+    const world = makeReadWorld();
+    const cwd = makeTempDir('toon-rig-json-clone-');
+    const result = await run(['clone', RELAY, `${OWNER}/demo`, '--json'], {
+      cwd,
+      seams: world.seams,
+    });
+    expect(result.code).toBe(0);
+    expect(parseSingleJsonDoc(result)).toMatchObject({
+      command: 'clone',
+      executed: true,
+    });
+  });
+
+  it('clone --json usage error: backstop envelope, exit 2', async () => {
+    const result = await run(['clone', '--json'], {});
+    expect(result.code).toBe(2);
+    const doc = parseSingleJsonDoc(result);
+    expect(doc['exitCode']).toBe(2);
+    expect(result.stderr).toContain('rig clone');
+  });
+
+  it('clone --json repo-not-found: one error envelope on stdout', async () => {
+    const world = makeReadWorld();
+    const seams: ReadSeams = {
+      ...world.seams,
+      webSocketFactory: makeMockRelayFactory(() => []), // relay knows nothing
+    };
+    const result = await run(['clone', RELAY, `${OWNER}/demo`, '--json'], {
+      cwd: makeTempDir('toon-rig-json-clone-'),
+      seams,
+    });
+    expect(result.code).toBe(1);
+    expect(parseSingleJsonDoc(result)).toMatchObject({
+      command: 'clone',
+      error: 'repo_not_found',
+    });
+  });
+
+  it('fetch --json emits one envelope (in a cloned repo, up to date)', async () => {
+    const world = makeReadWorld();
+    const cwd = makeTempDir('toon-rig-json-fetch-');
+    const cloned = await run(['clone', RELAY, `${OWNER}/demo`, 'cl', '--json'], {
+      cwd,
+      seams: world.seams,
+    });
+    expect(cloned.code).toBe(0);
+    const result = await run(['fetch', '--json'], {
+      cwd: join(cwd, 'cl'),
+      seams: world.seams,
+    });
+    expect(result.code).toBe(0);
+    expect(parseSingleJsonDoc(result)).toMatchObject({
+      command: 'fetch',
+      executed: true,
+    });
+  });
+
+  it('fetch --json error path (unconfigured repo): one error envelope', async () => {
+    const result = await run(['fetch', '--json'], { cwd: makeRepo() });
+    expect(result.code).toBe(1);
+    expect(parseSingleJsonDoc(result)).toMatchObject({
+      command: 'fetch',
+      error: 'unconfigured_repo_address',
+    });
+  });
+
+  it('issue list --json emits one envelope with the issues', async () => {
+    const world = makeReadWorld();
+    const result = await run(
+      [
+        'issue',
+        'list',
+        '--repo-id',
+        'demo',
+        '--owner',
+        OWNER,
+        '--relay',
+        RELAY,
+        '--json',
+      ],
+      { seams: world.seams }
+    );
+    expect(result.code).toBe(0);
+    expect(parseSingleJsonDoc(result)).toMatchObject({
+      command: 'issue list',
+      count: 1,
+    });
+  });
+
+  it('issue show / pr list / pr show --json each emit one envelope', async () => {
+    const world = makeReadWorld();
+    const seams = world.seams;
+
+    const shown = await run(
+      ['issue', 'show', '11'.repeat(32), '--relay', RELAY, '--json'],
+      { seams }
+    );
+    expect(shown.code).toBe(0);
+    expect(parseSingleJsonDoc(shown)).toMatchObject({ command: 'issue show' });
+
+    const prList = await run(
+      ['pr', 'list', '--repo-id', 'demo', '--owner', OWNER, '--relay', RELAY, '--json'],
+      { seams }
+    );
+    expect(prList.code).toBe(0);
+    expect(parseSingleJsonDoc(prList)).toMatchObject({
+      command: 'pr list',
+      count: 0,
+    });
+
+    // pr show of an id that is not on the relay: error envelope, exit 1.
+    const prShow = await run(
+      ['pr', 'show', '99'.repeat(32), '--relay', RELAY, '--json'],
+      { seams }
+    );
+    expect(prShow.code).toBe(1);
+    expect(parseSingleJsonDoc(prShow)).toMatchObject({ command: 'pr show' });
+    expect(prShow.stderr).toContain('not found');
   });
 });
 

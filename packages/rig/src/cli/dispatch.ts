@@ -1,13 +1,15 @@
 /**
  * `rig` subcommand dispatch (#250): rig-owned verbs first, git for the rest.
  *
- * rig owns exactly: init, remote, push, issue, comment, pr, channel, fund,
- * balance, help/-h/--help, and --version. EVERY other subcommand is executed
- * as `git <argv...>` verbatim (./git-passthrough.ts) — `rig status` IS `git
- * status`, `rig add -p`, `rig commit`, `rig rebase -i`, … all land in git
- * with rig's stdio and git's exit code. Owned verbs always win: `rig push`
- * is the paid TOON push and shadows `git push` (plain-git pushes stay
- * available by calling `git push` directly).
+ * rig owns exactly: init, remote, clone, fetch, push, issue, comment, pr,
+ * channel, fund, balance, help/-h/--help, and --version. EVERY other
+ * subcommand is executed as `git <argv...>` verbatim (./git-passthrough.ts)
+ * — `rig status` IS `git status`, `rig add -p`, `rig commit`, `rig rebase
+ * -i`, … all land in git with rig's stdio and git's exit code. Owned verbs
+ * always win: `rig push` is the paid TOON push and shadows `git push`, and
+ * `rig clone`/`rig fetch` (#278) are the free TOON transports shadowing
+ * their git counterparts (plain-git clone/fetch/push stay available by
+ * calling git directly).
  *
  * The NIP-34 status publish that used to be `rig status` lives at
  * `rig pr status` since #250 (BREAKING) — bare `rig status` is git's.
@@ -23,7 +25,9 @@
 import { createRequire } from 'node:module';
 import { runBalance } from './balance.js';
 import { runChannel } from './channel.js';
+import { runClone } from './clone.js';
 import { runComment, runIssue, runPr, type EventCommandDeps } from './events.js';
+import { runFetch } from './fetch.js';
 import { runFund } from './fund.js';
 import { runGitPassthrough, type GitRunner } from './git-passthrough.js';
 import { runInit } from './init.js';
@@ -40,12 +44,22 @@ Commands rig owns:
   remote add <name> <url>    add a relay as a REAL git remote ("origin" is
   remote remove <name>       the default publish target); remove/list manage
   remote list                them — \`git remote -v\` shows the same data
+  clone <relay-url> <owner>/<repo-id> [dir]
+                             clone a TOON repo (free): relay state + Arweave
+                             objects (SHA-1 verified) → a real git repository,
+                             push/pull-capable out of the box
+  fetch [remote]             fetch remote refs + missing objects (free) and
+                             update refs/remotes/<remote>/*; no merge. Shadows
+                             git fetch (plain \`git fetch\` stays available)
   push [remote] [refspecs...]  plan, price, confirm, and execute a paid push
                              to TOON (defaults to the "origin" remote). rig
                              push is the TOON transport and shadows git push;
                              plain-git pushes remain available by running
                              \`git push\` directly
   issue create               file an issue (kind:1621) against a repo
+  issue list | show <id>     read the repo's issues + comments (free)
+  pr list | show <id>        read the repo's patches; show prints the full
+                             patch text (free)
   comment <root-event-id>    comment (kind:1622) on an issue or patch
   pr create                  publish a patch (kind:1617) with real
                              \`git format-patch\` content
@@ -68,8 +82,10 @@ Any other command is passed through to git verbatim: \`rig status\` runs
 \`rig rebase -i\`, … behave exactly like git (same output, same exit code).
 
 Run \`rig <command> --help\` for a rig command's flags. \`rig init\`,
-\`rig remote\`, \`rig fund\`, \`rig balance\`, and \`rig channel list\` are
-free; push/issue/comment/pr are paid writes — permanent and non-refundable —
+\`rig remote\`, \`rig clone\`, \`rig fetch\`, \`rig issue list/show\`,
+\`rig pr list/show\`, \`rig fund\`, \`rig balance\`, and \`rig channel list\`
+are free; push/issue create/comment/pr create/pr status are paid writes —
+permanent and non-refundable —
 and channel open/close/settle are on-chain wallet transactions; each states
 what it will spend and asks for confirmation before doing so (--yes skips,
 --json emits machine output).
@@ -118,6 +134,11 @@ export async function dispatch(
       return runInit(rest, deps);
     case 'remote':
       return runRemote(rest, deps);
+    // The #278 read path — FREE (relay + Arweave gateway reads, no payment).
+    case 'clone':
+      return runClone(rest, deps);
+    case 'fetch':
+      return runFetch(rest, deps);
     case 'push':
       return runPush(rest, deps);
     case 'issue':
