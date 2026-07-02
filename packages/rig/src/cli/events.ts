@@ -9,11 +9,21 @@
  * `rig init` writes (`--repo-id`/`--owner` override; actionable "run
  * `rig init`" error when unconfigured), a fee-quoting confirm gate (`--yes`
  * skips; a non-TTY session without it refuses; `--json` without `--yes` is a
- * pure estimate), and ONE transport: build the NIP-34 event locally
- * (../nip34-events.ts — the same builders the toon-clientd daemon uses) and
- * pay-to-publish through the embedded, nonce-guarded StandalonePublisher
- * (#248: the CLI is standalone-only; the daemon keeps its own toon_git_* MCP
- * surface). The relay resolves like `rig push` (#249): `--remote <name>`
+ * pure estimate), and two transports (#279, ./daemon-session.ts):
+ *
+ *   standalone (default + guarantee) — build the NIP-34 event locally
+ *     (../nip34-events.ts — the same builders the toon-clientd daemon uses)
+ *     and pay-to-publish through the embedded, nonce-guarded
+ *     StandalonePublisher;
+ *   daemon (automatic fast path) — when a running toon-clientd holds the
+ *     SAME identity, delegate to its loopback POST
+ *     /git/issue|comment|patch|status route instead: the daemon builds,
+ *     signs, and pays from its warm bootstrap, and it owns the channel
+ *     watermark (the safety goal the old refusal protected). NOTE: the
+ *     single-event daemon routes publish via the daemon's own configured
+ *     relay route — a resolved relay that differs from it draws a warning.
+ *
+ * The relay resolves like `rig push` (#249): `--remote <name>`
  * (default: the `origin` git remote), `--relay <url>` as an ad-hoc override
  * that bypasses remotes, deprecated `git config toon.relay` as a nudged
  * fallback. Publishes go to a SINGLE relay; multiple configured relays and
@@ -49,11 +59,15 @@ import {
   type GitRepoAddr,
   type GitStatusValue,
 } from '../routes.js';
+import {
+  type DaemonGitClient,
+  type SessionPath,
+} from './daemon-session.js';
 import { emitCliError, UnconfiguredRepoAddressError } from './errors.js';
 import { readToonConfig, resolveRepoRoot, type ToonRepoConfig } from './git-config.js';
 import {
-  defaultLoadStandalone,
   identityReport,
+  loadPaidSession,
   type IdentityReport,
   type PushDeps,
 } from './push.js';
@@ -256,14 +270,26 @@ interface RunEventOptions {
    * Build the unsigned NIP-34 event for the resolved repo address — the
    * publish payload, and the source of truth for the kind. May do real work
    * (pr runs format-patch here), so failures land in the normal error path.
+   * ALWAYS called (both paths) — the kind drives rendering, and the daemon
+   * path reuses locally-derived values (e.g. the format-patch output).
    */
   buildEvent: (addr: GitRepoAddr) => Promise<UnsignedEvent>;
+  /**
+   * Drive the matching daemon `/git/*` route (#279 delegated fast path).
+   * Called only after the same-identity check and the confirm gate.
+   */
+  sendDaemon: (
+    client: DaemonGitClient,
+    addr: GitRepoAddr
+  ) => Promise<GitEventResponse>;
 }
 
 /** JSON envelope emitted by `--json` runs (agents consume this). */
 interface EventJsonOutput {
   command: EventCommand;
   repoAddr: GitRepoAddr;
+  /** Which transport paid: delegated daemon or embedded standalone (#279). */
+  path: SessionPath;
   /** Active identity: source tier + derived pubkey (never the phrase). */
   identity: IdentityReport;
   /** NIP-34 kind this command publishes. */
@@ -282,7 +308,7 @@ interface EventJsonOutput {
  */
 async function runEvent(opts: RunEventOptions): Promise<number> {
   const { command, flags, deps, actionLabel } = opts;
-  const { io, env } = deps;
+  const { io } = deps;
 
   let standaloneCtx: StandaloneContext | undefined;
   try {
@@ -316,16 +342,36 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
       return 1;
     }
 
-    // ── Standalone context (identity chain + nonce guard) + per-event fee ───
-    standaloneCtx = await (deps.loadStandalone ?? defaultLoadStandalone)({
-      env,
-      cwd: deps.cwd,
-      warn: (line) => io.err(line),
-      // Relay-origin for #264 network bootstrap (announce discovery).
-      ...(relaysUsed[0] !== undefined ? { relayUrl: relaysUsed[0] } : {}),
-    });
-    const identity = identityReport(standaloneCtx);
-    const fee = (await standaloneCtx.publisher.getFeeRates()).eventFee.toString();
+    // ── Paid session (#279): same-identity daemon → delegate; else the
+    // standalone context (identity chain + nonce guard) + per-event fee.
+    const session = await loadPaidSession(deps, relaysUsed[0]);
+    const path = session.path;
+    let identity: IdentityReport;
+    let fee: string | undefined;
+    if (session.path === 'standalone') {
+      standaloneCtx = session.ctx;
+      identity = identityReport(standaloneCtx);
+      fee = (await standaloneCtx.publisher.getFeeRates()).eventFee.toString();
+    } else {
+      identity = session.identity;
+      fee = session.feePerEvent;
+      // The single-event /git/* routes publish via the daemon's own
+      // configured relay route (no relayUrls field on the wire) — surface a
+      // mismatch instead of silently ignoring the resolved relay.
+      const resolvedRelay = relaysUsed[0];
+      if (
+        resolvedRelay !== undefined &&
+        session.daemonRelayUrl !== undefined &&
+        session.daemonRelayUrl !== resolvedRelay
+      ) {
+        io.err(
+          `rig: the daemon publishes via its configured relay ` +
+            `(${session.daemonRelayUrl}), not the resolved relay ` +
+            `(${resolvedRelay}) — stop the daemon to force the standalone ` +
+            'path if that matters'
+        );
+      }
+    }
 
     const owner = flags.owner ?? toonConfig.owner ?? identity.pubkey;
     const addr: GitRepoAddr = { ownerPubkey: owner, repoId };
@@ -336,7 +382,12 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
 
     // ── Confirm gate (identical semantics to `rig push`) ────────────────────
     if (!flags.json) {
-      for (const line of renderEventPlan({ action, addr, identity, fee })) {
+      for (const line of renderEventPlan({
+        action,
+        addr,
+        identity,
+        ...(fee !== undefined ? { fee } : {}),
+      })) {
         io.out(line);
       }
     }
@@ -345,10 +396,11 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
         io.emitJson({
           command,
           repoAddr: addr,
+          path,
           identity,
           kind: event.kind,
           executed: false,
-          feeEstimate: fee,
+          feeEstimate: fee ?? null,
           hint: 'estimate only — re-run with --yes to publish (permanent, non-refundable)',
         } satisfies EventJsonOutput);
         return 0;
@@ -370,18 +422,27 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
     }
 
     // ── Execute ─────────────────────────────────────────────────────────────
-    const receipt = await standaloneCtx.publisher.publishEvent(event, relaysUsed);
-    const result = serializeEventReceipt(event.kind, receipt);
+    let result: GitEventResponse;
+    if (session.path === 'standalone') {
+      const receipt = await session.ctx.publisher.publishEvent(
+        event,
+        relaysUsed
+      );
+      result = serializeEventReceipt(event.kind, receipt);
+    } else {
+      result = await opts.sendDaemon(session.client, addr);
+    }
 
     // ── Receipts ────────────────────────────────────────────────────────────
     if (flags.json) {
       io.emitJson({
         command,
         repoAddr: addr,
+        path,
         identity,
         kind: result.kind,
         executed: true,
-        feeEstimate: fee,
+        feeEstimate: fee ?? null,
         result,
       } satisfies EventJsonOutput);
     } else {
@@ -503,6 +564,13 @@ export async function runIssue(
     actionLabel: `issue ${JSON.stringify(title)}`,
     buildEvent: async (addr) =>
       buildIssue(addr.ownerPubkey, addr.repoId, title, body, labels),
+    sendDaemon: (client, addr) =>
+      client.gitIssue({
+        repoAddr: addr,
+        title,
+        body,
+        ...(labels.length > 0 ? { labels } : {}),
+      }),
   });
 }
 
@@ -578,6 +646,16 @@ export async function runComment(
         body,
         marker
       ),
+    sendDaemon: (client, addr) =>
+      client.gitComment({
+        repoAddr: addr,
+        rootEventId,
+        body,
+        ...(parentAuthor !== undefined
+          ? { parentAuthorPubkey: parentAuthor }
+          : {}),
+        marker,
+      }),
   });
 }
 
@@ -671,6 +749,12 @@ async function runPrCreate(
     return 2;
   }
 
+  // Captured by buildEvent for the daemon path: what is SHOWN locally (the
+  // built kind:1617 content) is exactly what the delegated /git/patch
+  // publishes — the daemon never re-derives the series.
+  let builtPatchText: string | undefined;
+  let builtCommits: { sha: string; parentSha: string }[] = [];
+
   return runEvent({
     command: 'pr',
     flags,
@@ -706,6 +790,8 @@ async function runPrCreate(
         }
         commits = [];
       }
+      builtPatchText = patchText;
+      builtCommits = commits;
       return buildPatch(
         addr.ownerPubkey,
         addr.repoId,
@@ -714,6 +800,18 @@ async function runPrCreate(
         branch,
         patchText
       );
+    },
+    sendDaemon: (client, addr) => {
+      if (builtPatchText === undefined) {
+        throw new Error('internal: patch text not built before delegation');
+      }
+      return client.gitPatch({
+        repoAddr: addr,
+        title,
+        patchText: builtPatchText,
+        ...(builtCommits.length > 0 ? { commits: builtCommits } : {}),
+        ...(branch !== undefined ? { branch } : {}),
+      });
     },
   });
 }
@@ -791,5 +889,7 @@ async function runPrStatus(
       ]);
       return event;
     },
+    sendDaemon: (client, addr) =>
+      client.gitStatus({ repoAddr: addr, targetEventId, status }),
   });
 }

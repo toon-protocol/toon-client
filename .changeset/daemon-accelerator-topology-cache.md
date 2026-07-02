@@ -1,0 +1,10 @@
+---
+'@toon-protocol/rig': minor
+---
+
+Kill the ~32s fixed bootstrap tax on paid rig commands (#279): daemon-as-accelerator delegation + a standalone topology cache.
+
+- **Daemon delegation (automatic fast path)**: when a running `toon-clientd` on the loopback control port holds the SAME identity, paid write commands (`push`, `issue`, `comment`, `pr create`, `pr status`) now delegate to its `/git/*` routes instead of refusing with `DaemonIdentityConflictError` — the daemon owns the channel watermark (one writer, the original safety goal) and its bootstrap is warm. Identity is confirmed against `GET /status` before anything is sent. A daemon on a different identity, or no daemon, runs standalone exactly as before. The chosen path prints on stderr and appears in `--json` envelopes as `"path": "daemon" | "standalone"`. `rig fund` / `rig balance` / `rig channel …` have no daemon route and stay standalone (channel mutations still refuse under a same-identity daemon).
+- **Standalone topology cache**: the resolved #264 network topology (kind:10032 announce discovery, payment-peer pick, settlement-chain selection incl. funded-chain probes) is persisted under `TOON_CLIENT_HOME` keyed by relay + identity + explicit config, TTL 15 min (`RIG_TOPOLOGY_TTL_MS` overrides; `0` disables). A cached topology that fails to bootstrap is invalidated and re-resolved live in-process. Claim watermarks and the channel map are never cached — writes still resume from the persisted cumulative.
+- **Happy-path trim**: the on-chain deposit re-read on channel resume is skipped when the channel-map record already carries `depositTotal` (accounting state only, not the claim watermark).
+- **Exit-hang fix (the actual bulk of the 32s)**: instrumentation showed the paid work completes in ~2s — the remaining ~30s was the CLI process failing to exit because the embedded client leaves a keep-alive socket holding the event loop. The `rig` bin now flushes stdio and exits as soon as dispatch resolves (all work is awaited by then). Measured on live devnet: ~32s → ~1.8s cold standalone, ~1.6s warm (cache hit), ~0.5s daemon-delegated.

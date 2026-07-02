@@ -1,14 +1,21 @@
 /**
  * `rig push [remote] [refspecs...]` — estimate → confirm → execute (#229,
- * standalone since #248, git-like remote resolution since #249).
+ * standalone since #248, git-like remote resolution since #249,
+ * daemon-as-accelerator since #279).
  *
- * The CLI is STANDALONE-ONLY: it plans locally (`planPush`) and executes
- * through the embedded, nonce-guarded StandalonePublisher (loaded via dynamic
- * import so runs that fail earlier never need `@toon-protocol/client`). The
- * identity comes from the RIG_MNEMONIC precedence chain (./identity.ts); the
- * nonce guard still refuses when a running toon-clientd holds the same
- * identity (cumulative-claim watermark protection) — drive the daemon through
- * its toon_git_* MCP tools instead.
+ * STANDALONE is the default and the guarantee: plan locally (`planPush`) and
+ * execute through the embedded, nonce-guarded StandalonePublisher (loaded
+ * via dynamic import so runs that fail earlier never need
+ * `@toon-protocol/client`). The identity comes from the RIG_MNEMONIC
+ * precedence chain (./identity.ts).
+ *
+ * DAEMON FAST PATH (#279, ./daemon-session.ts): when a running toon-clientd
+ * holds the SAME identity, the whole estimate→push pipeline is delegated to
+ * its loopback `/git/estimate` + `/git/push` routes instead of refusing —
+ * the daemon already owns the channel watermark and its bootstrap is warm,
+ * so the command finishes in seconds. A daemon on a different identity, or
+ * no daemon, runs standalone. The chosen path prints to stderr and lands in
+ * the `--json` envelope as `path`.
  *
  * Repo addressing comes from the `toon.*` git config keys `rig init` writes
  * (`--repo-id` overrides); an unconfigured repo is a hard "run `rig init`
@@ -37,6 +44,12 @@ import {
   type GitEstimateResponse,
   type GitPushResponse,
 } from '../routes.js';
+import {
+  resolvePaidSession,
+  type PaidSession,
+  type ProbeDaemon,
+  type SessionPath,
+} from './daemon-session.js';
 import { emitCliError, UnconfiguredRepoAddressError } from './errors.js';
 import { listGitRemotes, readToonConfig, resolveRepoRoot } from './git-config.js';
 import type { IdentitySourceKind } from './identity.js';
@@ -61,6 +74,30 @@ export interface PushDeps {
   cwd: string;
   /** Standalone factory; defaults to the real dynamic-import loader. */
   loadStandalone?: LoadStandalone;
+  /** Fetch for the daemon probe + delegated `/git/*` requests (tests). */
+  fetchImpl?: typeof fetch;
+  /** Daemon `/status` probe override (tests fake the loopback daemon). */
+  probeDaemon?: ProbeDaemon;
+}
+
+/**
+ * Resolve the paid session for a command from its deps (#279): probe for a
+ * same-identity toon-clientd (→ delegate) before falling back to the
+ * standalone loader. Shared by push and the single-event commands.
+ */
+export function loadPaidSession(
+  deps: PushDeps,
+  relayUrl: string | undefined
+): Promise<PaidSession> {
+  return resolvePaidSession({
+    env: deps.env,
+    cwd: deps.cwd,
+    warn: (line) => deps.io.err(line),
+    loadStandalone: deps.loadStandalone ?? defaultLoadStandalone,
+    ...(relayUrl !== undefined ? { relayUrl } : {}),
+    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    ...(deps.probeDaemon ? { probeDaemon: deps.probeDaemon } : {}),
+  });
 }
 
 /**
@@ -235,6 +272,8 @@ function parsePushArgs(args: string[]): PushFlags {
 interface PushJsonOutput {
   command: 'push';
   repoId: string;
+  /** Which transport paid: delegated daemon or embedded standalone (#279). */
+  path: SessionPath;
   /** Active identity: source tier + derived pubkey (never the phrase). */
   identity: IdentityReport;
   /** True when the paid execute step ran. */
@@ -248,7 +287,7 @@ interface PushJsonOutput {
 
 /** Run `rig push`; returns the process exit code. */
 export async function runPush(args: string[], deps: PushDeps): Promise<number> {
-  const { io, env } = deps;
+  const { io } = deps;
 
   let flags: PushFlags;
   try {
@@ -330,15 +369,17 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
       return 1;
     }
 
-    // ── Standalone context (identity chain + nonce guard) ───────────────────
-    standaloneCtx = await (deps.loadStandalone ?? defaultLoadStandalone)({
-      env,
-      cwd: deps.cwd,
-      warn: (line) => io.err(line),
-      // Relay-origin for #264 network bootstrap (announce discovery).
-      ...(relaysUsed[0] !== undefined ? { relayUrl: relaysUsed[0] } : {}),
-    });
-    const identity = identityReport(standaloneCtx);
+    // ── Paid session (#279): same-identity daemon → delegate; else the
+    // standalone context (identity chain + nonce guard).
+    const session = await loadPaidSession(deps, relaysUsed[0]);
+    const path = session.path;
+    let identity: IdentityReport;
+    if (session.path === 'standalone') {
+      standaloneCtx = session.ctx;
+      identity = identityReport(standaloneCtx);
+    } else {
+      identity = session.identity;
+    }
 
     if (toonConfig.owner && toonConfig.owner !== identity.pubkey) {
       io.err(
@@ -349,22 +390,58 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
       );
     }
 
-    // ── Estimate (local plan) ───────────────────────────────────────────────
-    const remoteState = await standaloneCtx.fetchRemote({
-      ownerPubkey: standaloneCtx.ownerPubkey,
-      repoId,
-      relayUrls: relaysUsed,
-    });
-    const feeRates = await standaloneCtx.publisher.getFeeRates();
-    const pushPlan = await planPush({
-      repoReader: reader,
-      remoteState,
-      feeRates,
-      repoId,
-      refs: refspecs,
-      force: flags.force,
-    });
-    const plan = serializePushPlan(pushPlan);
+    // ── Estimate ────────────────────────────────────────────────────────────
+    // Standalone plans locally; the daemon path delegates the plan to
+    // `POST /git/estimate` (same wire shape — ../routes.ts).
+    let plan: GitEstimateResponse;
+    let execute: () => Promise<GitPushResponse>;
+    if (session.path === 'standalone') {
+      const ctx = session.ctx;
+      const remoteState = await ctx.fetchRemote({
+        ownerPubkey: ctx.ownerPubkey,
+        repoId,
+        relayUrls: relaysUsed,
+      });
+      const feeRates = await ctx.publisher.getFeeRates();
+      const pushPlan = await planPush({
+        repoReader: reader,
+        remoteState,
+        feeRates,
+        repoId,
+        refs: refspecs,
+        force: flags.force,
+      });
+      plan = serializePushPlan(pushPlan);
+      execute = async () =>
+        serializePushResult(
+          pushPlan,
+          await executePush({
+            plan: pushPlan,
+            publisher: ctx.publisher,
+            remoteState,
+            repoReader: reader,
+            relayUrls: relaysUsed,
+          })
+        );
+    } else {
+      const client = session.client;
+      plan = await client.gitEstimate({
+        repoPath: repoRoot,
+        repoId,
+        refspecs,
+        force: flags.force,
+        relayUrls: relaysUsed,
+      });
+      execute = () =>
+        client.gitPush({
+          repoPath: repoRoot,
+          repoId,
+          refspecs,
+          force: flags.force,
+          relayUrls: relaysUsed,
+          confirm: true,
+        });
+    }
 
     // ── Up-to-date short-circuit (never publish a no-op refs event) ─────────
     const upToDate = plan.refUpdates.every((u) => u.kind === 'up-to-date');
@@ -373,6 +450,7 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
         io.emitJson({
           command: 'push',
           repoId,
+          path,
           identity,
           executed: false,
           upToDate: true,
@@ -394,6 +472,7 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
         io.emitJson({
           command: 'push',
           repoId,
+          path,
           identity,
           executed: false,
           upToDate: false,
@@ -419,20 +498,14 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
     }
 
     // ── Execute ─────────────────────────────────────────────────────────────
-    const pushResult = await executePush({
-      plan: pushPlan,
-      publisher: standaloneCtx.publisher,
-      remoteState,
-      repoReader: reader,
-      relayUrls: relaysUsed,
-    });
-    const result = serializePushResult(pushPlan, pushResult);
+    const result = await execute();
 
     // ── Receipts ────────────────────────────────────────────────────────────
     if (flags.json) {
       io.emitJson({
         command: 'push',
         repoId,
+        path,
         identity,
         executed: true,
         upToDate: false,

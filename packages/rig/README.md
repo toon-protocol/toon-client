@@ -108,10 +108,10 @@ The passthrough is exempt from the `--json` contract: `rig status --json` runs `
 
 ### Identity
 
-The CLI is **standalone-only**: it embeds its own payment client built from
-your seed phrase (`@toon-protocol/client` is a regular dependency, installed
-automatically with the package). The mnemonic is resolved along one
-precedence chain — highest first:
+The CLI is **standalone by default**: it embeds its own payment client built
+from your seed phrase (`@toon-protocol/client` is a regular dependency,
+installed automatically with the package) — no daemon is ever required. The
+mnemonic is resolved along one precedence chain — highest first:
 
 1. `RIG_MNEMONIC` environment variable
 2. `TOON_CLIENT_MNEMONIC` environment variable — deprecated alias, warns on
@@ -129,11 +129,42 @@ Every paid command reports which source is active and the derived pubkey
 output) — the phrase itself is never printed and never written to git config
 or any repo file.
 
-A running `toon-clientd` daemon on the **same identity** is still refused
-(the nonce guard): two writers would race the payment channel's
-cumulative-claim watermark. Stop the daemon or publish through its
-`toon_git_*` MCP tools instead — the daemon's `/git/*` routes are the MCP
-host path and are unaffected by the CLI.
+### Daemon as accelerator (#279)
+
+Every standalone paid command pays a fixed bootstrap cost (relay discovery,
+peer negotiation, channel resume). Two things remove most of it:
+
+- **Automatic daemon delegation** — when a running `toon-clientd` on the
+  loopback control port (`TOON_CLIENT_HTTP_PORT`, default 8787) holds the
+  **same identity**, paid write commands (`push`, `issue`, `comment`,
+  `pr create`, `pr status`) delegate to its `/git/*` routes instead of
+  bootstrapping an embedded client. The daemon already owns the payment
+  channel's cumulative-claim watermark, so one process signs all claims —
+  the exact safety property the pre-#279 nonce-guard *refusal* protected,
+  achieved by delegation instead. The identity match is confirmed against
+  `GET /status` **before** anything is sent. A daemon on a different
+  identity, or no daemon at all, runs standalone as always. The chosen path
+  prints on stderr (`rig: paid path: …`) and lands in `--json` envelopes as
+  `"path": "daemon" | "standalone"`. Note: the single-event daemon routes
+  publish via the daemon's configured relay route; a resolved relay that
+  differs from it draws a warning. Commands the daemon has **no route
+  for** — `rig fund`, `rig balance`, `rig channel open|close|settle` — always
+  run standalone; the on-chain channel mutations among them still refuse
+  while a same-identity daemon runs (they must not race its live claims):
+  stop the daemon for those.
+- **Standalone topology cache** — the resolved network topology (announce
+  discovery, payment-peer pick, settlement-chain selection incl. the
+  funded-chain probes) is cached under `TOON_CLIENT_HOME`
+  (`rig-topology-cache.json`), keyed by relay + identity + explicit config,
+  for 15 minutes (`RIG_TOPOLOGY_TTL_MS` overrides; `0` disables). A cached
+  topology that fails to bootstrap is invalidated and re-resolved live
+  automatically. Money state (claim watermarks, channel map) is never
+  cached.
+
+The `rig` bin also exits as soon as a command finishes and stdio is flushed:
+the embedded client can leave a keep-alive socket that would otherwise hold
+the process open for ~30 more seconds — which was, in fact, the bulk of the
+uniform "~32s per paid command" the #279 study measured.
 
 ### Pushing
 
@@ -179,7 +210,7 @@ No signing or payment code lives in the core — that stays behind the `Publishe
 - `npub.ts` — dependency-free bech32 `npubToHex`/`hexToNpub`/`ownerToHex` (NIP-19 pubkey addressing for `rig clone`).
 - `publisher.ts` — the `Publisher` interface (paid transport seam): `getFeeRates`, `uploadGitObject`, `publishEvent`. Implemented by the daemon (#227) and the standalone embedded client (#228).
 - `push.ts` — `planPush` (ref classification, object delta minus known sha→txId hints, oversize hard error, fee estimate) and `executePush` (uploads ref tips last, then ONE cumulative kind:30618 merging the full arweave map, kind:30617 first on first push; crash-resume safe via content-addressed skip).
-- `routes.ts` — the JSON wire shapes of the daemon's `/git/*` control routes (bigints as decimal strings, Maps as records) + the matching `serializePushPlan`/`serializePushResult` helpers, shared with `@toon-protocol/client-mcp` (the daemon keeps these routes; only the CLI stopped using them).
-- `cli/` — the `rig` bin: `init` (#248), `remote` (#249, relays as real git remotes + the shared relay resolution), `push` (#229), the single-event `issue`/`comment`/`pr create`/`pr status` subcommands (#231, nested under `pr` since #250), and the git passthrough (#250, `dispatch.ts` + `git-passthrough.ts`), all standalone-only with the `identity.ts` resolution chain.
+- `routes.ts` — the JSON wire shapes of the daemon's `/git/*` control routes (bigints as decimal strings, Maps as records) + the matching `serializePushPlan`/`serializePushResult` helpers, shared with `@toon-protocol/client-mcp` and consumed by the CLI's #279 delegated fast path (`cli/daemon-session.ts`).
+- `cli/` — the `rig` bin: `init` (#248), `remote` (#249, relays as real git remotes + the shared relay resolution), `push` (#229), the single-event `issue`/`comment`/`pr create`/`pr status` subcommands (#231, nested under `pr` since #250), the git passthrough (#250, `dispatch.ts` + `git-passthrough.ts`), and the #279 daemon-as-accelerator delegation (`daemon-session.ts`), standalone by default with the `identity.ts` resolution chain.
 
 Pure builders promoted from the proven Rig E2E seed pipeline (`packages/rig-web/tests/e2e/seed/lib`). Part of [epic #222](https://github.com/toon-protocol/toon-client/issues/222) and [epic #246](https://github.com/toon-protocol/toon-client/issues/246).

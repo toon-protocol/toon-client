@@ -82,6 +82,12 @@ interface Harness {
   confirms: string[];
 }
 
+/** Hermetic default: no daemon detected (never probes the real loopback). */
+const NO_DAEMON: NonNullable<EventCommandDeps['probeDaemon']> = async () => ({
+  baseUrl: 'http://127.0.0.1:8787',
+  reachable: false,
+});
+
 function makeDeps(
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -89,6 +95,8 @@ function makeDeps(
     interactive?: boolean;
     answer?: boolean;
     loadStandalone?: EventCommandDeps['loadStandalone'];
+    probeDaemon?: EventCommandDeps['probeDaemon'];
+    fetchImpl?: EventCommandDeps['fetchImpl'];
     stdin?: string;
   } = {}
 ): Harness {
@@ -112,6 +120,8 @@ function makeDeps(
     env,
     cwd,
     readStdin: async () => options.stdin ?? '',
+    probeDaemon: options.probeDaemon ?? NO_DAEMON,
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.loadStandalone
       ? { loadStandalone: options.loadStandalone }
       : {}),
@@ -698,5 +708,204 @@ describe('usage', () => {
       await runIssue(['create', '--title', 't', '--body', 'b', '--standalone'], deps().deps)
     ).toBe(2);
     expect(fake.published).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Daemon delegation (#279): same-identity toon-clientd → /git/* routes
+// ---------------------------------------------------------------------------
+
+describe('daemon delegation (#279)', () => {
+  /** Standard BIP-39 test vector phrase (public; never funded). */
+  const TEST_MNEMONIC =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+  let SELF: string;
+
+  beforeEach(async () => {
+    const { deriveNostrKeyFromMnemonic } = await import(
+      '@toon-protocol/client'
+    );
+    SELF = deriveNostrKeyFromMnemonic(TEST_MNEMONIC, 0).pubkey;
+  });
+
+  const sameIdentityProbe =
+    (relayUrl = 'wss://origin-relay.example'): NonNullable<EventCommandDeps['probeDaemon']> =>
+    async () => ({
+      baseUrl: 'http://127.0.0.1:8787',
+      reachable: true,
+      identity: SELF,
+      ready: true,
+      feePerEvent: '7',
+      relayUrl,
+    });
+
+  function daemonFetch(receipt: Record<string, unknown>): {
+    posts: { url: string; body: Record<string, unknown> }[];
+    fetchImpl: typeof fetch;
+  } {
+    const posts: { url: string; body: Record<string, unknown> }[] = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      return new Response(JSON.stringify(receipt), { status: 200 });
+    }) as typeof fetch;
+    return { posts, fetchImpl };
+  }
+
+  it('delegates rig comment to POST /git/comment (standalone untouched)', async () => {
+    const receipt = {
+      eventId: EVENT_ID,
+      feePaid: '7',
+      kind: 1622,
+      channelId: '0xchannel',
+      nonce: 4,
+    };
+    const { posts, fetchImpl } = daemonFetch(receipt);
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      loadStandalone: fake.load,
+      probeDaemon: sameIdentityProbe(),
+      fetchImpl,
+    });
+    const code = await runComment(
+      [ROOT_EVENT, '--body', 'B', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+
+    // Delegated: nothing published or stopped through the standalone seam.
+    expect(fake.published).toHaveLength(0);
+    expect(fake.stopped).toBe(false);
+    expect(posts).toEqual([
+      {
+        url: 'http://127.0.0.1:8787/git/comment',
+        body: {
+          repoAddr: { ownerPubkey: CONFIG_OWNER, repoId: 'demo' },
+          rootEventId: ROOT_EVENT,
+          body: 'B',
+          marker: 'root',
+        },
+      },
+    ]);
+
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['path']).toBe('daemon');
+    expect(doc['executed']).toBe(true);
+    expect(doc['feeEstimate']).toBe('7');
+    expect(doc['result']).toEqual(receipt);
+    expect((doc['identity'] as { pubkey: string }).pubkey).toBe(SELF);
+    expect(h.err.join('\n')).toContain('paid path: daemon');
+  });
+
+  it('warns when the resolved relay differs from the daemon relay route', async () => {
+    const { fetchImpl } = daemonFetch({
+      eventId: EVENT_ID,
+      feePaid: '7',
+      kind: 1622,
+    });
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      probeDaemon: sameIdentityProbe('wss://daemon-relay.example'),
+      fetchImpl,
+    });
+    const code = await runComment(
+      [ROOT_EVENT, '--body', 'B', '--yes'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.err.join('\n')).toContain(
+      'daemon publishes via its configured relay'
+    );
+  });
+
+  it('daemon estimate without --yes publishes nothing (pure estimate)', async () => {
+    const { posts, fetchImpl } = daemonFetch({});
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      probeDaemon: sameIdentityProbe(),
+      fetchImpl,
+    });
+    const code = await runIssue(
+      ['create', '--title', 'T', '--body', 'B', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(posts).toHaveLength(0);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['path']).toBe('daemon');
+    expect(doc['executed']).toBe(false);
+    expect(doc['feeEstimate']).toBe('7');
+  });
+
+  it('a daemon on a DIFFERENT identity keeps the standalone path', async () => {
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      loadStandalone: fake.load,
+      probeDaemon: async () => ({
+        baseUrl: 'http://127.0.0.1:8787',
+        reachable: true,
+        identity: 'ff'.repeat(32),
+      }),
+    });
+    const code = await runComment(
+      [ROOT_EVENT, '--body', 'B', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(fake.published).toHaveLength(1);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['path']).toBe('standalone');
+  });
+
+  it('an unreachable daemon keeps the standalone path (path in JSON)', async () => {
+    const h = deps();
+    const code = await runComment(
+      [ROOT_EVENT, '--body', 'B', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(fake.published).toHaveLength(1);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['path']).toBe('standalone');
+    expect(h.err.join('\n')).toContain('paid path: standalone');
+  });
+
+  it('pr create --patch-file delegates the EXACT local patch text', async () => {
+    const patch = 'From 0123456789012345678901234567890123456789 Mon Sep 17\n---\npatch body\n';
+    const patchPath = join(repoDir, 'x.patch');
+    writeFileSync(patchPath, patch);
+    const receipt = { eventId: EVENT_ID, feePaid: '7', kind: 1617 };
+    const { posts, fetchImpl } = daemonFetch(receipt);
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      probeDaemon: sameIdentityProbe(),
+      fetchImpl,
+    });
+    const code = await runPr(
+      ['create', '--title', 'P', '--patch-file', patchPath, '--yes'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(posts[0]?.url).toBe('http://127.0.0.1:8787/git/patch');
+    expect(posts[0]?.body['patchText']).toBe(patch);
+    expect(posts[0]?.body['title']).toBe('P');
+  });
+
+  it('pr status delegates to POST /git/status', async () => {
+    const receipt = { eventId: EVENT_ID, feePaid: '7', kind: 1632 };
+    const { posts, fetchImpl } = daemonFetch(receipt);
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      probeDaemon: sameIdentityProbe(),
+      fetchImpl,
+    });
+    const code = await runPr(['status', ROOT_EVENT, 'closed', '--yes'], h.deps);
+    expect(code).toBe(0);
+    expect(posts).toEqual([
+      {
+        url: 'http://127.0.0.1:8787/git/status',
+        body: {
+          repoAddr: { ownerPubkey: CONFIG_OWNER, repoId: 'demo' },
+          targetEventId: ROOT_EVENT,
+          status: 'closed',
+        },
+      },
+    ]);
   });
 });
