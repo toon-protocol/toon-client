@@ -266,6 +266,24 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
       json: { error: 'channel_map_corrupt', detail: message },
     };
   }
+  // Settle attempted before the challenge window elapsed (#263) — the client
+  // throws this retryable error BEFORE spending gas; surface when to retry.
+  if (name === 'SettleTooEarlyError') {
+    const settleableAt = (err as { settleableAt?: unknown }).settleableAt;
+    return {
+      code: 'settle_too_early',
+      lines: [
+        message,
+        'The settlement challenge window is still open — nothing was spent. ' +
+          'Re-run `rig channel settle` after the settleable time.',
+      ],
+      json: {
+        error: 'settle_too_early',
+        detail: message,
+        ...(typeof settleableAt === 'string' ? { settleableAt } : {}),
+      },
+    };
+  }
 
   return {
     code: 'error',

@@ -742,6 +742,201 @@ describe('StandalonePublisher', () => {
       expect(raw.channels[key]?.openedAt).toBeTruthy();
       expect(raw.channels[key]?.lastUsedAt).toBeTruthy();
     });
+
+    // ── money lifecycle (#263) ─────────────────────────────────────────────
+    describe('money lifecycle (#263)', () => {
+      interface MoneyCalls {
+        deposits: { channelId: string; amount: string | bigint }[];
+        closes: string[];
+        settles: string[];
+      }
+
+      /** Extend the #262 channel mock with the money surface + internals. */
+      function mockMoneyClient(): {
+        client: ToonClientLike;
+        calls: ChannelMockCalls;
+        money: MoneyCalls;
+        onChainContext: Map<
+          string,
+          { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
+        >;
+      } {
+        const { client, calls } = mockChannelClient();
+        const money: MoneyCalls = { deposits: [], closes: [], settles: [] };
+        const onChainContext = new Map<
+          string,
+          { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
+        >();
+        const extended = Object.assign(client as object, {
+          onChainChannelClient: { channelContext: onChainContext },
+          async depositToChannel(channelId: string, amount: string | bigint) {
+            money.deposits.push({ channelId, amount });
+            return { channelId, txHash: '0xdep', depositTotal: '100500' };
+          },
+          async closeChannel(channelId: string) {
+            money.closes.push(channelId);
+            return {
+              channelId,
+              txHash: '0xclose',
+              closedAt: '1000',
+              settleableAt: '2000',
+            };
+          },
+          async settleChannel(channelId: string) {
+            money.settles.push(channelId);
+            return { channelId, txHash: '0xsettle' };
+          },
+        }) as ToonClientLike;
+        return { client: extended, calls, money, onChainContext };
+      }
+
+      it('openChannelExplicit is the SAME recorded path: fresh open records + reports', async () => {
+        const { client, calls } = mockMoneyClient();
+        const publisher = buildPersistent(client);
+        const outcome = await publisher.openChannelExplicit();
+        await publisher.stop();
+
+        expect(calls.onChainOpens).toBe(1);
+        expect(outcome).toMatchObject({
+          channelId: '0xchannel-1',
+          resumed: false,
+          destination: ANCHOR,
+          chain: 'evm:31337',
+          peerId: PEER_ID,
+          depositTotal: '100000',
+        });
+        expect(map.list()).toHaveLength(1);
+        expect(map.readWatermark('0xchannel-1')).toEqual({
+          nonce: 0,
+          cumulativeAmount: '0',
+        });
+      });
+
+      it('openChannelExplicit resumes the recorded channel (resumed: true, zero opens)', async () => {
+        const first = mockMoneyClient();
+        const runA = buildPersistent(first.client);
+        await runA.openChannelExplicit();
+        await runA.stop();
+
+        const second = mockMoneyClient();
+        const runB = buildPersistent(second.client);
+        const outcome = await runB.openChannelExplicit();
+        await runB.stop();
+
+        expect(outcome.resumed).toBe(true);
+        expect(outcome.channelId).toBe('0xchannel-1');
+        expect(second.calls.onChainOpens).toBe(0);
+      });
+
+      it('openChannelExplicit --deposit tops up collateral and updates the map', async () => {
+        const { client, money } = mockMoneyClient();
+        const publisher = buildPersistent(client);
+        const outcome = await publisher.openChannelExplicit({ deposit: 500n });
+        await publisher.stop();
+
+        expect(money.deposits).toEqual([
+          { channelId: '0xchannel-1', amount: 500n },
+        ]);
+        expect(outcome).toMatchObject({
+          depositAdded: '500',
+          depositTotal: '100500',
+          depositTxHash: '0xdep',
+        });
+        expect(map.list()[0]?.depositTotal).toBe('100500');
+      });
+
+      it('closeRecordedChannel adopts the record (track + on-chain context) and NEVER opens', async () => {
+        // Run 1 opens and records the channel.
+        const first = mockMoneyClient();
+        const runA = buildPersistent(first.client);
+        await runA.openChannelExplicit();
+        await runA.stop();
+        const record = map.list()[0] as ChannelMapRecord;
+
+        // Run 2 (fresh process) closes it.
+        const second = mockMoneyClient();
+        const runB = buildPersistent(second.client);
+        const outcome = await runB.closeRecordedChannel(record);
+        await runB.stop();
+
+        expect(second.money.closes).toEqual(['0xchannel-1']);
+        expect(outcome).toMatchObject({
+          channelId: '0xchannel-1',
+          closedAt: '1000',
+          settleableAt: '2000',
+        });
+        // Adopted, not re-opened: trackChannel got the persisted context, the
+        // on-chain client's context cache was re-seeded, and openChannel was
+        // never called (close must not open channels as a side effect).
+        expect(second.calls.trackChannel).toEqual([
+          { channelId: '0xchannel-1', context: record.context },
+        ]);
+        expect(second.onChainContext.get('0xchannel-1')).toEqual({
+          chain: 'evm:31337',
+          tokenNetworkAddress: NEGOTIATION.tokenNetwork,
+          tokenAddress: NEGOTIATION.tokenAddress,
+        });
+        expect(second.calls.openChannel).toEqual([]);
+        expect(second.calls.onChainOpens).toBe(0);
+      });
+
+      it('settleRecordedChannel adopts + settles without opening', async () => {
+        const first = mockMoneyClient();
+        const runA = buildPersistent(first.client);
+        await runA.openChannelExplicit();
+        await runA.stop();
+        const record = map.list()[0] as ChannelMapRecord;
+
+        const second = mockMoneyClient();
+        const runB = buildPersistent(second.client);
+        const outcome = await runB.settleRecordedChannel(record);
+        await runB.stop();
+
+        expect(second.money.settles).toEqual(['0xchannel-1']);
+        expect(outcome).toMatchObject({
+          channelId: '0xchannel-1',
+          txHash: '0xsettle',
+        });
+        expect(second.calls.openChannel).toEqual([]);
+      });
+
+      it('close/settle refuse clearly when the client lacks the money surface', async () => {
+        const { client } = mockChannelClient(); // no closeChannel/settleChannel
+        const runA = buildPersistent(client);
+        await runA.openChannelExplicit();
+        const record = map.list()[0] as ChannelMapRecord;
+        await expect(runA.closeRecordedChannel(record)).rejects.toThrow(
+          /does not support closing/
+        );
+        await expect(runA.settleRecordedChannel(record)).rejects.toThrow(
+          /does not support settling/
+        );
+        await runA.stop();
+      });
+
+      it('readWalletBalances is a FREE read: no start, no lock, no channel', async () => {
+        const { client, calls } = mockMoneyClient();
+        const balances = [
+          { chain: 'evm' as const, address: '0xdead', amount: '42' },
+        ];
+        (
+          client as { getBalances?: () => Promise<typeof balances> }
+        ).getBalances = async () => balances;
+        const publisher = buildPersistent(client);
+        await expect(publisher.readWalletBalances()).resolves.toEqual(balances);
+        expect(calls.start).toBe(0);
+        expect(calls.openChannel).toEqual([]);
+        // stop() on the never-started publisher must not blow up either.
+        await publisher.stop();
+      });
+
+      it('readWalletBalances degrades to [] when the client cannot read balances', async () => {
+        const { client } = mockChannelClient(); // no getBalances
+        const publisher = buildPersistent(client);
+        await expect(publisher.readWalletBalances()).resolves.toEqual([]);
+        await publisher.stop();
+      });
+    });
   });
 });
 

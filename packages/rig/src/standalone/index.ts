@@ -17,6 +17,14 @@ export {
   type ToonClientLike,
 } from './standalone-publisher.js';
 
+export type {
+  ChannelCloseOutcome,
+  ChannelOpenOutcome,
+  ChannelSettleOutcome,
+  StandaloneMoneyOps,
+  WalletBalanceInfo,
+} from './money.js';
+
 export {
   ChannelMapCorruptError,
   ChannelMapStore,

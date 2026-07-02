@@ -9,6 +9,7 @@
 
 import type { Publisher } from '../publisher.js';
 import type { RemoteState } from '../remote-state.js';
+import type { StandaloneMoneyOps } from '../standalone/money.js';
 import type { IdentitySourceKind } from './identity.js';
 
 /** Everything a paid command needs from a standalone (embedded) session. */
@@ -33,6 +34,13 @@ export interface StandaloneContext {
     repoId: string;
     relayUrls: string[];
   }): Promise<RemoteState>;
+  /**
+   * Client money lifecycle operations (#263): explicit channel open/close/
+   * settle and free wallet-balance reads. Always present on the real loader;
+   * optional so pre-#263 fake contexts (and non-money commands) need not
+   * provide it.
+   */
+  money?: StandaloneMoneyOps;
   /** Release the identity lock / stop the embedded client. Idempotent. */
   stop(): Promise<void>;
 }
@@ -44,6 +52,18 @@ export interface StandaloneLoadOptions {
   cwd: string;
   /** Stderr line sink (deprecated-alias warning). */
   warn(line: string): void;
+  /**
+   * Channel-anchor override (`rig channel open --peer`, #263): the ILP
+   * destination the payment channel anchors to — and the peer→channel map
+   * key — instead of the configured/default destination.
+   */
+  channelDestination?: string;
+  /**
+   * When false, a missing proxy/BTP write uplink is tolerated: free reads
+   * (`rig balance`) never send paid writes, so they work from a read-only
+   * config. Default true (paid commands fail fast with MissingUplinkError).
+   */
+  requireUplink?: boolean;
 }
 
 /** Factory for a {@link StandaloneContext}; injectable in tests. */
