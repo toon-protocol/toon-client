@@ -18,14 +18,44 @@
  * tools surface "retry".
  */
 
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
 import { decodeEventFromToon } from '@toon-protocol/core';
+import {
+  STATUS_APPLIED_KIND,
+  STATUS_CLOSED_KIND,
+  STATUS_DRAFT_KIND,
+  STATUS_OPEN_KIND,
+  REPOSITORY_ANNOUNCEMENT_KIND,
+} from '@toon-protocol/core/nip34';
 import { arweaveUrls } from '@toon-protocol/arweave';
 import type { ToonClientConfig } from '@toon-protocol/client';
-import { fundWallet as faucetFund, type FaucetChain } from '@toon-protocol/client';
+import {
+  extractArweaveTxId,
+  fundWallet as faucetFund,
+  type FaucetChain,
+} from '@toon-protocol/client';
+import {
+  GitRepoReader,
+  buildComment,
+  buildIssue,
+  buildPatch,
+  buildStatus,
+  executePush,
+  fetchRemoteState,
+  planPush,
+  type Publisher,
+  type PublishReceipt,
+  type PushPlan,
+  type PushResult,
+  type RemoteState,
+  type StatusKind,
+  type UnsignedEvent,
+  type UploadReceipt,
+  type GitObjectUpload,
+} from '@toon-protocol/git';
 import { streamSwap } from '@toon-protocol/sdk/swap';
 import { RelaySubscription } from '../relay-subscription.js';
 import type {
@@ -46,6 +76,17 @@ import type {
   FundStatusResponse,
   FundWalletRequest,
   FundWalletResponse,
+  GitCommentRequest,
+  GitEstimateRequest,
+  GitEstimateResponse,
+  GitEventResponse,
+  GitFeeEstimate,
+  GitIssueRequest,
+  GitPatchRequest,
+  GitPushRequest,
+  GitPushResponse,
+  GitRepoAddr,
+  GitStatusRequest,
   HttpFetchPaidRequest,
   HttpFetchPaidResponse,
   NostrFilter,
@@ -97,7 +138,14 @@ export interface ToonClientLike {
   getNetworkStatus(): { evm: string; solana: string; mina: string } | undefined;
   publishEvent(
     event: NostrEvent,
-    options?: { destination?: string; claim?: unknown; ilpAmount?: bigint }
+    options?: {
+      destination?: string;
+      claim?: unknown;
+      ilpAmount?: bigint;
+      /** HTTP request-target the payment-proxy replays (default '/write';
+       *  '/store' routes to the Arweave store/DVM backend). */
+      proxyPath?: string;
+    }
   ): Promise<{
     success: boolean;
     eventId?: string;
@@ -195,6 +243,15 @@ export interface ClientRunnerDeps {
   logger?: (msg: string) => void;
   /** Path to the dynamic-targets store (tests override). */
   targetsPath?: string;
+  /**
+   * Test seams for the `/git/*` pipeline (default: the real
+   * @toon-protocol/git implementations). `fetchRemoteState` opens relay
+   * WebSockets, so tests inject a canned reader instead of hitting the network.
+   */
+  gitDeps?: {
+    fetchRemoteState?: typeof fetchRemoteState;
+    createRepoReader?: (repoPath: string) => GitRepoReader;
+  };
 }
 
 /** One apex write target: a BTP session + its payment channel + settlement. */
@@ -251,6 +308,11 @@ export class ClientRunner {
   private readonly log: (msg: string) => void;
   private readonly targetsPath?: string;
 
+  /** Remote-state reader for `/git/*` (injectable — opens relay sockets). */
+  private readonly fetchGitRemoteState: typeof fetchRemoteState;
+  /** Local-repo reader factory for `/git/*` (injectable for tests). */
+  private readonly createRepoReader: (repoPath: string) => GitRepoReader;
+
   /**
    * Identity-level chain-read client. Reading your OWN on-chain wallet balance is
    * a pure (wallet keys + chain RPC) operation that has nothing to do with the
@@ -301,6 +363,9 @@ export class ClientRunner {
     this.createClient = deps.createClient;
     this.log = deps.logger ?? ((): void => undefined);
     if (deps.targetsPath !== undefined) this.targetsPath = deps.targetsPath;
+    this.fetchGitRemoteState = deps.gitDeps?.fetchRemoteState ?? fetchRemoteState;
+    this.createRepoReader =
+      deps.gitDeps?.createRepoReader ?? ((repoPath) => new GitRepoReader(repoPath));
     this.defaultBtpUrl = deps.config.toonClientConfig.btpUrl ?? '';
     this.defaultRelayUrl = deps.config.relayUrl;
 
@@ -1067,20 +1132,30 @@ export class ClientRunner {
 
   // ── Paid operations ──────────────────────────────────────────────────────
 
-  /** Pay-to-write a single event through the selected (or default) apex. */
-  async publish(req: PublishRequest): Promise<PublishResponse> {
-    const apex = this.selectApex(req.btpUrl);
-    this.assertApexReady(apex);
-    // Lazily open the apex channel on first paid write (deferred at bootstrap so
-    // the wallet can be funded after start, #69) and persist it for resume.
+  /**
+   * Lazily open the apex channel on first paid write (deferred at bootstrap so
+   * the wallet can be funded after start, #69) and persist it for resume.
+   */
+  private async ensureApexChannel(
+    apex: ApexConnection,
+    destination?: string
+  ): Promise<string> {
     let channelId = apex.apexChannelId;
     if (!channelId) {
-      channelId = await apex.client.openChannel(req.destination);
-      if (!req.destination || req.destination === apex.destination) {
+      channelId = await apex.client.openChannel(destination);
+      if (!destination || destination === apex.destination) {
         apex.apexChannelId = channelId;
         this.persistApexChannel(apex, channelId);
       }
     }
+    return channelId;
+  }
+
+  /** Pay-to-write a single event through the selected (or default) apex. */
+  async publish(req: PublishRequest): Promise<PublishResponse> {
+    const apex = this.selectApex(req.btpUrl);
+    this.assertApexReady(apex);
+    const channelId = await this.ensureApexChannel(apex, req.destination);
     const fee = req.fee !== undefined ? BigInt(req.fee) : apex.feePerEvent;
     const claim = await apex.client.signBalanceProof(channelId, fee);
     // Relay writes default to the configured publish destination (e.g.
@@ -1504,6 +1579,281 @@ export class ClientRunner {
     };
   }
 
+  // ── Git write path (/git/*, epic #222 ticket #227) ────────────────────────
+
+  /**
+   * The daemon `Publisher` implementation (see @toon-protocol/git) for one
+   * apex. Maps the interface onto the runner's production paid-write
+   * machinery:
+   *
+   *  - `getFeeRates`: flat `apex.feePerEvent` per publish + the network
+   *    per-byte upload rate.
+   *  - `uploadGitObject`: kind:5094 store write with Git-SHA/Git-Type/Repo
+   *    tags (the proven seed-pipeline shape), signed with the daemon key,
+   *    paid via signBalanceProof on the apex channel, routed to the store
+   *    destination (`POST /store`); the Arweave txId is decoded from the
+   *    FULFILL HTTP envelope.
+   *  - `publishEvent`: sign with the daemon key + the standard paid publish
+   *    path (signBalanceProof → publishEvent → feePaid). The daemon owns its
+   *    write routing (config-seeded relay via the apex), so the advisory
+   *    `relayUrls` list is not consulted here — remote-state reads DO use it.
+   */
+  private gitPublisher(apex: ApexConnection): Publisher {
+    return {
+      getFeeRates: async () => ({
+        uploadFeePerByte: UPLOAD_FEE_PER_BYTE,
+        eventFee: apex.feePerEvent,
+      }),
+      uploadGitObject: (upload) => this.gitUploadObject(apex, upload),
+      publishEvent: (event) => this.gitPublishEvent(apex, event),
+    };
+  }
+
+  /** Upload one git object body as a paid kind:5094 store write. */
+  private async gitUploadObject(
+    apex: ApexConnection,
+    upload: GitObjectUpload
+  ): Promise<UploadReceipt> {
+    const channelId = await this.ensureApexChannel(apex);
+    const fee = BigInt(upload.body.length) * UPLOAD_FEE_PER_BYTE;
+    const claim = await apex.client.signBalanceProof(channelId, fee);
+    const signed = await apex.client.signEvent({
+      kind: 5094,
+      content: '',
+      tags: [
+        ['i', upload.body.toString('base64'), 'blob'],
+        ['bid', fee.toString(), 'usdc'],
+        ['output', 'application/octet-stream'],
+        ['Git-SHA', upload.sha],
+        ['Git-Type', upload.type],
+        ['Repo', upload.repoId],
+      ],
+      created_at: nowSeconds(),
+    });
+    const result = await apex.client.publishEvent(signed, {
+      destination: this.config.storeDestination,
+      claim,
+      ilpAmount: fee,
+      // The store/DVM backend serves POST /store (not the relay's /write).
+      proxyPath: '/store',
+    });
+    if (!result.success) {
+      throw new PublishRejectedError(
+        `git object ${upload.sha} upload failed (store ` +
+          `${this.config.storeDestination}): ${result.error ?? 'store rejected the write'}`
+      );
+    }
+    if (!result.data) {
+      throw new PublishRejectedError(
+        `git object ${upload.sha} upload FULFILL carried no data — expected the Arweave tx ID`
+      );
+    }
+    let txId: string;
+    try {
+      txId = extractArweaveTxId(result.data);
+    } catch (err) {
+      throw new PublishRejectedError(
+        `git object ${upload.sha} upload: ${errMsg(err)}`
+      );
+    }
+    return { txId, feePaid: fee };
+  }
+
+  /** Sign (daemon key) + pay-to-publish one NIP-34 event via the apex. */
+  private async gitPublishEvent(
+    apex: ApexConnection,
+    event: UnsignedEvent
+  ): Promise<PublishReceipt> {
+    const signed = await apex.client.signEvent(event);
+    const pub = await this.publish({
+      event: signed,
+      ...(apex.btpUrl ? { btpUrl: apex.btpUrl } : {}),
+    });
+    return { eventId: pub.eventId, feePaid: BigInt(pub.feePaid) };
+  }
+
+  /**
+   * Plan a push: read the local repo + the remote NIP-34 state, classify ref
+   * updates, compute the object delta, and price it. Shared by
+   * estimate (returns the plan) and push (executes it).
+   */
+  private async planGitPush(
+    apex: ApexConnection,
+    req: GitEstimateRequest
+  ): Promise<{
+    plan: PushPlan;
+    remoteState: RemoteState;
+    repoReader: GitRepoReader;
+    relayUrls: string[];
+    publisher: Publisher;
+  }> {
+    await assertRepoPath(req.repoPath);
+    if (typeof req.repoId !== 'string' || req.repoId === '') {
+      throw new InvalidPayloadError('repoId is required.');
+    }
+    const relayUrls =
+      req.relayUrls && req.relayUrls.length > 0
+        ? req.relayUrls
+        : [this.defaultRelayUrl];
+    // Pushes publish kind:30617/30618 signed by the daemon key, so the daemon
+    // identity IS the repo owner whose remote state we read.
+    const ownerPubkey = apex.client.getPublicKey();
+    const repoReader = this.createRepoReader(req.repoPath);
+    const remoteState = await this.fetchGitRemoteState({
+      relayUrls,
+      ownerPubkey,
+      repoId: req.repoId,
+    });
+    const publisher = this.gitPublisher(apex);
+    const feeRates = await publisher.getFeeRates();
+    const plan = await planPush({
+      repoReader,
+      remoteState,
+      feeRates,
+      repoId: req.repoId,
+      ...(req.refspecs !== undefined ? { refs: req.refspecs } : {}),
+      ...(req.force !== undefined ? { force: req.force } : {}),
+      ...(req.announcement !== undefined
+        ? { announcement: req.announcement }
+        : {}),
+    });
+    return { plan, remoteState, repoReader, relayUrls, publisher };
+  }
+
+  /** Plan + price a push WITHOUT paying (backs `POST /git/estimate`). */
+  async gitEstimate(req: GitEstimateRequest): Promise<GitEstimateResponse> {
+    const apex = this.selectApex();
+    this.assertApexReady(apex);
+    const { plan } = await this.planGitPush(apex, req);
+    return serializePushPlan(plan);
+  }
+
+  /** Plan + EXECUTE a push: paid uploads + paid publishes (`POST /git/push`). */
+  async gitPush(req: GitPushRequest): Promise<GitPushResponse> {
+    if (req.confirm !== true) {
+      throw new InvalidPayloadError(
+        'a push uploads objects to Arweave and publishes events — permanent ' +
+          'and paid. Run /git/estimate first, then set confirm: true to proceed.'
+      );
+    }
+    const apex = this.selectApex();
+    this.assertApexReady(apex);
+    const { plan, remoteState, repoReader, relayUrls, publisher } =
+      await this.planGitPush(apex, req);
+    const result = await executePush({
+      plan,
+      publisher,
+      remoteState,
+      repoReader,
+      relayUrls,
+    });
+    return serializePushResult(plan, result);
+  }
+
+  /** Build, sign, and pay-to-publish a kind:1621 issue. */
+  async gitIssue(req: GitIssueRequest): Promise<GitEventResponse> {
+    const addr = validateRepoAddr(req.repoAddr);
+    assertNonEmptyString(req.title, 'title');
+    assertNonEmptyString(req.body, 'body');
+    const event = buildIssue(
+      addr.ownerPubkey,
+      addr.repoId,
+      req.title,
+      req.body,
+      req.labels ?? []
+    );
+    return this.gitPublishSigned(event);
+  }
+
+  /** Build, sign, and pay-to-publish a kind:1622 comment on an issue/patch. */
+  async gitComment(req: GitCommentRequest): Promise<GitEventResponse> {
+    const addr = validateRepoAddr(req.repoAddr);
+    assertNonEmptyString(req.rootEventId, 'rootEventId');
+    assertNonEmptyString(req.body, 'body');
+    const event = buildComment(
+      addr.ownerPubkey,
+      addr.repoId,
+      req.rootEventId,
+      req.parentAuthorPubkey ?? addr.ownerPubkey,
+      req.body,
+      req.marker ?? 'root'
+    );
+    return this.gitPublishSigned(event);
+  }
+
+  /**
+   * Build, sign, and pay-to-publish a kind:1617 patch. Content is either the
+   * supplied `patchText` or real `git format-patch --stdout <range>` output
+   * from a local repository — exactly one source must be given.
+   */
+  async gitPatch(req: GitPatchRequest): Promise<GitEventResponse> {
+    const addr = validateRepoAddr(req.repoAddr);
+    assertNonEmptyString(req.title, 'title');
+    const hasText = typeof req.patchText === 'string' && req.patchText !== '';
+    const hasRange =
+      typeof req.repoPath === 'string' &&
+      req.repoPath !== '' &&
+      typeof req.range === 'string' &&
+      req.range !== '';
+    if (hasText === hasRange) {
+      throw new InvalidPayloadError(
+        'exactly one of patchText | repoPath+range is required.'
+      );
+    }
+    let content: string;
+    if (hasRange) {
+      await assertRepoPath(req.repoPath as string);
+      content = await this.createRepoReader(req.repoPath as string).formatPatch(
+        req.range as string
+      );
+      if (content === '') {
+        throw new InvalidPayloadError(
+          `range ${JSON.stringify(req.range)} selects no commits — nothing to publish.`
+        );
+      }
+    } else {
+      content = req.patchText as string;
+    }
+    const event = buildPatch(
+      addr.ownerPubkey,
+      addr.repoId,
+      req.title,
+      req.commits ?? [],
+      req.branch,
+      content
+    );
+    return this.gitPublishSigned(event);
+  }
+
+  /** Build, sign, and pay-to-publish a kind:1630-1633 status event. */
+  async gitStatus(req: GitStatusRequest): Promise<GitEventResponse> {
+    const addr = validateRepoAddr(req.repoAddr);
+    assertNonEmptyString(req.targetEventId, 'targetEventId');
+    const kind = STATUS_KIND_BY_VALUE[req.status];
+    if (kind === undefined) {
+      throw new InvalidPayloadError(
+        'status must be one of open | applied | closed | draft.'
+      );
+    }
+    const event = buildStatus(req.targetEventId, kind, req.targetPubkey);
+    // NIP-34 status events also carry the repo `a` tag so readers can scope
+    // a status stream to the repository without resolving the target first.
+    event.tags.push([
+      'a',
+      `${REPOSITORY_ANNOUNCEMENT_KIND}:${addr.ownerPubkey}:${addr.repoId}`,
+    ]);
+    return this.gitPublishSigned(event);
+  }
+
+  /** Sign a built NIP-34 event with the daemon key and pay-to-publish it. */
+  private async gitPublishSigned(event: UnsignedEvent): Promise<GitEventResponse> {
+    const apex = this.selectApex();
+    this.assertApexReady(apex);
+    const signed = await apex.client.signEvent(event);
+    const pub = await this.publish({ event: signed });
+    return { ...pub, kind: event.kind };
+  }
+
   /** Graceful teardown: close every relay + stop every apex client. */
   async stop(): Promise<void> {
     if (this.stopped) return;
@@ -1599,6 +1949,120 @@ export class BalancesUnavailableError extends Error {
     this.name = 'BalancesUnavailableError';
     if (providerError !== undefined) this.providerError = providerError;
   }
+}
+
+/**
+ * Upload price per git-object body byte, micro-USDC. Matches the network
+ * default `basePricePerByte` (10) the ToonClient prices writes with and the
+ * seed pipeline bids (`bytes × 10`); the bid tag, the signed claim, and the
+ * ILP amount all use this same figure so the pre-push estimate is exactly
+ * what a push pays.
+ */
+const UPLOAD_FEE_PER_BYTE = 10n;
+
+/** NIP-34 status kinds by wire value (`GitStatusRequest.status`). */
+const STATUS_KIND_BY_VALUE: Record<string, StatusKind> = {
+  open: STATUS_OPEN_KIND,
+  applied: STATUS_APPLIED_KIND,
+  closed: STATUS_CLOSED_KIND,
+  draft: STATUS_DRAFT_KIND,
+};
+
+/** Validate that `repoPath` names an existing directory (a git repo check
+ *  proper happens on first plumbing call — a non-repo dir surfaces as a
+ *  GitError the routes map to 400). */
+async function assertRepoPath(repoPath: unknown): Promise<void> {
+  if (typeof repoPath !== 'string' || repoPath === '') {
+    throw new InvalidPayloadError('repoPath is required.');
+  }
+  let stats;
+  try {
+    stats = await stat(resolve(repoPath));
+  } catch {
+    throw new InvalidPayloadError(`repoPath does not exist: ${repoPath}`);
+  }
+  if (!stats.isDirectory()) {
+    throw new InvalidPayloadError(`repoPath is not a directory: ${repoPath}`);
+  }
+}
+
+function assertNonEmptyString(value: unknown, what: string): void {
+  if (typeof value !== 'string' || value === '') {
+    throw new InvalidPayloadError(`${what} is required.`);
+  }
+}
+
+/** Validate a NIP-34 repo address (owner pubkey + repo id). */
+function validateRepoAddr(addr: GitRepoAddr | undefined): GitRepoAddr {
+  if (
+    !addr ||
+    typeof addr.ownerPubkey !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(addr.ownerPubkey)
+  ) {
+    throw new InvalidPayloadError(
+      'repoAddr.ownerPubkey must be a 64-char lowercase hex Nostr pubkey.'
+    );
+  }
+  if (typeof addr.repoId !== 'string' || addr.repoId === '') {
+    throw new InvalidPayloadError('repoAddr.repoId is required.');
+  }
+  return addr;
+}
+
+/** Serialize a PushPlan onto the wire (bigints → strings, Maps → records). */
+function serializePushPlan(plan: PushPlan): GitEstimateResponse {
+  return {
+    repoId: plan.repoId,
+    refUpdates: plan.refUpdates,
+    newRefs: plan.newRefs,
+    headSymref: plan.headSymref,
+    objects: plan.objects,
+    knownShaToTxId: Object.fromEntries(plan.knownShaToTxId),
+    announceNeeded: plan.announceNeeded,
+    announcement: plan.announcement,
+    estimate: serializeFeeEstimate(plan),
+  };
+}
+
+function serializeFeeEstimate(plan: PushPlan): GitFeeEstimate {
+  return {
+    objectCount: plan.estimate.objectCount,
+    totalObjectBytes: plan.estimate.totalObjectBytes,
+    uploadFee: plan.estimate.uploadFee.toString(),
+    eventCount: plan.estimate.eventCount,
+    eventFees: plan.estimate.eventFees.toString(),
+    totalFee: plan.estimate.totalFee.toString(),
+  };
+}
+
+/** Serialize a PushResult onto the wire (bigints → strings, Maps → records). */
+function serializePushResult(
+  plan: PushPlan,
+  result: PushResult
+): GitPushResponse {
+  return {
+    repoId: plan.repoId,
+    refUpdates: plan.refUpdates,
+    uploads: result.uploads.map((u) => ({
+      sha: u.sha,
+      txId: u.txId,
+      feePaid: u.feePaid.toString(),
+      skipped: u.skipped,
+    })),
+    announceReceipt: result.announceReceipt
+      ? {
+          eventId: result.announceReceipt.eventId,
+          feePaid: result.announceReceipt.feePaid.toString(),
+        }
+      : null,
+    refsReceipt: {
+      eventId: result.refsReceipt.eventId,
+      feePaid: result.refsReceipt.feePaid.toString(),
+    },
+    arweaveMap: Object.fromEntries(result.arweaveMap),
+    totalFeePaid: result.totalFeePaid.toString(),
+    estimate: serializeFeeEstimate(plan),
+  };
 }
 
 /** Current time in whole seconds (Nostr `created_at` unit). */

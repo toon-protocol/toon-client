@@ -22,6 +22,15 @@ import type {
   FundStatusResponse,
   FundWalletRequest,
   FundWalletResponse,
+  GitCommentRequest,
+  GitEstimateRequest,
+  GitEstimateResponse,
+  GitEventResponse,
+  GitIssueRequest,
+  GitPatchRequest,
+  GitPushRequest,
+  GitPushResponse,
+  GitStatusRequest,
   HttpFetchPaidRequest,
   HttpFetchPaidResponse,
   OpenChannelRequest,
@@ -49,7 +58,13 @@ export class ControlApiError extends Error {
     message: string,
     readonly status: number,
     readonly retryable: boolean,
-    readonly detail?: string
+    readonly detail?: string,
+    /**
+     * Structured payload for errors that carry data beyond a message — the
+     * extra top-level fields of the error envelope (e.g. `refs` on
+     * `non_fast_forward`, `objects` on `oversize_objects` from `/git/*`).
+     */
+    readonly data?: Record<string, unknown>
   ) {
     super(message);
     this.name = 'ControlApiError';
@@ -212,6 +227,47 @@ export class ControlClient {
     return this.request<FundStatusResponse>('GET', path);
   }
 
+  // ── Git write path (/git/*, epic #222 ticket #227) ─────────────────────────
+
+  /**
+   * Plan + price a push without paying. Runs local git plumbing plus a relay
+   * remote-state read in the daemon, so allow more than the default budget on
+   * large repositories.
+   */
+  gitEstimate(body: GitEstimateRequest): Promise<GitEstimateResponse> {
+    return this.request<GitEstimateResponse>('POST', '/git/estimate', body, {
+      timeoutMs: 120_000,
+    });
+  }
+
+  /**
+   * Execute a push (PAID: object uploads + event publishes). Uploads are
+   * sequential single-packet store writes, so a large first push can
+   * legitimately take minutes — budget accordingly rather than surfacing a
+   * still-working push as a timeout.
+   */
+  gitPush(body: GitPushRequest): Promise<GitPushResponse> {
+    return this.request<GitPushResponse>('POST', '/git/push', body, {
+      timeoutMs: 600_000,
+    });
+  }
+
+  gitIssue(body: GitIssueRequest): Promise<GitEventResponse> {
+    return this.request<GitEventResponse>('POST', '/git/issue', body);
+  }
+
+  gitComment(body: GitCommentRequest): Promise<GitEventResponse> {
+    return this.request<GitEventResponse>('POST', '/git/comment', body);
+  }
+
+  gitPatch(body: GitPatchRequest): Promise<GitEventResponse> {
+    return this.request<GitEventResponse>('POST', '/git/patch', body);
+  }
+
+  gitStatus(body: GitStatusRequest): Promise<GitEventResponse> {
+    return this.request<GitEventResponse>('POST', '/git/status', body);
+  }
+
   /**
    * Whether an HTTP method is safe to transparently retry. Idempotent reads
    * (GET) and deletes can be replayed verbatim; a mutating POST cannot — the
@@ -293,11 +349,16 @@ export class ControlClient {
     const json = text ? safeJson(text) : undefined;
     if (!res.ok) {
       const e = (json ?? {}) as ErrorResponse;
+      // Surface any extra top-level envelope fields (structured error data,
+      // e.g. /git/* `refs` / `objects`) on the thrown error.
+      const { error, detail, retryable, ...extra } = e;
       throw new ControlApiError(
-        e.error ?? `HTTP ${res.status}`,
+        error ?? `HTTP ${res.status}`,
         res.status,
-        e.retryable ?? res.status === 503,
-        e.detail
+        (typeof retryable === 'boolean' ? retryable : undefined) ??
+          res.status === 503,
+        typeof detail === 'string' ? detail : undefined,
+        Object.keys(extra).length > 0 ? extra : undefined
       );
     }
     return json as T;

@@ -18,11 +18,22 @@ import {
   TargetError,
 } from './client-runner.js';
 import { ApexDiscoveryError } from './apex-discovery.js';
+import {
+  GitError,
+  NonFastForwardError,
+  OversizeObjectsError,
+} from '@toon-protocol/git';
 import type {
   AddApexRequest,
   AddRelayRequest,
   EventsQuery,
   FundWalletRequest,
+  GitCommentRequest,
+  GitEstimateRequest,
+  GitIssueRequest,
+  GitPatchRequest,
+  GitPushRequest,
+  GitStatusRequest,
   HttpFetchPaidRequest,
   ChannelDepositRequest,
   CloseChannelRequest,
@@ -296,6 +307,134 @@ export function registerRoutes(
       return mapError(reply, err);
     }
   });
+
+  // ── Git write path (/git/*, epic #222 ticket #227) ─────────────────────────
+
+  app.post<{ Body: GitEstimateRequest }>('/git/estimate', async (req, reply) => {
+    const body = req.body;
+    if (!body || !isNonEmptyString(body.repoPath) || !isNonEmptyString(body.repoId)) {
+      return sendError(reply, 400, 'invalid_git_request', {
+        detail:
+          'body.repoPath (local repository path) and body.repoId are required.',
+      });
+    }
+    try {
+      return await runner.gitEstimate(body);
+    } catch (err) {
+      return mapGitError(reply, err);
+    }
+  });
+
+  app.post<{ Body: GitPushRequest }>('/git/push', async (req, reply) => {
+    const body = req.body;
+    if (!body || !isNonEmptyString(body.repoPath) || !isNonEmptyString(body.repoId)) {
+      return sendError(reply, 400, 'invalid_git_request', {
+        detail:
+          'body.repoPath (local repository path) and body.repoId are required.',
+      });
+    }
+    try {
+      return await runner.gitPush(body);
+    } catch (err) {
+      return mapGitError(reply, err);
+    }
+  });
+
+  app.post<{ Body: GitIssueRequest }>('/git/issue', async (req, reply) => {
+    const body = req.body;
+    if (!body || !body.repoAddr || !isNonEmptyString(body.title) || !isNonEmptyString(body.body)) {
+      return sendError(reply, 400, 'invalid_git_request', {
+        detail:
+          'body.repoAddr ({ ownerPubkey, repoId }), body.title, and body.body are required.',
+      });
+    }
+    try {
+      return await runner.gitIssue(body);
+    } catch (err) {
+      return mapGitError(reply, err);
+    }
+  });
+
+  app.post<{ Body: GitCommentRequest }>('/git/comment', async (req, reply) => {
+    const body = req.body;
+    if (!body || !body.repoAddr || !isNonEmptyString(body.rootEventId) || !isNonEmptyString(body.body)) {
+      return sendError(reply, 400, 'invalid_git_request', {
+        detail:
+          'body.repoAddr ({ ownerPubkey, repoId }), body.rootEventId, and body.body are required.',
+      });
+    }
+    try {
+      return await runner.gitComment(body);
+    } catch (err) {
+      return mapGitError(reply, err);
+    }
+  });
+
+  app.post<{ Body: GitPatchRequest }>('/git/patch', async (req, reply) => {
+    const body = req.body;
+    if (!body || !body.repoAddr || !isNonEmptyString(body.title)) {
+      return sendError(reply, 400, 'invalid_git_request', {
+        detail:
+          'body.repoAddr ({ ownerPubkey, repoId }) and body.title are required ' +
+          '(plus exactly one of patchText | repoPath+range).',
+      });
+    }
+    try {
+      return await runner.gitPatch(body);
+    } catch (err) {
+      return mapGitError(reply, err);
+    }
+  });
+
+  app.post<{ Body: GitStatusRequest }>('/git/status', async (req, reply) => {
+    const body = req.body;
+    if (!body || !body.repoAddr || !isNonEmptyString(body.targetEventId) || !isNonEmptyString(body.status)) {
+      return sendError(reply, 400, 'invalid_git_request', {
+        detail:
+          'body.repoAddr ({ ownerPubkey, repoId }), body.targetEventId, and ' +
+          'body.status (open | applied | closed | draft) are required.',
+      });
+    }
+    try {
+      return await runner.gitStatus(body);
+    } catch (err) {
+      return mapGitError(reply, err);
+    }
+  });
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value !== '';
+}
+
+/**
+ * Map `/git/*` errors: planPush's structured errors surface as clean JSON
+ * with their data attached (a confirm UI / CLI renders the refs or the
+ * oversize table directly), a git plumbing failure (not a repo, bad range,
+ * vanished objects) is caller-fixable 400, and everything else falls through
+ * to the standard mapper (bootstrapping 503, funding 402, ...).
+ */
+function mapGitError(reply: FastifyReply, err: unknown): FastifyReply {
+  if (err instanceof NonFastForwardError) {
+    // 409 Conflict: the remote moved — re-run with force or pull first.
+    return reply.status(409).send({
+      error: 'non_fast_forward',
+      detail: err.message,
+      refs: err.refs,
+    });
+  }
+  if (err instanceof OversizeObjectsError) {
+    // 413 Payload Too Large: objects over the 95KB v1 upload limit.
+    return reply.status(413).send({
+      error: 'oversize_objects',
+      detail: err.message,
+      objects: err.objects,
+    });
+  }
+  if (err instanceof GitError) {
+    return sendError(reply, 400, 'git_error', { detail: err.message });
+  }
+  return mapError(reply, err);
 }
 
 function isSignedEvent(event: unknown): event is NostrEvent {

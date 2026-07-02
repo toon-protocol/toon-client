@@ -48,6 +48,7 @@ export default defineConfig({
     '@toon-protocol/arweave',
     '@toon-protocol/client',
     '@toon-protocol/core',
+    '@toon-protocol/git',
     // The swap path (toon_swap → streamSwap) is inlined; the arweave/turbo-sdk
     // modules of @toon-protocol/sdk are NOT in that import graph, so they
     // tree-shake out (turbo-sdk stays external/undeclared, as before).

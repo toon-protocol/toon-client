@@ -542,12 +542,220 @@ export interface FundStatusResponse {
   jobs: FundWalletResponse[];
 }
 
+// ── Git write path (`/git/*`) — the daemon surface of the Rig push pipeline
+//    (epic #222, ticket #227). Planning/execution live in @toon-protocol/git;
+//    these are the JSON wire shapes (bigints as decimal strings, Maps as
+//    plain records). ─────────────────────────────────────────────────────────
+
+/** NIP-34 repository address: the owner+id pair behind `a` tags. */
+export interface GitRepoAddr {
+  /** Repository owner's Nostr pubkey (64-char hex) — author of kind:30617/30618. */
+  ownerPubkey: string;
+  /** Repository identifier (NIP-34 `d` tag). */
+  repoId: string;
+}
+
+/**
+ * `POST /git/estimate` — plan a push (local git plumbing + remote-state read)
+ * and price it WITHOUT paying anything. The same body (plus `confirm`) drives
+ * `POST /git/push`.
+ */
+export interface GitEstimateRequest {
+  /** Path to the local git repository (worktree or .git dir). Must exist. */
+  repoPath: string;
+  /** Repository identifier (NIP-34 `d` tag). The daemon identity is the owner. */
+  repoId: string;
+  /**
+   * Full refnames to push (e.g. `["refs/heads/main"]`). Default: every local
+   * branch and tag.
+   */
+  refspecs?: string[];
+  /** Allow non-fast-forward updates (default false → 409 `non_fast_forward`). */
+  force?: boolean;
+  /**
+   * Relay URLs to read remote state from and publish to. Plural from day one
+   * (forward-compat); defaults to the daemon's config-seeded relay.
+   */
+  relayUrls?: string[];
+  /** Repo name/description for the first-push kind:30617 announcement. */
+  announcement?: { name?: string; description?: string };
+}
+
+/** One planned ref update (wire shape of @toon-protocol/git `RefUpdate`). */
+export interface GitRefUpdate {
+  refname: string;
+  localSha: string;
+  /** Remote tip SHA, or null when the ref is new. */
+  remoteSha: string | null;
+  kind: 'new' | 'fast-forward' | 'forced' | 'up-to-date';
+}
+
+/** One object scheduled for upload (wire shape of `PlannedObject`). */
+export interface GitPlannedObject {
+  sha: string;
+  type: 'blob' | 'tree' | 'commit' | 'tag';
+  /** Body size in bytes (what the upload fee is charged on). */
+  size: number;
+  /** Path the object was reached by, when known (blobs / non-root trees). */
+  path?: string;
+  /** True when this SHA is the tip of a planned ref update (uploaded last). */
+  isRefTip: boolean;
+}
+
+/** Pre-push fee table (all fees in base/micro units, decimal strings). */
+export interface GitFeeEstimate {
+  objectCount: number;
+  totalObjectBytes: number;
+  /** Σ size × uploadFeePerByte. */
+  uploadFee: string;
+  /** Events to publish (refs event + announcement on first push). */
+  eventCount: number;
+  /** eventCount × per-event fee. */
+  eventFees: string;
+  /** uploadFee + eventFees. */
+  totalFee: string;
+}
+
+/** Serialized `PushPlan` — everything a confirm UI needs. */
+export interface GitEstimateResponse {
+  repoId: string;
+  refUpdates: GitRefUpdate[];
+  /** Full new ref state to publish (HEAD target first). */
+  newRefs: Record<string, string>;
+  headSymref: string | null;
+  objects: GitPlannedObject[];
+  /** sha→txId hints known WITHOUT uploading (remote tags + resolver finds). */
+  knownShaToTxId: Record<string, string>;
+  /** True when no kind:30617 exists yet — the push announces first. */
+  announceNeeded: boolean;
+  announcement: { name: string; description: string };
+  estimate: GitFeeEstimate;
+}
+
+/**
+ * `POST /git/push` — plan + execute: upload the delta to Arweave and publish
+ * the cumulative kind:30618 (+ kind:30617 on first push). PERMANENT + PAID.
+ */
+export interface GitPushRequest extends GitEstimateRequest {
+  /** Must be literally `true` — a push spends channel funds irreversibly. */
+  confirm: boolean;
+}
+
+/** One object-upload step result. */
+export interface GitUploadStep {
+  sha: string;
+  txId: string;
+  /** '0' when skipped (already on Arweave — content-addressed resume). */
+  feePaid: string;
+  skipped: boolean;
+}
+
+/** Receipt for one published event. */
+export interface GitPublishReceipt {
+  eventId: string;
+  feePaid: string;
+}
+
+/** Serialized `PushResult` — per-step receipts + total fees actually paid. */
+export interface GitPushResponse {
+  repoId: string;
+  refUpdates: GitRefUpdate[];
+  /** Per-object results, in plan order. */
+  uploads: GitUploadStep[];
+  /** kind:30617 receipt, or null when the repo was already announced. */
+  announceReceipt: GitPublishReceipt | null;
+  /** kind:30618 (cumulative refs + arweave map) receipt. */
+  refsReceipt: GitPublishReceipt;
+  /** Full sha→txId map published in the refs event. */
+  arweaveMap: Record<string, string>;
+  /** Total fees actually paid (uploads + events), base units, decimal. */
+  totalFeePaid: string;
+  /** The pre-push estimate the push ran under (compare against totalFeePaid). */
+  estimate: GitFeeEstimate;
+}
+
+/** `POST /git/issue` — publish a kind:1621 issue against a repo. PAID. */
+export interface GitIssueRequest {
+  repoAddr: GitRepoAddr;
+  /** Issue title (`subject` tag). */
+  title: string;
+  /** Issue body (Markdown content). */
+  body: string;
+  /** Labels (`t` tags). */
+  labels?: string[];
+}
+
+/** `POST /git/comment` — publish a kind:1622 comment on an issue/patch. PAID. */
+export interface GitCommentRequest {
+  repoAddr: GitRepoAddr;
+  /** Event id of the issue or patch being commented on. */
+  rootEventId: string;
+  /** Comment body (Markdown content). */
+  body: string;
+  /**
+   * Pubkey of the TARGET event's author (NIP-34 `p` threading tag — not the
+   * comment author). Defaults to the repo owner.
+   */
+  parentAuthorPubkey?: string;
+  /** `e`-tag marker (default 'root': commenting directly on the issue/patch). */
+  marker?: 'root' | 'reply';
+}
+
+/**
+ * `POST /git/patch` — publish a kind:1617 patch. Supply EXACTLY ONE of
+ * `patchText` (literal `git format-patch` output) or `repoPath`+`range`
+ * (the daemon runs `git format-patch --stdout <range>` locally). PAID.
+ */
+export interface GitPatchRequest {
+  repoAddr: GitRepoAddr;
+  /** Patch/PR title (`subject` tag). */
+  title: string;
+  /** Literal patch text. Mutually exclusive with `repoPath`+`range`. */
+  patchText?: string;
+  /** Local repository to run format-patch in. Requires `range`. */
+  repoPath?: string;
+  /** Revision range for format-patch (`<rev>`, `<rev>..<rev>`, `<rev>...<rev>`). */
+  range?: string;
+  /** Commit/parent pairs for `commit`/`parent-commit` tags. */
+  commits?: { sha: string; parentSha: string }[];
+  /** Branch name for the `t` tag. */
+  branch?: string;
+}
+
+export type GitStatusValue = 'open' | 'applied' | 'closed' | 'draft';
+
+/** `POST /git/status` — publish a kind:1630-1633 status event. PAID. */
+export interface GitStatusRequest {
+  repoAddr: GitRepoAddr;
+  /** Event id of the issue/patch whose status is being set. */
+  targetEventId: string;
+  /** open → 1630, applied → 1631, closed → 1632, draft → 1633. */
+  status: GitStatusValue;
+  /** Pubkey of the target event's author (`p` tag), when known. */
+  targetPubkey?: string;
+}
+
+/**
+ * Response of the single-event git publishes (issue/comment/patch/status):
+ * a normal publish receipt plus the NIP-34 kind that was published.
+ */
+export interface GitEventResponse extends PublishResponse {
+  kind: number;
+}
+
 /** Uniform error envelope returned with non-2xx responses. */
 export interface ErrorResponse {
   error: string;
   detail?: string;
   /** True when the caller should retry (e.g. still bootstrapping). */
   retryable?: boolean;
+  /**
+   * Structured error payload for errors that carry data beyond a message —
+   * e.g. `non_fast_forward` includes `refs` (the rejected updates) and
+   * `oversize_objects` includes `objects` (sha/type/size/path). Extra
+   * top-level fields on the envelope are surfaced here by `ControlClient`.
+   */
+  [extra: string]: unknown;
 }
 
 /**
