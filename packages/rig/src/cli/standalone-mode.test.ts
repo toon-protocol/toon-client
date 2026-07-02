@@ -285,6 +285,33 @@ describe('resolveNetworkTopology — settlement', () => {
     );
   });
 
+  it('fails fast on an underivable EVM chain in an explicit supportedChains list', async () => {
+    // Explicit config naming a custom EVM chain that no source (config map,
+    // announce, core preset) can derive a TokenNetwork for must throw the
+    // same actionable error as the announce-driven path — not sail through
+    // and die later inside the embedded client.
+    await expect(
+      resolveNetworkTopology(
+        inputs({
+          file: { supportedChains: ['evm:999999'] },
+        })
+      )
+    ).rejects.toThrow(/TokenNetwork.*evm:999999/s);
+  });
+
+  it('fails fast on a missing RPC URL for an explicit EVM chain', async () => {
+    await expect(
+      resolveNetworkTopology(
+        inputs({
+          file: {
+            supportedChains: ['evm:999999'],
+            tokenNetworks: { 'evm:999999': '0xEXPLICIT' },
+          },
+        })
+      )
+    ).rejects.toThrow(/RPC URL.*evm:999999/s);
+  });
+
   it('throws the clear tokenNetwork error for an underivable EVM chain', async () => {
     await expect(
       resolveNetworkTopology(

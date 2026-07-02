@@ -311,6 +311,21 @@ export async function resolveNetworkTopology(
       if (s.rpcUrl && !chainRpcUrls[chain]) {
         chainRpcUrls[chain] = s.rpcUrl;
       }
+      // Same fail-fast guarantee as the announce/selection path below: an
+      // explicitly configured EVM chain whose TokenNetwork/RPC cannot be
+      // derived must fail HERE with an actionable error, not later as the
+      // embedded client's generic "tokenNetwork address is required".
+      if (s.family === 'evm') {
+        if (!tokenNetworks[chain]) {
+          throw new TokenNetworkUnderivableError(chain, announce, relayUrl);
+        }
+        if (!chainRpcUrls[chain]) {
+          throw new Error(
+            `no RPC URL is derivable for settlement chain "${chain}"` +
+              ` — add chainRpcUrls["${chain}"] to ${configPath}`
+          );
+        }
+      }
     }
     selection = {
       chain: supportedChains[0] as string,
