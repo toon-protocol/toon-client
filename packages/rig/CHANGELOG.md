@@ -1,5 +1,40 @@
 # @toon-protocol/rig
 
+## 2.0.0
+
+### Major Changes
+
+- 3629992: Git passthrough + BREAKING `rig status` → `rig pr status` (#250).
+
+  **BREAKING — the NIP-34 status publish moved:** `rig status <target-event-id> <open|applied|closed|draft>` (the paid kind:1630–1633 publish) is now **`rig pr status <target-event-id> <state>`**. Bare `rig status` no longer publishes anything — it passes through to `git status`. Update scripts accordingly; flags (`--yes`, `--json`, `--remote`, `--relay`, `--repo-id`, `--owner`) and the `--json` receipt shape are unchanged apart from `command: "pr status"`.
+
+  - NEW git passthrough: any subcommand rig does not own is executed as `git <argv...>` verbatim — `rig add -p`, `rig commit -m`, `rig log --oneline`, `rig diff`, `rig branch`, `rig checkout`, `rig rebase -i`, everything. The child git runs with `stdio: 'inherit'` (interactive commands, pagers, colors, prompts all work), rig's exit code is git's exit code exactly (signal deaths map to 128+N), and SIGINT/SIGTERM/SIGHUP are relayed so git controls the outcome of a Ctrl-C. A missing system git is a clear error (exit 127).
+  - rig-owned verbs always win: `init`, `remote`, `push`, `issue`, `comment`, `pr`, `help`/`-h`/`--help`, and the new `--version`. In particular `rig push` remains the paid TOON push and shadows `git push` — plain-git pushes stay available by running `git push` directly.
+  - `rig help` now lists the owned verbs and states that any other command is passed through to git (`rig status` → `git status`).
+
+- d10965e: Standalone-only CLI + RIG_MNEMONIC identity chain + `rig init` (#248).
+
+  BREAKING:
+
+  - Daemon mode is removed from the `rig` CLI: the `--daemon`/`--standalone` flags, the toon-clientd `/status` probe with automatic mode selection, and the CLI's loopback `/git/*` HTTP client are gone. Every command publishes through the embedded, nonce-guarded StandalonePublisher. The daemon's `/git/*` routes and `toon_git_*` MCP tools are unaffected (that's the MCP host path), the shared wire types in `routes.ts` stay exported, and the nonce guard still refuses when a running toon-clientd holds the same identity.
+  - Repo config is no longer written as a side effect of the first push. `rig push` and the single-event commands now error with "run `rig init` first" when `toon.repoid` is unconfigured (`--repo-id`/`--owner`/`--relay` flag overrides keep working), and never mutate git config.
+  - Human/JSON output no longer carries a `mode` field; paid commands now report the active identity (`identity: { pubkey, source, sourceLabel }` in `--json`; an `Identity:` line in terminal output). The phrase itself is never printed or persisted.
+
+  NEW:
+
+  - Identity resolution precedence: `RIG_MNEMONIC` env > `TOON_CLIENT_MNEMONIC` env (deprecated alias, warns on stderr) > project-local `.env` (walked up from the working directory; ONLY the `RIG_MNEMONIC` line is parsed — never arbitrary env, never required) > `~/.toon-client` keystore/config.
+  - `rig init`: one-shot, idempotent repo setup — verifies the git repo (hints at `git init`, never runs it), resolves the identity chain (errors with all three remediation options), writes `toon.repoid` (default: directory basename, `--repo-id` overrides, existing value kept on re-runs) and `toon.owner` (derived pubkey) to the LOCAL git config, and prints the relay follow-up when none is configured. `--json` supported.
+
+### Minor Changes
+
+- 121e8f9: Relays as origins (#249): configure relays as REAL git remotes and push to them like git.
+
+  - NEW `rig remote add <name> <relay-url>` / `rig remote remove <name>` / `rig remote list [--json]` — mapped onto real `git remote` storage, so `git remote -v` shows them and plain git tooling round-trips the config (no parallel store). Junk URLs (anything but ws/wss/http/https) are rejected at add time; adding over an existing name is refused with a `git remote set-url` hint.
+  - `rig push [remote] [refspecs...]` — git-like remote resolution: when the first positional matches a configured remote name it is the push target, otherwise it is a refspec and the remote defaults to `origin`. No usable remote → clear ``no origin configured — run `rig remote add origin <relay-url>` `` error. The event commands (`issue`/`comment`/`pr`/`status`) take `--remote <name>` (default `origin`).
+  - `--relay <url>` stays as an ad-hoc override on every paid command — it bypasses the configured remotes entirely.
+  - One relay URL per remote: a git remote with multiple URLs (`git remote set-url --add`) is refused BEFORE anything is fetched, uploaded, or paid.
+  - Migration off `toon.relay` (deprecated, removed in v0.3): paid commands still fall back to it when no relay `origin` exists, printing a one-line migration nudge; `rig init` now migrates a single-valued `toon.relay` to a real `origin` remote automatically (the old key stays readable) and suggests `rig remote add origin <relay-url>` as the follow-up step when nothing is configured. Paid commands no longer silently fall back to the network-default relay.
+
 ## 1.0.0
 
 ### Minor Changes
