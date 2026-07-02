@@ -23,6 +23,12 @@
  * guard (./nonce-guard.ts): refuse if a toon-clientd holds this identity,
  * and hold an exclusive per-pubkey lockfile against other standalone
  * processes for the lifetime of this publisher.
+ *
+ * Channel REUSE (#262): with a `channelMap` configured, start() resumes the
+ * channel recorded for (identity, channel anchor) — `trackChannel` rehydrates
+ * the cumulative-claim watermark from the client's channels.json — and
+ * records any fresh lazy open, so sequential CLI invocations share ONE
+ * on-chain channel instead of stranding a deposit per run (./channel-map.ts).
  */
 
 import type {
@@ -40,6 +46,12 @@ import type {
   Publisher,
   UploadReceipt,
 } from '../publisher.js';
+import {
+  recordKey,
+  type ChannelMapRecord,
+  type ChannelMapStore,
+  type PersistedChannelContext,
+} from './channel-map.js';
 import { checkDaemonIdentity, NonceLock } from './nonce-guard.js';
 
 // ---------------------------------------------------------------------------
@@ -77,6 +89,13 @@ export interface ToonClientLike {
       proxyPath?: string;
     }
   ): Promise<PublishEventResult>;
+  /** On-chain deposit total for a tracked channel (channel-map bookkeeping). */
+  getChannelDepositTotal?(channelId: string): bigint;
+  /** Re-read a RESUMED channel's on-chain deposit (persisted state omits it). */
+  rehydrateChannelDeposit?(
+    channelId: string,
+    opts: { chain: string; tokenNetworkAddress: string }
+  ): Promise<bigint | undefined>;
 }
 
 export interface StandalonePublisherOptions {
@@ -114,6 +133,16 @@ export interface StandalonePublisherOptions {
   lockDir?: string;
   /** Fetch impl for the daemon probe (tests). */
   fetchImpl?: typeof fetch;
+  /**
+   * Peer→channel map store (#262): start() resumes the channel recorded for
+   * (identity, channel anchor) instead of opening a fresh one, and records
+   * any fresh lazy open for the next invocation. Absent (embedded callers
+   * managing their own channel lifecycle): the historical behaviour — open
+   * lazily every run, record nothing.
+   */
+  channelMap?: ChannelMapStore;
+  /** Sink for non-fatal channel-persistence warnings (default: stderr). */
+  warn?: (line: string) => void;
 }
 
 /** A relay/store rejected a paid write (fee NOT spent iff the claim failed too). */
@@ -214,6 +243,55 @@ export function extractArweaveTxId(base64Data: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Channel-resume introspection (#262)
+//
+// The peer negotiation table and the ChannelManager's peer→channel map are
+// PRIVATE on ToonClient, so resuming a channel reaches into them through a
+// structural runtime cast — the exact pattern the daemon uses
+// (client-mcp/src/daemon/client-runner.ts, openOrResumeApexChannel /
+// routeChildPeersThroughApexChannel). Keep the shapes in sync with
+// @toon-protocol/client's ToonClient/ChannelManager.
+// ---------------------------------------------------------------------------
+
+/** The slice of a `PeerNegotiation` the channel map records. */
+interface NegotiationLike {
+  chain: string;
+  chainType: string;
+  chainId: number | string;
+  settlementAddress: string;
+  tokenAddress?: string;
+  tokenNetwork?: string;
+}
+
+interface ChannelInternals {
+  peerNegotiations?: Map<string, NegotiationLike>;
+  channelManager?: {
+    trackChannel?: (
+      channelId: string,
+      context: PersistedChannelContext
+    ) => void;
+    peerChannels?: Map<string, string>;
+  };
+}
+
+/** Best-effort access to the client's private negotiation/channel state. */
+function channelInternals(client: ToonClientLike): ChannelInternals {
+  const c = client as unknown as ChannelInternals;
+  const negotiations =
+    c.peerNegotiations instanceof Map ? c.peerNegotiations : undefined;
+  const cm =
+    c.channelManager &&
+    typeof c.channelManager.trackChannel === 'function' &&
+    c.channelManager.peerChannels instanceof Map
+      ? c.channelManager
+      : undefined;
+  return {
+    ...(negotiations ? { peerNegotiations: negotiations } : {}),
+    ...(cm ? { channelManager: cm } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // StandalonePublisher
 // ---------------------------------------------------------------------------
 
@@ -228,6 +306,10 @@ export class StandalonePublisher implements Publisher {
   private readonly daemonPort: number | undefined;
   private readonly lockDir: string | undefined;
   private readonly fetchImpl: typeof fetch | undefined;
+  private readonly channelMap: ChannelMapStore | undefined;
+  /** ILP anchor the channel is keyed by in the map (peer/apex destination). */
+  private readonly channelAnchor: string | undefined;
+  private readonly warn: (line: string) => void;
 
   private lock: NonceLock | undefined;
   private channelId: string | undefined;
@@ -265,6 +347,10 @@ export class StandalonePublisher implements Publisher {
     this.daemonPort = options.daemonPort;
     this.lockDir = options.lockDir;
     this.fetchImpl = options.fetchImpl;
+    this.channelMap = options.channelMap;
+    this.channelAnchor = anchor;
+    this.warn =
+      options.warn ?? ((line) => process.stderr.write(`${line}\n`));
   }
 
   /** Hex Nostr pubkey of the embedded identity (available before start). */
@@ -304,13 +390,209 @@ export class StandalonePublisher implements Publisher {
       if (this.client.isStarted?.() !== true) {
         await this.client.start();
       }
-      // Idempotent — returns the existing channel for the peer if one is open.
-      this.channelId = await this.client.openChannel(this.channelDestination);
+      this.channelId = await this.openOrResumeChannel();
     } catch (err) {
       this.lock.release();
       this.lock = undefined;
       throw err;
     }
+  }
+
+  /**
+   * Open the payment channel — or, when the channel map has a record for
+   * (identity, anchor), RESUME the recorded on-chain channel (#262).
+   *
+   * Resume seeds the client's ChannelManager (`trackChannel` rehydrates the
+   * cumulative-claim watermark from channels.json; `peerChannels` makes the
+   * subsequent `openChannel` return the same id instead of opening on-chain).
+   * A fresh open is RECORDED so the next invocation resumes it. A corrupt map
+   * file throws BEFORE anything is opened — never a silent duplicate open.
+   */
+  private async openOrResumeChannel(): Promise<string> {
+    const map = this.channelMap;
+    if (!map) {
+      // No persistence configured: historical lazy open, nothing recorded.
+      return this.client.openChannel(this.channelDestination);
+    }
+    if (!this.channelAnchor) {
+      this.warn(
+        'rig: no channel anchor destination configured — the peer→channel ' +
+          'mapping cannot be persisted, so this run may open a fresh channel'
+      );
+      return this.client.openChannel(this.channelDestination);
+    }
+
+    const anchor = this.channelAnchor;
+    const identity = this.client.getPublicKey();
+    // Corruption check happens HERE, before any on-chain open (throws).
+    const candidates = map.listFor(identity, anchor);
+    const internals = channelInternals(this.client);
+    const resumed = await this.resumeRecordedChannel(map, candidates, internals);
+
+    // Idempotent — returns the (resumed or existing) channel for the peer if
+    // one is tracked, else opens lazily on-chain.
+    const channelId = await this.client.openChannel(this.channelDestination);
+
+    if (resumed && channelId === resumed.channelId) {
+      map.touch(recordKey(resumed));
+    } else {
+      this.recordOpenedChannel(map, internals, identity, anchor, channelId);
+    }
+    return channelId;
+  }
+
+  /**
+   * Try to resume one recorded channel: the first candidate whose peer is
+   * still negotiated on the SAME chain + tokenNetwork and whose watermark
+   * does not show it closed/settled. Returns the resumed record, if any.
+   */
+  private async resumeRecordedChannel(
+    map: ChannelMapStore,
+    candidates: ChannelMapRecord[],
+    internals: ChannelInternals
+  ): Promise<ChannelMapRecord | undefined> {
+    if (candidates.length === 0) return undefined;
+    const cm = internals.channelManager;
+    if (!cm?.trackChannel || !cm.peerChannels) {
+      this.warn(
+        'rig: a recorded channel exists but the client does not expose ' +
+          'channel internals to resume it — a fresh channel may be opened'
+      );
+      return undefined;
+    }
+
+    for (const record of candidates) {
+      // The peer must still be negotiated on the recorded chain/tokenNetwork;
+      // a rotated peer identity or re-negotiated settlement gets a fresh
+      // channel (recorded under its own key) instead of stale claims.
+      const negotiation = internals.peerNegotiations?.get(record.peerId);
+      if (
+        !negotiation ||
+        negotiation.chain !== record.chain ||
+        (negotiation.tokenNetwork ?? '') !== record.tokenNetwork
+      ) {
+        continue;
+      }
+
+      // Never resume a channel the withdraw flow already closed/settled.
+      const watermark = map.readWatermark(record.channelId);
+      if (
+        watermark?.closedAt !== undefined ||
+        watermark?.settledAt !== undefined
+      ) {
+        continue;
+      }
+      if (!watermark) {
+        // Fresh channels are seeded at record time, so a missing entry means
+        // the watermark store was lost. Resuming from nonce 0 fails SAFE: a
+        // regressed cumulative claim is rejected by the peer (no double
+        // spend), but warn so the failure is diagnosable.
+        this.warn(
+          `rig: resuming channel ${record.channelId} with no local claim ` +
+            `watermark (${map.watermarkPath}) — if this channel was claimed ` +
+            'against before, the peer will reject the stale claims; remove ' +
+            `its entry from ${map.mapPath} to open a fresh channel instead`
+        );
+      }
+
+      // trackChannel rehydrates nonce/cumulative from the watermark store;
+      // seeding peerChannels makes ensureChannel/openChannel reuse the id.
+      cm.trackChannel(record.channelId, record.context);
+      cm.peerChannels.set(record.peerId, record.channelId);
+
+      // Persisted channel state omits the on-chain deposit — re-read it so
+      // fee/balance accounting is right (EVM only; mirrors the daemon).
+      if (
+        record.context.chainType === 'evm' &&
+        this.client.rehydrateChannelDeposit
+      ) {
+        try {
+          const deposit = await this.client.rehydrateChannelDeposit(
+            record.channelId,
+            {
+              chain: record.chain,
+              tokenNetworkAddress: record.context.tokenNetworkAddress,
+            }
+          );
+          if (deposit !== undefined) {
+            map.touch(recordKey(record), {
+              depositTotal: deposit.toString(),
+            });
+          }
+        } catch (err) {
+          this.warn(
+            `rig: deposit re-read for resumed channel ${record.channelId} ` +
+              `failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+      return record;
+    }
+    return undefined;
+  }
+
+  /** Record a freshly opened channel (+ seed its claim watermark at 0/0). */
+  private recordOpenedChannel(
+    map: ChannelMapStore,
+    internals: ChannelInternals,
+    identity: string,
+    destination: string,
+    channelId: string
+  ): void {
+    let peerId: string | undefined;
+    for (const [peer, channel] of internals.channelManager?.peerChannels ??
+      []) {
+      if (channel === channelId) {
+        peerId = peer;
+        break;
+      }
+    }
+    const negotiation =
+      peerId !== undefined
+        ? internals.peerNegotiations?.get(peerId)
+        : undefined;
+    if (peerId === undefined || !negotiation) {
+      this.warn(
+        `rig: opened channel ${channelId} but could not record the ` +
+          'peer→channel mapping (client does not expose negotiation ' +
+          'internals) — the NEXT invocation may open another channel'
+      );
+      return;
+    }
+
+    let depositTotal: bigint | undefined;
+    try {
+      depositTotal = this.client.getChannelDepositTotal?.(channelId);
+    } catch {
+      // deposit unknown — recorded without it; a later resume re-reads it
+    }
+
+    map.record({
+      channelId,
+      peerId,
+      identity,
+      destination,
+      chain: negotiation.chain,
+      tokenNetwork: negotiation.tokenNetwork ?? '',
+      // Context mirrors the daemon's persistApexChannel shape — exactly what
+      // trackChannel needs on resume.
+      context: {
+        chainType: negotiation.chainType,
+        chainId:
+          typeof negotiation.chainId === 'number' ? negotiation.chainId : 0,
+        tokenNetworkAddress: negotiation.tokenNetwork ?? '',
+        ...(negotiation.tokenAddress
+          ? { tokenAddress: negotiation.tokenAddress }
+          : {}),
+        recipient: negotiation.settlementAddress,
+      },
+      ...(depositTotal !== undefined && depositTotal > 0n
+        ? { depositTotal: depositTotal.toString() }
+        : {}),
+    });
+    // Seed nonce 0 / cumulative 0 so a later resume can tell "never claimed
+    // against" apart from "watermark lost" (which only fails claim-rejected).
+    map.seedWatermark(channelId);
   }
 
   /** Release the identity lock and stop the embedded client (if we own it). */

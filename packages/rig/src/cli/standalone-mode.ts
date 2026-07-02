@@ -33,6 +33,10 @@ import {
   decodeEventFromToon,
   encodeEventToToon,
 } from '@toon-protocol/core';
+import {
+  ChannelMapStore,
+  RIG_CHANNEL_MAP_FILENAME,
+} from '../standalone/channel-map.js';
 import { StandalonePublisher } from '../standalone/standalone-publisher.js';
 import { fetchRemoteState } from '../remote-state.js';
 import { resolveIdentity } from './identity.js';
@@ -162,9 +166,20 @@ export async function createStandaloneContext(
     ...(file.minaChannel ? { minaChannel: file.minaChannel } : {}),
   };
 
+  // Peer→channel persistence (#262): paid commands resume the channel
+  // recorded for (identity, destination) and record fresh opens, so
+  // sequential CLI invocations share ONE on-chain channel. The watermark
+  // path is the SAME channels.json the embedded client persists nonces to.
+  const channelMap = new ChannelMapStore({
+    mapPath: join(dir, RIG_CHANNEL_MAP_FILENAME),
+    watermarkPath: channelStorePath,
+  });
+
   const publisher = new StandalonePublisher({
     clientConfig,
     eventFee,
+    channelMap,
+    warn: (line) => options.warn(line),
     ...(publishDestination ? { publishDestination } : {}),
     ...(storeDestination ? { storeDestination } : {}),
   });

@@ -257,6 +257,15 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
       json: { error: 'missing_uplink', detail: message },
     };
   }
+  // Peer→channel map corruption (#262) — matched by name so tsup chunk
+  // duplication between the cli and standalone entries can't break instanceof.
+  if (name === 'ChannelMapCorruptError') {
+    return {
+      code: 'channel_map_corrupt',
+      lines: [message],
+      json: { error: 'channel_map_corrupt', detail: message },
+    };
+  }
 
   return {
     code: 'error',
