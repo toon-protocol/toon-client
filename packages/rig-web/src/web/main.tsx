@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { HashRouter, Routes, Route } from 'react-router';
+import { normalizeRelayFragment } from '@/relay-fragment';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { RigConfigProvider } from '@/hooks/use-rig-config';
 import { ProfileCacheProvider } from '@/hooks/use-profile-cache';
@@ -18,6 +19,11 @@ import { IssueDetailPage } from '@/app/pages/issue-detail-page';
 import { PRListPage } from '@/app/pages/pr-list-page';
 import { PRDetailPage } from '@/app/pages/pr-detail-page';
 import './globals.css';
+
+// The documented shareable form is `#relay=wss://…`, but HashRouter owns
+// the fragment — rewrite it to the router-safe `#/?relay=…` BEFORE the
+// router mounts, or the app blank-pages on an unmatched route.
+normalizeRelayFragment();
 
 const root = document.getElementById('app');
 if (!root) throw new Error('Root element #app not found');

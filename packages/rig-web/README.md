@@ -11,8 +11,12 @@ VITE_DEFAULT_RELAY=wss://relay.example pnpm dev   # override the default relay
 
 ## Relay resolution order
 
-1. URL hash — the config reader matches `[?&]relay=` inside the fragment, so with
-   `HashRouter` the shareable form is `#/?relay=wss://relay.example` (gateway-safe)
+1. URL hash — the canonical shareable form is `#relay=wss://relay.example`
+   (gateway-safe, no server-side rewrites). The app uses `HashRouter`, which
+   owns the fragment, so boot code rewrites the bare form in place to the
+   router-safe equivalent `#/?relay=wss://relay.example` (also accepted
+   directly) before the router mounts; the config reader then matches
+   `[?&]relay=` inside the fragment.
 2. Query param — `?relay=…` (legacy)
 3. Build-time default — `VITE_DEFAULT_RELAY` baked into the bundle
 
@@ -46,7 +50,7 @@ git init -b gh-pages && git add -A && git commit -m "deploy: rig-web"
 git push --force https://github.com/toon-protocol/toon-client.git gh-pages:gh-pages
 ```
 
-Pages picks up the branch automatically (already enabled on the repo). Point at any relay without rebuilding via the hash: `…/toon-client/#/?relay=wss://relay.example` (the relay param and `HashRouter` share the fragment; the config reader matches `[?&]relay=`).
+Pages picks up the branch automatically (already enabled on the repo). Point at any relay without rebuilding via the hash: `…/toon-client/#relay=wss://relay.example` (boot code rewrites this to the router-safe `#/?relay=…`, which also works directly — see [Relay resolution order](#relay-resolution-order)).
 
 ### Arweave (permanent, decentralized — currently blocked)
 

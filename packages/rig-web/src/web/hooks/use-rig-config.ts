@@ -24,13 +24,28 @@ export function RigConfigProvider({ children }: { children: ReactNode }) {
       };
     }
 
-    // Fallback: check hash fragment for relay param (e.g. #relay=ws://...)
-    const hash = window.location.hash;
-    const relayMatch = hash.match(/[?&]relay=([^&]+)/);
+    // Fallback: relay param from the URL, hash fragment first.
+    // The canonical shareable form is `#relay=wss://…`; boot code
+    // (normalizeRelayFragment in relay-fragment.ts) rewrites it to the
+    // router-safe `#/?relay=…` before HashRouter mounts, so by the time
+    // this runs the fragment always carries `[?&]relay=`. The bare
+    // `?relay=…` query param is the legacy form, checked second.
+    const relayMatch =
+      window.location.hash.match(/[?&]relay=([^&]+)/) ??
+      window.location.search.match(/[?&]relay=([^&]+)/);
     let relayUrl = DEFAULT_RELAY_URL;
     if (relayMatch) {
-      const candidate = decodeURIComponent(relayMatch[1] as string);
-      if (isValidRelayUrl(candidate)) {
+      // decodeURIComponent throws URIError on malformed percent-encoding
+      // (e.g. a stray `%` from a truncated link); an uncaught throw here
+      // would blank-page the app during initial render, so fall back to
+      // the default relay instead.
+      let candidate: string | null = null;
+      try {
+        candidate = decodeURIComponent(relayMatch[1] as string);
+      } catch {
+        candidate = null;
+      }
+      if (candidate !== null && isValidRelayUrl(candidate)) {
         relayUrl = candidate;
       }
     }
