@@ -48,18 +48,26 @@ export {
 } from './publisher.js';
 
 export {
+  serializeEventReceipt,
   serializeFeeEstimate,
   serializePushPlan,
   serializePushResult,
+  type GitCommentRequest,
   type GitErrorEnvelope,
   type GitEstimateRequest,
   type GitEstimateResponse,
+  type GitEventResponse,
   type GitFeeEstimate,
+  type GitIssueRequest,
+  type GitPatchRequest,
   type GitPlannedObject,
   type GitPublishReceipt,
   type GitPushRequest,
   type GitPushResponse,
   type GitRefUpdate,
+  type GitRepoAddr,
+  type GitStatusRequest,
+  type GitStatusValue,
   type GitUploadStep,
 } from './routes.js';
 

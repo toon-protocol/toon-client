@@ -63,10 +63,13 @@ export interface PushDeps {
   loadStandalone?: LoadStandalone;
 }
 
-const defaultLoadStandalone: LoadStandalone = async (env) => {
-  // Dynamic import: `standalone-mode` (and its optional
-  // `@toon-protocol/client` peer dependency) only loads when standalone mode
-  // is actually selected.
+/**
+ * Default standalone factory (shared with the single-event subcommands in
+ * ./events.ts). Dynamic import: `standalone-mode` (and its optional
+ * `@toon-protocol/client` peer dependency) only loads when standalone mode
+ * is actually selected.
+ */
+export const defaultLoadStandalone: LoadStandalone = async (env) => {
   const mod = await import('./standalone-mode.js');
   return mod.createStandaloneContext(env);
 };

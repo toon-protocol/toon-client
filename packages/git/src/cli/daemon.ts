@@ -10,11 +10,16 @@
  */
 
 import type {
+  GitCommentRequest,
   GitErrorEnvelope,
   GitEstimateRequest,
   GitEstimateResponse,
+  GitEventResponse,
+  GitIssueRequest,
+  GitPatchRequest,
   GitPushRequest,
   GitPushResponse,
+  GitStatusRequest,
 } from '../routes.js';
 
 /** The daemon answered a `/git/*` route with a non-2xx error envelope. */
@@ -58,6 +63,22 @@ export class DaemonGitClient {
 
   gitPush(req: GitPushRequest): Promise<GitPushResponse> {
     return this.post<GitPushResponse>('/git/push', req);
+  }
+
+  gitIssue(req: GitIssueRequest): Promise<GitEventResponse> {
+    return this.post<GitEventResponse>('/git/issue', req);
+  }
+
+  gitComment(req: GitCommentRequest): Promise<GitEventResponse> {
+    return this.post<GitEventResponse>('/git/comment', req);
+  }
+
+  gitPatch(req: GitPatchRequest): Promise<GitEventResponse> {
+    return this.post<GitEventResponse>('/git/patch', req);
+  }
+
+  gitStatus(req: GitStatusRequest): Promise<GitEventResponse> {
+    return this.post<GitEventResponse>('/git/status', req);
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
