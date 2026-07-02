@@ -17,7 +17,7 @@ Git-to-TOON write path core — build git objects and NIP-34 events for the Rig 
 ## `rig` quickstart
 
 ```sh
-npm install -g @toon-protocol/rig @toon-protocol/client
+npm install -g @toon-protocol/rig
 
 # 1. identity — a BIP-39 seed phrase, either in your environment…
 export RIG_MNEMONIC="abandon abandon … about"
@@ -64,8 +64,9 @@ Any subcommand rig does not own is executed as `git <args...>` verbatim: the exa
 ### Identity
 
 The CLI is **standalone-only**: it embeds its own payment client built from
-your seed phrase (install the optional `@toon-protocol/client` peer to use
-it). The mnemonic is resolved along one precedence chain — highest first:
+your seed phrase (`@toon-protocol/client` is a regular dependency, installed
+automatically with the package). The mnemonic is resolved along one
+precedence chain — highest first:
 
 1. `RIG_MNEMONIC` environment variable
 2. `TOON_CLIENT_MNEMONIC` environment variable — deprecated alias, warns on

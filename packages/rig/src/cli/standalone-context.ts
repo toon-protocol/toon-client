@@ -2,9 +2,9 @@
  * The seam between the CLI commands and the standalone (embedded-client)
  * publisher. Kept in its own module WITHOUT any `@toon-protocol/client`
  * import so command modules can `import type` it: the real implementation
- * (`./standalone-mode.ts`, which needs the optional client peer dependency)
- * is only ever loaded via dynamic import once a command actually needs to
- * sign or pay. Tests inject a fake context here (the Publisher seam).
+ * (`./standalone-mode.ts`, which pulls in `@toon-protocol/client`) is only
+ * ever loaded via dynamic import once a command actually needs to sign or
+ * pay. Tests inject a fake context here (the Publisher seam).
  */
 
 import type { Publisher } from '../publisher.js';

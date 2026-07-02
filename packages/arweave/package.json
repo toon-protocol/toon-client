@@ -2,8 +2,17 @@
   "name": "@toon-protocol/arweave",
   "version": "0.2.0",
   "description": "Single source of truth for the TOON Arweave gateway preference list + URL helpers (upload stamping + render fallover). Consumed by views, rig, and client-mcp.",
+  "license": "MIT",
+  "author": "Jonathan Green",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/toon-protocol/toon-client.git",
+    "directory": "packages/arweave"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
-  "private": true,
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
