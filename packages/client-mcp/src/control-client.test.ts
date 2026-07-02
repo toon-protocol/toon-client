@@ -182,3 +182,66 @@ it('ControlApiError carries detail', () => {
   const e = new ControlApiError('x', 502, false, 'relay rejected');
   expect(e.detail).toBe('relay rejected');
 });
+
+describe('git methods (/git/*)', () => {
+  it('POSTs estimate/push/issue/comment/patch/status to their routes', async () => {
+    // A fresh Response per call — a body is single-read.
+    const fetchImpl = vi.fn().mockImplementation(async () => jsonResponse({}));
+    const client = new ControlClient({
+      baseUrl: 'http://127.0.0.1:8787',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const repoAddr = { ownerPubkey: 'ab'.repeat(32), repoId: 'r1' };
+    await client.gitEstimate({ repoPath: '/repo', repoId: 'r1' });
+    await client.gitPush({ repoPath: '/repo', repoId: 'r1', confirm: true });
+    await client.gitIssue({ repoAddr, title: 't', body: 'b' });
+    await client.gitComment({ repoAddr, rootEventId: 'e1', body: 'b' });
+    await client.gitPatch({ repoAddr, title: 't', patchText: 'p' });
+    await client.gitStatus({ repoAddr, targetEventId: 'e1', status: 'open' });
+
+    const urls = fetchImpl.mock.calls.map(([url]) => url);
+    expect(urls).toEqual([
+      'http://127.0.0.1:8787/git/estimate',
+      'http://127.0.0.1:8787/git/push',
+      'http://127.0.0.1:8787/git/issue',
+      'http://127.0.0.1:8787/git/comment',
+      'http://127.0.0.1:8787/git/patch',
+      'http://127.0.0.1:8787/git/status',
+    ]);
+    for (const [, init] of fetchImpl.mock.calls) {
+      expect(init.method).toBe('POST');
+    }
+    expect(JSON.parse(fetchImpl.mock.calls[1]![1].body)).toMatchObject({
+      confirm: true,
+    });
+  });
+
+  it('surfaces structured git error data (refs/objects) on ControlApiError', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(
+        {
+          error: 'non_fast_forward',
+          detail: 'non-fast-forward update rejected for refs/heads/main',
+          refs: [{ refname: 'refs/heads/main', localSha: 'a', remoteSha: 'b' }],
+        },
+        409
+      )
+    );
+    const client = new ControlClient({
+      baseUrl: 'http://127.0.0.1:8787',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const err = await client
+      .gitEstimate({ repoPath: '/repo', repoId: 'r1' })
+      .then(
+        () => undefined,
+        (e: unknown) => e as ControlApiError
+      );
+    expect(err).toBeInstanceOf(ControlApiError);
+    expect(err!.status).toBe(409);
+    expect(err!.message).toBe('non_fast_forward');
+    expect(err!.data).toEqual({
+      refs: [{ refname: 'refs/heads/main', localSha: 'a', remoteSha: 'b' }],
+    });
+  });
+});

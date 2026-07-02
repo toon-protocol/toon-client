@@ -107,6 +107,7 @@ export {
 // Arweave Blob Storage (kind:5094 DVM) helper
 export {
   requestBlobStorage,
+  extractArweaveTxId,
   type RequestBlobStorageParams,
   type RequestBlobStorageResult,
 } from './blob-storage.js';
