@@ -224,10 +224,15 @@ export async function requestBlobStorage(
  * payload is not HTTP-enveloped we preserve that original decode so non-HTTP
  * FULFILLs do not regress.
  *
+ * Exported for callers that drive `publishEvent` directly with a hand-built
+ * kind:5094 event (e.g. git-object uploads carrying Git-SHA/Git-Type/Repo
+ * tags, toon-client#227) and need the same FULFILL→txId decode this helper
+ * applies.
+ *
  * @throws {Error} If the response is non-2xx, `accept:false`, the body is not
  *   parseable JSON, or no valid Arweave tx ID can be extracted.
  */
-function extractArweaveTxId(base64Data: string): string {
+export function extractArweaveTxId(base64Data: string): string {
   const http = parseFulfillHttp(base64Data);
 
   // Legacy / non-HTTP FULFILL: bare base64(utf8(txId)).
