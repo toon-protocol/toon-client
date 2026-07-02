@@ -7,10 +7,13 @@ import {
   buildIssueListFilter,
   buildIssueCloseFilter,
 } from '../relay-client.js';
+import type { UnparseableEvent } from '../relay-client.js';
 import type { IssueMetadata, NostrFilter } from '../nip34-parsers.js';
 
 interface UseIssuesResult {
   issues: IssueMetadata[];
+  /** Issue-query EVENT frames that failed to decode (rendered degraded, not dropped) */
+  unparseable: UnparseableEvent[];
   loading: boolean;
   error: Error | null;
 }
@@ -33,6 +36,7 @@ export function useIssues(owner: string, repoId: string): UseIssuesResult {
 
   const {
     events: issueEvents,
+    unparseable,
     loading: issuesLoading,
     error: issuesError,
   } = useRelay(relayUrl, issueFilter);
@@ -66,6 +70,7 @@ export function useIssues(owner: string, repoId: string): UseIssuesResult {
 
   return {
     issues,
+    unparseable,
     loading: issuesLoading || closeLoading,
     error: issuesError,
   };

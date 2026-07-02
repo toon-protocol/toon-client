@@ -16,7 +16,7 @@ import {
 
 export function IssueListPage() {
   const { metadata, owner, repo } = useOutletContext<RepoContext>();
-  const { issues, loading, error } = useIssues(owner, metadata.repoId);
+  const { issues, unparseable, loading, error } = useIssues(owner, metadata.repoId);
   const { getDisplayName, requestProfiles } = useProfileCache();
   const [filter, setFilter] = useState<'open' | 'closed'>('open');
 
@@ -101,6 +101,38 @@ export function IssueListPage() {
               ))}
             </TableBody>
           </Table>
+        </div>
+      )}
+
+      {/* Events that failed to decode are shown degraded, never dropped (#276) */}
+      {unparseable.length > 0 && (
+        <div className="rounded-md border border-dashed">
+          {unparseable.map((u, i) => (
+            <div
+              key={u.id ?? `unparseable-${i}`}
+              data-testid="unparseable-event"
+              className="border-b p-3 text-sm last:border-b-0"
+            >
+              <div className="flex items-center gap-2">
+                <svg className="h-4 w-4 text-yellow-600" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M8.22 1.754a.25.25 0 00-.44 0L1.698 13.132a.25.25 0 00.22.368h12.164a.25.25 0 00.22-.368L8.22 1.754zm-1.763-.707c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0114.082 15H1.918a1.75 1.75 0 01-1.543-2.575L6.457 1.047zM9 11a1 1 0 11-2 0 1 1 0 012 0zm-.25-5.25a.75.75 0 00-1.5 0v2.5a.75.75 0 001.5 0v-2.5z" />
+                </svg>
+                <span className="font-medium">Unparseable event</span>
+                {u.id && (
+                  <code className="font-mono text-xs text-muted-foreground">{u.id.slice(0, 8)}</code>
+                )}
+              </div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                This event arrived from the relay but could not be decoded ({u.error}).
+              </div>
+              <details className="mt-1">
+                <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                  View raw event
+                </summary>
+                <pre className="mt-1 overflow-x-auto rounded bg-muted p-2 text-xs">{u.raw}</pre>
+              </details>
+            </div>
+          ))}
         </div>
       )}
     </div>
