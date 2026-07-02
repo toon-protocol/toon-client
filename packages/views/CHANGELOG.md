@@ -1,5 +1,14 @@
 # @toon-protocol/views
 
+## 0.12.3
+
+### Patch Changes
+
+- Updated dependencies [3f30e36]
+- Updated dependencies [1ff6370]
+  - @toon-protocol/arweave@0.2.0
+  - @toon-protocol/client@0.15.0
+
 ## 0.12.2
 
 ### Patch Changes
