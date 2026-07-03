@@ -79,6 +79,17 @@ export async function resolveRepoRoot(cwd: string): Promise<string> {
   }
 }
 
+/**
+ * `git init` in `dir` — create a fresh repository there (never a shell). Runs
+ * ONLY in `dir` itself, never a parent, and is idempotent (git init on an
+ * existing repo is a no-op). Used by `rig init` when it offers to create the
+ * repo for the user (consent-gated), mirroring how it offers to mint an
+ * identity on a cold start.
+ */
+export async function initGitRepository(dir: string): Promise<void> {
+  await git(dir, ['init']);
+}
+
 /** Read the `toon.*` git config keys of the repository at `repoPath`. */
 export async function readToonConfig(repoPath: string): Promise<ToonRepoConfig> {
   // exit 1 = key unset (git config --get convention) — tolerated everywhere.

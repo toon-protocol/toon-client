@@ -3,8 +3,10 @@
  *
  * Replaces the old "config written as a side effect of the first push":
  *
- *   1. verifies the working directory is inside a git repository (hints at
- *      `git init` when not — never runs it);
+ *   1. ensures the working directory is inside a git repository — when it is
+ *      not, it OFFERS to `git init` for you (a TTY `[y/N]` prompt, or the
+ *      non-interactive `--git-init` flag), mirroring how it offers to mint an
+ *      identity on a cold start; a refusal keeps the old `git init` hint;
  *   2. resolves the signing identity via the RIG_MNEMONIC precedence chain
  *      (./identity.ts) and reports the SOURCE + derived pubkey (never the
  *      phrase); a chain miss errors with all three remediation options;
@@ -28,6 +30,7 @@ import { parseArgs } from 'node:util';
 import { emitCliError, NotAGitRepositoryError } from './errors.js';
 import {
   addGitRemote,
+  initGitRepository,
   listGitRemotes,
   readToonConfig,
   resolveRepoRoot,
@@ -62,14 +65,20 @@ The follow-up step is adding a relay: \`rig remote add origin <relay-url>\`
 \`git config toon.relay\` is migrated to the origin remote automatically
 when no origin exists (the old key stays readable and is removed in v0.3).
 
-When NO identity resolves, init does not dead-end: in a terminal it offers to
-generate one (\`Create a new identity now? [y/N]\`), and \`--generate-identity\`
-does it non-interactively (equivalent to \`rig identity create\` — the phrase
-is shown once to back up). Nothing is ever auto-generated without your yes.
+When the directory is NOT inside a git repository, init does not dead-end: in
+a terminal it offers to create one (\`Initialize a git repository here?
+[y/N]\`), and \`--git-init\` does it non-interactively. Likewise, when NO
+identity resolves it offers to generate one (\`Create a new identity now?
+[y/N]\`), and \`--generate-identity\` does it non-interactively (equivalent to
+\`rig identity create\` — the phrase is shown once to back up). Nothing — repo
+or identity — is ever created without your yes. \`--git-init
+--generate-identity\` is a fully non-interactive fresh setup.
 
 Options:
   --repo-id <id>       repository id / NIP-34 d-tag (default: the existing
                        toon.repoid, then the repo directory basename)
+  --git-init           when the cwd is not a git repo, run \`git init\` here
+                       first, then proceed (no prompt)
   --generate-identity  when no identity resolves, mint a fresh one (no prompt)
   --json               machine-readable report
   -h, --help           show this help`;
@@ -87,6 +96,7 @@ export interface InitDeps {
 
 interface InitFlags {
   repoId?: string;
+  gitInit: boolean;
   generateIdentity: boolean;
   json: boolean;
   help: boolean;
@@ -97,6 +107,7 @@ function parseInitArgs(args: string[]): InitFlags {
     args,
     options: {
       'repo-id': { type: 'string' },
+      'git-init': { type: 'boolean', default: false },
       'generate-identity': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
@@ -107,6 +118,7 @@ function parseInitArgs(args: string[]): InitFlags {
     throw new Error(`rig init takes no positional arguments`);
   }
   const flags: InitFlags = {
+    gitInit: values['git-init'] ?? false,
     generateIdentity: values['generate-identity'] ?? false,
     json: values.json ?? false,
     help: values.help ?? false,
@@ -123,6 +135,8 @@ function parseInitArgs(args: string[]): InitFlags {
 interface InitJsonOutput {
   command: 'init';
   repoRoot: string;
+  /** True when THIS run created the git repository (`--git-init` or a TTY yes). */
+  initializedGitRepo: boolean;
   repoId: string;
   /** `toon.owner` — the derived pubkey of the active identity. */
   owner: string;
@@ -154,6 +168,35 @@ interface InitJsonOutput {
     keystorePath: string;
     autoPassword: boolean;
   };
+}
+
+/**
+ * Resolve the git worktree root; when the cwd is not inside a repo, create one
+ * instead of dead-ending — but ONLY with consent (`--git-init` or an
+ * interactive `[y/N]` yes), mirroring the identity generate-on-first-run flow.
+ * A refusal (non-interactive, or a prompt no) throws {@link
+ * NotAGitRepositoryError}, whose remediation now leads with `rig init
+ * --git-init`. `git init` runs in the cwd only (never a parent).
+ */
+async function resolveOrInitGitRepo(
+  deps: InitDeps,
+  flags: InitFlags
+): Promise<{ repoRoot: string; initialized: boolean }> {
+  const { io } = deps;
+  try {
+    return { repoRoot: await resolveRepoRoot(deps.cwd), initialized: false };
+  } catch {
+    let doInit = flags.gitInit;
+    if (!doInit && io.isInteractive && !flags.json) {
+      io.err('Not a git repository — rig keeps its config and objects in one.');
+      doInit = await io.confirm('Initialize a git repository here? [y/N] ');
+    }
+    if (!doInit) throw new NotAGitRepositoryError(deps.cwd);
+
+    await initGitRepository(deps.cwd);
+    // git init succeeded, so this must now resolve.
+    return { repoRoot: await resolveRepoRoot(deps.cwd), initialized: true };
+  }
 }
 
 /**
@@ -221,13 +264,11 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
   }
 
   try {
-    // ── (a) Must be a git repository — hint, never auto-run git init ────────
-    let repoRoot: string;
-    try {
-      repoRoot = await resolveRepoRoot(deps.cwd);
-    } catch {
-      throw new NotAGitRepositoryError(deps.cwd);
-    }
+    // ── (a) Git repository — create one (consent-gated) when there is none ──
+    // A cold start (`mkdir x && rig init`) is no longer a dead end: with
+    // consent init runs `git init` here first (prompt, or `--git-init`).
+    const { repoRoot, initialized: initializedGitRepo } =
+      await resolveOrInitGitRepo(deps, flags);
 
     // ── (b) Identity chain: source + derived pubkey (never the phrase) ──────
     // A chain miss no longer dead-ends: offer or honor identity generation.
@@ -273,6 +314,7 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
       const output: InitJsonOutput = {
         command: 'init',
         repoRoot,
+        initializedGitRepo,
         repoId,
         owner: identity.pubkey,
         identity: {
@@ -315,6 +357,7 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
       for (const line of createdIdentityBanner(generated)) io.out(line);
       if (generated.shadowedBy) io.err(shadowNote(generated.shadowedBy));
     }
+    if (initializedGitRepo) io.out(`Created a git repository at ${repoRoot}`);
     io.out(`Initialized rig for ${repoRoot}`);
     io.out(renderIdentityLine(identity));
     io.out(

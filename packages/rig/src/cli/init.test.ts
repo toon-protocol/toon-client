@@ -207,14 +207,17 @@ describe('rig init', () => {
     expect((await readToonConfig(repoDir)).owner).toBeUndefined();
   });
 
-  it('errors with a `git init` hint outside a git repository (never auto-runs it)', async () => {
+  it('refuses (non-TTY, no flag) outside a git repo, leading with --git-init', async () => {
     const bare = mkdtempSync(join(tmpdir(), 'toon-rig-norepo-'));
     try {
       const h = makeDeps({ RIG_MNEMONIC: PHRASE }, bare);
       expect(await runInit([], h.deps)).toBe(1);
       const text = h.err.join('\n');
       expect(text).toContain('not a git repository');
+      // Remediation now leads with the new flag, still mentions plain git init.
+      expect(text).toContain('rig init --git-init');
       expect(text).toContain('git init');
+      // Nothing created without consent.
       expect(execFileSync('ls', ['-A', bare], { encoding: 'utf-8' }).trim()).toBe('');
     } finally {
       rmSync(bare, { recursive: true, force: true });
@@ -374,5 +377,120 @@ describe('rig init identity generation (#294)', () => {
     expect(doc['owner']).toBe(gen['pubkey']);
     // The SECRET warning lands on stderr, not the machine stream.
     expect(h.err.join('\n')).toContain('SECRET');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #300: git repo creation on first run (consent-gated), mirroring #294
+// ---------------------------------------------------------------------------
+
+describe('rig init git-init (#300)', () => {
+  /** A deps harness rooted at a NON-repo directory, with tunable TTY. */
+  function makeAt(
+    dir: string,
+    env: Record<string, string>,
+    tty: { isInteractive: boolean; confirm: () => boolean }
+  ) {
+    const out: string[] = [];
+    const err: string[] = [];
+    return {
+      out,
+      err,
+      deps: {
+        io: {
+          out: (line) => out.push(line),
+          err: (line) => err.push(line),
+          emitJson: (payload) => out.push(JSON.stringify(payload, null, 2)),
+          isInteractive: tty.isInteractive,
+          confirm: async () => tty.confirm(),
+        },
+        env: { TOON_CLIENT_HOME: homeDir, ...env },
+        cwd: dir,
+      },
+    };
+  }
+
+  let bare: string;
+  beforeEach(() => {
+    bare = mkdtempSync(join(tmpdir(), 'toon-rig-norepo-'));
+  });
+  afterEach(() => {
+    rmSync(bare, { recursive: true, force: true });
+  });
+
+  it('--git-init (non-interactive) creates the repo and completes init', async () => {
+    const h = makeAt(bare, { RIG_MNEMONIC: PHRASE }, {
+      isInteractive: false,
+      confirm: () => false,
+    });
+    expect(await runInit(['--git-init'], h.deps)).toBe(0);
+    // A real git repo now exists and init wrote toon config against it.
+    expect(git(['rev-parse', '--is-inside-work-tree'], bare)).toBe('true');
+    const config = await readToonConfig(bare);
+    expect(config.repoId).toBe(basename(bare));
+    expect(config.owner).toBe(PUBKEY);
+    expect(h.out.join('\n')).toContain('Created a git repository at');
+  });
+
+  it('interactive: a `y` at the prompt runs git init; a `n` refuses', async () => {
+    const yes = makeAt(bare, { RIG_MNEMONIC: PHRASE }, {
+      isInteractive: true,
+      confirm: () => true,
+    });
+    expect(await runInit([], yes.deps)).toBe(0);
+    expect((await readToonConfig(bare)).owner).toBe(PUBKEY);
+    expect(yes.err.join('\n')).toContain('Not a git repository');
+
+    // Fresh non-repo dir for the `n` case.
+    const bare2 = mkdtempSync(join(tmpdir(), 'toon-rig-norepo-no-'));
+    try {
+      const no = makeAt(bare2, { RIG_MNEMONIC: PHRASE }, {
+        isInteractive: true,
+        confirm: () => false,
+      });
+      expect(await runInit([], no.deps)).toBe(1);
+      expect(no.err.join('\n')).toContain('not a git repository');
+      // Nothing was created on refusal.
+      expect(execFileSync('ls', ['-A', bare2], { encoding: 'utf-8' }).trim()).toBe('');
+    } finally {
+      rmSync(bare2, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT create a repo in --json mode without the flag (refuses)', async () => {
+    const h = makeAt(bare, { RIG_MNEMONIC: PHRASE }, {
+      // Even a "yes"-answering TTY is bypassed in --json mode (no prompt).
+      isInteractive: true,
+      confirm: () => true,
+    });
+    expect(await runInit(['--json'], h.deps)).toBe(1);
+    expect(JSON.parse(h.out.join('\n'))).toMatchObject({
+      command: 'init',
+      error: 'not_a_git_repository',
+    });
+    expect(execFileSync('ls', ['-A', bare], { encoding: 'utf-8' }).trim()).toBe('');
+  });
+
+  it('--git-init --generate-identity: empty dir → rig-ready in one command', async () => {
+    const h = makeAt(bare, {}, { isInteractive: false, confirm: () => false });
+    expect(
+      await runInit(['--git-init', '--generate-identity', '--json'], h.deps)
+    ).toBe(0);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['initializedGitRepo']).toBe(true);
+    expect(doc['owner']).toMatch(/^[0-9a-f]{64}$/);
+    const gen = doc['generatedIdentity'] as Record<string, unknown>;
+    expect((gen['mnemonic'] as string).split(' ').length).toBe(12);
+    // The repo, config, and identity all landed in one run.
+    expect(git(['remote'], bare)).toBe(''); // no relay yet (follow-up step)
+    expect((await readToonConfig(bare)).owner).toBe(doc['owner']);
+  });
+
+  it('--json reports initializedGitRepo: false inside an existing repo', async () => {
+    const h = makeDeps({ RIG_MNEMONIC: PHRASE });
+    expect(await runInit(['--json'], h.deps)).toBe(0);
+    expect(JSON.parse(h.out.join('\n'))).toMatchObject({
+      initializedGitRepo: false,
+    });
   });
 });
