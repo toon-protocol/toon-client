@@ -217,6 +217,23 @@ describe('rig maintainers add/remove (paid, owner-only)', () => {
     expect(io.err.join('\n')).toContain('only the repo owner');
   });
 
+  it('REFUSES add/remove on an unannounced repo (no phantom 30617, #287)', async () => {
+    // No existing announcement on the relay → republishing would mint a
+    // placeholder 30617 for real money that `rig push` could never fix.
+    for (const op of ['add', 'remove'] as const) {
+      const io = makeIo();
+      const fake = makeStandalone();
+      const code = await runMaintainers(
+        [op, M1, ...ADDR, '--yes'],
+        makeDeps(io, fake, []) // remoteEvents: [] ⇒ announced === false
+      );
+      expect(code).toBe(1);
+      expect(fake.published).toHaveLength(0);
+      expect(io.err.join('\n')).toContain('has no announcement');
+      expect(io.err.join('\n')).toContain('rig push');
+    }
+  });
+
   it('estimate only: --json without --yes publishes nothing', async () => {
     const io = makeIo();
     const fake = makeStandalone();

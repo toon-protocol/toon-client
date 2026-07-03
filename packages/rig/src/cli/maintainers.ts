@@ -360,6 +360,21 @@ async function runMutate(
         ? { webSocketFactory: deps.webSocketFactory }
         : {}),
     });
+    // Refuse on an unannounced repo: republishing here would MINT a phantom
+    // kind:30617 with a placeholder name (= repoId) and empty description, for
+    // real money. Worse, `rig push` only announces when the repo is NOT already
+    // announced (see push.ts), so that placeholder would permanently shadow the
+    // real name/description the first push intended, with no way to fix it.
+    // Managing maintainers presupposes the repo exists — announce it first.
+    if (!remote.announced) {
+      io.err(
+        `rig: 30617:${ctx.owner.slice(0, 8)}…:${ctx.repoId} has no announcement ` +
+          'yet — run `rig push` to publish the repo (with its real ' +
+          'name/description) before managing maintainers. Nothing was published ' +
+          'or paid.'
+      );
+      return 1;
+    }
     const current = remote.announceEvent
       ? parseMaintainers(remote.announceEvent.tags)
       : [];
