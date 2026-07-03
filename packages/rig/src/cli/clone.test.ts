@@ -20,6 +20,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { clearShaCache } from '@toon-protocol/arweave';
+import { EMPTY_BLOB_SHA } from '../objects.js';
 import { hexToNpub } from '../npub.js';
 import type { NostrEvent } from '../remote-state.js';
 import { runClone } from './clone.js';
@@ -370,3 +371,118 @@ describe('rig clone failure modes', () => {
     expect(gitText(join(cwd, REPO), ['fsck', '--strict'])).toBe('');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Empty (zero-byte) blob reconstruction (#310)
+// ---------------------------------------------------------------------------
+
+describe('rig clone empty-blob reconstruction', () => {
+  /** A source repo whose tree references the git empty blob (a 0-byte file). */
+  function makeEmptyFileRepo(): { dir: string; emptyBlobSha: string } {
+    const dir = makeTempDir('toon-rig-clone-empty-src-');
+    git(['init', '--initial-branch=main'], dir);
+    writeFileSync(join(dir, 'README.md'), '# demo\n');
+    writeFileSync(join(dir, 'empty.txt'), ''); // zero-byte file → empty blob
+    git(['add', '.'], dir);
+    git(['commit', '-m', 'with an empty file'], dir);
+    const emptyBlobSha = gitText(dir, ['rev-parse', 'main:empty.txt']);
+    return { dir, emptyBlobSha };
+  }
+
+  it('synthesizes the empty blob locally when it is absent from Arweave + GraphQL', async () => {
+    const { dir: srcDir, emptyBlobSha } = makeEmptyFileRepo();
+    // Sanity: git's empty file really is the universal empty-blob constant.
+    expect(emptyBlobSha).toBe(EMPTY_BLOB_SHA);
+
+    // A push by the fixed rig NEVER uploads the empty blob and never maps it,
+    // so simulate exactly that: drop it from BOTH the arweave map and store.
+    const { announce, refsEvent, objects } = repoStateEvents({
+      repoDir: srcDir,
+      owner: OWNER,
+      repoId: REPO,
+      arweaveMap: new Map(
+        objects_excluding(srcDir, EMPTY_BLOB_SHA).map((sha) => [sha, txFor(sha)])
+      ),
+    });
+    const store = storeFromObjects(
+      objects.filter((o) => o.sha !== EMPTY_BLOB_SHA)
+    );
+    const gateway = makeMockGateway(store);
+    const io = makeTestIo();
+    const cwd = makeTempDir('toon-rig-clone-dst-');
+
+    const code = await runClone([RELAY, `${OWNER}/${REPO}`], {
+      io,
+      env: {},
+      cwd,
+      webSocketFactory: makeMockRelayFactory((filter) =>
+        filterEvents([announce, refsEvent], filter)
+      ),
+      fetchFn: gateway.fetchFn,
+      // GraphQL cannot find it either — it was never uploaded.
+      resolveSha: async () => null,
+    });
+
+    expect(io.errLines.join('\n')).toBe('');
+    expect(code).toBe(0);
+
+    const dest = join(cwd, REPO);
+    // fsck-clean: the synthesized empty blob round-trips as a real git object.
+    expect(gitText(dest, ['fsck', '--strict'])).toBe('');
+    // The empty file exists at exactly 0 bytes…
+    expect(existsSync(join(dest, 'empty.txt'))).toBe(true);
+    expect(readFileSync(join(dest, 'empty.txt')).length).toBe(0);
+    // …and hashes to the git empty-blob constant (bit-identical clone).
+    expect(gitText(dest, ['rev-parse', 'main:empty.txt'])).toBe(EMPTY_BLOB_SHA);
+    expect(gitText(dest, ['status', '--porcelain'])).toBe('');
+  });
+
+  it('still errors on a genuinely-missing NON-empty object (empty-blob path does not swallow it)', async () => {
+    const { dir: srcDir } = makeEmptyFileRepo();
+    const { announce, refsEvent, objects } = repoStateEvents({
+      repoDir: srcDir,
+      owner: OWNER,
+      repoId: REPO,
+    });
+    // Drop the empty blob (skipped-on-push) AND a real blob (genuine lag).
+    const readmeSha = gitText(srcDir, ['rev-parse', 'main:README.md']);
+    const store = storeFromObjects(
+      objects.filter((o) => o.sha !== EMPTY_BLOB_SHA)
+    );
+    store.delete(txFor(readmeSha));
+    const gateway = makeMockGateway(store);
+    const io = makeTestIo();
+    const cwd = makeTempDir('toon-rig-clone-dst-');
+
+    const code = await runClone([RELAY, `${OWNER}/${REPO}`, '--json'], {
+      io,
+      env: {},
+      cwd,
+      webSocketFactory: makeMockRelayFactory((filter) =>
+        filterEvents([announce, refsEvent], filter)
+      ),
+      fetchFn: gateway.fetchFn,
+      resolveSha: async () => null,
+    });
+
+    expect(code).toBe(1);
+    const doc = io.jsonDocs[0] as Record<string, unknown>;
+    expect(doc).toMatchObject({ error: 'missing_remote_objects' });
+    // The honest lag-error names the real blob, NOT the empty blob.
+    expect(JSON.stringify(doc['missing'])).toContain(readmeSha);
+    expect(JSON.stringify(doc['missing'])).not.toContain(EMPTY_BLOB_SHA);
+    expect(existsSync(join(cwd, REPO))).toBe(false);
+  });
+});
+
+/** SHAs of every object in `repoDir` except `exclude`. */
+function objects_excluding(repoDir: string, exclude: string): string[] {
+  return gitText(repoDir, [
+    'cat-file',
+    '--batch-check=%(objectname)',
+    '--batch-all-objects',
+    '--unordered',
+  ])
+    .split('\n')
+    .filter((sha) => sha && sha !== exclude);
+}

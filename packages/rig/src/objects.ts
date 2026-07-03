@@ -35,6 +35,17 @@ export interface GitObject {
  */
 export const MAX_OBJECT_SIZE = 95 * 1024;
 
+/**
+ * Git's universal empty-blob SHA-1: the object for a zero-byte file.
+ *
+ * It is the ONLY zero-byte object git can produce (trees, commits, and tags
+ * are never empty) and it always has this exact constant value. The store
+ * rejects a zero-byte kind:5094 blob upload as malformed (F00), so `rig` never
+ * uploads this object — it is skipped on push and synthesized locally on
+ * clone/fetch (both keyed off an ACTUAL zero-length body, never a heuristic).
+ */
+export const EMPTY_BLOB_SHA = 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391';
+
 // ---------------------------------------------------------------------------
 // Envelope hashing
 // ---------------------------------------------------------------------------
