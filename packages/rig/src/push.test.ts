@@ -45,6 +45,8 @@ let featureCommit = '';
 let tagSha = '';
 /** Commit on the `empty` branch adding a zero-byte file + a real file. */
 let emptyCommit = '';
+/** Orphan commit whose root tree is the empty TREE object (allow-empty). */
+let emptyTreeCommit = '';
 /** All objects reachable from commit1 (the "remote already has these" set). */
 let commit1Objects: string[] = [];
 /** All objects reachable from main + feature/x + v1 tag (full first push). */
@@ -119,6 +121,14 @@ beforeAll(() => {
   git(['add', '.'], repoDir);
   git(['commit', '-m', 'empty + filled'], repoDir);
   emptyCommit = git(['rev-parse', 'HEAD'], repoDir);
+
+  // Empty-TREE branch: an orphan commit with no files, whose root tree is the
+  // git empty-tree object (4b825dc6…) — a zero-byte object that is NOT the
+  // empty blob and must NOT be skipped by the empty-blob special case.
+  git(['checkout', '--orphan', 'emptytree'], repoDir);
+  git(['rm', '-rf', '--quiet', '.'], repoDir);
+  git(['commit', '--allow-empty', '-m', 'empty tree'], repoDir);
+  emptyTreeCommit = git(['rev-parse', 'HEAD'], repoDir);
 
   git(['checkout', 'main'], repoDir);
 
@@ -762,6 +772,26 @@ describe('empty-blob handling', () => {
     if (!refsEvent) throw new Error('expected a kind:30618 refs event');
     const arweaveTags = tagValues(refsEvent.event, 'arweave');
     expect(arweaveTags.some((t) => t[0] === EMPTY_BLOB_SHA)).toBe(false);
+  });
+
+  it('does NOT skip the empty TREE object (only the empty blob is special-cased)', async () => {
+    const plan = await planPush({
+      repoReader: reader,
+      remoteState: cannedRemote(),
+      feeRates: FEE_RATES,
+      repoId: REPO_ID,
+      refs: ['refs/heads/emptytree'],
+    });
+
+    // The empty-tree object is zero bytes too, but it is NOT the empty blob —
+    // it must be scheduled for upload, never silently dropped.
+    const emptyTreeSha = hashGitObject('tree', Buffer.alloc(0)).sha;
+    expect(emptyTreeSha).toBe('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+    expect(plan.objects.map((o) => o.sha)).toContain(emptyTreeSha);
+    expect(plan.skippedEmptyObjects).toHaveLength(0);
+    expect(plan.estimate.skippedEmptyCount).toBe(0);
+    // Sanity: the branch really does carry the empty tree.
+    expect(reachableObjects([emptyTreeCommit], repoDir)).toContain(emptyTreeSha);
   });
 
   it('pushes the non-empty objects and skips ONLY the empty one', async () => {

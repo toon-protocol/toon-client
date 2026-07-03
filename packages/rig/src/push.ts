@@ -24,7 +24,11 @@
  */
 
 import { buildRepoAnnouncement, buildRepoRefs } from './nip34-events.js';
-import { MAX_OBJECT_SIZE, type GitObjectType } from './objects.js';
+import {
+  EMPTY_BLOB_SHA,
+  MAX_OBJECT_SIZE,
+  type GitObjectType,
+} from './objects.js';
 import type {
   FeeRates,
   PublishReceipt,
@@ -320,12 +324,13 @@ export async function planPush(options: PlanPushOptions): Promise<PushPlan> {
   }
   if (oversize.length > 0) throw new OversizeObjectsError(oversize);
 
-  // 4. Split off zero-byte objects, then order the rest ref-tips-last. -------
-  // The git empty blob (the ONLY zero-byte object git can produce) uploads as
-  // an empty kind:5094 `i` value, which the store rejects as malformed (F00).
-  // Skip it: it is reconstructed locally on clone/fetch. The key is an ACTUAL
-  // zero-length body (never a heuristic that could drop real content); a
-  // zero-byte object is always the empty blob, whose SHA is the git constant.
+  // 4. Split off the empty blob, then order the rest ref-tips-last. ----------
+  // The git empty blob uploads as an empty kind:5094 `i` value, which the
+  // store rejects as malformed (F00). Skip it: it is reconstructed locally on
+  // clone/fetch. Keyed off the EXACT empty-blob constant SHA — NOT a
+  // `size === 0` heuristic, which would also match the (distinct, valid) empty
+  // TREE object `4b825dc6…` and silently drop it (it is not synthesized on
+  // read). An object whose SHA is EMPTY_BLOB_SHA is provably the empty blob.
   const tipShas = new Set(updates.map((u) => u.localSha));
   const planned: PlannedObject[] = [];
   const skippedEmptyObjects: PlannedObject[] = [];
@@ -336,7 +341,7 @@ export async function planPush(options: PlanPushOptions): Promise<PushPlan> {
       ...(path ? { path } : {}),
       isRefTip: tipShas.has(stat.sha),
     };
-    if (stat.size === 0) skippedEmptyObjects.push(object);
+    if (stat.sha === EMPTY_BLOB_SHA) skippedEmptyObjects.push(object);
     else planned.push(object);
   }
   const objects = [
