@@ -14,8 +14,10 @@ import type { GitEventResponse } from '../routes.js';
 import {
   DaemonGitClient,
   DaemonRouteError,
+  DaemonTooOldForGitError,
   DaemonUnreachableError,
   daemonBaseUrl,
+  daemonSupportsGit,
   probeDaemon,
   resolvePaidSession,
   type DaemonProbe,
@@ -52,7 +54,7 @@ describe('daemonBaseUrl', () => {
 });
 
 describe('probeDaemon', () => {
-  it('parses identity, ready, relay URL, and feePerEvent from /status', async () => {
+  it('parses identity, ready, relay URL, feePerEvent, and capabilities from /status', async () => {
     const probe = await probeDaemon({}, (async (url: unknown) => {
       expect(String(url)).toBe('http://127.0.0.1:8787/status');
       return jsonResponse({
@@ -60,6 +62,7 @@ describe('probeDaemon', () => {
         identity: { nostrPubkey: TEST_PUBKEY },
         relay: { url: 'wss://relay.example' },
         feePerEvent: '7',
+        capabilities: ['git'],
       });
     }) as typeof fetch);
     expect(probe).toEqual({
@@ -69,7 +72,36 @@ describe('probeDaemon', () => {
       ready: true,
       relayUrl: 'wss://relay.example',
       feePerEvent: '7',
+      capabilities: ['git'],
     });
+  });
+
+  it('leaves capabilities undefined for an OLD daemon that omits the field', async () => {
+    const probe = await probeDaemon({}, (async () =>
+      jsonResponse({ identity: { nostrPubkey: TEST_PUBKEY } })) as typeof fetch);
+    expect(probe.capabilities).toBeUndefined();
+    expect(daemonSupportsGit(probe)).toBe(false);
+  });
+
+  it('keeps only string capability entries (garbage is filtered)', async () => {
+    const probe = await probeDaemon({}, (async () =>
+      jsonResponse({
+        identity: { nostrPubkey: TEST_PUBKEY },
+        capabilities: ['git', 7, null, 'future'],
+      })) as typeof fetch);
+    expect(probe.capabilities).toEqual(['git', 'future']);
+    expect(daemonSupportsGit(probe)).toBe(true);
+  });
+});
+
+describe('daemonSupportsGit', () => {
+  const base: DaemonProbe = { baseUrl: 'http://127.0.0.1:8787', reachable: true };
+  it('true only when capabilities includes "git"', () => {
+    expect(daemonSupportsGit({ ...base, capabilities: ['git'] })).toBe(true);
+    expect(daemonSupportsGit({ ...base, capabilities: ['other'] })).toBe(false);
+    expect(daemonSupportsGit({ ...base, capabilities: [] })).toBe(false);
+    // Old daemon (field absent) fails closed.
+    expect(daemonSupportsGit(base)).toBe(false);
   });
 
   it.each([
@@ -117,7 +149,7 @@ describe('resolvePaidSession', () => {
     });
   }
 
-  it('SAME identity → delegates (standalone loader never invoked)', async () => {
+  it('SAME identity + git capability → delegates (standalone loader never invoked)', async () => {
     let loaded = 0;
     const session = await resolvePaidSession({
       env,
@@ -132,6 +164,7 @@ describe('resolvePaidSession', () => {
         identity: TEST_PUBKEY,
         feePerEvent: '5',
         relayUrl: 'wss://daemon-relay.example',
+        capabilities: ['git'],
       }),
     });
     expect(session.path).toBe('daemon');
@@ -142,6 +175,53 @@ describe('resolvePaidSession', () => {
     expect(session.daemonRelayUrl).toBe('wss://daemon-relay.example');
     expect(loaded).toBe(0);
     expect(warnings.join('\n')).toContain('paid path: daemon');
+  });
+
+  it('SAME identity but OLD daemon (no git capability) → actionable error, NOT a raw 404', async () => {
+    let loaded = 0;
+    const err = await resolvePaidSession({
+      env,
+      cwd,
+      warn: (l) => warnings.push(l),
+      loadStandalone: async () => {
+        loaded += 1;
+        return fakeCtx;
+      },
+      // No `capabilities` field at all — an old client-mcp daemon.
+      probeDaemon: probeOf({ reachable: true, identity: TEST_PUBKEY }),
+    }).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(DaemonTooOldForGitError);
+    const message = (err as Error).message;
+    // Names the identity, the missing routes, AND both remediations.
+    expect(message).toContain(TEST_PUBKEY.slice(0, 8));
+    expect(message).toContain('missing /git routes');
+    expect(message).toContain('npm i -g @toon-protocol/client-mcp@latest');
+    expect(message).toContain('stop it to let rig run standalone');
+    // Never surfaced as an opaque 404, and standalone never silently ran
+    // (that would trip the #228 nonce guard anyway).
+    expect(message).not.toContain('404');
+    expect(loaded).toBe(0);
+    // It did NOT announce "delegating".
+    expect(warnings.join('\n')).not.toContain('delegating');
+  });
+
+  it('SAME identity + capabilities present but WITHOUT git → actionable error', async () => {
+    await expect(
+      resolvePaidSession({
+        env,
+        cwd,
+        warn: (l) => warnings.push(l),
+        loadStandalone: async () => fakeCtx,
+        probeDaemon: probeOf({
+          reachable: true,
+          identity: TEST_PUBKEY,
+          capabilities: ['something-else'],
+        }),
+      })
+    ).rejects.toBeInstanceOf(DaemonTooOldForGitError);
   });
 
   it('DIFFERENT identity → standalone (no conflict, no delegation)', async () => {
@@ -255,6 +335,28 @@ describe('DaemonGitClient', () => {
       'non_fast_forward'
     );
     expect((err as DaemonRouteError).envelope['refs']).toEqual([]);
+  });
+
+  it('maps a 404 on a git route to DaemonTooOldForGitError (defense in depth)', async () => {
+    // The capability probe said "git" but the route is actually missing (a
+    // lie, or a mid-restart skew): the raw 404 must still degrade to the
+    // actionable upgrade error, never the opaque "HTTP 404" envelope.
+    const client = new DaemonGitClient(
+      'http://127.0.0.1:8787',
+      (async () => new Response('Not Found', { status: 404 })) as typeof fetch,
+      TEST_PUBKEY
+    );
+    const err = await client
+      .gitPush({ repoPath: '/r', repoId: 'demo', confirm: true })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(err).toBeInstanceOf(DaemonTooOldForGitError);
+    const message = (err as Error).message;
+    expect(message).toContain('missing /git routes');
+    expect(message).toContain(TEST_PUBKEY.slice(0, 8));
+    expect(message).not.toContain('404');
   });
 
   it('wraps a vanished daemon in DaemonUnreachableError (post-probe race)', async () => {

@@ -990,6 +990,11 @@ export class ClientRunner {
       },
       ...(network ? { network } : {}),
       ...(apex?.lastError ? { lastError: apex.lastError } : {}),
+      // Advertise the optional-route surface this daemon build serves so a
+      // version-skewed rig CLI can capability-gate the `/git/*` write path
+      // BEFORE delegating (an old daemon lacking these routes 404s otherwise —
+      // #306). Static: these routes are always registered by this build.
+      capabilities: ['git'],
     };
   }
 

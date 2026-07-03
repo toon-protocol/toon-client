@@ -15,7 +15,11 @@ import {
   type RejectedRefUpdate,
 } from '../push.js';
 import { GitError } from '../repo-reader.js';
-import { DaemonRouteError, DaemonUnreachableError } from './daemon-session.js';
+import {
+  DaemonRouteError,
+  DaemonTooOldForGitError,
+  DaemonUnreachableError,
+} from './daemon-session.js';
 import { MissingIdentityError } from './identity.js';
 import type { CliIo } from './output.js';
 
@@ -280,6 +284,20 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
       code: 'daemon_unreachable',
       lines: err.message.split('\n'),
       json: { error: 'daemon_unreachable', detail: err.message },
+    };
+  }
+  // Version skew (#306): a same-identity daemon too old for the /git/* routes.
+  // The message already carries the upgrade + stop-daemon remediation.
+  if (err instanceof DaemonTooOldForGitError) {
+    return {
+      code: 'daemon_too_old_for_git',
+      lines: err.message.split('\n'),
+      json: {
+        error: 'daemon_too_old_for_git',
+        detail: err.message,
+        baseUrl: err.baseUrl,
+        ...(err.pubkey !== undefined ? { pubkey: err.pubkey } : {}),
+      },
     };
   }
 

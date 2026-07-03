@@ -61,7 +61,19 @@ export interface StatusResponse {
   network?: ChainStatus[];
   /** Last error observed during bootstrap, if any (non-fatal). */
   lastError?: string;
+  /**
+   * Optional-route capabilities this daemon build serves, so a version-skewed
+   * client can gate BEFORE it commits to a route that a stale daemon 404s.
+   * Currently: `'git'` — the `/git/estimate|push|issue|comment|patch|status`
+   * write path (added in #227). ABSENT on daemons older than the field itself,
+   * which a client MUST treat as "capability not present" (fail closed). A
+   * daemon must be RESTARTED to advertise a newly-added capability.
+   */
+  capabilities: DaemonCapability[];
 }
+
+/** A named optional-route capability advertised via `/status.capabilities`. */
+export type DaemonCapability = 'git';
 
 /** `POST /publish` — pay-to-write a single Nostr event. */
 export interface PublishRequest {
