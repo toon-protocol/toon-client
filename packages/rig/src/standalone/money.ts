@@ -14,22 +14,6 @@
 import type { ChannelMapRecord } from './channel-map.js';
 
 /**
- * One on-chain wallet token balance — structural twin of
- * `@toon-protocol/client`'s `WalletBalance` (`balance/WalletBalanceReader.ts`,
- * not exported from the package root); keep in sync.
- */
-export interface WalletBalanceInfo {
-  chain: 'evm' | 'solana' | 'mina';
-  address: string;
-  /** Base-unit integer, decimal string. */
-  amount: string;
-  /** Token symbol, when resolved (e.g. `'USDC'`, `'MINA'`). */
-  asset?: string;
-  /** Token decimals, when resolved. */
-  assetScale?: number;
-}
-
-/**
  * One asset amount within a chain's wallet view — structural twin of
  * `@toon-protocol/client`'s `WalletTokenAmount`; keep in sync.
  */
