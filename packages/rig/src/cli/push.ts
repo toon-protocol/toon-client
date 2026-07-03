@@ -170,14 +170,51 @@ Options:
 // ---------------------------------------------------------------------------
 
 /**
+ * Build the "no such local ref" error: name the missing ref, then point at the
+ * current branch (with a `did you mean` using the real branch name) or, when
+ * HEAD is detached/unborn, list the local branches. This is deliberately NOT
+ * the ref-deletion guard — a branch that simply doesn't exist is the common
+ * case (e.g. the docs say `main` but the repo is on `master`), and mentioning
+ * "ref deletion" there is a confusing red herring.
+ */
+function noSuchRefMessage(
+  spec: string,
+  head: string | undefined,
+  refs: readonly { refname: string }[],
+  remoteName: string
+): string {
+  const branches = refs
+    .filter((r) => r.refname.startsWith('refs/heads/'))
+    .map((r) => r.refname.slice('refs/heads/'.length));
+  const current =
+    head && head.startsWith('refs/heads/')
+      ? head.slice('refs/heads/'.length)
+      : undefined;
+  let msg = `no local branch or tag ${JSON.stringify(spec)}`;
+  if (current) {
+    msg +=
+      ` — your current branch is ${JSON.stringify(current)} ` +
+      `(did you mean \`rig push ${remoteName} ${current}\`?)`;
+  } else if (branches.length > 0) {
+    msg += ` — local branches: ${branches.join(', ')}`;
+  } else {
+    msg += ' — this repository has no branches yet (make a commit first)';
+  }
+  return msg;
+}
+
+/**
  * Expand positional refspecs / `--all` / `--tags` into full refnames using
  * the local ref list; default (no selection) is the current branch.
+ * `remoteName` (default `origin`) only shapes the `did you mean` hint on a
+ * missing ref.
  */
 export async function selectRefspecs(
   reader: GitRepoReader,
   positionals: string[],
   all: boolean,
-  tags: boolean
+  tags: boolean,
+  remoteName = 'origin'
 ): Promise<string[]> {
   const { head, refs } = await reader.listRefs();
   const byName = new Set(refs.map((r) => r.refname));
@@ -194,11 +231,14 @@ export async function selectRefspecs(
       add(`refs/heads/${spec}`);
     } else if (byName.has(`refs/tags/${spec}`)) {
       add(`refs/tags/${spec}`);
-    } else {
+    } else if (spec.startsWith(':')) {
+      // git deletion syntax (`rig push origin :branch`) — the one case where
+      // "out of scope in v1" genuinely applies.
       throw new Error(
-        `refspec ${JSON.stringify(spec)} matches no local branch or tag ` +
-          '(ref deletion is out of scope in v1)'
+        `deleting remote refs (${JSON.stringify(spec)}) is out of scope in v1`
       );
+    } else {
+      throw new Error(noSuchRefMessage(spec, head, refs, remoteName));
     }
   }
   if (all) {
@@ -348,7 +388,8 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
       reader,
       refspecArgs,
       flags.all,
-      flags.tags
+      flags.tags,
+      remoteName ?? 'origin'
     );
 
     // ── Relay resolution (#249: --relay > named remote > origin > toon.relay)

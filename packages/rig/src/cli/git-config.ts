@@ -85,9 +85,22 @@ export async function resolveRepoRoot(cwd: string): Promise<string> {
  * existing repo is a no-op). Used by `rig init` when it offers to create the
  * repo for the user (consent-gated), mirroring how it offers to mint an
  * identity on a cold start.
+ *
+ * The initial branch is forced to `main`, deterministically — a stock git
+ * without `init.defaultBranch=main` would otherwise create `master`, and every
+ * rig doc/quickstart says `main` (so `rig push origin main` / `rig checkout
+ * main` would then fail against a repo whose only branch is `master`). git
+ * ≥ 2.28 takes `--initial-branch=main`; older git falls back to pointing the
+ * unborn HEAD at `refs/heads/main` (no commits yet, so this just renames the
+ * pending branch).
  */
 export async function initGitRepository(dir: string): Promise<void> {
-  await git(dir, ['init']);
+  try {
+    await git(dir, ['init', '--initial-branch=main']);
+  } catch {
+    await git(dir, ['init']);
+    await git(dir, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+  }
 }
 
 /** Read the `toon.*` git config keys of the repository at `repoPath`. */

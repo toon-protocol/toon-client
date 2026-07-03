@@ -563,6 +563,9 @@ describe('rig init git-init (#300)', () => {
     expect(await runInit(['--git-init'], h.deps)).toBe(0);
     // A real git repo now exists and init wrote toon config against it.
     expect(git(['rev-parse', '--is-inside-work-tree'], bare)).toBe('true');
+    // ...and it lands on `main` (what every rig doc/quickstart assumes), not
+    // whatever the machine's init.defaultBranch would have produced (#master).
+    expect(git(['symbolic-ref', 'HEAD'], bare)).toBe('refs/heads/main');
     const config = await readToonConfig(bare);
     expect(config.repoId).toBe(basename(bare));
     expect(config.owner).toBe(PUBKEY);
@@ -618,7 +621,8 @@ describe('rig init git-init (#300)', () => {
     expect(doc['owner']).toMatch(/^[0-9a-f]{64}$/);
     const gen = doc['generatedIdentity'] as Record<string, unknown>;
     expect((gen['mnemonic'] as string).split(' ').length).toBe(12);
-    // The repo, config, and identity all landed in one run.
+    // The repo, config, and identity all landed in one run — on `main`.
+    expect(git(['symbolic-ref', 'HEAD'], bare)).toBe('refs/heads/main');
     expect(git(['remote'], bare)).toBe(''); // no relay yet (follow-up step)
     expect((await readToonConfig(bare)).owner).toBe(doc['owner']);
   });
