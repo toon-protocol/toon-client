@@ -3,10 +3,22 @@
  *
  * A FREE command: no relay, no client start, no nonce guard, no payment
  * channel — just the identity chain (RIG_MNEMONIC precedence, ./identity.ts)
- * to derive the chain address, and one HTTP POST to the devnet faucet
- * (`@toon-protocol/client`'s `fundWallet`: `POST {faucet}/api/request` for
- * EVM, `/api/solana/request`, `/api/mina/request` — body `{ address }`; the
- * faucet drips FIXED amounts, so there is no --amount).
+ * to derive the chain address(es), and an HTTP POST per chain to the devnet
+ * faucet (`@toon-protocol/client`'s `fundWallet`: `POST {faucet}/api/request`
+ * for EVM, `/api/solana/request`, `/api/mina/request` — body `{ address }`;
+ * the faucet drips FIXED amounts, so there is no --amount). Each per-chain
+ * drip already covers BOTH the native coin and USDC (EVM → ETH + USDC,
+ * Solana → SOL + USDC, Mina → MINA + USDC).
+ *
+ * MULTI-CHAIN BY DEFAULT: with no `--chain`, `rig fund` funds ALL supported
+ * chains (evm + solana + mina) so the wallet matches the multi-chain
+ * `rig balance` view (#299) in one run instead of three. `--chain <one>`
+ * narrows to a single chain; `--chain all` is the explicit alias for the
+ * default. The drips run in PARALLEL — the Mina faucet legitimately takes
+ * ~75s, so serializing would cost ~150s for a run that overlaps to ~75s — and
+ * each chain's result is INDEPENDENT: one chain's faucet failing never aborts
+ * the others. Exit code is 0 only when every targeted chain funded; if any
+ * chain failed the exit code is 1 and the per-chain breakdown is always shown.
  *
  * Faucet resolution mirrors the toon-clientd conventions
  * (client-mcp/src/daemon/config.ts — no import, keep in sync):
@@ -22,10 +34,11 @@
  * command prints the derived wallet address(es) to fund externally instead of
  * failing silently.
  *
- * The drip is awaited synchronously (a CLI has no background): the Mina
- * faucet legitimately takes ~75s, so the per-chain timeout is generous
+ * The drips are awaited (a CLI has no background) but run concurrently: the
+ * Mina faucet legitimately takes ~75s, so the per-chain timeout is generous
  * (daemon convention: 90s, mina 130s; `TOON_CLIENT_FAUCET_TIMEOUT_MS` /
- * config `faucetTimeoutMs` override).
+ * config `faucetTimeoutMs` override) and a serial evm→solana→mina run would
+ * stack those budgets — parallel drips overlap them.
  */
 
 import { readFileSync } from 'node:fs';
@@ -50,24 +63,41 @@ export const DEVNET_FAUCET_URL = 'https://faucet.devnet.toonprotocol.dev';
 const CHAINS = ['evm', 'solana', 'mina'] as const;
 type FundChain = (typeof CHAINS)[number];
 
+/** Accepted `--chain` values: a single chain, or `all` (the default). */
+const CHAIN_CHOICES = [...CHAINS, 'all'] as const;
+
+/** The native coin dripped alongside USDC for each chain (human hint). */
+const NATIVE_COIN: Record<FundChain, string> = {
+  evm: 'ETH',
+  solana: 'SOL',
+  mina: 'MINA',
+};
+
 export const FUND_USAGE = `Usage: rig fund [options]
 
 Drip devnet test funds to the active identity's wallet — free (the faucet
-pays). The identity comes from RIG_MNEMONIC (env or a project .env) or the
+pays). By default funds ALL supported chains (evm + solana + mina), each drip
+covering the native coin AND USDC, so the wallet matches the multi-chain
+\`rig balance\` view in one run. The per-chain drips run in parallel and are
+independent — one chain's faucet failing does not abort the others (exit 0
+only when every targeted chain funded; exit 1 if any failed, with the
+per-chain breakdown always shown).
+
+The identity comes from RIG_MNEMONIC (env or a project .env) or the
 ~/.toon-client keystore/config; the faucet from TOON_CLIENT_FAUCET_URL, the
 faucetUrl config field, or the deployed devnet faucet when the network is
 devnet — including when a configured *.devnet.toonprotocol.dev origin infers
 it (a devnet relay/proxy/btp endpoint, or the git origin remote from
 \`rig remote add origin <devnet relay>\`). The faucet drips a FIXED amount per
-chain (there is no --amount). On a
-network without a faucet, prints the wallet address(es) to fund externally
-instead.
+chain (there is no --amount). On a network without a faucet, prints the wallet
+address(es) to fund externally instead.
 
 Options:
-  --chain <chain>      evm | solana | mina (default: TOON_CLIENT_CHAIN, the
-                       \`chain\` config field, else evm)
+  --chain <chain>      evm | solana | mina | all — fund one chain, or all
+                       (default: all supported chains)
   --address <address>  fund this address instead of the identity's own
-  --json               machine-readable envelope
+                       (requires an explicit single --chain)
+  --json               machine-readable envelope (per-chain results array)
   -h, --help           show this help`;
 
 /** What `rig fund` needs from the command environment. */
@@ -85,24 +115,36 @@ interface FundConfigFile {
   network?: string;
   faucetUrl?: string;
   faucetTimeoutMs?: number;
-  chain?: string;
   relayUrl?: string;
   proxyUrl?: string;
   btpUrl?: string;
+}
+
+/** One chain's drip outcome — the parallel, independent unit of work. */
+interface ChainDripResult {
+  chain: FundChain;
+  /** True when this chain's faucet drip succeeded. */
+  funded: boolean;
+  /** The address that was (or would have been) funded; null if none derived. */
+  address: string | null;
+  /** Raw faucet response body on success (shape is faucet-defined). */
+  response?: unknown;
+  /** Failure reason when `funded` is false. */
+  error?: string;
+  /** Wall-clock duration of this chain's drip in ms (present once attempted). */
+  elapsedMs?: number;
 }
 
 /** `--json` envelope. */
 interface FundJson {
   command: 'fund';
   identity: IdentityReport;
-  /** True when a faucet drip was performed (and succeeded). */
+  /** True only when EVERY targeted chain funded (overall success). */
   funded: boolean;
   network: string | null;
-  chain: FundChain;
-  address?: string;
   faucetUrl?: string;
-  /** Raw faucet response body (shape is faucet-defined). */
-  response?: unknown;
+  /** The per-chain drip results (one entry per targeted chain). */
+  results?: ChainDripResult[];
   /**
    * Set when `network` was inferred as `devnet` from a configured
    * `*.devnet.toonprotocol.dev` origin (#288) rather than an explicit
@@ -273,9 +315,20 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
     chainFlag = values.chain;
     addressFlag = values.address;
     json = values.json ?? false;
-    if (chainFlag !== undefined && !CHAINS.includes(chainFlag as FundChain)) {
+    if (
+      chainFlag !== undefined &&
+      !CHAIN_CHOICES.includes(chainFlag as (typeof CHAIN_CHOICES)[number])
+    ) {
       throw new Error(
-        `--chain must be one of ${CHAINS.join(' | ')}, got ${JSON.stringify(chainFlag)}`
+        `--chain must be one of ${CHAIN_CHOICES.join(' | ')}, got ${JSON.stringify(chainFlag)}`
+      );
+    }
+    // A per-chain address (`--address`) is meaningless across chains — an EVM
+    // 0x address cannot fund Solana or Mina. Require an explicit single chain.
+    if (addressFlag !== undefined && (chainFlag === undefined || chainFlag === 'all')) {
+      throw new Error(
+        '--address requires an explicit single --chain (evm | solana | mina) — ' +
+          'a single address cannot fund every chain'
       );
     }
   } catch (err) {
@@ -286,15 +339,14 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
 
   try {
     const { file } = readFundConfig(env);
-    const chain = (chainFlag ??
-      env['TOON_CLIENT_CHAIN'] ??
-      file.chain ??
-      'evm') as FundChain;
-    if (!CHAINS.includes(chain)) {
-      throw new Error(
-        `configured settlement chain ${JSON.stringify(chain)} has no faucet — pass --chain ${CHAINS.join(' | ')}`
-      );
-    }
+    // MULTI-CHAIN BY DEFAULT (#299 parity): no `--chain` (or `--chain all`)
+    // funds every supported chain; a specific `--chain` narrows to one. The
+    // env/config `chain` settlement preference no longer narrows `rig fund` —
+    // funding all chains is a strict superset and matches `rig balance`.
+    const targetChains: FundChain[] =
+      chainFlag === undefined || chainFlag === 'all'
+        ? [...CHAINS]
+        : [chainFlag as FundChain];
     const network = env['TOON_CLIENT_NETWORK'] ?? file.network;
     // A configured `*.devnet.toonprotocol.dev` origin means the shared devnet
     // even when `network` still reads its `custom` default (#288): the host
@@ -353,7 +405,6 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
           identity,
           funded: false,
           network: network ?? null,
-          chain,
           addresses,
           guidance,
         } satisfies FundJson);
@@ -368,21 +419,15 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
       return 0;
     }
 
-    // ── Devnet faucet drip ───────────────────────────────────────────────────
-    const address = addressFlag ?? addresses[chain];
-    if (!address) {
-      throw new Error(
-        `no ${chain} address could be derived for this identity — pass an ` +
-          'explicit --address (for mina, install the optional mina-signer dependency)'
-      );
-    }
-    // Generous, chain-aware timeout (daemon convention): the drip is awaited
-    // here, and a Mina drip routinely takes >75s server-side.
+    // ── Devnet faucet drips (parallel, independent per chain) ───────────────
+    // Chain-aware timeout (daemon convention): a Mina drip routinely takes
+    // >75s server-side. Env/config override applies uniformly.
     const timeoutEnv = env['TOON_CLIENT_FAUCET_TIMEOUT_MS'];
-    const timeout =
-      timeoutEnv && Number.isFinite(Number(timeoutEnv))
-        ? Number(timeoutEnv)
-        : (file.faucetTimeoutMs ?? (chain === 'mina' ? 130_000 : 90_000));
+    const timeoutFor = (chain: FundChain): number => {
+      if (timeoutEnv && Number.isFinite(Number(timeoutEnv))) return Number(timeoutEnv);
+      if (file.faucetTimeoutMs !== undefined) return file.faucetTimeoutMs;
+      return chain === 'mina' ? 130_000 : 90_000;
+    };
 
     if (!json && inferredDevnet) {
       io.out(
@@ -392,34 +437,89 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
       );
     }
     if (!json) {
+      const list = targetChains.join(', ');
       io.out(
-        `Requesting ${chain} drip from ${faucetUrl} for ${address} …` +
-          (chain === 'mina' ? ' (mina settles slowly; this can take ~2 minutes)' : '')
+        `Requesting ${targetChains.length === 1 ? '' : 'parallel '}drip${targetChains.length === 1 ? '' : 's'} ` +
+          `from ${faucetUrl} for ${list} …` +
+          (targetChains.includes('mina')
+            ? ' (mina settles slowly; this can take ~2 minutes)'
+            : '')
       );
     }
-    const { response } = await client.fundWallet(faucetUrl, address, chain, {
-      timeout,
-      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+
+    // Each chain is an INDEPENDENT unit: derive-or-fail and drip-or-fail are
+    // both captured into a ChainDripResult so one chain's failure never
+    // rejects the batch. Kicking every drip off before awaiting makes them
+    // genuinely concurrent (the Mina ~75s overlaps evm/solana, not stacks).
+    const singleChain = targetChains.length === 1;
+    const drips = targetChains.map(async (chain): Promise<ChainDripResult> => {
+      const address = (singleChain ? addressFlag : undefined) ?? addresses[chain];
+      if (!address) {
+        return {
+          chain,
+          funded: false,
+          address: null,
+          error:
+            `no ${chain} address could be derived for this identity` +
+            (chain === 'mina'
+              ? ' (install the optional mina-signer dependency)'
+              : ''),
+        };
+      }
+      const started = Date.now();
+      try {
+        const { response } = await client.fundWallet(faucetUrl, address, chain, {
+          timeout: timeoutFor(chain),
+          ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+        });
+        return {
+          chain,
+          funded: true,
+          address,
+          response,
+          elapsedMs: Date.now() - started,
+        };
+      } catch (err) {
+        return {
+          chain,
+          funded: false,
+          address,
+          error: err instanceof Error ? err.message : String(err),
+          elapsedMs: Date.now() - started,
+        };
+      }
     });
+    const results = await Promise.all(drips);
+    const allFunded = results.every((r) => r.funded);
 
     if (json) {
       io.emitJson({
         command: 'fund',
         identity,
-        funded: true,
+        funded: allFunded,
         network: effectiveNetwork ?? null,
-        chain,
-        address,
         faucetUrl,
-        response,
+        results,
         ...(inferredDevnet ? { inferredDevnetFrom: devnetOrigin } : {}),
       } satisfies FundJson);
-      return 0;
+      return allFunded ? 0 : 1;
     }
-    io.out(`Faucet drip succeeded: ${chain} → ${address}`);
+
+    for (const r of results) {
+      const label = r.chain.padEnd(6);
+      if (r.funded) {
+        // The faucet drips native + USDC together; annotate the coins, and the
+        // wall time for slow chains (mina) so a >1-minute wait reads as normal.
+        const slow = r.elapsedMs !== undefined && r.elapsedMs >= 5_000;
+        const time = slow ? ` (${Math.round((r.elapsedMs as number) / 1000)}s)` : '';
+        io.out(`  ${label} ✓ funded (${NATIVE_COIN[r.chain]} + USDC)${time}`);
+      } else {
+        io.out(`  ${label} ✗ ${r.error ?? 'failed'}`);
+      }
+    }
     io.out(renderIdentityLine(identity));
     io.out('Re-check with `rig balance` (a drip can take a few blocks to land).');
-    return 0;
+    return allFunded ? 0 : 1;
   } catch (err) {
     return emitCliError(io, json, 'fund', err);
   }
