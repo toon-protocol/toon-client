@@ -1,6 +1,6 @@
 {
   "name": "@toon-protocol/rig-web",
-  "version": "0.2.33",
+  "version": "0.2.34",
   "description": "Decentralized control plane for TOON Protocol — a browser frontend that interprets events (NIP-34 git is its first surface, not a GitHub clone)",
   "type": "module",
   "private": true,
