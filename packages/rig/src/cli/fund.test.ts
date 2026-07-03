@@ -8,6 +8,7 @@
  * the one the client would fund.
  */
 
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -69,6 +70,17 @@ describe('rig fund', () => {
   function writeConfig(config: Record<string, unknown>): void {
     mkdirSync(home, { recursive: true });
     writeFileSync(join(home, 'config.json'), JSON.stringify(config));
+  }
+
+  /**
+   * Turn `cwd` into a real git repo whose `origin` remote is `url` — the same
+   * state `rig remote add origin <url>` leaves behind. `rig fund` resolves
+   * this origin the way push/fetch do, so a devnet origin should infer devnet
+   * (#288) without any env var.
+   */
+  function gitOrigin(url: string): void {
+    execFileSync('git', ['init', '-q'], { cwd });
+    execFileSync('git', ['remote', 'add', 'origin', url], { cwd });
   }
 
   const baseEnv = (): NodeJS.ProcessEnv => ({
@@ -258,6 +270,80 @@ describe('rig fund', () => {
     const text = h.out.join('\n');
     expect(text).not.toContain('looks like the shared devnet');
     expect(text).toContain('TOON_CLIENT_NETWORK=devnet');
+  });
+
+  // ── #288 reopened: infer devnet from the git `origin` remote too ──────────
+  // The shipped #291 auto-detect only read env/config relay/proxy/btp URLs,
+  // NOT the git remote `rig remote add origin …` writes. A fresh user who ran
+  // only `rig remote add origin wss://…devnet…` still got network `custom`.
+
+  it('a devnet git origin remote infers devnet and drips — no env var, no config network (#288)', async () => {
+    writeConfig({}); // fresh config → network defaults to "custom"; no env relay
+    gitOrigin('wss://relay-ws.devnet.toonprotocol.dev');
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund(['--json'], h.deps)).toBe(0);
+    // The devnet origin alone drove the drip from the deployed devnet faucet.
+    expect(h.fetchCalls).toHaveLength(1);
+    expect(h.fetchCalls[0]?.url).toBe(`${DEVNET_FAUCET_URL}/api/request`);
+    const parsed = JSON.parse(h.out.join('\n')) as {
+      funded: boolean;
+      network: string;
+      faucetUrl: string;
+      inferredDevnetFrom?: string;
+    };
+    expect(parsed.funded).toBe(true);
+    expect(parsed.network).toBe('devnet');
+    expect(parsed.faucetUrl).toBe(DEVNET_FAUCET_URL);
+    expect(parsed.inferredDevnetFrom).toBe(
+      'wss://relay-ws.devnet.toonprotocol.dev'
+    );
+  });
+
+  it('a devnet git origin: human output announces the inference (#288)', async () => {
+    writeConfig({});
+    gitOrigin('wss://relay-ws.devnet.toonprotocol.dev');
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund([], h.deps)).toBe(0);
+    const text = h.out.join('\n');
+    expect(text).toContain("Inferred network 'devnet' from the configured origin");
+    expect(text).toContain('wss://relay-ws.devnet.toonprotocol.dev');
+    expect(text).toContain('Faucet drip succeeded');
+  });
+
+  it('explicit TOON_CLIENT_NETWORK=testnet is authoritative over a devnet git origin (#288)', async () => {
+    writeConfig({});
+    gitOrigin('wss://relay-ws.devnet.toonprotocol.dev');
+    const h = makeHarness({ ...baseEnv(), TOON_CLIENT_NETWORK: 'testnet' }, cwd);
+    expect(await runFund(['--json'], h.deps)).toBe(0);
+    expect(h.fetchCalls).toEqual([]);
+    const parsed = JSON.parse(h.out.join('\n')) as {
+      funded: boolean;
+      network: string;
+    };
+    expect(parsed.funded).toBe(false);
+    expect(parsed.network).toBe('testnet');
+  });
+
+  it('a non-devnet git origin does NOT infer devnet (unchanged guidance) (#288)', async () => {
+    writeConfig({});
+    gitOrigin('wss://relay.example.com');
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund([], h.deps)).toBe(0);
+    expect(h.fetchCalls).toEqual([]);
+    const text = h.out.join('\n');
+    expect(text).not.toContain('looks like the shared devnet');
+    expect(text).toContain('TOON_CLIENT_NETWORK=devnet');
+  });
+
+  it('a plain (non-relay) git origin is ignored — no crash, prints guidance (#288)', async () => {
+    // An SSH GitHub clone URL is not a relay URL: resolveRelays skips it
+    // (NoOriginConfiguredError), which fund swallows to "no origin relay".
+    writeConfig({});
+    gitOrigin('git@github.com:toon-protocol/toon-client.git');
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund([], h.deps)).toBe(0);
+    expect(h.fetchCalls).toEqual([]);
+    expect(h.out.join('\n')).toContain('no faucet is configured for network');
   });
 
   it('a non-2xx faucet response is a clear error (exit 1)', async () => {

@@ -13,9 +13,14 @@
  * `TOON_CLIENT_FAUCET_URL` env → `faucetUrl` in the shared client config →
  * the deployed devnet faucet when the network IS (or is inferred as) devnet.
  * A configured `*.devnet.toonprotocol.dev` origin infers devnet even when
- * `network` still reads its `custom` default (#288). On any other network
- * there is no faucet: the command prints the derived wallet address(es) to
- * fund externally instead of failing silently.
+ * `network` still reads its `custom` default (#288) — that origin is BOTH a
+ * devnet-looking relay/proxy/btp endpoint in env/config AND the git `origin`
+ * remote `rig remote` configures (resolved the same way push/fetch resolve
+ * their relay), so a fresh user who only ran `rig remote add origin
+ * wss://relay-ws.devnet.toonprotocol.dev` gets the drip from a plain
+ * `rig fund` with no env var. On any other network there is no faucet: the
+ * command prints the derived wallet address(es) to fund externally instead of
+ * failing silently.
  *
  * The drip is awaited synchronously (a CLI has no background): the Mina
  * faucet legitimately takes ~75s, so the per-chain timeout is generous
@@ -28,9 +33,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { emitCliError } from './errors.js';
+import { readToonConfig, resolveRepoRoot } from './git-config.js';
 import { resolveIdentity } from './identity.js';
 import type { CliIo, IdentityReport } from './push.js';
 import { renderIdentityLine } from './render.js';
+import { resolveRelays } from './remote.js';
 
 /**
  * The deployed devnet faucet — the same edge the e2e suite drips from
@@ -50,7 +57,9 @@ pays). The identity comes from RIG_MNEMONIC (env or a project .env) or the
 ~/.toon-client keystore/config; the faucet from TOON_CLIENT_FAUCET_URL, the
 faucetUrl config field, or the deployed devnet faucet when the network is
 devnet — including when a configured *.devnet.toonprotocol.dev origin infers
-it. The faucet drips a FIXED amount per chain (there is no --amount). On a
+it (a devnet relay/proxy/btp endpoint, or the git origin remote from
+\`rig remote add origin <devnet relay>\`). The faucet drips a FIXED amount per
+chain (there is no --amount). On a
 network without a faucet, prints the wallet address(es) to fund externally
 instead.
 
@@ -108,37 +117,84 @@ interface FundJson {
 /** Hostname suffix of every shared-devnet edge (relay, proxy, faucet …). */
 const SHARED_DEVNET_SUFFIX = '.devnet.toonprotocol.dev';
 
+/** `url` when its host is a shared-devnet edge (`*.devnet.toonprotocol.dev`). */
+function devnetHost(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const { hostname } = new URL(url);
+    if (
+      hostname.endsWith(SHARED_DEVNET_SUFFIX) ||
+      hostname === SHARED_DEVNET_SUFFIX.slice(1)
+    ) {
+      return url;
+    }
+  } catch {
+    // junk URL — other commands surface that; fund only sniffs
+  }
+  return undefined;
+}
+
 /**
  * The first configured relay/uplink URL that points at the shared devnet
  * (`*.devnet.toonprotocol.dev`), if any. When the user's endpoints already
  * target the shared devnet but `network` still says `custom`, the fix for a
  * failed `rig fund` is `TOON_CLIENT_NETWORK=devnet` — NOT hunting for a
- * faucet URL (the #280 UX-study trap). Exported for tests.
+ * faucet URL (the #280 UX-study trap).
+ *
+ * The candidate endpoints are the env/config relay/proxy/btp URLs PLUS the
+ * relay(s) resolved from the git `origin` remote (`originRelays`, resolved by
+ * the same `rig remote`/git-config path push and fetch use — see
+ * {@link resolveOriginRelays}). The git origin is the endpoint a fresh user
+ * actually configures with `rig remote add origin <devnet relay>`; keying off
+ * only env/config (#291) missed it, so plain `rig fund` still refused to drip
+ * (#288 reopened). Exported for tests.
  */
 export function sharedDevnetOrigin(
   env: NodeJS.ProcessEnv,
-  file: FundConfigFile
+  file: FundConfigFile,
+  originRelays: string[] = []
 ): string | undefined {
   const candidates = [
     env['TOON_CLIENT_RELAY_URL'] ?? file.relayUrl,
     env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl,
     env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl,
+    ...originRelays,
   ];
   for (const url of candidates) {
-    if (!url) continue;
-    try {
-      const { hostname } = new URL(url);
-      if (
-        hostname.endsWith(SHARED_DEVNET_SUFFIX) ||
-        hostname === SHARED_DEVNET_SUFFIX.slice(1)
-      ) {
-        return url;
-      }
-    } catch {
-      // junk URL — other commands surface that; fund only sniffs
-    }
+    const hit = devnetHost(url);
+    if (hit) return hit;
   }
   return undefined;
+}
+
+/**
+ * The relay URL(s) the git `origin` remote resolves to — the SAME resolution
+ * `rig push`/`rig fetch` use (`resolveRelays` over the repo's real git
+ * remotes + the deprecated `toon.relay` fallback). `rig fund` only sniffs the
+ * host for the devnet suffix, so every failure mode is swallowed to `[]`: not
+ * a git repo, no `origin`, a non-relay `origin` (a GitHub clone URL), or an
+ * ambiguous multi-URL origin all mean "no origin relay to infer from" — never
+ * an error out of a free command.
+ */
+export async function resolveOriginRelays(cwd: string): Promise<string[]> {
+  let repoRoot: string;
+  try {
+    repoRoot = await resolveRepoRoot(cwd);
+  } catch {
+    return [];
+  }
+  try {
+    const toonConfig = await readToonConfig(repoRoot);
+    const resolved = await resolveRelays({
+      relayFlags: [],
+      remoteName: undefined,
+      repoRoot,
+      toonRelays: toonConfig.relays,
+    });
+    return resolved.relays;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -243,9 +299,18 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
     // A configured `*.devnet.toonprotocol.dev` origin means the shared devnet
     // even when `network` still reads its `custom` default (#288): the host
     // already encodes it, so infer devnet and let the faucet "just work"
-    // instead of making the user also export TOON_CLIENT_NETWORK=devnet. An
-    // EXPLICIT non-`custom` network stays authoritative — it is never coerced.
-    const devnetOrigin = sharedDevnetOrigin(env, file);
+    // instead of making the user also export TOON_CLIENT_NETWORK=devnet. The
+    // origin can be an env/config relay/proxy/btp endpoint OR the git `origin`
+    // remote `rig remote add origin …` configured (resolved like push/fetch);
+    // a fresh user who only ran that must still get the drip. An EXPLICIT
+    // non-`custom` network stays authoritative — it is never coerced.
+    //
+    // Only an unset/`custom` network can be inferred to devnet; when the
+    // network is explicit and non-`custom` the inference is a no-op, so skip
+    // the git-origin resolution (several `git` subprocesses) entirely.
+    const canInfer = network === undefined || network === 'custom';
+    const originRelays = canInfer ? await resolveOriginRelays(deps.cwd) : [];
+    const devnetOrigin = sharedDevnetOrigin(env, file, originRelays);
     const inferredDevnet =
       devnetOrigin !== undefined &&
       (network === undefined || network === 'custom');
