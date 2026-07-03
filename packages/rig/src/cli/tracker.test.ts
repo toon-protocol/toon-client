@@ -488,6 +488,72 @@ describe('rig issue show', () => {
     expect(code).toBe(1);
     expect(io.errLines.join('\n')).toContain('rig pr show');
   });
+
+  // ── Authority via the configured repo when the item lacks an `a` tag (#287) ──
+  // An item without a parseable `a` tag must still resolve its authority from
+  // the configured --repo-id/--owner, matching `list`. Otherwise `show` derives
+  // an EMPTY authorized set and reports a falsely-`open` status even for an
+  // item the real owner correctly closed. Regression for the show/list divergence.
+  it('[#287] resolves state via --repo-id/--owner when the item has no `a` tag', async () => {
+    const NO_ATAG_ID = '77'.repeat(32);
+    const events: NostrEvent[] = [
+      event({
+        id: NO_ATAG_ID,
+        kind: 1621,
+        created_at: 1100,
+        tags: [['subject', 'a-tag-less issue']], // NO `a` tag on the issue event
+        content: 'This issue event carries no repo `a` tag.',
+      }),
+      event({
+        id: 'b1'.repeat(32),
+        kind: 1632, // OWNER closes it
+        pubkey: OWNER,
+        created_at: 1300,
+        tags: [['e', NO_ATAG_ID]],
+      }),
+    ];
+    const io = makeTestIo();
+    const code = await runIssueShow(
+      [NO_ATAG_ID, ...ADDR_FLAGS, '--json'],
+      makeDeps(io, 'object', events)
+    );
+    expect(code).toBe(0);
+    expect(io.jsonDocs[0]).toMatchObject({
+      repoATag: null,
+      issue: { eventId: NO_ATAG_ID, status: 'closed' },
+    });
+  });
+
+  it('[#287] stays open for an a-tag-less item with no configured repo (safe empty-authority default)', async () => {
+    const ORPHAN_ID = '88'.repeat(32);
+    const events: NostrEvent[] = [
+      event({
+        id: ORPHAN_ID,
+        kind: 1621,
+        created_at: 1100,
+        tags: [['subject', 'orphan issue']],
+        content: 'No `a` tag and no configured repo → nothing authorizes state.',
+      }),
+      event({
+        id: 'b2'.repeat(32),
+        kind: 1632,
+        pubkey: OWNER,
+        created_at: 1300,
+        tags: [['e', ORPHAN_ID]],
+      }),
+    ];
+    const io = makeTestIo();
+    // Only --relay (cwd is not a repo) → no repoAddr, no a-tag ⇒ empty set.
+    const code = await runIssueShow(
+      [ORPHAN_ID, '--relay', RELAY, '--json'],
+      makeDeps(io, 'object', events)
+    );
+    expect(code).toBe(0);
+    expect(io.jsonDocs[0]).toMatchObject({
+      repoATag: null,
+      issue: { eventId: ORPHAN_ID, status: 'open' },
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

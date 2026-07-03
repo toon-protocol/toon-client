@@ -96,8 +96,10 @@ export function authorizedStatusAuthors(
  * @param name - Human-readable repository name
  * @param description - Repository description
  * @param maintainers - Optional declared maintainer pubkeys (hex). Emitted as
- *   a single `["maintainers", …]` tag when non-empty. The signer (owner) is an
- *   implicit maintainer and is filtered out if passed. See {@link MAINTAINERS_TAG}.
+ *   a single `["maintainers", …]` tag when non-empty; duplicate and non-64-hex
+ *   values are dropped. The owner (the signer) is an implicit maintainer and
+ *   need not be listed — if passed it is emitted, which is harmless since the
+ *   owner is authorized regardless. See {@link MAINTAINERS_TAG}.
  */
 export function buildRepoAnnouncement(
   repoId: string,

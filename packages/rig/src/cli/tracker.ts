@@ -279,13 +279,20 @@ async function resolveTrackerContext(
     // Not inside a git repo — flags must carry everything.
   }
 
+  // Resolve the repo address from flags/git config. `list` REQUIRES it (throws
+  // when unresolved). `show` does not, but resolves it OPPORTUNISTICALLY when
+  // available so it can fall back to it for the authority set (#287) when the
+  // shown item lacks a parseable `a` tag — otherwise `show` would report a
+  // falsely-`open` status that `list` (which always has the address) resolves
+  // correctly.
   let repoAddr: TrackerContext['repoAddr'] = null;
-  if (needRepoAddr) {
-    const repoId = flags.repoId ?? toonConfig.repoId;
-    if (!repoId) throw new UnconfiguredRepoAddressError('repository id');
-    const owner = flags.owner ?? toonConfig.owner;
-    if (!owner) throw new UnconfiguredRepoAddressError('repository owner');
+  const repoId = flags.repoId ?? toonConfig.repoId;
+  const owner = flags.owner ?? toonConfig.owner;
+  if (repoId && owner) {
     repoAddr = { ownerPubkey: owner, repoId };
+  } else if (needRepoAddr) {
+    if (!repoId) throw new UnconfiguredRepoAddressError('repository id');
+    throw new UnconfiguredRepoAddressError('repository owner');
   }
 
   const resolved = await resolveRelays({
@@ -532,12 +539,14 @@ async function fetchItem(
       content: e.content,
     }));
 
-  // Authority set (#287): `show` may run without a resolved repo address, so
-  // derive owner + repoId from the target's own `a` tag (30617:<owner>:<id>)
-  // and read that repo's 30617 for the maintainers. No parseable a-tag ⇒ an
-  // empty authority set ⇒ status stays open (safe: no stranger can move it).
+  // Authority set (#287): prefer the shown item's own `a` tag
+  // (30617:<owner>:<id>) and read that repo's 30617 for the maintainers. When
+  // the item lacks a parseable `a` tag, fall back to the configured repo
+  // address (--repo-id/--owner or git config) so `show` matches `list` instead
+  // of reporting a falsely-`open` status. Only when NEITHER is available is the
+  // set empty ⇒ status stays open (safe: no stranger can move it either way).
   const repoATag = tagValue(event.tags, 'a') ?? null;
-  const parsedAddr = parseRepoATag(repoATag);
+  const parsedAddr = parseRepoATag(repoATag) ?? ctx.repoAddr;
   const authorized = parsedAddr
     ? await fetchAuthorizedAuthors(ctx, parsedAddr.ownerPubkey, parsedAddr.repoId)
     : new Set<string>();
