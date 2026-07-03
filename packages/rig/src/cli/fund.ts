@@ -11,9 +11,11 @@
  * Faucet resolution mirrors the toon-clientd conventions
  * (client-mcp/src/daemon/config.ts — no import, keep in sync):
  * `TOON_CLIENT_FAUCET_URL` env → `faucetUrl` in the shared client config →
- * the deployed devnet faucet when the configured network IS devnet. On any
- * other network there is no faucet: the command prints the derived wallet
- * address(es) to fund externally instead of failing silently.
+ * the deployed devnet faucet when the network IS (or is inferred as) devnet.
+ * A configured `*.devnet.toonprotocol.dev` origin infers devnet even when
+ * `network` still reads its `custom` default (#288). On any other network
+ * there is no faucet: the command prints the derived wallet address(es) to
+ * fund externally instead of failing silently.
  *
  * The drip is awaited synchronously (a CLI has no background): the Mina
  * faucet legitimately takes ~75s, so the per-chain timeout is generous
@@ -46,10 +48,11 @@ export const FUND_USAGE = `Usage: rig fund [options]
 Drip devnet test funds to the active identity's wallet — free (the faucet
 pays). The identity comes from RIG_MNEMONIC (env or a project .env) or the
 ~/.toon-client keystore/config; the faucet from TOON_CLIENT_FAUCET_URL, the
-faucetUrl config field, or the deployed devnet faucet when the configured
-network is devnet. The faucet drips a FIXED amount per chain (there is no
---amount). On a network without a faucet, prints the wallet address(es) to
-fund externally instead.
+faucetUrl config field, or the deployed devnet faucet when the network is
+devnet — including when a configured *.devnet.toonprotocol.dev origin infers
+it. The faucet drips a FIXED amount per chain (there is no --amount). On a
+network without a faucet, prints the wallet address(es) to fund externally
+instead.
 
 Options:
   --chain <chain>      evm | solana | mina (default: TOON_CLIENT_CHAIN, the
@@ -91,6 +94,12 @@ interface FundJson {
   faucetUrl?: string;
   /** Raw faucet response body (shape is faucet-defined). */
   response?: unknown;
+  /**
+   * Set when `network` was inferred as `devnet` from a configured
+   * `*.devnet.toonprotocol.dev` origin (#288) rather than an explicit
+   * `TOON_CLIENT_NETWORK`/config value — carries the origin that triggered it.
+   */
+  inferredDevnetFrom?: string;
   /** Non-devnet path: the derived wallet addresses to fund externally. */
   addresses?: { evm: string | null; solana: string | null; mina: string | null };
   guidance?: string;
@@ -231,10 +240,20 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
       );
     }
     const network = env['TOON_CLIENT_NETWORK'] ?? file.network;
+    // A configured `*.devnet.toonprotocol.dev` origin means the shared devnet
+    // even when `network` still reads its `custom` default (#288): the host
+    // already encodes it, so infer devnet and let the faucet "just work"
+    // instead of making the user also export TOON_CLIENT_NETWORK=devnet. An
+    // EXPLICIT non-`custom` network stays authoritative — it is never coerced.
+    const devnetOrigin = sharedDevnetOrigin(env, file);
+    const inferredDevnet =
+      devnetOrigin !== undefined &&
+      (network === undefined || network === 'custom');
+    const effectiveNetwork = inferredDevnet ? 'devnet' : network;
     const faucetUrl =
       env['TOON_CLIENT_FAUCET_URL'] ??
       file.faucetUrl ??
-      (network === 'devnet' ? DEVNET_FAUCET_URL : undefined);
+      (effectiveNetwork === 'devnet' ? DEVNET_FAUCET_URL : undefined);
 
     // ── Identity chain → wallet addresses (never the phrase) ────────────────
     const resolved = await resolveIdentity({
@@ -262,7 +281,7 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
 
     // ── No faucet on this network: name the ACTUAL knob first (#280) ────────
     if (!faucetUrl) {
-      const guidance = noFaucetGuidance(network, sharedDevnetOrigin(env, file));
+      const guidance = noFaucetGuidance(network, devnetOrigin);
       if (json) {
         io.emitJson({
           command: 'fund',
@@ -300,6 +319,13 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
         ? Number(timeoutEnv)
         : (file.faucetTimeoutMs ?? (chain === 'mina' ? 130_000 : 90_000));
 
+    if (!json && inferredDevnet) {
+      io.out(
+        `Inferred network 'devnet' from the configured origin ${devnetOrigin} ` +
+          `(network was ${JSON.stringify(network ?? 'custom')}). ` +
+          'Set TOON_CLIENT_NETWORK explicitly to override.'
+      );
+    }
     if (!json) {
       io.out(
         `Requesting ${chain} drip from ${faucetUrl} for ${address} …` +
@@ -316,11 +342,12 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
         command: 'fund',
         identity,
         funded: true,
-        network: network ?? null,
+        network: effectiveNetwork ?? null,
         chain,
         address,
         faucetUrl,
         response,
+        ...(inferredDevnet ? { inferredDevnetFrom: devnetOrigin } : {}),
       } satisfies FundJson);
       return 0;
     }

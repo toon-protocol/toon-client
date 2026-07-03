@@ -194,23 +194,29 @@ describe('rig fund', () => {
     expect(text).toMatch(/self-hosted[^.]*TOON_CLIENT_FAUCET_URL/);
   });
 
-  it('a *.devnet.toonprotocol.dev relay on a "custom" network is called out as the shared devnet', async () => {
+  it('a *.devnet.toonprotocol.dev relay on a "custom" network infers devnet and drips (#288)', async () => {
     writeConfig({
+      network: 'custom',
       relayUrl: 'wss://relay-ws.devnet.toonprotocol.dev',
     });
     const h = makeHarness(baseEnv(), cwd);
     expect(await runFund(['--json'], h.deps)).toBe(0);
-    expect(h.fetchCalls).toEqual([]);
-    const parsed = JSON.parse(h.out.join('\n')) as { guidance: string };
-    expect(parsed.guidance).toContain(
-      'your configured origin (wss://relay-ws.devnet.toonprotocol.dev) looks like the shared devnet'
-    );
-    expect(parsed.guidance).toContain('TOON_CLIENT_NETWORK=devnet');
-    // The shared devnet needs no faucet URL — don't send the user hunting.
-    expect(parsed.guidance).not.toContain('TOON_CLIENT_FAUCET_URL');
+    // Inferred devnet ⇒ the deployed faucet is hit without the manual env step.
+    expect(h.fetchCalls).toHaveLength(1);
+    expect(h.fetchCalls[0]?.url).toBe(`${DEVNET_FAUCET_URL}/api/request`);
+    const parsed = JSON.parse(h.out.join('\n')) as {
+      funded: boolean;
+      network: string;
+      faucetUrl: string;
+      inferredDevnetFrom?: string;
+    };
+    expect(parsed.funded).toBe(true);
+    expect(parsed.network).toBe('devnet');
+    expect(parsed.faucetUrl).toBe(DEVNET_FAUCET_URL);
+    expect(parsed.inferredDevnetFrom).toBe('wss://relay-ws.devnet.toonprotocol.dev');
   });
 
-  it('a devnet-looking TOON_CLIENT_PROXY_URL env override is sniffed too', async () => {
+  it('a devnet-looking TOON_CLIENT_PROXY_URL env override infers devnet too (#288)', async () => {
     writeConfig({ network: 'custom' });
     const h = makeHarness(
       {
@@ -220,12 +226,32 @@ describe('rig fund', () => {
       cwd
     );
     expect(await runFund([], h.deps)).toBe(0);
+    expect(h.fetchCalls).toHaveLength(1);
+    expect(h.fetchCalls[0]?.url).toBe(`${DEVNET_FAUCET_URL}/api/request`);
     const text = h.out.join('\n');
-    expect(text).toContain('looks like the shared devnet');
-    expect(text).toContain('TOON_CLIENT_NETWORK=devnet');
+    expect(text).toContain("Inferred network 'devnet' from the configured origin");
+    expect(text).toContain('https://apex.devnet.toonprotocol.dev');
   });
 
-  it('a non-devnet origin does NOT trigger the shared-devnet callout', async () => {
+  it('an explicit non-custom network is authoritative — a devnet origin does NOT override it (#288)', async () => {
+    // testnet is a real choice; a devnet-looking relay must not coerce it to
+    // devnet and silently drip from the wrong faucet.
+    writeConfig({
+      network: 'testnet',
+      relayUrl: 'wss://relay-ws.devnet.toonprotocol.dev',
+    });
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund(['--json'], h.deps)).toBe(0);
+    expect(h.fetchCalls).toEqual([]);
+    const parsed = JSON.parse(h.out.join('\n')) as {
+      funded: boolean;
+      network: string;
+    };
+    expect(parsed.funded).toBe(false);
+    expect(parsed.network).toBe('testnet');
+  });
+
+  it('a non-devnet origin does NOT infer devnet (still prints guidance)', async () => {
     writeConfig({ relayUrl: 'wss://relay.example.com' });
     const h = makeHarness(baseEnv(), cwd);
     expect(await runFund([], h.deps)).toBe(0);
