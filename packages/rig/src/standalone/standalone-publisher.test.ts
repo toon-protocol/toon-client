@@ -943,26 +943,34 @@ describe('StandalonePublisher', () => {
         await runA.stop();
       });
 
-      it('readWalletBalances is a FREE read: no start, no lock, no channel', async () => {
+      it('readWalletChainBalances is a FREE read: no start, no lock, no channel', async () => {
         const { client, calls } = mockMoneyClient();
         const balances = [
-          { chain: 'evm' as const, address: '0xdead', amount: '42' },
+          {
+            chain: 'evm' as const,
+            chainKey: 'evm:31337',
+            address: '0xdead',
+            native: { symbol: 'ETH', amount: '42', decimals: 18 },
+            tokens: [{ symbol: 'USDC', amount: '7', decimals: 6 }],
+          },
         ];
         (
-          client as { getBalances?: () => Promise<typeof balances> }
-        ).getBalances = async () => balances;
+          client as { getWalletBalances?: () => Promise<typeof balances> }
+        ).getWalletBalances = async () => balances;
         const publisher = buildPersistent(client);
-        await expect(publisher.readWalletBalances()).resolves.toEqual(balances);
+        await expect(publisher.readWalletChainBalances()).resolves.toEqual(
+          balances
+        );
         expect(calls.start).toBe(0);
         expect(calls.openChannel).toEqual([]);
         // stop() on the never-started publisher must not blow up either.
         await publisher.stop();
       });
 
-      it('readWalletBalances degrades to [] when the client cannot read balances', async () => {
-        const { client } = mockChannelClient(); // no getBalances
+      it('readWalletChainBalances degrades to [] when the client cannot read balances', async () => {
+        const { client } = mockChannelClient(); // no getWalletBalances
         const publisher = buildPersistent(client);
-        await expect(publisher.readWalletBalances()).resolves.toEqual([]);
+        await expect(publisher.readWalletChainBalances()).resolves.toEqual([]);
         await publisher.stop();
       });
     });

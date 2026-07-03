@@ -573,8 +573,10 @@ class TopologyRecoveringPublisher implements Publisher {
   }
 
   /** Free read on the unstarted client — no bootstrap, no recovery needed. */
-  readWalletBalances(): ReturnType<StandalonePublisher['readWalletBalances']> {
-    return this.inner.readWalletBalances();
+  readWalletChainBalances(): ReturnType<
+    StandalonePublisher['readWalletChainBalances']
+  > {
+    return this.inner.readWalletChainBalances();
   }
 
   async stop(): Promise<void> {
@@ -836,7 +838,7 @@ export async function createStandaloneContext(
       openChannel: (opts) => publisher.openChannelExplicit(opts),
       closeChannel: (record) => publisher.closeRecordedChannel(record),
       settleChannel: (record) => publisher.settleRecordedChannel(record),
-      walletBalances: () => publisher.readWalletBalances(),
+      walletChainBalances: () => publisher.readWalletChainBalances(),
     },
     stop: () => publisher.stop(),
   };

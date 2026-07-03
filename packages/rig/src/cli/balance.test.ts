@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ChannelMapStore } from '../standalone/channel-map.js';
-import type { WalletBalanceInfo } from '../standalone/money.js';
+import type { WalletChainBalanceInfo } from '../standalone/money.js';
 import { BALANCE_USAGE, runBalance, type BalanceDeps } from './balance.js';
 import type { CliIo } from './push.js';
 import type {
@@ -34,7 +34,7 @@ interface Harness {
 
 function makeHarness(
   env: NodeJS.ProcessEnv,
-  wallet: WalletBalanceInfo[] = []
+  wallet: WalletChainBalanceInfo[] = []
 ): Harness {
   const out: string[] = [];
   const err: string[] = [];
@@ -82,7 +82,7 @@ function makeHarness(
       settleChannel: async () => {
         throw new Error('balance never settles channels');
       },
-      walletBalances: async () => wallet,
+      walletChainBalances: async () => wallet,
     },
     stop: async () => {
       harness.stopped = true;
@@ -152,13 +152,39 @@ describe('rig balance', () => {
     );
   }
 
-  const WALLET: WalletBalanceInfo[] = [
+  const EVM_ADDR = '0x' + 'ab'.repeat(20);
+  const SOL_ADDR = 'So1anaAddr11111111111111111111111111111111';
+  const MINA_ADDR = 'B62qMinaAddr1111111111111111111111111111111';
+
+  // The full 2×3 matrix: native + USDC on EVM and Solana; native MINA only.
+  const WALLET: WalletChainBalanceInfo[] = [
     {
       chain: 'evm',
-      address: '0x' + 'ab'.repeat(20),
-      amount: '9983880',
-      asset: 'USDC',
-      assetScale: 6,
+      chainKey: 'evm:31337',
+      address: EVM_ADDR,
+      native: { symbol: 'ETH', amount: '1500000000000000000', decimals: 18 },
+      tokens: [
+        {
+          symbol: 'USDC',
+          amount: '9983880',
+          decimals: 6,
+          address: '0x' + 'cc'.repeat(20),
+        },
+      ],
+    },
+    {
+      chain: 'solana',
+      chainKey: 'solana',
+      address: SOL_ADDR,
+      native: { symbol: 'SOL', amount: '2000000000', decimals: 9 },
+      tokens: [{ symbol: 'USDC', amount: '0', decimals: 6, address: 'MintUSDC' }],
+    },
+    {
+      chain: 'mina',
+      chainKey: 'mina',
+      address: MINA_ADDR,
+      native: { symbol: 'MINA', amount: '0', decimals: 9 },
+      tokens: [],
     },
   ];
 
@@ -205,25 +231,69 @@ describe('rig balance', () => {
     expect(parsed.channels.map((c) => c.channelId)).toEqual([CHANNEL_ID]);
   });
 
-  it('renders the human view: identity, wallet lines, channel lines', async () => {
+  it('renders the human view: identity, per-chain native+USDC, channel lines', async () => {
     seedChannels();
     const h = makeHarness({ TOON_CLIENT_HOME: dir }, WALLET);
     expect(await runBalance([], h.deps)).toBe(0);
     const text = h.out.join('\n');
     expect(text).toContain(`Identity: ${IDENTITY} (from RIG_MNEMONIC env)`);
     expect(text).toContain('Wallet (on-chain):');
-    expect(text).toMatch(/evm\s+0xabab.*9983880 USDC \(scale 6\)/);
+    // EVM: native ETH (18 dec → 1.5) + USDC (6 dec → 9.98388), same chain block.
+    expect(text).toMatch(/evm:31337\s+0xabab/);
+    expect(text).toMatch(/ETH 1\.5\s+USDC 9\.98388/);
+    // Solana: native SOL (9 dec → 2) + USDC 0, on the solana block.
+    expect(text).toMatch(/solana\s+So1ana/);
+    expect(text).toMatch(/SOL 2\s+USDC 0/);
+    // Mina: native MINA only (no configured token).
+    expect(text).toMatch(/mina\s+B62qMina/);
+    expect(text).toContain('MINA 0');
     expect(text).toContain('Channels (recorded):');
     expect(text).toContain(
       `${CHANNEL_ID} [open]  deposited 100000  claimed 16120  available 83880`
     );
   });
 
+  it('a chain whose RPC is unreachable degrades to a per-chain notice, not a crash', async () => {
+    const wallet: WalletChainBalanceInfo[] = [
+      { ...WALLET[0]! },
+      {
+        chain: 'solana',
+        chainKey: 'solana',
+        address: SOL_ADDR,
+        tokens: [],
+        unreadable: true,
+        error: 'Solana RPC request failed: HTTP 502',
+      },
+    ];
+    const h = makeHarness({ TOON_CLIENT_HOME: dir }, wallet);
+    expect(await runBalance([], h.deps)).toBe(0);
+    const text = h.out.join('\n');
+    // The reachable EVM chain still renders …
+    expect(text).toMatch(/ETH 1\.5\s+USDC 9\.98388/);
+    // … and the unreachable one shows a clear notice with the cause.
+    expect(text).toMatch(/solana\s+So1ana/);
+    expect(text).toContain('unreadable (RPC unreachable)');
+    expect(text).toContain('HTTP 502');
+  });
+
+  it('--json carries the full per-chain native+tokens shape', async () => {
+    const h = makeHarness({ TOON_CLIENT_HOME: dir }, WALLET);
+    expect(await runBalance(['--json'], h.deps)).toBe(0);
+    const parsed = JSON.parse(h.out.join('\n')) as { wallet: WalletChainBalanceInfo[] };
+    expect(parsed.wallet).toEqual(WALLET);
+    expect(parsed.wallet[0]).toMatchObject({
+      chain: 'evm',
+      chainKey: 'evm:31337',
+      native: { symbol: 'ETH', amount: '1500000000000000000', decimals: 18 },
+      tokens: [{ symbol: 'USDC', amount: '9983880', decimals: 6 }],
+    });
+  });
+
   it('handles no balances and no channels gracefully', async () => {
     const h = makeHarness({ TOON_CLIENT_HOME: dir });
     expect(await runBalance([], h.deps)).toBe(0);
     const text = h.out.join('\n');
-    expect(text).toContain('no balance readable');
+    expect(text).toContain('no chain configured');
     expect(text).toContain('none — paid commands record their channel');
   });
 

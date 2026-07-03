@@ -56,7 +56,7 @@ import type {
   ChannelCloseOutcome,
   ChannelOpenOutcome,
   ChannelSettleOutcome,
-  WalletBalanceInfo,
+  WalletChainBalanceInfo,
 } from './money.js';
 import { checkDaemonIdentity, NonceLock } from './nonce-guard.js';
 
@@ -120,8 +120,12 @@ export interface ToonClientLike {
   settleChannel?(
     channelId: string
   ): Promise<{ channelId: string; txHash?: string }>;
-  /** Free on-chain wallet-balance read (works on an UNSTARTED client). */
-  getBalances?(): Promise<WalletBalanceInfo[]>;
+  /**
+   * Free FULL multi-chain wallet view (#299) — native coin + configured tokens
+   * per chain — works on an UNSTARTED client (Solana/Mina addresses are derived
+   * from the mnemonic on demand).
+   */
+  getWalletBalances?(): Promise<WalletChainBalanceInfo[]>;
 }
 
 export interface StandalonePublisherOptions {
@@ -871,16 +875,16 @@ export class StandalonePublisher implements Publisher {
   }
 
   /**
-   * On-chain wallet balances for the embedded identity — a FREE read on the
-   * UNSTARTED client (no nonce guard, no uplink, no channel): the client
-   * reads the settlement chain its channels actually use (its EVM key is
-   * derived at construction; Solana/Mina keys only exist after a start, so
-   * those chains appear once a start-requiring command ran — same
-   * best-effort contract as the client's own getBalances).
+   * The full multi-chain wallet view (#299) for the embedded identity — native
+   * coin + configured tokens (USDC) per chain — a FREE read on the UNSTARTED
+   * client (no nonce guard, no uplink, no channel). The client derives the
+   * Solana/Mina addresses from the mnemonic on demand, so ALL configured chains
+   * appear even before a start. Best-effort per chain (an unreachable RPC yields
+   * an `unreadable` chain, not a failure).
    */
-  async readWalletBalances(): Promise<WalletBalanceInfo[]> {
-    if (!this.client.getBalances) return [];
-    return await this.client.getBalances();
+  async readWalletChainBalances(): Promise<WalletChainBalanceInfo[]> {
+    if (!this.client.getWalletBalances) return [];
+    return await this.client.getWalletBalances();
   }
 
   // ── Publisher ─────────────────────────────────────────────────────────────
