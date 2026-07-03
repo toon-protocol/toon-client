@@ -8,6 +8,7 @@ import {
   parseComment,
   resolvePRStatus,
   resolveIssueStatus,
+  repoAuthorizedAuthors,
 } from './nip34.js';
 import {
   parseProfile,
@@ -95,14 +96,108 @@ describe('nip34 parsers', () => {
     expect(parsePR(evt({ kind: 1617, tags: [] }))?.description).toBeUndefined();
   });
 
-  it('resolves PR + issue status by latest event', () => {
-    const status = resolvePRStatus('pr1', [
-      evt({ kind: 1630, created_at: 1, tags: [['e', 'pr1']] }),
-      evt({ kind: 1632, created_at: 5, tags: [['e', 'pr1']] }),
-    ]);
+  it('resolves PR + issue status by latest AUTHORIZED event', () => {
+    const owner = 'a'.repeat(64);
+    const authorized = [owner];
+    const status = resolvePRStatus(
+      'pr1',
+      [
+        evt({ kind: 1630, pubkey: owner, created_at: 1, tags: [['e', 'pr1']] }),
+        evt({ kind: 1632, pubkey: owner, created_at: 5, tags: [['e', 'pr1']] }),
+      ],
+      authorized
+    );
     expect(status).toBe('closed');
-    expect(resolveIssueStatus('i1', [evt({ kind: 1632, tags: [['e', 'i1']] })])).toBe('closed');
-    expect(resolveIssueStatus('i1', [])).toBe('open');
+    expect(
+      resolveIssueStatus(
+        'i1',
+        [evt({ kind: 1632, pubkey: owner, tags: [['e', 'i1']] })],
+        authorized
+      )
+    ).toBe('closed');
+    expect(resolveIssueStatus('i1', [], authorized)).toBe('open');
+  });
+
+  it('parses the maintainers tag and combines with the owner (#287)', () => {
+    const m1 = 'b'.repeat(64);
+    const m2 = 'c'.repeat(64);
+    const repo = parseRepoAnnouncement(
+      evt({
+        kind: 30617,
+        pubkey: 'a'.repeat(64),
+        tags: [
+          ['d', 'my-repo'],
+          ['name', 'My Repo'],
+          ['maintainers', m1, m2, 'NOT-HEX'],
+        ],
+      })
+    );
+    expect(repo?.maintainers).toEqual([m1, m2]);
+    const authorized = repoAuthorizedAuthors(repo!);
+    expect(authorized.has('a'.repeat(64))).toBe(true); // owner (implicit)
+    expect(authorized.has(m1)).toBe(true);
+    expect(authorized.has(m2)).toBe(true);
+    // No tag → owner-only authority.
+    const bare = parseRepoAnnouncement(
+      evt({ kind: 30617, pubkey: 'a'.repeat(64), tags: [['d', 'r']] })
+    );
+    expect(bare?.maintainers).toEqual([]);
+  });
+
+  it('ignores UNAUTHORIZED status events (spoof regression, #287)', () => {
+    const owner = 'a'.repeat(64);
+    const maintainer = 'b'.repeat(64);
+    const stranger = 'f'.repeat(64);
+    const authorized = new Set([owner, maintainer]);
+
+    // A funded stranger publishes a LATER draft status — it must NOT win.
+    const prStatus = resolvePRStatus(
+      'pr1',
+      [
+        evt({ kind: 1630, pubkey: owner, created_at: 1, tags: [['e', 'pr1']] }),
+        evt({
+          kind: 1633,
+          pubkey: stranger,
+          created_at: 99,
+          tags: [['e', 'pr1']],
+        }),
+      ],
+      authorized
+    );
+    expect(prStatus).toBe('open'); // stranger's draft ignored
+
+    // A declared maintainer's status DOES move state.
+    const byMaintainer = resolvePRStatus(
+      'pr1',
+      [
+        evt({ kind: 1630, pubkey: owner, created_at: 1, tags: [['e', 'pr1']] }),
+        evt({
+          kind: 1632,
+          pubkey: maintainer,
+          created_at: 5,
+          tags: [['e', 'pr1']],
+        }),
+      ],
+      authorized
+    );
+    expect(byMaintainer).toBe('closed');
+
+    // An unauthorized close event does NOT close an issue.
+    expect(
+      resolveIssueStatus(
+        'i1',
+        [evt({ kind: 1632, pubkey: stranger, tags: [['e', 'i1']] })],
+        authorized
+      )
+    ).toBe('open');
+    // The owner's close does.
+    expect(
+      resolveIssueStatus(
+        'i1',
+        [evt({ kind: 1632, pubkey: owner, tags: [['e', 'i1']] })],
+        authorized
+      )
+    ).toBe('closed');
   });
 });
 

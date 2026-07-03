@@ -78,10 +78,12 @@ const EVENTS: NostrEvent[] = [
     ],
     content: 'Open body.',
   }),
-  // Status history for the closed issue: opened, then closed LATER (latest wins).
+  // Status history for the closed issue: opened, then closed LATER (latest
+  // wins). Signed by the OWNER — the authoritative status author (#287).
   event({
     id: 'a1'.repeat(32),
     kind: 1630,
+    pubkey: OWNER,
     created_at: 1150,
     tags: [
       ['e', ISSUE_CLOSED_ID],
@@ -91,7 +93,20 @@ const EVENTS: NostrEvent[] = [
   event({
     id: 'a2'.repeat(32),
     kind: 1632,
+    pubkey: OWNER,
     created_at: 1300,
+    tags: [
+      ['e', ISSUE_CLOSED_ID],
+      ['a', A_TAG],
+    ],
+  }),
+  // SPOOF (#287): a funded NON-owner publishes a later re-open against the
+  // closed issue. It must be IGNORED — the issue stays closed for authority-
+  // honoring readers. (Author defaults to AUTHOR = a contributor, not owner.)
+  event({
+    id: 'de'.repeat(32),
+    kind: 1630,
+    created_at: 1400, // LATER than the owner's close
     tags: [
       ['e', ISSUE_CLOSED_ID],
       ['a', A_TAG],
@@ -123,10 +138,11 @@ const EVENTS: NostrEvent[] = [
     content: 'From abc patch',
   }),
   // The applied PR's status carries NO `a` tag (other clients do this) —
-  // reachable only through the follow-up `#e` query.
+  // reachable only through the follow-up `#e` query. Signed by the OWNER.
   event({
     id: 'a3'.repeat(32),
     kind: 1631,
+    pubkey: OWNER,
     created_at: 1450,
     tags: [['e', PR_APPLIED_ID]],
   }),
@@ -187,26 +203,46 @@ const ADDR_FLAGS = ['--repo-id', REPO, '--owner', OWNER, '--relay', RELAY];
 // deriveStatus (latest-wins)
 // ---------------------------------------------------------------------------
 
+// The authoritative author set for these unit tests: owner-only (#287).
+const AUTHZ = new Set([OWNER]);
+
 describe('deriveStatus', () => {
   it('defaults to open with no status events', () => {
-    expect(deriveStatus(ISSUE_OPEN_ID, EVENTS)).toBe('open');
+    expect(deriveStatus(ISSUE_OPEN_ID, EVENTS, AUTHZ)).toBe('open');
   });
 
-  it('latest status wins (a later close beats an earlier open)', () => {
-    expect(deriveStatus(ISSUE_CLOSED_ID, EVENTS)).toBe('closed');
+  it('latest AUTHORIZED status wins (a later owner close beats an earlier open)', () => {
+    expect(deriveStatus(ISSUE_CLOSED_ID, EVENTS, AUTHZ)).toBe('closed');
   });
 
-  it('a re-open AFTER a close wins again', () => {
+  it('IGNORES an unauthorized later status — spoof regression (#287)', () => {
+    // EVENTS already contains a later (created_at 1400) kind:1630 re-open on
+    // the closed issue signed by AUTHOR (a non-owner). It must NOT reopen the
+    // issue for an authority-honoring reader: owner-only ⇒ stays closed.
+    expect(deriveStatus(ISSUE_CLOSED_ID, EVENTS, AUTHZ)).toBe('closed');
+    // But if that author WERE authorized (owner ∪ maintainers), the re-open
+    // would win — proving the author filter is what protects the state.
+    expect(deriveStatus(ISSUE_CLOSED_ID, EVENTS, new Set([OWNER, AUTHOR]))).toBe(
+      'open'
+    );
+  });
+
+  it('an empty authority set moves NOTHING (safe fallback, #287)', () => {
+    expect(deriveStatus(ISSUE_CLOSED_ID, EVENTS, new Set())).toBe('open');
+  });
+
+  it('a re-open AFTER a close wins again (when AUTHORIZED)', () => {
     const reopened = [
       ...EVENTS,
       event({
         id: 'a4'.repeat(32),
         kind: 1630,
-        created_at: 1400,
+        pubkey: OWNER,
+        created_at: 1500,
         tags: [['e', ISSUE_CLOSED_ID]],
       }),
     ];
-    expect(deriveStatus(ISSUE_CLOSED_ID, reopened)).toBe('open');
+    expect(deriveStatus(ISSUE_CLOSED_ID, reopened, AUTHZ)).toBe('open');
   });
 
   it('created_at ties break on the LOWEST event id', () => {
@@ -214,21 +250,23 @@ describe('deriveStatus', () => {
       event({
         id: 'ff'.repeat(32),
         kind: 1630,
+        pubkey: OWNER,
         created_at: 2000,
         tags: [['e', ISSUE_CLOSED_ID]],
       }),
       event({
         id: '00'.repeat(32),
         kind: 1632,
+        pubkey: OWNER,
         created_at: 2000,
         tags: [['e', ISSUE_CLOSED_ID]],
       }),
     ];
-    expect(deriveStatus(ISSUE_CLOSED_ID, tied)).toBe('closed');
+    expect(deriveStatus(ISSUE_CLOSED_ID, tied, AUTHZ)).toBe('closed');
   });
 
   it('ignores statuses that reference other events', () => {
-    expect(deriveStatus(PR_OPEN_ID, EVENTS)).toBe('open');
+    expect(deriveStatus(PR_OPEN_ID, EVENTS, AUTHZ)).toBe('open');
   });
 });
 
@@ -298,6 +336,105 @@ describe('rig issue list', () => {
       makeDeps(io)
     );
     expect(code).toBe(2);
+  });
+
+  it('HONORS a declared maintainer status via the 30617 maintainers tag (#287)', async () => {
+    const MAINT_ISSUE_ID = '77'.repeat(32);
+    // Self-contained set: a 30617 announcing AUTHOR as a maintainer, an open
+    // issue, and a close signed by that maintainer (NOT the owner).
+    const events: NostrEvent[] = [
+      event({
+        id: '99'.repeat(32),
+        kind: 30617,
+        pubkey: OWNER,
+        created_at: 1000,
+        tags: [
+          ['d', REPO],
+          ['name', 'demo'],
+          ['maintainers', AUTHOR],
+        ],
+      }),
+      event({
+        id: MAINT_ISSUE_ID,
+        kind: 1621,
+        created_at: 1100,
+        tags: [
+          ['a', A_TAG],
+          ['subject', 'Closed by a maintainer'],
+        ],
+      }),
+      event({
+        id: 'ab'.repeat(32),
+        kind: 1632,
+        pubkey: AUTHOR, // the declared maintainer, not the owner
+        created_at: 1200,
+        tags: [
+          ['e', MAINT_ISSUE_ID],
+          ['a', A_TAG],
+        ],
+      }),
+    ];
+    const io = makeTestIo();
+    const code = await runIssueList(
+      [...ADDR_FLAGS, '--json'],
+      makeDeps(io, 'object', events)
+    );
+    expect(code).toBe(0);
+    const doc = io.jsonDocs[0] as {
+      issues: { eventId: string; status: string }[];
+    };
+    expect(doc.issues).toEqual([
+      expect.objectContaining({ eventId: MAINT_ISSUE_ID, status: 'closed' }),
+    ]);
+  });
+
+  it('IGNORES a maintainer-status once the 30617 no longer lists them (#287)', async () => {
+    const ISSUE_ID = '88'.repeat(32);
+    // Same as above but the 30617 declares NO maintainers → AUTHOR is a
+    // stranger → their close is ignored, the issue stays open.
+    const events: NostrEvent[] = [
+      event({
+        id: '9a'.repeat(32),
+        kind: 30617,
+        pubkey: OWNER,
+        created_at: 1000,
+        tags: [
+          ['d', REPO],
+          ['name', 'demo'],
+        ],
+      }),
+      event({
+        id: ISSUE_ID,
+        kind: 1621,
+        created_at: 1100,
+        tags: [
+          ['a', A_TAG],
+          ['subject', 'Should stay open'],
+        ],
+      }),
+      event({
+        id: 'ba'.repeat(32),
+        kind: 1632,
+        pubkey: AUTHOR,
+        created_at: 1200,
+        tags: [
+          ['e', ISSUE_ID],
+          ['a', A_TAG],
+        ],
+      }),
+    ];
+    const io = makeTestIo();
+    const code = await runIssueList(
+      [...ADDR_FLAGS, '--json'],
+      makeDeps(io, 'object', events)
+    );
+    expect(code).toBe(0);
+    const doc = io.jsonDocs[0] as {
+      issues: { eventId: string; status: string }[];
+    };
+    expect(doc.issues).toEqual([
+      expect.objectContaining({ eventId: ISSUE_ID, status: 'open' }),
+    ]);
   });
 });
 

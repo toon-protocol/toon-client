@@ -23,7 +23,7 @@ import {
   STATUS_DRAFT_KIND,
   STATUS_OPEN_KIND,
 } from '@toon-protocol/core/nip34';
-import { COMMENT_KIND } from '../nip34-events.js';
+import { COMMENT_KIND, authorizedStatusAuthors } from '../nip34-events.js';
 import { ownerToHex } from '../npub.js';
 import {
   queryRelay,
@@ -120,17 +120,26 @@ function tagValues(tags: string[][], name: string): string[] {
 
 /**
  * Derive the state of an issue/patch from its status events: consider only
- * kind:1630-1633 events whose `e` tag references the target; the LATEST wins
- * (highest created_at, ties broken by lowest event id — the same replaceable
- * convention remote-state uses). No status events ⇒ open.
+ * kind:1630-1633 events whose `e` tag references the target AND whose author
+ * is AUTHORIZED — the repo owner ∪ declared maintainers (#287). Among the
+ * authorized events the LATEST wins (highest created_at, ties broken by lowest
+ * event id — the same replaceable convention remote-state uses). Unauthorized
+ * status events (any funded stranger) are IGNORED for state; they never move
+ * it. No authorized status events ⇒ open.
+ *
+ * `authorized` is the lowercased-hex set from {@link authorizedStatusAuthors}.
+ * When it is empty (the 30617 could not be resolved) NOTHING is authorized and
+ * the state stays open — a safe, non-spoofable default.
  */
 export function deriveStatus(
   targetEventId: string,
-  statusEvents: Iterable<NostrEvent>
+  statusEvents: Iterable<NostrEvent>,
+  authorized: ReadonlySet<string>
 ): TrackerStatus {
   let winner: NostrEvent | null = null;
   for (const event of statusEvents) {
     if (STATUS_BY_KIND[event.kind] === undefined) continue;
+    if (!authorized.has(event.pubkey.toLowerCase())) continue;
     if (!event.tags.some((t) => t[0] === 'e' && t[1] === targetEventId))
       continue;
     if (
@@ -304,6 +313,54 @@ function repoATag(addr: { ownerPubkey: string; repoId: string }): string {
   return `${REPOSITORY_ANNOUNCEMENT_KIND}:${addr.ownerPubkey}:${addr.repoId}`;
 }
 
+/**
+ * Resolve the AUTHORIZED status authors (#287) for a repo: the owner ∪ the
+ * maintainers declared on the repo's kind:30617 announcement. Reads the 30617
+ * from the relay(s) — untrusted relays may over-return, so only the owner's
+ * own announcement for this `d`-tag is honored. When no announcement is found
+ * the set falls back to OWNER-ONLY (the owner is always an implicit
+ * maintainer); this is the safe default — an unresolved 30617 can never widen
+ * authority to a stranger.
+ */
+async function fetchAuthorizedAuthors(
+  ctx: TrackerContext,
+  ownerPubkey: string,
+  repoId: string
+): Promise<Set<string>> {
+  let announceTags: string[][] = [];
+  try {
+    const events = await queryAll(
+      ctx.relays,
+      [
+        {
+          kinds: [REPOSITORY_ANNOUNCEMENT_KIND],
+          authors: [ownerPubkey],
+          '#d': [repoId],
+        },
+      ],
+      ctx.webSocketFactory
+    );
+    // Latest replaceable 30617 by (created_at, id) from the trusted owner.
+    let latest: NostrEvent | null = null;
+    for (const event of events.values()) {
+      if (event.kind !== REPOSITORY_ANNOUNCEMENT_KIND) continue;
+      if (event.pubkey !== ownerPubkey) continue;
+      if (!event.tags.some((t) => t[0] === 'd' && t[1] === repoId)) continue;
+      if (
+        latest === null ||
+        event.created_at > latest.created_at ||
+        (event.created_at === latest.created_at && event.id < latest.id)
+      ) {
+        latest = event;
+      }
+    }
+    if (latest) announceTags = latest.tags;
+  } catch {
+    // Relay read failed — fall back to owner-only authority.
+  }
+  return authorizedStatusAuthors(ownerPubkey, announceTags);
+}
+
 // ---------------------------------------------------------------------------
 // Shared list/show engines (issues and PRs differ only in kind + fields)
 // ---------------------------------------------------------------------------
@@ -363,8 +420,14 @@ async function fetchItems(
   ctx: TrackerContext,
   kind: number
 ): Promise<TrackerItem[]> {
-  const aTag = repoATag(
-    ctx.repoAddr as { ownerPubkey: string; repoId: string }
+  const addr = ctx.repoAddr as { ownerPubkey: string; repoId: string };
+  const aTag = repoATag(addr);
+  // Authority set (#287): owner ∪ declared maintainers from the 30617. Fetched
+  // in parallel with the items — status resolution honors ONLY these authors.
+  const authorizedPromise = fetchAuthorizedAuthors(
+    ctx,
+    addr.ownerPubkey,
+    addr.repoId
   );
   const [itemEvents, aStatusEvents] = await Promise.all([
     queryAll(
@@ -396,9 +459,10 @@ async function fetchItems(
       if (!statuses.has(id)) statuses.set(id, event);
   }
 
+  const authorized = await authorizedPromise;
   return items
     .map((event) =>
-      parseTrackerItem(event, deriveStatus(event.id, statuses.values()))
+      parseTrackerItem(event, deriveStatus(event.id, statuses.values(), authorized))
     )
     .sort((a, b) => b.createdAt - a.createdAt);
 }
@@ -468,11 +532,37 @@ async function fetchItem(
       content: e.content,
     }));
 
+  // Authority set (#287): `show` may run without a resolved repo address, so
+  // derive owner + repoId from the target's own `a` tag (30617:<owner>:<id>)
+  // and read that repo's 30617 for the maintainers. No parseable a-tag ⇒ an
+  // empty authority set ⇒ status stays open (safe: no stranger can move it).
+  const repoATag = tagValue(event.tags, 'a') ?? null;
+  const parsedAddr = parseRepoATag(repoATag);
+  const authorized = parsedAddr
+    ? await fetchAuthorizedAuthors(ctx, parsedAddr.ownerPubkey, parsedAddr.repoId)
+    : new Set<string>();
+
   return {
-    item: parseTrackerItem(event, deriveStatus(eventId, statusEvents.values())),
+    item: parseTrackerItem(
+      event,
+      deriveStatus(eventId, statusEvents.values(), authorized)
+    ),
     comments,
-    repoATag: tagValue(event.tags, 'a') ?? null,
+    repoATag,
   };
+}
+
+/** Parse a NIP-34 repo `a` tag `30617:<owner-hex>:<repoId>` into its parts. */
+function parseRepoATag(
+  aTag: string | null
+): { ownerPubkey: string; repoId: string } | null {
+  if (!aTag) return null;
+  const [kind, ownerPubkey, ...repoIdParts] = aTag.split(':');
+  const repoId = repoIdParts.join(':');
+  if (kind !== String(REPOSITORY_ANNOUNCEMENT_KIND) || !ownerPubkey || !repoId) {
+    return null;
+  }
+  return { ownerPubkey, repoId };
 }
 
 // ---------------------------------------------------------------------------

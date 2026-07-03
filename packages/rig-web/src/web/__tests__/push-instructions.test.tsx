@@ -28,6 +28,7 @@ function createRepoMetadata(overrides: Partial<RepoMetadata> = {}): RepoMetadata
     eventId: 'evt1',
     cloneUrls: [],
     webUrls: [],
+    maintainers: [],
     ...overrides,
   };
 }

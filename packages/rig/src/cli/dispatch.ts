@@ -31,6 +31,7 @@ import { runFetch } from './fetch.js';
 import { runFund } from './fund.js';
 import { runGitPassthrough, type GitRunner } from './git-passthrough.js';
 import { runInit } from './init.js';
+import { runMaintainers } from './maintainers.js';
 import { runPush, PUSH_USAGE } from './push.js';
 import { runRemote } from './remote.js';
 
@@ -65,6 +66,10 @@ Commands rig owns:
                              \`git format-patch\` content
   pr status <event-id> <state>  set an issue/patch status (kind:1630-1633):
                              open | applied | closed | draft
+  maintainers list           show the repo's declared maintainers (free); add/
+  maintainers add <pubkey>   remove republish the kind:30617 to change who may
+  maintainers remove <pubkey>  author authoritative issue/PR status (owner is
+                             always an implicit maintainer)
   fund                       drip devnet faucet funds to this identity's
                              wallet (free); on other networks prints the
                              address(es) to fund externally
@@ -147,6 +152,8 @@ export async function dispatch(
       return runComment(rest, deps);
     case 'pr':
       return runPr(rest, deps);
+    case 'maintainers':
+      return runMaintainers(rest, deps);
     case 'channel':
       return runChannel(rest, deps);
     case 'fund':

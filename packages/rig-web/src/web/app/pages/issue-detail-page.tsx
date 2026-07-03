@@ -10,7 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 export function IssueDetailPage() {
   const { id = '' } = useParams();
   const { metadata, owner } = useOutletContext<RepoContext>();
-  const { issues, loading: issuesLoading } = useIssues(owner, metadata.repoId);
+  const { issues, loading: issuesLoading } = useIssues(owner, metadata.repoId, metadata.maintainers);
 
   const issue = useMemo(() => {
     return issues.find((i) => i.eventId === id) ?? null;

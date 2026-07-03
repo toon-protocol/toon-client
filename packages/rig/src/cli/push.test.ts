@@ -127,6 +127,7 @@ function emptyRemoteState(overrides: Partial<RemoteState> = {}): RemoteState {
     name: null,
     description: null,
     relays: [],
+    maintainers: [],
     resolveMissing: async () => new Map(),
     ...overrides,
   };

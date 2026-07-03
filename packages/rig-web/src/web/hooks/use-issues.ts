@@ -18,7 +18,11 @@ interface UseIssuesResult {
   error: Error | null;
 }
 
-export function useIssues(owner: string, repoId: string): UseIssuesResult {
+export function useIssues(
+  owner: string,
+  repoId: string,
+  maintainers: string[] = []
+): UseIssuesResult {
   const { relayUrl } = useRigConfig();
 
   const ownerHex = useMemo(() => {
@@ -28,6 +32,14 @@ export function useIssues(owner: string, repoId: string): UseIssuesResult {
       return null;
     }
   }, [owner]);
+
+  // Authorized status authors (#287): owner ∪ declared maintainers. A close
+  // event (kind:1632) from anyone else does NOT close the issue.
+  const authorized = useMemo(() => {
+    const set = new Set<string>(maintainers.map((m) => m.toLowerCase()));
+    if (ownerHex) set.add(ownerHex.toLowerCase());
+    return set;
+  }, [ownerHex, maintainers]);
 
   const issueFilter = useMemo<NostrFilter | null>(() => {
     if (!ownerHex) return null;
@@ -60,13 +72,13 @@ export function useIssues(owner: string, repoId: string): UseIssuesResult {
       const issue = parseIssue(ev);
       if (issue) {
         // Override hardcoded 'open' status with resolved status
-        issue.status = resolveIssueStatus(issue.eventId, closeEvents);
+        issue.status = resolveIssueStatus(issue.eventId, closeEvents, authorized);
         parsed.push(issue);
       }
     }
     // Sort by created_at descending (newest first)
     return parsed.sort((a, b) => b.createdAt - a.createdAt);
-  }, [issueEvents, closeEvents]);
+  }, [issueEvents, closeEvents, authorized]);
 
   return {
     issues,

@@ -27,7 +27,12 @@ import {
 } from './events.js';
 import { writeToonConfig } from './git-config.js';
 import type { CliIo } from './push.js';
+import {
+  filterEvents,
+  makeMockRelayFactory,
+} from './read-testkit.js';
 import type { StandaloneContext } from './standalone-context.js';
+import type { NostrEvent } from '../remote-state.js';
 
 const OWNER = 'ab'.repeat(32);
 const CONFIG_OWNER = 'cd'.repeat(32);
@@ -98,6 +103,12 @@ function makeDeps(
     probeDaemon?: EventCommandDeps['probeDaemon'];
     fetchImpl?: EventCommandDeps['fetchImpl'];
     stdin?: string;
+    /**
+     * Events the mock relay serves (the #287 `pr status` authority pre-check
+     * reads the repo's 30617 here). Default: none — a hermetic mock relay is
+     * ALWAYS injected so the warning path never touches the real network.
+     */
+    remoteEvents?: NostrEvent[];
   } = {}
 ): Harness {
   const out: string[] = [];
@@ -121,6 +132,11 @@ function makeDeps(
     cwd,
     readStdin: async () => options.stdin ?? '',
     probeDaemon: options.probeDaemon ?? NO_DAEMON,
+    // Hermetic mock relay for the #287 authority pre-check (never real network).
+    webSocketFactory: makeMockRelayFactory(
+      (filter) => filterEvents(options.remoteEvents ?? [], filter),
+      'object'
+    ),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.loadStandalone
       ? { loadStandalone: options.loadStandalone }
@@ -643,6 +659,55 @@ describe('rig pr status', () => {
     expect(text).toContain('Usage: rig pr status');
     expect(await runPr([], deps().deps)).toBe(2);
     expect(fake.published).toHaveLength(0);
+  });
+
+  // ── Authority warning (#287) ─────────────────────────────────────────────
+  function announcement(owner: string, maintainers: string[]): NostrEvent {
+    return {
+      id: '30'.repeat(32),
+      pubkey: owner,
+      created_at: 1000,
+      kind: 30617,
+      tags: [
+        ['d', 'demo'],
+        ['name', 'demo'],
+        ...(maintainers.length > 0 ? [['maintainers', ...maintainers]] : []),
+      ],
+      content: '',
+      sig: '0'.repeat(128),
+    };
+  }
+
+  it('WARNS but still publishes when the identity is not a maintainer (#287)', async () => {
+    // Config owner is CONFIG_OWNER; the standalone identity is OWNER (a
+    // non-owner). The 30617 declares no maintainers → OWNER is unauthorized.
+    const h = deps({ remoteEvents: [announcement(CONFIG_OWNER, [])] });
+    const code = await runPr(['status', ROOT_EVENT, 'closed', '--yes'], h.deps);
+    expect(code).toBe(0);
+    expect(fake.published).toHaveLength(1); // publish still happens
+    const err = h.err.join('\n');
+    expect(err).toContain('not a maintainer');
+    expect(err).toContain('will IGNORE this status');
+  });
+
+  it('does NOT warn when the identity is the repo owner (#287)', async () => {
+    // --owner OWNER makes the addr owner match the standalone identity.
+    const h = deps();
+    const code = await runPr(
+      ['status', ROOT_EVENT, 'closed', '--yes', '--owner', OWNER],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.err.join('\n')).not.toContain('not a maintainer');
+  });
+
+  it('does NOT warn when the identity is a DECLARED maintainer (#287)', async () => {
+    // The 30617 (owned by CONFIG_OWNER) lists OWNER as a maintainer.
+    const h = deps({ remoteEvents: [announcement(CONFIG_OWNER, [OWNER])] });
+    const code = await runPr(['status', ROOT_EVENT, 'closed', '--yes'], h.deps);
+    expect(code).toBe(0);
+    expect(fake.published).toHaveLength(1);
+    expect(h.err.join('\n')).not.toContain('not a maintainer');
   });
 });
 

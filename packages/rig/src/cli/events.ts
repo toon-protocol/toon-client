@@ -45,6 +45,7 @@ import {
   STATUS_OPEN_KIND,
 } from '@toon-protocol/core/nip34';
 import {
+  authorizedStatusAuthors,
   buildComment,
   buildIssue,
   buildPatch,
@@ -52,6 +53,7 @@ import {
   type StatusKind,
   type UnsignedEvent,
 } from '../nip34-events.js';
+import { fetchRemoteState } from '../remote-state.js';
 import { GitRepoReader } from '../repo-reader.js';
 import {
   serializeEventReceipt,
@@ -288,6 +290,21 @@ interface RunEventOptions {
     client: DaemonGitClient,
     addr: GitRepoAddr
   ) => Promise<GitEventResponse>;
+  /**
+   * Optional pre-confirm hook (#287): runs AFTER the identity + repo address
+   * are resolved and the event is built, but BEFORE the plan is rendered and
+   * the confirm gate. Used by `pr status` to WARN when the active identity is
+   * not an authorized maintainer of the target repo (the write is still
+   * allowed — the relay is permissionless — but clients honoring repo
+   * authority will ignore it). Failures here must be non-fatal: emit a soft
+   * note and proceed. The warning prints to stderr so the existing confirm
+   * gate (or --yes) still governs whether money moves.
+   */
+  preConfirm?: (args: {
+    identity: IdentityReport;
+    addr: GitRepoAddr;
+    relayUrl: string | undefined;
+  }) => Promise<void>;
 }
 
 /** JSON envelope emitted by `--json` runs (agents consume this). */
@@ -385,6 +402,11 @@ async function runEvent(opts: RunEventOptions): Promise<number> {
     // Built once: the publish payload AND the kind for rendering.
     const event = await opts.buildEvent(addr);
     const action = `kind:${event.kind} ${actionLabel}`;
+
+    // ── Authority pre-check (#287) — warn (do not block) before the gate ────
+    if (opts.preConfirm) {
+      await opts.preConfirm({ identity, addr, relayUrl: relaysUsed[0] });
+    }
 
     // ── Confirm gate (identical semantics to `rig push`) ────────────────────
     if (!flags.json) {
@@ -928,7 +950,62 @@ async function runPrStatus(
       ]);
       return event;
     },
+    // Authority warning (#287): a status event only moves an issue/PR's
+    // resolved state for repo-authority-honoring clients if its author is the
+    // owner or a declared maintainer. Warn clearly when the active identity is
+    // neither — the publish still happens (permissionless relay; the caller
+    // may be acting on their own repo/fork), but the futility is made obvious.
+    preConfirm: (args) => warnIfNotMaintainer(deps, args),
     sendDaemon: (client, addr) =>
       client.gitStatus({ repoAddr: addr, targetEventId, status }),
   });
+}
+
+/**
+ * Read the target repo's kind:30617 and warn on stderr when the active
+ * identity is NOT an authorized status author (owner ∪ declared maintainers,
+ * #287). Never throws / never blocks: a relay read failure downgrades to a
+ * "could not verify" note and the publish proceeds under the normal gate.
+ */
+async function warnIfNotMaintainer(
+  deps: EventCommandDeps,
+  args: {
+    identity: IdentityReport;
+    addr: GitRepoAddr;
+    relayUrl: string | undefined;
+  }
+): Promise<void> {
+  const { io } = deps;
+  const { identity, addr, relayUrl } = args;
+  // The owner is always an implicit maintainer — no need to read the relay.
+  if (identity.pubkey.toLowerCase() === addr.ownerPubkey.toLowerCase()) return;
+  if (relayUrl === undefined) return;
+  try {
+    const remote = await fetchRemoteState({
+      relayUrls: [relayUrl],
+      ownerPubkey: addr.ownerPubkey,
+      repoId: addr.repoId,
+      ...(deps.webSocketFactory
+        ? { webSocketFactory: deps.webSocketFactory }
+        : {}),
+    });
+    const authorized = authorizedStatusAuthors(
+      addr.ownerPubkey,
+      remote.announceEvent?.tags ?? []
+    );
+    if (authorized.has(identity.pubkey.toLowerCase())) return;
+    io.err(
+      `warning: you (${identity.pubkey.slice(0, 8)}…) are not a maintainer of ` +
+        `30617:${addr.ownerPubkey.slice(0, 8)}…:${addr.repoId} — clients honoring ` +
+        'repo authority (rig, rig-web) will IGNORE this status when resolving the ' +
+        "issue/PR's state. Publishing anyway (the relay is permissionless); ask the " +
+        'owner to `rig maintainers add` you if this should stick.'
+    );
+  } catch {
+    io.err(
+      'warning: could not read the repo announcement to verify your maintainer ' +
+        'status — if you are not the owner or a declared maintainer, ' +
+        'authority-honoring clients will ignore this status.'
+    );
+  }
 }

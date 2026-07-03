@@ -30,7 +30,7 @@ import {
 } from '@toon-protocol/arweave';
 import { REPOSITORY_ANNOUNCEMENT_KIND } from '@toon-protocol/core/nip34';
 
-import { REPOSITORY_STATE_KIND } from './nip34-events.js';
+import { REPOSITORY_STATE_KIND, parseMaintainers } from './nip34-events.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -117,6 +117,12 @@ export interface RemoteState {
   description: string | null;
   /** Relay URLs advertised in the announcement `relays` tag(s). */
   relays: string[];
+  /**
+   * Declared maintainer pubkeys (hex) from the announcement `maintainers`
+   * tag (#287). Does NOT include the owner (an implicit maintainer). Empty
+   * when unannounced or owner-only.
+   */
+  maintainers: string[];
   /**
    * Resolve SHAs to Arweave txIds: served from the `arweave` tag map when
    * present, otherwise via the GraphQL Git-SHA resolver. SHAs that resolve
@@ -455,6 +461,11 @@ export async function fetchRemoteState(
       }
     }
   }
+  // Declared maintainers (#287): the `maintainers` tag on the 30617. Owner is
+  // an implicit maintainer and is NOT listed here.
+  const maintainers = announceEvent
+    ? parseMaintainers(announceEvent.tags)
+    : [];
 
   const resolveMissing = async (
     shas: string[]
@@ -490,6 +501,7 @@ export async function fetchRemoteState(
     name,
     description,
     relays,
+    maintainers,
     resolveMissing,
   };
 }

@@ -13,7 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 export function PRDetailPage() {
   const { id = '' } = useParams();
   const { metadata, refs, owner } = useOutletContext<RepoContext>();
-  const { prs, loading: prsLoading } = usePRs(owner, metadata.repoId);
+  const { prs, loading: prsLoading } = usePRs(owner, metadata.repoId, metadata.maintainers);
 
   const pr = useMemo(() => {
     return prs.find((p) => p.eventId === id) ?? null;

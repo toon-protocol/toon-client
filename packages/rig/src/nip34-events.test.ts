@@ -8,13 +8,16 @@
 import { describe, it, expect } from 'vitest';
 import {
   COMMENT_KIND,
+  MAINTAINERS_TAG,
   REPOSITORY_STATE_KIND,
+  authorizedStatusAuthors,
   buildComment,
   buildIssue,
   buildPatch,
   buildRepoAnnouncement,
   buildRepoRefs,
   buildStatus,
+  parseMaintainers,
 } from './nip34-events.js';
 
 const OWNER_PUBKEY =
@@ -57,6 +60,52 @@ describe('buildRepoAnnouncement (kind:30617)', () => {
 
     expect(event.created_at).toBeGreaterThanOrEqual(before);
     expect(event.created_at).toBeLessThanOrEqual(after);
+  });
+
+  it('omits the maintainers tag when none are given (owner-only)', () => {
+    const event = buildRepoAnnouncement('test', 'Test', 'Desc');
+    expect(event.tags.some((t) => t[0] === MAINTAINERS_TAG)).toBe(false);
+  });
+
+  it('emits ONE maintainers tag and round-trips via parseMaintainers (#287)', () => {
+    const event = buildRepoAnnouncement('test', 'Test', 'Desc', [
+      OWNER_PUBKEY,
+      AUTHOR_PUBKEY,
+      // duplicate + uppercase → deduped + lowercased
+      AUTHOR_PUBKEY.toUpperCase(),
+      'not-hex', // dropped
+    ]);
+    const tags = event.tags.filter((t) => t[0] === MAINTAINERS_TAG);
+    expect(tags).toHaveLength(1);
+    expect(tags[0]).toEqual([MAINTAINERS_TAG, OWNER_PUBKEY, AUTHOR_PUBKEY]);
+    expect(parseMaintainers(event.tags)).toEqual([OWNER_PUBKEY, AUTHOR_PUBKEY]);
+  });
+});
+
+describe('maintainer authority helpers (#287)', () => {
+  it('authorizedStatusAuthors = owner ∪ declared maintainers (lowercased)', () => {
+    const tags = [
+      ['d', 'r'],
+      [MAINTAINERS_TAG, AUTHOR_PUBKEY],
+    ];
+    const set = authorizedStatusAuthors(OWNER_PUBKEY, tags);
+    expect(set.has(OWNER_PUBKEY)).toBe(true); // owner always implicit
+    expect(set.has(AUTHOR_PUBKEY)).toBe(true);
+    expect(set.has(EVENT_ID)).toBe(false); // a stranger
+  });
+
+  it('owner is authorized even with no maintainers tag', () => {
+    const set = authorizedStatusAuthors(OWNER_PUBKEY, [['d', 'r']]);
+    expect([...set]).toEqual([OWNER_PUBKEY]);
+  });
+
+  it('parseMaintainers tolerates repeated tags + non-hex noise', () => {
+    expect(
+      parseMaintainers([
+        [MAINTAINERS_TAG, OWNER_PUBKEY, 'garbage'],
+        [MAINTAINERS_TAG, AUTHOR_PUBKEY],
+      ])
+    ).toEqual([OWNER_PUBKEY, AUTHOR_PUBKEY]);
   });
 });
 

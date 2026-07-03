@@ -24,4 +24,5 @@ export {
   parseComment,
   resolvePRStatus,
   resolveIssueStatus,
+  repoAuthorizedAuthors,
 } from '@toon-protocol/views';
