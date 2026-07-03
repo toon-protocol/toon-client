@@ -7,7 +7,7 @@ Git-to-TOON write path core — build git objects and NIP-34 events for the Rig 
 | `rig identity create` | rig (free) | mint a fresh BIP-39 identity into the encrypted keystore — the phrase is shown ONCE. Removes the cold-start wall |
 | `rig identity show` | rig (free) | the active identity's source + derived pubkey (never the phrase) |
 | `rig identity import` | rig (free) | write an existing phrase (read from stdin, never argv) to the keystore |
-| `rig init` | rig (free) | one-shot repo setup: git repo (offers to `git init`, or `--git-init`) + identity (offers to generate one) + `toon.*` git config |
+| `rig init` | rig (free) | one-shot repo setup: git repo (offers to `git init`, or `--git-init`) + identity (offers to generate one) + `toon.*` git config + repo-local git commit-author from your nostr identity (so `rig commit` works out of the box) |
 | `rig remote add/remove/list` | rig (free) | relays as REAL git remotes (`origin` = default publish target) |
 | `rig clone <relay-url> <owner>/<repo-id> [dir]` | rig (free) | bootstrap a repo from TOON: relay state + SHA-verified Arweave objects → a real, push-capable git repository. Shadows `git clone` |
 | `rig fetch [remote]` | rig (free) | download the missing object delta + update `refs/remotes/<remote>/*` (no merge — `rig merge origin/main`). Shadows `git fetch` |
@@ -46,6 +46,11 @@ rig identity import          # …or import it into the keystore (reads stdin)
 #    --git-init). No identity yet? It offers to generate one (or pass
 #    --generate-identity). `--git-init --generate-identity` is a fully
 #    non-interactive fresh setup: empty dir → rig-ready in one command.
+#    It ALSO sets the repo-local git commit-author from your nostr identity
+#    (never --global) so `rig commit`/`git commit` work out of the box and
+#    every commit is attributed to the signer: user.email = <npub>@nostr,
+#    user.name = your kind:0 profile display name when published (read
+#    best-effort from a relay) else the npub. Re-run to refresh the name.
 rig init                     # default repo id = directory name
 rig init --repo-id my-repo   # or pick one
 
@@ -55,7 +60,9 @@ rig remote add origin wss://relay.example
 rig remote list              # names + URLs; --json for machines
 rig remote remove origin
 
-# 4. work exactly like git — unowned commands pass through to system git:
+# 4. work exactly like git — unowned commands pass through to system git.
+#    `rig commit`/`git commit` already work: `rig init` set this repo's
+#    author to your nostr identity (no `git config user.*` step needed).
 rig status                   # IS `git status`
 rig add -p && rig commit -m "fix"
 rig log --oneline            # pagers, colors, prompts all behave like git
