@@ -1,5 +1,85 @@
 # @toon-protocol/rig
 
+## 2.5.0
+
+### Minor Changes
+
+- bc1befc: `rig balance`: full multi-chain wallet view — native coin + USDC across EVM, Solana, and Mina (#299)
+
+  `rig balance` previously showed a single number: USDC on the EVM settlement
+  chain (and, on the unstarted embedded client, Solana/Mina never appeared at all
+  because their keys only derive during a client start). It now renders a per-chain
+  block for every chain the identity is configured for — the native coin
+  (ETH / SOL / MINA) AND USDC — with the wallet address per chain. A chain with no
+  configured token still shows its native balance; an unreachable RPC degrades to a
+  per-chain `unreadable (RPC unreachable)` notice without failing the other chains
+  (each chain is read independently, in parallel). The command stays FREE (RPC +
+  local state reads only) and `--json` grows to
+  `{ chain, chainKey, address, native, tokens[] }[]`.
+
+  `@toon-protocol/client` gains `ToonClient.getWalletBalances()` — the comprehensive
+  multi-chain reader (native + tokens grouped per chain) — plus native readers
+  (`readEvmNativeBalance`, `readSolanaNativeBalance`) and a pure grouped reader
+  (`readWalletBalances`), all exported. The existing settlement-scoped
+  `getBalances()` is unchanged (payment-channel settlement semantics depend on it).
+  `getWalletBalances()` derives the Solana/Mina addresses from the mnemonic on
+  demand, so it reports every configured chain even on an unstarted client.
+
+  Follow-up: the daemon/MCP `toon_balances` path still uses `getBalances()`; it can
+  adopt the richer `getWalletBalances()` view separately (touches the views atoms).
+
+- 32aee92: feat(rig): `rig init` sets the git commit-author from the nostr identity
+
+  `rig commit` is a git passthrough, so on a repo where the user never set a
+  global git identity it dead-ended on git's "Author identity unknown / empty
+  ident name not allowed". `rig init` now sets this repo's LOCAL git author
+  (never `--global`) from the resolved nostr identity, so `rig commit` /
+  `git commit` work out of the box and every commit is attributed to the signer
+  — commit author == push signer == nostr identity, a coherent authorship chain
+  baked into the git objects on Arweave.
+
+  - `user.email` = `<npub>@nostr` (npub is a valid email local part).
+  - `user.name` = the identity's kind:0 profile display name when published
+    (prefer `display_name`, else `name`, read latest-wins from a resolvable
+    relay), best-effort; falls back to the npub when there is no profile, no
+    resolvable relay, or the read fails. Relay resolves at init time from
+    `--relay` → `origin`/`toon.relay` → the genesis seed, with a short
+    (~3s, `RIG_PROFILE_TIMEOUT_MS`-overridable) timeout — init never blocks or
+    errors on the profile read.
+  - Idempotent: a later `rig init` refreshes `user.name` from a now-readable
+    profile. Reported in the human output and in `--json` as
+    `gitAuthor: { name, email, source: 'profile' | 'npub' }`.
+
+  Closes #302.
+
+- 369a035: feat(rig): `rig init` initializes the git repo itself instead of dead-ending
+
+  `rig init` already offers to mint + persist an identity on a cold start
+  (#294), but it flatly refused when the cwd was not inside a git repository —
+  hinting at `git init` and never running it. Creating a `.git` is a smaller,
+  safer, idempotent action than minting a seed phrase, so init now offers it
+  too, behind the same consent gate:
+
+  - **TTY**: prompts `Initialize a git repository here? [y/N]` (same default-no
+    shape as the identity prompt). On yes it runs `git init` in the cwd and
+    proceeds with normal init; on no it keeps the existing remediation.
+  - **`--git-init`**: non-interactive flag that runs `git init` then proceeds
+    (the scripting path); also skips the prompt in a TTY.
+  - **Non-TTY / `--json` without the flag**: still refuses (never silently
+    creates a repo), but the `NotAGitRepositoryError` remediation now leads with
+    `rig init --git-init` (and still mentions plain `git init`).
+
+  `git init` runs in the resolved cwd only (never a parent). Combined with
+  `--generate-identity`, `rig init --git-init --generate-identity` is a fully
+  non-interactive fresh setup: an empty directory becomes rig-ready in one
+  command (git repo → identity → toon config). `--json` reports the new
+  `initializedGitRepo` field. Closes #300.
+
+### Patch Changes
+
+- Updated dependencies [bc1befc]
+  - @toon-protocol/client@0.16.0
+
 ## 2.4.1
 
 ### Patch Changes
