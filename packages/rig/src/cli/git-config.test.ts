@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  initGitRepository,
   readToonConfig,
   resolveRepoRoot,
   writeToonConfig,
@@ -45,6 +46,35 @@ describe('resolveRepoRoot', () => {
       );
     } finally {
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('initGitRepository', () => {
+  it('creates a repo whose initial branch is `main`, even under a hostile init.defaultBranch=master', async () => {
+    const fresh = mkdtempSync(join(tmpdir(), 'toon-rig-init-'));
+    // Force the machine default to `master` for the git children that
+    // initGitRepository spawns (they inherit process.env). This proves we
+    // pin `main` deterministically rather than inheriting the system default.
+    const saved = {
+      count: process.env.GIT_CONFIG_COUNT,
+      key: process.env.GIT_CONFIG_KEY_0,
+      value: process.env.GIT_CONFIG_VALUE_0,
+    };
+    process.env.GIT_CONFIG_COUNT = '1';
+    process.env.GIT_CONFIG_KEY_0 = 'init.defaultBranch';
+    process.env.GIT_CONFIG_VALUE_0 = 'master';
+    try {
+      await initGitRepository(fresh);
+      expect(git(['symbolic-ref', 'HEAD'], fresh)).toBe('refs/heads/main');
+    } finally {
+      if (saved.count === undefined) delete process.env.GIT_CONFIG_COUNT;
+      else process.env.GIT_CONFIG_COUNT = saved.count;
+      if (saved.key === undefined) delete process.env.GIT_CONFIG_KEY_0;
+      else process.env.GIT_CONFIG_KEY_0 = saved.key;
+      if (saved.value === undefined) delete process.env.GIT_CONFIG_VALUE_0;
+      else process.env.GIT_CONFIG_VALUE_0 = saved.value;
+      rmSync(fresh, { recursive: true, force: true });
     }
   });
 });

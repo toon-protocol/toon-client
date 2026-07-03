@@ -223,9 +223,34 @@ describe('selectRefspecs', () => {
       'refs/heads/main',
       'refs/tags/v1',
     ]);
+  });
+
+  it('errors helpfully on a missing ref: names it + the current branch, no ref-deletion herring', async () => {
+    const reader = new GitRepoReader(repoDir);
+    // The repo is on `main`; asking for a nonexistent branch should say so
+    // plainly and point at the real current branch — NOT mention ref deletion.
     await expect(
       selectRefspecs(reader, ['nope'], false, false)
-    ).rejects.toThrow(/matches no local branch or tag/);
+    ).rejects.toThrow(/no local branch or tag "nope"/);
+    await expect(
+      selectRefspecs(reader, ['nope'], false, false)
+    ).rejects.toThrow(/your current branch is "main"/);
+    await expect(
+      selectRefspecs(reader, ['nope'], false, false)
+    ).rejects.toThrow(/did you mean `rig push origin main`/);
+    await expect(
+      selectRefspecs(reader, ['nope'], false, false, 'upstream')
+    ).rejects.toThrow(/rig push upstream main/);
+    await expect(
+      selectRefspecs(reader, ['nope'], false, false)
+    ).rejects.not.toThrow(/deletion/);
+  });
+
+  it('keeps the ref-deletion guard for actual `:ref` deletion syntax', async () => {
+    const reader = new GitRepoReader(repoDir);
+    await expect(
+      selectRefspecs(reader, [':main'], false, false)
+    ).rejects.toThrow(/deleting remote refs .* is out of scope in v1/);
   });
 });
 
