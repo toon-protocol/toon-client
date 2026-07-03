@@ -1,5 +1,63 @@
 # @toon-protocol/rig
 
+## 2.6.0
+
+### Minor Changes
+
+- 245c9ab: rig: capability-check the daemon before delegating git ops; actionable error against an old toon-clientd (#306)
+
+  `rig push` (and `issue`/`comment`/`pr create`/`pr status`) against a running-but-OLD `toon-clientd` used to dead-end with an opaque `daemon rejected the operation (HTTP 404): Not Found`. The daemon-as-accelerator delegation (#279) probes `GET /status` and, on a same-identity match, delegates to the daemon's `/git/*` routes — but those routes only exist since #227, so an older daemon has `/status` yet 404s every git call.
+
+  - **client-mcp**: `/status` now advertises `capabilities: ['git']` so a version-skewed rig can gate before it commits to a route the daemon lacks. Backward-compatible additive field; the daemon must be restarted to advertise it. (Fixed-group with `@toon-protocol/views`.)
+  - **rig**: capability-probes the daemon before delegating. A same-identity daemon that does not advertise `git` (or predates the field) no longer dead-ends — it raises a clear, actionable error naming both remediations (upgrade `@toon-protocol/client-mcp@latest` + restart, or stop the daemon to run standalone). A `/git/*` 404 despite a positive probe degrades to the same message (defense in depth). No silent fallback to standalone: a same-identity daemon makes the #228 nonce guard refuse standalone anyway, so the only correct resolution is upgrading or stopping the daemon.
+
+- ff5f576: `rig fund` funds ALL supported chains by default (#309). A plain `rig fund` now
+  drips to evm + solana + mina in one run — each drip covering the native coin AND
+  USDC — so the wallet matches the multi-chain `rig balance` view (#299) instead
+  of requiring three separate `--chain` runs.
+
+  - **Multi-chain by default.** No `--chain` funds every supported chain;
+    `--chain <one>` still narrows to a single chain (preserved); `--chain all` is
+    the explicit alias for the default. The env/config `chain` settlement
+    preference no longer narrows `rig fund` (funding all chains is a superset).
+  - **Parallel, independent drips.** The Mina faucet legitimately takes ~75s, so
+    the per-chain drips run concurrently (overlapping their timeouts) rather than
+    stacking to ~150s. Each chain's result is independent: one chain's faucet
+    failing never aborts the others.
+  - **Exit code:** `0` only when every targeted chain funded; `1` if any chain
+    failed — the per-chain breakdown is always shown (`evm ✓ funded (ETH +
+USDC)` / `solana ✗ <reason>`).
+  - **`--json`:** a per-chain `results` array (`{ chain, funded, address, error?,
+response? }`) replacing the single-chain `chain`/`address`/`response` fields;
+    still a strict single JSON document.
+  - `--address` now requires an explicit single `--chain` (one address cannot
+    fund every chain). The no-faucet path (prints all three wallet addresses) and
+    the #288 devnet-origin auto-detect are unchanged.
+
+### Patch Changes
+
+- a8c5855: Handle empty (zero-byte) git blobs. `rig push` previously failed on any repo
+  containing an empty file because it uploaded the zero-byte blob body as a
+  kind:5094 request with an empty `i` value, which the store rejects as malformed
+  (F00). The git empty blob (`e69de29b…`, the only zero-byte object git can
+  produce) is now skipped on push — its commit/tree still references it — and
+  synthesized locally on clone/fetch, so a repo with an empty file pushes and
+  clones back bit-identically (git fsck clean). Fee estimates and receipts report
+  the skip honestly. Closes #310.
+- df6feb5: `rig fund`: echo the funded (or attempted) wallet address on each per-chain line
+  of the human (non-`--json`) output — `evm ✓ funded (ETH + USDC) → 0x…` /
+  `solana ✗ → <address> — <error>`. The multi-chain rewrite (#309) had dropped the
+  address from the terminal output, leaving no confirmation of WHERE funds went;
+  this restores it, which matters most when `--address` targets an arbitrary,
+  non-derived address a typo could misdirect.
+- 543ff2c: fix(rig): `rig init --git-init` now creates `main` deterministically (was
+  `master` on a stock git without `init.defaultBranch=main`), matching every rig
+  doc/quickstart; and `rig push`'s error when a refspec matches no local branch
+  now names the missing ref and your current branch (`no local branch or tag
+"main" — your current branch is "master" (did you mean \`rig push origin
+  master\`?)`) instead of the misleading "ref deletion is out of scope" clause,
+which is now reserved for actual `:ref` deletion syntax.
+
 ## 2.5.0
 
 ### Minor Changes
