@@ -49,10 +49,15 @@ export function renderPlan(plan: GitEstimateResponse): string[] {
 
   const est = plan.estimate;
   const skipped = Object.keys(plan.knownShaToTxId).length;
+  const emptySkipped = est.skippedEmptyCount ?? 0;
   lines.push(
     `Objects: ${est.objectCount} to upload` +
       ` (${formatNumber(est.totalObjectBytes)} bytes)` +
-      (skipped > 0 ? `; ${skipped} already on Arweave (free)` : '')
+      (skipped > 0 ? `; ${skipped} already on Arweave (free)` : '') +
+      (emptySkipped > 0
+        ? `; ${emptySkipped} empty blob${emptySkipped === 1 ? '' : 's'} skipped ` +
+          '(reconstructed on clone)'
+        : '')
   );
   lines.push('Fees (base units):');
   lines.push(
@@ -125,6 +130,13 @@ export function renderResult(result: GitPushResponse): string[] {
   lines.push(
     `Uploads: ${paid.length} paid, ${skipped.length} skipped (content-addressed).`
   );
+  const emptySkipped = result.estimate.skippedEmptyCount ?? 0;
+  if (emptySkipped > 0) {
+    lines.push(
+      `Empty blobs: ${emptySkipped} skipped (zero-byte, not uploaded — ` +
+        'reconstructed on clone).'
+    );
+  }
   if (result.announceReceipt) {
     lines.push(
       `Announcement (kind:30617): ${result.announceReceipt.eventId}` +

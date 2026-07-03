@@ -63,6 +63,13 @@ export interface GitFeeEstimate {
   eventFees: string;
   /** uploadFee + eventFees. */
   totalFee: string;
+  /**
+   * Zero-byte objects (the git empty blob) excluded from the upload — the
+   * store rejects zero-byte content as malformed, so they are skipped on push
+   * and reconstructed on clone/fetch. Optional for wire compatibility with
+   * daemons predating the empty-blob handling. Default 0.
+   */
+  skippedEmptyCount?: number;
 }
 
 /** Serialized `PushPlan` — everything a confirm UI needs. */
@@ -253,6 +260,9 @@ export function serializeFeeEstimate(plan: PushPlan): GitFeeEstimate {
     eventCount: plan.estimate.eventCount,
     eventFees: plan.estimate.eventFees.toString(),
     totalFee: plan.estimate.totalFee.toString(),
+    ...(plan.estimate.skippedEmptyCount > 0
+      ? { skippedEmptyCount: plan.estimate.skippedEmptyCount }
+      : {}),
   };
 }
 

@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hashGitObject, MAX_OBJECT_SIZE } from './objects.js';
+import { EMPTY_BLOB_SHA, hashGitObject, MAX_OBJECT_SIZE } from './objects.js';
 import type { UnsignedEvent } from './nip34-events.js';
 import type {
   FeeRates,
@@ -43,6 +43,10 @@ let commit1 = '';
 let commit2 = '';
 let featureCommit = '';
 let tagSha = '';
+/** Commit on the `empty` branch adding a zero-byte file + a real file. */
+let emptyCommit = '';
+/** Orphan commit whose root tree is the empty TREE object (allow-empty). */
+let emptyTreeCommit = '';
 /** All objects reachable from commit1 (the "remote already has these" set). */
 let commit1Objects: string[] = [];
 /** All objects reachable from main + feature/x + v1 tag (full first push). */
@@ -108,6 +112,23 @@ beforeAll(() => {
   writeFileSync(join(repoDir, 'big.bin'), Buffer.alloc(MAX_OBJECT_SIZE + 1, 7));
   git(['add', 'big.bin'], repoDir);
   git(['commit', '-m', 'big blob'], repoDir);
+
+  // Empty-file branch: one zero-byte file (the git empty blob) + a real file,
+  // from commit1. Exercises the empty-blob skip/synthesize path.
+  git(['checkout', '-b', 'empty', commit1], repoDir);
+  writeFileSync(join(repoDir, 'empty.txt'), '');
+  writeFileSync(join(repoDir, 'filled.txt'), 'not empty\n');
+  git(['add', '.'], repoDir);
+  git(['commit', '-m', 'empty + filled'], repoDir);
+  emptyCommit = git(['rev-parse', 'HEAD'], repoDir);
+
+  // Empty-TREE branch: an orphan commit with no files, whose root tree is the
+  // git empty-tree object (4b825dc6…) — a zero-byte object that is NOT the
+  // empty blob and must NOT be skipped by the empty-blob special case.
+  git(['checkout', '--orphan', 'emptytree'], repoDir);
+  git(['rm', '-rf', '--quiet', '.'], repoDir);
+  git(['commit', '--allow-empty', '-m', 'empty tree'], repoDir);
+  emptyTreeCommit = git(['rev-parse', 'HEAD'], repoDir);
 
   git(['checkout', 'main'], repoDir);
 
@@ -686,5 +707,119 @@ describe('executePush', () => {
     expect(publisher.published.map((p) => p.event.kind)).toEqual([30618]);
     expect(result.announceReceipt).toBeNull();
     expect(result.totalFeePaid).toBe(FEE_RATES.eventFee); // one event only
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Empty (zero-byte) blob handling (#310)
+// ---------------------------------------------------------------------------
+
+describe('empty-blob handling', () => {
+  it('excludes the empty blob from the upload set and reports the skip', async () => {
+    const plan = await planPush({
+      repoReader: reader,
+      remoteState: cannedRemote(),
+      feeRates: FEE_RATES,
+      repoId: REPO_ID,
+      refs: ['refs/heads/empty'],
+    });
+
+    // The tree references the empty blob, but it is NOT scheduled for upload.
+    const uploadShas = plan.objects.map((o) => o.sha);
+    expect(uploadShas).not.toContain(EMPTY_BLOB_SHA);
+    expect(plan.skippedEmptyObjects.map((o) => o.sha)).toEqual([
+      EMPTY_BLOB_SHA,
+    ]);
+    expect(plan.estimate.skippedEmptyCount).toBe(1);
+    // The non-empty sibling blob IS uploaded.
+    const filledSha = hashGitObject(
+      'blob',
+      Buffer.from('not empty\n')
+    ).sha;
+    expect(uploadShas).toContain(filledSha);
+    // The empty blob has no txId and is never added to the arweave map.
+    expect(plan.knownShaToTxId.has(EMPTY_BLOB_SHA)).toBe(false);
+    // Its zero body contributes nothing to the fee.
+    const totalBytes = plan.objects.reduce((sum, o) => sum + o.size, 0);
+    expect(plan.estimate.totalObjectBytes).toBe(totalBytes);
+    expect(plan.estimate.uploadFee).toBe(BigInt(totalBytes) * 10n);
+  });
+
+  it('executePush never uploads the empty blob (Publisher.uploadGitObject not called for it)', async () => {
+    const plan = await planPush({
+      repoReader: reader,
+      remoteState: cannedRemote(),
+      feeRates: FEE_RATES,
+      repoId: REPO_ID,
+      refs: ['refs/heads/empty'],
+    });
+    const publisher = new MockPublisher();
+    const result = await executePush({
+      plan,
+      publisher,
+      remoteState: cannedRemote(),
+      repoReader: reader,
+      relayUrls: RELAYS,
+    });
+
+    // The empty blob is never handed to the Publisher…
+    expect(publisher.uploads.map((u) => u.sha)).not.toContain(EMPTY_BLOB_SHA);
+    // …and never appears in the receipts or the published arweave map.
+    expect(result.uploads.map((u) => u.sha)).not.toContain(EMPTY_BLOB_SHA);
+    expect(result.arweaveMap.has(EMPTY_BLOB_SHA)).toBe(false);
+
+    const refsEvent = publisher.published.find((p) => p.event.kind === 30618);
+    if (!refsEvent) throw new Error('expected a kind:30618 refs event');
+    const arweaveTags = tagValues(refsEvent.event, 'arweave');
+    expect(arweaveTags.some((t) => t[0] === EMPTY_BLOB_SHA)).toBe(false);
+  });
+
+  it('does NOT skip the empty TREE object (only the empty blob is special-cased)', async () => {
+    const plan = await planPush({
+      repoReader: reader,
+      remoteState: cannedRemote(),
+      feeRates: FEE_RATES,
+      repoId: REPO_ID,
+      refs: ['refs/heads/emptytree'],
+    });
+
+    // The empty-tree object is zero bytes too, but it is NOT the empty blob —
+    // it must be scheduled for upload, never silently dropped.
+    const emptyTreeSha = hashGitObject('tree', Buffer.alloc(0)).sha;
+    expect(emptyTreeSha).toBe('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+    expect(plan.objects.map((o) => o.sha)).toContain(emptyTreeSha);
+    expect(plan.skippedEmptyObjects).toHaveLength(0);
+    expect(plan.estimate.skippedEmptyCount).toBe(0);
+    // Sanity: the branch really does carry the empty tree.
+    expect(reachableObjects([emptyTreeCommit], repoDir)).toContain(emptyTreeSha);
+  });
+
+  it('pushes the non-empty objects and skips ONLY the empty one', async () => {
+    const plan = await planPush({
+      repoReader: reader,
+      remoteState: cannedRemote(),
+      feeRates: FEE_RATES,
+      repoId: REPO_ID,
+      refs: ['refs/heads/empty'],
+    });
+    const publisher = new MockPublisher();
+    await executePush({
+      plan,
+      publisher,
+      remoteState: cannedRemote(),
+      repoReader: reader,
+      relayUrls: RELAYS,
+    });
+
+    // Every reachable non-empty object was uploaded exactly once.
+    const reachable = reachableObjects([emptyCommit], repoDir).filter(
+      (sha) => sha !== EMPTY_BLOB_SHA
+    );
+    const uploaded = publisher.uploads.map((u) => u.sha).sort();
+    expect(uploaded).toEqual([...new Set(reachable)].sort());
+    // No upload carried an empty body (which is what the store rejects).
+    for (const upload of publisher.uploads) {
+      expect(upload.body.length).toBeGreaterThan(0);
+    }
   });
 });

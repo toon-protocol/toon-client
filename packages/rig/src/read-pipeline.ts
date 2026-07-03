@@ -26,6 +26,7 @@ import {
   type DownloadOptions,
   type FetchedObject,
 } from './object-fetch.js';
+import { EMPTY_BLOB_SHA } from './objects.js';
 
 /** A reachable object that could not be obtained. */
 export interface MissingObject {
@@ -111,8 +112,27 @@ export async function collectRepoObjects(
     if (result.objects.size === 0) break; // every attempt failed — stop
   }
 
+  // The git empty blob is never uploaded (the store rejects zero-byte
+  // content; `rig push` skips it), so a tree that references it reports it
+  // "missing" here even though it is a git constant. Synthesize it locally —
+  // a zero-byte blob body always hashes to EMPTY_BLOB_SHA — instead of
+  // erroring, so an empty file reconstructs bit-identically (git fsck clean).
+  // Keyed off the EXACT constant SHA: the honest lag-error still fires for any
+  // genuinely-missing non-empty object.
+  let finalClosure = walkClosure(tips, objects, present);
+  if (
+    finalClosure.missing.includes(EMPTY_BLOB_SHA) &&
+    !present.has(EMPTY_BLOB_SHA)
+  ) {
+    objects.set(EMPTY_BLOB_SHA, {
+      sha: EMPTY_BLOB_SHA,
+      type: 'blob',
+      body: Buffer.alloc(0),
+    });
+    finalClosure = walkClosure(tips, objects, present);
+  }
+
   // Final accounting.
-  const finalClosure = walkClosure(tips, objects, present);
   const missing: MissingObject[] = finalClosure.missing.map((sha) => ({
     sha,
     txId: txIds.get(sha) ?? null,

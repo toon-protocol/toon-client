@@ -24,7 +24,11 @@
  */
 
 import { buildRepoAnnouncement, buildRepoRefs } from './nip34-events.js';
-import { MAX_OBJECT_SIZE, type GitObjectType } from './objects.js';
+import {
+  EMPTY_BLOB_SHA,
+  MAX_OBJECT_SIZE,
+  type GitObjectType,
+} from './objects.js';
 import type {
   FeeRates,
   PublishReceipt,
@@ -140,6 +144,13 @@ export interface PushFeeEstimate {
   eventFees: bigint;
   /** uploadFee + eventFees. */
   totalFee: bigint;
+  /**
+   * Objects excluded from the upload because their body is zero bytes — the
+   * git empty blob, which the store rejects as malformed (F00). Reconstructed
+   * locally on clone/fetch, so nothing is lost; surfaced here so the fee table
+   * can report the skip honestly.
+   */
+  skippedEmptyCount: number;
 }
 
 /** Everything `executePush` (and a confirm UI) needs. */
@@ -161,6 +172,13 @@ export interface PushPlan {
    * crashed push never uploads a tip whose history is missing.
    */
   objects: PlannedObject[];
+  /**
+   * Zero-byte objects (the git empty blob) excluded from {@link objects}: the
+   * store rejects a zero-byte kind:5094 upload as malformed (F00), so `rig`
+   * never uploads it — the commit/tree still references it and clone/fetch
+   * synthesizes it locally. Kept for honest receipts, never uploaded.
+   */
+  skippedEmptyObjects: PlannedObject[];
   /**
    * sha→txId hints known WITHOUT uploading: the remote's `arweave` tags
    * plus anything `resolveMissing` found. Merged into the published
@@ -306,12 +324,26 @@ export async function planPush(options: PlanPushOptions): Promise<PushPlan> {
   }
   if (oversize.length > 0) throw new OversizeObjectsError(oversize);
 
-  // 4. Upload order: ref tips last. -----------------------------------------
+  // 4. Split off the empty blob, then order the rest ref-tips-last. ----------
+  // The git empty blob uploads as an empty kind:5094 `i` value, which the
+  // store rejects as malformed (F00). Skip it: it is reconstructed locally on
+  // clone/fetch. Keyed off the EXACT empty-blob constant SHA — NOT a
+  // `size === 0` heuristic, which would also match the (distinct, valid) empty
+  // TREE object `4b825dc6…` and silently drop it (it is not synthesized on
+  // read). An object whose SHA is EMPTY_BLOB_SHA is provably the empty blob.
   const tipShas = new Set(updates.map((u) => u.localSha));
-  const planned: PlannedObject[] = stats.map((stat) => {
+  const planned: PlannedObject[] = [];
+  const skippedEmptyObjects: PlannedObject[] = [];
+  for (const stat of stats) {
     const path = pathBySha.get(stat.sha);
-    return { ...stat, ...(path ? { path } : {}), isRefTip: tipShas.has(stat.sha) };
-  });
+    const object: PlannedObject = {
+      ...stat,
+      ...(path ? { path } : {}),
+      isRefTip: tipShas.has(stat.sha),
+    };
+    if (stat.sha === EMPTY_BLOB_SHA) skippedEmptyObjects.push(object);
+    else planned.push(object);
+  }
   const objects = [
     ...planned.filter((o) => !o.isRefTip),
     ...planned.filter((o) => o.isRefTip),
@@ -348,6 +380,7 @@ export async function planPush(options: PlanPushOptions): Promise<PushPlan> {
     newRefs,
     headSymref,
     objects,
+    skippedEmptyObjects,
     knownShaToTxId,
     announceNeeded,
     announcement: {
@@ -361,6 +394,7 @@ export async function planPush(options: PlanPushOptions): Promise<PushPlan> {
       eventCount,
       eventFees,
       totalFee: uploadFee + eventFees,
+      skippedEmptyCount: skippedEmptyObjects.length,
     },
   };
 }
