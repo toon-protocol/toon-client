@@ -34,7 +34,17 @@ import {
   writeToonConfig,
   type GitRemoteInfo,
 } from './git-config.js';
-import { resolveIdentity, type ResolvedIdentity } from './identity.js';
+import {
+  createIdentity,
+  createdIdentityBanner,
+  shadowNote,
+  type CreatedIdentity,
+} from './identity-cmd.js';
+import {
+  MissingIdentityError,
+  resolveIdentity,
+  type ResolvedIdentity,
+} from './identity.js';
 import type { CliIo } from './push.js';
 import { isRelayUrl } from './remote.js';
 import { renderIdentityLine } from './render.js';
@@ -52,11 +62,17 @@ The follow-up step is adding a relay: \`rig remote add origin <relay-url>\`
 \`git config toon.relay\` is migrated to the origin remote automatically
 when no origin exists (the old key stays readable and is removed in v0.3).
 
+When NO identity resolves, init does not dead-end: in a terminal it offers to
+generate one (\`Create a new identity now? [y/N]\`), and \`--generate-identity\`
+does it non-interactively (equivalent to \`rig identity create\` — the phrase
+is shown once to back up). Nothing is ever auto-generated without your yes.
+
 Options:
-  --repo-id <id>     repository id / NIP-34 d-tag (default: the existing
-                     toon.repoid, then the repo directory basename)
-  --json             machine-readable report
-  -h, --help         show this help`;
+  --repo-id <id>       repository id / NIP-34 d-tag (default: the existing
+                       toon.repoid, then the repo directory basename)
+  --generate-identity  when no identity resolves, mint a fresh one (no prompt)
+  --json               machine-readable report
+  -h, --help           show this help`;
 
 /** Deps subset `rig init` needs (no publisher — init is free). */
 export interface InitDeps {
@@ -65,10 +81,13 @@ export interface InitDeps {
   cwd: string;
   /** Identity resolver seam (tests); defaults to the real chain. */
   resolveIdentityImpl?: typeof resolveIdentity;
+  /** Identity generator seam (tests); defaults to the real mint. */
+  createIdentityImpl?: typeof createIdentity;
 }
 
 interface InitFlags {
   repoId?: string;
+  generateIdentity: boolean;
   json: boolean;
   help: boolean;
 }
@@ -78,6 +97,7 @@ function parseInitArgs(args: string[]): InitFlags {
     args,
     options: {
       'repo-id': { type: 'string' },
+      'generate-identity': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -87,6 +107,7 @@ function parseInitArgs(args: string[]): InitFlags {
     throw new Error(`rig init takes no positional arguments`);
   }
   const flags: InitFlags = {
+    generateIdentity: values['generate-identity'] ?? false,
     json: values.json ?? false,
     help: values.help ?? false,
   };
@@ -122,11 +143,69 @@ interface InitJsonOutput {
   migratedToonRelay: boolean;
   /** What this run changed in git config (false = already up to date). */
   changed: { repoId: boolean; owner: boolean };
+  /**
+   * Present only when THIS run generated the identity (`--generate-identity`
+   * or a TTY yes). Like `rig identity create --json`, it carries the seed
+   * phrase in `mnemonic` for the scripted path — treat as SECRET.
+   */
+  generatedIdentity?: {
+    mnemonic: string;
+    pubkey: string;
+    keystorePath: string;
+    autoPassword: boolean;
+  };
+}
+
+/**
+ * Resolve the signing identity; when nothing resolves, generate one instead of
+ * dead-ending — but ONLY with consent (`--generate-identity` or an interactive
+ * yes). A refusal (non-interactive, or a `[y/N]` no) rethrows the original
+ * {@link MissingIdentityError}, whose remediation now leads with
+ * `rig identity create`.
+ */
+async function resolveOrGenerateIdentity(
+  deps: InitDeps,
+  flags: InitFlags
+): Promise<{ identity: ResolvedIdentity; generated?: CreatedIdentity }> {
+  const { io, env } = deps;
+  const resolve = deps.resolveIdentityImpl ?? resolveIdentity;
+  try {
+    return { identity: await resolve({ env, cwd: deps.cwd, warn: io.err }) };
+  } catch (err) {
+    if (!(err instanceof MissingIdentityError)) throw err;
+
+    let generate = flags.generateIdentity;
+    if (!generate && io.isInteractive && !flags.json) {
+      io.err('No identity found — rig needs one to sign and pay.');
+      generate = await io.confirm('Create a new identity now? [y/N] ');
+    }
+    if (!generate) throw err;
+
+    const created = await (deps.createIdentityImpl ?? createIdentity)({
+      env,
+      cwd: deps.cwd,
+      force: false,
+      warn: io.err,
+      ...(deps.resolveIdentityImpl
+        ? { resolveIdentityImpl: deps.resolveIdentityImpl }
+        : {}),
+    });
+    // Build the ResolvedIdentity from the fresh mint directly (rather than
+    // re-resolving) so a custom-password keystore needs no env var to link.
+    const identity: ResolvedIdentity = {
+      mnemonic: created.mnemonic,
+      accountIndex: created.accountIndex,
+      source: 'keystore',
+      sourceLabel: created.keystorePath,
+      pubkey: created.pubkey,
+    };
+    return { identity, generated: created };
+  }
 }
 
 /** Run `rig init`; returns the process exit code. */
 export async function runInit(args: string[], deps: InitDeps): Promise<number> {
-  const { io, env } = deps;
+  const { io } = deps;
 
   let flags: InitFlags;
   try {
@@ -151,11 +230,8 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
     }
 
     // ── (b) Identity chain: source + derived pubkey (never the phrase) ──────
-    const identity = await (deps.resolveIdentityImpl ?? resolveIdentity)({
-      env,
-      cwd: deps.cwd,
-      warn: (line) => io.err(line),
-    });
+    // A chain miss no longer dead-ends: offer or honor identity generation.
+    const { identity, generated } = await resolveOrGenerateIdentity(deps, flags);
 
     // ── (c) Write toon.repoid / toon.owner to LOCAL git config ──────────────
     const existing = await readToonConfig(repoRoot);
@@ -210,11 +286,35 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
         origin: originRelay ?? null,
         migratedToonRelay,
         changed,
+        ...(generated
+          ? {
+              generatedIdentity: {
+                mnemonic: generated.mnemonic,
+                pubkey: generated.pubkey,
+                keystorePath: generated.keystorePath,
+                autoPassword: generated.autoPassword,
+              },
+            }
+          : {}),
       };
       io.emitJson(output);
+      if (generated) {
+        io.err(
+          'rig: `--json` emitted your new seed phrase in ' +
+            '`generatedIdentity.mnemonic` — this output is SECRET; store it ' +
+            'safely and do not log or share it.'
+        );
+        if (generated.shadowedBy) io.err(shadowNote(generated.shadowedBy));
+      }
       return 0;
     }
 
+    // A freshly minted identity gets its one-time backup banner FIRST, before
+    // the init report, so the phrase is the thing the user sees.
+    if (generated) {
+      for (const line of createdIdentityBanner(generated)) io.out(line);
+      if (generated.shadowedBy) io.err(shadowNote(generated.shadowedBy));
+    }
     io.out(`Initialized rig for ${repoRoot}`);
     io.out(renderIdentityLine(identity));
     io.out(

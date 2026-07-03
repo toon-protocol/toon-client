@@ -29,7 +29,7 @@
  * earlier (usage errors, missing git repo, …).
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -63,8 +63,11 @@ export interface ResolvedIdentity {
 export class MissingIdentityError extends Error {
   constructor(configPath: string) {
     super(
-      'no identity found — rig needs a BIP-39 seed phrase to sign and pay. ' +
-        'Provide one of (highest precedence first):\n' +
+      'no identity found — rig needs a BIP-39 seed phrase to sign and pay.\n' +
+        'Generate one now (no BIP-39 tooling needed):\n' +
+        '  • `rig identity create` — mint a fresh identity into the encrypted ' +
+        'keystore (shows the phrase once to back up)\n' +
+        'Or point rig at an existing phrase (highest precedence first):\n' +
         '  • RIG_MNEMONIC environment variable\n' +
         '  • RIG_MNEMONIC=<phrase> in a project-local .env file (gitignore it!)\n' +
         `  • the shared client config at ${configPath} (mnemonic or ` +
@@ -79,24 +82,39 @@ export class MissingIdentityError extends Error {
 // note as standalone/nonce-guard.ts: no @toon-protocol/client-mcp import)
 // ---------------------------------------------------------------------------
 
-/** Duplicated daemon convention: auto-keystore password. */
-const DEFAULT_KEYSTORE_PASSWORD = 'toon-client-default';
+/**
+ * Duplicated daemon convention (client-mcp `daemon/config.ts`): the password
+ * used to encrypt a keystore rig auto-provisions (`rig identity create`
+ * with no `TOON_CLIENT_KEYSTORE_PASSWORD` set) so the identity reloads across
+ * runs with no env var. At-rest obfuscation only.
+ */
+export const DEFAULT_KEYSTORE_PASSWORD = 'toon-client-default';
 
 /** Shared client state dir: `TOON_CLIENT_HOME`, else `~/.toon-client`. */
+export function clientStateDir(env: NodeJS.ProcessEnv): string {
+  return env['TOON_CLIENT_HOME'] ?? join(homedir(), '.toon-client');
+}
+
+/** Shared client config file path (`<state-dir>/config.json`). */
 export function clientConfigPath(env: NodeJS.ProcessEnv): string {
-  const dir = env['TOON_CLIENT_HOME'] ?? join(homedir(), '.toon-client');
-  return join(dir, 'config.json');
+  return join(clientStateDir(env), 'config.json');
+}
+
+/** Default encrypted-keystore path (`<state-dir>/keystore.json`) — the same
+ * convention the daemon's first-run provisioning uses. */
+export function clientKeystorePath(env: NodeJS.ProcessEnv): string {
+  return join(clientStateDir(env), 'keystore.json');
 }
 
 /** The subset of the shared client config file identity resolution reads. */
-interface ClientConfigIdentityFields {
+export interface ClientConfigIdentityFields {
   mnemonic?: unknown;
   mnemonicAccountIndex?: unknown;
   keystorePath?: unknown;
   keystoreAutoPassword?: unknown;
 }
 
-function readClientConfigFile(path: string): ClientConfigIdentityFields {
+export function readClientConfigFile(path: string): ClientConfigIdentityFields {
   try {
     return JSON.parse(readFileSync(path, 'utf8')) as ClientConfigIdentityFields;
   } catch (err) {
@@ -105,6 +123,38 @@ function readClientConfigFile(path: string): ClientConfigIdentityFields {
       `failed to read client config at ${path}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
+}
+
+/**
+ * Link a freshly written keystore into the shared client config so the
+ * keystore tier of {@link resolveIdentity} (and the daemon) picks it up on the
+ * next run — merging into any existing config, preserving every other field,
+ * and writing owner-only (mode 0o600). `keystoreAutoPassword` records whether
+ * rig chose the default password (so a user-set password still requires the
+ * env var to decrypt, exactly like the daemon's first-run convention).
+ */
+export function linkKeystoreInClientConfig(
+  env: NodeJS.ProcessEnv,
+  keystorePath: string,
+  autoPassword: boolean
+): string {
+  const configPath = clientConfigPath(env);
+  mkdirSync(dirname(configPath), { recursive: true });
+  const existing = readClientConfigFile(configPath) as Record<string, unknown>;
+  const merged: Record<string, unknown> = {
+    ...existing,
+    keystorePath,
+    ...(autoPassword
+      ? { keystoreAutoPassword: true }
+      : // A user-set password: drop any stale auto flag so decryption
+        // requires TOON_CLIENT_KEYSTORE_PASSWORD.
+        { keystoreAutoPassword: false }),
+  };
+  writeFileSync(configPath, JSON.stringify(merged, null, 2) + '\n', {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  return configPath;
 }
 
 // ---------------------------------------------------------------------------

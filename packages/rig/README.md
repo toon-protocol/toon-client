@@ -4,7 +4,10 @@ Git-to-TOON write path core — build git objects and NIP-34 events for the Rig 
 
 | command | owner | what it does |
 | --- | --- | --- |
-| `rig init` | rig (free) | one-shot repo setup: identity + `toon.*` git config |
+| `rig identity create` | rig (free) | mint a fresh BIP-39 identity into the encrypted keystore — the phrase is shown ONCE. Removes the cold-start wall |
+| `rig identity show` | rig (free) | the active identity's source + derived pubkey (never the phrase) |
+| `rig identity import` | rig (free) | write an existing phrase (read from stdin, never argv) to the keystore |
+| `rig init` | rig (free) | one-shot repo setup: identity (offers to generate one) + `toon.*` git config |
 | `rig remote add/remove/list` | rig (free) | relays as REAL git remotes (`origin` = default publish target) |
 | `rig clone <relay-url> <owner>/<repo-id> [dir]` | rig (free) | bootstrap a repo from TOON: relay state + SHA-verified Arweave objects → a real, push-capable git repository. Shadows `git clone` |
 | `rig fetch [remote]` | rig (free) | download the missing object delta + update `refs/remotes/<remote>/*` (no merge — `rig merge origin/main`). Shadows `git fetch` |
@@ -23,13 +26,20 @@ Git-to-TOON write path core — build git objects and NIP-34 events for the Rig 
 ```sh
 npm install -g @toon-protocol/rig
 
-# 1. identity — a BIP-39 seed phrase, either in your environment…
-export RIG_MNEMONIC="abandon abandon … about"
-#    …or in a project-local .env (gitignore it!):
-echo 'RIG_MNEMONIC="abandon abandon … about"' >> .env
+# 1. identity — mint one on the spot (no BIP-39 tooling needed). The seed
+#    phrase is shown ONCE (write it down) and stored in an encrypted keystore
+#    under ~/.toon-client. This is the cold-start step `git init` never needs.
+rig identity create
+rig identity show            # active source + derived pubkey (never the phrase)
+#    Already have a phrase? Bring it instead of generating:
+export RIG_MNEMONIC="abandon abandon … about"          # env, or…
+echo 'RIG_MNEMONIC="abandon abandon … about"' >> .env  # project .env (gitignore it!)
+rig identity import          # …or import it into the keystore (reads stdin)
 
 # 2. one-shot repo setup (free): writes toon.repoid + toon.owner to the
-#    repo's local git config and reports which identity source is active
+#    repo's local git config and reports which identity source is active.
+#    No identity yet? `rig init` offers to generate one (or pass
+#    --generate-identity for the non-interactive path).
 rig init                     # default repo id = directory name
 rig init --repo-id my-repo   # or pick one
 
@@ -111,8 +121,20 @@ The passthrough is exempt from the `--json` contract: `rig status --json` runs `
 
 The CLI is **standalone by default**: it embeds its own payment client built
 from your seed phrase (`@toon-protocol/client` is a regular dependency,
-installed automatically with the package) — no daemon is ever required. The
-mnemonic is resolved along one precedence chain — highest first:
+installed automatically with the package) — no daemon is ever required.
+
+**No phrase yet? Generate one — `rig identity create`.** It mints a fresh
+BIP-39 mnemonic (via the client's generator — no external BIP-39 tooling),
+shows it ONCE with a backup warning, and writes it to the encrypted keystore
+under `TOON_CLIENT_HOME`. It refuses to overwrite an existing identity without
+`--force`. `rig identity show` reports the active source + pubkey (never the
+phrase); `rig identity import` writes an existing phrase (read from stdin,
+never a CLI argument) to the keystore. `--json` on **`create`** is the ONE
+sanctioned path that emits the phrase (in a `mnemonic` field — treat as
+secret); `show`/`import` never do. `rig init` also offers to generate on a
+chain miss (or `rig init --generate-identity`).
+
+The mnemonic is resolved along one precedence chain — highest first:
 
 1. `RIG_MNEMONIC` environment variable
 2. `TOON_CLIENT_MNEMONIC` environment variable — deprecated alias, warns on

@@ -149,6 +149,7 @@ export function makeCliIo(options: CliIoOptions): RigIo {
  */
 export const RIG_OWNED_VERBS: ReadonlySet<string> = new Set([
   'init',
+  'identity',
   'remote',
   'clone',
   'fetch',
