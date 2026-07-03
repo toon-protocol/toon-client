@@ -81,6 +81,24 @@ export interface DaemonProbe {
    * string) — what the single-event subcommands quote before confirming.
    */
   feePerEvent?: string;
+  /**
+   * Optional-route capabilities the daemon advertises (`capabilities` in the
+   * `/status` body, #306). `'git'` means the `/git/*` write path exists. A
+   * daemon older than the field itself omits it entirely — so an UNDEFINED or
+   * absent-of-`'git'` value must be read as "no git support" (fail closed),
+   * NOT delegated to (it would 404 mid-operation).
+   */
+  capabilities?: string[];
+}
+
+/**
+ * True when the probed daemon advertises the `/git/*` write path (#306).
+ * Fails closed: a daemon that predates the `capabilities` field reports
+ * `undefined` here, which is treated as "no git routes" so rig raises a clear
+ * upgrade error instead of delegating into a mid-operation 404.
+ */
+export function daemonSupportsGit(probe: DaemonProbe): boolean {
+  return Array.isArray(probe.capabilities) && probe.capabilities.includes('git');
 }
 
 /** Injectable probe signature (tests fake this instead of the network). */
@@ -119,6 +137,7 @@ export async function probeDaemon(
       identity?: { nostrPubkey?: unknown };
       relay?: { url?: unknown };
       feePerEvent?: unknown;
+      capabilities?: unknown;
     };
     const probe: DaemonProbe = { baseUrl, reachable: true };
     const pubkey = body?.identity?.nostrPubkey;
@@ -129,6 +148,13 @@ export async function probeDaemon(
     }
     if (typeof body?.feePerEvent === 'string' && body.feePerEvent !== '') {
       probe.feePerEvent = body.feePerEvent;
+    }
+    // Only keep string entries — an old daemon omits the field entirely, and
+    // daemonSupportsGit() reads a missing/garbage value as "no git routes".
+    if (Array.isArray(body?.capabilities)) {
+      probe.capabilities = body.capabilities.filter(
+        (c): c is string => typeof c === 'string'
+      );
     }
     return probe;
   } catch {
@@ -153,6 +179,38 @@ export class DaemonRouteError extends Error {
   }
 }
 
+/**
+ * A same-identity daemon holds the identity but is too old to serve the
+ * `/git/*` routes (#306 — version skew: git routes added in #227, delegation
+ * in #279). Raised at the capability pre-flight (no `'git'` in `/status`
+ * `capabilities`), and as defense-in-depth when a git route still 404s despite
+ * a positive probe. NOT auto-fell-back to standalone on purpose: a
+ * same-identity daemon holding the identity makes the #228 nonce guard REFUSE
+ * standalone anyway (both writers would race the channel's cumulative-claim
+ * watermark) — so the only correct, non-racy resolution is upgrading or
+ * stopping the daemon.
+ */
+export class DaemonTooOldForGitError extends Error {
+  constructor(
+    /** Control API base URL the stale daemon answered on. */
+    public readonly baseUrl: string,
+    /** The shared Nostr pubkey (hex), when known — shortened in the message. */
+    public readonly pubkey?: string
+  ) {
+    const holds =
+      pubkey !== undefined && pubkey !== ''
+        ? ` holds this identity (${pubkey.slice(0, 8)}…)`
+        : ' holds this identity';
+    super(
+      `toon-clientd at ${baseUrl}${holds} but is too old to handle git ` +
+        'operations (missing /git routes). Upgrade the daemon ' +
+        '(npm i -g @toon-protocol/client-mcp@latest, then restart it) — or ' +
+        'stop it to let rig run standalone.'
+    );
+    this.name = 'DaemonTooOldForGitError';
+  }
+}
+
 /** The daemon vanished between the identity probe and the operation. */
 export class DaemonUnreachableError extends Error {
   constructor(
@@ -172,7 +230,9 @@ export class DaemonUnreachableError extends Error {
 export class DaemonGitClient {
   constructor(
     private readonly baseUrl: string,
-    private readonly fetchImpl: typeof fetch
+    private readonly fetchImpl: typeof fetch,
+    /** Shared identity pubkey, for the too-old error message on a 404. */
+    private readonly pubkey?: string
   ) {}
 
   gitEstimate(req: GitEstimateRequest): Promise<GitEstimateResponse> {
@@ -209,6 +269,13 @@ export class DaemonGitClient {
       });
     } catch (err) {
       throw new DaemonUnreachableError(this.baseUrl, err);
+    }
+    // Defense in depth (#306): a 404 on a `/git/*` route means the route is
+    // not registered — a daemon too old for the git write path, despite the
+    // capability pre-flight having (wrongly) passed. Surface the same
+    // actionable upgrade error rather than the opaque "HTTP 404" envelope.
+    if (res.status === 404) {
+      throw new DaemonTooOldForGitError(this.baseUrl, this.pubkey);
     }
     const text = await res.text();
     let parsed: unknown;
@@ -303,13 +370,22 @@ export async function resolvePaidSession(
       warn: options.warn,
     });
     if (identity.pubkey === probe.identity) {
+      // Capability pre-flight (#306): a same-identity daemon that predates the
+      // `/git/*` routes (older client-mcp) has `/status` but 404s every git
+      // route. Delegating would dead-end with an opaque 404, and blindly
+      // falling back to standalone is unsafe — the #228 nonce guard REFUSES
+      // standalone while a same-identity daemon is up (cumulative-claim race).
+      // Fail closed with a clear upgrade/stop remediation instead.
+      if (!daemonSupportsGit(probe)) {
+        throw new DaemonTooOldForGitError(probe.baseUrl, identity.pubkey);
+      }
       options.warn(
         `rig: paid path: daemon — toon-clientd at ${probe.baseUrl} holds ` +
           `this identity (${identity.pubkey.slice(0, 8)}…), delegating`
       );
       return {
         path: 'daemon',
-        client: new DaemonGitClient(probe.baseUrl, fetchImpl),
+        client: new DaemonGitClient(probe.baseUrl, fetchImpl, identity.pubkey),
         baseUrl: probe.baseUrl,
         identity: {
           pubkey: identity.pubkey,

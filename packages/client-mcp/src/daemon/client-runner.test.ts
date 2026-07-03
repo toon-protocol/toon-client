@@ -268,6 +268,12 @@ describe('ClientRunner', () => {
     expect(status.feePerEvent).toBe('1');
   });
 
+  it('getStatus advertises the git capability so a skewed rig can gate (#306)', () => {
+    // rig capability-checks this field BEFORE delegating to /git/* — its
+    // presence is what distinguishes this build from an old daemon that 404s.
+    expect(runner.getStatus().capabilities).toContain('git');
+  });
+
   it('injects the apex negotiation into the ToonClient', async () => {
     await runner.bootstrap();
     expect(client.peerNegotiations.get('proxy')).toMatchObject({

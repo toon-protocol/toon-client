@@ -903,6 +903,7 @@ describe('daemon delegation (#279)', () => {
       ready: true,
       feePerEvent: '7',
       relayUrl,
+      capabilities: ['git'],
     });
 
   function daemonFetch(receipt: Record<string, unknown>): {
@@ -1019,6 +1020,37 @@ describe('daemon delegation (#279)', () => {
     expect(fake.published).toHaveLength(1);
     const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
     expect(doc['path']).toBe('standalone');
+  });
+
+  it('OLD same-identity daemon (no /git routes) → actionable error on a single-event command (#306)', async () => {
+    let daemonHit = 0;
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      loadStandalone: fake.load,
+      probeDaemon: async () => ({
+        baseUrl: 'http://127.0.0.1:8787',
+        reachable: true,
+        identity: SELF,
+        ready: true,
+        // No `capabilities` — old client-mcp lacking /git/* routes.
+      }),
+      fetchImpl: (async () => {
+        daemonHit += 1;
+        return new Response('Not Found', { status: 404 });
+      }) as typeof fetch,
+    });
+    const code = await runComment(
+      [ROOT_EVENT, '--body', 'B', '--yes'],
+      h.deps
+    );
+    expect(code).toBe(1);
+    const text = h.err.join('\n');
+    expect(text).toContain('too old to handle git operations');
+    expect(text).toContain('npm i -g @toon-protocol/client-mcp@latest');
+    expect(text).toContain('stop it to let rig run standalone');
+    expect(text).not.toContain('HTTP 404');
+    // Never touched the daemon's git routes, never ran standalone.
+    expect(daemonHit).toBe(0);
+    expect(fake.published).toHaveLength(0);
   });
 
   it('an unreachable daemon keeps the standalone path (path in JSON)', async () => {

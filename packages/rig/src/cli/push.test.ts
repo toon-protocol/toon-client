@@ -712,6 +712,17 @@ describe('daemon delegation (#279)', () => {
       ready: true,
       feePerEvent: '1',
       relayUrl: 'wss://origin-relay.example',
+      capabilities: ['git'],
+    });
+
+  /** A same-identity daemon too old for the /git/* routes (no capabilities). */
+  const oldDaemonProbe = (): NonNullable<PushDeps['probeDaemon']> =>
+    async () => ({
+      baseUrl: 'http://127.0.0.1:8787',
+      reachable: true,
+      identity: SELF,
+      ready: true,
+      // No `capabilities` field — an old client-mcp build (#306).
     });
 
   function daemonPlan(overrides: Partial<GitEstimateResponse> = {}): GitEstimateResponse {
@@ -809,6 +820,50 @@ describe('daemon delegation (#279)', () => {
     expect(doc['result']).toEqual(daemonResult);
     expect((doc['identity'] as { pubkey: string }).pubkey).toBe(SELF);
     expect(h.err.join('\n')).toContain('paid path: daemon');
+  });
+
+  it('OLD same-identity daemon (no /git routes) → actionable error, NOT a raw 404 (#306)', async () => {
+    const fake = makeStandalone(emptyRemoteState());
+    let daemonHit = 0;
+    const fetchImpl = (async () => {
+      daemonHit += 1;
+      return new Response('Not Found', { status: 404 });
+    }) as typeof fetch;
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      loadStandalone: fake.load,
+      probeDaemon: oldDaemonProbe(),
+      fetchImpl,
+    });
+    const code = await runPush(['--yes'], h.deps);
+    expect(code).toBe(1);
+
+    const text = h.err.join('\n');
+    // The clear, actionable message — not the opaque 404 the user hit.
+    expect(text).toContain('too old to handle git operations');
+    expect(text).toContain('missing /git routes');
+    expect(text).toContain('npm i -g @toon-protocol/client-mcp@latest');
+    expect(text).toContain('stop it to let rig run standalone');
+    expect(text).toContain(SELF.slice(0, 8));
+    expect(text).not.toContain('HTTP 404');
+    expect(text).not.toContain('delegating');
+
+    // Failed CLOSED before any /git/* request AND without silently running
+    // standalone (which the #228 nonce guard would refuse anyway).
+    expect(daemonHit).toBe(0);
+    expect(fake.loadedWith).toHaveLength(0);
+    expect(fake.published).toHaveLength(0);
+  });
+
+  it('OLD daemon actionable error carries a machine code under --json (#306)', async () => {
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      probeDaemon: oldDaemonProbe(),
+    });
+    const code = await runPush(['--yes', '--json'], h.deps);
+    expect(code).toBe(1);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['error']).toBe('daemon_too_old_for_git');
+    expect(doc['baseUrl']).toBe('http://127.0.0.1:8787');
+    expect(doc['pubkey']).toBe(SELF);
   });
 
   it('daemon estimate without --yes is a pure estimate (nothing executed)', async () => {
