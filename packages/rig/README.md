@@ -7,7 +7,7 @@ Git-to-TOON write path core — build git objects and NIP-34 events for the Rig 
 | `rig identity create` | rig (free) | mint a fresh BIP-39 identity into the encrypted keystore — the phrase is shown ONCE. Removes the cold-start wall |
 | `rig identity show` | rig (free) | the active identity's source + derived pubkey (never the phrase) |
 | `rig identity import` | rig (free) | write an existing phrase (read from stdin, never argv) to the keystore |
-| `rig init` | rig (free) | one-shot repo setup: identity (offers to generate one) + `toon.*` git config |
+| `rig init` | rig (free) | one-shot repo setup: git repo (offers to `git init`, or `--git-init`) + identity (offers to generate one) + `toon.*` git config + repo-local git commit-author from your nostr identity (so `rig commit` works out of the box) |
 | `rig remote add/remove/list` | rig (free) | relays as REAL git remotes (`origin` = default publish target) |
 | `rig clone <relay-url> <owner>/<repo-id> [dir]` | rig (free) | bootstrap a repo from TOON: relay state + SHA-verified Arweave objects → a real, push-capable git repository. Shadows `git clone` |
 | `rig fetch [remote]` | rig (free) | download the missing object delta + update `refs/remotes/<remote>/*` (no merge — `rig merge origin/main`). Shadows `git fetch` |
@@ -26,9 +26,13 @@ Git-to-TOON write path core — build git objects and NIP-34 events for the Rig 
 ```sh
 npm install -g @toon-protocol/rig
 
+# 0. start anywhere — an empty directory is fine; `rig init` (step 2) will
+#    offer to `git init` it for you.
+mkdir my-repo && cd my-repo
+
 # 1. identity — mint one on the spot (no BIP-39 tooling needed). The seed
 #    phrase is shown ONCE (write it down) and stored in an encrypted keystore
-#    under ~/.toon-client. This is the cold-start step `git init` never needs.
+#    under ~/.toon-client.
 rig identity create
 rig identity show            # active source + derived pubkey (never the phrase)
 #    Already have a phrase? Bring it instead of generating:
@@ -38,8 +42,15 @@ rig identity import          # …or import it into the keystore (reads stdin)
 
 # 2. one-shot repo setup (free): writes toon.repoid + toon.owner to the
 #    repo's local git config and reports which identity source is active.
-#    No identity yet? `rig init` offers to generate one (or pass
-#    --generate-identity for the non-interactive path).
+#    Not a git repo yet? `rig init` offers to `git init` here (or pass
+#    --git-init). No identity yet? It offers to generate one (or pass
+#    --generate-identity). `--git-init --generate-identity` is a fully
+#    non-interactive fresh setup: empty dir → rig-ready in one command.
+#    It ALSO sets the repo-local git commit-author from your nostr identity
+#    (never --global) so `rig commit`/`git commit` work out of the box and
+#    every commit is attributed to the signer: user.email = <npub>@nostr,
+#    user.name = your kind:0 profile display name when published (read
+#    best-effort from a relay) else the npub. Re-run to refresh the name.
 rig init                     # default repo id = directory name
 rig init --repo-id my-repo   # or pick one
 
@@ -49,7 +60,9 @@ rig remote add origin wss://relay.example
 rig remote list              # names + URLs; --json for machines
 rig remote remove origin
 
-# 4. work exactly like git — unowned commands pass through to system git:
+# 4. work exactly like git — unowned commands pass through to system git.
+#    `rig commit`/`git commit` already work: `rig init` set this repo's
+#    author to your nostr identity (no `git config user.*` step needed).
 rig status                   # IS `git status`
 rig add -p && rig commit -m "fix"
 rig log --oneline            # pagers, colors, prompts all behave like git

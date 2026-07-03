@@ -3,8 +3,10 @@
  *
  * Replaces the old "config written as a side effect of the first push":
  *
- *   1. verifies the working directory is inside a git repository (hints at
- *      `git init` when not — never runs it);
+ *   1. ensures the working directory is inside a git repository — when it is
+ *      not, it OFFERS to `git init` for you (a TTY `[y/N]` prompt, or the
+ *      non-interactive `--git-init` flag), mirroring how it offers to mint an
+ *      identity on a cold start; a refusal keeps the old `git init` hint;
  *   2. resolves the signing identity via the RIG_MNEMONIC precedence chain
  *      (./identity.ts) and reports the SOURCE + derived pubkey (never the
  *      phrase); a chain miss errors with all three remediation options;
@@ -27,10 +29,17 @@ import { basename } from 'node:path';
 import { parseArgs } from 'node:util';
 import { emitCliError, NotAGitRepositoryError } from './errors.js';
 import {
+  resolveGitAuthor,
+  profileTimeoutFromEnv,
+  type GitAuthor,
+} from './git-author.js';
+import {
   addGitRemote,
+  initGitRepository,
   listGitRemotes,
   readToonConfig,
   resolveRepoRoot,
+  setGitAuthor,
   writeToonConfig,
   type GitRemoteInfo,
 } from './git-config.js';
@@ -57,19 +66,35 @@ keystore/config), then writes toon.repoid and toon.owner to the repo's
 LOCAL git config. Re-running updates and reports; it never errors on an
 already-initialized repo. The seed phrase is never written anywhere.
 
+It also sets the repo's LOCAL git commit-author from your nostr identity
+(never --global) so \`rig commit\`/\`git commit\` work out of the box and every
+commit is attributed to the signer: user.email = <npub>@nostr, user.name =
+your kind:0 profile display name when published (read best-effort from a
+relay, latest-wins) else the npub. Re-running refreshes the name from a
+now-readable profile.
+
 The follow-up step is adding a relay: \`rig remote add origin <relay-url>\`
 (a real git remote — \`git remote -v\` shows it). A deprecated v0.1
 \`git config toon.relay\` is migrated to the origin remote automatically
 when no origin exists (the old key stays readable and is removed in v0.3).
 
-When NO identity resolves, init does not dead-end: in a terminal it offers to
-generate one (\`Create a new identity now? [y/N]\`), and \`--generate-identity\`
-does it non-interactively (equivalent to \`rig identity create\` — the phrase
-is shown once to back up). Nothing is ever auto-generated without your yes.
+When the directory is NOT inside a git repository, init does not dead-end: in
+a terminal it offers to create one (\`Initialize a git repository here?
+[y/N]\`), and \`--git-init\` does it non-interactively. Likewise, when NO
+identity resolves it offers to generate one (\`Create a new identity now?
+[y/N]\`), and \`--generate-identity\` does it non-interactively (equivalent to
+\`rig identity create\` — the phrase is shown once to back up). Nothing — repo
+or identity — is ever created without your yes. \`--git-init
+--generate-identity\` is a fully non-interactive fresh setup.
 
 Options:
   --repo-id <id>       repository id / NIP-34 d-tag (default: the existing
                        toon.repoid, then the repo directory basename)
+  --git-init           when the cwd is not a git repo, run \`git init\` here
+                       first, then proceed (no prompt)
+  --relay <url>        relay to read your kind:0 profile from for the git
+                       author name (default: origin/toon.relay, then the
+                       genesis seed; skipped if none is resolvable)
   --generate-identity  when no identity resolves, mint a fresh one (no prompt)
   --json               machine-readable report
   -h, --help           show this help`;
@@ -83,10 +108,14 @@ export interface InitDeps {
   resolveIdentityImpl?: typeof resolveIdentity;
   /** Identity generator seam (tests); defaults to the real mint. */
   createIdentityImpl?: typeof createIdentity;
+  /** Git-author resolver seam (tests); defaults to the real kind:0 read. */
+  resolveGitAuthorImpl?: typeof resolveGitAuthor;
 }
 
 interface InitFlags {
   repoId?: string;
+  gitInit: boolean;
+  relay?: string;
   generateIdentity: boolean;
   json: boolean;
   help: boolean;
@@ -97,6 +126,8 @@ function parseInitArgs(args: string[]): InitFlags {
     args,
     options: {
       'repo-id': { type: 'string' },
+      'git-init': { type: 'boolean', default: false },
+      relay: { type: 'string' },
       'generate-identity': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
@@ -107,6 +138,7 @@ function parseInitArgs(args: string[]): InitFlags {
     throw new Error(`rig init takes no positional arguments`);
   }
   const flags: InitFlags = {
+    gitInit: values['git-init'] ?? false,
     generateIdentity: values['generate-identity'] ?? false,
     json: values.json ?? false,
     help: values.help ?? false,
@@ -116,13 +148,57 @@ function parseInitArgs(args: string[]): InitFlags {
     if (repoId.trim() === '') throw new Error('--repo-id must not be empty');
     flags.repoId = repoId;
   }
+  const relay = values.relay;
+  if (relay !== undefined) {
+    if (relay.trim() === '') throw new Error('--relay must not be empty');
+    flags.relay = relay.trim();
+  }
   return flags;
+}
+
+/** True for a WebSocket-scheme URL (the kind:0 profile read speaks only ws(s)). */
+function isWebSocketRelay(url: string): boolean {
+  return /^wss?:\/\//i.test(url);
+}
+
+/**
+ * Resolve the relay to read the identity's kind:0 profile from, at init time —
+ * BEFORE `rig remote add origin` may have run. Precedence: `--relay` flag →
+ * the `origin` remote → the deprecated `toon.relay` → the #264 genesis seed.
+ * Only ws(s) URLs qualify (the read is a WebSocket REQ); returns undefined when
+ * none resolves, in which case the git author falls back to the npub.
+ */
+async function resolveProfileRelay(
+  flagRelay: string | undefined,
+  originRelay: string | undefined,
+  toonRelays: string[]
+): Promise<string | undefined> {
+  const candidates = [
+    flagRelay,
+    originRelay,
+    ...toonRelays,
+  ].filter((u): u is string => u !== undefined && isWebSocketRelay(u));
+  if (candidates[0] !== undefined) return candidates[0];
+  // Offline fallback: the committed genesis apex relay (core >= 2.0.1). Loaded
+  // lazily so a repo that already has a relay never drags core into init.
+  try {
+    const { loadGenesisSeed } = await import(
+      '../standalone/network-bootstrap.js'
+    );
+    const seed = loadGenesisSeed();
+    if (seed?.relayUrl && isWebSocketRelay(seed.relayUrl)) return seed.relayUrl;
+  } catch {
+    // Seed unavailable → no relay; author falls back to the npub.
+  }
+  return undefined;
 }
 
 /** JSON envelope emitted by `rig init --json`. */
 interface InitJsonOutput {
   command: 'init';
   repoRoot: string;
+  /** True when THIS run created the git repository (`--git-init` or a TTY yes). */
+  initializedGitRepo: boolean;
   repoId: string;
   /** `toon.owner` — the derived pubkey of the active identity. */
   owner: string;
@@ -141,6 +217,13 @@ interface InitJsonOutput {
   origin: string | null;
   /** True when this run migrated toon.relay to a new `origin` remote. */
   migratedToonRelay: boolean;
+  /**
+   * The repo-local git commit-author derived from the nostr identity (#302):
+   * `user.name` (kind:0 display name when published, else the npub) and
+   * `user.email` = `<npub>@nostr`. Always set so `rig commit` works out of the
+   * box; `source` records whether the name came from the profile or the npub.
+   */
+  gitAuthor: { name: string; email: string; source: GitAuthor['source'] };
   /** What this run changed in git config (false = already up to date). */
   changed: { repoId: boolean; owner: boolean };
   /**
@@ -154,6 +237,35 @@ interface InitJsonOutput {
     keystorePath: string;
     autoPassword: boolean;
   };
+}
+
+/**
+ * Resolve the git worktree root; when the cwd is not inside a repo, create one
+ * instead of dead-ending — but ONLY with consent (`--git-init` or an
+ * interactive `[y/N]` yes), mirroring the identity generate-on-first-run flow.
+ * A refusal (non-interactive, or a prompt no) throws {@link
+ * NotAGitRepositoryError}, whose remediation now leads with `rig init
+ * --git-init`. `git init` runs in the cwd only (never a parent).
+ */
+async function resolveOrInitGitRepo(
+  deps: InitDeps,
+  flags: InitFlags
+): Promise<{ repoRoot: string; initialized: boolean }> {
+  const { io } = deps;
+  try {
+    return { repoRoot: await resolveRepoRoot(deps.cwd), initialized: false };
+  } catch {
+    let doInit = flags.gitInit;
+    if (!doInit && io.isInteractive && !flags.json) {
+      io.err('Not a git repository — rig keeps its config and objects in one.');
+      doInit = await io.confirm('Initialize a git repository here? [y/N] ');
+    }
+    if (!doInit) throw new NotAGitRepositoryError(deps.cwd);
+
+    await initGitRepository(deps.cwd);
+    // git init succeeded, so this must now resolve.
+    return { repoRoot: await resolveRepoRoot(deps.cwd), initialized: true };
+  }
 }
 
 /**
@@ -221,13 +333,11 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
   }
 
   try {
-    // ── (a) Must be a git repository — hint, never auto-run git init ────────
-    let repoRoot: string;
-    try {
-      repoRoot = await resolveRepoRoot(deps.cwd);
-    } catch {
-      throw new NotAGitRepositoryError(deps.cwd);
-    }
+    // ── (a) Git repository — create one (consent-gated) when there is none ──
+    // A cold start (`mkdir x && rig init`) is no longer a dead end: with
+    // consent init runs `git init` here first (prompt, or `--git-init`).
+    const { repoRoot, initialized: initializedGitRepo } =
+      await resolveOrInitGitRepo(deps, flags);
 
     // ── (b) Identity chain: source + derived pubkey (never the phrase) ──────
     // A chain miss no longer dead-ends: offer or honor identity generation.
@@ -268,11 +378,37 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
         ? (origin.urls[0] as string)
         : undefined;
 
-    // ── (e) Report ───────────────────────────────────────────────────────────
+    // ── (e) Git commit-author from the nostr identity (#302) ────────────────
+    // On a rig repo the nostr key IS the identity: set the repo's LOCAL git
+    // author (never --global) so `rig commit` (a git passthrough) stops
+    // dead-ending on "empty ident name not allowed" and every commit is
+    // attributed to the signer. user.name = the kind:0 display name when
+    // published (best-effort, latest-wins), else the npub; email `<npub>@nostr`.
+    // Re-running refreshes user.name from a now-readable profile.
+    const profileRelay = await resolveProfileRelay(
+      flags.relay,
+      originRelay,
+      existing.relays
+    );
+    const resolveAuthor = deps.resolveGitAuthorImpl ?? resolveGitAuthor;
+    const gitAuthor = await resolveAuthor({
+      pubkey: identity.pubkey,
+      relayUrl: profileRelay,
+      ...(profileTimeoutFromEnv(deps.env) !== undefined
+        ? { timeoutMs: profileTimeoutFromEnv(deps.env) as number }
+        : {}),
+    });
+    await setGitAuthor(repoRoot, {
+      name: gitAuthor.name,
+      email: gitAuthor.email,
+    });
+
+    // ── (f) Report ───────────────────────────────────────────────────────────
     if (flags.json) {
       const output: InitJsonOutput = {
         command: 'init',
         repoRoot,
+        initializedGitRepo,
         repoId,
         owner: identity.pubkey,
         identity: {
@@ -285,6 +421,11 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
         remotes,
         origin: originRelay ?? null,
         migratedToonRelay,
+        gitAuthor: {
+          name: gitAuthor.name,
+          email: gitAuthor.email,
+          source: gitAuthor.source,
+        },
         changed,
         ...(generated
           ? {
@@ -315,6 +456,7 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
       for (const line of createdIdentityBanner(generated)) io.out(line);
       if (generated.shadowedBy) io.err(shadowNote(generated.shadowedBy));
     }
+    if (initializedGitRepo) io.out(`Created a git repository at ${repoRoot}`);
     io.out(`Initialized rig for ${repoRoot}`);
     io.out(renderIdentityLine(identity));
     io.out(
@@ -326,6 +468,10 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
       `  toon.owner  = ${identity.pubkey}` +
         (changed.owner ? '' : ' (unchanged)') +
         (existing.owner && changed.owner ? ` (was ${existing.owner})` : '')
+    );
+    io.out(
+      `Git author: ${gitAuthor.name} <${gitAuthor.email}> ` +
+        `(from ${gitAuthor.source === 'profile' ? 'nostr profile' : 'npub'})`
     );
     if (originRelay !== undefined) {
       io.out(

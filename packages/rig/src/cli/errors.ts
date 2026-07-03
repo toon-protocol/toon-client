@@ -123,8 +123,9 @@ export class NotAGitRepositoryError extends Error {
   constructor(cwd: string) {
     super(
       `not a git repository: ${cwd}\n` +
-        'rig works inside an existing repo — create one first with `git init` ' +
-        '(rig never runs it for you), then re-run.'
+        'rig can create one for you: re-run `rig init --git-init` (in a ' +
+        'terminal, plain `rig init` offers the same via a prompt). Or run ' +
+        '`git init` yourself first, then re-run.'
     );
     this.name = 'NotAGitRepositoryError';
   }
