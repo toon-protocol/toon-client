@@ -304,7 +304,12 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
     // remote `rig remote add origin …` configured (resolved like push/fetch);
     // a fresh user who only ran that must still get the drip. An EXPLICIT
     // non-`custom` network stays authoritative — it is never coerced.
-    const originRelays = await resolveOriginRelays(deps.cwd);
+    //
+    // Only an unset/`custom` network can be inferred to devnet; when the
+    // network is explicit and non-`custom` the inference is a no-op, so skip
+    // the git-origin resolution (several `git` subprocesses) entirely.
+    const canInfer = network === undefined || network === 'custom';
+    const originRelays = canInfer ? await resolveOriginRelays(deps.cwd) : [];
     const devnetOrigin = sharedDevnetOrigin(env, file, originRelays);
     const inferredDevnet =
       devnetOrigin !== undefined &&
