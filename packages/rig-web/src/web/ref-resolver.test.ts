@@ -12,6 +12,7 @@ import type { RepoMetadata } from './nip34-parsers.js';
 
 function createRepoMeta(overrides: Partial<RepoMetadata> = {}): RepoMetadata {
   return {
+    repoId: overrides.repoId ?? 'test-repo',
     name: overrides.name ?? 'test-repo',
     description: overrides.description ?? 'A test repo',
     ownerPubkey: overrides.ownerPubkey ?? 'ab'.repeat(32),
@@ -19,6 +20,7 @@ function createRepoMeta(overrides: Partial<RepoMetadata> = {}): RepoMetadata {
     eventId: overrides.eventId ?? 'a'.repeat(64),
     cloneUrls: overrides.cloneUrls ?? [],
     webUrls: overrides.webUrls ?? [],
+    maintainers: overrides.maintainers ?? [],
   };
 }
 
