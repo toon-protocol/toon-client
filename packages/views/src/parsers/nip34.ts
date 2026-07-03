@@ -24,6 +24,46 @@ export interface RepoMetadata {
   eventId: string;
   cloneUrls: string[];
   webUrls: string[];
+  /**
+   * Declared maintainer pubkeys (hex) from the `maintainers` tag (#287). Does
+   * NOT include the owner, who is an implicit maintainer. Combine with
+   * `ownerPubkey` via {@link repoAuthorizedAuthors} to get the full set of
+   * authors whose kind:1630-1633 status events are authoritative.
+   */
+  maintainers: string[];
+}
+
+/**
+ * NIP-34 tag naming a repo's declared maintainers on the kind:30617:
+ * one multi-valued `["maintainers", "<hex>", …]` tag (mirrors `relays`).
+ */
+const MAINTAINERS_TAG = 'maintainers';
+const HEX64_RE = /^[0-9a-f]{64}$/;
+
+/** Collect the lowercased-hex maintainer pubkeys from 30617 tags (#287). */
+function parseMaintainerTags(tags: string[][]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of tags) {
+    if (tag[0] !== MAINTAINERS_TAG) continue;
+    for (const value of tag.slice(1)) {
+      const hex = value.toLowerCase();
+      if (HEX64_RE.test(hex) && !seen.has(hex)) {
+        seen.add(hex);
+        out.push(hex);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The set of authors whose kind:1630-1633 status events are authoritative for
+ * a repo (#287): the owner (always) ∪ declared maintainers. Lowercased hex.
+ * Feed this to {@link resolvePRStatus} / {@link resolveIssueStatus}.
+ */
+export function repoAuthorizedAuthors(repo: RepoMetadata): Set<string> {
+  return new Set([repo.ownerPubkey.toLowerCase(), ...repo.maintainers]);
 }
 
 /** Maximum number of refs to parse from a single kind:30618 event. */
@@ -82,6 +122,7 @@ export function parseRepoAnnouncement(event: NostrEvent): RepoMetadata | null {
     eventId: event.id,
     cloneUrls,
     webUrls,
+    maintainers: parseMaintainerTags(event.tags),
   };
 }
 
@@ -179,10 +220,22 @@ export function parseComment(event: NostrEvent): CommentMetadata | null {
   };
 }
 
-/** Resolve the status of a PR from status events (kind:1630-1633). */
+/**
+ * Resolve the status of a PR from status events (kind:1630-1633), honoring
+ * ONLY events signed by an AUTHORIZED author — the repo owner ∪ declared
+ * maintainers (#287; see {@link repoAuthorizedAuthors}). The relay is
+ * permissionless, so any funded stranger can PUBLISH a kind:163x against a PR;
+ * this consumer-side filter ensures such spoofed events NEVER move the
+ * displayed state. Among authorized events the latest (by created_at) wins.
+ *
+ * `authorized` is the lowercased-hex author set. When empty (the 30617 was not
+ * resolved) nothing is authoritative and the PR resolves to open — a safe,
+ * non-spoofable default.
+ */
 export function resolvePRStatus(
   prEventId: string,
-  statusEvents: NostrEvent[]
+  statusEvents: NostrEvent[],
+  authorized: Iterable<string>
 ): 'open' | 'applied' | 'closed' | 'draft' {
   const KIND_STATUS_MAP: Record<number, 'open' | 'applied' | 'closed' | 'draft'> = {
     1630: 'open',
@@ -190,10 +243,16 @@ export function resolvePRStatus(
     1632: 'closed',
     1633: 'draft',
   };
+  const authors = authorized instanceof Set ? authorized : new Set(authorized);
 
   const relevant = statusEvents.filter((evt) => {
     const eTag = getTagValue(evt.tags, 'e');
-    return eTag === prEventId && evt.kind >= 1630 && evt.kind <= 1633;
+    return (
+      eTag === prEventId &&
+      evt.kind >= 1630 &&
+      evt.kind <= 1633 &&
+      authors.has(evt.pubkey.toLowerCase())
+    );
   });
 
   if (relevant.length === 0) return 'open';
@@ -207,14 +266,25 @@ export function resolvePRStatus(
   return KIND_STATUS_MAP[latest.kind] ?? 'open';
 }
 
-/** Resolve the status of an issue from close events (kind:1632). */
+/**
+ * Resolve the status of an issue from close events (kind:1632), honoring ONLY
+ * events signed by an AUTHORIZED author (owner ∪ maintainers, #287). An
+ * unauthorized close event does NOT close the issue. `authorized` is the
+ * lowercased-hex author set (see {@link repoAuthorizedAuthors}).
+ */
 export function resolveIssueStatus(
   issueEventId: string,
-  closeEvents: NostrEvent[]
+  closeEvents: NostrEvent[],
+  authorized: Iterable<string>
 ): 'open' | 'closed' {
+  const authors = authorized instanceof Set ? authorized : new Set(authorized);
   const isClosed = closeEvents.some((evt) => {
     const eTag = getTagValue(evt.tags, 'e');
-    return eTag === issueEventId && evt.kind === 1632;
+    return (
+      eTag === issueEventId &&
+      evt.kind === 1632 &&
+      authors.has(evt.pubkey.toLowerCase())
+    );
   });
   return isClosed ? 'closed' : 'open';
 }

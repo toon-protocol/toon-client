@@ -25,13 +25,16 @@ export {
 
 export {
   COMMENT_KIND,
+  MAINTAINERS_TAG,
   REPOSITORY_STATE_KIND,
+  authorizedStatusAuthors,
   buildComment,
   buildIssue,
   buildPatch,
   buildRepoAnnouncement,
   buildRepoRefs,
   buildStatus,
+  parseMaintainers,
   type StatusKind,
   type UnsignedEvent,
 } from './nip34-events.js';

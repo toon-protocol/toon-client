@@ -16,7 +16,7 @@ import {
 
 export function IssueListPage() {
   const { metadata, owner, repo } = useOutletContext<RepoContext>();
-  const { issues, unparseable, loading, error } = useIssues(owner, metadata.repoId);
+  const { issues, unparseable, loading, error } = useIssues(owner, metadata.repoId, metadata.maintainers);
   const { getDisplayName, requestProfiles } = useProfileCache();
   const [filter, setFilter] = useState<'open' | 'closed'>('open');
 

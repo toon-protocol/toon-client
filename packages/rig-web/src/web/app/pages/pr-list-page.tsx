@@ -23,7 +23,7 @@ const STATUS_BADGE: Record<string, { variant: 'default' | 'secondary' | 'destruc
 
 export function PRListPage() {
   const { metadata, owner, repo } = useOutletContext<RepoContext>();
-  const { prs, loading, error } = usePRs(owner, metadata.repoId);
+  const { prs, loading, error } = usePRs(owner, metadata.repoId, metadata.maintainers);
   const { getDisplayName, requestProfiles } = useProfileCache();
   const [filter, setFilter] = useState<'open' | 'closed'>('open');
 

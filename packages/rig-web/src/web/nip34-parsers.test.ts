@@ -482,10 +482,11 @@ function createMockStatusEvent(overrides: {
   kind: number;
   prEventId: string;
   created_at?: number;
+  pubkey?: string;
 }): NostrEvent {
   return {
     id: Math.random().toString(36).slice(2).padEnd(64, '0'),
-    pubkey: 'ab'.repeat(32),
+    pubkey: overrides.pubkey ?? 'ab'.repeat(32),
     created_at: overrides.created_at ?? 1700002000,
     kind: overrides.kind,
     tags: [['e', overrides.prEventId]],
@@ -633,6 +634,9 @@ describe('NIP-34 Parsers - parseComment', () => {
 
 describe('NIP-34 Parsers - resolvePRStatus (8.5-UNIT-004)', () => {
   const prEventId = 'p'.repeat(64);
+  // The mock status events are signed by 'ab'×32 — treat that as the
+  // authorized author (owner) for these state-resolution unit tests (#287).
+  const AUTHORIZED = ['ab'.repeat(32)];
 
   it('[P1] returns status from the most recent status event', () => {
     const statusEvents: NostrEvent[] = [
@@ -640,13 +644,13 @@ describe('NIP-34 Parsers - resolvePRStatus (8.5-UNIT-004)', () => {
       createMockStatusEvent({ kind: 1631, prEventId, created_at: 1700002000 }), // applied (most recent)
     ];
 
-    const result = resolvePRStatus(prEventId, statusEvents);
+    const result = resolvePRStatus(prEventId, statusEvents, AUTHORIZED);
 
     expect(result).toBe('applied');
   });
 
   it('[P1] returns open when no status events exist', () => {
-    const result = resolvePRStatus(prEventId, []);
+    const result = resolvePRStatus(prEventId, [], AUTHORIZED);
 
     expect(result).toBe('open');
   });
@@ -661,7 +665,7 @@ describe('NIP-34 Parsers - resolvePRStatus (8.5-UNIT-004)', () => {
       }),
     ];
 
-    const result = resolvePRStatus(prEventId, statusEvents);
+    const result = resolvePRStatus(prEventId, statusEvents, AUTHORIZED);
 
     expect(result).toBe('open');
   });
@@ -671,7 +675,7 @@ describe('NIP-34 Parsers - resolvePRStatus (8.5-UNIT-004)', () => {
       createMockStatusEvent({ kind: 1630, prEventId, created_at: 1700001000 }),
     ];
 
-    const result = resolvePRStatus(prEventId, statusEvents);
+    const result = resolvePRStatus(prEventId, statusEvents, AUTHORIZED);
 
     expect(result).toBe('open');
   });
@@ -681,7 +685,7 @@ describe('NIP-34 Parsers - resolvePRStatus (8.5-UNIT-004)', () => {
       createMockStatusEvent({ kind: 1632, prEventId, created_at: 1700001000 }),
     ];
 
-    const result = resolvePRStatus(prEventId, statusEvents);
+    const result = resolvePRStatus(prEventId, statusEvents, AUTHORIZED);
 
     expect(result).toBe('closed');
   });
@@ -691,7 +695,7 @@ describe('NIP-34 Parsers - resolvePRStatus (8.5-UNIT-004)', () => {
       createMockStatusEvent({ kind: 1633, prEventId, created_at: 1700001000 }),
     ];
 
-    const result = resolvePRStatus(prEventId, statusEvents);
+    const result = resolvePRStatus(prEventId, statusEvents, AUTHORIZED);
 
     expect(result).toBe('draft');
   });
@@ -705,7 +709,7 @@ describe('NIP-34 Parsers - resolvePRStatus (8.5-UNIT-004)', () => {
 
     // With equal timestamps, the loop keeps the first one found
     // (since > is strict, not >=). This is deterministic.
-    const result = resolvePRStatus(prEventId, statusEvents);
+    const result = resolvePRStatus(prEventId, statusEvents, AUTHORIZED);
     expect(result).toBe('open');
   });
 
@@ -722,8 +726,46 @@ describe('NIP-34 Parsers - resolvePRStatus (8.5-UNIT-004)', () => {
       },
     ];
 
-    const result = resolvePRStatus(prEventId, statusEvents);
+    const result = resolvePRStatus(prEventId, statusEvents, AUTHORIZED);
     expect(result).toBe('open');
+  });
+
+  it('[P0] IGNORES an unauthorized (non-owner/non-maintainer) status — spoof regression (#287)', () => {
+    const stranger = 'ff'.repeat(32);
+    const statusEvents: NostrEvent[] = [
+      // Owner opens the PR.
+      createMockStatusEvent({ kind: 1630, prEventId, created_at: 1700001000 }),
+      // A funded stranger publishes a LATER "draft" — must NOT move state.
+      createMockStatusEvent({
+        kind: 1633,
+        prEventId,
+        created_at: 1700009000,
+        pubkey: stranger,
+      }),
+    ];
+    // Stranger not in the authorized set → their status is ignored.
+    expect(resolvePRStatus(prEventId, statusEvents, AUTHORIZED)).toBe('open');
+    // If the stranger WERE authorized, their draft would win — proves the
+    // filter (not some other quirk) is what protects the state.
+    expect(
+      resolvePRStatus(prEventId, statusEvents, [...AUTHORIZED, stranger])
+    ).toBe('draft');
+  });
+
+  it('[P1] honors a DECLARED MAINTAINER status (#287)', () => {
+    const maintainer = 'cc'.repeat(32);
+    const statusEvents: NostrEvent[] = [
+      createMockStatusEvent({ kind: 1630, prEventId, created_at: 1700001000 }),
+      createMockStatusEvent({
+        kind: 1632,
+        prEventId,
+        created_at: 1700005000,
+        pubkey: maintainer,
+      }),
+    ];
+    expect(
+      resolvePRStatus(prEventId, statusEvents, [...AUTHORIZED, maintainer])
+    ).toBe('closed');
   });
 });
 

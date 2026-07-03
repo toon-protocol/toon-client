@@ -37,8 +37,57 @@ export interface UnsignedEvent {
 }
 
 // ---------------------------------------------------------------------------
-// kind:30617 — Repository Announcement
+// kind:30617 — Repository Announcement (+ maintainer authority, #287)
 // ---------------------------------------------------------------------------
+
+/**
+ * NIP-34 tag naming the repo's declared maintainers: one multi-valued tag
+ * `["maintainers", "<hex-pubkey>", "<hex-pubkey>", …]` on the kind:30617
+ * announcement (mirrors the spec's multi-valued `relays` tag). The repo
+ * OWNER — the announcement event's own pubkey — is ALWAYS an implicit
+ * maintainer and need not be listed. Consumers derive an issue/PR's status
+ * ONLY from kind:1630-1633 events signed by owner ∪ maintainers (#287): the
+ * relay is permissionless, so this is the CONSUMER-side authority filter.
+ */
+export const MAINTAINERS_TAG = 'maintainers';
+
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/**
+ * Collect the declared maintainer pubkeys (lowercased hex) from a kind:30617
+ * event's tags. Tolerant of repeated `maintainers` tags and non-hex noise —
+ * only 64-char hex values survive. Does NOT include the owner (implicit).
+ */
+export function parseMaintainers(tags: string[][]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of tags) {
+    if (tag[0] !== MAINTAINERS_TAG) continue;
+    for (const value of tag.slice(1)) {
+      const hex = value.toLowerCase();
+      if (HEX64.test(hex) && !seen.has(hex)) {
+        seen.add(hex);
+        out.push(hex);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The set of pubkeys whose kind:1630-1633 status events are authoritative for
+ * a repo: the owner (always) ∪ the declared maintainers (from the 30617's
+ * `maintainers` tag). All values are lowercased hex.
+ */
+export function authorizedStatusAuthors(
+  ownerPubkey: string,
+  repoAnnouncementTags: string[][]
+): Set<string> {
+  return new Set([
+    ownerPubkey.toLowerCase(),
+    ...parseMaintainers(repoAnnouncementTags),
+  ]);
+}
 
 /**
  * Build a kind:30617 repository announcement event.
@@ -46,20 +95,39 @@ export interface UnsignedEvent {
  * @param repoId - Repository identifier (d tag)
  * @param name - Human-readable repository name
  * @param description - Repository description
+ * @param maintainers - Optional declared maintainer pubkeys (hex). Emitted as
+ *   a single `["maintainers", …]` tag when non-empty; duplicate and non-64-hex
+ *   values are dropped. The owner (the signer) is an implicit maintainer and
+ *   need not be listed — if passed it is emitted, which is harmless since the
+ *   owner is authorized regardless. See {@link MAINTAINERS_TAG}.
  */
 export function buildRepoAnnouncement(
   repoId: string,
   name: string,
-  description: string
+  description: string,
+  maintainers: string[] = []
 ): UnsignedEvent {
+  const tags: string[][] = [
+    ['d', repoId],
+    ['name', name],
+    ['description', description],
+  ];
+  const declared: string[] = [];
+  const seen = new Set<string>();
+  for (const value of maintainers) {
+    const hex = value.toLowerCase();
+    if (HEX64.test(hex) && !seen.has(hex)) {
+      seen.add(hex);
+      declared.push(hex);
+    }
+  }
+  if (declared.length > 0) {
+    tags.push([MAINTAINERS_TAG, ...declared]);
+  }
   return {
     kind: REPOSITORY_ANNOUNCEMENT_KIND,
     content: '',
-    tags: [
-      ['d', repoId],
-      ['name', name],
-      ['description', description],
-    ],
+    tags,
     created_at: Math.floor(Date.now() / 1000),
   };
 }
