@@ -147,9 +147,10 @@ describe('rig identity create', () => {
     expect(h.err.join('\n')).toContain('SECRET');
   });
 
-  it('honors --password (keystoreAutoPassword=false, no env-var reload)', async () => {
-    const h = makeDeps({}, {});
-    expect(await runIdentity(['create', '--password', 'hunter2'], h.deps)).toBe(0);
+  it('honors TOON_CLIENT_KEYSTORE_PASSWORD (keystoreAutoPassword=false, no env-var reload)', async () => {
+    // The keystore password comes from the env var, NEVER a CLI flag.
+    const h = makeDeps({ TOON_CLIENT_KEYSTORE_PASSWORD: 'hunter2' });
+    expect(await runIdentity(['create'], h.deps)).toBe(0);
     const config = JSON.parse(readFileSync(join(homeDir, 'config.json'), 'utf8'));
     expect(config.keystoreAutoPassword).toBe(false);
     // Without the password env var a later resolve refuses (correct posture).
@@ -159,6 +160,19 @@ describe('rig identity create', () => {
     // With it, resolution succeeds.
     const withPw = makeDeps({ TOON_CLIENT_KEYSTORE_PASSWORD: 'hunter2' });
     expect(await runIdentity(['show'], withPw.deps)).toBe(0);
+  });
+
+  it('rejects `--password` as a CLI flag (secrets never come via argv)', async () => {
+    // A keystore password on the command line would leak to shell history /
+    // `ps` / `/proc` — the same exposure the phrase itself is protected from.
+    const create = makeDeps();
+    expect(await runIdentity(['create', '--password', 'hunter2'], create.deps)).toBe(2);
+    expect(existsSync(keystorePath())).toBe(false);
+    expect(create.err.join('\n')).toContain('Usage: rig identity');
+
+    const imp = makeDeps({}, { readSecretLine: async () => PHRASE_B });
+    expect(await runIdentity(['import', '--password', 'hunter2'], imp.deps)).toBe(2);
+    expect(existsSync(keystorePath())).toBe(false);
   });
 });
 

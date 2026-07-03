@@ -141,8 +141,6 @@ export interface MintIdentityInput {
   cwd: string;
   /** Overwrite an existing identity / keystore file. */
   force: boolean;
-  /** Explicit `--password` (overrides `TOON_CLIENT_KEYSTORE_PASSWORD` + auto). */
-  password?: string;
   warn(line: string): void;
   resolveIdentityImpl?: typeof resolveIdentity;
   loadKeyOps?: () => Promise<IdentityKeyOps>;
@@ -183,10 +181,14 @@ async function prepareKeystoreTarget(
     throw new KeystoreFileExistsError(keystorePath);
   }
 
+  // The keystore password comes ONLY from TOON_CLIENT_KEYSTORE_PASSWORD (env),
+  // never a CLI flag: a `--password` argv would leak the value that decrypts
+  // the keystore to shell history / `ps` / `/proc` — the exact exposure this
+  // command deliberately avoids for the seed phrase itself. No env var → the
+  // default password, so the identity reloads with no configuration.
   const envPassword = input.env['TOON_CLIENT_KEYSTORE_PASSWORD']?.trim() || undefined;
-  const explicit = input.password ?? envPassword;
-  const autoPassword = explicit === undefined;
-  const password = explicit ?? DEFAULT_KEYSTORE_PASSWORD;
+  const autoPassword = envPassword === undefined;
+  const password = envPassword ?? DEFAULT_KEYSTORE_PASSWORD;
 
   mkdirSync(dirname(keystorePath), { recursive: true });
   return { keystorePath, password, autoPassword, existing, keyOps };
@@ -282,7 +284,7 @@ export function createdIdentityBanner(result: CreatedIdentity): string[] {
       ? '  Encrypted with the default password, so the identity reloads with no\n' +
         '  env var. To use your own password: set TOON_CLIENT_KEYSTORE_PASSWORD\n' +
         '  and re-import with `rig identity import`.'
-      : '  Encrypted with your TOON_CLIENT_KEYSTORE_PASSWORD / --password.',
+      : '  Encrypted with your TOON_CLIENT_KEYSTORE_PASSWORD.',
     '════════════════════════════════════════════════════════════════',
     '',
   ];
@@ -318,14 +320,16 @@ Manage the BIP-39 signing identity rig uses to sign and pay:
 
 Options:
   --force              (create/import) replace an existing identity/keystore
-  --password <pass>    encrypt with this password instead of the auto default
-                       (else TOON_CLIENT_KEYSTORE_PASSWORD, else a default so
-                       the identity reloads with no env var)
   --json               machine-readable output. NOTE: \`identity create --json\`
                        DELIBERATELY emits the seed phrase in a \`mnemonic\`
                        field — treat that output as SECRET. \`identity show\`
                        and \`identity import\` never emit the phrase.
-  -h, --help           show this help`;
+  -h, --help           show this help
+
+The keystore is encrypted with TOON_CLIENT_KEYSTORE_PASSWORD when that env var
+is set, else a default password so the identity reloads with no configuration.
+rig deliberately does NOT accept the keystore password as a CLI flag — that
+would leak the value that decrypts your keys to shell history and \`ps\`.`;
 
 /** Route `rig identity <sub>`; returns the process exit code. */
 export async function runIdentity(
@@ -358,17 +362,18 @@ export async function runIdentity(
 
 interface MintFlags {
   force: boolean;
-  password?: string;
   json: boolean;
   help: boolean;
 }
 
 function parseMintArgs(args: string[], verb: string): MintFlags {
+  // No `--password` option on purpose: an unknown `--password` therefore
+  // errors out (caught → usage exit) rather than silently accepting a secret
+  // on the command line. The keystore password comes from the env var only.
   const { values, positionals } = parseArgs({
     args,
     options: {
       force: { type: 'boolean', default: false },
-      password: { type: 'string' },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -377,17 +382,11 @@ function parseMintArgs(args: string[], verb: string): MintFlags {
   if (positionals.length > 0) {
     throw new Error(`rig identity ${verb} takes no positional arguments`);
   }
-  const flags: MintFlags = {
+  return {
     force: values.force ?? false,
     json: values.json ?? false,
     help: values.help ?? false,
   };
-  const password = values.password;
-  if (password !== undefined) {
-    if (password === '') throw new Error('--password must not be empty');
-    flags.password = password;
-  }
-  return flags;
 }
 
 async function runIdentityCreate(
@@ -413,7 +412,6 @@ async function runIdentityCreate(
       env: deps.env,
       cwd: deps.cwd,
       force: flags.force,
-      ...(flags.password !== undefined ? { password: flags.password } : {}),
       warn: (line) => io.err(line),
       ...(deps.resolveIdentityImpl
         ? { resolveIdentityImpl: deps.resolveIdentityImpl }
@@ -466,7 +464,6 @@ async function runIdentityImport(
       cwd: deps.cwd,
       force: flags.force,
       mnemonic: phrase,
-      ...(flags.password !== undefined ? { password: flags.password } : {}),
       warn: (line) => io.err(line),
       ...(deps.resolveIdentityImpl
         ? { resolveIdentityImpl: deps.resolveIdentityImpl }
@@ -619,14 +616,35 @@ function emitMintError(
   return emitCliError(io, json, command, err);
 }
 
-/** Default secret reader: one line from stdin, prompt on stderr when a TTY. */
+/**
+ * Default secret reader: one line from stdin. When a human types the phrase at
+ * a TTY, the terminal echo is SUPPRESSED — the phrase is the most sensitive
+ * value this CLI handles ("CONTROLS YOUR FUNDS"), so it must never land in
+ * cleartext on screen, scrollback, or a session recording. We write the prompt
+ * to stderr ourselves, then mute readline's echo of the typed characters (like
+ * a conventional password prompt). Piped, non-interactive input has no echo to
+ * mask, so it is read verbatim with no prompt.
+ */
 async function defaultReadSecretLine(
   prompt: string,
   isInteractive: boolean
 ): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
+  if (isInteractive) {
+    process.stderr.write(prompt);
+    // Suppress echo of the typed secret. readline routes every keystroke
+    // through `_writeToOutput`; replacing it with a no-op masks the input
+    // while still capturing the line.
+    (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput =
+      () => {
+        /* mask: swallow every echoed keystroke so the phrase never prints */
+      };
+  }
   try {
-    return await rl.question(isInteractive ? prompt : '');
+    const answer = await rl.question('');
+    // The muted Enter left the cursor on the hidden prompt line; advance it.
+    if (isInteractive) process.stderr.write('\n');
+    return answer;
   } finally {
     rl.close();
   }

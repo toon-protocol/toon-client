@@ -191,7 +191,7 @@ async function resolveOrGenerateIdentity(
         : {}),
     });
     // Build the ResolvedIdentity from the fresh mint directly (rather than
-    // re-resolving) so a custom --password keystore needs no env var to link.
+    // re-resolving) so a custom-password keystore needs no env var to link.
     const identity: ResolvedIdentity = {
       mnemonic: created.mnemonic,
       accountIndex: created.accountIndex,

@@ -14,9 +14,10 @@ never-print-a-phrase invariants intact:
   existing generator — no hand-rolled bip39/crypto), display it ONCE with a
   prominent backup warning, then persist it to the encrypted keystore under
   `TOON_CLIENT_HOME` (reusing the client/daemon keystore-write path + the
-  auto-password convention; `--password` / `TOON_CLIENT_KEYSTORE_PASSWORD`
-  override). Refuses to overwrite an existing identity/keystore without
-  `--force`.
+  auto-password convention; `TOON_CLIENT_KEYSTORE_PASSWORD` overrides the
+  encryption password — never a CLI flag, which would leak a keystore secret
+  to shell history / `ps`). Refuses to overwrite an existing identity/keystore
+  without `--force`.
 - `rig identity show` — the active identity's source + derived pubkey (never
   the phrase).
 - `rig identity import` — write an existing phrase, read from stdin (never a

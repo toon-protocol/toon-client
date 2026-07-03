@@ -85,8 +85,8 @@ export class MissingIdentityError extends Error {
 /**
  * Duplicated daemon convention (client-mcp `daemon/config.ts`): the password
  * used to encrypt a keystore rig auto-provisions (`rig identity create`
- * without `--password`/`TOON_CLIENT_KEYSTORE_PASSWORD`) so the identity
- * reloads across runs with no env var. At-rest obfuscation only.
+ * with no `TOON_CLIENT_KEYSTORE_PASSWORD` set) so the identity reloads across
+ * runs with no env var. At-rest obfuscation only.
  */
 export const DEFAULT_KEYSTORE_PASSWORD = 'toon-client-default';
 
