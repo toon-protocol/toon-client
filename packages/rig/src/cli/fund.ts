@@ -115,7 +115,6 @@ interface FundConfigFile {
   network?: string;
   faucetUrl?: string;
   faucetTimeoutMs?: number;
-  chain?: string;
   relayUrl?: string;
   proxyUrl?: string;
   btpUrl?: string;
