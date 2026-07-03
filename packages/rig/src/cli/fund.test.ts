@@ -239,9 +239,11 @@ describe('rig fund', () => {
     });
     expect(await runFund([], h.deps)).toBe(1);
     const text = h.out.join('\n');
-    expect(text).toMatch(/evm\s+✓ funded \(ETH \+ USDC\)/);
-    expect(text).toMatch(/mina\s+✓ funded \(MINA \+ USDC\)/);
-    expect(text).toMatch(/solana\s+✗ .*(503|faucet dry)/);
+    // Every chain's funded/attempted ADDRESS is echoed (the #312 review fix —
+    // human output must confirm WHERE funds went, not just the coin type).
+    expect(text).toMatch(/evm\s+✓ funded \(ETH \+ USDC\) → 0x[0-9a-fA-F]{40}/);
+    expect(text).toMatch(/mina\s+✓ funded \(MINA \+ USDC\) → B62q\w+/);
+    expect(text).toMatch(/solana\s+✗ → [1-9A-HJ-NP-Za-km-z]+ — .*(503|faucet dry)/);
   });
 
   // ── Single-chain targeting (preserved) ────────────────────────────────────

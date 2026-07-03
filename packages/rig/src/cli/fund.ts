@@ -507,14 +507,19 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
 
     for (const r of results) {
       const label = r.chain.padEnd(6);
+      // Always echo the funded (or attempted) address so a human can confirm
+      // WHERE the funds went — essential when `--address` targets an arbitrary,
+      // non-derived address a typo could misdirect (only shown via --json
+      // otherwise).
+      const addr = r.address ? ` → ${r.address}` : '';
       if (r.funded) {
         // The faucet drips native + USDC together; annotate the coins, and the
         // wall time for slow chains (mina) so a >1-minute wait reads as normal.
         const slow = r.elapsedMs !== undefined && r.elapsedMs >= 5_000;
         const time = slow ? ` (${Math.round((r.elapsedMs as number) / 1000)}s)` : '';
-        io.out(`  ${label} ✓ funded (${NATIVE_COIN[r.chain]} + USDC)${time}`);
+        io.out(`  ${label} ✓ funded (${NATIVE_COIN[r.chain]} + USDC)${addr}${time}`);
       } else {
-        io.out(`  ${label} ✗ ${r.error ?? 'failed'}`);
+        io.out(`  ${label} ✗${addr} — ${r.error ?? 'failed'}`);
       }
     }
     io.out(renderIdentityLine(identity));
