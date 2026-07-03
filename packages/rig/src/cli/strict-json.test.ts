@@ -280,6 +280,44 @@ describe('strict --json stdout: every rig-owned command emits exactly one JSON d
     expect(result.stdout).not.toContain('rename the variable to RIG_MNEMONIC');
   });
 
+  it('identity create/show --json each emit exactly one JSON document', async () => {
+    const home = makeTempDir('toon-rig-json-home-');
+    const env = { TOON_CLIENT_HOME: home };
+
+    const created = await run(['identity', 'create', '--json'], { env });
+    expect(created.code).toBe(0);
+    const doc = parseSingleJsonDoc(created);
+    expect(doc).toMatchObject({ command: 'identity create', created: true });
+    // The DELIBERATE exception: the phrase is IN the single stdout document…
+    expect(typeof doc['mnemonic']).toBe('string');
+    // …and the SECRET warning lands on stderr, never the machine stream.
+    expect(created.stderr).toContain('SECRET');
+    expect(created.stdout).not.toContain('SECRET');
+
+    const shown = await run(['identity', 'show', '--json'], { env });
+    expect(shown.code).toBe(0);
+    const showDoc = parseSingleJsonDoc(shown);
+    expect(showDoc).toMatchObject({ command: 'identity show' });
+    expect(showDoc['mnemonic']).toBeUndefined();
+    // The phrase never leaks into `show`'s output.
+    expect(shown.stdout).not.toContain(doc['mnemonic'] as string);
+  });
+
+  it('identity create --json refusal (identity exists): one error envelope', async () => {
+    const result = await run(['identity', 'create', '--json'], {
+      env: {
+        TOON_CLIENT_HOME: makeTempDir('toon-rig-json-home-'),
+        RIG_MNEMONIC: TEST_MNEMONIC,
+      },
+    });
+    expect(result.code).toBe(1);
+    expect(parseSingleJsonDoc(result)).toMatchObject({
+      command: 'identity create',
+      error: 'identity_exists',
+    });
+    expect(result.stderr).toContain('already resolves');
+  });
+
   it('remote add/list/remove --json (toon.relay shadow note goes to stderr)', async () => {
     const repo = makeRepo();
     git(['config', 'toon.relay', 'ws://old.example'], repo);

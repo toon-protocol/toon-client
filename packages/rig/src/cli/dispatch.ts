@@ -1,8 +1,9 @@
 /**
  * `rig` subcommand dispatch (#250): rig-owned verbs first, git for the rest.
  *
- * rig owns exactly: init, remote, clone, fetch, push, issue, comment, pr,
- * channel, fund, balance, help/-h/--help, and --version. EVERY other
+ * rig owns exactly: init, identity, remote, clone, fetch, push, issue,
+ * comment, pr, channel, fund, balance, help/-h/--help, and --version. EVERY
+ * other
  * subcommand is executed as `git <argv...>` verbatim (./git-passthrough.ts)
  * — `rig status` IS `git status`, `rig add -p`, `rig commit`, `rig rebase
  * -i`, … all land in git with rig's stdio and git's exit code. Owned verbs
@@ -30,6 +31,7 @@ import { runComment, runIssue, runPr, type EventCommandDeps } from './events.js'
 import { runFetch } from './fetch.js';
 import { runFund } from './fund.js';
 import { runGitPassthrough, type GitRunner } from './git-passthrough.js';
+import { runIdentity } from './identity-cmd.js';
 import { runInit } from './init.js';
 import { runMaintainers } from './maintainers.js';
 import { runPush, PUSH_USAGE } from './push.js';
@@ -40,8 +42,15 @@ export const USAGE = `rig — git with a TOON remote (pay-to-write Nostr + Arwea
 Usage: rig <command> [options]
 
 Commands rig owns:
-  init                       set up this repo: resolve your identity
-                             (RIG_MNEMONIC) and write the toon.* git config
+  identity create            generate a fresh identity (BIP-39) into the
+                             encrypted keystore — the phrase is shown ONCE;
+                             back it up. This is your first step on a new box
+  identity show              the active identity's source + derived pubkey
+                             (never the phrase)
+  identity import            write an EXISTING phrase (read from stdin) to the
+                             encrypted keystore
+  init                       set up this repo: resolve your identity (or offer
+                             to generate one) and write the toon.* git config
   remote add <name> <url>    add a relay as a REAL git remote ("origin" is
   remote remove <name>       the default publish target); remove/list manage
   remote list                them — \`git remote -v\` shows the same data
@@ -137,6 +146,8 @@ export async function dispatch(
   switch (command) {
     case 'init':
       return runInit(rest, deps);
+    case 'identity':
+      return runIdentity(rest, deps);
     case 'remote':
       return runRemote(rest, deps);
     // The #278 read path — FREE (relay + Arweave gateway reads, no payment).

@@ -49,6 +49,7 @@ function makeHarness(gitExitCode = 0): Harness {
 describe('dispatch precedence (rig-owned verbs never pass through)', () => {
   it.each([
     ['init'],
+    ['identity'],
     ['remote'],
     ['push'],
     ['issue'],
@@ -66,6 +67,8 @@ describe('dispatch precedence (rig-owned verbs never pass through)', () => {
 
   it('owned verbs stay owned even with bad args (rig usage, no git)', async () => {
     for (const argv of [
+      ['identity'],
+      ['identity', 'bogus'],
       ['issue'],
       ['comment'],
       ['pr'],

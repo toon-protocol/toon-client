@@ -193,15 +193,17 @@ describe('rig init', () => {
     expect((await readToonConfig(repoDir)).owner).toBe(PUBKEY);
   });
 
-  it('errors with the three-option remediation when no identity exists', async () => {
+  it('errors with the remediation (now naming `rig identity create`) when no identity exists', async () => {
     const h = makeDeps({});
     expect(await runInit([], h.deps)).toBe(1);
     const text = h.err.join('\n');
     expect(text).toContain('no identity found');
+    // The cold-start fix: generation is the FIRST option now (#294).
+    expect(text).toContain('rig identity create');
     expect(text).toContain('RIG_MNEMONIC environment variable');
     expect(text).toContain('.env');
     expect(text).toContain(join(homeDir, 'config.json'));
-    // Nothing was written.
+    // Nothing was written (no consent, non-interactive).
     expect((await readToonConfig(repoDir)).owner).toBeUndefined();
   });
 
@@ -280,5 +282,97 @@ describe('rig init', () => {
     expect(await runInit(['--help'], h.deps)).toBe(0);
     expect(h.out.join('\n')).toContain('--repo-id');
     expect((await readToonConfig(repoDir)).owner).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #294: identity generation on first run (consent-gated)
+// ---------------------------------------------------------------------------
+
+describe('rig init identity generation (#294)', () => {
+  /** A deps harness with tunable TTY + confirm (init.test's default is off). */
+  function makeGenDeps(
+    env: Record<string, string>,
+    tty: { isInteractive: boolean; confirm: () => boolean }
+  ) {
+    const out: string[] = [];
+    const err: string[] = [];
+    return {
+      out,
+      err,
+      deps: {
+        io: {
+          out: (line) => out.push(line),
+          err: (line) => err.push(line),
+          emitJson: (payload) => out.push(JSON.stringify(payload, null, 2)),
+          isInteractive: tty.isInteractive,
+          confirm: async () => tty.confirm(),
+        },
+        env: { TOON_CLIENT_HOME: homeDir, ...env },
+        cwd: repoDir,
+      },
+    };
+  }
+
+  it('--generate-identity mints an identity and writes toon.owner (no prompt)', async () => {
+    const h = makeGenDeps({}, { isInteractive: false, confirm: () => false });
+    expect(await runInit(['--generate-identity'], h.deps)).toBe(0);
+
+    // A keystore was written and toon.owner is the fresh pubkey.
+    const config = await readToonConfig(repoDir);
+    expect(config.owner).toMatch(/^[0-9a-f]{64}$/);
+    const banner = h.out.join('\n');
+    expect(banner).toContain('generated a new identity');
+    expect(banner).toContain('shown ONCE');
+    // A later run resolves the SAME identity from the keystore (no re-gen).
+    const again = makeGenDeps({}, { isInteractive: false, confirm: () => false });
+    expect(await runInit([], again.deps)).toBe(0);
+    expect(again.out.join('\n')).toContain(`from ${join(homeDir, 'keystore.json')}`);
+    expect(again.out.join('\n')).not.toContain('generated a new identity');
+  });
+
+  it('interactive: a `y` at the prompt generates; a `n` errors', async () => {
+    const yes = makeGenDeps({}, { isInteractive: true, confirm: () => true });
+    expect(await runInit([], yes.deps)).toBe(0);
+    expect((await readToonConfig(repoDir)).owner).toMatch(/^[0-9a-f]{64}$/);
+
+    // Fresh repo + home for the `n` case.
+    const noRepo = mkdtempSync(join(tmpdir(), 'toon-rig-init-no-'));
+    git(['init', '--initial-branch=main'], noRepo);
+    const noHome = mkdtempSync(join(tmpdir(), 'toon-rig-inithome-no-'));
+    try {
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await runInit([], {
+        io: {
+          out: (l) => out.push(l),
+          err: (l) => err.push(l),
+          emitJson: (p) => out.push(JSON.stringify(p)),
+          isInteractive: true,
+          confirm: async () => false,
+        },
+        env: { TOON_CLIENT_HOME: noHome },
+        cwd: noRepo,
+      });
+      expect(code).toBe(1);
+      expect(err.join('\n')).toContain('rig identity create');
+      expect((await readToonConfig(noRepo)).owner).toBeUndefined();
+    } finally {
+      rmSync(noRepo, { recursive: true, force: true });
+      rmSync(noHome, { recursive: true, force: true });
+    }
+  });
+
+  it('--generate-identity --json embeds the seed phrase for the scripted path', async () => {
+    const h = makeGenDeps({}, { isInteractive: false, confirm: () => false });
+    expect(await runInit(['--generate-identity', '--json'], h.deps)).toBe(0);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    const gen = doc['generatedIdentity'] as Record<string, unknown>;
+    expect(gen).toBeDefined();
+    expect(typeof gen['mnemonic']).toBe('string');
+    expect((gen['mnemonic'] as string).split(' ').length).toBe(12);
+    expect(doc['owner']).toBe(gen['pubkey']);
+    // The SECRET warning lands on stderr, not the machine stream.
+    expect(h.err.join('\n')).toContain('SECRET');
   });
 });
