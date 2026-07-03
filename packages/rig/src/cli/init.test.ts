@@ -12,9 +12,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { deriveNostrKeyFromMnemonic } from '@toon-protocol/client';
-import { readToonConfig, writeToonConfig } from './git-config.js';
-import { runInit } from './init.js';
-import type { CliIo } from './push.js';
+import { hexToNpub } from '../npub.js';
+import { resolveGitAuthor } from './git-author.js';
+import { readGitAuthor, readToonConfig, writeToonConfig } from './git-config.js';
+import { runInit, type InitDeps } from './init.js';
 
 const PHRASE =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -39,12 +40,25 @@ afterEach(() => {
 });
 
 interface Harness {
-  deps: { io: CliIo; env: NodeJS.ProcessEnv; cwd: string };
+  deps: InitDeps;
   out: string[];
   err: string[];
 }
 
-function makeDeps(env: Record<string, string>, cwd = repoDir): Harness {
+/**
+ * Default git-author seam: an OFFLINE npub-fallback resolver (relayUrl forced
+ * out) so the broad init suite never reaches a relay. The dedicated
+ * git-author tests below pass their own `resolveGitAuthorImpl`/relay to
+ * exercise the kind:0 profile path.
+ */
+const offlineGitAuthor: NonNullable<InitDeps['resolveGitAuthorImpl']> = (opts) =>
+  resolveGitAuthor({ pubkey: opts.pubkey });
+
+function makeDeps(
+  env: Record<string, string>,
+  cwd = repoDir,
+  overrides: Partial<InitDeps> = {}
+): Harness {
   const out: string[] = [];
   const err: string[] = [];
   return {
@@ -62,6 +76,8 @@ function makeDeps(env: Record<string, string>, cwd = repoDir): Harness {
       },
       env: { TOON_CLIENT_HOME: homeDir, ...env },
       cwd,
+      resolveGitAuthorImpl: offlineGitAuthor,
+      ...overrides,
     },
   };
 }
@@ -313,6 +329,7 @@ describe('rig init identity generation (#294)', () => {
         },
         env: { TOON_CLIENT_HOME: homeDir, ...env },
         cwd: repoDir,
+        resolveGitAuthorImpl: offlineGitAuthor,
       },
     };
   }
@@ -377,6 +394,126 @@ describe('rig init identity generation (#294)', () => {
     expect(doc['owner']).toBe(gen['pubkey']);
     // The SECRET warning lands on stderr, not the machine stream.
     expect(h.err.join('\n')).toContain('SECRET');
+  });
+
+  // ── Git commit-author from the nostr identity (#302) ─────────────────────
+  describe('git commit-author', () => {
+    const NPUB = hexToNpub(PUBKEY);
+    const EMAIL = `${NPUB}@nostr`;
+
+    it('sets the repo-LOCAL git author to the npub identity (fixes the trap)', async () => {
+      const h = makeDeps({ RIG_MNEMONIC: PHRASE });
+      expect(await runInit([], h.deps)).toBe(0);
+
+      // Repo-local user.name / user.email are set → `git commit` works.
+      const author = await readGitAuthor(repoDir);
+      expect(author.name).toBe(NPUB);
+      expect(author.email).toBe(EMAIL);
+      expect(h.out.join('\n')).toContain(
+        `Git author: ${NPUB} <${EMAIL}> (from npub)`
+      );
+
+      // A real commit succeeds — no "empty ident name not allowed".
+      git(['commit', '--allow-empty', '-m', 'first'], repoDir);
+      expect(git(['log', '--format=%an <%ae>', '-1'], repoDir)).toBe(
+        `${NPUB} <${EMAIL}>`
+      );
+    });
+
+    it('--json carries the gitAuthor {name, email, source} shape', async () => {
+      const h = makeDeps({ RIG_MNEMONIC: PHRASE });
+      expect(await runInit(['--json'], h.deps)).toBe(0);
+      const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+      expect(doc['gitAuthor']).toEqual({
+        name: NPUB,
+        email: EMAIL,
+        source: 'npub',
+      });
+    });
+
+    it('overrides a global user.name for THIS repo only (repo-local wins)', async () => {
+      // A mocked global git identity that must NOT win over the rig identity.
+      const globalCfg = join(homeDir, 'globalgitconfig');
+      writeFileSync(
+        globalCfg,
+        '[user]\n\tname = Global Person\n\temail = global@example.com\n'
+      );
+      const prev = process.env['GIT_CONFIG_GLOBAL'];
+      process.env['GIT_CONFIG_GLOBAL'] = globalCfg;
+      try {
+        const h = makeDeps({ RIG_MNEMONIC: PHRASE });
+        expect(await runInit([], h.deps)).toBe(0);
+        // The effective author (local shadows global) is the npub identity.
+        expect(git(['config', 'user.name'], repoDir)).toBe(NPUB);
+        expect(git(['config', 'user.email'], repoDir)).toBe(EMAIL);
+        // The global config file itself is untouched.
+        expect(git(['config', '--global', 'user.name'], repoDir)).toBe(
+          'Global Person'
+        );
+      } finally {
+        if (prev === undefined) delete process.env['GIT_CONFIG_GLOBAL'];
+        else process.env['GIT_CONFIG_GLOBAL'] = prev;
+      }
+    });
+
+    it('reads the kind:0 profile from the --relay flag (relay-at-init-time)', async () => {
+      let seenRelay: string | undefined;
+      const h = makeDeps({ RIG_MNEMONIC: PHRASE }, repoDir, {
+        resolveGitAuthorImpl: (opts) => {
+          seenRelay = opts.relayUrl;
+          return Promise.resolve({
+            name: 'Alice',
+            email: EMAIL,
+            npub: NPUB,
+            source: 'profile',
+          });
+        },
+      });
+      expect(
+        await runInit(['--relay', 'wss://relay.example'], h.deps)
+      ).toBe(0);
+      // The --relay flag is the profile relay handed to the resolver.
+      expect(seenRelay).toBe('wss://relay.example');
+      // The profile display name becomes user.name (source: profile).
+      expect((await readGitAuthor(repoDir)).name).toBe('Alice');
+      expect(h.out.join('\n')).toContain('(from nostr profile)');
+    });
+
+    it('falls back to the genesis-seed relay when none is configured', async () => {
+      let seenRelay: string | undefined;
+      const h = makeDeps({ RIG_MNEMONIC: PHRASE }, repoDir, {
+        resolveGitAuthorImpl: (opts) => {
+          seenRelay = opts.relayUrl;
+          return resolveGitAuthor({ pubkey: opts.pubkey });
+        },
+      });
+      expect(await runInit([], h.deps)).toBe(0);
+      // No origin/toon.relay/flag → the committed genesis apex relay is used
+      // for the kind:0 read (resolved offline from core's seed).
+      expect(seenRelay).toBe('wss://relay-ws.devnet.toonprotocol.dev');
+    });
+
+    it('a re-run refreshes user.name from a now-readable profile', async () => {
+      // First run: npub fallback (no profile / no relay).
+      const first = makeDeps({ RIG_MNEMONIC: PHRASE });
+      expect(await runInit([], first.deps)).toBe(0);
+      expect((await readGitAuthor(repoDir)).name).toBe(NPUB);
+
+      // Second run: a profile is now readable → user.name refreshes to it.
+      const second = makeDeps({ RIG_MNEMONIC: PHRASE }, repoDir, {
+        resolveGitAuthorImpl: (opts) =>
+          Promise.resolve({
+            name: 'Alice Display',
+            email: `${hexToNpub(opts.pubkey)}@nostr`,
+            npub: hexToNpub(opts.pubkey),
+            source: 'profile',
+          }),
+      });
+      expect(await runInit([], second.deps)).toBe(0);
+      const author = await readGitAuthor(repoDir);
+      expect(author.name).toBe('Alice Display');
+      expect(author.email).toBe(EMAIL);
+    });
   });
 });
 

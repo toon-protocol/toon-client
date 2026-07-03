@@ -153,6 +153,47 @@ export async function listGitRemotes(
   return remotes;
 }
 
+/** The repo-local git author identity (`user.name` + `user.email`). */
+export interface GitAuthorConfig {
+  name?: string;
+  email?: string;
+}
+
+/**
+ * Read the repository's LOCAL `user.name` / `user.email` (never `--global`).
+ * A `--local --get` miss is exit 1 (tolerated) and yields `undefined` — so
+ * this reports only what THIS repo overrides, not any inherited global value.
+ */
+export async function readGitAuthor(
+  repoPath: string
+): Promise<GitAuthorConfig> {
+  const [name, email] = await Promise.all([
+    git(repoPath, ['config', '--local', '--get', 'user.name'], [1]),
+    git(repoPath, ['config', '--local', '--get', 'user.email'], [1]),
+  ]);
+  const config: GitAuthorConfig = {};
+  const n = name.stdout.trim();
+  if (name.exitCode === 0 && n) config.name = n;
+  const e = email.stdout.trim();
+  if (email.exitCode === 0 && e) config.email = e;
+  return config;
+}
+
+/**
+ * Set the repository's LOCAL git author identity — `git config --local`, so it
+ * overrides any global `user.name`/`user.email` FOR THIS REPO ONLY and never
+ * touches `~/.gitconfig`. On a rig repo the nostr key is the identity, so the
+ * commit author == push signer == nostr identity (a coherent authorship chain
+ * baked into the git objects on Arweave).
+ */
+export async function setGitAuthor(
+  repoPath: string,
+  author: { name: string; email: string }
+): Promise<void> {
+  await git(repoPath, ['config', '--local', 'user.name', author.name]);
+  await git(repoPath, ['config', '--local', 'user.email', author.email]);
+}
+
 /** `git remote add <name> <url>` — real git remote storage, never a shell. */
 export async function addGitRemote(
   repoPath: string,

@@ -29,11 +29,17 @@ import { basename } from 'node:path';
 import { parseArgs } from 'node:util';
 import { emitCliError, NotAGitRepositoryError } from './errors.js';
 import {
+  resolveGitAuthor,
+  profileTimeoutFromEnv,
+  type GitAuthor,
+} from './git-author.js';
+import {
   addGitRemote,
   initGitRepository,
   listGitRemotes,
   readToonConfig,
   resolveRepoRoot,
+  setGitAuthor,
   writeToonConfig,
   type GitRemoteInfo,
 } from './git-config.js';
@@ -60,6 +66,13 @@ keystore/config), then writes toon.repoid and toon.owner to the repo's
 LOCAL git config. Re-running updates and reports; it never errors on an
 already-initialized repo. The seed phrase is never written anywhere.
 
+It also sets the repo's LOCAL git commit-author from your nostr identity
+(never --global) so \`rig commit\`/\`git commit\` work out of the box and every
+commit is attributed to the signer: user.email = <npub>@nostr, user.name =
+your kind:0 profile display name when published (read best-effort from a
+relay, latest-wins) else the npub. Re-running refreshes the name from a
+now-readable profile.
+
 The follow-up step is adding a relay: \`rig remote add origin <relay-url>\`
 (a real git remote — \`git remote -v\` shows it). A deprecated v0.1
 \`git config toon.relay\` is migrated to the origin remote automatically
@@ -79,6 +92,9 @@ Options:
                        toon.repoid, then the repo directory basename)
   --git-init           when the cwd is not a git repo, run \`git init\` here
                        first, then proceed (no prompt)
+  --relay <url>        relay to read your kind:0 profile from for the git
+                       author name (default: origin/toon.relay, then the
+                       genesis seed; skipped if none is resolvable)
   --generate-identity  when no identity resolves, mint a fresh one (no prompt)
   --json               machine-readable report
   -h, --help           show this help`;
@@ -92,11 +108,14 @@ export interface InitDeps {
   resolveIdentityImpl?: typeof resolveIdentity;
   /** Identity generator seam (tests); defaults to the real mint. */
   createIdentityImpl?: typeof createIdentity;
+  /** Git-author resolver seam (tests); defaults to the real kind:0 read. */
+  resolveGitAuthorImpl?: typeof resolveGitAuthor;
 }
 
 interface InitFlags {
   repoId?: string;
   gitInit: boolean;
+  relay?: string;
   generateIdentity: boolean;
   json: boolean;
   help: boolean;
@@ -108,6 +127,7 @@ function parseInitArgs(args: string[]): InitFlags {
     options: {
       'repo-id': { type: 'string' },
       'git-init': { type: 'boolean', default: false },
+      relay: { type: 'string' },
       'generate-identity': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
@@ -128,7 +148,49 @@ function parseInitArgs(args: string[]): InitFlags {
     if (repoId.trim() === '') throw new Error('--repo-id must not be empty');
     flags.repoId = repoId;
   }
+  const relay = values.relay;
+  if (relay !== undefined) {
+    if (relay.trim() === '') throw new Error('--relay must not be empty');
+    flags.relay = relay.trim();
+  }
   return flags;
+}
+
+/** True for a WebSocket-scheme URL (the kind:0 profile read speaks only ws(s)). */
+function isWebSocketRelay(url: string): boolean {
+  return /^wss?:\/\//i.test(url);
+}
+
+/**
+ * Resolve the relay to read the identity's kind:0 profile from, at init time —
+ * BEFORE `rig remote add origin` may have run. Precedence: `--relay` flag →
+ * the `origin` remote → the deprecated `toon.relay` → the #264 genesis seed.
+ * Only ws(s) URLs qualify (the read is a WebSocket REQ); returns undefined when
+ * none resolves, in which case the git author falls back to the npub.
+ */
+async function resolveProfileRelay(
+  flagRelay: string | undefined,
+  originRelay: string | undefined,
+  toonRelays: string[]
+): Promise<string | undefined> {
+  const candidates = [
+    flagRelay,
+    originRelay,
+    ...toonRelays,
+  ].filter((u): u is string => u !== undefined && isWebSocketRelay(u));
+  if (candidates[0] !== undefined) return candidates[0];
+  // Offline fallback: the committed genesis apex relay (core >= 2.0.1). Loaded
+  // lazily so a repo that already has a relay never drags core into init.
+  try {
+    const { loadGenesisSeed } = await import(
+      '../standalone/network-bootstrap.js'
+    );
+    const seed = loadGenesisSeed();
+    if (seed?.relayUrl && isWebSocketRelay(seed.relayUrl)) return seed.relayUrl;
+  } catch {
+    // Seed unavailable → no relay; author falls back to the npub.
+  }
+  return undefined;
 }
 
 /** JSON envelope emitted by `rig init --json`. */
@@ -155,6 +217,13 @@ interface InitJsonOutput {
   origin: string | null;
   /** True when this run migrated toon.relay to a new `origin` remote. */
   migratedToonRelay: boolean;
+  /**
+   * The repo-local git commit-author derived from the nostr identity (#302):
+   * `user.name` (kind:0 display name when published, else the npub) and
+   * `user.email` = `<npub>@nostr`. Always set so `rig commit` works out of the
+   * box; `source` records whether the name came from the profile or the npub.
+   */
+  gitAuthor: { name: string; email: string; source: GitAuthor['source'] };
   /** What this run changed in git config (false = already up to date). */
   changed: { repoId: boolean; owner: boolean };
   /**
@@ -309,7 +378,32 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
         ? (origin.urls[0] as string)
         : undefined;
 
-    // ── (e) Report ───────────────────────────────────────────────────────────
+    // ── (e) Git commit-author from the nostr identity (#302) ────────────────
+    // On a rig repo the nostr key IS the identity: set the repo's LOCAL git
+    // author (never --global) so `rig commit` (a git passthrough) stops
+    // dead-ending on "empty ident name not allowed" and every commit is
+    // attributed to the signer. user.name = the kind:0 display name when
+    // published (best-effort, latest-wins), else the npub; email `<npub>@nostr`.
+    // Re-running refreshes user.name from a now-readable profile.
+    const profileRelay = await resolveProfileRelay(
+      flags.relay,
+      originRelay,
+      existing.relays
+    );
+    const resolveAuthor = deps.resolveGitAuthorImpl ?? resolveGitAuthor;
+    const gitAuthor = await resolveAuthor({
+      pubkey: identity.pubkey,
+      relayUrl: profileRelay,
+      ...(profileTimeoutFromEnv(deps.env) !== undefined
+        ? { timeoutMs: profileTimeoutFromEnv(deps.env) as number }
+        : {}),
+    });
+    await setGitAuthor(repoRoot, {
+      name: gitAuthor.name,
+      email: gitAuthor.email,
+    });
+
+    // ── (f) Report ───────────────────────────────────────────────────────────
     if (flags.json) {
       const output: InitJsonOutput = {
         command: 'init',
@@ -327,6 +421,11 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
         remotes,
         origin: originRelay ?? null,
         migratedToonRelay,
+        gitAuthor: {
+          name: gitAuthor.name,
+          email: gitAuthor.email,
+          source: gitAuthor.source,
+        },
         changed,
         ...(generated
           ? {
@@ -369,6 +468,10 @@ export async function runInit(args: string[], deps: InitDeps): Promise<number> {
       `  toon.owner  = ${identity.pubkey}` +
         (changed.owner ? '' : ' (unchanged)') +
         (existing.owner && changed.owner ? ` (was ${existing.owner})` : '')
+    );
+    io.out(
+      `Git author: ${gitAuthor.name} <${gitAuthor.email}> ` +
+        `(from ${gitAuthor.source === 'profile' ? 'nostr profile' : 'npub'})`
     );
     if (originRelay !== undefined) {
       io.out(
