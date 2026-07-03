@@ -28,7 +28,10 @@ import {
   readEvmTokenBalance,
   readSolanaTokenBalance,
   readMinaBalance,
+  readWalletBalances,
   type WalletBalance,
+  type WalletBalanceSources,
+  type WalletChainBalances,
 } from './balance/WalletBalanceReader.js';
 import {
   requestBlobStorage,
@@ -1146,6 +1149,87 @@ export class ToonClient {
     }
 
     return out;
+  }
+
+  /**
+   * The FULL multi-chain wallet view (#299): for every chain the identity is
+   * configured for, the native coin (ETH / SOL / MINA) AND every configured
+   * token (USDC), grouped per chain with the identity's address on that chain.
+   * A superset of {@link getBalances} — which stays scoped to the channel's
+   * settlement token — kept as a separate reader so channel-settlement callers
+   * are unaffected.
+   *
+   * FREE: read-only RPC, no signing, no payment. Works on an UNSTARTED client:
+   * the Solana/Mina addresses (which the signers only register during
+   * `start()`) are derived on demand from the retained mnemonic — the SAME keys
+   * `start()` would register and that `rig fund` prints — so all configured
+   * chains appear even before a start. Best-effort per chain: an unreachable
+   * RPC yields `{ unreadable: true }` for that chain, never failing the others.
+   */
+  async getWalletBalances(): Promise<WalletChainBalances[]> {
+    const sources: WalletBalanceSources = {};
+
+    // Solana/Mina keys are only registered as signers during start(); derive
+    // them from the retained mnemonic on demand so an unstarted client (e.g.
+    // `rig balance`) still reports every configured chain. Derived once, lazily.
+    let derived: Awaited<ReturnType<typeof deriveFullIdentity>> | undefined;
+    let derivedTried = false;
+    const ensureDerived = async (): Promise<typeof derived> => {
+      if (derivedTried) return derived;
+      derivedTried = true;
+      if (this.config.mnemonic) {
+        derived = await deriveFullIdentity(
+          this.config.mnemonic,
+          this.config.mnemonicAccountIndex ?? 0
+        );
+      }
+      return derived;
+    };
+
+    // EVM: native ETH + settlement USDC. Pick the settlement chain key the same
+    // way getBalances does (settlement chain wins over the preset primary).
+    const evmAddress = this.getEvmAddress();
+    const rpcUrls = this.config.chainRpcUrls;
+    const tokens = this.config.preferredTokens;
+    if (evmAddress && rpcUrls) {
+      const usableEvm = (c: string): boolean => c.startsWith('evm') && Boolean(rpcUrls[c]);
+      const settlementKeys = Object.keys(this.config.settlementAddresses ?? {});
+      const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
+      const chainKey = settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
+      if (chainKey && rpcUrls[chainKey]) {
+        sources.evm = {
+          chainKey,
+          rpcUrl: rpcUrls[chainKey],
+          owner: evmAddress,
+          ...(tokens?.[chainKey] ? { tokenAddress: tokens[chainKey] } : {}),
+        };
+      }
+    }
+
+    // Solana: native SOL + SPL USDC (the negotiated mint).
+    const sol = this.config.solanaChannel;
+    if (sol?.rpcUrl) {
+      const solAddress = this.getSolanaAddress() ?? (await ensureDerived())?.solana.publicKey;
+      if (solAddress) {
+        sources.solana = {
+          chainKey: 'solana',
+          rpcUrl: sol.rpcUrl,
+          owner: solAddress,
+          ...(sol.tokenMint ? { tokenMint: sol.tokenMint } : {}),
+        };
+      }
+    }
+
+    // Mina: native MINA (no configured Mina token on devnet).
+    const mina = this.config.minaChannel;
+    if (mina?.graphqlUrl) {
+      const minaAddress = this.getMinaAddress() ?? (await ensureDerived())?.mina.publicKey;
+      if (minaAddress) {
+        sources.mina = { chainKey: 'mina', graphqlUrl: mina.graphqlUrl, owner: minaAddress };
+      }
+    }
+
+    return readWalletBalances(sources);
   }
 
   /**

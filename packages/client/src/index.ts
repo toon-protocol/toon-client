@@ -112,6 +112,21 @@ export {
   type RequestBlobStorageResult,
 } from './blob-storage.js';
 
+// Wallet balance readers — the full multi-chain wallet view (#299) plus the
+// per-chain primitives, for callers that read balances outside a ToonClient.
+export {
+  readWalletBalances,
+  readEvmNativeBalance,
+  readEvmTokenBalance,
+  readSolanaNativeBalance,
+  readSolanaTokenBalance,
+  readMinaBalance,
+  type WalletBalance,
+  type WalletTokenAmount,
+  type WalletChainBalances,
+  type WalletBalanceSources,
+} from './balance/WalletBalanceReader.js';
+
 // Key Management
 export {
   KeyManager,

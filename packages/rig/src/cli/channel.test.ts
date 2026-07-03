@@ -152,7 +152,7 @@ function makeMoney(identity: string = IDENTITY): FakeMoney {
         if (fake.settleError) throw fake.settleError;
         return fake.settleOutcome;
       },
-      walletBalances: async () => [],
+      walletChainBalances: async () => [],
     },
     stop: async () => {
       fake.stopped = true;

@@ -148,13 +148,13 @@ function makeNoisyStandalone(): { load: LoadStandalone } {
         settleableAt: '2000',
       }),
       settleChannel: async (record) => ({ channelId: record.channelId }),
-      walletBalances: async () => [
+      walletChainBalances: async () => [
         {
           chain: 'evm',
+          chainKey: 'evm:31337',
           address: '0x' + '1'.repeat(40),
-          amount: '424242',
-          asset: 'USDC',
-          assetScale: 6,
+          native: { symbol: 'ETH', amount: '1000000000000000000', decimals: 18 },
+          tokens: [{ symbol: 'USDC', amount: '424242', decimals: 6 }],
         },
       ],
     },

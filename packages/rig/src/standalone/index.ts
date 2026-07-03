@@ -22,7 +22,8 @@ export type {
   ChannelOpenOutcome,
   ChannelSettleOutcome,
   StandaloneMoneyOps,
-  WalletBalanceInfo,
+  WalletChainBalanceInfo,
+  WalletTokenAmountInfo,
 } from './money.js';
 
 export {

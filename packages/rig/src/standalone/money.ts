@@ -14,19 +14,39 @@
 import type { ChannelMapRecord } from './channel-map.js';
 
 /**
- * One on-chain wallet token balance — structural twin of
- * `@toon-protocol/client`'s `WalletBalance` (`balance/WalletBalanceReader.ts`,
- * not exported from the package root); keep in sync.
+ * One asset amount within a chain's wallet view — structural twin of
+ * `@toon-protocol/client`'s `WalletTokenAmount`; keep in sync.
  */
-export interface WalletBalanceInfo {
-  chain: 'evm' | 'solana' | 'mina';
-  address: string;
+export interface WalletTokenAmountInfo {
+  /** Asset symbol (e.g. `'ETH'`, `'SOL'`, `'MINA'`, `'USDC'`), when known. */
+  symbol?: string;
   /** Base-unit integer, decimal string. */
   amount: string;
-  /** Token symbol, when resolved (e.g. `'USDC'`, `'MINA'`). */
-  asset?: string;
-  /** Token decimals, when resolved. */
-  assetScale?: number;
+  /** Decimals for formatting (ETH 18, SOL 9, MINA 9, USDC 6). */
+  decimals?: number;
+  /** Token contract / SPL mint address. Absent for the native coin. */
+  address?: string;
+}
+
+/**
+ * The full wallet view for ONE chain — native coin + configured tokens —
+ * structural twin of `@toon-protocol/client`'s `WalletChainBalances`
+ * (`balance/WalletBalanceReader.ts`, exported from the package root); keep in
+ * sync.
+ */
+export interface WalletChainBalanceInfo {
+  chain: 'evm' | 'solana' | 'mina';
+  /** Full chain key, e.g. `'evm:31337'`, `'solana'`, `'mina'`. */
+  chainKey: string;
+  address: string;
+  /** Native-coin balance, when readable. */
+  native?: WalletTokenAmountInfo;
+  /** Configured token balances (e.g. USDC). */
+  tokens: WalletTokenAmountInfo[];
+  /** True when nothing on this chain could be read (RPC unreachable). */
+  unreadable?: boolean;
+  /** First read error, when any read failed. */
+  error?: string;
 }
 
 /** Receipt of an explicit `rig channel open` (fresh open OR resume). */
@@ -82,8 +102,10 @@ export interface StandaloneMoneyOps {
   /** Settle a closed channel after its challenge window — releases funds. */
   settleChannel(record: ChannelMapRecord): Promise<ChannelSettleOutcome>;
   /**
-   * On-chain wallet balances for the identity's configured chains — a FREE
-   * read (no client start, no nonce guard, no uplink). Best-effort per chain.
+   * The full multi-chain wallet view (#299) for the identity's configured
+   * chains — native coin + configured tokens (USDC) grouped per chain — a FREE
+   * read (no client start, no nonce guard, no uplink). Best-effort per chain:
+   * an unreachable RPC yields an `unreadable` chain rather than failing others.
    */
-  walletBalances(): Promise<WalletBalanceInfo[]>;
+  walletChainBalances(): Promise<WalletChainBalanceInfo[]>;
 }
