@@ -8,12 +8,20 @@
 import { truncateNpubFromHex } from './npub.js';
 
 /**
- * Cached profile data from a kind:0 event.
+ * Cached profile data from a kind:0 event. The whole parsed content JSON is
+ * stored, so these are the standard NIP-24 metadata fields (snake_case on the
+ * wire; `displayName` kept as a camelCase alias some clients emit).
  */
 export interface ProfileData {
   name?: string;
+  display_name?: string;
   displayName?: string;
+  about?: string;
   picture?: string;
+  banner?: string;
+  nip05?: string;
+  website?: string;
+  lud16?: string;
 }
 
 /**
@@ -63,10 +71,16 @@ export class ProfileCache {
   getDisplayName(pubkey: string): string {
     const profile = this.profiles.get(pubkey);
     if (profile) {
+      if (profile.display_name) return profile.display_name;
       if (profile.displayName) return profile.displayName;
       if (profile.name) return profile.name;
     }
     return truncateNpub(pubkey);
+  }
+
+  /** The full cached kind:0 profile for a pubkey, if one has been fetched. */
+  getProfile(pubkey: string): ProfileData | undefined {
+    return this.profiles.get(pubkey);
   }
 
   /**

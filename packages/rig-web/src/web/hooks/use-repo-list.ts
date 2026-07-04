@@ -20,8 +20,14 @@ interface UseRepoListResult {
   error: Error | null;
 }
 
-export function useRepoList(): UseRepoListResult {
-  const { relayUrl, owner } = useRigConfig();
+/**
+ * List repo announcements (kind:30617). Defaults to the rig config's `owner`
+ * scope; pass `ownerOverride` (npub or hex) to list a specific author's repos
+ * regardless of config — used by the profile page.
+ */
+export function useRepoList(ownerOverride?: string): UseRepoListResult {
+  const { relayUrl, owner: configOwner } = useRigConfig();
+  const owner = ownerOverride ?? configOwner;
 
   const filter = useMemo<NostrFilter>(() => {
     const f: NostrFilter = { kinds: [30617] };
