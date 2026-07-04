@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Check, ChevronDown, Code2, Copy, Upload } from 'lucide-react';
+import { Check, ChevronDown, Code2, Copy } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
 import { useRigConfig } from '@/hooks/use-rig-config';
@@ -63,7 +63,9 @@ function shellQuote(value: string): string {
 
 /**
  * The paste-and-run command to clone a specific repo with the `rig` CLI:
- * install `@toon-protocol/rig`, then `rig clone <relay-url> <owner>/<repo-id>`.
+ * `rig clone <relay-url> <owner>/<repo-id>`. Mirrors GitHub's clone box — just
+ * the clone command, one copyable line (the `rig` install is covered by the
+ * CLI docs link in the popover, not baked into the copied command).
  *
  * Cloning is entirely FREE — it reads the kind:30617/30618 state from the
  * relay and pulls objects from Arweave gateways; no payment, channel, or
@@ -74,17 +76,15 @@ function shellQuote(value: string): string {
  * The owner + relay come from safe charsets (hex/npub pubkey, ws(s):// URL),
  * but `repoId` is attacker-publishable, so the whole `<owner>/<repo-id>`
  * argument is `shellQuote`d as one token to keep a hostile `d` tag from
- * smuggling extra shell words onto the paste.
+ * smuggling extra shell words onto the paste (a stripped newline can never
+ * become a second executable line).
  */
 export function buildCloneCommand(
   repoId: string,
   ownerPubkey: string,
   relayUrl: string,
 ): string {
-  return [
-    'npm i -g @toon-protocol/rig',
-    `rig clone ${shellQuote(relayUrl)} ${shellQuote(`${ownerPubkey}/${repoId}`)}`,
-  ].join('\n');
+  return `rig clone ${shellQuote(relayUrl)} ${shellQuote(`${ownerPubkey}/${repoId}`)}`;
 }
 
 /**
@@ -95,11 +95,8 @@ export function buildCloneCommand(
  *
  * This is the read path, so it's free and needs no identity — the popover is a
  * hand-off to the `rig` CLI on the reader's machine. No daemon probing or
- * payment happens from the browser.
- *
- * Renders side by side with {@link PushInstructions} — GitHub's green "Code"
- * button paired with a Push affordance that explains the (paid) write path,
- * so a caller that wants both just drops in `<CloneInstructions metadata={…}/>`.
+ * payment happens from the browser. Modeled on GitHub's green "Code" button:
+ * one clone command with a copy affordance.
  */
 export function CloneInstructions({ metadata }: { metadata: RepoMetadata }) {
   const { relayUrl } = useRigConfig();
@@ -126,109 +123,21 @@ export function CloneInstructions({ metadata }: { metadata: RepoMetadata }) {
   }, [copied]);
 
   return (
-    <div className="flex items-center gap-2">
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button variant="success" size="sm" className="gap-1.5">
-            <Code2 aria-hidden="true" className="h-3.5 w-3.5" />
-            Code
-            <ChevronDown aria-hidden="true" className="ml-0.5 h-3 w-3 opacity-80" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-[28rem] max-w-[calc(100vw-2rem)] p-4" align="end">
-          <div className="space-y-3">
-            <div className="space-y-1">
-              <h3 className="text-sm font-semibold">Clone this repo</h3>
-              <p className="text-xs text-muted-foreground">
-                Reads on TOON are free — clone from your terminal with the{' '}
-                <code className="font-mono">rig</code> CLI. No TOON identity needed.
-              </p>
-            </div>
-            <div className="relative rounded-md border bg-muted/50">
-              <pre className="overflow-x-auto p-3 pr-10 font-mono text-xs leading-relaxed">
-                {command}
-              </pre>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                aria-label={copied ? 'Copy clone command — copied' : 'Copy clone command'}
-                className="absolute right-1 top-1 text-muted-foreground hover:text-foreground"
-                onClick={onCopy}
-              >
-                {copied ? (
-                  <Check aria-hidden="true" className="text-primary" />
-                ) : (
-                  <Copy aria-hidden="true" />
-                )}
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              The clone sets up <code className="font-mono">origin</code> for you, so{' '}
-              <code className="font-mono">rig push</code> works from the folder afterwards
-              (that write is paid). See the{' '}
-              <a
-                href={RIG_CLI_DOCS_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="underline underline-offset-2 hover:text-foreground"
-              >
-                rig CLI docs
-              </a>
-              .
-            </p>
-          </div>
-        </PopoverContent>
-      </Popover>
-      <PushInstructions metadata={metadata} />
-    </div>
-  );
-}
-
-/**
- * "Push" affordance: a small popover explaining the paid write path. Unlike
- * clone (free, no identity), `rig push` spends a payment-channel claim to
- * upload the object delta to Arweave and publish the NIP-34 refs event — so
- * this is deliberately just documentation + a copyable command, never a
- * button that fires a payment from the browser.
- */
-export function PushInstructions({ metadata }: { metadata: RepoMetadata }) {
-  const command = 'rig push';
-
-  const [copied, setCopied] = useState(false);
-  const onCopy = useCallback(() => {
-    const succeed = (): void => setCopied(true);
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      void navigator.clipboard.writeText(command).then(succeed, () => {
-        if (legacyCopy(command)) succeed();
-      });
-      return;
-    }
-    if (legacyCopy(command)) succeed();
-  }, [command]);
-
-  useEffect(() => {
-    if (!copied) return;
-    const t = setTimeout(() => setCopied(false), 1500);
-    return () => clearTimeout(t);
-  }, [copied]);
-
-  return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="gap-1.5">
-          <Upload aria-hidden="true" className="h-3.5 w-3.5" />
-          Push
+        <Button variant="success" size="sm" className="gap-1.5">
+          <Code2 aria-hidden="true" className="h-3.5 w-3.5" />
+          Code
+          <ChevronDown aria-hidden="true" className="ml-0.5 h-3 w-3 opacity-80" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[24rem] max-w-[calc(100vw-2rem)] p-4" align="end">
+      <PopoverContent className="w-[28rem] max-w-[calc(100vw-2rem)] p-4" align="end">
         <div className="space-y-3">
           <div className="space-y-1">
-            <h3 className="text-sm font-semibold">Push to {metadata.name}</h3>
+            <h3 className="text-sm font-semibold">Clone this repo</h3>
             <p className="text-xs text-muted-foreground">
-              Writes on TOON are paid — <code className="font-mono">rig push</code>{' '}
-              spends a payment-channel claim to upload the object delta to Arweave
-              and publish the updated refs. Reads (and the clone above) stay free.
+              Reads on TOON are free — clone from your terminal with the{' '}
+              <code className="font-mono">rig</code> CLI. No TOON identity needed.
             </p>
           </div>
           <div className="relative rounded-md border bg-muted/50">
@@ -239,7 +148,7 @@ export function PushInstructions({ metadata }: { metadata: RepoMetadata }) {
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label={copied ? 'Copy push command — copied' : 'Copy push command'}
+              aria-label={copied ? 'Copy clone command — copied' : 'Copy clone command'}
               className="absolute right-1 top-1 text-muted-foreground hover:text-foreground"
               onClick={onCopy}
             >
@@ -251,8 +160,9 @@ export function PushInstructions({ metadata }: { metadata: RepoMetadata }) {
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Run it from a folder cloned with <code className="font-mono">rig clone</code>{' '}
-            (origin is already configured). See the{' '}
+            The clone sets up <code className="font-mono">origin</code> for you, so{' '}
+            <code className="font-mono">rig push</code> works from the folder afterwards
+            (that write is paid). See the{' '}
             <a
               href={RIG_CLI_DOCS_URL}
               target="_blank"

