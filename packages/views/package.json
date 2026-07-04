@@ -1,6 +1,6 @@
 {
   "name": "@toon-protocol/views",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Shared TOON kind→atom registry, NIP parsers, ViewSpec composition runtime, and MCP-app iframe bundle. Consumed by rig and the toon-mcp apps surface.",
   "type": "module",
   "publishConfig": {
