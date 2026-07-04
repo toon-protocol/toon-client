@@ -6,7 +6,7 @@ import { resolveDefaultRef } from '../ref-resolver.js';
 import { shortRefName } from '@/lib/ref-utils';
 import { BranchSelector } from '@/components/branch-selector';
 import { ErrorBoundary } from '@/components/error-boundary';
-import { PushInstructions } from '@/components/push-instructions';
+import { CloneInstructions } from '@/components/clone-instructions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useEffect, useMemo } from 'react';
 import type { RepoMetadata, RepoRefs } from '../nip34-parsers.js';
@@ -121,9 +121,9 @@ export function RepoLayout() {
         ))}
       </nav>
 
-      {/* Branch selector + push hand-off — shown on code/tree/blob views.
-          PushInstructions renders even for a refs-less (announced but never
-          pushed) repo — that's exactly when the setup snippet matters most. */}
+      {/* Branch selector + clone hand-off — shown on code/tree/blob views.
+          CloneInstructions renders even for a refs-less (announced but never
+          pushed) repo — the copyable clone command is still valid there. */}
       {activeTab === 'code' && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           {refs ? (
@@ -138,7 +138,7 @@ export function RepoLayout() {
           ) : (
             <div />
           )}
-          <PushInstructions metadata={metadata} />
+          <CloneInstructions metadata={metadata} />
         </div>
       )}
 
