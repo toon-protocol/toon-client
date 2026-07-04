@@ -1,12 +1,11 @@
-import { Outlet, useParams, useNavigate, useLocation } from 'react-router';
+import { Outlet, Link, useParams, useNavigate, useLocation } from 'react-router';
 import { useRepo } from '@/hooks/use-repo';
 import { useProfileCache } from '@/hooks/use-profile-cache';
 import { hexToNpub } from '../npub.js';
 import { resolveDefaultRef } from '../ref-resolver.js';
 import { shortRefName } from '@/lib/ref-utils';
-import { BranchSelector } from '@/components/branch-selector';
 import { ErrorBoundary } from '@/components/error-boundary';
-import { CloneInstructions } from '@/components/clone-instructions';
+import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useEffect, useMemo } from 'react';
 import type { RepoMetadata, RepoRefs } from '../nip34-parsers.js';
@@ -23,12 +22,6 @@ export function RepoLayout() {
       requestProfiles([metadata.ownerPubkey]);
     }
   }, [metadata, requestProfiles]);
-
-  const resolvedBranch = useMemo(() => {
-    if (!metadata || !refs) return metadata?.defaultBranch ?? 'main';
-    const resolved = resolveDefaultRef(metadata, refs);
-    return resolved ? shortRefName(resolved.refName) : metadata.defaultBranch;
-  }, [metadata, refs]);
 
   const activeTab = useMemo(() => {
     const path = location.pathname;
@@ -84,17 +77,52 @@ export function RepoLayout() {
 
   return (
     <div className="space-y-4">
-      {/* Repo Header */}
-      <div className="space-y-1">
-        <div className="flex items-center gap-2 text-lg">
-          <span className="text-muted-foreground">{ownerDisplay}</span>
+      {/* Repo header — repo glyph, owner/name breadcrumb, visibility pill, and
+          the GitHub-style Watch / Fork / Star action cluster on the right. */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-center gap-2 text-xl">
+          <svg
+            className="h-5 w-5 shrink-0 text-muted-foreground"
+            viewBox="0 0 16 16"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z" />
+          </svg>
+          <Link to={`/${ownerNpub}`} className="text-primary hover:underline">
+            {ownerDisplay}
+          </Link>
           <span className="text-muted-foreground">/</span>
-          <span className="font-semibold">{metadata.name}</span>
+          <Link to={`/${ownerNpub}/${repo}`} className="font-semibold text-primary hover:underline">
+            {metadata.name}
+          </Link>
+          <Badge variant="outline" className="ml-1 rounded-full text-xs font-medium text-muted-foreground">
+            Public
+          </Badge>
         </div>
-        {metadata.description && (
-          <p className="text-sm text-muted-foreground">{metadata.description}</p>
-        )}
+
+        <div className="flex items-center gap-2">
+          <RepoCounterButton
+            label="Watch"
+            count={0}
+            icon="M8 2c1.981 0 3.671.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.45.678-1.367 1.932-2.637 3.023C11.67 13.008 9.981 14 8 14c-1.981 0-3.671-.992-4.933-2.078C1.797 10.831.88 9.577.43 8.899a1.62 1.62 0 0 1 0-1.798c.45-.678 1.367-1.932 2.637-3.023C4.33 2.992 6.019 2 8 2ZM8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z"
+          />
+          <RepoCounterButton
+            label="Fork"
+            count={0}
+            icon="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0ZM5 3.25a.75.75 0 1 0-1.5 0 .75.75 0 0 0 1.5 0Zm6.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm-3 8.75a.75.75 0 1 0-1.5 0 .75.75 0 0 0 1.5 0Z"
+          />
+          <RepoCounterButton
+            label="Star"
+            count={0}
+            icon="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+          />
+        </div>
       </div>
+
+      {metadata.description && (
+        <p className="-mt-2 text-sm text-muted-foreground">{metadata.description}</p>
+      )}
 
       {/* GitHub-style tab navigation */}
       <nav className="flex items-center gap-1 border-b">
@@ -121,27 +149,6 @@ export function RepoLayout() {
         ))}
       </nav>
 
-      {/* Branch selector + clone hand-off — shown on code/tree/blob views.
-          CloneInstructions renders even for a refs-less (announced but never
-          pushed) repo — the copyable clone command is still valid there. */}
-      {activeTab === 'code' && (
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {refs ? (
-            <BranchSelector
-              refs={refs}
-              currentRef={resolvedBranch}
-              onSelect={(fullRef) => {
-                const short = shortRefName(fullRef);
-                navigate(`/${ownerNpub}/${repo}/tree/${short}`);
-              }}
-            />
-          ) : (
-            <div />
-          )}
-          <CloneInstructions metadata={metadata} />
-        </div>
-      )}
-
       {/* Per-tab error boundary: a crash in one tab renders an inline error
           card instead of white-screening the app; keyed on pathname so
           navigating to another tab resets it (#277). */}
@@ -157,4 +164,34 @@ export interface RepoContext {
   refs: RepoRefs | null;
   owner: string;
   repo: string;
+}
+
+/**
+ * GitHub's split "counter" button (Watch / Fork / Star): a labeled action
+ * segment joined to a count segment. These are presentational for now — the
+ * decentralized model has no server-side engagement metric to back them — so
+ * they render disabled to avoid implying a working control.
+ */
+function RepoCounterButton({
+  label,
+  count,
+  icon,
+}: {
+  label: string;
+  count: number;
+  icon: string;
+}) {
+  return (
+    <div className="inline-flex items-stretch overflow-hidden rounded-md border text-xs font-medium">
+      <span className="flex items-center gap-1.5 bg-secondary px-2.5 py-1 text-secondary-foreground">
+        <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d={icon} />
+        </svg>
+        {label}
+      </span>
+      <span className="flex items-center border-l bg-background px-2.5 py-1 tabular-nums text-muted-foreground">
+        {count}
+      </span>
+    </div>
+  );
 }
