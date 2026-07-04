@@ -20,6 +20,14 @@ vi.mock('@/hooks/use-rig-config', () => ({
     owner: undefined,
   }),
 }));
+// The row-enrichment hooks hit the relay / Arweave; stub them so this stays a
+// focused render test of the list itself (they're exercised live, not here).
+vi.mock('@/hooks/use-repo-issue-counts', () => ({
+  useRepoIssueCounts: () => ({ counts: new Map(), loading: false }),
+}));
+vi.mock('@/hooks/use-repo-languages', () => ({
+  useRepoLanguages: () => new Map(),
+}));
 
 import { RepoListPage } from '@/app/pages/repo-list-page';
 import { useRepoList } from '@/hooks/use-repo-list';
