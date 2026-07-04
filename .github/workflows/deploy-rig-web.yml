@@ -1,0 +1,78 @@
+name: Deploy rig-web
+
+# Builds packages/rig-web and deploys it to GitHub Pages
+# (https://toon-protocol.github.io/toon-client/) on every push to main that
+# touches the web app or its workspace deps, plus manual dispatch. This
+# replaces the old manual "build locally, push dist to the gh-pages branch"
+# flow — the live UI now tracks main automatically.
+#
+# Two build-time details matter and are handled below:
+#   * VITE_DEFAULT_RELAY is inlined by Vite AT BUILD TIME (not read at serve
+#     time), so it must be set on the build step or the app falls back to the
+#     baked-in localhost default and can't reach the network.
+#   * --base=/toon-client/ rewrites asset URLs for the project-pages subpath
+#     (the site is served under /toon-client/, not the domain root). The app
+#     uses hash routing (#/...), so no SPA 404.html fallback is needed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/rig-web/**'
+      - 'packages/arweave/**'
+      - 'packages/views/**'
+      - '.github/workflows/deploy-rig-web.yml'
+  workflow_dispatch:
+
+# Least privilege for the Pages deployment (GITHUB_TOKEN OIDC).
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deploy at a time; a newer push supersedes an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - run: pnpm install --no-frozen-lockfile
+
+      # Build all workspace packages in dependency order (same step release.yml
+      # uses) so rig-web's workspace deps (@toon-protocol/arweave, /views, …)
+      # are present, then rebuild ONLY rig-web with the Pages base + devnet
+      # relay baked in.
+      - run: pnpm -r build
+
+      - name: Build rig-web for Pages
+        env:
+          VITE_DEFAULT_RELAY: wss://relay-ws.devnet.toonprotocol.dev
+        run: |
+          pnpm --filter @toon-protocol/rig-web exec vite build --base=/toon-client/
+          touch packages/rig-web/dist/.nojekyll
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/rig-web/dist
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
