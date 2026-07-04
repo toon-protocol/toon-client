@@ -34,7 +34,8 @@ function createRepoMetadata(overrides: Partial<RepoMetadata> = {}): RepoMetadata
 }
 
 function openPopover() {
-  fireEvent.click(screen.getByRole('button', { name: /clone/i }));
+  // The clone trigger is the GitHub-style green "Code" button (was "Clone").
+  fireEvent.click(screen.getByRole('button', { name: /^code$/i }));
 }
 
 describe('[P1] CloneInstructions', () => {

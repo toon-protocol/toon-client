@@ -6,13 +6,28 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
+import { LatestCommitBar } from '@/components/latest-commit-bar';
 import type { TreeEntry } from '../git-objects.js';
+import type { RepoRefs } from '../nip34-parsers.js';
 
 interface FileTreeProps {
   entries: TreeEntry[];
   loading: boolean;
   basePath: string; // e.g. "/npub1.../repo/tree/main"
   blobPath: string; // e.g. "/npub1.../repo/blob/main"
+  /**
+   * Latest-commit header props. Optional so FileTree keeps working for any
+   * caller that doesn't have ref/commit context (e.g. a future embedded
+   * usage) — omitting it just skips the header row.
+   */
+  commitHeader?: {
+    commitSha: string | null;
+    repoId: string;
+    refs: RepoRefs | null;
+    owner: string;
+    repo: string;
+    refForUrl: string;
+  };
 }
 
 function FolderIcon() {
@@ -31,17 +46,7 @@ function FileIcon() {
   );
 }
 
-export function FileTree({ entries, loading, basePath, blobPath }: FileTreeProps) {
-  if (loading) {
-    return (
-      <div className="space-y-2">
-        {Array.from({ length: 8 }, (_, i) => (
-          <Skeleton key={i} className="h-8 w-full" />
-        ))}
-      </div>
-    );
-  }
-
+export function FileTree({ entries, loading, basePath, blobPath, commitHeader }: FileTreeProps) {
   // Sort: directories first, then files, alphabetical within each
   const sorted = [...entries].sort((a, b) => {
     const aIsDir = a.mode === '40000' || a.mode === '040000';
@@ -52,29 +57,38 @@ export function FileTree({ entries, loading, basePath, blobPath }: FileTreeProps
   });
 
   return (
-    <div className="rounded-md border">
-      <Table>
-        <TableBody>
-          {sorted.map((entry) => {
-            const isDir = entry.mode === '40000' || entry.mode === '040000';
-            const href = isDir
-              ? `${basePath}/${entry.name}`
-              : `${blobPath}/${entry.name}`;
-            return (
-              <TableRow key={entry.name}>
-                <TableCell className="w-8 py-1.5 pl-3 pr-0">
-                  {isDir ? <FolderIcon /> : <FileIcon />}
-                </TableCell>
-                <TableCell className="py-1.5">
-                  <Link to={href} className="hover:text-primary hover:underline">
-                    {entry.name}
-                  </Link>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
+    <div className="overflow-hidden rounded-md border">
+      {commitHeader && <LatestCommitBar {...commitHeader} />}
+      {loading ? (
+        <div className="space-y-2 p-3">
+          {Array.from({ length: 8 }, (_, i) => (
+            <Skeleton key={i} className="h-8 w-full" />
+          ))}
+        </div>
+      ) : (
+        <Table>
+          <TableBody>
+            {sorted.map((entry) => {
+              const isDir = entry.mode === '40000' || entry.mode === '040000';
+              const href = isDir
+                ? `${basePath}/${entry.name}`
+                : `${blobPath}/${entry.name}`;
+              return (
+                <TableRow key={entry.name}>
+                  <TableCell className="w-8 py-1.5 pl-3 pr-0">
+                    {isDir ? <FolderIcon /> : <FileIcon />}
+                  </TableCell>
+                  <TableCell className="py-1.5">
+                    <Link to={href} className="hover:text-primary hover:underline">
+                      {entry.name}
+                    </Link>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      )}
     </div>
   );
 }

@@ -1,12 +1,11 @@
-import { Outlet, useParams, useNavigate, useLocation } from 'react-router';
+import { Outlet, Link, useParams, useNavigate, useLocation } from 'react-router';
 import { useRepo } from '@/hooks/use-repo';
 import { useProfileCache } from '@/hooks/use-profile-cache';
 import { hexToNpub } from '../npub.js';
 import { resolveDefaultRef } from '../ref-resolver.js';
 import { shortRefName } from '@/lib/ref-utils';
-import { BranchSelector } from '@/components/branch-selector';
 import { ErrorBoundary } from '@/components/error-boundary';
-import { CloneInstructions } from '@/components/clone-instructions';
+import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useEffect, useMemo } from 'react';
 import type { RepoMetadata, RepoRefs } from '../nip34-parsers.js';
@@ -23,12 +22,6 @@ export function RepoLayout() {
       requestProfiles([metadata.ownerPubkey]);
     }
   }, [metadata, requestProfiles]);
-
-  const resolvedBranch = useMemo(() => {
-    if (!metadata || !refs) return metadata?.defaultBranch ?? 'main';
-    const resolved = resolveDefaultRef(metadata, refs);
-    return resolved ? shortRefName(resolved.refName) : metadata.defaultBranch;
-  }, [metadata, refs]);
 
   const activeTab = useMemo(() => {
     const path = location.pathname;
@@ -84,17 +77,35 @@ export function RepoLayout() {
 
   return (
     <div className="space-y-4">
-      {/* Repo Header */}
-      <div className="space-y-1">
-        <div className="flex items-center gap-2 text-lg">
-          <span className="text-muted-foreground">{ownerDisplay}</span>
+      {/* Repo header — repo glyph, owner/name breadcrumb, visibility pill.
+          No Watch/Fork/Star: the web app is read-only and NIP-34 has no
+          star/watch/fork primitive, so those would be dead controls. */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-center gap-2 text-xl">
+          <svg
+            className="h-5 w-5 shrink-0 text-muted-foreground"
+            viewBox="0 0 16 16"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z" />
+          </svg>
+          <Link to={`/${ownerNpub}`} className="text-primary hover:underline">
+            {ownerDisplay}
+          </Link>
           <span className="text-muted-foreground">/</span>
-          <span className="font-semibold">{metadata.name}</span>
+          <Link to={`/${ownerNpub}/${repo}`} className="font-semibold text-primary hover:underline">
+            {metadata.name}
+          </Link>
+          <Badge variant="outline" className="ml-1 rounded-full text-xs font-medium text-muted-foreground">
+            Public
+          </Badge>
         </div>
-        {metadata.description && (
-          <p className="text-sm text-muted-foreground">{metadata.description}</p>
-        )}
       </div>
+
+      {metadata.description && (
+        <p className="-mt-2 text-sm text-muted-foreground">{metadata.description}</p>
+      )}
 
       {/* GitHub-style tab navigation */}
       <nav className="flex items-center gap-1 border-b">
@@ -120,27 +131,6 @@ export function RepoLayout() {
           </button>
         ))}
       </nav>
-
-      {/* Branch selector + clone hand-off — shown on code/tree/blob views.
-          CloneInstructions renders even for a refs-less (announced but never
-          pushed) repo — the copyable clone command is still valid there. */}
-      {activeTab === 'code' && (
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {refs ? (
-            <BranchSelector
-              refs={refs}
-              currentRef={resolvedBranch}
-              onSelect={(fullRef) => {
-                const short = shortRefName(fullRef);
-                navigate(`/${ownerNpub}/${repo}/tree/${short}`);
-              }}
-            />
-          ) : (
-            <div />
-          )}
-          <CloneInstructions metadata={metadata} />
-        </div>
-      )}
 
       {/* Per-tab error boundary: a crash in one tab renders an inline error
           card instead of white-screening the app; keyed on pathname so
