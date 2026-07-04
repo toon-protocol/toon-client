@@ -98,5 +98,10 @@ export function useProfileCache() {
     [cache, version]
   );
 
-  return { getDisplayName, requestProfiles, version };
+  const getProfile = useCallback(
+    (pubkey: string) => cache.getProfile(pubkey),
+    [cache, version]
+  );
+
+  return { getDisplayName, getProfile, requestProfiles, version };
 }

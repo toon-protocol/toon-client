@@ -8,6 +8,7 @@ import { ProfileCacheProvider } from '@/hooks/use-profile-cache';
 import { AppLayout } from '@/app/app-layout';
 import { RepoLayout } from '@/app/repo-layout';
 import { RepoListPage } from '@/app/pages/repo-list-page';
+import { ProfilePage } from '@/app/pages/profile-page';
 import { RepoHomePage } from '@/app/pages/repo-home-page';
 import { TreePage } from '@/app/pages/tree-page';
 import { BlobPage } from '@/app/pages/blob-page';
@@ -38,6 +39,10 @@ createRoot(root).render(
             <Routes>
               <Route element={<AppLayout />}>
                 <Route index element={<RepoListPage />} />
+                {/* Bare owner (npub/hex) — the user profile page (kind:0
+                    metadata + their repos). More specific `:owner/:repo`
+                    routes below still win by React Router's ranking. */}
+                <Route path=":owner" element={<ProfilePage />} />
                 <Route path=":owner/:repo" element={<RepoLayout />}>
                   <Route index element={<RepoHomePage />} />
                   <Route path="tree/:ref/*" element={<TreePage />} />
