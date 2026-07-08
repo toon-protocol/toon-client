@@ -2,7 +2,7 @@
   "name": "toon-client",
   "version": "0.3.0",
   "private": true,
-  "description": "ILP-gated Nostr relay. Pay to write, free to read.",
+  "description": "TOON Protocol consumer side — pay-to-write Nostr client, MCP agent daemon, and the Rig git-to-TOON write path / decentralized control plane frontend.",
   "type": "module",
   "scripts": {
     "build": "pnpm -r run build",
