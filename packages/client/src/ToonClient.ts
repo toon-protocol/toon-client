@@ -548,39 +548,11 @@ export class ToonClient {
       // Resolve the active paid-write transport (proxy ILP-over-HTTP or BTP).
       const transport = this.getClaimTransport();
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let claimMessage: any;
-      if (options?.claim) {
-        // EXISTING PATH: Caller provides pre-signed claim (backwards compatible).
-        // Build the envelope with the chain-appropriate signer so a Solana/Mina
-        // balance proof is not mis-wrapped as an EVM claim (see F06 root cause).
-        claimMessage = this.buildClaimMessageForProof(options.claim);
-      } else if (this.channelManager) {
-        // NEW PATH: Auto-open channel + auto-sign claim (lazy channels)
-        const peerId = this.resolvePeerId(destination);
-        const negotiation = this.peerNegotiations.get(peerId);
-        if (!negotiation) {
-          throw new ToonClientError(
-            `No negotiation metadata for peer "${peerId}" — was bootstrap completed?`,
-            'PEER_NOT_NEGOTIATED'
-          );
-        }
-        const channelId = await this.channelManager.ensureChannel(
-          peerId,
-          negotiation
-        );
-        const proof = await this.channelManager.signBalanceProof(
-          channelId,
-          BigInt(amount)
-        );
-        const signer = this.channelManager.getSignerForChannel(channelId);
-        claimMessage = signer.buildClaimMessage(proof, this.getPublicKey());
-      } else {
-        throw new ToonClientError(
-          'No claim provided and no channel manager configured',
-          'MISSING_CLAIM'
-        );
-      }
+      const claimMessage = await this.resolveClaimForDestination(
+        destination,
+        BigInt(amount),
+        options?.claim
+      );
 
       const response = await transport.sendIlpPacketWithClaim(
         {
@@ -825,8 +797,6 @@ export class ToonClient {
 
   /**
    * Shared claim-resolution logic used by `publishEvent` and `sendSwapPacket`.
-   * TODO(12.5 followup): also factor `publishEvent`'s inline claim resolution
-   * to call this helper. Kept duplicated for now to minimize regression risk.
    */
   private async resolveClaimForDestination(
     destination: string,
