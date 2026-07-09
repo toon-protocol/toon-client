@@ -51,9 +51,11 @@ pnpm add mina-signer
 These coordinates go straight into the [`ToonClient` config](#quick-start) below.
 
 > **Local development (from a clone of this repo, not the npm package).** To try the client
-> end-to-end against a throwaway local network — Anvil + two peer nodes + relays — follow the
-> Docker Compose E2E setup in [`packages/client/tests/e2e/README.md`](tests/e2e/README.md). This
-> repo does not ship the monorepo's `scripts/sdk-e2e-infra.sh` wrapper.
+> end-to-end against a throwaway local network — Anvil + two peer nodes + relays — see
+> [`packages/client/tests/e2e/README.md`](tests/e2e/README.md) for the service topology and manual
+> testing snippet. Its automated setup steps assume the monorepo's `scripts/sdk-e2e-infra.sh`
+> wrapper and a `docker-compose-sdk-e2e.yml`, neither of which ships in this extracted repo; treat
+> those steps as a reference for provisioning the equivalent infrastructure yourself.
 >
 > | Service          | Port  | Purpose                                             |
 > | ---------------- | ----- | --------------------------------------------------- |
@@ -271,7 +273,9 @@ pnpm test:coverage        # Run with coverage report
 ### E2E Tests
 
 E2E tests require Docker Compose infrastructure. See
-[tests/e2e/README.md](tests/e2e/README.md) for detailed setup, then run:
+[tests/e2e/README.md](tests/e2e/README.md) for the service topology — note its automated setup
+script isn't included in this extracted repo either (see the Prerequisites section above), so
+provision the equivalent infrastructure manually, then run:
 
 ```bash
 cd packages/client
