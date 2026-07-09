@@ -302,5 +302,3 @@ packages (`fastify`, `@modelcontextprotocol/sdk`, `nostr-tools`, `viem`, `ws`,
 `@solana/web3.js`) installed only when you use those chains.
 A guard test (`src/package-structure.test.ts`) fails the build if a
 `@toon-protocol/*` runtime dep ever leaks in.
-
-To publish manually: `pnpm --filter @toon-protocol/client-mcp build && pnpm --filter @toon-protocol/client-mcp publish --access public`.
