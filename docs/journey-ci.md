@@ -11,9 +11,11 @@ This is the consumer-side counterpart to the hub (which *does* run on Linode, as
 persistent apex — see `toon-protocol/hub`). The client is episodic, so it needs no
 durable disk: the wallet is re-derived from the seed each run.
 
-> **Runner status:** the deterministic journey orchestrator is WS5 + WS7
-> (`toon-protocol/toon-client#21`). Until it lands, the runner does a **safe read-only
-> smoke** by default; `full` is opt-in and spends tiny testnet amounts.
+> **Runner status:** the deterministic journey orchestrator (WS5 + WS7,
+> `toon-protocol/toon-client#21` and children) has shipped —
+> [`journey/runner.mjs`](../journey/runner.mjs) implements the phased `full`-mode journey
+> described below. The runner still does a **safe read-only smoke** by default; `full` is
+> opt-in and spends tiny testnet amounts.
 
 ## Why no Linode box for the client
 
@@ -86,7 +88,7 @@ pointing at the hub's `.anon` endpoint.
 
 Actions → **Client Journey (CI)** → Run workflow → choose `journey_mode`:
 - `smoke` works today (read-only).
-- `full` once the WS5 orchestrator lands and the derived wallet is funded.
+- `full` once the derived wallet is funded (the WS5 orchestrator has already shipped).
 
 Inspect the run logs (the runner streams the agent's tool calls + result; the daemon log
 is uploaded on completion).
