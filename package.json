@@ -12,7 +12,6 @@
     "lint": "eslint .",
     "format": "prettier --write \"packages/*/src/**/*.ts\"",
     "format:check": "prettier --check \"packages/*/src/**/*.ts\"",
-    "demo:ilp-gated-relay": "tsx packages/examples/src/ilp-gated-relay-demo/index.ts",
     "changeset": "changeset",
     "version": "changeset version",
     "release": "changeset publish"
