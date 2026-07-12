@@ -348,6 +348,16 @@ export interface SwapRequest {
    * config-seeded apex). The swap peer must be a child peer of this apex.
    */
   btpUrl?: string;
+  /**
+   * Mint a FRESH sender-chosen execution condition per packet
+   * (`C_i = sha256(P_i)`, toon-client#350 / rolling-swap toon-meta#145 §3)
+   * and verify each FULFILL's preimage client-side; a mismatch counts the
+   * packet failed. Requires a maker + connector implementing the
+   * sender-chosen fulfillment contract (connector#309) — the deployed
+   * claim-issuing mill does NOT, so this is opt-in; the default (unset)
+   * keeps today's legacy zero-condition packets.
+   */
+  senderConditions?: boolean;
 }
 
 /** One accumulated, decrypted claim harvested from a single swap packet. */

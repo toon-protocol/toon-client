@@ -66,6 +66,12 @@ export interface ILPPreparePacket {
 
 export interface ILPFulfillPacket {
   type: typeof ILPPacketType.FULFILL;
+  /**
+   * The 32-byte fulfillment preimage from the wire. All-zero on legacy
+   * (zero-condition) packets; on sender-chosen conditions (toon-client#350)
+   * the transport verifies `sha256(fulfillment) == executionCondition`.
+   */
+  fulfillment: Uint8Array;
   data: Uint8Array;
 }
 
@@ -225,10 +231,15 @@ export function deserializeIlpPacket(buf: Uint8Array): ILPResponsePacket {
 
 function deserializeIlpFulfill(buf: Uint8Array): ILPFulfillPacket {
   let offset = 1; // skip type byte
-  // Skip 32-byte fulfillment (unused in TOON)
+  // 32-byte fulfillment preimage. Was skipped ("unused in TOON") before
+  // sender-chosen execution conditions (toon-client#350) made it load-bearing.
+  if (buf.length < offset + 32) {
+    throw new Error('Buffer underflow reading FULFILL fulfillment');
+  }
+  const fulfillment = buf.slice(offset, offset + 32);
   offset += 32;
   const { value: data } = decodeVarOctetString(buf, offset);
-  return { type: ILPPacketType.FULFILL, data };
+  return { type: ILPPacketType.FULFILL, fulfillment, data };
 }
 
 function deserializeIlpReject(buf: Uint8Array): ILPRejectPacket {

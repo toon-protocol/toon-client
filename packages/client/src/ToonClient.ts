@@ -38,6 +38,7 @@ import {
   type RequestBlobStorageResult,
 } from './blob-storage.js';
 import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
+import type { IlpSendParams } from './adapters/ilp-send.js';
 import {
   Http402Client,
   type H402FetchOptions,
@@ -698,6 +699,14 @@ export class ToonClient {
    *       matching `destination`,
    *   (c) neither -> throw MISSING_CLAIM.
    *
+   * A caller may supply a sender-chosen 32-byte `executionCondition`
+   * (`C = sha256(P)`, one fresh preimage per packet — toon-client#350,
+   * rolling-swap spec §3 R1/R2) and an explicit `expiresAt` (R7). Both are
+   * set on the wire by either transport (HTTP `POST /ilp` and BTP), and on
+   * FULFILL the transport verifies `sha256(fulfillment) == condition` —
+   * a mismatch comes back as `accepted: false` (code F99), never a silent
+   * accept. Omitting them keeps today's zero-condition legacy packet.
+   *
    * @throws {ToonClientError} INVALID_STATE / NO_ILP_TRANSPORT / MISSING_CLAIM
    */
   async sendSwapPacket(params: {
@@ -706,6 +715,10 @@ export class ToonClient {
     toonData: Uint8Array;
     timeout?: number;
     claim?: SignedBalanceProof;
+    /** Sender-chosen 32-byte execution condition; absent/zero = legacy. */
+    executionCondition?: Uint8Array;
+    /** Explicit ILP expiry; defaults to `now + timeout` in the transport. */
+    expiresAt?: Date;
   }): Promise<IlpSendResult> {
     if (!this.state) {
       throw new ToonClientError(
@@ -727,6 +740,10 @@ export class ToonClient {
         amount: String(params.amount),
         data: toBase64(params.toonData),
         timeout: params.timeout ?? 30000,
+        ...(params.executionCondition
+          ? { executionCondition: params.executionCondition }
+          : {}),
+        ...(params.expiresAt ? { expiresAt: params.expiresAt } : {}),
       },
       claimMessage as unknown as Record<string, unknown>
     );
@@ -787,13 +804,11 @@ export class ToonClient {
    *   a packet+claim.
    */
   private getClaimTransport(): {
+    // IlpSendParams: both built-in transports (HttpIlpClient / BtpRuntimeClient)
+    // accept the sender-chosen `executionCondition` + explicit `expiresAt`
+    // extensions (toon-client#350) and enforce FULFILL preimage verification.
     sendIlpPacketWithClaim(
-      params: {
-        destination: string;
-        amount: string;
-        data: string;
-        timeout?: number;
-      },
+      params: IlpSendParams,
       claim: unknown
     ): Promise<IlpSendResult>;
   } {

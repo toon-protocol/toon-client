@@ -843,6 +843,118 @@ describe('ClientRunner', () => {
     expect(res.warning).toMatch(/millSignerAddress/);
   });
 
+  it('swap with senderConditions mints a FRESH non-zero condition per packet (#350)', async () => {
+    await runner.bootstrap();
+    const pair = {
+      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+      rate: '1.0',
+    };
+    const sendSpy = vi.spyOn(client, 'sendSwapPacket');
+
+    // Drive the wrapped client like the real sender: one sendSwapPacket call
+    // per packet, then return a minimal completed result.
+    vi.mocked(streamSwap).mockImplementation(async (params) => {
+      const swapClient = params.client as unknown as {
+        sendSwapPacket(p: {
+          destination: string;
+          amount: bigint;
+          toonData: Uint8Array;
+        }): Promise<unknown>;
+      };
+      for (let i = 0; i < 2; i++) {
+        await swapClient.sendSwapPacket({
+          destination: params.swapIlpAddress,
+          amount: 500n,
+          toonData: new Uint8Array([i]),
+        });
+      }
+      return {
+        state: 'completed',
+        claims: [],
+        rejections: [],
+        errors: [],
+        abortReason: 'complete',
+        cumulativeSource: 1000n,
+        cumulativeTarget: 999n,
+        packetsSent: 2,
+        packetsScheduled: 2,
+      } as unknown as Awaited<ReturnType<typeof streamSwap>>;
+    });
+
+    await runner.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair,
+      chainRecipient: 'SoLrecipient',
+      packetCount: 2,
+      senderConditions: true,
+    });
+
+    // The underlying client received one FRESH sender-chosen condition per packet.
+    expect(sendSpy).toHaveBeenCalledTimes(2);
+    const conditions = sendSpy.mock.calls.map(
+      (c) =>
+        (c[0] as unknown as { executionCondition?: Uint8Array })
+          .executionCondition
+    );
+    for (const condition of conditions) {
+      expect(condition).toBeInstanceOf(Uint8Array);
+      expect(condition).toHaveLength(32);
+      expect(condition!.some((b) => b !== 0)).toBe(true);
+    }
+    expect(conditions[0]).not.toEqual(conditions[1]);
+  });
+
+  it('swap without senderConditions keeps the legacy path: no condition injected', async () => {
+    await runner.bootstrap();
+    const pair = {
+      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+      rate: '1.0',
+    };
+    const sendSpy = vi.spyOn(client, 'sendSwapPacket');
+
+    vi.mocked(streamSwap).mockImplementation(async (params) => {
+      await (
+        params.client as unknown as {
+          sendSwapPacket(p: unknown): Promise<unknown>;
+        }
+      ).sendSwapPacket({
+        destination: params.swapIlpAddress,
+        amount: 1000n,
+        toonData: new Uint8Array([0]),
+      });
+      return {
+        state: 'completed',
+        claims: [],
+        rejections: [],
+        errors: [],
+        abortReason: 'complete',
+        cumulativeSource: 1000n,
+        cumulativeTarget: 999n,
+        packetsSent: 1,
+        packetsScheduled: 1,
+      } as unknown as Awaited<ReturnType<typeof streamSwap>>;
+    });
+
+    await runner.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair,
+      chainRecipient: 'SoLrecipient',
+    });
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(
+      (sendSpy.mock.calls[0]![0] as unknown as Record<string, unknown>)[
+        'executionCondition'
+      ]
+    ).toBeUndefined();
+  });
+
   it('swap surfaces a swap peer rejection (no claims) as not-accepted', async () => {
     await runner.bootstrap();
     const pair = {

@@ -35,6 +35,7 @@ import type { ToonClientConfig } from '@toon-protocol/client';
 import {
   extractArweaveTxId,
   fundWallet as faucetFund,
+  mintExecutionCondition,
   type FaucetChain,
 } from '@toon-protocol/client';
 import {
@@ -200,6 +201,14 @@ export interface ToonClientLike {
     amount: bigint;
     toonData: Uint8Array;
     claim?: unknown;
+    /**
+     * Sender-chosen 32-byte execution condition (toon-client#350). The
+     * transport puts it on the PREPARE and verifies the FULFILL preimage
+     * (`sha256(fulfillment) == condition`); absent/all-zero = legacy packet.
+     */
+    executionCondition?: Uint8Array;
+    /** Explicit ILP expiry; defaults to `now + timeout` in the transport. */
+    expiresAt?: Date;
   }): Promise<{
     accepted: boolean;
     data?: string;
@@ -1530,13 +1539,24 @@ export class ClientRunner {
    * `MISSING_SETTLEMENT_METADATA` in `buildSettlementTx`, so we detect it
    * here (accepted claims with no `swapSignerAddress`) and surface a loud
    * `warning` on the response at swap time (#349).
+   *
+   * With `req.senderConditions` set, every swap packet is sent with a FRESH
+   * sender-minted execution condition (`C_i = sha256(P_i)`, one per packet —
+   * toon-client#350, rolling-swap spec §3 R1/R2) and the transport verifies
+   * each FULFILL's preimage; a mismatch counts the packet failed. This
+   * requires a maker/connector implementing the sender-chosen fulfillment
+   * contract (connector#309) — the deployed claim-issuing mill cannot satisfy
+   * it — so it is opt-in and the default stays the legacy zero condition.
    */
   async swap(req: SwapRequest): Promise<SwapResponse> {
     const apex = this.selectApex(req.btpUrl);
     this.assertApexReady(apex);
     const senderSecretKey = generateSecretKey();
+    const swapClient = req.senderConditions
+      ? this.withSenderConditions(apex.client)
+      : apex.client;
     const result = await streamSwap({
-      client: apex.client as unknown as Parameters<
+      client: swapClient as unknown as Parameters<
         typeof streamSwap
       >[0]['client'],
       swapPubkey: req.swapPubkey,
@@ -1595,6 +1615,32 @@ export class ClientRunner {
           }
         : {}),
     };
+  }
+
+  /**
+   * Wrap an apex client so each `sendSwapPacket` call carries a freshly
+   * minted sender-chosen execution condition (one preimage per packet, spec
+   * R1 — reuse would let an observer of packet *i* fulfill packet *i+1*).
+   * `streamSwap` calls `sendSwapPacket` once per packet, so minting here
+   * yields exactly one condition per packet. The transports verify each
+   * FULFILL's preimage against the condition and fail the packet on mismatch.
+   *
+   * NOTE: the minted preimage is intentionally NOT retained yet — leg-B
+   * receive-side ingestion (where the sender reveals `P_i`) is a separate
+   * rolling-swap workstream (toon-meta docs/rolling-swap.md §3.2). Until a
+   * maker implements the connector#309 contract end-to-end, packets sent with
+   * conditions will fail closed rather than settle unverified.
+   */
+  private withSenderConditions(client: ToonClientLike): ToonClientLike {
+    const wrapped: ToonClientLike = Object.create(client) as ToonClientLike;
+    wrapped.sendSwapPacket = (params) => {
+      const { condition } = mintExecutionCondition();
+      return client.sendSwapPacket({
+        ...params,
+        executionCondition: condition,
+      });
+    };
+    return wrapped;
   }
 
   /**
