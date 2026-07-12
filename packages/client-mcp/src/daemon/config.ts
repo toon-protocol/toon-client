@@ -21,7 +21,10 @@ import {
 } from '@toon-protocol/core';
 import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import type { ToonClientConfig } from '@toon-protocol/client';
-import type { SettlementChain } from '../control-api.js';
+import type {
+  SettlementChain,
+  SwapControllerParams,
+} from '../control-api.js';
 
 /** Apex/relay settlement parameters injected as a peer negotiation. */
 export interface ApexNegotiationConfig {
@@ -155,6 +158,30 @@ export interface DaemonConfigFile {
    * resolved). Env override: `TOON_CLIENT_UPLOAD_ROOT`.
    */
   uploadAllowedRoot?: string;
+  /**
+   * Daemon-level defaults for the rolling-swap sender defenses (#351). A
+   * per-request `SwapRequest` field always wins; these apply when the request
+   * leaves the knob unset.
+   */
+  swapDefaults?: SwapDefaultsConfig;
+}
+
+/** Daemon-level swap-defense defaults (rolling-swap toon-meta#145, #351). */
+export interface SwapDefaultsConfig {
+  /**
+   * Default floor tolerance in basis points: every swap gets
+   * `minExchangeRate = pair.rate × (1 − floorBps/10000)` unless the request
+   * supplies an explicit `minExchangeRate` or its own `floorBps`.
+   */
+  floorBps?: number;
+  /** Default per-packet PREPARE expiry window, ms (rolling-swap R7). */
+  packetExpiryMs?: number;
+  /**
+   * Engage the adaptive δ/W controller by default for swaps that don't pin an
+   * explicit `packetCount` or supply their own `controller` params.
+   * `advertisedSpread` is required (the sdk deliberately has no default).
+   */
+  controller?: SwapControllerParams;
 }
 
 export interface ResolvedDaemonConfig {
@@ -190,6 +217,15 @@ export interface ResolvedDaemonConfig {
   chain: SettlementChain;
   /** File mapping (destination, chain) → on-chain channelId for restart resume. */
   apexChannelStorePath: string;
+  /**
+   * JSON file persisting per-(source chain, maker, pair) adaptive-controller
+   * state (sdk `JsonFileSwapControllerStateStore`), beside the channel stores.
+   * Optional only so manually-built configs (tests) may omit it — the runner
+   * falls back to `<configDir>/swap-controller-state.json`.
+   */
+  swapControllerStatePath?: string;
+  /** Daemon-level swap-defense defaults (#351), when configured. */
+  swapDefaults?: SwapDefaultsConfig;
   /** Fully-built config for the `ToonClient` constructor. */
   toonClientConfig: ToonClientConfig;
   network?: string;
@@ -387,6 +423,10 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const channelStorePath =
     file.channelStorePath ?? join(configDir(), 'channels.json');
   const apexChannelStorePath = join(configDir(), 'apex-channels.json');
+  const swapControllerStatePath = join(
+    configDir(),
+    'swap-controller-state.json'
+  );
 
   const toonClientConfig: ToonClientConfig = {
     // validateConfig requires connectorUrl OR proxyUrl. When only BTP is set
@@ -438,6 +478,8 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     ...(file.apexChildPeers ? { apexChildPeers: file.apexChildPeers } : {}),
     chain,
     apexChannelStorePath,
+    swapControllerStatePath,
+    ...(file.swapDefaults ? { swapDefaults: file.swapDefaults } : {}),
     toonClientConfig,
     network,
     arweaveGateways,

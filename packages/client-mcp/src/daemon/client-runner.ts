@@ -19,7 +19,7 @@
  */
 
 import { readFile, stat } from 'node:fs/promises';
-import { resolve, sep } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
 import { decodeEventFromToon } from '@toon-protocol/core';
@@ -58,6 +58,11 @@ import {
   type GitObjectUpload,
 } from '@toon-protocol/rig';
 import { streamSwap } from '@toon-protocol/sdk/swap';
+import {
+  AdaptiveDeltaController,
+  JsonFileSwapControllerStateStore,
+  type PacketProgress,
+} from '@toon-protocol/sdk';
 import { RelaySubscription } from '../relay-subscription.js';
 import type {
   AddApexRequest,
@@ -98,6 +103,8 @@ import type {
   StatusResponse,
   SubscribeRequest,
   SubscribeResponse,
+  SwapControllerParams,
+  SwapPacketOutcome,
   SwapResponse,
   TargetsResponse,
   UploadMediaRequest,
@@ -1547,10 +1554,87 @@ export class ClientRunner {
    * requires a maker/connector implementing the sender-chosen fulfillment
    * contract (connector#309) — the deployed claim-issuing mill cannot satisfy
    * it — so it is opt-in and the default stays the legacy zero condition.
+   *
+   * Sender-side rolling-swap defenses (#351, sdk ≥2.1.0, spec §5/§6):
+   *
+   * - **Hard floor** — `req.minExchangeRate`, or derived
+   *   `pair.rate × (1 − floorBps/10000)` from `req.floorBps` /
+   *   `swapDefaults.floorBps`. A below-floor packet records `BELOW_FLOOR` and
+   *   halts the stream (`abortReason: 'below-floor'`); the armed floor is
+   *   echoed on the response so hosts can show the guaranteed worst case.
+   * - **Adaptive controller** — `req.controller` (or
+   *   `swapDefaults.controller` when the request pins no `packetCount`)
+   *   replaces the static even split with `AdaptiveDeltaController` δ/W
+   *   sizing; per-(source chain, maker, pair) state persists in
+   *   `swap-controller-state.json` beside the daemon's channel stores. The
+   *   controller is efficiency-only — it can never relax the floor.
+   * - **Telemetry** — `onPacket` is always wired: per-packet outcomes,
+   *   rejections, and a realized-rate summary land on the response, and each
+   *   accepted packet is logged. Everything else is strictly opt-in: with no
+   *   new params and no `swapDefaults`, the `streamSwap` call is the legacy
+   *   request (no floor, no controller, no expiry stamping, no signal).
+   * - **Abort** — `req.timeoutMs` arms an `AbortSignal`; on expiry in-flight
+   *   packets drain and the partial fill is reported exactly (partial
+   *   `claims`, cumulatives, `state`/`abortReason`).
    */
   async swap(req: SwapRequest): Promise<SwapResponse> {
     const apex = this.selectApex(req.btpUrl);
     this.assertApexReady(apex);
+    if (req.controller && req.packetCount !== undefined) {
+      throw new InvalidPayloadError(
+        '`controller` and `packetCount` are mutually exclusive: the adaptive ' +
+          'controller replaces the static even split with dynamic δ/W sizing.'
+      );
+    }
+    const defaults = this.config.swapDefaults;
+    // Floor precedence: explicit rate → per-request bps → daemon-default bps.
+    const minExchangeRate =
+      req.minExchangeRate ??
+      deriveFloorRate(req.pair.rate, req.floorBps ?? defaults?.floorBps);
+    const packetExpiryMs = req.packetExpiryMs ?? defaults?.packetExpiryMs;
+    // Controller precedence: per-request params → daemon default — but an
+    // explicit packetCount on the request always pins the legacy even split.
+    const controllerParams =
+      req.controller ??
+      (req.packetCount === undefined ? defaults?.controller : undefined);
+    const controller = controllerParams
+      ? await this.createSwapController(req, controllerParams)
+      : undefined;
+
+    // Per-packet telemetry: collected for the response and logged. The
+    // callback must never throw — streamSwap treats a throwing onPacket as a
+    // stop signal, and telemetry must not be able to halt the stream.
+    const packets: SwapPacketOutcome[] = [];
+    let packetsTruncated = false;
+    const onPacket = (p: PacketProgress): void => {
+      try {
+        this.log(
+          `[runner] swap packet ${p.index}: ${p.sourceAmount} → ` +
+            `${p.targetAmount} (rate ${p.effectiveRate.toFixed(6)}, ` +
+            `deviation ${p.rateDeviation.toFixed(6)}` +
+            (p.rate ? `, tape ${p.rate}` : '') +
+            ')'
+        );
+        if (packets.length >= SWAP_PACKETS_RESPONSE_LIMIT) {
+          packetsTruncated = true;
+          return;
+        }
+        packets.push({
+          index: p.index,
+          sourceAmount: p.sourceAmount.toString(),
+          targetAmount: p.targetAmount.toString(),
+          effectiveRate: p.effectiveRate,
+          rateDeviation: p.rateDeviation,
+          ...(p.rate !== undefined ? { rate: p.rate } : {}),
+          ...(p.rateTimestamp !== undefined
+            ? { rateTimestamp: p.rateTimestamp }
+            : {}),
+        });
+      } catch {
+        // Swallow: telemetry failures must not stop the stream.
+      }
+    };
+
     const senderSecretKey = generateSecretKey();
     const swapClient = req.senderConditions
       ? this.withSenderConditions(apex.client)
@@ -1565,7 +1649,14 @@ export class ClientRunner {
       senderSecretKey,
       chainRecipient: req.chainRecipient,
       totalAmount: BigInt(req.amount),
-      packetCount: req.packetCount ?? 1,
+      // EXACTLY ONE of controller / packetCount (sdk contract).
+      ...(controller ? { controller } : { packetCount: req.packetCount ?? 1 }),
+      onPacket,
+      ...(minExchangeRate !== undefined ? { minExchangeRate } : {}),
+      ...(packetExpiryMs !== undefined ? { packetExpiryMs } : {}),
+      ...(req.timeoutMs !== undefined
+        ? { signal: AbortSignal.timeout(req.timeoutMs) }
+        : {}),
     });
     const firstReject = result.rejections[0];
     const claims = result.claims.map((c) => ({
@@ -1594,6 +1685,11 @@ export class ClientRunner {
           'settlement metadata — swap peer is likely pre-rename (sdk <2.0.0)'
       );
     }
+    const realizedRate = computeRealizedRate(
+      result.cumulativeSource,
+      result.cumulativeTarget,
+      req.pair
+    );
     return {
       accepted: result.claims.length > 0,
       packetsAccepted: result.claims.length,
@@ -1601,6 +1697,21 @@ export class ClientRunner {
       cumulativeSource: result.cumulativeSource.toString(),
       cumulativeTarget: result.cumulativeTarget.toString(),
       state: result.state,
+      abortReason: result.abortReason,
+      ...(packets.length > 0 ? { packets } : {}),
+      ...(packetsTruncated ? { packetsTruncated } : {}),
+      ...(result.rejections.length > 0
+        ? {
+            rejections: result.rejections.map((r) => ({
+              packetIndex: r.packetIndex,
+              sourceAmount: r.sourceAmount.toString(),
+              code: r.code,
+              message: r.message,
+            })),
+          }
+        : {}),
+      ...(realizedRate !== undefined ? { realizedRate } : {}),
+      ...(minExchangeRate !== undefined ? { minExchangeRate } : {}),
       ...(firstReject
         ? { code: firstReject.code, message: firstReject.message }
         : {}),
@@ -1641,6 +1752,67 @@ export class ClientRunner {
       });
     };
     return wrapped;
+  }
+
+  /**
+   * Build the adaptive δ/W controller for one swap session (#351, spec §6).
+   * State is keyed per-(source chain, maker, pair) and persisted in the
+   * daemon's data dir via the sdk's atomic JSON-file store, so ramp/trust
+   * survives across swaps and daemon restarts.
+   */
+  private async createSwapController(
+    req: SwapRequest,
+    params: SwapControllerParams
+  ): Promise<AdaptiveDeltaController> {
+    if (
+      typeof params.advertisedSpread !== 'number' ||
+      !(params.advertisedSpread > 0)
+    ) {
+      throw new InvalidPayloadError(
+        'controller.advertisedSpread must be a positive fraction (e.g. ' +
+          '0.004 = 40 bps): ε is denominated off the half-spread and the sdk ' +
+          'deliberately has no default.'
+      );
+    }
+    const store = new JsonFileSwapControllerStateStore(
+      this.swapControllerStatePath()
+    );
+    return AdaptiveDeltaController.create({
+      makerPubkey: req.swapPubkey,
+      pair: req.pair,
+      advertisedSpread: params.advertisedSpread,
+      ...(params.maxPacketAmount !== undefined
+        ? { maxPacketAmount: BigInt(params.maxPacketAmount) }
+        : {}),
+      ...(params.minPacketAmount !== undefined
+        ? { minPacketAmount: BigInt(params.minPacketAmount) }
+        : {}),
+      ...(params.maxWindow !== undefined
+        ? { maxWindow: params.maxWindow }
+        : {}),
+      ...(params.cleanStreakLength !== undefined
+        ? { cleanStreakLength: params.cleanStreakLength }
+        : {}),
+      ...(params.coldStartDivisor !== undefined
+        ? { coldStartDivisor: params.coldStartDivisor }
+        : {}),
+      ...(params.ewmaAlpha !== undefined
+        ? { ewmaAlpha: params.ewmaAlpha }
+        : {}),
+      store,
+    });
+  }
+
+  /**
+   * Controller-state file path: resolved config value, or the same
+   * `<configDir>` the other daemon stores live in (`channels.json`,
+   * `apex-channels.json`) for manually-built configs.
+   */
+  private swapControllerStatePath(): string {
+    return (
+      this.config.swapControllerStatePath ??
+      join(configDir(), 'swap-controller-state.json')
+    );
   }
 
   /**
@@ -2250,4 +2422,63 @@ function sanitize(s: string): string {
     .replace(/[^a-zA-Z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80);
+}
+
+/**
+ * Cap on per-packet outcomes echoed on a `SwapResponse`. Adaptive sizing can
+ * schedule an unbounded packet count (δ_min defaults to 1 micro-unit); the
+ * cumulative totals stay exact, only the per-packet echo is truncated.
+ */
+const SWAP_PACKETS_RESPONSE_LIMIT = 500;
+
+/**
+ * Derive the hard floor from the advertised rate (#351, rolling-swap spec §5:
+ * `minExchangeRate = R₀ × (1 − tolerance)`): exact decimal-string
+ * `rate × (10000 − floorBps) / 10000` — no float round-trip, so the floor is
+ * bit-stable for the sdk's BigInt comparison. Returns `undefined` when no
+ * tolerance is configured. Exported for tests.
+ */
+export function deriveFloorRate(
+  rate: string,
+  floorBps: number | undefined
+): string | undefined {
+  if (floorBps === undefined) return undefined;
+  if (!Number.isInteger(floorBps) || floorBps < 0 || floorBps >= 10_000) {
+    throw new InvalidPayloadError(
+      `floorBps must be an integer in [0, 10000), got ${String(floorBps)}.`
+    );
+  }
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(rate.trim());
+  if (!m) {
+    throw new InvalidPayloadError(
+      `pair.rate "${rate}" is not a plain positive decimal — cannot derive ` +
+        'a floor from floorBps; pass minExchangeRate explicitly.'
+    );
+  }
+  const [, intDigits = '', fracDigits = ''] = m;
+  const digits = intDigits + fracDigits;
+  const scale = fracDigits.length + 4; // ×(10000−bps) adds 4 decimal places
+  const scaled = (BigInt(digits) * BigInt(10_000 - floorBps))
+    .toString()
+    .padStart(scale + 1, '0');
+  const intPart = scaled.slice(0, -scale);
+  const fracPart = scaled.slice(-scale).replace(/0+$/, '');
+  return fracPart ? `${intPart}.${fracPart}` : intPart;
+}
+
+/**
+ * Realized-rate summary: delivered/spent in WHOLE units, adjusted for the
+ * pair's asset scales (display-only `number`, same convention as the sdk's
+ * `PacketProgress.effectiveRate`). `undefined` when nothing was filled.
+ */
+function computeRealizedRate(
+  cumulativeSource: bigint,
+  cumulativeTarget: bigint,
+  pair: SwapRequest['pair']
+): number | undefined {
+  if (cumulativeSource <= 0n) return undefined;
+  return (
+    (Number(cumulativeTarget) / Number(cumulativeSource)) *
+    10 ** (pair.from.assetScale - pair.to.assetScale)
+  );
 }

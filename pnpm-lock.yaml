@@ -213,14 +213,14 @@ importers:
         specifier: workspace:*
         version: link:../client
       '@toon-protocol/core':
-        specifier: ^2.0.0
-        version: 2.0.1(typescript@5.9.3)
+        specifier: ^2.1.0
+        version: 2.1.0(typescript@5.9.3)
       '@toon-protocol/rig':
         specifier: workspace:*
         version: link:../rig
       '@toon-protocol/sdk':
-        specifier: ^2.0.0
-        version: 2.0.1(mina-signer@3.1.0)(typescript@5.9.3)
+        specifier: ^2.1.0
+        version: 2.1.0(mina-signer@3.1.0)(typescript@5.9.3)
       '@toon-protocol/views':
         specifier: workspace:*
         version: link:../views
@@ -8718,6 +8718,62 @@ packages:
       - uploadthing
       - utf-8-validate
 
+  /@toon-protocol/core@2.1.0(typescript@5.9.3):
+    resolution: {integrity: sha512-UxIdR/2yjJF79jvsQ7l/CwKZlEzfxtQtqksE+5OzSagv+lV0p7gL+mBMlDn8JacvBNRanM1qa8f8BNyQfBtvhg==}
+    peerDependencies:
+      '@toon-protocol/connector': '>=3.3.3'
+    peerDependenciesMeta:
+      '@toon-protocol/connector':
+        optional: true
+    dependencies:
+      '@ardrive/turbo-sdk': 1.42.0(typescript@5.9.3)
+      '@noble/hashes': 2.2.0
+      '@scure/bip32': 2.2.0
+      '@scure/bip39': 2.2.0
+      '@toon-format/toon': 1.4.0
+      arweave: 1.15.7
+      nostr-tools: 2.23.5(typescript@5.9.3)
+      simple-git: 3.36.0
+      ws: 8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
+    transitivePeerDependencies:
+      - '@azure/app-configuration'
+      - '@azure/cosmos'
+      - '@azure/data-tables'
+      - '@azure/identity'
+      - '@azure/keyvault-secrets'
+      - '@azure/storage-blob'
+      - '@capacitor/preferences'
+      - '@deno/kv'
+      - '@netlify/blobs'
+      - '@planetscale/database'
+      - '@react-native-async-storage/async-storage'
+      - '@solana/sysvars'
+      - '@tanstack/query-core'
+      - '@tanstack/react-query'
+      - '@types/react'
+      - '@upstash/redis'
+      - '@vercel/blob'
+      - '@vercel/functions'
+      - '@vercel/kv'
+      - aws4fetch
+      - bufferutil
+      - db0
+      - debug
+      - encoding
+      - expo-auth-session
+      - expo-crypto
+      - expo-web-browser
+      - fastestsmallesttextencoderdecoder
+      - immer
+      - ioredis
+      - react
+      - react-native
+      - supports-color
+      - typescript
+      - uploadthing
+      - utf-8-validate
+    dev: true
+
   /@toon-protocol/mina-zkapp@0.1.1:
     resolution: {integrity: sha512-N0i40O6PzoBM05IMGZ2G6MB5n7U4VjNTimmAEx8A3ABdaGz9oedFuKZF0eJkEV5v1glOLIy4yvVU/LUOHhre9Q==}
     engines: {node: '>=22.11.0'}
@@ -8979,6 +9035,65 @@ packages:
       '@scure/bip32': 2.2.0
       '@scure/bip39': 2.2.0
       '@toon-protocol/core': 2.0.1(typescript@5.9.3)
+      mina-signer: 3.1.0
+      nostr-tools: 2.23.5(typescript@5.9.3)
+    transitivePeerDependencies:
+      - '@azure/app-configuration'
+      - '@azure/cosmos'
+      - '@azure/data-tables'
+      - '@azure/identity'
+      - '@azure/keyvault-secrets'
+      - '@azure/storage-blob'
+      - '@capacitor/preferences'
+      - '@deno/kv'
+      - '@netlify/blobs'
+      - '@planetscale/database'
+      - '@react-native-async-storage/async-storage'
+      - '@solana/sysvars'
+      - '@tanstack/query-core'
+      - '@tanstack/react-query'
+      - '@types/react'
+      - '@upstash/redis'
+      - '@vercel/blob'
+      - '@vercel/functions'
+      - '@vercel/kv'
+      - aws4fetch
+      - bufferutil
+      - db0
+      - debug
+      - encoding
+      - expo-auth-session
+      - expo-crypto
+      - expo-web-browser
+      - fastestsmallesttextencoderdecoder
+      - immer
+      - ioredis
+      - react
+      - react-native
+      - supports-color
+      - typescript
+      - uploadthing
+      - utf-8-validate
+    dev: true
+
+  /@toon-protocol/sdk@2.1.0(mina-signer@3.1.0)(typescript@5.9.3):
+    resolution: {integrity: sha512-1rJWUZNbMuT2Ch7AU7EJC1gtg8x6npbV91NzomwpDrJwiE5RKFF2Z9XmuVXz6BHRV1omFv4N83zCzKweMuInRw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      '@toon-protocol/connector': '>=3.3.3'
+      mina-signer: '>=3.0.0'
+    peerDependenciesMeta:
+      '@toon-protocol/connector':
+        optional: true
+      mina-signer:
+        optional: true
+    dependencies:
+      '@ardrive/turbo-sdk': 1.42.0(typescript@5.9.3)
+      '@noble/curves': 2.2.0
+      '@noble/hashes': 2.2.0
+      '@scure/bip32': 2.2.0
+      '@scure/bip39': 2.2.0
+      '@toon-protocol/core': 2.1.0(typescript@5.9.3)
       mina-signer: 3.1.0
       nostr-tools: 2.23.5(typescript@5.9.3)
     transitivePeerDependencies:
