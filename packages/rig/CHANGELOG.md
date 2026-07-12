@@ -1,5 +1,13 @@
 # @toon-protocol/rig
 
+## 2.6.2
+
+### Patch Changes
+
+- Updated dependencies [a6caf80]
+- Updated dependencies [488cdbf]
+  - @toon-protocol/client@0.17.0
+
 ## 2.6.1
 
 ### Patch Changes
