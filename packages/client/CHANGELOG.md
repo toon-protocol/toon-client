@@ -1,5 +1,55 @@
 # @toon-protocol/client
 
+## 0.17.0
+
+### Minor Changes
+
+- a6caf80: Rolling-swap prerequisite (#350): transports send a real sender-chosen ILP
+  executionCondition and verify the FULFILL preimage.
+
+  - Both ILP transports (`HttpIlpClient` `POST /ilp` and `BtpRuntimeClient` BTP)
+    accept an optional 32-byte `executionCondition` and explicit `expiresAt` and
+    set them on the wire; the default stays the legacy all-zero condition, so
+    existing publish/upload writes are byte-for-byte unchanged.
+  - On FULFILL with a non-zero sent condition, the client verifies
+    `sha256(fulfillment) == condition` and surfaces a mismatch (or a missing /
+    malformed / all-zero preimage) as a FAILED, non-retried packet (code F99) —
+    never a silent accept. The FULFILL's 32-byte preimage is now captured from
+    the OER wire instead of skipped.
+  - `ToonClient.sendSwapPacket` plumbs `executionCondition`/`expiresAt` through
+    to whichever transport is active; new exports `mintExecutionCondition`,
+    `fulfillmentMatchesCondition`, `isZeroCondition`, `assertValidCondition`,
+    and the `IlpSendParams`/`IlpSendResultWithFulfillment` types.
+  - Daemon `POST /swap` gains opt-in `senderConditions`: the swap path mints one
+    FRESH condition per packet (`C_i = sha256(P_i)`, rolling-swap spec §3 R1/R2).
+    Requires a maker + connector implementing the sender-chosen fulfillment
+    contract (connector#309); default off.
+
+### Patch Changes
+
+- 488cdbf: Migrate to `@toon-protocol/sdk` ^2.0.0 and `@toon-protocol/core` ^2.0.0 — the
+  `mill`→`swap` vocabulary rename (`millSignerAddress`→`swapSignerAddress`,
+  `millEphemeralPubkey`→`swapEphemeralPubkey`, `millPubkey`→`swapPubkey`,
+  `millIlpAddress`→`swapIlpAddress`; toon commit `af4cd24`, released as
+  sdk/core 2.0.0). Rolling-swap prerequisite (toon-protocol/toon-meta#145).
+
+  - `ClientRunner.swap` now calls `streamSwap` with the renamed params and reads
+    `swapSignerAddress` directly off accumulated claims (the old
+    mill→swap translation shim is gone).
+  - **Deploy ordering:** the rename has NO wire back-compat. A pre-rename
+    (sdk <2.0.0) swap peer emits `millSignerAddress` in its FULFILL settlement
+    metadata, which sdk ≥2's `decodeFulfillMetadata` silently drops — the swap
+    "succeeds" but its claims fail later in `buildSettlementTx` with
+    `MISSING_SETTLEMENT_METADATA`. Upgrade swap peers (mills) together with
+    this client (see toon-protocol/swap#45 / swap#51).
+  - New early alarm: `SwapResponse.warning` is set at swap time when accepted
+    claims are missing `swapSignerAddress`, instead of failing silently until
+    settlement.
+  - core ≥2.0.1 ships a seeded `genesis-peers.json` (live devnet apex), so a
+    daemon with no relay/destination config now bootstraps from the committed
+    seed (`wss://relay-ws.devnet.toonprotocol.dev` / `g.proxy`) instead of the
+    `ws://localhost:7100` last-resort fallback.
+
 ## 0.16.0
 
 ### Minor Changes
