@@ -278,10 +278,10 @@ describe('daemon config', () => {
       btpUrl: 'ws://apex.test:3000/btp',
     });
     expect(cfg.httpPort).toBe(8787);
-    expect(cfg.relayUrl).toBe('ws://localhost:7100');
-    // No file/env destination and an empty bundled genesis list → last-resort
-    // fallback. Once core ships a seeded genesis-peers.json this resolves to the
-    // seed apex's ILP anchor instead.
+    // No file/env overrides → defaults come from core's committed genesis peer
+    // seed (core ≥2.0.1 ships the live devnet apex; the pre-seed last-resort
+    // fallbacks were ws://localhost:7100 / g.proxy).
+    expect(cfg.relayUrl).toBe('wss://relay-ws.devnet.toonprotocol.dev');
     expect(cfg.destination).toBe('g.proxy');
     expect(cfg.feePerEvent).toBe(1n);
     expect(cfg.toonClientConfig.btpUrl).toBe('ws://apex.test:3000/btp');
