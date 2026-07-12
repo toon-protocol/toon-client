@@ -732,11 +732,11 @@ describe('ClientRunner', () => {
           sourceAmount: 1000n,
           targetAmount: 999n,
           claimBytes: new Uint8Array([1, 2, 3, 4]),
-          millEphemeralPubkey: 'ab'.repeat(32),
+          swapEphemeralPubkey: 'ab'.repeat(32),
           claimId: 'claim-1',
           channelId: '1111',
           recipient: 'SoLrecipient',
-          millSignerAddress: 'MILLsigner',
+          swapSignerAddress: '0xswapsigner',
           nonce: '1',
           cumulativeAmount: '999',
           pair,
@@ -762,8 +762,8 @@ describe('ClientRunner', () => {
 
     // streamSwap got the request params (default single packet).
     const arg = vi.mocked(streamSwap).mock.calls[0]![0];
-    expect(arg.millIlpAddress).toBe('g.proxy.swap');
-    expect(arg.millPubkey).toBe('cd'.repeat(32));
+    expect(arg.swapIlpAddress).toBe('g.proxy.swap');
+    expect(arg.swapPubkey).toBe('cd'.repeat(32));
     expect(arg.totalAmount).toBe(1000n);
     expect(arg.chainRecipient).toBe('SoLrecipient');
     expect(arg.packetCount).toBe(1);
@@ -779,9 +779,68 @@ describe('ClientRunner', () => {
       claim: Buffer.from([1, 2, 3, 4]).toString('base64'),
       channelId: '1111',
       recipient: 'SoLrecipient',
-      swapSignerAddress: 'MILLsigner',
+      swapSignerAddress: '0xswapsigner',
       claimId: 'claim-1',
     });
+    // Settlement metadata survived the round trip — no wire-skew warning.
+    expect(res.warning).toBeUndefined();
+  });
+
+  it('swap warns when accepted claims are missing swapSignerAddress (pre-rename swap peer)', async () => {
+    // A sdk <2.0.0 swap peer emits `millSignerAddress` in its FULFILL
+    // settlement metadata; sdk ≥2's decodeFulfillMetadata silently drops the
+    // unknown field, so the accumulated claim arrives WITHOUT
+    // swapSignerAddress. That claim is unsettleable (buildSettlementTx →
+    // MISSING_SETTLEMENT_METADATA) — the runner must say so at swap time.
+    await runner.bootstrap();
+    const pair = {
+      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+      rate: '1.0',
+    };
+    vi.mocked(streamSwap).mockResolvedValue({
+      state: 'completed',
+      claims: [
+        {
+          packetIndex: 0,
+          sourceAmount: 1000n,
+          targetAmount: 999n,
+          claimBytes: new Uint8Array([1, 2, 3, 4]),
+          swapEphemeralPubkey: 'ab'.repeat(32),
+          claimId: 'claim-1',
+          channelId: '1111',
+          recipient: 'SoLrecipient',
+          // swapSignerAddress absent: dropped by decodeFulfillMetadata.
+          nonce: '1',
+          cumulativeAmount: '999',
+          pair,
+          receivedAt: 0,
+        },
+      ],
+      rejections: [],
+      errors: [],
+      abortReason: 'complete',
+      cumulativeSource: 1000n,
+      cumulativeTarget: 999n,
+      packetsSent: 1,
+      packetsScheduled: 1,
+    } as unknown as Awaited<ReturnType<typeof streamSwap>>);
+
+    const res = await runner.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair,
+      chainRecipient: 'SoLrecipient',
+    });
+
+    // Claims still surface (the payment already happened) …
+    expect(res.accepted).toBe(true);
+    expect(res.claims[0]).not.toHaveProperty('swapSignerAddress');
+    // … but the response carries a loud, actionable skew warning.
+    expect(res.warning).toMatch(/swapSignerAddress/);
+    expect(res.warning).toMatch(/MISSING_SETTLEMENT_METADATA/);
+    expect(res.warning).toMatch(/millSignerAddress/);
   });
 
   it('swap surfaces a swap peer rejection (no claims) as not-accepted', async () => {

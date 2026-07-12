@@ -11,7 +11,7 @@ vi.mock('@toon-protocol/sdk/swap', () => ({
         sourceAmount: 10n,
         targetAmount: 10n,
         claimBytes: new Uint8Array([1]),
-        millEphemeralPubkey: 'ab'.repeat(32),
+        swapEphemeralPubkey: 'ab'.repeat(32),
         pair: {},
         receivedAt: 0,
       },

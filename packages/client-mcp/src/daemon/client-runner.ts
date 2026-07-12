@@ -1518,7 +1518,19 @@ export class ClientRunner {
     throw new Error(`Channel "${channelId}" is not tracked by any apex.`);
   }
 
-  /** Swap source→target asset against a swap peer via the selected apex. */
+  /**
+   * Swap source→target asset against a swap peer via the selected apex.
+   *
+   * sdk ≥2.0.0 (the `mill`→`swap` vocabulary rename, toon commit `af4cd24`):
+   * `streamSwap` takes `swapPubkey`/`swapIlpAddress` and accumulated claims
+   * carry `swapSignerAddress`. The rename has NO wire back-compat — a
+   * pre-rename (sdk ≤1.x) swap peer still emits `millSignerAddress` in its
+   * FULFILL settlement metadata, which `decodeFulfillMetadata` silently drops
+   * as an unknown field. That skew would otherwise surface only much later as
+   * `MISSING_SETTLEMENT_METADATA` in `buildSettlementTx`, so we detect it
+   * here (accepted claims with no `swapSignerAddress`) and surface a loud
+   * `warning` on the response at swap time (#349).
+   */
   async swap(req: SwapRequest): Promise<SwapResponse> {
     const apex = this.selectApex(req.btpUrl);
     this.assertApexReady(apex);
@@ -1527,8 +1539,8 @@ export class ClientRunner {
       client: apex.client as unknown as Parameters<
         typeof streamSwap
       >[0]['client'],
-      millPubkey: req.swapPubkey,
-      millIlpAddress: req.destination,
+      swapPubkey: req.swapPubkey,
+      swapIlpAddress: req.destination,
       pair: req.pair,
       senderSecretKey,
       chainRecipient: req.chainRecipient,
@@ -1536,27 +1548,51 @@ export class ClientRunner {
       packetCount: req.packetCount ?? 1,
     });
     const firstReject = result.rejections[0];
+    const claims = result.claims.map((c) => ({
+      sourceAmount: c.sourceAmount.toString(),
+      targetAmount: c.targetAmount.toString(),
+      claim: Buffer.from(c.claimBytes).toString('base64'),
+      ...(c.channelId ? { channelId: c.channelId } : {}),
+      ...(c.recipient ? { recipient: c.recipient } : {}),
+      ...(c.swapSignerAddress
+        ? { swapSignerAddress: c.swapSignerAddress }
+        : {}),
+      ...(c.claimId ? { claimId: c.claimId } : {}),
+      ...(c.nonce ? { nonce: c.nonce } : {}),
+      ...(c.cumulativeAmount ? { cumulativeAmount: c.cumulativeAmount } : {}),
+    }));
+    // Wire-rename skew guard: claims were FULFILLed but none carries the
+    // swapSignerAddress settlement metadata — the signature of a pre-rename
+    // swap peer (emits `millSignerAddress`, silently dropped by sdk ≥2's
+    // decodeFulfillMetadata). Settlement of these claims WILL fail with
+    // MISSING_SETTLEMENT_METADATA; say so now instead of then.
+    const missingSettlementSigner =
+      claims.length > 0 && claims.every((c) => !c.swapSignerAddress);
+    if (missingSettlementSigner) {
+      this.log(
+        '[runner] swap: accepted claims are missing swapSignerAddress ' +
+          'settlement metadata — swap peer is likely pre-rename (sdk <2.0.0)'
+      );
+    }
     return {
       accepted: result.claims.length > 0,
       packetsAccepted: result.claims.length,
-      claims: result.claims.map((c) => ({
-        sourceAmount: c.sourceAmount.toString(),
-        targetAmount: c.targetAmount.toString(),
-        claim: Buffer.from(c.claimBytes).toString('base64'),
-        ...(c.channelId ? { channelId: c.channelId } : {}),
-        ...(c.recipient ? { recipient: c.recipient } : {}),
-        ...(c.millSignerAddress
-          ? { swapSignerAddress: c.millSignerAddress }
-          : {}),
-        ...(c.claimId ? { claimId: c.claimId } : {}),
-        ...(c.nonce ? { nonce: c.nonce } : {}),
-        ...(c.cumulativeAmount ? { cumulativeAmount: c.cumulativeAmount } : {}),
-      })),
+      claims,
       cumulativeSource: result.cumulativeSource.toString(),
       cumulativeTarget: result.cumulativeTarget.toString(),
       state: result.state,
       ...(firstReject
         ? { code: firstReject.code, message: firstReject.message }
+        : {}),
+      ...(missingSettlementSigner
+        ? {
+            warning:
+              'Accepted claims are missing `swapSignerAddress` settlement ' +
+              'metadata, so settling them will fail with ' +
+              'MISSING_SETTLEMENT_METADATA. The swap peer is likely running ' +
+              'a pre-rename SDK (<2.0.0, emits `millSignerAddress`, which ' +
+              'sdk ≥2 silently drops). Upgrade the swap peer before settling.',
+          }
         : {}),
     };
   }

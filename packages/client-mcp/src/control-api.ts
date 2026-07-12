@@ -389,6 +389,14 @@ export interface SwapResponse {
   code?: string;
   /** First rejection message, if any. */
   message?: string;
+  /**
+   * Early wire-skew alarm (#349): set when packets were FULFILLed but no
+   * accepted claim carries `swapSignerAddress` settlement metadata — the
+   * signature of a pre-rename (sdk <2.0.0) swap peer whose `millSignerAddress`
+   * field sdk ≥2 silently drops. Settling such claims fails later with
+   * `MISSING_SETTLEMENT_METADATA`; this surfaces the problem at swap time.
+   */
+  warning?: string;
 }
 
 /**

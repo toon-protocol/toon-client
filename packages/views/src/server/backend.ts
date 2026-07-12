@@ -227,6 +227,12 @@ export interface SwapResponse {
   code?: string;
   /** First rejection message, if any. */
   message?: string;
+  /**
+   * Wire-skew alarm from the daemon: accepted claims are missing
+   * `swapSignerAddress` settlement metadata (pre-rename sdk <2.0.0 swap
+   * peer), so settling them will fail. Show it when present.
+   */
+  warning?: string;
 }
 
 /**
