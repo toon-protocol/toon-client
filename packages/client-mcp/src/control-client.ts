@@ -42,6 +42,9 @@ import type {
   RemoveApexRequest,
   RemoveRelayRequest,
   SettlementChain,
+  SettleSwapClaimsRequest,
+  SettleSwapClaimsResponse,
+  ListSwapClaimsResponse,
   StatusResponse,
   SubscribeRequest,
   SubscribeResponse,
@@ -178,6 +181,27 @@ export class ControlClient {
 
   swap(body: SwapRequest): Promise<SwapResponse> {
     return this.request<SwapResponse>('POST', '/swap', body);
+  }
+
+  /** List persisted received-claim watermarks (#352). */
+  swapClaims(): Promise<ListSwapClaimsResponse> {
+    return this.request<ListSwapClaimsResponse>('GET', '/swap/claims');
+  }
+
+  /**
+   * Build/submit on-chain settlements for received swap claims (#352). An
+   * EVM submission waits out gas estimation + a receipt, so give it headroom
+   * beyond the default control timeout.
+   */
+  settleSwapClaims(
+    body: SettleSwapClaimsRequest = {}
+  ): Promise<SettleSwapClaimsResponse> {
+    return this.request<SettleSwapClaimsResponse>(
+      'POST',
+      '/swap/settle',
+      body,
+      { timeoutMs: 120_000 }
+    );
   }
 
   httpFetchPaid(body: HttpFetchPaidRequest): Promise<HttpFetchPaidResponse> {

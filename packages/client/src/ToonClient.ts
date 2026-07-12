@@ -43,6 +43,11 @@ import {
   Http402Client,
   type H402FetchOptions,
 } from './adapters/Http402Client.js';
+import type { SettlementBundle } from '@toon-protocol/sdk';
+import {
+  submitEvmSettlement,
+  type SubmitEvmSettlementResult,
+} from './swap/settle-received-claims.js';
 import type {
   ToonClientConfig,
   ToonStartResult,
@@ -1058,6 +1063,41 @@ export class ToonClient {
     const r = await this.onChainChannelClient.settleChannel(channelId);
     this.channelManager.setChannelSettled(channelId, nowSec);
     return { channelId, ...(r.txHash ? { txHash: r.txHash } : {}) };
+  }
+
+  /**
+   * Submit a receive-side swap settlement bundle on-chain (toon-client#352).
+   * The bundle comes from the sdk's `buildSettlementTx` over persisted,
+   * verified chain-B claims (`buildSwapSettlements`); this signs it with the
+   * client's EVM account (the claim recipient) and broadcasts it.
+   *
+   * Env-gated seam: EVM only, and only when `chainRpcUrls[bundle.chain]` is
+   * configured — otherwise this throws a clear config error and callers
+   * surface a built-not-submitted result. Solana submission and the Mina
+   * receive-side co-sign path are explicit follow-ups (see
+   * swap/settle-received-claims.ts module doc).
+   */
+  async settleSwapBundle(
+    bundle: SettlementBundle
+  ): Promise<SubmitEvmSettlementResult> {
+    if (bundle.chainKind !== 'evm') {
+      throw new Error(
+        `Swap settlement submission for ${bundle.chainKind} (${bundle.chain}) is not wired yet — EVM only today.`
+      );
+    }
+    const rpcUrl = this.config.chainRpcUrls?.[bundle.chain];
+    if (!rpcUrl) {
+      throw new Error(
+        `No RPC URL configured for chain "${bundle.chain}" — add it to chainRpcUrls to enable swap settlement submission.`
+      );
+    }
+    if (!this.evmSigner) {
+      throw new Error('EVM signer not configured (no evmPrivateKey/mnemonic).');
+    }
+    return submitEvmSettlement(bundle, {
+      rpcUrl,
+      account: this.evmSigner.account,
+    });
   }
 
   /** Where a tracked channel sits in the withdraw journey. */

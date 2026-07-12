@@ -44,9 +44,19 @@ export interface IlpSendParams {
   executionCondition?: Uint8Array;
   /**
    * Explicit PREPARE `expiresAt` (spec R7). Defaults to `now + timeout`,
-   * preserving pre-#350 behavior.
+   * preserving pre-#350 behavior. Accepts a `Date` or an ISO 8601 string —
+   * `@toon-protocol/core` ≥2.1.0's `IlpClient` passes the string form.
    */
-  expiresAt?: Date;
+  expiresAt?: Date | string;
+}
+
+/** Normalize an `IlpSendParams.expiresAt` to a `Date` (default: now + timeout). */
+export function resolveExpiresAt(
+  expiresAt: Date | string | undefined,
+  timeoutMs: number
+): Date {
+  if (expiresAt === undefined) return new Date(Date.now() + timeoutMs);
+  return expiresAt instanceof Date ? new Date(expiresAt.getTime()) : new Date(expiresAt);
 }
 
 /**

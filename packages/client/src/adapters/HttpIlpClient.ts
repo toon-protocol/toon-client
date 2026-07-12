@@ -38,7 +38,7 @@ import { BtpRuntimeClient } from './BtpRuntimeClient.js';
 import { NetworkError, ConnectorError } from '../errors.js';
 import { withRetry } from '../utils/retry.js';
 import { toBase64, fromBase64, encodeUtf8 } from '../utils/binary.js';
-import { mapIlpResponse, type IlpSendParams } from './ilp-send.js';
+import { mapIlpResponse, resolveExpiresAt, type IlpSendParams } from './ilp-send.js';
 import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
 
 /** Header carrying the base64(JSON) payment-channel claim. */
@@ -214,7 +214,7 @@ export class HttpIlpClient implements IlpClient {
       amount: BigInt(params.amount),
       destination: params.destination,
       executionCondition: condition ?? new Uint8Array(32),
-      expiresAt: params.expiresAt ?? new Date(Date.now() + requestTimeout),
+      expiresAt: resolveExpiresAt(params.expiresAt, requestTimeout),
       data: fromBase64(params.data),
     });
 

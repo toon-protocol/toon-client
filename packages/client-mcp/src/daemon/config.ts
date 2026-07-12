@@ -108,6 +108,12 @@ export interface DaemonConfigFile {
   feePerEvent?: string;
   /** Channel nonce-watermark persistence file. Default `<dir>/channels.json`. */
   channelStorePath?: string;
+  /**
+   * Received swap-claim (chain-B) watermark persistence file (#352). Default
+   * `<dir>/received-claims.json`. Verified claims harvested from `toon_swap`
+   * survive a daemon restart here.
+   */
+  receivedClaimStorePath?: string;
   /** Localhost control API port. Default 8787. */
   httpPort?: number;
   /**
@@ -226,6 +232,12 @@ export interface ResolvedDaemonConfig {
   swapControllerStatePath?: string;
   /** Daemon-level swap-defense defaults (#351), when configured. */
   swapDefaults?: SwapDefaultsConfig;
+  /**
+   * Durable store for verified RECEIVED swap claims (chain-B watermarks, #352).
+   * Optional only so manually-built test configs may omit it (the runner then
+   * falls back to an in-memory store); `resolveConfig` always sets it.
+   */
+  receivedClaimStorePath?: string;
   /** Fully-built config for the `ToonClient` constructor. */
   toonClientConfig: ToonClientConfig;
   network?: string;
@@ -427,6 +439,8 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     configDir(),
     'swap-controller-state.json'
   );
+  const receivedClaimStorePath =
+    file.receivedClaimStorePath ?? join(configDir(), 'received-claims.json');
 
   const toonClientConfig: ToonClientConfig = {
     // validateConfig requires connectorUrl OR proxyUrl. When only BTP is set
@@ -480,6 +494,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     apexChannelStorePath,
     swapControllerStatePath,
     ...(file.swapDefaults ? { swapDefaults: file.swapDefaults } : {}),
+    receivedClaimStorePath,
     toonClientConfig,
     network,
     arweaveGateways,

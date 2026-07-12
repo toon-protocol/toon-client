@@ -404,6 +404,15 @@ export interface SwapRequest {
    * the `minExchangeRate` floor.
    */
   controller?: SwapControllerParams;
+  /**
+   * The maker's ADVERTISED on-chain signer address for `pair.to.chain`
+   * (kind:10032 discovery or operator-supplied), toon-client#352. When set,
+   * every received claim's self-reported signer must match it
+   * (`SWAP_SIGNER_MISMATCH` otherwise) and signatures are verified against
+   * THIS address — never the claim's own. When unset, the claim's
+   * self-reported signer is verified and pinned per channel.
+   */
+  swapSignerAddress?: string;
 }
 
 /**
@@ -481,6 +490,21 @@ export interface SwapClaim {
   nonce?: string;
   /** Cumulative transferred on the target channel (micro-units, decimal). */
   cumulativeAmount?: string;
+  /**
+   * Receipt-time verification outcome (#352). `true`: the claim passed
+   * signature/recipient/monotonicity checks and advanced the persisted
+   * watermark. Absent: the claim lacked settlement metadata (legacy pre-rename
+   * peer, see `SwapResponse.warning`) and was neither verified nor persisted.
+   */
+  verified?: boolean;
+  /**
+   * Why verification REJECTED this claim (#352). A rejected claim is never
+   * counted as value received and is not persisted. Codes follow the sdk 2.x
+   * vocabulary (`SWAP_SIGNER_MISMATCH`, `SIGNER_MISMATCH`, `SIGNATURE_INVALID`,
+   * `NON_MONOTONIC_NONCE`, `NON_MONOTONIC_CUMULATIVE`, `CUMULATIVE_SHORTFALL`,
+   * `RECIPIENT_MISMATCH`, `CHAIN_MISMATCH`, `MINA_VERIFICATION_UNSUPPORTED`, …).
+   */
+  verificationError?: { code: string; message: string };
 }
 
 export interface SwapResponse {
@@ -506,6 +530,10 @@ export interface SwapResponse {
    * signature of a pre-rename (sdk <2.0.0) swap peer whose `millSignerAddress`
    * field sdk ≥2 silently drops. Settling such claims fails later with
    * `MISSING_SETTLEMENT_METADATA`; this surfaces the problem at swap time.
+   *
+   * Also set (#352) when one or more received claims FAILED receipt-time
+   * verification — those claims carry `verificationError` and are never
+   * counted as value received.
    */
   warning?: string;
   /**
@@ -538,6 +566,90 @@ export interface SwapResponse {
    * alongside the fee/consent surface. Absent when no floor was armed.
    */
   minExchangeRate?: string;
+  /** #352: claims that passed receipt-time verification and were persisted. */
+  claimsVerified?: number;
+  /** #352: claims REJECTED at receipt time (see per-claim `verificationError`). */
+  claimsRejected?: number;
+  /**
+   * #352: total verified watermark advance across this swap's claims — the
+   * value actually received, target micro-units. Rejected claims contribute
+   * NOTHING here. Absent when no claim carried settlement metadata (legacy).
+   */
+  valueReceived?: string;
+}
+
+// ── Received swap claims: persistence + settlement (#352) ────────────────────
+
+/** One persisted received-claim watermark (highest nonce per chain+channel). */
+export interface ReceivedClaimInfo {
+  /** Target chain the claim settles on (e.g. `evm:base:8453`). */
+  chain: string;
+  /** Payment-channel id on the target chain. */
+  channelId: string;
+  /** Balance-proof nonce (decimal). */
+  nonce: string;
+  /** Cumulative transferred amount (target micro-units, decimal). */
+  cumulativeAmount: string;
+  /** Recipient (the sender's payout address the claim was verified against). */
+  recipient: string;
+  /** Swap peer's on-chain signer the signature verified against. */
+  swapSignerAddress: string;
+  /** Unix ms the winning claim was received. */
+  receivedAt: number;
+  /** Unix ms the watermark last advanced. */
+  updatedAt: number;
+  /** Set once a settlement submission succeeded. */
+  settledAt?: number;
+  /** Watermark nonce redeemed by that settlement (decimal). */
+  settledNonce?: string;
+  settleTxHash?: string;
+}
+
+/** `GET /swap/claims` — list persisted received-claim watermarks. */
+export interface ListSwapClaimsResponse {
+  claims: ReceivedClaimInfo[];
+}
+
+/**
+ * `POST /swap/settle` — build (and, where chain plumbing is configured,
+ * submit) on-chain settlements for persisted received claims. N received
+ * advances per channel redeem as ONE close with the final watermark.
+ */
+export interface SettleSwapClaimsRequest {
+  /** Restrict to one target chain (e.g. `evm:base:8453`). */
+  chain?: string;
+  /** Restrict to one channel. */
+  channelId?: string;
+  /**
+   * When false, stop after building the settlement tx (dry run). Default true:
+   * submit each EVM bundle whose chain has an RPC configured
+   * (`chainRpcUrls[chain]` — the env-gated submission seam).
+   */
+  submit?: boolean;
+}
+
+/** Per-channel settlement outcome (result-shaped; nothing throws per channel). */
+export interface SwapSettlementResult {
+  chain: string;
+  channelId: string;
+  /** Whether a settlement tx was built (claim re-verified at settle time). */
+  built: boolean;
+  /** Whether the tx was submitted on-chain. */
+  submitted: boolean;
+  /** Final watermark being redeemed (decimal), when built. */
+  nonce?: string;
+  cumulativeAmount?: string;
+  /** Unsigned settlement tx bytes (base64), when built — for external signers. */
+  unsignedTx?: string;
+  txHash?: string;
+  /** Receipt status when submission waited one out. */
+  txStatus?: string;
+  /** Why the step stopped where it did (missing config, verification, …). */
+  error?: { code: string; message: string };
+}
+
+export interface SettleSwapClaimsResponse {
+  results: SwapSettlementResult[];
 }
 
 /**
