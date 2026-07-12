@@ -36,8 +36,15 @@ import {
   extractArweaveTxId,
   fundWallet as faucetFund,
   mintExecutionCondition,
+  ingestReceivedClaims,
+  buildSwapSettlements,
+  InMemoryReceivedClaimStore,
+  JsonFileReceivedClaimStore,
   type FaucetChain,
+  type ReceivedClaimEntry,
+  type ReceivedClaimStore,
 } from '@toon-protocol/client';
+import { loadMinaSignerClient, type SettlementBundle } from '@toon-protocol/sdk';
 import {
   GitRepoReader,
   buildComment,
@@ -106,6 +113,12 @@ import type {
   SwapControllerParams,
   SwapPacketOutcome,
   SwapResponse,
+  SwapClaim,
+  ListSwapClaimsResponse,
+  ReceivedClaimInfo,
+  SettleSwapClaimsRequest,
+  SettleSwapClaimsResponse,
+  SwapSettlementResult,
   TargetsResponse,
   UploadMediaRequest,
   UploadMediaResponse,
@@ -237,6 +250,15 @@ export interface ToonClientLike {
       destination?: string;
     }
   ): Promise<Response>;
+  /**
+   * Submit a receive-side swap settlement bundle on-chain (#352). EVM only;
+   * env-gated on `chainRpcUrls[bundle.chain]`. Optional so lightweight fakes
+   * need not implement it — the runner surfaces a result-shaped
+   * `SUBMISSION_UNAVAILABLE` when absent.
+   */
+  settleSwapBundle?(
+    bundle: SettlementBundle
+  ): Promise<{ txHash: string; status?: 'success' | 'reverted' }>;
 }
 
 /** A started managed proxy: just the teardown handle the runner needs. */
@@ -349,6 +371,13 @@ export class ClientRunner {
   private readonly relays = new Map<string, RelaySubscription>();
 
   /**
+   * Durable store for VERIFIED received swap claims (chain-B watermarks,
+   * #352) — file-backed when the config names a path (production), in-memory
+   * otherwise (manually-built test configs). Claims survive a daemon restart.
+   */
+  private readonly receivedClaimStore: ReceivedClaimStore;
+
+  /**
    * Async faucet drip jobs, keyed by chain. A drip is launched in the background
    * (the Mina faucet legitimately takes ~75s — longer than the MCP host's ~60s
    * tool-call budget) and its terminal state is observed via {@link getFundStatus}
@@ -384,6 +413,9 @@ export class ClientRunner {
       deps.gitDeps?.createRepoReader ?? ((repoPath) => new GitRepoReader(repoPath));
     this.defaultBtpUrl = deps.config.toonClientConfig.btpUrl ?? '';
     this.defaultRelayUrl = deps.config.relayUrl;
+    this.receivedClaimStore = deps.config.receivedClaimStorePath
+      ? new JsonFileReceivedClaimStore(deps.config.receivedClaimStorePath)
+      : new InMemoryReceivedClaimStore();
 
     this.createRelay =
       deps.createRelay ??
@@ -1659,24 +1691,71 @@ export class ClientRunner {
         : {}),
     });
     const firstReject = result.rejections[0];
-    const claims = result.claims.map((c) => ({
-      sourceAmount: c.sourceAmount.toString(),
-      targetAmount: c.targetAmount.toString(),
-      claim: Buffer.from(c.claimBytes).toString('base64'),
-      ...(c.channelId ? { channelId: c.channelId } : {}),
-      ...(c.recipient ? { recipient: c.recipient } : {}),
-      ...(c.swapSignerAddress
-        ? { swapSignerAddress: c.swapSignerAddress }
+
+    // #352: receipt-time verification + durable ingestion. Every FULFILLed
+    // claim with settlement metadata is verified (signature against the
+    // maker's advertised/pinned signer, recipient, chain, nonce/cumulative
+    // monotonicity vs the persisted watermark) and, only if it passes,
+    // persisted as the channel's highest-nonce watermark. A claim that fails
+    // is NEVER counted as value received. Claims MISSING settlement metadata
+    // take the legacy #349 path (warning, not persisted) unchanged.
+    const expectedChain = req.pair.to.chain;
+    const minaSignerClient = expectedChain.startsWith('mina')
+      ? await loadMinaSignerClient()
+      : undefined;
+    const ingest = ingestReceivedClaims({
+      claims: result.claims,
+      expectedChain,
+      chainRecipient: req.chainRecipient,
+      ...(req.swapSignerAddress
+        ? { expectedSignerAddress: req.swapSignerAddress }
         : {}),
-      ...(c.claimId ? { claimId: c.claimId } : {}),
-      ...(c.nonce ? { nonce: c.nonce } : {}),
-      ...(c.cumulativeAmount ? { cumulativeAmount: c.cumulativeAmount } : {}),
-    }));
-    // Wire-rename skew guard: claims were FULFILLed but none carries the
-    // swapSignerAddress settlement metadata — the signature of a pre-rename
-    // swap peer (emits `millSignerAddress`, silently dropped by sdk ≥2's
-    // decodeFulfillMetadata). Settlement of these claims WILL fail with
-    // MISSING_SETTLEMENT_METADATA; say so now instead of then.
+      store: this.receivedClaimStore,
+      ...(minaSignerClient ? { minaSignerClient } : {}),
+    });
+    const verifiedSet = new Set(ingest.verified.map((v) => v.claim));
+    const rejectionByClaim = new Map(
+      ingest.rejected.map((r) => [r.claim, r] as const)
+    );
+    for (const r of ingest.rejected) {
+      this.log(
+        `[runner] swap: REJECTED received claim (packet ${r.claim.packetIndex}, ` +
+          `channel ${r.claim.channelId ?? '?'}): ${r.code} — ${r.message}`
+      );
+    }
+
+    const claims = result.claims.map((c): SwapClaim => {
+      const rejection = rejectionByClaim.get(c);
+      return {
+        sourceAmount: c.sourceAmount.toString(),
+        targetAmount: c.targetAmount.toString(),
+        claim: Buffer.from(c.claimBytes).toString('base64'),
+        ...(c.channelId ? { channelId: c.channelId } : {}),
+        ...(c.recipient ? { recipient: c.recipient } : {}),
+        ...(c.swapSignerAddress
+          ? { swapSignerAddress: c.swapSignerAddress }
+          : {}),
+        ...(c.claimId ? { claimId: c.claimId } : {}),
+        ...(c.nonce ? { nonce: c.nonce } : {}),
+        ...(c.cumulativeAmount ? { cumulativeAmount: c.cumulativeAmount } : {}),
+        ...(verifiedSet.has(c) ? { verified: true } : {}),
+        ...(rejection
+          ? {
+              verified: false,
+              verificationError: {
+                code: rejection.code,
+                message: rejection.message,
+              },
+            }
+          : {}),
+      };
+    });
+
+    // Wire-rename skew guard (#349): claims were FULFILLed but none carries
+    // the swapSignerAddress settlement metadata — the signature of a
+    // pre-rename swap peer (emits `millSignerAddress`, silently dropped by
+    // sdk ≥2's decodeFulfillMetadata). Settlement of these claims WILL fail
+    // with MISSING_SETTLEMENT_METADATA; say so now instead of then.
     const missingSettlementSigner =
       claims.length > 0 && claims.every((c) => !c.swapSignerAddress);
     if (missingSettlementSigner) {
@@ -1690,8 +1769,32 @@ export class ClientRunner {
       result.cumulativeTarget,
       req.pair
     );
+    const warnings: string[] = [];
+    if (missingSettlementSigner) {
+      warnings.push(
+        'Accepted claims are missing `swapSignerAddress` settlement ' +
+          'metadata, so settling them will fail with ' +
+          'MISSING_SETTLEMENT_METADATA. The swap peer is likely running ' +
+          'a pre-rename SDK (<2.0.0, emits `millSignerAddress`, which ' +
+          'sdk ≥2 silently drops). Upgrade the swap peer before settling.'
+      );
+    }
+    const firstRejected = ingest.rejected[0];
+    if (firstRejected) {
+      warnings.push(
+        `${ingest.rejected.length} received claim(s) FAILED verification and ` +
+          `were NOT counted as value received (first: ${firstRejected.code} — ` +
+          `${firstRejected.message}). See per-claim verificationError.`
+      );
+    }
+
+    const hadIngestibleClaims =
+      ingest.verified.length + ingest.rejected.length > 0;
     return {
-      accepted: result.claims.length > 0,
+      // A swap only counts as accepted when it yielded a VERIFIED claim (or a
+      // legacy no-metadata claim, whose path is unchanged). FULFILLed packets
+      // whose claims all failed verification are a failed swap, loudly.
+      accepted: ingest.verified.length + ingest.legacy.length > 0,
       packetsAccepted: result.claims.length,
       claims,
       cumulativeSource: result.cumulativeSource.toString(),
@@ -1715,17 +1818,172 @@ export class ClientRunner {
       ...(firstReject
         ? { code: firstReject.code, message: firstReject.message }
         : {}),
-      ...(missingSettlementSigner
+      ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
+      ...(hadIngestibleClaims
         ? {
-            warning:
-              'Accepted claims are missing `swapSignerAddress` settlement ' +
-              'metadata, so settling them will fail with ' +
-              'MISSING_SETTLEMENT_METADATA. The swap peer is likely running ' +
-              'a pre-rename SDK (<2.0.0, emits `millSignerAddress`, which ' +
-              'sdk ≥2 silently drops). Upgrade the swap peer before settling.',
+            claimsVerified: ingest.verified.length,
+            claimsRejected: ingest.rejected.length,
+            valueReceived: ingest.valueReceived.toString(),
           }
         : {}),
     };
+  }
+
+  // ── Received swap claims: persistence + settlement surfaces (#352) ─────────
+
+  /** List the persisted received-claim watermarks (`GET /swap/claims`). */
+  listSwapClaims(): ListSwapClaimsResponse {
+    return {
+      claims: this.receivedClaimStore.list().map(toReceivedClaimInfo),
+    };
+  }
+
+  /**
+   * Build (and, where chain plumbing is configured, submit) on-chain
+   * settlements for persisted received claims (`POST /swap/settle`).
+   *
+   * Per (chain, channelId) the persisted entry IS the highest-nonce
+   * watermark, so N received advances redeem as ONE close. Result-shaped
+   * throughout: a channel that cannot build or submit reports `error` instead
+   * of failing the batch. Submission is the env-gated seam — it requires the
+   * identity client's EVM plumbing plus `chainRpcUrls[chain]`; without them
+   * the built (re-verified) tx is returned as `unsignedTx` for an external
+   * signer. Solana submission and the Mina receive-side co-sign path are
+   * explicit follow-ups (spec §9 dependency 2).
+   */
+  async settleSwapClaims(
+    req: SettleSwapClaimsRequest = {}
+  ): Promise<SettleSwapClaimsResponse> {
+    const submit = req.submit !== false;
+    const entries = this.receivedClaimStore
+      .list()
+      .filter((e) => (req.chain ? e.chain === req.chain : true))
+      .filter((e) => (req.channelId ? e.channelId === req.channelId : true));
+
+    const results: SwapSettlementResult[] = [];
+    const pending: ReceivedClaimEntry[] = [];
+    for (const entry of entries) {
+      if (entry.settledNonce !== undefined && entry.settledNonce >= entry.nonce) {
+        results.push({
+          chain: entry.chain,
+          channelId: entry.channelId,
+          built: false,
+          submitted: false,
+          error: {
+            code: 'ALREADY_SETTLED',
+            message: `watermark nonce ${entry.nonce} was already settled (tx ${entry.settleTxHash ?? 'unknown'})`,
+          },
+        });
+        continue;
+      }
+      pending.push(entry);
+    }
+
+    const minaSignerClient = pending.some((e) => e.chain.startsWith('mina'))
+      ? await loadMinaSignerClient()
+      : undefined;
+    const builds = buildSwapSettlements({
+      entries: pending,
+      ...(this.config.toonClientConfig.tokenNetworks
+        ? { tokenNetworks: this.config.toonClientConfig.tokenNetworks }
+        : {}),
+      ...(minaSignerClient ? { minaSignerClient } : {}),
+    });
+
+    for (const [i, build] of builds.entries()) {
+      const entry = pending[i];
+      if (!entry) continue; // builds is index-aligned with pending
+      if (!build.bundle) {
+        results.push({
+          chain: build.chain,
+          channelId: build.channelId,
+          built: false,
+          submitted: false,
+          ...(build.error ? { error: build.error } : {}),
+        });
+        continue;
+      }
+      const bundle = build.bundle;
+      const base: SwapSettlementResult = {
+        chain: build.chain,
+        channelId: build.channelId,
+        built: true,
+        submitted: false,
+        nonce: bundle.nonce,
+        cumulativeAmount: bundle.cumulativeAmount,
+        unsignedTx: Buffer.from(bundle.unsignedTxBytes).toString('base64'),
+      };
+      if (!submit) {
+        results.push(base);
+        continue;
+      }
+      if (bundle.chainKind !== 'evm') {
+        results.push({
+          ...base,
+          error: {
+            code: 'SUBMISSION_UNSUPPORTED',
+            message:
+              bundle.chainKind === 'mina'
+                ? 'Mina receive-side redemption needs a co-signed claimFromChannel (signatureA AND signatureB) plus o1js proof generation — no client co-sign path exists yet. Out of scope for #352; follow-up: toon-client#357.'
+                : 'Solana settlement submission is not wired yet (bundle carries a serialized Message; follow-up under toon-meta#145).',
+          },
+        });
+        continue;
+      }
+      const rpcUrl =
+        this.config.toonClientConfig.chainRpcUrls?.[bundle.chain];
+      if (!rpcUrl) {
+        results.push({
+          ...base,
+          error: {
+            code: 'NO_RPC_CONFIGURED',
+            message: `No RPC URL configured for "${bundle.chain}" (chainRpcUrls) — returning the built tx unsubmitted.`,
+          },
+        });
+        continue;
+      }
+      if (!this.identityClient.settleSwapBundle) {
+        results.push({
+          ...base,
+          error: {
+            code: 'SUBMISSION_UNAVAILABLE',
+            message: 'The active client does not implement settleSwapBundle.',
+          },
+        });
+        continue;
+      }
+      try {
+        const submitted = await this.identityClient.settleSwapBundle(bundle);
+        // Mark the watermark settled so a re-run skips it.
+        const latest =
+          this.receivedClaimStore.load(entry.chain, entry.channelId) ?? entry;
+        this.receivedClaimStore.save({
+          ...latest,
+          settledAt: Date.now(),
+          settledNonce: BigInt(bundle.nonce),
+          settleTxHash: submitted.txHash,
+        });
+        this.log(
+          `[runner] swap settle: submitted ${bundle.chain}/${bundle.channelId} ` +
+            `nonce ${bundle.nonce} cumulative ${bundle.cumulativeAmount} → ${submitted.txHash}`
+        );
+        results.push({
+          ...base,
+          submitted: true,
+          txHash: submitted.txHash,
+          ...(submitted.status ? { txStatus: submitted.status } : {}),
+        });
+      } catch (err) {
+        results.push({
+          ...base,
+          error: {
+            code: 'SUBMISSION_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+    }
+    return { results };
   }
 
   /**
@@ -2481,4 +2739,23 @@ function computeRealizedRate(
     (Number(cumulativeTarget) / Number(cumulativeSource)) *
     10 ** (pair.from.assetScale - pair.to.assetScale)
   );
+}
+
+/** Map a persisted received-claim entry onto the wire shape (#352). */
+function toReceivedClaimInfo(e: ReceivedClaimEntry): ReceivedClaimInfo {
+  return {
+    chain: e.chain,
+    channelId: e.channelId,
+    nonce: e.nonce.toString(),
+    cumulativeAmount: e.cumulativeAmount.toString(),
+    recipient: e.recipient,
+    swapSignerAddress: e.swapSignerAddress,
+    receivedAt: e.receivedAt,
+    updatedAt: e.updatedAt,
+    ...(e.settledAt !== undefined ? { settledAt: e.settledAt } : {}),
+    ...(e.settledNonce !== undefined
+      ? { settledNonce: e.settledNonce.toString() }
+      : {}),
+    ...(e.settleTxHash !== undefined ? { settleTxHash: e.settleTxHash } : {}),
+  };
 }

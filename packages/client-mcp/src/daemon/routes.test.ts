@@ -471,6 +471,24 @@ describe('control API routes', () => {
       expect(res.statusCode).toBe(400);
     });
 
+    it('GET /swap/claims returns the persisted received-claim list (#352)', async () => {
+      const res = await app.inject({ method: 'GET', url: '/swap/claims' });
+      expect(res.statusCode).toBe(200);
+      // The route-mock claim carries no settlement metadata (legacy), so
+      // nothing was persisted — the wire shape is still the claims envelope.
+      expect(res.json()).toEqual({ claims: [] });
+    });
+
+    it('POST /swap/settle with nothing to settle returns empty results (#352)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/swap/settle',
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ results: [] });
+    });
+
     it('POST /http-fetch-paid returns { status, headers, body }', async () => {
       const res = await app.inject({
         method: 'POST',

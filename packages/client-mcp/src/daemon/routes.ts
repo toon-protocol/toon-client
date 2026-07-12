@@ -45,6 +45,7 @@ import type {
   RemoveApexRequest,
   RemoveRelayRequest,
   SettlementChain,
+  SettleSwapClaimsRequest,
   SubscribeRequest,
   SwapRequest,
   UploadMediaRequest,
@@ -214,6 +215,20 @@ export function registerRoutes(
       return mapError(reply, err);
     }
   });
+
+  // Received swap claims: persisted watermarks + settlement drive (#352).
+  app.get('/swap/claims', async () => runner.listSwapClaims());
+
+  app.post<{ Body: SettleSwapClaimsRequest }>(
+    '/swap/settle',
+    async (req, reply) => {
+      try {
+        return await runner.settleSwapClaims(req.body ?? {});
+      } catch (err) {
+        return mapError(reply, err);
+      }
+    }
+  );
 
   app.post<{ Body: HttpFetchPaidRequest }>(
     '/http-fetch-paid',

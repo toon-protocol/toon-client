@@ -669,6 +669,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             'minExchangeRate = pair.rate × (1 − floorBps/10000). Integer ' +
             'basis points in [0, 10000). Ignored when minExchangeRate is set.',
         },
+        swapSignerAddress: {
+          type: 'string',
+          description:
+            "The maker's ADVERTISED on-chain signer address for pair.to.chain " +
+            '(from kind:10032 discovery). When set, received claims signed by ' +
+            'any other address are rejected (SWAP_SIGNER_MISMATCH).',
+        },
       },
       required: [
         'destination',
@@ -677,6 +684,49 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         'pair',
         'chainRecipient',
       ],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_swap_claims',
+    description:
+      'List the daemon-persisted RECEIVED swap claims (verified chain-B ' +
+      'watermarks, highest nonce per chain+channel). These are the claims ' +
+      'toon_swap verified and banked; settle them on-chain with ' +
+      'toon_swap_settle. Free local read.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'toon_swap_settle',
+    description:
+      'Redeem persisted received swap claims on-chain: builds ONE settlement ' +
+      'tx per (chain, channel) with the final verified watermark (N swap ' +
+      'packets net to one close) and submits it where the chain is configured ' +
+      '(EVM with an RPC url today; Solana/Mina return the built tx ' +
+      'unsubmitted). Spends gas on the target chain. Use submit:false for a ' +
+      'free dry-run that only builds the tx.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chain: {
+          type: 'string',
+          description: 'Restrict to one target chain (e.g. evm:base:8453).',
+        },
+        channelId: {
+          type: 'string',
+          description: 'Restrict to one channel id.',
+        },
+        submit: {
+          type: 'boolean',
+          description:
+            'false = dry-run: build + return the unsigned tx without ' +
+            'submitting. Default true.',
+        },
+      },
       additionalProperties: false,
     },
   },
@@ -918,6 +968,9 @@ const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   toon_git_comment: PAID_WRITE,
   toon_git_patch: PAID_WRITE,
   toon_git_status: PAID_WRITE,
+  // received swap claims (#352): free local read + on-chain redemption
+  toon_swap_claims: READ_LOCAL,
+  toon_swap_settle: ONCHAIN_WRITE,
   // on-chain channel ops
   toon_open_channel: { ...ONCHAIN_WRITE, idempotentHint: true }, // returns the existing channel if open
   toon_channel_deposit: ONCHAIN_WRITE,
@@ -1191,6 +1244,25 @@ export async function dispatchTool(
               : {}),
             ...(typeof args['floorBps'] === 'number'
               ? { floorBps: args['floorBps'] }
+              : {}),
+            ...(typeof args['swapSignerAddress'] === 'string'
+              ? { swapSignerAddress: args['swapSignerAddress'] }
+              : {}),
+          })
+        );
+      case 'toon_swap_claims':
+        return ok(await client.swapClaims());
+      case 'toon_swap_settle':
+        return ok(
+          await client.settleSwapClaims({
+            ...(typeof args['chain'] === 'string'
+              ? { chain: args['chain'] }
+              : {}),
+            ...(typeof args['channelId'] === 'string'
+              ? { channelId: args['channelId'] }
+              : {}),
+            ...(typeof args['submit'] === 'boolean'
+              ? { submit: args['submit'] }
               : {}),
           })
         );

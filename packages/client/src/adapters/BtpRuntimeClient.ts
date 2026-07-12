@@ -6,7 +6,7 @@ import { type BTPProtocolData } from '../btp/protocol.js';
 import type { IlpClient, IlpSendResult } from '@toon-protocol/core';
 import { withRetry } from '../utils/retry.js';
 import { fromBase64, encodeUtf8 } from '../utils/binary.js';
-import { mapIlpResponse, type IlpSendParams } from './ilp-send.js';
+import { mapIlpResponse, resolveExpiresAt, type IlpSendParams } from './ilp-send.js';
 import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
 
 export interface BtpRuntimeClientConfig {
@@ -206,8 +206,7 @@ export class BtpRuntimeClient implements IlpClient {
         amount: BigInt(params.amount),
         destination: params.destination,
         executionCondition: condition ?? new Uint8Array(32),
-        expiresAt:
-          params.expiresAt ?? new Date(Date.now() + (params.timeout ?? 30000)),
+        expiresAt: resolveExpiresAt(params.expiresAt, params.timeout ?? 30000),
         data: fromBase64(params.data),
       },
       condition,

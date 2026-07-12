@@ -9,3 +9,9 @@ export {
   type ChannelStore,
   type ChannelStoreEntry,
 } from './ChannelStore.js';
+export {
+  JsonFileReceivedClaimStore,
+  InMemoryReceivedClaimStore,
+  type ReceivedClaimStore,
+  type ReceivedClaimEntry,
+} from './ReceivedClaimStore.js';

@@ -21,6 +21,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
+import { privateKeyToAccount } from 'viem/accounts';
 import {
   BalancesUnavailableError,
   ClientRunner,
@@ -33,8 +34,86 @@ import {
 } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
 import { RelaySubscription } from '../relay-subscription.js';
-import { ILP_PEER_INFO_KIND } from '@toon-protocol/core';
+import {
+  ILP_PEER_INFO_KIND,
+  balanceProofHashEvm,
+  hexToBytes,
+} from '@toon-protocol/core';
 import { loadTargets } from './targets-store.js';
+
+// ── Received-claim fixtures (#352): REAL secp256k1-signed EVM balance proofs,
+//    byte-compatible with the sdk's verifyAccumulatedClaim (the swap peer's
+//    signer signs balanceProofHashEvm(channelId, cumulative, nonce, recipient)
+//    and ships the 65-byte r||s||v signature as claimBytes). ─────────────────
+
+/** The swap peer's chain-B signer (well-known dev key, never a live secret). */
+const SWAP_SIGNER_ACCOUNT = privateKeyToAccount(
+  '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
+);
+const SWAP_SIGNER = SWAP_SIGNER_ACCOUNT.address.toLowerCase();
+/** The sender's payout address on the target chain. */
+const EVM_RECIPIENT = '0x' + 'aa'.repeat(20);
+const EVM_CHANNEL = '0x' + '11'.repeat(32);
+const EVM_PAIR = {
+  from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+  to: { assetCode: 'USDC', assetScale: 6, chain: 'evm:anvil:31337' },
+  rate: '1.0',
+};
+
+/** Build a genuinely-signed accumulated EVM claim (sdk wire shape). */
+async function signedEvmClaim(opts: {
+  nonce: string;
+  cumulativeAmount: string;
+  targetAmount: bigint;
+  sourceAmount?: bigint;
+  packetIndex?: number;
+  channelId?: string;
+  recipient?: string;
+  /** Sign over DIFFERENT values than advertised (a tampered claim). */
+  signedCumulative?: string;
+}) {
+  const channelId = opts.channelId ?? EVM_CHANNEL;
+  const recipient = opts.recipient ?? EVM_RECIPIENT;
+  const hash = balanceProofHashEvm(
+    hexToBytes(channelId),
+    BigInt(opts.signedCumulative ?? opts.cumulativeAmount),
+    BigInt(opts.nonce),
+    hexToBytes(recipient)
+  );
+  const sigHex = await SWAP_SIGNER_ACCOUNT.sign({
+    hash: `0x${Buffer.from(hash).toString('hex')}`,
+  });
+  return {
+    packetIndex: opts.packetIndex ?? 0,
+    sourceAmount: opts.sourceAmount ?? opts.targetAmount,
+    targetAmount: opts.targetAmount,
+    claimBytes: hexToBytes(sigHex),
+    swapEphemeralPubkey: 'ab'.repeat(32),
+    claimId: `claim-${opts.nonce}`,
+    channelId,
+    recipient,
+    swapSignerAddress: SWAP_SIGNER,
+    nonce: opts.nonce,
+    cumulativeAmount: opts.cumulativeAmount,
+    pair: EVM_PAIR,
+    receivedAt: 0,
+  };
+}
+
+/** Wrap accumulated claims into a completed streamSwap result. */
+function swapResult(claims: unknown[], totals?: { source?: bigint; target?: bigint }) {
+  return {
+    state: 'completed',
+    claims,
+    rejections: [],
+    errors: [],
+    abortReason: 'complete',
+    cumulativeSource: totals?.source ?? 1000n,
+    cumulativeTarget: totals?.target ?? 999n,
+    packetsSent: claims.length,
+    packetsScheduled: claims.length,
+  } as unknown as Awaited<ReturnType<typeof streamSwap>>;
+}
 
 let tmpDir: string;
 
@@ -203,6 +282,10 @@ class FakeClient implements ToonClientLike {
   async sendSwapPacket(): Promise<{ accepted: boolean; data?: string }> {
     return { accepted: true, data: 'c3dhcA==' };
   }
+  /** Optional settlement-submission seam (#352); tests assign a spy. */
+  settleSwapBundle?: (
+    bundle: unknown
+  ) => Promise<{ txHash: string; status?: 'success' | 'reverted' }>;
   async h402Fetch(): Promise<Response> {
     return new Response('hello', {
       status: 200,
@@ -722,47 +805,23 @@ describe('ClientRunner', () => {
     ]);
   });
 
-  it('swap streams via streamSwap and maps the accumulated claims', async () => {
+  it('swap streams via streamSwap, VERIFIES the claim, persists it, and maps it (#352)', async () => {
     await runner.bootstrap();
-    const pair = {
-      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
-      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
-      rate: '1.0',
-    };
-    vi.mocked(streamSwap).mockResolvedValue({
-      state: 'completed',
-      claims: [
-        {
-          packetIndex: 0,
-          sourceAmount: 1000n,
-          targetAmount: 999n,
-          claimBytes: new Uint8Array([1, 2, 3, 4]),
-          swapEphemeralPubkey: 'ab'.repeat(32),
-          claimId: 'claim-1',
-          channelId: '1111',
-          recipient: 'SoLrecipient',
-          swapSignerAddress: '0xswapsigner',
-          nonce: '1',
-          cumulativeAmount: '999',
-          pair,
-          receivedAt: 0,
-        },
-      ],
-      rejections: [],
-      errors: [],
-      abortReason: 'complete',
-      cumulativeSource: 1000n,
-      cumulativeTarget: 999n,
-      packetsSent: 1,
-      packetsScheduled: 1,
-    } as unknown as Awaited<ReturnType<typeof streamSwap>>);
+    const claim = await signedEvmClaim({
+      nonce: '1',
+      cumulativeAmount: '999',
+      targetAmount: 999n,
+      sourceAmount: 1000n,
+    });
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
 
     const res = await runner.swap({
       destination: 'g.proxy.swap',
       amount: '1000',
       swapPubkey: 'cd'.repeat(32),
-      pair,
-      chainRecipient: 'SoLrecipient',
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      swapSignerAddress: SWAP_SIGNER,
     });
 
     // streamSwap got the request params (default single packet).
@@ -770,10 +829,10 @@ describe('ClientRunner', () => {
     expect(arg.swapIlpAddress).toBe('g.proxy.swap');
     expect(arg.swapPubkey).toBe('cd'.repeat(32));
     expect(arg.totalAmount).toBe(1000n);
-    expect(arg.chainRecipient).toBe('SoLrecipient');
+    expect(arg.chainRecipient).toBe(EVM_RECIPIENT);
     expect(arg.packetCount).toBe(1);
 
-    // The accumulated claim is mapped (claimBytes → base64).
+    // The accumulated claim is mapped (claimBytes → base64) and VERIFIED.
     expect(res.accepted).toBe(true);
     expect(res.packetsAccepted).toBe(1);
     expect(res.cumulativeTarget).toBe('999');
@@ -781,14 +840,31 @@ describe('ClientRunner', () => {
     expect(res.claims[0]).toMatchObject({
       sourceAmount: '1000',
       targetAmount: '999',
-      claim: Buffer.from([1, 2, 3, 4]).toString('base64'),
-      channelId: '1111',
-      recipient: 'SoLrecipient',
-      swapSignerAddress: '0xswapsigner',
+      claim: Buffer.from(claim.claimBytes).toString('base64'),
+      channelId: EVM_CHANNEL,
+      recipient: EVM_RECIPIENT,
+      swapSignerAddress: SWAP_SIGNER,
       claimId: 'claim-1',
+      verified: true,
     });
+    expect(res.claimsVerified).toBe(1);
+    expect(res.claimsRejected).toBe(0);
+    expect(res.valueReceived).toBe('999');
     // Settlement metadata survived the round trip — no wire-skew warning.
     expect(res.warning).toBeUndefined();
+
+    // The verified claim is PERSISTED as the channel watermark, reflected in
+    // the received-claims surface (`GET /swap/claims`).
+    const listed = runner.listSwapClaims().claims;
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      chain: EVM_PAIR.to.chain,
+      channelId: EVM_CHANNEL,
+      nonce: '1',
+      cumulativeAmount: '999',
+      recipient: EVM_RECIPIENT,
+      swapSignerAddress: SWAP_SIGNER,
+    });
   });
 
   it('swap warns when accepted claims are missing swapSignerAddress (pre-rename swap peer)', async () => {
@@ -1015,7 +1091,7 @@ describe('ClientRunner', () => {
     chainRecipient: 'SoLrecipient',
   };
   /** Minimal completed StreamSwapResult, override what the test needs. */
-  function swapResult(
+  function defenseSwapResult(
     overrides: Record<string, unknown> = {}
   ): Awaited<ReturnType<typeof streamSwap>> {
     return {
@@ -1036,7 +1112,7 @@ describe('ClientRunner', () => {
     await runner.bootstrap();
     vi.mocked(streamSwap).mockReset();
     vi.mocked(streamSwap).mockResolvedValue(
-      swapResult({
+      defenseSwapResult({
         state: 'failed',
         rejections: [
           {
@@ -1075,7 +1151,7 @@ describe('ClientRunner', () => {
   it('swap derives the floor from floorBps against the advertised rate (spec §5 R₀ × (1 − tolerance))', async () => {
     await runner.bootstrap();
     vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult());
+    vi.mocked(streamSwap).mockResolvedValue(defenseSwapResult());
     // 50 bps under the advertised 4.0 → 3.98, exact decimal-string math.
     const res = await runner.swap({ ...DEFENSE_SWAP, floorBps: 50 });
     expect(vi.mocked(streamSwap).mock.calls[0]![0].minExchangeRate).toBe(
@@ -1099,7 +1175,7 @@ describe('ClientRunner', () => {
   it('swap with defaults off sends the byte-identical legacy request (only telemetry onPacket added)', async () => {
     await runner.bootstrap();
     vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult());
+    vi.mocked(streamSwap).mockResolvedValue(defenseSwapResult());
     await runner.swap(DEFENSE_SWAP);
     const arg = vi.mocked(streamSwap).mock.calls[0]![0];
     // Exactly the legacy key set plus the local-only telemetry callback: no
@@ -1135,7 +1211,7 @@ describe('ClientRunner', () => {
       expect(delta).toBeLessThanOrEqual(1000n);
       expect(ctrl.window).toBeGreaterThanOrEqual(1);
       await ctrl.observe({ resolution: 'fulfill', rttMs: 50 });
-      return swapResult();
+      return defenseSwapResult();
     });
     await runner.swap({
       ...DEFENSE_SWAP,
@@ -1150,7 +1226,7 @@ describe('ClientRunner', () => {
   it('swap rejects controller + packetCount (mutually exclusive) and a missing advertisedSpread', async () => {
     await runner.bootstrap();
     vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult());
+    vi.mocked(streamSwap).mockResolvedValue(defenseSwapResult());
     await expect(
       runner.swap({
         ...DEFENSE_SWAP,
@@ -1177,7 +1253,7 @@ describe('ClientRunner', () => {
       const ctrl = params.controller as AdaptiveDeltaController;
       ctrl.nextDelta(BigInt(DEFENSE_SWAP.amount)); // seeds δ_0 = 1000/256 = 3
       await ctrl.observe({ resolution: 'fulfill', rttMs: 100 });
-      return swapResult();
+      return defenseSwapResult();
     });
     await runner.swap({ ...DEFENSE_SWAP, controller: controllerParams });
 
@@ -1200,7 +1276,7 @@ describe('ClientRunner', () => {
     vi.mocked(streamSwap).mockImplementation(async (params) => {
       resumedDelta = (params.controller as AdaptiveDeltaController).state
         .delta;
-      return swapResult();
+      return defenseSwapResult();
     });
     await runner.swap({ ...DEFENSE_SWAP, controller: controllerParams });
     expect(resumedDelta).toBe('3');
@@ -1209,7 +1285,7 @@ describe('ClientRunner', () => {
     vi.mocked(streamSwap).mockImplementation(async (params) => {
       resumedDelta = (params.controller as AdaptiveDeltaController).state
         .delta;
-      return swapResult();
+      return defenseSwapResult();
     });
     await runner.swap({
       ...DEFENSE_SWAP,
@@ -1244,7 +1320,7 @@ describe('ClientRunner', () => {
     });
     await r.bootstrap();
     vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult());
+    vi.mocked(streamSwap).mockResolvedValue(defenseSwapResult());
 
     // No per-request knobs → daemon defaults engage everything.
     await r.swap(DEFENSE_SWAP);
@@ -1290,7 +1366,7 @@ describe('ClientRunner', () => {
     vi.mocked(streamSwap).mockImplementation(async (params) => {
       await params.onPacket!(progress(0));
       await params.onPacket!(progress(1));
-      return swapResult({
+      return defenseSwapResult({
         cumulativeSource: 1000n,
         cumulativeTarget: 3980n,
         packetsSent: 2,
@@ -1322,7 +1398,7 @@ describe('ClientRunner', () => {
     vi.mocked(streamSwap).mockReset();
     const pair = DEFENSE_PAIR;
     vi.mocked(streamSwap).mockResolvedValue(
-      swapResult({
+      defenseSwapResult({
         state: 'stopped',
         abortReason: 'aborted',
         claims: [
@@ -1370,7 +1446,7 @@ describe('ClientRunner', () => {
         amount: 500n,
         toonData: new Uint8Array([0]),
       });
-      return swapResult();
+      return defenseSwapResult();
     });
 
     await runner.swap({
@@ -1388,6 +1464,257 @@ describe('ClientRunner', () => {
     ).executionCondition;
     expect(condition).toBeInstanceOf(Uint8Array);
     expect(condition!.some((b) => b !== 0)).toBe(true);
+  });
+
+  // ── Receive-side claim ingestion/verification/settlement (#352) ────────────
+
+  const swapReq = (over: Partial<Parameters<ClientRunner['swap']>[0]> = {}) => ({
+    destination: 'g.proxy.swap',
+    amount: '1000',
+    swapPubkey: 'cd'.repeat(32),
+    pair: EVM_PAIR,
+    chainRecipient: EVM_RECIPIENT,
+    ...over,
+  });
+
+  it('swap REJECTS a tampered claim loudly: not counted, not persisted, swap not accepted (#352)', async () => {
+    await runner.bootstrap();
+    // The signature covers cumulative=500 but the claim ADVERTISES 999 — a
+    // maker inflating the advertised watermark beyond what it signed.
+    const tampered = await signedEvmClaim({
+      nonce: '1',
+      cumulativeAmount: '999',
+      signedCumulative: '500',
+      targetAmount: 999n,
+    });
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([tampered]));
+
+    const res = await runner.swap(swapReq({ swapSignerAddress: SWAP_SIGNER }));
+
+    // The packet FULFILLed at transport level but the claim FAILED
+    // verification: never counted as value received, swap not accepted.
+    expect(res.accepted).toBe(false);
+    expect(res.claimsVerified).toBe(0);
+    expect(res.claimsRejected).toBe(1);
+    expect(res.valueReceived).toBe('0');
+    expect(res.claims[0]!.verified).toBe(false);
+    expect(res.claims[0]!.verificationError?.code).toBe('SIGNER_MISMATCH');
+    expect(res.warning).toMatch(/FAILED verification/);
+    // Nothing was persisted.
+    expect(runner.listSwapClaims().claims).toHaveLength(0);
+  });
+
+  it('swap REJECTS a claim signed by the wrong signer: SWAP_SIGNER_MISMATCH against the advertised address (#352)', async () => {
+    await runner.bootstrap();
+    const claim = await signedEvmClaim({
+      nonce: '1',
+      cumulativeAmount: '999',
+      targetAmount: 999n,
+    });
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
+
+    const res = await runner.swap(
+      // Maker's ADVERTISED signer differs from the claim's self-reported one.
+      swapReq({ swapSignerAddress: '0x' + 'cc'.repeat(20) })
+    );
+
+    expect(res.accepted).toBe(false);
+    expect(res.claims[0]!.verificationError?.code).toBe('SWAP_SIGNER_MISMATCH');
+    expect(res.valueReceived).toBe('0');
+    expect(runner.listSwapClaims().claims).toHaveLength(0);
+  });
+
+  it('swap REJECTS a non-monotonic nonce/cumulative against the persisted watermark (#352)', async () => {
+    await runner.bootstrap();
+    const first = await signedEvmClaim({
+      nonce: '2',
+      cumulativeAmount: '2000',
+      targetAmount: 2000n,
+    });
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([first]));
+    await runner.swap(swapReq());
+
+    // A replayed/stale claim: same nonce, same cumulative — validly signed.
+    const replay = await signedEvmClaim({
+      nonce: '2',
+      cumulativeAmount: '2000',
+      targetAmount: 2000n,
+    });
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([replay]));
+    const res = await runner.swap(swapReq());
+
+    expect(res.accepted).toBe(false);
+    expect(res.claims[0]!.verificationError?.code).toBe('NON_MONOTONIC_NONCE');
+    expect(res.valueReceived).toBe('0');
+    // The watermark still holds the FIRST claim.
+    expect(runner.listSwapClaims().claims[0]).toMatchObject({
+      nonce: '2',
+      cumulativeAmount: '2000',
+    });
+  });
+
+  it('swap folds N packets into ONE per-channel watermark with summed value (#352)', async () => {
+    await runner.bootstrap();
+    const claims = [
+      await signedEvmClaim({ nonce: '1', cumulativeAmount: '300', targetAmount: 300n, packetIndex: 0 }),
+      await signedEvmClaim({ nonce: '2', cumulativeAmount: '600', targetAmount: 300n, packetIndex: 1 }),
+      await signedEvmClaim({ nonce: '3', cumulativeAmount: '900', targetAmount: 300n, packetIndex: 2 }),
+    ];
+    vi.mocked(streamSwap).mockResolvedValue(
+      swapResult(claims, { source: 900n, target: 900n })
+    );
+
+    const res = await runner.swap(swapReq({ packetCount: 3 }));
+    expect(res.claimsVerified).toBe(3);
+    expect(res.valueReceived).toBe('900');
+
+    // One persisted entry — the final watermark.
+    const listed = runner.listSwapClaims().claims;
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ nonce: '3', cumulativeAmount: '900' });
+  });
+
+  it('persisted received claims survive a daemon restart (#352)', async () => {
+    const storePath = join(tmpDir, 'received-claims.json');
+    const mkRunner = () =>
+      new ClientRunner({
+        config: makeConfig({ receivedClaimStorePath: storePath }),
+        createClient: () => client,
+        createRelay: fakeRelay,
+      });
+    const first = mkRunner();
+    await first.bootstrap();
+    vi.mocked(streamSwap).mockResolvedValue(
+      swapResult([
+        await signedEvmClaim({ nonce: '1', cumulativeAmount: '999', targetAmount: 999n }),
+      ])
+    );
+    await first.swap(swapReq());
+    expect(first.listSwapClaims().claims).toHaveLength(1);
+    await first.stop();
+
+    // A FRESH runner (daemon restart) reads the same store file.
+    const second = mkRunner();
+    const listed = second.listSwapClaims().claims;
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      chain: EVM_PAIR.to.chain,
+      channelId: EVM_CHANNEL,
+      nonce: '1',
+      cumulativeAmount: '999',
+      swapSignerAddress: SWAP_SIGNER,
+    });
+    await second.stop();
+  });
+
+  it('settleSwapClaims builds ONE settlement with the final watermark and submits it via the client (#352)', async () => {
+    // Chain plumbing configured: TokenNetwork + RPC for the target chain.
+    const settleRunner = new ClientRunner({
+      config: makeConfig({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        toonClientConfig: {
+          btpUrl: 'ws://apex.test/btp',
+          tokenNetworks: { [EVM_PAIR.to.chain]: '0x' + '22'.repeat(20) },
+          chainRpcUrls: { [EVM_PAIR.to.chain]: 'http://127.0.0.1:8545' },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      }),
+      createClient: () => client,
+      createRelay: fakeRelay,
+    });
+    const settleSpy = vi.fn(async () => ({
+      txHash: '0xsettletx',
+      status: 'success' as const,
+    }));
+    client.settleSwapBundle = settleSpy;
+    await settleRunner.bootstrap();
+
+    // Three verified advances → one persisted watermark.
+    vi.mocked(streamSwap).mockResolvedValue(
+      swapResult([
+        await signedEvmClaim({ nonce: '1', cumulativeAmount: '300', targetAmount: 300n, packetIndex: 0 }),
+        await signedEvmClaim({ nonce: '2', cumulativeAmount: '600', targetAmount: 300n, packetIndex: 1 }),
+        await signedEvmClaim({ nonce: '3', cumulativeAmount: '900', targetAmount: 300n, packetIndex: 2 }),
+      ])
+    );
+    await settleRunner.swap(swapReq({ packetCount: 3 }));
+
+    const settle = await settleRunner.settleSwapClaims({});
+    expect(settle.results).toHaveLength(1);
+    const r = settle.results[0]!;
+    expect(r.built).toBe(true);
+    expect(r.submitted).toBe(true);
+    expect(r.txHash).toBe('0xsettletx');
+    // ONE on-chain close with the FINAL watermark, not three.
+    expect(r.nonce).toBe('3');
+    expect(r.cumulativeAmount).toBe('900');
+    expect(settleSpy).toHaveBeenCalledTimes(1);
+    expect(typeof r.unsignedTx).toBe('string');
+
+    // The watermark is marked settled…
+    expect(settleRunner.listSwapClaims().claims[0]).toMatchObject({
+      settledNonce: '3',
+      settleTxHash: '0xsettletx',
+    });
+    // …so a re-run skips it instead of double-spending gas.
+    const again = await settleRunner.settleSwapClaims({});
+    expect(again.results[0]!.error?.code).toBe('ALREADY_SETTLED');
+    expect(settleSpy).toHaveBeenCalledTimes(1);
+    await settleRunner.stop();
+  });
+
+  it('settleSwapClaims is result-shaped when chain plumbing is missing (env-gated seam, #352)', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockResolvedValue(
+      swapResult([
+        await signedEvmClaim({ nonce: '1', cumulativeAmount: '999', targetAmount: 999n }),
+      ])
+    );
+    await runner.swap(swapReq());
+
+    // No tokenNetworks for the target chain → the tx cannot even be BUILT;
+    // the failure is result-shaped with an actionable code, never a throw.
+    const res = await runner.settleSwapClaims({});
+    expect(res.results).toHaveLength(1);
+    expect(res.results[0]!.built).toBe(false);
+    expect(res.results[0]!.submitted).toBe(false);
+    expect(res.results[0]!.error?.code).toBe('MISSING_CHAIN_CONFIG');
+  });
+
+  it('settleSwapClaims submit:false builds without submitting; no RPC yields the tx unsubmitted (#352)', async () => {
+    const dryRunner = new ClientRunner({
+      config: makeConfig({
+        // TokenNetwork configured, but NO RPC url — build works, submit can't.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        toonClientConfig: {
+          btpUrl: 'ws://apex.test/btp',
+          tokenNetworks: { [EVM_PAIR.to.chain]: '0x' + '22'.repeat(20) },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      }),
+      createClient: () => client,
+      createRelay: fakeRelay,
+    });
+    await dryRunner.bootstrap();
+    vi.mocked(streamSwap).mockResolvedValue(
+      swapResult([
+        await signedEvmClaim({ nonce: '1', cumulativeAmount: '999', targetAmount: 999n }),
+      ])
+    );
+    await dryRunner.swap(swapReq());
+
+    // Dry run: built, not submitted, no error.
+    const dry = await dryRunner.settleSwapClaims({ submit: false });
+    expect(dry.results[0]!).toMatchObject({ built: true, submitted: false });
+    expect(dry.results[0]!.error).toBeUndefined();
+    expect(typeof dry.results[0]!.unsignedTx).toBe('string');
+
+    // Real run without an RPC configured: still result-shaped.
+    const noRpc = await dryRunner.settleSwapClaims({});
+    expect(noRpc.results[0]!.built).toBe(true);
+    expect(noRpc.results[0]!.submitted).toBe(false);
+    expect(noRpc.results[0]!.error?.code).toBe('NO_RPC_CONFIGURED');
+    await dryRunner.stop();
   });
 
   it('subscribe + getEvents delegate to the relay subscription', async () => {

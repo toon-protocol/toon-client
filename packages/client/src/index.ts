@@ -74,7 +74,32 @@ export {
   type OnChainChannelClientConfig,
   ChannelManager,
   readMinaDepositTotal,
+  JsonFileReceivedClaimStore,
+  InMemoryReceivedClaimStore,
+  type ReceivedClaimStore,
+  type ReceivedClaimEntry,
 } from './channel/index.js';
+
+// Receive-side swap claim ingestion/verification + settlement (toon-client#352,
+// rolling-swap epic toon-meta#145 — spec §3.2/§9 dependency 1).
+export {
+  ingestReceivedClaims,
+  hasSettlementMetadata,
+  buildSwapSettlements,
+  entryToAccumulatedClaim,
+  parseEvmChainId,
+  decodeEvmSettlementTx,
+  submitEvmSettlement,
+  type IngestReceivedClaimsParams,
+  type IngestReceivedClaimsResult,
+  type ReceivedClaimRejection,
+  type ReceivedClaimRejectionCode,
+  type VerifiedReceivedClaim,
+  type BuildSwapSettlementsParams,
+  type SwapSettlementBuild,
+  type SubmitEvmSettlementParams,
+  type SubmitEvmSettlementResult,
+} from './swap/index.js';
 
 // Utilities
 export { withRetry, type RetryOptions } from './utils/index.js';

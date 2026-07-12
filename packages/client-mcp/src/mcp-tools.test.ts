@@ -32,6 +32,8 @@ describe('TOOL_DEFINITIONS', () => {
         'toon_read',
         'toon_status',
         'toon_swap',
+        'toon_swap_claims',
+        'toon_swap_settle',
         'toon_http_fetch_paid',
         'toon_subscribe',
         'toon_fund_wallet',
