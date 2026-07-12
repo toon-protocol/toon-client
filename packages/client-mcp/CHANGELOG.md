@@ -1,5 +1,23 @@
 # @toon-protocol/client-mcp
 
+## 0.18.0
+
+### Minor Changes
+
+- 2eb9709: Rolling swap: receive-side claim ingestion, verification, and settlement (#352, part of toon-meta#145).
+
+  The client now VERIFIES every chain-B claim a swap returns instead of accepting it blind: signature against the maker's advertised/pinned `swapSignerAddress` (sdk 2.x `verifyAccumulatedClaim`), chain/recipient consistency, and nonce/cumulative monotonicity against a durably persisted per-`(chain, channelId)` watermark (`received-claims.json`, beside the channel store — survives daemon restarts). A claim that fails verification is never counted as value received: it is rejected loudly and result-shaped (per-claim `verificationError`, `SwapResponse.warning`, `accepted: false` when nothing verified). Legacy no-metadata swaps keep the existing #349 warning path unchanged.
+
+  New settlement drive: `GET /swap/claims` lists persisted watermarks; `POST /swap/settle` (MCP: `toon_swap_claims` / `toon_swap_settle`) builds ONE on-chain close per channel from the final watermark via sdk `buildSettlementTx` (claims re-verified at settle time) and submits it on EVM when `chainRpcUrls[chain]` is configured — the env-gated seam; Solana/Mina return the built tx unsubmitted (Mina receive-side co-sign is an explicit follow-up). `@toon-protocol/client` exports the pipeline (`ingestReceivedClaims`, `buildSwapSettlements`, `submitEvmSettlement`, `JsonFileReceivedClaimStore`) and `ToonClient.settleSwapBundle`. sdk/core bumped to ^2.1.0; ILP transports accept core 2.1's ISO-string `expiresAt`.
+
+- 5bcacaf: Wire the rolling-swap sender-side defenses into the daemon (#351, toon-meta#145, sdk 2.1.0):
+
+  - **Hard floor** — `SwapRequest.minExchangeRate` (explicit) or `floorBps` (derived `pair.rate × (1 − bps/10000)`, exact decimal math); a below-floor packet surfaces `BELOW_FLOOR` + `abortReason: 'below-floor'` and the armed floor is echoed on the response for host consent surfaces. Both floor params are also on the `toon_swap` MCP schema.
+  - **Adaptive controller** — `SwapRequest.controller` (or daemon `swapDefaults.controller`) engages the sdk `AdaptiveDeltaController` for dynamic δ/W packet sizing; per-(source chain, maker, pair) state persists in `<configDir>/swap-controller-state.json` beside the channel stores and resumes across swaps and restarts.
+  - **Telemetry** — `onPacket` is now wired: per-packet outcomes (`packets`, capped at 500), `rejections`, `abortReason`, and a `realizedRate` summary land on `SwapResponse`; accepted packets are logged.
+  - **Abort + expiry** — `SwapRequest.timeoutMs` arms an `AbortSignal` (partial fills reported exactly); `packetExpiryMs` stamps deterministic per-packet PREPARE expiries.
+  - **Daemon defaults** — new `swapDefaults` config block (`floorBps`, `packetExpiryMs`, `controller`); per-request values win, an explicit `packetCount` pins the legacy even split, and with nothing configured the `streamSwap` request is unchanged. Composes with `senderConditions` (#354).
+
 ## 0.17.0
 
 ### Minor Changes
