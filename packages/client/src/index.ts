@@ -85,6 +85,23 @@ export {
   type ParsedFulfillHttp,
 } from './utils/fulfill-http.js';
 
+// Sender-chosen ILP execution conditions (toon-client#350, rolling-swap
+// prerequisite; contract: connector docs/local-delivery-fulfillment-contract.md)
+export {
+  CONDITION_LENGTH,
+  mintExecutionCondition,
+  isZeroCondition,
+  assertValidCondition,
+  fulfillmentMatchesCondition,
+  type ExecutionConditionPair,
+} from './utils/condition.js';
+export {
+  FULFILLMENT_MISMATCH_CODE,
+  FULFILLMENT_MISMATCH_MESSAGE,
+  type IlpSendParams,
+  type IlpSendResultWithFulfillment,
+} from './adapters/ilp-send.js';
+
 // Config validation (for advanced use cases)
 export {
   validateConfig,

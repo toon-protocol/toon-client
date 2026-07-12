@@ -2,10 +2,12 @@ import {
   IsomorphicBtpClient,
   BtpConnectionError,
 } from '../btp/IsomorphicBtpClient.js';
-import { ILPPacketType, type BTPProtocolData } from '../btp/protocol.js';
+import { type BTPProtocolData } from '../btp/protocol.js';
 import type { IlpClient, IlpSendResult } from '@toon-protocol/core';
 import { withRetry } from '../utils/retry.js';
-import { toBase64, fromBase64, encodeUtf8 } from '../utils/binary.js';
+import { fromBase64, encodeUtf8 } from '../utils/binary.js';
+import { mapIlpResponse, type IlpSendParams } from './ilp-send.js';
+import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
 
 export interface BtpRuntimeClientConfig {
   btpUrl: string;
@@ -99,13 +101,14 @@ export class BtpRuntimeClient implements IlpClient {
   /**
    * Sends an ILP packet via BTP with auto-reconnect on connection errors.
    * Satisfies IlpClient interface.
+   *
+   * `params` may carry a sender-chosen `executionCondition` and an explicit
+   * `expiresAt` (toon-client#350); omitting both is the legacy zero-condition
+   * path, unchanged. With a non-zero condition the FULFILL preimage is
+   * verified (`sha256(fulfillment) == condition`) and a mismatch is surfaced
+   * as a failed result — see `mapIlpResponse`.
    */
-  async sendIlpPacket(params: {
-    destination: string;
-    amount: string;
-    data: string;
-    timeout?: number;
-  }): Promise<IlpSendResult> {
+  async sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult> {
     return withRetry(() => this._sendIlpPacketOnce(params), {
       maxRetries: this.config.maxRetries ?? 3,
       retryDelay: this.config.retryDelay ?? 1000,
@@ -120,14 +123,12 @@ export class BtpRuntimeClient implements IlpClient {
   /**
    * Sends a balance proof claim via BTP protocol data, then sends an ILP packet.
    * Auto-reconnects on connection errors.
+   *
+   * Sender-chosen `executionCondition` / explicit `expiresAt` semantics are
+   * identical to {@link sendIlpPacket}.
    */
   async sendIlpPacketWithClaim(
-    params: {
-      destination: string;
-      amount: string;
-      data: string;
-      timeout?: number;
-    },
+    params: IlpSendParams,
     claim: Record<string, unknown>
   ): Promise<IlpSendResult> {
     return withRetry(() => this._sendIlpPacketWithClaimOnce(params, claim), {
@@ -178,54 +179,63 @@ export class BtpRuntimeClient implements IlpClient {
   }
 
   /**
+   * Build the ILP PREPARE for a send, applying the sender-chosen condition /
+   * explicit expiry when provided (toon-client#350) and validating that a
+   * non-zero condition is exactly 32 bytes (the OER serializer would
+   * otherwise silently zero-fill it, downgrading the packet to the legacy
+   * unverified class).
+   */
+  private buildPrepare(params: IlpSendParams): {
+    prepare: {
+      type: 12;
+      amount: bigint;
+      destination: string;
+      executionCondition: Uint8Array;
+      expiresAt: Date;
+      data: Uint8Array;
+    };
+    condition: Uint8Array | undefined;
+  } {
+    const condition = params.executionCondition;
+    if (condition !== undefined && !isZeroCondition(condition)) {
+      assertValidCondition(condition);
+    }
+    return {
+      prepare: {
+        type: 12 as const,
+        amount: BigInt(params.amount),
+        destination: params.destination,
+        executionCondition: condition ?? new Uint8Array(32),
+        expiresAt:
+          params.expiresAt ?? new Date(Date.now() + (params.timeout ?? 30000)),
+        data: fromBase64(params.data),
+      },
+      condition,
+    };
+  }
+
+  /**
    * Single-attempt ILP packet send. Reconnects if not connected.
    */
-  private async _sendIlpPacketOnce(params: {
-    destination: string;
-    amount: string;
-    data: string;
-    timeout?: number;
-  }): Promise<IlpSendResult> {
+  private async _sendIlpPacketOnce(
+    params: IlpSendParams
+  ): Promise<IlpSendResult> {
     if (!this._isConnected) {
       await this.reconnect();
     }
 
+    const { prepare, condition } = this.buildPrepare(params);
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guaranteed by reconnect() above
-    const response = await this.btpClient!.sendPacket({
-      type: 12 as const,
-      amount: BigInt(params.amount),
-      destination: params.destination,
-      executionCondition: new Uint8Array(32),
-      expiresAt: new Date(Date.now() + (params.timeout ?? 30000)),
-      data: fromBase64(params.data),
-    });
+    const response = await this.btpClient!.sendPacket(prepare);
 
-    if (response.type === ILPPacketType.FULFILL) {
-      return {
-        accepted: true,
-        data: response.data.length > 0 ? toBase64(response.data) : undefined,
-      };
-    }
-
-    // Reject
-    return {
-      accepted: false,
-      code: response.code,
-      message: response.message,
-      data: response.data.length > 0 ? toBase64(response.data) : undefined,
-    };
+    return mapIlpResponse(response, condition);
   }
 
   /**
    * Single-attempt claim + ILP packet send. Reconnects if not connected.
    */
   private async _sendIlpPacketWithClaimOnce(
-    params: {
-      destination: string;
-      amount: string;
-      data: string;
-      timeout?: number;
-    },
+    params: IlpSendParams,
     claim: Record<string, unknown>
   ): Promise<IlpSendResult> {
     if (!this._isConnected) {
@@ -244,30 +254,9 @@ export class BtpRuntimeClient implements IlpClient {
       },
     ];
 
-    const response = await this.btpClient.sendPacket(
-      {
-        type: 12 as const,
-        amount: BigInt(params.amount),
-        destination: params.destination,
-        executionCondition: new Uint8Array(32),
-        expiresAt: new Date(Date.now() + (params.timeout ?? 30000)),
-        data: fromBase64(params.data),
-      },
-      protocolData
-    );
+    const { prepare, condition } = this.buildPrepare(params);
+    const response = await this.btpClient.sendPacket(prepare, protocolData);
 
-    if (response.type === ILPPacketType.FULFILL) {
-      return {
-        accepted: true,
-        data: response.data.length > 0 ? toBase64(response.data) : undefined,
-      };
-    }
-
-    return {
-      accepted: false,
-      code: response.code,
-      message: response.message,
-      data: response.data.length > 0 ? toBase64(response.data) : undefined,
-    };
+    return mapIlpResponse(response, condition);
   }
 }

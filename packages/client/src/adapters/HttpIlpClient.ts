@@ -38,6 +38,8 @@ import { BtpRuntimeClient } from './BtpRuntimeClient.js';
 import { NetworkError, ConnectorError } from '../errors.js';
 import { withRetry } from '../utils/retry.js';
 import { toBase64, fromBase64, encodeUtf8 } from '../utils/binary.js';
+import { mapIlpResponse, type IlpSendParams } from './ilp-send.js';
+import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
 
 /** Header carrying the base64(JSON) payment-channel claim. */
 export const ILP_CLAIM_HEADER = 'ILP-Payment-Channel-Claim';
@@ -106,13 +108,14 @@ export class HttpIlpClient implements IlpClient {
    * Send an ILP PREPARE via `POST /ilp` WITHOUT a claim. The connector accepts
    * this only on free/zero-amount routes; paid writes must use
    * {@link sendIlpPacketWithClaim}. Satisfies the IlpClient interface.
+   *
+   * `params` may carry a sender-chosen `executionCondition` and an explicit
+   * `expiresAt` (toon-client#350); omitting both is the legacy zero-condition
+   * path, unchanged. With a non-zero condition the FULFILL preimage is
+   * verified (`sha256(fulfillment) == condition`) and a mismatch is surfaced
+   * as a failed result — see {@link mapIlpResponse}.
    */
-  async sendIlpPacket(params: {
-    destination: string;
-    amount: string;
-    data: string;
-    timeout?: number;
-  }): Promise<IlpSendResult> {
+  async sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult> {
     return withRetry(() => this.postPrepare(params), {
       maxRetries: this.retryConfig.maxRetries,
       retryDelay: this.retryConfig.retryDelay,
@@ -126,14 +129,12 @@ export class HttpIlpClient implements IlpClient {
    * as the `ILP-Payment-Channel-Claim` header. `claim` is the SAME JSON object
    * the BTP path attaches as the `payment-channel-claim` protocolData entry —
    * we base64(JSON.stringify(claim)) it, byte-for-byte identical to BTP.
+   *
+   * Sender-chosen `executionCondition` / explicit `expiresAt` semantics are
+   * identical to {@link sendIlpPacket}.
    */
   async sendIlpPacketWithClaim(
-    params: {
-      destination: string;
-      amount: string;
-      data: string;
-      timeout?: number;
-    },
+    params: IlpSendParams,
     claim: unknown
   ): Promise<IlpSendResult> {
     return withRetry(() => this.postPrepare(params, claim), {
@@ -195,22 +196,25 @@ export class HttpIlpClient implements IlpClient {
    * @throws {ConnectorError} On non-retryable transport errors (5xx / unexpected).
    */
   private async postPrepare(
-    params: {
-      destination: string;
-      amount: string;
-      data: string;
-      timeout?: number;
-    },
+    params: IlpSendParams,
     claim?: unknown
   ): Promise<IlpSendResult> {
     const requestTimeout = params.timeout ?? this.timeout;
+
+    // Sender-chosen condition (toon-client#350): validate length up front so
+    // the OER serializer can never silently zero-fill a malformed condition
+    // and downgrade the packet to the legacy unverified class.
+    const condition = params.executionCondition;
+    if (condition !== undefined && !isZeroCondition(condition)) {
+      assertValidCondition(condition);
+    }
 
     const prepare = serializeIlpPrepare({
       type: ILPPacketType.PREPARE,
       amount: BigInt(params.amount),
       destination: params.destination,
-      executionCondition: new Uint8Array(32),
-      expiresAt: new Date(Date.now() + requestTimeout),
+      executionCondition: condition ?? new Uint8Array(32),
+      expiresAt: params.expiresAt ?? new Date(Date.now() + requestTimeout),
       data: fromBase64(params.data),
     });
 
@@ -236,7 +240,7 @@ export class HttpIlpClient implements IlpClient {
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      return await this.mapResponse(response);
+      return await this.mapResponse(response, condition);
     } catch (error) {
       clearTimeout(timeoutId);
       throw this.mapTransportError(error, requestTimeout);
@@ -247,26 +251,21 @@ export class HttpIlpClient implements IlpClient {
    * Map a `200 OK` body (OER FULFILL/REJECT) to an IlpSendResult; map a non-2xx
    * to a transport error. Per the wire contract, ILP-level rejects arrive as a
    * 200 + REJECT body — only HTTP non-2xx means a transport-layer failure.
+   *
+   * When `sentCondition` is non-zero the FULFILL preimage is verified against
+   * it; a mismatch yields `accepted: false` (shared `mapIlpResponse` logic,
+   * identical to the BTP path).
    */
-  private async mapResponse(response: Response): Promise<IlpSendResult> {
+  private async mapResponse(
+    response: Response,
+    sentCondition?: Uint8Array
+  ): Promise<IlpSendResult> {
     if (response.ok) {
       const buf = new Uint8Array(await response.arrayBuffer());
       if (buf.length === 0) {
         throw new ConnectorError('Empty 200 body from /ilp (expected OER ILP response)');
       }
-      const ilp = deserializeIlpPacket(buf);
-      if (ilp.type === ILPPacketType.FULFILL) {
-        return {
-          accepted: true,
-          data: ilp.data.length > 0 ? toBase64(ilp.data) : undefined,
-        };
-      }
-      return {
-        accepted: false,
-        code: ilp.code,
-        message: ilp.message,
-        data: ilp.data.length > 0 ? toBase64(ilp.data) : undefined,
-      };
+      return mapIlpResponse(deserializeIlpPacket(buf), sentCondition);
     }
 
     // Transport-level error (400 malformed, 401 auth, 413 too large, 5xx).

@@ -173,4 +173,70 @@ describe('ToonClient.sendSwapPacket (Story 12.5 AC-3)', () => {
     const [, claimMessage] = sendIlpPacketWithClaim.mock.calls[0] ?? [];
     expect(claimMessage).toBe(autoClaimMessage);
   });
+
+  it('forwards a sender-chosen executionCondition + expiresAt to the transport (#350)', async () => {
+    const client = new ToonClient(baseConfig());
+    const sendIlpPacketWithClaim = vi.fn(async () => ({ accepted: true }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: {},
+      runtimeClient: {},
+      peersDiscovered: 0,
+      btpClient: { sendIlpPacketWithClaim },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).resolveClaimForDestination = vi.fn(async () => ({
+      fake: 'claim-message',
+    }));
+
+    const condition = new Uint8Array(32).fill(9);
+    const expiresAt = new Date('2026-07-12T00:00:30.000Z');
+
+    await client.sendSwapPacket({
+      destination: 'g.toon.mill1',
+      amount: 100n,
+      toonData: new Uint8Array([1]),
+      claim: { fake: true } as never,
+      executionCondition: condition,
+      expiresAt,
+    });
+
+    const [ilpParams] = sendIlpPacketWithClaim.mock.calls[0] ?? [];
+    expect(ilpParams).toMatchObject({
+      destination: 'g.toon.mill1',
+      executionCondition: condition,
+      expiresAt,
+    });
+  });
+
+  it('omits condition/expiry from transport params by default (legacy zero-condition path)', async () => {
+    const client = new ToonClient(baseConfig());
+    const sendIlpPacketWithClaim = vi.fn(async () => ({ accepted: true }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: {},
+      runtimeClient: {},
+      peersDiscovered: 0,
+      btpClient: { sendIlpPacketWithClaim },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).resolveClaimForDestination = vi.fn(async () => ({
+      fake: 'claim-message',
+    }));
+
+    await client.sendSwapPacket({
+      destination: 'g.toon.mill1',
+      amount: 100n,
+      toonData: new Uint8Array([1]),
+      claim: { fake: true } as never,
+    });
+
+    const [ilpParams] = sendIlpPacketWithClaim.mock.calls[0] ?? [];
+    expect(ilpParams).not.toHaveProperty('executionCondition');
+    expect(ilpParams).not.toHaveProperty('expiresAt');
+  });
 });

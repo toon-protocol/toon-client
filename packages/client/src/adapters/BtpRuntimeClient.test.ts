@@ -30,6 +30,11 @@ vi.mock('../btp/IsomorphicBtpClient.js', () => {
 });
 
 import { BtpRuntimeClient } from './BtpRuntimeClient.js';
+import { mintExecutionCondition } from '../utils/condition.js';
+import {
+  FULFILLMENT_MISMATCH_CODE,
+  type IlpSendResultWithFulfillment,
+} from './ilp-send.js';
 
 /** Test claim factory — includes all fields required by connector's validateClaimMessage */
 function makeTestClaim() {
@@ -292,6 +297,143 @@ describe('BtpRuntimeClient', () => {
           claim
         )
       ).rejects.toThrow('ECONNREFUSED');
+    });
+  });
+
+  describe('sender-chosen execution conditions (#350)', () => {
+    beforeEach(async () => {
+      mockConnect.mockResolvedValue(undefined);
+      await client.connect();
+    });
+
+    it('legacy default: PREPARE carries an all-zero condition and default expiry', async () => {
+      mockSendPacket.mockResolvedValue({
+        type: ILP_PACKET_TYPE.FULFILL,
+        fulfillment: new Uint8Array(32),
+        data: new Uint8Array(0),
+      });
+
+      const result = await client.sendIlpPacketWithClaim(
+        { destination: 'g.test', amount: '1000', data: '', timeout: 15000 },
+        makeTestClaim()
+      );
+
+      expect(result.accepted).toBe(true);
+      const packet = mockSendPacket.mock.calls[0]![0] as {
+        executionCondition: Uint8Array;
+        expiresAt: Date;
+      };
+      expect(packet.executionCondition).toEqual(new Uint8Array(32));
+      expect(packet.expiresAt.getTime()).toBe(Date.now() + 15000);
+    });
+
+    it('sets the condition and an explicit expiry on the outgoing PREPARE (spec R2/R7)', async () => {
+      const { preimage, condition } = mintExecutionCondition();
+      const expiresAt = new Date(Date.now() + 12345);
+      mockSendPacket.mockResolvedValue({
+        type: ILP_PACKET_TYPE.FULFILL,
+        fulfillment: preimage,
+        data: new Uint8Array(0),
+      });
+
+      const result = (await client.sendIlpPacketWithClaim(
+        {
+          destination: 'g.test',
+          amount: '1000',
+          data: '',
+          executionCondition: condition,
+          expiresAt,
+        },
+        makeTestClaim()
+      )) as IlpSendResultWithFulfillment;
+
+      expect(result.accepted).toBe(true);
+      expect(result.fulfillment).toBe(Buffer.from(preimage).toString('base64'));
+      const packet = mockSendPacket.mock.calls[0]![0] as {
+        executionCondition: Uint8Array;
+        expiresAt: Date;
+      };
+      expect(packet.executionCondition).toEqual(condition);
+      expect(packet.executionCondition.some((b: number) => b !== 0)).toBe(true);
+      expect(packet.expiresAt).toEqual(expiresAt);
+    });
+
+    it('rejects a FULFILL with the wrong preimage — failed packet, no retry', async () => {
+      const { condition } = mintExecutionCondition();
+      const wrongPreimage = mintExecutionCondition().preimage;
+      mockSendPacket.mockResolvedValue({
+        type: ILP_PACKET_TYPE.FULFILL,
+        fulfillment: wrongPreimage,
+        data: new Uint8Array(0),
+      });
+
+      const result = await client.sendIlpPacketWithClaim(
+        {
+          destination: 'g.test',
+          amount: '1000',
+          data: '',
+          executionCondition: condition,
+        },
+        makeTestClaim()
+      );
+
+      expect(result.accepted).toBe(false);
+      expect(result.code).toBe(FULFILLMENT_MISMATCH_CODE);
+      // Verification failure is not a connection error — never retried.
+      expect(mockSendPacket).toHaveBeenCalledTimes(1);
+    });
+
+    it('a FULFILL missing its fulfillment fails a conditioned packet closed', async () => {
+      const { condition } = mintExecutionCondition();
+      // Pre-#350 peer shape: no fulfillment surfaced at all.
+      mockSendPacket.mockResolvedValue({
+        type: ILP_PACKET_TYPE.FULFILL,
+        data: new Uint8Array(0),
+      });
+
+      const result = await client.sendIlpPacket({
+        destination: 'g.test',
+        amount: '1000',
+        data: '',
+        executionCondition: condition,
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.code).toBe(FULFILLMENT_MISMATCH_CODE);
+    });
+
+    it('sendIlpPacket (no claim) carries the condition too', async () => {
+      const { preimage, condition } = mintExecutionCondition();
+      mockSendPacket.mockResolvedValue({
+        type: ILP_PACKET_TYPE.FULFILL,
+        fulfillment: preimage,
+        data: new Uint8Array(0),
+      });
+
+      const result = await client.sendIlpPacket({
+        destination: 'g.test',
+        amount: '0',
+        data: '',
+        executionCondition: condition,
+      });
+
+      expect(result.accepted).toBe(true);
+      const packet = mockSendPacket.mock.calls[0]![0] as {
+        executionCondition: Uint8Array;
+      };
+      expect(packet.executionCondition).toEqual(condition);
+    });
+
+    it('throws on a malformed (non-32-byte) condition instead of zero-filling it', async () => {
+      await expect(
+        client.sendIlpPacket({
+          destination: 'g.test',
+          amount: '1000',
+          data: '',
+          executionCondition: new Uint8Array(31).fill(7),
+        })
+      ).rejects.toThrow(/32 bytes/);
+      expect(mockSendPacket).not.toHaveBeenCalled();
     });
   });
 

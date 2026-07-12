@@ -325,8 +325,15 @@ export class IsomorphicBtpClient {
               const responseData = json['data']
                 ? this.base64ToUint8Array(json['data'] as string)
                 : new Uint8Array(0);
+              // JSON FULFILLs may carry the fulfillment preimage as base64;
+              // absent means all-zero (legacy). A sender-chosen condition
+              // (toon-client#350) then fails verification — fail-closed.
+              const fulfillment = json['fulfillment']
+                ? this.base64ToUint8Array(json['fulfillment'] as string)
+                : new Uint8Array(32);
               pending.resolve({
                 type: ILPPacketType.FULFILL,
+                fulfillment,
                 data: responseData,
               });
             } else {
