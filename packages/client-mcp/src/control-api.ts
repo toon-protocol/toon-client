@@ -358,6 +358,107 @@ export interface SwapRequest {
    * keeps today's legacy zero-condition packets.
    */
   senderConditions?: boolean;
+  /**
+   * Hard floor on the per-packet exchange rate (sdk ≥2.1.0, rolling-swap
+   * toon-meta#145 spec §5). Decimal string in `SwapPair.rate` format (target
+   * whole-units per source whole-unit). When set, every fulfilled packet is
+   * checked BEFORE its claim is accumulated: a maker tape rate `R_i` below
+   * the floor — or a delivered amount below `applyRate(sourceAmount, floor)`
+   * — records a `BELOW_FLOOR` rejection and halts the stream
+   * (`abortReason: 'below-floor'`). The floor is a safety mechanism,
+   * deliberately never relaxed by the adaptive controller. Takes precedence
+   * over `floorBps`.
+   */
+  minExchangeRate?: string;
+  /**
+   * Derive the floor from the advertised pair rate instead of supplying it:
+   * `minExchangeRate = pair.rate × (1 − floorBps/10000)` (spec §5's
+   * `R₀ × (1 − tolerance)`). Integer basis points in `[0, 10000)`. Ignored
+   * when `minExchangeRate` is set. Falls back to the daemon's
+   * `swapDefaults.floorBps` when both are unset.
+   */
+  floorBps?: number;
+  /**
+   * Per-packet PREPARE expiry window in ms (sdk ≥2.1.0, rolling-swap R7): each
+   * packet is stamped `expiresAt = now + packetExpiryMs` at send time so a
+   * stalled packet expires deterministically and frees its in-flight slot.
+   * Unset keeps the legacy transport-derived expiry. Falls back to the
+   * daemon's `swapDefaults.packetExpiryMs`.
+   */
+  packetExpiryMs?: number;
+  /**
+   * Overall swap deadline in ms, wired to `streamSwap`'s `AbortSignal`. On
+   * expiry the stream aborts mid-flight, in-flight packets are drained, and
+   * the response reports the partial fill accurately (`state: 'stopped'`,
+   * `abortReason: 'aborted'`, partial `claims`/cumulatives).
+   */
+  timeoutMs?: number;
+  /**
+   * Engage the sdk's adaptive δ/W controller (`AdaptiveDeltaController`,
+   * rolling-swap spec §6) for DYNAMIC packet sizing instead of a static even
+   * split. Mutually exclusive with `packetCount`. Controller state is
+   * persisted per-(source chain, maker, pair) under the daemon's data dir so
+   * ramp/trust survives across swaps. When unset, the daemon's
+   * `swapDefaults.controller` applies (unless the request pins an explicit
+   * `packetCount`). The controller only tunes efficiency — it can never relax
+   * the `minExchangeRate` floor.
+   */
+  controller?: SwapControllerParams;
+}
+
+/**
+ * Adaptive-controller parameters (mirrors the sdk's
+ * `AdaptiveDeltaControllerConfig`, minus the identity/persistence fields the
+ * daemon supplies itself). BigInt-valued sdk fields travel as decimal strings.
+ */
+export interface SwapControllerParams {
+  /**
+   * Maker's advertised two-sided spread as a fraction (e.g. `0.004` = 40 bps).
+   * REQUIRED — ε is denominated off the half-spread and the sdk deliberately
+   * has no default (an invented spread would silently mis-size ε).
+   */
+  advertisedSpread: number;
+  /** Absolute per-packet ceiling in source micro-units (decimal string). */
+  maxPacketAmount?: string;
+  /** Floor on δ in source micro-units (decimal string). Default `1`. */
+  minPacketAmount?: string;
+  /** Ceiling on the in-flight window W. Default 8. */
+  maxWindow?: number;
+  /** Clean-fulfill streak length K per widen step. Default 16. */
+  cleanStreakLength?: number;
+  /** Cold-start divisor: `δ_0 = notional / coldStartDivisor`. Default 256. */
+  coldStartDivisor?: number;
+  /** EWMA smoothing factor α for `v`/`τ`, in (0, 1]. Default 0.2. */
+  ewmaAlpha?: number;
+}
+
+/** Per-packet telemetry for one accepted FULFILL (from the sdk's `onPacket`). */
+export interface SwapPacketOutcome {
+  /** 0-indexed packet number. With an adaptive window > 1, completion order. */
+  index: number;
+  /** Source-asset amount sent for this packet (micro-units, decimal). */
+  sourceAmount: string;
+  /** Target-asset amount claimed (micro-units, decimal). */
+  targetAmount: string;
+  /** Effective rate for this packet (target/source, whole units). Display-only. */
+  effectiveRate: number;
+  /** Absolute deviation from the advertised rate (e.g. 0.0125 = 1.25%). */
+  rateDeviation: number;
+  /** Maker's fresh quote-tape rate `R_i` applied to THIS packet, when emitted. */
+  rate?: string;
+  /** Unix ms when the maker's rate source produced `rate`. Present iff `rate` is. */
+  rateTimestamp?: number;
+}
+
+/** One rejected packet (e.g. `BELOW_FLOOR`, or a maker/connector reject). */
+export interface SwapRejection {
+  /** 0-indexed packet number. */
+  packetIndex: number;
+  /** Source-asset amount the packet attempted (micro-units, decimal). */
+  sourceAmount: string;
+  /** ILP-style rejection code (e.g. `BELOW_FLOOR`, `F99`, `T99`). */
+  code: string;
+  message: string;
 }
 
 /** One accumulated, decrypted claim harvested from a single swap packet. */
@@ -407,6 +508,36 @@ export interface SwapResponse {
    * `MISSING_SETTLEMENT_METADATA`; this surfaces the problem at swap time.
    */
   warning?: string;
+  /**
+   * Why the stream ended (sdk `StreamSwapResult.abortReason`): `'complete'`,
+   * `'aborted'` (signal / `timeoutMs`), `'stopped'`, `'callback-stop'`,
+   * `'callback-throw'`, `'rate-deviation'`, `'below-floor'` (floor breach —
+   * pairs with a `BELOW_FLOOR` rejection), or `'all-rejected'`.
+   */
+  abortReason?: string;
+  /**
+   * Per-packet outcomes for accepted FULFILLs, in completion order (host
+   * telemetry / consent surface). Capped at 500 entries — see
+   * `packetsTruncated`.
+   */
+  packets?: SwapPacketOutcome[];
+  /** Set when `packets` was capped; cumulative totals remain exact. */
+  packetsTruncated?: boolean;
+  /** Per-packet rejections (floor breaches, maker rejects, stale-rate T99s). */
+  rejections?: SwapRejection[];
+  /**
+   * Realized-rate summary: `cumulativeTarget / cumulativeSource` in WHOLE
+   * units (scale-adjusted per the pair). Display-only number; compare against
+   * the advertised `pair.rate` and `minExchangeRate`. Absent when nothing
+   * was filled.
+   */
+  realizedRate?: number;
+  /**
+   * The hard floor that was armed for this swap (explicit param or derived
+   * from `floorBps`), echoed so hosts can show the guaranteed worst-case rate
+   * alongside the fee/consent surface. Absent when no floor was armed.
+   */
+  minExchangeRate?: string;
 }
 
 /**

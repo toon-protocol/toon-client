@@ -654,6 +654,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: 'number',
           description: 'Split the swap into N equal packets (default 1).',
         },
+        minExchangeRate: {
+          type: 'string',
+          description:
+            'Hard floor on the per-packet exchange rate (decimal string, ' +
+            'target whole-units per source whole-unit). A packet quoted or ' +
+            'delivered below the floor is rejected (BELOW_FLOOR) and the ' +
+            'swap halts; the armed floor is echoed on the response.',
+        },
+        floorBps: {
+          type: 'number',
+          description:
+            'Derive the floor from the advertised rate instead: ' +
+            'minExchangeRate = pair.rate × (1 − floorBps/10000). Integer ' +
+            'basis points in [0, 10000). Ignored when minExchangeRate is set.',
+        },
       },
       required: [
         'destination',
@@ -1170,6 +1185,12 @@ export async function dispatchTool(
             chainRecipient: String(args['chainRecipient']),
             ...(typeof args['packetCount'] === 'number'
               ? { packetCount: args['packetCount'] }
+              : {}),
+            ...(typeof args['minExchangeRate'] === 'string'
+              ? { minExchangeRate: args['minExchangeRate'] }
+              : {}),
+            ...(typeof args['floorBps'] === 'number'
+              ? { floorBps: args['floorBps'] }
               : {}),
           })
         );

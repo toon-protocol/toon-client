@@ -5,6 +5,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // ephemeral key generated inside swap()).
 vi.mock('@toon-protocol/sdk/swap', () => ({ streamSwap: vi.fn() }));
 import { streamSwap } from '@toon-protocol/sdk/swap';
+// The controller surface (#351) is NOT mocked: the state-persistence tests
+// below exercise the real AdaptiveDeltaController + JsonFileSwapControllerStateStore.
+import { swapControllerStateKey } from '@toon-protocol/sdk';
+import type { AdaptiveDeltaController, PacketProgress } from '@toon-protocol/sdk';
 // Mock only the faucet boundary so async fundWallet jobs run without a real
 // faucet; every other `@toon-protocol/client` export is preserved.
 vi.mock('@toon-protocol/client', async (importOriginal) => {
@@ -24,6 +28,7 @@ import {
   NotReadyError,
   PublishRejectedError,
   TargetError,
+  deriveFloorRate,
   type ToonClientLike,
 } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
@@ -992,6 +997,397 @@ describe('ClientRunner', () => {
     expect(res.packetsAccepted).toBe(0);
     expect(res.code).toBe('F99');
     expect(res.message).toBe('Payment rejected');
+  });
+
+  // ── Rolling-swap sender defenses (#351): floor, controller, telemetry ──────
+
+  /** The pair used across the #351 defense tests (advertised rate 4.0). */
+  const DEFENSE_PAIR = {
+    from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+    to: { assetCode: 'MINA', assetScale: 6, chain: 'mina:devnet' },
+    rate: '4.0',
+  };
+  const DEFENSE_SWAP = {
+    destination: 'g.proxy.swap',
+    amount: '1000',
+    swapPubkey: 'cd'.repeat(32),
+    pair: DEFENSE_PAIR,
+    chainRecipient: 'SoLrecipient',
+  };
+  /** Minimal completed StreamSwapResult, override what the test needs. */
+  function swapResult(
+    overrides: Record<string, unknown> = {}
+  ): Awaited<ReturnType<typeof streamSwap>> {
+    return {
+      state: 'completed',
+      claims: [],
+      rejections: [],
+      errors: [],
+      abortReason: 'complete',
+      cumulativeSource: 0n,
+      cumulativeTarget: 0n,
+      packetsSent: 0,
+      packetsScheduled: 0,
+      ...overrides,
+    } as unknown as Awaited<ReturnType<typeof streamSwap>>;
+  }
+
+  it('swap passes minExchangeRate through and surfaces a BELOW_FLOOR halt (#351)', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    vi.mocked(streamSwap).mockResolvedValue(
+      swapResult({
+        state: 'failed',
+        rejections: [
+          {
+            packetIndex: 0,
+            sourceAmount: 1000n,
+            code: 'BELOW_FLOOR',
+            message: 'tape rate 3.9000 below floor 3.98',
+          },
+        ],
+        abortReason: 'below-floor',
+      })
+    );
+
+    const res = await runner.swap({ ...DEFENSE_SWAP, minExchangeRate: '3.98' });
+
+    // The hard floor reached the sdk verbatim.
+    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
+    expect(arg.minExchangeRate).toBe('3.98');
+    // The breach halted the stream and is surfaced on the response.
+    expect(res.accepted).toBe(false);
+    expect(res.state).toBe('failed');
+    expect(res.code).toBe('BELOW_FLOOR');
+    expect(res.abortReason).toBe('below-floor');
+    expect(res.rejections).toEqual([
+      {
+        packetIndex: 0,
+        sourceAmount: '1000',
+        code: 'BELOW_FLOOR',
+        message: 'tape rate 3.9000 below floor 3.98',
+      },
+    ]);
+    // Consent surface: the armed floor is echoed for the host to show.
+    expect(res.minExchangeRate).toBe('3.98');
+  });
+
+  it('swap derives the floor from floorBps against the advertised rate (spec §5 R₀ × (1 − tolerance))', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult());
+    // 50 bps under the advertised 4.0 → 3.98, exact decimal-string math.
+    const res = await runner.swap({ ...DEFENSE_SWAP, floorBps: 50 });
+    expect(vi.mocked(streamSwap).mock.calls[0]![0].minExchangeRate).toBe(
+      '3.98'
+    );
+    expect(res.minExchangeRate).toBe('3.98');
+  });
+
+  it('deriveFloorRate does exact decimal math and validates its inputs', () => {
+    expect(deriveFloorRate('4.0', 50)).toBe('3.98');
+    expect(deriveFloorRate('3.9800', 50)).toBe('3.9601');
+    expect(deriveFloorRate('1', 0)).toBe('1');
+    expect(deriveFloorRate('0.000001', 2500)).toBe('0.00000075');
+    expect(deriveFloorRate('4.0', undefined)).toBeUndefined();
+    expect(() => deriveFloorRate('4.0', 10000)).toThrow(InvalidPayloadError);
+    expect(() => deriveFloorRate('4.0', -1)).toThrow(InvalidPayloadError);
+    expect(() => deriveFloorRate('4.0', 0.5)).toThrow(InvalidPayloadError);
+    expect(() => deriveFloorRate('4e-2', 50)).toThrow(InvalidPayloadError);
+  });
+
+  it('swap with defaults off sends the byte-identical legacy request (only telemetry onPacket added)', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult());
+    await runner.swap(DEFENSE_SWAP);
+    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
+    // Exactly the legacy key set plus the local-only telemetry callback: no
+    // floor, no controller, no expiry stamping, no abort signal on the wire.
+    expect(Object.keys(arg).sort()).toEqual(
+      [
+        'chainRecipient',
+        'client',
+        'onPacket',
+        'pair',
+        'packetCount',
+        'senderSecretKey',
+        'swapIlpAddress',
+        'swapPubkey',
+        'totalAmount',
+      ].sort()
+    );
+    expect(arg.packetCount).toBe(1);
+    expect(arg.minExchangeRate).toBeUndefined();
+    expect(arg.controller).toBeUndefined();
+    expect(arg.packetExpiryMs).toBeUndefined();
+    expect(arg.signal).toBeUndefined();
+  });
+
+  it('swap engages the adaptive controller when configured, replacing the even split (#351)', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    vi.mocked(streamSwap).mockImplementation(async (params) => {
+      // The controller is live: it sizes packets and accepts observations.
+      const ctrl = params.controller!;
+      const delta = ctrl.nextDelta(1000n);
+      expect(delta).toBeGreaterThanOrEqual(1n);
+      expect(delta).toBeLessThanOrEqual(1000n);
+      expect(ctrl.window).toBeGreaterThanOrEqual(1);
+      await ctrl.observe({ resolution: 'fulfill', rttMs: 50 });
+      return swapResult();
+    });
+    await runner.swap({
+      ...DEFENSE_SWAP,
+      controller: { advertisedSpread: 0.004, maxPacketAmount: '100' },
+    });
+    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
+    expect(arg.controller).toBeDefined();
+    // EXACTLY ONE of controller/packetCount (sdk contract): no even split.
+    expect(arg.packetCount).toBeUndefined();
+  });
+
+  it('swap rejects controller + packetCount (mutually exclusive) and a missing advertisedSpread', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult());
+    await expect(
+      runner.swap({
+        ...DEFENSE_SWAP,
+        packetCount: 2,
+        controller: { advertisedSpread: 0.004 },
+      })
+    ).rejects.toThrow(InvalidPayloadError);
+    await expect(
+      runner.swap({
+        ...DEFENSE_SWAP,
+        controller: { advertisedSpread: 0 },
+      })
+    ).rejects.toThrow(/advertisedSpread/);
+    expect(streamSwap).not.toHaveBeenCalled();
+  });
+
+  it('swap persists controller state per-(chain, maker, pair) and reloads it on the next swap (#351)', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    const controllerParams = { advertisedSpread: 0.004 };
+
+    // Swap 1: cold start. Seed δ via nextDelta, persist via observe.
+    vi.mocked(streamSwap).mockImplementation(async (params) => {
+      const ctrl = params.controller as AdaptiveDeltaController;
+      ctrl.nextDelta(BigInt(DEFENSE_SWAP.amount)); // seeds δ_0 = 1000/256 = 3
+      await ctrl.observe({ resolution: 'fulfill', rttMs: 100 });
+      return swapResult();
+    });
+    await runner.swap({ ...DEFENSE_SWAP, controller: controllerParams });
+
+    // State landed in the daemon data dir, keyed by the canonical tuple.
+    const stateFile = join(tmpDir, 'swap-controller-state.json');
+    const key = swapControllerStateKey({
+      makerPubkey: DEFENSE_SWAP.swapPubkey,
+      pair: DEFENSE_PAIR,
+    });
+    const persisted = JSON.parse(readFileSync(stateFile, 'utf8')) as Record<
+      string,
+      { v: number; delta: string }
+    >;
+    expect(Object.keys(persisted)).toEqual([key]);
+    expect(persisted[key]).toMatchObject({ v: 1, delta: '3' });
+
+    // Swap 2 (same tuple): the controller resumes from the persisted ramp
+    // instead of starting cold.
+    let resumedDelta: string | undefined;
+    vi.mocked(streamSwap).mockImplementation(async (params) => {
+      resumedDelta = (params.controller as AdaptiveDeltaController).state
+        .delta;
+      return swapResult();
+    });
+    await runner.swap({ ...DEFENSE_SWAP, controller: controllerParams });
+    expect(resumedDelta).toBe('3');
+
+    // A different maker is a different tuple: cold state, same file.
+    vi.mocked(streamSwap).mockImplementation(async (params) => {
+      resumedDelta = (params.controller as AdaptiveDeltaController).state
+        .delta;
+      return swapResult();
+    });
+    await runner.swap({
+      ...DEFENSE_SWAP,
+      swapPubkey: 'ef'.repeat(32),
+      controller: controllerParams,
+    });
+    expect(resumedDelta).toBe('0'); // '0' = δ not yet seeded (cold start)
+  });
+
+  it('swap applies daemon-level swapDefaults, and an explicit packetCount pins the legacy split', async () => {
+    const c = new FakeClient();
+    const r = new ClientRunner({
+      config: makeConfig({
+        apex: {
+          destination: 'g.proxy',
+          peerId: 'proxy',
+          chain: 'evm',
+          chainKey: 'evm:base:84532',
+          chainId: 84532,
+          settlementAddress: '0xapex',
+          tokenAddress: '0xusdc',
+          tokenNetwork: '0xtn',
+        },
+        swapDefaults: {
+          floorBps: 100,
+          packetExpiryMs: 5000,
+          controller: { advertisedSpread: 0.004 },
+        },
+      }),
+      createClient: () => c,
+      createRelay: fakeRelay,
+    });
+    await r.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult());
+
+    // No per-request knobs → daemon defaults engage everything.
+    await r.swap(DEFENSE_SWAP);
+    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
+    expect(arg.minExchangeRate).toBe('3.96'); // 4.0 × (1 − 100/10000)
+    expect(arg.packetExpiryMs).toBe(5000);
+    expect(arg.controller).toBeDefined();
+    expect(arg.packetCount).toBeUndefined();
+
+    // An explicit packetCount pins the legacy even split (the default
+    // controller stays out); floor/expiry defaults still apply.
+    await r.swap({ ...DEFENSE_SWAP, packetCount: 2 });
+    const arg2 = vi.mocked(streamSwap).mock.calls[1]![0];
+    expect(arg2.controller).toBeUndefined();
+    expect(arg2.packetCount).toBe(2);
+    expect(arg2.minExchangeRate).toBe('3.96');
+
+    // A per-request floor beats the daemon default.
+    await r.swap({ ...DEFENSE_SWAP, minExchangeRate: '3.99' });
+    expect(vi.mocked(streamSwap).mock.calls[2]![0].minExchangeRate).toBe(
+      '3.99'
+    );
+  });
+
+  it('swap surfaces per-packet outcomes + a realized-rate summary from onPacket (#351)', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    const progress = (index: number): PacketProgress =>
+      Object.freeze({
+        index,
+        total: 2,
+        sourceAmount: 500n,
+        targetAmount: 1990n,
+        advertisedRate: '4.0',
+        effectiveRate: 3.98,
+        rateDeviation: 0.005,
+        cumulativeSource: BigInt(500 * (index + 1)),
+        cumulativeTarget: BigInt(1990 * (index + 1)),
+        rate: '3.99',
+        rateTimestamp: 1234,
+        state: 'running',
+      }) as PacketProgress;
+    vi.mocked(streamSwap).mockImplementation(async (params) => {
+      await params.onPacket!(progress(0));
+      await params.onPacket!(progress(1));
+      return swapResult({
+        cumulativeSource: 1000n,
+        cumulativeTarget: 3980n,
+        packetsSent: 2,
+        packetsScheduled: 2,
+      });
+    });
+
+    const res = await runner.swap(DEFENSE_SWAP);
+    expect(res.packets).toEqual([
+      {
+        index: 0,
+        sourceAmount: '500',
+        targetAmount: '1990',
+        effectiveRate: 3.98,
+        rateDeviation: 0.005,
+        rate: '3.99',
+        rateTimestamp: 1234,
+      },
+      expect.objectContaining({ index: 1 }),
+    ]);
+    expect(res.packetsTruncated).toBeUndefined();
+    // Realized rate in whole units (equal scales): 3980 / 1000 = 3.98.
+    expect(res.realizedRate).toBeCloseTo(3.98, 10);
+    expect(res.abortReason).toBe('complete');
+  });
+
+  it('swap arms an abort signal from timeoutMs and reports a partial fill accurately', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    const pair = DEFENSE_PAIR;
+    vi.mocked(streamSwap).mockResolvedValue(
+      swapResult({
+        state: 'stopped',
+        abortReason: 'aborted',
+        claims: [
+          {
+            packetIndex: 0,
+            sourceAmount: 500n,
+            targetAmount: 1990n,
+            claimBytes: new Uint8Array([9]),
+            swapEphemeralPubkey: 'ab'.repeat(32),
+            swapSignerAddress: '0xswapsigner',
+            pair,
+            receivedAt: 0,
+          },
+        ],
+        cumulativeSource: 500n,
+        cumulativeTarget: 1990n,
+        packetsSent: 2,
+        packetsScheduled: 2,
+      })
+    );
+
+    const res = await runner.swap({ ...DEFENSE_SWAP, timeoutMs: 60_000 });
+    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
+    expect(arg.signal).toBeInstanceOf(AbortSignal);
+    // Partial fill: one of two packets landed before the abort.
+    expect(res.state).toBe('stopped');
+    expect(res.abortReason).toBe('aborted');
+    expect(res.packetsAccepted).toBe(1);
+    expect(res.cumulativeSource).toBe('500');
+    expect(res.cumulativeTarget).toBe('1990');
+  });
+
+  it('swap composes #354 senderConditions with the #351 defenses (floor + controller + conditions)', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    const sendSpy = vi.spyOn(client, 'sendSwapPacket');
+    vi.mocked(streamSwap).mockImplementation(async (params) => {
+      // Both wired at once: the defense params reached the sdk …
+      expect(params.minExchangeRate).toBe('3.98');
+      expect(params.controller).toBeDefined();
+      expect(params.packetCount).toBeUndefined();
+      // … and the client still mints a fresh sender-chosen condition.
+      await params.client.sendSwapPacket({
+        destination: params.swapIlpAddress,
+        amount: 500n,
+        toonData: new Uint8Array([0]),
+      });
+      return swapResult();
+    });
+
+    await runner.swap({
+      ...DEFENSE_SWAP,
+      senderConditions: true,
+      minExchangeRate: '3.98',
+      controller: { advertisedSpread: 0.004 },
+    });
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const condition = (
+      sendSpy.mock.calls[0]![0] as unknown as {
+        executionCondition?: Uint8Array;
+      }
+    ).executionCondition;
+    expect(condition).toBeInstanceOf(Uint8Array);
+    expect(condition!.some((b) => b !== 0)).toBe(true);
   });
 
   it('subscribe + getEvents delegate to the relay subscription', async () => {
