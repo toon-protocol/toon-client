@@ -295,6 +295,7 @@ export type ResolvedConfig = Required<
     | 'settlementTimeout'
     | 'solanaChannel'
     | 'minaChannel'
+    | 'swapMinaMakerSignatures'
     | 'channelStorePath'
     | 'knownPeers'
     | 'destinationAddress'
@@ -333,6 +334,7 @@ export type ResolvedConfig = Required<
   settlementTimeout?: number;
   solanaChannel?: ToonClientConfig['solanaChannel'];
   minaChannel?: ToonClientConfig['minaChannel'];
+  swapMinaMakerSignatures?: ToonClientConfig['swapMinaMakerSignatures'];
   channelStorePath?: string;
   knownPeers?: {
     pubkey: string;

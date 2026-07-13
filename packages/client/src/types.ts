@@ -343,6 +343,22 @@ export interface ToonClientConfig {
    */
   minaChannel?: MinaChannelClientOptions;
 
+  /**
+   * Receive-side Mina swap-claim redemption (#357): maker on-chain co-signatures
+   * keyed by dest-channel zkApp address (B62).
+   *
+   * On-chain `claimFromChannel` is dual-party — it verifies BOTH participants
+   * signed `[commitment, nonce, channelHash]`. The recipient (this client)
+   * produces its own co-signature from the derived Mina key, but the swap-wire
+   * claim only carries the maker's `balanceProofFieldsMina` signature (a
+   * DIFFERENT message), so the maker must additionally deliver a
+   * payment-channel-commitment-form co-signature. Until that flows over the swap
+   * wire, an operator can inject the maker's `{ r, s }` here to complete a
+   * receive-side redemption. Absent one, settlement fails closed with
+   * `MINA_MAKER_COSIGN_REQUIRED` (never a silent pass).
+   */
+  swapMinaMakerSignatures?: Record<string, { r: string; s: string }>;
+
   // ============================================================================
   // PERSISTENCE (optional)
   // ============================================================================

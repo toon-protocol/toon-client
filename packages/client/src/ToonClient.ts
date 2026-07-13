@@ -48,12 +48,37 @@ import {
   submitEvmSettlement,
   type SubmitEvmSettlementResult,
 } from './swap/settle-received-claims.js';
+import {
+  submitMinaSettlement,
+  type MinaSignaturePair,
+} from './swap/mina-settlement.js';
 import type {
   ToonClientConfig,
   ToonStartResult,
   PublishEventResult,
   SignedBalanceProof,
 } from './types.js';
+
+/**
+ * Validate an operator-supplied maker Mina co-signature (`{ r, s }` decimal
+ * Field strings). Returns undefined for an absent/malformed entry so the
+ * settlement path fails closed with `MINA_MAKER_COSIGN_REQUIRED` rather than
+ * forwarding garbage into o1js.
+ */
+function parseMakerMinaSignature(
+  raw: { r: string; s: string } | undefined
+): MinaSignaturePair | undefined {
+  if (
+    raw &&
+    typeof raw.r === 'string' &&
+    raw.r.length > 0 &&
+    typeof raw.s === 'string' &&
+    raw.s.length > 0
+  ) {
+    return { r: raw.r, s: raw.s };
+  }
+  return undefined;
+}
 
 /**
  * Internal state for ToonClient after initialization.
@@ -1080,6 +1105,29 @@ export class ToonClient {
   async settleSwapBundle(
     bundle: SettlementBundle
   ): Promise<SubmitEvmSettlementResult> {
+    if (bundle.chainKind === 'mina') {
+      // Mina receive-side redemption (#357): reads the live channel state,
+      // produces the recipient's co-signature, and drives the dual-party
+      // `claimFromChannel` (o1js proving). Config-gated on minaChannel.graphqlUrl
+      // + a derived Mina key; fails closed (never a silent pass) with a stable
+      // MinaSettlementError code that the daemon surfaces.
+      if (!this.minaPrivateKey) {
+        throw new Error(
+          'Mina signer not configured (no mnemonic / mina-signer) — cannot co-sign the receive-side claim.'
+        );
+      }
+      const makerSignature = parseMakerMinaSignature(
+        this.config.swapMinaMakerSignatures?.[bundle.channelId]
+      );
+      const { txHash } = await submitMinaSettlement(bundle, {
+        recipientPrivateKey: this.minaPrivateKey,
+        ...(this.config.minaChannel?.graphqlUrl
+          ? { graphqlUrl: this.config.minaChannel.graphqlUrl }
+          : {}),
+        ...(makerSignature ? { makerSignature } : {}),
+      });
+      return { txHash };
+    }
     if (bundle.chainKind !== 'evm') {
       throw new Error(
         `Swap settlement submission for ${bundle.chainKind} (${bundle.chain}) is not wired yet — EVM only today.`

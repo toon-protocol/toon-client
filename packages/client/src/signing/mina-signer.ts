@@ -43,7 +43,7 @@ const MINA_CLAIM_NETWORK = 'devnet' as const;
  * of `sha256` to stay safely inside the Pallas field (< 2^254). Non-zero by
  * construction (connector `validateMinaClaim` requires a non-empty `salt`).
  */
-function deriveMinaSalt(zkAppAddress: string, nonce: number): bigint {
+export function deriveMinaSalt(zkAppAddress: string, nonce: number): bigint {
   const digestHex = bytesToHex(
     sha256(new TextEncoder().encode(`mina-pc-salt:${zkAppAddress}:${nonce}`))
   );
