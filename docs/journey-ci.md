@@ -39,7 +39,7 @@ needed persistence. A dedicated box is only worth it for a *resident, always-on*
 | --- | --- | --- |
 | `HUB_INSTANCE_LABEL` | `relay-hub` | Linode label the job looks up to resolve the hub IP. |
 | `HUB_DESTINATION` | `g.proxy` | Apex ILP address (protocol constant, not IP-derived). |
-| `CLIENT_ACCOUNT_INDEX` | `0` | BIP-44 account index the client wallet derives at. |
+| `CLIENT_ACCOUNT_INDEX` | `1` | BIP-44 account index the client wallet derives at. |
 | `HUB_BTP_URL` / `HUB_RELAY_URL` | _(derived)_ | Optional overrides; otherwise `ws://<hub-ip>:3000` / `:7100` from the discovered IP. |
 
 The job resolves the hub IP via the Linode API by `HUB_INSTANCE_LABEL` and derives the
