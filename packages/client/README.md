@@ -51,14 +51,11 @@ pnpm add mina-signer
 These coordinates go straight into the [`ToonClient` config](#quick-start) below.
 
 > **Local development (from a clone of this repo, not the npm package).** To try the client
-> end-to-end against a throwaway local network, start the monorepo's SDK E2E stack — Anvil + two peer
-> nodes + relays. This script ships with the repo, **not** the published package:
->
-> ```bash
-> ./scripts/sdk-e2e-infra.sh up     # start (Ctrl-C-safe; `down` to stop)
-> curl http://localhost:19100/health   # peer 1 health
-> ./scripts/sdk-e2e-infra.sh down   # stop
-> ```
+> end-to-end against a throwaway local network — Anvil + two peer nodes + relays — see
+> [`packages/client/tests/e2e/README.md`](tests/e2e/README.md) for the service topology and manual
+> testing snippet. Its automated setup steps assume the monorepo's `scripts/sdk-e2e-infra.sh`
+> wrapper and a `docker-compose-sdk-e2e.yml`, neither of which ships in this extracted repo; treat
+> those steps as a reference for provisioning the equivalent infrastructure yourself.
 >
 > | Service          | Port  | Purpose                                             |
 > | ---------------- | ----- | --------------------------------------------------- |
@@ -275,38 +272,36 @@ pnpm test:coverage        # Run with coverage report
 
 ### E2E Tests
 
-E2E tests require the SDK E2E infrastructure:
+E2E tests require Docker Compose infrastructure. See
+[tests/e2e/README.md](tests/e2e/README.md) for the service topology — note its automated setup
+script isn't included in this extracted repo either (see the Prerequisites section above), so
+provision the equivalent infrastructure manually, then run:
 
 ```bash
-# Start infrastructure
-./scripts/sdk-e2e-infra.sh up
-
-# Run E2E tests
 cd packages/client
 pnpm test:e2e
 ```
-
-See [tests/e2e/README.md](tests/e2e/README.md) for detailed E2E setup.
 
 ---
 
 ## Examples
 
-See [examples/client-example/](../../examples/client-example/) for standalone client examples:
+See [examples/](examples/) for standalone client examples:
 
-- **01 - Publish Event** (`01-publish-event.ts`): Full client lifecycle with self-describing claims
-- **02 - Payment Channel Lifecycle** (`02-payment-channel.ts`): Multiple events with incrementing balance proofs
-- **03 - Multi-Chain Publish** (`03-multi-chain-publish.ts`): Publishing with multiple settlement chains configured
-- **04 - Subscribe to Events** (`04-subscribe-events.ts`): Reading events back from the relay (free)
+- **Basic Publish** (`basic-publish.ts`): Publish a Nostr event to the TOON network
+- **Publish and Verify** (`publish-and-verify.ts`): Publish an event and verify via connector logs
+- **Publish to Peer1** (`publish-to-peer1.ts`): Multi-hop ILP routing via a peer connector
+- **Multi-Hop Routing** (`multi-hop-routing.ts`): Route an event through peer1 to the genesis relay
+- **With Payment Channels** (`with-payment-channels.ts`): Configure EVM payment channels and publish with a signed balance proof
 
 ---
 
 ## Related Packages
 
-- **[@toon-protocol/core](../core/)** — Core protocol (peer discovery, bootstrap, `buildBlobStorageRequest`)
-- **[@toon-protocol/relay](../relay/)** — Operator product running the apex connector plus relay/swap/store nodes; also exports `encodeEventToToon` / `decodeEventFromToon` for event encoding
-- **[@toon-protocol/sdk](../sdk/)** — Higher-level helpers including `streamSwap()` for multi-chain swaps via a **swap**
-- **[@toon-protocol/bls](../bls/)** — Business Logic Server (pricing, validation, storage)
+- **[@toon-protocol/core](https://www.npmjs.com/package/@toon-protocol/core)** — Core protocol (peer discovery, bootstrap, `buildBlobStorageRequest`)
+- **[@toon-protocol/relay](https://www.npmjs.com/package/@toon-protocol/relay)** — Operator product running the apex connector plus relay/swap/store nodes; also exports `encodeEventToToon` / `decodeEventFromToon` for event encoding
+- **[@toon-protocol/sdk](https://www.npmjs.com/package/@toon-protocol/sdk)** — Higher-level helpers including `streamSwap()` for multi-chain swaps via a **swap**
+- **[@toon-protocol/bls](https://www.npmjs.com/package/@toon-protocol/bls)** — Business Logic Server (pricing, validation, storage)
 
 ---
 
