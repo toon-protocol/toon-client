@@ -37,20 +37,17 @@ Output is a plain static directory in `packages/rig-web/dist/` (~2.2 MB, ~22 fil
 The current standing deployment is GitHub Pages, serving the devnet-pointed build:
 
 - **URL:** <https://toon-protocol.github.io/toon-client/>
-- Branch: `gh-pages` (orphan branch containing only `dist/` + `.nojekyll`)
 
-Repeatable deploy:
+Deploys are automatic: [`.github/workflows/deploy-rig-web.yml`](../../.github/workflows/deploy-rig-web.yml)
+builds and publishes `dist/` via GitHub's Pages Actions build (`actions/configure-pages` +
+`actions/deploy-pages`) on every push to `main` that touches `packages/rig-web/**`,
+`packages/arweave/**`, or `packages/views/**` — the live UI tracks `main` automatically, no
+manual deploy step required. To redeploy without a code change, run the workflow manually via
+`workflow_dispatch`.
 
-```bash
-VITE_DEFAULT_RELAY=wss://relay-ws.devnet.toonprotocol.dev \
-  pnpm --filter @toon-protocol/rig-web... build
-cd packages/rig-web/dist
-touch .nojekyll
-git init -b gh-pages && git add -A && git commit -m "deploy: rig-web"
-git push --force https://github.com/toon-protocol/toon-client.git gh-pages:gh-pages
-```
-
-Pages picks up the branch automatically (already enabled on the repo). Point at any relay without rebuilding via the hash: `…/toon-client/#relay=wss://relay.example` (boot code rewrites this to the router-safe `#/?relay=…`, which also works directly — see [Relay resolution order](#relay-resolution-order)).
+Point at any relay without rebuilding via the hash: `…/toon-client/#relay=wss://relay.example`
+(boot code rewrites this to the router-safe `#/?relay=…`, which also works directly — see
+[Relay resolution order](#relay-resolution-order)).
 
 ### Arweave (permanent, decentralized — currently blocked)
 
