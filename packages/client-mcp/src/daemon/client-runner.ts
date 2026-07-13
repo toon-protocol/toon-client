@@ -36,13 +36,16 @@ import {
   extractArweaveTxId,
   fundWallet as faucetFund,
   mintExecutionCondition,
-  ingestReceivedClaims,
+  ingestAndReveal,
   buildSwapSettlements,
   InMemoryReceivedClaimStore,
   JsonFileReceivedClaimStore,
+  InMemoryPreimageRetentionStore,
   type FaucetChain,
   type ReceivedClaimEntry,
   type ReceivedClaimStore,
+  type PreimageRetentionStore,
+  type RevealFn,
 } from '@toon-protocol/client';
 import { loadMinaSignerClient, type SettlementBundle } from '@toon-protocol/sdk';
 import {
@@ -1668,8 +1671,11 @@ export class ClientRunner {
     };
 
     const senderSecretKey = generateSecretKey();
+    // Session-scoped preimage retention (#360): populated only on the
+    // sender-chosen path, consumed by the leg-B reveal in `ingestAndReveal`.
+    const preimages = new InMemoryPreimageRetentionStore();
     const swapClient = req.senderConditions
-      ? this.withSenderConditions(apex.client)
+      ? this.withSenderConditions(apex.client, preimages)
       : apex.client;
     const result = await streamSwap({
       client: swapClient as unknown as Parameters<
@@ -1692,18 +1698,31 @@ export class ClientRunner {
     });
     const firstReject = result.rejections[0];
 
-    // #352: receipt-time verification + durable ingestion. Every FULFILLed
-    // claim with settlement metadata is verified (signature against the
-    // maker's advertised/pinned signer, recipient, chain, nonce/cumulative
-    // monotonicity vs the persisted watermark) and, only if it passes,
-    // persisted as the channel's highest-nonce watermark. A claim that fails
-    // is NEVER counted as value received. Claims MISSING settlement metadata
-    // take the legacy #349 path (warning, not persisted) unchanged.
+    // #352/#360: receipt-time verification + durable ingestion composed
+    // ATOMICALLY with the leg-B reveal. Every FULFILLed claim with settlement
+    // metadata is verified (signature against the maker's advertised/pinned
+    // signer, recipient, chain, nonce/cumulative monotonicity vs the persisted
+    // watermark) and, only if it passes, persisted as the channel's
+    // highest-nonce watermark; the sender then reveals the retained preimage
+    // `P_i` to commit leg A. If the reveal is withheld or fails, the watermark
+    // advance is ROLLED BACK so it tracks only revealed packets (engine R8: the
+    // maker reuses the rolled-back nonce for the next fill, which must not be
+    // falsely rejected as non-monotonic). A claim that fails verification is
+    // NEVER revealed and NEVER counted. Claims MISSING settlement metadata take
+    // the legacy #349 path (warning, not persisted) unchanged.
+    //
+    // In the deployed single-round-trip model the FULFILL already resolved
+    // leg A inline at `sendSwapPacket` time (the transport verified `P_i`), so
+    // the reveal here commits every verified claim — this wires the atomic seam
+    // and the retained preimages without withholding. The withhold/rollback
+    // branch is exercised by a maker-driven leg-B (spec §3.2) and covered by
+    // `ingestAndReveal`'s unit tests.
     const expectedChain = req.pair.to.chain;
     const minaSignerClient = expectedChain.startsWith('mina')
       ? await loadMinaSignerClient()
       : undefined;
-    const ingest = ingestReceivedClaims({
+    const reveal: RevealFn = () => ({ decision: 'revealed' });
+    const ingest = await ingestAndReveal({
       claims: result.claims,
       expectedChain,
       chainRecipient: req.chainRecipient,
@@ -1712,8 +1731,11 @@ export class ClientRunner {
         : {}),
       store: this.receivedClaimStore,
       ...(minaSignerClient ? { minaSignerClient } : {}),
+      preimages,
+      reveal,
     });
-    const verifiedSet = new Set(ingest.verified.map((v) => v.claim));
+    preimages.clear();
+    const verifiedSet = new Set(ingest.revealed.map((v) => v.claim));
     const rejectionByClaim = new Map(
       ingest.rejected.map((r) => [r.claim, r] as const)
     );
@@ -1789,12 +1811,13 @@ export class ClientRunner {
     }
 
     const hadIngestibleClaims =
-      ingest.verified.length + ingest.rejected.length > 0;
+      ingest.revealed.length + ingest.rejected.length > 0;
     return {
-      // A swap only counts as accepted when it yielded a VERIFIED claim (or a
-      // legacy no-metadata claim, whose path is unchanged). FULFILLed packets
-      // whose claims all failed verification are a failed swap, loudly.
-      accepted: ingest.verified.length + ingest.legacy.length > 0,
+      // A swap only counts as accepted when it yielded a VERIFIED+REVEALED
+      // claim (or a legacy no-metadata claim, whose path is unchanged).
+      // FULFILLed packets whose claims all failed verification are a failed
+      // swap, loudly.
+      accepted: ingest.revealed.length + ingest.legacy.length > 0,
       packetsAccepted: result.claims.length,
       claims,
       cumulativeSource: result.cumulativeSource.toString(),
@@ -1821,9 +1844,9 @@ export class ClientRunner {
       ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
       ...(hadIngestibleClaims
         ? {
-            claimsVerified: ingest.verified.length,
+            claimsVerified: ingest.revealed.length,
             claimsRejected: ingest.rejected.length,
-            valueReceived: ingest.valueReceived.toString(),
+            valueReceived: ingest.valueRevealed.toString(),
           }
         : {}),
     };
@@ -1990,20 +2013,33 @@ export class ClientRunner {
    * Wrap an apex client so each `sendSwapPacket` call carries a freshly
    * minted sender-chosen execution condition (one preimage per packet, spec
    * R1 — reuse would let an observer of packet *i* fulfill packet *i+1*).
-   * `streamSwap` calls `sendSwapPacket` once per packet, so minting here
-   * yields exactly one condition per packet. The transports verify each
-   * FULFILL's preimage against the condition and fail the packet on mismatch.
+   * `streamSwap` calls `sendSwapPacket` once per packet, in strictly
+   * increasing `packetIndex` order, so minting here yields exactly one
+   * condition per packet and the local counter tracks `packetIndex`. The
+   * transports verify each FULFILL's preimage against the condition and fail
+   * the packet on mismatch.
    *
-   * NOTE: the minted preimage is intentionally NOT retained yet — leg-B
-   * receive-side ingestion (where the sender reveals `P_i`) is a separate
-   * rolling-swap workstream (toon-meta docs/rolling-swap.md §3.2). Until a
-   * maker implements the connector#309 contract end-to-end, packets sent with
-   * conditions will fail closed rather than settle unverified.
+   * Preimage retention (toon-client#360, spec §3.2 leg-B reveal): every minted
+   * `P_i` is retained in `preimages`, keyed by `packetIndex` — the identifier
+   * shared with `AccumulatedClaim.packetIndex` — so the receive-side reveal
+   * step (`ingestAndReveal`) can correlate and consume the preimage for the
+   * claim it commits. Retention is session-scoped (one store per `swap()`
+   * call); a fresh stream mints fresh preimages.
    */
-  private withSenderConditions(client: ToonClientLike): ToonClientLike {
+  private withSenderConditions(
+    client: ToonClientLike,
+    preimages: PreimageRetentionStore
+  ): ToonClientLike {
     const wrapped: ToonClientLike = Object.create(client) as ToonClientLike;
+    let packetIndex = 0;
     wrapped.sendSwapPacket = (params) => {
-      const { condition } = mintExecutionCondition();
+      const { preimage, condition } = mintExecutionCondition();
+      preimages.retain({
+        packetIndex: packetIndex++,
+        preimage,
+        condition,
+        retainedAt: Date.now(),
+      });
       return client.sendSwapPacket({
         ...params,
         executionCondition: condition,
