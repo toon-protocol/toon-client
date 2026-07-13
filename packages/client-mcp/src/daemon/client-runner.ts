@@ -1940,17 +1940,62 @@ export class ClientRunner {
         results.push(base);
         continue;
       }
-      if (bundle.chainKind !== 'evm') {
+      if (bundle.chainKind === 'solana') {
         results.push({
           ...base,
           error: {
             code: 'SUBMISSION_UNSUPPORTED',
             message:
-              bundle.chainKind === 'mina'
-                ? 'Mina receive-side redemption needs a co-signed claimFromChannel (signatureA AND signatureB) plus o1js proof generation — no client co-sign path exists yet. Out of scope for #352; follow-up: toon-client#357.'
-                : 'Solana settlement submission is not wired yet (bundle carries a serialized Message; follow-up under toon-meta#145).',
+              'Solana settlement submission is not wired yet (bundle carries a serialized Message; follow-up under toon-meta#145).',
           },
         });
+        continue;
+      }
+      if (bundle.chainKind === 'mina') {
+        // Mina receive-side redemption (#357): the client produces the
+        // recipient's co-signature and drives the dual-party `claimFromChannel`
+        // (o1js proving) via `settleSwapBundle`. Fails closed with a stable
+        // MinaSettlementError code (e.g. NO_GRAPHQL_CONFIGURED,
+        // MINA_MAKER_COSIGN_REQUIRED) surfaced as SUBMISSION_FAILED.
+        if (!this.identityClient.settleSwapBundle) {
+          results.push({
+            ...base,
+            error: {
+              code: 'SUBMISSION_UNAVAILABLE',
+              message: 'The active client does not implement settleSwapBundle.',
+            },
+          });
+          continue;
+        }
+        try {
+          const submitted = await this.identityClient.settleSwapBundle(bundle);
+          const latest =
+            this.receivedClaimStore.load(entry.chain, entry.channelId) ?? entry;
+          this.receivedClaimStore.save({
+            ...latest,
+            settledAt: Date.now(),
+            settledNonce: BigInt(bundle.nonce),
+            settleTxHash: submitted.txHash,
+          });
+          this.log(
+            `[runner] swap settle: submitted ${bundle.chain}/${bundle.channelId} ` +
+              `nonce ${bundle.nonce} cumulative ${bundle.cumulativeAmount} → ${submitted.txHash}`
+          );
+          results.push({
+            ...base,
+            submitted: true,
+            txHash: submitted.txHash,
+            ...(submitted.status ? { txStatus: submitted.status } : {}),
+          });
+        } catch (err) {
+          results.push({
+            ...base,
+            error: {
+              code: 'SUBMISSION_FAILED',
+              message: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
         continue;
       }
       const rpcUrl =

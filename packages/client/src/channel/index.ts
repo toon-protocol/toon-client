@@ -3,7 +3,12 @@ export {
   type OnChainChannelClientConfig,
 } from './OnChainChannelClient.js';
 export { ChannelManager } from './ChannelManager.js';
-export { readMinaDepositTotal } from './mina-deposit.js';
+export {
+  readMinaDepositTotal,
+  readMinaChannelState,
+  MINA_CHANNEL_STATE,
+  type MinaOnChainChannelState,
+} from './mina-deposit.js';
 export {
   JsonFileChannelStore,
   type ChannelStore,
