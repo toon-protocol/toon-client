@@ -288,11 +288,11 @@ The integration suite lives in `src/__integration__/`.
 
 ## Publishing
 
-This package is **published to npm automatically by CI/CD**, in lockstep with the
-repo's release tag (the same `vX.Y.Z` semantic-release cuts for
-`@toon-protocol/relay`). On a release, `publish-relay-images.yml` builds
-this package, sets its version to the tag, and runs
-`pnpm --filter @toon-protocol/client-mcp publish --access public`.
+This package is **published to npm automatically by CI/CD** via
+[changesets](https://github.com/changesets/changesets): `.github/workflows/release.yml`
+runs `pnpm changeset publish` on every push to `main`, using the org `NPM_TOKEN`
+secret. It ships whenever a changeset targeting it lands — independently of any
+other repo's release cadence. Never run `npm publish` manually.
 
 It is **self-contained**: its `@toon-protocol/*` workspace deps (`client`, `core`)
 are **bundled into `dist`** at build time (tsup `noExternal`), so the published
@@ -302,5 +302,3 @@ packages (`fastify`, `@modelcontextprotocol/sdk`, `nostr-tools`, `viem`, `ws`,
 `@solana/web3.js`) installed only when you use those chains.
 A guard test (`src/package-structure.test.ts`) fails the build if a
 `@toon-protocol/*` runtime dep ever leaks in.
-
-To publish manually: `pnpm --filter @toon-protocol/client-mcp build && pnpm --filter @toon-protocol/client-mcp publish --access public`.
