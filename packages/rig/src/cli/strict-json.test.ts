@@ -205,6 +205,8 @@ async function run(
     loadStandalone?: LoadStandalone;
     probeDaemon?: DispatchDeps['probeDaemon'];
     runGit?: DispatchDeps['runGit'];
+    /** #367 `rig name` ArNS SDK stub (never the live registry). */
+    loadArns?: DispatchDeps['loadArns'];
     /** #278 read-path seams (mock relay / gateway / resolver). */
     seams?: ReadSeams;
   } = {}
@@ -236,6 +238,7 @@ async function run(
       probeDaemon: opts.probeDaemon ?? NO_DAEMON,
       ...(opts.loadStandalone ? { loadStandalone: opts.loadStandalone } : {}),
       ...(opts.runGit ? { runGit: opts.runGit } : {}),
+      ...(opts.loadArns ? { loadArns: opts.loadArns } : {}),
       ...(opts.seams ?? {}),
     });
     io.ensureSingleJsonDoc(code);
@@ -556,6 +559,35 @@ describe('strict --json stdout: every rig-owned command emits exactly one JSON d
     expect(doc).toMatchObject({ command: 'balance' });
     expect(result.stderr).toContain('[Bootstrap]');
     expect(result.stdout).not.toContain('[Bootstrap]');
+  });
+
+  it('name status --json emits exactly one document (ar.io SDK stubbed)', async () => {
+    const home = makeTempDir('toon-rig-json-home-');
+    const result = await run(['name', 'status', 'mysite', '--json'], {
+      env: { TOON_CLIENT_HOME: home, RIG_MNEMONIC: TEST_MNEMONIC },
+      // Stub the ArNS SDK — NEVER the live ar.io registry (hard safety rule).
+      loadArns: async () => ({
+        getTokenCost: async () => 1_000_000n,
+        buyRecord: async () => ({ id: 'tx' }),
+        getArNSRecord: async () => ({
+          processId: 'ANT',
+          type: 'lease' as const,
+          endTimestamp: 1_800_000_000_000,
+          undernameLimit: 10,
+        }),
+        ant: async () => ({
+          getRecords: async () => ({ '@': { transactionId: TX_ID, ttlSeconds: 3600 } }),
+          setBaseNameRecord: async () => ({ id: 'm' }),
+          setUndernameRecord: async () => ({ id: 'm' }),
+        }),
+      }),
+    });
+    expect(result.code).toBe(0);
+    expect(parseSingleJsonDoc(result)).toMatchObject({
+      command: 'name',
+      action: 'status',
+      registered: true,
+    });
   });
 });
 

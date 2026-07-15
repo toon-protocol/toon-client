@@ -242,6 +242,16 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
       json: { error: 'git_error', detail: err.message },
     };
   }
+  // `rig name` (#367): the optional `@ar.io/sdk` dependency is not installed.
+  // Matched by name (the class lives in name.ts) so tsup chunk duplication can
+  // never break instanceof — same rationale as the standalone-path errors below.
+  if (err instanceof Error && err.name === 'ArnsSdkUnavailableError') {
+    return {
+      code: 'arns_sdk_unavailable',
+      lines: err.message.split('\n'),
+      json: { error: 'arns_sdk_unavailable', detail: err.message },
+    };
+  }
 
   // Delegated-daemon path (#279): the daemon's /git/* error envelope carries
   // the same structured payloads the local planner throws — render them

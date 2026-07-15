@@ -51,6 +51,9 @@
     "@toon-protocol/client": "workspace:^",
     "@toon-protocol/core": "^2.0.1"
   },
+  "optionalDependencies": {
+    "@ar.io/sdk": "^4.0.0"
+  },
   "devDependencies": {
     "@toon-protocol/arweave": "workspace:*",
     "@types/node": "^20.0.0",
