@@ -34,6 +34,7 @@ import { runGitPassthrough, type GitRunner } from './git-passthrough.js';
 import { runIdentity } from './identity-cmd.js';
 import { runInit } from './init.js';
 import { runMaintainers } from './maintainers.js';
+import { runName, type LoadArns } from './name.js';
 import { runPush, PUSH_USAGE } from './push.js';
 import { runRemote } from './remote.js';
 
@@ -84,6 +85,11 @@ Commands rig owns:
                              address(es) to fund externally
   balance                    wallet balances + payment-channel holdings
                              (free — chain reads and local state only)
+  name buy <name>            ArNS naming (#367): buy points a human name at an
+  name set <name> <txId>     Arweave txId, owned + paid by this identity's
+  name status <name>         Solana key. buy spends mARIO on Solana via the
+                             ar.io registry (NOT ILP); status is free. Needs
+                             the optional \`@ar.io/sdk\` dependency
   channel list               show the payment channels paid commands hold
                              (free — reads local state)
   channel open               explicitly open (or resume) the channel for a
@@ -115,6 +121,11 @@ not apply to the git passthrough (\`rig status --json\` runs
 export interface DispatchDeps extends EventCommandDeps {
   /** Runs the git passthrough (default: real spawned git; tests inject). */
   runGit?: GitRunner;
+  /**
+   * `rig name` ArNS SDK loader seam (#367): defaults to the lazy `@ar.io/sdk`
+   * import; tests inject a stub so no real ar.io registry call is ever made.
+   */
+  loadArns?: LoadArns;
 }
 
 /**
@@ -171,6 +182,8 @@ export async function dispatch(
       return runFund(rest, deps);
     case 'balance':
       return runBalance(rest, deps);
+    case 'name':
+      return runName(rest, deps);
     case 'help':
     case '--help':
     case '-h':
