@@ -1,5 +1,12 @@
 # @toon-protocol/views
 
+## 0.20.0
+
+### Patch Changes
+
+- Updated dependencies [fb7485d]
+  - @toon-protocol/client@0.20.0
+
 ## 0.19.0
 
 ### Patch Changes
