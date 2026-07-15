@@ -77,3 +77,35 @@ Unblocking either — a funded Turbo JWK (whole build ≈ $0.06 at current prici
 chunked store client + funded store wallet — makes the permanent deploy a small script:
 upload each file with its correct `Content-Type` tag, collect txids, upload the manifest,
 serve from any gateway.
+
+#### ArNS name — a stable URL instead of a changing manifest txId (additive, opt-in)
+
+A raw manifest txId is unreadable and **changes on every redeploy**, so there is no stable
+permanent URL even once the upload unblocks. [ArNS](https://ar.io) (the ar.io Name System)
+fixes this: a registered name resolves at every gateway as `https://<name>.<gateway>/`,
+serving whatever txId the name's ANT record points at. Since ar.io's Solana migration (June
+2026) names are owned by a **Solana wallet** via [`@ar.io/sdk`](https://docs.ar.io) (prices in
+mARIO, $ARIO base units).
+
+`src/web/arns-deploy.ts` implements this as a **self-contained, additive** step, independent
+of the two blockers above (it can be built and tested today against any small manifest):
+
+- **One-time** — buy a name: `quoteBuyName()` (getTokenCost) then `buyName()` (buyRecord).
+  Buying spawns an ANT owned by the deploy wallet.
+- **Every redeploy** — `runArnsRedeployStep({ manifestTxId, ant })` points the name at the new
+  manifest via `setBaseNameRecord`. It is **opt-in**: a no-op unless `RIG_ARNS_NAME` is set, so
+  the existing flow is undisturbed.
+
+Result — stable, human-readable, gateway-agnostic; the `#relay=` fragment (see
+[Relay resolution order](#relay-resolution-order)) still works, so it stays relay-configurable
+with no rebuild:
+
+```
+https://<name>.<any ar.io gateway>/#relay=wss://relay-ws.devnet.toonprotocol.dev
+```
+
+Config (env): `RIG_ARNS_NAME` (enables the step), `RIG_ARNS_TYPE` (`lease`|`permabuy`),
+`RIG_ARNS_YEARS`, `RIG_ARNS_TTL_SECONDS`, `RIG_ARNS_GATEWAY`, `RIG_ARNS_RELAY`,
+`RIG_ARNS_PROCESS_ID` (registry; default mainnet), `RIG_ARNS_WALLET` (the org deploy-identity
+wallet that owns the name). The `@ar.io/sdk` clients are **injected**, so all money-moving
+paths are unit-tested against mocks only — no real registry call, no funds spent.
