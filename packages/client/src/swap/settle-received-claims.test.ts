@@ -22,22 +22,32 @@ const RECIPIENT = '0x' + 'aa'.repeat(20);
 const CHANNEL = '0x' + '11'.repeat(32);
 const CONTRACT = '0x' + '22'.repeat(20);
 const CHAIN = 'evm:anvil:31337';
+const CHAIN_ID = 31337n;
 const PAIR = {
   from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
   to: { assetCode: 'USDC', assetScale: 6, chain: CHAIN },
   rate: '1.0',
 };
 
-async function evmEntry(over: Partial<ReceivedClaimEntry> = {}): Promise<ReceivedClaimEntry> {
+async function evmEntry(
+  over: Partial<ReceivedClaimEntry> = {}
+): Promise<ReceivedClaimEntry> {
   const nonce = over.nonce ?? 3n;
   const cumulativeAmount = over.cumulativeAmount ?? 900n;
+  // v2 EIP-712 digest (sdk@^3): binds chainId + verifyingContract, so the
+  // signature the sdk `buildSettlementTx` re-verifies must be over the same
+  // (chainId, TokenNetwork) the settlement targets.
   const hash = balanceProofHashEvm(
     hexToBytes(CHANNEL),
     cumulativeAmount,
     nonce,
-    hexToBytes(RECIPIENT)
+    hexToBytes(RECIPIENT),
+    CHAIN_ID,
+    hexToBytes(CONTRACT)
   );
-  const sig = await SIGNER.sign({ hash: `0x${Buffer.from(hash).toString('hex')}` });
+  const sig = await SIGNER.sign({
+    hash: `0x${Buffer.from(hash).toString('hex')}`,
+  });
   return {
     chain: CHAIN,
     channelId: CHANNEL,
@@ -119,8 +129,14 @@ describe('buildSwapSettlements (#352)', () => {
   });
 
   it('fails CLOSED on mina entries without a mina-signer client', async () => {
-    const entry = await evmEntry({ chain: 'mina:devnet', channelId: 'B62channel' });
-    entry.pair = { ...PAIR, to: { assetCode: 'MINA', assetScale: 9, chain: 'mina:devnet' } };
+    const entry = await evmEntry({
+      chain: 'mina:devnet',
+      channelId: 'B62channel',
+    });
+    entry.pair = {
+      ...PAIR,
+      to: { assetCode: 'MINA', assetScale: 9, chain: 'mina:devnet' },
+    };
     entry.recipient = 'B62recipient';
     entry.swapSignerAddress = 'B62signer';
     entry.claimBytes = new TextEncoder().encode('sig');

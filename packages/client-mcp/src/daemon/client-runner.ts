@@ -47,7 +47,10 @@ import {
   type PreimageRetentionStore,
   type RevealFn,
 } from '@toon-protocol/client';
-import { loadMinaSignerClient, type SettlementBundle } from '@toon-protocol/sdk';
+import {
+  loadMinaSignerClient,
+  type SettlementBundle,
+} from '@toon-protocol/sdk';
 import {
   GitRepoReader,
   buildComment,
@@ -193,7 +196,12 @@ export interface ToonClientLike {
     bid?: string;
     destination?: string;
     ilpAmount?: bigint;
-  }): Promise<{ success: boolean; txId?: string; eventId?: string; error?: string }>;
+  }): Promise<{
+    success: boolean;
+    txId?: string;
+    eventId?: string;
+    error?: string;
+  }>;
   openChannel(destination?: string): Promise<string>;
   getTrackedChannels(): string[];
   getChannelNonce(channelId: string): number;
@@ -204,11 +212,18 @@ export interface ToonClientLike {
     channelId: string,
     amount: string
   ): Promise<{ channelId: string; txHash?: string; depositTotal: string }>;
-  closeChannel(
+  closeChannel(channelId: string): Promise<{
+    channelId: string;
+    txHash?: string;
+    closedAt: string;
+    settleableAt: string;
+  }>;
+  settleChannel(
     channelId: string
-  ): Promise<{ channelId: string; txHash?: string; closedAt: string; settleableAt: string }>;
-  settleChannel(channelId: string): Promise<{ channelId: string; txHash?: string }>;
-  getChannelCloseState(channelId: string): 'open' | 'closing' | 'settleable' | 'settled';
+  ): Promise<{ channelId: string; txHash?: string }>;
+  getChannelCloseState(
+    channelId: string
+  ): 'open' | 'closing' | 'settleable' | 'settled';
   getSettleableAt(channelId: string): bigint | undefined;
   /**
    * Re-read a resumed channel's on-chain deposit (persisted state omits it).
@@ -411,9 +426,11 @@ export class ClientRunner {
     this.createClient = deps.createClient;
     this.log = deps.logger ?? ((): void => undefined);
     if (deps.targetsPath !== undefined) this.targetsPath = deps.targetsPath;
-    this.fetchGitRemoteState = deps.gitDeps?.fetchRemoteState ?? fetchRemoteState;
+    this.fetchGitRemoteState =
+      deps.gitDeps?.fetchRemoteState ?? fetchRemoteState;
     this.createRepoReader =
-      deps.gitDeps?.createRepoReader ?? ((repoPath) => new GitRepoReader(repoPath));
+      deps.gitDeps?.createRepoReader ??
+      ((repoPath) => new GitRepoReader(repoPath));
     this.defaultBtpUrl = deps.config.toonClientConfig.btpUrl ?? '';
     this.defaultRelayUrl = deps.config.relayUrl;
     this.receivedClaimStore = deps.config.receivedClaimStorePath
@@ -868,7 +885,9 @@ export class ClientRunner {
             )
           );
       }
-      this.log(`[runner] resumed apex channel ${saved.channelId} (deposit re-read)`);
+      this.log(
+        `[runner] resumed apex channel ${saved.channelId} (deposit re-read)`
+      );
       return saved.channelId;
     }
 
@@ -1243,11 +1262,15 @@ export class ClientRunner {
    * to report a truthful post-write balance in publish/upload receipts. Returns
    * undefined if the channel isn't tracked on this apex (balance unknown).
    */
-  private channelAvailable(apex: ApexConnection, channelId: string): string | undefined {
+  private channelAvailable(
+    apex: ApexConnection,
+    channelId: string
+  ): string | undefined {
     if (!apex.client.getTrackedChannels().includes(channelId)) return undefined;
     const cumulative = apex.client.getChannelCumulativeAmount(channelId);
     const depositTotal = apex.client.getChannelDepositTotal(channelId);
-    const available = depositTotal > cumulative ? depositTotal - cumulative : 0n;
+    const available =
+      depositTotal > cumulative ? depositTotal - cumulative : 0n;
     return available.toString();
   }
 
@@ -1312,7 +1335,10 @@ export class ClientRunner {
         `Arweave upload leg failed (store ${this.config.storeDestination}): ${upload.error ?? 'blob upload rejected'}`
       );
     }
-    const { url, fallbacks } = arweaveUrls(upload.txId, this.config.arweaveGateways);
+    const { url, fallbacks } = arweaveUrls(
+      upload.txId,
+      this.config.arweaveGateways
+    );
     const kind = req.kind ?? 1063;
     const signed = await apex.client.signEvent({
       kind,
@@ -1365,7 +1391,9 @@ export class ClientRunner {
       return new Uint8Array(buf);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      throw new InvalidPayloadError(`failed to read filePath ${resolved}: ${detail}`);
+      throw new InvalidPayloadError(
+        `failed to read filePath ${resolved}: ${detail}`
+      );
     }
   }
 
@@ -1440,7 +1468,12 @@ export class ClientRunner {
     // NIP-68/71 picture/video + NIP-92 inline note: a single `imeta` tag with
     // the primary `url` first and the remaining gateways as `fallback` mirrors.
     return [
-      ['imeta', `url ${url}`, `m ${mime}`, ...fallbacks.map((f) => `fallback ${f}`)],
+      [
+        'imeta',
+        `url ${url}`,
+        `m ${mime}`,
+        ...fallbacks.map((f) => `fallback ${f}`),
+      ],
       ...extra,
     ];
   }
@@ -1476,7 +1509,8 @@ export class ClientRunner {
         const depositTotal = apex.client.getChannelDepositTotal(channelId);
         // Available (spendable) balance = locked collateral − cumulative spent.
         // Clamp at 0 so an over-spend estimate never surfaces as negative.
-        const available = depositTotal > cumulative ? depositTotal - cumulative : 0n;
+        const available =
+          depositTotal > cumulative ? depositTotal - cumulative : 0n;
         const settleableAt = apex.client.getSettleableAt(channelId);
         channels.push({
           channelId,
@@ -1485,7 +1519,9 @@ export class ClientRunner {
           depositTotal: depositTotal.toString(),
           availableBalance: available.toString(),
           closeState: apex.client.getChannelCloseState(channelId),
-          ...(settleableAt !== undefined ? { settleableAt: settleableAt.toString() } : {}),
+          ...(settleableAt !== undefined
+            ? { settleableAt: settleableAt.toString() }
+            : {}),
         });
       }
     }
@@ -1536,7 +1572,9 @@ export class ClientRunner {
    * client tracks the channel (each apex client opens/tracks its own channels);
    * the client signs its own on-chain tx.
    */
-  async depositToChannel(req: ChannelDepositRequest): Promise<ChannelDepositResponse> {
+  async depositToChannel(
+    req: ChannelDepositRequest
+  ): Promise<ChannelDepositResponse> {
     return this.withTrackingApex(req.channelId, (client) =>
       client.depositToChannel(req.channelId, req.amount)
     );
@@ -1544,7 +1582,9 @@ export class ClientRunner {
 
   /** Close a channel to begin the settlement grace period (withdraw, step 1). */
   async closeChannel(req: CloseChannelRequest): Promise<CloseChannelResponse> {
-    return this.withTrackingApex(req.channelId, (client) => client.closeChannel(req.channelId));
+    return this.withTrackingApex(req.channelId, (client) =>
+      client.closeChannel(req.channelId)
+    );
   }
 
   /**
@@ -1552,8 +1592,12 @@ export class ClientRunner {
    * enforces the `now >= settleableAt` guard and throws a retryable error if
    * called early; `mapError` maps that to HTTP 425.
    */
-  async settleChannel(req: SettleChannelRequest): Promise<SettleChannelResponse> {
-    return this.withTrackingApex(req.channelId, (client) => client.settleChannel(req.channelId));
+  async settleChannel(
+    req: SettleChannelRequest
+  ): Promise<SettleChannelResponse> {
+    return this.withTrackingApex(req.channelId, (client) =>
+      client.settleChannel(req.channelId)
+    );
   }
 
   /** Run `fn` against the apex client that tracks `channelId`, else throw. */
@@ -1729,6 +1773,13 @@ export class ClientRunner {
       ...(req.swapSignerAddress
         ? { expectedSignerAddress: req.swapSignerAddress }
         : {}),
+      // v2 EIP-712 receive-side verify (#365): EVM claims are domain-separated
+      // over `(chainId, verifyingContract)`, so the receive path needs the same
+      // `tokenNetworks` (chain key → RollingSwapChannel address) map the settle
+      // path already threads, or an EVM claim is rejected MISSING_CHAIN_CONFIG.
+      ...(this.config.toonClientConfig.tokenNetworks
+        ? { tokenNetworks: this.config.toonClientConfig.tokenNetworks }
+        : {}),
       store: this.receivedClaimStore,
       ...(minaSignerClient ? { minaSignerClient } : {}),
       preimages,
@@ -1886,7 +1937,10 @@ export class ClientRunner {
     const results: SwapSettlementResult[] = [];
     const pending: ReceivedClaimEntry[] = [];
     for (const entry of entries) {
-      if (entry.settledNonce !== undefined && entry.settledNonce >= entry.nonce) {
+      if (
+        entry.settledNonce !== undefined &&
+        entry.settledNonce >= entry.nonce
+      ) {
         results.push({
           chain: entry.chain,
           channelId: entry.channelId,
@@ -1910,6 +1964,14 @@ export class ClientRunner {
       ...(this.config.toonClientConfig.tokenNetworks
         ? { tokenNetworks: this.config.toonClientConfig.tokenNetworks }
         : {}),
+      // Re-verify the stored watermark's signature at settle time
+      // (defense-in-depth over the store file). The published v2 sdk
+      // (`@toon-protocol/sdk@^3`) verifies EVM claims against the SAME v2
+      // EIP-712 domain-separated digest the receive-side used (#365), so a
+      // valid v2 signature verifies correctly here — `buildSwapSettlements`
+      // threads `chainId` + `verifyingContract` (from `tokenNetworks`) into the
+      // sdk signer config so the EIP-712 domain is reconstructed.
+      verifySignatures: true,
       ...(minaSignerClient ? { minaSignerClient } : {}),
     });
 
@@ -1998,8 +2060,7 @@ export class ClientRunner {
         }
         continue;
       }
-      const rpcUrl =
-        this.config.toonClientConfig.chainRpcUrls?.[bundle.chain];
+      const rpcUrl = this.config.toonClientConfig.chainRpcUrls?.[bundle.chain];
       if (!rpcUrl) {
         results.push({
           ...base,
@@ -2448,7 +2509,9 @@ export class ClientRunner {
   }
 
   /** Sign a built NIP-34 event with the daemon key and pay-to-publish it. */
-  private async gitPublishSigned(event: UnsignedEvent): Promise<GitEventResponse> {
+  private async gitPublishSigned(
+    event: UnsignedEvent
+  ): Promise<GitEventResponse> {
     const apex = this.selectApex();
     this.assertApexReady(apex);
     const signed = await apex.client.signEvent(event);
@@ -2683,7 +2746,11 @@ function delay(ms: number): Promise<void> {
  * background) — this just bounds how long the caller waits, so a stalled chain
  * RPC fast-fails instead of blocking the control request (#199).
  */
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(message)), ms);
     promise.then(
@@ -2704,8 +2771,10 @@ function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
   if (filter.ids && !filter.ids.includes(event.id)) return false;
   if (filter.kinds && !filter.kinds.includes(event.kind)) return false;
   if (filter.authors && !filter.authors.includes(event.pubkey)) return false;
-  if (filter.since !== undefined && event.created_at < filter.since) return false;
-  if (filter.until !== undefined && event.created_at > filter.until) return false;
+  if (filter.since !== undefined && event.created_at < filter.since)
+    return false;
+  if (filter.until !== undefined && event.created_at > filter.until)
+    return false;
   for (const [key, values] of Object.entries(filter)) {
     if (!key.startsWith('#') || !Array.isArray(values)) continue;
     const letter = key.slice(1);
@@ -2720,7 +2789,8 @@ function matchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
 /** Validate that `raw` is an array of string arrays, returning it typed. */
 function normalizeTags(raw: unknown): string[][] {
   if (raw === undefined) return [];
-  if (!Array.isArray(raw)) throw new InvalidPayloadError('tags must be an array.');
+  if (!Array.isArray(raw))
+    throw new InvalidPayloadError('tags must be an array.');
   return raw.map((tag, i) => {
     if (!Array.isArray(tag) || !tag.every((x) => typeof x === 'string')) {
       throw new InvalidPayloadError(`tags[${i}] must be an array of strings.`);

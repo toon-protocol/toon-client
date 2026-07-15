@@ -8,6 +8,21 @@ export {
   type VerifiedReceivedClaim,
 } from './received-claims.js';
 export {
+  evmClaimDigest,
+  evmCooperativeCloseDigest,
+  recoverEvmClaimSigner,
+  verifyEvmClaimSignature,
+  ROLLING_SWAP_DOMAIN_NAME,
+  ROLLING_SWAP_DOMAIN_VERSION,
+  CLAIM_TYPEHASH,
+  COOP_CLOSE_TYPEHASH,
+  type EvmClaimDomainContext,
+  type EvmClaimMessage,
+  type EvmCooperativeCloseMessage,
+  type EvmClaimVerifyResult,
+  type ClaimSignature,
+} from './evm-claim-digest.js';
+export {
   InMemoryPreimageRetentionStore,
   type PreimageRetentionStore,
   type RetainedPreimage,

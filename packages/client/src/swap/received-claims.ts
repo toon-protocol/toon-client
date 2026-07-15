@@ -25,10 +25,15 @@
  *      `swapSignerAddress` (kind:10032 discovery / operator config), the
  *      claim's self-reported signer must match (`SWAP_SIGNER_MISMATCH`,
  *      sdk 2.x vocabulary).
- *   5. signature — `verifyAccumulatedClaim` (sdk) against the expected signer:
- *      the advertised address when given, else the claim's self-reported one
- *      (which then still proves the claim is internally consistent and pins
- *      the address the settlement tx will verify against on-chain).
+ *   5. signature — against the expected signer (advertised address when given,
+ *      else the claim's self-reported one). EVM claims verify against the
+ *      **v2 EIP-712 domain-separated** balance-proof digest
+ *      (`verifyEvmClaimSignature`, connector#324 finding #1) — the digest binds
+ *      `chainId` + `verifyingContract`, so `tokenNetworks[chain]` (the
+ *      RollingSwapChannel address) and a numeric chain id are REQUIRED (an EVM
+ *      claim without them is rejected `MISSING_CHAIN_CONFIG`, fail-closed).
+ *      Solana/Mina keep the sdk `verifyAccumulatedClaim` path (their domain is
+ *      folded into the message).
  *   6. signer pinning — a claim may not silently rotate the signer of an
  *      already-persisted watermark for the same channel.
  *   7. nonce/cumulative monotonicity vs the locally persisted watermark —
@@ -46,6 +51,8 @@ import type {
   ReceivedClaimEntry,
   ReceivedClaimStore,
 } from '../channel/ReceivedClaimStore.js';
+import { verifyEvmClaimSignature } from './evm-claim-digest.js';
+import { parseEvmChainId } from './settle-received-claims.js';
 
 /** Why a claim was rejected at receipt time. Codes are stable API. */
 export type ReceivedClaimRejectionCode =
@@ -59,6 +66,7 @@ export type ReceivedClaimRejectionCode =
   | 'NON_MONOTONIC_NONCE'
   | 'NON_MONOTONIC_CUMULATIVE'
   | 'CUMULATIVE_SHORTFALL'
+  | 'MISSING_CHAIN_CONFIG'
   | 'MALFORMED_METADATA';
 
 export interface ReceivedClaimRejection {
@@ -88,6 +96,21 @@ export interface IngestReceivedClaimsParams {
    * never the claim's own.
    */
   expectedSignerAddress?: string;
+  /**
+   * Per-chain settlement contract addresses (the deployed `RollingSwapChannel`
+   * / `verifyingContract`), keyed by the FULL chain key (e.g. `evm:base:8453`).
+   * Matches the daemon config's `tokenNetworks` map and what
+   * `buildSwapSettlements` already threads on the submit side.
+   *
+   * REQUIRED for EVM claims under the v2 EIP-712 digest (connector#324 finding
+   * #1): the claim signature is domain-separated over `(chainId,
+   * verifyingContract)`, so an EVM claim whose chain key lacks a `tokenNetworks`
+   * entry (or a numeric chain id) is rejected `MISSING_CHAIN_CONFIG` — it cannot
+   * be verified fail-closed without the domain. Supplied by the connector/swap
+   * session context (the RollingSwapChannel the client settles against). Unused
+   * for Solana/Mina claims, which fold their domain into the message itself.
+   */
+  tokenNetworks?: Record<string, string>;
   /** Durable watermark store; verified claims are persisted here. */
   store: ReceivedClaimStore;
   /** Pre-loaded `mina-signer` client — required to verify `mina:*` claims. */
@@ -118,7 +141,11 @@ export function hasSettlementMetadata(
   Required<
     Pick<
       AccumulatedClaim,
-      'channelId' | 'nonce' | 'cumulativeAmount' | 'recipient' | 'swapSignerAddress'
+      | 'channelId'
+      | 'nonce'
+      | 'cumulativeAmount'
+      | 'recipient'
+      | 'swapSignerAddress'
     >
   > {
   return (
@@ -209,11 +236,57 @@ export function ingestReceivedClaims(
     }
     const expectedSigner =
       params.expectedSignerAddress ?? claim.swapSignerAddress;
-    const sig = verifyAccumulatedClaim(
-      claim,
-      { address: expectedSigner },
-      params.minaSignerClient
-    );
+    // Signature check. EVM uses the v2 EIP-712 domain-separated digest
+    // (connector#324 finding #1): the digest binds `chainId` +
+    // `verifyingContract`, so the recovered signer is only valid for the exact
+    // (chain, deployment) the claim settles against — closing cross-chain /
+    // cross-deployment replay. Solana/Mina fold their domain into the message
+    // itself and stay on the sdk `verifyAccumulatedClaim` path.
+    let sig: { valid: true } | { valid: false; reason: string };
+    if (chain.startsWith('evm')) {
+      const chainId = parseEvmChainId(chain);
+      const verifyingContract = params.tokenNetworks?.[chain];
+      if (chainId === undefined || !verifyingContract) {
+        reject(
+          claim,
+          'MISSING_CHAIN_CONFIG',
+          `EVM v2 balance-proof verification for ${chain} needs a numeric chain id in the ` +
+            `chain key AND tokenNetworks["${chain}"] (the RollingSwapChannel / verifyingContract) ` +
+            `to reconstruct the EIP-712 domain; supply it from the connector/swap session context.`
+        );
+        continue;
+      }
+      let msgNonce: bigint;
+      let msgCumulative: bigint;
+      try {
+        msgNonce = BigInt(claim.nonce);
+        msgCumulative = BigInt(claim.cumulativeAmount);
+      } catch {
+        reject(
+          claim,
+          'MALFORMED_METADATA',
+          `nonce "${claim.nonce}" / cumulativeAmount "${claim.cumulativeAmount}" are not decimal integers`
+        );
+        continue;
+      }
+      sig = verifyEvmClaimSignature({
+        ctx: { chainId, verifyingContract },
+        message: {
+          channelId: claim.channelId,
+          cumulativeAmount: msgCumulative,
+          nonce: msgNonce,
+          recipient: claim.recipient,
+        },
+        signature: claim.claimBytes,
+        expectedSigner,
+      });
+    } else {
+      sig = verifyAccumulatedClaim(
+        claim,
+        { address: expectedSigner },
+        params.minaSignerClient
+      );
+    }
     if (!sig.valid) {
       reject(claim, signatureRejectionCode(sig.reason), sig.reason);
       continue;

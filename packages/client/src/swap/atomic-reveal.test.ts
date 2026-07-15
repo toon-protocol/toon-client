@@ -11,8 +11,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
-import { balanceProofHashEvm, hexToBytes } from '@toon-protocol/core';
+import { hexToBytes } from '@toon-protocol/core';
 import type { AccumulatedClaim } from '@toon-protocol/sdk/swap';
+import { evmClaimDigest } from './evm-claim-digest.js';
 import {
   InMemoryReceivedClaimStore,
   JsonFileReceivedClaimStore,
@@ -32,6 +33,9 @@ const SIGNER = privateKeyToAccount(
 const RECIPIENT = '0x' + 'aa'.repeat(20);
 const CHANNEL = '0x' + '11'.repeat(32);
 const EVM_CHAIN = 'evm:anvil:31337';
+const EVM_CHAIN_ID = 31337;
+const EVM_CONTRACT = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
+const EVM_TOKEN_NETWORKS = { [EVM_CHAIN]: EVM_CONTRACT };
 const EVM_PAIR = {
   from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
   to: { assetCode: 'USDC', assetScale: 6, chain: EVM_CHAIN },
@@ -46,15 +50,16 @@ async function evmClaim(opts: {
   recipient?: string;
 }): Promise<AccumulatedClaim> {
   const recipient = opts.recipient ?? RECIPIENT;
-  const hash = balanceProofHashEvm(
-    hexToBytes(CHANNEL),
-    BigInt(opts.cumulativeAmount),
-    BigInt(opts.nonce),
-    hexToBytes(recipient)
+  const digest = evmClaimDigest(
+    { chainId: EVM_CHAIN_ID, verifyingContract: EVM_CONTRACT },
+    {
+      channelId: CHANNEL,
+      cumulativeAmount: BigInt(opts.cumulativeAmount),
+      nonce: BigInt(opts.nonce),
+      recipient,
+    }
   );
-  const sig = await SIGNER.sign({
-    hash: `0x${Buffer.from(hash).toString('hex')}`,
-  });
+  const sig = await SIGNER.sign({ hash: digest });
   return {
     packetIndex: opts.packetIndex ?? 0,
     sourceAmount: opts.targetAmount,
@@ -111,9 +116,16 @@ function retained(packetIndex: number): RetainedPreimage {
   return { packetIndex, preimage, condition, retainedAt: 1000 };
 }
 
-const base = { expectedChain: EVM_CHAIN, chainRecipient: RECIPIENT };
+const base = {
+  expectedChain: EVM_CHAIN,
+  chainRecipient: RECIPIENT,
+  tokenNetworks: EVM_TOKEN_NETWORKS,
+};
 const reveal: RevealFn = () => ({ decision: 'revealed' });
-const withhold: RevealFn = () => ({ decision: 'withheld', reason: 'test-withhold' });
+const withhold: RevealFn = () => ({
+  decision: 'withheld',
+  reason: 'test-withhold',
+});
 
 describe('ingestAndReveal (#360)', () => {
   let store: InMemoryReceivedClaimStore;
@@ -250,7 +262,12 @@ describe('ingestAndReveal (#360)', () => {
         cumulativeAmount: '100',
         targetAmount: 100n,
       });
-      await ingestAndReveal({ ...base, claims: [c1], store: fileStore, reveal });
+      await ingestAndReveal({
+        ...base,
+        claims: [c1],
+        store: fileStore,
+        reveal,
+      });
 
       // Verify nonce=2 then withhold — rollback must be DURABLE.
       const c2 = await evmClaim({

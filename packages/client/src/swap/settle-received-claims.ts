@@ -60,6 +60,21 @@ export interface BuildSwapSettlementsParams {
   tokenNetworks?: Record<string, string>;
   /** Pre-loaded `mina-signer` client for `mina:*` re-verification. */
   minaSignerClient?: MinaSignerClientLike;
+  /**
+   * Re-verify the stored claim's signature at settle time (defense in depth
+   * over the store file). Default `true` — the published **v2** sdk
+   * (`@toon-protocol/sdk@^3`, connector#324 finding #1) verifies EVM claims
+   * against the **v2** EIP-712 domain-separated balance-proof digest, the SAME
+   * digest the receive-side used (`ingestReceivedClaims`). Reconstructing that
+   * EIP-712 domain needs `chainId` + `verifyingContract`, which this builder
+   * threads into the sdk signer config from `tokenNetworks` (for EVM claims) —
+   * so a claim verified at receipt re-verifies correctly here.
+   *
+   * Set `false` only to skip the settle-time re-verify entirely (e.g. when the
+   * receive-side verify is treated as the sole authoritative gate); the sdk is
+   * then used only to BUILD the settlement calldata.
+   */
+  verifySignatures?: boolean;
 }
 
 /** Rebuild the sdk `AccumulatedClaim` shape from a persisted entry. */
@@ -139,6 +154,9 @@ export function buildSwapSettlements(
         claims: [entryToAccumulatedClaim(entry)],
         signers: { [entry.chain]: signer },
         recipients: { [entry.chain]: entry.recipient },
+        ...(params.verifySignatures !== undefined
+          ? { verifySignatures: params.verifySignatures }
+          : {}),
         ...(params.minaSignerClient
           ? { minaSignerClient: params.minaSignerClient }
           : {}),
@@ -214,7 +232,9 @@ export function decodeEvmSettlementTx(bundle: SettlementBundle): {
   const chainIdHex = fields[6] as Hex;
   const chainId = Number.parseInt(chainIdHex === '0x' ? '0x0' : chainIdHex, 16);
   if (typeof to !== 'string' || to.length !== 42) {
-    throw new Error(`settlement tx "to" is not a 20-byte address: ${String(to)}`);
+    throw new Error(
+      `settlement tx "to" is not a 20-byte address: ${String(to)}`
+    );
   }
   return { to, data: (data === '0x' ? '0x' : data) as Hex, chainId };
 }
@@ -240,7 +260,10 @@ export async function submitEvmSettlement(
     nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
     rpcUrls: { default: { http: [params.rpcUrl] } },
   });
-  const publicClient = createPublicClient({ chain, transport: http(params.rpcUrl) });
+  const publicClient = createPublicClient({
+    chain,
+    transport: http(params.rpcUrl),
+  });
 
   const [nonce, gasPrice, gas] = await Promise.all([
     publicClient.getTransactionCount({
