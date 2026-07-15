@@ -198,6 +198,10 @@ rig pr status <event-id> applied
 | `rig comment <root-event-id>` | **paid** | comment (kind:1622) on an issue/patch |
 | `rig pr create` | **paid** | publish a patch (kind:1617) from real `git format-patch` |
 | `rig pr status <event-id> <state>` | **paid** | set issue/patch status (kind:1630–1633) |
+| `rig site publish [ref]` | **paid** | deploy a pushed repo as a permaweb site: build the ar.io path manifest (repo paths → Arweave txids) and upload it as one paid store write; prints the gateway URL |
+| `rig site url [ref]` | free | print the last-published site URL for a ref |
+| `rig name status <name>` | free | an ArNS name's registry record, ANT process, and current target txId |
+| `rig name buy <name>` / `rig name set <name> <txId>` | **paid¹** | buy an ArNS name / point it at an Arweave txId. ¹Paid in mARIO on Solana via the ar.io registry — **not** ILP; needs the optional `@ar.io/sdk` dep |
 | `rig channel list/open/close/settle` | free / **paid** | inspect or manage the payment channels paid commands hold |
 | `rig help` / `rig --version` | free | usage / version |
 | everything else | — | executed as `git <args...>` with rig's stdio and git's exit code |
@@ -228,6 +232,67 @@ claim. You rarely touch this directly:
 The `open`/`close`/`settle` lifecycle commands are on-chain wallet operations (gas +
 collateral movement), so they follow the same confirm idiom as `push`: they print
 what will happen, then require `--yes` or an interactive confirm.
+
+---
+
+## Permaweb sites & ArNS names (Arweave)
+
+Every `rig push` already stores your repo's file bytes on Arweave. Two more verbs
+turn a pushed repo into a permanent, human-named website — *GitHub Pages, but
+permanent and named.*
+
+### `rig site` — a pushed repo as a website
+
+`rig site publish [ref]` builds an
+[ar.io path manifest](https://specs.ar.io/#/en/manifests/1.0.0) (`index.html`
+routing) from the ref's tree joined with the objects already on Arweave, uploads it
+as **one paid store write**, and prints a servable URL:
+
+```sh
+rig site publish                      # publish the current branch as a site
+# rig site publish main --spa         # SPA routing: serve index.html for unknown paths
+# rig site publish --force-reupload   # re-pay to re-upload blobs stored without a Content-Type
+rig site url                          # (free) print the last-published site URL for a ref
+```
+
+```
+https://<gateway>/<manifestTxId>/
+```
+
+`rig push` now tags each uploaded blob with a `Content-Type` derived from its path,
+so files render in a browser instead of downloading as `application/octet-stream`.
+Blobs pushed **before** this change serve as octet-stream until re-uploaded with
+`--force-reupload` (a fresh paid write). Site assets are bounded by rig's per-object
+size cap — fine for typical static sites.
+
+The manifest txId **changes on every push**, so the stable pointer is an ArNS name.
+
+### `rig name` — a human name for a txId (ArNS)
+
+[ArNS](https://ar.io) (the ar.io Name System) is Arweave's naming layer: a registered
+name resolves at every ar.io gateway as `https://<name>.<gateway>/`, serving whatever
+txId its record points at. Names are owned and paid by **this identity's own Solana
+key** — derived from the same mnemonic as everything else, so no new key material:
+
+```sh
+rig name status <name>                # (free) registry record, ANT process, current target
+rig name buy <name> --years 1         # buy a name (estimate → confirm → execute)
+rig name set <name> <manifestTxId>    # point the name at your published site's manifest
+```
+
+Put together — one mnemonic, end to end:
+
+```sh
+rig push && rig site publish && rig name set my-app <manifestTxId>
+# → https://my-app.<gateway>/
+```
+
+> **Real funds, a different rail from ILP.** `rig name buy`/`set` spend **mARIO on
+> Solana via the ar.io registry program** — *not* through TOON's ILP payment channels
+> (the rail behind `rig push` / `rig site publish` fees). `rig name` needs the
+> optional [`@ar.io/sdk`](https://docs.ar.io) dependency; install it if the command
+> reports it missing. As with every paid verb, these are estimate → confirm →
+> execute, and a `--json` run *without* `--yes` is a free estimate — nothing is spent.
 
 ---
 
