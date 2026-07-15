@@ -60,6 +60,21 @@ export interface BuildSwapSettlementsParams {
   tokenNetworks?: Record<string, string>;
   /** Pre-loaded `mina-signer` client for `mina:*` re-verification. */
   minaSignerClient?: MinaSignerClientLike;
+  /**
+   * Re-verify the stored claim's signature at settle time (defense in depth
+   * over the store file). Default `true` — the sdk `buildSettlementTx` verifies
+   * against its **v1** balance-proof digest.
+   *
+   * Set `false` when the claim was already verified against the client's **v2**
+   * EIP-712 digest at receipt time (connector#324 finding #1): a v2 signature
+   * can never recover under the sdk's v1 digest, so leaving the v1 re-verify on
+   * would wrongly reject every valid v2 claim. The receive-side verify
+   * (`ingestReceivedClaims`) is then the authoritative gate; the sdk is used
+   * only to BUILD the settlement calldata. Migrating this re-verify to the v2
+   * digest (or a published v2 sdk) restores settle-time defense in depth and is
+   * the documented follow-up.
+   */
+  verifySignatures?: boolean;
 }
 
 /** Rebuild the sdk `AccumulatedClaim` shape from a persisted entry. */
@@ -139,6 +154,9 @@ export function buildSwapSettlements(
         claims: [entryToAccumulatedClaim(entry)],
         signers: { [entry.chain]: signer },
         recipients: { [entry.chain]: entry.recipient },
+        ...(params.verifySignatures !== undefined
+          ? { verifySignatures: params.verifySignatures }
+          : {}),
         ...(params.minaSignerClient
           ? { minaSignerClient: params.minaSignerClient }
           : {}),
@@ -214,7 +232,9 @@ export function decodeEvmSettlementTx(bundle: SettlementBundle): {
   const chainIdHex = fields[6] as Hex;
   const chainId = Number.parseInt(chainIdHex === '0x' ? '0x0' : chainIdHex, 16);
   if (typeof to !== 'string' || to.length !== 42) {
-    throw new Error(`settlement tx "to" is not a 20-byte address: ${String(to)}`);
+    throw new Error(
+      `settlement tx "to" is not a 20-byte address: ${String(to)}`
+    );
   }
   return { to, data: (data === '0x' ? '0x' : data) as Hex, chainId };
 }
@@ -240,7 +260,10 @@ export async function submitEvmSettlement(
     nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
     rpcUrls: { default: { http: [params.rpcUrl] } },
   });
-  const publicClient = createPublicClient({ chain, transport: http(params.rpcUrl) });
+  const publicClient = createPublicClient({
+    chain,
+    transport: http(params.rpcUrl),
+  });
 
   const [nonce, gasPrice, gas] = await Promise.all([
     publicClient.getTransactionCount({
