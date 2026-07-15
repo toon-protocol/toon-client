@@ -1,5 +1,11 @@
 # @toon-protocol/rig
 
+## 2.7.1
+
+### Patch Changes
+
+- 640f527: docs(rig): document the `rig site` (permaweb sites) and `rig name` (ArNS) verbs in the package README — the push → publish → name → permanent URL flow, plus command-reference rows and the funds/`@ar.io/sdk`/mARIO-not-ILP caveats.
+
 ## 2.7.0
 
 ### Minor Changes
