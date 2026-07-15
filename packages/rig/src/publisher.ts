@@ -42,6 +42,29 @@ export interface GitObjectUpload {
   body: Buffer;
   /** Repository identifier — becomes the `Repo` tag on the store write. */
   repoId: string;
+  /**
+   * Path the blob was reached by in the tree (#368), if known. Its extension
+   * derives the `Content-Type` sent in the store write's `output` tag so a
+   * gateway serves the blob as its real media type instead of
+   * `application/octet-stream`. Absent (or a non-blob object) → octet-stream.
+   */
+  path?: string;
+}
+
+/**
+ * A NON-git blob queued for upload to Arweave with an explicit `Content-Type`
+ * (#368): the ar.io path manifest that turns a pushed repo into a permaweb
+ * site. Unlike {@link GitObjectUpload} it carries no `Git-SHA`/`Git-Type`
+ * tags, so the store stores the raw bytes verbatim (no git-envelope
+ * re-derivation) — exactly what a manifest needs.
+ */
+export interface BlobUpload {
+  /** Raw bytes to store. */
+  body: Buffer;
+  /** MIME type sent in the store write's `output` tag. */
+  contentType: string;
+  /** Optional repository identifier for provenance (`Repo` tag). */
+  repoId?: string;
 }
 
 /** Receipt for one uploaded git object. */
@@ -82,6 +105,13 @@ export interface Publisher {
   getFeeRates(): Promise<FeeRates>;
   /** Upload one git object body to Arweave; paid. */
   uploadGitObject(upload: GitObjectUpload): Promise<UploadReceipt>;
+  /**
+   * Upload one raw blob (no git envelope) with an explicit `Content-Type`;
+   * paid. Used by `rig site` (#368) for the ar.io path manifest. Optional so
+   * transports that only move git objects (and pre-#368 test fakes) need not
+   * implement it — `rig site` requires it and errors clearly when absent.
+   */
+  uploadBlob?(upload: BlobUpload): Promise<UploadReceipt>;
   /**
    * Sign (implementation-held key) and pay-to-publish one event to the
    * given relay(s).

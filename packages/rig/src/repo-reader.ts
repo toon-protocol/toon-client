@@ -374,6 +374,44 @@ export class GitRepoReader {
     return objects;
   }
 
+  /**
+   * List every blob (file) reachable from a ref's root tree, recursively,
+   * with the path it is served at (#368: the ar.io site manifest join key).
+   * Uses `git ls-tree -r -z` — NUL-terminated records so binary/spaced paths
+   * survive verbatim, and no path quoting to undo. Submodule (`commit`)
+   * gitlink entries and directories are excluded; only real file blobs remain.
+   */
+  async listBlobs(rev: string): Promise<{ path: string; sha: string }[]> {
+    assertRevision(rev, 'ref');
+    const { stdout } = await this.git(['ls-tree', '-r', '-z', rev, '--']);
+    const blobs: { path: string; sha: string }[] = [];
+    for (const record of stdout.split('\0')) {
+      if (!record) continue;
+      // `<mode> SP <type> SP <sha> TAB <path>`
+      const tab = record.indexOf('\t');
+      if (tab === -1) {
+        throw new GitError(
+          `unexpected ls-tree record: ${JSON.stringify(record)}`,
+          undefined,
+          ''
+        );
+      }
+      const meta = record.slice(0, tab);
+      const path = record.slice(tab + 1);
+      const [, type, sha] = meta.split(' ');
+      if (type !== 'blob') continue; // trees are flattened by -r; skip gitlinks
+      if (!sha || !FULL_SHA_RE.test(sha)) {
+        throw new GitError(
+          `unexpected ls-tree object id: ${JSON.stringify(record)}`,
+          undefined,
+          ''
+        );
+      }
+      blobs.push({ path, sha });
+    }
+    return blobs;
+  }
+
   /** Run git feeding `input` on stdin; resolves collected stdout bytes. */
   private runWithStdin(args: string[], input: string): Promise<Buffer> {
     return new Promise<Buffer>((resolve, reject) => {

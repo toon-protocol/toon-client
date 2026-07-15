@@ -345,6 +345,92 @@ describe('StandalonePublisher', () => {
       );
       await publisher.stop();
     });
+
+    it('#368: derives the output Content-Type from the blob path extension', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client);
+      await publisher.uploadGitObject({ ...upload, path: 'index.html' });
+      const outputTag = calls.publishes[0]!.event.tags.find(
+        (t) => t[0] === 'output'
+      );
+      expect(outputTag).toEqual(['output', 'text/html']);
+      await publisher.stop();
+    });
+
+    it('#368: a NON-blob object stays octet-stream even with a path', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client);
+      await publisher.uploadGitObject({
+        ...upload,
+        type: 'tree',
+        path: 'sub',
+      });
+      const outputTag = calls.publishes[0]!.event.tags.find(
+        (t) => t[0] === 'output'
+      );
+      expect(outputTag).toEqual(['output', 'application/octet-stream']);
+      await publisher.stop();
+    });
+  });
+
+  describe('uploadBlob (#368 — raw manifest, no git envelope)', () => {
+    it('publishes a kind:5094 with i/bid/output/Repo tags (no Git-* tags), one claim', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client, { uploadFeePerByte: 10n });
+      const body = Buffer.from('{"manifest":"arweave/paths"}');
+
+      const receipt = await publisher.uploadBlob({
+        body,
+        contentType: 'application/x.arweave-manifest+json',
+        repoId: 'toon-meta',
+      });
+      const expectedFee = BigInt(body.length) * 10n;
+      expect(receipt).toEqual({ txId: TX_ID, feePaid: expectedFee });
+      expect(calls.claims).toEqual([
+        { channelId: 'channel-1', amount: expectedFee },
+      ]);
+
+      const pub = calls.publishes[0]!;
+      expect(pub.event.kind).toBe(5094);
+      expect(pub.event.tags).toEqual([
+        ['i', body.toString('base64'), 'blob'],
+        ['bid', expectedFee.toString(), 'usdc'],
+        ['output', 'application/x.arweave-manifest+json'],
+        ['Repo', 'toon-meta'],
+      ]);
+      // No git-envelope tags — the store keeps the manifest bytes verbatim.
+      expect(pub.event.tags.some((t) => t[0] === 'Git-SHA')).toBe(false);
+      expect(pub.event.tags.some((t) => t[0] === 'Git-Type')).toBe(false);
+      expect(pub.options?.destination).toBe('g.proxy.store');
+      expect(pub.options?.proxyPath).toBe('/store');
+      await publisher.stop();
+    });
+
+    it('omits the Repo tag when no repoId is given', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client);
+      await publisher.uploadBlob({
+        body: Buffer.from('x'),
+        contentType: 'text/plain',
+      });
+      expect(
+        calls.publishes[0]!.event.tags.some((t) => t[0] === 'Repo')
+      ).toBe(false);
+      await publisher.stop();
+    });
+
+    it('hard-errors an oversize manifest BEFORE paying', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client);
+      await expect(
+        publisher.uploadBlob({
+          body: Buffer.alloc(MAX_OBJECT_SIZE + 1),
+          contentType: 'application/json',
+        })
+      ).rejects.toThrow(/exceeds/);
+      expect(calls.claims).toHaveLength(0);
+      await publisher.stop();
+    });
   });
 
   describe('nonce guard integration', () => {

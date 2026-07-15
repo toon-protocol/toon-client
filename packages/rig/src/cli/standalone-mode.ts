@@ -59,6 +59,7 @@ import {
   encodeEventToToon,
 } from '@toon-protocol/core';
 import type {
+  BlobUpload,
   FeeRates,
   GitObjectUpload,
   Publisher,
@@ -547,6 +548,11 @@ class TopologyRecoveringPublisher implements Publisher {
   async uploadGitObject(upload: GitObjectUpload): Promise<UploadReceipt> {
     const p = await this.ensure((x) => x.start());
     return p.uploadGitObject(upload);
+  }
+
+  async uploadBlob(upload: BlobUpload): Promise<UploadReceipt> {
+    const p = await this.ensure((x) => x.start());
+    return p.uploadBlob(upload);
   }
 
   // ── money lifecycle passthroughs (#263) — same recovery contract ─────────

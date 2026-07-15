@@ -1,7 +1,7 @@
 /**
  * `rig` subcommand dispatch (#250): rig-owned verbs first, git for the rest.
  *
- * rig owns exactly: init, identity, remote, clone, fetch, push, issue,
+ * rig owns exactly: init, identity, remote, clone, fetch, push, site, issue,
  * comment, pr, channel, fund, balance, help/-h/--help, and --version. EVERY
  * other
  * subcommand is executed as `git <argv...>` verbatim (./git-passthrough.ts)
@@ -36,6 +36,7 @@ import { runInit } from './init.js';
 import { runMaintainers } from './maintainers.js';
 import { runPush, PUSH_USAGE } from './push.js';
 import { runRemote } from './remote.js';
+import { runSite } from './site.js';
 
 export const USAGE = `rig — git with a TOON remote (pay-to-write Nostr + Arweave)
 
@@ -66,6 +67,10 @@ Commands rig owns:
                              push is the TOON transport and shadows git push;
                              plain-git pushes remain available by running
                              \`git push\` directly
+  site publish [ref]         deploy a pushed repo as a permaweb site: build the
+                             ar.io path manifest (paths → Arweave txids) and
+                             upload it as one paid store write; prints the URL
+  site url [ref]             print the last-published site URL for a ref (free)
   issue create               file an issue (kind:1621) against a repo
   issue list | show <id>     read the repo's issues + comments (free)
   pr list | show <id>        read the repo's patches; show prints the full
@@ -157,6 +162,8 @@ export async function dispatch(
       return runFetch(rest, deps);
     case 'push':
       return runPush(rest, deps);
+    case 'site':
+      return runSite(rest, deps);
     case 'issue':
       return runIssue(rest, deps);
     case 'comment':
