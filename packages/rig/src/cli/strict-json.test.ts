@@ -124,6 +124,10 @@ function makeNoisyStandalone(): { load: LoadStandalone } {
       txId: TX_ID,
       feePaid: BigInt(upload.body.length) * 10n,
     }),
+    uploadBlob: async (upload) => ({
+      txId: TX_ID,
+      feePaid: BigInt(upload.body.length) * 10n,
+    }),
     publishEvent: async () => ({ eventId: 'e'.repeat(64), feePaid: 1n }),
   };
   const context: StandaloneContext = {
@@ -399,6 +403,21 @@ describe('strict --json stdout: every rig-owned command emits exactly one JSON d
     expect(result.code).toBe(0);
     const doc = parseSingleJsonDoc(result);
     expect(doc).toMatchObject({ command: 'push', executed: true });
+    expect(result.stdout).not.toContain('[Bootstrap]');
+  });
+
+  it('site publish --json estimate emits exactly one document (chatter on stderr)', async () => {
+    const repo = makeRepo();
+    await writeToonConfig(repo, { repoId: 'demo', owner: OWNER });
+    // Empty arweave map + --force-reupload → a pure estimate needs no uploads.
+    const result = await run(
+      ['site', 'publish', '--relay', 'wss://relay.example', '--force-reupload', '--json'],
+      { cwd: repo, loadStandalone: makeNoisyStandalone().load }
+    );
+    expect(result.code).toBe(0);
+    const doc = parseSingleJsonDoc(result);
+    expect(doc).toMatchObject({ command: 'site publish', executed: false });
+    expect(result.stderr).toContain('[Bootstrap]');
     expect(result.stdout).not.toContain('[Bootstrap]');
   });
 

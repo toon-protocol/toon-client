@@ -508,6 +508,9 @@ export async function executePush(
         type: object.type,
         body,
         repoId: plan.repoId,
+        // #368: the path the blob was reached by drives its Content-Type; a
+        // non-blob object (no path) uploads as octet-stream.
+        ...(object.path ? { path: object.path } : {}),
       });
       merged.set(object.sha, receipt.txId);
       totalFeePaid += receipt.feePaid;

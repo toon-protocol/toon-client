@@ -38,8 +38,10 @@ import type {
 } from '@toon-protocol/client';
 import { ToonClient, parseFulfillHttp } from '@toon-protocol/client';
 import { MAX_OBJECT_SIZE } from '../objects.js';
+import { contentTypeForPath, DEFAULT_CONTENT_TYPE } from '../mime.js';
 import type { UnsignedEvent } from '../nip34-events.js';
 import type {
+  BlobUpload,
   FeeRates,
   GitObjectUpload,
   PublishReceipt,
@@ -905,6 +907,12 @@ export class StandalonePublisher implements Publisher {
    * Upload one git object as a kind:5094 store write (Git-SHA/Git-Type/Repo
    * tagged — the proven seed-pipeline shape), signing one balance-proof claim
    * for `body.length × uploadFeePerByte`.
+   *
+   * #368: a blob's `Content-Type` is derived from its path extension (else
+   * octet-stream) and sent in the `output` tag, which the store forwards onto
+   * the Arweave upload's Content-Type — so a gateway serves `index.html` as
+   * `text/html`, not `application/octet-stream`. Non-blob objects (trees,
+   * commits, tags) are never served as files, so they stay octet-stream.
    */
   async uploadGitObject(upload: GitObjectUpload): Promise<UploadReceipt> {
     if (upload.body.length > MAX_OBJECT_SIZE) {
@@ -915,6 +923,11 @@ export class StandalonePublisher implements Publisher {
     await this.start();
     const channelId = this.requireChannel();
 
+    const contentType =
+      upload.type === 'blob'
+        ? contentTypeForPath(upload.path)
+        : DEFAULT_CONTENT_TYPE;
+
     const fee = BigInt(upload.body.length) * this.uploadFeePerByte;
     const event = this.client.signEvent({
       kind: 5094,
@@ -923,7 +936,7 @@ export class StandalonePublisher implements Publisher {
       tags: [
         ['i', upload.body.toString('base64'), 'blob'],
         ['bid', fee.toString(), 'usdc'],
-        ['output', 'application/octet-stream'],
+        ['output', contentType],
         ['Git-SHA', upload.sha],
         ['Git-Type', upload.type],
         ['Repo', upload.repoId],
@@ -946,6 +959,56 @@ export class StandalonePublisher implements Publisher {
     if (!result.data) {
       throw new StandalonePublishError(
         `git-object upload FULFILL carried no data (${upload.sha}); expected the Arweave tx ID`
+      );
+    }
+    return { txId: extractArweaveTxId(result.data), feePaid: fee };
+  }
+
+  /**
+   * Upload one raw blob (no git envelope) with an explicit `Content-Type`
+   * (#368) — a kind:5094 store write carrying just the `i`/`bid`/`output`
+   * tags (and an optional `Repo` provenance tag), NOT the Git-SHA/Git-Type
+   * tags. Without those the store keeps the bytes verbatim instead of
+   * re-deriving a git envelope, which is exactly what the ar.io path manifest
+   * needs. One balance-proof claim for `body.length × uploadFeePerByte`.
+   */
+  async uploadBlob(upload: BlobUpload): Promise<UploadReceipt> {
+    if (upload.body.length > MAX_OBJECT_SIZE) {
+      throw new StandalonePublishError(
+        `blob exceeds the ${MAX_OBJECT_SIZE}-byte limit: ${upload.body.length} bytes`
+      );
+    }
+    await this.start();
+    const channelId = this.requireChannel();
+
+    const fee = BigInt(upload.body.length) * this.uploadFeePerByte;
+    const event = this.client.signEvent({
+      kind: 5094,
+      content: '',
+      created_at: nowSeconds(),
+      tags: [
+        ['i', upload.body.toString('base64'), 'blob'],
+        ['bid', fee.toString(), 'usdc'],
+        ['output', upload.contentType],
+        ...(upload.repoId ? [['Repo', upload.repoId]] : []),
+      ],
+    });
+
+    const claim = await this.client.signBalanceProof(channelId, fee);
+    const result = await this.client.publishEvent(event, {
+      ...(this.storeDestination ? { destination: this.storeDestination } : {}),
+      claim,
+      ilpAmount: fee,
+      proxyPath: '/store',
+    });
+    if (!result.success) {
+      throw new StandalonePublishError(
+        `blob upload rejected: ${result.error ?? 'store rejected the write'}`
+      );
+    }
+    if (!result.data) {
+      throw new StandalonePublishError(
+        'blob upload FULFILL carried no data; expected the Arweave tx ID'
       );
     }
     return { txId: extractArweaveTxId(result.data), feePaid: fee };
