@@ -1,5 +1,61 @@
 # @toon-protocol/client
 
+## 0.19.0
+
+### Minor Changes
+
+- c3b34b0: Atomic verify/reveal composition + per-packet preimage retention (rolling-swap leg-B, toon-client#360, part of toon-meta#145)
+
+  Two coupled rolling-swap seams that leg-B reveal (spec §3.2) needs:
+
+  - **Preimage retention.** `withSenderConditions` minted a fresh per-packet
+    preimage `P_i`, set `C_i = sha256(P_i)` on the leg-A PREPARE, and then
+    discarded `P_i`. It now retains each `P_i` in a session-scoped
+    `InMemoryPreimageRetentionStore`, keyed by `packetIndex` — the identifier
+    shared with `AccumulatedClaim.packetIndex` — so the receive-side reveal can
+    correlate and consume the secret for the claim it commits.
+  - **Atomic verify → persist → reveal.** New `ingestAndReveal` composes the
+    `ingestReceivedClaims` verification/persist step with the leg-B reveal as one
+    unit: a verified claim's watermark advance survives iff its reveal commits,
+    and is rolled back (compensating restore of the prior watermark) on
+    withhold/failure. This makes the persisted watermark track only
+    accepted/revealed packets, so engine R8's reused nonce — the maker reuses a
+    rolled-back nonce for the next fill — is accepted, not falsely rejected as
+    non-monotonic. The daemon's swap path routes claim ingestion through it.
+
+  Legacy zero-condition swaps and hard verification rejects are unchanged (never
+  reach a reveal, never touch a watermark).
+
+- c816641: Mina receive-side swap settlement: co-signed `claimFromChannel` (#357)
+
+  Redeem swapped-in `mina:*` claims on-chain, replacing the `SUBMISSION_UNSUPPORTED`
+  fail-closed that #352 shipped. `POST /swap/settle` / `toon_swap_settle` now route
+  Mina bundles through a receive-side co-sign path instead of refusing them.
+
+  - `buildMinaCoSignedClaim` (client) assembles a dual-party `claimFromChannel`
+    claim from a verified Mina bundle: reads the on-chain channel state via plain
+    GraphQL (no o1js), resolves the participant A/B ordering against the stored
+    `channelHash`, conserves balances against `depositTotal`, and produces the
+    recipient's Pallas-Schnorr co-signature over `[commitment, nonce, channelHash]`
+    with `mina-signer`.
+  - `submitMinaSettlement` drives the o1js `claimFromChannel` proof + broadcast
+    through an injectable submitter (default: a lazy o1js + `@toon-protocol/mina-zkapp`
+    settler, so the non-Mina path never loads the WASM circuit runtime).
+  - Wired into `ToonClient.settleSwapBundle` and the daemon `settleSwapClaims` seam.
+
+  The on-chain claim is dual-party, so it still needs the maker's
+  payment-channel-commitment-form co-signature (the swap-wire claim only carries the
+  maker's `balanceProofFieldsMina` signature — a different message). Absent one,
+  settlement fails closed with `MINA_MAKER_COSIGN_REQUIRED` after assembling the
+  recipient's half. Operators can inject the maker `{ r, s }` via
+  `swapMinaMakerSignatures` until it flows over the swap wire.
+
+  Part of toon-protocol/toon-meta#145.
+
+### Patch Changes
+
+- 0eaa65e: De-duplicate `publishEvent`'s inline claim-resolution branch into the shared `resolveClaimForDestination` helper already used by `sendSwapPacket`.
+
 ## 0.18.0
 
 ### Minor Changes
