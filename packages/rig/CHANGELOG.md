@@ -1,5 +1,12 @@
 # @toon-protocol/rig
 
+## 2.7.2
+
+### Patch Changes
+
+- Updated dependencies [fb7485d]
+  - @toon-protocol/client@0.20.0
+
 ## 2.7.1
 
 ### Patch Changes
