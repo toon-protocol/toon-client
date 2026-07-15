@@ -2,7 +2,7 @@
 // Ensures seedFromRefs correctly reformats sha→txId mappings so that
 // resolveGitSha() can satisfy lookups from relay events without a GraphQL round-trip.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { seedFromRefs } from './lib/seed-cache.js';
 import {
   clearShaCache,
@@ -24,8 +24,26 @@ function makeRefs(arweaveEntries: [string, string][]): RepoRefs {
   };
 }
 
+// On a cache MISS, resolveGitSha() falls through to a real
+// `fetch('https://arweave.net/graphql')` bounded only by AbortSignal.timeout.
+// Left unstubbed that is a live network request whose failure is not guaranteed
+// to land inside vitest's 5s test timeout — the source of this file's flake.
+// Stub fetch so every miss resolves deterministically (empty GraphQL result →
+// null) and instantly, with zero network dependence. Seeded (cache-hit) tests
+// never reach fetch, so this does not mask their behaviour.
+let fetchMock: ReturnType<typeof vi.fn>;
+
 beforeEach(() => {
   clearShaCache();
+  fetchMock = vi.fn(async () => ({
+    ok: true,
+    json: async () => ({ data: { transactions: { edges: [] } } }),
+  }));
+  vi.stubGlobal('fetch', fetchMock);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('seedFromRefs - no-op behaviour', () => {
@@ -36,11 +54,13 @@ describe('seedFromRefs - no-op behaviour', () => {
 
   it('[P1] leaves cache empty when arweaveMap is empty', async () => {
     seedFromRefs(makeRefs([]), REPO_ID);
-    // Cache miss → resolveGitSha would go to network; in jsdom it returns null.
-    // We verify the cache is cold by checking a known SHA that was never seeded.
-    // (network is absent in jsdom, so a cache miss always resolves to null)
+    // An empty arweaveMap seeds nothing, so this SHA is a genuine cache miss:
+    // resolveGitSha falls through to the (stubbed) GraphQL fetch, which returns
+    // no edges → null. Asserting fetch was reached proves the cache was cold
+    // rather than silently short-circuited.
     const result = await resolveGitSha(SHA1, REPO_ID);
     expect(result).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
