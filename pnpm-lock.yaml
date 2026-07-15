@@ -128,11 +128,11 @@ importers:
         specifier: ^1.3.0
         version: 1.6.0
       '@toon-protocol/core':
-        specifier: ^2.1.0
-        version: 2.1.0(typescript@5.9.3)
+        specifier: ^3.0.0
+        version: 3.0.0(typescript@5.9.3)
       '@toon-protocol/sdk':
-        specifier: ^2.1.0
-        version: 2.1.0(mina-signer@3.1.0)(typescript@5.9.3)
+        specifier: ^3.0.0
+        version: 3.0.0(mina-signer@3.1.0)(typescript@5.9.3)
       nostr-tools:
         specifier: ^2.20.0
         version: 2.23.5(typescript@5.9.3)
@@ -213,14 +213,14 @@ importers:
         specifier: workspace:*
         version: link:../client
       '@toon-protocol/core':
-        specifier: ^2.1.0
-        version: 2.1.0(typescript@5.9.3)
+        specifier: ^3.0.0
+        version: 3.0.0(typescript@5.9.3)
       '@toon-protocol/rig':
         specifier: workspace:*
         version: link:../rig
       '@toon-protocol/sdk':
-        specifier: ^2.1.0
-        version: 2.1.0(mina-signer@3.1.0)(typescript@5.9.3)
+        specifier: ^3.0.0
+        version: 3.0.0(mina-signer@3.1.0)(typescript@5.9.3)
       '@toon-protocol/views':
         specifier: workspace:*
         version: link:../views
@@ -9661,8 +9661,8 @@ packages:
       - utf-8-validate
     dev: false
 
-  /@toon-protocol/core@2.1.0(typescript@5.9.3):
-    resolution: {integrity: sha512-UxIdR/2yjJF79jvsQ7l/CwKZlEzfxtQtqksE+5OzSagv+lV0p7gL+mBMlDn8JacvBNRanM1qa8f8BNyQfBtvhg==}
+  /@toon-protocol/core@3.0.0(typescript@5.9.3):
+    resolution: {integrity: sha512-wMX4mlqM9bJu8zNoLyLnpXGU+9BcCzpsAGeAImVgzDeBlxqJh5F86Vayf+saN2gDMkWeCMUzJ6Qoq5UWHrXKyg==}
     peerDependencies:
       '@toon-protocol/connector': '>=3.3.3'
     peerDependenciesMeta:
@@ -9959,8 +9959,8 @@ packages:
       - utf-8-validate
     dev: true
 
-  /@toon-protocol/sdk@2.1.0(mina-signer@3.1.0)(typescript@5.9.3):
-    resolution: {integrity: sha512-1rJWUZNbMuT2Ch7AU7EJC1gtg8x6npbV91NzomwpDrJwiE5RKFF2Z9XmuVXz6BHRV1omFv4N83zCzKweMuInRw==}
+  /@toon-protocol/sdk@3.0.0(mina-signer@3.1.0)(typescript@5.9.3):
+    resolution: {integrity: sha512-Ju28VbvD2mGVwq0aTo+zL+4VCBH6glurTMo8KZTqbZAM4/AFR5fv2wFUouO8WS6uqVRyKAeEpFTupmzV3GNNXQ==}
     engines: {node: '>=22'}
     peerDependencies:
       '@toon-protocol/connector': '>=3.3.3'
@@ -9976,7 +9976,7 @@ packages:
       '@noble/hashes': 2.2.0
       '@scure/bip32': 2.2.0
       '@scure/bip39': 2.2.0
-      '@toon-protocol/core': 2.1.0(typescript@5.9.3)
+      '@toon-protocol/core': 3.0.0(typescript@5.9.3)
       mina-signer: 3.1.0
       nostr-tools: 2.23.5(typescript@5.9.3)
     transitivePeerDependencies:

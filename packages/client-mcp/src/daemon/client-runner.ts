@@ -1964,12 +1964,14 @@ export class ClientRunner {
       ...(this.config.toonClientConfig.tokenNetworks
         ? { tokenNetworks: this.config.toonClientConfig.tokenNetworks }
         : {}),
-      // The stored watermark was already verified against the client's v2
-      // EIP-712 digest at receipt time (#365); the sdk's settle-time re-verify
-      // is v1-only and would reject a valid v2 signature, so skip it here. The
-      // receive-side verify is authoritative; the sdk builds the calldata only.
-      // Restoring v2 settle-time re-verification is the documented follow-up.
-      verifySignatures: false,
+      // Re-verify the stored watermark's signature at settle time
+      // (defense-in-depth over the store file). The published v2 sdk
+      // (`@toon-protocol/sdk@^3`) verifies EVM claims against the SAME v2
+      // EIP-712 domain-separated digest the receive-side used (#365), so a
+      // valid v2 signature verifies correctly here — `buildSwapSettlements`
+      // threads `chainId` + `verifyingContract` (from `tokenNetworks`) into the
+      // sdk signer config so the EIP-712 domain is reconstructed.
+      verifySignatures: true,
       ...(minaSignerClient ? { minaSignerClient } : {}),
     });
 

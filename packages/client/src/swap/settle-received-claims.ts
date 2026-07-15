@@ -62,17 +62,17 @@ export interface BuildSwapSettlementsParams {
   minaSignerClient?: MinaSignerClientLike;
   /**
    * Re-verify the stored claim's signature at settle time (defense in depth
-   * over the store file). Default `true` — the sdk `buildSettlementTx` verifies
-   * against its **v1** balance-proof digest.
+   * over the store file). Default `true` — the published **v2** sdk
+   * (`@toon-protocol/sdk@^3`, connector#324 finding #1) verifies EVM claims
+   * against the **v2** EIP-712 domain-separated balance-proof digest, the SAME
+   * digest the receive-side used (`ingestReceivedClaims`). Reconstructing that
+   * EIP-712 domain needs `chainId` + `verifyingContract`, which this builder
+   * threads into the sdk signer config from `tokenNetworks` (for EVM claims) —
+   * so a claim verified at receipt re-verifies correctly here.
    *
-   * Set `false` when the claim was already verified against the client's **v2**
-   * EIP-712 digest at receipt time (connector#324 finding #1): a v2 signature
-   * can never recover under the sdk's v1 digest, so leaving the v1 re-verify on
-   * would wrongly reject every valid v2 claim. The receive-side verify
-   * (`ingestReceivedClaims`) is then the authoritative gate; the sdk is used
-   * only to BUILD the settlement calldata. Migrating this re-verify to the v2
-   * digest (or a published v2 sdk) restores settle-time defense in depth and is
-   * the documented follow-up.
+   * Set `false` only to skip the settle-time re-verify entirely (e.g. when the
+   * receive-side verify is treated as the sole authoritative gate); the sdk is
+   * then used only to BUILD the settlement calldata.
    */
   verifySignatures?: boolean;
 }
