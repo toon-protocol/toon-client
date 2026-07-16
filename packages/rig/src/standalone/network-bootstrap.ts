@@ -48,6 +48,7 @@ import {
   GenesisPeerLoader,
   isEventExpired,
   parseIlpPeerInfo,
+  resolveClientNetwork,
   type GenesisPeer,
   type IlpPeerInfo,
 } from '@toon-protocol/core';
@@ -90,10 +91,12 @@ export interface ChainSettlement {
   family: string;
   /** JSON-RPC / GraphQL endpoint, when derivable. */
   rpcUrl?: string;
-  /** Preferred token (USDC) address, when derivable. */
+  /** Preferred token (USDC / SPL mint) address, when derivable. */
   tokenAddress?: string;
-  /** EVM TokenNetwork contract, when derivable. */
+  /** EVM TokenNetwork contract, when derivable (EVM only). */
   tokenNetwork?: string;
+  /** Solana payment-channel program id, when derivable (Solana only). */
+  programId?: string;
 }
 
 /** Why a settlement chain was selected (documented rule, in order). */
@@ -280,7 +283,7 @@ export function isDevnetZonePeer(
 }
 
 /** Numeric chain id of an `evm:<id>` / `evm:<name>:<id>` chain key. */
-function evmChainIdOf(chain: string): number | undefined {
+export function evmChainIdOf(chain: string): number | undefined {
   const parts = chain.split(':');
   if (parts[0] !== 'evm') return undefined;
   const raw = parts.length >= 3 ? parts[2] : parts[1];
@@ -311,6 +314,49 @@ export function evmPresetForChain(chain: string):
   return undefined;
 }
 
+/**
+ * Public-cluster Solana preset matching a `solana:<cluster>` chain key. Draws
+ * from core's client network presets (`resolveClientNetwork`) — the same
+ * tables the daemon and townhouse resolve — so the deployed public-devnet
+ * program/mint and the mainnet-beta RPC + Circle USDC mint come from ONE
+ * source. `programId` is present only where the TOON payment-channel program
+ * is actually deployed (public devnet today; mainnet-beta once deployed).
+ * Self-hosted validators (e.g. the TOON devnet's own `solana-rpc.*` box) have
+ * their own regenerated program ids — those must come from the announce or
+ * explicit config, never a preset.
+ */
+export function solanaPresetForChain(chain: string):
+  | { rpcUrl?: string; tokenMint?: string; programId?: string }
+  | undefined {
+  const [family, cluster] = chain.split(':');
+  if (family !== 'solana' || !cluster) return undefined;
+  const tier =
+    cluster === 'mainnet-beta'
+      ? 'mainnet'
+      : cluster === 'devnet'
+        ? 'devnet'
+        : cluster === 'testnet'
+          ? 'testnet'
+          : undefined;
+  if (!tier) return undefined;
+  const presets = resolveClientNetwork(tier);
+  // Look up by the exact chain key: the `testnet` tier resolves to the
+  // deployed `solana:devnet` cluster, so `solana:testnet` correctly finds
+  // nothing (TOON has no deployment on Solana's testnet cluster).
+  const rpcUrl = presets.chainRpcUrls[chain];
+  const tokenMint = presets.preferredTokens[chain];
+  const programId =
+    presets.solanaChannel && presets.supportedChains.includes(chain)
+      ? presets.solanaChannel.programId
+      : undefined;
+  if (!rpcUrl && !tokenMint && !programId) return undefined;
+  return {
+    ...(rpcUrl ? { rpcUrl } : {}),
+    ...(tokenMint ? { tokenMint } : {}),
+    ...(programId ? { programId } : {}),
+  };
+}
+
 /** Explicit per-chain maps from the shared client-config file. */
 export interface ExplicitChainConfig {
   chainRpcUrls?: Record<string, string>;
@@ -322,7 +368,14 @@ export interface ExplicitChainConfig {
  * Resolve one chain's settlement parameters: explicit config > announce >
  * devnet endpoint table (RPC only, devnet-zone peers) > core chain preset.
  * Fields stay undefined when no source covers them — callers decide whether
- * that is fatal (see {@link requireTokenNetwork}).
+ * that is fatal (see {@link TokenNetworkUnderivableError} /
+ * {@link SolanaChannelUnderivableError}).
+ *
+ * For `solana:*` chains the chain-keyed maps carry the SPL analogues: the
+ * `preferredTokens` entry is the token mint, and the `tokenNetworks` entry is
+ * the payment-channel PROGRAM id (the map is chain-keyed settlement-contract
+ * addressing — TokenNetwork contract on EVM, channel program on Solana),
+ * surfaced as {@link ChainSettlement.programId}.
  */
 export function resolveChainSettlement(
   chain: string,
@@ -330,21 +383,47 @@ export function resolveChainSettlement(
   announce?: AnnouncedPeer
 ): ChainSettlement {
   const family = chain.split(':')[0] ?? chain;
-  const preset = evmPresetForChain(chain);
+  const evmPreset = family === 'evm' ? evmPresetForChain(chain) : undefined;
   const devnetRpc = isDevnetZonePeer(announce)
     ? DEVNET_CHAIN_RPC_URLS[chain]
     : undefined;
+  // The devnet zone SELF-HOSTS this chain (its own validator): the
+  // public-cluster preset addresses do not exist there (the devnet's Solana
+  // program id is regenerated per redeploy), so presets must not fill gaps —
+  // only the announce or explicit config can (else the caller fails fast
+  // with an actionable error instead of an on-chain "program not found").
+  // Detected via the announcing peer's zone OR the resolved RPC host, so an
+  // explicit zone RPC is protected even when discovery was skipped/failed.
+  const explicitOrZoneRpc = explicit.chainRpcUrls?.[chain] ?? devnetRpc;
+  const rpcHost = hostOf(explicitOrZoneRpc);
+  const zoneSelfHosted =
+    (isDevnetZonePeer(announce) &&
+      DEVNET_CHAIN_RPC_URLS[chain] !== undefined) ||
+    (rpcHost !== undefined &&
+      (rpcHost === DEVNET_ZONE || rpcHost.endsWith(`.${DEVNET_ZONE}`)));
+  const solPreset =
+    family === 'solana' && !zoneSelfHosted
+      ? solanaPresetForChain(chain)
+      : undefined;
 
-  const rpcUrl =
-    explicit.chainRpcUrls?.[chain] ?? devnetRpc ?? preset?.rpcUrl;
+  const rpcUrl = explicitOrZoneRpc ?? evmPreset?.rpcUrl ?? solPreset?.rpcUrl;
   const tokenAddress =
     explicit.preferredTokens?.[chain] ??
     announce?.info.preferredTokens?.[chain] ??
-    (preset?.usdcAddress || undefined);
+    (evmPreset?.usdcAddress || undefined) ??
+    solPreset?.tokenMint;
   const tokenNetwork =
-    explicit.tokenNetworks?.[chain] ??
-    announce?.info.tokenNetworks?.[chain] ??
-    (preset?.tokenNetworkAddress || undefined);
+    family === 'evm'
+      ? (explicit.tokenNetworks?.[chain] ??
+        announce?.info.tokenNetworks?.[chain] ??
+        (evmPreset?.tokenNetworkAddress || undefined))
+      : undefined;
+  const programId =
+    family === 'solana'
+      ? (explicit.tokenNetworks?.[chain] ??
+        announce?.info.tokenNetworks?.[chain] ??
+        solPreset?.programId)
+      : undefined;
 
   return {
     chain,
@@ -352,6 +431,7 @@ export function resolveChainSettlement(
     ...(rpcUrl ? { rpcUrl } : {}),
     ...(tokenAddress ? { tokenAddress } : {}),
     ...(tokenNetwork ? { tokenNetwork } : {}),
+    ...(programId ? { programId } : {}),
   };
 }
 
@@ -369,6 +449,36 @@ export class TokenNetworkUnderivableError extends Error {
         `chain via TOON_CLIENT_CHAIN / the chain config field)`
     );
     this.name = 'TokenNetworkUnderivableError';
+  }
+}
+
+/**
+ * A Solana chain was selected but its channel parameters cannot be derived.
+ * The missing pieces are named so the error is directly actionable: a
+ * `solanaChannel` config object always works; the chain-keyed maps
+ * (`tokenNetworks` = program id, `preferredTokens` = mint,
+ * `chainRpcUrls` = RPC) work per-chain.
+ */
+export class SolanaChannelUnderivableError extends Error {
+  constructor(
+    chain: string,
+    missing: string[],
+    announce: AnnouncedPeer | undefined,
+    relayUrl: string
+  ) {
+    const announceRef = announce
+      ? `the kind:10032 announce from ${announce.pubkey.slice(0, 16)}… on ${relayUrl} does not carry them`
+      : `no kind:10032 announce was found on ${relayUrl}`;
+    super(
+      `cannot derive the Solana channel parameters for settlement chain ` +
+        `"${chain}" (missing: ${missing.join(', ')}): ${announceRef}, and ` +
+        `no built-in preset covers this cluster — add a solanaChannel ` +
+        `{ rpcUrl, programId, tokenMint } object to the client config (or ` +
+        `set tokenNetworks["${chain}"] = <program id>, ` +
+        `preferredTokens["${chain}"] = <mint>, chainRpcUrls["${chain}"]), ` +
+        `or pick another chain via TOON_CLIENT_CHAIN / the chain config field`
+    );
+    this.name = 'SolanaChannelUnderivableError';
   }
 }
 

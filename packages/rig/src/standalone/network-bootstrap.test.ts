@@ -11,6 +11,7 @@ import type { AddressInfo } from 'node:net';
 import type { NostrEvent } from '../remote-state.js';
 import {
   DEVNET_CHAIN_RPC_URLS,
+  SolanaChannelUnderivableError,
   TokenNetworkUnderivableError,
   discoverAnnouncedPeers,
   evmPresetForChain,
@@ -21,6 +22,7 @@ import {
   pickPaymentPeer,
   resolveChainSettlement,
   selectSettlementChain,
+  solanaPresetForChain,
   type AnnouncedPeer,
 } from './network-bootstrap.js';
 
@@ -310,6 +312,168 @@ describe('resolveChainSettlement', () => {
     expect(err.message).toContain('wss://relay.example');
     const errNoAnnounce = new TokenNetworkUnderivableError(
       'evm:999999',
+      undefined,
+      'wss://relay.example'
+    );
+    expect(errNoAnnounce.message).toContain('no kind:10032 announce');
+  });
+
+  it('derives EVM mainnet (Base 8453) RPC + Circle USDC from the preset', () => {
+    // TOON TokenNetwork is not deployed on Base mainnet — RPC and token come
+    // from the core preset, the TokenNetwork ONLY from announce/config.
+    for (const chain of ['evm:8453', 'evm:base:8453']) {
+      const s = resolveChainSettlement(chain, {}, apex);
+      expect(s.rpcUrl).toBe('https://mainnet.base.org');
+      expect(s.tokenAddress).toBe(
+        '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+      );
+      expect(s.tokenNetwork).toBeUndefined();
+    }
+    const announced = announcedPeer(APEX_PUBKEY, {
+      ...APEX_CONTENT,
+      tokenNetworks: { 'evm:base:8453': '0xMAINNETTN' },
+    });
+    const s = resolveChainSettlement('evm:base:8453', {}, announced);
+    expect(s.tokenNetwork).toBe('0xMAINNETTN');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveChainSettlement — Solana
+// ---------------------------------------------------------------------------
+
+describe('resolveChainSettlement — solana', () => {
+  const apex = announcedPeer(APEX_PUBKEY, APEX_CONTENT); // devnet-zone peer
+  /** A peer OUTSIDE the devnet zone (local stack / public network). */
+  const publicPeer = announcedPeer(APEX_PUBKEY, {
+    ...APEX_CONTENT,
+    httpEndpoint: 'https://proxy.example.com/ilp',
+    btpEndpoint: 'wss://proxy.example.com:443',
+    relayUrl: 'wss://relay.example.com',
+  });
+
+  it('solanaPresetForChain covers the public clusters from core presets', () => {
+    // Public devnet: the deployed TOON program + mint.
+    const devnet = solanaPresetForChain('solana:devnet');
+    expect(devnet?.rpcUrl).toBe('https://api.devnet.solana.com');
+    expect(devnet?.programId).toBeTruthy();
+    expect(devnet?.tokenMint).toBeTruthy();
+    // Mainnet-beta: RPC + Circle USDC mint; program not deployed yet.
+    const mainnet = solanaPresetForChain('solana:mainnet-beta');
+    expect(mainnet?.rpcUrl).toBe('https://api.mainnet-beta.solana.com');
+    expect(mainnet?.tokenMint).toBe(
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+    );
+    expect(mainnet?.programId).toBeUndefined();
+    // No TOON deployment on Solana's testnet cluster; unknown clusters and
+    // non-solana chains resolve to nothing.
+    expect(solanaPresetForChain('solana:testnet')).toBeUndefined();
+    expect(solanaPresetForChain('solana:localnet')).toBeUndefined();
+    expect(solanaPresetForChain('evm:31337')).toBeUndefined();
+  });
+
+  it('public-cluster peer: full derivation from the core preset', () => {
+    const s = resolveChainSettlement('solana:devnet', {}, publicPeer);
+    expect(s.family).toBe('solana');
+    const preset = solanaPresetForChain('solana:devnet');
+    expect(s.rpcUrl).toBe(preset?.rpcUrl);
+    expect(s.tokenAddress).toBe(preset?.tokenMint);
+    expect(s.programId).toBe(preset?.programId);
+    expect(s.tokenNetwork).toBeUndefined();
+  });
+
+  it('devnet-zone peer: zone RPC, NO preset program/mint (self-hosted validator)', () => {
+    // The devnet runs its own solana-test-validator whose program id is
+    // regenerated per redeploy — the public-devnet preset addresses do not
+    // exist there and must not be offered as fallbacks.
+    const s = resolveChainSettlement('solana:devnet', {}, apex);
+    expect(s.rpcUrl).toBe(DEVNET_CHAIN_RPC_URLS['solana:devnet']);
+    expect(s.programId).toBeUndefined();
+    expect(s.tokenAddress).toBeUndefined();
+  });
+
+  it('an explicit zone-hosted RPC blocks preset program/mint even with no announce', () => {
+    // Discovery skipped/failed (announce undefined) but the explicit config
+    // points the chain at the self-hosted devnet-zone validator: the public
+    // preset addresses still do not exist there.
+    const s = resolveChainSettlement(
+      'solana:devnet',
+      {
+        chainRpcUrls: {
+          'solana:devnet': 'https://solana-rpc.devnet.toonprotocol.dev',
+        },
+      },
+      undefined
+    );
+    expect(s.rpcUrl).toBe('https://solana-rpc.devnet.toonprotocol.dev');
+    expect(s.programId).toBeUndefined();
+    expect(s.tokenAddress).toBeUndefined();
+  });
+
+  it('announce tokenNetworks/preferredTokens carry the program id + mint', () => {
+    const announced = announcedPeer(APEX_PUBKEY, {
+      ...APEX_CONTENT,
+      tokenNetworks: { 'solana:devnet': 'ProgramAnnounced11111' },
+      preferredTokens: { 'solana:devnet': 'MintAnnounced1111111' },
+    });
+    const s = resolveChainSettlement('solana:devnet', {}, announced);
+    expect(s.programId).toBe('ProgramAnnounced11111');
+    expect(s.tokenAddress).toBe('MintAnnounced1111111');
+    expect(s.rpcUrl).toBe(DEVNET_CHAIN_RPC_URLS['solana:devnet']);
+  });
+
+  it('explicit config beats announce and presets', () => {
+    const announced = announcedPeer(APEX_PUBKEY, {
+      ...APEX_CONTENT,
+      tokenNetworks: { 'solana:devnet': 'ProgramAnnounced11111' },
+      preferredTokens: { 'solana:devnet': 'MintAnnounced1111111' },
+    });
+    const s = resolveChainSettlement(
+      'solana:devnet',
+      {
+        tokenNetworks: { 'solana:devnet': 'ProgramExplicit111111' },
+        preferredTokens: { 'solana:devnet': 'MintExplicit11111111' },
+        chainRpcUrls: { 'solana:devnet': 'http://explicit:8899' },
+      },
+      announced
+    );
+    expect(s.programId).toBe('ProgramExplicit111111');
+    expect(s.tokenAddress).toBe('MintExplicit11111111');
+    expect(s.rpcUrl).toBe('http://explicit:8899');
+  });
+
+  it('mainnet-beta with an announced program id is settlement-complete', () => {
+    const announced = announcedPeer(APEX_PUBKEY, {
+      ...APEX_CONTENT,
+      supportedChains: ['solana:mainnet-beta'],
+      httpEndpoint: 'https://proxy.example.com/ilp',
+      btpEndpoint: 'wss://proxy.example.com:443',
+      relayUrl: 'wss://relay.example.com',
+      tokenNetworks: { 'solana:mainnet-beta': 'ProgramMainnet111111' },
+    });
+    const s = resolveChainSettlement('solana:mainnet-beta', {}, announced);
+    expect(s.programId).toBe('ProgramMainnet111111');
+    expect(s.rpcUrl).toBe('https://api.mainnet-beta.solana.com');
+    expect(s.tokenAddress).toBe(
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+    );
+  });
+
+  it('SolanaChannelUnderivableError names the missing pieces and remedies', () => {
+    const err = new SolanaChannelUnderivableError(
+      'solana:devnet',
+      ['programId', 'tokenMint'],
+      apex,
+      'wss://relay.example'
+    );
+    expect(err.message).toContain('solana:devnet');
+    expect(err.message).toContain('programId, tokenMint');
+    expect(err.message).toContain(APEX_PUBKEY.slice(0, 16));
+    expect(err.message).toContain('solanaChannel');
+    expect(err.message).toContain('tokenNetworks["solana:devnet"]');
+    const errNoAnnounce = new SolanaChannelUnderivableError(
+      'solana:mainnet-beta',
+      ['programId'],
       undefined,
       'wss://relay.example'
     );

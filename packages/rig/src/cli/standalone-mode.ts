@@ -82,8 +82,10 @@ import {
 } from '../standalone/topology-cache.js';
 import {
   DISCOVERY_TIMEOUT_MS,
+  SolanaChannelUnderivableError,
   TokenNetworkUnderivableError,
   discoverAnnouncedPeers,
+  evmChainIdOf,
   evmTokenBalance,
   genesisSeedPubkeys,
   loadGenesisSeed,
@@ -92,6 +94,7 @@ import {
   selectSettlementChain,
   type AnnouncedPeer,
   type ChainSelection,
+  type ChainSettlement,
   type ChannelRecordLike,
   type EvmBalanceProbe,
   type ExplicitChainConfig,
@@ -220,6 +223,42 @@ export interface NetworkTopology {
   preferredTokens?: Record<string, string>;
   tokenNetworks?: Record<string, string>;
   chainRpcUrls?: Record<string, string>;
+  /**
+   * Solana channel parameters derived for the (first) `solana:*` chain in
+   * play — the config-ready `ToonClientConfig.solanaChannel` shape. Absent
+   * when no Solana chain is supported or an explicit `solanaChannel` config
+   * object already covers it (explicit rides through verbatim).
+   */
+  solanaChannel?: { rpcUrl: string; programId: string; tokenMint?: string };
+}
+
+/**
+ * Build the embedded client's `solanaChannel` from one resolved settlement —
+ * or throw the actionable {@link SolanaChannelUnderivableError} naming the
+ * missing pieces. A Solana chain in play with no way to open its channel must
+ * fail HERE, not later as the embedded client's generic "Solana channel
+ * config not provided".
+ */
+function deriveSolanaChannel(
+  settlement: ChainSettlement,
+  announce: AnnouncedPeer | undefined,
+  relayUrl: string
+): NonNullable<NetworkTopology['solanaChannel']> {
+  const { rpcUrl, programId, tokenAddress } = settlement;
+  if (!rpcUrl || !programId || !tokenAddress) {
+    const missing = [
+      ...(rpcUrl ? [] : ['rpcUrl']),
+      ...(programId ? [] : ['programId']),
+      ...(tokenAddress ? [] : ['tokenMint']),
+    ];
+    throw new SolanaChannelUnderivableError(
+      settlement.chain,
+      missing,
+      announce,
+      relayUrl
+    );
+  }
+  return { rpcUrl, programId, tokenMint: tokenAddress };
 }
 
 /**
@@ -321,41 +360,112 @@ export async function resolveNetworkTopology(
   let preferredTokens: Record<string, string> | undefined;
   let tokenNetworks: Record<string, string> | undefined;
   let chainRpcUrls: Record<string, string> | undefined;
+  let solanaChannel: NetworkTopology['solanaChannel'];
 
   if (file.supportedChains?.length) {
-    // Explicit chain list: pass through as-is (its order IS the negotiation
-    // preference), filling per-chain parameter gaps from announce/presets.
-    supportedChains = file.supportedChains;
+    // Explicit chain list: pass through in order (its order IS the
+    // negotiation preference), filling per-chain parameter gaps from
+    // announce/presets.
+    const listed = file.supportedChains;
+    const kept: string[] = [];
+    let firstDropError: unknown;
     preferredTokens = { ...file.preferredTokens };
     tokenNetworks = { ...file.tokenNetworks };
     chainRpcUrls = { ...file.chainRpcUrls };
-    for (const chain of supportedChains) {
+    for (const chain of listed) {
       const s = resolveSettlement(chain);
-      if (s.tokenAddress && !preferredTokens[chain]) {
-        preferredTokens[chain] = s.tokenAddress;
+      // Chain negotiation is an EXACT string intersection of the two chain
+      // lists — a spelling difference for the same chain (config
+      // `evm:base:31337` vs announced `evm:31337`) silently strands the
+      // chain and negotiation falls through to whatever else matches. When
+      // a listed EVM chain names the same numeric chain id as an announced
+      // one, advertise the ANNOUNCED spelling (parameters resolved from the
+      // configured spelling carry over).
+      let key = chain;
+      if (s.family === 'evm' && !announcedChains.includes(chain)) {
+        const chainId = evmChainIdOf(chain);
+        const equivalent =
+          chainId !== undefined
+            ? announcedChains.find((c) => evmChainIdOf(c) === chainId)
+            : undefined;
+        if (equivalent) {
+          warn(
+            `rig: aligning configured settlement chain "${chain}" to the ` +
+              `announced spelling "${equivalent}" (same EVM chain id ` +
+              `${chainId}) — chain negotiation matches identifiers exactly`
+          );
+          key = equivalent;
+        }
       }
-      if (s.tokenNetwork && !tokenNetworks[chain]) {
-        tokenNetworks[chain] = s.tokenNetwork;
+      if (kept.includes(key)) continue;
+      if (s.tokenAddress && !preferredTokens[key]) {
+        preferredTokens[key] = s.tokenAddress;
       }
-      if (s.rpcUrl && !chainRpcUrls[chain]) {
-        chainRpcUrls[chain] = s.rpcUrl;
+      if (s.tokenNetwork && !tokenNetworks[key]) {
+        tokenNetworks[key] = s.tokenNetwork;
+      }
+      if (s.rpcUrl && !chainRpcUrls[key]) {
+        chainRpcUrls[key] = s.rpcUrl;
       }
       // Same fail-fast guarantee as the announce/selection path below: an
       // explicitly configured EVM chain whose TokenNetwork/RPC cannot be
       // derived must fail HERE with an actionable error, not later as the
       // embedded client's generic "tokenNetwork address is required".
       if (s.family === 'evm') {
-        if (!tokenNetworks[chain]) {
+        if (!tokenNetworks[key]) {
           throw new TokenNetworkUnderivableError(chain, announce, relayUrl);
         }
-        if (!chainRpcUrls[chain]) {
+        if (!chainRpcUrls[key]) {
           throw new Error(
             `no RPC URL is derivable for settlement chain "${chain}"` +
               ` — add chainRpcUrls["${chain}"] to ${configPath}`
           );
         }
       }
+      // A listed Solana chain is advertised to negotiation, which may pick
+      // it — so its channel parameters must be derivable NOW. An explicit
+      // solanaChannel config object covers it (rides through to the embedded
+      // client verbatim); otherwise the first derivable Solana chain
+      // provides the channel params, and an UNDERIVABLE one is dropped from
+      // the advertised list (warned, with the remedy) instead of leaving a
+      // chain in play that the on-chain open is guaranteed to die on.
+      if (s.family === 'solana' && !file.solanaChannel) {
+        if (solanaChannel) {
+          // The embedded client carries ONE solanaChannel — a second Solana
+          // chain cannot be honored with distinct params.
+          kept.push(key);
+          continue;
+        }
+        try {
+          solanaChannel = deriveSolanaChannel(s, announce, relayUrl);
+        } catch (err) {
+          firstDropError ??= err;
+          warn(
+            `rig: dropping settlement chain ${chain} from the configured ` +
+              `supportedChains — ${err instanceof Error ? err.message : String(err)}`
+          );
+          continue;
+        }
+      }
+      kept.push(key);
     }
+    if (kept.length === 0) {
+      // Every listed chain was dropped — surface the first underivable
+      // error instead of negotiating with an empty chain list.
+      throw firstDropError;
+    }
+    supportedChains = kept;
+    // The embedded client validates chainRpcUrls keys ⊆ supportedChains, so
+    // entries for dropped/re-spelled chains must not survive; prune all
+    // three chain-keyed maps to the advertised list for coherence.
+    const advertised = new Set(kept);
+    const prune = (map: Record<string, string>): Record<string, string> =>
+      Object.fromEntries(
+        Object.entries(map).filter(([chain]) => advertised.has(chain))
+      );
+    preferredTokens = prune(preferredTokens);
+    tokenNetworks = prune(tokenNetworks);
+    chainRpcUrls = prune(chainRpcUrls);
     selection = {
       chain: supportedChains[0] as string,
       reason: 'explicit',
@@ -391,6 +501,11 @@ export async function resolveNetworkTopology(
             ` — add chainRpcUrls["${selection.chain}"] to ${configPath}`
         );
       }
+    }
+    // Same fail-fast for a selected Solana chain: its channel parameters
+    // must be derivable now (an explicit solanaChannel config covers it).
+    if (settlement.family === 'solana' && !file.solanaChannel) {
+      solanaChannel = deriveSolanaChannel(settlement, announce, relayUrl);
     }
     supportedChains = [selection.chain];
     preferredTokens = settlement.tokenAddress
@@ -445,6 +560,7 @@ export async function resolveNetworkTopology(
     ...(chainRpcUrls && Object.keys(chainRpcUrls).length > 0
       ? { chainRpcUrls }
       : {}),
+    ...(solanaChannel ? { solanaChannel } : {}),
   };
 }
 
@@ -674,15 +790,29 @@ export async function createStandaloneContext(
     // ── Live announce discovery ────────────────────────────────────────────
     // Skipped when explicit config already pins the whole payment topology
     // (fully-configured setups keep their zero-roundtrip start and their
-    // exact pre-#264 behavior). Discovery failure is non-fatal: warn +
-    // genesis seed.
+    // exact pre-#264 behavior). A listed `solana:*` chain WITHOUT explicit
+    // channel parameters is not fully pinned: the announce is a needed
+    // parameter source (program id / mint), and skipping discovery would
+    // also skip the announced-spelling alignment that keeps the chain list
+    // negotiable. Discovery failure is non-fatal: warn + genesis seed.
+    const solanaExplicitlyComplete = (file.supportedChains ?? []).every(
+      (chain) =>
+        !chain.startsWith('solana:') ||
+        Boolean(file.solanaChannel) ||
+        Boolean(
+          file.tokenNetworks?.[chain] &&
+            file.preferredTokens?.[chain] &&
+            file.chainRpcUrls?.[chain]
+        )
+    );
     const fullyExplicit =
       Boolean(
         (env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl) ||
           (env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl)
       ) &&
       Boolean(env['TOON_CLIENT_DESTINATION'] ?? file.destination) &&
-      Boolean(file.supportedChains?.length);
+      Boolean(file.supportedChains?.length) &&
+      solanaExplicitlyComplete;
     let announce: AnnouncedPeer | undefined;
     if (!fullyExplicit) {
       try {
@@ -777,7 +907,13 @@ export async function createStandaloneContext(
       ...(topo.preferredTokens ? { preferredTokens: topo.preferredTokens } : {}),
       ...(topo.tokenNetworks ? { tokenNetworks: topo.tokenNetworks } : {}),
       ...(topo.chainRpcUrls ? { chainRpcUrls: topo.chainRpcUrls } : {}),
-      ...(file.solanaChannel ? { solanaChannel: file.solanaChannel } : {}),
+      // Solana channel params: an explicit config object wins verbatim; else
+      // the topology's derivation (announce/presets — see resolveNetworkTopology).
+      ...(file.solanaChannel
+        ? { solanaChannel: file.solanaChannel }
+        : topo.solanaChannel
+          ? { solanaChannel: topo.solanaChannel }
+          : {}),
       ...(file.minaChannel ? { minaChannel: file.minaChannel } : {}),
     };
 
