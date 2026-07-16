@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { deriveFullIdentity } from '@toon-protocol/client';
 
 import type { AnnouncedPeer } from '../standalone/network-bootstrap.js';
 import {
@@ -78,6 +79,7 @@ function inputs(
     identity: { mnemonic: MNEMONIC, accountIndex: 0, pubkey: 'd4'.repeat(32) },
     channelRecords: () => [],
     probeBalance: () => Promise.resolve(0n),
+    probeSolanaBalance: () => Promise.resolve(0n),
     warn: () => {},
     ...overrides,
   };
@@ -234,6 +236,62 @@ describe('resolveNetworkTopology — settlement', () => {
     expect(topology.selection).toMatchObject({
       chain: 'evm:31337',
       reason: 'funded',
+    });
+  });
+
+  it('prefers a Solana chain funded for the identity-derived address', async () => {
+    // A wallet funded ONLY on Solana settles there automatically: the EVM
+    // probe finds nothing, the SPL probe (against the mnemonic's own derived
+    // base58 address) does. The announce must carry the program id/mint —
+    // the devnet-zone apex self-hosts its validator (no preset fallback).
+    const probedOwners: string[] = [];
+    const topology = await resolveNetworkTopology(
+      inputs({
+        announce: apexAnnounce({
+          tokenNetworks: { 'solana:devnet': 'ProgramAnnounced11111' },
+          preferredTokens: { 'solana:devnet': 'MintAnnounced1111111' },
+        }),
+        probeBalance: () => Promise.resolve(0n),
+        probeSolanaBalance: (args) => {
+          probedOwners.push(args.owner);
+          expect(args.rpcUrl).toBe('https://solana-rpc.devnet.toonprotocol.dev');
+          expect(args.tokenAddress).toBe('MintAnnounced1111111');
+          return Promise.resolve(5000n);
+        },
+      })
+    );
+    expect(topology.selection).toMatchObject({
+      chain: 'solana:devnet',
+      reason: 'funded',
+    });
+    // The probed owner is the identity's own Solana address (the client's
+    // SLIP-0010 m/44'/501'/{account}'/0' derivation from the mnemonic).
+    const identity = await deriveFullIdentity(MNEMONIC, 0);
+    expect(probedOwners).toEqual([identity.solana.publicKey]);
+    expect(identity.solana.publicKey).not.toBe('');
+    // The funded Solana pick is settlement-complete for the embedded client.
+    expect(topology.supportedChains).toEqual(['solana:devnet']);
+    expect(topology.solanaChannel).toEqual({
+      rpcUrl: 'https://solana-rpc.devnet.toonprotocol.dev',
+      programId: 'ProgramAnnounced11111',
+      tokenMint: 'MintAnnounced1111111',
+    });
+  });
+
+  it('falls back to the default EVM chain when the Solana probe errors', async () => {
+    const topology = await resolveNetworkTopology(
+      inputs({
+        announce: apexAnnounce({
+          tokenNetworks: { 'solana:devnet': 'ProgramAnnounced11111' },
+          preferredTokens: { 'solana:devnet': 'MintAnnounced1111111' },
+        }),
+        probeBalance: () => Promise.resolve(0n),
+        probeSolanaBalance: () => Promise.reject(new Error('rpc down')),
+      })
+    );
+    expect(topology.selection).toMatchObject({
+      chain: 'evm:31337',
+      reason: 'default',
     });
   });
 

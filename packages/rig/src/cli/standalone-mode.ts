@@ -53,7 +53,11 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ToonClientConfig } from '@toon-protocol/client';
-import { EvmSigner, deriveNostrKeyFromMnemonic } from '@toon-protocol/client';
+import {
+  EvmSigner,
+  deriveFullIdentity,
+  deriveNostrKeyFromMnemonic,
+} from '@toon-protocol/client';
 import {
   decodeEventFromToon,
   encodeEventToToon,
@@ -92,12 +96,14 @@ import {
   pickPaymentPeer,
   resolveChainSettlement,
   selectSettlementChain,
+  solanaTokenBalance,
   type AnnouncedPeer,
   type ChainSelection,
   type ChainSettlement,
   type ChannelRecordLike,
   type EvmBalanceProbe,
   type ExplicitChainConfig,
+  type SolanaBalanceProbe,
 } from '../standalone/network-bootstrap.js';
 import { StandalonePublisher } from '../standalone/standalone-publisher.js';
 import { fetchRemoteState } from '../remote-state.js';
@@ -197,8 +203,13 @@ export interface NetworkTopologyInputs {
    * chain selection actually needs it.
    */
   channelRecords: () => ChannelRecordLike[];
-  /** Balance probe override (tests); default: raw `eth_call`. */
+  /** EVM balance probe override (tests); default: raw `eth_call`. */
   probeBalance?: EvmBalanceProbe;
+  /**
+   * Solana balance probe override (tests); default: raw
+   * `getTokenAccountsByOwner`.
+   */
+  probeSolanaBalance?: SolanaBalanceProbe;
   /**
    * When false (#263 free reads, e.g. `rig balance`), a missing uplink is
    * tolerated instead of throwing {@link MissingUplinkError}.
@@ -478,13 +489,34 @@ export async function resolveNetworkTopology(
       inputs.identity.accountIndex
     );
     const evmAddress = new EvmSigner(secretKey).address;
+    // The Solana funded-chain probe needs the identity's base58 Solana
+    // address, derived pre-client-start via the client's own SLIP-0010
+    // helper (same paths the embedded client uses, so the probed address IS
+    // the one the client will settle with). Only derived when a `solana:*`
+    // chain is actually announced and no explicit chain pins selection
+    // anyway; `deriveFullIdentity` degrades to an empty publicKey when the
+    // Ed25519 deps are unavailable — then Solana chains are not probed.
+    let solanaAddress: string | undefined;
+    if (!explicitChain && announcedChains.some((c) => c.startsWith('solana:'))) {
+      const fullIdentity = await deriveFullIdentity(
+        inputs.identity.mnemonic,
+        inputs.identity.accountIndex
+      );
+      solanaAddress = fullIdentity.solana.publicKey || undefined;
+      // Only the address is needed here — drop the derived key material.
+      fullIdentity.nostr.secretKey.fill(0);
+      fullIdentity.evm.privateKey.fill(0);
+      fullIdentity.solana.secretKey.fill(0);
+    }
     selection = await selectSettlementChain({
       ...(explicitChain ? { explicitChain } : {}),
       announcedChains,
       records: inputs.channelRecords(),
       evmAddress,
+      ...(solanaAddress ? { solanaAddress } : {}),
       resolveSettlement,
       probeBalance: inputs.probeBalance ?? evmTokenBalance,
+      probeSolanaBalance: inputs.probeSolanaBalance ?? solanaTokenBalance,
     });
     const settlement = resolveSettlement(selection.chain);
     if (settlement.family === 'evm') {
