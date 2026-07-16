@@ -23,6 +23,7 @@ import {
   resolveChainSettlement,
   selectSettlementChain,
   solanaPresetForChain,
+  solanaTokenBalance,
   type AnnouncedPeer,
 } from './network-bootstrap.js';
 
@@ -581,6 +582,97 @@ describe('selectSettlementChain', () => {
     expect(selection).toMatchObject({ chain: 'evm:31337', reason: 'funded' });
   });
 
+  it('picks a funded Solana chain when EVM chains are unfunded', async () => {
+    const selection = await selectSettlementChain({
+      announcedChains: ['evm:31337', 'solana:devnet'],
+      evmAddress: '0x' + '11'.repeat(20),
+      solanaAddress: 'So1anaOwner1111111111111111111111111111111',
+      resolveSettlement,
+      probeBalance: () => Promise.resolve(0n),
+      probeSolanaBalance: (args) => {
+        expect(args.rpcUrl).toBe('http://rpc.example/solana:devnet');
+        expect(args.tokenAddress).toBe('0xTOKEN');
+        expect(args.owner).toBe('So1anaOwner1111111111111111111111111111111');
+        return Promise.resolve(250n);
+      },
+    });
+    expect(selection).toMatchObject({
+      chain: 'solana:devnet',
+      reason: 'funded',
+    });
+    expect(selection.detail).toContain('250');
+  });
+
+  it('announce order decides when both an EVM and a Solana chain are funded', async () => {
+    const probeArgs = {
+      evmAddress: '0x' + '11'.repeat(20),
+      solanaAddress: 'So1anaOwner1111111111111111111111111111111',
+      resolveSettlement,
+      probeBalance: () => Promise.resolve(7n),
+      probeSolanaBalance: () => Promise.resolve(9n),
+    };
+    const solanaFirst = await selectSettlementChain({
+      announcedChains: ['solana:devnet', 'evm:31337'],
+      ...probeArgs,
+    });
+    expect(solanaFirst).toMatchObject({
+      chain: 'solana:devnet',
+      reason: 'funded',
+    });
+    const evmFirst = await selectSettlementChain({
+      announcedChains: ['evm:31337', 'solana:devnet'],
+      ...probeArgs,
+    });
+    expect(evmFirst).toMatchObject({ chain: 'evm:31337', reason: 'funded' });
+  });
+
+  it('Solana probe errors skip the candidate instead of failing selection', async () => {
+    const selection = await selectSettlementChain({
+      announcedChains: ['solana:devnet', 'evm:31337'],
+      evmAddress: '0x' + '11'.repeat(20),
+      solanaAddress: 'So1anaOwner1111111111111111111111111111111',
+      resolveSettlement,
+      probeBalance: () => Promise.resolve(0n),
+      probeSolanaBalance: () => Promise.reject(new Error('rpc down')),
+    });
+    expect(selection).toMatchObject({ chain: 'evm:31337', reason: 'default' });
+  });
+
+  it('does not probe Solana chains without a solanaAddress', async () => {
+    let solanaProbed = 0;
+    const selection = await selectSettlementChain({
+      announcedChains: ['solana:devnet', 'evm:31337'],
+      evmAddress: '0x' + '11'.repeat(20),
+      resolveSettlement,
+      probeBalance: () => Promise.resolve(3n),
+      probeSolanaBalance: () => {
+        solanaProbed += 1;
+        return Promise.resolve(999n);
+      },
+    });
+    expect(solanaProbed).toBe(0);
+    expect(selection).toMatchObject({ chain: 'evm:31337', reason: 'funded' });
+  });
+
+  it('skips a Solana candidate whose settlement lacks RPC or mint', async () => {
+    const selection = await selectSettlementChain({
+      announcedChains: ['solana:devnet', 'evm:31337'],
+      evmAddress: '0x' + '11'.repeat(20),
+      solanaAddress: 'So1anaOwner1111111111111111111111111111111',
+      resolveSettlement: (chain) => ({
+        chain,
+        family: chain.split(':')[0] as string,
+        // No rpcUrl/tokenAddress for solana — the mint is underivable.
+        ...(chain.startsWith('evm:')
+          ? { rpcUrl: `http://rpc.example/${chain}`, tokenAddress: '0xTOKEN' }
+          : {}),
+      }),
+      probeBalance: () => Promise.resolve(4n),
+      probeSolanaBalance: () => Promise.resolve(999n),
+    });
+    expect(selection).toMatchObject({ chain: 'evm:31337', reason: 'funded' });
+  });
+
   it('defaults to the first announced EVM chain with a rationale', async () => {
     const selection = await selectSettlementChain({
       announcedChains,
@@ -652,6 +744,95 @@ describe('evmTokenBalance', () => {
           )) as unknown as typeof fetch,
       })
     ).rejects.toThrow(/execution reverted/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// solanaTokenBalance — raw getTokenAccountsByOwner probe
+// ---------------------------------------------------------------------------
+
+describe('solanaTokenBalance', () => {
+  const OWNER = 'A3FG5y6rfBNJQrsGYTNNR7UHAXCREPJgV362LdTQGNwK';
+  const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+  const tokenAccount = (amount: string) => ({
+    account: { data: { parsed: { info: { tokenAmount: { amount } } } } },
+  });
+
+  it('requests the owner accounts for the mint and sums their amounts', async () => {
+    let captured: { url: string; body: string } | undefined;
+    const balance = await solanaTokenBalance({
+      rpcUrl: 'http://rpc.example',
+      tokenAddress: MINT,
+      owner: OWNER,
+      fetchImpl: ((url: string, init: { body: string }) => {
+        captured = { url, body: init.body };
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              result: { value: [tokenAccount('123'), tokenAccount('7')] },
+            })
+          )
+        );
+      }) as unknown as typeof fetch,
+    });
+    expect(balance).toBe(130n);
+    expect(captured?.url).toBe('http://rpc.example');
+    const body = JSON.parse(captured?.body ?? '{}') as {
+      method: string;
+      params: [string, { mint: string }, { encoding: string }];
+    };
+    expect(body.method).toBe('getTokenAccountsByOwner');
+    expect(body.params[0]).toBe(OWNER);
+    expect(body.params[1]).toEqual({ mint: MINT });
+    expect(body.params[2]).toEqual({ encoding: 'jsonParsed' });
+  });
+
+  it('returns 0n when the owner has no token accounts for the mint', async () => {
+    const balance = await solanaTokenBalance({
+      rpcUrl: 'http://rpc.example',
+      tokenAddress: MINT,
+      owner: OWNER,
+      fetchImpl: (() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ jsonrpc: '2.0', id: 1, result: { value: [] } })
+          )
+        )) as unknown as typeof fetch,
+    });
+    expect(balance).toBe(0n);
+  });
+
+  it('throws on RPC errors', async () => {
+    await expect(
+      solanaTokenBalance({
+        rpcUrl: 'http://rpc.example',
+        tokenAddress: MINT,
+        owner: OWNER,
+        fetchImpl: (() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({ error: { message: 'Invalid param: WrongSize' } })
+            )
+          )) as unknown as typeof fetch,
+      })
+    ).rejects.toThrow(/Invalid param: WrongSize/);
+  });
+
+  it('throws on HTTP failures', async () => {
+    await expect(
+      solanaTokenBalance({
+        rpcUrl: 'http://rpc.example',
+        tokenAddress: MINT,
+        owner: OWNER,
+        fetchImpl: (() =>
+          Promise.resolve(
+            new Response('rate limited', { status: 429 })
+          )) as unknown as typeof fetch,
+      })
+    ).rejects.toThrow(/HTTP 429/);
   });
 });
 

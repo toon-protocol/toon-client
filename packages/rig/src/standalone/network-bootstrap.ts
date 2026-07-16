@@ -33,8 +33,9 @@
  *   2. PERSISTED CHANNEL — the chain of the most recently used live channel
  *      recorded for this identity in the #262 channel map (a channel there
  *      means collateral is already locked on that chain).
- *   3. FUNDED — the first announced EVM chain where the identity's token
- *      balance is > 0 (one `eth_call` per candidate).
+ *   3. FUNDED — the first announced chain (EVM or Solana, in announce
+ *      order) where the identity's token balance is > 0 (one `eth_call` /
+ *      `getTokenAccountsByOwner` per candidate).
  *   4. DEFAULT — the first EVM chain the peer announces (else the first
  *      announced chain), with a printed rationale.
  *
@@ -501,6 +502,18 @@ export type EvmBalanceProbe = (args: {
   owner: string;
 }) => Promise<bigint>;
 
+/**
+ * Async SPL token-balance probe (injectable; default is a raw
+ * `getTokenAccountsByOwner`). `tokenAddress` is the SPL mint and `owner`
+ * the identity's base58 Solana address — the same argument shape as
+ * {@link EvmBalanceProbe} so both feed the one funded-chain loop.
+ */
+export type SolanaBalanceProbe = (args: {
+  rpcUrl: string;
+  tokenAddress: string;
+  owner: string;
+}) => Promise<bigint>;
+
 export interface SelectChainOptions {
   /**
    * Explicit chain choice: full chain id (`evm:31337`), a family
@@ -512,17 +525,26 @@ export interface SelectChainOptions {
   announcedChains: readonly string[];
   /** #262 channel-map records for this identity (any anchor). */
   records?: readonly ChannelRecordLike[];
-  /** Identity's EVM address (funded-chain probe). */
+  /** Identity's EVM address (funded-chain probe, `evm:*` candidates). */
   evmAddress?: string;
+  /**
+   * Identity's base58 Solana address (funded-chain probe, `solana:*`
+   * candidates). Absent (e.g. the identity's Ed25519 key could not be
+   * derived) means Solana chains are simply not probed.
+   */
+  solanaAddress?: string;
   /** Per-chain settlement resolver (for RPC/token of probe candidates). */
   resolveSettlement: (chain: string) => ChainSettlement;
-  /** Balance probe; probe errors just skip the candidate. */
+  /** EVM balance probe; probe errors just skip the candidate. */
   probeBalance?: EvmBalanceProbe;
+  /** Solana balance probe; probe errors just skip the candidate. */
+  probeSolanaBalance?: SolanaBalanceProbe;
 }
 
 /**
  * Select the settlement chain per the documented rule: explicit >
- * persisted channel > funded EVM chain > first announced EVM chain.
+ * persisted channel > funded chain (EVM + Solana, in announce order) >
+ * first announced EVM chain.
  */
 export async function selectSettlementChain(
   options: SelectChainOptions
@@ -569,28 +591,40 @@ export async function selectSettlementChain(
     };
   }
 
-  // 3 — first announced EVM chain where the identity holds tokens.
+  // 3 — first announced chain where the identity holds tokens, probing
+  // EVM and Solana candidates in ANNOUNCE ORDER (the peer's stated
+  // preference breaks a both-funded tie). Families without an address or
+  // probe are skipped, as are candidates whose RPC/token are underivable.
   const evmChains = announcedChains.filter((c) => c.startsWith('evm:'));
-  if (options.evmAddress && options.probeBalance) {
-    for (const chain of evmChains) {
-      const settlement = options.resolveSettlement(chain);
-      if (!settlement.rpcUrl || !settlement.tokenAddress) continue;
-      try {
-        const balance = await options.probeBalance({
-          rpcUrl: settlement.rpcUrl,
-          tokenAddress: settlement.tokenAddress,
-          owner: options.evmAddress,
-        });
-        if (balance > 0n) {
-          return {
-            chain,
-            reason: 'funded',
-            detail: `wallet holds ${balance} token base units on ${chain}`,
-          };
-        }
-      } catch {
-        // Unreachable RPC / bad token — not a candidate; fall through.
+  for (const chain of announcedChains) {
+    const family = chain.split(':')[0];
+    let probe: EvmBalanceProbe | SolanaBalanceProbe | undefined;
+    let owner: string | undefined;
+    if (family === 'evm') {
+      probe = options.probeBalance;
+      owner = options.evmAddress;
+    } else if (family === 'solana') {
+      probe = options.probeSolanaBalance;
+      owner = options.solanaAddress;
+    }
+    if (!probe || !owner) continue;
+    const settlement = options.resolveSettlement(chain);
+    if (!settlement.rpcUrl || !settlement.tokenAddress) continue;
+    try {
+      const balance = await probe({
+        rpcUrl: settlement.rpcUrl,
+        tokenAddress: settlement.tokenAddress,
+        owner,
+      });
+      if (balance > 0n) {
+        return {
+          chain,
+          reason: 'funded',
+          detail: `wallet holds ${balance} token base units on ${chain}`,
+        };
       }
+    } catch {
+      // Unreachable RPC / bad token — not a candidate; fall through.
     }
   }
 
@@ -612,7 +646,7 @@ export async function selectSettlementChain(
 }
 
 // ---------------------------------------------------------------------------
-// Default EVM balance probe (raw JSON-RPC eth_call, no extra deps)
+// Default balance probes (raw JSON-RPC, no extra deps)
 // ---------------------------------------------------------------------------
 
 /** ERC-20 `balanceOf(address)` selector. */
@@ -656,6 +690,71 @@ export async function evmTokenBalance(args: {
       throw new Error(`eth_call failed: ${body.error?.message ?? 'no result'}`);
     }
     return BigInt(body.result === '0x' ? '0x0' : body.result);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Read an SPL token balance with one raw `getTokenAccountsByOwner` call
+ * (keeps the probe free of @solana/web3.js — the embedded client is not
+ * started yet when selection runs). `tokenAddress` is the mint; balances
+ * are summed across all of the owner's token accounts for that mint (an
+ * owner can hold the mint in more than one account).
+ */
+export async function solanaTokenBalance(args: {
+  rpcUrl: string;
+  tokenAddress: string;
+  owner: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<bigint> {
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), args.timeoutMs ?? 5000);
+  try {
+    const res = await fetchImpl(args.rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getTokenAccountsByOwner',
+        params: [
+          args.owner,
+          { mint: args.tokenAddress },
+          { encoding: 'jsonParsed' },
+        ],
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`getTokenAccountsByOwner failed: HTTP ${res.status}`);
+    }
+    const body = (await res.json()) as {
+      result?: { value?: unknown };
+      error?: { message?: string };
+    };
+    const accounts = body.result?.value;
+    if (!Array.isArray(accounts)) {
+      throw new Error(
+        `getTokenAccountsByOwner failed: ${body.error?.message ?? 'no result'}`
+      );
+    }
+    let total = 0n;
+    for (const account of accounts) {
+      const amount = (
+        account as {
+          account?: {
+            data?: {
+              parsed?: { info?: { tokenAmount?: { amount?: unknown } } };
+            };
+          };
+        }
+      )?.account?.data?.parsed?.info?.tokenAmount?.amount;
+      if (typeof amount === 'string') total += BigInt(amount);
+    }
+    return total;
   } finally {
     clearTimeout(timer);
   }
