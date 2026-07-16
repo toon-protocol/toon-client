@@ -240,6 +240,12 @@ describe('resolveNetworkTopology — settlement', () => {
   it('prefers a live persisted channel chain (#262 map)', async () => {
     const topology = await resolveNetworkTopology(
       inputs({
+        // The devnet-zone apex self-hosts its Solana validator, so the
+        // program id/mint must ride the announce (no preset fallback).
+        announce: apexAnnounce({
+          tokenNetworks: { 'solana:devnet': 'ProgramAnnounced11111' },
+          preferredTokens: { 'solana:devnet': 'MintAnnounced1111111' },
+        }),
         channelRecords: () => [
           {
             chain: 'solana:devnet',
@@ -254,6 +260,13 @@ describe('resolveNetworkTopology — settlement', () => {
       reason: 'persisted-channel',
     });
     expect(topology.supportedChains).toEqual(['solana:devnet']);
+    // The selected Solana chain is settlement-complete: channel params
+    // derived from the announce + the devnet-zone RPC table.
+    expect(topology.solanaChannel).toEqual({
+      rpcUrl: 'https://solana-rpc.devnet.toonprotocol.dev',
+      programId: 'ProgramAnnounced11111',
+      tokenMint: 'MintAnnounced1111111',
+    });
   });
 
   it('honors TOON_CLIENT_CHAIN as an explicit family pick', async () => {
@@ -272,6 +285,12 @@ describe('resolveNetworkTopology — settlement', () => {
         file: {
           supportedChains: ['solana:devnet', 'evm:31337'],
           tokenNetworks: { 'evm:31337': '0xEXPLICIT' },
+          // A listed Solana chain must be settlement-complete; the explicit
+          // channel object covers it.
+          solanaChannel: {
+            rpcUrl: 'https://solana-rpc.devnet.toonprotocol.dev',
+            programId: 'ProgramExplicit111111',
+          },
         },
       })
     );
@@ -283,6 +302,9 @@ describe('resolveNetworkTopology — settlement', () => {
     expect(topology.chainRpcUrls?.['evm:31337']).toBe(
       'https://evm-rpc.devnet.toonprotocol.dev'
     );
+    // The explicit solanaChannel rides through buildPublisher verbatim — the
+    // topology does not re-derive one.
+    expect(topology.solanaChannel).toBeUndefined();
   });
 
   it('fails fast on an underivable EVM chain in an explicit supportedChains list', async () => {
@@ -338,6 +360,204 @@ describe('resolveNetworkTopology — settlement', () => {
     expect(
       warnings.some((w) => w.includes('no settlement chains'))
     ).toBe(true);
+  });
+
+  it('drops a listed Solana chain with no derivable channel params (warned)', async () => {
+    // The devnet-zone announce carries no solana program/mint and the zone's
+    // validator is self-hosted (presets do not apply): a listed solana:devnet
+    // without a solanaChannel config cannot be settled on, so it must not be
+    // advertised to negotiation — negotiation landing there is guaranteed to
+    // die later as the embedded client's "Solana channel config not
+    // provided". The remaining chains keep working.
+    const warnings: string[] = [];
+    const topology = await resolveNetworkTopology(
+      inputs({
+        file: { supportedChains: ['evm:31337', 'solana:devnet'] },
+        warn: (line) => warnings.push(line),
+      })
+    );
+    expect(topology.supportedChains).toEqual(['evm:31337']);
+    expect(topology.solanaChannel).toBeUndefined();
+    const dropWarning = warnings.find((w) => w.includes('dropping'));
+    expect(dropWarning).toContain('solana:devnet');
+    expect(dropWarning).toContain('solanaChannel');
+  });
+
+  it('aligns a configured EVM spelling to the announced chain id (devnet config shape)', async () => {
+    // The live-devnet failure shape: the shared daemon config lists
+    // `evm:base:31337` while the apex announces `evm:31337` — negotiation
+    // matches identifiers exactly, so the EVM chain was silently stranded
+    // and negotiation fell through to solana:devnet (which standalone could
+    // not open). The listed chain must be advertised under the ANNOUNCED
+    // spelling, its explicit parameters carried over, and the chain-keyed
+    // maps pruned to the advertised list (the client validates
+    // chainRpcUrls keys ⊆ supportedChains).
+    const warnings: string[] = [];
+    const topology = await resolveNetworkTopology(
+      inputs({
+        file: {
+          supportedChains: ['evm:base:31337', 'solana:devnet', 'mina:devnet'],
+          tokenNetworks: {
+            'evm:base:31337': '0xCafac3dD18aC6c6e92c921884f9E4176737C052c',
+          },
+          preferredTokens: {
+            'evm:base:31337': '0x5FbDB2315678afecb367f032d93F642f64180aa3',
+          },
+          chainRpcUrls: {
+            'evm:base:31337': 'https://evm-rpc.devnet.toonprotocol.dev',
+            'solana:devnet': 'https://solana-rpc.devnet.toonprotocol.dev',
+            'mina:devnet': 'https://mina.devnet.toonprotocol.dev/graphql',
+          },
+        },
+        warn: (line) => warnings.push(line),
+      })
+    );
+    // evm aligned to the announced spelling; underivable solana dropped;
+    // mina passed through.
+    expect(topology.supportedChains).toEqual(['evm:31337', 'mina:devnet']);
+    expect(topology.selection?.chain).toBe('evm:31337');
+    // Explicit parameters carried over under the announced spelling.
+    expect(topology.tokenNetworks).toEqual({
+      'evm:31337': '0xCafac3dD18aC6c6e92c921884f9E4176737C052c',
+    });
+    expect(topology.preferredTokens).toEqual({
+      'evm:31337': '0x5FbDB2315678afecb367f032d93F642f64180aa3',
+    });
+    expect(topology.chainRpcUrls).toEqual({
+      'evm:31337': 'https://evm-rpc.devnet.toonprotocol.dev',
+      'mina:devnet': 'https://mina.devnet.toonprotocol.dev/graphql',
+    });
+    expect(warnings.some((w) => w.includes('aligning'))).toBe(true);
+  });
+
+  it('fails fast when EVERY listed chain is an underivable Solana chain', async () => {
+    await expect(
+      resolveNetworkTopology(
+        inputs({
+          file: { supportedChains: ['solana:devnet'] },
+        })
+      )
+    ).rejects.toThrow(/Solana channel parameters.*solana:devnet/s);
+  });
+
+  it('fails fast when the SELECTED chain is Solana with no derivable params', async () => {
+    await expect(
+      resolveNetworkTopology(
+        inputs({
+          channelRecords: () => [
+            {
+              chain: 'solana:devnet',
+              lastUsedAt: '2026-07-01T00:00:00Z',
+              closed: false,
+            },
+          ],
+        })
+      )
+    ).rejects.toThrow(/Solana channel parameters.*solana:devnet/s);
+  });
+
+  it('derives solanaChannel for a listed Solana chain from the announce', async () => {
+    const topology = await resolveNetworkTopology(
+      inputs({
+        announce: apexAnnounce({
+          tokenNetworks: { 'solana:devnet': 'ProgramAnnounced11111' },
+          preferredTokens: { 'solana:devnet': 'MintAnnounced1111111' },
+        }),
+        file: { supportedChains: ['solana:devnet'] },
+      })
+    );
+    expect(topology.solanaChannel).toEqual({
+      rpcUrl: 'https://solana-rpc.devnet.toonprotocol.dev',
+      programId: 'ProgramAnnounced11111',
+      tokenMint: 'MintAnnounced1111111',
+    });
+    // The mint also fills the chain-keyed token map (negotiation fallback).
+    expect(topology.preferredTokens?.['solana:devnet']).toBe(
+      'MintAnnounced1111111'
+    );
+  });
+
+  it('supports Solana mainnet-beta once the program id is known', async () => {
+    // A non-devnet-zone peer announcing mainnet-beta with its program id:
+    // RPC + Circle USDC mint come from the core preset, the program from the
+    // announce — settlement-complete without any local config.
+    const mainnetAnnounce = apexAnnounce({
+      httpEndpoint: 'https://proxy.example.com/ilp',
+      btpEndpoint: 'wss://proxy.example.com:443',
+      relayUrl: 'wss://relay.example.com',
+      supportedChains: ['solana:mainnet-beta'],
+      settlementAddresses: {
+        'solana:mainnet-beta': 'A3FG5y6rfBNJQrsGYTNNR7UHAXCREPJgV362LdTQGNwK',
+      },
+      tokenNetworks: { 'solana:mainnet-beta': 'ProgramMainnet111111' },
+    });
+    const topology = await resolveNetworkTopology(
+      inputs({ announce: mainnetAnnounce })
+    );
+    expect(topology.selection?.chain).toBe('solana:mainnet-beta');
+    expect(topology.solanaChannel).toEqual({
+      rpcUrl: 'https://api.mainnet-beta.solana.com',
+      programId: 'ProgramMainnet111111',
+      tokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    });
+  });
+
+  it('fails fast on Solana mainnet-beta without a program id, naming it', async () => {
+    const mainnetAnnounce = apexAnnounce({
+      httpEndpoint: 'https://proxy.example.com/ilp',
+      btpEndpoint: 'wss://proxy.example.com:443',
+      relayUrl: 'wss://relay.example.com',
+      supportedChains: ['solana:mainnet-beta'],
+      settlementAddresses: {
+        'solana:mainnet-beta': 'A3FG5y6rfBNJQrsGYTNNR7UHAXCREPJgV362LdTQGNwK',
+      },
+    });
+    await expect(
+      resolveNetworkTopology(inputs({ announce: mainnetAnnounce }))
+    ).rejects.toThrow(/solana:mainnet-beta.*missing: programId/s);
+  });
+
+  it('supports EVM mainnet (Base 8453) when the announce carries its TokenNetwork', async () => {
+    const mainnetAnnounce = apexAnnounce({
+      httpEndpoint: 'https://proxy.example.com/ilp',
+      btpEndpoint: 'wss://proxy.example.com:443',
+      relayUrl: 'wss://relay.example.com',
+      supportedChains: ['evm:base:8453'],
+      settlementAddresses: {
+        'evm:base:8453': '0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab',
+      },
+      tokenNetworks: { 'evm:base:8453': '0xMAINNETTN' },
+    });
+    const topology = await resolveNetworkTopology(
+      inputs({ announce: mainnetAnnounce })
+    );
+    expect(topology.selection?.chain).toBe('evm:base:8453');
+    expect(topology.tokenNetworks?.['evm:base:8453']).toBe('0xMAINNETTN');
+    // RPC + Circle USDC from the core base-mainnet preset (chain-id match).
+    expect(topology.chainRpcUrls?.['evm:base:8453']).toBe(
+      'https://mainnet.base.org'
+    );
+    expect(topology.preferredTokens?.['evm:base:8453']).toBe(
+      '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+    );
+    expect(topology.solanaChannel).toBeUndefined();
+  });
+
+  it('fails fast on EVM mainnet without an announced TokenNetwork', async () => {
+    // TOON's TokenNetwork is not deployed on Base mainnet, so the preset
+    // cannot fill it — only the announce or explicit config can.
+    const mainnetAnnounce = apexAnnounce({
+      httpEndpoint: 'https://proxy.example.com/ilp',
+      btpEndpoint: 'wss://proxy.example.com:443',
+      relayUrl: 'wss://relay.example.com',
+      supportedChains: ['evm:base:8453'],
+      settlementAddresses: {
+        'evm:base:8453': '0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab',
+      },
+    });
+    await expect(
+      resolveNetworkTopology(inputs({ announce: mainnetAnnounce }))
+    ).rejects.toThrow(/TokenNetwork.*evm:base:8453/s);
   });
 
   it('ignores the network preset for settlement (#260) with a warning', async () => {
