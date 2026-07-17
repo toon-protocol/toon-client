@@ -34,6 +34,7 @@ import {
   type ArnsSdk,
   type DvmBuyJobReceipt,
   type DvmBuyJobRequest,
+  type GasStationClient,
   type LoadArns,
   type NameDeps,
   type SubmitDvmBuyJob,
@@ -55,6 +56,14 @@ interface StubCalls {
   }[];
   buyRecord: { name: string; type: string; years?: number }[];
   spawnAnt: { name: string }[];
+  buildSetRecordTransaction: {
+    antProcessId: string;
+    undername: string;
+    transactionId: string;
+    ttlSeconds: number;
+    feePayer: string;
+    recentBlockhash: string;
+  }[];
   getArNSRecord: { name: string }[];
   antFor: string[];
   setBaseNameRecord: { transactionId: string; ttlSeconds: number }[];
@@ -81,6 +90,7 @@ function makeStubSdk(options: StubOptions): { sdk: ArnsSdk; calls: StubCalls } {
     getTokenCost: [],
     buyRecord: [],
     spawnAnt: [],
+    buildSetRecordTransaction: [],
     getArNSRecord: [],
     antFor: [],
     setBaseNameRecord: [],
@@ -117,6 +127,10 @@ function makeStubSdk(options: StubOptions): { sdk: ArnsSdk; calls: StubCalls } {
       calls.spawnAnt.push(args);
       return { processId: 'SPAWNED-ANT-ID', signature: 'spawn-tx-1' };
     },
+    buildSetRecordTransaction: async (args) => {
+      calls.buildSetRecordTransaction.push(args);
+      return 'BASE64-PARTIAL-TX';
+    },
     getArNSRecord: async (args) => {
       calls.getArNSRecord.push(args);
       return options.record === undefined ? defaultRecord : options.record;
@@ -139,6 +153,9 @@ interface Harness {
   loadArnsModes: string[];
   /** Every kind:5095 job the stubbed DVM submitter received (--via). */
   dvmJobs: DvmBuyJobRequest[];
+  /** Every kind:5096 gas-station call the stubbed client received. */
+  gasQuotes: { viaUrl: string; transaction?: string }[];
+  gasExecutes: { viaUrl: string; transaction: string; quoteId: string; idempotencyKey: string }[];
 }
 
 function makeHarness(
@@ -185,7 +202,47 @@ function makeHarness(
       }
     );
   };
-  const deps: NameDeps = { io, env, cwd, loadArns, submitDvmBuyJob };
+  const gasQuotes: Harness['gasQuotes'] = [];
+  const gasExecutes: Harness['gasExecutes'] = [];
+  const gasStation: GasStationClient = {
+    quote: async (args) => {
+      gasQuotes.push({
+        viaUrl: args.viaUrl,
+        ...(args.transaction !== undefined
+          ? { transaction: args.transaction }
+          : {}),
+      });
+      expect(args.nostrSecretKey).toHaveLength(32);
+      return {
+        quoteId: 'quote-1',
+        feePayer: 'GASWALLETADDR',
+        maxLamports: '1000000',
+        recentBlockhash: 'QUOTEDBLOCKHASH',
+        expiresAt: 1_900_000_000_000,
+      };
+    },
+    execute: async (args) => {
+      gasExecutes.push({
+        viaUrl: args.viaUrl,
+        transaction: args.transaction,
+        quoteId: args.quoteId,
+        idempotencyKey: args.idempotencyKey,
+      });
+      return {
+        signature: 'gas-broadcast-sig-1',
+        slot: '123',
+        feeLamportsActual: '5000',
+      };
+    },
+  };
+  const deps: NameDeps = {
+    io,
+    env,
+    cwd,
+    loadArns,
+    submitDvmBuyJob,
+    gasStation,
+  };
   return {
     deps,
     out,
@@ -193,6 +250,8 @@ function makeHarness(
     calls,
     loadArnsModes,
     dvmJobs,
+    gasQuotes,
+    gasExecutes,
     get loadArnsCalls() {
       return loadArnsCalls;
     },
@@ -633,6 +692,111 @@ describe('rig name', () => {
     expect(h.dvmJobs).toHaveLength(1);
     expect(h.dvmJobs[0]!.viaUrl).toBe('http://dvm.env:3300');
     expect(h.calls.buyRecord).toHaveLength(0);
+  });
+
+  // ── set --via (gas-station record update — toon-meta#163) ────────────────
+
+  it('set --via --yes quotes, builds against the quoted blockhash/feePayer, and executes (no local ANT write)', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      [
+        'set',
+        'mysite',
+        TX_ID,
+        '--via',
+        'http://dvm.local:3300',
+        '--network',
+        'devnet',
+        '--yes',
+        '--json',
+      ],
+      h.deps
+    );
+    expect(code).toBe(0);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc).toMatchObject({
+      command: 'name',
+      action: 'set',
+      executed: true,
+      via: 'http://dvm.local:3300',
+      gasStation: {
+        quoteId: 'quote-1',
+        feePayer: 'GASWALLETADDR',
+        maxLamports: '1000000',
+        feeLamportsActual: '5000',
+      },
+      result: { messageId: 'gas-broadcast-sig-1' },
+    });
+    // The tx was built with the DVM's quote (fee payer + blockhash) and the
+    // local (self-funded) ANT write path never ran.
+    expect(h.calls.buildSetRecordTransaction).toEqual([
+      {
+        antProcessId: 'ANT-PROCESS-ID',
+        undername: '@',
+        transactionId: TX_ID,
+        ttlSeconds: 3600,
+        feePayer: 'GASWALLETADDR',
+        recentBlockhash: 'QUOTEDBLOCKHASH',
+      },
+    ]);
+    expect(h.gasQuotes).toEqual([{ viaUrl: 'http://dvm.local:3300' }]);
+    expect(h.gasExecutes).toHaveLength(1);
+    expect(h.gasExecutes[0]).toMatchObject({
+      transaction: 'BASE64-PARTIAL-TX',
+      quoteId: 'quote-1',
+    });
+    expect(h.gasExecutes[0]!.idempotencyKey.length).toBeGreaterThan(8);
+    expect(h.calls.setBaseNameRecord).toHaveLength(0);
+    expect(h.loadArnsModes).toEqual(['read', 'write']);
+  });
+
+  it('set --via --json without --yes is a pure preview (no quote, no build, no execute)', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      ['set', 'mysite', TX_ID, '--via', 'http://dvm.local:3300', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc).toMatchObject({ executed: false, via: 'http://dvm.local:3300' });
+    expect(h.gasQuotes).toHaveLength(0);
+    expect(h.gasExecutes).toHaveLength(0);
+    expect(h.calls.buildSetRecordTransaction).toHaveLength(0);
+  });
+
+  it('set --via targets an undername with its own record', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      [
+        'set',
+        'mysite',
+        TX_ID,
+        '--undername',
+        'docs',
+        '--via',
+        'http://dvm.local:3300',
+        '--yes',
+        '--json',
+      ],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.calls.buildSetRecordTransaction[0]).toMatchObject({
+      undername: 'docs',
+    });
+  });
+
+  it('a plain set (no --via) never touches the gas station', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      ['set', 'mysite', TX_ID, '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.gasQuotes).toHaveLength(0);
+    expect(h.gasExecutes).toHaveLength(0);
+    expect(h.calls.setBaseNameRecord).toHaveLength(1);
+    expect(h.calls.buildSetRecordTransaction).toHaveLength(0);
   });
 
   it('a plain buy (no --via) never spawns or submits a DVM job', async () => {

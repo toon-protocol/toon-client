@@ -49,6 +49,7 @@
  * Defaults to mainnet.
  */
 
+import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { formatUnits } from './balance.js';
 import { emitCliError } from './errors.js';
@@ -190,6 +191,22 @@ export interface ArnsSdk {
   spawnAnt(args: {
     name: string;
   }): Promise<{ processId: string; signature: string }>;
+  /**
+   * Build (do NOT send) a partially-signed ANT record-set transaction for
+   * the gas-station path (toon-meta#163): feePayer = the DVM's advertised
+   * gas wallet, lifetime = the quoted blockhash, caller = THIS identity's
+   * Solana key, which partial-signs. Returns the base64 wire transaction
+   * ready for a kind:5096 execute job. Write mode only.
+   */
+  buildSetRecordTransaction(args: {
+    antProcessId: string;
+    /** `@` for the base name. */
+    undername: string;
+    transactionId: string;
+    ttlSeconds: number;
+    feePayer: string;
+    recentBlockhash: string;
+  }): Promise<string>;
   /** Read a name's current registry record (free). */
   getArNSRecord(args: { name: string }): Promise<ArnsRecordView | null>;
   /** Bind an ANT handle for a name's process id (for `set` / `status`). */
@@ -304,6 +321,12 @@ interface RawArioModule {
     arns?: string;
     ant?: string;
   };
+  /** Root-exported PDA helper: (mint, undername, antProgramId?) → [pda]. */
+  getAntRecordPDA?: (
+    mint: unknown,
+    undername: string,
+    programId?: unknown
+  ) => Promise<readonly unknown[]>;
 }
 interface RawArioInstance {
   getTokenCost: (args: unknown) => Promise<unknown>;
@@ -324,6 +347,29 @@ interface RawSolanaKitModule {
   createSolanaRpc?: (url: string) => unknown;
   createSolanaRpcSubscriptions?: (url: string) => unknown;
   createKeyPairSignerFromBytes?: (bytes: Uint8Array) => Promise<unknown>;
+  // ── extras the gas-station tx builder uses (all loose-typed on purpose:
+  //    the optional module's types are not a build dep) ──
+  createKeyPairFromBytes?: (bytes: Uint8Array) => Promise<unknown>;
+  createNoopSigner?: (addr: unknown) => unknown;
+  address?: (s: string) => unknown;
+  blockhash?: (s: string) => unknown;
+  createTransactionMessage?: (o: { version: number }) => unknown;
+  setTransactionMessageFeePayer?: (a: unknown, m: unknown) => unknown;
+  setTransactionMessageLifetimeUsingBlockhash?: (
+    l: unknown,
+    m: unknown
+  ) => unknown;
+  appendTransactionMessageInstructions?: (ix: unknown[], m: unknown) => unknown;
+  compileTransaction?: (m: unknown) => unknown;
+  partiallySignTransaction?: (kps: unknown[], tx: unknown) => Promise<unknown>;
+  getBase64EncodedWireTransaction?: (tx: unknown) => string;
+}
+/** The `@ar.io/solana-contracts/ant` slice the record-set builder uses. */
+interface RawAntContractsModule {
+  getSetRecordInstructionAsync?: (
+    input: Record<string, unknown>,
+    config?: { programAddress?: unknown }
+  ) => Promise<unknown>;
 }
 
 /**
@@ -461,6 +507,103 @@ export const defaultLoadArns: LoadArns = async (options) => {
         ...(antProgramId !== undefined ? { antProgramId } : {}),
       });
       return { processId: result.processId, signature: result.signature };
+    },
+    buildSetRecordTransaction: async (args) => {
+      if (options.mode !== 'write') {
+        throw new ArnsSdkIncompatibleError(
+          'buildSetRecordTransaction requires the write-mode SDK (a client ' +
+            'partial-signature) — this client was built signerless'
+        );
+      }
+      const contractsSpecifier = '@ar.io/solana-contracts/ant' as string;
+      let contracts: RawAntContractsModule;
+      try {
+        contracts = (await import(
+          contractsSpecifier
+        )) as unknown as RawAntContractsModule;
+      } catch (err) {
+        throw new ArnsSdkUnavailableError(err, '@ar.io/solana-contracts');
+      }
+      const getSetRecordInstructionAsync = contracts.getSetRecordInstructionAsync;
+      const getAntRecordPDA = mod.getAntRecordPDA;
+      const {
+        createKeyPairFromBytes,
+        createNoopSigner,
+        address: toAddr,
+        blockhash: toBlockhash,
+        createTransactionMessage,
+        setTransactionMessageFeePayer,
+        setTransactionMessageLifetimeUsingBlockhash,
+        appendTransactionMessageInstructions,
+        compileTransaction,
+        partiallySignTransaction,
+        getBase64EncodedWireTransaction,
+      } = kit;
+      if (
+        !getSetRecordInstructionAsync ||
+        !getAntRecordPDA ||
+        !createKeyPairFromBytes ||
+        !createNoopSigner ||
+        !toAddr ||
+        !toBlockhash ||
+        !createTransactionMessage ||
+        !setTransactionMessageFeePayer ||
+        !setTransactionMessageLifetimeUsingBlockhash ||
+        !appendTransactionMessageInstructions ||
+        !compileTransaction ||
+        !partiallySignTransaction ||
+        !getBase64EncodedWireTransaction
+      ) {
+        throw new ArnsSdkIncompatibleError(
+          'the installed @ar.io/sdk / @ar.io/solana-contracts / @solana/kit ' +
+            'do not expose the record-set transaction builder surface'
+        );
+      }
+
+      const asset = toAddr(args.antProcessId);
+      const antProgram =
+        antProgramId !== undefined ? toAddr(antProgramId) : undefined;
+      const [recordPda] = await getAntRecordPDA(
+        asset,
+        args.undername,
+        antProgram
+      );
+      // The client is the record CALLER (authority) — a noop signer here so
+      // the compiled account meta is marked signer; the real signature comes
+      // from partiallySignTransaction below. The DVM's gas wallet is ONLY
+      // the fee payer.
+      const ix = await getSetRecordInstructionAsync(
+        {
+          asset,
+          record: recordPda,
+          caller: createNoopSigner(toAddr(options.solanaPublicKey)),
+          undername: args.undername,
+          target: args.transactionId,
+          targetProtocol: 0,
+          ttlSeconds: args.ttlSeconds,
+          priority: null,
+          recordOwner: null,
+        },
+        antProgram !== undefined ? { programAddress: antProgram } : undefined
+      );
+
+      let message = createTransactionMessage({ version: 0 });
+      message = setTransactionMessageFeePayer(toAddr(args.feePayer), message);
+      message = setTransactionMessageLifetimeUsingBlockhash(
+        {
+          blockhash: toBlockhash(args.recentBlockhash),
+          lastValidBlockHeight: 0n,
+        },
+        message
+      );
+      message = appendTransactionMessageInstructions([ix], message);
+
+      const keyPair = await createKeyPairFromBytes(options.solanaSecretKey);
+      const signed = await partiallySignTransaction(
+        [keyPair],
+        compileTransaction(message)
+      );
+      return getBase64EncodedWireTransaction(signed);
     },
     getArNSRecord: async (args) => {
       // 4.x throws on an unregistered name; our seam reports `null` so
@@ -671,6 +814,180 @@ export const defaultSubmitDvmBuyJob: SubmitDvmBuyJob = async (request) => {
 };
 
 // ---------------------------------------------------------------------------
+// The gas-station job seam (kind:5096 — toon-meta#163)
+// ---------------------------------------------------------------------------
+
+/** The NIP-90 job kind for a gas-station (fee-payer-as-a-service) job. */
+export const GAS_STATION_JOB_KIND = 5096;
+
+/** A kind:5096 quote — the merged quote/blockhash deadline contract. */
+export interface GasStationQuote {
+  quoteId: string;
+  /** The DVM's advertised fee-payer address — set as the tx feePayer. */
+  feePayer: string;
+  /** The delta cap the DVM will enforce (lamports, base-10 string). */
+  maxLamports: string;
+  /** Build + partial-sign against exactly this blockhash. */
+  recentBlockhash: string;
+  /** ms epoch — submit before this or re-quote. */
+  expiresAt: number;
+}
+
+/** A landed kind:5096 execute result. */
+export interface GasStationExecuteResult {
+  signature: string;
+  slot: string | null;
+  feeLamportsActual: string | null;
+  replayed?: boolean;
+}
+
+/** The DVM refused or failed a gas-station job (machine-readable reason). */
+export class GasStationJobError extends Error {
+  constructor(
+    public readonly reason: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'GasStationJobError';
+  }
+}
+
+/** kind:5096 client seam (tests inject a stub — NEVER the live net). */
+export interface GasStationClient {
+  quote(args: {
+    viaUrl: string;
+    /** Optional draft wire tx for an accurate (rent-aware) maxLamports. */
+    transaction?: string;
+    nostrSecretKey: Uint8Array;
+  }): Promise<GasStationQuote>;
+  execute(args: {
+    viaUrl: string;
+    transaction: string;
+    quoteId: string;
+    idempotencyKey: string;
+    nostrSecretKey: Uint8Array;
+  }): Promise<GasStationExecuteResult>;
+}
+
+/** POST one signed kind:5096 job to the DVM's `/store` backend. */
+async function postGasStationJob(
+  viaUrl: string,
+  params: [string, string][],
+  nostrSecretKey: Uint8Array
+): Promise<Record<string, unknown>> {
+  const { finalizeEvent } = await import('nostr-tools/pure');
+  const event = finalizeEvent(
+    {
+      kind: GAS_STATION_JOB_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      content: '',
+      tags: params.map(([k, v]) => ['param', k, v]),
+    },
+    nostrSecretKey
+  );
+  const url = `${viaUrl.replace(/\/+$/, '')}/store`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ event }),
+    });
+  } catch (err) {
+    throw new GasStationJobError(
+      'unreachable',
+      `could not reach the DVM at ${url}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  let body: { accept?: boolean; code?: string; message?: string; result?: Record<string, unknown> };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch {
+    throw new GasStationJobError(
+      'bad_response',
+      `the DVM at ${url} returned a non-JSON response (HTTP ${response.status})`
+    );
+  }
+  if (!response.ok || body.accept !== true || !body.result) {
+    throw new GasStationJobError(
+      String(body.code ?? 'rejected'),
+      `the DVM rejected the kind:${GAS_STATION_JOB_KIND} job (HTTP ${response.status}${body.code ? `, ${body.code}` : ''})${body.message ? `: ${body.message}` : ''}`
+    );
+  }
+  const result = body.result;
+  if (result['status'] === 'failed') {
+    throw new GasStationJobError(
+      String(result['reason'] ?? 'failed'),
+      `gas-station job failed: ${String(result['reason'] ?? 'unknown')} — ${String(result['detail'] ?? '')}`
+    );
+  }
+  return result;
+}
+
+/**
+ * Default {@link GasStationClient}: signed kind:5096 events POSTed to the
+ * DVM's payment-oblivious `/store` backend — the identical HTTP request the
+ * connector payment proxy replays on the paid path (RouteTermination).
+ */
+export const defaultGasStationClient: GasStationClient = {
+  quote: async (args) => {
+    const result = await postGasStationJob(
+      args.viaUrl,
+      [
+        ['phase', 'quote'],
+        ...(args.transaction !== undefined
+          ? ([['transaction', args.transaction]] as [string, string][])
+          : []),
+      ],
+      args.nostrSecretKey
+    );
+    const { quoteId, feePayer, maxLamports, recentBlockhash, expiresAt } =
+      result as Partial<GasStationQuote>;
+    if (
+      typeof quoteId !== 'string' ||
+      typeof feePayer !== 'string' ||
+      typeof maxLamports !== 'string' ||
+      typeof recentBlockhash !== 'string' ||
+      typeof expiresAt !== 'number'
+    ) {
+      throw new GasStationJobError(
+        'bad_response',
+        `the DVM quote is missing fields: ${JSON.stringify(result)}`
+      );
+    }
+    return { quoteId, feePayer, maxLamports, recentBlockhash, expiresAt };
+  },
+  execute: async (args) => {
+    const result = await postGasStationJob(
+      args.viaUrl,
+      [
+        ['phase', 'execute'],
+        ['transaction', args.transaction],
+        ['quoteId', args.quoteId],
+        ['idempotencyKey', args.idempotencyKey],
+      ],
+      args.nostrSecretKey
+    );
+    const signature = result['signature'];
+    if (typeof signature !== 'string' || signature.length === 0) {
+      throw new GasStationJobError(
+        'bad_response',
+        `the DVM execute result carries no signature: ${JSON.stringify(result)}`
+      );
+    }
+    return {
+      signature,
+      slot: typeof result['slot'] === 'string' ? result['slot'] : null,
+      feeLamportsActual:
+        typeof result['feeLamportsActual'] === 'string'
+          ? result['feeLamportsActual']
+          : null,
+      ...(result['replayed'] === true ? { replayed: true } : {}),
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Deps + usage
 // ---------------------------------------------------------------------------
 
@@ -684,6 +1001,8 @@ export interface NameDeps {
   loadArns?: LoadArns;
   /** kind:5095 job submitter seam; defaults to the signed HTTP POST. */
   submitDvmBuyJob?: SubmitDvmBuyJob;
+  /** kind:5096 gas-station client seam; defaults to the signed HTTP POST. */
+  gasStation?: GasStationClient;
 }
 
 export const NAME_USAGE = `Usage: rig name <buy|set|status> <name> [options]
@@ -706,10 +1025,13 @@ Commands:
                        the ANT (dust SOL only), then a store DVM executes the
                        kind:5095 buy job and pays the mARIO from ITS wallet;
                        the name is owned by your ANT from inception.
-  name set <name> <txId> [--undername <sub>] [--ttl <seconds>]
+  name set <name> <txId> [--undername <sub>] [--ttl <seconds>] [--via <dvm-url>]
                        point the name (or an undername) at an Arweave txId
                        (typically a deployed path manifest). Signs an ANT
-                       record update with the Solana key.
+                       record update with the Solana key. With --via: the
+                       gas-station path (kind:5096) — you author and
+                       partial-sign, the DVM co-signs as fee payer and pays
+                       the lamports; needs ZERO SOL in this wallet.
   name status <name>   FREE: registry record (lease/permabuy, expiry), ANT
                        process id, current target txId(s), TTL, undernames.
 
@@ -1167,11 +1489,21 @@ interface NameSetJson {
   ttl: number;
   network: ArioNetwork;
   processId: string | null;
+  /** Gas-station path: the DVM endpoint the kind:5096 job goes to. */
+  via: string | null;
   identity: IdentityReport;
   solanaAddress: string;
   antProcessId: string;
   executed: boolean;
   hint?: string;
+  /** Gas-station path: the quote the DVM enforced. */
+  gasStation?: {
+    quoteId: string;
+    feePayer: string;
+    maxLamports: string;
+    expiresAt: number;
+    feeLamportsActual: string | null;
+  };
   result?: { messageId: string };
 }
 
@@ -1200,6 +1532,7 @@ async function runSet(
   }
   const antProcessId = record.processId;
   const undername = flags.undername ?? null;
+  const via = flags.via ?? null;
 
   const buildJson = (
     executed: boolean,
@@ -1213,6 +1546,7 @@ async function runSet(
     ttl: flags.ttl,
     network: ctx.network,
     processId: ctx.processId ?? null,
+    via,
     identity: ctx.identity,
     solanaAddress: ctx.solanaAddress,
     antProcessId,
@@ -1226,10 +1560,18 @@ async function runSet(
 
   if (!flags.json) {
     io.out(
-      `Set ${targetLabel} → txId ${txId} (ttl ${flags.ttl}s) on ${ctx.network}`
+      `Set ${targetLabel} → txId ${txId} (ttl ${flags.ttl}s) on ${ctx.network}` +
+        (via !== null ? ` — gas paid by the DVM at ${via} (kind:5096)` : '')
     );
     io.out(`  ANT process: ${antProcessId}`);
     io.out(`  Signed by the identity's Solana key (${ctx.solanaAddress}).`);
+    if (via !== null) {
+      io.out(
+        '  Gas station: you author + partial-sign the record update; the ' +
+          'DVM co-signs as fee payer and pays the lamports (toon-meta#163). ' +
+          'Direct backend targeting stubs the job payment (dev/e2e).'
+      );
+    }
     io.out(renderIdentityLine(ctx.identity));
   }
 
@@ -1238,7 +1580,10 @@ async function runSet(
     if (flags.json) {
       io.emitJson(
         buildJson(false, {
-          hint: 'estimate only — re-run with --yes to write the ANT record',
+          hint:
+            via === null
+              ? 'estimate only — re-run with --yes to write the ANT record'
+              : 'estimate only — re-run with --yes to quote the gas-station and write the ANT record (DVM pays the gas)',
         })
       );
       return 0;
@@ -1251,7 +1596,9 @@ async function runSet(
       return 1;
     }
     const proceed = await io.confirm(
-      `Proceed — point ${targetLabel} at ${txId}? [y/N] `
+      `Proceed — point ${targetLabel} at ${txId}?` +
+        (via !== null ? ' (the DVM pays the gas)' : '') +
+        ' [y/N] '
     );
     if (!proceed) {
       io.err('aborted — the ANT record was not changed.');
@@ -1267,6 +1614,55 @@ async function runSet(
     flags.processId,
     'write'
   );
+
+  if (via !== null) {
+    // ── Gas-station path (toon-meta#163): author + partial-sign locally,
+    //    the DVM co-signs as fee payer and broadcasts. ────────────────────
+    const gas = deps.gasStation ?? defaultGasStationClient;
+    // Quote: learn the fee payer + the quoted blockhash (merged deadline).
+    const quote = await gas.quote({
+      viaUrl: via,
+      nostrSecretKey: signed.nostrSecretKey,
+    });
+    // Build + partial-sign against exactly the quoted blockhash.
+    const wireTx = await signed.sdk.buildSetRecordTransaction({
+      antProcessId,
+      undername: undername ?? '@',
+      transactionId: txId,
+      ttlSeconds: flags.ttl,
+      feePayer: quote.feePayer,
+      recentBlockhash: quote.recentBlockhash,
+    });
+    const executed = await gas.execute({
+      viaUrl: via,
+      transaction: wireTx,
+      quoteId: quote.quoteId,
+      idempotencyKey: randomUUID(),
+      nostrSecretKey: signed.nostrSecretKey,
+    });
+    const gasStation = {
+      quoteId: quote.quoteId,
+      feePayer: quote.feePayer,
+      maxLamports: quote.maxLamports,
+      expiresAt: quote.expiresAt,
+      feeLamportsActual: executed.feeLamportsActual,
+    };
+    const result = { messageId: executed.signature };
+
+    if (flags.json) {
+      io.emitJson(buildJson(true, { gasStation, result }));
+    } else {
+      io.out(
+        `Updated — record-set tx ${executed.signature} (gas paid by ${quote.feePayer})`
+      );
+      const host = undername ? `${undername}_${name}` : name;
+      io.out(
+        `  Resolves at https://${host}.<gateway>/ (allow for gateway cache/TTL).`
+      );
+    }
+    return 0;
+  }
+
   const ant = await signed.sdk.ant(antProcessId);
   const receipt = undername
     ? await ant.setUndernameRecord({
