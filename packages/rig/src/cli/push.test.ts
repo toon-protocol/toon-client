@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import type { Publisher } from '../publisher.js';
 import type { RemoteState } from '../remote-state.js';
 import { readToonConfig, writeToonConfig } from './git-config.js';
+import { readRigPointerRecord } from './rig-pointer-record.js';
 import { runPush, selectRefspecs, type CliIo, type PushDeps } from './push.js';
 import { GitRepoReader } from '../repo-reader.js';
 import type {
@@ -136,6 +137,7 @@ function emptyRemoteState(overrides: Partial<RemoteState> = {}): RemoteState {
 interface FakeStandalone {
   context: StandaloneContext;
   uploads: { sha: string; size: number }[];
+  blobs: { contentType: string; size: number; body: string }[];
   published: { kind: number; relayUrls: string[] }[];
   remoteRequests: { ownerPubkey: string; repoId: string; relayUrls: string[] }[];
   loadedWith: StandaloneLoadOptions[];
@@ -143,8 +145,20 @@ interface FakeStandalone {
   load: PushDeps['loadStandalone'];
 }
 
-function makeStandalone(remoteState: RemoteState): FakeStandalone {
+/** Distinct txId for Rig-pointer blob uploads (vs git-object TX_ID). */
+const POINTER_TX = 'P'.repeat(43);
+
+function makeStandalone(
+  remoteState: RemoteState,
+  options: {
+    /** Add `uploadBlob` to the fake publisher (enables the Rig-page path). */
+    withBlobUpload?: boolean;
+    /** Make `uploadBlob` reject (pointer-failure resilience tests). */
+    blobUploadError?: string;
+  } = {}
+): FakeStandalone {
   const uploads: FakeStandalone['uploads'] = [];
+  const blobs: FakeStandalone['blobs'] = [];
   const published: FakeStandalone['published'] = [];
   const remoteRequests: FakeStandalone['remoteRequests'] = [];
   const loadedWith: FakeStandalone['loadedWith'] = [];
@@ -158,9 +172,31 @@ function makeStandalone(remoteState: RemoteState): FakeStandalone {
       published.push({ kind: event.kind, relayUrls });
       return { eventId: 'e'.repeat(64), feePaid: 1n };
     },
+    ...(options.withBlobUpload
+      ? {
+          uploadBlob: async (upload: {
+            body: Buffer;
+            contentType: string;
+          }) => {
+            if (options.blobUploadError) {
+              throw new Error(options.blobUploadError);
+            }
+            blobs.push({
+              contentType: upload.contentType,
+              size: upload.body.length,
+              body: upload.body.toString('utf8'),
+            });
+            return {
+              txId: POINTER_TX,
+              feePaid: BigInt(upload.body.length) * 10n,
+            };
+          },
+        }
+      : {}),
   };
   const fake: FakeStandalone = {
     uploads,
+    blobs,
     published,
     remoteRequests,
     loadedWith,
@@ -334,6 +370,81 @@ describe('standalone push (Publisher seam)', () => {
     expect(text).toContain(`Identity: ${OWNER} (from RIG_MNEMONIC env)`);
     expect(text).toContain('Refs event (kind:30618)');
     expect(text).toContain(`ar:${TX_ID}`);
+  });
+
+  it('publishes the Rig page on first push and reuses it for free after', async () => {
+    // First push: pointer uploaded as text/html, receipt printed, recorded.
+    const fake1 = makeStandalone(emptyRemoteState(), { withBlobUpload: true });
+    const h1 = makeDeps(env, repoDir, { loadStandalone: fake1.load });
+    expect(await runPush(['--yes'], h1.deps)).toBe(0);
+    expect(fake1.blobs).toEqual([
+      expect.objectContaining({ contentType: 'text/html' }),
+    ]);
+    // The pointer routes rig-web to THIS repo over THIS relay.
+    expect(fake1.blobs[0]?.body).toContain('/#/npub1');
+    expect(fake1.blobs[0]?.body).toContain('demo?relay=');
+    const out1 = h1.out.join('\n');
+    expect(out1).toContain(`Rig page: https://ar-io.dev/${POINTER_TX}`);
+    // The confirm plan shows the pointer fee before any spend.
+    expect(out1).toContain('rig page');
+    expect(readRigPointerRecord(env, 'demo')?.pointerTxId).toBe(POINTER_TX);
+
+    // Second push (new commit): pointer unchanged → no second blob upload,
+    // the recorded URL is reused for free.
+    writeFileSync(join(repoDir, 'file2.md'), 'more\n');
+    git(['add', '.'], repoDir);
+    git(['commit', '-m', 'second'], repoDir);
+    const fake2 = makeStandalone(emptyRemoteState(), { withBlobUpload: true });
+    const h2 = makeDeps(env, repoDir, { loadStandalone: fake2.load });
+    expect(await runPush(['--yes'], h2.deps)).toBe(0);
+    expect(fake2.blobs).toHaveLength(0);
+    expect(h2.out.join('\n')).toContain(
+      `Rig page: https://ar-io.dev/${POINTER_TX}`
+    );
+  });
+
+  it('--no-rig-page skips the pointer entirely', async () => {
+    const fake = makeStandalone(emptyRemoteState(), { withBlobUpload: true });
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    expect(await runPush(['--yes', '--no-rig-page'], h.deps)).toBe(0);
+    expect(fake.blobs).toHaveLength(0);
+    expect(readRigPointerRecord(env, 'demo')).toBeUndefined();
+    expect(h.err.join('\n')).toContain('skipped (--no-rig-page)');
+  });
+
+  it('a pointer upload failure never fails a succeeded push (retries next push)', async () => {
+    const fake = makeStandalone(emptyRemoteState(), {
+      withBlobUpload: true,
+      blobUploadError: 'store exploded',
+    });
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    expect(await runPush(['--yes'], h.deps)).toBe(0);
+    expect(h.err.join('\n')).toContain('store exploded');
+    expect(h.err.join('\n')).toContain('next push retries');
+    // No record → the next push plans an upload again.
+    expect(readRigPointerRecord(env, 'demo')).toBeUndefined();
+  });
+
+  it('a publisher without uploadBlob skips the pointer with a note', async () => {
+    const fake = makeStandalone(emptyRemoteState());
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    expect(await runPush(['--yes'], h.deps)).toBe(0);
+    expect(h.err.join('\n')).toContain('cannot upload raw blobs');
+  });
+
+  it('--json envelope carries the rigPage report', async () => {
+    const fake = makeStandalone(emptyRemoteState(), { withBlobUpload: true });
+    const h = makeDeps(env, repoDir, { loadStandalone: fake.load });
+    expect(await runPush(['--json', '--yes'], h.deps)).toBe(0);
+    const parsed = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(parsed).toMatchObject({
+      command: 'push',
+      rigPage: {
+        status: 'published',
+        txId: POINTER_TX,
+        url: `https://ar-io.dev/${POINTER_TX}`,
+      },
+    });
   });
 
   it('never writes git config as a push side effect', async () => {
