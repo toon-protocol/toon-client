@@ -13,6 +13,7 @@ import {
   DEVNET_CHAIN_RPC_URLS,
   SolanaChannelUnderivableError,
   TokenNetworkUnderivableError,
+  devnetChainRpcUrl,
   discoverAnnouncedPeers,
   evmPresetForChain,
   evmTokenBalance,
@@ -250,6 +251,34 @@ describe('resolveChainSettlement', () => {
     // TokenNetwork/token: core's deterministic anvil (31337) chain preset.
     const preset = evmPresetForChain('evm:31337');
     expect(preset).toBeDefined();
+    expect(s.tokenNetwork).toBe(preset?.tokenNetworkAddress);
+    expect(s.tokenAddress).toBe(preset?.usdcAddress);
+  });
+
+  it('matches the devnet RPC table by EVM chain id for qualified spellings (#384)', () => {
+    // The announce chain-key format is `evm:{network}:{chainId}` — the same
+    // devnet chain arrives spelled `evm:31337` OR `evm:anvil:31337`. An
+    // exact-key table miss left the chain without an RPC, so zero-config
+    // negotiation could not balance-probe it and fell through.
+    expect(devnetChainRpcUrl('evm:anvil:31337')).toBe(
+      DEVNET_CHAIN_RPC_URLS['evm:31337']
+    );
+    expect(devnetChainRpcUrl('evm:31337')).toBe(
+      DEVNET_CHAIN_RPC_URLS['evm:31337']
+    );
+    expect(devnetChainRpcUrl('solana:devnet')).toBe(
+      DEVNET_CHAIN_RPC_URLS['solana:devnet']
+    );
+    expect(devnetChainRpcUrl('evm:base:8453')).toBeUndefined();
+    expect(devnetChainRpcUrl('mina:devnet')).toBeUndefined();
+
+    const qualified = announcedPeer(APEX_PUBKEY, {
+      ...APEX_CONTENT,
+      supportedChains: ['evm:anvil:31337', 'solana:devnet'],
+    });
+    const s = resolveChainSettlement('evm:anvil:31337', {}, qualified);
+    expect(s.rpcUrl).toBe(DEVNET_CHAIN_RPC_URLS['evm:31337']);
+    const preset = evmPresetForChain('evm:anvil:31337');
     expect(s.tokenNetwork).toBe(preset?.tokenNetworkAddress);
     expect(s.tokenAddress).toBe(preset?.usdcAddress);
   });
@@ -699,6 +728,37 @@ describe('selectSettlementChain', () => {
     await expect(
       selectSettlementChain({ announcedChains: [], resolveSettlement })
     ).rejects.toThrow(/no settlement chains/);
+  });
+
+  it('devnet zero-config: probes the announced EVM chain via the zone RPC (#384)', async () => {
+    // The exact rig 2.7.1 failure: a bare mnemonic against the devnet, the
+    // announce carries no chainRpcUrls, and the EVM chain (spelled with the
+    // qualified `evm:{network}:{chainId}` key) had no reachable RPC — so
+    // the funded probe skipped it and negotiation fell through toward
+    // `solana:devnet`. With the devnet endpoint table matched by chain id,
+    // the EVM balance probe reaches the zone RPC and the funded wallet wins.
+    for (const evmKey of ['evm:31337', 'evm:anvil:31337']) {
+      const apex = announcedPeer(APEX_PUBKEY, {
+        ...APEX_CONTENT,
+        supportedChains: ['solana:devnet', evmKey],
+      });
+      const probed: string[] = [];
+      const selection = await selectSettlementChain({
+        announcedChains: ['solana:devnet', evmKey],
+        evmAddress: '0x' + '11'.repeat(20),
+        solanaAddress: 'So1anaOwner1111111111111111111111111111111',
+        resolveSettlement: (chain) => resolveChainSettlement(chain, {}, apex),
+        probeBalance: (args) => {
+          probed.push(args.rpcUrl);
+          return Promise.resolve(10000n);
+        },
+        // The self-hosted solana:devnet has no derivable mint (announce
+        // carries none) — it must be skipped, never probed blind.
+        probeSolanaBalance: () => Promise.reject(new Error('must not probe')),
+      });
+      expect(selection).toMatchObject({ chain: evmKey, reason: 'funded' });
+      expect(probed).toEqual(['https://evm-rpc.devnet.toonprotocol.dev']);
+    }
   });
 });
 

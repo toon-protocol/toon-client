@@ -196,12 +196,64 @@ describe('resolveIdentity precedence', () => {
     );
   });
 
-  it('applies the shared mnemonicAccountIndex to env-sourced phrases too', async () => {
-    writeClientConfig({ mnemonicAccountIndex: 1 });
-    const identity = await resolveIdentity(opts({ RIG_MNEMONIC: PHRASE_A }));
+  it('applies the shared mnemonicAccountIndex to home-sourced phrases', async () => {
+    writeClientConfig({ mnemonic: PHRASE_A, mnemonicAccountIndex: 1 });
+    const identity = await resolveIdentity(opts({}));
+    expect(identity.source).toBe('config');
     expect(identity.accountIndex).toBe(1);
     expect(identity.pubkey).toBe(deriveNostrKeyFromMnemonic(PHRASE_A, 1).pubkey);
     expect(identity.pubkey).not.toBe(PUBKEY_A);
+  });
+
+  it('ignores per-home mnemonicAccountIndex for an env-sourced phrase (#384)', async () => {
+    writeClientConfig({ mnemonicAccountIndex: 1 });
+    const identity = await resolveIdentity(opts({ RIG_MNEMONIC: PHRASE_A }));
+    expect(identity.accountIndex).toBe(0);
+    expect(identity.pubkey).toBe(PUBKEY_A);
+  });
+
+  it('derives the same identity from RIG_MNEMONIC across different homes (#384)', async () => {
+    // Home A carries an accountIndex; home B has no config at all. An
+    // explicit RIG_MNEMONIC must pin one identity regardless.
+    writeClientConfig({ mnemonicAccountIndex: 3 });
+    const otherHome = mkdtempSync(join(tmpdir(), 'toon-rig-identity-home-b-'));
+    try {
+      const a = await resolveIdentity(opts({ RIG_MNEMONIC: PHRASE_A }));
+      const b = await resolveIdentity({
+        ...opts({ RIG_MNEMONIC: PHRASE_A }),
+        env: { TOON_CLIENT_HOME: otherHome, RIG_MNEMONIC: PHRASE_A },
+      });
+      expect(a.pubkey).toBe(PUBKEY_A);
+      expect(b.pubkey).toBe(PUBKEY_A);
+      expect(a.accountIndex).toBe(0);
+      expect(b.accountIndex).toBe(0);
+    } finally {
+      rmSync(otherHome, { recursive: true, force: true });
+    }
+  });
+
+  it('RIG_ACCOUNT_INDEX overrides the index for every source', async () => {
+    writeClientConfig({ mnemonicAccountIndex: 1 });
+    const fromEnv = await resolveIdentity(
+      opts({ RIG_MNEMONIC: PHRASE_A, RIG_ACCOUNT_INDEX: '2' })
+    );
+    expect(fromEnv.accountIndex).toBe(2);
+    expect(fromEnv.pubkey).toBe(deriveNostrKeyFromMnemonic(PHRASE_A, 2).pubkey);
+
+    writeClientConfig({ mnemonic: PHRASE_A, mnemonicAccountIndex: 1 });
+    const fromConfig = await resolveIdentity(opts({ RIG_ACCOUNT_INDEX: '2' }));
+    expect(fromConfig.source).toBe('config');
+    expect(fromConfig.accountIndex).toBe(2);
+    expect(fromConfig.pubkey).toBe(deriveNostrKeyFromMnemonic(PHRASE_A, 2).pubkey);
+  });
+
+  it('rejects a malformed RIG_ACCOUNT_INDEX instead of deriving silently', async () => {
+    await expect(
+      resolveIdentity(opts({ RIG_MNEMONIC: PHRASE_A, RIG_ACCOUNT_INDEX: 'one' }))
+    ).rejects.toThrow(/RIG_ACCOUNT_INDEX must be a non-negative integer/);
+    await expect(
+      resolveIdentity(opts({ RIG_MNEMONIC: PHRASE_A, RIG_ACCOUNT_INDEX: '-1' }))
+    ).rejects.toThrow(/RIG_ACCOUNT_INDEX/);
   });
 
   it('throws MissingIdentityError listing all three options when nothing resolves', async () => {

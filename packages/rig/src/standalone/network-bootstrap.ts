@@ -261,6 +261,25 @@ export const DEVNET_CHAIN_RPC_URLS: Readonly<Record<string, string>> = {
   'solana:devnet': 'https://solana-rpc.devnet.toonprotocol.dev',
 };
 
+/**
+ * Devnet endpoint-table lookup. EVM entries match by NUMERIC CHAIN ID, not
+ * exact key: announces spell the same chain both `evm:31337` and
+ * `evm:anvil:31337` (`evm:{network}:{chainId}` — the network label is
+ * cosmetic), and an exact-key miss here left the announced EVM chain
+ * without a reachable RPC, so zero-config devnet negotiation could not
+ * balance-probe it and fell through to an unusable chain (#384).
+ */
+export function devnetChainRpcUrl(chain: string): string | undefined {
+  const exact = DEVNET_CHAIN_RPC_URLS[chain];
+  if (exact) return exact;
+  const chainId = evmChainIdOf(chain);
+  if (chainId === undefined) return undefined;
+  for (const [key, url] of Object.entries(DEVNET_CHAIN_RPC_URLS)) {
+    if (evmChainIdOf(key) === chainId) return url;
+  }
+  return undefined;
+}
+
 /** Hostname of a ws(s)/http(s) URL, or undefined when unparsable. */
 function hostOf(url: string | undefined): string | undefined {
   if (!url) return undefined;
@@ -386,7 +405,7 @@ export function resolveChainSettlement(
   const family = chain.split(':')[0] ?? chain;
   const evmPreset = family === 'evm' ? evmPresetForChain(chain) : undefined;
   const devnetRpc = isDevnetZonePeer(announce)
-    ? DEVNET_CHAIN_RPC_URLS[chain]
+    ? devnetChainRpcUrl(chain)
     : undefined;
   // The devnet zone SELF-HOSTS this chain (its own validator): the
   // public-cluster preset addresses do not exist there (the devnet's Solana
@@ -398,8 +417,7 @@ export function resolveChainSettlement(
   const explicitOrZoneRpc = explicit.chainRpcUrls?.[chain] ?? devnetRpc;
   const rpcHost = hostOf(explicitOrZoneRpc);
   const zoneSelfHosted =
-    (isDevnetZonePeer(announce) &&
-      DEVNET_CHAIN_RPC_URLS[chain] !== undefined) ||
+    (isDevnetZonePeer(announce) && devnetChainRpcUrl(chain) !== undefined) ||
     (rpcHost !== undefined &&
       (rpcHost === DEVNET_ZONE || rpcHost.endsWith(`.${DEVNET_ZONE}`)));
   const solPreset =
