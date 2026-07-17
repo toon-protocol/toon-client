@@ -10,7 +10,11 @@
  *
  * Coverage: buy (estimate → confirm → execute, the strict `--json` contract,
  * and the load-bearing "mARIO on Solana, NOT ILP" messaging), set (base +
- * undername, mocked), and status (FREE, no confirm, mocked read).
+ * undername, mocked), status (FREE, no confirm, mocked read — built
+ * SIGNERLESS, #376), the unavailable-vs-incompatible SDK error split (#376),
+ * and offline construction of the REAL `@ar.io/sdk`/`@solana/kit` adapter
+ * (no network; the live free-read smoke test is env-gated under
+ * `src/__integration__/`).
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -19,8 +23,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CliIo } from './output.js';
 import {
+  ArnsSdkIncompatibleError,
   ArnsSdkUnavailableError,
+  defaultLoadArns,
   MARIO_PAYMENT_NOTE,
+  MIN_ARIO_SDK_VERSION,
   runName,
   type ArnsAnt,
   type ArnsSdk,
@@ -36,12 +43,21 @@ const MNEMONIC =
 const TX_ID = 'x'.repeat(43);
 
 interface StubCalls {
-  getTokenCost: { intent: string; name: string; type: string; years?: number }[];
+  getTokenCost: {
+    intent: string;
+    name: string;
+    type: string;
+    years?: number;
+  }[];
   buyRecord: { name: string; type: string; years?: number }[];
   getArNSRecord: { name: string }[];
   antFor: string[];
   setBaseNameRecord: { transactionId: string; ttlSeconds: number }[];
-  setUndernameRecord: { undername: string; transactionId: string; ttlSeconds: number }[];
+  setUndernameRecord: {
+    undername: string;
+    transactionId: string;
+    ttlSeconds: number;
+  }[];
 }
 
 interface StubOptions {
@@ -109,6 +125,8 @@ interface Harness {
   err: string[];
   calls: StubCalls;
   loadArnsCalls: number;
+  /** The `mode` each loadArns call requested (read vs write plumbing, #376). */
+  loadArnsModes: string[];
 }
 
 function makeHarness(
@@ -127,8 +145,10 @@ function makeHarness(
   };
   const { sdk, calls } = makeStubSdk(opts.stub ?? {});
   let loadArnsCalls = 0;
+  const loadArnsModes: string[] = [];
   const loadArns: LoadArns = async (options) => {
     loadArnsCalls += 1;
+    loadArnsModes.push(options.mode);
     if (opts.stub?.loadError) throw opts.stub.loadError;
     // The Solana key MUST reach the SDK loader — names are owned/paid by it.
     expect(options.solanaSecretKey.length).toBe(64);
@@ -141,6 +161,7 @@ function makeHarness(
     out,
     err,
     calls,
+    loadArnsModes,
     get loadArnsCalls() {
       return loadArnsCalls;
     },
@@ -187,7 +208,9 @@ describe('rig name', () => {
 
   it('--years and --permabuy together is a usage error', async () => {
     const h = makeHarness(env, cwd);
-    expect(await runName(['buy', 'foo', '--years', '2', '--permabuy'], h.deps)).toBe(2);
+    expect(
+      await runName(['buy', 'foo', '--years', '2', '--permabuy'], h.deps)
+    ).toBe(2);
     expect(h.err.join('\n')).toContain('mutually exclusive');
   });
 
@@ -209,19 +232,31 @@ describe('rig name', () => {
     expect(doc['quote']).toMatchObject({ mARIO: '2500000', ARIO: '2.5' });
     // The load-bearing distinction: mARIO on Solana, NOT ILP.
     expect(doc['payment']).toBe(MARIO_PAYMENT_NOTE);
-    expect(String(doc['payment'])).toContain('NOT through TOON ILP payment channels');
+    expect(String(doc['payment'])).toContain(
+      'NOT through TOON ILP payment channels'
+    );
     expect(doc['hint']).toContain('--yes');
-    // Estimate quoted, but NOTHING was bought.
+    // Estimate quoted, but NOTHING was bought — and the quote is a FREE read:
+    // no write plumbing (signer) was ever requested (#376).
     expect(h.calls.getTokenCost).toHaveLength(1);
     expect(h.calls.buyRecord).toHaveLength(0);
+    expect(h.loadArnsModes).toEqual(['read']);
   });
 
   it('buy --yes executes buyRecord and reports the registry tx + ANT process', async () => {
     const h = makeHarness(env, cwd, { stub: { cost: 1_000_000n } });
-    const code = await runName(['buy', 'mysite', '--permabuy', '--yes', '--json'], h.deps);
+    const code = await runName(
+      ['buy', 'mysite', '--permabuy', '--yes', '--json'],
+      h.deps
+    );
     expect(code).toBe(0);
     const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
-    expect(doc).toMatchObject({ action: 'buy', type: 'permabuy', years: null, executed: true });
+    expect(doc).toMatchObject({
+      action: 'buy',
+      type: 'permabuy',
+      years: null,
+      executed: true,
+    });
     expect(doc['result']).toMatchObject({
       registryTxId: 'registry-tx-1',
       antProcessId: 'ANT-PROCESS-ID',
@@ -230,17 +265,25 @@ describe('rig name', () => {
       { intent: 'Buy-Name', name: 'mysite', type: 'permabuy' },
     ]);
     expect(h.calls.buyRecord).toEqual([{ name: 'mysite', type: 'permabuy' }]);
+    // The quote runs signerless; write plumbing is built only at execute time.
+    expect(h.loadArnsModes).toEqual(['read', 'write']);
   });
 
   it('buy (human) states mARIO-on-Solana, NOT ILP, before the confirm', async () => {
-    const h = makeHarness(env, cwd, { interactive: true, confirm: true, stub: { cost: 1_000_000n } });
+    const h = makeHarness(env, cwd, {
+      interactive: true,
+      confirm: true,
+      stub: { cost: 1_000_000n },
+    });
     const code = await runName(['buy', 'mysite', '--years', '3'], h.deps);
     expect(code).toBe(0);
     const text = h.out.join('\n');
     expect(text).toContain('mARIO');
     expect(text).toContain('NOT through TOON ILP payment channels');
     expect(text).toContain('3 years');
-    expect(h.calls.buyRecord).toEqual([{ name: 'mysite', type: 'lease', years: 3 }]);
+    expect(h.calls.buyRecord).toEqual([
+      { name: 'mysite', type: 'lease', years: 3 },
+    ]);
   });
 
   it('buy (human, interactive) declining the confirm buys nothing (exit 1)', async () => {
@@ -263,7 +306,10 @@ describe('rig name', () => {
 
   it('set --yes points the base name at a txId via setBaseNameRecord', async () => {
     const h = makeHarness(env, cwd);
-    const code = await runName(['set', 'mysite', TX_ID, '--yes', '--json'], h.deps);
+    const code = await runName(
+      ['set', 'mysite', TX_ID, '--yes', '--json'],
+      h.deps
+    );
     expect(code).toBe(0);
     const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
     expect(doc).toMatchObject({
@@ -275,14 +321,28 @@ describe('rig name', () => {
       antProcessId: 'ANT-PROCESS-ID',
       executed: true,
     });
-    expect(h.calls.setBaseNameRecord).toEqual([{ transactionId: TX_ID, ttlSeconds: 3600 }]);
+    expect(h.calls.setBaseNameRecord).toEqual([
+      { transactionId: TX_ID, ttlSeconds: 3600 },
+    ]);
     expect(h.calls.setUndernameRecord).toHaveLength(0);
+    // The record lookup runs signerless; write plumbing only at execute time.
+    expect(h.loadArnsModes).toEqual(['read', 'write']);
   });
 
   it('set --undername --ttl targets the undername via setUndernameRecord', async () => {
     const h = makeHarness(env, cwd);
     const code = await runName(
-      ['set', 'mysite', TX_ID, '--undername', 'app', '--ttl', '120', '--yes', '--json'],
+      [
+        'set',
+        'mysite',
+        TX_ID,
+        '--undername',
+        'app',
+        '--ttl',
+        '120',
+        '--yes',
+        '--json',
+      ],
       h.deps
     );
     expect(code).toBe(0);
@@ -302,11 +362,16 @@ describe('rig name', () => {
     expect(doc).toMatchObject({ action: 'set', executed: false });
     expect(doc['hint']).toContain('--yes');
     expect(h.calls.setBaseNameRecord).toHaveLength(0);
+    // A preview is a FREE read — no signer was ever requested (#376).
+    expect(h.loadArnsModes).toEqual(['read']);
   });
 
   it('set on an unregistered name errors (nothing written)', async () => {
     const h = makeHarness(env, cwd, { stub: { record: null } });
-    const code = await runName(['set', 'ghost', TX_ID, '--yes', '--json'], h.deps);
+    const code = await runName(
+      ['set', 'ghost', TX_ID, '--yes', '--json'],
+      h.deps
+    );
     expect(code).toBe(1);
     const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
     expect(doc).toMatchObject({ command: 'name', error: 'error' });
@@ -336,11 +401,18 @@ describe('rig name', () => {
       name: 'mysite',
       registered: true,
     });
-    expect(doc['record']).toMatchObject({ antProcessId: 'ANT-PROCESS-ID', type: 'lease' });
-    expect(doc['targets']).toMatchObject({ '@': { transactionId: TX_ID, ttlSeconds: 3600 } });
-    // FREE: no purchase, no write.
+    expect(doc['record']).toMatchObject({
+      antProcessId: 'ANT-PROCESS-ID',
+      type: 'lease',
+    });
+    expect(doc['targets']).toMatchObject({
+      '@': { transactionId: TX_ID, ttlSeconds: 3600 },
+    });
+    // FREE: no purchase, no write — and the SDK was built SIGNERLESS (#376):
+    // the read path must never require write plumbing.
     expect(h.calls.buyRecord).toHaveLength(0);
     expect(h.calls.setBaseNameRecord).toHaveLength(0);
+    expect(h.loadArnsModes).toEqual(['read']);
   });
 
   it('status of an unregistered name reports available (exit 0)', async () => {
@@ -354,19 +426,24 @@ describe('rig name', () => {
 
   it('rejects an invalid --network (exit 2)', async () => {
     const h = makeHarness(env, cwd);
-    expect(await runName(['status', 'mysite', '--network', 'bogus'], h.deps)).toBe(2);
+    expect(
+      await runName(['status', 'mysite', '--network', 'bogus'], h.deps)
+    ).toBe(2);
     expect(h.err.join('\n')).toContain('--network must be one of');
   });
 
   it('--network devnet flows through to the JSON envelope', async () => {
     const h = makeHarness(env, cwd);
-    const code = await runName(['status', 'mysite', '--network', 'devnet', '--json'], h.deps);
+    const code = await runName(
+      ['status', 'mysite', '--network', 'devnet', '--json'],
+      h.deps
+    );
     expect(code).toBe(0);
     const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
     expect(doc).toMatchObject({ network: 'devnet' });
   });
 
-  // ── optional-dependency missing ───────────────────────────────────────────
+  // ── optional-dependency missing vs installed-but-incompatible (#376) ──────
 
   it('surfaces a clean error when @ar.io/sdk is missing', async () => {
     const h = makeHarness(env, cwd, {
@@ -375,7 +452,97 @@ describe('rig name', () => {
     const code = await runName(['status', 'mysite', '--json'], h.deps);
     expect(code).toBe(1);
     const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
-    expect(doc).toMatchObject({ command: 'name', error: 'arns_sdk_unavailable' });
+    expect(doc).toMatchObject({
+      command: 'name',
+      error: 'arns_sdk_unavailable',
+    });
     expect(String(doc['detail'])).toContain('@ar.io/sdk');
+    // The install hint pins the minimum version rig name is built against.
+    expect(String(doc['detail'])).toContain(MIN_ARIO_SDK_VERSION);
+  });
+
+  it('distinguishes an installed-but-incompatible @ar.io/sdk (#376)', async () => {
+    const h = makeHarness(env, cwd, {
+      stub: {
+        loadError: new ArnsSdkIncompatibleError(
+          'it exposes no ARIO.init / ANT.init'
+        ),
+      },
+    });
+    const code = await runName(['status', 'mysite', '--json'], h.deps);
+    expect(code).toBe(1);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    // NOT arns_sdk_unavailable — the SDK is installed; the remediation is an
+    // upgrade (with the pinned minimum stated), not an install.
+    expect(doc).toMatchObject({
+      command: 'name',
+      error: 'arns_sdk_incompatible',
+    });
+    expect(String(doc['detail'])).toContain('incompatible');
+    expect(String(doc['detail'])).toContain(MIN_ARIO_SDK_VERSION);
+    expect(String(doc['detail'])).not.toContain('not installed');
+  });
+});
+
+/**
+ * The default `@ar.io/sdk` adapter against the REAL installed SDK — offline
+ * construction only (#376). Both #376 bugs came from coding against an API
+ * surface no released SDK exports, which stubs and type checks cannot catch;
+ * these tests import the published `@ar.io/sdk` + `@solana/kit` for real and
+ * verify the adapter wires them. NO network call is made: kit's rpc clients
+ * are lazy and only building the clients (plus the signer, from a throwaway
+ * test-vector key) is exercised. The live FREE-read acceptance check lives in
+ * `src/__integration__/arns-live-read.integration.test.ts` (env-gated).
+ */
+describe('defaultLoadArns against the installed @ar.io/sdk (offline)', () => {
+  it('read mode builds a signerless client — zero key material required', async () => {
+    const sdk = await defaultLoadArns({
+      mode: 'read',
+      // All zeroes: NOT a usable keypair. Read mode must never touch it —
+      // constructing a signer from it would throw.
+      solanaSecretKey: new Uint8Array(64),
+      solanaPublicKey: 'reader',
+      network: 'mainnet',
+    });
+    expect(typeof sdk.getTokenCost).toBe('function');
+    expect(typeof sdk.getArNSRecord).toBe('function');
+    expect(typeof sdk.ant).toBe('function');
+  });
+
+  it('write mode derives a @solana/kit signer from the identity secret key', async () => {
+    const client = await import('@toon-protocol/client');
+    const derived = await client.deriveFullIdentity(MNEMONIC, 0);
+    expect(derived.solana.publicKey).not.toBe('');
+    // The signer model #376 lands on: kit's createKeyPairSignerFromBytes over
+    // the identity's 64-byte Ed25519 keypair — its address MUST equal the
+    // derived base58 Solana pubkey (the owner/payer rig funds).
+    const kit = (await import('@solana/kit')) as unknown as {
+      createKeyPairSignerFromBytes: (
+        bytes: Uint8Array
+      ) => Promise<{ address: string }>;
+    };
+    const signer = await kit.createKeyPairSignerFromBytes(
+      derived.solana.secretKey
+    );
+    expect(signer.address).toBe(derived.solana.publicKey);
+    // And the adapter builds the signed client from the same bytes.
+    const sdk = await defaultLoadArns({
+      mode: 'write',
+      solanaSecretKey: derived.solana.secretKey,
+      solanaPublicKey: derived.solana.publicKey,
+      network: 'mainnet',
+    });
+    expect(typeof sdk.buyRecord).toBe('function');
+  });
+
+  it('write mode rejects junk key material (createKeyPairSignerFromBytes validates)', async () => {
+    await expect(
+      defaultLoadArns({
+        mode: 'write',
+        solanaSecretKey: new Uint8Array(64),
+        solanaPublicKey: 'junk',
+        network: 'mainnet',
+      })
+    ).rejects.toThrow();
   });
 });

@@ -52,7 +52,8 @@
     "@toon-protocol/core": "^2.0.1"
   },
   "optionalDependencies": {
-    "@ar.io/sdk": "^4.0.0"
+    "@ar.io/sdk": "^4.0.3",
+    "@solana/kit": "^6.8.0"
   },
   "devDependencies": {
     "@toon-protocol/arweave": "workspace:*",

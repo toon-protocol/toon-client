@@ -150,9 +150,7 @@ function nonFastForwardLines(refs: RejectedRefUpdate[]): string[] {
 function oversizeLines(objects: OversizeObject[]): string[] {
   return [
     `Push rejected: ${objects.length} object(s) exceed the ${MAX_OBJECT_SIZE}-byte (95KB) upload limit:`,
-    ...objects.map(
-      (o) => `  ${o.path ?? o.sha}  ${o.type}, ${o.size} bytes`
-    ),
+    ...objects.map((o) => `  ${o.path ?? o.sha}  ${o.type}, ${o.size} bytes`),
     'Objects over 95KB are a hard error in v1 — split or remove the file(s) from history to push.',
     'Large-object support is tracked in toon-client#235.',
   ];
@@ -188,7 +186,11 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
     return {
       code: 'unknown_remote',
       lines: err.message.split('\n'),
-      json: { error: 'unknown_remote', detail: err.message, remote: err.remote },
+      json: {
+        error: 'unknown_remote',
+        detail: err.message,
+        remote: err.remote,
+      },
     };
   }
   if (err instanceof MultiUrlRemoteError) {
@@ -252,13 +254,27 @@ export function describeError(err: unknown, command = 'push'): DescribedError {
       json: { error: 'arns_sdk_unavailable', detail: err.message },
     };
   }
+  // `rig name` (#376): `@ar.io/sdk` IS installed but its API surface doesn't
+  // match — kept distinct from "not installed" so the remediation (upgrade,
+  // not install) is right. Matched by name for the same chunk-duplication
+  // rationale as above.
+  if (err instanceof Error && err.name === 'ArnsSdkIncompatibleError') {
+    return {
+      code: 'arns_sdk_incompatible',
+      lines: err.message.split('\n'),
+      json: { error: 'arns_sdk_incompatible', detail: err.message },
+    };
+  }
 
   // Delegated-daemon path (#279): the daemon's /git/* error envelope carries
   // the same structured payloads the local planner throws — render them
   // identically so the two paths are indistinguishable to the user.
   if (err instanceof DaemonRouteError) {
     const envelope = err.envelope;
-    if (envelope.error === 'non_fast_forward' && Array.isArray(envelope['refs'])) {
+    if (
+      envelope.error === 'non_fast_forward' &&
+      Array.isArray(envelope['refs'])
+    ) {
       return {
         code: 'non_fast_forward',
         lines: nonFastForwardLines(envelope['refs'] as RejectedRefUpdate[]),

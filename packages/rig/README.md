@@ -290,8 +290,9 @@ rig push && rig site publish && rig name set my-app <manifestTxId>
 > **Real funds, a different rail from ILP.** `rig name buy`/`set` spend **mARIO on
 > Solana via the ar.io registry program** — *not* through TOON's ILP payment channels
 > (the rail behind `rig push` / `rig site publish` fees). `rig name` needs the
-> optional [`@ar.io/sdk`](https://docs.ar.io) dependency; install it if the command
-> reports it missing. As with every paid verb, these are estimate → confirm →
+> optional [`@ar.io/sdk`](https://docs.ar.io) dependency (>= 4.0.3, the
+> Solana-native release); install it if the command reports it missing.
+> `rig name status` is a free, signerless read. As with every paid verb, these are estimate → confirm →
 > execute, and a `--json` run *without* `--yes` is a free estimate — nothing is spent.
 
 ---
