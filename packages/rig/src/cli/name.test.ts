@@ -26,13 +26,17 @@ import {
   ArnsSdkIncompatibleError,
   ArnsSdkUnavailableError,
   defaultLoadArns,
+  DVM_PAYMENT_NOTE,
   MARIO_PAYMENT_NOTE,
   MIN_ARIO_SDK_VERSION,
   runName,
   type ArnsAnt,
   type ArnsSdk,
+  type DvmBuyJobReceipt,
+  type DvmBuyJobRequest,
   type LoadArns,
   type NameDeps,
+  type SubmitDvmBuyJob,
 } from './name.js';
 
 /** Standard BIP-39 test vector phrase — deterministic, never funded. */
@@ -50,6 +54,7 @@ interface StubCalls {
     years?: number;
   }[];
   buyRecord: { name: string; type: string; years?: number }[];
+  spawnAnt: { name: string }[];
   getArNSRecord: { name: string }[];
   antFor: string[];
   setBaseNameRecord: { transactionId: string; ttlSeconds: number }[];
@@ -75,6 +80,7 @@ function makeStubSdk(options: StubOptions): { sdk: ArnsSdk; calls: StubCalls } {
   const calls: StubCalls = {
     getTokenCost: [],
     buyRecord: [],
+    spawnAnt: [],
     getArNSRecord: [],
     antFor: [],
     setBaseNameRecord: [],
@@ -107,6 +113,10 @@ function makeStubSdk(options: StubOptions): { sdk: ArnsSdk; calls: StubCalls } {
       calls.buyRecord.push(args);
       return { id: 'registry-tx-1', processId: 'ANT-PROCESS-ID' };
     },
+    spawnAnt: async (args) => {
+      calls.spawnAnt.push(args);
+      return { processId: 'SPAWNED-ANT-ID', signature: 'spawn-tx-1' };
+    },
     getArNSRecord: async (args) => {
       calls.getArNSRecord.push(args);
       return options.record === undefined ? defaultRecord : options.record;
@@ -127,12 +137,20 @@ interface Harness {
   loadArnsCalls: number;
   /** The `mode` each loadArns call requested (read vs write plumbing, #376). */
   loadArnsModes: string[];
+  /** Every kind:5095 job the stubbed DVM submitter received (--via). */
+  dvmJobs: DvmBuyJobRequest[];
 }
 
 function makeHarness(
   env: NodeJS.ProcessEnv,
   cwd: string,
-  opts: { interactive?: boolean; confirm?: boolean; stub?: StubOptions } = {}
+  opts: {
+    interactive?: boolean;
+    confirm?: boolean;
+    stub?: StubOptions;
+    /** Canned DVM job receipt / failure for the --via submitter stub. */
+    dvm?: { receipt?: DvmBuyJobReceipt; error?: Error };
+  } = {}
 ): Harness {
   const out: string[] = [];
   const err: string[] = [];
@@ -155,13 +173,26 @@ function makeHarness(
     expect(options.solanaPublicKey.length).toBeGreaterThan(0);
     return sdk;
   };
-  const deps: NameDeps = { io, env, cwd, loadArns };
+  const dvmJobs: DvmBuyJobRequest[] = [];
+  const submitDvmBuyJob: SubmitDvmBuyJob = async (request) => {
+    dvmJobs.push(request);
+    if (opts.dvm?.error) throw opts.dvm.error;
+    return (
+      opts.dvm?.receipt ?? {
+        registryTxId: 'dvm-registry-tx-1',
+        quotedMario: '2291718480',
+        syncAttributesTxId: 'dvm-sync-tx-1',
+      }
+    );
+  };
+  const deps: NameDeps = { io, env, cwd, loadArns, submitDvmBuyJob };
   return {
     deps,
     out,
     err,
     calls,
     loadArnsModes,
+    dvmJobs,
     get loadArnsCalls() {
       return loadArnsCalls;
     },
@@ -481,6 +512,142 @@ describe('rig name', () => {
     expect(String(doc['detail'])).toContain('incompatible');
     expect(String(doc['detail'])).toContain(MIN_ARIO_SDK_VERSION);
     expect(String(doc['detail'])).not.toContain('not installed');
+  });
+
+  // ── buy --via (brokered "buyfor" through a store DVM) ────────────────────
+
+  it('--via --json without --yes is a pure estimate: no spawn, no job, read-only SDK', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      ['buy', 'toon-buyfor-e2e', '--via', 'http://dvm.local:3300', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc).toMatchObject({
+      command: 'name',
+      action: 'buy',
+      executed: false,
+      via: 'http://dvm.local:3300',
+      payment: DVM_PAYMENT_NOTE,
+    });
+    expect(h.calls.spawnAnt).toHaveLength(0);
+    expect(h.calls.buyRecord).toHaveLength(0);
+    expect(h.dvmJobs).toHaveLength(0);
+    expect(h.loadArnsModes).toEqual(['read']);
+  });
+
+  it('--via --yes spawns OUR ANT and submits the kind:5095 job with its processId (no local buyRecord)', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      [
+        'buy',
+        'toon-buyfor-e2e',
+        '--via',
+        'http://dvm.local:3300',
+        '--network',
+        'devnet',
+        '--yes',
+        '--json',
+      ],
+      h.deps
+    );
+    expect(code).toBe(0);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc).toMatchObject({
+      executed: true,
+      network: 'devnet',
+      via: 'http://dvm.local:3300',
+      spawn: { processId: 'SPAWNED-ANT-ID', signature: 'spawn-tx-1' },
+      result: {
+        registryTxId: 'dvm-registry-tx-1',
+        antProcessId: 'SPAWNED-ANT-ID',
+        syncAttributesTxId: 'dvm-sync-tx-1',
+        dvmQuotedMario: '2291718480',
+      },
+    });
+    // The load-bearing chain: the spawn happens in WRITE mode, the job
+    // carries the SPAWNED processId, and the LOCAL wallet never buys.
+    expect(h.calls.spawnAnt).toEqual([{ name: 'toon-buyfor-e2e' }]);
+    expect(h.calls.buyRecord).toHaveLength(0);
+    expect(h.dvmJobs).toHaveLength(1);
+    expect(h.dvmJobs[0]).toMatchObject({
+      viaUrl: 'http://dvm.local:3300',
+      name: 'toon-buyfor-e2e',
+      type: 'lease',
+      years: 1,
+      processId: 'SPAWNED-ANT-ID',
+    });
+    expect(h.dvmJobs[0]!.nostrSecretKey).toHaveLength(32);
+    expect(h.loadArnsModes).toEqual(['read', 'write']);
+  });
+
+  it('--via refuses without --yes when non-interactive (nothing spawned or submitted)', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      ['buy', 'toon-buyfor-e2e', '--via', 'http://dvm.local:3300'],
+      h.deps
+    );
+    expect(code).toBe(1);
+    expect(h.err.join('\n')).toContain('--yes');
+    expect(h.calls.spawnAnt).toHaveLength(0);
+    expect(h.dvmJobs).toHaveLength(0);
+  });
+
+  it('a DVM rejection surfaces as a CLI error after the spawn', async () => {
+    const h = makeHarness(env, cwd, {
+      dvm: { error: new Error('the DVM rejected the kind:5095 buy job (T00): insufficient ARIO balance') },
+    });
+    const code = await runName(
+      ['buy', 'toon-buyfor-e2e', '--via', 'http://dvm.local:3300', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(1);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(String(doc['detail'])).toContain('insufficient ARIO balance');
+    expect(h.calls.spawnAnt).toHaveLength(1);
+    expect(h.calls.buyRecord).toHaveLength(0);
+  });
+
+  it('--via must be an http(s) URL (usage error, no SDK load)', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      ['buy', 'toon-buyfor-e2e', '--via', 'wss://not-http'],
+      h.deps
+    );
+    expect(code).toBe(2);
+    expect(h.err.join('\n')).toContain('--via must be an http(s)');
+    expect(h.loadArnsCalls).toBe(0);
+  });
+
+  it('RIG_ARNS_DVM_URL is the --via env fallback', async () => {
+    const h = makeHarness(
+      { ...env, RIG_ARNS_DVM_URL: 'http://dvm.env:3300' },
+      cwd
+    );
+    const code = await runName(
+      ['buy', 'toon-buyfor-e2e', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.dvmJobs).toHaveLength(1);
+    expect(h.dvmJobs[0]!.viaUrl).toBe('http://dvm.env:3300');
+    expect(h.calls.buyRecord).toHaveLength(0);
+  });
+
+  it('a plain buy (no --via) never spawns or submits a DVM job', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      ['buy', 'mysite', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.calls.buyRecord).toHaveLength(1);
+    expect(h.calls.spawnAnt).toHaveLength(0);
+    expect(h.dvmJobs).toHaveLength(0);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['via']).toBeNull();
+    expect(doc['payment']).toBe(MARIO_PAYMENT_NOTE);
   });
 });
 
