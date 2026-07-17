@@ -384,7 +384,7 @@ describe('standalone push (Publisher seam)', () => {
     expect(fake1.blobs[0]?.body).toContain('/#/npub1');
     expect(fake1.blobs[0]?.body).toContain('demo?relay=');
     const out1 = h1.out.join('\n');
-    expect(out1).toContain(`Rig page: https://ar-io.dev/${POINTER_TX}`);
+    expect(out1).toContain(`Rig page: https://arweave.net/${POINTER_TX}`);
     // The confirm plan shows the pointer fee before any spend.
     expect(out1).toContain('rig page');
     expect(readRigPointerRecord(env, 'demo')?.pointerTxId).toBe(POINTER_TX);
@@ -399,7 +399,7 @@ describe('standalone push (Publisher seam)', () => {
     expect(await runPush(['--yes'], h2.deps)).toBe(0);
     expect(fake2.blobs).toHaveLength(0);
     expect(h2.out.join('\n')).toContain(
-      `Rig page: https://ar-io.dev/${POINTER_TX}`
+      `Rig page: https://arweave.net/${POINTER_TX}`
     );
   });
 
@@ -442,7 +442,7 @@ describe('standalone push (Publisher seam)', () => {
       rigPage: {
         status: 'published',
         txId: POINTER_TX,
-        url: `https://ar-io.dev/${POINTER_TX}`,
+        url: `https://arweave.net/${POINTER_TX}`,
       },
     });
   });

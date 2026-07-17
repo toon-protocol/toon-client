@@ -36,7 +36,6 @@
 
 import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
-import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import {
   DEFAULT_RIG_WEB_URL,
   RIG_WEB_URL_ENV,
@@ -356,11 +355,19 @@ export interface RigPageReport {
   detail?: string;
 }
 
-/** Preferred gateway for printed Rig-page URLs (ar.io first — fastest serving). */
+/**
+ * Gateway for printed Rig-page URLs. A PRINTED URL is a single address with
+ * no client-side fallback, so it must be the most RELIABLE gateway — the
+ * flagship `arweave.net` (matching `rig site`'s DEFAULT_GATEWAY) — not the
+ * first entry of the fetch-redundancy list (`ar-io.dev`, which the object
+ * fetcher can afford to try first because it falls back; a browser can't).
+ * `RIG_ARWEAVE_GATEWAY` overrides, same as `rig site`.
+ */
 function pointerGateway(env: NodeJS.ProcessEnv): string {
-  return (
-    env['RIG_ARWEAVE_GATEWAY'] ?? ARWEAVE_GATEWAYS[0] ?? 'https://arweave.net'
-  ).replace(/\/+$/, '');
+  return (env['RIG_ARWEAVE_GATEWAY'] ?? 'https://arweave.net').replace(
+    /\/+$/,
+    ''
+  );
 }
 
 /** Build the Rig-pointer plan: deterministic pointer + content-addressed skip. */
