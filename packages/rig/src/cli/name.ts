@@ -1113,6 +1113,14 @@ async function runBuy(
       io.out(`  ANT process (owned by YOU): ${spawn.processId}`);
       if (receipt.syncAttributesTxId) {
         io.out(`  Trait sync: ${receipt.syncAttributesTxId}`);
+      } else {
+        // Proven on devnet: the deployed ario-ant program gates SyncAttributes
+        // to the NFT holder, so the DVM cannot reconcile the traits — you can.
+        io.out(
+          '  Trait sync: not run by the DVM (holder-gated on this ' +
+            'deployment) — as the ANT holder you can reconcile with ' +
+            'syncAttributes later; resolution works regardless.'
+        );
       }
       io.out(
         `Point it at content with \`rig name set ${name} <txId>\`, then it ` +
