@@ -1,0 +1,9 @@
+---
+"@toon-protocol/rig": minor
+---
+
+rig push: every push keeps the repo's Rig page current — a permanent per-repo Arweave pointer that RENDERS the repo in place, the repo's GitHub-Pages equivalent served entirely from Arweave + the relay.
+
+- The pointer boots the FULL React Rig from its Arweave deployment: `window.__RIG_CONFIG__` pins relay/owner/repo, the HashRouter route is preset in the pointer's own fragment, and rig-web's entry css/js load from an ar.io path manifest — module-relative imports resolve against the module URL, so the whole chunk graph serves from Arweave while the address bar stays on the pointer. The deployment itself (`rig-web/scripts/deploy-arweave.mjs`) fits ArDrive Turbo's FREE tier: shiki now uses its JS regex engine (no 600 KiB wasm), vite splits vendors per package so every output gzips < 100 KiB, and each file uploads gzipped with a `Content-Encoding` tag that ar.io gateways serve as a header (verified live) — 122 files + manifest, $0, no funded wallet. `RIG_WEB_TX`/`RIG_WEB_ENTRY_JS`/`RIG_WEB_ENTRY_CSS` override the bundle. The single-file rig-lite build stays in-tree as the ultra-light option.
+- Content-addressed: the pointer HTML is deterministic for (rig-web URL, relay, owner, repoId) and recorded locally (`rig-pointers.json`), so it is paid for once and reused free until an input changes. Its fee is part of the confirmed push total; `--no-rig-page` skips it; a pointer failure never fails a succeeded push (the next push retries). Printed as `Rig page: <ar.io-gateway>/<txId>`; the `--json` envelope carries a `rigPage` report. Daemon-path pushes skip with a note (no raw-blob route yet).
+- Test-harness hardening: the strict-json `run()` helper now defaults to a hermetic `TOON_CLIENT_HOME` — an empty env let command tests write local record stores into the developer's real `~/.toon-client`.

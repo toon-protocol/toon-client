@@ -62,7 +62,14 @@ export function detectLanguage(filename: string): string | null {
 
 async function createHighlighter(): Promise<HighlighterCore> {
   const { createHighlighterCore } = await import('shiki/core');
-  const { createOnigurumaEngine } = await import('shiki/engine/oniguruma');
+  // JS regex engine, NOT oniguruma: the wasm engine is a single 600 KiB+
+  // chunk that can never fit ArDrive Turbo's 105 KiB free-tier per-file cap,
+  // which the Arweave deployment depends on (README "Deploying"). The JS
+  // engine covers the grammars we load; `forgiving` degrades any unsupported
+  // oniguruma construct to plain text instead of throwing.
+  const { createJavaScriptRegexEngine } = await import(
+    'shiki/engine/javascript'
+  );
 
   const [js, ts, json, html, css, md, py, go, rust, yaml, bash, sql, toml] =
     await Promise.all([
@@ -101,7 +108,7 @@ async function createHighlighter(): Promise<HighlighterCore> {
       sql.default,
       toml.default,
     ],
-    engine: createOnigurumaEngine(import('shiki/wasm')),
+    engine: createJavaScriptRegexEngine({ forgiving: true }),
   });
 }
 
