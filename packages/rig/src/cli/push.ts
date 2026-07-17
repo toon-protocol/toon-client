@@ -37,9 +37,11 @@
 import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import {
-  DEFAULT_RIG_LITE_TX,
+  DEFAULT_RIG_WEB_BUNDLE,
   DEFAULT_RIG_WEB_URL,
-  RIG_LITE_TX_ENV,
+  RIG_WEB_ENTRY_CSS_ENV,
+  RIG_WEB_ENTRY_JS_ENV,
+  RIG_WEB_TX_ENV,
   RIG_WEB_URL_ENV,
   generateRigPointerHtml,
 } from '../rig-pointer.js';
@@ -161,10 +163,10 @@ defaults to origin. Refspecs are branch/tag names or full refnames; default
 is the current branch.
 
 Every push also keeps the repo's RIG PAGE current: a permanent Arweave
-page that RENDERS this repo in place — it boots rig-lite (the single-file
-Arweave build of the Rig) with this repo pinned, everything served from
+page that RENDERS this repo in place — it boots the FULL Rig (rig-web)
+from its Arweave deployment with this repo pinned, everything served from
 Arweave + the relay. The pointer is content-addressed, so it is paid for
-once and reused for free until the relay or Rig build changes.
+once and reused for free until the relay or Rig deployment changes.
 --no-rig-page skips it.
 
 Options:
@@ -382,7 +384,12 @@ function planRigPointer(args: {
   uploadFeePerByte: bigint;
 }): RigPointerPlan {
   const html = generateRigPointerHtml({
-    rigLiteTx: args.env[RIG_LITE_TX_ENV] ?? DEFAULT_RIG_LITE_TX,
+    bundle: {
+      manifestTx: args.env[RIG_WEB_TX_ENV] ?? DEFAULT_RIG_WEB_BUNDLE.manifestTx,
+      entryJs: args.env[RIG_WEB_ENTRY_JS_ENV] ?? DEFAULT_RIG_WEB_BUNDLE.entryJs,
+      entryCss:
+        args.env[RIG_WEB_ENTRY_CSS_ENV] ?? DEFAULT_RIG_WEB_BUNDLE.entryCss,
+    },
     gateway: pointerGateway(args.env),
     rigWebUrl: args.env[RIG_WEB_URL_ENV] ?? DEFAULT_RIG_WEB_URL,
     relay: args.relay,
