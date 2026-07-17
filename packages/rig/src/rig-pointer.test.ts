@@ -1,11 +1,12 @@
 /**
- * Tests for the per-repo Rig pointer (stage-1 redirect shell): route
- * construction, HTML safety, and the determinism the content-addressed
- * skip in `rig push` relies on.
+ * Tests for the per-repo Rig pointer (rig-lite boot-in-place shell): route
+ * construction, config pinning, HTML safety, and the determinism the
+ * content-addressed skip in `rig push` relies on.
  */
 
 import { describe, it, expect } from 'vitest';
 import {
+  DEFAULT_RIG_LITE_TX,
   DEFAULT_RIG_WEB_URL,
   generateRigPointerHtml,
   rigWebRoute,
@@ -16,6 +17,8 @@ const NPUB = 'npub1me9xmmtap3xjgza6e8hsh0xe2rxv3haektma840yrf8p2z53qmeq65a5y6';
 
 function options(overrides: Partial<RigPointerOptions> = {}): RigPointerOptions {
   return {
+    rigLiteTx: DEFAULT_RIG_LITE_TX,
+    gateway: 'https://arweave.net',
     rigWebUrl: DEFAULT_RIG_WEB_URL,
     relay: 'wss://relay-ws.devnet.toonprotocol.dev',
     ownerNpub: NPUB,
@@ -51,39 +54,49 @@ describe('generateRigPointerHtml', () => {
     expect(generateRigPointerHtml(options())).not.toBe(
       generateRigPointerHtml(options({ relay: 'wss://other.example' }))
     );
+    expect(generateRigPointerHtml(options())).not.toBe(
+      generateRigPointerHtml(options({ rigLiteTx: 'B'.repeat(43) }))
+    );
   });
 
-  it('redirects three ways: meta refresh, script, and a visible link', () => {
+  it('boots rig-lite in place: pinned config + immutable module script', () => {
     const html = generateRigPointerHtml(options());
-    const target = rigWebRoute(options());
-    expect(html).toContain(`content="0; url=${target}"`);
-    expect(html).toContain(`location.replace(${JSON.stringify(target)})`);
-    expect(html).toContain(`<a href="${target}">`);
+    expect(html).toContain(
+      `window.__RIG_CONFIG__={"relay":"wss://relay-ws.devnet.toonprotocol.dev","owner":"${NPUB}","repo":"hello-toon"}`
+    );
+    expect(html).toContain(
+      `<script type="module" src="https://arweave.net/${DEFAULT_RIG_LITE_TX}"></script>`
+    );
     expect(html).toContain('<title>hello-toon — Rig</title>');
+    // No redirect — the pointer renders from Arweave in place.
+    expect(html).not.toContain('http-equiv="refresh"');
+    expect(html).not.toContain('location.replace');
   });
 
-  it('neutralizes hostile input in both HTML and script positions', () => {
+  it('degrades to a full-Rig link (noscript + delayed fallback)', () => {
+    const html = generateRigPointerHtml(options());
+    const fullRig = rigWebRoute(options());
+    expect(html).toContain('<noscript>');
+    expect(html).toContain(`href="${fullRig}"`);
+    expect(html).toContain('data-fallback');
+  });
+
+  it('neutralizes hostile input in HTML and script positions', () => {
     const html = generateRigPointerHtml(
       options({ repoId: '</script><script>alert(1)' })
     );
-    // Route segments are percent-encoded, so the payload never reaches the
-    // markup raw in URL positions…
-    expect(html).not.toContain('</script><script>alert(1)');
-    expect(html).toContain('%3C%2Fscript%3E');
-    // …and the title/link text entity-escapes it.
+    // Script position: `<` escaped inside the JSON config string.
+    expect(html).not.toContain('"repo":"</script>');
+    expect(html).toContain('\\u003c');
+    // HTML positions: entity-escaped title, percent-encoded route.
     expect(html).toContain('&lt;/script&gt;');
-    // Defense-in-depth for the one non-encoded input (the operator-config
-    // rig-web base URL): `<` is <-escaped in the script position.
-    const hostileBase = generateRigPointerHtml(
-      options({ rigWebUrl: 'https://x.example/</script>' })
-    );
-    expect(hostileBase).toContain('\\u003c');
-    expect(hostileBase).not.toContain('replace("https://x.example/</script>');
+    expect(html).toContain('%3C%2Fscript%3E');
   });
 
-  it('is fully self-contained (no external asset loads to rot)', () => {
+  it('loads nothing external except the one immutable rig-lite module', () => {
     const html = generateRigPointerHtml(options());
-    expect(html).not.toMatch(/<script[^>]+src=/);
+    const srcs = [...html.matchAll(/src="([^"]+)"/g)].map((m) => m[1]);
+    expect(srcs).toEqual([`https://arweave.net/${DEFAULT_RIG_LITE_TX}`]);
     expect(html).not.toMatch(/<link[^>]+href="https?:/);
   });
 });

@@ -37,7 +37,9 @@
 import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import {
+  DEFAULT_RIG_LITE_TX,
   DEFAULT_RIG_WEB_URL,
+  RIG_LITE_TX_ENV,
   RIG_WEB_URL_ENV,
   generateRigPointerHtml,
 } from '../rig-pointer.js';
@@ -158,11 +160,12 @@ remote name it is the remote; otherwise it is a refspec and the remote
 defaults to origin. Refspecs are branch/tag names or full refnames; default
 is the current branch.
 
-Every push also keeps the repo's RIG PAGE current: a tiny permanent
-Arweave page that opens this repo in the Rig (rig-web) — the
-repo's GitHub-Pages equivalent, served from any ar.io gateway. The pointer
-is content-addressed, so it is paid for once and reused for free until the
-relay or rig-web deployment changes. --no-rig-page skips it.
+Every push also keeps the repo's RIG PAGE current: a permanent Arweave
+page that RENDERS this repo in place — it boots rig-lite (the single-file
+Arweave build of the Rig) with this repo pinned, everything served from
+Arweave + the relay. The pointer is content-addressed, so it is paid for
+once and reused for free until the relay or Rig build changes.
+--no-rig-page skips it.
 
 Options:
   --force            allow non-fast-forward ref updates (overwrites remote history)
@@ -379,6 +382,8 @@ function planRigPointer(args: {
   uploadFeePerByte: bigint;
 }): RigPointerPlan {
   const html = generateRigPointerHtml({
+    rigLiteTx: args.env[RIG_LITE_TX_ENV] ?? DEFAULT_RIG_LITE_TX,
+    gateway: pointerGateway(args.env),
     rigWebUrl: args.env[RIG_WEB_URL_ENV] ?? DEFAULT_RIG_WEB_URL,
     relay: args.relay,
     ownerNpub: hexToNpub(args.ownerPubkey),
@@ -748,7 +753,7 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
         io.out(
           `Rig page: ${rigPage.url}` +
             (rigPage.status === 'published' ? `  paid ${rigPage.feePaid}` : '') +
-            '  (opens this repo in the Rig)'
+            '  (renders this repo from Arweave)'
         );
       } else if (rigPage.detail) {
         io.err(`rig page: ${rigPage.detail}`);
