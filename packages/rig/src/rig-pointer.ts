@@ -25,10 +25,10 @@
 
 /**
  * Arweave txId of the current rig-lite build (uploaded via the TOON store,
- * 2026-07-17). Override with `RIG_LITE_TX` (e.g. a newer build or an ArNS
- * name-resolved tx).
+ * 2026-07-17; themed with the full Rig's design tokens). Override with
+ * `RIG_LITE_TX` (e.g. a newer build or an ArNS name-resolved tx).
  */
-export const DEFAULT_RIG_LITE_TX = '6E047tFfnpd6mEGL2ktBQ1rI4bUWaWOXs4_Y5-VXO7c';
+export const DEFAULT_RIG_LITE_TX = 'yI6KAbrGJXLwduYnuMIQTgtmCrhnEJ7jXd25-ZgLvJc';
 
 /** Env var overriding the rig-lite txId the pointer boots. */
 export const RIG_LITE_TX_ENV = 'RIG_LITE_TX';

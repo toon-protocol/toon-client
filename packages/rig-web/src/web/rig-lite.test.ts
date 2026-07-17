@@ -15,7 +15,6 @@ import {
   parseTree,
   renderMarkdown,
   verifyBody,
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-expect-error plain JS module without type declarations (by design)
 } from '../../lite/rig-lite.js';
 

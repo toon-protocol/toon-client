@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import type { Publisher } from '../publisher.js';
 import type { RemoteState } from '../remote-state.js';
 import { readToonConfig, writeToonConfig } from './git-config.js';
-import { readRigPointerRecord } from './rig-pointer-record.js';
+import { readRigPointerRecord, writeRigPointerRecord } from './rig-pointer-record.js';
 import { runPush, selectRefspecs, type CliIo, type PushDeps } from './push.js';
 import { GitRepoReader } from '../repo-reader.js';
 import type {
@@ -401,6 +401,41 @@ describe('standalone push (Publisher seam)', () => {
     expect(h2.out.join('\n')).toContain(
       `Rig page: https://arweave.net/${POINTER_TX}`
     );
+  });
+
+  it('refreshes a STALE Rig page even when every ref is up-to-date', async () => {
+    // Publish once, then make the recorded pointer stale (as a new Rig build
+    // or relay change would) and push again with unchanged refs: the refs
+    // short-circuit must still refresh the pointer — never demand a dummy
+    // commit — and pay ONLY the pointer fee.
+    const fake1 = makeStandalone(emptyRemoteState(), { withBlobUpload: true });
+    const h1 = makeDeps(env, repoDir, { loadStandalone: fake1.load });
+    expect(await runPush(['--yes'], h1.deps)).toBe(0);
+    const record = readRigPointerRecord(env, 'demo');
+    expect(record).toBeDefined();
+    writeRigPointerRecord(env, {
+      ...(record as NonNullable<typeof record>),
+      contentHash: 'f0'.repeat(32), // no longer matches the generated HTML
+    });
+
+    const headSha = git(['rev-parse', 'HEAD'], repoDir);
+    const fake2 = makeStandalone(
+      emptyRemoteState({
+        announced: true,
+        refs: new Map([['refs/heads/main', headSha]]),
+        headSymref: 'refs/heads/main',
+      }),
+      { withBlobUpload: true }
+    );
+    const h2 = makeDeps(env, repoDir, { loadStandalone: fake2.load });
+    expect(await runPush(['--yes'], h2.deps)).toBe(0);
+    // No git objects or events published — only the pointer refreshed.
+    expect(fake2.uploads).toHaveLength(0);
+    expect(fake2.published).toHaveLength(0);
+    expect(fake2.blobs).toHaveLength(1);
+    expect(h2.out.join('\n')).toContain('the Rig page is stale');
+    expect(h2.out.join('\n')).toContain(`Rig page: https://arweave.net/${POINTER_TX}`);
+    expect(readRigPointerRecord(env, 'demo')?.contentHash).not.toBe('f0'.repeat(32));
   });
 
   it('--no-rig-page skips the pointer entirely', async () => {

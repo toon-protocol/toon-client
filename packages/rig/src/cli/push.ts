@@ -616,9 +616,120 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
       rigPageSkipDetail = 'skipped on the daemon path (refreshes on the next standalone push)';
     }
 
+    // ── Rig-page pointer publish (shared by the normal path and the
+    // up-to-date refresh below; never fails a succeeded push) ────────────────
+    const gateway = pointerGateway(deps.env);
+    const publishPointer = async (
+      pointer: RigPointerPlan
+    ): Promise<RigPageReport> => {
+      try {
+        // Guarded at plan time: a plan only exists when uploadBlob is available.
+        const ctx = standaloneCtx as StandaloneContext;
+        const receipt = await (
+          ctx.publisher.uploadBlob as NonNullable<
+            typeof ctx.publisher.uploadBlob
+          >
+        )({
+          body: Buffer.from(pointer.html, 'utf8'),
+          contentType: 'text/html',
+          repoId,
+        });
+        writeRigPointerRecord(deps.env, {
+          repoId,
+          owner: identity.pubkey,
+          pointerTxId: receipt.txId,
+          contentHash: pointer.contentHash,
+          updatedAt: Date.now(),
+        });
+        return {
+          status: 'published',
+          txId: receipt.txId,
+          url: `${gateway}/${receipt.txId}`,
+          feePaid: receipt.feePaid.toString(),
+        };
+      } catch (err) {
+        // The record was not updated, so the next push retries the upload.
+        return {
+          status: 'skipped',
+          detail: `pointer upload failed (push itself succeeded; the next push retries): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        };
+      }
+    };
+    const printRigPage = (rigPage: RigPageReport): void => {
+      if (rigPage.url) {
+        io.out(
+          `Rig page: ${rigPage.url}` +
+            (rigPage.status === 'published' ? `  paid ${rigPage.feePaid}` : '') +
+            '  (renders this repo from Arweave)'
+        );
+      } else if (rigPage.detail) {
+        io.err(`rig page: ${rigPage.detail}`);
+      }
+    };
+
     // ── Up-to-date short-circuit (never publish a no-op refs event) ─────────
+    // A STALE Rig page still refreshes here: the pointer changes when the Rig
+    // build / relay / gateway changes, not the refs — requiring a dummy
+    // commit to roll it forward would be absurd.
     const upToDate = plan.refUpdates.every((u) => u.kind === 'up-to-date');
     if (upToDate) {
+      if (pointerPlan?.action !== 'upload') {
+        if (flags.json) {
+          io.emitJson({
+            command: 'push',
+            repoId,
+            path,
+            identity,
+            executed: false,
+            upToDate: true,
+            plan,
+          } satisfies PushJsonOutput);
+        } else {
+          io.out('Everything up-to-date — nothing to push (and nothing paid).');
+        }
+        return 0;
+      }
+
+      if (!flags.json) {
+        io.out(
+          'Everything up-to-date — refs unchanged, but the Rig page is stale ' +
+            '(new Rig build, relay, or gateway):'
+        );
+        io.out(`  rig page  ${pointerPlan.bytes} bytes   ${pointerPlan.fee}`);
+        io.out(renderIdentityLine(identity));
+      }
+      if (!flags.yes) {
+        if (flags.json) {
+          io.emitJson({
+            command: 'push',
+            repoId,
+            path,
+            identity,
+            executed: false,
+            upToDate: true,
+            plan,
+            hint: 'refs up-to-date; the Rig page is stale — re-run with --yes to refresh it (or --no-rig-page to skip)',
+          } satisfies PushJsonOutput);
+          return 0;
+        }
+        if (!io.isInteractive) {
+          io.err(
+            'refusing to spend channel funds without confirmation in a non-interactive ' +
+              'session — re-run with --yes (or --no-rig-page to skip the refresh)'
+          );
+          return 1;
+        }
+        const proceed = await io.confirm(
+          `Refresh the Rig page (total ${pointerPlan.fee} base units)? [y/N] `
+        );
+        if (!proceed) {
+          io.err('aborted — nothing was uploaded or published.');
+          return 1;
+        }
+      }
+      const rigPage = await publishPointer(pointerPlan);
       if (flags.json) {
         io.emitJson({
           command: 'push',
@@ -628,9 +739,10 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
           executed: false,
           upToDate: true,
           plan,
+          rigPage,
         } satisfies PushJsonOutput);
       } else {
-        io.out('Everything up-to-date — nothing to push (and nothing paid).');
+        printRigPage(rigPage);
       }
       return 0;
     }
@@ -684,8 +796,7 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
     // ── Execute ─────────────────────────────────────────────────────────────
     const result = await execute();
 
-    // ── Rig-page pointer publish (after the push succeeded; never fails it) ────
-    const gateway = pointerGateway(deps.env);
+    // ── Rig-page pointer (after the push succeeded; never fails it) ─────────
     let rigPage: RigPageReport;
     if (!pointerPlan) {
       rigPage = { status: 'skipped', ...(rigPageSkipDetail ? { detail: rigPageSkipDetail } : {}) };
@@ -696,42 +807,7 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
         url: `${gateway}/${pointerPlan.recordedTxId}`,
       };
     } else {
-      try {
-        // Guarded above: pointerPlan only exists when uploadBlob is available.
-        const ctx = standaloneCtx as StandaloneContext;
-        const receipt = await (
-          ctx.publisher.uploadBlob as NonNullable<
-            typeof ctx.publisher.uploadBlob
-          >
-        )({
-          body: Buffer.from(pointerPlan.html, 'utf8'),
-          contentType: 'text/html',
-          repoId,
-        });
-        writeRigPointerRecord(deps.env, {
-          repoId,
-          owner: identity.pubkey,
-          pointerTxId: receipt.txId,
-          contentHash: pointerPlan.contentHash,
-          updatedAt: Date.now(),
-        });
-        rigPage = {
-          status: 'published',
-          txId: receipt.txId,
-          url: `${gateway}/${receipt.txId}`,
-          feePaid: receipt.feePaid.toString(),
-        };
-      } catch (err) {
-        // The PUSH succeeded — a pointer failure must not turn it into a
-        // failed command. The record was not updated, so the next push
-        // retries the upload.
-        rigPage = {
-          status: 'skipped',
-          detail: `pointer upload failed (push itself succeeded; the next push retries): ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        };
-      }
+      rigPage = await publishPointer(pointerPlan);
     }
 
     // ── Receipts ────────────────────────────────────────────────────────────
@@ -749,15 +825,7 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
       } satisfies PushJsonOutput);
     } else {
       for (const line of renderResult(result)) io.out(line);
-      if (rigPage.url) {
-        io.out(
-          `Rig page: ${rigPage.url}` +
-            (rigPage.status === 'published' ? `  paid ${rigPage.feePaid}` : '') +
-            '  (renders this repo from Arweave)'
-        );
-      } else if (rigPage.detail) {
-        io.err(`rig page: ${rigPage.detail}`);
-      }
+      printRigPage(rigPage);
     }
     return 0;
   } catch (err) {

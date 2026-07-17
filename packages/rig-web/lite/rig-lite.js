@@ -374,33 +374,45 @@ export function renderMarkdown(md) {
 // UI (created only in a browser; the parsers above stay node-testable)
 // ---------------------------------------------------------------------------
 
+// The full Rig's design tokens VERBATIM (rig-web/src/web/globals.css —
+// shadcn "new-york" structure, GitHub palette). Inlined rather than a
+// Tailwind/shadcn CDN: this page is a permanent Arweave tx and must never
+// depend on a mutable external origin; shadcn is vendored React source, not
+// a hosted library, so the tokens ARE its portable form.
 const CSS = `
-:root{color-scheme:light dark;--fg:#1a1a2e;--bg:#fff;--muted:#667;--line:#e2e2ea;--accent:#5b4dff;--code:#f5f5f8}
-@media (prefers-color-scheme:dark){:root{--fg:#e4e4ef;--bg:#121218;--muted:#99a;--line:#2a2a36;--accent:#8f85ff;--code:#1c1c26}}
-*{box-sizing:border-box}body{margin:0;font:15px/1.55 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
-a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
-header h1{font-size:18px;margin:0}header .muted{color:var(--muted);font-size:13px}
+:root{color-scheme:light dark;--background:#ffffff;--foreground:#1f2328;--primary:#1f2328;--primary-foreground:#ffffff;--secondary:#f6f8fa;--muted:#f6f8fa;--muted-foreground:#656d76;--accent:#f6f8fa;--success:#1f883d;--border:#d1d9e0;--ring:#0969da;--radius:0.375rem;--sidebar-background:#f6f8fa;--sidebar-accent:#eaeef2;--link:#0969da}
+@media (prefers-color-scheme:dark){:root{--background:#0d1117;--foreground:#e6edf3;--primary:#e6edf3;--primary-foreground:#0d1117;--secondary:#161b22;--muted:#161b22;--muted-foreground:#8b949e;--accent:#161b22;--success:#238636;--border:#30363d;--ring:#58a6ff;--sidebar-background:#010409;--sidebar-accent:#161b22;--link:#58a6ff}}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:var(--foreground);background:var(--background)}
+a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
+header{padding:16px 24px 12px;display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+header h1{font-size:16px;font-weight:600;margin:0}
+header .muted{color:var(--muted-foreground);font-size:13px}
 header .spacer{flex:1}
-nav.tabs{display:flex;gap:2px;padding:0 20px;border-bottom:1px solid var(--line)}
-nav.tabs button{border:0;background:none;color:var(--muted);padding:9px 12px;font:inherit;cursor:pointer;border-bottom:2px solid transparent}
-nav.tabs button.active{color:var(--fg);border-bottom-color:var(--accent)}
+header>a{font-size:13px;border:1px solid var(--border);border-radius:var(--radius);padding:4px 10px;color:var(--foreground)}
+header>a:hover{background:var(--accent);text-decoration:none}
+nav.tabs{display:flex;gap:4px;padding:0 16px;border-bottom:1px solid var(--border)}
+nav.tabs button{border:0;background:none;color:var(--foreground);padding:8px 14px;font:inherit;font-size:14px;cursor:pointer;border-bottom:2px solid transparent;border-radius:var(--radius) var(--radius) 0 0}
+nav.tabs button:hover{background:var(--accent)}
+nav.tabs button.active{font-weight:600;border-bottom-color:#fd8c73}
 main{display:flex;min-height:calc(100vh - 100px)}
-#tree{width:290px;min-width:200px;border-right:1px solid var(--line);padding:12px 8px;overflow:auto}
+#tree{width:296px;min-width:200px;border-right:1px solid var(--border);padding:12px 8px;overflow:auto;background:var(--sidebar-background)}
 #tree ul{list-style:none;margin:0;padding-left:16px}#tree>ul{padding-left:4px}
-#tree li>span,#tree li>a{display:block;padding:2px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--fg)}
-#tree li>span:hover,#tree li>a:hover{background:var(--code);text-decoration:none}
-#tree .dir::before{content:"▸ ";color:var(--muted)}#tree .dir.open::before{content:"▾ "}
-#content{flex:1;padding:18px 26px;overflow:auto;min-width:0}
-#content pre{background:var(--code);padding:12px;border-radius:8px;overflow:auto}
-#content code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13px}
-#content pre code{padding:0}
-.commit{padding:10px 0;border-bottom:1px solid var(--line)}
-.commit .sha{font-family:ui-monospace,monospace;color:var(--muted);font-size:12px}
-.filehead{color:var(--muted);font-size:13px;margin-bottom:8px}
-.status{padding:40px;text-align:center;color:var(--muted)}
-select{font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 6px}
-img.blob{max-width:100%}
+#tree li>span,#tree li>a{display:block;padding:3px 8px;border-radius:var(--radius);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--foreground);font-size:13px}
+#tree li>span:hover,#tree li>a:hover{background:var(--sidebar-accent);text-decoration:none}
+#tree .dir::before{content:"▸ ";color:var(--muted-foreground)}#tree .dir.open::before{content:"▾ "}
+#content{flex:1;padding:20px 28px;overflow:auto;min-width:0}
+#content h1,#content h2{border-bottom:1px solid var(--border);padding-bottom:6px}
+#content pre{background:var(--muted);border:1px solid var(--border);padding:14px;border-radius:calc(var(--radius) + 2px);overflow:auto;font-size:13px;line-height:1.45}
+#content code{background:var(--muted);padding:2px 5px;border-radius:4px;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;font-size:12.5px}
+#content pre code{padding:0;background:none;border:0}
+.commit{padding:12px 4px;border-bottom:1px solid var(--border)}
+.commit .sha{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted-foreground);font-size:12px;margin-top:2px}
+.filehead{color:var(--muted-foreground);font-size:12px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.status{padding:48px;text-align:center;color:var(--muted-foreground)}
+select{font:inherit;font-size:13px;background:var(--secondary);color:var(--foreground);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px}
+select:focus{outline:2px solid var(--ring);outline-offset:1px}
+img.blob{max-width:100%;border-radius:var(--radius)}
 `;
 
 function el(tag, attrs = {}, ...children) {
