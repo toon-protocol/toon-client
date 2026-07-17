@@ -28,7 +28,7 @@
  * 2026-07-17; themed with the full Rig's design tokens). Override with
  * `RIG_LITE_TX` (e.g. a newer build or an ArNS name-resolved tx).
  */
-export const DEFAULT_RIG_LITE_TX = 'yI6KAbrGJXLwduYnuMIQTgtmCrhnEJ7jXd25-ZgLvJc';
+export const DEFAULT_RIG_LITE_TX = 'mEFmvqb8xkCDyNPtspI8UYEETY5XG7wMR7LQGlNb4LA';
 
 /** Env var overriding the rig-lite txId the pointer boots. */
 export const RIG_LITE_TX_ENV = 'RIG_LITE_TX';
@@ -107,7 +107,7 @@ export function generateRigPointerHtml(options: RigPointerOptions): string {
 </head><body>
   <noscript><p>JavaScript is off — open <a href="${safeFullRig}">${title}</a> in the full Rig.</p></noscript>
   <p hidden data-fallback>If nothing loads, open <a href="${safeFullRig}">${title}</a> in the full Rig.</p>
-  <script>setTimeout(function(){var p=document.querySelector("[data-fallback]");if(p&&!document.querySelector("header"))p.hidden=false},8000)</script>
+  <script>setTimeout(function(){var p=document.querySelector("[data-fallback]");if(p&&!document.querySelector(".container"))p.hidden=false},8000)</script>
 </body></html>
 `;
 }

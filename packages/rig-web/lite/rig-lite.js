@@ -371,49 +371,82 @@ export function renderMarkdown(md) {
 }
 
 // ---------------------------------------------------------------------------
-// UI (created only in a browser; the parsers above stay node-testable)
+// UI (created only in a browser; the parsers above stay node-testable).
+// The markup mirrors rig-web's repo pages 1:1 — repo-glyph breadcrumb header
+// with the Public pill, octicon tab nav, bordered file TABLE with path
+// breadcrumbs, and the README card — using the full Rig's design tokens
+// VERBATIM (rig-web/src/web/globals.css: shadcn "new-york" structure, GitHub
+// palette). Inlined rather than a Tailwind/shadcn CDN: this page is a
+// permanent Arweave tx and must never depend on a mutable external origin;
+// shadcn is vendored React source, not a hosted library, so the tokens ARE
+// its portable form.
 // ---------------------------------------------------------------------------
 
-// The full Rig's design tokens VERBATIM (rig-web/src/web/globals.css —
-// shadcn "new-york" structure, GitHub palette). Inlined rather than a
-// Tailwind/shadcn CDN: this page is a permanent Arweave tx and must never
-// depend on a mutable external origin; shadcn is vendored React source, not
-// a hosted library, so the tokens ARE its portable form.
 const CSS = `
-:root{color-scheme:light dark;--background:#ffffff;--foreground:#1f2328;--primary:#1f2328;--primary-foreground:#ffffff;--secondary:#f6f8fa;--muted:#f6f8fa;--muted-foreground:#656d76;--accent:#f6f8fa;--success:#1f883d;--border:#d1d9e0;--ring:#0969da;--radius:0.375rem;--sidebar-background:#f6f8fa;--sidebar-accent:#eaeef2;--link:#0969da}
-@media (prefers-color-scheme:dark){:root{--background:#0d1117;--foreground:#e6edf3;--primary:#e6edf3;--primary-foreground:#0d1117;--secondary:#161b22;--muted:#161b22;--muted-foreground:#8b949e;--accent:#161b22;--success:#238636;--border:#30363d;--ring:#58a6ff;--sidebar-background:#010409;--sidebar-accent:#161b22;--link:#58a6ff}}
+:root{color-scheme:light dark;--background:#ffffff;--foreground:#1f2328;--primary:#1f2328;--secondary:#f6f8fa;--muted:#f6f8fa;--muted-foreground:#656d76;--accent:#f6f8fa;--success:#1f883d;--border:#d1d9e0;--ring:#0969da;--radius:0.375rem;--link:#0969da}
+@media (prefers-color-scheme:dark){:root{--background:#0d1117;--foreground:#e6edf3;--primary:#e6edf3;--secondary:#161b22;--muted:#161b22;--muted-foreground:#8b949e;--accent:#161b22;--success:#238636;--border:#30363d;--ring:#58a6ff;--link:#58a6ff}}
 *{box-sizing:border-box}
 body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:var(--foreground);background:var(--background)}
 a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
-header{padding:16px 24px 12px;display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
-header h1{font-size:16px;font-weight:600;margin:0}
-header .muted{color:var(--muted-foreground);font-size:13px}
-header .spacer{flex:1}
-header>a{font-size:13px;border:1px solid var(--border);border-radius:var(--radius);padding:4px 10px;color:var(--foreground)}
-header>a:hover{background:var(--accent);text-decoration:none}
-nav.tabs{display:flex;gap:4px;padding:0 16px;border-bottom:1px solid var(--border)}
-nav.tabs button{border:0;background:none;color:var(--foreground);padding:8px 14px;font:inherit;font-size:14px;cursor:pointer;border-bottom:2px solid transparent;border-radius:var(--radius) var(--radius) 0 0}
-nav.tabs button:hover{background:var(--accent)}
-nav.tabs button.active{font-weight:600;border-bottom-color:#fd8c73}
-main{display:flex;min-height:calc(100vh - 100px)}
-#tree{width:296px;min-width:200px;border-right:1px solid var(--border);padding:12px 8px;overflow:auto;background:var(--sidebar-background)}
-#tree ul{list-style:none;margin:0;padding-left:16px}#tree>ul{padding-left:4px}
-#tree li>span,#tree li>a{display:block;padding:3px 8px;border-radius:var(--radius);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--foreground);font-size:13px}
-#tree li>span:hover,#tree li>a:hover{background:var(--sidebar-accent);text-decoration:none}
-#tree .dir::before{content:"▸ ";color:var(--muted-foreground)}#tree .dir.open::before{content:"▾ "}
-#content{flex:1;padding:20px 28px;overflow:auto;min-width:0}
-#content h1,#content h2{border-bottom:1px solid var(--border);padding-bottom:6px}
-#content pre{background:var(--muted);border:1px solid var(--border);padding:14px;border-radius:calc(var(--radius) + 2px);overflow:auto;font-size:13px;line-height:1.45}
-#content code{background:var(--muted);padding:2px 5px;border-radius:4px;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;font-size:12.5px}
-#content pre code{padding:0;background:none;border:0}
-.commit{padding:12px 4px;border-bottom:1px solid var(--border)}
-.commit .sha{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted-foreground);font-size:12px;margin-top:2px}
-.filehead{color:var(--muted-foreground);font-size:12px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border)}
-.status{padding:48px;text-align:center;color:var(--muted-foreground)}
+svg{vertical-align:text-bottom;fill:currentColor}
+.container{max-width:1216px;margin:0 auto;padding:24px 32px}
+.repo-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.repo-head svg{color:var(--muted-foreground)}
+.repo-head .owner{color:var(--link)}
+.repo-head .sep{color:var(--muted-foreground)}
+.repo-head .name{font-weight:600;color:var(--link)}
+.pill{margin-left:4px;border:1px solid var(--border);border-radius:999px;padding:1px 8px;font-size:12px;font-weight:500;color:var(--muted-foreground)}
+.desc{margin:6px 0 0;font-size:14px;color:var(--muted-foreground)}
+nav.tabs{display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--border);margin-top:16px}
+nav.tabs .tab{display:flex;align-items:center;gap:6px;border:0;background:none;color:var(--muted-foreground);padding:8px 12px;font:inherit;font-size:14px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent;text-decoration:none}
+nav.tabs .tab:hover{color:var(--foreground);border-bottom-color:color-mix(in srgb,var(--muted-foreground) 30%,transparent);text-decoration:none}
+nav.tabs .tab.active{color:var(--foreground);border-bottom-color:var(--primary)}
+.toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:16px 0;flex-wrap:wrap}
+.crumbs{font-size:14px}
+.crumbs .cur{font-weight:600;color:var(--foreground)}
+.crumbs .sep{color:var(--muted-foreground);padding:0 4px}
+.crumbs a{cursor:pointer}
 select{font:inherit;font-size:13px;background:var(--secondary);color:var(--foreground);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px}
 select:focus{outline:2px solid var(--ring);outline-offset:1px}
-img.blob{max-width:100%;border-radius:var(--radius)}
+.card{border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:16px;background:var(--background)}
+table.files{width:100%;border-collapse:collapse}
+table.files td{padding:7px 8px;border-top:1px solid var(--border);font-size:14px}
+table.files tr:first-child td{border-top:0}
+table.files tr:hover{background:var(--accent)}
+table.files td.icon{width:32px;padding-left:14px;padding-right:0;color:var(--muted-foreground)}
+table.files a{color:var(--foreground);cursor:pointer}
+table.files a:hover{color:var(--link);text-decoration:underline}
+.cardhead{display:flex;align-items:center;gap:6px;border-bottom:1px solid var(--border);padding:0 16px}
+.cardhead .htab{display:flex;align-items:center;gap:6px;padding:10px 8px;font-size:13px;font-weight:600;border-bottom:2px solid var(--primary);color:var(--foreground)}
+.cardhead svg{color:var(--muted-foreground)}
+.prose{padding:24px;max-width:none;font-size:15px;line-height:1.6}
+.prose h1,.prose h2{border-bottom:1px solid var(--border);padding-bottom:6px}
+.prose pre{background:var(--muted);border:1px solid var(--border);padding:14px;border-radius:calc(var(--radius) + 2px);overflow:auto;font-size:13px;line-height:1.45}
+.prose code{background:var(--muted);padding:2px 5px;border-radius:4px;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;font-size:85%}
+.prose pre code{padding:0;background:none;border:0}
+.filehead{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);padding:10px 16px;font-size:12px;color:var(--muted-foreground)}
+.filehead .fname{font-weight:600;color:var(--foreground);font-size:13px}
+.blobbody pre{margin:0;padding:16px;overflow:auto;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;font-size:12.5px;line-height:1.5}
+.commit{display:flex;justify-content:space-between;gap:12px;padding:10px 16px;border-top:1px solid var(--border)}
+.commit:first-child{border-top:0}
+.commit .msg{font-weight:600;color:var(--foreground)}
+.commit .meta{color:var(--muted-foreground);font-size:12px;margin-top:2px}
+.commit .sha{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted-foreground);font-size:12px;white-space:nowrap}
+.status{padding:48px;text-align:center;color:var(--muted-foreground)}
+img.blob{max-width:100%;display:block;margin:16px}
 `;
+
+// GitHub octicons (path data copied from rig-web's repo-layout / file-tree).
+const ICONS = {
+  repo: 'M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 010-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.25.25 0 00.4.2l1.45-1.087a.25.25 0 01.3 0L8.6 15.7a.25.25 0 00.4-.2v-3.25a.25.25 0 00-.25-.25h-3.5a.25.25 0 00-.25.25z',
+  code: 'M4.72 3.22a.75.75 0 011.06 1.06L2.06 8l3.72 3.72a.75.75 0 11-1.06 1.06L.47 8.53a.75.75 0 010-1.06l4.25-4.25zm6.56 0a.75.75 0 10-1.06 1.06L13.94 8l-3.72 3.72a.75.75 0 101.06 1.06l4.25-4.25a.75.75 0 000-1.06L11.28 3.22z',
+  issues: 'M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z',
+  pulls: 'M1.5 3.25a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zm5.677-.177L9.573.677A.25.25 0 0110 .854V2.5h1A2.5 2.5 0 0113.5 5v5.628a2.251 2.251 0 11-1.5 0V5a1 1 0 00-1-1h-1v1.646a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm0 9.5a.75.75 0 100 1.5.75.75 0 000-1.5zm8.25.75a.75.75 0 11-1.5 0 .75.75 0 011.5 0z',
+  commits: 'M11.93 8.5a4.002 4.002 0 01-7.86 0H.75a.75.75 0 010-1.5h3.32a4.002 4.002 0 017.86 0h3.32a.75.75 0 010 1.5h-3.32zm-1.43-.75a2.5 2.5 0 10-5 0 2.5 2.5 0 005 0z',
+  folder: 'M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z',
+  file: 'M3.75 1.5a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25V6H9.75A1.75 1.75 0 0 1 8 4.25V1.5H3.75zm5.75.56v2.19c0 .138.112.25.25.25h2.19L9.5 2.06zM2 1.75C2 .784 2.784 0 3.75 0h5.086c.464 0 .909.184 1.237.513l3.414 3.414c.329.328.513.773.513 1.237v9.086A1.75 1.75 0 0 1 12.25 16h-8.5A1.75 1.75 0 0 1 2 14.25V1.75z',
+  book: 'M0 1.75A.75.75 0 01.75 1h4.253c1.227 0 2.317.59 3 1.501A3.744 3.744 0 0111.006 1h4.245a.75.75 0 01.75.75v10.5a.75.75 0 01-.75.75h-4.507a2.25 2.25 0 00-1.591.659l-.622.621a.75.75 0 01-1.06 0l-.622-.621A2.25 2.25 0 005.258 13H.75a.75.75 0 01-.75-.75zm7.251 10.324l.004-5.073-.002-2.253A2.25 2.25 0 005.003 2.5H1.5v9h3.757a3.75 3.75 0 011.994.574zM8.755 4.75l-.004 7.322a3.752 3.752 0 011.992-.572H14.5v-9h-3.495a2.25 2.25 0 00-2.25 2.25z',
+};
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -426,6 +459,18 @@ function el(tag, attrs = {}, ...children) {
     node.append(child);
   }
   return node;
+}
+
+function icon(name, size = 16) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('width', String(size));
+  svg.setAttribute('height', String(size));
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', ICONS[name]);
+  svg.append(path);
+  return svg;
 }
 
 function isProbablyText(bytes) {
@@ -448,8 +493,10 @@ async function boot() {
   const repo = config.repo ?? params.get('repo');
 
   document.head.append(el('style', {}, CSS));
+  const container = el('div', { class: 'container' });
+  document.body.append(container);
   const status = el('div', { class: 'status' }, 'Loading repo from the relay…');
-  document.body.append(status);
+  container.append(status);
 
   const fail = (msg) => {
     status.textContent = msg;
@@ -470,12 +517,15 @@ async function boot() {
   if (!refsEvent) return fail(`No repo state found for ${repo} on ${relay}.`);
   const { refs, head, arweave } = parseRefsEvent(refsEvent);
   const { name, description } = parseAnnounceEvent(events.get(ANNOUNCE_KIND));
-  const fullRigUrl = `${FULL_RIG_URL}/#/${hexToNpub(ownerHex)}/${encodeURIComponent(repo)}?relay=${encodeURIComponent(relay)}`;
+  const ownerNpub = hexToNpub(ownerHex);
+  const fullRigBase = `${FULL_RIG_URL}/#/${ownerNpub}`;
+  const fullRigRepo = `${fullRigBase}/${encodeURIComponent(repo)}`;
+  const relayQ = `?relay=${encodeURIComponent(relay)}`;
 
   status.remove();
   document.title = `${name ?? repo} — Rig`;
 
-  // ── Chrome ────────────────────────────────────────────────────────────────
+  // ── Repo header: glyph + owner / name + Public pill (repo-layout.tsx) ─────
   const refSelect = el('select');
   for (const refName of refs.keys()) {
     refSelect.append(
@@ -483,141 +533,191 @@ async function boot() {
         refName.replace(/^refs\/(heads|tags)\//, ''))
     );
   }
-  const content = el('div', { id: 'content' });
-  const treePane = el('div', { id: 'tree' });
-  const tabFiles = el('button', { class: 'active' }, 'Files');
-  const tabCommits = el('button', {}, 'Commits');
-  document.body.append(
-    el('header', {},
-      el('h1', {}, name ?? repo),
-      el('span', { class: 'muted' }, description ?? ''),
-      el('span', { class: 'spacer' }),
-      refSelect,
-      el('a', { href: fullRigUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Open in full Rig ↗')
-    ),
-    el('nav', { class: 'tabs' }, tabFiles, tabCommits),
-    el('main', {}, treePane, content)
+  const shortOwner = `${ownerNpub.slice(0, 12)}…${ownerNpub.slice(-4)}`;
+  container.append(
+    el('div', { class: 'repo-head' },
+      icon('repo'),
+      el('a', { class: 'owner', href: fullRigBase + relayQ, target: '_blank', rel: 'noopener noreferrer', title: ownerNpub }, shortOwner),
+      el('span', { class: 'sep' }, '/'),
+      el('span', { class: 'name' }, name ?? repo),
+      el('span', { class: 'pill' }, 'Public')
+    )
+  );
+  if (description) container.append(el('p', { class: 'desc' }, description));
+
+  // ── Tab nav (Code/Commits native; Issues/PRs open the full Rig) ──────────
+  const tabCode = el('button', { class: 'tab active' }, icon('code'), 'Code');
+  const tabCommits = el('button', { class: 'tab' }, icon('commits'), 'Commits');
+  container.append(
+    el('nav', { class: 'tabs' },
+      tabCode,
+      el('a', { class: 'tab', href: `${fullRigRepo}/issues${relayQ}`, target: '_blank', rel: 'noopener noreferrer' }, icon('issues'), 'Issues'),
+      el('a', { class: 'tab', href: `${fullRigRepo}/pulls${relayQ}`, target: '_blank', rel: 'noopener noreferrer' }, icon('pulls'), 'Pull Requests'),
+      tabCommits
+    )
   );
 
+  const view = el('div');
+  container.append(view);
   const setStatus = (msg) => {
-    content.replaceChildren(el('div', { class: 'status' }, msg));
+    view.replaceChildren(el('div', { class: 'status' }, msg));
+  };
+  const setActive = (tab) => {
+    for (const t of [tabCode, tabCommits]) t.classList.toggle('active', t === tab);
   };
 
-  // ── File viewing ──────────────────────────────────────────────────────────
-  async function showBlob(path, sha) {
+  // ── Blob view: filename card + rendered contents (blob-page.tsx) ─────────
+  async function showBlob(pathSegs, sha) {
+    const path = pathSegs.join('/');
     setStatus(`Loading ${path}…`);
     try {
       const { body } = await fetchObject(sha, arweave);
-      const head_ = el('div', { class: 'filehead' }, `${path} · ${body.length} bytes · sha ${sha.slice(0, 12)} · SHA-1 verified ✓`);
+      const card = el('div', { class: 'card' },
+        el('div', { class: 'filehead' },
+          icon('file', 14),
+          el('span', { class: 'fname' }, pathSegs.at(-1)),
+          el('span', {}, `${body.length} bytes · sha ${sha.slice(0, 12)} · SHA-1 verified ✓`)
+        )
+      );
       const ext = (path.match(IMAGE_EXT) ?? [])[1]?.toLowerCase();
       if (ext) {
         const url = URL.createObjectURL(new Blob([body], { type: IMAGE_MIME[ext] }));
-        content.replaceChildren(head_, el('img', { class: 'blob', src: url, alt: path }));
+        card.append(el('img', { class: 'blob', src: url, alt: path }));
       } else if (!isProbablyText(body)) {
-        content.replaceChildren(head_, el('p', { class: 'status' }, 'Binary file.'));
+        card.append(el('p', { class: 'status' }, 'Binary file.'));
       } else {
         const text = new TextDecoder().decode(body);
         if (/\.(md|markdown)$/i.test(path)) {
-          const div = el('div');
+          const div = el('div', { class: 'prose' });
           div.innerHTML = renderMarkdown(text);
-          content.replaceChildren(head_, div);
+          card.append(div);
         } else {
-          content.replaceChildren(head_, el('pre', {}, el('code', {}, text)));
+          card.append(el('div', { class: 'blobbody' }, el('pre', {}, text)));
         }
       }
+      view.replaceChildren(crumbBar(pathSegs, true), card);
     } catch (err) {
       setStatus(String(err.message ?? err));
     }
   }
 
-  // ── Tree rendering (lazy per directory) ───────────────────────────────────
-  async function renderTreeInto(ul, treeSha, prefix) {
-    const { body } = await fetchObject(treeSha, arweave);
-    for (const entry of parseTree(body)) {
-      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.isTree) {
-        const childUl = el('ul');
-        childUl.hidden = true;
-        let loaded = false;
-        const label = el('span', {
-          class: 'dir',
-          onclick: async () => {
-            childUl.hidden = !childUl.hidden;
-            label.classList.toggle('open', !childUl.hidden);
-            if (!loaded) {
-              loaded = true;
-              try {
-                await renderTreeInto(childUl, entry.sha, path);
-              } catch (err) {
-                childUl.append(el('li', {}, String(err.message ?? err)));
-              }
-            }
-          },
-        }, entry.name);
-        ul.append(el('li', {}, label, childUl));
-      } else {
-        ul.append(el('li', {}, el('a', { onclick: () => showBlob(path, entry.sha) }, entry.name)));
-      }
-    }
+  // ── Path breadcrumb (tree-page.tsx) ──────────────────────────────────────
+  function crumbBar(pathSegs, isBlob) {
+    const crumbs = el('span', { class: 'crumbs' });
+    crumbs.append(el('a', { onclick: () => showDir([]) }, name ?? repo));
+    pathSegs.forEach((seg, i) => {
+      crumbs.append(el('span', { class: 'sep' }, '/'));
+      const isLast = i === pathSegs.length - 1;
+      if (isLast) crumbs.append(el('span', { class: 'cur' }, seg));
+      else crumbs.append(el('a', { onclick: () => showDir(pathSegs.slice(0, i + 1)) }, seg));
+    });
+    const bar = el('div', { class: 'toolbar' }, crumbs);
+    if (!isBlob && pathSegs.length === 0) bar.append(refSelect);
+    return bar;
   }
 
-  // ── Views ─────────────────────────────────────────────────────────────────
-  let rootCommit = null;
-  async function showFiles() {
-    tabFiles.classList.add('active');
-    tabCommits.classList.remove('active');
-    treePane.hidden = false;
-    const refName = refSelect.value;
-    const commitSha = refs.get(refName);
+  // ── Directory view: bordered file table (file-tree.tsx) + README card ────
+  async function resolveTreeAt(pathSegs) {
+    const commitSha = refs.get(refSelect.value);
+    const commitObj = await fetchObject(commitSha, arweave);
+    let treeSha = parseCommit(commitObj.body).tree;
+    for (const seg of pathSegs) {
+      const { body } = await fetchObject(treeSha, arweave);
+      const entry = parseTree(body).find((e) => e.name === seg && e.isTree);
+      if (!entry) throw new Error(`no such directory: ${pathSegs.join('/')}`);
+      treeSha = entry.sha;
+    }
+    return treeSha;
+  }
+
+  async function showDir(pathSegs) {
+    setActive(tabCode);
     setStatus('Loading tree…');
-    treePane.replaceChildren();
     try {
-      const commitObj = await fetchObject(commitSha, arweave);
-      rootCommit = parseCommit(commitObj.body);
-      const rootUl = el('ul');
-      treePane.append(rootUl);
-      await renderTreeInto(rootUl, rootCommit.tree, '');
-      // README on home, when present at the root.
-      const { body } = await fetchObject(rootCommit.tree, arweave);
-      const readme = parseTree(body).find((e) => /^readme(\.(md|markdown|txt))?$/i.test(e.name));
-      if (readme) await showBlob(readme.name, readme.sha);
-      else setStatus('Select a file.');
+      const treeSha = await resolveTreeAt(pathSegs);
+      const { body } = await fetchObject(treeSha, arweave);
+      const entries = parseTree(body);
+
+      const table = el('table', { class: 'files' });
+      for (const entry of entries) {
+        const segs = [...pathSegs, entry.name];
+        const link = entry.isTree
+          ? el('a', { onclick: () => showDir(segs) }, entry.name)
+          : el('a', { onclick: () => showBlob(segs, entry.sha) }, entry.name);
+        table.append(
+          el('tr', {},
+            el('td', { class: 'icon' }, icon(entry.isTree ? 'folder' : 'file')),
+            el('td', {}, link)
+          )
+        );
+      }
+      const parts = [crumbBar(pathSegs, false), el('div', { class: 'card' }, table)];
+
+      // README card on the repo home (repo-home-page.tsx).
+      if (pathSegs.length === 0) {
+        const readme = entries.find((e) => !e.isTree && /^readme(\.(md|markdown|txt))?$/i.test(e.name));
+        if (readme) {
+          try {
+            const { body: readmeBody } = await fetchObject(readme.sha, arweave);
+            const prose = el('div', { class: 'prose' });
+            if (/\.(md|markdown)$/i.test(readme.name) || !readme.name.includes('.')) {
+              prose.innerHTML = renderMarkdown(new TextDecoder().decode(readmeBody));
+            } else {
+              prose.append(el('pre', {}, new TextDecoder().decode(readmeBody)));
+            }
+            parts.push(
+              el('div', { class: 'card' },
+                el('div', { class: 'cardhead' }, el('span', { class: 'htab' }, icon('book', 14), 'README')),
+                prose
+              )
+            );
+          } catch {
+            // README fetch failure never blocks the file listing.
+          }
+        }
+      }
+      view.replaceChildren(...parts);
     } catch (err) {
       setStatus(String(err.message ?? err));
     }
   }
 
+  // ── Commit log (commit-log-page.tsx) ─────────────────────────────────────
   async function showCommits() {
-    tabCommits.classList.add('active');
-    tabFiles.classList.remove('active');
-    treePane.hidden = true;
+    setActive(tabCommits);
     setStatus('Loading commits…');
     try {
-      const list = el('div');
+      const card = el('div', { class: 'card' });
       let sha = refs.get(refSelect.value);
       for (let i = 0; i < MAX_COMMITS && sha; i++) {
         const { body } = await fetchObject(sha, arweave);
         const commit = parseCommit(body);
-        list.append(
+        card.append(
           el('div', { class: 'commit' },
-            el('div', {}, commit.message.split('\n')[0] || '(no message)'),
-            el('div', { class: 'sha' },
-              `${sha.slice(0, 12)} · ${commit.author ?? 'unknown'}${commit.date ? ` · ${commit.date.toISOString().slice(0, 10)}` : ''}`)
+            el('div', {},
+              el('div', { class: 'msg' }, commit.message.split('\n')[0] || '(no message)'),
+              el('div', { class: 'meta' },
+                `${commit.author ?? 'unknown'}${commit.date ? ` committed on ${commit.date.toISOString().slice(0, 10)}` : ''}`)
+            ),
+            el('span', { class: 'sha' }, sha.slice(0, 7))
           )
         );
         sha = commit.parents[0];
         if (sha && !arweave.has(sha)) break; // history beyond the uploaded set
       }
-      content.replaceChildren(list);
+      view.replaceChildren(el('div', { class: 'toolbar' }, el('span', { class: 'crumbs' }, ''), refSelect), card);
     } catch (err) {
       setStatus(String(err.message ?? err));
     }
   }
 
-  tabFiles.addEventListener('click', showFiles);
+  tabCode.addEventListener('click', () => showDir([]));
   tabCommits.addEventListener('click', showCommits);
-  refSelect.addEventListener('change', showFiles);
-  await showFiles();
+  refSelect.addEventListener('change', () => {
+    if (tabCommits.classList.contains('active')) void showCommits();
+    else void showDir([]);
+  });
+  await showDir([]);
 }
 
 // Auto-boot only in a browser with the pointer's config (or hash params);
