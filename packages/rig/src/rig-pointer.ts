@@ -39,7 +39,7 @@ export interface RigWebBundle {
  * `RIG_WEB_TX` / `RIG_WEB_ENTRY_JS` / `RIG_WEB_ENTRY_CSS`.
  */
 export const DEFAULT_RIG_WEB_BUNDLE: RigWebBundle = {
-  manifestTx: 'gCQ_tuwaUxiMBHbCCPuv-V-XZmLC7400zWmR-eQwxDA',
+  manifestTx: 'Iy8sHYVnoevSpwDC2lqUoIg8BWdes9NmMbgmPd81UpU',
   entryJs: 'assets/index-BuKzYubR.js',
   entryCss: 'assets/index-H5D6cmfa.css',
 };

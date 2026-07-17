@@ -129,6 +129,39 @@ const manifestTx = await uploadItem(
 );
 
 console.error(`manifest → ${manifestTx}`);
+
+// ── --verify: poll every path through the manifest until it actually serves.
+// Upload receipts are NOT proof of seeding: a 122-file deploy shipped with 2
+// items the bundler dropped (each needed a re-upload + patched manifest), and
+// ONE missing chunk white-pages the whole module graph. Never point the Rig
+// pointer at an unverified deployment.
+if (process.argv.includes('--verify')) {
+  const base = `https://arweave.net/${manifestTx}`;
+  const pending = new Set([...Object.keys(paths), '']);
+  const deadline = Date.now() + 90 * 60 * 1000;
+  while (pending.size > 0 && Date.now() < deadline) {
+    for (const p of [...pending]) {
+      try {
+        const res = await fetch(`${base}/${p}`, { redirect: 'follow' });
+        if (res.ok) pending.delete(p);
+        await res.arrayBuffer();
+      } catch {
+        // unreachable right now — retried next round
+      }
+    }
+    if (pending.size > 0) {
+      console.error(`  waiting on ${pending.size} path(s)…`);
+      await new Promise((r) => setTimeout(r, 60_000));
+    }
+  }
+  if (pending.size > 0) {
+    console.error(`VERIFY FAILED — still unseeded: ${[...pending].slice(0, 5).join(', ')}`);
+    process.exitCode = 1;
+  } else {
+    console.error('verified: every path serves through the manifest ✓');
+  }
+}
+
 console.log(
   JSON.stringify(
     {
