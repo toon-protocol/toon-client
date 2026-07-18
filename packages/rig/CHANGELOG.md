@@ -1,5 +1,29 @@
 # @toon-protocol/rig
 
+## 2.10.0
+
+### Minor Changes
+
+- f14819e: `rig name buy --via <store-url>` — brokered ArNS purchase through the store's kind:5095 job: spawns a client-owned ANT and submits the buy with its processId, so the store pays mARIO while the client owns the name from inception (toon-meta#162).
+- 6e94527: Fix the two #384 devnet e2e findings:
+
+  - **Zero-config chain negotiation**: the shipped devnet RPC endpoint table now
+    matches EVM chains by numeric chain id, so an announce spelling the devnet
+    chain `evm:anvil:31337` (the qualified `evm:{network}:{chainId}` key format)
+    resolves the same zone RPC as `evm:31337`. A bare mnemonic + relay URL can
+    balance-probe the announced EVM chain again instead of skipping it and
+    falling through to an unusable `solana:devnet` pick that died at push time.
+  - **Identity precedence**: an env- or `.env`-sourced `RIG_MNEMONIC` now derives
+    at account 0 regardless of the active `TOON_CLIENT_HOME` — a per-home
+    config's `mnemonicAccountIndex` applies only when the phrase itself came
+    from that shared state dir. The new `RIG_ACCOUNT_INDEX` environment variable
+    overrides the account index for every source (malformed values fail fast).
+
+### Patch Changes
+
+- 9d35d3a: Fix `rig name` against every published `@ar.io/sdk` (#376): the verbs guarded on a `SolanaSigner` export that no released SDK ships, so they always died with `arns_sdk_unavailable`. The default loader now drives the Solana-native SDK the way 4.0.3 actually works — an explicit `@solana/kit` `createSolanaRpc` transport (the SDK builds no defaults), plus `createKeyPairSignerFromBytes` over the identity's 64-byte Ed25519 key and an `rpcSubscriptions` client for writes only. `rig name status` (and all free reads) now runs signerless; "SDK not installed" (`arns_sdk_unavailable`) is distinguished from "SDK installed but API-incompatible" (`arns_sdk_incompatible`, minimum `@ar.io/sdk` 4.0.3 stated and pinned in optionalDependencies); and an env-gated live smoke test (`pnpm test:arns-live`) executes real free reads against the published SDK so the surface can never silently drift again.
+- 26698d6: README: document the ar.io network program ids for `rig name` (`--network` mainnet/devnet table, MPL Core id, no-testnet note, free devnet loop).
+
 ## 2.9.0
 
 ### Minor Changes
