@@ -295,6 +295,31 @@ rig push && rig site publish && rig name set my-app <manifestTxId>
 > `rig name status` is a free, signerless read. As with every paid verb, these are estimate → confirm →
 > execute, and a `--json` run *without* `--yes` is a free estimate — nothing is spent.
 
+#### Network program ids (`--network` / `RIG_ARIO_NETWORK`)
+
+`--network` selects which cluster's **ar.io registry programs** every `rig name`
+verb targets. The ids come from the installed `@ar.io/sdk` (>= 4.0.3) at runtime
+(`ARIO_*_PROGRAM_ID` for mainnet, `DEVNET_PROGRAM_IDS` off it) — this table is
+the human-readable snapshot (verified live 2026-07-17), useful when auditing
+`--process-id` overrides or block-explorer output:
+
+| Program | `--network mainnet` (default) | `--network devnet` |
+|---|---|---|
+| ario-core | `73YoECm6NKXpVRoe5f1Q9BcP5DJGPFUjnFy6AxBE5Nvh` | `8Njx9wPkXiNzDCgjwVsJFRjpAEV34gGW3n8DzX3V23m1` |
+| ario-gar | `89fNiiwgpFSPHKuqfNUkgYTYjtAJAhyqHjXmgXeppGpf` | `7WsDTrtZBsfKtnP33XkjuqXCY69JE7n4QVYpynqJCFxz` |
+| ario-arns (name registry) | `2yCUx5edFvUrkibYaUa2ZXWyx9kuJkS8CwyzsgHPWdZZ` | `6EZNezcg4rc5hnh8HG34vGquT3WpW5xXypzPb24uyEpp` |
+| ario-ant (ANT state) | `2MWexMHfMhGJwMHv9Qm9YAVCqjUFUJwDJAysW4oCUGk5` | `DbHbRwUD1oAn1mrDSqtWtvwGcNrmhWdD2g8L4xmeQ7NX` |
+
+- **There is no `--network testnet`**: ar.io deploys nothing on Solana's testnet
+  cluster (#376/#381) — the flag rejects it up front.
+- Every spawned ANT is an **MPL Core** asset (`CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d`,
+  same id on every cluster); the asset pubkey is the SDK's `processId`.
+- Free devnet test loop (#381): ARIO faucet `https://faucet.services.ar-io.dev/` →
+  `rig name buy --network devnet` → `rig name set` → resolves at the
+  devnet-connected gateway `https://<name>.ar-io.dev/`.
+- `--process-id <id>` overrides the arns registry program outright (wins over
+  `--network`) — for pointing at a fresh/staging registry deployment.
+
 ---
 
 ## Strict `--json` stdout (machine consumers)
