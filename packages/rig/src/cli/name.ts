@@ -49,6 +49,7 @@
  * Defaults to mainnet.
  */
 
+import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { formatUnits } from './balance.js';
 import { emitCliError } from './errors.js';
@@ -83,6 +84,23 @@ export const MARIO_PAYMENT_NOTE =
   'the ar.io registry program — NOT through TOON ILP payment channels. Fund ' +
   'this wallet with `rig fund --chain solana` (or send $ARIO to the Solana ' +
   'address above).';
+
+/**
+ * The brokered ("buyfor") counterpart of {@link MARIO_PAYMENT_NOTE}: with
+ * `--via <dvm>`, a store DVM pays the mARIO name price from ITS wallet by
+ * executing the kind:5095 ArNS-buy job — this identity never holds $ARIO.
+ * The client still OWNS the name from inception, because the job carries the
+ * processId of an ANT this identity spawned and owns (`ANT.spawn` costs only
+ * dust SOL). Exported so the buy output and the tests pin one string.
+ */
+export const DVM_PAYMENT_NOTE =
+  'Brokered buy (--via): the DVM pays the mARIO name price from ITS Solana ' +
+  'wallet via the kind:5095 job; this wallet needs only dust SOL to spawn ' +
+  'the ANT it owns. On the paid path the job fee is enforced by the ' +
+  'connector payment proxy in front of the DVM; when --via targets the DVM ' +
+  'backend directly the job payment is STUBBED (dev/e2e only). The ArNS ' +
+  'purchase itself is real either way, and the name is owned by YOUR ANT ' +
+  'from inception.';
 
 // ---------------------------------------------------------------------------
 // The ar.io SDK seam (lazily imported; tests inject a stub — NEVER the live net)
@@ -163,6 +181,32 @@ export interface ArnsSdk {
     type: NameType;
     years?: number;
   }): Promise<{ id: string; processId?: string }>;
+  /**
+   * Spawn a fresh ANT owned by THIS identity's Solana key (`ANT.spawn` —
+   * mints the MPL Core asset + initializes the ario-ant PDAs; costs only
+   * rent/fee dust, no $ARIO). The returned `processId` (the asset pubkey) is
+   * what a brokered `--via` buy hands the DVM so the client owns the bought
+   * name from inception. Write mode only — a signerless SDK must throw.
+   */
+  spawnAnt(args: {
+    name: string;
+  }): Promise<{ processId: string; signature: string }>;
+  /**
+   * Build (do NOT send) a partially-signed ANT record-set transaction for
+   * the gas-station path (toon-meta#163): feePayer = the DVM's advertised
+   * gas wallet, lifetime = the quoted blockhash, caller = THIS identity's
+   * Solana key, which partial-signs. Returns the base64 wire transaction
+   * ready for a kind:5096 execute job. Write mode only.
+   */
+  buildSetRecordTransaction(args: {
+    antProcessId: string;
+    /** `@` for the base name. */
+    undername: string;
+    transactionId: string;
+    ttlSeconds: number;
+    feePayer: string;
+    recentBlockhash: string;
+  }): Promise<string>;
   /** Read a name's current registry record (free). */
   getArNSRecord(args: { name: string }): Promise<ArnsRecordView | null>;
   /** Bind an ANT handle for a name's process id (for `set` / `status`). */
@@ -262,6 +306,10 @@ interface RawArioModule {
   ANT?: {
     /** 4.x resolves the ANT program from the asset, hence async. */
     init?: (config: unknown) => Promise<RawAntInstance>;
+    /** 4.x Solana `ANT.spawn` — mints the MPL Core asset (write only). */
+    spawn?: (
+      params: unknown
+    ) => Promise<{ processId: string; signature: string }>;
   };
   DEFAULT_SOLANA_RPC_URL?: string;
   MAINNET_RPC_URL?: string;
@@ -273,6 +321,12 @@ interface RawArioModule {
     arns?: string;
     ant?: string;
   };
+  /** Root-exported PDA helper: (mint, undername, antProgramId?) → [pda]. */
+  getAntRecordPDA?: (
+    mint: unknown,
+    undername: string,
+    programId?: unknown
+  ) => Promise<readonly unknown[]>;
 }
 interface RawArioInstance {
   getTokenCost: (args: unknown) => Promise<unknown>;
@@ -293,6 +347,29 @@ interface RawSolanaKitModule {
   createSolanaRpc?: (url: string) => unknown;
   createSolanaRpcSubscriptions?: (url: string) => unknown;
   createKeyPairSignerFromBytes?: (bytes: Uint8Array) => Promise<unknown>;
+  // ── extras the gas-station tx builder uses (all loose-typed on purpose:
+  //    the optional module's types are not a build dep) ──
+  createKeyPairFromBytes?: (bytes: Uint8Array) => Promise<unknown>;
+  createNoopSigner?: (addr: unknown) => unknown;
+  address?: (s: string) => unknown;
+  blockhash?: (s: string) => unknown;
+  createTransactionMessage?: (o: { version: number }) => unknown;
+  setTransactionMessageFeePayer?: (a: unknown, m: unknown) => unknown;
+  setTransactionMessageLifetimeUsingBlockhash?: (
+    l: unknown,
+    m: unknown
+  ) => unknown;
+  appendTransactionMessageInstructions?: (ix: unknown[], m: unknown) => unknown;
+  compileTransaction?: (m: unknown) => unknown;
+  partiallySignTransaction?: (kps: unknown[], tx: unknown) => Promise<unknown>;
+  getBase64EncodedWireTransaction?: (tx: unknown) => string;
+}
+/** The `@ar.io/solana-contracts/ant` slice the record-set builder uses. */
+interface RawAntContractsModule {
+  getSetRecordInstructionAsync?: (
+    input: Record<string, unknown>,
+    config?: { programAddress?: unknown }
+  ) => Promise<unknown>;
 }
 
 /**
@@ -410,6 +487,124 @@ export const defaultLoadArns: LoadArns = async (options) => {
       }
       return (await ario.buyRecord(args)) as { id: string; processId?: string };
     },
+    spawnAnt: async (args) => {
+      const spawn = mod.ANT?.spawn;
+      if (typeof spawn !== 'function') {
+        throw new ArnsSdkIncompatibleError('it exposes no ANT.spawn');
+      }
+      if (options.mode !== 'write') {
+        // Mirrors the SDK's own contract: spawning signs a transaction, so a
+        // signerless (read) client must never attempt it.
+        throw new ArnsSdkIncompatibleError(
+          'ANT.spawn requires the write-mode SDK (a signer) — this client ' +
+            'was built signerless'
+        );
+      }
+      const result = await spawn({
+        rpc,
+        ...writeExtras,
+        state: { name: args.name },
+        ...(antProgramId !== undefined ? { antProgramId } : {}),
+      });
+      return { processId: result.processId, signature: result.signature };
+    },
+    buildSetRecordTransaction: async (args) => {
+      if (options.mode !== 'write') {
+        throw new ArnsSdkIncompatibleError(
+          'buildSetRecordTransaction requires the write-mode SDK (a client ' +
+            'partial-signature) — this client was built signerless'
+        );
+      }
+      const contractsSpecifier = '@ar.io/solana-contracts/ant' as string;
+      let contracts: RawAntContractsModule;
+      try {
+        contracts = (await import(
+          contractsSpecifier
+        )) as unknown as RawAntContractsModule;
+      } catch (err) {
+        throw new ArnsSdkUnavailableError(err, '@ar.io/solana-contracts');
+      }
+      const getSetRecordInstructionAsync = contracts.getSetRecordInstructionAsync;
+      const getAntRecordPDA = mod.getAntRecordPDA;
+      const {
+        createKeyPairFromBytes,
+        createNoopSigner,
+        address: toAddr,
+        blockhash: toBlockhash,
+        createTransactionMessage,
+        setTransactionMessageFeePayer,
+        setTransactionMessageLifetimeUsingBlockhash,
+        appendTransactionMessageInstructions,
+        compileTransaction,
+        partiallySignTransaction,
+        getBase64EncodedWireTransaction,
+      } = kit;
+      if (
+        !getSetRecordInstructionAsync ||
+        !getAntRecordPDA ||
+        !createKeyPairFromBytes ||
+        !createNoopSigner ||
+        !toAddr ||
+        !toBlockhash ||
+        !createTransactionMessage ||
+        !setTransactionMessageFeePayer ||
+        !setTransactionMessageLifetimeUsingBlockhash ||
+        !appendTransactionMessageInstructions ||
+        !compileTransaction ||
+        !partiallySignTransaction ||
+        !getBase64EncodedWireTransaction
+      ) {
+        throw new ArnsSdkIncompatibleError(
+          'the installed @ar.io/sdk / @ar.io/solana-contracts / @solana/kit ' +
+            'do not expose the record-set transaction builder surface'
+        );
+      }
+
+      const asset = toAddr(args.antProcessId);
+      const antProgram =
+        antProgramId !== undefined ? toAddr(antProgramId) : undefined;
+      const [recordPda] = await getAntRecordPDA(
+        asset,
+        args.undername,
+        antProgram
+      );
+      // The client is the record CALLER (authority) — a noop signer here so
+      // the compiled account meta is marked signer; the real signature comes
+      // from partiallySignTransaction below. The DVM's gas wallet is ONLY
+      // the fee payer.
+      const ix = await getSetRecordInstructionAsync(
+        {
+          asset,
+          record: recordPda,
+          caller: createNoopSigner(toAddr(options.solanaPublicKey)),
+          undername: args.undername,
+          target: args.transactionId,
+          targetProtocol: 0,
+          ttlSeconds: args.ttlSeconds,
+          priority: null,
+          recordOwner: null,
+        },
+        antProgram !== undefined ? { programAddress: antProgram } : undefined
+      );
+
+      let message = createTransactionMessage({ version: 0 });
+      message = setTransactionMessageFeePayer(toAddr(args.feePayer), message);
+      message = setTransactionMessageLifetimeUsingBlockhash(
+        {
+          blockhash: toBlockhash(args.recentBlockhash),
+          lastValidBlockHeight: 0n,
+        },
+        message
+      );
+      message = appendTransactionMessageInstructions([ix], message);
+
+      const keyPair = await createKeyPairFromBytes(options.solanaSecretKey);
+      const signed = await partiallySignTransaction(
+        [keyPair],
+        compileTransaction(message)
+      );
+      return getBase64EncodedWireTransaction(signed);
+    },
     getArNSRecord: async (args) => {
       // 4.x throws on an unregistered name; our seam reports `null` so
       // `status` can render "available" instead of an error.
@@ -485,6 +680,314 @@ export const defaultLoadArns: LoadArns = async (options) => {
 };
 
 // ---------------------------------------------------------------------------
+// The brokered-buy DVM job seam (#buyfor)
+// ---------------------------------------------------------------------------
+
+/**
+ * The NIP-90 job kind for a brokered ArNS name purchase — mirrors the store
+ * repo's `ARNS_BUY_KIND` (the DVM registers this next to its kind:5094
+ * Arweave storage job).
+ */
+export const ARNS_BUY_JOB_KIND = 5095;
+
+/** One brokered buy job, ready to submit to a DVM. */
+export interface DvmBuyJobRequest {
+  /** The DVM endpoint `--via` resolved (the store backend base URL). */
+  viaUrl: string;
+  name: string;
+  type: NameType;
+  /** Lease years; null for a permabuy. */
+  years: number | null;
+  /** The CLIENT's freshly-spawned ANT (asset pubkey) — the owner-to-be. */
+  processId: string;
+  /** Nostr secret key that signs the job event (the rig identity). */
+  nostrSecretKey: Uint8Array;
+}
+
+/** What the DVM reports back for an executed buy job. */
+export interface DvmBuyJobReceipt {
+  /** Registry transaction signature of the DVM-paid buy. */
+  registryTxId: string;
+  /** The mARIO the DVM quoted/paid, when reported. */
+  quotedMario: string | null;
+  /** The permissionless `syncAttributes` reconcile tx, when it succeeded. */
+  syncAttributesTxId: string | null;
+}
+
+/** Submit one kind:5095 job (tests inject a stub — NEVER the live net). */
+export type SubmitDvmBuyJob = (
+  request: DvmBuyJobRequest
+) => Promise<DvmBuyJobReceipt>;
+
+/** A DVM refused or failed a brokered buy job. */
+export class DvmBuyJobError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DvmBuyJobError';
+  }
+}
+
+/**
+ * Default {@link SubmitDvmBuyJob}: sign a kind:5095 event carrying the job as
+ * NIP-90 `param` tags and POST it to the DVM's payment-oblivious `/store`
+ * backend. This is the DIRECT interface — on the paid path the identical
+ * event travels inside a paid ILP packet and the connector in front of the
+ * DVM replays this same HTTP request after terminating payment
+ * (RouteTermination), so the job shape is one and the same.
+ */
+export const defaultSubmitDvmBuyJob: SubmitDvmBuyJob = async (request) => {
+  const { finalizeEvent } = await import('nostr-tools/pure');
+  const event = finalizeEvent(
+    {
+      kind: ARNS_BUY_JOB_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      content: '',
+      tags: [
+        ['param', 'name', request.name],
+        ['param', 'type', request.type],
+        ...(request.years !== null
+          ? [['param', 'years', String(request.years)]]
+          : []),
+        ['param', 'processId', request.processId],
+      ],
+    },
+    request.nostrSecretKey
+  );
+
+  const url = `${request.viaUrl.replace(/\/+$/, '')}/store`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ event }),
+    });
+  } catch (err) {
+    throw new DvmBuyJobError(
+      `could not reach the DVM at ${url}: ` +
+        `${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  let body: {
+    accept?: boolean;
+    code?: string;
+    message?: string;
+    result?: {
+      registryTxId?: unknown;
+      quotedMario?: unknown;
+      syncAttributesTxId?: unknown;
+    };
+  };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch {
+    throw new DvmBuyJobError(
+      `the DVM at ${url} returned a non-JSON response (HTTP ${response.status})`
+    );
+  }
+  if (!response.ok || body.accept !== true) {
+    throw new DvmBuyJobError(
+      `the DVM rejected the kind:${ARNS_BUY_JOB_KIND} buy job ` +
+        `(HTTP ${response.status}${body.code ? `, ${body.code}` : ''})` +
+        `${body.message ? `: ${body.message}` : ''}`
+    );
+  }
+  const registryTxId = body.result?.registryTxId;
+  if (typeof registryTxId !== 'string' || registryTxId.length === 0) {
+    throw new DvmBuyJobError(
+      `the DVM accepted the job but returned no registryTxId — response: ` +
+        JSON.stringify(body.result ?? null)
+    );
+  }
+  return {
+    registryTxId,
+    quotedMario:
+      typeof body.result?.quotedMario === 'string'
+        ? body.result.quotedMario
+        : null,
+    syncAttributesTxId:
+      typeof body.result?.syncAttributesTxId === 'string'
+        ? body.result.syncAttributesTxId
+        : null,
+  };
+};
+
+// ---------------------------------------------------------------------------
+// The gas-station job seam (kind:5096 — toon-meta#163)
+// ---------------------------------------------------------------------------
+
+/** The NIP-90 job kind for a gas-station (fee-payer-as-a-service) job. */
+export const GAS_STATION_JOB_KIND = 5096;
+
+/** A kind:5096 quote — the merged quote/blockhash deadline contract. */
+export interface GasStationQuote {
+  quoteId: string;
+  /** The DVM's advertised fee-payer address — set as the tx feePayer. */
+  feePayer: string;
+  /** The delta cap the DVM will enforce (lamports, base-10 string). */
+  maxLamports: string;
+  /** Build + partial-sign against exactly this blockhash. */
+  recentBlockhash: string;
+  /** ms epoch — submit before this or re-quote. */
+  expiresAt: number;
+}
+
+/** A landed kind:5096 execute result. */
+export interface GasStationExecuteResult {
+  signature: string;
+  slot: string | null;
+  feeLamportsActual: string | null;
+  replayed?: boolean;
+}
+
+/** The DVM refused or failed a gas-station job (machine-readable reason). */
+export class GasStationJobError extends Error {
+  constructor(
+    public readonly reason: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'GasStationJobError';
+  }
+}
+
+/** kind:5096 client seam (tests inject a stub — NEVER the live net). */
+export interface GasStationClient {
+  quote(args: {
+    viaUrl: string;
+    /** Optional draft wire tx for an accurate (rent-aware) maxLamports. */
+    transaction?: string;
+    nostrSecretKey: Uint8Array;
+  }): Promise<GasStationQuote>;
+  execute(args: {
+    viaUrl: string;
+    transaction: string;
+    quoteId: string;
+    idempotencyKey: string;
+    nostrSecretKey: Uint8Array;
+  }): Promise<GasStationExecuteResult>;
+}
+
+/** POST one signed kind:5096 job to the DVM's `/store` backend. */
+async function postGasStationJob(
+  viaUrl: string,
+  params: [string, string][],
+  nostrSecretKey: Uint8Array
+): Promise<Record<string, unknown>> {
+  const { finalizeEvent } = await import('nostr-tools/pure');
+  const event = finalizeEvent(
+    {
+      kind: GAS_STATION_JOB_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      content: '',
+      tags: params.map(([k, v]) => ['param', k, v]),
+    },
+    nostrSecretKey
+  );
+  const url = `${viaUrl.replace(/\/+$/, '')}/store`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ event }),
+    });
+  } catch (err) {
+    throw new GasStationJobError(
+      'unreachable',
+      `could not reach the DVM at ${url}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  let body: { accept?: boolean; code?: string; message?: string; result?: Record<string, unknown> };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch {
+    throw new GasStationJobError(
+      'bad_response',
+      `the DVM at ${url} returned a non-JSON response (HTTP ${response.status})`
+    );
+  }
+  if (!response.ok || body.accept !== true || !body.result) {
+    throw new GasStationJobError(
+      String(body.code ?? 'rejected'),
+      `the DVM rejected the kind:${GAS_STATION_JOB_KIND} job (HTTP ${response.status}${body.code ? `, ${body.code}` : ''})${body.message ? `: ${body.message}` : ''}`
+    );
+  }
+  const result = body.result;
+  if (result['status'] === 'failed') {
+    throw new GasStationJobError(
+      String(result['reason'] ?? 'failed'),
+      `gas-station job failed: ${String(result['reason'] ?? 'unknown')} — ${String(result['detail'] ?? '')}`
+    );
+  }
+  return result;
+}
+
+/**
+ * Default {@link GasStationClient}: signed kind:5096 events POSTed to the
+ * DVM's payment-oblivious `/store` backend — the identical HTTP request the
+ * connector payment proxy replays on the paid path (RouteTermination).
+ */
+export const defaultGasStationClient: GasStationClient = {
+  quote: async (args) => {
+    const result = await postGasStationJob(
+      args.viaUrl,
+      [
+        ['phase', 'quote'],
+        ...(args.transaction !== undefined
+          ? ([['transaction', args.transaction]] as [string, string][])
+          : []),
+      ],
+      args.nostrSecretKey
+    );
+    const { quoteId, feePayer, maxLamports, recentBlockhash, expiresAt } =
+      result as Partial<GasStationQuote>;
+    if (
+      typeof quoteId !== 'string' ||
+      typeof feePayer !== 'string' ||
+      typeof maxLamports !== 'string' ||
+      typeof recentBlockhash !== 'string' ||
+      typeof expiresAt !== 'number'
+    ) {
+      throw new GasStationJobError(
+        'bad_response',
+        `the DVM quote is missing fields: ${JSON.stringify(result)}`
+      );
+    }
+    return { quoteId, feePayer, maxLamports, recentBlockhash, expiresAt };
+  },
+  execute: async (args) => {
+    const result = await postGasStationJob(
+      args.viaUrl,
+      [
+        ['phase', 'execute'],
+        ['transaction', args.transaction],
+        ['quoteId', args.quoteId],
+        ['idempotencyKey', args.idempotencyKey],
+      ],
+      args.nostrSecretKey
+    );
+    const signature = result['signature'];
+    if (typeof signature !== 'string' || signature.length === 0) {
+      throw new GasStationJobError(
+        'bad_response',
+        `the DVM execute result carries no signature: ${JSON.stringify(result)}`
+      );
+    }
+    return {
+      signature,
+      slot: typeof result['slot'] === 'string' ? result['slot'] : null,
+      feeLamportsActual:
+        typeof result['feeLamportsActual'] === 'string'
+          ? result['feeLamportsActual']
+          : null,
+      ...(result['replayed'] === true ? { replayed: true } : {}),
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Deps + usage
 // ---------------------------------------------------------------------------
 
@@ -496,6 +999,10 @@ export interface NameDeps {
   cwd: string;
   /** ar.io SDK loader seam; defaults to the lazy `@ar.io/sdk` import. */
   loadArns?: LoadArns;
+  /** kind:5095 job submitter seam; defaults to the signed HTTP POST. */
+  submitDvmBuyJob?: SubmitDvmBuyJob;
+  /** kind:5096 gas-station client seam; defaults to the signed HTTP POST. */
+  gasStation?: GasStationClient;
 }
 
 export const NAME_USAGE = `Usage: rig name <buy|set|status> <name> [options]
@@ -510,14 +1017,21 @@ mnemonic that pays for pushes (derived at m/44'/501'/0'/0'). Fund it with
 registry program — NOT through TOON ILP payment channels.
 
 Commands:
-  name buy <name> [--years n | --permabuy]
+  name buy <name> [--years n | --permabuy] [--via <dvm-url>]
                        quote (mARIO) → confirm → register. The spawned ANT is
                        owned by this identity's Solana key. Default: 1-year
                        lease. PAID — spends mARIO from the Solana wallet.
-  name set <name> <txId> [--undername <sub>] [--ttl <seconds>]
+                       With --via: BROKERED — this identity spawns and owns
+                       the ANT (dust SOL only), then a store DVM executes the
+                       kind:5095 buy job and pays the mARIO from ITS wallet;
+                       the name is owned by your ANT from inception.
+  name set <name> <txId> [--undername <sub>] [--ttl <seconds>] [--via <dvm-url>]
                        point the name (or an undername) at an Arweave txId
                        (typically a deployed path manifest). Signs an ANT
-                       record update with the Solana key.
+                       record update with the Solana key. With --via: the
+                       gas-station path (kind:5096) — you author and
+                       partial-sign, the DVM co-signs as fee payer and pays
+                       the lamports; needs ZERO SOL in this wallet.
   name status <name>   FREE: registry record (lease/permabuy, expiry), ANT
                        process id, current target txId(s), TTL, undernames.
 
@@ -534,6 +1048,12 @@ Options:
                        unverified.
   --process-id <id>    explicit ArNS registry program id — a Solana program
                        address (overrides --network; or RIG_ARIO_PROCESS_ID)
+  --via <dvm-url>      buy only: broker the purchase through a store DVM's
+                       kind:5095 job endpoint (or RIG_ARNS_DVM_URL). The DVM
+                       pays the mARIO; you own the name via your spawned ANT.
+                       Direct backend targeting stubs the job payment
+                       (dev/e2e) — the paid path runs the same job through
+                       the connector payment proxy.
   --yes                skip the confirmation (required when not a TTY) for
                        buy/set
   --json               machine-readable envelope; for buy/set without --yes it
@@ -555,6 +1075,8 @@ interface NameContext {
   network: ArioNetwork;
   processId: string | undefined;
   sdk: ArnsSdk;
+  /** Nostr secret key of the identity — signs brokered kind:5095 jobs. */
+  nostrSecretKey: Uint8Array;
 }
 
 /**
@@ -604,7 +1126,11 @@ async function resolveNameContext(
     network,
     ...(processId !== undefined ? { processId } : {}),
   });
-  return { identity, solanaAddress, network, processId, sdk };
+  const nostrSecretKey = client.deriveNostrKeyFromMnemonic(
+    resolved.mnemonic,
+    resolved.accountIndex
+  ).secretKey;
+  return { identity, solanaAddress, network, processId, sdk, nostrSecretKey };
 }
 
 // ---------------------------------------------------------------------------
@@ -618,6 +1144,8 @@ interface NameFlags {
   ttl: number;
   network: ArioNetwork;
   processId?: string;
+  /** Brokered buy: the DVM endpoint to submit the kind:5095 job to. */
+  via?: string;
   yes: boolean;
   json: boolean;
 }
@@ -639,6 +1167,7 @@ function parseNameFlags(
       ttl: { type: 'string' },
       network: { type: 'string' },
       'process-id': { type: 'string' },
+      via: { type: 'string' },
       yes: { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
@@ -688,6 +1217,17 @@ function parseNameFlags(
   }
   const processId = values['process-id'] ?? env['RIG_ARIO_PROCESS_ID'];
 
+  const viaRaw = values.via ?? env['RIG_ARNS_DVM_URL'];
+  let via: string | undefined;
+  if (viaRaw !== undefined) {
+    if (!/^https?:\/\/.+/.test(viaRaw)) {
+      throw new Error(
+        `--via must be an http(s) DVM endpoint URL, got ${JSON.stringify(viaRaw)}`
+      );
+    }
+    via = viaRaw;
+  }
+
   return {
     positionals,
     flags: {
@@ -699,6 +1239,7 @@ function parseNameFlags(
       ttl,
       network: networkRaw as ArioNetwork,
       ...(processId !== undefined ? { processId } : {}),
+      ...(via !== undefined ? { via } : {}),
       yes: values.yes ?? false,
       json: values.json ?? false,
     },
@@ -717,6 +1258,8 @@ interface NameBuyJson {
   years: number | null;
   network: ArioNetwork;
   processId: string | null;
+  /** Brokered buy: the DVM endpoint the kind:5095 job goes to (else null). */
+  via: string | null;
   identity: IdentityReport;
   solanaAddress: string;
   /** The mARIO quote (base units, string) + a human ARIO figure. */
@@ -725,7 +1268,16 @@ interface NameBuyJson {
   payment: string;
   executed: boolean;
   hint?: string;
-  result?: { registryTxId: string; antProcessId: string | null };
+  /** Brokered buy: the ANT this identity spawned and owns (execute only). */
+  spawn?: { processId: string; signature: string };
+  result?: {
+    registryTxId: string;
+    antProcessId: string | null;
+    /** Brokered buy: the DVM's permissionless trait reconcile tx, if any. */
+    syncAttributesTxId?: string | null;
+    /** Brokered buy: the mARIO the DVM reported paying, if any. */
+    dvmQuotedMario?: string | null;
+  };
 }
 
 async function runBuy(
@@ -758,6 +1310,9 @@ async function runBuy(
     ARIO: formatUnits(mario.toString(), ARIO_DECIMALS),
   };
 
+  const via = flags.via ?? null;
+  const paymentNote = via === null ? MARIO_PAYMENT_NOTE : DVM_PAYMENT_NOTE;
+
   const buildJson = (
     executed: boolean,
     extra: Partial<NameBuyJson> = {}
@@ -769,10 +1324,11 @@ async function runBuy(
     years,
     network: ctx.network,
     processId: ctx.processId ?? null,
+    via,
     identity: ctx.identity,
     solanaAddress: ctx.solanaAddress,
     quote,
-    payment: MARIO_PAYMENT_NOTE,
+    payment: paymentNote,
     executed,
     ...extra,
   });
@@ -782,11 +1338,16 @@ async function runBuy(
     io.out(
       `Buy ArNS name "${name}" — ${type}` +
         (years !== null ? ` (${years} year${years === 1 ? '' : 's'})` : '') +
-        ` on ${ctx.network}`
+        ` on ${ctx.network}` +
+        (via !== null ? ` — brokered via DVM ${via}` : '')
     );
-    io.out(`  Cost: ${renderMario(mario)}`);
+    io.out(
+      via === null
+        ? `  Cost: ${renderMario(mario)}`
+        : `  Name cost (paid by the DVM): ${renderMario(mario)}`
+    );
     io.out(`  Solana wallet: ${ctx.solanaAddress}`);
-    io.out(`  ${MARIO_PAYMENT_NOTE}`);
+    io.out(`  ${paymentNote}`);
     io.out(renderIdentityLine(ctx.identity));
   }
 
@@ -795,20 +1356,30 @@ async function runBuy(
     if (flags.json) {
       io.emitJson(
         buildJson(false, {
-          hint: 'estimate only — re-run with --yes to buy (spends mARIO on Solana, non-refundable)',
+          hint:
+            via === null
+              ? 'estimate only — re-run with --yes to buy (spends mARIO on Solana, non-refundable)'
+              : 'estimate only — re-run with --yes to spawn your ANT and submit the kind:5095 buy job to the DVM',
         })
       );
       return 0;
     }
     if (!io.isInteractive) {
       io.err(
-        'refusing to spend mARIO without confirmation in a non-interactive ' +
-          'session — re-run with --yes (or use --json for a pure estimate)'
+        via === null
+          ? 'refusing to spend mARIO without confirmation in a non-interactive ' +
+              'session — re-run with --yes (or use --json for a pure estimate)'
+          : 'refusing to spawn an ANT and submit a paid DVM job without ' +
+              'confirmation in a non-interactive session — re-run with --yes ' +
+              '(or use --json for a pure estimate)'
       );
       return 1;
     }
     const proceed = await io.confirm(
-      `Proceed — buy "${name}" for ${renderMario(mario)} from your Solana wallet? [y/N] `
+      via === null
+        ? `Proceed — buy "${name}" for ${renderMario(mario)} from your Solana wallet? [y/N] `
+        : `Proceed — spawn your ANT and have the DVM at ${via} buy "${name}" ` +
+            `for ${renderMario(mario)} from ITS wallet? [y/N] `
     );
     if (!proceed) {
       io.err('aborted — nothing was bought or paid.');
@@ -816,14 +1387,72 @@ async function runBuy(
     }
   }
 
-  // ── Execute (register; the spawned ANT is owned by the Solana key) ────────
-  // Only now — confirmed — build the signed SDK (write mode).
+  // ── Execute — build the signed SDK (write mode) only now, confirmed ──────
   const signed = await resolveNameContext(
     deps,
     flags.network,
     flags.processId,
     'write'
   );
+
+  if (via !== null) {
+    // ── Brokered ("buyfor"): spawn OUR ANT, then the DVM buys for it ───────
+    // 1. ANT.spawn with this identity's Solana key — the client owns the ANT
+    //    (and therefore the name, from inception). Costs dust SOL, no $ARIO.
+    const spawn = await signed.sdk.spawnAnt({ name });
+    if (!flags.json) {
+      io.out(`Spawned ANT ${spawn.processId} (tx ${spawn.signature})`);
+    }
+    // 2. Submit the kind:5095 job carrying OUR processId; the DVM executes
+    //    buyRecord with ITS funded signer.
+    const submit = deps.submitDvmBuyJob ?? defaultSubmitDvmBuyJob;
+    const receipt = await submit({
+      viaUrl: via,
+      name,
+      type,
+      years,
+      processId: spawn.processId,
+      nostrSecretKey: signed.nostrSecretKey,
+    });
+    const result = {
+      registryTxId: receipt.registryTxId,
+      antProcessId: spawn.processId,
+      syncAttributesTxId: receipt.syncAttributesTxId,
+      dvmQuotedMario: receipt.quotedMario,
+    };
+
+    if (flags.json) {
+      io.emitJson(
+        buildJson(true, {
+          spawn: { processId: spawn.processId, signature: spawn.signature },
+          result,
+        })
+      );
+    } else {
+      io.out(
+        `Registered "${name}" via the DVM — registry tx ${result.registryTxId}`
+      );
+      io.out(`  ANT process (owned by YOU): ${spawn.processId}`);
+      if (receipt.syncAttributesTxId) {
+        io.out(`  Trait sync: ${receipt.syncAttributesTxId}`);
+      } else {
+        // Proven on devnet: the deployed ario-ant program gates SyncAttributes
+        // to the NFT holder, so the DVM cannot reconcile the traits — you can.
+        io.out(
+          '  Trait sync: not run by the DVM (holder-gated on this ' +
+            'deployment) — as the ANT holder you can reconcile with ' +
+            'syncAttributes later; resolution works regardless.'
+        );
+      }
+      io.out(
+        `Point it at content with \`rig name set ${name} <txId>\`, then it ` +
+          `resolves at https://${name}.<gateway>/`
+      );
+    }
+    return 0;
+  }
+
+  // ── Direct: register with our own funded wallet (the #367 path) ──────────
   const receipt = await signed.sdk.buyRecord({
     name,
     type,
@@ -860,11 +1489,21 @@ interface NameSetJson {
   ttl: number;
   network: ArioNetwork;
   processId: string | null;
+  /** Gas-station path: the DVM endpoint the kind:5096 job goes to. */
+  via: string | null;
   identity: IdentityReport;
   solanaAddress: string;
   antProcessId: string;
   executed: boolean;
   hint?: string;
+  /** Gas-station path: the quote the DVM enforced. */
+  gasStation?: {
+    quoteId: string;
+    feePayer: string;
+    maxLamports: string;
+    expiresAt: number;
+    feeLamportsActual: string | null;
+  };
   result?: { messageId: string };
 }
 
@@ -893,6 +1532,7 @@ async function runSet(
   }
   const antProcessId = record.processId;
   const undername = flags.undername ?? null;
+  const via = flags.via ?? null;
 
   const buildJson = (
     executed: boolean,
@@ -906,6 +1546,7 @@ async function runSet(
     ttl: flags.ttl,
     network: ctx.network,
     processId: ctx.processId ?? null,
+    via,
     identity: ctx.identity,
     solanaAddress: ctx.solanaAddress,
     antProcessId,
@@ -919,10 +1560,18 @@ async function runSet(
 
   if (!flags.json) {
     io.out(
-      `Set ${targetLabel} → txId ${txId} (ttl ${flags.ttl}s) on ${ctx.network}`
+      `Set ${targetLabel} → txId ${txId} (ttl ${flags.ttl}s) on ${ctx.network}` +
+        (via !== null ? ` — gas paid by the DVM at ${via} (kind:5096)` : '')
     );
     io.out(`  ANT process: ${antProcessId}`);
     io.out(`  Signed by the identity's Solana key (${ctx.solanaAddress}).`);
+    if (via !== null) {
+      io.out(
+        '  Gas station: you author + partial-sign the record update; the ' +
+          'DVM co-signs as fee payer and pays the lamports (toon-meta#163). ' +
+          'Direct backend targeting stubs the job payment (dev/e2e).'
+      );
+    }
     io.out(renderIdentityLine(ctx.identity));
   }
 
@@ -931,7 +1580,10 @@ async function runSet(
     if (flags.json) {
       io.emitJson(
         buildJson(false, {
-          hint: 'estimate only — re-run with --yes to write the ANT record',
+          hint:
+            via === null
+              ? 'estimate only — re-run with --yes to write the ANT record'
+              : 'estimate only — re-run with --yes to quote the gas-station and write the ANT record (DVM pays the gas)',
         })
       );
       return 0;
@@ -944,7 +1596,9 @@ async function runSet(
       return 1;
     }
     const proceed = await io.confirm(
-      `Proceed — point ${targetLabel} at ${txId}? [y/N] `
+      `Proceed — point ${targetLabel} at ${txId}?` +
+        (via !== null ? ' (the DVM pays the gas)' : '') +
+        ' [y/N] '
     );
     if (!proceed) {
       io.err('aborted — the ANT record was not changed.');
@@ -960,6 +1614,55 @@ async function runSet(
     flags.processId,
     'write'
   );
+
+  if (via !== null) {
+    // ── Gas-station path (toon-meta#163): author + partial-sign locally,
+    //    the DVM co-signs as fee payer and broadcasts. ────────────────────
+    const gas = deps.gasStation ?? defaultGasStationClient;
+    // Quote: learn the fee payer + the quoted blockhash (merged deadline).
+    const quote = await gas.quote({
+      viaUrl: via,
+      nostrSecretKey: signed.nostrSecretKey,
+    });
+    // Build + partial-sign against exactly the quoted blockhash.
+    const wireTx = await signed.sdk.buildSetRecordTransaction({
+      antProcessId,
+      undername: undername ?? '@',
+      transactionId: txId,
+      ttlSeconds: flags.ttl,
+      feePayer: quote.feePayer,
+      recentBlockhash: quote.recentBlockhash,
+    });
+    const executed = await gas.execute({
+      viaUrl: via,
+      transaction: wireTx,
+      quoteId: quote.quoteId,
+      idempotencyKey: randomUUID(),
+      nostrSecretKey: signed.nostrSecretKey,
+    });
+    const gasStation = {
+      quoteId: quote.quoteId,
+      feePayer: quote.feePayer,
+      maxLamports: quote.maxLamports,
+      expiresAt: quote.expiresAt,
+      feeLamportsActual: executed.feeLamportsActual,
+    };
+    const result = { messageId: executed.signature };
+
+    if (flags.json) {
+      io.emitJson(buildJson(true, { gasStation, result }));
+    } else {
+      io.out(
+        `Updated — record-set tx ${executed.signature} (gas paid by ${quote.feePayer})`
+      );
+      const host = undername ? `${undername}_${name}` : name;
+      io.out(
+        `  Resolves at https://${host}.<gateway>/ (allow for gateway cache/TTL).`
+      );
+    }
+    return 0;
+  }
+
   const ant = await signed.sdk.ant(antProcessId);
   const receipt = undername
     ? await ant.setUndernameRecord({

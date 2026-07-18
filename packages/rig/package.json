@@ -49,10 +49,12 @@
   "dependencies": {
     "@toon-format/toon": "^1.0.0",
     "@toon-protocol/client": "workspace:^",
-    "@toon-protocol/core": "^2.0.1"
+    "@toon-protocol/core": "^2.0.1",
+    "nostr-tools": "^2.20.0"
   },
   "optionalDependencies": {
     "@ar.io/sdk": "^4.0.3",
+    "@ar.io/solana-contracts": "^1.0.1",
     "@solana/kit": "^6.8.0"
   },
   "devDependencies": {

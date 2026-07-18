@@ -253,10 +253,16 @@ importers:
       '@toon-protocol/core':
         specifier: ^2.0.1
         version: 2.0.1(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      nostr-tools:
+        specifier: ^2.20.0
+        version: 2.23.5(typescript@5.9.3)
     optionalDependencies:
       '@ar.io/sdk':
         specifier: ^4.0.3
         version: 4.0.3(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      '@ar.io/solana-contracts':
+        specifier: ^1.0.1
+        version: 1.0.1(@solana/kit@6.10.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
       '@solana/kit':
         specifier: ^6.8.0
         version: 6.10.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
