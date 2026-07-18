@@ -15,9 +15,17 @@
  *      auto-password fallback for daemon-provisioned keystores), then the
  *      plain `mnemonic` config field — the pre-#248 standalone-context logic
  *
- * The BIP-44 `mnemonicAccountIndex` from the shared config file applies to
- * every source (same convention as the daemon), so the derived pubkey never
- * depends on WHERE the phrase came from.
+ * The BIP-44 account index follows the same env-over-config precedence:
+ *
+ *   1. `RIG_ACCOUNT_INDEX` environment variable (applies to every source)
+ *   2. `mnemonicAccountIndex` from the shared config file — but ONLY when the
+ *      phrase itself came from that shared state dir (keystore/config tiers).
+ *      An env- or `.env`-sourced phrase derives at index 0 unless
+ *      `RIG_ACCOUNT_INDEX` says otherwise, so an explicit `RIG_MNEMONIC`
+ *      pins the same identity no matter which `TOON_CLIENT_HOME` is active
+ *      (#384 — a per-home config must never silently shift an explicitly
+ *      provided identity).
+ *   3. account 0
  *
  * The phrase itself is never written anywhere by rig (not to git config, not
  * to any repo file) and never printed — callers report only the SOURCE and
@@ -50,7 +58,9 @@ export type IdentitySourceKind =
 export interface ResolvedIdentity {
   /** The BIP-39 phrase. Handle with care; never log or persist it. */
   mnemonic: string;
-  /** BIP-44 account index used for derivation (shared config, default 0). */
+  /** BIP-44 account index used for derivation — `RIG_ACCOUNT_INDEX` env,
+   * else `mnemonicAccountIndex` from the shared config (home-sourced phrases
+   * only), else 0. */
   accountIndex: number;
   source: IdentitySourceKind;
   /** Human-facing source label, e.g. `RIG_MNEMONIC env` or a file path. */
@@ -218,6 +228,47 @@ export function findDotenvMnemonic(
 }
 
 // ---------------------------------------------------------------------------
+// Account index (env > per-home config for home-sourced phrases > 0)
+// ---------------------------------------------------------------------------
+
+/** Sources whose phrase lives OUTSIDE the shared state dir. For these the
+ * per-home `mnemonicAccountIndex` must not apply — an explicit
+ * `RIG_MNEMONIC` derives the same identity across every
+ * `TOON_CLIENT_HOME` (#384). */
+const HOME_INDEPENDENT_SOURCES: ReadonlySet<IdentitySourceKind> = new Set([
+  'env',
+  'env-alias',
+  'dotenv',
+]);
+
+/**
+ * Resolve the BIP-44 account index for a phrase from `source`:
+ * `RIG_ACCOUNT_INDEX` env always wins; the shared config's
+ * `mnemonicAccountIndex` applies only when the phrase itself came from the
+ * shared state dir (keystore/config tiers); default 0. Throws on a
+ * malformed `RIG_ACCOUNT_INDEX` — silently deriving a different identity
+ * is exactly the surprise this precedence exists to prevent.
+ */
+export function resolveAccountIndex(
+  env: NodeJS.ProcessEnv,
+  source: IdentitySourceKind,
+  file: ClientConfigIdentityFields
+): number {
+  const raw = env['RIG_ACCOUNT_INDEX']?.trim();
+  if (raw) {
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new Error(
+        `RIG_ACCOUNT_INDEX must be a non-negative integer, got ${JSON.stringify(raw)}`
+      );
+    }
+    return parsed;
+  }
+  if (HOME_INDEPENDENT_SOURCES.has(source)) return 0;
+  return typeof file.mnemonicAccountIndex === 'number' ? file.mnemonicAccountIndex : 0;
+}
+
+// ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------
 
@@ -331,8 +382,7 @@ export async function resolveIdentity(
     source = picked;
   }
 
-  const accountIndex =
-    typeof file.mnemonicAccountIndex === 'number' ? file.mnemonicAccountIndex : 0;
+  const accountIndex = resolveAccountIndex(options.env, source.source, file);
   const { pubkey } = keys.deriveNostrKeyFromMnemonic(source.mnemonic, accountIndex);
   return { ...source, accountIndex, pubkey };
 }
