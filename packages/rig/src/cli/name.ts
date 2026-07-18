@@ -29,11 +29,24 @@
  * not installed, the command fails with a clean, actionable error
  * ({@link ArnsSdkUnavailableError}) instead of a module-resolution stack trace.
  *
- * DEVNET/TESTNET (#367 open question): the registry process id is configurable
- * — `--network mainnet|devnet|testnet` (or `RIG_ARIO_NETWORK`) selects the
- * SDK's `ARIO_{MAINNET,DEVNET,TESTNET}_PROCESS_ID`, and `--process-id <id>`
- * (or `RIG_ARIO_PROCESS_ID`) overrides outright. Defaults to mainnet. Whether
- * public gateways resolve non-mainnet registries is UNVERIFIED (see the PR).
+ * SDK WIRING (#376): `@ar.io/sdk` >= 4.0.3 is Solana-native. There is no
+ * `SolanaSigner` class and no AO registry process id, and `ARIO.init()` builds
+ * NO default rpc — the caller constructs everything from `@solana/kit`:
+ * `createSolanaRpc` (all calls), plus `createSolanaRpcSubscriptions` and a
+ * `createKeyPairSignerFromBytes` signer for writes only. The FREE read path
+ * (`status`) therefore runs signerless ({@link LoadArnsOptions.mode}) — reads
+ * being free is the rig discipline everywhere else. This surface is pinned by
+ * a live smoke test against the published SDK
+ * (`src/__integration__/arns-live-read.integration.test.ts`), because both
+ * #376 bugs came from coding against an API no released version exports.
+ *
+ * DEVNET (#367 open question, revised by #376): post-migration, registry
+ * selection is a Solana CLUSTER, not an AO process id — `--network
+ * mainnet|devnet` (or `RIG_ARIO_NETWORK`) picks the cluster (devnet applies
+ * the SDK's `DEVNET_PROGRAM_IDS`); ar.io deploys nothing on Solana's testnet
+ * cluster, so `testnet` is rejected up front. `--process-id <id>` (or
+ * `RIG_ARIO_PROCESS_ID`) overrides the ArNS registry program id outright.
+ * Defaults to mainnet.
  */
 
 import { parseArgs } from 'node:util';
@@ -78,8 +91,11 @@ export const MARIO_PAYMENT_NOTE =
 /** A name registration kind: a time-boxed lease or a one-time permabuy. */
 export type NameType = 'lease' | 'permabuy';
 
-/** The three registries the SDK exposes; mainnet is the default. */
-export type ArioNetwork = 'mainnet' | 'devnet' | 'testnet';
+/**
+ * The Solana clusters ar.io deploys its programs to; mainnet is the default.
+ * (No `testnet`: ar.io has no deployment on Solana's testnet cluster — #376.)
+ */
+export type ArioNetwork = 'mainnet' | 'devnet';
 
 /** One name's current registry record (the free `status` read). */
 export interface ArnsRecordView {
@@ -153,137 +169,316 @@ export interface ArnsSdk {
   ant(processId: string): Promise<ArnsAnt>;
 }
 
-/** What the {@link LoadArns} seam needs to build a signed, targeted SDK. */
+/** What the {@link LoadArns} seam needs to build a targeted SDK. */
 export interface LoadArnsOptions {
-  /** 64-byte Solana keypair (secretKey ‖ publicKey) that owns and pays. */
+  /**
+   * Which capability the caller needs (#376). `read` builds a SIGNERLESS,
+   * read-only client — the FREE lookups (`status`, cost quotes) must never
+   * require write plumbing. `write` additionally derives a `@solana/kit`
+   * signer from `solanaSecretKey` and wires the rpc-subscriptions client that
+   * transaction confirmation requires.
+   */
+  mode: 'read' | 'write';
+  /**
+   * 64-byte Ed25519 Solana keypair (secretKey ‖ publicKey) that owns and
+   * pays — consumed only in `write` mode (readers never touch it).
+   */
   solanaSecretKey: Uint8Array;
   /** Solana public key (base58) — for the signer + human messaging. */
   solanaPublicKey: string;
-  /** Which registry to target. */
+  /** Which cluster's ar.io deployment to target. */
   network: ArioNetwork;
-  /** Explicit registry process id override (wins over `network`). */
+  /** Explicit ArNS registry program id override (wins over `network`). */
   processId?: string;
 }
 
-/** Build a signed, network-targeted {@link ArnsSdk} (tests inject a stub). */
+/** Build a network-targeted {@link ArnsSdk} (tests inject a stub). */
 export type LoadArns = (options: LoadArnsOptions) => Promise<ArnsSdk>;
 
 /**
- * `@ar.io/sdk` is not installed. Optional-dependency by design (#367): surface
- * a clean, actionable message instead of a raw module-resolution failure.
+ * The minimum `@ar.io/sdk` release `rig name` is built against: the first
+ * Solana-native surface verified to expose the clients the default loader
+ * wires (`ARIO.init`/`ANT.init` over a caller-built `@solana/kit` rpc, signer
+ * optional). Mirrored by the `optionalDependencies` pin in package.json.
+ */
+export const MIN_ARIO_SDK_VERSION = '4.0.3';
+
+/**
+ * An optional module (`@ar.io/sdk`, or its `@solana/kit` companion) is not
+ * installed. Optional-dependency by design (#367): surface a clean,
+ * actionable message instead of a module-resolution stack trace. Distinct
+ * from {@link ArnsSdkIncompatibleError} — "not installed" and "installed but
+ * the wrong API surface" need different remediations (#376).
  */
 export class ArnsSdkUnavailableError extends Error {
-  constructor(cause?: unknown) {
+  constructor(cause?: unknown, module = '@ar.io/sdk') {
     super(
-      '`rig name` needs the optional `@ar.io/sdk` dependency, which is not ' +
+      `\`rig name\` needs the optional \`${module}\` dependency, which is not ` +
         'installed. It is intentionally NOT a base `rig` dependency (keeps the ' +
         'install lean). Add it to use ArNS naming:\n' +
-        '  npm i @ar.io/sdk    # or: pnpm add @ar.io/sdk\n' +
-        'then re-run your `rig name` command.' +
+        `  npm i @ar.io/sdk@^${MIN_ARIO_SDK_VERSION}    # or: pnpm add @ar.io/sdk@^${MIN_ARIO_SDK_VERSION}\n` +
+        '(`@solana/kit` installs alongside it) then re-run your `rig name` ' +
+        'command.' +
         (cause instanceof Error ? `\n(underlying error: ${cause.message})` : '')
     );
     this.name = 'ArnsSdkUnavailableError';
   }
 }
 
-/** Known mainnet registry process id (overridable via flag/env). */
-const ARIO_MAINNET_PROCESS_ID = 'qNvAoz0TgcH7DMg8BCVn8jF32QH5L6T29VjHxhHqqGE';
+/**
+ * `@ar.io/sdk` (or `@solana/kit`) IS installed but exposes an API surface
+ * `rig name` cannot drive — e.g. a pre-Solana-migration build. Kept separate
+ * from {@link ArnsSdkUnavailableError} so users are never told to install a
+ * package they already have (#376: the old message sent users chasing an
+ * upgrade that did not exist).
+ */
+export class ArnsSdkIncompatibleError extends Error {
+  constructor(detail: string) {
+    super(
+      `the installed @ar.io/sdk is incompatible with \`rig name\`: ${detail}.\n` +
+        `\`rig name\` requires @ar.io/sdk >= ${MIN_ARIO_SDK_VERSION} (the ` +
+        'Solana-native release driven via a `@solana/kit` rpc + signer). ' +
+        'Upgrade with:\n' +
+        '  npm i @ar.io/sdk@latest    # or: pnpm add @ar.io/sdk@latest'
+    );
+    this.name = 'ArnsSdkIncompatibleError';
+  }
+}
+
+/** Public Solana RPC endpoints (fallbacks when the SDK exports none). */
+const SOLANA_MAINNET_RPC_URL = 'https://api.mainnet-beta.solana.com';
+const SOLANA_DEVNET_RPC_URL = 'https://api.devnet.solana.com';
 
 /**
  * The untyped shape of the pieces of `@ar.io/sdk` the default loader reaches
- * for. Kept local (the package is optional and its types are not a build dep)
- * and cast through `unknown` — never `any`, so eslint's no-explicit-any holds.
+ * for (verified against the published 4.0.3). Kept local (the package is
+ * optional and its types are not a build dep) and cast through `unknown` —
+ * never `any`, so eslint's no-explicit-any holds.
  */
 interface RawArioModule {
   ARIO?: {
     init?: (config: unknown) => RawArioInstance;
   };
   ANT?: {
-    init?: (config: unknown) => RawAntInstance;
+    /** 4.x resolves the ANT program from the asset, hence async. */
+    init?: (config: unknown) => Promise<RawAntInstance>;
   };
-  ArweaveSigner?: unknown;
-  ARIO_MAINNET_PROCESS_ID?: string;
-  ARIO_DEVNET_PROCESS_ID?: string;
-  ARIO_TESTNET_PROCESS_ID?: string;
-  /** Solana-native signer factory (post-migration @ar.io/sdk). */
-  SolanaSigner?: new (secretKey: Uint8Array) => unknown;
+  DEFAULT_SOLANA_RPC_URL?: string;
+  MAINNET_RPC_URL?: string;
+  DEVNET_RPC_URL?: string;
+  /** Devnet (staging) program-id overrides — required off mainnet. */
+  DEVNET_PROGRAM_IDS?: {
+    core?: string;
+    gar?: string;
+    arns?: string;
+    ant?: string;
+  };
 }
 interface RawArioInstance {
   getTokenCost: (args: unknown) => Promise<unknown>;
-  buyRecord: (args: unknown) => Promise<unknown>;
+  /** Present only on the writeable (signer-built) client. */
+  buyRecord?: (args: unknown) => Promise<unknown>;
   getArNSRecord: (args: unknown) => Promise<unknown>;
 }
 interface RawAntInstance {
-  getRecords: () => Promise<Record<string, { transactionId: string; ttlSeconds: number }>>;
-  setBaseNameRecord: (args: unknown) => Promise<{ id: string }>;
-  setUndernameRecord: (args: unknown) => Promise<{ id: string }>;
+  getRecords: () => Promise<
+    Record<string, { transactionId: string; ttlSeconds: number }>
+  >;
+  /** Present only on the writeable (signer-built) client. */
+  setBaseNameRecord?: (args: unknown) => Promise<{ id: string }>;
+  setUndernameRecord?: (args: unknown) => Promise<{ id: string }>;
+}
+/** The three `@solana/kit` factories the Solana-native SDK is driven with. */
+interface RawSolanaKitModule {
+  createSolanaRpc?: (url: string) => unknown;
+  createSolanaRpcSubscriptions?: (url: string) => unknown;
+  createKeyPairSignerFromBytes?: (bytes: Uint8Array) => Promise<unknown>;
 }
 
 /**
- * Default {@link LoadArns}: lazily `import('@ar.io/sdk')` and adapt it to our
- * seam. The specifier is stored in a `string`-typed variable so TypeScript
- * does not try to resolve the optional module at build time; a missing package
- * surfaces as {@link ArnsSdkUnavailableError}.
+ * Default {@link LoadArns}: lazily `import('@ar.io/sdk')` + `@solana/kit` and
+ * adapt them to our seam. Specifiers are stored in `string`-typed variables so
+ * TypeScript does not try to resolve the optional modules at build time; a
+ * missing package surfaces as {@link ArnsSdkUnavailableError}, a wrong API
+ * surface as {@link ArnsSdkIncompatibleError}.
  *
- * NOTE: the real adapter is never exercised by tests (the hard safety rule —
- * every money-moving path runs ONLY against injected stubs). It exists so the
- * command works against a real, funded install once a human signs off on
- * spending real mainnet $ARIO.
+ * THE #376 LESSON, load-bearing: the SDK provides NO defaults. Bare
+ * `ARIO.init()` throws and `ARIO.init({})` produces a client whose every read
+ * fails — the caller must build the rpc (`createSolanaRpc`) explicitly, and
+ * for writes also `rpcSubscriptions` + a `createKeyPairSignerFromBytes`
+ * signer. Read mode constructs NO signer at all, so free lookups need zero
+ * key material at the SDK layer.
+ *
+ * NOTE: no test drives this adapter against the live registry except the
+ * env-gated smoke test (`__integration__/arns-live-read.integration.test.ts`,
+ * FREE reads only) — every money-moving path runs ONLY against injected
+ * stubs, and no real $ARIO is ever spent by code we run.
  */
 export const defaultLoadArns: LoadArns = async (options) => {
   // Cast to `string` (not a literal type) so TypeScript does not try to
-  // resolve the OPTIONAL `@ar.io/sdk` module at build time — a missing package
-  // must surface as a clean runtime error, not a compile failure.
-  const specifier = '@ar.io/sdk' as string;
+  // resolve the OPTIONAL modules at build time — a missing package must
+  // surface as a clean runtime error, not a compile failure.
+  const sdkSpecifier = '@ar.io/sdk' as string;
   let mod: RawArioModule;
   try {
-    mod = (await import(specifier)) as unknown as RawArioModule;
+    mod = (await import(sdkSpecifier)) as unknown as RawArioModule;
   } catch (err) {
     throw new ArnsSdkUnavailableError(err);
   }
-  if (!mod.ARIO?.init || !mod.ANT?.init) {
-    throw new ArnsSdkUnavailableError(
-      new Error('the installed @ar.io/sdk does not expose ARIO.init / ANT.init')
+  // `@solana/kit` carries the rpc/signer factories the Solana-native SDK is
+  // driven with. It is a dependency of `@ar.io/sdk` AND declared in rig's own
+  // optionalDependencies so strict (pnpm-style) layouts resolve it here too.
+  const kitSpecifier = '@solana/kit' as string;
+  let kit: RawSolanaKitModule;
+  try {
+    kit = (await import(kitSpecifier)) as unknown as RawSolanaKitModule;
+  } catch (err) {
+    throw new ArnsSdkUnavailableError(err, '@solana/kit');
+  }
+
+  const arioInit = mod.ARIO?.init;
+  const antInit = mod.ANT?.init;
+  if (!arioInit || !antInit) {
+    throw new ArnsSdkIncompatibleError('it exposes no ARIO.init / ANT.init');
+  }
+  const {
+    createSolanaRpc,
+    createSolanaRpcSubscriptions,
+    createKeyPairSignerFromBytes,
+  } = kit;
+  if (
+    !createSolanaRpc ||
+    !createSolanaRpcSubscriptions ||
+    !createKeyPairSignerFromBytes
+  ) {
+    throw new ArnsSdkIncompatibleError(
+      'the resolved @solana/kit exposes no createSolanaRpc / ' +
+        'createSolanaRpcSubscriptions / createKeyPairSignerFromBytes'
     );
   }
-  const processId =
-    options.processId ??
-    (options.network === 'devnet'
-      ? (mod.ARIO_DEVNET_PROCESS_ID ?? '')
-      : options.network === 'testnet'
-        ? (mod.ARIO_TESTNET_PROCESS_ID ?? '')
-        : (mod.ARIO_MAINNET_PROCESS_ID ?? ARIO_MAINNET_PROCESS_ID));
-  if (!processId) {
-    throw new ArnsSdkUnavailableError(
-      new Error(
-        `the installed @ar.io/sdk exposes no ${options.network} registry ` +
-          'process id — pass --process-id explicitly'
-      )
+
+  // Cluster targeting: rpc endpoint + (off mainnet) program-id overrides.
+  const rpcUrl =
+    options.network === 'devnet'
+      ? (mod.DEVNET_RPC_URL ?? SOLANA_DEVNET_RPC_URL)
+      : (mod.DEFAULT_SOLANA_RPC_URL ??
+        mod.MAINNET_RPC_URL ??
+        SOLANA_MAINNET_RPC_URL);
+  const devnetIds =
+    options.network === 'devnet' ? mod.DEVNET_PROGRAM_IDS : undefined;
+  if (options.network === 'devnet' && devnetIds === undefined) {
+    throw new ArnsSdkIncompatibleError(
+      'it exposes no DEVNET_PROGRAM_IDS — devnet targeting needs the ' +
+        "SDK's staging program ids"
     );
   }
-  if (!mod.SolanaSigner) {
-    throw new ArnsSdkUnavailableError(
-      new Error(
-        'the installed @ar.io/sdk exposes no SolanaSigner — this build predates ' +
-          "ar.io's Solana migration; upgrade @ar.io/sdk"
-      )
-    );
-  }
-  const signer = new mod.SolanaSigner(options.solanaSecretKey);
-  const ario = mod.ARIO.init({ process: processId, signer });
-  const antInit = mod.ANT.init;
+  const antProgramId = devnetIds?.ant;
+  const programOverrides = {
+    ...(devnetIds?.core !== undefined ? { coreProgramId: devnetIds.core } : {}),
+    ...(devnetIds?.gar !== undefined ? { garProgramId: devnetIds.gar } : {}),
+    ...(devnetIds?.arns !== undefined ? { arnsProgramId: devnetIds.arns } : {}),
+    ...(antProgramId !== undefined ? { antProgramId } : {}),
+    // --process-id / RIG_ARIO_PROCESS_ID: explicit ArNS registry program
+    // override (wins over the cluster default).
+    ...(options.processId !== undefined
+      ? { arnsProgramId: options.processId }
+      : {}),
+  };
+
+  // Build the transport(s) explicitly — see the #376 lesson above. Write mode
+  // alone derives the signer (from the identity's 64-byte Ed25519 keypair)
+  // and the ws subscriptions client that transaction confirmation needs.
+  const rpc = createSolanaRpc(rpcUrl);
+  const writeExtras =
+    options.mode === 'write'
+      ? {
+          signer: await createKeyPairSignerFromBytes(options.solanaSecretKey),
+          rpcSubscriptions: createSolanaRpcSubscriptions(
+            rpcUrl.replace(/^http/, 'ws')
+          ),
+        }
+      : {};
+  const ario = arioInit({ rpc, ...writeExtras, ...programOverrides });
+
   return {
     getTokenCost: async (args) => BigInt(String(await ario.getTokenCost(args))),
-    buyRecord: async (args) =>
-      (await ario.buyRecord(args)) as { id: string; processId?: string },
-    getArNSRecord: async (args) =>
-      (await ario.getArNSRecord(args)) as ArnsRecordView | null,
-    ant: async (pid) => {
-      const ant = antInit({ processId: pid, signer });
+    buyRecord: async (args) => {
+      if (typeof ario.buyRecord !== 'function') {
+        throw new ArnsSdkIncompatibleError(
+          'the signed ARIO client exposes no buyRecord'
+        );
+      }
+      return (await ario.buyRecord(args)) as { id: string; processId?: string };
+    },
+    getArNSRecord: async (args) => {
+      // 4.x throws on an unregistered name; our seam reports `null` so
+      // `status` can render "available" instead of an error.
+      let raw: {
+        processId?: string;
+        type?: NameType;
+        startTimestamp?: number;
+        endTimestamp?: number;
+        undernameLimit?: number;
+      };
+      try {
+        raw = (await ario.getArNSRecord(args)) as typeof raw;
+      } catch (err) {
+        if (err instanceof Error && /not found/i.test(err.message)) return null;
+        throw err;
+      }
+      // Solana-native records carry cluster unix timestamps in SECONDS; the
+      // seam contract (and the human expiry render) is ms epoch.
       return {
-        getRecords: () => ant.getRecords(),
-        setBaseNameRecord: (a) => ant.setBaseNameRecord(a),
-        setUndernameRecord: (a) => ant.setUndernameRecord(a),
+        processId: raw.processId ?? null,
+        type: raw.type ?? null,
+        ...(raw.startTimestamp !== undefined
+          ? { startTimestamp: raw.startTimestamp * 1000 }
+          : {}),
+        ...(raw.endTimestamp !== undefined
+          ? { endTimestamp: raw.endTimestamp * 1000 }
+          : {}),
+        ...(raw.undernameLimit !== undefined
+          ? { undernameLimit: raw.undernameLimit }
+          : {}),
+      };
+    },
+    ant: async (pid) => {
+      const ant = await antInit({
+        processId: pid,
+        rpc,
+        ...writeExtras,
+        ...(antProgramId !== undefined ? { antProgramId } : {}),
+      });
+      return {
+        getRecords: async () => {
+          // Pin the seam shape: 4.x records carry extra fields (index,
+          // targetProtocol, …) that must not leak into the `--json` contract.
+          const records = await ant.getRecords();
+          const targets: Record<string, AntRecordTarget> = {};
+          for (const [undername, record] of Object.entries(records)) {
+            targets[undername] = {
+              transactionId: record.transactionId,
+              ttlSeconds: record.ttlSeconds,
+            };
+          }
+          return targets;
+        },
+        setBaseNameRecord: async (a) => {
+          if (typeof ant.setBaseNameRecord !== 'function') {
+            throw new ArnsSdkIncompatibleError(
+              'the signed ANT client exposes no setBaseNameRecord'
+            );
+          }
+          return ant.setBaseNameRecord(a);
+        },
+        setUndernameRecord: async (a) => {
+          if (typeof ant.setUndernameRecord !== 'function') {
+            throw new ArnsSdkIncompatibleError(
+              'the signed ANT client exposes no setUndernameRecord'
+            );
+          }
+          return ant.setUndernameRecord(a);
+        },
       };
     },
   };
@@ -333,11 +528,12 @@ Options:
   --undername <sub>    target the undername <sub>_<name> instead of the base
                        name (set)
   --ttl <seconds>      record TTL in seconds (set; default 3600)
-  --network <net>      registry: mainnet | devnet | testnet (default mainnet;
-                       or RIG_ARIO_NETWORK). Non-mainnet gateway resolution is
+  --network <net>      cluster: mainnet | devnet (default mainnet; or
+                       RIG_ARIO_NETWORK). ar.io has no Solana-testnet
+                       deployment. Non-mainnet gateway resolution is
                        unverified.
-  --process-id <id>    explicit registry process id (overrides --network; or
-                       RIG_ARIO_PROCESS_ID)
+  --process-id <id>    explicit ArNS registry program id — a Solana program
+                       address (overrides --network; or RIG_ARIO_PROCESS_ID)
   --yes                skip the confirmation (required when not a TTY) for
                        buy/set
   --json               machine-readable envelope; for buy/set without --yes it
@@ -350,7 +546,7 @@ Options:
 
 const DEFAULT_TTL_SECONDS = 3600;
 const DEFAULT_LEASE_YEARS = 1;
-const NETWORKS: readonly ArioNetwork[] = ['mainnet', 'devnet', 'testnet'];
+const NETWORKS: readonly ArioNetwork[] = ['mainnet', 'devnet'];
 
 /** Resolved wallet context shared by every `rig name` action. */
 interface NameContext {
@@ -364,11 +560,16 @@ interface NameContext {
 /**
  * Resolve the rig identity, derive its Solana key (the owner/payer), and build
  * the (stub-injected in tests) ArNS SDK targeted at the chosen registry.
+ * `mode` decides whether the SDK gets write plumbing: every FREE lookup —
+ * `status`, the buy quote, the set preview — runs `read` (signerless, #376);
+ * `buy`/`set` escalate to `write` only at execute time, after the confirm
+ * gate.
  */
 async function resolveNameContext(
   deps: NameDeps,
   network: ArioNetwork,
-  processId: string | undefined
+  processId: string | undefined,
+  mode: 'read' | 'write'
 ): Promise<NameContext> {
   const { io, env } = deps;
   const resolved = await resolveIdentity({
@@ -392,11 +593,12 @@ async function resolveNameContext(
   if (!solanaAddress) {
     throw new Error(
       'no Solana key could be derived for this identity — ArNS names are ' +
-        'owned by the Solana key (m/44\'/501\'/0\'/0\'). Ensure the optional ' +
+        "owned by the Solana key (m/44'/501'/0'/0'). Ensure the optional " +
         'Solana derivation deps are installed.'
     );
   }
   const sdk = await (deps.loadArns ?? defaultLoadArns)({
+    mode,
     solanaSecretKey: derived.solana.secretKey,
     solanaPublicKey: solanaAddress,
     network,
@@ -420,7 +622,10 @@ interface NameFlags {
   json: boolean;
 }
 
-function parseNameFlags(args: string[], env: NodeJS.ProcessEnv): {
+function parseNameFlags(
+  args: string[],
+  env: NodeJS.ProcessEnv
+): {
   positionals: string[];
   flags: NameFlags;
 } {
@@ -440,14 +645,25 @@ function parseNameFlags(args: string[], env: NodeJS.ProcessEnv): {
     },
   });
   if (values.help) {
-    return { positionals: ['--help'], flags: { permabuy: false, ttl: 0, network: 'mainnet', yes: false, json: false } };
+    return {
+      positionals: ['--help'],
+      flags: {
+        permabuy: false,
+        ttl: 0,
+        network: 'mainnet',
+        yes: false,
+        json: false,
+      },
+    };
   }
 
   let years: number | undefined;
   if (values.years !== undefined) {
     years = Number(values.years);
     if (!Number.isInteger(years) || years <= 0) {
-      throw new Error(`--years must be a positive integer, got ${JSON.stringify(values.years)}`);
+      throw new Error(
+        `--years must be a positive integer, got ${JSON.stringify(values.years)}`
+      );
     }
   }
   if (years !== undefined && values.permabuy) {
@@ -458,13 +674,17 @@ function parseNameFlags(args: string[], env: NodeJS.ProcessEnv): {
   if (values.ttl !== undefined) {
     ttl = Number(values.ttl);
     if (!Number.isInteger(ttl) || ttl <= 0) {
-      throw new Error(`--ttl must be a positive integer number of seconds, got ${JSON.stringify(values.ttl)}`);
+      throw new Error(
+        `--ttl must be a positive integer number of seconds, got ${JSON.stringify(values.ttl)}`
+      );
     }
   }
 
   const networkRaw = values.network ?? env['RIG_ARIO_NETWORK'] ?? 'mainnet';
   if (!NETWORKS.includes(networkRaw as ArioNetwork)) {
-    throw new Error(`--network must be one of ${NETWORKS.join(' | ')}, got ${JSON.stringify(networkRaw)}`);
+    throw new Error(
+      `--network must be one of ${NETWORKS.join(' | ')}, got ${JSON.stringify(networkRaw)}`
+    );
   }
   const processId = values['process-id'] ?? env['RIG_ARIO_PROCESS_ID'];
 
@@ -473,7 +693,9 @@ function parseNameFlags(args: string[], env: NodeJS.ProcessEnv): {
     flags: {
       ...(years !== undefined ? { years } : {}),
       permabuy: values.permabuy ?? false,
-      ...(values.undername !== undefined ? { undername: values.undername } : {}),
+      ...(values.undername !== undefined
+        ? { undername: values.undername }
+        : {}),
       ttl,
       network: networkRaw as ArioNetwork,
       ...(processId !== undefined ? { processId } : {}),
@@ -515,7 +737,14 @@ async function runBuy(
   const type: NameType = flags.permabuy ? 'permabuy' : 'lease';
   const years = type === 'lease' ? (flags.years ?? DEFAULT_LEASE_YEARS) : null;
 
-  const ctx = await resolveNameContext(deps, flags.network, flags.processId);
+  // Signerless context: the quote is a FREE read (#376); write plumbing is
+  // built only after the confirm gate, right before money moves.
+  const ctx = await resolveNameContext(
+    deps,
+    flags.network,
+    flags.processId,
+    'read'
+  );
 
   // ── Estimate (quote the mARIO cost) ──────────────────────────────────────
   const mario = await ctx.sdk.getTokenCost({
@@ -588,7 +817,14 @@ async function runBuy(
   }
 
   // ── Execute (register; the spawned ANT is owned by the Solana key) ────────
-  const receipt = await ctx.sdk.buyRecord({
+  // Only now — confirmed — build the signed SDK (write mode).
+  const signed = await resolveNameContext(
+    deps,
+    flags.network,
+    flags.processId,
+    'write'
+  );
+  const receipt = await signed.sdk.buyRecord({
     name,
     type,
     ...(years !== null ? { years } : {}),
@@ -639,7 +875,14 @@ async function runSet(
   deps: NameDeps
 ): Promise<number> {
   const { io } = deps;
-  const ctx = await resolveNameContext(deps, flags.network, flags.processId);
+  // Signerless context: the record lookup / preview is a FREE read (#376);
+  // write plumbing is built only after the confirm gate.
+  const ctx = await resolveNameContext(
+    deps,
+    flags.network,
+    flags.processId,
+    'read'
+  );
 
   const record = await ctx.sdk.getArNSRecord({ name });
   if (!record || !record.processId) {
@@ -670,10 +913,14 @@ async function runSet(
     ...extra,
   });
 
-  const targetLabel = undername ? `undername "${undername}_${name}"` : `base name "${name}"`;
+  const targetLabel = undername
+    ? `undername "${undername}_${name}"`
+    : `base name "${name}"`;
 
   if (!flags.json) {
-    io.out(`Set ${targetLabel} → txId ${txId} (ttl ${flags.ttl}s) on ${ctx.network}`);
+    io.out(
+      `Set ${targetLabel} → txId ${txId} (ttl ${flags.ttl}s) on ${ctx.network}`
+    );
     io.out(`  ANT process: ${antProcessId}`);
     io.out(`  Signed by the identity's Solana key (${ctx.solanaAddress}).`);
     io.out(renderIdentityLine(ctx.identity));
@@ -706,10 +953,24 @@ async function runSet(
   }
 
   // ── Execute (sign + submit the ANT record update) ────────────────────────
-  const ant = await ctx.sdk.ant(antProcessId);
+  // Only now — confirmed — build the signed SDK (write mode).
+  const signed = await resolveNameContext(
+    deps,
+    flags.network,
+    flags.processId,
+    'write'
+  );
+  const ant = await signed.sdk.ant(antProcessId);
   const receipt = undername
-    ? await ant.setUndernameRecord({ undername, transactionId: txId, ttlSeconds: flags.ttl })
-    : await ant.setBaseNameRecord({ transactionId: txId, ttlSeconds: flags.ttl });
+    ? await ant.setUndernameRecord({
+        undername,
+        transactionId: txId,
+        ttlSeconds: flags.ttl,
+      })
+    : await ant.setBaseNameRecord({
+        transactionId: txId,
+        ttlSeconds: flags.ttl,
+      });
   const result = { messageId: receipt.id };
 
   if (flags.json) {
@@ -717,7 +978,9 @@ async function runSet(
   } else {
     io.out(`Updated — ANT message ${result.messageId}`);
     const host = undername ? `${undername}_${name}` : name;
-    io.out(`  Resolves at https://${host}.<gateway>/ (allow for gateway cache/TTL).`);
+    io.out(
+      `  Resolves at https://${host}.<gateway>/ (allow for gateway cache/TTL).`
+    );
   }
   return 0;
 }
@@ -752,7 +1015,13 @@ async function runStatus(
   deps: NameDeps
 ): Promise<number> {
   const { io } = deps;
-  const ctx = await resolveNameContext(deps, flags.network, flags.processId);
+  // FREE read: signerless SDK — a status lookup must never need write plumbing.
+  const ctx = await resolveNameContext(
+    deps,
+    flags.network,
+    flags.processId,
+    'read'
+  );
 
   const record = await ctx.sdk.getArNSRecord({ name });
   let targets: Record<string, AntRecordTarget> | null = null;
@@ -805,7 +1074,9 @@ async function runStatus(
     io.out('  Records:');
     for (const [under, target] of Object.entries(targets)) {
       const label = under === '@' ? '(base)' : `${under}_${name}`;
-      io.out(`    ${label} → ${target.transactionId} (ttl ${target.ttlSeconds}s)`);
+      io.out(
+        `    ${label} → ${target.transactionId} (ttl ${target.ttlSeconds}s)`
+      );
     }
   } else {
     io.out('  Records: none set — point one with `rig name set`.');
@@ -867,7 +1138,9 @@ export async function runName(args: string[], deps: NameDeps): Promise<number> {
     // set: `rig name set <name> <txId>`
     const txId = positionals[1];
     if (txId === undefined) {
-      io.err('`rig name set` needs a <txId> (the Arweave transaction to point at)');
+      io.err(
+        '`rig name set` needs a <txId> (the Arweave transaction to point at)'
+      );
       io.err(NAME_USAGE);
       return 2;
     }
