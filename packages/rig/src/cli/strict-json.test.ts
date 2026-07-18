@@ -237,7 +237,10 @@ async function run(
     });
     const code = await dispatch(argv, {
       io,
-      env: opts.env ?? {},
+      // Hermetic by default: an empty env would fall back to the REAL
+      // ~/.toon-client for local record stores (site manifests, rig
+      // pointers) — tests must never write there.
+      env: opts.env ?? { TOON_CLIENT_HOME: makeTempDir('toon-rig-json-home-') },
       cwd: opts.cwd ?? makeTempDir('toon-rig-json-cwd-'),
       probeDaemon: opts.probeDaemon ?? NO_DAEMON,
       ...(opts.loadStandalone ? { loadStandalone: opts.loadStandalone } : {}),

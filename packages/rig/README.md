@@ -347,6 +347,13 @@ The mnemonic is resolved along one precedence chain — highest first:
    keystore (`keystorePath` + `TOON_CLIENT_KEYSTORE_PASSWORD`), then the `mnemonic`
    config field
 
+The BIP-44 account index follows the same env-over-config rule: the
+`RIG_ACCOUNT_INDEX` environment variable always wins; the shared config's
+`mnemonicAccountIndex` applies ONLY when the phrase itself came from the shared
+state dir (tier 4); otherwise account 0. An explicit `RIG_MNEMONIC` therefore
+derives the same identity no matter which `TOON_CLIENT_HOME` is active — a
+per-home config never silently shifts an explicitly provided identity.
+
 Every paid command reports which source is active and the derived pubkey
 (`Identity: <pubkey> (from …)`, and an `identity` object in `--json` output) — the
 phrase itself is never printed and never written to git config or any repo file.

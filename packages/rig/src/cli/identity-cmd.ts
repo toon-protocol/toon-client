@@ -38,6 +38,7 @@ import {
   linkKeystoreInClientConfig,
   MissingIdentityError,
   readClientConfigFile,
+  resolveAccountIndex,
   resolveIdentity,
   type ResolvedIdentity,
 } from './identity.js';
@@ -194,12 +195,12 @@ async function prepareKeystoreTarget(
   return { keystorePath, password, autoPassword, existing, keyOps };
 }
 
-/** BIP-44 account index from the shared config (default 0), as resolve uses. */
+/** BIP-44 account index exactly as {@link resolveIdentity} will pick it for
+ * the keystore this command mints (`RIG_ACCOUNT_INDEX` env > shared config >
+ * 0), so the reported pubkey matches subsequent runs. */
 function readAccountIndex(env: NodeJS.ProcessEnv): number {
   const file = readClientConfigFile(clientConfigPath(env));
-  return typeof file.mnemonicAccountIndex === 'number'
-    ? file.mnemonicAccountIndex
-    : 0;
+  return resolveAccountIndex(env, 'keystore', file);
 }
 
 /** Assemble the {@link CreatedIdentity} once a phrase is on disk. */
