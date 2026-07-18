@@ -13,6 +13,7 @@ vi.mock('@/hooks/use-rig-config', () => ({
 import {
   CloneInstructions,
   buildCloneCommand,
+  buildDisplayCommand,
 } from '@/components/clone-instructions';
 import type { RepoMetadata } from '../../nip34-parsers.js';
 
@@ -86,17 +87,40 @@ describe('[P1] CloneInstructions', () => {
     expect(command).toContain(`rig clone ws://localhost:7100 '${OWNER}/it'\\''s; rm -rf ~'`);
   });
 
-  it('renders the command with the active relay, owner pubkey, and repo id', () => {
+  it('renders a display command with the owner pubkey abbreviated (full command in title)', () => {
     render(<CloneInstructions metadata={createRepoMetadata({ repoId: 'rig-demo' })} />);
     openPopover();
 
     const command = document.querySelector('pre');
     expect(command).not.toBeNull();
+    // Displayed: abbreviated owner so the one-line box stays readable and
+    // never runs under the copy button.
     expect(command?.textContent).toContain(
+      `rig clone wss://relay.devnet.toonprotocol.dev ${OWNER.slice(0, 8)}…${OWNER.slice(-4)}/rig-demo`,
+    );
+    expect(command?.textContent).not.toContain(OWNER);
+    // The FULL command stays reachable on the box itself for hover/selection.
+    expect(command?.getAttribute('title')).toBe(
       `rig clone wss://relay.devnet.toonprotocol.dev ${OWNER}/rig-demo`,
     );
     // The npm install line is no longer part of the copied command.
     expect(command?.textContent).not.toContain('npm i -g');
+  });
+
+  it('buildDisplayCommand abbreviates the owner and strips control characters without quoting', () => {
+    expect(buildDisplayCommand('my-repo', OWNER, 'ws://localhost:7100')).toBe(
+      `rig clone ws://localhost:7100 ${OWNER.slice(0, 8)}…${OWNER.slice(-4)}/my-repo`,
+    );
+    // Display-only: control chars are stripped but nothing is shell-quoted.
+    expect(
+      buildDisplayCommand('evil\nrepo', OWNER, 'ws://localhost:7100'),
+    ).toBe(
+      `rig clone ws://localhost:7100 ${OWNER.slice(0, 8)}…${OWNER.slice(-4)}/evilrepo`,
+    );
+    // Short owners (not pubkey-shaped) are left intact.
+    expect(buildDisplayCommand('r', 'shortname', 'ws://localhost:7100')).toBe(
+      'rig clone ws://localhost:7100 shortname/r',
+    );
   });
 
   it('notes that reads are free and links the rig CLI docs', () => {
