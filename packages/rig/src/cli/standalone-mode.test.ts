@@ -239,6 +239,44 @@ describe('resolveNetworkTopology — settlement', () => {
     });
   });
 
+  it('zero-config devnet: a qualified EVM chain key still probes and wins (#384)', async () => {
+    // rig 2.7.1 regression: bare mnemonic + relay URL against the devnet,
+    // Solana announced FIRST, and the EVM chain spelled with the qualified
+    // `evm:{network}:{chainId}` key. The devnet RPC table missed the
+    // qualified key, the EVM probe was skipped, and negotiation fell
+    // through to `solana:devnet` — which then died at push time. The chain
+    // must resolve its zone RPC by chain id and win the funded probe.
+    const probed: string[] = [];
+    const topology = await resolveNetworkTopology(
+      inputs({
+        announce: apexAnnounce({
+          supportedChains: ['solana:devnet', 'evm:anvil:31337'],
+          settlementAddresses: {
+            'evm:anvil:31337': '0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab',
+            'solana:devnet': 'A3FG5y6rfBNJQrsGYTNNR7UHAXCREPJgV362LdTQGNwK',
+          },
+        }),
+        probeBalance: (args) => {
+          probed.push(args.rpcUrl);
+          return Promise.resolve(12345n);
+        },
+      })
+    );
+    expect(topology.selection).toMatchObject({
+      chain: 'evm:anvil:31337',
+      reason: 'funded',
+    });
+    expect(probed).toEqual(['https://evm-rpc.devnet.toonprotocol.dev']);
+    expect(topology.supportedChains).toEqual(['evm:anvil:31337']);
+    expect(topology.chainRpcUrls).toEqual({
+      'evm:anvil:31337': 'https://evm-rpc.devnet.toonprotocol.dev',
+    });
+    // Deterministic anvil contracts still derive from the chain-id preset.
+    expect(topology.tokenNetworks?.['evm:anvil:31337']).toMatch(/^0x/);
+    expect(topology.preferredTokens?.['evm:anvil:31337']).toMatch(/^0x/);
+    expect(topology.solanaChannel).toBeUndefined();
+  });
+
   it('prefers a Solana chain funded for the identity-derived address', async () => {
     // A wallet funded ONLY on Solana settles there automatically: the EVM
     // probe finds nothing, the SPL probe (against the mnemonic's own derived
