@@ -77,6 +77,7 @@ export {
 export { hexToNpub, npubToHex, ownerToHex } from './npub.js';
 
 export {
+  flooredUploadFee,
   type FeeRates,
   type GitObjectUpload,
   type PublishReceipt,

@@ -40,13 +40,14 @@ import { ToonClient, parseFulfillHttp } from '@toon-protocol/client';
 import { MAX_OBJECT_SIZE } from '../objects.js';
 import { contentTypeForPath, DEFAULT_CONTENT_TYPE } from '../mime.js';
 import type { UnsignedEvent } from '../nip34-events.js';
-import type {
-  BlobUpload,
-  FeeRates,
-  GitObjectUpload,
-  PublishReceipt,
-  Publisher,
-  UploadReceipt,
+import {
+  flooredUploadFee,
+  type BlobUpload,
+  type FeeRates,
+  type GitObjectUpload,
+  type PublishReceipt,
+  type Publisher,
+  type UploadReceipt,
 } from '../publisher.js';
 import {
   recordKey,
@@ -159,6 +160,17 @@ export interface StandalonePublisherOptions {
   eventFee?: bigint;
   /** Upload fee per object body byte (seed pipeline's bid rate). Default 10n. */
   uploadFeePerByte?: bigint;
+  /**
+   * FLAT per-packet route prices the payment peer announces for the
+   * publish/store destinations (kind:10032 `capabilities` — e.g.
+   * `{capability:'os.publish', address:'g.proxy.relay', price:'1000'}`).
+   * The connector gates every paid packet at the destination route's price:
+   * a balance-proof claim advancing the channel by less is rejected (F06).
+   * Applied as a FLOOR on the computed per-packet fee — `publish` floors
+   * event claims, `store` floors upload claims. A destination without a
+   * known price keeps the computed fee unchanged (pre-floor behavior).
+   */
+  routePrices?: { publish?: bigint; store?: bigint };
   /** Daemon control API port probed by the nonce guard. */
   daemonPort?: number;
   /** Directory for the per-identity advisory lockfile. */
@@ -366,6 +378,9 @@ export class StandalonePublisher implements Publisher {
   private readonly channelDestination: string | undefined;
   private readonly eventFee: bigint;
   private readonly uploadFeePerByte: bigint;
+  private readonly routePrices:
+    | StandalonePublisherOptions['routePrices']
+    | undefined;
   private readonly daemonPort: number | undefined;
   private readonly lockDir: string | undefined;
   private readonly fetchImpl: typeof fetch | undefined;
@@ -414,6 +429,7 @@ export class StandalonePublisher implements Publisher {
 
     this.eventFee = options.eventFee ?? 1n;
     this.uploadFeePerByte = options.uploadFeePerByte ?? 10n;
+    this.routePrices = options.routePrices;
     this.daemonPort = options.daemonPort;
     this.lockDir = options.lockDir;
     this.fetchImpl = options.fetchImpl;
@@ -894,19 +910,47 @@ export class StandalonePublisher implements Publisher {
   /**
    * Fee rates for `planPush` estimation: the flat per-event fee and the
    * per-byte upload rate this publisher pays (daemon `feePerEvent` and seed
-   * bid-rate conventions; override via options).
+   * bid-rate conventions; override via options), with the announced route
+   * prices folded in so the ESTIMATE always equals the CLAIMS: the flat
+   * `eventFee` is returned pre-floored at the publish route price, and the
+   * store route price rides as `minUploadFee` (the per-upload floor —
+   * per-byte pricing can't fold a flat floor into the rate).
    */
   getFeeRates(): Promise<FeeRates> {
+    const minUploadFee = this.routePrices?.store;
     return Promise.resolve({
       uploadFeePerByte: this.uploadFeePerByte,
-      eventFee: this.eventFee,
+      eventFee: this.effectiveEventFee(),
+      ...(minUploadFee !== undefined ? { minUploadFee } : {}),
     });
+  }
+
+  /**
+   * The flat per-event claim: `eventFee`, floored at the publish route's
+   * announced price (the connector rejects a claim below it — F06).
+   */
+  private effectiveEventFee(): bigint {
+    const min = this.routePrices?.publish ?? 0n;
+    return this.eventFee > min ? this.eventFee : min;
+  }
+
+  /**
+   * The per-upload claim: `bytes × uploadFeePerByte`, floored at the store
+   * route's announced price (the connector rejects a claim below it — F06).
+   */
+  private uploadFee(bytes: number): bigint {
+    return flooredUploadFee(
+      bytes,
+      this.uploadFeePerByte,
+      this.routePrices?.store
+    );
   }
 
   /**
    * Upload one git object as a kind:5094 store write (Git-SHA/Git-Type/Repo
    * tagged — the proven seed-pipeline shape), signing one balance-proof claim
-   * for `body.length × uploadFeePerByte`.
+   * for `body.length × uploadFeePerByte`, floored at the store route's
+   * announced price ({@link StandalonePublisherOptions.routePrices}).
    *
    * #368: a blob's `Content-Type` is derived from its path extension (else
    * octet-stream) and sent in the `output` tag, which the store forwards onto
@@ -928,7 +972,7 @@ export class StandalonePublisher implements Publisher {
         ? contentTypeForPath(upload.path)
         : DEFAULT_CONTENT_TYPE;
 
-    const fee = BigInt(upload.body.length) * this.uploadFeePerByte;
+    const fee = this.uploadFee(upload.body.length);
     const event = this.client.signEvent({
       kind: 5094,
       content: '',
@@ -970,7 +1014,8 @@ export class StandalonePublisher implements Publisher {
    * tags (and an optional `Repo` provenance tag), NOT the Git-SHA/Git-Type
    * tags. Without those the store keeps the bytes verbatim instead of
    * re-deriving a git envelope, which is exactly what the ar.io path manifest
-   * needs. One balance-proof claim for `body.length × uploadFeePerByte`.
+   * needs. One balance-proof claim for `body.length × uploadFeePerByte`,
+   * floored at the store route's announced price.
    */
   async uploadBlob(upload: BlobUpload): Promise<UploadReceipt> {
     if (upload.body.length > MAX_OBJECT_SIZE) {
@@ -981,7 +1026,7 @@ export class StandalonePublisher implements Publisher {
     await this.start();
     const channelId = this.requireChannel();
 
-    const fee = BigInt(upload.body.length) * this.uploadFeePerByte;
+    const fee = this.uploadFee(upload.body.length);
     const event = this.client.signEvent({
       kind: 5094,
       content: '',
@@ -1036,7 +1081,7 @@ export class StandalonePublisher implements Publisher {
     const channelId = this.requireChannel();
 
     const signed = this.client.signEvent(event);
-    const fee = this.eventFee;
+    const fee = this.effectiveEventFee();
     const claim = await this.client.signBalanceProof(channelId, fee);
     const result = await this.client.publishEvent(signed, {
       ...(this.publishDestination

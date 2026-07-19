@@ -72,6 +72,23 @@ export interface AnnouncedRoutes {
   store?: string;
 }
 
+/**
+ * One announced capability with its FLAT route price (out-of-band
+ * `capabilities` content field, e.g. `{capability:'os.publish',
+ * address:'g.proxy.relay', price:'1000'}`). The connector (≥3.34.6) gates
+ * every paid packet at the destination route's price: a balance-proof claim
+ * advancing the channel by less is rejected (F06), so per-packet fees to
+ * `address` must be floored at `price`.
+ */
+export interface AnnouncedCapability {
+  /** Capability name, e.g. `os.publish` / `os.store`. */
+  capability: string;
+  /** ILP destination address the capability (and its price) applies to. */
+  address: string;
+  /** Flat per-packet price, base-unit non-negative integer string. */
+  price: string;
+}
+
 /** One schema-valid, unexpired kind:10032 announce seen on the relay. */
 export interface AnnouncedPeer {
   /** Announcing identity (event author, hex). */
@@ -80,6 +97,8 @@ export interface AnnouncedPeer {
   info: IlpPeerInfo;
   /** Out-of-band `routes` content field, when present and well-formed. */
   routes?: AnnouncedRoutes;
+  /** Out-of-band `capabilities` content field (route prices), when valid. */
+  capabilities?: AnnouncedCapability[];
   /** Announce timestamp (freshness tiebreaker). */
   createdAt: number;
 }
@@ -139,6 +158,36 @@ function parseRoutes(content: string): AnnouncedRoutes | undefined {
 }
 
 /**
+ * Parse the announce's out-of-band `capabilities` array (route prices).
+ * Malformed entries are skipped; a `price` must be a non-negative integer
+ * string (the same base-unit serialization every other announced amount
+ * uses). Returns undefined when nothing valid is present.
+ */
+function parseCapabilities(content: string): AnnouncedCapability[] | undefined {
+  try {
+    const parsed = JSON.parse(content) as { capabilities?: unknown };
+    if (!Array.isArray(parsed.capabilities)) return undefined;
+    const out: AnnouncedCapability[] = [];
+    for (const entry of parsed.capabilities) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const { capability, address, price } = entry as Record<string, unknown>;
+      if (
+        typeof capability === 'string' &&
+        typeof address === 'string' &&
+        address.length > 0 &&
+        typeof price === 'string' &&
+        /^\d+$/.test(price)
+      ) {
+        out.push({ capability, address, price });
+      }
+    }
+    return out.length > 0 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Query `relayUrl` for kind:10032 announces and return the latest
  * schema-valid, unexpired announce per author. Invalid/expired events are
  * skipped silently (the relay serves plenty of non-peer 10032 experiments).
@@ -180,10 +229,12 @@ export async function discoverAnnouncedPeers(
       continue; // not a schema-valid IlpPeerInfo announce
     }
     const routes = parseRoutes(event.content);
+    const capabilities = parseCapabilities(event.content);
     peers.push({
       pubkey: event.pubkey,
       info,
       ...(routes ? { routes } : {}),
+      ...(capabilities ? { capabilities } : {}),
       createdAt: event.created_at,
     });
   }
@@ -499,6 +550,28 @@ export async function selectSettlementChain(
   // it: the user may know better than a stale announce).
   if (explicitChain) {
     if (explicitChain.includes(':')) {
+      // Chain negotiation is an EXACT string intersection: a full chain id
+      // spelled differently from the announce for the SAME EVM chain
+      // (`evm:base:84532` vs announced `evm:84532`) would strand the pin and
+      // let negotiation fall through to another chain entirely. Align an
+      // explicit EVM chain id to the announced spelling (same rule the
+      // configured-supportedChains path applies).
+      if (!announcedChains.includes(explicitChain)) {
+        const chainId = evmChainIdOf(explicitChain);
+        const equivalent =
+          chainId !== undefined
+            ? announcedChains.find((c) => evmChainIdOf(c) === chainId)
+            : undefined;
+        if (equivalent) {
+          return {
+            chain: equivalent,
+            reason: 'explicit',
+            detail:
+              `chain ${explicitChain} set by config → announced spelling ` +
+              `${equivalent} (same EVM chain id ${chainId})`,
+          };
+        }
+      }
       return {
         chain: explicitChain,
         reason: 'explicit',

@@ -87,8 +87,37 @@ export interface PublishReceipt {
 export interface FeeRates {
   /** Upload cost per body byte (smallest asset unit). */
   uploadFeePerByte: bigint;
-  /** Flat cost per published event (smallest asset unit). */
+  /**
+   * Flat cost per published event (smallest asset unit). Implementations
+   * already fold any per-packet route-price floor into this flat value, so
+   * estimates using it match the claims actually signed.
+   */
   eventFee: bigint;
+  /**
+   * FLAT minimum per upload claim (smallest asset unit): the store
+   * destination's announced route price. The connector gates every paid
+   * packet at the destination route's price — a balance-proof claim
+   * advancing the channel by less is rejected (F06) — so each per-upload fee
+   * is `max(bytes × uploadFeePerByte, minUploadFee)`. Absent: no floor
+   * (pre-floor behavior, e.g. when the peer announces no capability prices).
+   */
+  minUploadFee?: bigint;
+}
+
+/**
+ * Per-upload fee: `bytes × ratePerByte`, floored at `minFee` (the
+ * destination's announced flat route price — see
+ * {@link FeeRates.minUploadFee}). The single shared implementation keeps
+ * every estimate site equal to what the publisher actually claims.
+ */
+export function flooredUploadFee(
+  bytes: number,
+  ratePerByte: bigint,
+  minFee?: bigint
+): bigint {
+  const fee = BigInt(bytes) * ratePerByte;
+  const min = minFee ?? 0n;
+  return fee > min ? fee : min;
 }
 
 /**

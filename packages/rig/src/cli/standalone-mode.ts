@@ -105,7 +105,10 @@ import {
   type ExplicitChainConfig,
   type SolanaBalanceProbe,
 } from '../standalone/network-bootstrap.js';
-import { StandalonePublisher } from '../standalone/standalone-publisher.js';
+import {
+  StandalonePublisher,
+  deriveRouteDestinations,
+} from '../standalone/standalone-publisher.js';
 import { fetchRemoteState } from '../remote-state.js';
 import { resolveIdentity } from './identity.js';
 import type {
@@ -228,6 +231,14 @@ export interface NetworkTopology {
   storeDestination?: string;
   /** The peer the embedded client bootstraps + negotiates with. */
   knownPeers: { pubkey: string; relayUrl: string; btpEndpoint: string }[];
+  /**
+   * FLAT per-packet route prices the peer announces for the effective
+   * publish/store destinations (kind:10032 `capabilities`; base-unit integer
+   * strings — this document is JSON-cached). The connector rejects any
+   * balance-proof claim advancing the channel by less than the destination
+   * route's price (F06), so the publisher floors its per-packet fees here.
+   */
+  routePrices?: { publish?: string; store?: string };
   /** The selected settlement chain + rationale (absent: nothing known). */
   selection?: ChainSelection;
   supportedChains?: string[];
@@ -333,6 +344,30 @@ export async function resolveNetworkTopology(
     'g.proxy';
   const publishDestination = explicitPublish ?? announce?.routes?.publish;
   const storeDestination = explicitStore ?? announce?.routes?.store;
+
+  // ── Route-price floors ───────────────────────────────────────────────────
+  // The announce's `capabilities` carry a FLAT price per destination route,
+  // and the connector gates every paid packet at it (a claim advancing the
+  // channel by less is rejected — F06). Match the announced prices against
+  // the EFFECTIVE publish/store destinations — including the publisher's
+  // `<base>.relay.store` anchor-derivation fallback, so the floor applies
+  // exactly when a paid write would actually target the priced route. An
+  // unmatched destination gets no floor (behavior unchanged).
+  let routePrices: NetworkTopology['routePrices'];
+  const capabilities = announce?.capabilities;
+  if (capabilities && capabilities.length > 0) {
+    const derived = deriveRouteDestinations(destination);
+    const priceOf = (address: string): string | undefined =>
+      capabilities.find((c) => c.address === address)?.price;
+    const publishPrice = priceOf(publishDestination ?? derived.publish);
+    const storePrice = priceOf(storeDestination ?? derived.store);
+    if (publishPrice !== undefined || storePrice !== undefined) {
+      routePrices = {
+        ...(publishPrice !== undefined ? { publish: publishPrice } : {}),
+        ...(storePrice !== undefined ? { store: storePrice } : {}),
+      };
+    }
+  }
 
   // ── Known peer for the embedded client's own bootstrap ───────────────────
   // The client re-queries the peer's announce itself (its internal core) and
@@ -555,6 +590,14 @@ export async function resolveNetworkTopology(
           `${selection.detail}; set TOON_CLIENT_CHAIN (or supportedChains ` +
           'in the client config) to override'
       );
+    } else if (explicitChain && selection.chain !== explicitChain) {
+      // The explicit pin was re-spelled to the announced chain id (chain
+      // negotiation matches identifiers exactly) — say so, like the
+      // configured-supportedChains path does.
+      warn(
+        `rig: aligning configured settlement chain "${explicitChain}" to ` +
+          `the announced spelling "${selection.chain}" — ${selection.detail}`
+      );
     }
   } else {
     warn(
@@ -580,6 +623,7 @@ export async function resolveNetworkTopology(
     destination,
     ...(publishDestination ? { publishDestination } : {}),
     ...(storeDestination ? { storeDestination } : {}),
+    ...(routePrices ? { routePrices } : {}),
     knownPeers,
     ...(selection ? { selection } : {}),
     ...(supportedChains ? { supportedChains } : {}),
@@ -959,6 +1003,20 @@ export async function createStandaloneContext(
         : {}),
       ...(topo.storeDestination
         ? { storeDestination: topo.storeDestination }
+        : {}),
+      // Route-price floors (F06): every per-packet claim must advance the
+      // channel by at least the destination route's announced price.
+      ...(topo.routePrices
+        ? {
+            routePrices: {
+              ...(topo.routePrices.publish !== undefined
+                ? { publish: BigInt(topo.routePrices.publish) }
+                : {}),
+              ...(topo.routePrices.store !== undefined
+                ? { store: BigInt(topo.routePrices.store) }
+                : {}),
+            },
+          }
         : {}),
       // `rig channel open --peer` (#263): anchor the channel (and its map
       // key) to an explicit peer destination instead of the configured

@@ -29,10 +29,11 @@ import {
   MAX_OBJECT_SIZE,
   type GitObjectType,
 } from './objects.js';
-import type {
-  FeeRates,
-  PublishReceipt,
-  Publisher,
+import {
+  flooredUploadFee,
+  type FeeRates,
+  type PublishReceipt,
+  type Publisher,
 } from './publisher.js';
 import { GitError, type GitRef, type GitRepoReader } from './repo-reader.js';
 import type { RemoteState } from './remote-state.js';
@@ -136,7 +137,7 @@ export interface PushFeeEstimate {
   objectCount: number;
   /** Total bytes across all planned object bodies. */
   totalObjectBytes: number;
-  /** Σ size × uploadFeePerByte (smallest asset unit). */
+  /** Σ max(size × uploadFeePerByte, minUploadFee) — smallest asset unit. */
   uploadFee: bigint;
   /** Number of events to publish (refs event + announcement on first push). */
   eventCount: number;
@@ -368,9 +369,17 @@ export async function planPush(options: PlanPushOptions): Promise<PushPlan> {
   }
 
   // 6. Fee estimate. ---------------------------------------------------------
+  // Per-object pricing, each upload floored at the destination route's
+  // announced price (`minUploadFee`) — the exact same math the publisher
+  // claims per packet, so the confirm table always equals what is paid.
   const announceNeeded = !remoteState.announced;
   const totalObjectBytes = objects.reduce((sum, o) => sum + o.size, 0);
-  const uploadFee = BigInt(totalObjectBytes) * feeRates.uploadFeePerByte;
+  const uploadFee = objects.reduce(
+    (sum, o) =>
+      sum +
+      flooredUploadFee(o.size, feeRates.uploadFeePerByte, feeRates.minUploadFee),
+    0n
+  );
   const eventCount = 1 + (announceNeeded ? 1 : 0);
   const eventFees = BigInt(eventCount) * feeRates.eventFee;
 

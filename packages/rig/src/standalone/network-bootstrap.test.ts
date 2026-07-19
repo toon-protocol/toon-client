@@ -152,6 +152,47 @@ describe('discoverAnnouncedPeers', () => {
     );
   });
 
+  it('parses the out-of-band capabilities (route prices), skipping malformed entries', async () => {
+    await withMockRelay(
+      [
+        announceEvent(APEX_PUBKEY, {
+          ...APEX_CONTENT,
+          capabilities: [
+            { capability: 'os.publish', address: 'g.proxy.relay', price: '1000' },
+            { capability: 'os.store', address: 'g.proxy.store', price: '1000' },
+            // Malformed entries are skipped, not fatal:
+            { capability: 'os.bad', address: 'g.proxy.bad', price: '-5' },
+            { capability: 'os.bad2', address: '', price: '1' },
+            { capability: 'os.bad3', address: 'g.proxy.bad3', price: 12 },
+            'not an object',
+          ],
+        }),
+      ],
+      async (relayUrl) => {
+        const peers = await discoverAnnouncedPeers(relayUrl, {
+          timeoutMs: 2000,
+        });
+        expect(peers).toHaveLength(1);
+        expect((peers[0] as AnnouncedPeer).capabilities).toEqual([
+          { capability: 'os.publish', address: 'g.proxy.relay', price: '1000' },
+          { capability: 'os.store', address: 'g.proxy.store', price: '1000' },
+        ]);
+      }
+    );
+  });
+
+  it('announces without capabilities parse with the field absent', async () => {
+    await withMockRelay(
+      [announceEvent(APEX_PUBKEY, APEX_CONTENT)],
+      async (relayUrl) => {
+        const peers = await discoverAnnouncedPeers(relayUrl, {
+          timeoutMs: 2000,
+        });
+        expect((peers[0] as AnnouncedPeer).capabilities).toBeUndefined();
+      }
+    );
+  });
+
   it('skips NIP-40 expired announces', async () => {
     await withMockRelay(
       [
@@ -518,6 +559,33 @@ describe('selectSettlementChain', () => {
       resolveSettlement,
     });
     expect(selection).toMatchObject({ chain: 'evm:8453', reason: 'explicit' });
+  });
+
+  it('aligns an explicit EVM chain id to the announced spelling (negotiation is exact-string)', async () => {
+    // `evm:base:31337` pins the SAME chain the peer announces as `evm:31337`
+    // — passing the configured spelling through verbatim would strand the
+    // pin at the embedded client's exact-string chain negotiation.
+    const selection = await selectSettlementChain({
+      explicitChain: 'evm:base:31337',
+      announcedChains,
+      resolveSettlement,
+    });
+    expect(selection).toMatchObject({ chain: 'evm:31337', reason: 'explicit' });
+    expect(selection.detail).toContain('evm:base:31337');
+    expect(selection.detail).toContain('announced spelling');
+  });
+
+  it('an explicitly announced spelling passes through verbatim', async () => {
+    const selection = await selectSettlementChain({
+      explicitChain: 'evm:31337',
+      announcedChains,
+      resolveSettlement,
+    });
+    expect(selection).toMatchObject({
+      chain: 'evm:31337',
+      reason: 'explicit',
+      detail: 'chain evm:31337 set by config',
+    });
   });
 
   it('explicit family resolves against announced chains', async () => {

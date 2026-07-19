@@ -433,6 +433,112 @@ describe('StandalonePublisher', () => {
     });
   });
 
+  describe('route-price floors (the connector gates packets at the route price — F06)', () => {
+    const gitUpload = (bytes: number) => ({
+      sha: '1234567890abcdef1234567890abcdef12345678',
+      type: 'blob' as const,
+      body: Buffer.alloc(bytes, 0x61),
+      repoId: 'toon-meta',
+    });
+    /** The devnet announce's flat prices: 1000 per packet on both routes. */
+    const routePrices = { publish: 1000n, store: 1000n };
+
+    it('floors a small upload claim at the store route price (74 B × 10 = 740 → 1000)', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client, { uploadFeePerByte: 10n, routePrices });
+      const receipt = await publisher.uploadGitObject(gitUpload(74));
+      expect(receipt.feePaid).toBe(1000n);
+      expect(calls.claims).toEqual([{ channelId: 'channel-1', amount: 1000n }]);
+      const pub = calls.publishes[0]!;
+      expect(pub.options?.ilpAmount).toBe(1000n);
+      // The bid rides the floored fee too — the store is paid what it is bid.
+      expect(pub.event.tags.find((t) => t[0] === 'bid')).toEqual([
+        'bid',
+        '1000',
+        'usdc',
+      ]);
+      await publisher.stop();
+    });
+
+    it('leaves a large upload claim unchanged (1835 B × 10 = 18350 > 1000)', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client, { uploadFeePerByte: 10n, routePrices });
+      const receipt = await publisher.uploadGitObject(gitUpload(1835));
+      expect(receipt.feePaid).toBe(18350n);
+      expect(calls.claims).toEqual([
+        { channelId: 'channel-1', amount: 18350n },
+      ]);
+      await publisher.stop();
+    });
+
+    it('floors a raw-blob upload claim the same way', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client, { uploadFeePerByte: 10n, routePrices });
+      const receipt = await publisher.uploadBlob({
+        body: Buffer.alloc(74, 0x61),
+        contentType: 'text/html',
+      });
+      expect(receipt.feePaid).toBe(1000n);
+      expect(calls.claims).toEqual([{ channelId: 'channel-1', amount: 1000n }]);
+      await publisher.stop();
+    });
+
+    it('floors an eventFee-0 publish claim at the publish route price (0 → 1000)', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client, { eventFee: 0n, routePrices });
+      const receipt = await publisher.publishEvent(EVENT, []);
+      expect(receipt.feePaid).toBe(1000n);
+      expect(calls.claims).toEqual([{ channelId: 'channel-1', amount: 1000n }]);
+      expect(calls.publishes[0]!.options?.ilpAmount).toBe(1000n);
+      await publisher.stop();
+    });
+
+    it('keeps pre-floor behavior when no route prices are known (740 / 0)', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client, { uploadFeePerByte: 10n, eventFee: 0n });
+      const receipt = await publisher.uploadGitObject(gitUpload(74));
+      expect(receipt.feePaid).toBe(740n);
+      const publishReceipt = await publisher.publishEvent(EVENT, []);
+      expect(publishReceipt.feePaid).toBe(0n);
+      expect(calls.claims).toEqual([
+        { channelId: 'channel-1', amount: 740n },
+        { channelId: 'channel-1', amount: 0n },
+      ]);
+      await publisher.stop();
+    });
+
+    it('getFeeRates folds the floors in (estimate === claims)', async () => {
+      const { client } = mockClient();
+      const publisher = build(client, {
+        eventFee: 1n,
+        uploadFeePerByte: 10n,
+        routePrices,
+      });
+      await expect(publisher.getFeeRates()).resolves.toEqual({
+        uploadFeePerByte: 10n,
+        eventFee: 1000n, // flat fee pre-floored at the publish route price
+        minUploadFee: 1000n, // per-upload floor (store route price)
+      });
+      await publisher.stop();
+    });
+
+    it('a floor only applies to its own route (publish-only price)', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client, {
+        uploadFeePerByte: 10n,
+        eventFee: 1n,
+        routePrices: { publish: 1000n },
+      });
+      await publisher.uploadGitObject(gitUpload(74));
+      expect(calls.claims).toEqual([{ channelId: 'channel-1', amount: 740n }]);
+      await expect(publisher.getFeeRates()).resolves.toEqual({
+        uploadFeePerByte: 10n,
+        eventFee: 1000n,
+      });
+      await publisher.stop();
+    });
+  });
+
   describe('nonce guard integration', () => {
     it('REFUSES every paid op while a toon-clientd holds the SAME identity', async () => {
       const { client, calls } = mockClient();

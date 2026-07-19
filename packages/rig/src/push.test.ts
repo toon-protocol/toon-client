@@ -17,12 +17,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EMPTY_BLOB_SHA, hashGitObject, MAX_OBJECT_SIZE } from './objects.js';
 import type { UnsignedEvent } from './nip34-events.js';
-import type {
-  FeeRates,
-  GitObjectUpload,
-  PublishReceipt,
-  Publisher,
-  UploadReceipt,
+import {
+  flooredUploadFee,
+  type FeeRates,
+  type GitObjectUpload,
+  type PublishReceipt,
+  type Publisher,
+  type UploadReceipt,
 } from './publisher.js';
 import { GitRepoReader } from './repo-reader.js';
 import type { RemoteState } from './remote-state.js';
@@ -821,5 +822,106 @@ describe('empty-blob handling', () => {
     for (const upload of publisher.uploads) {
       expect(upload.body.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Route-price floors — estimate/actual parity
+// ---------------------------------------------------------------------------
+
+describe('route-price floors (estimate === claims parity)', () => {
+  /** Devnet-shaped rates: 10/byte uploads floored at a flat 1000 per packet. */
+  const FLOORED_RATES: FeeRates = {
+    uploadFeePerByte: 10n,
+    eventFee: 1000n, // flat per-event fee arrives pre-floored from getFeeRates
+    minUploadFee: 1000n,
+  };
+
+  /** Publisher paying the EXACT per-packet fees a floored publisher claims. */
+  class FlooredMockPublisher extends MockPublisher {
+    override async getFeeRates(): Promise<FeeRates> {
+      return FLOORED_RATES;
+    }
+
+    override async uploadGitObject(
+      upload: GitObjectUpload
+    ): Promise<UploadReceipt> {
+      const receipt = await super.uploadGitObject(upload);
+      return {
+        ...receipt,
+        feePaid: flooredUploadFee(
+          upload.body.length,
+          FLOORED_RATES.uploadFeePerByte,
+          FLOORED_RATES.minUploadFee
+        ),
+      };
+    }
+
+    override async publishEvent(
+      event: UnsignedEvent,
+      relayUrls: string[]
+    ): Promise<PublishReceipt> {
+      const receipt = await super.publishEvent(event, relayUrls);
+      return { ...receipt, feePaid: FLOORED_RATES.eventFee };
+    }
+  }
+
+  it('planPush floors each object at minUploadFee', async () => {
+    const plan = await planPush({
+      repoReader: reader,
+      remoteState: cannedRemote(),
+      feeRates: FLOORED_RATES,
+      repoId: REPO_ID,
+      refs: ['refs/heads/main'],
+    });
+
+    // The fixture has small objects (< 100 bytes), so the floor really bites.
+    const floored = plan.objects.filter((o) => BigInt(o.size) * 10n < 1000n);
+    expect(floored.length).toBeGreaterThan(0);
+
+    const expectedUploadFee = plan.objects.reduce(
+      (sum, o) => sum + flooredUploadFee(o.size, 10n, 1000n),
+      0n
+    );
+    expect(plan.estimate.uploadFee).toBe(expectedUploadFee);
+    // Strictly more than the unfloored Σ bytes × rate.
+    expect(plan.estimate.uploadFee).toBeGreaterThan(
+      BigInt(plan.estimate.totalObjectBytes) * 10n
+    );
+    expect(plan.estimate.totalFee).toBe(
+      expectedUploadFee + BigInt(plan.estimate.eventCount) * 1000n
+    );
+  });
+
+  it('executePush pays exactly the plan estimate (confirm table === claims)', async () => {
+    const plan = await planPush({
+      repoReader: reader,
+      remoteState: cannedRemote(),
+      feeRates: FLOORED_RATES,
+      repoId: REPO_ID,
+      refs: ['refs/heads/main'],
+    });
+    const publisher = new FlooredMockPublisher();
+    const result = await executePush({
+      plan,
+      publisher,
+      remoteState: cannedRemote(),
+      repoReader: reader,
+      relayUrls: RELAYS,
+    });
+    expect(result.totalFeePaid).toBe(plan.estimate.totalFee);
+  });
+
+  it('rates without a floor keep the historical Σ bytes × rate estimate', async () => {
+    const plan = await planPush({
+      repoReader: reader,
+      remoteState: cannedRemote(),
+      feeRates: FEE_RATES, // no minUploadFee
+      repoId: REPO_ID,
+      refs: ['refs/heads/main'],
+    });
+    expect(plan.estimate.uploadFee).toBe(
+      BigInt(plan.estimate.totalObjectBytes) * FEE_RATES.uploadFeePerByte
+    );
   });
 });

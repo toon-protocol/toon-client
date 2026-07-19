@@ -46,6 +46,7 @@ import {
   generateRigPointerHtml,
 } from '../rig-pointer.js';
 import { hexToNpub } from '../npub.js';
+import { flooredUploadFee } from '../publisher.js';
 import { planPush, executePush } from '../push.js';
 import { GitRepoReader } from '../repo-reader.js';
 import { readRigPointerRecord, writeRigPointerRecord } from './rig-pointer-record.js';
@@ -382,6 +383,8 @@ function planRigPointer(args: {
   repoId: string;
   relay: string;
   uploadFeePerByte: bigint;
+  /** Per-upload route-price floor (see FeeRates.minUploadFee). */
+  minUploadFee?: bigint;
 }): RigPointerPlan {
   const html = generateRigPointerHtml({
     bundle: {
@@ -418,7 +421,7 @@ function planRigPointer(args: {
     html,
     contentHash,
     bytes,
-    fee: BigInt(bytes) * args.uploadFeePerByte,
+    fee: flooredUploadFee(bytes, args.uploadFeePerByte, args.minUploadFee),
   };
 }
 
@@ -598,6 +601,9 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
           repoId,
           relay: relaysUsed[0],
           uploadFeePerByte: feeRates.uploadFeePerByte,
+          ...(feeRates.minUploadFee !== undefined
+            ? { minUploadFee: feeRates.minUploadFee }
+            : {}),
         });
       }
     } else {
