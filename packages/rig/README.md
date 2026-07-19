@@ -100,6 +100,11 @@ rig fund                 # devnet faucet drip (Mina can take ~75s)
 rig balance              # confirm the funds landed
 ```
 
+Prefer a browser? The same faucet has a web UI at
+**<https://faucet.devnet.toonprotocol.dev>** — pick a chain, paste an address,
+get USDC. (See [Devnet reference](#devnet-reference-public-chains) for the API
+routes and every deployed contract address.)
+
 > On any non-devnet network there is no faucet: `rig fund` prints your wallet
 > address(es) so you can fund them externally, then `rig push` draws from there.
 
@@ -321,6 +326,75 @@ the human-readable snapshot (verified live 2026-07-17), useful when auditing
   `--network`) — for pointing at a fresh/staging registry deployment.
 
 ---
+
+## Devnet reference (public chains)
+
+Since 2026-07-19 the TOON devnet settles on **public networks** — there is no
+self-hosted chain infrastructure. The authoritative, machine-readable source for
+everything below is the apex's **kind:10032 announce** on the relay; the
+authoritative doc is
+[toon-meta `docs/deployment.md`](https://github.com/toon-protocol/toon-meta/blob/main/docs/deployment.md).
+
+### Endpoints
+
+| What | URL |
+|---|---|
+| Faucet (web UI + API) | `https://faucet.devnet.toonprotocol.dev` |
+| Relay (free reads, `rig clone`/`fetch`) | `wss://relay-ws.devnet.toonprotocol.dev` |
+| Payment proxy (paid writes, BTP) | `wss://proxy.devnet.toonprotocol.dev:443` |
+| Store DVM (ArNS buyfor/gas-station jobs, `--via`) | `https://dvm.devnet.toonprotocol.dev` |
+
+### Faucet routes
+
+| `POST` path | Drips |
+|---|---|
+| `/api/base-sepolia/request` | 1000 USDC (ungated on-chain mint) |
+| `/api/solana/request` | 2 SOL + 1000 USDC (airdrop leg subject to the public devnet's per-IP quota) |
+| `/api/mina/request` | 5 MINA + USDC (treasury self-mint, rate-limited token) |
+
+Body: `{"address": "<wallet>"}`. `rig fund` hits these same routes for the
+identity's derived wallets.
+
+### Settlement contracts
+
+Chain ids below are the **announced spellings** — use them verbatim with
+`TOON_CLIENT_CHAIN=<id> rig push` to pin a settlement chain.
+
+| Chain (`TOON_CLIENT_CHAIN`) | Payment-channel contract/program/zkApp | USDC token (6dp) | Explorer |
+|---|---|---|---|
+| `evm:84532` (Base Sepolia) | TokenNetwork `0x1E95493fEF46707E034b4a1945f25a8C76A1823D` (registry `0xcC9079adE929b168B54145f6d25262b64FAB9D5b`) | `0x49beE1Bca5d15Fb0963117923403F9498119a9Ce` | [base-sepolia.blockscout.com](https://base-sepolia.blockscout.com) |
+| `solana:devnet` | program `2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip` | mint `xyc5J8MgKFiEN13PnfftdXxUzYH34FEvw1LCrFwN7in` | [explorer.solana.com/?cluster=devnet](https://explorer.solana.com/?cluster=devnet) |
+| `mina:devnet` | PaymentChannel zkApp `B62qmgPhv2Xo6QVEtwjLja8UZJUtu8yapRFAR6gaoGtbM9zE5hG7Tkf` | token `B62qqN1Pu3kF2KGmqLA8EwpqfWrnFTVZJGDSDHQuQRoVt5BCFjhNz3d`<br>tokenId `9497120696276615621907376728658022802954262638363646162765282600447713419198` | [minascan.io/devnet](https://minascan.io/devnet/home) |
+
+### Config notes (rig ≥ 2.10.2)
+
+Keep `~/.toon-client/config.json` **minimal** — settlement parameters derive
+from the announce. Three additions are load-bearing on today's devnet:
+
+```jsonc
+{
+  "feePerEvent": "1000",             // = the announced route price
+  "chainRpcUrls": {                   // per-field overrides only
+    "evm:84532":   "https://base-sepolia-rpc.publicnode.com",
+    "mina:devnet": "https://api.minascan.io/node/devnet/v1/graphql"
+  },
+  "minaChannel": {                    // Mina is not announce-derivable yet
+    "graphqlUrl": "https://api.minascan.io/node/devnet/v1/graphql",
+    "zkAppAddress": "B62qmgPhv2Xo6QVEtwjLja8UZJUtu8yapRFAR6gaoGtbM9zE5hG7Tkf",
+    "tokenId": "9497120696276615621907376728658022802954262638363646162765282600447713419198",
+    "networkId": "devnet"
+  }
+}
+```
+
+- Do **not** set `supportedChains`/`tokenNetworks`/`preferredTokens` explicitly —
+  explicit topology bypasses the announce's route prices and paid writes get
+  rejected (F06).
+- After config changes, delete `~/.toon-client/rig-topology-cache.json` (cached
+  topology can mask edits).
+- Base Sepolia's official RPC (`sepolia.base.org`) is a load-balancer that
+  serves stale reads — channel opens need a single-backend RPC like
+  `base-sepolia-rpc.publicnode.com` (already in the snippet above).
 
 ## Strict `--json` stdout (machine consumers)
 
