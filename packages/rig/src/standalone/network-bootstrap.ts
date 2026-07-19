@@ -20,11 +20,11 @@
  * Chain-level parameters the announce does NOT carry (EVM TokenNetwork
  * contract, token address, RPC URL) are derived per selected chain:
  * explicit config > announce (`tokenNetworks`/`preferredTokens`, when a peer
- * announces them) > the deployed-devnet endpoint table (canonical
- * `*.devnet.toonprotocol.dev` hosts, keyed off the announce's own hostnames)
- * > core's deterministic chain presets (`CHAIN_PRESETS`, matched by chain
- * id — e.g. `evm:31337` is the Foundry/anvil deploy whose TOON contract
- * addresses are deterministic).
+ * announces them) > core's deterministic chain presets (`CHAIN_PRESETS`,
+ * matched by chain id — e.g. `evm:31337` is the Foundry/anvil deploy whose
+ * TOON contract addresses are deterministic; `evm:base:84532` and
+ * `solana:devnet` are the public networks the TOON devnet settles on since
+ * the zone's self-hosted chain nodes were retired, 2026-07).
  *
  * Settlement-chain selection (#260 root cause 4) — simple and predictable:
  *
@@ -244,64 +244,6 @@ export function pickPaymentPeer(
 // Per-chain settlement derivation
 // ---------------------------------------------------------------------------
 
-/**
- * The one deployed-network endpoint table rig ships: the canonical TOON
- * devnet (`*.devnet.toonprotocol.dev`, see toon-meta docs/deployment.md).
- * Chain RPC endpoints are deployment infrastructure the kind:10032 announce
- * does not carry (yet), so when the discovered peer's own endpoints live
- * under this zone, its self-hosted chains resolve to the canonical hosts.
- * Same status as `DEVNET_FAUCET_URL` in `../cli/fund.ts`. Everything here
- * is overridable by explicit `chainRpcUrls` config.
- */
-export const DEVNET_ZONE = 'devnet.toonprotocol.dev';
-
-/** Canonical devnet chain RPC endpoints (self-hosted chains only). */
-export const DEVNET_CHAIN_RPC_URLS: Readonly<Record<string, string>> = {
-  'evm:31337': 'https://evm-rpc.devnet.toonprotocol.dev',
-  'solana:devnet': 'https://solana-rpc.devnet.toonprotocol.dev',
-};
-
-/**
- * Devnet endpoint-table lookup. EVM entries match by NUMERIC CHAIN ID, not
- * exact key: announces spell the same chain both `evm:31337` and
- * `evm:anvil:31337` (`evm:{network}:{chainId}` — the network label is
- * cosmetic), and an exact-key miss here left the announced EVM chain
- * without a reachable RPC, so zero-config devnet negotiation could not
- * balance-probe it and fell through to an unusable chain (#384).
- */
-export function devnetChainRpcUrl(chain: string): string | undefined {
-  const exact = DEVNET_CHAIN_RPC_URLS[chain];
-  if (exact) return exact;
-  const chainId = evmChainIdOf(chain);
-  if (chainId === undefined) return undefined;
-  for (const [key, url] of Object.entries(DEVNET_CHAIN_RPC_URLS)) {
-    if (evmChainIdOf(key) === chainId) return url;
-  }
-  return undefined;
-}
-
-/** Hostname of a ws(s)/http(s) URL, or undefined when unparsable. */
-function hostOf(url: string | undefined): string | undefined {
-  if (!url) return undefined;
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return undefined;
-  }
-}
-
-/** True when the announce's own endpoints live under the TOON devnet zone. */
-export function isDevnetZonePeer(
-  peer: Pick<AnnouncedPeer, 'info'> | undefined
-): boolean {
-  if (!peer) return false;
-  return [
-    hostOf(peer.info.httpEndpoint),
-    hostOf(peer.info.btpEndpoint),
-    hostOf(peer.info.relayUrl),
-  ].some((h) => h !== undefined && (h === DEVNET_ZONE || h.endsWith(`.${DEVNET_ZONE}`)));
-}
-
 /** Numeric chain id of an `evm:<id>` / `evm:<name>:<id>` chain key. */
 export function evmChainIdOf(chain: string): number | undefined {
   const parts = chain.split(':');
@@ -341,9 +283,11 @@ export function evmPresetForChain(chain: string):
  * program/mint and the mainnet-beta RPC + Circle USDC mint come from ONE
  * source. `programId` is present only where the TOON payment-channel program
  * is actually deployed (public devnet today; mainnet-beta once deployed).
- * Self-hosted validators (e.g. the TOON devnet's own `solana-rpc.*` box) have
- * their own regenerated program ids — those must come from the announce or
- * explicit config, never a preset.
+ * Announce-provided values and explicit config always take precedence over
+ * these presets (see {@link resolveChainSettlement}) — that precedence is
+ * what protected the devnet's former self-hosted validator, whose regenerated
+ * program id rode the announce (retired 2026-07; the devnet now settles on
+ * the public clusters).
  */
 export function solanaPresetForChain(chain: string):
   | { rpcUrl?: string; tokenMint?: string; programId?: string }
@@ -386,9 +330,9 @@ export interface ExplicitChainConfig {
 
 /**
  * Resolve one chain's settlement parameters: explicit config > announce >
- * devnet endpoint table (RPC only, devnet-zone peers) > core chain preset.
- * Fields stay undefined when no source covers them — callers decide whether
- * that is fatal (see {@link TokenNetworkUnderivableError} /
+ * core chain preset. Fields stay undefined when no source covers them —
+ * callers decide whether that is fatal (see
+ * {@link TokenNetworkUnderivableError} /
  * {@link SolanaChannelUnderivableError}).
  *
  * For `solana:*` chains the chain-keyed maps carry the SPL analogues: the
@@ -404,28 +348,10 @@ export function resolveChainSettlement(
 ): ChainSettlement {
   const family = chain.split(':')[0] ?? chain;
   const evmPreset = family === 'evm' ? evmPresetForChain(chain) : undefined;
-  const devnetRpc = isDevnetZonePeer(announce)
-    ? devnetChainRpcUrl(chain)
-    : undefined;
-  // The devnet zone SELF-HOSTS this chain (its own validator): the
-  // public-cluster preset addresses do not exist there (the devnet's Solana
-  // program id is regenerated per redeploy), so presets must not fill gaps —
-  // only the announce or explicit config can (else the caller fails fast
-  // with an actionable error instead of an on-chain "program not found").
-  // Detected via the announcing peer's zone OR the resolved RPC host, so an
-  // explicit zone RPC is protected even when discovery was skipped/failed.
-  const explicitOrZoneRpc = explicit.chainRpcUrls?.[chain] ?? devnetRpc;
-  const rpcHost = hostOf(explicitOrZoneRpc);
-  const zoneSelfHosted =
-    (isDevnetZonePeer(announce) && devnetChainRpcUrl(chain) !== undefined) ||
-    (rpcHost !== undefined &&
-      (rpcHost === DEVNET_ZONE || rpcHost.endsWith(`.${DEVNET_ZONE}`)));
-  const solPreset =
-    family === 'solana' && !zoneSelfHosted
-      ? solanaPresetForChain(chain)
-      : undefined;
+  const solPreset = family === 'solana' ? solanaPresetForChain(chain) : undefined;
 
-  const rpcUrl = explicitOrZoneRpc ?? evmPreset?.rpcUrl ?? solPreset?.rpcUrl;
+  const rpcUrl =
+    explicit.chainRpcUrls?.[chain] ?? evmPreset?.rpcUrl ?? solPreset?.rpcUrl;
   const tokenAddress =
     explicit.preferredTokens?.[chain] ??
     announce?.info.preferredTokens?.[chain] ??
