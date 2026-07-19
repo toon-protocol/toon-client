@@ -690,4 +690,78 @@ describe('resolveNetworkTopology — settlement', () => {
     // internal tracker numbers.
     expect(warnings.join('\n')).not.toMatch(/#\d+/);
   });
+
+  it('aligns an explicit TOON_CLIENT_CHAIN spelling to the announced chain id (warned)', async () => {
+    // `TOON_CLIENT_CHAIN=evm:base:31337` pins the SAME chain the apex
+    // announces as `evm:31337` — the pin must survive the embedded client's
+    // exact-string chain negotiation.
+    const warnings: string[] = [];
+    const topology = await resolveNetworkTopology(
+      inputs({
+        env: { TOON_CLIENT_CHAIN: 'evm:base:31337' },
+        warn: (line) => warnings.push(line),
+      })
+    );
+    expect(topology.selection).toMatchObject({
+      chain: 'evm:31337',
+      reason: 'explicit',
+    });
+    expect(topology.supportedChains).toEqual(['evm:31337']);
+    const alignWarning = warnings.find((w) => w.includes('aligning'));
+    expect(alignWarning).toContain('evm:base:31337');
+    expect(alignWarning).toContain('evm:31337');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Route-price floors (announce `capabilities` → topology.routePrices)
+// ---------------------------------------------------------------------------
+
+describe('resolveNetworkTopology — route prices', () => {
+  const CAPABILITIES = [
+    { capability: 'os.publish', address: 'g.proxy.relay', price: '1000' },
+    { capability: 'os.store', address: 'g.proxy.store', price: '1500' },
+  ];
+
+  it('matches announced capability prices to the resolved routes', async () => {
+    const announce = { ...apexAnnounce(), capabilities: CAPABILITIES };
+    const topology = await resolveNetworkTopology(inputs({ announce }));
+    expect(topology.routePrices).toEqual({ publish: '1000', store: '1500' });
+  });
+
+  it('absent capabilities leave routePrices unset (behavior unchanged)', async () => {
+    const topology = await resolveNetworkTopology(inputs());
+    expect(topology.routePrices).toBeUndefined();
+  });
+
+  it('an explicitly overridden destination without an announced price gets no floor', async () => {
+    const announce = { ...apexAnnounce(), capabilities: CAPABILITIES };
+    const topology = await resolveNetworkTopology(
+      inputs({
+        announce,
+        env: { TOON_CLIENT_STORE_DESTINATION: 'g.mine.store' },
+      })
+    );
+    // The publish route still matches; the custom store route has no price.
+    expect(topology.routePrices).toEqual({ publish: '1000' });
+  });
+
+  it('prices match the anchor-derived routes when the announce carries no routes map', async () => {
+    const announce: AnnouncedPeer = {
+      ...apexAnnounce(),
+      capabilities: CAPABILITIES,
+    };
+    delete (announce as { routes?: unknown }).routes;
+    const topology = await resolveNetworkTopology(
+      inputs({
+        announce,
+        env: { TOON_CLIENT_DESTINATION: 'g.proxy.relay.store' },
+      })
+    );
+    // No announced routes: the publisher's `<base>.relay.store` derivation
+    // yields g.proxy.relay / g.proxy.store — the priced routes.
+    expect(topology.publishDestination).toBeUndefined();
+    expect(topology.storeDestination).toBeUndefined();
+    expect(topology.routePrices).toEqual({ publish: '1000', store: '1500' });
+  });
 });

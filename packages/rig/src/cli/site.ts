@@ -29,6 +29,7 @@
 import { parseArgs } from 'node:util';
 import { buildArweaveManifest, type ManifestEntry } from '../arweave-manifest.js';
 import { resolveConflictingPath } from '../mime.js';
+import { flooredUploadFee } from '../publisher.js';
 import { GitRepoReader } from '../repo-reader.js';
 import type { RemoteState } from '../remote-state.js';
 import {
@@ -340,7 +341,10 @@ async function runSitePublish(
     }
 
     // ── Fee estimate ───────────────────────────────────────────────────────
-    const { uploadFeePerByte } = await ctx.publisher.getFeeRates();
+    // Per-upload fees are floored at the store route's announced price
+    // (minUploadFee) — the same math the publisher claims per packet.
+    const feeRates = await ctx.publisher.getFeeRates();
+    const { uploadFeePerByte, minUploadFee } = feeRates;
     // Preview manifest with known/placeholder 43-char txids: byte-accurate for
     // the fee (every txid is 43 chars, so the real manifest is the same size).
     const previewEntries: ManifestEntry[] = blobs.map((b) => ({
@@ -355,12 +359,20 @@ async function runSitePublish(
     const manifestBytes = Buffer.byteLength(JSON.stringify(previewManifest));
 
     let reuploadBytes = 0;
+    let reuploadFee = 0n;
     if (flags.forceReupload) {
       const { objects } = await reader.statObjects(uniqueShas);
       reuploadBytes = objects.reduce((sum, o) => sum + o.size, 0);
+      reuploadFee = objects.reduce(
+        (sum, o) => sum + flooredUploadFee(o.size, uploadFeePerByte, minUploadFee),
+        0n
+      );
     }
-    const manifestFee = BigInt(manifestBytes) * uploadFeePerByte;
-    const reuploadFee = BigInt(reuploadBytes) * uploadFeePerByte;
+    const manifestFee = flooredUploadFee(
+      manifestBytes,
+      uploadFeePerByte,
+      minUploadFee
+    );
     const totalFee = manifestFee + reuploadFee;
 
     const gateway = flags.gateway ?? deps.env['RIG_ARWEAVE_GATEWAY'] ?? DEFAULT_GATEWAY;

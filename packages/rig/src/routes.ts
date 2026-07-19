@@ -55,7 +55,7 @@ export interface GitEstimateRequest {
 export interface GitFeeEstimate {
   objectCount: number;
   totalObjectBytes: number;
-  /** Σ size × uploadFeePerByte. */
+  /** Σ max(size × uploadFeePerByte, per-upload route-price floor). */
   uploadFee: string;
   /** Events to publish (refs event + announcement on first push). */
   eventCount: number;
