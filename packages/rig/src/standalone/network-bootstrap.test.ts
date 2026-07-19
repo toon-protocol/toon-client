@@ -10,15 +10,12 @@ import type { AddressInfo } from 'node:net';
 
 import type { NostrEvent } from '../remote-state.js';
 import {
-  DEVNET_CHAIN_RPC_URLS,
   SolanaChannelUnderivableError,
   TokenNetworkUnderivableError,
-  devnetChainRpcUrl,
   discoverAnnouncedPeers,
   evmPresetForChain,
   evmTokenBalance,
   genesisSeedPubkeys,
-  isDevnetZonePeer,
   loadGenesisSeed,
   pickPaymentPeer,
   resolveChainSettlement,
@@ -237,48 +234,38 @@ describe('pickPaymentPeer', () => {
 });
 
 // ---------------------------------------------------------------------------
-// resolveChainSettlement — explicit > announce > devnet table > core preset
+// resolveChainSettlement — explicit > announce > core preset
 // ---------------------------------------------------------------------------
 
 describe('resolveChainSettlement', () => {
   const apex = announcedPeer(APEX_PUBKEY, APEX_CONTENT);
 
-  it('derives evm:31337 fully for a devnet-zone peer (no explicit config)', () => {
+  it('derives evm:31337 fully from the core preset (no explicit config)', () => {
     const s = resolveChainSettlement('evm:31337', {}, apex);
     expect(s.family).toBe('evm');
-    // RPC: the devnet endpoint table (announce hosts are *.devnet.toonprotocol.dev).
-    expect(s.rpcUrl).toBe(DEVNET_CHAIN_RPC_URLS['evm:31337']);
-    // TokenNetwork/token: core's deterministic anvil (31337) chain preset.
+    // RPC + TokenNetwork/token: core's deterministic anvil (31337) preset —
+    // the announcing peer's zone no longer matters (the devnet's self-hosted
+    // chain boxes are retired; explicit config/announce still win per field).
     const preset = evmPresetForChain('evm:31337');
     expect(preset).toBeDefined();
+    expect(s.rpcUrl).toBe(preset?.rpcUrl);
     expect(s.tokenNetwork).toBe(preset?.tokenNetworkAddress);
     expect(s.tokenAddress).toBe(preset?.usdcAddress);
   });
 
-  it('matches the devnet RPC table by EVM chain id for qualified spellings (#384)', () => {
+  it('matches core presets by EVM chain id for qualified spellings (#384)', () => {
     // The announce chain-key format is `evm:{network}:{chainId}` — the same
-    // devnet chain arrives spelled `evm:31337` OR `evm:anvil:31337`. An
-    // exact-key table miss left the chain without an RPC, so zero-config
-    // negotiation could not balance-probe it and fell through.
-    expect(devnetChainRpcUrl('evm:anvil:31337')).toBe(
-      DEVNET_CHAIN_RPC_URLS['evm:31337']
-    );
-    expect(devnetChainRpcUrl('evm:31337')).toBe(
-      DEVNET_CHAIN_RPC_URLS['evm:31337']
-    );
-    expect(devnetChainRpcUrl('solana:devnet')).toBe(
-      DEVNET_CHAIN_RPC_URLS['solana:devnet']
-    );
-    expect(devnetChainRpcUrl('evm:base:8453')).toBeUndefined();
-    expect(devnetChainRpcUrl('mina:devnet')).toBeUndefined();
-
+    // chain arrives spelled `evm:31337` OR `evm:anvil:31337`. An exact-key
+    // miss must not leave the announced EVM chain without an RPC (else
+    // zero-config negotiation cannot balance-probe it and falls through).
     const qualified = announcedPeer(APEX_PUBKEY, {
       ...APEX_CONTENT,
       supportedChains: ['evm:anvil:31337', 'solana:devnet'],
     });
     const s = resolveChainSettlement('evm:anvil:31337', {}, qualified);
-    expect(s.rpcUrl).toBe(DEVNET_CHAIN_RPC_URLS['evm:31337']);
     const preset = evmPresetForChain('evm:anvil:31337');
+    expect(preset).toBeDefined();
+    expect(s.rpcUrl).toBe(preset?.rpcUrl);
     expect(s.tokenNetwork).toBe(preset?.tokenNetworkAddress);
     expect(s.tokenAddress).toBe(preset?.usdcAddress);
   });
@@ -312,16 +299,15 @@ describe('resolveChainSettlement', () => {
     expect(s.tokenNetwork).toBe('0xANNOUNCED');
   });
 
-  it('does not apply the devnet RPC table for non-devnet peers', () => {
+  it('resolves identically for a local-stack peer (no zone special-casing)', () => {
     const local = announcedPeer(APEX_PUBKEY, {
       ...APEX_CONTENT,
       httpEndpoint: 'http://localhost:8080/ilp',
       btpEndpoint: 'ws://localhost:3000',
       relayUrl: 'ws://localhost:7100',
     });
-    expect(isDevnetZonePeer(local)).toBe(false);
     const s = resolveChainSettlement('evm:31337', {}, local);
-    // Falls to the anvil preset's localhost RPC — right for a local stack.
+    // The anvil preset's localhost RPC — right for a local stack.
     expect(s.rpcUrl).toBe(evmPresetForChain('evm:31337')?.rpcUrl);
   });
 
@@ -412,35 +398,36 @@ describe('resolveChainSettlement — solana', () => {
     expect(s.tokenNetwork).toBeUndefined();
   });
 
-  it('devnet-zone peer: zone RPC, NO preset program/mint (self-hosted validator)', () => {
-    // The devnet runs its own solana-test-validator whose program id is
-    // regenerated per redeploy — the public-devnet preset addresses do not
-    // exist there and must not be offered as fallbacks.
+  it('devnet-zone peer: the public-cluster preset applies (self-hosted chains retired)', () => {
+    // The relay/proxy/store stay under `*.devnet.toonprotocol.dev`, but the
+    // zone's self-hosted chain nodes are retired (2026-07): `solana:devnet`
+    // IS the public cluster now, so the core preset must apply even when the
+    // announcing peer lives under the devnet zone — the former zone guard
+    // (zone RPC + preset suppression) would strand rig on a dead RPC.
     const s = resolveChainSettlement('solana:devnet', {}, apex);
-    expect(s.rpcUrl).toBe(DEVNET_CHAIN_RPC_URLS['solana:devnet']);
-    expect(s.programId).toBeUndefined();
-    expect(s.tokenAddress).toBeUndefined();
+    const preset = solanaPresetForChain('solana:devnet');
+    expect(s.rpcUrl).toBe('https://api.devnet.solana.com');
+    expect(s.programId).toBe(preset?.programId);
+    expect(s.tokenAddress).toBe(preset?.tokenMint);
   });
 
-  it('an explicit zone-hosted RPC blocks preset program/mint even with no announce', () => {
-    // Discovery skipped/failed (announce undefined) but the explicit config
-    // points the chain at the self-hosted devnet-zone validator: the public
-    // preset addresses still do not exist there.
+  it('an explicit RPC wins while the preset fills the remaining gaps', () => {
+    // Discovery skipped/failed (announce undefined) with an explicit RPC:
+    // the RPC is honored verbatim, program/mint still derive per field.
     const s = resolveChainSettlement(
       'solana:devnet',
       {
-        chainRpcUrls: {
-          'solana:devnet': 'https://solana-rpc.devnet.toonprotocol.dev',
-        },
+        chainRpcUrls: { 'solana:devnet': 'http://explicit:8899' },
       },
       undefined
     );
-    expect(s.rpcUrl).toBe('https://solana-rpc.devnet.toonprotocol.dev');
-    expect(s.programId).toBeUndefined();
-    expect(s.tokenAddress).toBeUndefined();
+    expect(s.rpcUrl).toBe('http://explicit:8899');
+    const preset = solanaPresetForChain('solana:devnet');
+    expect(s.programId).toBe(preset?.programId);
+    expect(s.tokenAddress).toBe(preset?.tokenMint);
   });
 
-  it('announce tokenNetworks/preferredTokens carry the program id + mint', () => {
+  it('announce tokenNetworks/preferredTokens beat the preset program id + mint', () => {
     const announced = announcedPeer(APEX_PUBKEY, {
       ...APEX_CONTENT,
       tokenNetworks: { 'solana:devnet': 'ProgramAnnounced11111' },
@@ -449,7 +436,7 @@ describe('resolveChainSettlement — solana', () => {
     const s = resolveChainSettlement('solana:devnet', {}, announced);
     expect(s.programId).toBe('ProgramAnnounced11111');
     expect(s.tokenAddress).toBe('MintAnnounced1111111');
-    expect(s.rpcUrl).toBe(DEVNET_CHAIN_RPC_URLS['solana:devnet']);
+    expect(s.rpcUrl).toBe('https://api.devnet.solana.com');
   });
 
   it('explicit config beats announce and presets', () => {
@@ -730,35 +717,40 @@ describe('selectSettlementChain', () => {
     ).rejects.toThrow(/no settlement chains/);
   });
 
-  it('devnet zero-config: probes the announced EVM chain via the zone RPC (#384)', async () => {
-    // The exact rig 2.7.1 failure: a bare mnemonic against the devnet, the
-    // announce carries no chainRpcUrls, and the EVM chain (spelled with the
-    // qualified `evm:{network}:{chainId}` key) had no reachable RPC — so
-    // the funded probe skipped it and negotiation fell through toward
-    // `solana:devnet`. With the devnet endpoint table matched by chain id,
-    // the EVM balance probe reaches the zone RPC and the funded wallet wins.
-    for (const evmKey of ['evm:31337', 'evm:anvil:31337']) {
-      const apex = announcedPeer(APEX_PUBKEY, {
-        ...APEX_CONTENT,
-        supportedChains: ['solana:devnet', evmKey],
-      });
-      const probed: string[] = [];
-      const selection = await selectSettlementChain({
-        announcedChains: ['solana:devnet', evmKey],
-        evmAddress: '0x' + '11'.repeat(20),
-        solanaAddress: 'So1anaOwner1111111111111111111111111111111',
-        resolveSettlement: (chain) => resolveChainSettlement(chain, {}, apex),
-        probeBalance: (args) => {
-          probed.push(args.rpcUrl);
-          return Promise.resolve(10000n);
-        },
-        // The self-hosted solana:devnet has no derivable mint (announce
-        // carries none) — it must be skipped, never probed blind.
-        probeSolanaBalance: () => Promise.reject(new Error('must not probe')),
-      });
-      expect(selection).toMatchObject({ chain: evmKey, reason: 'funded' });
-      expect(probed).toEqual(['https://evm-rpc.devnet.toonprotocol.dev']);
-    }
+  it('devnet zero-config: probes the announced public chains via core presets', async () => {
+    // A bare mnemonic against the devnet: the announce carries no
+    // chainRpcUrls, and the zone's self-hosted chain boxes are retired —
+    // every announced public chain must resolve a reachable preset RPC so
+    // the funded probe can reach it (announce order preserved).
+    const apex = announcedPeer(APEX_PUBKEY, {
+      ...APEX_CONTENT,
+      supportedChains: ['solana:devnet', 'evm:base:84532'],
+    });
+    const probed: string[] = [];
+    const selection = await selectSettlementChain({
+      announcedChains: ['solana:devnet', 'evm:base:84532'],
+      evmAddress: '0x' + '11'.repeat(20),
+      solanaAddress: 'So1anaOwner1111111111111111111111111111111',
+      resolveSettlement: (chain) => resolveChainSettlement(chain, {}, apex),
+      probeBalance: (args) => {
+        probed.push(args.rpcUrl);
+        return Promise.resolve(10000n);
+      },
+      // solana:devnet resolves the public preset (RPC + mint) even though
+      // the announce comes from a `*.devnet.toonprotocol.dev` peer.
+      probeSolanaBalance: (args) => {
+        probed.push(args.rpcUrl);
+        return Promise.resolve(0n);
+      },
+    });
+    expect(selection).toMatchObject({
+      chain: 'evm:base:84532',
+      reason: 'funded',
+    });
+    expect(probed).toEqual([
+      'https://api.devnet.solana.com',
+      'https://sepolia.base.org',
+    ]);
   });
 });
 
