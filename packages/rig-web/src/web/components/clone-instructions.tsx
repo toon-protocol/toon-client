@@ -88,6 +88,28 @@ export function buildCloneCommand(
 }
 
 /**
+ * Display-only rendering of the clone command with the 64-char owner pubkey
+ * abbreviated (`dfbf0e5c…9a11`) so the one-line box stays readable — the copy
+ * button always copies the FULL command from {@link buildCloneCommand} (and
+ * the box's `title` carries it for hover/selection). Control characters are
+ * stripped for the same reason as {@link shellQuote}, but no quoting is
+ * applied: this string is only ever rendered as text, never pasted.
+ */
+export function buildDisplayCommand(
+  repoId: string,
+  ownerPubkey: string,
+  relayUrl: string,
+): string {
+  // eslint-disable-next-line no-control-regex -- stripping control chars is the point
+  const strip = (v: string) => v.replace(/[\u0000-\u001f\u007f]/g, '');
+  const owner =
+    ownerPubkey.length > 16
+      ? `${ownerPubkey.slice(0, 8)}…${ownerPubkey.slice(-4)}`
+      : ownerPubkey;
+  return `rig clone ${strip(relayUrl)} ${strip(`${owner}/${repoId}`)}`;
+}
+
+/**
  * "Clone this repo" affordance: a compact GitHub-style popover with a copyable
  * `rig clone` command pre-filled from the repo's actual context (repoId from
  * the kind:30617 `d` tag, owner from the announcement pubkey, relay from the
@@ -101,6 +123,11 @@ export function buildCloneCommand(
 export function CloneInstructions({ metadata }: { metadata: RepoMetadata }) {
   const { relayUrl } = useRigConfig();
   const command = buildCloneCommand(metadata.repoId, metadata.ownerPubkey, relayUrl);
+  const displayCommand = buildDisplayCommand(
+    metadata.repoId,
+    metadata.ownerPubkey,
+    relayUrl,
+  );
 
   const [copied, setCopied] = useState(false);
   const onCopy = useCallback(() => {
@@ -140,16 +167,19 @@ export function CloneInstructions({ metadata }: { metadata: RepoMetadata }) {
               <code className="font-mono">rig</code> CLI. No TOON identity needed.
             </p>
           </div>
-          <div className="relative rounded-md border bg-muted/50">
-            <pre className="overflow-x-auto p-3 pr-10 font-mono text-xs leading-relaxed">
-              {command}
+          <div className="flex items-center rounded-md border bg-muted/50">
+            <pre
+              title={command}
+              className="min-w-0 flex-1 overflow-x-auto p-3 font-mono text-xs leading-relaxed"
+            >
+              {displayCommand}
             </pre>
             <Button
               type="button"
               variant="ghost"
               size="icon-sm"
               aria-label={copied ? 'Copy clone command — copied' : 'Copy clone command'}
-              className="absolute right-1 top-1 text-muted-foreground hover:text-foreground"
+              className="mx-1 shrink-0 text-muted-foreground hover:text-foreground"
               onClick={onCopy}
             >
               {copied ? (
