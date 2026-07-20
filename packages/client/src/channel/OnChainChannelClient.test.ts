@@ -555,11 +555,13 @@ describe('OnChainChannelClient', () => {
       expect(sent).toBe(true);
     });
 
-    it('depositToChannel throws when no funded token account is configured', async () => {
+    it('depositToChannel derives the payer ATA from the mint when none is configured', async () => {
       mockRpc(false);
       const c = new OnChainChannelClient({
         evmSigner: signer,
         chainRpcUrls: {},
+        // tokenMint present, but NO deposit.payerTokenAccount — it is derived
+        // (the payer's ATA for the mint) rather than required from config.
         solanaConfig: { rpcUrl: 'http://localhost:8899', keypair: seed, programId: PROGRAM_ID, tokenMint: TOKEN_MINT },
       });
       const { channelId } = await c.openChannel({
@@ -568,9 +570,15 @@ describe('OnChainChannelClient', () => {
         token: TOKEN_MINT,
         peerAddress: APEX_PUBKEY,
       });
-      await expect(c.depositToChannel(channelId, 100n, { currentDeposit: 0n })).rejects.toThrow(
-        /payerTokenAccount|token account/i
+      fetchMock.mockClear();
+      const out = await c.depositToChannel(channelId, 100n, { currentDeposit: 0n });
+      expect(out.txHash).toBe('tx-signature-stub');
+      const sent = fetchMock.mock.calls.some(
+        (call) =>
+          (JSON.parse((call[1] as RequestInit).body as string) as { method: string }).method ===
+          'sendTransaction'
       );
+      expect(sent).toBe(true);
     });
   });
 
