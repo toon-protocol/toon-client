@@ -65,7 +65,7 @@ export function buildArweaveManifest(
   return {
     manifest: 'arweave/paths',
     version: '0.2.0',
-    ...(indexPath in paths ? { index: { path: indexPath } } : {}),
+    ...(Object.hasOwn(paths, indexPath) ? { index: { path: indexPath } } : {}),
     ...(fallbackTxId ? { fallback: { id: fallbackTxId } } : {}),
     paths,
   };

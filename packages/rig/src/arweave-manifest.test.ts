@@ -79,6 +79,14 @@ describe('buildArweaveManifest - dangling index (#398)', () => {
     const m = buildArweaveManifest(TYPICAL_ENTRIES);
     expect(m.index).toEqual({ path: 'index.html' });
   });
+
+  it('omits index for an --index value matching an Object.prototype member name', () => {
+    const m = buildArweaveManifest(
+      [{ path: 'README.md', txId: 'A'.repeat(43) }],
+      'constructor'
+    );
+    expect(m.index).toBeUndefined();
+  });
 });
 
 describe('buildArweaveManifest - SPA fallback (#368 addition)', () => {
