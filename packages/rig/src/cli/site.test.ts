@@ -56,6 +56,16 @@ function makeRepo(): string {
   return dir;
 }
 
+/** Fixture repo with NO index.html (#398 repro). */
+function makeRepoNoIndex(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'toon-rig-site-noindex-'));
+  git(['init', '--initial-branch=main'], dir);
+  writeFileSync(join(dir, 'README.md'), '# hi\n');
+  git(['add', '.'], dir);
+  git(['commit', '-m', 'no index'], dir);
+  return dir;
+}
+
 /** The repo's blob shas keyed by path (via the real reader). */
 async function blobsOf(dir: string): Promise<Map<string, string>> {
   const reader = new GitRepoReader(dir);
@@ -296,6 +306,57 @@ describe('site publish — pre-existing blobs / --force-reupload', () => {
     expect(manifest.paths['index.html'].id).toBe(
       shaByPath.get('index.html')!.padEnd(43, 'N')
     );
+  });
+});
+
+describe('site publish — missing index (#398)', () => {
+  it('omits the manifest index and warns loudly when no index.html exists', async () => {
+    const dir = makeRepoNoIndex();
+    try {
+      await writeToonConfig(dir, { repoId: 'demo', owner: OWNER });
+      const shas = await blobsOf(dir);
+      const map = new Map(
+        [...shas.values()].map((sha) => [sha, txFor(sha)] as const)
+      );
+      const h = makeDeps(env, dir, map);
+      const code = await runSite(
+        ['publish', '--relay', RELAY, '--yes', '--json'],
+        h.deps
+      );
+      expect(code).toBe(0);
+      expect(h.err.join('\n')).toMatch(/no "index\.html".*404|no index\.html/i);
+
+      const manifest = JSON.parse(h.uploadBlobBodies[0]!.toString('utf8'));
+      expect(manifest.index).toBeUndefined();
+      expect(manifest.paths['README.md']).toEqual({
+        id: txFor(shas.get('README.md')!),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('--index <path> sets a present path as the manifest index', async () => {
+    const dir = makeRepoNoIndex();
+    try {
+      await writeToonConfig(dir, { repoId: 'demo', owner: OWNER });
+      const shas = await blobsOf(dir);
+      const map = new Map(
+        [...shas.values()].map((sha) => [sha, txFor(sha)] as const)
+      );
+      const h = makeDeps(env, dir, map);
+      const code = await runSite(
+        ['publish', '--relay', RELAY, '--index', 'README.md', '--yes'],
+        h.deps
+      );
+      expect(code).toBe(0);
+      expect(h.err.join('\n')).not.toMatch(/no.*index/i);
+
+      const manifest = JSON.parse(h.uploadBlobBodies[0]!.toString('utf8'));
+      expect(manifest.index).toEqual({ path: 'README.md' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
