@@ -22,6 +22,7 @@ import {
   openSolanaChannel as openSolanaChannelOnChain,
   getChannelAccountState as getSolanaChannelAccountState,
   depositSolanaChannel,
+  deriveAssociatedTokenAccount,
 } from './solana-payment-channel.js';
 import { openMinaChannelOnChain } from './mina-channel-open.js';
 
@@ -366,14 +367,20 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       throw new Error('Solana channel config not set — cannot deposit.');
     }
     const cfg = this.solanaConfig;
-    const payerTokenAccount = cfg.deposit?.payerTokenAccount;
-    if (!payerTokenAccount) {
-      throw new Error(
-        'Solana deposit requires solanaConfig.deposit.payerTokenAccount (the funded SPL token account).'
-      );
-    }
     const payerSeed = cfg.keypair.slice(0, 32);
     const payerPubkey = base58Encode(new Uint8Array(ed25519.getPublicKey(payerSeed)));
+    // The funded token account is deterministically the payer's ATA for the
+    // channel mint, so derive it when the caller didn't pass one explicitly
+    // (config need not carry payerTokenAccount — it's owner+mint, both known here).
+    let payerTokenAccount = cfg.deposit?.payerTokenAccount;
+    if (!payerTokenAccount) {
+      if (!cfg.tokenMint) {
+        throw new Error(
+          'Solana deposit requires solanaConfig.deposit.payerTokenAccount or solanaConfig.tokenMint to derive the payer ATA.'
+        );
+      }
+      payerTokenAccount = deriveAssociatedTokenAccount(payerPubkey, cfg.tokenMint);
+    }
     const { depositTxSignature } = await depositSolanaChannel({
       rpcUrl: cfg.rpcUrl,
       programId: cfg.programId,
@@ -621,7 +628,11 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     const deposit = cfg.deposit
       ? {
           amount: BigInt(cfg.deposit.amount),
-          payerTokenAccount: cfg.deposit.payerTokenAccount,
+          // Derive the payer ATA (owner + channel mint) when not supplied — it is
+          // deterministic, so the caller need not thread payerTokenAccount through.
+          payerTokenAccount:
+            cfg.deposit.payerTokenAccount ||
+            deriveAssociatedTokenAccount(payerPubkey, tokenMint),
         }
       : undefined;
 

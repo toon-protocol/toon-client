@@ -178,6 +178,30 @@ export function deriveChannelPDA(
 }
 
 /**
+ * Derive the Associated Token Account (ATA) for an owner + SPL mint — the
+ * standard SPL ATA PDA over seeds `[owner, TOKEN_PROGRAM_ID, mint]` under the
+ * Associated-Token-Account program. Deterministic from `(owner, mint)`, so
+ * callers (e.g. a Solana channel deposit) need not supply the funded token
+ * account explicitly — it is always the owner's ATA for the channel's mint.
+ *
+ * @param owner - base58 wallet pubkey that owns the token account.
+ * @param tokenMint - base58 SPL mint.
+ * @returns base58 ATA address.
+ */
+export function deriveAssociatedTokenAccount(owner: string, tokenMint: string): string {
+  // Canonical mainnet/devnet SPL program ids (same on every cluster).
+  const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+  const ASSOCIATED_TOKEN_PROGRAM_ID = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+  const seeds = [
+    padTo32(base58Decode(owner)),
+    padTo32(base58Decode(TOKEN_PROGRAM_ID)),
+    padTo32(base58Decode(tokenMint)),
+  ];
+  const { pda } = findProgramAddress(seeds, padTo32(base58Decode(ASSOCIATED_TOKEN_PROGRAM_ID)));
+  return base58Encode(pda);
+}
+
+/**
  * Derive the vault PDA for a channel — connector-parity.
  * Seeds: `[b"vault", channel_pda]`.
  */
