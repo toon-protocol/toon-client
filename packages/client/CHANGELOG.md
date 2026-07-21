@@ -1,5 +1,46 @@
 # @toon-protocol/client
 
+## 0.20.2
+
+### Patch Changes
+
+- cdd7a0c: Drop the temporary local Base Sepolia (`evm:base:84532`) preset overrides now
+  that `@toon-protocol/core@3.1.1` ships the corrected public-devnet addresses.
+
+  - Bump `@toon-protocol/core` to `^3.1.1` in `client`, `client-mcp` (both from
+    `^3.0.0`) and `rig` (from `^2.0.1`, a major jump), so the correct Base Sepolia
+    USDC (`0x49beE1…`, 6-decimal) + TokenNetwork (`0x1E95493f…`) and the corrected
+    Solana devnet payment-channel program (`2aEVJ8ko…`) flow straight from the
+    package.
+  - Remove the `evm:base:84532` correction block (and the `BASE_SEPOLIA_*`
+    constants) from the client's `applyNetworkPresets` — the values now come
+    directly from core's `base-sepolia` preset.
+  - Remove the `BASE_SEPOLIA_PRESET` override (and its early `id === 84532`
+    return) from the rig standalone `evmPresetForChain`, letting it fall through
+    to core's `CHAIN_PRESETS['base-sepolia']`.
+
+  The relay-default hardening and the `rig fund` USDC-only routes from the prior
+  change are unaffected. Completes the follow-up from PR #404 / toon#104.
+
+- 9751296: Point `rig` at the current public devnet/testnet infra instead of dead or stale
+  defaults.
+
+  - `rig fund` now funds **USDC only** (assuming the wallet already holds gas) via
+    the USDC-only faucet legs (`/api/base-sepolia/request`,
+    `/api/solana/usdc-request`, `/api/mina/usdc-request`) instead of the
+    deprecated local-anvil `/api/request` leg, and accepts a positional chain so
+    `rig fund sol | mina | evm | all` works alongside `--chain` (`sol` aliases
+    `solana`).
+  - Fix `rig balance` / channel settlement resolving the **wrong Base Sepolia
+    token**: the `@toon-protocol/core` `base-sepolia` (`evm:84532`) preset still
+    carries the retired e2e deployment (18-decimal USDC, old TokenNetwork), so the
+    announce-fallback path read the wrong token at the wrong decimals. Corrected
+    the fallback to the current public addresses in both the rig resolution layer
+    and the client SDK (`applyNetworkPresets`), pending an upstream core bump.
+  - Harden the dead-local `ws://localhost:7100` relay fallbacks to the public
+    devnet relay `wss://relay-ws.devnet.toonprotocol.dev` (explicit config still
+    wins).
+
 ## 0.20.1
 
 ### Patch Changes
