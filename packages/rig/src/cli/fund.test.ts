@@ -1,13 +1,14 @@
 /**
  * `rig fund` tests (#263, multi-chain by default): the devnet faucet call shape
- * (the exact POST the e2e drips with — `{faucet}/api/request` + `{ address }`
- * body, per-chain paths), the ALL-chains default (one run funds evm + solana +
- * mina), the parallel + independent-failure contract (one chain failing never
- * aborts the others; partial success renders and exits non-zero), faucet-URL
- * resolution (env → config → devnet default), the non-devnet guidance path
- * (addresses printed, nothing fetched), and error surfacing. The fetch seam is
- * injected; identity derivation is REAL (a fixed test mnemonic), so the derived
- * addresses in the request bodies are the ones the client would fund.
+ * (the exact POST the e2e drips with — the USDC-only per-chain paths +
+ * `{ address }` body), the ALL-chains default (one run funds evm + solana +
+ * mina), positional + `--chain` chain selection (with the `sol` alias), the
+ * parallel + independent-failure contract (one chain failing never aborts the
+ * others; partial success renders and exits non-zero), faucet-URL resolution
+ * (env → config → devnet default), the non-devnet guidance path (addresses
+ * printed, nothing fetched), and error surfacing. The fetch seam is injected;
+ * identity derivation is REAL (a fixed test mnemonic), so the derived addresses
+ * in the request bodies are the ones the client would fund.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -22,10 +23,10 @@ import type { CliIo } from './push.js';
 const MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
-/** The three faucet paths, in the fixed evm → solana → mina order. */
-const EVM_PATH = '/api/request';
-const SOLANA_PATH = '/api/solana/request';
-const MINA_PATH = '/api/mina/request';
+/** The three USDC-only faucet paths, in the fixed evm → solana → mina order. */
+const EVM_PATH = '/api/base-sepolia/request';
+const SOLANA_PATH = '/api/solana/usdc-request';
+const MINA_PATH = '/api/mina/usdc-request';
 
 interface Harness {
   deps: FundDeps;
@@ -144,7 +145,7 @@ describe('rig fund', () => {
 
   // ── The all-chains default (#299 parity) ──────────────────────────────────
 
-  it('default (no --chain) funds ALL three chains, native + USDC each', async () => {
+  it('default (no chain arg) funds ALL three chains, USDC each', async () => {
     writeConfig({ network: 'devnet' });
     const h = makeHarness(baseEnv(), cwd);
     expect(await runFund(['--json'], h.deps)).toBe(0);
@@ -241,8 +242,8 @@ describe('rig fund', () => {
     const text = h.out.join('\n');
     // Every chain's funded/attempted ADDRESS is echoed (the #312 review fix —
     // human output must confirm WHERE funds went, not just the coin type).
-    expect(text).toMatch(/evm\s+✓ funded \(ETH \+ USDC\) → 0x[0-9a-fA-F]{40}/);
-    expect(text).toMatch(/mina\s+✓ funded \(MINA \+ USDC\) → B62q\w+/);
+    expect(text).toMatch(/evm\s+✓ funded \(USDC\) → 0x[0-9a-fA-F]{40}/);
+    expect(text).toMatch(/mina\s+✓ funded \(USDC\) → B62q\w+/);
     expect(text).toMatch(/solana\s+✗ → [1-9A-HJ-NP-Za-km-z]+ — .*(503|faucet dry)/);
   });
 
@@ -299,7 +300,7 @@ describe('rig fund', () => {
     const h = makeHarness(baseEnv(), cwd);
     expect(await runFund(['--address', '0x' + 'ab'.repeat(20)], h.deps)).toBe(2);
     expect(h.fetchCalls).toEqual([]);
-    expect(h.err.join('\n')).toMatch(/--address requires an explicit single --chain/);
+    expect(h.err.join('\n')).toMatch(/--address requires an explicit single chain/);
   });
 
   // ── Faucet-URL resolution ─────────────────────────────────────────────────
@@ -511,7 +512,55 @@ describe('rig fund', () => {
     const h = makeHarness(baseEnv(), cwd);
     expect(await runFund(['--chain', 'dogecoin'], h.deps)).toBe(2);
     expect(h.fetchCalls).toEqual([]);
-    expect(h.err.join('\n')).toContain('--chain must be one of');
+    expect(h.err.join('\n')).toContain('chain must be one of');
+  });
+
+  // ── Positional chain argument (`rig fund sol`) ────────────────────────────
+
+  it('a positional chain funds only that chain (rig fund evm)', async () => {
+    writeConfig({ network: 'devnet' });
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund(['evm', '--json'], h.deps)).toBe(0);
+    expect(h.fetchCalls).toHaveLength(1);
+    expect(h.fetchCalls[0]?.url).toBe(`${DEVNET_FAUCET_URL}${EVM_PATH}`);
+    expect(parseJson(h).results?.map((r) => r.chain)).toEqual(['evm']);
+  });
+
+  it('the `sol` alias resolves to the solana USDC leg (rig fund sol)', async () => {
+    writeConfig({ network: 'devnet' });
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund(['sol', '--json'], h.deps)).toBe(0);
+    expect(h.fetchCalls).toHaveLength(1);
+    expect(h.fetchCalls[0]?.url).toBe(`${DEVNET_FAUCET_URL}${SOLANA_PATH}`);
+    expect(parseJson(h).results?.map((r) => r.chain)).toEqual(['solana']);
+  });
+
+  it('a positional `all` funds every chain', async () => {
+    writeConfig({ network: 'devnet' });
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund(['all', '--json'], h.deps)).toBe(0);
+    expect(h.fetchCalls).toHaveLength(3);
+  });
+
+  it('an unknown positional chain is a usage error (exit 2, nothing fetched)', async () => {
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund(['dogecoin'], h.deps)).toBe(2);
+    expect(h.fetchCalls).toEqual([]);
+    expect(h.err.join('\n')).toContain('chain must be one of');
+  });
+
+  it('a positional chain AND --chain together is a usage error (exit 2)', async () => {
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund(['sol', '--chain', 'evm'], h.deps)).toBe(2);
+    expect(h.fetchCalls).toEqual([]);
+    expect(h.err.join('\n')).toMatch(/positional argument.*OR.*--chain/);
+  });
+
+  it('more than one positional chain is a usage error (exit 2)', async () => {
+    const h = makeHarness(baseEnv(), cwd);
+    expect(await runFund(['sol', 'evm'], h.deps)).toBe(2);
+    expect(h.fetchCalls).toEqual([]);
+    expect(h.err.join('\n')).toMatch(/at most one chain argument/);
   });
 
   it('a missing identity surfaces the identity-chain remediation (exit 1)', async () => {

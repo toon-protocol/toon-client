@@ -23,6 +23,26 @@ export interface ClientSettlementInfo {
 }
 
 /**
+ * Local correction for the stale public Base Sepolia (chainId 84532) preset.
+ *
+ * `@toon-protocol/core`'s `base-sepolia` preset (consumed here via
+ * `resolveClientNetwork`) still points at the RETIRED e2e deployment: an
+ * 18-decimal mock USDC and the old TokenNetwork. Reading balances against those
+ * reads the wrong token at the wrong decimals and would settle channels against
+ * the wrong contract. We correct the two stale addresses locally for the
+ * `evm:base:84532` chain key, pending a `@toon-protocol/core`-package bump.
+ *
+ * Authoritative source: toon-meta docs/deployment.md (current public Base Sepolia).
+ *   USDC (6-decimal, ungated mint):  0x49beE1Bca5d15Fb0963117923403F9498119a9Ce
+ *   TokenNetwork (runtime-resolved): 0x1E95493fEF46707E034b4a1945f25a8C76A1823D
+ */
+const BASE_SEPOLIA_EVM_KEY = 'evm:base:84532';
+const BASE_SEPOLIA_CORRECT_USDC =
+  '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce';
+const BASE_SEPOLIA_CORRECT_TOKEN_NETWORK =
+  '0x1E95493fEF46707E034b4a1945f25a8C76A1823D';
+
+/**
  * Applies named-network preset defaults to a client config.
  *
  * When `config.network` is set and != `'custom'`, the settlement-related
@@ -44,6 +64,25 @@ export function applyNetworkPresets(
 
   const presets = resolveClientNetwork(network);
 
+  // Correct the stale public Base Sepolia addresses baked into the core preset
+  // (see BASE_SEPOLIA_* above) BEFORE the explicit-config merge, so an explicit
+  // per-chain override still wins. Only touches the `evm:base:84532` key when
+  // the preset actually surfaces it (testnet/devnet tiers), so other tiers
+  // (e.g. base-mainnet at evm:base:8453) are untouched.
+  const correctedPreferredTokens: Record<string, string> = {
+    ...presets.preferredTokens,
+  };
+  if (BASE_SEPOLIA_EVM_KEY in correctedPreferredTokens) {
+    correctedPreferredTokens[BASE_SEPOLIA_EVM_KEY] = BASE_SEPOLIA_CORRECT_USDC;
+  }
+  const correctedTokenNetworks: Record<string, string> = {
+    ...presets.tokenNetworks,
+  };
+  if (BASE_SEPOLIA_EVM_KEY in correctedTokenNetworks) {
+    correctedTokenNetworks[BASE_SEPOLIA_EVM_KEY] =
+      BASE_SEPOLIA_CORRECT_TOKEN_NETWORK;
+  }
+
   // Merge a preset record under an explicit one (explicit keys win).
   const mergeRecord = (
     explicit: Record<string, string> | undefined,
@@ -63,9 +102,9 @@ export function applyNetworkPresets(
     chainRpcUrls: mergeRecord(config.chainRpcUrls, presets.chainRpcUrls),
     preferredTokens: mergeRecord(
       config.preferredTokens,
-      presets.preferredTokens
+      correctedPreferredTokens
     ),
-    tokenNetworks: mergeRecord(config.tokenNetworks, presets.tokenNetworks),
+    tokenNetworks: mergeRecord(config.tokenNetworks, correctedTokenNetworks),
     // settlementAddresses are identity-derived (per-client), so they have no
     // preset; pass any explicit value through unchanged.
     ...(config.settlementAddresses && {
@@ -439,7 +478,10 @@ export function applyDefaults(rawConfig: ToonClientConfig): ResolvedConfig {
     connectorUrl: connectorUrl as string,
     // Surface the derived `POST /ilp` endpoint so HTTP mode selects HttpIlpClient.
     ...(connectorHttpEndpoint ? { connectorHttpEndpoint } : {}),
-    relayUrl: config.relayUrl ?? 'ws://localhost:7100',
+    // Last-resort relay default. An explicit `config.relayUrl` always wins;
+    // `applyNetworkPresets` does not set a per-network relay, so this fallback
+    // points at the public devnet relay rather than a dead localhost socket.
+    relayUrl: config.relayUrl ?? 'wss://relay-ws.devnet.toonprotocol.dev',
     queryTimeout: config.queryTimeout ?? 30000,
     maxRetries: config.maxRetries ?? 3,
     retryDelay: config.retryDelay ?? 1000,

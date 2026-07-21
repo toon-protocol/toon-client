@@ -31,7 +31,7 @@ export const DEVNET = {
   relayUrl: 'wss://relay-ws.devnet.toonprotocol.dev',
   /** Connector payment-proxy base — paid writes via `POST /ilp`. */
   proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
-  /** Faucet base — `POST /api/request` (EVM), `/api/solana/request`, `/api/mina/request`. */
+  /** Faucet base — `fundWallet` hits the USDC-only legs: `POST /api/base-sepolia/request` (EVM), `/api/solana/usdc-request`, `/api/mina/usdc-request`. */
   faucetUrl: 'https://faucet.devnet.toonprotocol.dev',
   /**
    * Apex ILP destination on the deployed edge — the relay store behind the

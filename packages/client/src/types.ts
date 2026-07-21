@@ -370,7 +370,7 @@ export interface ToonClientConfig {
   // NETWORK (optional with defaults)
   // ============================================================================
 
-  /** Nostr relay URL for peer discovery. Default: 'ws://localhost:7100' */
+  /** Nostr relay URL for peer discovery. Default: 'wss://relay-ws.devnet.toonprotocol.dev' */
   relayUrl?: string;
 
   /**

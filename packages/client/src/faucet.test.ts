@@ -24,15 +24,15 @@ function mockJsonFetch(body: unknown, status = 200): typeof fetch {
   ) as unknown as typeof fetch;
 }
 
-describe('fundWallet (devnet faucet)', () => {
-  it('POSTs the EVM address to /api/request and returns parsed JSON', async () => {
+describe('fundWallet (devnet faucet, USDC-only legs)', () => {
+  it('POSTs the EVM address to the Base Sepolia USDC route and returns parsed JSON', async () => {
     const fetchImpl = mockJsonFetch({ ok: true, txHash: '0xabc' });
     const result = await fundWallet(FAUCET, EVM_ADDR, 'evm', { fetchImpl });
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock
       .calls[0];
-    expect(url).toBe(`${FAUCET}/api/request`);
+    expect(url).toBe(`${FAUCET}/api/base-sepolia/request`);
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ address: EVM_ADDR });
     expect((init.headers as Record<string, string>)['Content-Type']).toBe(
@@ -49,7 +49,7 @@ describe('fundWallet (devnet faucet)', () => {
     await fundWallet(`${FAUCET}/`, EVM_ADDR, 'evm', { fetchImpl });
     const [url] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock
       .calls[0];
-    expect(url).toBe(`${FAUCET}/api/request`);
+    expect(url).toBe(`${FAUCET}/api/base-sepolia/request`);
   });
 
   it('tolerates an empty/non-JSON 200 body', async () => {
@@ -81,14 +81,14 @@ describe('fundWallet (devnet faucet)', () => {
     await expect(fundWallet(FAUCET, '', 'evm')).rejects.toThrow(/address/);
   });
 
-  it('POSTs the address to the chain-specific path for solana and mina', async () => {
+  it('POSTs the address to the USDC-only path for solana and mina', async () => {
     const solFetch = mockJsonFetch({ success: true });
     const solResult = await fundWallet(FAUCET, 'SoLaddr', 'solana', {
       fetchImpl: solFetch,
     });
     const [solUrl, solInit] = (solFetch as unknown as ReturnType<typeof vi.fn>)
       .mock.calls[0];
-    expect(solUrl).toBe(`${FAUCET}/api/solana/request`);
+    expect(solUrl).toBe(`${FAUCET}/api/solana/usdc-request`);
     expect(JSON.parse(solInit.body as string)).toEqual({ address: 'SoLaddr' });
     expect(solResult.chain).toBe('solana');
 
@@ -96,7 +96,7 @@ describe('fundWallet (devnet faucet)', () => {
     await fundWallet(FAUCET, 'B62addr', 'mina', { fetchImpl: minaFetch });
     const [minaUrl] = (minaFetch as unknown as ReturnType<typeof vi.fn>).mock
       .calls[0];
-    expect(minaUrl).toBe(`${FAUCET}/api/mina/request`);
+    expect(minaUrl).toBe(`${FAUCET}/api/mina/usdc-request`);
   });
 
   it('uses a chain-aware default timeout (30s evm/solana, 120s mina)', () => {

@@ -92,11 +92,14 @@ rig remote list
 ### 5. Fund your wallet
 
 Pushing is paid, so your wallet needs a balance. On devnet, `rig fund` drips test
-funds (native coin **and** USDC) to every supported chain — it's free and needs no
-faucet URL because it infers devnet from your `origin` remote.
+**USDC** (the settlement token) to every supported chain — it's free and needs no
+faucet URL because it infers devnet from your `origin` remote. The drip assumes
+your wallet already holds enough native gas (the EVM leg still best-effort tops
+up Base Sepolia gas; hold a little SOL/MINA for the other chains).
 
 ```sh
-rig fund                 # devnet faucet drip (Mina can take ~75s)
+rig fund                 # devnet USDC drip, all chains (Mina can take ~75s)
+rig fund sol             # or fund a single chain: evm | sol | mina
 rig balance              # confirm the funds landed
 ```
 
@@ -192,7 +195,7 @@ rig pr status <event-id> applied
 | `rig identity import` | free | write an existing phrase (read from stdin, never argv) to the keystore |
 | `rig init` | free | one-shot repo setup: git repo + identity + `toon.*` config + repo-local git commit-author from your Nostr identity |
 | `rig remote add/remove/list` | free | relays as REAL git remotes (`origin` = default publish target) |
-| `rig fund [--chain <c>]` | free | devnet faucet drip (native + USDC) to the active identity's wallet; prints addresses to fund externally off-devnet |
+| `rig fund [chain]` | free | devnet USDC drip (gas assumed) to the active identity's wallet; `chain` = evm \| sol \| mina \| all; prints addresses to fund externally off-devnet |
 | `rig balance` | free | the active wallet's multi-chain balances |
 | `rig clone <relay-url> <owner>/<repo-id> [dir]` | free | bootstrap a repo from TOON: relay state + SHA-verified Arweave objects → a real git repo. Shadows `git clone` |
 | `rig fetch [remote]` | free | download the missing object delta + update `refs/remotes/<remote>/*`. Shadows `git fetch` |
@@ -348,12 +351,16 @@ authoritative doc is
 
 | `POST` path | Drips |
 |---|---|
-| `/api/base-sepolia/request` | 1000 USDC (ungated on-chain mint) |
+| `/api/base-sepolia/request` | 1000 USDC (ungated on-chain mint) + best-effort Base Sepolia gas |
+| `/api/solana/usdc-request` | 1000 USDC (treasury transfer, no SOL leg) |
+| `/api/mina/usdc-request` | USDC (treasury self-mint, rate-limited token; no MINA leg) |
 | `/api/solana/request` | 2 SOL + 1000 USDC (airdrop leg subject to the public devnet's per-IP quota) |
 | `/api/mina/request` | 5 MINA + USDC (treasury self-mint, rate-limited token) |
 
-Body: `{"address": "<wallet>"}`. `rig fund` hits these same routes for the
-identity's derived wallets.
+Body: `{"address": "<wallet>"}`. `rig fund` hits the **USDC-only** routes
+(`/api/base-sepolia/request`, `/api/solana/usdc-request`, `/api/mina/usdc-request`)
+for the identity's derived wallets — it funds USDC and assumes gas is already
+present. The combined native-plus-USDC routes above remain for manual use.
 
 ### Settlement contracts
 

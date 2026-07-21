@@ -837,7 +837,10 @@ export async function createStandaloneContext(
     env['TOON_CLIENT_RELAY_URL'] ??
     file.relayUrl ??
     genesisSeed?.relayUrl ??
-    'ws://localhost:7100';
+    // Last resort: the genesis seed normally supplies the relay, so this is
+    // only reached when no seed/config/env relay is present. Point at the
+    // shared public devnet relay rather than a dead local default.
+    'wss://relay-ws.devnet.toonprotocol.dev';
 
   // ── Peer→channel persistence (#262) ──────────────────────────────────────
   const channelStorePath = file.channelStorePath ?? join(dir, 'channels.json');

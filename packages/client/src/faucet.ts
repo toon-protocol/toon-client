@@ -1,17 +1,21 @@
 /**
  * Devnet faucet helper.
  *
- * The deployed TOON devnet exposes a faucet that drips test funds to a given
- * chain address so a client can open payment channels and pay for writes:
+ * The deployed TOON devnet exposes a faucet that drips the settlement token
+ * (USDC) to a given chain address so a client can open payment channels and pay
+ * for writes. This helper hits the USDC-ONLY faucet legs — it funds USDC and
+ * assumes the wallet already holds enough native gas to transact:
  *
- *   EVM     `POST {faucetUrl}/api/request`        body `{ address }` → 100 ETH + 10k USDC
- *   Solana  `POST {faucetUrl}/api/solana/request` body `{ address }` → SOL + USDC
- *   Mina    `POST {faucetUrl}/api/mina/request`   body `{ address }` → native MINA + USDC
+ *   EVM     `POST {faucetUrl}/api/base-sepolia/request` body `{ address }` → USDC (Base Sepolia mint)
+ *   Solana  `POST {faucetUrl}/api/solana/usdc-request`  body `{ address }` → USDC (no SOL leg)
+ *   Mina    `POST {faucetUrl}/api/mina/usdc-request`    body `{ address }` → USDC (no MINA leg)
  *
  * Devnet edge (today): `https://faucet.devnet.toonprotocol.dev`.
  *
  * All three chains are live on the deployed faucet — the request shape is
- * identical (`{ address }`); only the path differs.
+ * identical (`{ address }`); only the path differs. (The EVM leg mints the
+ * ungated mock USDC on Base Sepolia and best-effort tops up gas; the Solana and
+ * Mina legs are strictly USDC-only and expect the address to already hold gas.)
  */
 
 import { NetworkError } from './errors.js';
@@ -44,26 +48,30 @@ export interface FundWalletOptions {
 /**
  * Default faucet request timeout (ms) for a chain.
  *
- * EVM and Solana faucets respond in a few seconds, so 30s is plenty. The Mina
- * faucet sends native MINA *and* mints USDC on a chain that settles much more
- * slowly: the drip routinely succeeds server-side (the faucet logs
- * `✅ Mina faucet request completed`) but takes well over 30s to answer the
- * HTTP request, so a flat 30s budget makes the client give up on a request that
- * actually worked. Give mina a much longer budget.
+ * The EVM (Base Sepolia mint) and Solana USDC legs respond in a few seconds, so
+ * 30s is plenty. The Mina USDC leg TRANSFERS the token via an o1js-proven
+ * transaction on a chain that settles much more slowly: the drip routinely
+ * succeeds server-side but takes well over 30s to answer the HTTP request, so a
+ * flat 30s budget makes the client give up on a request that actually worked.
+ * Give mina a much longer budget.
  */
 export function defaultFaucetTimeout(chain: FaucetChain): number {
   return chain === 'mina' ? 120000 : 30000;
 }
 
-/** Map a chain to its faucet request path. */
+/**
+ * Map a chain to its USDC-only faucet request path. Each leg funds USDC and
+ * assumes the address already holds native gas (the EVM leg still best-effort
+ * tops up Base Sepolia ETH, but does not depend on it).
+ */
 function faucetPath(chain: FaucetChain): string {
   switch (chain) {
     case 'evm':
-      return '/api/request';
+      return '/api/base-sepolia/request';
     case 'solana':
-      return '/api/solana/request';
+      return '/api/solana/usdc-request';
     case 'mina':
-      return '/api/mina/request';
+      return '/api/mina/usdc-request';
   }
 }
 
