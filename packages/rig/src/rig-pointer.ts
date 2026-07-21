@@ -49,6 +49,20 @@ export const RIG_WEB_TX_ENV = 'RIG_WEB_TX';
 export const RIG_WEB_ENTRY_JS_ENV = 'RIG_WEB_ENTRY_JS';
 export const RIG_WEB_ENTRY_CSS_ENV = 'RIG_WEB_ENTRY_CSS';
 
+/**
+ * Gateway the pointer loads the rig-web BUNDLE from. Tied to where the
+ * bundle deploy lives (mainnet, via Turbo), NOT to where `rig push`
+ * uploads repo data: the assets are stored GZIPPED with a
+ * `Content-Encoding` tag that `arweave.net` serves as a real header —
+ * `ar-io.dev` drops it and ships raw gzip bytes, which the browser then
+ * fails to parse ("Invalid or unexpected token", blank page). Override
+ * with `RIG_WEB_GATEWAY` alongside a bundle override.
+ */
+export const DEFAULT_RIG_WEB_GATEWAY = 'https://arweave.net';
+
+/** Env var overriding the bundle gateway. */
+export const RIG_WEB_GATEWAY_ENV = 'RIG_WEB_GATEWAY';
+
 /** Pages deployment for the no-JS / delayed fallback link (tracks main). */
 export const DEFAULT_RIG_WEB_URL =
   'https://toon-protocol.github.io/toon-client';

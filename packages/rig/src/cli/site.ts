@@ -49,8 +49,12 @@ import type { StandaloneContext } from './standalone-context.js';
 /** The ar.io path-manifest media type (spec-mandated `output` tag value). */
 export const MANIFEST_CONTENT_TYPE = 'application/x.arweave-manifest+json';
 
-/** Default Arweave/ar.io gateway the printed site URL uses. */
-export const DEFAULT_GATEWAY = 'https://arweave.net';
+/**
+ * Default Arweave/ar.io gateway the printed site URL uses. `ar-io.dev`
+ * because it serves the store's fresh uploads (currently ar.io testnet,
+ * which mainnet `arweave.net` never indexes).
+ */
+export const DEFAULT_GATEWAY = 'https://ar-io.dev';
 
 export const SITE_USAGE = `Usage: rig site <publish|url> [ref] [options]
 
