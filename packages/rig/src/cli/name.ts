@@ -53,6 +53,7 @@ import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { formatUnits } from './balance.js';
 import { emitCliError } from './errors.js';
+import { resolveEffectiveNetwork } from './fund.js';
 import { resolveIdentity } from './identity.js';
 import type { CliIo } from './output.js';
 import type { IdentityReport } from './push.js';
@@ -1003,7 +1004,20 @@ export interface NameDeps {
   submitDvmBuyJob?: SubmitDvmBuyJob;
   /** kind:5096 gas-station client seam; defaults to the signed HTTP POST. */
   gasStation?: GasStationClient;
+  /**
+   * TOON-network resolution seam for the default `--via` DVM (defaults to
+   * `rig fund`'s {@link resolveEffectiveNetwork}; tests inject). The devnet
+   * DVM is only defaulted when the TOON side ALSO resolves to devnet.
+   */
+  resolveToonNetwork?: typeof resolveEffectiveNetwork;
 }
+
+/**
+ * The deployed devnet store DVM — defaulted as `--via` for buy/set when BOTH
+ * the ArNS `--network` and the TOON network resolve to devnet and the user
+ * neither named a DVM (`--via`/`RIG_ARNS_DVM_URL`) nor opted out (`--direct`).
+ */
+export const DEVNET_DVM_URL = 'https://dvm.devnet.toonprotocol.dev';
 
 export const NAME_USAGE = `Usage: rig name <buy|set|status> <name> [options]
 
@@ -1057,12 +1071,18 @@ Options:
                        unverified.
   --process-id <id>    explicit ArNS registry program id — a Solana program
                        address (overrides --network; or RIG_ARIO_PROCESS_ID)
-  --via <dvm-url>      buy only: broker the purchase through a store DVM's
-                       kind:5095 job endpoint (or RIG_ARNS_DVM_URL). The DVM
-                       pays the mARIO; you own the name via your spawned ANT.
-                       Direct backend targeting stubs the job payment
-                       (dev/e2e) — the paid path runs the same job through
-                       the connector payment proxy.
+  --via <dvm-url>      broker buy/set through a store DVM's job endpoint (or
+                       RIG_ARNS_DVM_URL). The DVM pays the mARIO; you own the
+                       name via your spawned ANT. Direct backend targeting
+                       stubs the job payment (dev/e2e) — the paid path runs
+                       the same job through the connector payment proxy.
+                       DEVNET DEFAULT: with --network devnet and the TOON
+                       network on devnet too, buy/set default to the deployed
+                       devnet store DVM (${DEVNET_DVM_URL})
+                       unless --direct opts out.
+  --direct             force the direct wallet-paid path: never default (or
+                       read RIG_ARNS_DVM_URL as) a --via DVM. Mutually
+                       exclusive with an explicit --via.
   --yes                skip the confirmation (required when not a TTY) for
                        buy/set
   --json               machine-readable envelope; for buy/set without --yes it
@@ -1156,6 +1176,11 @@ interface NameFlags {
   /** Brokered buy: the DVM endpoint to submit the kind:5095 job to. */
   via?: string;
   /**
+   * Opt out of the devnet default `--via` DVM: force the direct wallet-paid
+   * path even when both networks resolve to devnet.
+   */
+  direct: boolean;
+  /**
    * `set` only: the Arweave txId as an explicit option, so it never has to
    * sit in the hyphen-ambiguous positional slot — Arweave txids are
    * base64url and roughly 1 in 32 lead with `-` or `_`, which Node's
@@ -1184,6 +1209,7 @@ function parseNameFlags(
       network: { type: 'string' },
       'process-id': { type: 'string' },
       via: { type: 'string' },
+      direct: { type: 'boolean', default: false },
       'tx-id': { type: 'string' },
       yes: { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
@@ -1197,6 +1223,7 @@ function parseNameFlags(
         permabuy: false,
         ttl: 0,
         network: 'mainnet',
+        direct: false,
         yes: false,
         json: false,
       },
@@ -1234,7 +1261,16 @@ function parseNameFlags(
   }
   const processId = values['process-id'] ?? env['RIG_ARIO_PROCESS_ID'];
 
-  const viaRaw = values.via ?? env['RIG_ARNS_DVM_URL'];
+  if (values.direct && values.via !== undefined) {
+    throw new Error(
+      '--direct and --via are mutually exclusive: --direct forces the ' +
+        'wallet-paid path, --via brokers through a DVM'
+    );
+  }
+  // --direct beats the ambient RIG_ARNS_DVM_URL too (explicit opt-out).
+  const viaRaw = values.direct
+    ? undefined
+    : (values.via ?? env['RIG_ARNS_DVM_URL']);
   let via: string | undefined;
   if (viaRaw !== undefined) {
     if (!/^https?:\/\/.+/.test(viaRaw)) {
@@ -1257,6 +1293,7 @@ function parseNameFlags(
       network: networkRaw as ArioNetwork,
       ...(processId !== undefined ? { processId } : {}),
       ...(via !== undefined ? { via } : {}),
+      direct: values.direct ?? false,
       ...(values['tx-id'] !== undefined ? { txId: values['tx-id'] } : {}),
       yes: values.yes ?? false,
       json: values.json ?? false,
@@ -1851,6 +1888,36 @@ export async function runName(args: string[], deps: NameDeps): Promise<number> {
     io.err(`\`rig name ${sub}\` needs a <name>`);
     io.err(NAME_USAGE);
     return 2;
+  }
+
+  // Default `--via` DVM on the shared devnet (#demo): buy/set broker through
+  // the deployed store DVM when the user neither named a DVM (--via /
+  // RIG_ARNS_DVM_URL) nor opted out (--direct). Hard-gated BOTH ways: the
+  // ArNS `--network` must be devnet (a mainnet purchase must never silently
+  // switch payment paths) AND the TOON network must resolve to devnet (same
+  // inference `rig fund` drips on — explicit config, devnet origin, or the
+  // genesis-seed fresh install).
+  if (
+    (sub === 'buy' || sub === 'set') &&
+    !flags.direct &&
+    flags.via === undefined &&
+    flags.network === 'devnet'
+  ) {
+    let toonDevnet = false;
+    try {
+      const resolved = await (deps.resolveToonNetwork ??
+        resolveEffectiveNetwork)({ env: deps.env, cwd: deps.cwd });
+      toonDevnet = resolved.effectiveNetwork === 'devnet';
+    } catch {
+      // Unreadable client config — leave the wallet-paid path untouched.
+    }
+    if (toonDevnet) {
+      flags = { ...flags, via: DEVNET_DVM_URL };
+      io.err(
+        `Brokering via the devnet store DVM ${DEVNET_DVM_URL} ` +
+          `(no --via given; pass --direct for a wallet-paid ${sub}).`
+      );
+    }
   }
 
   try {

@@ -46,6 +46,12 @@ interface HarnessOptions {
    * barrier, so the test times out — only genuinely parallel drips pass.
    */
   barrier?: number;
+  /**
+   * Genesis-seed loader injected into the deps. Defaults to "no seed" so
+   * every pre-seed test keeps its exact behavior; the fresh-install tests
+   * inject a seed explicitly.
+   */
+  genesisSeed?: FundDeps['loadGenesisSeed'];
 }
 
 function makeHarness(
@@ -82,7 +88,18 @@ function makeHarness(
     const body = override?.body ?? options.body ?? JSON.stringify({ success: true });
     return new Response(body, { status });
   }) as unknown as typeof fetch;
-  return { deps: { io, env, cwd, fetchImpl }, out, err, fetchCalls };
+  return {
+    deps: {
+      io,
+      env,
+      cwd,
+      fetchImpl,
+      loadGenesisSeed: options.genesisSeed ?? (async () => undefined),
+    },
+    out,
+    err,
+    fetchCalls,
+  };
 }
 
 /** The parsed `--json` envelope of a fund run. */
@@ -486,12 +503,93 @@ describe('rig fund', () => {
   it('a plain (non-relay) git origin is ignored — no crash, prints guidance (#288)', async () => {
     // An SSH GitHub clone URL is not a relay URL: resolveRelays skips it
     // (NoOriginConfiguredError), which fund swallows to "no origin relay".
+    // (With no injected genesis seed this still guides; a real install would
+    // fall through to the seed — covered by the fresh-install tests below.)
     writeConfig({});
     gitOrigin('git@github.com:toon-protocol/toon-client.git');
     const h = makeHarness(baseEnv(), cwd);
     expect(await runFund([], h.deps)).toBe(0);
     expect(h.fetchCalls).toEqual([]);
     expect(h.out.join('\n')).toContain('no faucet is configured for network');
+  });
+
+  // ── Fresh install: genesis-seed inference (zero config) ───────────────────
+  // Nothing configured anywhere → core's committed genesis seed names the
+  // shared-devnet apex, so a bare `rig fund` drips with zero config. The seed
+  // is a LAST resort: any configured origin — devnet or not — suppresses it.
+
+  const DEVNET_SEED = async () => ({
+    relayUrl: 'wss://relay-ws.devnet.toonprotocol.dev',
+    btpEndpoint: 'wss://proxy.devnet.toonprotocol.dev:443',
+  });
+
+  it('truly empty config: the genesis seed infers devnet and drips', async () => {
+    const h = makeHarness(baseEnv(), cwd, { genesisSeed: DEVNET_SEED });
+    expect(await runFund(['--json'], h.deps)).toBe(0);
+    expect(h.fetchCalls).toHaveLength(3);
+    expect(h.fetchCalls[0]?.url).toBe(`${DEVNET_FAUCET_URL}${EVM_PATH}`);
+    const parsed = parseJson(h);
+    expect(parsed.funded).toBe(true);
+    expect(parsed.network).toBe('devnet');
+    expect(parsed.faucetUrl).toBe(DEVNET_FAUCET_URL);
+    expect(parsed.inferredDevnetFrom).toBe(
+      'wss://relay-ws.devnet.toonprotocol.dev (genesis seed)'
+    );
+  });
+
+  it('fresh install: human output names the genesis seed as the source', async () => {
+    const h = makeHarness(baseEnv(), cwd, { genesisSeed: DEVNET_SEED });
+    expect(await runFund([], h.deps)).toBe(0);
+    const text = h.out.join('\n');
+    expect(text).toContain("Inferred network 'devnet' from the built-in genesis seed");
+    expect(text).toContain('wss://relay-ws.devnet.toonprotocol.dev');
+    expect(text).toMatch(/✓ funded/);
+  });
+
+  it('a seed with only a devnet btpEndpoint still infers (relay missing)', async () => {
+    const h = makeHarness(baseEnv(), cwd, {
+      genesisSeed: async () => ({
+        btpEndpoint: 'wss://proxy.devnet.toonprotocol.dev:443',
+      }),
+    });
+    expect(await runFund(['--json'], h.deps)).toBe(0);
+    const parsed = parseJson(h);
+    expect(parsed.funded).toBe(true);
+    expect(parsed.inferredDevnetFrom).toBe(
+      'wss://proxy.devnet.toonprotocol.dev:443 (genesis seed)'
+    );
+  });
+
+  it('a non-devnet genesis seed never infers — seed is not "devnet" by fiat', async () => {
+    const h = makeHarness(baseEnv(), cwd, {
+      genesisSeed: async () => ({ relayUrl: 'wss://relay.example.com' }),
+    });
+    expect(await runFund([], h.deps)).toBe(0);
+    expect(h.fetchCalls).toEqual([]);
+    expect(h.out.join('\n')).toContain('no faucet is configured for network');
+  });
+
+  it('explicit TOON_CLIENT_NETWORK=testnet beats the genesis seed', async () => {
+    const seed = vi.fn(DEVNET_SEED);
+    const h = makeHarness({ ...baseEnv(), TOON_CLIENT_NETWORK: 'testnet' }, cwd, {
+      genesisSeed: seed,
+    });
+    expect(await runFund(['--json'], h.deps)).toBe(0);
+    expect(h.fetchCalls).toEqual([]);
+    expect(seed).not.toHaveBeenCalled();
+    const parsed = parseJson(h);
+    expect(parsed.funded).toBe(false);
+    expect(parsed.network).toBe('testnet');
+  });
+
+  it('any configured origin suppresses the seed — even a non-devnet one', async () => {
+    const seed = vi.fn(DEVNET_SEED);
+    writeConfig({ relayUrl: 'wss://relay.example.com' });
+    const h = makeHarness(baseEnv(), cwd, { genesisSeed: seed });
+    expect(await runFund([], h.deps)).toBe(0);
+    expect(h.fetchCalls).toEqual([]);
+    expect(seed).not.toHaveBeenCalled();
+    expect(h.out.join('\n')).toContain('TOON_CLIENT_NETWORK=devnet');
   });
 
   // ── Errors ────────────────────────────────────────────────────────────────

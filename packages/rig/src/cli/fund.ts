@@ -33,9 +33,14 @@
  * remote `rig remote` configures (resolved the same way push/fetch resolve
  * their relay), so a fresh user who only ran `rig remote add origin
  * wss://relay-ws.devnet.toonprotocol.dev` gets the drip from a plain
- * `rig fund` with no env var. On any other network there is no faucet: the
- * command prints the derived wallet address(es) to fund externally instead of
- * failing silently.
+ * `rig fund` with no env var. A truly FRESH install — no origin configured
+ * anywhere (env, config, git `origin`) — falls back to core's committed
+ * genesis seed, whose relay/btp origin names the live shared devnet, so
+ * `npm i -g @toon-protocol/rig && rig fund` drips with zero config; any
+ * configured origin (devnet or not) suppresses the seed, keeping the #288
+ * "explicit stays authoritative" rule. On any other network there is no
+ * faucet: the command prints the derived wallet address(es) to fund
+ * externally instead of failing silently.
  *
  * The drips are awaited (a CLI has no background) but run concurrently: the
  * Mina faucet legitimately takes ~75s, so the per-chain timeout is generous
@@ -115,7 +120,9 @@ The identity comes from RIG_MNEMONIC (env or a project .env) or the
 faucetUrl config field, or the deployed devnet faucet when the network is
 devnet — including when a configured *.devnet.toonprotocol.dev origin infers
 it (a devnet relay/proxy/btp endpoint, or the git origin remote from
-\`rig remote add origin <devnet relay>\`). The faucet drips a FIXED amount per
+\`rig remote add origin <devnet relay>\`). A completely fresh install with NO
+origin configured anywhere infers devnet from the built-in genesis seed, so a
+bare \`rig fund\` works with zero config. The faucet drips a FIXED amount per
 chain (there is no --amount). On a network without a faucet, prints the wallet
 address(es) to fund externally instead.
 
@@ -136,10 +143,19 @@ export interface FundDeps {
   cwd: string;
   /** fetch used for the faucet call (tests inject; default global fetch). */
   fetchImpl?: typeof fetch;
+  /**
+   * Genesis-seed loader seam: consulted ONLY when nothing else — env, config,
+   * or the git `origin` remote — names an origin at all (a truly fresh
+   * install with no config). Defaults to the lazy standalone
+   * network-bootstrap import (core's committed genesis peer); tests inject.
+   */
+  loadGenesisSeed?: () => Promise<
+    { relayUrl?: string; btpEndpoint?: string } | undefined
+  >;
 }
 
 /** The slice of the shared client config file `rig fund` consumes. */
-interface FundConfigFile {
+export interface FundConfigFile {
   network?: string;
   faucetUrl?: string;
   faucetTimeoutMs?: number;
@@ -174,9 +190,11 @@ interface FundJson {
   /** The per-chain drip results (one entry per targeted chain). */
   results?: ChainDripResult[];
   /**
-   * Set when `network` was inferred as `devnet` from a configured
+   * Set when `network` was inferred as `devnet` from a
    * `*.devnet.toonprotocol.dev` origin (#288) rather than an explicit
-   * `TOON_CLIENT_NETWORK`/config value — carries the origin that triggered it.
+   * `TOON_CLIENT_NETWORK`/config value — carries the origin that triggered
+   * it. A fresh-install inference from the built-in genesis seed (no origin
+   * configured anywhere) is marked with a ` (genesis seed)` suffix.
    */
   inferredDevnetFrom?: string;
   /** Non-devnet path: the derived wallet addresses to fund externally. */
@@ -246,6 +264,92 @@ export function sharedDevnetOrigin(
  * ambiguous multi-URL origin all mean "no origin relay to infer from" — never
  * an error out of a free command.
  */
+/**
+ * Default {@link FundDeps.loadGenesisSeed}: core's committed genesis peer,
+ * loaded lazily (same pattern as `rig init`'s offline relay fallback) so a
+ * run that never needs it — any configured origin — never drags the
+ * standalone bootstrap in. Failures mean "no seed", never an error out of a
+ * free command.
+ */
+async function loadGenesisSeedDefault(): Promise<
+  { relayUrl?: string; btpEndpoint?: string } | undefined
+> {
+  try {
+    const { loadGenesisSeed } = await import(
+      '../standalone/network-bootstrap.js'
+    );
+    return loadGenesisSeed();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The devnet-or-not decision shared by `rig fund` and `rig name` (#288 + the
+ * genesis-seed fresh-install fallback). Precedence:
+ *
+ *   1. An explicit non-`custom` `TOON_CLIENT_NETWORK`/config `network` is
+ *      authoritative — never coerced.
+ *   2. Otherwise a configured `*.devnet.toonprotocol.dev` origin (env/config
+ *      relay/proxy/btp URL, or the git `origin` relay) infers devnet.
+ *   3. Otherwise — NOTHING configured anywhere (a truly fresh install) —
+ *      core's committed genesis seed is consulted. Its URLs still go through
+ *      {@link devnetHost}: "seed" never hardcodes "devnet"; a future seed
+ *      pointing elsewhere simply stops inferring. Any configured origin,
+ *      devnet or not, suppresses the seed so a deliberately non-devnet setup
+ *      keeps refusing to drip.
+ *
+ * Exported for `rig name` (default `--via` DVM) and tests.
+ */
+export async function resolveEffectiveNetwork(opts: {
+  env: NodeJS.ProcessEnv;
+  cwd: string;
+  /** Pre-read client config slice (callers that already loaded it). */
+  file?: FundConfigFile;
+  /** Genesis-seed loader seam (tests inject; default core's committed seed). */
+  loadGenesisSeed?: FundDeps['loadGenesisSeed'];
+}): Promise<{
+  /** The explicit env/config network value, if any. */
+  network: string | undefined;
+  /** `network` with devnet inference applied. */
+  effectiveNetwork: string | undefined;
+  /** The devnet-looking origin that drove (or could drive) inference. */
+  devnetOrigin: string | undefined;
+  /** True when the origin came from the built-in genesis seed. */
+  seededOrigin: boolean;
+  /** True when `effectiveNetwork` is an INFERRED devnet (not explicit). */
+  inferredDevnet: boolean;
+}> {
+  const { env, cwd } = opts;
+  const file = opts.file ?? readFundConfig(env).file;
+  const network = env['TOON_CLIENT_NETWORK'] ?? file.network;
+  const canInfer = network === undefined || network === 'custom';
+  const originRelays = canInfer ? await resolveOriginRelays(cwd) : [];
+  let devnetOrigin = sharedDevnetOrigin(env, file, originRelays);
+  let seededOrigin = false;
+  if (devnetOrigin === undefined && canInfer) {
+    const anyConfiguredOrigin = [
+      env['TOON_CLIENT_RELAY_URL'] ?? file.relayUrl,
+      env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl,
+      env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl,
+      ...originRelays,
+    ].some((url) => url !== undefined);
+    if (!anyConfiguredOrigin) {
+      const seed = await (opts.loadGenesisSeed ?? loadGenesisSeedDefault)();
+      devnetOrigin = devnetHost(seed?.relayUrl) ?? devnetHost(seed?.btpEndpoint);
+      seededOrigin = devnetOrigin !== undefined;
+    }
+  }
+  const inferredDevnet = devnetOrigin !== undefined && canInfer;
+  return {
+    network,
+    effectiveNetwork: inferredDevnet ? 'devnet' : network,
+    devnetOrigin,
+    seededOrigin,
+    inferredDevnet,
+  };
+}
+
 export async function resolveOriginRelays(cwd: string): Promise<string[]> {
   let repoRoot: string;
   try {
@@ -394,13 +498,15 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
     // Only an unset/`custom` network can be inferred to devnet; when the
     // network is explicit and non-`custom` the inference is a no-op, so skip
     // the git-origin resolution (several `git` subprocesses) entirely.
-    const canInfer = network === undefined || network === 'custom';
-    const originRelays = canInfer ? await resolveOriginRelays(deps.cwd) : [];
-    const devnetOrigin = sharedDevnetOrigin(env, file, originRelays);
-    const inferredDevnet =
-      devnetOrigin !== undefined &&
-      (network === undefined || network === 'custom');
-    const effectiveNetwork = inferredDevnet ? 'devnet' : network;
+    const { devnetOrigin, seededOrigin, inferredDevnet, effectiveNetwork } =
+      await resolveEffectiveNetwork({
+        env,
+        cwd: deps.cwd,
+        file,
+        ...(deps.loadGenesisSeed
+          ? { loadGenesisSeed: deps.loadGenesisSeed }
+          : {}),
+      });
     const faucetUrl =
       env['TOON_CLIENT_FAUCET_URL'] ??
       file.faucetUrl ??
@@ -465,9 +571,13 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
 
     if (!json && inferredDevnet) {
       io.out(
-        `Inferred network 'devnet' from the configured origin ${devnetOrigin} ` +
-          `(network was ${JSON.stringify(network ?? 'custom')}). ` +
-          'Set TOON_CLIENT_NETWORK explicitly to override.'
+        seededOrigin
+          ? `Inferred network 'devnet' from the built-in genesis seed ` +
+              `${devnetOrigin} (nothing configured — fresh install). ` +
+              'Set TOON_CLIENT_NETWORK explicitly to override.'
+          : `Inferred network 'devnet' from the configured origin ${devnetOrigin} ` +
+              `(network was ${JSON.stringify(network ?? 'custom')}). ` +
+              'Set TOON_CLIENT_NETWORK explicitly to override.'
       );
     }
     if (!json) {
@@ -534,7 +644,13 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
         network: effectiveNetwork ?? null,
         faucetUrl,
         results,
-        ...(inferredDevnet ? { inferredDevnetFrom: devnetOrigin } : {}),
+        ...(inferredDevnet
+          ? {
+              inferredDevnetFrom: seededOrigin
+                ? `${devnetOrigin} (genesis seed)`
+                : devnetOrigin,
+            }
+          : {}),
       } satisfies FundJson);
       return allFunded ? 0 : 1;
     }

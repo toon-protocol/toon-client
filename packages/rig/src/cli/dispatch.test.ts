@@ -8,6 +8,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { dispatch, USAGE, type DispatchDeps } from './dispatch.js';
 import type { GitPassthroughOptions } from './git-passthrough.js';
 import type { CliIo } from './push.js';
@@ -56,8 +59,11 @@ describe('dispatch precedence (rig-owned verbs never pass through)', () => {
     ['comment'],
     ['pr'],
     ['channel'],
+    ['channels'],
     ['fund'],
     ['balance'],
+    ['chain'],
+    ['entry'],
     ['name'],
   ])('rig %s --help is answered by rig, not git', async (verb) => {
     const h = makeHarness();
@@ -83,6 +89,31 @@ describe('dispatch precedence (rig-owned verbs never pass through)', () => {
       expect(await dispatch(argv, h.deps)).toBe(2);
       expect(h.gitCalls).toHaveLength(0);
       expect(h.err.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('rig channels is `rig channel list` (alias); subcommands still route', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rig-dispatch-channels-'));
+    try {
+      const h = makeHarness();
+      h.deps.env = { TOON_CLIENT_HOME: dir };
+      expect(await dispatch(['channels'], h.deps)).toBe(0);
+      expect(h.gitCalls).toHaveLength(0);
+      expect(h.out.join('\n')).toContain('No payment channels recorded');
+
+      const j = makeHarness();
+      j.deps.env = { TOON_CLIENT_HOME: dir };
+      expect(await dispatch(['channels', '--json'], j.deps)).toBe(0);
+      const parsed = JSON.parse(j.out.join('\n')) as { command: string };
+      expect(parsed.command).toBe('channel list');
+
+      // A subcommand word forwards to the channel router, never to git.
+      const s = makeHarness();
+      s.deps.env = { TOON_CLIENT_HOME: dir };
+      expect(await dispatch(['channels', 'bogus'], s.deps)).toBe(2);
+      expect(s.gitCalls).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

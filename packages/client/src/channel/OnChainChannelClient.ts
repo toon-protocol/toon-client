@@ -164,7 +164,36 @@ export interface SolanaChannelConfig {
 export interface MinaChannelConfig {
   graphqlUrl: string;
   privateKey: string;
-  zkAppAddress: string;
+  /**
+   * Deployed payment-channel zkApp address (B62). Optional when `autoDeploy`
+   * is set — the open path then resolves (or deploys) a pair-owned zkApp
+   * itself; see `mina-channel-deploy.ts`.
+   */
+  zkAppAddress?: string;
+  /**
+   * Per-pair zkApp auto-deploy (the Mina `PaymentChannel` zkApp is
+   * single-pair: one deployment serves exactly one client↔connector pair).
+   * When set, `openMinaChannel` first resolves a zkApp that is provably OURS
+   * — the recorded `deployed` one, or `zkAppAddress` when its on-chain
+   * channelHash matches this pair — and deploys a fresh one otherwise
+   * (compile ≈1-3 min; inclusion ≈3-6 min; costs ~1.1 MINA + fees).
+   * Without it, behavior is exactly the pre-autoDeploy contract: the
+   * configured `zkAppAddress` is required and used verbatim.
+   */
+  autoDeploy?: {
+    /** A previously recorded own deployment for this identity, if any. */
+    deployed?: { zkAppAddress: string; zkAppPrivateKey: string };
+    /** Persist hook — called BEFORE the open proceeds on a fresh deploy. */
+    onDeployed?: (record: {
+      zkAppAddress: string;
+      zkAppPrivateKey: string;
+      feePayer: string;
+      deployTxHash?: string;
+      vkHash?: string;
+    }) => void | Promise<void>;
+    /** Progress lines (compile/deploy/inclusion phases take minutes). */
+    onProgress?: (line: string) => void;
+  };
   /**
    * Channel settlement timeout in slots for `initializeChannel`. Defaults to
    * `OpenChannelParams.settlementTimeout` or 86400.
@@ -692,24 +721,51 @@ export class OnChainChannelClient implements ConnectorChannelClient {
         'Mina channel config not provided — cannot open Mina channel'
       );
     }
-    // The deployed zkApp address IS the channel id (claim `zkAppAddress`).
-    const zkAppAddress = this.minaConfig.zkAppAddress;
-    if (!zkAppAddress) {
-      throw new Error(
-        'Mina channel requires a deployed zkAppAddress (minaConfig.zkAppAddress)'
-      );
-    }
     // The apex's Mina settlement B62 (participantB) is REQUIRED so the channel is
     // opened TWO-party. The off-chain claim is signed in participant form
     // (`Poseidon([client.x, apex.x, 0])`); without participantB the on-chain
     // channel records empty/duplicate participants and the connector's
     // participant-form verification fails on settle (`Invalid balance proof
     // signature`, `participants:["",""]`). Mirrors the Solana peerAddress guard.
+    // (Checked before auto-deploy too — the pair hash needs participantB.)
     if (!params.peerAddress) {
       throw new Error(
         'Mina channel requires peerAddress (apex Mina settlement B62) so the ' +
           'on-chain channel is opened two-party — the participant-form claim ' +
           'cannot settle against a single-party channel'
+      );
+    }
+    // The deployed zkApp address IS the channel id (claim `zkAppAddress`).
+    // With autoDeploy, resolve a zkApp that is provably OURS for this pair
+    // (reusing the recorded/configured one when its on-chain channelHash
+    // matches; deploying a dedicated one otherwise) — the Mina PaymentChannel
+    // zkApp is single-pair, so a shared/announced address can never serve a
+    // second identity. Lazily imported: only autoDeploy users pay the cost.
+    let zkAppAddress = this.minaConfig.zkAppAddress;
+    if (this.minaConfig.autoDeploy) {
+      const { ensureOwnedMinaZkApp } = await import(
+        './mina-channel-deploy.js'
+      );
+      const ensured = await ensureOwnedMinaZkApp({
+        graphqlUrl: this.minaConfig.graphqlUrl,
+        payerPrivateKey: this.minaConfig.privateKey,
+        peerPublicKey: params.peerAddress,
+        ...(this.minaConfig.autoDeploy.deployed
+          ? { deployed: this.minaConfig.autoDeploy.deployed }
+          : {}),
+        ...(zkAppAddress ? { candidateZkAppAddress: zkAppAddress } : {}),
+        ...(this.minaConfig.autoDeploy.onDeployed
+          ? { onDeployed: this.minaConfig.autoDeploy.onDeployed }
+          : {}),
+        ...(this.minaConfig.autoDeploy.onProgress
+          ? { onProgress: this.minaConfig.autoDeploy.onProgress }
+          : {}),
+      });
+      zkAppAddress = ensured.zkAppAddress;
+    }
+    if (!zkAppAddress) {
+      throw new Error(
+        'Mina channel requires a deployed zkAppAddress (minaConfig.zkAppAddress)'
       );
     }
 

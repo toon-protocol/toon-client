@@ -302,3 +302,15 @@ export {
   type GenerativeFallbackOptions,
   type GenerativeFallbackResult,
 } from './render/index.js';
+
+// Per-pair Mina zkApp auto-deploy (zero-config Mina channels). The heavy
+// o1js + @toon-protocol/mina-zkapp runtime is lazily loaded INSIDE these
+// functions — importing them costs nothing.
+export {
+  deployMinaChannelZkApp,
+  ensureOwnedMinaZkApp,
+  type DeployMinaZkAppParams,
+  type EnsureOwnedMinaZkAppParams,
+  type EnsureOwnedMinaZkAppResult,
+  type MinaZkAppDeployRecord,
+} from './channel/mina-channel-deploy.js';

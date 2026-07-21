@@ -27,6 +27,7 @@ import {
   ArnsSdkUnavailableError,
   defaultLoadArns,
   DVM_PAYMENT_NOTE,
+  DEVNET_DVM_URL,
   MARIO_PAYMENT_NOTE,
   MIN_ARIO_SDK_VERSION,
   runName,
@@ -174,6 +175,11 @@ function makeHarness(
     stub?: StubOptions;
     /** Canned DVM job receipt / failure for the --via submitter stub. */
     dvm?: { receipt?: DvmBuyJobReceipt; error?: Error };
+    /**
+     * What the TOON network resolves to for the default `--via` gate
+     * (default: NOT devnet, so pre-default tests keep the wallet-paid path).
+     */
+    toonDevnet?: boolean;
   } = {}
 ): Harness {
   const out: string[] = [];
@@ -249,6 +255,13 @@ function makeHarness(
     loadArns,
     submitDvmBuyJob,
     gasStation,
+    resolveToonNetwork: async () => ({
+      network: undefined,
+      effectiveNetwork: opts.toonDevnet ? 'devnet' : undefined,
+      devnetOrigin: undefined,
+      seededOrigin: false,
+      inferredDevnet: opts.toonDevnet ?? false,
+    }),
   };
   return {
     deps,
@@ -878,6 +891,119 @@ describe('rig name', () => {
     const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
     expect(doc['via']).toBeNull();
     expect(doc['payment']).toBe(MARIO_PAYMENT_NOTE);
+  });
+
+  // ── devnet default --via (the deployed store DVM) ─────────────────────────
+  // Gated BOTH ways: ArNS --network devnet AND the TOON network resolving to
+  // devnet (the harness stubs the resolution; default NOT devnet).
+
+  it('buy --network devnet on a devnet TOON network defaults --via to the deployed DVM', async () => {
+    const h = makeHarness(env, cwd, { toonDevnet: true });
+    const code = await runName(
+      ['buy', 'toon-demo-name', '--network', 'devnet', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    // Brokered: our ANT spawned, the kind:5095 job hit the DEFAULT DVM, and
+    // the local wallet never bought.
+    expect(h.dvmJobs).toHaveLength(1);
+    expect(h.dvmJobs[0]?.viaUrl).toBe(DEVNET_DVM_URL);
+    expect(h.calls.buyRecord).toHaveLength(0);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['via']).toBe(DEVNET_DVM_URL);
+    expect(h.err.join('\n')).toContain('Brokering via the devnet store DVM');
+    expect(h.err.join('\n')).toContain('--direct');
+  });
+
+  it('set --network devnet on a devnet TOON network defaults to the gas-station DVM path', async () => {
+    const h = makeHarness(env, cwd, { toonDevnet: true });
+    const code = await runName(
+      ['set', 'mysite', TX_ID, '--network', 'devnet', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.gasQuotes).toHaveLength(1);
+    expect(h.gasQuotes[0]?.viaUrl).toBe(DEVNET_DVM_URL);
+    expect(h.calls.setBaseNameRecord).toHaveLength(0);
+  });
+
+  it('the default is NOT applied when the TOON network is not devnet', async () => {
+    const h = makeHarness(env, cwd); // toonDevnet defaults to false
+    const code = await runName(
+      ['buy', 'mysite', '--network', 'devnet', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.dvmJobs).toHaveLength(0);
+    expect(h.calls.buyRecord).toHaveLength(1);
+  });
+
+  it('the default is NOT applied on ArNS mainnet even with a devnet TOON network', async () => {
+    const h = makeHarness(env, cwd, { toonDevnet: true });
+    const code = await runName(['buy', 'mysite', '--yes', '--json'], h.deps);
+    expect(code).toBe(0);
+    expect(h.dvmJobs).toHaveLength(0);
+    expect(h.calls.buyRecord).toHaveLength(1);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['via']).toBeNull();
+  });
+
+  it('--direct opts out of the devnet default (wallet-paid, no notice)', async () => {
+    const h = makeHarness(env, cwd, { toonDevnet: true });
+    const code = await runName(
+      ['buy', 'mysite', '--network', 'devnet', '--direct', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.dvmJobs).toHaveLength(0);
+    expect(h.calls.buyRecord).toHaveLength(1);
+    expect(h.err.join('\n')).not.toContain('Brokering via the devnet store DVM');
+  });
+
+  it('--direct also suppresses the ambient RIG_ARNS_DVM_URL', async () => {
+    const h = makeHarness(
+      { ...env, RIG_ARNS_DVM_URL: 'http://dvm.local:3300' },
+      cwd,
+      { toonDevnet: true }
+    );
+    const code = await runName(
+      ['buy', 'mysite', '--network', 'devnet', '--direct', '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.dvmJobs).toHaveLength(0);
+    expect(h.calls.buyRecord).toHaveLength(1);
+  });
+
+  it('--direct with an explicit --via is a usage error (exit 2)', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      ['buy', 'mysite', '--via', 'http://dvm.local:3300', '--direct', '--yes'],
+      h.deps
+    );
+    expect(code).toBe(2);
+    expect(h.err.join('\n')).toContain('mutually exclusive');
+  });
+
+  it('an explicit --via wins over the devnet default', async () => {
+    const h = makeHarness(env, cwd, { toonDevnet: true });
+    const code = await runName(
+      [
+        'buy',
+        'toon-demo-name',
+        '--via',
+        'http://dvm.local:3300',
+        '--network',
+        'devnet',
+        '--yes',
+        '--json',
+      ],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.dvmJobs).toHaveLength(1);
+    expect(h.dvmJobs[0]?.viaUrl).toBe('http://dvm.local:3300');
+    expect(h.err.join('\n')).not.toContain('Brokering via the devnet store DVM');
   });
 });
 

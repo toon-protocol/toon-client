@@ -53,8 +53,35 @@ export interface SolanaChannelClientOptions {
 export interface MinaChannelClientOptions {
   /** Mina GraphQL URL used to open the channel + read zkApp state. */
   graphqlUrl: string;
-  /** Deployed payment-channel zkApp address (B62 base58). */
-  zkAppAddress: string;
+  /**
+   * Deployed payment-channel zkApp address (B62 base58). Optional when
+   * `autoDeploy` is set — the open path then resolves (or deploys) a
+   * pair-owned zkApp itself.
+   */
+  zkAppAddress?: string;
+  /**
+   * Per-pair zkApp auto-deploy: the Mina `PaymentChannel` zkApp is
+   * single-pair (its on-chain channelHash bakes the participant pair at
+   * initialization), so a fresh identity can never reuse a shared/announced
+   * zkApp. With `autoDeploy`, opening a Mina channel first checks whether
+   * the recorded/configured zkApp is provably OURS for this pair and deploys
+   * a dedicated one otherwise (compile ≈1-3 min, inclusion ≈3-6 min,
+   * ~1.1 MINA + fees — surfaced through `onProgress`).
+   */
+  autoDeploy?: {
+    /** A previously recorded own deployment for this identity, if any. */
+    deployed?: { zkAppAddress: string; zkAppPrivateKey: string };
+    /** Persist hook — called BEFORE the open proceeds on a fresh deploy. */
+    onDeployed?: (record: {
+      zkAppAddress: string;
+      zkAppPrivateKey: string;
+      feePayer: string;
+      deployTxHash?: string;
+      vkHash?: string;
+    }) => void | Promise<void>;
+    /** Progress lines for the slow compile/deploy/inclusion phases. */
+    onProgress?: (line: string) => void;
+  };
   /** Channel settlement timeout in slots for `initializeChannel` (default 86400). */
   challengeDuration?: number;
   /** Mina token id field (decimal string) for `initializeChannel` (default '1'). */
