@@ -47,6 +47,13 @@ const MNEMONIC =
 /** A plausible 43-char Arweave txId (path-manifest target). */
 const TX_ID = 'x'.repeat(43);
 
+/**
+ * A txId leading with `-` (#399): Arweave txids are base64url, so this is a
+ * normal, valid shape — but as a bare positional it would previously be
+ * misread as an unknown flag by Node's (strict) `parseArgs`.
+ */
+const TX_ID_LEADING_HYPHEN = `-${'x'.repeat(42)}`;
+
 interface StubCalls {
   getTokenCost: {
     intent: string;
@@ -473,6 +480,65 @@ describe('rig name', () => {
     const h = makeHarness(env, cwd);
     expect(await runName(['set', 'mysite'], h.deps)).toBe(2);
     expect(h.err.join('\n')).toContain('needs a <txId>');
+  });
+
+  it('set --tx-id accepts a txId leading with "-" (#399)', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      ['set', 'mysite', `--tx-id=${TX_ID_LEADING_HYPHEN}`, '--yes', '--json'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc).toMatchObject({
+      action: 'set',
+      txId: TX_ID_LEADING_HYPHEN,
+      executed: true,
+    });
+    expect(h.calls.setBaseNameRecord).toEqual([
+      { transactionId: TX_ID_LEADING_HYPHEN, ttlSeconds: 3600 },
+    ]);
+  });
+
+  it('set --tx-id works alongside other flags (#399)', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      [
+        'set',
+        'mysite',
+        '--network',
+        'devnet',
+        `--tx-id=${TX_ID_LEADING_HYPHEN}`,
+        '--yes',
+        '--json',
+      ],
+      h.deps
+    );
+    expect(code).toBe(0);
+    expect(h.calls.setBaseNameRecord).toEqual([
+      { transactionId: TX_ID_LEADING_HYPHEN, ttlSeconds: 3600 },
+    ]);
+  });
+
+  it('set --tx-id without "=" is ambiguous when the value leads with "-" (Node parseArgs)', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      ['set', 'mysite', '--tx-id', TX_ID_LEADING_HYPHEN, '--yes'],
+      h.deps
+    );
+    expect(code).toBe(2);
+    expect(h.err.join('\n')).toContain('ambiguous');
+  });
+
+  it('set --tx-id and a positional <txId> are mutually exclusive (exit 2)', async () => {
+    const h = makeHarness(env, cwd);
+    const code = await runName(
+      ['set', 'mysite', TX_ID, '--tx-id', TX_ID, '--yes'],
+      h.deps
+    );
+    expect(code).toBe(2);
+    expect(h.err.join('\n')).toContain('mutually exclusive');
+    expect(h.calls.setBaseNameRecord).toHaveLength(0);
   });
 
   // ── status: FREE ──────────────────────────────────────────────────────────

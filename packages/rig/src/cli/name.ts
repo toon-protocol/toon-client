@@ -1032,6 +1032,11 @@ Commands:
                        gas-station path (kind:5096) — you author and
                        partial-sign, the DVM co-signs as fee payer and pays
                        the lamports; needs ZERO SOL in this wallet.
+                       <txId> may instead be given via --tx-id <id> — use
+                       that instead of the positional when the txId leads
+                       with '-' or '_' (Arweave txids are base64url). For a
+                       leading '-' write --tx-id=<id> (the '=' form), since
+                       "--tx-id -XYZ..." is itself ambiguous to the parser.
   name status <name>   FREE: registry record (lease/permabuy, expiry), ANT
                        process id, current target txId(s), TTL, undernames.
 
@@ -1042,6 +1047,10 @@ Options:
   --undername <sub>    target the undername <sub>_<name> instead of the base
                        name (set)
   --ttl <seconds>      record TTL in seconds (set; default 3600)
+  --tx-id <id>         set only: the Arweave txId to point at, as an
+                       explicit option instead of the positional (mutually
+                       exclusive with the positional <txId>). For a value
+                       leading with '-' use --tx-id=<id>.
   --network <net>      cluster: mainnet | devnet (default mainnet; or
                        RIG_ARIO_NETWORK). ar.io has no Solana-testnet
                        deployment. Non-mainnet gateway resolution is
@@ -1146,6 +1155,13 @@ interface NameFlags {
   processId?: string;
   /** Brokered buy: the DVM endpoint to submit the kind:5095 job to. */
   via?: string;
+  /**
+   * `set` only: the Arweave txId as an explicit option, so it never has to
+   * sit in the hyphen-ambiguous positional slot — Arweave txids are
+   * base64url and roughly 1 in 32 lead with `-` or `_`, which Node's
+   * `parseArgs` (strict by default) misreads as an unknown flag (#399).
+   */
+  txId?: string;
   yes: boolean;
   json: boolean;
 }
@@ -1168,6 +1184,7 @@ function parseNameFlags(
       network: { type: 'string' },
       'process-id': { type: 'string' },
       via: { type: 'string' },
+      'tx-id': { type: 'string' },
       yes: { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
@@ -1240,6 +1257,7 @@ function parseNameFlags(
       network: networkRaw as ArioNetwork,
       ...(processId !== undefined ? { processId } : {}),
       ...(via !== undefined ? { via } : {}),
+      ...(values['tx-id'] !== undefined ? { txId: values['tx-id'] } : {}),
       yes: values.yes ?? false,
       json: values.json ?? false,
     },
@@ -1838,11 +1856,19 @@ export async function runName(args: string[], deps: NameDeps): Promise<number> {
   try {
     if (sub === 'buy') return await runBuy(name, flags, deps);
     if (sub === 'status') return await runStatus(name, flags, deps);
-    // set: `rig name set <name> <txId>`
-    const txId = positionals[1];
+    // set: `rig name set <name> <txId>` — or `rig name set <name> --tx-id
+    // <id>` (#399: a positional txId leading with `-`/`_` is hyphen-
+    // ambiguous with Node's strict `parseArgs`).
+    if (flags.txId !== undefined && positionals[1] !== undefined) {
+      io.err('`--tx-id` and a positional <txId> are mutually exclusive');
+      io.err(NAME_USAGE);
+      return 2;
+    }
+    const txId = flags.txId ?? positionals[1];
     if (txId === undefined) {
       io.err(
-        '`rig name set` needs a <txId> (the Arweave transaction to point at)'
+        '`rig name set` needs a <txId> (the Arweave transaction to point at) ' +
+          '— as a positional or via --tx-id'
       );
       io.err(NAME_USAGE);
       return 2;
