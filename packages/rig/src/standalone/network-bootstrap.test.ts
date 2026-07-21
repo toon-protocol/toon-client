@@ -353,7 +353,9 @@ describe('resolveChainSettlement', () => {
     // the fields) must resolve them so balance/settle target the right
     // contracts. The retired 18-decimal mock USDC `0xac806…` must not leak.
     const preset = evmPresetForChain('evm:base:84532');
-    expect(preset?.rpcUrl).toBe('https://sepolia.base.org');
+    // core >=3.1.2: the baked RPC is the working publicnode endpoint (the old
+    // `sepolia.base.org` LB failed openChannel on stale reads).
+    expect(preset?.rpcUrl).toBe('https://base-sepolia-rpc.publicnode.com');
     expect(preset?.usdcAddress).toBe('0x49beE1Bca5d15Fb0963117923403F9498119a9Ce');
     expect(preset?.tokenNetworkAddress).toBe('0x1E95493fEF46707E034b4a1945f25a8C76A1823D');
     // And the stale 18-decimal token must NOT leak through.
@@ -650,13 +652,20 @@ describe('resolveChainSettlement — mina', () => {
     expect(s.minaTokenId).toBe(DEVNET_MINA.tokenId);
   });
 
-  it('the announced zkApp beats the (drift-prone) core preset zkApp', () => {
+  it('the announced zkApp beats the core preset zkApp (precedence)', () => {
     const preset = minaPresetForChain('mina:devnet');
-    const s = resolveChainSettlement('mina:devnet', {}, minaApex);
-    // The core preset ships a DIFFERENT (older) zkApp than the current
-    // devnet's — proving the announce, not the constant, is authoritative.
-    expect(preset?.zkAppAddress).not.toBe(DEVNET_MINA.zkAppAddress);
-    expect(s.zkAppAddress).toBe(DEVNET_MINA.zkAppAddress);
+    // An announce advertising a DIFFERENT zkApp than the baked preset must win —
+    // proving the announce, not the constant, is authoritative (drift-proof).
+    // (core >=3.1.2's preset zkApp is now current, so use a distinct override.)
+    const overridden = announcedPeer(APEX_PUBKEY, {
+      ...APEX_CONTENT,
+      supportedChains: ['mina:devnet'],
+      tokenNetworks: { 'mina:devnet': 'B62qAnnouncedOverrideZkApp000000000000000000000' },
+      minaTokenIds: { 'mina:devnet': DEVNET_MINA.tokenId },
+    });
+    const s = resolveChainSettlement('mina:devnet', {}, overridden);
+    expect(s.zkAppAddress).toBe('B62qAnnouncedOverrideZkApp000000000000000000000');
+    expect(s.zkAppAddress).not.toBe(preset?.zkAppAddress);
   });
 
   it('falls back to the preset zkApp when the announce carries none', () => {
@@ -665,9 +674,10 @@ describe('resolveChainSettlement — mina', () => {
     const preset = minaPresetForChain('mina:devnet');
     expect(s.zkAppAddress).toBe(preset?.zkAppAddress);
     expect(s.rpcUrl).toBe(DEVNET_MINA.graphqlUrl);
-    // No token id anywhere (core 3.1.1 preset has none) → native-MINA default
-    // is applied downstream.
-    expect(s.minaTokenId).toBeUndefined();
+    // core >=3.1.2's preset now carries the token id too, so a bare announce
+    // still resolves the current devnet token id from the baked fallback.
+    expect(s.minaTokenId).toBe(preset?.tokenId);
+    expect(s.minaTokenId).toBe(DEVNET_MINA.tokenId);
   });
 
   it('explicit config beats the announce and the preset', () => {
@@ -1034,7 +1044,7 @@ describe('selectSettlementChain', () => {
     });
     expect(probed).toEqual([
       'https://api.devnet.solana.com',
-      'https://sepolia.base.org',
+      'https://base-sepolia-rpc.publicnode.com',
     ]);
   });
 });

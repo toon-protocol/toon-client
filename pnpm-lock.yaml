@@ -127,8 +127,8 @@ importers:
         specifier: ^1.3.0
         version: 1.6.0
       '@toon-protocol/core':
-        specifier: ^3.1.1
-        version: 3.1.1(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10)
+        specifier: ^3.1.2
+        version: 3.1.2(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@toon-protocol/sdk':
         specifier: ^3.0.0
         version: 3.0.0(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(mina-signer@3.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10)
@@ -212,8 +212,8 @@ importers:
         specifier: workspace:*
         version: link:../client
       '@toon-protocol/core':
-        specifier: ^3.1.1
-        version: 3.1.1(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10)
+        specifier: ^3.1.2
+        version: 3.1.2(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@toon-protocol/rig':
         specifier: workspace:*
         version: link:../rig
@@ -251,8 +251,8 @@ importers:
         specifier: workspace:^
         version: link:../client
       '@toon-protocol/core':
-        specifier: ^3.1.1
-        version: 3.1.1(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6)
+        specifier: ^3.1.2
+        version: 3.1.2(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6)
       nostr-tools:
         specifier: ^2.20.0
         version: 2.23.5(typescript@5.9.3)
@@ -356,7 +356,7 @@ importers:
         specifier: workspace:*
         version: link:../client
       '@toon-protocol/core':
-        specifier: ^1.4.1
+        specifier: ^1.6.0
         version: 1.6.0(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@22.7.5)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6))(@types/react@19.2.17)(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6)
       '@toon-protocol/relay':
         specifier: ^1.3.1
@@ -4545,8 +4545,8 @@ packages:
       '@toon-protocol/connector':
         optional: true
 
-  '@toon-protocol/core@3.1.1':
-    resolution: {integrity: sha512-vXHz81kYqfyyES/KlcwgnQKGgia+5Jq/Wskmv9oCTEtqqy4YvGqo9ioZtnxiiPLBCLvv6fW2qBe8hTEq98jRlw==}
+  '@toon-protocol/core@3.1.2':
+    resolution: {integrity: sha512-5fXlyOVLvMVfxWGjtej2J4LYU1y51PjJCmw4O/sF5j5hC3c5nSRqxxlMZDFaE4w/aHIwOH+K+EnbFI2sT45IVw==}
     peerDependencies:
       '@toon-protocol/connector': '>=3.3.3'
     peerDependenciesMeta:
@@ -5242,6 +5242,9 @@ packages:
 
   bn.js@5.2.3:
     resolution: {integrity: sha512-EAcmnPkxpntVL+DS7bO1zhcZNvCkxqtkd0ZY53h06GNQ3DEkkGZ/gKgmDv6DdZQGj9BgfSPKtJJ7Dp1GPP8f7w==}
+
+  bn.js@5.2.5:
+    resolution: {integrity: sha512-Vq886eXykuP5E6HcKSSStP3bJgrE6In5WKxVUvJ8XGpWWYs2xZHWqUwzCtGgEtBcxyd57KBFDPFoUfNzdaHCNg==}
 
   body-parser@2.3.0:
     resolution: {integrity: sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw==}
@@ -8151,8 +8154,13 @@ packages:
   preact@10.24.2:
     resolution: {integrity: sha512-1cSoF0aCC8uaARATfrlz4VCBqE8LwZwRfLgkxJOQwAlQt6ayTmi0D9OF7nXid1POI5SZidFuG9CnlXbDfLqY/Q==}
 
-  preact@10.29.2:
-    resolution: {integrity: sha512-7tNmwg/7mzzAoB/8kSg6Hl37JraAZw3Z3A0JSY7VXlZwo82Xn0G7wKbNNs2qoF4ZEEsQGTwDAroNdqKs1ofJxQ==}
+  preact@10.29.7:
+    resolution: {integrity: sha512-DCHYrK/B10yUD3ZjLfhZ3WIE/9Vf9VFUODcRE2dRomTYDpJk6z6L9wecSfhfE6M9ZTHUdyQkoC46arIDhEV84Q==}
+    peerDependencies:
+      preact-render-to-string: '>=5'
+    peerDependenciesMeta:
+      preact-render-to-string:
+        optional: true
 
   prebuild-install@7.1.3:
     resolution: {integrity: sha512-8Mf2cbV7x1cXPUILADGI3wuhfqWvtiLA1iclTDbFRZkgRQS0NqsPZphna9V+HyTEadheuPmjaJMsbzKQFOzLug==}
@@ -8600,6 +8608,11 @@ packages:
 
   semver@7.8.4:
     resolution: {integrity: sha512-rUCObTnP32Q08R2uuIrt7r9PlEonuTmtuXYcW6s5kjdlj3xbnwe+21yXptAUYcMAABLkYYTtnmzb3w3EDZfueA==}
+    engines: {node: '>=10'}
+    hasBin: true
+
+  semver@7.8.5:
+    resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -10033,6 +10046,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -10092,6 +10106,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -10151,6 +10166,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -10210,6 +10226,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -11063,16 +11080,17 @@ snapshots:
 
   '@coinbase/wallet-sdk@3.9.3':
     dependencies:
-      bn.js: 5.2.3
+      bn.js: 5.2.5
       buffer: 6.0.3
       clsx: 1.2.1
       eth-block-tracker: 7.1.0
       eth-json-rpc-filters: 6.0.1
       eventemitter3: 5.0.4
       keccak: 3.0.4
-      preact: 10.29.2
+      preact: 10.29.7
       sha.js: 2.4.12
     transitivePeerDependencies:
+      - preact-render-to-string
       - supports-color
 
   '@coinbase/wallet-sdk@4.3.6(@types/react@19.2.17)(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(use-sync-external-store@1.4.0(react@19.2.7))(utf-8-validate@6.0.6)(zod@3.25.76)':
@@ -12519,7 +12537,7 @@ snapshots:
       '@ethereumjs/tx': 4.2.0
       '@types/debug': 4.1.13
       debug: 4.4.3
-      semver: 7.8.4
+      semver: 7.8.5
       superstruct: 1.0.4
     transitivePeerDependencies:
       - supports-color
@@ -16733,6 +16751,7 @@ snapshots:
       - ioredis
       - mina-signer
       - o1js
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -16787,6 +16806,7 @@ snapshots:
       - ioredis
       - mina-signer
       - o1js
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -16988,6 +17008,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17039,6 +17060,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17090,6 +17112,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17141,6 +17164,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17192,6 +17216,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17199,7 +17224,7 @@ snapshots:
       - uploadthing
       - utf-8-validate
 
-  '@toon-protocol/core@3.1.1(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10)':
+  '@toon-protocol/core@3.1.2(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@ardrive/turbo-sdk': 1.42.0(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@noble/hashes': 2.2.0
@@ -17244,6 +17269,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17251,7 +17277,7 @@ snapshots:
       - uploadthing
       - utf-8-validate
 
-  '@toon-protocol/core@3.1.1(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6)':
+  '@toon-protocol/core@3.1.2(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(@toon-protocol/connector@3.13.0(@types/node@20.19.43)(bufferutil@4.1.0)(o1js@2.14.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6)':
     dependencies:
       '@ardrive/turbo-sdk': 1.42.0(@azure/identity@4.13.1)(@solana/sysvars@6.10.0(typescript@5.9.3))(bufferutil@4.1.0)(react@19.2.7)(typescript@5.9.3)(utf-8-validate@6.0.6)
       '@noble/hashes': 2.2.0
@@ -17296,6 +17322,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17354,6 +17381,7 @@ snapshots:
       - ioredis
       - mina-signer
       - o1js
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17410,6 +17438,7 @@ snapshots:
       - ioredis
       - mina-signer
       - o1js
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17462,6 +17491,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17512,6 +17542,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17562,6 +17593,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17906,6 +17938,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -17959,6 +17992,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -18012,6 +18046,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -18065,6 +18100,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -19470,6 +19506,8 @@ snapshots:
   bn.js@4.12.3: {}
 
   bn.js@5.2.3: {}
+
+  bn.js@5.2.5: {}
 
   body-parser@2.3.0:
     dependencies:
@@ -22741,7 +22779,7 @@ snapshots:
 
   preact@10.24.2: {}
 
-  preact@10.29.2: {}
+  preact@10.29.7: {}
 
   prebuild-install@7.1.3:
     dependencies:
@@ -23308,6 +23346,8 @@ snapshots:
   semver@6.3.1: {}
 
   semver@7.8.4: {}
+
+  semver@7.8.5: {}
 
   send@1.2.1:
     dependencies:
@@ -24560,6 +24600,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react-native
       - supports-color
       - uploadthing
@@ -24604,6 +24645,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react-native
       - supports-color
       - uploadthing
@@ -24648,6 +24690,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react-native
       - supports-color
       - uploadthing
@@ -24691,6 +24734,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react-native
       - supports-color
       - uploadthing
@@ -24869,6 +24913,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -24912,6 +24957,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -24955,6 +25001,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -24998,6 +25045,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -25051,6 +25099,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -25104,6 +25153,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -25157,6 +25207,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
@@ -25210,6 +25261,7 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - immer
       - ioredis
+      - preact-render-to-string
       - react
       - react-native
       - supports-color
