@@ -183,6 +183,17 @@ export interface MinaChannelConfig {
   autoDeploy?: {
     /** A previously recorded own deployment for this identity, if any. */
     deployed?: { zkAppAddress: string; zkAppPrivateKey: string };
+    /**
+     * Persist hook — called with the zkApp address + key BEFORE the deploy tx
+     * is sent (and before the circuit compiles), so a crash between send and
+     * on-chain confirmation reuses the SAME zkApp next run instead of
+     * deploying (and paying ~1.1 MINA for) a second one.
+     */
+    onDeploying?: (record: {
+      zkAppAddress: string;
+      zkAppPrivateKey: string;
+      feePayer: string;
+    }) => void | Promise<void>;
     /** Persist hook — called BEFORE the open proceeds on a fresh deploy. */
     onDeployed?: (record: {
       zkAppAddress: string;
@@ -376,7 +387,9 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       return this.depositSolana(channelId, amount, opts.currentDeposit);
     }
     if (chainPrefix === 'mina') {
-      throw new Error('Deposit on mina is not yet supported (EVM + Solana today; Mina follow-up).');
+      throw new Error(
+        'Deposit on mina is not yet supported (EVM + Solana today; Mina follow-up).'
+      );
     }
     return this.depositEvm(channelId, amount, opts.currentDeposit, ctx);
   }
@@ -397,7 +410,9 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     }
     const cfg = this.solanaConfig;
     const payerSeed = cfg.keypair.slice(0, 32);
-    const payerPubkey = base58Encode(new Uint8Array(ed25519.getPublicKey(payerSeed)));
+    const payerPubkey = base58Encode(
+      new Uint8Array(ed25519.getPublicKey(payerSeed))
+    );
     // The funded token account is deterministically the payer's ATA for the
     // channel mint, so derive it when the caller didn't pass one explicitly
     // (config need not carry payerTokenAccount — it's owner+mint, both known here).
@@ -408,7 +423,10 @@ export class OnChainChannelClient implements ConnectorChannelClient {
           'Solana deposit requires solanaConfig.deposit.payerTokenAccount or solanaConfig.tokenMint to derive the payer ATA.'
         );
       }
-      payerTokenAccount = deriveAssociatedTokenAccount(payerPubkey, cfg.tokenMint);
+      payerTokenAccount = deriveAssociatedTokenAccount(
+        payerPubkey,
+        cfg.tokenMint
+      );
     }
     const { depositTxSignature } = await depositSolanaChannel({
       rpcUrl: cfg.rpcUrl,
@@ -419,7 +437,10 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       payerTokenAccount,
       amount,
     });
-    return { txHash: depositTxSignature, depositTotal: currentDeposit + amount };
+    return {
+      txHash: depositTxSignature,
+      depositTotal: currentDeposit + amount,
+    };
   }
 
   /**
@@ -478,7 +499,12 @@ export class OnChainChannelClient implements ConnectorChannelClient {
    */
   async closeChannel(
     channelId: string
-  ): Promise<{ txHash?: string; closedAt: bigint; settlementTimeout: bigint; settleableAt: bigint }> {
+  ): Promise<{
+    txHash?: string;
+    closedAt: bigint;
+    settlementTimeout: bigint;
+    settleableAt: bigint;
+  }> {
     const ctx = this.channelContext.get(channelId);
     if (!ctx) {
       throw new Error(
@@ -501,7 +527,11 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     });
     await publicClient.waitForTransactionReceipt({ hash: closeHash });
 
-    const info = await this.readEvmChannel(publicClient, tokenNetworkAddr, channelId);
+    const info = await this.readEvmChannel(
+      publicClient,
+      tokenNetworkAddr,
+      channelId
+    );
     return {
       txHash: closeHash,
       closedAt: info.closedAt,
@@ -552,13 +582,20 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     settleableAt: bigint;
   }> {
     const ctx = this.channelContext.get(channelId);
-    if (!ctx) throw new Error(`No on-chain context for channel "${channelId}".`);
+    if (!ctx)
+      throw new Error(`No on-chain context for channel "${channelId}".`);
     const chainPrefix = ctx.chain.split(':')[0];
     if (chainPrefix === 'solana' || chainPrefix === 'mina') {
-      throw new Error(`getChannelCloseInfo on ${chainPrefix} is not supported.`);
+      throw new Error(
+        `getChannelCloseInfo on ${chainPrefix} is not supported.`
+      );
     }
     const { publicClient } = this.createClients(ctx.chain);
-    const info = await this.readEvmChannel(publicClient, ctx.tokenNetworkAddress as Hex, channelId);
+    const info = await this.readEvmChannel(
+      publicClient,
+      ctx.tokenNetworkAddress as Hex,
+      channelId
+    );
     return {
       status: STATE_MAP[info.state] ?? 'open',
       closedAt: info.closedAt,
@@ -569,7 +606,9 @@ export class OnChainChannelClient implements ConnectorChannelClient {
 
   /** Read + destructure the EVM `channels(bytes32)` view. */
   private async readEvmChannel(
-    publicClient: ReturnType<OnChainChannelClient['createClients']>['publicClient'],
+    publicClient: ReturnType<
+      OnChainChannelClient['createClients']
+    >['publicClient'],
     tokenNetworkAddr: Hex,
     channelId: string
   ): Promise<{ settlementTimeout: bigint; state: number; closedAt: bigint }> {
@@ -579,7 +618,11 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       functionName: 'channels',
       args: [channelId as Hex],
     })) as readonly [bigint, number, bigint, bigint, string, string];
-    return { settlementTimeout: res[0], state: Number(res[1]), closedAt: res[2] };
+    return {
+      settlementTimeout: res[0],
+      state: Number(res[1]),
+      closedAt: res[2],
+    };
   }
 
   /**
@@ -743,9 +786,7 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     // second identity. Lazily imported: only autoDeploy users pay the cost.
     let zkAppAddress = this.minaConfig.zkAppAddress;
     if (this.minaConfig.autoDeploy) {
-      const { ensureOwnedMinaZkApp } = await import(
-        './mina-channel-deploy.js'
-      );
+      const { ensureOwnedMinaZkApp } = await import('./mina-channel-deploy.js');
       const ensured = await ensureOwnedMinaZkApp({
         graphqlUrl: this.minaConfig.graphqlUrl,
         payerPrivateKey: this.minaConfig.privateKey,
@@ -754,6 +795,9 @@ export class OnChainChannelClient implements ConnectorChannelClient {
           ? { deployed: this.minaConfig.autoDeploy.deployed }
           : {}),
         ...(zkAppAddress ? { candidateZkAppAddress: zkAppAddress } : {}),
+        ...(this.minaConfig.autoDeploy.onDeploying
+          ? { onDeploying: this.minaConfig.autoDeploy.onDeploying }
+          : {}),
         ...(this.minaConfig.autoDeploy.onDeployed
           ? { onDeployed: this.minaConfig.autoDeploy.onDeployed }
           : {}),

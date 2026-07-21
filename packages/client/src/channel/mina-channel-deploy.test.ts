@@ -32,13 +32,25 @@ class FakePublicKey {
 
 let freshCounter = 0;
 class FakePrivateKey {
-  constructor(public b58: string, public pub: string) {}
+  constructor(
+    public b58: string,
+    public pub: string
+  ) {}
   static fromBase58(b58: string) {
-    return new FakePrivateKey(b58, 'B62qCLIENT');
+    // The payer key maps to B62qCLIENT; any other key (e.g. a recorded zkApp
+    // key on redeploy) derives its OWN distinct public key so the redeployed
+    // address is not confused with the fee payer.
+    return new FakePrivateKey(
+      b58,
+      b58 === 'EKPAYERkeybase58' ? 'B62qCLIENT' : `B62qZK_${b58}`
+    );
   }
   static random() {
     freshCounter += 1;
-    return new FakePrivateKey(`EKFRESH${freshCounter}`, `B62qFRESH${freshCounter}`);
+    return new FakePrivateKey(
+      `EKFRESH${freshCounter}`,
+      `B62qFRESH${freshCounter}`
+    );
   }
   toPublicKey() {
     return new FakePublicKey(this.pub);
@@ -55,28 +67,41 @@ const Poseidon = {
   }),
 };
 
-const fetchAccount = vi.fn(async ({ publicKey }: { publicKey: FakePublicKey }) => {
-  const address = publicKey.toBase58();
-  if (address === 'B62qCLIENT') return { error: undefined, account: {} };
-  const entry = chain.get(address);
-  if (!entry) return { error: 'account not found', account: undefined };
-  const appState = [
-    entry.channelHash,
-    '0',
-    '0',
-    String(entry.channelState),
-    '0',
-    '0',
-    '0',
-    '0',
-  ];
-  return {
-    error: undefined,
-    account: {
-      zkapp: { appState: appState.map((v) => ({ toString: () => v })) },
-    },
-  };
-});
+/** Fee-payer (B62qCLIENT) on-chain MINA balance the preflight reads (nanomina).
+ *  undefined = account does not exist on-chain (0 MINA). */
+let payerBalanceNanomina: bigint | undefined = 5_000_000_000n; // 5 MINA, funded
+const fetchAccount = vi.fn(
+  async ({ publicKey }: { publicKey: FakePublicKey }) => {
+    const address = publicKey.toBase58();
+    if (address === 'B62qCLIENT') {
+      if (payerBalanceNanomina === undefined) {
+        return { error: 'account not found', account: undefined };
+      }
+      return {
+        error: undefined,
+        account: { balance: { toString: () => String(payerBalanceNanomina) } },
+      };
+    }
+    const entry = chain.get(address);
+    if (!entry) return { error: 'account not found', account: undefined };
+    const appState = [
+      entry.channelHash,
+      '0',
+      '0',
+      String(entry.channelState),
+      '0',
+      '0',
+      '0',
+      '0',
+    ];
+    return {
+      error: undefined,
+      account: {
+        zkapp: { appState: appState.map((v) => ({ toString: () => v })) },
+      },
+    };
+  }
+);
 
 const prove = vi.fn(async () => {});
 const waitForInclusion = vi.fn(async () => ({ status: 'included' }));
@@ -129,12 +154,10 @@ class FakePaymentChannel {
   }
 }
 
-const { _resetMinaChannelOpenCache, _setMinaRuntimeForTests } = await import(
-  './mina-channel-open.js'
-);
-const { deployMinaChannelZkApp, ensureOwnedMinaZkApp } = await import(
-  './mina-channel-deploy.js'
-);
+const { _resetMinaChannelOpenCache, _setMinaRuntimeForTests } =
+  await import('./mina-channel-open.js');
+const { deployMinaChannelZkApp, ensureOwnedMinaZkApp } =
+  await import('./mina-channel-deploy.js');
 _setMinaRuntimeForTests(async () => ({
   o1js: fakeO1js as never,
   PaymentChannel: FakePaymentChannel,
@@ -156,6 +179,7 @@ describe('ensureOwnedMinaZkApp', () => {
     sendBehavior.landAccount = true;
     lastDeployedAddress = undefined;
     freshCounter = 0;
+    payerBalanceNanomina = 5_000_000_000n;
   });
   afterEach(() => {
     _resetMinaChannelOpenCache();
@@ -248,6 +272,26 @@ describe('ensureOwnedMinaZkApp', () => {
     expect(result.deployed).toBe(true);
   });
 
+  it('reuses a recorded key when the prior deploy never landed on-chain (no orphan)', async () => {
+    // Our recorded deployment whose account is NOT on chain (deploy tx was
+    // persisted before it confirmed, then crashed). The retry must redeploy
+    // the SAME key/address — never mint a brand-new ~1.1-MINA zkApp.
+    const result = await ensureOwnedMinaZkApp({
+      graphqlUrl: GRAPHQL,
+      payerPrivateKey: PK,
+      peerPublicKey: PEER,
+      deployed: {
+        zkAppAddress: 'B62qZK_EKRECORDEDpending',
+        zkAppPrivateKey: 'EKRECORDEDpending',
+      },
+    });
+    expect(result.deployed).toBe(true);
+    expect(result.zkAppAddress).toBe('B62qZK_EKRECORDEDpending');
+    // The recorded key is reused; no fresh random zkApp key was generated.
+    expect(freshCounter).toBe(0);
+    expect(signedWith).toEqual(['EKPAYERkeybase58', 'EKRECORDEDpending']);
+  });
+
   it('progress lines cover compile, deploy, and inclusion phases', async () => {
     const lines: string[] = [];
     await ensureOwnedMinaZkApp({
@@ -271,6 +315,7 @@ describe('deployMinaChannelZkApp', () => {
     sendBehavior.landAccount = true;
     lastDeployedAddress = undefined;
     freshCounter = 0;
+    payerBalanceNanomina = 5_000_000_000n;
   });
   afterEach(() => {
     _resetMinaChannelOpenCache();
@@ -305,5 +350,78 @@ describe('deployMinaChannelZkApp', () => {
         pollTimeoutMs: 10,
       })
     ).rejects.toThrow(/did not appear on-chain.*deploy-tx-1/s);
+  });
+
+  // ── Bug #1: fee-payer preflight (fail fast, no wasted compile) ──────────────
+
+  it('throws a funded-wallet error BEFORE compiling when the fee payer has no account', async () => {
+    payerBalanceNanomina = undefined; // account does not exist on-chain
+    await expect(
+      deployMinaChannelZkApp({ graphqlUrl: GRAPHQL, payerPrivateKey: PK })
+    ).rejects.toThrow(/B62qCLIENT.*does not exist on-chain.*Fund/s);
+    // The whole point: the multi-minute compile never ran, and no tx was built.
+    expect(compile).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('throws when the fee payer exists but is below the required minimum', async () => {
+    payerBalanceNanomina = 500_000_000n; // 0.5 MINA — under 1 MINA creation fee
+    await expect(
+      deployMinaChannelZkApp({ graphqlUrl: GRAPHQL, payerPrivateKey: PK })
+    ).rejects.toThrow(/holds only 0\.500 MINA.*needs/s);
+    expect(compile).not.toHaveBeenCalled();
+  });
+
+  // ── Bug #3: persist the zkApp key BEFORE the deploy is attempted ─────────────
+
+  it('fires onDeploying with the fresh key BEFORE compiling or sending', async () => {
+    const order: string[] = [];
+    compile.mockImplementationOnce(async () => {
+      order.push('compile');
+      return { verificationKey: { hash: { toString: () => 'vk-hash-1' } } };
+    });
+    send.mockImplementationOnce(async () => {
+      order.push('send');
+      if (lastDeployedAddress) {
+        chain.set(lastDeployedAddress, { channelHash: '0', channelState: 0n });
+      }
+      return { hash: 'deploy-tx-1', wait: waitForInclusion };
+    });
+    await deployMinaChannelZkApp({
+      graphqlUrl: GRAPHQL,
+      payerPrivateKey: PK,
+      onDeploying: (rec) => {
+        order.push(`deploying:${rec.zkAppAddress}`);
+        expect(rec.zkAppPrivateKey).toBe('EKFRESH1');
+        expect(rec.feePayer).toBe('B62qCLIENT');
+      },
+    });
+    // The key is persisted first, THEN the circuit compiles, THEN the tx sends.
+    expect(order).toEqual(['deploying:B62qFRESH1', 'compile', 'send']);
+  });
+
+  it('redeploys the SAME address from a provided key instead of minting a fresh one', async () => {
+    const record = await deployMinaChannelZkApp({
+      graphqlUrl: GRAPHQL,
+      payerPrivateKey: PK,
+      zkAppPrivateKey: 'EKRECORDEDpending',
+    });
+    // Same key/address reused — no PrivateKey.random() minted a new zkApp.
+    expect(record.zkAppAddress).toBe('B62qZK_EKRECORDEDpending');
+    expect(record.zkAppPrivateKey).toBe('EKRECORDEDpending');
+    expect(freshCounter).toBe(0);
+    // The deploy tx is signed by the payer + the RECORDED zkApp key.
+    expect(signedWith).toEqual(['EKPAYERkeybase58', 'EKRECORDEDpending']);
+  });
+
+  it('does NOT re-fire onDeploying when redeploying a provided (already-persisted) key', async () => {
+    const onDeploying = vi.fn();
+    await deployMinaChannelZkApp({
+      graphqlUrl: GRAPHQL,
+      payerPrivateKey: PK,
+      zkAppPrivateKey: 'EKRECORDEDpending',
+      onDeploying,
+    });
+    expect(onDeploying).not.toHaveBeenCalled();
   });
 });

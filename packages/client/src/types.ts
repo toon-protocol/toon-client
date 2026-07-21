@@ -71,6 +71,17 @@ export interface MinaChannelClientOptions {
   autoDeploy?: {
     /** A previously recorded own deployment for this identity, if any. */
     deployed?: { zkAppAddress: string; zkAppPrivateKey: string };
+    /**
+     * Persist hook — called with the zkApp address + key BEFORE the deploy tx
+     * is sent (and before the circuit compiles), so a crash between send and
+     * on-chain confirmation reuses the SAME zkApp next run instead of
+     * deploying (and paying ~1.1 MINA for) a second one.
+     */
+    onDeploying?: (record: {
+      zkAppAddress: string;
+      zkAppPrivateKey: string;
+      feePayer: string;
+    }) => void | Promise<void>;
     /** Persist hook — called BEFORE the open proceeds on a fresh deploy. */
     onDeployed?: (record: {
       zkAppAddress: string;

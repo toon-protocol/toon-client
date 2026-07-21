@@ -41,6 +41,9 @@
 
 import { hexToMinaBase58PrivateKey } from '@toon-protocol/core';
 import {
+  MINA_ACCOUNT_CREATION_FEE_NANOMINA,
+  assertMinaFeePayerFunded,
+  buildMinaTransaction,
   getCompiledPaymentChannel,
   getCompiledVerificationKeyHash,
   loadMinaRuntime,
@@ -78,6 +81,26 @@ export interface DeployMinaZkAppParams {
    * charged to the payer via `AccountUpdate.fundNewAccount`.
    */
   feeNanomina?: bigint;
+  /**
+   * Reuse THIS zkApp key (`EK…` base58) instead of generating a fresh one.
+   * Used to re-attempt a deployment whose key was already recorded (so a
+   * crashed/pending first attempt does not orphan a NEW ~1.1-MINA zkApp on
+   * every retry — the SAME address is redeployed).
+   */
+  zkAppPrivateKey?: string;
+  /**
+   * Called with the zkApp address + key IMMEDIATELY after the key is known and
+   * the fee-payer preflight passes — BEFORE the circuit compiles or the deploy
+   * tx is sent. The rig store persists this so a crash between send and
+   * confirmation reuses the SAME zkApp next run rather than deploying (and
+   * paying for) a second one. Fired only for a freshly-generated key (a
+   * redeploy of a recorded key is already persisted).
+   */
+  onDeploying?: (record: {
+    zkAppAddress: string;
+    zkAppPrivateKey: string;
+    feePayer: string;
+  }) => void | Promise<void>;
   /** Progress lines (compile/deploy/inclusion phases take minutes). */
   onProgress?: (line: string) => void;
   /** Inclusion poll interval ms (default 15_000; tests shrink it). */
@@ -99,6 +122,13 @@ export interface EnsureOwnedMinaZkAppParams extends DeployMinaZkAppParams {
    * even if the caller's subsequent initialize fails.
    */
   onDeployed?: (record: MinaZkAppDeployRecord) => void | Promise<void>;
+}
+
+/** Required fee-payer balance to deploy: 1 MINA account creation + tx fees. */
+function requiredDeployBalanceNanomina(feeNanomina: bigint): bigint {
+  // account-creation (1 MINA) + the deploy tx fee + a buffer for the follow-up
+  // initializeChannel tx (same fee) the opener submits right after.
+  return MINA_ACCOUNT_CREATION_FEE_NANOMINA + feeNanomina * 2n;
 }
 
 export interface EnsureOwnedMinaZkAppResult {
@@ -124,7 +154,7 @@ export async function deployMinaChannelZkApp(
 ): Promise<MinaZkAppDeployRecord> {
   const { o1js } = await loadMinaRuntime();
   const { Mina, PrivateKey, AccountUpdate, fetchAccount } = o1js;
-  const progress = params.onProgress ?? (() => {});
+  const progress = params.onProgress ?? ((): void => undefined);
 
   const network = Mina.Network(params.graphqlUrl);
   Mina.setActiveInstance(network);
@@ -133,14 +163,41 @@ export async function deployMinaChannelZkApp(
   const payerPrivateKey = PrivateKey.fromBase58(payerKeyBase58);
   const payerPublicKey = payerPrivateKey.toPublicKey();
 
+  const feeNanomina = params.feeNanomina ?? 100_000_000n;
+
+  // ── Preflight (bug #1) ───────────────────────────────────────────────────
+  // Fail fast if the fee payer cannot fund the deploy — BEFORE the ~1-3 min
+  // circuit compile. Without this the compile runs first and only then does
+  // Mina.transaction throw `getAccount: Could not find account …`, wasting the
+  // compile AND leaking the o1js transaction context (see buildMinaTransaction).
+  await assertMinaFeePayerFunded({
+    o1js,
+    payerPublicKey,
+    requiredNanomina: requiredDeployBalanceNanomina(feeNanomina),
+    graphqlUrl: params.graphqlUrl,
+  });
+
+  // Reuse a recorded key (redeploy of a pending/crashed attempt) or mint a
+  // fresh one. A fresh key is PERSISTED via onDeploying BEFORE any spend so a
+  // crash between send and confirmation never orphans a new zkApp (bug #3).
+  const zkAppPrivateKey = params.zkAppPrivateKey
+    ? PrivateKey.fromBase58(params.zkAppPrivateKey)
+    : PrivateKey.random();
+  const zkAppPublicKey = zkAppPrivateKey.toPublicKey();
+  const zkAppAddress: string = zkAppPublicKey.toBase58();
+  if (!params.zkAppPrivateKey) {
+    await params.onDeploying?.({
+      zkAppAddress,
+      zkAppPrivateKey: zkAppPrivateKey.toBase58(),
+      feePayer: payerPublicKey.toBase58(),
+    });
+  }
+
   progress(
     'compiling the PaymentChannel circuit (one-time, can take 1-3 minutes)…'
   );
   const PaymentChannel = await getCompiledPaymentChannel();
 
-  const zkAppPrivateKey = PrivateKey.random();
-  const zkAppPublicKey = zkAppPrivateKey.toPublicKey();
-  const zkAppAddress: string = zkAppPublicKey.toBase58();
   const zkApp = new PaymentChannel(zkAppPublicKey);
 
   // The payer account must be in the active-instance cache for the fee/nonce.
@@ -150,10 +207,13 @@ export async function deployMinaChannelZkApp(
     `deploying a dedicated PaymentChannel zkApp ${zkAppAddress} ` +
       '(costs the 1 MINA account-creation fee + tx fee)…'
   );
-  const fee = Number(params.feeNanomina ?? 100_000_000n);
+  const fee = Number(feeNanomina);
   // Deploy ONLY — initialize is a separate tx (Issue #128: the initialize
-  // precondition needs the account to already exist).
-  const deployTx = await Mina.transaction(
+  // precondition needs the account to already exist). Built through
+  // buildMinaTransaction so a failure cannot leak the o1js transaction context
+  // and poison a retry (bug #2).
+  const deployTx = await buildMinaTransaction(
+    o1js,
     { sender: payerPublicKey, fee },
     async () => {
       AccountUpdate.fundNewAccount(payerPublicKey);
@@ -216,7 +276,7 @@ export async function ensureOwnedMinaZkApp(
 ): Promise<EnsureOwnedMinaZkAppResult> {
   const { o1js } = await loadMinaRuntime();
   const { Mina, PrivateKey, PublicKey, Field, Poseidon, fetchAccount } = o1js;
-  const progress = params.onProgress ?? (() => {});
+  const progress = params.onProgress ?? ((): void => undefined);
 
   const network = Mina.Network(params.graphqlUrl);
   Mina.setActiveInstance(network);
@@ -256,13 +316,27 @@ export async function ensureOwnedMinaZkApp(
     });
   }
 
+  // A recorded own key whose account is not (yet) on-chain: the previous
+  // deploy attempt was persisted BEFORE its tx confirmed (bug #3), then
+  // crashed/never landed. Redeploy the SAME key rather than minting a new
+  // zkApp — otherwise every retry orphans another ~1.1-MINA deployment.
+  let pendingOwnKey: string | undefined;
+
   for (const candidate of candidates) {
     let appState: { toString(): string }[] | undefined;
     try {
       const res = await fetchAccount({
         publicKey: PublicKey.fromBase58(candidate.address),
       });
-      if (res.error || !res.account) continue; // not on-chain → not usable
+      if (res.error || !res.account) {
+        // Not on-chain. If it is OUR recorded deployment, remember its key so
+        // the deploy below reuses the SAME address instead of orphaning a new
+        // zkApp on every retry.
+        if (candidate.ownRecord && params.deployed?.zkAppPrivateKey) {
+          pendingOwnKey = params.deployed.zkAppPrivateKey;
+        }
+        continue;
+      }
       appState = res.account.zkapp?.appState;
     } catch {
       continue;
@@ -288,8 +362,13 @@ export async function ensureOwnedMinaZkApp(
     // someone already initialized, CLOSING/SETTLED remnants — is not ours.
   }
 
-  // No usable candidate: deploy a dedicated zkApp for this pair.
-  const record = await deployMinaChannelZkApp(params);
+  // No usable candidate: deploy a dedicated zkApp for this pair. Reuse the
+  // recorded pending key when present (redeploy the same address, no orphan).
+  const record = await deployMinaChannelZkApp({
+    ...params,
+    ...(pendingOwnKey ? { zkAppPrivateKey: pendingOwnKey } : {}),
+    ...(params.onDeploying ? { onDeploying: params.onDeploying } : {}),
+  });
   // Persist BEFORE returning: if the caller's initialize fails, the zkApp key
   // (and the ~1.1 MINA it cost) must not be lost.
   await params.onDeployed?.(record);

@@ -58,10 +58,7 @@ import {
   deriveFullIdentity,
   deriveNostrKeyFromMnemonic,
 } from '@toon-protocol/client';
-import {
-  decodeEventFromToon,
-  encodeEventToToon,
-} from '@toon-protocol/core';
+import { decodeEventFromToon, encodeEventToToon } from '@toon-protocol/core';
 import type {
   BlobUpload,
   FeeRates,
@@ -285,7 +282,7 @@ export interface NetworkTopology {
  * the deployment cost), and route the slow compile/deploy/inclusion progress
  * to the warn stream.
  */
-function buildMinaAutoDeploy(
+export function buildMinaAutoDeploy(
   dir: string,
   identityPubkey: string,
   chain: string,
@@ -311,6 +308,26 @@ function buildMinaAutoDeploy(
           },
         }
       : {}),
+    // Persist the zkApp key BEFORE the deploy tx is sent (bug #3): a crash or
+    // failed cache-invalidation retry between send and confirmation then finds
+    // this record next run and REDEPLOYS the same address, instead of paying
+    // the ~1.1-MINA account-creation fee for a brand-new zkApp every attempt.
+    onDeploying: (record) => {
+      store.save({
+        identity: identityPubkey,
+        chain,
+        zkAppAddress: record.zkAppAddress,
+        zkAppPrivateKey: record.zkAppPrivateKey,
+        feePayer: record.feePayer,
+        deployedAt: new Date().toISOString(),
+        source:
+          'rig auto-deploy (npm @toon-protocol/mina-zkapp build, pending)',
+      });
+      warn(
+        `rig: recorded pending Mina zkApp ${record.zkAppAddress} before ` +
+          `deploy — key saved to ${store.filePath} (reused on retry)`
+      );
+    },
     onDeployed: (record) => {
       store.save({
         identity: identityPubkey,
@@ -660,7 +677,10 @@ export async function resolveNetworkTopology(
     // anyway; `deriveFullIdentity` degrades to an empty publicKey when the
     // Ed25519 deps are unavailable — then Solana chains are not probed.
     let solanaAddress: string | undefined;
-    if (!explicitChain && announcedChains.some((c) => c.startsWith('solana:'))) {
+    if (
+      !explicitChain &&
+      announcedChains.some((c) => c.startsWith('solana:'))
+    ) {
       const fullIdentity = await deriveFullIdentity(
         inputs.identity.mnemonic,
         inputs.identity.accountIndex
@@ -793,6 +813,10 @@ const NON_RECOVERABLE_START_ERRORS: ReadonlySet<string> = new Set([
   'DaemonIdentityConflictError',
   'StandaloneLockError',
   'ChannelMapCorruptError',
+  // An unfunded Mina fee payer is a wallet-funding problem, not topology
+  // staleness — re-resolving the topology cannot fix it, so retrying would
+  // just re-run the (already fail-fast) preflight for nothing.
+  'MinaFeePayerUnfundedError',
 ]);
 
 /**
@@ -1013,8 +1037,8 @@ export async function createStandaloneContext(
         Boolean(file.solanaChannel) ||
         Boolean(
           file.tokenNetworks?.[chain] &&
-            file.preferredTokens?.[chain] &&
-            file.chainRpcUrls?.[chain]
+          file.preferredTokens?.[chain] &&
+          file.chainRpcUrls?.[chain]
         )
     );
     // A listed `mina:*` chain WITHOUT an explicit `minaChannel` is not fully
@@ -1027,7 +1051,7 @@ export async function createStandaloneContext(
     const fullyExplicit =
       Boolean(
         (env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl) ||
-          (env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl)
+        (env['TOON_CLIENT_BTP_URL'] ?? file.btpUrl)
       ) &&
       Boolean(env['TOON_CLIENT_DESTINATION'] ?? file.destination) &&
       Boolean(file.supportedChains?.length) &&
@@ -1124,7 +1148,9 @@ export async function createStandaloneContext(
       ...(file.settlementAddresses
         ? { settlementAddresses: file.settlementAddresses }
         : {}),
-      ...(topo.preferredTokens ? { preferredTokens: topo.preferredTokens } : {}),
+      ...(topo.preferredTokens
+        ? { preferredTokens: topo.preferredTokens }
+        : {}),
       ...(topo.tokenNetworks ? { tokenNetworks: topo.tokenNetworks } : {}),
       ...(topo.chainRpcUrls ? { chainRpcUrls: topo.chainRpcUrls } : {}),
       // Solana channel params: an explicit config object wins verbatim; else
