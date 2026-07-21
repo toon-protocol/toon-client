@@ -25,6 +25,7 @@
 
 import { createRequire } from 'node:module';
 import { runBalance } from './balance.js';
+import { runChain } from './chain.js';
 import { runChannel } from './channel.js';
 import { runClone } from './clone.js';
 import { runComment, runIssue, runPr, type EventCommandDeps } from './events.js';
@@ -90,6 +91,8 @@ Commands rig owns:
                              address(es) to fund externally
   balance                    wallet balances + payment-channel holdings
                              (free — chain reads and local state only)
+  chain [set <c>|unset]      choose which chain/USDC settles paid writes
+                             (evm|sol|mina); free — reads/writes local config
   name buy <name>            ArNS naming (#367): buy points a human name at an
   name set <name> <txId>     Arweave txId, owned + paid by this identity's
   name status <name>         Solana key. buy spends mARIO on Solana via the
@@ -189,6 +192,8 @@ export async function dispatch(
       return runFund(rest, deps);
     case 'balance':
       return runBalance(rest, deps);
+    case 'chain':
+      return runChain(rest, deps);
     case 'name':
       return runName(rest, deps);
     case 'help':
