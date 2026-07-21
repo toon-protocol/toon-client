@@ -141,4 +141,57 @@ describe('ToonClient.getWalletBalances', () => {
     expect(sources.solana).toBeUndefined();
     expect(sources.mina).toBeUndefined();
   });
+
+  it('uses the fallback Solana/Mina channels when config has none (#299 rig balance)', async () => {
+    // The rig-embedded client has no solanaChannel/minaChannel in its settlement
+    // config; the network-preset fallback still lets the wallet view show all
+    // three chains (0 for a not-yet-on-chain account) — with the derived address.
+    readWalletBalances.mockClear();
+    const client = new ToonClient(
+      baseConfig({ solanaChannel: undefined, minaChannel: undefined })
+    );
+    await client.getWalletBalances({
+      solanaChannel: {
+        rpcUrl: 'https://api.devnet.solana.com',
+        programId: 'Prog1111111111111111111111111111111111111111',
+        tokenMint: 'Mint1111111111111111111111111111111111111111',
+      },
+      minaChannel: {
+        graphqlUrl: 'https://api.minascan.io/node/devnet/v1/graphql',
+        zkAppAddress: 'B62qZkApp1111111111111111111111111111111111',
+      },
+    });
+    const sources = readWalletBalances.mock.calls[0]![0] as WalletBalanceSources;
+    expect(sources.solana).toMatchObject({
+      chainKey: 'solana',
+      rpcUrl: 'https://api.devnet.solana.com',
+      tokenMint: 'Mint1111111111111111111111111111111111111111',
+    });
+    expect(sources.solana?.owner).toBeTruthy();
+    expect(sources.mina).toMatchObject({
+      chainKey: 'mina',
+      graphqlUrl: 'https://api.minascan.io/node/devnet/v1/graphql',
+    });
+    expect(sources.mina?.owner).toBeTruthy();
+  });
+
+  it('prefers explicit config over the fallback channels', async () => {
+    // Explicit config always wins: a caller-supplied fallback never overrides a
+    // channel the identity actually configured.
+    readWalletBalances.mockClear();
+    const client = new ToonClient(baseConfig({})); // solana/mina configured
+    await client.getWalletBalances({
+      solanaChannel: {
+        rpcUrl: 'https://fallback.solana.example',
+        programId: 'ProgFALLBACK11111111111111111111111111111111',
+      },
+      minaChannel: {
+        graphqlUrl: 'https://fallback.mina.example/graphql',
+        zkAppAddress: 'B62qFallback1111111111111111111111111111111',
+      },
+    });
+    const sources = readWalletBalances.mock.calls[0]![0] as WalletBalanceSources;
+    expect(sources.solana?.rpcUrl).toBe('https://solana.example');
+    expect(sources.mina?.graphqlUrl).toBe('https://mina.example/graphql');
+  });
 });

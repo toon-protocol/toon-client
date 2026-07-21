@@ -1165,6 +1165,35 @@ describe('StandalonePublisher', () => {
         await expect(publisher.readWalletChainBalances()).resolves.toEqual([]);
         await publisher.stop();
       });
+
+      it('forwards the wallet-view fallback (#299) to the client', async () => {
+        // The network-preset Solana/Mina channels must reach getWalletBalances
+        // so `rig balance` can show all three chains for a single-EVM identity.
+        const { client } = mockMoneyClient();
+        let received: unknown;
+        (
+          client as {
+            getWalletBalances?: (fallback?: unknown) => Promise<unknown[]>;
+          }
+        ).getWalletBalances = async (fallback?: unknown) => {
+          received = fallback;
+          return [];
+        };
+        const publisher = buildPersistent(client);
+        const fallback = {
+          solanaChannel: {
+            rpcUrl: 'https://api.devnet.solana.com',
+            programId: 'Prog1111111111111111111111111111111111111111',
+          },
+          minaChannel: {
+            graphqlUrl: 'https://api.minascan.io/node/devnet/v1/graphql',
+            zkAppAddress: 'B62qZkApp1111111111111111111111111111111111',
+          },
+        };
+        await publisher.readWalletChainBalances(fallback);
+        expect(received).toEqual(fallback);
+        await publisher.stop();
+      });
     });
 
     // ── negotiation fallbacks (#264 / #260 root cause 3) ────────────────────

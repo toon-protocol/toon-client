@@ -1243,8 +1243,18 @@ export class ToonClient {
    * `start()` would register and that `rig fund` prints — so all configured
    * chains appear even before a start. Best-effort per chain: an unreachable
    * RPC yields `{ unreadable: true }` for that chain, never failing the others.
+   *
+   * `fallback` supplies Solana/Mina channel params (RPC/GraphQL + token) to use
+   * ONLY when `config.solanaChannel`/`config.minaChannel` are unset — a
+   * wallet-view-only default (e.g. the network preset's public RPC) that lets a
+   * caller show all three chains, reading 0 for a not-yet-on-chain account,
+   * WITHOUT injecting those channels into the client's settlement config (which
+   * would change chain negotiation). Explicit config wins.
    */
-  async getWalletBalances(): Promise<WalletChainBalances[]> {
+  async getWalletBalances(fallback?: {
+    solanaChannel?: ToonClientConfig['solanaChannel'];
+    minaChannel?: ToonClientConfig['minaChannel'];
+  }): Promise<WalletChainBalances[]> {
     const sources: WalletBalanceSources = {};
 
     // Solana/Mina keys are only registered as signers during start(); derive
@@ -1284,8 +1294,9 @@ export class ToonClient {
       }
     }
 
-    // Solana: native SOL + SPL USDC (the negotiated mint).
-    const sol = this.config.solanaChannel;
+    // Solana: native SOL + SPL USDC (the negotiated mint). Explicit config
+    // wins; else the caller's wallet-view fallback (e.g. network preset RPC).
+    const sol = this.config.solanaChannel ?? fallback?.solanaChannel;
     if (sol?.rpcUrl) {
       const solAddress = this.getSolanaAddress() ?? (await ensureDerived())?.solana.publicKey;
       if (solAddress) {
@@ -1302,7 +1313,8 @@ export class ToonClient {
     // token's balance (USDC) — read via the derived/explicit `minaChannel.tokenId`
     // (core preset or announce, see resolveNetworkTopology/deriveMinaChannel). A
     // fresh client with no explicit `config.minaChannel` still gets both.
-    const mina = this.config.minaChannel;
+    // Explicit config wins; else the caller's wallet-view fallback.
+    const mina = this.config.minaChannel ?? fallback?.minaChannel;
     if (mina?.graphqlUrl) {
       const minaAddress = this.getMinaAddress() ?? (await ensureDerived())?.mina.publicKey;
       if (minaAddress) {
