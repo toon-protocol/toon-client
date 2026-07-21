@@ -1,5 +1,12 @@
 # @toon-protocol/views
 
+## 0.20.5
+
+### Patch Changes
+
+- Updated dependencies [f03aaef]
+  - @toon-protocol/client@0.21.1
+
 ## 0.20.4
 
 ### Patch Changes
