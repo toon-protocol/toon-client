@@ -64,6 +64,40 @@ export function defaultLockDir(): string {
 }
 
 // ---------------------------------------------------------------------------
+// Force-standalone override
+// ---------------------------------------------------------------------------
+
+/**
+ * Env var (and `--standalone` / `--no-daemon` flag) that makes rig ALWAYS run
+ * embedded, bypassing a running `toon-clientd` entirely — both the #279
+ * daemon-delegation fast path ({@link ../cli/daemon-session.ts}) and the
+ * same-identity refusal ({@link checkDaemonIdentity}, Guard 1 below).
+ *
+ * SAFETY: this only disables the DAEMON detection. The exclusive per-pubkey
+ * advisory lockfile (Guard 2, {@link NonceLock}) still runs, so two forced
+ * STANDALONE rig processes cannot race the channel's cumulative-claim
+ * watermark. What it CANNOT protect against is a running daemon on the SAME
+ * identity that is ALSO signing claims concurrently — the daemon does not
+ * take the lockfile. So the durable, race-free way to "always standalone" is
+ * to STOP the daemon (its pid is in `~/.toon-client/daemon.pid`); this
+ * override is for the common case where the daemon is idle/in-the-way and you
+ * just want rig to sign for itself.
+ */
+export const RIG_STANDALONE_ENV = 'RIG_STANDALONE';
+
+/**
+ * True when {@link RIG_STANDALONE_ENV} is set to a truthy value
+ * (`1`/`true`/`yes`/`on`, case-insensitive). Any other value — including an
+ * explicit `0`/`false`/empty — leaves the default daemon-aware behaviour.
+ */
+export function standaloneForced(env: NodeJS.ProcessEnv): boolean {
+  const raw = env[RIG_STANDALONE_ENV];
+  if (raw === undefined) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 

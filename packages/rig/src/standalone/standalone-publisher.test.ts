@@ -567,6 +567,47 @@ describe('StandalonePublisher', () => {
       await publisher.stop();
     });
 
+    it('skipDaemonCheck (force-standalone) PROCEEDS despite a same-identity daemon', async () => {
+      const { client, calls } = mockClient();
+      const publisher = build(client, {
+        fetchImpl: daemonWith(PUBKEY),
+        skipDaemonCheck: true,
+      });
+      // Same identity as the daemon, but the override bypasses Guard 1.
+      await expect(publisher.publishEvent(EVENT, [])).resolves.toMatchObject({
+        feePaid: 1n,
+      });
+      expect(calls.start).toBe(1);
+      expect(calls.claims).toHaveLength(1);
+      await publisher.stop();
+    });
+
+    it('skipDaemonCheck still holds the per-identity lock (Guard 2 stays on)', async () => {
+      const { client } = mockClient();
+      const first = build(client, {
+        fetchImpl: daemonWith(PUBKEY),
+        skipDaemonCheck: true,
+      });
+      await first.publishEvent(EVENT, []);
+
+      // A second forced-standalone process on the SAME identity + lock dir
+      // must still refuse — the double-spend guard against concurrent
+      // standalone writers is independent of the daemon bypass.
+      writeFileSync(
+        join(lockDir, `standalone-${PUBKEY}.lock`),
+        JSON.stringify({ pid: process.ppid, pubkey: PUBKEY, createdAt: 'x' })
+      );
+      const { client: client2 } = mockClient();
+      const second = build(client2, {
+        fetchImpl: daemonWith(PUBKEY),
+        skipDaemonCheck: true,
+      });
+      await expect(second.publishEvent(EVENT, [])).rejects.toThrow(
+        StandaloneLockError
+      );
+      await first.stop();
+    });
+
     it('holds the per-identity lock for its lifetime: a second standalone instance refuses', async () => {
       const { client } = mockClient();
       const first = build(client);

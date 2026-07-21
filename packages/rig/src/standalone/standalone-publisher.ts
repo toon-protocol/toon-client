@@ -189,6 +189,14 @@ export interface StandalonePublisherOptions {
   routePrices?: { publish?: bigint; store?: bigint };
   /** Daemon control API port probed by the nonce guard. */
   daemonPort?: number;
+  /**
+   * Skip Guard 1 (the same-identity daemon refusal, {@link checkDaemonIdentity})
+   * — the force-standalone override ({@link standaloneForced} / RIG_STANDALONE
+   * / `rig --standalone`). Guard 2, the exclusive per-identity {@link NonceLock},
+   * ALWAYS runs regardless, so two standalone processes still can't race the
+   * channel watermark. Default false (daemon-aware).
+   */
+  skipDaemonCheck?: boolean;
   /** Directory for the per-identity advisory lockfile. */
   lockDir?: string;
   /** Fetch impl for the daemon probe (tests). */
@@ -398,6 +406,7 @@ export class StandalonePublisher implements Publisher {
     | StandalonePublisherOptions['routePrices']
     | undefined;
   private readonly daemonPort: number | undefined;
+  private readonly skipDaemonCheck: boolean;
   private readonly lockDir: string | undefined;
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly channelMap: ChannelMapStore | undefined;
@@ -447,6 +456,7 @@ export class StandalonePublisher implements Publisher {
     this.uploadFeePerByte = options.uploadFeePerByte ?? 10n;
     this.routePrices = options.routePrices;
     this.daemonPort = options.daemonPort;
+    this.skipDaemonCheck = options.skipDaemonCheck ?? false;
     this.lockDir = options.lockDir;
     this.fetchImpl = options.fetchImpl;
     this.channelMap = options.channelMap;
@@ -504,11 +514,16 @@ export class StandalonePublisher implements Publisher {
   private async doStartClient(): Promise<void> {
     const pubkey = this.client.getPublicKey();
 
-    // Guard 1: refuse while a toon-clientd holds this identity.
-    await checkDaemonIdentity(pubkey, {
-      ...(this.daemonPort !== undefined ? { port: this.daemonPort } : {}),
-      ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
-    });
+    // Guard 1: refuse while a toon-clientd holds this identity — UNLESS the
+    // force-standalone override is set (RIG_STANDALONE / `rig --standalone`),
+    // in which case the caller has explicitly chosen to sign for itself and
+    // ignore the daemon. Guard 2 (the NonceLock below) still runs either way.
+    if (!this.skipDaemonCheck) {
+      await checkDaemonIdentity(pubkey, {
+        ...(this.daemonPort !== undefined ? { port: this.daemonPort } : {}),
+        ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
+      });
+    }
 
     // Guard 2: exclusive advisory lock against other standalone processes.
     this.lock = await NonceLock.acquire(pubkey, {

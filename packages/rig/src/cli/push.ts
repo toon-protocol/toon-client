@@ -66,6 +66,7 @@ import {
   type ProbeDaemon,
   type SessionPath,
 } from './daemon-session.js';
+import { RIG_STANDALONE_ENV } from '../standalone/nonce-guard.js';
 import { emitCliError, UnconfiguredRepoAddressError } from './errors.js';
 import { listGitRemotes, readToonConfig, resolveRepoRoot } from './git-config.js';
 import type { IdentitySourceKind } from './identity.js';
@@ -94,6 +95,18 @@ export interface PushDeps {
   fetchImpl?: typeof fetch;
   /** Daemon `/status` probe override (tests fake the loopback daemon). */
   probeDaemon?: ProbeDaemon;
+}
+
+/**
+ * Return deps with the force-standalone override switched on — the
+ * `--standalone` / `--no-daemon` per-command flag, equivalent to running with
+ * `RIG_STANDALONE=1` in the environment. Every paid path reads the override
+ * from `env` ({@link standaloneForced}), so injecting it here makes the flag
+ * bypass the daemon for both session resolution and the embedded publisher's
+ * guard. Generic so the event commands keep their extra deps.
+ */
+export function withForcedStandalone<D extends PushDeps>(deps: D): D {
+  return { ...deps, env: { ...deps.env, [RIG_STANDALONE_ENV]: '1' } };
 }
 
 /**
@@ -187,6 +200,9 @@ Options:
                      as a fallback, with a migration nudge
   --repo-id <id>     repository id / NIP-34 d-tag (default: git config
                      toon.repoid — run \`rig init\` to set it)
+  --standalone       always run embedded, bypassing a running toon-clientd
+                     (alias: --no-daemon). Same as RIG_STANDALONE=1 — set that
+                     env var to make it the durable default
   -h, --help         show this help`;
 
 // ---------------------------------------------------------------------------
@@ -300,6 +316,8 @@ interface PushFlags {
   json: boolean;
   relay: string[];
   repoId?: string;
+  /** Force embedded standalone, bypassing the daemon (--standalone/--no-daemon). */
+  standalone: boolean;
   help: boolean;
   positionals: string[];
 }
@@ -316,6 +334,8 @@ function parsePushArgs(args: string[]): PushFlags {
       json: { type: 'boolean', default: false },
       relay: { type: 'string', multiple: true },
       'repo-id': { type: 'string' },
+      standalone: { type: 'boolean', default: false },
+      'no-daemon': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: true,
@@ -328,6 +348,7 @@ function parsePushArgs(args: string[]): PushFlags {
     yes: values.yes ?? false,
     json: values.json ?? false,
     relay: values.relay ?? [],
+    standalone: (values.standalone ?? false) || (values['no-daemon'] ?? false),
     help: values.help ?? false,
     positionals,
   };
@@ -479,6 +500,9 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
     io.out(PUSH_USAGE);
     return 0;
   }
+  // --standalone/--no-daemon: force embedded, bypassing any running daemon
+  // (same as RIG_STANDALONE=1 for this one invocation).
+  if (flags.standalone) deps = withForcedStandalone(deps);
 
   let standaloneCtx: StandaloneContext | undefined;
   try {

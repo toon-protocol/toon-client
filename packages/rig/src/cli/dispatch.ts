@@ -132,7 +132,16 @@ goes to stderr), so \`rig <command> --json | jq\` always parses. --json is a
 per-subcommand flag on the commands rig owns, NOT a global rig flag: it does
 not apply to the git passthrough (\`rig status --json\` runs
 \`git status --json\`), and flags placed before the subcommand
-(\`rig --json status\`) pass through to git untouched.`;
+(\`rig --json status\`) pass through to git untouched.
+
+STANDALONE MODE: by default rig delegates paid commands to a running
+toon-clientd that holds the same identity (it owns the payment channel and its
+bootstrap is warm). To bypass the daemon and always sign for yourself, set
+RIG_STANDALONE=1 in your environment (the durable, applies-to-everything
+switch) or pass --standalone / --no-daemon to a paid command. rig then runs
+fully embedded; a per-identity lockfile still stops two rig processes from
+racing the channel. If a daemon is ALSO actively writing on this identity,
+stop it (its pid is in ~/.toon-client/daemon.pid) to avoid a claim race.`;
 
 /** Dispatch deps: the event-command deps plus an injectable git runner. */
 export interface DispatchDeps extends EventCommandDeps {

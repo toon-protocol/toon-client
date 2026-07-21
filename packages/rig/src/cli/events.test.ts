@@ -857,21 +857,21 @@ describe('usage', () => {
       expect(await run(args as unknown as string[], h.deps)).toBe(0);
       const text = h.out.join('\n');
       expect(text).toContain(needle);
-      expect(text).not.toContain('--daemon');
-      expect(text).not.toContain('--standalone');
+      // --standalone / --no-daemon are documented; the removed --daemon is not.
+      expect(text).toContain('--standalone');
+      expect(text).not.toContain('--daemon ');
     }
     expect(fake.published).toHaveLength(0);
   });
 
-  it('rejects unknown flags (incl. the removed mode flags) with usage (exit 2)', async () => {
+  it('rejects unknown flags (incl. the removed --daemon mode flag) with usage (exit 2)', async () => {
     const h = deps();
     expect(await runPr(['status', ROOT_EVENT, 'open', '--frobnicate'], h.deps)).toBe(2);
     expect(h.err.join('\n')).toContain('Usage: rig pr status');
+    // --daemon was removed and stays unknown; --standalone/--no-daemon are now
+    // valid force-standalone flags (covered in the delegation describe below).
     expect(
       await runIssue(['create', '--title', 't', '--body', 'b', '--daemon'], deps().deps)
-    ).toBe(2);
-    expect(
-      await runIssue(['create', '--title', 't', '--body', 'b', '--standalone'], deps().deps)
     ).toBe(2);
     expect(fake.published).toHaveLength(0);
   });
@@ -963,6 +963,28 @@ describe('daemon delegation (#279)', () => {
     expect(doc['result']).toEqual(receipt);
     expect((doc['identity'] as { pubkey: string }).pubkey).toBe(SELF);
     expect(h.err.join('\n')).toContain('paid path: daemon');
+  });
+
+  it('--standalone forces the embedded seam even with a same-identity git daemon', async () => {
+    // The daemon would normally handle the publish; --standalone bypasses it.
+    const { posts, fetchImpl } = daemonFetch({ eventId: EVENT_ID, kind: 1622 });
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      loadStandalone: fake.load,
+      probeDaemon: sameIdentityProbe(),
+      fetchImpl,
+    });
+    const code = await runComment(
+      [ROOT_EVENT, '--body', 'B', '--yes', '--json', '--standalone'],
+      h.deps
+    );
+    expect(code).toBe(0);
+    // Published through the standalone seam; the daemon was never POSTed to.
+    expect(posts).toHaveLength(0);
+    expect(fake.published).toHaveLength(1);
+    expect(fake.stopped).toBe(true);
+    const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(doc['path']).toBe('standalone');
+    expect(h.err.join('\n')).toContain('RIG_STANDALONE set');
   });
 
   it('warns when the resolved relay differs from the daemon relay route', async () => {
