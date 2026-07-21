@@ -111,6 +111,7 @@ import {
   deriveRouteDestinations,
 } from '../standalone/standalone-publisher.js';
 import { fetchRemoteState } from '../remote-state.js';
+import { MinaZkAppStore } from '../standalone/mina-zkapp-store.js';
 import { resolveIdentity } from './identity.js';
 import type {
   StandaloneContext,
@@ -276,6 +277,63 @@ export interface NetworkTopology {
  * `zkAppAddress` (from the live announce); `tokenId`/`networkId` ride through
  * when present (a Mina channel with no token id opens on native MINA).
  */
+/**
+ * The `autoDeploy` block attached to a DERIVED `minaChannel` (an explicit
+ * config object keeps the pin-a-zkApp semantics and never auto-deploys):
+ * reuse the recorded per-pair zkApp when one exists, persist a fresh
+ * deployment's key BEFORE the open proceeds (losing it strands the ~1.1 MINA
+ * the deployment cost), and route the slow compile/deploy/inclusion progress
+ * to the warn stream.
+ */
+function buildMinaAutoDeploy(
+  dir: string,
+  identityPubkey: string,
+  chain: string,
+  warn: (line: string) => void
+): NonNullable<NonNullable<ToonClientConfig['minaChannel']>['autoDeploy']> {
+  const store = MinaZkAppStore.forHome(dir);
+  let existing: ReturnType<MinaZkAppStore['lookup']>;
+  try {
+    existing = store.lookup(identityPubkey, chain);
+  } catch (err) {
+    warn(
+      `rig: unreadable Mina zkApp store at ${store.filePath} ` +
+        `(${err instanceof Error ? err.message : String(err)}) — a fresh ` +
+        'zkApp may be deployed'
+    );
+  }
+  return {
+    ...(existing
+      ? {
+          deployed: {
+            zkAppAddress: existing.zkAppAddress,
+            zkAppPrivateKey: existing.zkAppPrivateKey,
+          },
+        }
+      : {}),
+    onDeployed: (record) => {
+      store.save({
+        identity: identityPubkey,
+        chain,
+        zkAppAddress: record.zkAppAddress,
+        zkAppPrivateKey: record.zkAppPrivateKey,
+        feePayer: record.feePayer,
+        ...(record.deployTxHash !== undefined
+          ? { deployTxHash: record.deployTxHash }
+          : {}),
+        ...(record.vkHash !== undefined ? { vkHash: record.vkHash } : {}),
+        deployedAt: new Date().toISOString(),
+        source: 'rig auto-deploy (npm @toon-protocol/mina-zkapp build)',
+      });
+      warn(
+        `rig: deployed a dedicated Mina PaymentChannel zkApp ` +
+          `${record.zkAppAddress} — key saved to ${store.filePath}`
+      );
+    },
+    onProgress: (line) => warn(`rig: mina: ${line}`),
+  };
+}
+
 function deriveMinaChannel(
   settlement: ChainSettlement,
   announce: AnnouncedPeer | undefined,
@@ -1079,10 +1137,26 @@ export async function createStandaloneContext(
       // Mina channel params: an explicit config object wins verbatim; else the
       // topology's derivation (announce zkApp/tokenId + preset graphqlUrl —
       // see resolveNetworkTopology / deriveMinaChannel).
+      // An explicit config object keeps today's pin-a-zkApp semantics
+      // verbatim. The DERIVED path additionally gets `autoDeploy`: the
+      // announce/preset zkApp is shared and single-pair, so a fresh identity
+      // can never open on it — the client checks on-chain ownership and
+      // deploys a dedicated per-pair zkApp when needed, persisting the key
+      // through the rig zkApp store (losing it would strand ~1.1 MINA).
       ...(file.minaChannel
         ? { minaChannel: file.minaChannel }
         : topo.minaChannel
-          ? { minaChannel: topo.minaChannel }
+          ? {
+              minaChannel: {
+                ...topo.minaChannel,
+                autoDeploy: buildMinaAutoDeploy(
+                  dir,
+                  identity.pubkey,
+                  `mina:${topo.minaChannel.networkId ?? 'devnet'}`,
+                  warn
+                ),
+              },
+            }
           : {}),
     };
 

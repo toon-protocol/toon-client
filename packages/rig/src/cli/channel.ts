@@ -28,6 +28,9 @@
  * behaviour: any channel present in the map can be driven to settled.
  */
 
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   channelStatus,
@@ -36,7 +39,10 @@ import {
   type ChannelMapRecord,
   type WatermarkEntry,
 } from '../standalone/channel-map.js';
+import { minaPresetForChain } from '../standalone/network-bootstrap.js';
+import { MinaZkAppStore } from '../standalone/mina-zkapp-store.js';
 import { emitCliError } from './errors.js';
+import { resolveIdentity } from './identity.js';
 import {
   defaultLoadStandalone,
   identityReport,
@@ -68,6 +74,17 @@ Subcommands:
                    to (default: the configured destination, e.g. the devnet
                    apex); --deposit adds that much extra collateral after the
                    open/resume. On-chain: asks for confirmation (--yes skips).
+
+  deploy-zkapp [--graphql-url <url>]
+                   deploy a dedicated Mina PaymentChannel zkApp for THIS
+                   identity (the zkApp is single-pair; Mina channels open on
+                   an identity-owned deployment). Normally automatic — the
+                   Mina open path deploys one when needed — this explicit
+                   form pre-deploys it (compile ≈1-3 min, inclusion ≈3-6 min).
+                   On-chain: costs the 1 MINA account-creation fee + tx fee
+                   from the wallet's MINA. The zkApp key is saved under
+                   TOON_CLIENT_HOME/keys/. Asks for confirmation (--yes
+                   skips).
 
   close <channelId>
                    close a recorded channel — an on-chain tx that starts the
@@ -120,6 +137,8 @@ export async function runChannel(
       return runChannelList(rest, deps);
     case 'open':
       return runChannelOpen(rest, deps);
+    case 'deploy-zkapp':
+      return runChannelDeployZkApp(rest, deps);
     case 'close':
       return runChannelWithdrawStep(rest, deps, 'close');
     case 'settle':
@@ -391,6 +410,11 @@ async function runChannelOpen(
           '(no on-chain spend); otherwise an on-chain channel open locks the ' +
           'peer-negotiated initial deposit from your wallet (plus gas).'
       );
+      io.out(
+        'On a Mina chain a first open may also deploy a dedicated ' +
+          'PaymentChannel zkApp for this identity (~1.1 MINA + fees; ' +
+          'compile ≈1-3 min, inclusion ≈3-6 min — progress is printed).'
+      );
     }
 
     const gate = await confirmOnChain(
@@ -453,6 +477,213 @@ async function runChannelOpen(
     return emitCliError(io, json, 'channel open', err);
   } finally {
     await stopQuietly(ctx);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// deploy-zkapp (explicit per-pair Mina zkApp pre-deploy)
+// ---------------------------------------------------------------------------
+
+interface DeployZkAppJson {
+  command: 'channel deploy-zkapp';
+  identity: IdentityReport;
+  executed: boolean;
+  plan: { chain: string; graphqlUrl: string | null };
+  result?: {
+    zkAppAddress: string;
+    deployTxHash: string | null;
+    vkHash: string | null;
+    storePath: string;
+  };
+  hint?: string;
+}
+
+/**
+ * Explicitly deploy the identity-owned Mina `PaymentChannel` zkApp — the
+ * same deployment the Mina open path performs automatically, runnable ahead
+ * of time (the compile + inclusion wait is minutes; pre-deploying keeps the
+ * first paid Mina write fast). The record (INCLUDING the zkApp private key)
+ * is persisted to the rig zkApp store; the open path finds and reuses it.
+ */
+async function runChannelDeployZkApp(
+  args: string[],
+  deps: ChannelDeps
+): Promise<number> {
+  const { io, env } = deps;
+  let graphqlFlag: string | undefined;
+  let yes = false;
+  let json = false;
+  try {
+    const { values } = parseArgs({
+      args,
+      options: {
+        'graphql-url': { type: 'string' },
+        yes: { type: 'boolean', default: false },
+        json: { type: 'boolean', default: false },
+        help: { type: 'boolean', short: 'h', default: false },
+      },
+    });
+    if (values.help) {
+      io.out(CHANNEL_USAGE);
+      return 0;
+    }
+    graphqlFlag = values['graphql-url'];
+    yes = values.yes ?? false;
+    json = values.json ?? false;
+  } catch (err) {
+    io.err(err instanceof Error ? err.message : String(err));
+    io.err(CHANNEL_USAGE);
+    return 2;
+  }
+
+  try {
+    const dir = env['TOON_CLIENT_HOME'] ?? join(homedir(), '.toon-client');
+    let file: {
+      chain?: string;
+      minaChannel?: { graphqlUrl?: string };
+    } = {};
+    try {
+      file = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')) as typeof file;
+    } catch {
+      // no config — presets cover the devnet default
+    }
+    // The chain key the deployment is recorded under: the pinned mina:* chain
+    // when one is set, else the devnet deployment.
+    const pinned = env['TOON_CLIENT_CHAIN'] ?? file.chain;
+    const chain =
+      pinned !== undefined && pinned.startsWith('mina:') ? pinned : 'mina:devnet';
+    const graphqlUrl =
+      graphqlFlag ??
+      file.minaChannel?.graphqlUrl ??
+      minaPresetForChain(chain)?.graphqlUrl;
+    if (!graphqlUrl) {
+      throw new Error(
+        `no Mina GraphQL endpoint for ${chain} — pass --graphql-url or set ` +
+          'minaChannel.graphqlUrl in the client config'
+      );
+    }
+
+    const resolved = await resolveIdentity({
+      env,
+      cwd: deps.cwd,
+      warn: (line) => io.err(line),
+    });
+    const identity: IdentityReport = {
+      pubkey: resolved.pubkey,
+      source: resolved.source,
+      sourceLabel: resolved.sourceLabel,
+    };
+    const store = MinaZkAppStore.forHome(dir);
+    const existing = store.lookup(resolved.pubkey, chain);
+    if (existing) {
+      // Idempotence without an on-chain read: the open path's ownership check
+      // handles staleness; an explicit re-deploy would strand the old MINA.
+      if (json) {
+        io.emitJson({
+          command: 'channel deploy-zkapp',
+          identity,
+          executed: false,
+          plan: { chain, graphqlUrl },
+          result: {
+            zkAppAddress: existing.zkAppAddress,
+            deployTxHash: existing.deployTxHash ?? null,
+            vkHash: existing.vkHash ?? null,
+            storePath: store.filePath,
+          },
+          hint: 'a zkApp is already recorded for this identity/chain — the open path reuses it',
+        } satisfies DeployZkAppJson);
+        return 0;
+      }
+      io.out(
+        `A Mina zkApp is already recorded for this identity on ${chain}: ` +
+          existing.zkAppAddress
+      );
+      io.out(`The open path reuses it (record: ${store.filePath}).`);
+      return 0;
+    }
+
+    const plan = { chain, graphqlUrl };
+    if (!json) {
+      io.out('Mina zkApp deploy plan:');
+      io.out(`  chain       ${chain}`);
+      io.out(`  graphql     ${graphqlUrl}`);
+      io.out(renderIdentityLine(identity));
+      io.out(
+        'Deploys a dedicated PaymentChannel zkApp for this identity — ' +
+          'on-chain: the 1 MINA account-creation fee + a 0.1 MINA tx fee ' +
+          'from your wallet. Compile ≈1-3 min; inclusion ≈3-6 min.'
+      );
+    }
+    const gate = await confirmOnChain(
+      io,
+      { yes, json },
+      'Proceed with the on-chain zkApp deploy? [y/N] '
+    );
+    if (gate === 'json-plan') {
+      io.emitJson({
+        command: 'channel deploy-zkapp',
+        identity,
+        executed: false,
+        plan,
+        hint: 'plan only — re-run with --yes to deploy (on-chain: ~1.1 MINA + fees)',
+      } satisfies DeployZkAppJson);
+      return 0;
+    }
+    if (gate !== 'proceed') return gate;
+
+    // Heavy path: derive the Mina key and run the deploy (lazy o1js inside).
+    const client = await import('@toon-protocol/client');
+    const derived = await client.deriveFullIdentity(
+      resolved.mnemonic,
+      resolved.accountIndex
+    );
+    if (!derived.mina.privateKey) {
+      throw new Error(
+        'no Mina key derived — the optional `mina-signer` dependency is not installed'
+      );
+    }
+    const record = await client.deployMinaChannelZkApp({
+      graphqlUrl,
+      payerPrivateKey: derived.mina.privateKey,
+      onProgress: (line) => io.err(`rig: mina: ${line}`),
+    });
+    store.save({
+      identity: resolved.pubkey,
+      chain,
+      zkAppAddress: record.zkAppAddress,
+      zkAppPrivateKey: record.zkAppPrivateKey,
+      feePayer: record.feePayer,
+      ...(record.deployTxHash !== undefined
+        ? { deployTxHash: record.deployTxHash }
+        : {}),
+      ...(record.vkHash !== undefined ? { vkHash: record.vkHash } : {}),
+      deployedAt: new Date().toISOString(),
+      source: 'rig channel deploy-zkapp (npm @toon-protocol/mina-zkapp build)',
+    });
+
+    if (json) {
+      io.emitJson({
+        command: 'channel deploy-zkapp',
+        identity,
+        executed: true,
+        plan,
+        result: {
+          zkAppAddress: record.zkAppAddress,
+          deployTxHash: record.deployTxHash ?? null,
+          vkHash: record.vkHash ?? null,
+          storePath: store.filePath,
+        },
+      } satisfies DeployZkAppJson);
+      return 0;
+    }
+    io.out(`Deployed Mina PaymentChannel zkApp ${record.zkAppAddress}.`);
+    if (record.deployTxHash) io.out(`  deploy tx   ${record.deployTxHash}`);
+    if (record.vkHash) io.out(`  vk hash     ${record.vkHash}`);
+    io.out(`  record      ${store.filePath} (holds the zkApp key — back it up)`);
+    io.out('The next Mina channel open/push finds and reuses this zkApp.');
+    return 0;
+  } catch (err) {
+    return emitCliError(io, json, 'channel deploy-zkapp', err);
   }
 }
 

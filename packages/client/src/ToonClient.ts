@@ -479,7 +479,12 @@ export class ToonClient {
         if (this.config.minaChannel && this.minaPrivateKey) {
           initialization.onChainChannelClient.setMinaConfig({
             graphqlUrl: this.config.minaChannel.graphqlUrl,
-            zkAppAddress: this.config.minaChannel.zkAppAddress,
+            ...(this.config.minaChannel.zkAppAddress !== undefined
+              ? { zkAppAddress: this.config.minaChannel.zkAppAddress }
+              : {}),
+            ...(this.config.minaChannel.autoDeploy !== undefined
+              ? { autoDeploy: this.config.minaChannel.autoDeploy }
+              : {}),
             privateKey: this.minaPrivateKey,
             ...(this.config.minaChannel.challengeDuration !== undefined
               ? { challengeDuration: this.config.minaChannel.challengeDuration }

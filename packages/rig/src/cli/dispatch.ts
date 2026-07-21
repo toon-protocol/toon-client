@@ -108,6 +108,9 @@ Commands rig owns:
                              shorthand for \`rig channel list\`)
   channel open               explicitly open (or resume) the channel for a
                              peer; --deposit adds collateral (on-chain)
+  channel deploy-zkapp       pre-deploy this identity's dedicated Mina
+                             PaymentChannel zkApp (on-chain; the Mina open
+                             path otherwise does this automatically)
   channel close <channelId>  start the settlement challenge window (on-chain)
   channel settle <channelId> release collateral after the window (on-chain)
 

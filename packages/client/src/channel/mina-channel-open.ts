@@ -50,12 +50,14 @@ interface FetchAccountResult {
 }
 
 /** Minimal o1js surface this module uses (lazy-loaded). */
-interface O1jsLike {
+export interface O1jsLike {
   Mina: any;
   PrivateKey: any;
   PublicKey: any;
   Field: any;
   AccountUpdate: any;
+  /** Present on the real o1js; the deploy/ownership path uses it. */
+  Poseidon?: any;
   fetchAccount: (args: { publicKey: any }) => Promise<FetchAccountResult>;
 }
 
@@ -102,7 +104,7 @@ export function _setMinaRuntimeForTests(
  * lazy (and `external` in tsup) so the multi-hundred-MB WASM runtime is only
  * loaded when a Mina channel is actually opened.
  */
-async function loadMinaRuntime(): Promise<{
+export async function loadMinaRuntime(): Promise<{
   o1js: O1jsLike;
   PaymentChannel: any;
 }> {
@@ -154,18 +156,30 @@ async function getO1js(): Promise<O1jsLike> {
   return (await loadMinaRuntime()).o1js;
 }
 
+let compiledVerificationKeyHash: string | undefined;
+
 /**
  * Lazily resolve + compile the `PaymentChannel` contract. Compilation is the
  * expensive o1js step; cache the compiled artifact so repeated opens in the
  * same process don't recompile.
  */
-async function getCompiledPaymentChannel(): Promise<any> {
+export async function getCompiledPaymentChannel(): Promise<any> {
   const { PaymentChannel } = await loadMinaRuntime();
   if (!compiledContract) {
-    await PaymentChannel.compile();
+    const compiled = await PaymentChannel.compile();
+    // Record the vk hash for the deploy path's provenance record (drift
+    // debugging: the deployed vk IS this locally compiled one by
+    // construction, but keeping the hash makes that checkable later).
+    compiledVerificationKeyHash =
+      compiled?.verificationKey?.hash?.toString() ?? undefined;
     compiledContract = PaymentChannel;
   }
   return compiledContract;
+}
+
+/** The vk hash of the last {@link getCompiledPaymentChannel} compile, if any. */
+export function getCompiledVerificationKeyHash(): string | undefined {
+  return compiledVerificationKeyHash;
 }
 
 /** Test hook: reset the cached o1js + compiled-contract state. */
@@ -173,6 +187,7 @@ export function _resetMinaChannelOpenCache(): void {
   cachedO1js = null;
   cachedPaymentChannel = null;
   compiledContract = null;
+  compiledVerificationKeyHash = undefined;
 }
 
 /** CHANNEL_STATE.OPEN from `@toon-protocol/mina-zkapp` constants. */
