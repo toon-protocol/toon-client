@@ -126,9 +126,25 @@ export interface ToonClientLike {
   /**
    * Free FULL multi-chain wallet view (#299) — native coin + configured tokens
    * per chain — works on an UNSTARTED client (Solana/Mina addresses are derived
-   * from the mnemonic on demand).
+   * from the mnemonic on demand). `fallback` supplies Solana/Mina channel params
+   * to read WHEN the client config has none, without touching settlement config.
    */
-  getWalletBalances?(): Promise<WalletChainBalanceInfo[]>;
+  getWalletBalances?(
+    fallback?: WalletViewFallback
+  ): Promise<WalletChainBalanceInfo[]>;
+}
+
+/**
+ * Wallet-view-only Solana/Mina channel defaults (#299): RPC/GraphQL + token used
+ * to READ the balance of a chain the identity has no configured channel for, so
+ * `rig balance` shows all three chains (0 for a not-yet-on-chain account). These
+ * NEVER enter the client's settlement config — they cannot influence chain
+ * negotiation — so a preset default here is safe even for a chain the wallet
+ * cannot yet settle on.
+ */
+export interface WalletViewFallback {
+  solanaChannel?: ToonClientConfig['solanaChannel'];
+  minaChannel?: ToonClientConfig['minaChannel'];
 }
 
 export interface StandalonePublisherOptions {
@@ -898,11 +914,14 @@ export class StandalonePublisher implements Publisher {
    * client (no nonce guard, no uplink, no channel). The client derives the
    * Solana/Mina addresses from the mnemonic on demand, so ALL configured chains
    * appear even before a start. Best-effort per chain (an unreachable RPC yields
-   * an `unreadable` chain, not a failure).
+   * an `unreadable` chain, not a failure). `fallback` supplies Solana/Mina RPC
+   * defaults (e.g. the network preset) for chains the config has no channel for.
    */
-  async readWalletChainBalances(): Promise<WalletChainBalanceInfo[]> {
+  async readWalletChainBalances(
+    fallback?: WalletViewFallback
+  ): Promise<WalletChainBalanceInfo[]> {
     if (!this.client.getWalletBalances) return [];
-    return await this.client.getWalletBalances();
+    return await this.client.getWalletBalances(fallback);
   }
 
   // ── Publisher ─────────────────────────────────────────────────────────────

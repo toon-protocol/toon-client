@@ -58,7 +58,11 @@ import {
   deriveFullIdentity,
   deriveNostrKeyFromMnemonic,
 } from '@toon-protocol/client';
-import { decodeEventFromToon, encodeEventToToon } from '@toon-protocol/core';
+import {
+  decodeEventFromToon,
+  encodeEventToToon,
+  resolveClientNetwork,
+} from '@toon-protocol/core';
 import type {
   BlobUpload,
   FeeRates,
@@ -106,6 +110,7 @@ import {
 import {
   StandalonePublisher,
   deriveRouteDestinations,
+  type WalletViewFallback,
 } from '../standalone/standalone-publisher.js';
 import { fetchRemoteState } from '../remote-state.js';
 import { MinaZkAppStore } from '../standalone/mina-zkapp-store.js';
@@ -928,10 +933,10 @@ class TopologyRecoveringPublisher implements Publisher {
   }
 
   /** Free read on the unstarted client — no bootstrap, no recovery needed. */
-  readWalletChainBalances(): ReturnType<
-    StandalonePublisher['readWalletChainBalances']
-  > {
-    return this.inner.readWalletChainBalances();
+  readWalletChainBalances(
+    ...args: Parameters<StandalonePublisher['readWalletChainBalances']>
+  ): ReturnType<StandalonePublisher['readWalletChainBalances']> {
+    return this.inner.readWalletChainBalances(...args);
   }
 
   async stop(): Promise<void> {
@@ -1250,6 +1255,29 @@ export async function createStandaloneContext(
     warn
   );
 
+  // Wallet-view preset defaults (#299): when the identity has no configured
+  // Solana/Mina channel (the common single-EVM-chain case), `rig balance` still
+  // shows those chains — 0 for an account not yet on-chain — by reading the
+  // named network's public RPC/GraphQL. Resolved HERE and passed only to the
+  // wallet-view read, NOT merged into the client's settlement config: setting
+  // `network` there would expand `supportedChains` via applyNetworkPresets and
+  // change chain negotiation, which this deliberately avoids.
+  const walletViewNetwork = env['TOON_CLIENT_NETWORK'] ?? file.network;
+  let walletViewFallback: WalletViewFallback | undefined;
+  if (
+    walletViewNetwork === 'devnet' ||
+    walletViewNetwork === 'testnet' ||
+    walletViewNetwork === 'mainnet'
+  ) {
+    const presets = resolveClientNetwork(walletViewNetwork);
+    walletViewFallback = {
+      ...(presets.solanaChannel
+        ? { solanaChannel: presets.solanaChannel }
+        : {}),
+      ...(presets.minaChannel ? { minaChannel: presets.minaChannel } : {}),
+    };
+  }
+
   return {
     ownerPubkey: publisher.getPublicKey(),
     identitySource: identity.source,
@@ -1263,7 +1291,8 @@ export async function createStandaloneContext(
       openChannel: (opts) => publisher.openChannelExplicit(opts),
       closeChannel: (record) => publisher.closeRecordedChannel(record),
       settleChannel: (record) => publisher.settleRecordedChannel(record),
-      walletChainBalances: () => publisher.readWalletChainBalances(),
+      walletChainBalances: () =>
+        publisher.readWalletChainBalances(walletViewFallback),
     },
     stop: () => publisher.stop(),
   };
