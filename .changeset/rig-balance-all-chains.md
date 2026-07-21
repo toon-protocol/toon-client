@@ -17,3 +17,10 @@ an account not yet on-chain. `getWalletBalances(fallback)` gains an optional
 wallet-view-only fallback; it is threaded through the rig money seam and is
 NEVER merged into settlement config, so chain negotiation is unaffected. Explicit
 `config.solanaChannel`/`minaChannel` still win.
+
+Also bounds each wallet-balance RPC/GraphQL request individually (viem `timeout`
+for EVM; an `AbortSignal` for the Solana/Mina `fetch`, since Node's global fetch
+has no default timeout). One intermittently-slow endpoint now degrades only its
+own chain to `unreadable` instead of hanging the whole multi-chain read until the
+caller's outer bound and hiding every chain's balance. Env override
+`TOON_WALLET_RPC_TIMEOUT_MS` (default 8000; `0` disables).
