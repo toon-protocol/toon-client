@@ -18,7 +18,12 @@
 export interface ArweaveManifest {
   manifest: 'arweave/paths';
   version: '0.2.0';
-  index: { path: string };
+  /**
+   * Omitted when `indexPath` isn't one of the manifest's `paths` — an `index`
+   * pointing at a path the manifest doesn't carry makes gateways 404 the site
+   * root (indistinguishable from ArNS propagation lag; see #398).
+   */
+  index?: { path: string };
   /**
    * Optional SPA fallback: the transaction served for any path not present in
    * `paths` (e.g. client-routed `/about` on a single-page app). Omitted for a
@@ -60,7 +65,7 @@ export function buildArweaveManifest(
   return {
     manifest: 'arweave/paths',
     version: '0.2.0',
-    index: { path: indexPath },
+    ...(Object.hasOwn(paths, indexPath) ? { index: { path: indexPath } } : {}),
     ...(fallbackTxId ? { fallback: { id: fallbackTxId } } : {}),
     paths,
   };
