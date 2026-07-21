@@ -65,6 +65,15 @@ interface ChannelBalanceJson {
   nonce: number | null;
   /** depositTotal − cumulativeClaimed, when both are known (floored at 0). */
   available: string | null;
+  /**
+   * cumulativeClaimed − depositTotal, when both are known (floored at 0).
+   * Non-zero means the cumulative signed claims exceed the recorded on-chain
+   * collateral: the peer accepted (and may keep accepting) claims it cannot
+   * fully redeem on-chain until the deposit is topped up — the on-chain
+   * TokenNetwork caps redemption at the deposit. `available 0` alone cannot
+   * distinguish "exactly spent" from "overdrawn", hence this field.
+   */
+  overdrawn: string | null;
 }
 
 /** `--json` envelope. */
@@ -144,9 +153,11 @@ export async function runBalance(
         const deposited = record.depositTotal;
         const claimed = watermark?.cumulativeAmount;
         let available: string | null = null;
+        let overdrawn: string | null = null;
         if (deposited !== undefined && claimed !== undefined) {
           const remaining = BigInt(deposited) - BigInt(claimed);
           available = (remaining > 0n ? remaining : 0n).toString();
+          overdrawn = (remaining < 0n ? -remaining : 0n).toString();
         }
         return {
           channelId: record.channelId,
@@ -158,6 +169,7 @@ export async function runBalance(
           cumulativeClaimed: claimed ?? null,
           nonce: watermark?.nonce ?? null,
           available,
+          overdrawn,
         };
       });
 
@@ -209,6 +221,14 @@ export async function runBalance(
           `claimed ${c.cumulativeClaimed ?? '?'}  available ${c.available ?? '?'}` +
           `  (${c.chain} → ${c.destination})`
       );
+      if (c.overdrawn !== null && BigInt(c.overdrawn) > 0n) {
+        io.out(
+          `    OVERDRAWN by ${c.overdrawn}: cumulative claims exceed the ` +
+            `recorded deposit — the peer accepted claims only partially ` +
+            `covered by on-chain collateral. Top up with ` +
+            `\`rig channel open --deposit <amount>\`.`
+        );
+      }
     }
     return 0;
   } catch (err) {
