@@ -179,7 +179,7 @@ function proxyBaseOf(httpEndpoint: string): string {
 // Pure topology resolution (#264) — exported for tests
 // ---------------------------------------------------------------------------
 
-/** A genesis-seed peer as this module consumes it (rig's core 2.x shape). */
+/** A genesis-seed peer as this module consumes it (rig's core 3.x shape). */
 export interface GenesisSeedLike {
   pubkey: string;
   relayUrl: string;

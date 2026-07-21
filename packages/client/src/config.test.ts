@@ -688,8 +688,8 @@ describe('network targeting (#202)', () => {
       const evmId = 'evm:base:84532';
       expect(c.supportedChains).toContain(evmId);
       expect(c.chainRpcUrls?.[evmId]).toBe('https://sepolia.base.org');
-      // Current public Base Sepolia settlement addresses (toon-meta
-      // docs/deployment.md), correcting the stale core preset.
+      // Current public Base Sepolia settlement addresses, sourced directly
+      // from the @toon-protocol/core (>=3.1.1) base-sepolia preset.
       expect(c.tokenNetworks?.[evmId]).toBe(
         '0x1E95493fEF46707E034b4a1945f25a8C76A1823D'
       );
@@ -720,8 +720,11 @@ describe('network targeting (#202)', () => {
       const c = applyNetworkPresets(baseConfig({ network: 'devnet' }));
       expect(c.supportedChains).toContain('solana:devnet');
       expect(c.supportedChains).toContain('mina:devnet');
+      // Live public Solana devnet payment-channel program, sourced from the
+      // @toon-protocol/core (>=3.1.1) devnet preset (corrected: the pre-3.1.1
+      // preset carried the retired localhost-validator program EdJxYPD…).
       expect(c.solanaChannel?.programId).toBe(
-        'EdJxYPDxGvaJuu57DSUptf4soLv8enpdyQJJhHDLiydG'
+        '2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip'
       );
       expect(c.solanaChannel?.rpcUrl).toBe('https://api.devnet.solana.com');
       expect(c.minaChannel?.zkAppAddress).toBe(
