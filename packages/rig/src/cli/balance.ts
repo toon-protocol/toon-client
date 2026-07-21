@@ -94,6 +94,68 @@ function renderAmount(a: WalletTokenAmountInfo): string {
   return `${a.symbol ?? 'token'} ${formatUnits(a.amount, a.decimals)}`;
 }
 
+/** Env override for the wallet-read timeout; `0` opts out (wait forever). */
+const WALLET_READ_TIMEOUT_ENV = 'RIG_BALANCE_WALLET_TIMEOUT_MS';
+/** Default cap on the wallet read — generous, only trips a genuine hang. */
+const DEFAULT_WALLET_READ_TIMEOUT_MS = 20_000;
+
+/** Resolve the wallet-read timeout (ms): valid non-negative env override, else default. */
+export function walletReadTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env[WALLET_READ_TIMEOUT_ENV];
+  if (raw === undefined || raw === '') return DEFAULT_WALLET_READ_TIMEOUT_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_WALLET_READ_TIMEOUT_MS;
+}
+
+/**
+ * The wallet read exceeded {@link walletReadTimeoutMs}. This is the guard that
+ * turns the silent-exit bug into a loud, actionable failure: on the Mina
+ * settlement path a wallet read can neither resolve nor keep a live handle
+ * open (a hung GraphQL endpoint, a nonexistent on-chain account, o1js-adjacent
+ * work), so awaiting it UNBOUNDED lets Node's event loop drain and the one-shot
+ * CLI exits 0 with no output at all. The bounded read's live timer prevents
+ * that drain and forces a decision instead.
+ */
+export class WalletReadTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(
+      `wallet balance read timed out after ${timeoutMs}ms — the chain ` +
+        'RPC/GraphQL endpoint is unreachable or hanging. (A nonexistent Mina ' +
+        'account reads as 0, so a hang points at the endpoint, not an empty ' +
+        'balance.) Recorded channels are unaffected; retry, or set ' +
+        `${WALLET_READ_TIMEOUT_ENV}=0 to wait indefinitely.`
+    );
+    this.name = 'WalletReadTimeoutError';
+  }
+}
+
+/**
+ * Read the multi-chain wallet view under a hard time bound. The `setTimeout`
+ * is deliberately NOT `unref()`ed: its live handle is exactly what keeps the
+ * one-shot CLI's event loop from draining to a silent exit-0 while the read
+ * hangs. A late rejection from the losing promise is swallowed so it never
+ * surfaces as an unhandled rejection after the race is decided.
+ */
+export async function readWalletBounded(
+  read: () => Promise<WalletChainBalanceInfo[]>,
+  timeoutMs: number
+): Promise<WalletChainBalanceInfo[]> {
+  const settled = read();
+  // A `0` (or negative) timeout opts out of the bound entirely (wait forever).
+  if (timeoutMs <= 0) return settled;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const guard = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new WalletReadTimeoutError(timeoutMs)), timeoutMs);
+  });
+  // Don't let the loser reject into an unhandled rejection post-race.
+  settled.catch(() => {});
+  try {
+    return await Promise.race([settled, guard]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Run `rig balance`; returns the process exit code. */
 export async function runBalance(
   args: string[],
@@ -131,10 +193,10 @@ export async function runBalance(
     });
     const identity = identityReport(ctx);
 
-    // ── Wallet: the client's full multi-chain view (#299) — native + USDC ───
-    const wallet = ctx.money ? await ctx.money.walletChainBalances() : [];
-
     // ── Channels: #262 map ⋈ claim watermark, THIS identity only ────────────
+    // Read FIRST: a purely local read that is always available (a corrupt map
+    // is still a clear error via the outer catch), so the report can show
+    // recorded channels even when the on-chain wallet read below fails.
     const store = new ChannelMapStore(resolveChannelPaths(env));
     const channels: ChannelBalanceJson[] = store
       .list()
@@ -161,7 +223,29 @@ export async function runBalance(
         };
       });
 
+    // ── Wallet: the client's full multi-chain view (#299) — native + USDC ───
+    // BOUNDED. An unbounded await here is the silent-exit bug: on the Mina path
+    // the read can neither resolve nor keep the event loop alive, so the CLI
+    // drains and exits 0 with no output. The bound turns any such hang into a
+    // loud, non-zero failure that STILL prints the identity + channels.
+    let wallet: WalletChainBalanceInfo[] = [];
+    let walletError: Error | undefined;
+    if (ctx.money) {
+      const money = ctx.money;
+      try {
+        wallet = await readWalletBounded(
+          () => money.walletChainBalances(),
+          walletReadTimeoutMs(env)
+        );
+      } catch (err) {
+        walletError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+
     if (json) {
+      // A wallet-read failure is a hard error in the machine contract: emit the
+      // single error envelope (never a partial + a silent 0).
+      if (walletError) return emitCliError(io, json, 'balance', walletError);
       io.emitJson({
         command: 'balance',
         identity,
@@ -174,10 +258,11 @@ export async function runBalance(
     io.out(renderIdentityLine(identity));
     io.out('');
     io.out('Wallet (on-chain):');
-    if (wallet.length === 0) {
-      io.out(
-        '  (no chain configured for this identity — nothing to read)'
-      );
+    if (walletError) {
+      // Loud, actionable — never a silent gap. The channels below still print.
+      io.out(`  wallet balances unavailable — ${walletError.message}`);
+    } else if (wallet.length === 0) {
+      io.out('  (no chain configured for this identity — nothing to read)');
     }
     for (const chain of wallet) {
       io.out(`  ${chain.chainKey.padEnd(11)} ${chain.address}`);
@@ -210,7 +295,9 @@ export async function runBalance(
           `  (${c.chain} → ${c.destination})`
       );
     }
-    return 0;
+    // Non-zero when the wallet read failed — the report is printed, but the
+    // command reports failure (never a silent success on a broken read).
+    return walletError ? 1 : 0;
   } catch (err) {
     return emitCliError(io, json, 'balance', err);
   } finally {

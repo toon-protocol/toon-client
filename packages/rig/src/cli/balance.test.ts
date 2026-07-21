@@ -12,7 +12,14 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ChannelMapStore } from '../standalone/channel-map.js';
 import type { WalletChainBalanceInfo } from '../standalone/money.js';
-import { BALANCE_USAGE, runBalance, type BalanceDeps } from './balance.js';
+import {
+  BALANCE_USAGE,
+  readWalletBounded,
+  runBalance,
+  walletReadTimeoutMs,
+  WalletReadTimeoutError,
+  type BalanceDeps,
+} from './balance.js';
 import type { CliIo } from './push.js';
 import type {
   StandaloneContext,
@@ -34,7 +41,10 @@ interface Harness {
 
 function makeHarness(
   env: NodeJS.ProcessEnv,
-  wallet: WalletChainBalanceInfo[] = []
+  wallet: WalletChainBalanceInfo[] = [],
+  // Override the wallet reader itself (e.g. a hanging or rejecting read) —
+  // defaults to resolving `wallet` immediately.
+  walletImpl?: () => Promise<WalletChainBalanceInfo[]>
 ): Harness {
   const out: string[] = [];
   const err: string[] = [];
@@ -82,7 +92,7 @@ function makeHarness(
       settleChannel: async () => {
         throw new Error('balance never settles channels');
       },
-      walletChainBalances: async () => wallet,
+      walletChainBalances: walletImpl ?? (async () => wallet),
     },
     stop: async () => {
       harness.stopped = true;
@@ -330,6 +340,119 @@ describe('rig balance', () => {
     const parsed = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
     expect(parsed['error']).toBe('channel_map_corrupt');
     expect(h.stopped).toBe(true);
+  });
+
+  // ── The silent-exit bug (Mina path): a wallet read that never settles ─────
+  // Regression: `rig balance` awaited the wallet read UNBOUNDED, so a Mina read
+  // that neither resolved nor kept the event loop alive drained the one-shot
+  // CLI to a silent exit-0 with NO output. The bound must turn that into a
+  // loud, non-zero failure that STILL prints the identity + channels.
+
+  /** A wallet read that never resolves and never rejects — the drain trigger. */
+  const neverSettles = (): Promise<WalletChainBalanceInfo[]> =>
+    new Promise<WalletChainBalanceInfo[]>(() => {});
+
+  it('a hanging wallet read fails loudly (exit 1) — never a silent exit', async () => {
+    seedChannels();
+    const h = makeHarness(
+      { TOON_CLIENT_HOME: dir, RIG_BALANCE_WALLET_TIMEOUT_MS: '30' },
+      [],
+      neverSettles
+    );
+    const code = await runBalance([], h.deps);
+    // Non-zero: the read failed. And it is NOT silent — the report still prints.
+    expect(code).toBe(1);
+    const text = h.out.join('\n');
+    expect(text).toContain(`Identity: ${IDENTITY}`);
+    expect(text).toContain('Wallet (on-chain):');
+    expect(text).toContain('wallet balances unavailable');
+    expect(text).toMatch(/timed out after 30ms/);
+    // The recorded channel is still shown — the local read is unaffected.
+    expect(text).toContain('Channels (recorded):');
+    expect(text).toContain(CHANNEL_ID);
+    // Teardown still runs on the failure path.
+    expect(h.stopped).toBe(true);
+  });
+
+  it('a hanging wallet read under --json emits one error envelope (exit 1)', async () => {
+    const h = makeHarness(
+      { TOON_CLIENT_HOME: dir, RIG_BALANCE_WALLET_TIMEOUT_MS: '30' },
+      [],
+      neverSettles
+    );
+    expect(await runBalance(['--json'], h.deps)).toBe(1);
+    const parsed = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(parsed['error']).toBe('error');
+    expect(String(parsed['detail'])).toMatch(/timed out after 30ms/);
+    expect(h.stopped).toBe(true);
+  });
+
+  it('a rejecting wallet read fails loudly and still prints the channels', async () => {
+    seedChannels();
+    const h = makeHarness({ TOON_CLIENT_HOME: dir }, [], async () => {
+      throw new Error('Mina GraphQL request failed: HTTP 500');
+    });
+    expect(await runBalance([], h.deps)).toBe(1);
+    const text = h.out.join('\n');
+    expect(text).toContain(`Identity: ${IDENTITY}`);
+    expect(text).toContain(
+      'wallet balances unavailable — Mina GraphQL request failed: HTTP 500'
+    );
+    expect(text).toContain(CHANNEL_ID);
+  });
+
+  it('a rejecting wallet read under --json is a single error envelope (exit 1)', async () => {
+    const h = makeHarness({ TOON_CLIENT_HOME: dir }, [], async () => {
+      throw new Error('Mina GraphQL request failed: HTTP 500');
+    });
+    expect(await runBalance(['--json'], h.deps)).toBe(1);
+    const parsed = JSON.parse(h.out.join('\n')) as Record<string, unknown>;
+    expect(parsed['error']).toBe('error');
+    expect(String(parsed['detail'])).toContain('HTTP 500');
+  });
+
+  it('a slow-but-successful wallet read within the bound still succeeds (exit 0)', async () => {
+    const h = makeHarness(
+      { TOON_CLIENT_HOME: dir, RIG_BALANCE_WALLET_TIMEOUT_MS: '5000' },
+      [],
+      () =>
+        new Promise<WalletChainBalanceInfo[]>((resolve) =>
+          setTimeout(() => resolve(WALLET), 10)
+        )
+    );
+    expect(await runBalance([], h.deps)).toBe(0);
+    expect(h.out.join('\n')).toContain('MINA 0');
+  });
+
+  describe('readWalletBounded / walletReadTimeoutMs', () => {
+    it('rejects with WalletReadTimeoutError when the read outlasts the bound', async () => {
+      await expect(readWalletBounded(neverSettles, 20)).rejects.toBeInstanceOf(
+        WalletReadTimeoutError
+      );
+    });
+
+    it('resolves with the value when the read finishes in time', async () => {
+      await expect(readWalletBounded(async () => WALLET, 1000)).resolves.toEqual(
+        WALLET
+      );
+    });
+
+    it('a non-positive timeout opts out of the bound (waits for the read)', async () => {
+      await expect(readWalletBounded(async () => WALLET, 0)).resolves.toEqual(
+        WALLET
+      );
+    });
+
+    it('parses the env override; falls back to the default on junk/absent', () => {
+      expect(walletReadTimeoutMs({ RIG_BALANCE_WALLET_TIMEOUT_MS: '500' })).toBe(
+        500
+      );
+      expect(walletReadTimeoutMs({ RIG_BALANCE_WALLET_TIMEOUT_MS: '0' })).toBe(0);
+      expect(walletReadTimeoutMs({ RIG_BALANCE_WALLET_TIMEOUT_MS: 'nope' })).toBe(
+        20_000
+      );
+      expect(walletReadTimeoutMs({})).toBe(20_000);
+    });
   });
 
   it('--help prints usage', async () => {
