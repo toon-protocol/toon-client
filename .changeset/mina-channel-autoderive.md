@@ -24,10 +24,11 @@ preset**:
   deployment advertises working endpoints (e.g. the correct Base Sepolia RPC)
   instead of the client falling back to a stale/broken baked preset.
 
-Announce-advertised rather than baked into a core preset **on purpose**: the
-deployment-specific values (zkApp, tokenId, RPC) are drift-prone — core 3.1.1's
-Mina preset is already stale — so the live announce is the source of truth.
-Fully backward-compatible: with no announce fields the client falls back to
-today's preset behavior; old clients ignore the new fields. Activating the
-zero-config path end to end (esp. Mina tokenId + the fixed EVM RPC) requires the
-devnet connector to redeploy so its announce carries the new fields.
+Announce-advertised **first**, with the core preset as a drift-proof fallback:
+the deployment-specific values (zkApp, tokenId, RPC) are drift-prone, so the live
+announce overrides when present. The corrected core preset (Mina zkApp + tokenId,
+publicnode Base Sepolia RPC) is the baked fallback a fresh client resolves when
+the announce carries nothing — so once this client picks up the corrected core
+release, a fresh `rig fund && rig balance` works on all three chains **without**
+waiting on a connector redeploy. Fully backward-compatible: old clients ignore
+the new announce fields; the announce still wins over the preset when present.

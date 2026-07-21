@@ -24,6 +24,8 @@ vi.mock('./balance/WalletBalanceReader.js', () => ({
   readSolanaTokenBalance: vi.fn(),
   readSolanaNativeBalance: vi.fn(),
   readMinaBalance: vi.fn(),
+  readMinaTokenBalance: vi.fn(),
+  minaTokenIdToBase58: vi.fn(),
   readWalletBalances,
 }));
 
@@ -91,6 +93,41 @@ describe('ToonClient.getWalletBalances', () => {
       tokenMint: 'Mint1111111111111111111111111111111111111111',
     });
     expect(sources.solana?.owner).toBeTruthy();
+  });
+
+  it('threads the derived minaChannel.tokenId into the Mina balance source', async () => {
+    // A fresh client resolves minaChannel (graphqlUrl + zkApp + tokenId) from the
+    // preset/announce even without an explicit config.minaChannel; the tokenId
+    // must reach the reader so the custom Mina USDC balance is read (not native).
+    readWalletBalances.mockClear();
+    const client = new ToonClient(
+      baseConfig({
+        minaChannel: {
+          graphqlUrl: 'https://mina.example/graphql',
+          zkAppAddress: 'B62qmgPhv2Xo6QVEtwjLja8UZJUtu8yapRFAR6gaoGtbM9zE5hG7Tkf',
+          tokenId:
+            '9497120696276615621907376728658022802954262638363646162765282600447713419198',
+        },
+      })
+    );
+    await client.getWalletBalances(); // no start()
+    const sources = readWalletBalances.mock.calls[0]![0] as WalletBalanceSources;
+    expect(sources.mina).toMatchObject({
+      chainKey: 'mina',
+      graphqlUrl: 'https://mina.example/graphql',
+      tokenId:
+        '9497120696276615621907376728658022802954262638363646162765282600447713419198',
+    });
+    expect(sources.mina?.owner).toBeTruthy();
+  });
+
+  it('omits the Mina tokenId when the channel has none (native-only)', async () => {
+    readWalletBalances.mockClear();
+    const client = new ToonClient(baseConfig({})); // baseConfig minaChannel has no tokenId
+    await client.getWalletBalances();
+    const sources = readWalletBalances.mock.calls[0]![0] as WalletBalanceSources;
+    expect(sources.mina).toBeDefined();
+    expect(sources.mina?.tokenId).toBeUndefined();
   });
 
   it('omits Solana/Mina when the identity has no such chain config', async () => {

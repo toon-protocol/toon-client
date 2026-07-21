@@ -1293,12 +1293,20 @@ export class ToonClient {
       }
     }
 
-    // Mina: native MINA (no configured Mina token on devnet).
+    // Mina: native MINA plus, when the deployment settles a custom token, that
+    // token's balance (USDC) — read via the derived/explicit `minaChannel.tokenId`
+    // (core preset or announce, see resolveNetworkTopology/deriveMinaChannel). A
+    // fresh client with no explicit `config.minaChannel` still gets both.
     const mina = this.config.minaChannel;
     if (mina?.graphqlUrl) {
       const minaAddress = this.getMinaAddress() ?? (await ensureDerived())?.mina.publicKey;
       if (minaAddress) {
-        sources.mina = { chainKey: 'mina', graphqlUrl: mina.graphqlUrl, owner: minaAddress };
+        sources.mina = {
+          chainKey: 'mina',
+          graphqlUrl: mina.graphqlUrl,
+          owner: minaAddress,
+          ...(mina.tokenId ? { tokenId: mina.tokenId } : {}),
+        };
       }
     }
 
