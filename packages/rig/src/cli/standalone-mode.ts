@@ -112,6 +112,7 @@ import {
   deriveRouteDestinations,
   type WalletViewFallback,
 } from '../standalone/standalone-publisher.js';
+import { standaloneForced } from '../standalone/nonce-guard.js';
 import { fetchRemoteState } from '../remote-state.js';
 import { MinaZkAppStore } from '../standalone/mina-zkapp-store.js';
 import { resolveIdentity } from './identity.js';
@@ -988,6 +989,19 @@ export async function createStandaloneContext(
   const file = readClientConfig(configPath);
   const identity = await resolveIdentity(options);
 
+  // Force-standalone override (RIG_STANDALONE / `rig --standalone`): when set,
+  // the embedded publisher skips the same-identity daemon refusal so a running
+  // toon-clientd never blocks the standalone path. The per-identity NonceLock
+  // still guards against two standalone processes racing the claim watermark.
+  const skipDaemonCheck = standaloneForced(env);
+  if (skipDaemonCheck) {
+    warn(
+      'rig: force-standalone (RIG_STANDALONE) — bypassing any running ' +
+        'toon-clientd; this rig process signs its own claims (stop the daemon ' +
+        'if it is also writing on this identity)'
+    );
+  }
+
   const genesisSeed = loadGenesisSeed();
 
   // ── Relay-origin ──────────────────────────────────────────────────────────
@@ -1196,6 +1210,7 @@ export async function createStandaloneContext(
       eventFee,
       channelMap,
       warn,
+      ...(skipDaemonCheck ? { skipDaemonCheck: true } : {}),
       ...(topo.publishDestination
         ? { publishDestination: topo.publishDestination }
         : {}),

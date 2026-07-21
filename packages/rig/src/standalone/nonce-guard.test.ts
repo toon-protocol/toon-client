@@ -14,6 +14,7 @@ import {
   NonceLock,
   StandaloneLockError,
   checkDaemonIdentity,
+  standaloneForced,
 } from './nonce-guard.js';
 
 const PUBKEY = 'a'.repeat(64);
@@ -35,6 +36,21 @@ function deadPid(): number {
   if (typeof child.pid !== 'number') throw new Error('spawnSync gave no pid');
   return child.pid;
 }
+
+describe('standaloneForced', () => {
+  it('is true for the accepted truthy spellings (case/space-insensitive)', () => {
+    for (const v of ['1', 'true', 'TRUE', 'yes', 'on', ' on ', 'On']) {
+      expect(standaloneForced({ RIG_STANDALONE: v })).toBe(true);
+    }
+  });
+
+  it('is false when unset or set to a non-truthy value', () => {
+    expect(standaloneForced({})).toBe(false);
+    for (const v of ['0', 'false', 'no', 'off', '']) {
+      expect(standaloneForced({ RIG_STANDALONE: v })).toBe(false);
+    }
+  });
+});
 
 describe('checkDaemonIdentity', () => {
   it('refuses when a daemon responds with the SAME pubkey', async () => {

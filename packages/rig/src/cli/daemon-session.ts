@@ -41,7 +41,7 @@
  * `../standalone/nonce-guard.ts` — keep in sync.
  */
 
-import { defaultDaemonPort } from '../standalone/nonce-guard.js';
+import { defaultDaemonPort, standaloneForced } from '../standalone/nonce-guard.js';
 import type {
   GitCommentRequest,
   GitErrorEnvelope,
@@ -356,6 +356,25 @@ export async function resolvePaidSession(
   options: ResolveSessionOptions
 ): Promise<PaidSession> {
   const fetchImpl = options.fetchImpl ?? fetch;
+
+  // Force-standalone override (RIG_STANDALONE / `rig --standalone`): skip the
+  // daemon probe outright and run embedded, even when a same-identity daemon
+  // is up and supports the /git routes. The user has explicitly opted out of
+  // delegation; createStandaloneContext skips the same-identity refusal too,
+  // and the NonceLock still guards against concurrent standalone processes.
+  if (standaloneForced(options.env)) {
+    options.warn(
+      'rig: paid path: standalone (RIG_STANDALONE set — toon-clientd bypassed)'
+    );
+    const ctx = await options.loadStandalone({
+      env: options.env,
+      cwd: options.cwd,
+      warn: options.warn,
+      ...(options.relayUrl !== undefined ? { relayUrl: options.relayUrl } : {}),
+    });
+    return { path: 'standalone', ctx };
+  }
+
   const probe = await (options.probeDaemon ?? probeDaemon)(
     options.env,
     fetchImpl

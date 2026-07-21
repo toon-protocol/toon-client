@@ -224,6 +224,35 @@ describe('resolvePaidSession', () => {
     ).rejects.toBeInstanceOf(DaemonTooOldForGitError);
   });
 
+  it('RIG_STANDALONE set → standalone, probe NEVER run even for a same-identity git daemon', async () => {
+    let probed = 0;
+    let loaded = 0;
+    const session = await resolvePaidSession({
+      env: { ...env, RIG_STANDALONE: '1' },
+      cwd,
+      warn: (l) => warnings.push(l),
+      loadStandalone: async () => {
+        loaded += 1;
+        return fakeCtx;
+      },
+      // A same-identity daemon that DOES support git would normally delegate;
+      // the override must skip the probe entirely and run standalone instead.
+      probeDaemon: async () => {
+        probed += 1;
+        return {
+          baseUrl: 'http://127.0.0.1:8787',
+          reachable: true,
+          identity: TEST_PUBKEY,
+          capabilities: ['git'],
+        };
+      },
+    });
+    expect(session.path).toBe('standalone');
+    expect(probed).toBe(0);
+    expect(loaded).toBe(1);
+    expect(warnings.join('\n')).toContain('RIG_STANDALONE set');
+  });
+
   it('DIFFERENT identity → standalone (no conflict, no delegation)', async () => {
     const session = await resolvePaidSession({
       env,

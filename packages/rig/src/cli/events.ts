@@ -70,6 +70,7 @@ import { readToonConfig, resolveRepoRoot, type ToonRepoConfig } from './git-conf
 import {
   identityReport,
   loadPaidSession,
+  withForcedStandalone,
   type IdentityReport,
   type PushDeps,
 } from './push.js';
@@ -129,6 +130,8 @@ const COMMON_FLAGS_USAGE = `  --repo-id <id>       repository id / NIP-34 d-tag 
   --yes                skip the fee confirmation (required when not a TTY)
   --json               machine-readable receipt; without --yes it is a pure
                        estimate (nothing published, exit 0)
+  --standalone         always run embedded, bypassing a running toon-clientd
+                       (alias: --no-daemon; same as RIG_STANDALONE=1)
   -h, --help           show this help`;
 
 export const ISSUE_USAGE = `Usage: rig issue create --title <title> [options]
@@ -230,6 +233,8 @@ const COMMON_OPTIONS = {
   remote: { type: 'string' },
   'repo-id': { type: 'string' },
   owner: { type: 'string' },
+  standalone: { type: 'boolean', default: false },
+  'no-daemon': { type: 'boolean', default: false },
   help: { type: 'boolean', short: 'h', default: false },
 } as const;
 
@@ -240,6 +245,8 @@ interface CommonFlags {
   remote?: string;
   repoId?: string;
   owner?: string;
+  /** Force embedded standalone, bypassing the daemon (--standalone/--no-daemon). */
+  standalone: boolean;
   help: boolean;
 }
 
@@ -248,6 +255,7 @@ function pickCommon(values: Record<string, unknown>): CommonFlags {
     yes: values['yes'] === true,
     json: values['json'] === true,
     relay: Array.isArray(values['relay']) ? (values['relay'] as string[]) : [],
+    standalone: values['standalone'] === true || values['no-daemon'] === true,
     help: values['help'] === true,
   };
   const remote = values['remote'];
@@ -330,7 +338,12 @@ interface EventJsonOutput {
  * Money moves only after the confirm gate and the single-relay guard.
  */
 async function runEvent(opts: RunEventOptions): Promise<number> {
-  const { command, flags, deps, actionLabel } = opts;
+  const { command, flags, actionLabel } = opts;
+  // --standalone/--no-daemon: force embedded for this invocation (same as
+  // RIG_STANDALONE=1). Every paid path reads the override from `env`.
+  const deps = flags.standalone
+    ? withForcedStandalone(opts.deps)
+    : opts.deps;
   const { io } = deps;
 
   let standaloneCtx: StandaloneContext | undefined;

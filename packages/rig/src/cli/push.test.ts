@@ -372,6 +372,53 @@ describe('standalone push (Publisher seam)', () => {
     expect(text).toContain(`ar:${TX_ID}`);
   });
 
+  it('--standalone bypasses the daemon: probe never runs, standalone loader wins', async () => {
+    const fake = makeStandalone(emptyRemoteState());
+    let probed = 0;
+    // A same-identity git-capable daemon would normally DELEGATE (loader never
+    // called). --standalone must skip the probe and run embedded instead.
+    const h = makeDeps(env, repoDir, {
+      loadStandalone: fake.load,
+      probeDaemon: async () => {
+        probed += 1;
+        return {
+          baseUrl: 'http://127.0.0.1:8787',
+          reachable: true,
+          identity: OWNER,
+          capabilities: ['git'],
+        };
+      },
+    });
+
+    const code = await runPush(['--yes', '--standalone'], h.deps);
+    expect(code).toBe(0);
+    expect(probed).toBe(0);
+    expect(fake.loadedWith).toHaveLength(1);
+    // The loader saw the force-standalone override in its env.
+    expect(fake.loadedWith[0]?.env['RIG_STANDALONE']).toBe('1');
+    expect(fake.published.map((p) => p.kind)).toEqual([30617, 30618]);
+  });
+
+  it('--no-daemon is an accepted alias for --standalone', async () => {
+    const fake = makeStandalone(emptyRemoteState());
+    let probed = 0;
+    const h = makeDeps(env, repoDir, {
+      loadStandalone: fake.load,
+      probeDaemon: async () => {
+        probed += 1;
+        return {
+          baseUrl: 'http://127.0.0.1:8787',
+          reachable: true,
+          identity: OWNER,
+          capabilities: ['git'],
+        };
+      },
+    });
+    expect(await runPush(['--yes', '--no-daemon'], h.deps)).toBe(0);
+    expect(probed).toBe(0);
+    expect(fake.loadedWith[0]?.env['RIG_STANDALONE']).toBe('1');
+  });
+
   it('publishes the Rig page on first push and reuses it for free after', async () => {
     // First push: pointer uploaded as text/html, receipt printed, recorded.
     const fake1 = makeStandalone(emptyRemoteState(), { withBlobUpload: true });
@@ -812,12 +859,12 @@ describe('usage', () => {
     expect(h.err.join('\n')).toContain('Usage: rig push');
   });
 
-  it('the removed --daemon/--standalone mode flags are hard errors', async () => {
-    for (const flag of ['--daemon', '--standalone']) {
-      const h = makeDeps(env, repoDir);
-      expect(await runPush([flag], h.deps)).toBe(2);
-      expect(h.err.join('\n')).toContain('Usage: rig push');
-    }
+  it('the removed --daemon mode flag is still a hard error', async () => {
+    // --standalone / --no-daemon are now VALID again (force-standalone,
+    // exercised in the standalone-push describe), but --daemon stays unknown.
+    const h = makeDeps(env, repoDir);
+    expect(await runPush(['--daemon'], h.deps)).toBe(2);
+    expect(h.err.join('\n')).toContain('Usage: rig push');
   });
 
   it('--help prints usage (mentioning rig init) and exits 0', async () => {
