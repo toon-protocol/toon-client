@@ -10,6 +10,7 @@ import type { AddressInfo } from 'node:net';
 
 import type { NostrEvent } from '../remote-state.js';
 import {
+  MinaChannelUnderivableError,
   SolanaChannelUnderivableError,
   TokenNetworkUnderivableError,
   discoverAnnouncedPeers,
@@ -17,6 +18,7 @@ import {
   evmTokenBalance,
   genesisSeedPubkeys,
   loadGenesisSeed,
+  minaPresetForChain,
   pickPaymentPeer,
   resolveChainSettlement,
   selectSettlementChain,
@@ -24,6 +26,15 @@ import {
   solanaTokenBalance,
   type AnnouncedPeer,
 } from './network-bootstrap.js';
+
+/** Authoritative current devnet Mina values (docs/deployment.md). */
+const DEVNET_MINA = {
+  graphqlUrl: 'https://api.minascan.io/node/devnet/v1/graphql',
+  zkAppAddress: 'B62qmgPhv2Xo6QVEtwjLja8UZJUtu8yapRFAR6gaoGtbM9zE5hG7Tkf',
+  tokenId:
+    '9497120696276615621907376728658022802954262638363646162765282600447713419198',
+  networkId: 'devnet' as const,
+};
 
 // ---------------------------------------------------------------------------
 // Fixtures — modeled on the LIVE devnet announces (connector >= 3.28.5)
@@ -80,6 +91,16 @@ function announcedPeer(
     info: content as unknown as AnnouncedPeer['info'],
     ...(content['routes']
       ? { routes: content['routes'] as AnnouncedPeer['routes'] }
+      : {}),
+    ...(content['minaTokenIds']
+      ? {
+          minaTokenIds: content['minaTokenIds'] as Record<string, string>,
+        }
+      : {}),
+    ...(content['chainRpcUrls']
+      ? {
+          chainRpcUrls: content['chainRpcUrls'] as Record<string, string>,
+        }
       : {}),
     createdAt: event.created_at,
   };
@@ -189,6 +210,38 @@ describe('discoverAnnouncedPeers', () => {
           timeoutMs: 2000,
         });
         expect((peers[0] as AnnouncedPeer).capabilities).toBeUndefined();
+      }
+    );
+  });
+
+  it('parses the out-of-band minaTokenIds + chainRpcUrls ride-alongs', async () => {
+    await withMockRelay(
+      [
+        announceEvent(APEX_PUBKEY, {
+          ...APEX_CONTENT,
+          minaTokenIds: {
+            'mina:devnet':
+              '9497120696276615621907376728658022802954262638363646162765282600447713419198',
+            // Non-decimal token id is skipped.
+            'mina:bad': 'not-a-number',
+          },
+          chainRpcUrls: {
+            'evm:31337': 'https://base-sepolia-rpc.publicnode.com',
+            // Non-URL value is skipped.
+            'evm:bad': 'ftp://nope',
+          },
+        }),
+      ],
+      async (relayUrl) => {
+        const peers = await discoverAnnouncedPeers(relayUrl, { timeoutMs: 2000 });
+        const peer = peers[0] as AnnouncedPeer;
+        expect(peer.minaTokenIds).toEqual({
+          'mina:devnet':
+            '9497120696276615621907376728658022802954262638363646162765282600447713419198',
+        });
+        expect(peer.chainRpcUrls).toEqual({
+          'evm:31337': 'https://base-sepolia-rpc.publicnode.com',
+        });
       }
     );
   });
@@ -554,6 +607,152 @@ describe('resolveChainSettlement — solana', () => {
       'wss://relay.example'
     );
     expect(errNoAnnounce.message).toContain('no kind:10032 announce');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveChainSettlement — Mina (the auto-derivation this change adds)
+// ---------------------------------------------------------------------------
+
+describe('resolveChainSettlement — mina', () => {
+  /** A live-devnet-shaped apex that advertises its OWN Mina zkApp + token id. */
+  const minaApex = announcedPeer(APEX_PUBKEY, {
+    ...APEX_CONTENT,
+    // The connector advertises the payment-channel zkApp in `tokenNetworks`
+    // (mirroring Solana's program id) and the custom-token id out-of-band.
+    tokenNetworks: { 'mina:devnet': DEVNET_MINA.zkAppAddress },
+    minaTokenIds: { 'mina:devnet': DEVNET_MINA.tokenId },
+  });
+
+  it('minaPresetForChain supplies the non-deployment-specific defaults from core', () => {
+    const devnet = minaPresetForChain('mina:devnet');
+    expect(devnet?.graphqlUrl).toBe(DEVNET_MINA.graphqlUrl);
+    expect(devnet?.networkId).toBe('devnet');
+    // Core ships a zkApp fallback, but it is deployment-specific and may be
+    // stale — the announce overrides it (see the derivation tests below).
+    expect(devnet?.zkAppAddress).toBeTruthy();
+    // No TOON zkApp on mainnet; unknown networks and non-mina chains resolve
+    // to nothing.
+    expect(minaPresetForChain('mina:mainnet')).toBeUndefined();
+    expect(minaPresetForChain('mina:testnet')).toBeUndefined();
+    expect(minaPresetForChain('solana:devnet')).toBeUndefined();
+    expect(minaPresetForChain('evm:31337')).toBeUndefined();
+  });
+
+  it('derives the live devnet channel: announce zkApp + token id, preset graphqlUrl', () => {
+    const s = resolveChainSettlement('mina:devnet', {}, minaApex);
+    expect(s.family).toBe('mina');
+    // graphqlUrl (the Mina "RPC") + networkId come from the core preset.
+    expect(s.rpcUrl).toBe(DEVNET_MINA.graphqlUrl);
+    expect(s.networkId).toBe('devnet');
+    // zkApp + token id come from the live announce (drift-proof).
+    expect(s.zkAppAddress).toBe(DEVNET_MINA.zkAppAddress);
+    expect(s.minaTokenId).toBe(DEVNET_MINA.tokenId);
+  });
+
+  it('the announced zkApp beats the (drift-prone) core preset zkApp', () => {
+    const preset = minaPresetForChain('mina:devnet');
+    const s = resolveChainSettlement('mina:devnet', {}, minaApex);
+    // The core preset ships a DIFFERENT (older) zkApp than the current
+    // devnet's — proving the announce, not the constant, is authoritative.
+    expect(preset?.zkAppAddress).not.toBe(DEVNET_MINA.zkAppAddress);
+    expect(s.zkAppAddress).toBe(DEVNET_MINA.zkAppAddress);
+  });
+
+  it('falls back to the preset zkApp when the announce carries none', () => {
+    const bare = announcedPeer(APEX_PUBKEY, { ...APEX_CONTENT });
+    const s = resolveChainSettlement('mina:devnet', {}, bare);
+    const preset = minaPresetForChain('mina:devnet');
+    expect(s.zkAppAddress).toBe(preset?.zkAppAddress);
+    expect(s.rpcUrl).toBe(DEVNET_MINA.graphqlUrl);
+    // No token id anywhere (core 3.1.1 preset has none) → native-MINA default
+    // is applied downstream.
+    expect(s.minaTokenId).toBeUndefined();
+  });
+
+  it('explicit config beats the announce and the preset', () => {
+    const s = resolveChainSettlement(
+      'mina:devnet',
+      {
+        tokenNetworks: { 'mina:devnet': 'B62qEXPLICITzkApp' },
+        chainRpcUrls: { 'mina:devnet': 'http://explicit-graphql' },
+      },
+      minaApex
+    );
+    expect(s.zkAppAddress).toBe('B62qEXPLICITzkApp');
+    expect(s.rpcUrl).toBe('http://explicit-graphql');
+  });
+
+  it('MinaChannelUnderivableError names the missing pieces and remedies', () => {
+    const err = new MinaChannelUnderivableError(
+      'mina:devnet',
+      ['zkAppAddress'],
+      minaApex,
+      'wss://relay.example'
+    );
+    expect(err.message).toContain('mina:devnet');
+    expect(err.message).toContain('zkAppAddress');
+    expect(err.message).toContain('minaChannel');
+    const errNoAnnounce = new MinaChannelUnderivableError(
+      'mina:devnet',
+      ['graphqlUrl', 'zkAppAddress'],
+      undefined,
+      'wss://relay.example'
+    );
+    expect(errNoAnnounce.message).toContain('no kind:10032 announce');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveChainSettlement — announce-advertised RPC beats the baked preset
+// ---------------------------------------------------------------------------
+
+describe('resolveChainSettlement — announce chainRpcUrls', () => {
+  const WORKING_EVM_RPC = 'https://base-sepolia-rpc.publicnode.com';
+
+  it('an EVM chain takes its RPC from the announce over the (possibly broken) preset', () => {
+    // A fresh client would otherwise get the baked preset RPC, which for Base
+    // Sepolia is a stale-read LB that breaks setTotalDeposit — the deployment
+    // advertises the known-good endpoint instead.
+    const announced = announcedPeer(APEX_PUBKEY, {
+      ...APEX_CONTENT,
+      chainRpcUrls: { 'evm:31337': WORKING_EVM_RPC },
+    });
+    const preset = evmPresetForChain('evm:31337');
+    const s = resolveChainSettlement('evm:31337', {}, announced);
+    expect(preset?.rpcUrl).toBeTruthy();
+    expect(s.rpcUrl).toBe(WORKING_EVM_RPC);
+    expect(s.rpcUrl).not.toBe(preset?.rpcUrl);
+    // The TokenNetwork/token still derive from the deterministic preset.
+    expect(s.tokenNetwork).toBe(preset?.tokenNetworkAddress);
+  });
+
+  it('explicit config chainRpcUrls still beats the announce', () => {
+    const announced = announcedPeer(APEX_PUBKEY, {
+      ...APEX_CONTENT,
+      chainRpcUrls: { 'evm:31337': WORKING_EVM_RPC },
+    });
+    const s = resolveChainSettlement(
+      'evm:31337',
+      { chainRpcUrls: { 'evm:31337': 'http://explicit:8545' } },
+      announced
+    );
+    expect(s.rpcUrl).toBe('http://explicit:8545');
+  });
+
+  it('falls back to the preset RPC when the announce carries none', () => {
+    const s = resolveChainSettlement('evm:31337', {}, announcedPeer(APEX_PUBKEY, APEX_CONTENT));
+    expect(s.rpcUrl).toBe(evmPresetForChain('evm:31337')?.rpcUrl);
+  });
+
+  it('a Mina chain takes its graphqlUrl from the announce over the preset', () => {
+    const announced = announcedPeer(APEX_PUBKEY, {
+      ...APEX_CONTENT,
+      chainRpcUrls: { 'mina:devnet': 'https://my-mina-graphql.example/graphql' },
+      tokenNetworks: { 'mina:devnet': DEVNET_MINA.zkAppAddress },
+    });
+    const s = resolveChainSettlement('mina:devnet', {}, announced);
+    expect(s.rpcUrl).toBe('https://my-mina-graphql.example/graphql');
   });
 });
 

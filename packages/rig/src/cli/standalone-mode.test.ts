@@ -56,6 +56,12 @@ function apexAnnounce(
     pubkey: APEX_PUBKEY,
     info: content as unknown as AnnouncedPeer['info'],
     routes: { publish: 'g.proxy.relay', store: 'g.proxy.store' },
+    ...(content['minaTokenIds']
+      ? { minaTokenIds: content['minaTokenIds'] as Record<string, string> }
+      : {}),
+    ...(content['chainRpcUrls']
+      ? { chainRpcUrls: content['chainRpcUrls'] as Record<string, string> }
+      : {}),
     createdAt: 1000,
   };
 }
@@ -763,5 +769,113 @@ describe('resolveNetworkTopology — route prices', () => {
     expect(topology.publishDestination).toBeUndefined();
     expect(topology.storeDestination).toBeUndefined();
     expect(topology.routePrices).toEqual({ publish: '1000', store: '1500' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mina channel auto-derivation (zero-config onboarding) + announce RPC
+// ---------------------------------------------------------------------------
+
+describe('resolveNetworkTopology — mina channel auto-derivation', () => {
+  /** Authoritative current devnet Mina values (docs/deployment.md). */
+  const DEVNET_MINA = {
+    graphqlUrl: 'https://api.minascan.io/node/devnet/v1/graphql',
+    zkAppAddress: 'B62qmgPhv2Xo6QVEtwjLja8UZJUtu8yapRFAR6gaoGtbM9zE5hG7Tkf',
+    tokenId:
+      '9497120696276615621907376728658022802954262638363646162765282600447713419198',
+    networkId: 'devnet' as const,
+  };
+
+  /** A devnet apex that advertises its OWN Mina zkApp + token id (path B). */
+  function minaApex(): AnnouncedPeer {
+    return apexAnnounce({
+      tokenNetworks: { 'mina:devnet': DEVNET_MINA.zkAppAddress },
+      minaTokenIds: { 'mina:devnet': DEVNET_MINA.tokenId },
+    });
+  }
+
+  it('derives a working minaChannel with NO minaChannel in config (pins mina)', async () => {
+    const topology = await resolveNetworkTopology(
+      inputs({
+        file: { chain: 'mina' }, // pin the Mina family; no minaChannel block
+        announce: minaApex(),
+      })
+    );
+    expect(topology.selection).toMatchObject({
+      chain: 'mina:devnet',
+      reason: 'explicit',
+    });
+    // The derived channel matches the CURRENT devnet values: zkApp + token id
+    // from the announce, graphqlUrl + networkId from the core preset.
+    expect(topology.minaChannel).toEqual({
+      graphqlUrl: DEVNET_MINA.graphqlUrl,
+      zkAppAddress: DEVNET_MINA.zkAppAddress,
+      tokenId: DEVNET_MINA.tokenId,
+      networkId: DEVNET_MINA.networkId,
+    });
+  });
+
+  it('derives minaChannel for a listed mina:* chain without a minaChannel block', async () => {
+    const topology = await resolveNetworkTopology(
+      inputs({
+        file: { supportedChains: ['mina:devnet'] },
+        announce: minaApex(),
+      })
+    );
+    expect(topology.supportedChains).toEqual(['mina:devnet']);
+    expect(topology.minaChannel).toEqual({
+      graphqlUrl: DEVNET_MINA.graphqlUrl,
+      zkAppAddress: DEVNET_MINA.zkAppAddress,
+      tokenId: DEVNET_MINA.tokenId,
+      networkId: DEVNET_MINA.networkId,
+    });
+  });
+
+  it('an explicit minaChannel config wins — the topology does not re-derive one', async () => {
+    const explicit = {
+      graphqlUrl: 'https://my-own-graphql.example/graphql',
+      zkAppAddress: 'B62qEXPLICITuserSuppliedZkApp',
+      tokenId: '1',
+      networkId: 'devnet' as const,
+    };
+    const topology = await resolveNetworkTopology(
+      inputs({
+        file: { chain: 'mina', minaChannel: explicit },
+        announce: minaApex(),
+      })
+    );
+    // buildPublisher applies `file.minaChannel` verbatim; the topology stays
+    // out of the way (mirrors the explicit-solanaChannel precedence).
+    expect(topology.minaChannel).toBeUndefined();
+  });
+
+  it('drops a listed mina:* chain when no source can derive its channel (warned)', async () => {
+    // No announce zkApp + no core preset (mina:localnet is not a real network)
+    // + no minaChannel config → the chain cannot be settled on and is dropped.
+    const warnings: string[] = [];
+    const topology = await resolveNetworkTopology(
+      inputs({
+        file: { supportedChains: ['evm:31337', 'mina:localnet'] },
+        warn: (line) => warnings.push(line),
+      })
+    );
+    expect(topology.supportedChains).toEqual(['evm:31337']);
+    expect(topology.minaChannel).toBeUndefined();
+    const dropWarning = warnings.find(
+      (w) => w.includes('dropping') && w.includes('mina:localnet')
+    );
+    expect(dropWarning).toContain('minaChannel');
+  });
+
+  it('EVM RPC comes from the announce over the (broken) baked preset', async () => {
+    const WORKING = 'https://base-sepolia-rpc.publicnode.com';
+    const topology = await resolveNetworkTopology(
+      inputs({
+        env: { TOON_CLIENT_CHAIN: 'evm' },
+        announce: apexAnnounce({ chainRpcUrls: { 'evm:31337': WORKING } }),
+      })
+    );
+    expect(topology.selection?.chain).toBe('evm:31337');
+    expect(topology.chainRpcUrls?.['evm:31337']).toBe(WORKING);
   });
 });
