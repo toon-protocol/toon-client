@@ -38,13 +38,16 @@ import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import {
   DEFAULT_RIG_WEB_BUNDLE,
+  DEFAULT_RIG_WEB_GATEWAY,
   DEFAULT_RIG_WEB_URL,
   RIG_WEB_ENTRY_CSS_ENV,
+  RIG_WEB_GATEWAY_ENV,
   RIG_WEB_ENTRY_JS_ENV,
   RIG_WEB_TX_ENV,
   RIG_WEB_URL_ENV,
   generateRigPointerHtml,
 } from '../rig-pointer.js';
+import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import { hexToNpub } from '../npub.js';
 import { flooredUploadFee } from '../publisher.js';
 import { planPush, executePush } from '../push.js';
@@ -362,18 +365,32 @@ export interface RigPageReport {
 }
 
 /**
- * Gateway for printed Rig-page URLs. A PRINTED URL is a single address with
- * no client-side fallback, so it must be the most RELIABLE gateway — the
- * flagship `arweave.net` (matching `rig site`'s DEFAULT_GATEWAY) — not the
- * first entry of the fetch-redundancy list (`ar-io.dev`, which the object
- * fetcher can afford to try first because it falls back; a browser can't).
- * `RIG_ARWEAVE_GATEWAY` overrides, same as `rig site`.
+ * Gateway for printed Rig-page URLs. Must be a gateway that serves the
+ * store's FRESH uploads — `ar-io.dev` (the head of the fetch-redundancy
+ * list): the store currently uploads to the ar.io testnet, which
+ * `arweave.net` (mainnet) never serves, and even for mainnet uploads it
+ * lags until the bundle settles. The mirror URL printed alongside covers
+ * the other gateway. Distinct from the BUNDLE gateway embedded in the
+ * pointer HTML ({@link DEFAULT_RIG_WEB_GATEWAY}), which tracks where the
+ * rig-web deploy lives. `RIG_ARWEAVE_GATEWAY` overrides, same as
+ * `rig site`.
  */
 function pointerGateway(env: NodeJS.ProcessEnv): string {
-  return (env['RIG_ARWEAVE_GATEWAY'] ?? 'https://arweave.net').replace(
+  return (env['RIG_ARWEAVE_GATEWAY'] ?? 'https://ar-io.dev').replace(
     /\/+$/,
     ''
   );
+}
+
+/**
+ * A second gateway to print alongside the primary pointer URL. Gateways
+ * index fresh uploads at different speeds (arweave.net serves Turbo
+ * uploads immediately; ar-io.dev can lag until the bundle is unbundled —
+ * and vice versa for older data), so printing two addresses gives the
+ * user a working link whichever side is behind.
+ */
+function mirrorGateway(primary: string): string | undefined {
+  return ARWEAVE_GATEWAYS.find((g) => g !== primary);
 }
 
 /** Build the Rig-pointer plan: deterministic pointer + content-addressed skip. */
@@ -393,7 +410,9 @@ function planRigPointer(args: {
       entryCss:
         args.env[RIG_WEB_ENTRY_CSS_ENV] ?? DEFAULT_RIG_WEB_BUNDLE.entryCss,
     },
-    gateway: pointerGateway(args.env),
+    gateway: (
+      args.env[RIG_WEB_GATEWAY_ENV] ?? DEFAULT_RIG_WEB_GATEWAY
+    ).replace(/\/+$/, ''),
     rigWebUrl: args.env[RIG_WEB_URL_ENV] ?? DEFAULT_RIG_WEB_URL,
     relay: args.relay,
     ownerNpub: hexToNpub(args.ownerPubkey),
@@ -677,6 +696,12 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
             (rigPage.status === 'published' ? `  paid ${rigPage.feePaid}` : '') +
             '  (renders this repo from Arweave)'
         );
+        const mirror = rigPage.txId ? mirrorGateway(gateway) : undefined;
+        if (mirror) {
+          io.out(
+            `     also: ${mirror}/${rigPage.txId}  (same page; gateways index fresh uploads at different speeds)`
+          );
+        }
       } else if (rigPage.detail) {
         io.err(`rig page: ${rigPage.detail}`);
       }
