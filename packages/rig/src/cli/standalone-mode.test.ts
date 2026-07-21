@@ -7,15 +7,20 @@
  * the full matrix runs without any network or client start.
  */
 
-import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { deriveFullIdentity } from '@toon-protocol/client';
 
 import {
   solanaPresetForChain,
   type AnnouncedPeer,
 } from '../standalone/network-bootstrap.js';
+import { MinaZkAppStore } from '../standalone/mina-zkapp-store.js';
 import {
   MissingUplinkError,
+  buildMinaAutoDeploy,
   resolveNetworkTopology,
   type ClientConfigFile,
   type GenesisSeedLike,
@@ -456,9 +461,7 @@ describe('resolveNetworkTopology — settlement', () => {
     );
     expect(topology.selection).toBeUndefined();
     expect(topology.supportedChains).toBeUndefined();
-    expect(
-      warnings.some((w) => w.includes('no settlement chains'))
-    ).toBe(true);
+    expect(warnings.some((w) => w.includes('no settlement chains'))).toBe(true);
   });
 
   it('drops a listed Solana chain with no derivable channel params (warned)', async () => {
@@ -877,5 +880,77 @@ describe('resolveNetworkTopology — mina channel auto-derivation', () => {
     );
     expect(topology.selection?.chain).toBe('evm:31337');
     expect(topology.chainRpcUrls?.['evm:31337']).toBe(WORKING);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildMinaAutoDeploy — persist-before-deploy → reuse-next-run (bug #3)
+// ---------------------------------------------------------------------------
+
+describe('buildMinaAutoDeploy — zkApp key persistence', () => {
+  let dir: string;
+  const IDENTITY = 'ab'.repeat(32);
+  const CHAIN = 'mina:devnet';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'rig-mina-autodeploy-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('onDeploying persists the key BEFORE deploy, so the NEXT run reuses it (no orphan)', () => {
+    const warnings: string[] = [];
+    const warn = (line: string) => warnings.push(line);
+
+    // Run 1: no prior record → no `deployed` seed; the deploy path fires
+    // onDeploying with the fresh key, which must be persisted immediately.
+    const first = buildMinaAutoDeploy(dir, IDENTITY, CHAIN, warn);
+    expect(first.deployed).toBeUndefined();
+    first.onDeploying?.({
+      zkAppAddress: 'B62qPENDINGzkApp',
+      zkAppPrivateKey: 'EKpendingKey',
+      feePayer: 'B62qFEEPAYER',
+    });
+
+    // The store now holds the pending record (survives a crash before confirm).
+    const store = MinaZkAppStore.forHome(dir);
+    const rec = store.lookup(IDENTITY, CHAIN);
+    expect(rec?.zkAppAddress).toBe('B62qPENDINGzkApp');
+    expect(rec?.zkAppPrivateKey).toBe('EKpendingKey');
+    expect(
+      warnings.some((w) => w.includes('recorded pending Mina zkApp'))
+    ).toBe(true);
+
+    // Run 2 (fresh process): the recorded key is surfaced as `deployed`, so
+    // ensureOwnedMinaZkApp redeploys the SAME address instead of a new zkApp.
+    const second = buildMinaAutoDeploy(dir, IDENTITY, CHAIN, warn);
+    expect(second.deployed).toEqual({
+      zkAppAddress: 'B62qPENDINGzkApp',
+      zkAppPrivateKey: 'EKpendingKey',
+    });
+  });
+
+  it('onDeployed upgrades the pending record with tx hash + vk hash', () => {
+    const store = MinaZkAppStore.forHome(dir);
+    const auto = buildMinaAutoDeploy(dir, IDENTITY, CHAIN, () => {});
+    auto.onDeploying?.({
+      zkAppAddress: 'B62qPENDINGzkApp',
+      zkAppPrivateKey: 'EKpendingKey',
+      feePayer: 'B62qFEEPAYER',
+    });
+    auto.onDeployed?.({
+      zkAppAddress: 'B62qPENDINGzkApp',
+      zkAppPrivateKey: 'EKpendingKey',
+      feePayer: 'B62qFEEPAYER',
+      deployTxHash: 'tx-abc',
+      vkHash: 'vk-1',
+    });
+    const rec = store.lookup(IDENTITY, CHAIN);
+    expect(rec).toMatchObject({
+      zkAppAddress: 'B62qPENDINGzkApp',
+      deployTxHash: 'tx-abc',
+      vkHash: 'vk-1',
+    });
   });
 });

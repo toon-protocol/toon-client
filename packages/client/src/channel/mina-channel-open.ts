@@ -46,6 +46,8 @@ interface FetchAccountResult {
   error?: unknown;
   account?: {
     zkapp?: { appState?: { toString(): string }[] };
+    /** Account MINA balance (o1js `UInt64`) — the preflight reads its total. */
+    balance?: { toString(): string };
   };
 }
 
@@ -188,6 +190,138 @@ export function _resetMinaChannelOpenCache(): void {
   cachedPaymentChannel = null;
   compiledContract = null;
   compiledVerificationKeyHash = undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Transaction-nesting safety (o1js currentTransaction leak)
+// ---------------------------------------------------------------------------
+
+/**
+ * o1js tracks the "current transaction" in a module-level stack
+ * (`Mina.currentTransaction`). `Mina.transaction(feePayer, f)` ENTERS that
+ * context, runs the circuit `f`, then LEAVES it — but the fee-payer nonce read
+ * (`getAccount(sender)`) happens AFTER the enter and OUTSIDE the try/finally
+ * that would leave it. So when the fee payer's account is not in the cache
+ * (e.g. an unfunded / nonexistent wallet — `getAccount: Could not find account
+ * for public key …`), that read THROWS with the context still entered: the
+ * transaction is leaked. The very next `Mina.transaction` anywhere in the
+ * SAME process then hits `if (currentTransaction.has()) throw 'Cannot start
+ * new transaction within another transaction'` — which is exactly what the
+ * cache-invalidation retry path re-triggered after a first failed deploy.
+ *
+ * This pops any leaked contexts so a subsequent transaction (a retry, or the
+ * next zkApp tx) starts clean. Best-effort and defensive: unknown/absent
+ * context shapes are ignored.
+ */
+export function abandonLeakedMinaTransaction(o1js: O1jsLike): void {
+  const ctx = (o1js.Mina as { currentTransaction?: unknown })
+    .currentTransaction;
+  const c = ctx as
+    | { has?: () => boolean; id?: () => unknown; leave?: (id: unknown) => void }
+    | undefined;
+  if (!c || typeof c.has !== 'function' || typeof c.leave !== 'function')
+    return;
+  // Bounded loop — never spin if leave() does not shrink the stack.
+  for (let i = 0; i < 64 && c.has(); i += 1) {
+    try {
+      const id = typeof c.id === 'function' ? c.id() : undefined;
+      c.leave(id);
+    } catch {
+      break; // inconsistent context — stop rather than throw over the caller's error
+    }
+  }
+}
+
+/**
+ * `Mina.transaction(feePayer, f)` that cannot leak the o1js currentTransaction
+ * context on failure (see {@link abandonLeakedMinaTransaction}). Every Mina tx
+ * this package builds goes through here so ONE failed build (unfunded fee
+ * payer, prove error, …) can never poison the next attempt in the process.
+ */
+export async function buildMinaTransaction(
+  o1js: O1jsLike,
+  feePayer: unknown,
+  f: () => Promise<void>
+): Promise<any> {
+  try {
+    return await o1js.Mina.transaction(feePayer, f);
+  } catch (err) {
+    abandonLeakedMinaTransaction(o1js);
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fee-payer preflight (fail fast BEFORE the multi-minute circuit compile)
+// ---------------------------------------------------------------------------
+
+/** The protocol's account-creation fee for a brand-new Mina account (1 MINA). */
+export const MINA_ACCOUNT_CREATION_FEE_NANOMINA = 1_000_000_000n;
+
+/**
+ * The Mina fee payer cannot fund an on-chain operation: either the account
+ * does not exist on-chain yet (never received MINA) or its balance is below
+ * the required minimum. Carries the address, the shortfall and the network so
+ * the message is directly actionable ("send N MINA to <addr> on <network>").
+ */
+export class MinaFeePayerUnfundedError extends Error {
+  constructor(
+    readonly address: string,
+    readonly requiredNanomina: bigint,
+    readonly haveNanomina: bigint | undefined,
+    readonly graphqlUrl: string
+  ) {
+    const mina = (n: bigint) => `${(Number(n) / 1e9).toFixed(3)} MINA`;
+    const state =
+      haveNanomina === undefined
+        ? `does not exist on-chain (0 MINA)`
+        : `holds only ${mina(haveNanomina)}`;
+    super(
+      `Mina fee-payer wallet ${address} ${state} but needs ~${mina(
+        requiredNanomina
+      )} to open a payment channel (≈1 MINA account-creation fee + tx fees) ` +
+        `on ${graphqlUrl}. Fund ${address} and retry — no circuit was ` +
+        `compiled (this check runs before the ~1-3 min compile).`
+    );
+    this.name = 'MinaFeePayerUnfundedError';
+  }
+}
+
+/**
+ * Read the fee payer's on-chain MINA balance and throw
+ * {@link MinaFeePayerUnfundedError} when the account is missing or under
+ * `requiredNanomina`. Runs BEFORE any circuit compile / zkApp deploy so an
+ * unfunded wallet fails in seconds, not after minutes of wasted compilation.
+ * The active o1js Mina instance must already be set to `graphqlUrl`.
+ */
+export async function assertMinaFeePayerFunded(params: {
+  o1js: O1jsLike;
+  payerPublicKey: { toBase58(): string };
+  requiredNanomina: bigint;
+  graphqlUrl: string;
+}): Promise<void> {
+  const { o1js, payerPublicKey, requiredNanomina, graphqlUrl } = params;
+  const address = payerPublicKey.toBase58();
+  const res = await o1js.fetchAccount({ publicKey: payerPublicKey });
+  if (res.error || !res.account) {
+    // No account on-chain → 0 MINA, cannot even pay the account-creation fee.
+    throw new MinaFeePayerUnfundedError(
+      address,
+      requiredNanomina,
+      undefined,
+      graphqlUrl
+    );
+  }
+  const raw = res.account.balance?.toString();
+  const have = raw !== undefined ? BigInt(raw) : 0n;
+  if (have < requiredNanomina) {
+    throw new MinaFeePayerUnfundedError(
+      address,
+      requiredNanomina,
+      have,
+      graphqlUrl
+    );
+  }
 }
 
 /** CHANNEL_STATE.OPEN from `@toon-protocol/mina-zkapp` constants. */
@@ -358,7 +492,8 @@ export async function openMinaChannelOnChain(
     await fetchAccount({ publicKey: zkAppPublicKey });
     await fetchAccount({ publicKey: payerPublicKey });
 
-    const initTx = await Mina.transaction(
+    const initTx = await buildMinaTransaction(
+      await getO1js(),
       { sender: payerPublicKey, fee: Number(txFee) },
       async () => {
         await channel.initializeChannel(
@@ -405,7 +540,8 @@ export async function openMinaChannelOnChain(
     // Re-fetch so the deposit tx sees the post-init state.
     await fetchAccount({ publicKey: zkAppPublicKey });
     const amountField = Field(params.deposit.amount.toString());
-    const depositTx = await Mina.transaction(
+    const depositTx = await buildMinaTransaction(
+      await getO1js(),
       { sender: payerPublicKey, fee: Number(txFee) },
       async () => {
         await channel.deposit(amountField, payerPublicKey);

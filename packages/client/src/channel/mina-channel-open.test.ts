@@ -106,6 +106,10 @@ class FakePaymentChannel {
 // `vi.mock` can't intercept that, so we inject fakes via the test hook instead.
 const {
   openMinaChannelOnChain,
+  abandonLeakedMinaTransaction,
+  buildMinaTransaction,
+  assertMinaFeePayerFunded,
+  MinaFeePayerUnfundedError,
   _resetMinaChannelOpenCache,
   _setMinaRuntimeForTests,
 } = await import('./mina-channel-open.js');
@@ -224,5 +228,123 @@ describe('openMinaChannelOnChain', () => {
       })
     ).rejects.toThrow(/not UNINITIALIZED\/OPEN/i);
     expect(initializeChannel).not.toHaveBeenCalled();
+  });
+});
+
+// ── Bug #2: o1js transaction-context leak on failed builds ────────────────────
+
+/**
+ * A faithful stand-in for o1js's `Mina.currentTransaction` stack: `enter`
+ * pushes, `leave` pops, `has` reports depth. `Mina.transaction` here mimics the
+ * real bug — it ENTERS the context, then the fee-payer nonce read throws while
+ * the context is still entered (leaking it), exactly like `getAccount(sender)`
+ * on an unfunded wallet.
+ */
+function makeLeakyO1js() {
+  const stack: number[] = [];
+  const currentTransaction = {
+    has: () => stack.length > 0,
+    id: () => stack[stack.length - 1],
+    enter: () => {
+      const id = Math.random();
+      stack.push(id);
+      return id;
+    },
+    leave: (id: number) => {
+      if (stack[stack.length - 1] !== id) throw new Error('context conflict');
+      stack.pop();
+    },
+  };
+  const Mina = {
+    currentTransaction,
+    // Enters the context then throws WITHOUT leaving — the o1js leak.
+    transaction: vi.fn(async () => {
+      currentTransaction.enter();
+      throw new Error(
+        'getAccount: Could not find account for public key B62qX'
+      );
+    }),
+  };
+  return { o1js: { Mina } as never, stack };
+}
+
+describe('buildMinaTransaction / abandonLeakedMinaTransaction (o1js nesting safety)', () => {
+  it('abandons a leaked transaction context so the next build is not blocked', async () => {
+    const { o1js, stack } = makeLeakyO1js();
+    await expect(
+      buildMinaTransaction(o1js, { sender: 'x' }, async () => {})
+    ).rejects.toThrow(/Could not find account/);
+    // The leaked context was popped — a subsequent Mina.transaction (the retry)
+    // would NOT hit "Cannot start new transaction within another transaction".
+    expect(stack.length).toBe(0);
+  });
+
+  it('is a no-op when nothing leaked', () => {
+    const { o1js, stack } = makeLeakyO1js();
+    abandonLeakedMinaTransaction(o1js);
+    expect(stack.length).toBe(0);
+  });
+
+  it('tolerates an o1js surface without a currentTransaction context', () => {
+    expect(() =>
+      abandonLeakedMinaTransaction({ Mina: {} } as never)
+    ).not.toThrow();
+  });
+});
+
+// ── Bug #1: fee-payer preflight ───────────────────────────────────────────────
+
+describe('assertMinaFeePayerFunded', () => {
+  const payerPublicKey = { toBase58: () => 'B62qFEEPAYER' };
+
+  it('throws when the account does not exist on-chain', async () => {
+    const o1js = {
+      fetchAccount: vi.fn(async () => ({
+        error: 'not found',
+        account: undefined,
+      })),
+    } as never;
+    await expect(
+      assertMinaFeePayerFunded({
+        o1js,
+        payerPublicKey,
+        requiredNanomina: 1_200_000_000n,
+        graphqlUrl: 'https://api.minascan.io/node/devnet/v1/graphql',
+      })
+    ).rejects.toBeInstanceOf(MinaFeePayerUnfundedError);
+  });
+
+  it('throws when the balance is below the required minimum', async () => {
+    const o1js = {
+      fetchAccount: vi.fn(async () => ({
+        error: undefined,
+        account: { balance: { toString: () => '500000000' } }, // 0.5 MINA
+      })),
+    } as never;
+    await expect(
+      assertMinaFeePayerFunded({
+        o1js,
+        payerPublicKey,
+        requiredNanomina: 1_200_000_000n,
+        graphqlUrl: 'https://graphql',
+      })
+    ).rejects.toThrow(/holds only 0\.500 MINA/);
+  });
+
+  it('passes when the balance meets the requirement', async () => {
+    const o1js = {
+      fetchAccount: vi.fn(async () => ({
+        error: undefined,
+        account: { balance: { toString: () => '2000000000' } }, // 2 MINA
+      })),
+    } as never;
+    await expect(
+      assertMinaFeePayerFunded({
+        o1js,
+        payerPublicKey,
+        requiredNanomina: 1_200_000_000n,
+        graphqlUrl: 'https://graphql',
+      })
+    ).resolves.toBeUndefined();
   });
 });
