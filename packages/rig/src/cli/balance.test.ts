@@ -209,6 +209,8 @@ describe('rig balance', () => {
           nonce: 15,
           // deposited − claimed
           available: '83880',
+          // claims within the deposit → no overdraft
+          overdrawn: '0',
         },
       ],
     });
@@ -320,7 +322,93 @@ describe('rig balance', () => {
     expect(parsed.channels[0]).toMatchObject({
       available: null,
       cumulativeClaimed: null,
+      overdrawn: null,
     });
+  });
+
+  it('claims beyond the deposit surface as overdrawn, not just available 0', async () => {
+    // Live-devnet shape (channel 0xea1a942b…, 2026-07-21): the recorded
+    // deposit matches the chain, but the peer kept accepting claims past the
+    // collateral — the on-chain TokenNetwork caps redemption at the deposit,
+    // so the excess is unsecured. `available` floors at 0 (correct: nothing
+    // is left) and the overdraft is reported separately.
+    const store = new ChannelMapStore({
+      mapPath: join(dir, 'rig-channels.json'),
+      watermarkPath: join(dir, 'channels.json'),
+    });
+    store.record({
+      channelId: CHANNEL_ID,
+      peerId: 'nostr-2813187e',
+      identity: IDENTITY,
+      destination: 'g.toon.relay',
+      chain: 'evm:84532',
+      tokenNetwork: '0x' + '22'.repeat(20),
+      context: {
+        chainType: 'evm',
+        chainId: 84532,
+        tokenNetworkAddress: '0x' + '22'.repeat(20),
+      },
+      depositTotal: '100000',
+    });
+    writeFileSync(
+      join(dir, 'channels.json'),
+      JSON.stringify({
+        [CHANNEL_ID]: { nonce: 31, cumulativeAmount: '140840' },
+      })
+    );
+
+    const h = makeHarness({ TOON_CLIENT_HOME: dir });
+    expect(await runBalance(['--json'], h.deps)).toBe(0);
+    const parsed = JSON.parse(h.out.join('\n')) as {
+      channels: { available: string; overdrawn: string }[];
+    };
+    expect(parsed.channels[0]).toMatchObject({
+      depositTotal: '100000',
+      cumulativeClaimed: '140840',
+      available: '0',
+      overdrawn: '40840',
+    });
+
+    const h2 = makeHarness({ TOON_CLIENT_HOME: dir });
+    expect(await runBalance([], h2.deps)).toBe(0);
+    const text = h2.out.join('\n');
+    expect(text).toContain(
+      `${CHANNEL_ID} [open]  deposited 100000  claimed 140840  available 0`
+    );
+    expect(text).toContain('OVERDRAWN by 40840');
+    expect(text).toContain('rig channel open --deposit');
+  });
+
+  it('a channel exactly spent (claimed == deposited) is NOT flagged overdrawn', async () => {
+    const store = new ChannelMapStore({
+      mapPath: join(dir, 'rig-channels.json'),
+      watermarkPath: join(dir, 'channels.json'),
+    });
+    store.record({
+      channelId: CHANNEL_ID,
+      peerId: 'nostr-2813187e',
+      identity: IDENTITY,
+      destination: 'g.toon.relay',
+      chain: 'evm:84532',
+      tokenNetwork: '0x' + '22'.repeat(20),
+      context: {
+        chainType: 'evm',
+        chainId: 84532,
+        tokenNetworkAddress: '0x' + '22'.repeat(20),
+      },
+      depositTotal: '100000',
+    });
+    writeFileSync(
+      join(dir, 'channels.json'),
+      JSON.stringify({
+        [CHANNEL_ID]: { nonce: 8, cumulativeAmount: '100000' },
+      })
+    );
+    const h = makeHarness({ TOON_CLIENT_HOME: dir });
+    expect(await runBalance([], h.deps)).toBe(0);
+    const text = h.out.join('\n');
+    expect(text).toContain('available 0');
+    expect(text).not.toContain('OVERDRAWN');
   });
 
   it('a corrupt channel map is a clear error (exit 1)', async () => {
