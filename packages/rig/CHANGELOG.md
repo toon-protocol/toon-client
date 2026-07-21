@@ -1,5 +1,60 @@
 # @toon-protocol/rig
 
+## 2.13.2
+
+### Patch Changes
+
+- 8eea197: `rig balance` never exits silently on the Mina settlement path. The wallet read
+  (`money.walletChainBalances()`) was awaited unbounded, so a Mina read that
+  neither resolved nor kept a live handle open let Node's event loop drain and the
+  one-shot CLI exit `0` with no output at all — only the earlier settlement-chain
+  alignment warnings on stderr. The read is now time-bounded
+  (`RIG_BALANCE_WALLET_TIMEOUT_MS`, default 20s; `0` opts out): its live timer
+  prevents the drain and forces a decision. On a hang or a rejected read, balance
+  prints the identity + recorded channels plus a loud, actionable wallet notice
+  and exits non-zero (a single error envelope under `--json`) — the report and
+  channels are still shown, never a silent success.
+- 2b20e28: `rig balance`: flag channels whose cumulative claims exceed the recorded
+  on-chain deposit as OVERDRAWN. `available` is
+  `max(0, deposited − claimed)`, so an overdrawn channel showed `available 0`
+  with no indication that the signed claims had run past the collateral (e.g.
+  `deposited 100000 claimed 140840 available 0`). The on-chain TokenNetwork
+  caps redemption at the deposit, so the excess is unsecured — the balance
+  view now surfaces the overdraft amount and suggests a top-up. Adds an
+  `overdrawn` field to the `--json` envelope.
+- f03aaef: Fix three related Mina-settlement bugs in `rig push` (standalone mode) that
+  made a first-time, unfunded, or interrupted Mina channel-open fail slowly and
+  wastefully:
+
+  - **Fee-payer preflight (fail fast).** Before compiling the `PaymentChannel`
+    circuit (1–3 min) or attempting a zkApp deploy, the fee payer's on-chain
+    MINA balance is checked. An account that does not exist / is under
+    ~1 MINA (account-creation fee + tx fees) now throws
+    `MinaFeePayerUnfundedError` naming the address, the required amount and the
+    network — in seconds, before any compile. Previously the circuit compiled
+    first and only then did `Mina.transaction` throw
+    `getAccount: Could not find account for public key …`.
+
+  - **o1js transaction-nesting on retry.** `Mina.transaction` enters o1js's
+    module-level `currentTransaction` context and then reads the fee-payer nonce
+    (`getAccount(sender)`) OUTSIDE the try/finally that would leave it, so an
+    unfunded fee payer leaked the context. The next `Mina.transaction` (the
+    cache-invalidation retry) then threw `Cannot start new transaction within
+another transaction`. Every Mina tx now builds through `buildMinaTransaction`,
+    which abandons any leaked context on failure so a retry starts clean; the
+    preflight error is also treated as non-recoverable so it does not trigger a
+    pointless topology re-resolution.
+
+  - **Orphaned zkApp deploys.** The dedicated per-pair zkApp key is now persisted
+    BEFORE the deploy tx is sent (`onDeploying`), and a recorded-but-unconfirmed
+    deployment is REDEPLOYED at the SAME address on the next run instead of
+    minting a brand-new zkApp — so a crash or retry between deploy and
+    confirmation no longer burns the ~1.1-MINA account-creation fee on a fresh
+    zkApp each attempt.
+
+- Updated dependencies [f03aaef]
+  - @toon-protocol/client@0.21.1
+
 ## 2.13.1
 
 ### Patch Changes
