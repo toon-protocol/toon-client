@@ -27,6 +27,8 @@ const {
   readSolanaTokenBalance,
   readSolanaNativeBalance,
   readMinaBalance,
+  readMinaTokenBalance,
+  minaTokenIdToBase58,
   readWalletBalances,
 } = await import('./WalletBalanceReader.js');
 
@@ -125,6 +127,73 @@ describe('readMinaBalance', () => {
     await expect(
       readMinaBalance({ graphqlUrl: 'x', owner: 'o', fetchImpl: fetchImpl as unknown as typeof fetch })
     ).rejects.toThrow(/no account/);
+  });
+});
+
+describe('minaTokenIdToBase58', () => {
+  it('round-trips the native token id (1) to its known base58 TokenId', () => {
+    // Anchors the encoding to o1js `TokenId.toBase58(Field(1))` without the dep.
+    expect(minaTokenIdToBase58('1')).toBe(
+      'wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf'
+    );
+  });
+  it('encodes the deployed devnet USDC token id', () => {
+    expect(
+      minaTokenIdToBase58(
+        '9497120696276615621907376728658022802954262638363646162765282600447713419198'
+      )
+    ).toBe('xsaNMhHtEkK2aCMa3wxgEzCVgzmfYEz28iMzHY5Q2RD8rsdue8');
+  });
+  it('rejects a non-decimal (e.g. already-base58) token id', () => {
+    expect(() => minaTokenIdToBase58('wSHV2S4q')).toThrow(/decimal Field/);
+  });
+});
+
+describe('readMinaTokenBalance', () => {
+  it('queries account(publicKey, token) with the base58 tokenId and reports USDC', async () => {
+    let sentToken: string | undefined;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        query?: string;
+        variables?: { t?: string };
+      };
+      sentToken = body.variables?.t;
+      // The GraphQL layer rejects a decimal tokenId outright — assert base58.
+      expect(body.query).toContain('token:$t');
+      return new Response(
+        JSON.stringify({ data: { account: { balance: { total: '4200000' } } } }),
+        { status: 200 }
+      );
+    });
+    const bal = await readMinaTokenBalance({
+      graphqlUrl: 'http://localhost:3085/graphql',
+      owner: 'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im4oG6',
+      tokenId:
+        '9497120696276615621907376728658022802954262638363646162765282600447713419198',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(sentToken).toBe('xsaNMhHtEkK2aCMa3wxgEzCVgzmfYEz28iMzHY5Q2RD8rsdue8');
+    expect(bal).toEqual({
+      chain: 'mina',
+      address: 'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im4oG6',
+      amount: '4200000',
+      asset: 'USDC',
+      assetScale: 9,
+    });
+  });
+
+  it('reports 0 when the owner holds no account for the token (null)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ data: { account: null } }), { status: 200 })
+    );
+    const bal = await readMinaTokenBalance({
+      graphqlUrl: 'x',
+      owner: 'o',
+      tokenId: '1',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(bal.amount).toBe('0');
+    expect(bal.asset).toBe('USDC');
   });
 });
 
@@ -251,6 +320,37 @@ describe('readWalletBalances (grouped multi-chain view)', () => {
         tokens: [],
       },
     ]);
+  });
+
+  it('reports a Mina USDC token when a tokenId is configured (custom-token read)', async () => {
+    // Mina fetch answers native (no token var) and token (base58 token var) off
+    // the same impl — proving the tokenId drives a distinct token read.
+    const minaFetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        variables?: { t?: string };
+      };
+      const total = body.variables?.t ? '4200000' : '3000000000';
+      return new Response(
+        JSON.stringify({ data: { account: { balance: { total } } } }),
+        { status: 200 }
+      );
+    });
+    const [chain] = await readWalletBalances({
+      mina: {
+        graphqlUrl: 'http://localhost:3085/graphql',
+        owner: 'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im4oG6',
+        tokenId:
+          '9497120696276615621907376728658022802954262638363646162765282600447713419198',
+      },
+      fetchImpl: minaFetch as unknown as typeof fetch,
+    });
+    expect(chain).toEqual({
+      chain: 'mina',
+      chainKey: 'mina',
+      address: 'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im4oG6',
+      native: { symbol: 'MINA', amount: '3000000000', decimals: 9 },
+      tokens: [{ symbol: 'USDC', amount: '4200000', decimals: 9 }],
+    });
   });
 
   it('a chain with no token config still reports native', async () => {

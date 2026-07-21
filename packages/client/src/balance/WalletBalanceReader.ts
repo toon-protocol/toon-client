@@ -10,6 +10,7 @@
  * than failing the whole wallet view.
  */
 import { createPublicClient, http, defineChain } from 'viem';
+import { sha256 } from '@noble/hashes/sha2.js';
 
 /** One on-chain wallet token balance. `amount` is base-unit integer, decimal. */
 export interface WalletBalance {
@@ -217,6 +218,96 @@ export async function readMinaBalance(opts: {
   };
 }
 
+const BASE58_ALPHABET =
+  '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+/** base58-encode raw bytes (Bitcoin/Mina alphabet, leading-zero preserving). */
+function base58encode(bytes: Uint8Array): string {
+  let num = 0n;
+  for (const b of bytes) num = num * 256n + BigInt(b);
+  let out = '';
+  while (num > 0n) {
+    out = BASE58_ALPHABET[Number(num % 58n)] + out;
+    num /= 58n;
+  }
+  for (const b of bytes) {
+    if (b === 0) out = '1' + out;
+    else break;
+  }
+  return out;
+}
+
+/**
+ * Encode a Mina token id (a Field, given as a decimal string) into the base58
+ * `TokenId` scalar the Mina GraphQL `account(publicKey, token)` query expects.
+ *
+ * Mina's base58check layout is `0x1c` version byte ++ the 32-byte
+ * little-endian field ++ a 4-byte double-SHA256 checksum. (The client avoids the
+ * heavy o1js dependency — `TokenId.toBase58` — so this reproduces its encoding;
+ * it round-trips the native token id `1` to
+ * `wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf`.) The decimal form the
+ * GraphQL layer rejects outright, hence this conversion.
+ */
+export function minaTokenIdToBase58(tokenId: string): string {
+  if (!/^\d+$/.test(tokenId)) {
+    throw new Error(`Mina tokenId must be a decimal Field string: "${tokenId}"`);
+  }
+  let field = BigInt(tokenId);
+  const le = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    le[i] = Number(field & 0xffn);
+    field >>= 8n;
+  }
+  const body = new Uint8Array(1 + 32);
+  body[0] = 0x1c;
+  body.set(le, 1);
+  const checksum = sha256(sha256(body)).slice(0, 4);
+  const raw = new Uint8Array(body.length + 4);
+  raw.set(body, 0);
+  raw.set(checksum, body.length);
+  return base58encode(raw);
+}
+
+/**
+ * Read a CUSTOM Mina token balance (e.g. the settlement USDC) for `owner`.
+ *
+ * Unlike {@link readMinaBalance} (native MINA), this passes the settlement
+ * `tokenId` so the GraphQL `account(publicKey, token)` query returns the
+ * token-specific balance. An account holding none of the token resolves to
+ * `null` → reported as `0`. Same 9-decimal scale as native Mina amounts.
+ */
+export async function readMinaTokenBalance(opts: {
+  graphqlUrl: string;
+  owner: string;
+  tokenId: string;
+  fetchImpl?: typeof fetch;
+}): Promise<WalletBalance> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const token = minaTokenIdToBase58(opts.tokenId);
+  const query =
+    'query($pk:PublicKey!,$t:TokenId){account(publicKey:$pk,token:$t){balance{total}}}';
+  const res = await fetchImpl(opts.graphqlUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query, variables: { pk: opts.owner, t: token } }),
+  });
+  if (!res.ok) throw new Error(`Mina GraphQL request failed: HTTP ${res.status}`);
+  const json = (await res.json()) as {
+    data?: { account?: { balance?: { total?: string } | null } | null };
+    errors?: { message?: string }[];
+  };
+  if (json.errors && json.errors.length > 0) {
+    throw new Error(`Mina GraphQL error: ${json.errors[0]?.message ?? 'unknown'}`);
+  }
+  return {
+    chain: 'mina',
+    address: opts.owner,
+    amount: String(json.data?.account?.balance?.total ?? '0'),
+    asset: 'USDC',
+    assetScale: 9,
+  };
+}
+
 /**
  * Per-chain inputs for {@link readWalletBalances}: the resolved RPC URL, the
  * identity's address on that chain, and the configured token (USDC) — sourced by
@@ -226,7 +317,13 @@ export async function readMinaBalance(opts: {
 export interface WalletBalanceSources {
   evm?: { chainKey: string; rpcUrl: string; owner: string; tokenAddress?: string };
   solana?: { chainKey?: string; rpcUrl: string; owner: string; tokenMint?: string };
-  mina?: { chainKey?: string; graphqlUrl: string; owner: string };
+  mina?: {
+    chainKey?: string;
+    graphqlUrl: string;
+    owner: string;
+    /** Settlement-token Field id (decimal). Reads the token balance when set. */
+    tokenId?: string;
+  };
   /** Injectable fetch (Solana/Mina JSON-RPC & GraphQL) for tests. */
   fetchImpl?: typeof fetch;
 }
@@ -330,27 +427,34 @@ export async function readWalletBalances(
   }
 
   if (sources.mina) {
-    const { chainKey = 'mina', graphqlUrl, owner } = sources.mina;
+    const { chainKey = 'mina', graphqlUrl, owner, tokenId } = sources.mina;
     tasks.push(
       (async () => {
         const out: WalletChainBalances = { chain: 'mina', chainKey, address: owner, tokens: [] };
         const errors: string[] = [];
-        // Mina's paid asset is native MINA; there is no configured Mina token.
-        const nativeR = await Promise.allSettled([readMinaBalance({ graphqlUrl, owner, fetchImpl })]);
+        // Native MINA (gas) plus, when the deployment settles a custom token,
+        // that token's balance (USDC) — read via the tokenId. Independent reads.
+        const [nativeR, tokenR] = await Promise.allSettled([
+          readMinaBalance({ graphqlUrl, owner, fetchImpl }),
+          tokenId
+            ? readMinaTokenBalance({ graphqlUrl, owner, tokenId, fetchImpl })
+            : Promise.resolve<WalletBalance | undefined>(undefined),
+        ]);
         foldNative(
           out,
-          nativeR[0].status === 'fulfilled'
+          nativeR.status === 'fulfilled'
             ? {
                 status: 'fulfilled',
                 value: {
-                  symbol: nativeR[0].value.asset,
-                  amount: nativeR[0].value.amount,
-                  decimals: nativeR[0].value.assetScale,
+                  symbol: nativeR.value.asset,
+                  amount: nativeR.value.amount,
+                  decimals: nativeR.value.assetScale,
                 },
               }
-            : nativeR[0],
+            : nativeR,
           errors
         );
+        foldToken(out, tokenR, undefined, errors);
         finalizeChain(out, errors);
         return out;
       })()

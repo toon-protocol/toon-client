@@ -86,6 +86,7 @@ import {
 } from '../standalone/topology-cache.js';
 import {
   DISCOVERY_TIMEOUT_MS,
+  MinaChannelUnderivableError,
   SolanaChannelUnderivableError,
   TokenNetworkUnderivableError,
   discoverAnnouncedPeers,
@@ -252,6 +253,53 @@ export interface NetworkTopology {
    * object already covers it (explicit rides through verbatim).
    */
   solanaChannel?: { rpcUrl: string; programId: string; tokenMint?: string };
+  /**
+   * Mina channel parameters derived for the (first) `mina:*` chain in play —
+   * the config-ready `ToonClientConfig.minaChannel` shape. Absent when no Mina
+   * chain is supported or an explicit `minaChannel` config object already
+   * covers it (explicit rides through verbatim).
+   */
+  minaChannel?: {
+    graphqlUrl: string;
+    zkAppAddress: string;
+    tokenId?: string;
+    networkId?: 'devnet' | 'mainnet';
+  };
+}
+
+/**
+ * Build the embedded client's `minaChannel` from one resolved settlement — or
+ * throw the actionable {@link MinaChannelUnderivableError} naming the missing
+ * pieces. A Mina chain in play with no way to open its channel must fail HERE,
+ * not later as the embedded client's generic "Mina channel config not
+ * provided". The required pieces are `graphqlUrl` (from a core preset) and
+ * `zkAppAddress` (from the live announce); `tokenId`/`networkId` ride through
+ * when present (a Mina channel with no token id opens on native MINA).
+ */
+function deriveMinaChannel(
+  settlement: ChainSettlement,
+  announce: AnnouncedPeer | undefined,
+  relayUrl: string
+): NonNullable<NetworkTopology['minaChannel']> {
+  const { rpcUrl, zkAppAddress, minaTokenId, networkId } = settlement;
+  if (!rpcUrl || !zkAppAddress) {
+    const missing = [
+      ...(rpcUrl ? [] : ['graphqlUrl']),
+      ...(zkAppAddress ? [] : ['zkAppAddress']),
+    ];
+    throw new MinaChannelUnderivableError(
+      settlement.chain,
+      missing,
+      announce,
+      relayUrl
+    );
+  }
+  return {
+    graphqlUrl: rpcUrl,
+    zkAppAddress,
+    ...(minaTokenId ? { tokenId: minaTokenId } : {}),
+    ...(networkId ? { networkId } : {}),
+  };
 }
 
 /**
@@ -407,6 +455,7 @@ export async function resolveNetworkTopology(
   let tokenNetworks: Record<string, string> | undefined;
   let chainRpcUrls: Record<string, string> | undefined;
   let solanaChannel: NetworkTopology['solanaChannel'];
+  let minaChannel: NetworkTopology['minaChannel'];
 
   if (file.supportedChains?.length) {
     // Explicit chain list: pass through in order (its order IS the
@@ -484,6 +533,27 @@ export async function resolveNetworkTopology(
         }
         try {
           solanaChannel = deriveSolanaChannel(s, announce, relayUrl);
+        } catch (err) {
+          firstDropError ??= err;
+          warn(
+            `rig: dropping settlement chain ${chain} from the configured ` +
+              `supportedChains — ${err instanceof Error ? err.message : String(err)}`
+          );
+          continue;
+        }
+      }
+      // A listed Mina chain: same fail-fast contract as Solana. An explicit
+      // minaChannel config covers it (rides through verbatim); otherwise the
+      // first derivable Mina chain provides the channel params, and an
+      // UNDERIVABLE one is dropped from the advertised list (warned) instead of
+      // leaving a chain in play the on-chain open is guaranteed to die on.
+      if (s.family === 'mina' && !file.minaChannel) {
+        if (minaChannel) {
+          kept.push(key);
+          continue;
+        }
+        try {
+          minaChannel = deriveMinaChannel(s, announce, relayUrl);
         } catch (err) {
           firstDropError ??= err;
           warn(
@@ -574,6 +644,10 @@ export async function resolveNetworkTopology(
     if (settlement.family === 'solana' && !file.solanaChannel) {
       solanaChannel = deriveSolanaChannel(settlement, announce, relayUrl);
     }
+    // Same fail-fast for a selected Mina chain (an explicit minaChannel covers it).
+    if (settlement.family === 'mina' && !file.minaChannel) {
+      minaChannel = deriveMinaChannel(settlement, announce, relayUrl);
+    }
     supportedChains = [selection.chain];
     preferredTokens = settlement.tokenAddress
       ? { [selection.chain]: settlement.tokenAddress }
@@ -637,6 +711,7 @@ export async function resolveNetworkTopology(
       ? { chainRpcUrls }
       : {}),
     ...(solanaChannel ? { solanaChannel } : {}),
+    ...(minaChannel ? { minaChannel } : {}),
   };
 }
 
@@ -884,6 +959,13 @@ export async function createStandaloneContext(
             file.chainRpcUrls?.[chain]
         )
     );
+    // A listed `mina:*` chain WITHOUT an explicit `minaChannel` is not fully
+    // pinned either: the announce is the authoritative source for the
+    // deployment's zkApp (and token id), so discovery must run. Only an
+    // explicit `minaChannel` config makes a Mina chain announce-independent.
+    const minaExplicitlyComplete = (file.supportedChains ?? []).every(
+      (chain) => !chain.startsWith('mina:') || Boolean(file.minaChannel)
+    );
     const fullyExplicit =
       Boolean(
         (env['TOON_CLIENT_PROXY_URL'] ?? file.proxyUrl) ||
@@ -891,7 +973,8 @@ export async function createStandaloneContext(
       ) &&
       Boolean(env['TOON_CLIENT_DESTINATION'] ?? file.destination) &&
       Boolean(file.supportedChains?.length) &&
-      solanaExplicitlyComplete;
+      solanaExplicitlyComplete &&
+      minaExplicitlyComplete;
     let announce: AnnouncedPeer | undefined;
     if (!fullyExplicit) {
       try {
@@ -993,7 +1076,14 @@ export async function createStandaloneContext(
         : topo.solanaChannel
           ? { solanaChannel: topo.solanaChannel }
           : {}),
-      ...(file.minaChannel ? { minaChannel: file.minaChannel } : {}),
+      // Mina channel params: an explicit config object wins verbatim; else the
+      // topology's derivation (announce zkApp/tokenId + preset graphqlUrl —
+      // see resolveNetworkTopology / deriveMinaChannel).
+      ...(file.minaChannel
+        ? { minaChannel: file.minaChannel }
+        : topo.minaChannel
+          ? { minaChannel: topo.minaChannel }
+          : {}),
     };
 
     return new StandalonePublisher({

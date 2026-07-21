@@ -687,9 +687,13 @@ describe('network targeting (#202)', () => {
       const c = applyNetworkPresets(baseConfig({ network: 'testnet' }));
       const evmId = 'evm:base:84532';
       expect(c.supportedChains).toContain(evmId);
-      expect(c.chainRpcUrls?.[evmId]).toBe('https://sepolia.base.org');
+      // core >=3.1.2 bakes the working publicnode RPC (the old sepolia.base.org
+      // LB failed openChannel on stale reads).
+      expect(c.chainRpcUrls?.[evmId]).toBe(
+        'https://base-sepolia-rpc.publicnode.com'
+      );
       // Current public Base Sepolia settlement addresses, sourced directly
-      // from the @toon-protocol/core (>=3.1.1) base-sepolia preset.
+      // from the @toon-protocol/core base-sepolia preset.
       expect(c.tokenNetworks?.[evmId]).toBe(
         '0x1E95493fEF46707E034b4a1945f25a8C76A1823D'
       );
@@ -727,8 +731,17 @@ describe('network targeting (#202)', () => {
         '2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip'
       );
       expect(c.solanaChannel?.rpcUrl).toBe('https://api.devnet.solana.com');
+      // core >=3.1.2 corrected the Mina preset to the live devnet zkApp + added
+      // the token id (the pre-3.1.2 preset carried the retired B62qrH1As4… and
+      // no token id).
       expect(c.minaChannel?.zkAppAddress).toBe(
+        'B62qmgPhv2Xo6QVEtwjLja8UZJUtu8yapRFAR6gaoGtbM9zE5hG7Tkf'
+      );
+      expect(c.minaChannel?.zkAppAddress).not.toBe(
         'B62qrH1As4odHiNyKpTZMHaM6tRs6gi5DJ53efZKQBtbaR5CUctbDs6'
+      );
+      expect(c.minaChannel?.tokenId).toBe(
+        '9497120696276615621907376728658022802954262638363646162765282600447713419198'
       );
       expect(c.minaChannel?.networkId).toBe('devnet');
     });

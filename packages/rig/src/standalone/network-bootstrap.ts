@@ -99,6 +99,28 @@ export interface AnnouncedPeer {
   routes?: AnnouncedRoutes;
   /** Out-of-band `capabilities` content field (route prices), when valid. */
   capabilities?: AnnouncedCapability[];
+  /**
+   * Out-of-band `minaTokenIds` content field: chain id → Mina token id
+   * (decimal string). The zkApp address for a Mina channel already rides the
+   * standard `tokenNetworks` map (mirroring Solana's program id), but the Mina
+   * token id — the deployment-specific fungible-token discriminator a custom
+   * USDC channel opens on — has no home in core's kind:10032 wire schema, so
+   * the connector advertises it here (a content ride-along, like `routes`).
+   * Absent for native-MINA settlement (token id defaults to '1' downstream).
+   */
+  minaTokenIds?: Record<string, string>;
+  /**
+   * Out-of-band `chainRpcUrls` content field: chain id → JSON-RPC / GraphQL
+   * endpoint the deployment KNOWS works for that chain. Core's baked chain
+   * presets carry a default RPC per chain, but a baked default can be a stale
+   * or broken endpoint (e.g. Base Sepolia's `sepolia.base.org` load balancer
+   * fails openChannel→setTotalDeposit with InvalidChannelState) — the same
+   * stale-constant failure mode as the base-sepolia preset bug (#103). So the
+   * live deployment advertises its OWN working RPC here and the client prefers
+   * it over the preset (see {@link resolveChainSettlement}). A content
+   * ride-along, like `routes` — core's kind:10032 wire schema is unchanged.
+   */
+  chainRpcUrls?: Record<string, string>;
   /** Announce timestamp (freshness tiebreaker). */
   createdAt: number;
 }
@@ -117,6 +139,12 @@ export interface ChainSettlement {
   tokenNetwork?: string;
   /** Solana payment-channel program id, when derivable (Solana only). */
   programId?: string;
+  /** Mina payment-channel zkApp address, when derivable (Mina only). */
+  zkAppAddress?: string;
+  /** Mina token id (decimal string), when derivable (Mina only). */
+  minaTokenId?: string;
+  /** Mina network id for the account/Schnorr prefix (Mina only). */
+  networkId?: 'devnet' | 'mainnet';
 }
 
 /** Why a settlement chain was selected (documented rule, in order). */
@@ -188,6 +216,56 @@ function parseCapabilities(content: string): AnnouncedCapability[] | undefined {
 }
 
 /**
+ * Parse the announce's out-of-band `minaTokenIds` map (chain id → Mina token
+ * id decimal string). Non-string / non-decimal entries are skipped; keys are
+ * accepted verbatim (they are matched against the selected chain id later).
+ * Returns undefined when nothing valid is present.
+ */
+function parseMinaTokenIds(content: string): Record<string, string> | undefined {
+  try {
+    const parsed = JSON.parse(content) as { minaTokenIds?: unknown };
+    const map = parsed.minaTokenIds;
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) {
+      return undefined;
+    }
+    const out: Record<string, string> = {};
+    for (const [chain, tokenId] of Object.entries(map as Record<string, unknown>)) {
+      if (typeof tokenId === 'string' && /^\d+$/.test(tokenId)) {
+        out[chain] = tokenId;
+      }
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parse the announce's out-of-band `chainRpcUrls` map (chain id → RPC/GraphQL
+ * endpoint). Non-string / non-http(s) entries are skipped; keys are accepted
+ * verbatim (matched against the selected chain id later). Returns undefined
+ * when nothing valid is present.
+ */
+function parseChainRpcUrls(content: string): Record<string, string> | undefined {
+  try {
+    const parsed = JSON.parse(content) as { chainRpcUrls?: unknown };
+    const map = parsed.chainRpcUrls;
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) {
+      return undefined;
+    }
+    const out: Record<string, string> = {};
+    for (const [chain, url] of Object.entries(map as Record<string, unknown>)) {
+      if (typeof url === 'string' && /^(https?|wss?):\/\//.test(url)) {
+        out[chain] = url;
+      }
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Query `relayUrl` for kind:10032 announces and return the latest
  * schema-valid, unexpired announce per author. Invalid/expired events are
  * skipped silently (the relay serves plenty of non-peer 10032 experiments).
@@ -230,11 +308,15 @@ export async function discoverAnnouncedPeers(
     }
     const routes = parseRoutes(event.content);
     const capabilities = parseCapabilities(event.content);
+    const minaTokenIds = parseMinaTokenIds(event.content);
+    const chainRpcUrls = parseChainRpcUrls(event.content);
     peers.push({
       pubkey: event.pubkey,
       info,
       ...(routes ? { routes } : {}),
       ...(capabilities ? { capabilities } : {}),
+      ...(minaTokenIds ? { minaTokenIds } : {}),
+      ...(chainRpcUrls ? { chainRpcUrls } : {}),
       createdAt: event.created_at,
     });
   }
@@ -375,6 +457,55 @@ export function solanaPresetForChain(chain: string):
   };
 }
 
+/**
+ * Public-network Mina preset matching a `mina:<network>` chain key. Draws from
+ * core's client network presets (`resolveClientNetwork`) — the SAME tables the
+ * daemon and townhouse resolve — so the deployed devnet graphqlUrl and network
+ * id come from ONE source.
+ *
+ * IMPORTANT — the preset supplies only the NON-deployment-specific defaults
+ * (`graphqlUrl`, `networkId`): the public minascan endpoint and the network id
+ * derivable from the chain key. It also carries the preset's `zkAppAddress`
+ * (and, in a future core release, a `tokenId`) as an OFFLINE-ONLY fallback, but
+ * the payment-channel zkApp and the custom-token id are DEPLOYMENT-specific and
+ * go stale on redeploy — exactly the drift that produced the stale
+ * base-sepolia/solana bug (#103). So the live announce (which advertises the
+ * deployment's own zkApp via `tokenNetworks` and its token id via
+ * `minaTokenIds`) ALWAYS takes precedence over these preset values in
+ * {@link resolveChainSettlement}. `undefined` for non-`mina:*` chains and for
+ * networks with no deployed TOON zkApp (e.g. `mina:mainnet`).
+ */
+export function minaPresetForChain(chain: string):
+  | {
+      graphqlUrl?: string;
+      zkAppAddress?: string;
+      tokenId?: string;
+      networkId?: 'devnet' | 'mainnet';
+    }
+  | undefined {
+  const [family, network] = chain.split(':');
+  if (family !== 'mina' || !network) return undefined;
+  // Mina has no separate `testnet` network — the deployment is on `mina:devnet`
+  // (the core `testnet` tier resolves to the same devnet zkApp, so `mina:testnet`
+  // is not a real chain and must resolve to nothing, mirroring `solana:testnet`).
+  const tier =
+    network === 'mainnet' ? 'mainnet' : network === 'devnet' ? 'devnet' : undefined;
+  if (!tier) return undefined;
+  const presets = resolveClientNetwork(tier);
+  const mina = presets.minaChannel;
+  if (!mina) return undefined;
+  // Core >= 3.1.1's `minaChannel` carries { graphqlUrl, zkAppAddress,
+  // networkId }; a `tokenId` field is read opportunistically so a future core
+  // release can add it without a client change (announce still wins).
+  const tokenId = (mina as { tokenId?: string }).tokenId;
+  return {
+    ...(mina.graphqlUrl ? { graphqlUrl: mina.graphqlUrl } : {}),
+    ...(mina.zkAppAddress ? { zkAppAddress: mina.zkAppAddress } : {}),
+    ...(tokenId ? { tokenId } : {}),
+    ...(mina.networkId ? { networkId: mina.networkId } : {}),
+  };
+}
+
 /** Explicit per-chain maps from the shared client-config file. */
 export interface ExplicitChainConfig {
   chainRpcUrls?: Record<string, string>;
@@ -403,9 +534,19 @@ export function resolveChainSettlement(
   const family = chain.split(':')[0] ?? chain;
   const evmPreset = family === 'evm' ? evmPresetForChain(chain) : undefined;
   const solPreset = family === 'solana' ? solanaPresetForChain(chain) : undefined;
+  const minaPreset = family === 'mina' ? minaPresetForChain(chain) : undefined;
 
   const rpcUrl =
-    explicit.chainRpcUrls?.[chain] ?? evmPreset?.rpcUrl ?? solPreset?.rpcUrl;
+    explicit.chainRpcUrls?.[chain] ??
+    // The live deployment's advertised RPC beats the baked preset default: a
+    // preset RPC can be a stale/broken endpoint (e.g. Base Sepolia's
+    // sepolia.base.org fails setTotalDeposit) while the announce carries the
+    // deployment's known-good URL. Same drift lesson as #103.
+    announce?.chainRpcUrls?.[chain] ??
+    evmPreset?.rpcUrl ??
+    solPreset?.rpcUrl ??
+    // For Mina the "RPC" is the GraphQL endpoint (non-deployment-specific).
+    minaPreset?.graphqlUrl;
   const tokenAddress =
     explicit.preferredTokens?.[chain] ??
     announce?.info.preferredTokens?.[chain] ??
@@ -423,6 +564,27 @@ export function resolveChainSettlement(
         announce?.info.tokenNetworks?.[chain] ??
         solPreset?.programId)
       : undefined;
+  // Mina: the settlement-contract slot (`tokenNetworks`, chain-keyed) carries
+  // the payment-channel zkApp address — the announce advertises it exactly as
+  // Solana advertises its program id. The token id rides the out-of-band
+  // `minaTokenIds` content map. Both prefer explicit config > announce > the
+  // (drift-prone) preset fallback; the graphqlUrl/networkId come from the
+  // preset (or the derived chain key).
+  const zkAppAddress =
+    family === 'mina'
+      ? (explicit.tokenNetworks?.[chain] ??
+        announce?.info.tokenNetworks?.[chain] ??
+        minaPreset?.zkAppAddress)
+      : undefined;
+  const minaTokenId =
+    family === 'mina'
+      ? (announce?.minaTokenIds?.[chain] ?? minaPreset?.tokenId)
+      : undefined;
+  const networkId =
+    family === 'mina'
+      ? (minaPreset?.networkId ??
+        (chain.split(':')[1] === 'mainnet' ? 'mainnet' : 'devnet'))
+      : undefined;
 
   return {
     chain,
@@ -431,6 +593,9 @@ export function resolveChainSettlement(
     ...(tokenAddress ? { tokenAddress } : {}),
     ...(tokenNetwork ? { tokenNetwork } : {}),
     ...(programId ? { programId } : {}),
+    ...(zkAppAddress ? { zkAppAddress } : {}),
+    ...(minaTokenId ? { minaTokenId } : {}),
+    ...(networkId ? { networkId } : {}),
   };
 }
 
@@ -478,6 +643,36 @@ export class SolanaChannelUnderivableError extends Error {
         `or pick another chain via TOON_CLIENT_CHAIN / the chain config field`
     );
     this.name = 'SolanaChannelUnderivableError';
+  }
+}
+
+/**
+ * A Mina chain was selected but its channel parameters cannot be derived. The
+ * missing pieces are named so the error is directly actionable: an explicit
+ * `minaChannel` config object always works; the live announce normally
+ * supplies the zkApp (`tokenNetworks["mina:…"]`) and token id
+ * (`minaTokenIds["mina:…"]`), while the graphqlUrl comes from a core preset.
+ */
+export class MinaChannelUnderivableError extends Error {
+  constructor(
+    chain: string,
+    missing: string[],
+    announce: AnnouncedPeer | undefined,
+    relayUrl: string
+  ) {
+    const announceRef = announce
+      ? `the kind:10032 announce from ${announce.pubkey.slice(0, 16)}… on ${relayUrl} does not carry them`
+      : `no kind:10032 announce was found on ${relayUrl}`;
+    super(
+      `cannot derive the Mina channel parameters for settlement chain ` +
+        `"${chain}" (missing: ${missing.join(', ')}): ${announceRef}, and ` +
+        `no built-in preset covers this network — add a minaChannel ` +
+        `{ graphqlUrl, zkAppAddress, tokenId, networkId } object to the client ` +
+        `config (or set tokenNetworks["${chain}"] = <zkApp address> and ` +
+        `chainRpcUrls["${chain}"] = <graphql url>), or pick another chain via ` +
+        `TOON_CLIENT_CHAIN / the chain config field`
+    );
+    this.name = 'MinaChannelUnderivableError';
   }
 }
 
