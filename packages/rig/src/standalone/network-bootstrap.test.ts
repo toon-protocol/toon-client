@@ -294,11 +294,11 @@ describe('resolveChainSettlement', () => {
     expect(s.tokenAddress).toBe(preset?.usdcAddress);
   });
 
-  it('evm:84532 uses the CURRENT public Base Sepolia addresses, not the stale core preset', () => {
-    // The core `base-sepolia` preset carries the retired e2e deployment (an
-    // 18-decimal mock USDC `0xac806…`); the current public token is 6-decimal
-    // at `0x49beE1…`. A bare fallback (announce omits the fields) must resolve
-    // the current addresses so balance/settle target the right contracts.
+  it('evm:84532 resolves the CURRENT public Base Sepolia addresses from the core preset', () => {
+    // core (>=3.1.1) `base-sepolia` preset carries the current public token
+    // (6-decimal `0x49beE1…`) + TokenNetwork; a bare fallback (announce omits
+    // the fields) must resolve them so balance/settle target the right
+    // contracts. The retired 18-decimal mock USDC `0xac806…` must not leak.
     const preset = evmPresetForChain('evm:base:84532');
     expect(preset?.rpcUrl).toBe('https://sepolia.base.org');
     expect(preset?.usdcAddress).toBe('0x49beE1Bca5d15Fb0963117923403F9498119a9Ce');
