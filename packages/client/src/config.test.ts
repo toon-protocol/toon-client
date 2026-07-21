@@ -436,7 +436,7 @@ describe('applyDefaults', () => {
     const config = createMinimalConfig();
     const result = applyDefaults(config);
 
-    expect(result.relayUrl).toBe('ws://localhost:7100');
+    expect(result.relayUrl).toBe('wss://relay-ws.devnet.toonprotocol.dev');
   });
 
   it('should preserve custom relayUrl', () => {
@@ -683,16 +683,36 @@ describe('network targeting (#202)', () => {
   };
 
   describe('applyNetworkPresets — tier resolution', () => {
-    it('testnet resolves Base Sepolia + deployed TokenNetwork', () => {
+    it('testnet resolves Base Sepolia + current (corrected) TokenNetwork', () => {
       const c = applyNetworkPresets(baseConfig({ network: 'testnet' }));
       const evmId = 'evm:base:84532';
       expect(c.supportedChains).toContain(evmId);
       expect(c.chainRpcUrls?.[evmId]).toBe('https://sepolia.base.org');
+      // Current public Base Sepolia settlement addresses (toon-meta
+      // docs/deployment.md), correcting the stale core preset.
       expect(c.tokenNetworks?.[evmId]).toBe(
-        '0x47616F4b9cF4dA25F74FD727Cd85E9CA0C70Ec5C'
+        '0x1E95493fEF46707E034b4a1945f25a8C76A1823D'
       );
       expect(c.preferredTokens?.[evmId]).toBe(
+        '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce'
+      );
+    });
+
+    it('devnet emits the current Base Sepolia addresses (no stale 18-decimal token leaks)', () => {
+      const c = applyNetworkPresets(baseConfig({ network: 'devnet' }));
+      const evmId = 'evm:base:84532';
+      expect(c.preferredTokens?.[evmId]).toBe(
+        '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce'
+      );
+      expect(c.tokenNetworks?.[evmId]).toBe(
+        '0x1E95493fEF46707E034b4a1945f25a8C76A1823D'
+      );
+      // The retired 18-decimal mock USDC / old TokenNetwork must NOT leak through.
+      expect(c.preferredTokens?.[evmId]).not.toBe(
         '0xac80670b86db1eeb5c18c82e18a6bda98fcb4504'
+      );
+      expect(c.tokenNetworks?.[evmId]).not.toBe(
+        '0x47616F4b9cF4dA25F74FD727Cd85E9CA0C70Ec5C'
       );
     });
 
@@ -732,9 +752,9 @@ describe('network targeting (#202)', () => {
       );
       expect(c.chainRpcUrls?.[evmId]).toBe('https://my-rpc.example');
       expect(c.tokenNetworks?.[evmId]).toBe('0xOVERRIDE');
-      // Untouched preset fields still present.
+      // Untouched preset fields still present (corrected USDC, not the stale one).
       expect(c.preferredTokens?.[evmId]).toBe(
-        '0xac80670b86db1eeb5c18c82e18a6bda98fcb4504'
+        '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce'
       );
     });
 
@@ -795,7 +815,7 @@ describe('network targeting (#202)', () => {
       const resolved = applyDefaults(baseConfig({ network: 'testnet' }));
       expect(resolved.supportedChains).toContain('evm:base:84532');
       expect(resolved.tokenNetworks?.['evm:base:84532']).toBe(
-        '0x47616F4b9cF4dA25F74FD727Cd85E9CA0C70Ec5C'
+        '0x1E95493fEF46707E034b4a1945f25a8C76A1823D'
       );
       expect(resolved.network).toBe('testnet');
     });
@@ -805,7 +825,7 @@ describe('network targeting (#202)', () => {
       expect(info).toBeDefined();
       expect(info!.supportedChains).toContain('evm:base:84532');
       expect(info!.tokenNetworks?.['evm:base:84532']).toBe(
-        '0x47616F4b9cF4dA25F74FD727Cd85E9CA0C70Ec5C'
+        '0x1E95493fEF46707E034b4a1945f25a8C76A1823D'
       );
     });
 

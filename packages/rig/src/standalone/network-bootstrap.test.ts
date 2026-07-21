@@ -294,6 +294,24 @@ describe('resolveChainSettlement', () => {
     expect(s.tokenAddress).toBe(preset?.usdcAddress);
   });
 
+  it('evm:84532 uses the CURRENT public Base Sepolia addresses, not the stale core preset', () => {
+    // The core `base-sepolia` preset carries the retired e2e deployment (an
+    // 18-decimal mock USDC `0xac806…`); the current public token is 6-decimal
+    // at `0x49beE1…`. A bare fallback (announce omits the fields) must resolve
+    // the current addresses so balance/settle target the right contracts.
+    const preset = evmPresetForChain('evm:base:84532');
+    expect(preset?.rpcUrl).toBe('https://sepolia.base.org');
+    expect(preset?.usdcAddress).toBe('0x49beE1Bca5d15Fb0963117923403F9498119a9Ce');
+    expect(preset?.tokenNetworkAddress).toBe('0x1E95493fEF46707E034b4a1945f25a8C76A1823D');
+    // And the stale 18-decimal token must NOT leak through.
+    expect(preset?.usdcAddress).not.toBe('0xac80670b86db1eeb5c18c82e18a6bda98fcb4504');
+
+    // Full resolution with no explicit config + a bare announce falls back to it.
+    const s = resolveChainSettlement('evm:base:84532', {}, apex);
+    expect(s.tokenAddress).toBe('0x49beE1Bca5d15Fb0963117923403F9498119a9Ce');
+    expect(s.tokenNetwork).toBe('0x1E95493fEF46707E034b4a1945f25a8C76A1823D');
+  });
+
   it('matches core presets by EVM chain id for qualified spellings (#384)', () => {
     // The announce chain-key format is `evm:{network}:{chainId}` — the same
     // chain arrives spelled `evm:31337` OR `evm:anvil:31337`. An exact-key

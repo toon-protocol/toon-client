@@ -4,17 +4,20 @@
  * A FREE command: no relay, no client start, no nonce guard, no payment
  * channel — just the identity chain (RIG_MNEMONIC precedence, ./identity.ts)
  * to derive the chain address(es), and an HTTP POST per chain to the devnet
- * faucet (`@toon-protocol/client`'s `fundWallet`: `POST {faucet}/api/request`
- * for EVM, `/api/solana/request`, `/api/mina/request` — body `{ address }`;
- * the faucet drips FIXED amounts, so there is no --amount). Each per-chain
- * drip already covers BOTH the native coin and USDC (EVM → ETH + USDC,
- * Solana → SOL + USDC, Mina → MINA + USDC).
+ * faucet (`@toon-protocol/client`'s `fundWallet`, which hits the USDC-ONLY
+ * legs: `POST {faucet}/api/base-sepolia/request` for EVM,
+ * `/api/solana/usdc-request`, `/api/mina/usdc-request` — body `{ address }`;
+ * the faucet drips a FIXED amount, so there is no --amount). Each per-chain
+ * drip funds ONLY the settlement token (USDC) and ASSUMES the wallet already
+ * holds enough native gas to transact — the EVM leg still best-effort tops up
+ * Base Sepolia gas, but Solana/Mina expect the address to already hold SOL/MINA.
  *
- * MULTI-CHAIN BY DEFAULT: with no `--chain`, `rig fund` funds ALL supported
+ * MULTI-CHAIN BY DEFAULT: with no chain argument, `rig fund` funds ALL supported
  * chains (evm + solana + mina) so the wallet matches the multi-chain
- * `rig balance` view (#299) in one run instead of three. `--chain <one>`
- * narrows to a single chain; `--chain all` is the explicit alias for the
- * default. The drips run in PARALLEL — the Mina faucet legitimately takes
+ * `rig balance` view (#299) in one run instead of three. A chain argument —
+ * positional (`rig fund sol`) or `--chain <one>` — narrows to a single chain;
+ * `all` is the explicit alias for the default. The drips run in PARALLEL — the
+ * Mina faucet legitimately takes
  * ~75s, so serializing would cost ~150s for a run that overlaps to ~75s — and
  * each chain's result is INDEPENDENT: one chain's faucet failing never aborts
  * the others. Exit code is 0 only when every targeted chain funded; if any
@@ -63,25 +66,49 @@ export const DEVNET_FAUCET_URL = 'https://faucet.devnet.toonprotocol.dev';
 const CHAINS = ['evm', 'solana', 'mina'] as const;
 type FundChain = (typeof CHAINS)[number];
 
-/** Accepted `--chain` values: a single chain, or `all` (the default). */
-const CHAIN_CHOICES = [...CHAINS, 'all'] as const;
-
-/** The native coin dripped alongside USDC for each chain (human hint). */
-const NATIVE_COIN: Record<FundChain, string> = {
-  evm: 'ETH',
-  solana: 'SOL',
-  mina: 'MINA',
+/**
+ * Accepted chain arguments (positional `rig fund sol` or `--chain sol`), mapped
+ * to the canonical selector. Short aliases (`sol`) are accepted alongside the
+ * canonical names; `all` funds every supported chain (the default).
+ */
+const CHAIN_ALIASES: Record<string, FundChain | 'all'> = {
+  evm: 'evm',
+  eth: 'evm',
+  sol: 'solana',
+  solana: 'solana',
+  mina: 'mina',
+  all: 'all',
 };
 
-export const FUND_USAGE = `Usage: rig fund [options]
+/** Human-readable list of accepted chain arguments (for usage/errors). */
+const CHAIN_ARG_LIST = 'evm | sol | solana | mina | all';
 
-Drip devnet test funds to the active identity's wallet — free (the faucet
-pays). By default funds ALL supported chains (evm + solana + mina), each drip
-covering the native coin AND USDC, so the wallet matches the multi-chain
-\`rig balance\` view in one run. The per-chain drips run in parallel and are
-independent — one chain's faucet failing does not abort the others (exit 0
-only when every targeted chain funded; exit 1 if any failed, with the
-per-chain breakdown always shown).
+/**
+ * Resolve a raw chain argument (positional or `--chain`) to the canonical
+ * selector, accepting short aliases. Throws a usage error on an unknown value.
+ * Returns `undefined` when no chain was given (→ the all-chains default).
+ */
+function resolveChainArg(raw: string | undefined): FundChain | 'all' | undefined {
+  if (raw === undefined) return undefined;
+  const canonical = CHAIN_ALIASES[raw.toLowerCase()];
+  if (!canonical) {
+    throw new Error(
+      `chain must be one of ${CHAIN_ARG_LIST}, got ${JSON.stringify(raw)}`
+    );
+  }
+  return canonical;
+}
+
+export const FUND_USAGE = `Usage: rig fund [chain] [options]
+
+Drip devnet USDC to the active identity's wallet — free (the faucet pays). Each
+drip funds ONLY the settlement token (USDC) and assumes the wallet already holds
+enough native gas to transact. By default funds ALL supported chains (evm +
+solana + mina) so the wallet matches the multi-chain \`rig balance\` view in one
+run; name a chain — positional (\`rig fund sol\`) or \`--chain\` — to narrow to
+one. The per-chain drips run in parallel and are independent — one chain's
+faucet failing does not abort the others (exit 0 only when every targeted chain
+funded; exit 1 if any failed, with the per-chain breakdown always shown).
 
 The identity comes from RIG_MNEMONIC (env or a project .env) or the
 ~/.toon-client keystore/config; the faucet from TOON_CLIENT_FAUCET_URL, the
@@ -93,10 +120,11 @@ chain (there is no --amount). On a network without a faucet, prints the wallet
 address(es) to fund externally instead.
 
 Options:
-  --chain <chain>      evm | solana | mina | all — fund one chain, or all
-                       (default: all supported chains)
+  [chain]              evm | sol | solana | mina | all — positional chain to
+                       fund (default: all supported chains)
+  --chain <chain>      same as the positional chain argument
   --address <address>  fund this address instead of the identity's own
-                       (requires an explicit single --chain)
+                       (requires an explicit single chain)
   --json               machine-readable envelope (per-chain results array)
   -h, --help           show this help`;
 
@@ -295,12 +323,13 @@ function readFundConfig(env: NodeJS.ProcessEnv): {
 export async function runFund(args: string[], deps: FundDeps): Promise<number> {
   const { io, env } = deps;
 
-  let chainFlag: string | undefined;
+  let resolvedChain: FundChain | 'all' | undefined;
   let addressFlag: string | undefined;
   let json = false;
   try {
-    const { values } = parseArgs({
+    const { values, positionals } = parseArgs({
       args,
+      allowPositionals: true,
       options: {
         chain: { type: 'string' },
         address: { type: 'string' },
@@ -312,22 +341,27 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
       io.out(FUND_USAGE);
       return 0;
     }
-    chainFlag = values.chain;
-    addressFlag = values.address;
-    json = values.json ?? false;
-    if (
-      chainFlag !== undefined &&
-      !CHAIN_CHOICES.includes(chainFlag as (typeof CHAIN_CHOICES)[number])
-    ) {
+    // The chain can be given positionally (`rig fund sol`) OR with `--chain`,
+    // but not both, and at most one positional is accepted.
+    if (positionals.length > 1) {
       throw new Error(
-        `--chain must be one of ${CHAIN_CHOICES.join(' | ')}, got ${JSON.stringify(chainFlag)}`
+        `rig fund takes at most one chain argument, got ${positionals.length}: ${positionals.join(' ')}`
       );
     }
+    const positionalChain = positionals[0];
+    if (positionalChain !== undefined && values.chain !== undefined) {
+      throw new Error(
+        'give the chain as a positional argument (`rig fund sol`) OR with --chain, not both'
+      );
+    }
+    resolvedChain = resolveChainArg(positionalChain ?? values.chain);
+    addressFlag = values.address;
+    json = values.json ?? false;
     // A per-chain address (`--address`) is meaningless across chains — an EVM
     // 0x address cannot fund Solana or Mina. Require an explicit single chain.
-    if (addressFlag !== undefined && (chainFlag === undefined || chainFlag === 'all')) {
+    if (addressFlag !== undefined && (resolvedChain === undefined || resolvedChain === 'all')) {
       throw new Error(
-        '--address requires an explicit single --chain (evm | solana | mina) — ' +
+        `--address requires an explicit single chain (${CHAIN_ARG_LIST}) — ` +
           'a single address cannot fund every chain'
       );
     }
@@ -339,14 +373,14 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
 
   try {
     const { file } = readFundConfig(env);
-    // MULTI-CHAIN BY DEFAULT (#299 parity): no `--chain` (or `--chain all`)
-    // funds every supported chain; a specific `--chain` narrows to one. The
-    // env/config `chain` settlement preference no longer narrows `rig fund` —
-    // funding all chains is a strict superset and matches `rig balance`.
+    // MULTI-CHAIN BY DEFAULT (#299 parity): no chain argument (or `all`) funds
+    // every supported chain; a specific chain narrows to one. The env/config
+    // `chain` settlement preference no longer narrows `rig fund` — funding all
+    // chains is a strict superset and matches `rig balance`.
     const targetChains: FundChain[] =
-      chainFlag === undefined || chainFlag === 'all'
+      resolvedChain === undefined || resolvedChain === 'all'
         ? [...CHAINS]
-        : [chainFlag as FundChain];
+        : [resolvedChain];
     const network = env['TOON_CLIENT_NETWORK'] ?? file.network;
     // A configured `*.devnet.toonprotocol.dev` origin means the shared devnet
     // even when `network` still reads its `custom` default (#288): the host
@@ -439,7 +473,7 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
     if (!json) {
       const list = targetChains.join(', ');
       io.out(
-        `Requesting ${targetChains.length === 1 ? '' : 'parallel '}drip${targetChains.length === 1 ? '' : 's'} ` +
+        `Requesting ${targetChains.length === 1 ? '' : 'parallel '}USDC drip${targetChains.length === 1 ? '' : 's'} ` +
           `from ${faucetUrl} for ${list} …` +
           (targetChains.includes('mina')
             ? ' (mina settles slowly; this can take ~2 minutes)'
@@ -513,11 +547,11 @@ export async function runFund(args: string[], deps: FundDeps): Promise<number> {
       // otherwise).
       const addr = r.address ? ` → ${r.address}` : '';
       if (r.funded) {
-        // The faucet drips native + USDC together; annotate the coins, and the
-        // wall time for slow chains (mina) so a >1-minute wait reads as normal.
+        // The faucet drips USDC only (gas is assumed); annotate the token, and
+        // the wall time for slow chains (mina) so a >1-minute wait reads as normal.
         const slow = r.elapsedMs !== undefined && r.elapsedMs >= 5_000;
         const time = slow ? ` (${Math.round((r.elapsedMs as number) / 1000)}s)` : '';
-        io.out(`  ${label} ✓ funded (${NATIVE_COIN[r.chain]} + USDC)${addr}${time}`);
+        io.out(`  ${label} ✓ funded (USDC)${addr}${time}`);
       } else {
         io.out(`  ${label} ✗${addr} — ${r.error ?? 'failed'}`);
       }

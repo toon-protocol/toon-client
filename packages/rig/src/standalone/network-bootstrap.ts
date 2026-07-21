@@ -305,6 +305,26 @@ export function evmChainIdOf(chain: string): number | undefined {
 }
 
 /**
+ * The CURRENT public Base Sepolia (chainId 84532) settlement addresses.
+ *
+ * The `@toon-protocol/core` `base-sepolia` preset still carries the retired
+ * e2e deployment — an 18-decimal mock USDC (`0xac806…`) and the old
+ * TokenNetwork/registry — so falling back to it makes `rig balance` read the
+ * WRONG token at the WRONG decimals (the current USDC is 6-decimal) and a
+ * channel open/settle against the wrong contract, whenever the live announce
+ * is unreachable or omits `preferredTokens`/`tokenNetworks` for this chain.
+ * Until the core preset is bumped, correct the fallback here to the current
+ * public deployment. Authoritative source: toon-meta `docs/deployment.md`
+ * (post-cutover address book). The RPC (`https://sepolia.base.org`) was already
+ * correct in the core preset; only the addresses were stale.
+ */
+const BASE_SEPOLIA_PRESET = {
+  rpcUrl: 'https://sepolia.base.org',
+  usdcAddress: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
+  tokenNetworkAddress: '0x1E95493fEF46707E034b4a1945f25a8C76A1823D',
+} as const;
+
+/**
  * Core chain preset matching an EVM chain key by numeric chain id. Presets
  * carry the DETERMINISTIC TOON contract addresses per chain (e.g. the
  * `anvil` 31337 Foundry deploy), which is what makes `tokenNetwork`
@@ -315,6 +335,8 @@ export function evmPresetForChain(chain: string):
   | undefined {
   const id = evmChainIdOf(chain);
   if (id === undefined) return undefined;
+  // Base Sepolia: use the current public addresses, not the stale core preset.
+  if (id === 84532) return { ...BASE_SEPOLIA_PRESET };
   for (const preset of Object.values(CHAIN_PRESETS)) {
     if (preset.chainId === id) {
       return {
