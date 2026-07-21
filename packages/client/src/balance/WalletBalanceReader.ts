@@ -333,7 +333,10 @@ export async function readMinaTokenBalance(opts: {
     address: opts.owner,
     amount: String(json.data?.account?.balance?.total ?? '0'),
     asset: 'USDC',
-    assetScale: 9,
+    // TOON's settlement USDC is 6-decimal on every chain (assetScale 6), unlike
+    // native MINA's 9. The Mina custom-token amount is a raw u64, so scale it at
+    // 6 — otherwise a 50 USDC balance (50_000000) misreads as 0.05.
+    assetScale: 6,
   };
 }
 
