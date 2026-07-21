@@ -2,8 +2,8 @@
  * `rig` subcommand dispatch (#250): rig-owned verbs first, git for the rest.
  *
  * rig owns exactly: init, identity, remote, clone, fetch, push, site, issue,
- * comment, pr, channel, fund, balance, help/-h/--help, and --version. EVERY
- * other
+ * comment, pr, maintainers, channel (+ the `channels` list shorthand), fund,
+ * balance, chain, entry, name, help/-h/--help, and --version. EVERY other
  * subcommand is executed as `git <argv...>` verbatim (./git-passthrough.ts)
  * — `rig status` IS `git status`, `rig add -p`, `rig commit`, `rig rebase
  * -i`, … all land in git with rig's stdio and git's exit code. Owned verbs
@@ -29,6 +29,7 @@ import { runChain } from './chain.js';
 import { runChannel } from './channel.js';
 import { runClone } from './clone.js';
 import { runComment, runIssue, runPr, type EventCommandDeps } from './events.js';
+import { runEntry } from './entry.js';
 import { runFetch } from './fetch.js';
 import { runFund } from './fund.js';
 import { runGitPassthrough, type GitRunner } from './git-passthrough.js';
@@ -93,13 +94,18 @@ Commands rig owns:
                              (free — chain reads and local state only)
   chain [set <c>|unset]      choose which chain/USDC settles paid writes
                              (evm|sol|mina); free — reads/writes local config
+  entry [apex|sandbox|url]   choose the network entry node (payment ingress +
+                             relay): apex settles evm|sol|mina, sandbox is the
+                             Mina-only multihop demo path; free — writes local
+                             config and clears the cached topology
   name buy <name>            ArNS naming (#367): buy points a human name at an
   name set <name> <txId>     Arweave txId, owned + paid by this identity's
   name status <name>         Solana key. buy spends mARIO on Solana via the
                              ar.io registry (NOT ILP); status is free. Needs
                              the optional \`@ar.io/sdk\` dependency
   channel list               show the payment channels paid commands hold
-                             (free — reads local state)
+                             (free — reads local state; \`rig channels\` is a
+                             shorthand for \`rig channel list\`)
   channel open               explicitly open (or resume) the channel for a
                              peer; --deposit adds collateral (on-chain)
   channel close <channelId>  start the settlement challenge window (on-chain)
@@ -188,12 +194,23 @@ export async function dispatch(
       return runMaintainers(rest, deps);
     case 'channel':
       return runChannel(rest, deps);
+    case 'channels':
+      // Alias (#demo): bare `rig channels` (plus flags) is `rig channel list`;
+      // a subcommand word still routes normally (`rig channels open` works).
+      return runChannel(
+        rest[0] !== undefined && !rest[0].startsWith('-')
+          ? rest
+          : ['list', ...rest],
+        deps
+      );
     case 'fund':
       return runFund(rest, deps);
     case 'balance':
       return runBalance(rest, deps);
     case 'chain':
       return runChain(rest, deps);
+    case 'entry':
+      return runEntry(rest, deps);
     case 'name':
       return runName(rest, deps);
     case 'help':

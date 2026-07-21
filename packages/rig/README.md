@@ -209,8 +209,10 @@ rig pr status <event-id> applied
 | `rig site publish [ref]` | **paid** | deploy a pushed repo as a permaweb site: build the ar.io path manifest (repo paths → Arweave txids) and upload it as one paid store write; prints the gateway URL |
 | `rig site url [ref]` | free | print the last-published site URL for a ref |
 | `rig name status <name>` | free | an ArNS name's registry record, ANT process, and current target txId |
-| `rig name buy <name>` / `rig name set <name> <txId>` | **paid¹** | buy an ArNS name / point it at an Arweave txId. ¹Paid in mARIO on Solana via the ar.io registry — **not** ILP; needs the optional `@ar.io/sdk` dep |
-| `rig channel list/open/close/settle` | free / **paid** | inspect or manage the payment channels paid commands hold |
+| `rig name buy <name>` / `rig name set <name> <txId>` | **paid¹** | buy an ArNS name / point it at an Arweave txId. On the devnet, buy/set default to brokering through the deployed store DVM (`--direct` opts out). ¹Paid in mARIO on Solana via the ar.io registry — **not** ILP; needs the optional `@ar.io/sdk` dep |
+| `rig channel list/open/close/settle` | free / **paid** | inspect or manage the payment channels paid commands hold (`rig channels` = `rig channel list`) |
+| `rig chain [set <c>\|unset]` | free | pin which chain/USDC settles paid writes: evm \| sol \| mina |
+| `rig entry [apex\|sandbox\|url]` | free | choose the network entry node (payment ingress + relay); `sandbox` is the Mina-only multihop demo entry |
 | `rig help` / `rig --version` | free | usage / version |
 | everything else | — | executed as `git <args...>` with rig's stdio and git's exit code |
 

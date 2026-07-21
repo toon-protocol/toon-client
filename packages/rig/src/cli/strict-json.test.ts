@@ -557,8 +557,14 @@ describe('strict --json stdout: every rig-owned command emits exactly one JSON d
 
   it('fund --json (no faucet network): guidance envelope; alias warning on stderr', async () => {
     const home = makeTempDir('toon-rig-json-home-');
+    // An explicit non-devnet network: with nothing configured at all, fund now
+    // infers devnet from the built-in genesis seed and would REALLY drip.
     const result = await run(['fund', '--json'], {
-      env: { TOON_CLIENT_HOME: home, TOON_CLIENT_MNEMONIC: TEST_MNEMONIC },
+      env: {
+        TOON_CLIENT_HOME: home,
+        TOON_CLIENT_MNEMONIC: TEST_MNEMONIC,
+        TOON_CLIENT_NETWORK: 'testnet',
+      },
       cwd: makeTempDir('toon-rig-json-cwd-'),
     });
     expect(result.code).toBe(0);
