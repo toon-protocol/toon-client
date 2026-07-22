@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "vite",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",

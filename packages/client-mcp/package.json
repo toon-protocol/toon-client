@@ -27,6 +27,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "mcpb": "node scripts/build-mcpb.mjs",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
