@@ -60,7 +60,7 @@ function convertBits(data: number[], fromBits: number, toBits: number, pad: bool
   return ret;
 }
 
-function hexToBytesLocal(hex: string): number[] {
+function hexToBytes(hex: string): number[] {
   const bytes: number[] = [];
   for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16));
   return bytes;
@@ -68,7 +68,7 @@ function hexToBytesLocal(hex: string): number[] {
 
 /** Forge a valid-checksum npub whose padding word has a non-zero low bit. */
 function forgeNonZeroPaddingNpub(hex: string): string {
-  const words = convertBits(hexToBytesLocal(hex), 8, 5, true);
+  const words = convertBits(hexToBytes(hex), 8, 5, true);
   words[words.length - 1] = (words[words.length - 1] as number) | 1;
   const checksum = bech32CreateChecksum('npub', words);
   const combined = words.concat(checksum);
