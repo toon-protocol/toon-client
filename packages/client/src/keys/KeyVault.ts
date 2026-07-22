@@ -102,7 +102,7 @@ export async function deriveKek(prfOutput: ArrayBuffer): Promise<CryptoKey> {
  */
 export async function deriveKekFromPassword(
   password: string,
-  salt: Uint8Array
+  salt: Uint8Array<ArrayBuffer>
 ): Promise<CryptoKey> {
   const encoder = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(

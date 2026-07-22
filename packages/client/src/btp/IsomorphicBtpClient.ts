@@ -287,7 +287,7 @@ export class IsomorphicBtpClient {
               const errData = message.data as BTPErrorData;
               reject(
                 new BtpAuthError(
-                  `Authentication failed: ${errData.code} msg=${errData.message ?? ''} trigger=${errData.triggeredBy ?? ''}`
+                  `Authentication failed: ${errData.code} msg=${errData.message ?? ''} trigger=${errData.triggeredAt ?? ''}`
                 )
               );
             } else if (message.type === BTPMessageType.RESPONSE) {

@@ -52,6 +52,8 @@ export interface BTPErrorData {
   code: string;
   name: string;
   triggeredAt: string;
+  /** The trailing `data` octet string decoded as UTF-8 — the human-readable error text. */
+  message: string;
   data: Uint8Array;
 }
 
@@ -323,7 +325,12 @@ export function parseBtpMessage(buf: Uint8Array): BTPMessage {
     const dataLen = readUint32BE(buf, offset);
     offset += 4;
     const data = buf.slice(offset, offset + dataLen);
-    return { type, requestId, data: { code, name, triggeredAt, data } };
+    const message = textDecoder.decode(data);
+    return {
+      type,
+      requestId,
+      data: { code, name, triggeredAt, message, data },
+    };
   }
 
   // MESSAGE or RESPONSE
