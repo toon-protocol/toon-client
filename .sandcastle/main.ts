@@ -60,7 +60,20 @@ const MAX_ITERATIONS = 10;
 // mismatch — a pre-existing repo condition, not introduced here.)
 const hooks = {
   sandbox: {
-    onSandboxReady: [{ command: "pnpm install --no-frozen-lockfile" }],
+    onSandboxReady: [
+      // Wire `git push` auth deterministically inside the container, as the
+      // FIRST hook. @ai-hero/sandcastle@0.12.0 configures git identity +
+      // safe.directory but NO credential helper, so a bare `git push` is
+      // unauthenticated and only succeeds by luck. `gh auth setup-git` installs
+      // `gh` as git's credential helper (reads GH_TOKEN at push time, stores no
+      // token in any file). Guarded on GH_TOKEN so token-less local dev no-ops
+      // rather than aborting setup. See ./agent-implement-issue.ts for the full
+      // note (store#50 root cause; fixed in store#51, validated by store#52).
+      { command: 'if [ -n "$GH_TOKEN" ]; then gh auth setup-git; fi' },
+      // Install PRESERVED as-is (--no-frozen-lockfile): the committed lockfile
+      // is v9 while packageManager pins pnpm@8.15.9 (toon-client#425).
+      { command: "pnpm install --no-frozen-lockfile" },
+    ],
   },
 };
 

@@ -39,7 +39,18 @@ const planSchema = z.object({
 // (pnpm's symlinked store breaks across the bind-mount).
 const hooks = {
   sandbox: {
-    onSandboxReady: [{ command: "pnpm install --no-frozen-lockfile" }],
+    onSandboxReady: [
+      // Wire `git push` auth deterministically inside the container, as the
+      // FIRST hook, for parity with the other runners. This planner phase is
+      // read-only and does not push, but @ai-hero/sandcastle@0.12.0 does NO
+      // credential setup, so every entrypoint installs the helper identically
+      // (guarded on GH_TOKEN so token-less local dev no-ops). See
+      // ./agent-implement-issue.ts for the full note (store#51 / store#52).
+      { command: 'if [ -n "$GH_TOKEN" ]; then gh auth setup-git; fi' },
+      // Install PRESERVED as-is (--no-frozen-lockfile): the committed lockfile
+      // is v9 while packageManager pins pnpm@8.15.9 (toon-client#425).
+      { command: "pnpm install --no-frozen-lockfile" },
+    ],
   },
 };
 
