@@ -12,11 +12,12 @@ TOON Protocol consumer side — `@toon-protocol/client` (pay-to-write Nostr clie
 
 [Devbox](https://github.com/jetify-com/devbox) pins a reproducible local
 toolchain — Node `22` and pnpm `8.15.9` — so `pnpm build`, `pnpm test`, and
-`pnpm lint` run in a shell without touching your system packages. This pnpm
-major trails the repo's `packageManager` pin (`pnpm@9.12.3`, matching the
-committed lockfileVersion 9) and its Nix package isn't updated yet — tracked
-as a follow-up; `devbox run build` installs with `--no-frozen-lockfile` for
-that reason.
+`pnpm lint` run in a shell without touching your system packages.
+
+Devbox's pnpm still trails the repo's `packageManager` pin (`pnpm@9.12.3`,
+matching the committed lockfileVersion 9): the Nix `pnpm_8` package hasn't
+been bumped yet (tracked as a follow-up), so `devbox run build` installs with
+`--no-frozen-lockfile` to bridge that version gap.
 
 **Prerequisites:** [Install devbox](https://www.jetify.com/devbox/docs/installing_devbox/) (one-liner).
 
