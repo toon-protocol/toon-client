@@ -10,10 +10,13 @@ TOON Protocol consumer side — `@toon-protocol/client` (pay-to-write Nostr clie
 
 ## Getting started with Devbox
 
-[Devbox](https://github.com/jetify-com/devbox) pins the local toolchain to the exact
-versions CI uses — Node `22` and pnpm `8.15.9` — so `pnpm build`,
-`pnpm test`, and `pnpm lint` run in a reproducible shell without touching your system
-packages.
+[Devbox](https://github.com/jetify-com/devbox) pins a reproducible local
+toolchain — Node `22` and pnpm `8.15.9` — so `pnpm build`, `pnpm test`, and
+`pnpm lint` run in a shell without touching your system packages. This pnpm
+major trails the repo's `packageManager` pin (`pnpm@9.12.3`, matching the
+committed lockfileVersion 9) and its Nix package isn't updated yet — tracked
+as a follow-up; `devbox run build` installs with `--no-frozen-lockfile` for
+that reason.
 
 **Prerequisites:** [Install devbox](https://www.jetify.com/devbox/docs/installing_devbox/) (one-liner).
 

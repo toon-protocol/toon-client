@@ -87,12 +87,12 @@ jobs:
           node-version: '22'
 
       - name: Enable pnpm via corepack
-        run: corepack enable && corepack prepare pnpm@8.15.9 --activate
+        run: corepack enable && corepack prepare pnpm@9.12.3 --activate
 
-      # --no-frozen-lockfile mirrors toon-client's own ci.yml (v9 lockfile /
-      # pnpm@8.15.9 pin mismatch).
+      # --frozen-lockfile mirrors toon-client's own ci.yml: packageManager now
+      # matches the committed lockfileVersion 9 (pnpm@9.12.3, toon-client#425).
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Build sandcastle agent image
         run: npx --yes @ai-hero/sandcastle@0.12.0 docker build-image
