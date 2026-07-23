@@ -17,7 +17,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 # Enable pnpm via corepack (run as root, before the USER switch — corepack
 # writes shims into a root-owned prefix). Pin matches toon-client's package.json
-# `packageManager` field (pnpm@8.15.9).
+# `packageManager` field (pnpm@9.12.3, toon-client#425) so the version is
+# pre-cached in the image instead of needing a network fetch at container start.
 #
 # NO native-build toolchain (python/make/g++) is installed on purpose:
 # toon-client's one native dependency (better-sqlite3) is listed in
@@ -25,7 +26,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # other heavy dep (lightningcss, bufferutil, utf-8-validate, esbuild) ships
 # prebuilt binaries. The rig-web bundle builds with Vite (pure JS). Add
 # build-essential here only if a future dependency actually needs to compile.
-RUN corepack enable && corepack prepare pnpm@8.15.9 --activate
+RUN corepack enable && corepack prepare pnpm@9.12.3 --activate
 
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files

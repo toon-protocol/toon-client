@@ -2,7 +2,7 @@ name: Agent image
 
 # Minimal build-only check for the sandcastle agent container image.
 # Proves the `.sandcastle/Dockerfile` (node:22-bookworm + gh + Claude Code CLI
-# + corepack/pnpm@8.15.9) builds. This is NOT the label->runner: the
+# + corepack/pnpm@9.12.3) builds. This is NOT the label->runner: the
 # agent:implement / agent:review triggered runners are agent-implement.yml /
 # agent-review.yml.
 
@@ -36,7 +36,7 @@ jobs:
             set -e
             node --version
             gh --version | head -1
-            # pnpm resolves via corepack; the mounted repo pins pnpm@8.15.9
+            # pnpm resolves via corepack; the mounted repo pins pnpm@9.12.3
             # through its packageManager field at runtime.
             corepack --version
             test "$(whoami)" = "agent"

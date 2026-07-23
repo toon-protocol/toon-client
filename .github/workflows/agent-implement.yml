@@ -138,13 +138,12 @@ jobs:
           node-version: '22'
 
       - name: Enable pnpm via corepack
-        run: corepack enable && corepack prepare pnpm@8.15.9 --activate
+        run: corepack enable && corepack prepare pnpm@9.12.3 --activate
 
-      # --no-frozen-lockfile mirrors toon-client's own ci.yml: the committed
-      # pnpm-lock.yaml is lockfileVersion 9 while packageManager pins pnpm@8.15.9,
-      # so a frozen install under pnpm 8 cannot consume it.
+      # --frozen-lockfile mirrors toon-client's own ci.yml: packageManager now
+      # matches the committed lockfileVersion 9 (pnpm@9.12.3, toon-client#425).
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       # Docker is preinstalled on ubuntu-latest. Build the agent sandbox image
       # (.sandcastle/Dockerfile) the engine runs each agent inside.

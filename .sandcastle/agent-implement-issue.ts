@@ -80,12 +80,11 @@ const issueTitle = execFileSync(
   { encoding: "utf8" },
 ).trim();
 
-// toon-client is a large pnpm monorepo. We install with `--no-frozen-lockfile`
-// (NOT `--frozen-lockfile`): the committed pnpm-lock.yaml is lockfileVersion 9
-// while `packageManager` pins pnpm@8.15.9, so a frozen install under pnpm 8
-// cannot consume the v9 lockfile. This mirrors toon-client's own ci.yml. We
-// deliberately do NOT copyToWorktree node_modules — pnpm's symlinked store
-// breaks across the host->worktree bind-mount.
+// toon-client is a large pnpm monorepo. `packageManager` matches the committed
+// lockfileVersion 9 (pnpm@9.12.3, toon-client#425), so we install frozen —
+// drift between package.json and the lockfile fails loudly instead of
+// silently rewriting it. We deliberately do NOT copyToWorktree node_modules —
+// pnpm's symlinked store breaks across the host->worktree bind-mount.
 const hooks = {
   sandbox: {
     onSandboxReady: [
@@ -111,10 +110,7 @@ const hooks = {
           'if [ -n "$GH_TOKEN" ]; then gh auth setup-git; ' +
           "git config --unset-all 'http.https://github.com/.extraheader' 2>/dev/null || true; fi",
       },
-      // Install command PRESERVED as-is: toon-client uses --no-frozen-lockfile
-      // (NOT --frozen-lockfile) because the committed pnpm-lock.yaml is v9 while
-      // packageManager pins pnpm@8.15.9 (toon-client#425). Do not change it.
-      { command: "pnpm install --no-frozen-lockfile" },
+      { command: "pnpm install --frozen-lockfile" },
     ],
   },
 };
