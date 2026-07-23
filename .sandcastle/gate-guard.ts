@@ -3,8 +3,8 @@
 // described in toon-client#433 / toon-meta#210 (ADR-0001, baseline-freeze first).
 //
 // Usage (wired into ci.yml's build job):
-//   node --experimental-strip-types .sandcastle/gate-guard.ts \
-//     --eslint-json=/tmp/eslint.json \
+//   npx tsx .sandcastle/gate-guard.ts \
+//     --eslint-json=/tmp/eslint-report.json \
 //     --typecheck-log=/tmp/typecheck.log \
 //     --wall-clock-seconds=$WALL_CLOCK \
 //     --runner-minutes=$RUNNER_MINUTES
@@ -33,11 +33,11 @@ export type GateBaseline = {
 
 export type LiveCorrectness = { eslint: EslintCounts; typecheck: TypecheckCounts };
 
-export type LiveSpeedPerformance = {
-  gateWallClockSeconds?: number;
-  runnerMinutes?: number;
-  imageSizeBytes?: number;
-};
+export type LiveSpeed = { gateWallClockSeconds?: number };
+
+export type LivePerformance = { runnerMinutes?: number; imageSizeBytes?: number };
+
+export type LiveSpeedPerformance = LiveSpeed & LivePerformance;
 
 export type Verdict = { ok: boolean; violations: string[] };
 
@@ -118,7 +118,7 @@ export function evaluateSpeedPerformance(
 }
 
 export function evaluateGate(
-  live: { correctness: LiveCorrectness; speed: LiveSpeedPerformance; performance: LiveSpeedPerformance },
+  live: { correctness: LiveCorrectness; speed: LiveSpeed; performance: LivePerformance },
   baseline: GateBaseline,
 ): Verdict {
   const correctness = evaluateCorrectness(live.correctness, baseline.correctness);

@@ -1,5 +1,4 @@
 {
-  "$schema": "./gate-baseline.schema.json",
   "capturedAt": "2026-07-23",
   "capturedFromCommit": "8a8f5018b6351e4f8f995cbfe20cb5aeb92e1708",
   "capturedFromBranch": "main",
