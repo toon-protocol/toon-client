@@ -39,6 +39,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # First step: the gate no-regression guard (below) measures wall-clock
+      # against the frozen `.sandcastle/gate-baseline.json`, which was
+      # captured as this job's TOTAL duration (checkout through test) — so
+      # timing must start here, before checkout, to stay comparable.
+      - name: Record gate start time
+        id: gate-start
+        run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
@@ -52,12 +60,37 @@ jobs:
 
       - run: pnpm install --no-frozen-lockfile
 
-      - run: pnpm lint
+      # JSON output (not human-readable "stylish") so the gate guard can
+      # parse exact error/warning counts. continue-on-error: the frozen
+      # baseline debt (16 errors / 718 warnings) shouldn't block the job by
+      # itself — the guard step below is the real pass/fail authority.
+      - name: Lint
+        run: npx eslint . -f json -o /tmp/eslint-report.json
         continue-on-error: true
 
       - run: pnpm -r build
 
+      # Typecheck previously had NO CI step at all (soft-gated in agent
+      # instructions only) — a genuine false-PASS hole (toon-client#433).
+      # continue-on-error for the same reason as lint: the 75 frozen
+      # pre-existing errors (#423) shouldn't block the job; the guard does.
+      - name: Typecheck
+        run: pnpm -r --no-bail run typecheck 2>&1 | tee /tmp/typecheck.log
+        continue-on-error: true
+
       - run: pnpm -r test --if-present
+
+      - name: Gate no-regression guard
+        run: |
+          END=$(date +%s)
+          WALL_CLOCK=$((END - ${{ steps.gate-start.outputs.start }}))
+          RUNNER_MINUTES=$(awk "BEGIN { printf \"%.4f\", $WALL_CLOCK / 60 }")
+          echo "Gate wall-clock: ${WALL_CLOCK}s (${RUNNER_MINUTES} runner-minutes)"
+          npx tsx .sandcastle/gate-guard.ts \
+            --eslint-json=/tmp/eslint-report.json \
+            --typecheck-log=/tmp/typecheck.log \
+            --wall-clock-seconds="$WALL_CLOCK" \
+            --runner-minutes="$RUNNER_MINUTES"
 
   devbox-validate:
     name: Devbox Environment Validation
