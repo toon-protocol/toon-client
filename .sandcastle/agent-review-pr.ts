@@ -74,7 +74,11 @@ const hooks = {
       // in store#51, validated by store#52). `gh auth setup-git` installs `gh`
       // as git's credential helper (reads GH_TOKEN at push time, stores no
       // token in any file). Guarded on GH_TOKEN so token-less local dev no-ops.
-      { command: 'if [ -n "$GH_TOKEN" ]; then gh auth setup-git; fi' },
+      {
+        command:
+          'if [ -n "$GH_TOKEN" ]; then gh auth setup-git; ' +
+          "git config --unset-all 'http.https://github.com/.extraheader' 2>/dev/null || true; fi",
+      },
       // Install PRESERVED as-is (--no-frozen-lockfile): the committed lockfile
       // is v9 while packageManager pins pnpm@8.15.9 (toon-client#425).
       { command: "pnpm install --no-frozen-lockfile" },
@@ -116,13 +120,18 @@ try {
     console.log(
       `\nReviewer made ${review.commits.length} commit(s) — pushing to the PR branch.`,
     );
-    await sandbox.run({
-      name: "push-review",
-      maxIterations: 1,
-      agent: sandcastle.claudeCode("claude-sonnet-5"),
-      promptFile: "./.sandcastle/review-push-prompt.md",
-      promptArgs: { BRANCH: headRef },
+    // DETERMINISTIC (no agent) — see toon-meta#235. This was an agent run
+    // (review-push-prompt.md) whose only job was `git push origin <branch>`.
+    // Run it directly; sandbox.exec() surfaces a non-zero exitCode (it does NOT
+    // throw) — check it and fail loud.
+    const push = await sandbox.exec(`git push origin ${headRef}`, {
+      onLine: (line) => console.log(`  [push] ${line}`),
     });
+    if (push.exitCode !== 0) {
+      throw new Error(
+        `git push of '${headRef}' failed (exit ${push.exitCode}).\n${push.stderr}`,
+      );
+    }
 
     // FAIL LOUD. The push-review phase logs COMPLETE from the prompt regardless
     // of whether the in-sandbox `git push` actually landed, so we must NOT trust
