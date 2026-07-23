@@ -42,3 +42,11 @@ jobs:
             test "$(whoami)" = "agent"
             test -x /home/agent/.local/bin/claude
           '
+
+      # Feeds `.sandcastle/gate-baseline.json`'s performance.imageSizeBytes,
+      # which has no baseline yet (no docker daemon in the gate-baseline
+      # capture environment) — see toon-client#433.
+      - name: Report image size
+        run: |
+          SIZE_BYTES=$(docker image inspect sandcastle:toon-client --format='{{.Size}}')
+          echo "Agent image size: ${SIZE_BYTES} bytes"

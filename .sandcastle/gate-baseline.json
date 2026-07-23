@@ -1,0 +1,39 @@
+{
+  "$schema": "./gate-baseline.schema.json",
+  "capturedAt": "2026-07-23",
+  "capturedFromCommit": "8a8f5018b6351e4f8f995cbfe20cb5aeb92e1708",
+  "capturedFromBranch": "main",
+  "tolerancePercent": 20,
+  "correctness": {
+    "description": "Frozen violation counts. The guard fails on any NEW violation beyond these — it never re-fails on this known, pre-existing debt (tracked in #423 for typecheck).",
+    "captureMethod": "eslint . -f json (summed errorCount/warningCount across all files); pnpm -r --no-bail run typecheck (counted `error TS` occurrences per package from the recursive log prefix).",
+    "eslint": {
+      "errors": 16,
+      "warnings": 718
+    },
+    "typecheck": {
+      "totalErrors": 75,
+      "byPackage": {
+        "arweave": 0,
+        "client": 0,
+        "client-mcp": 0,
+        "rig": 1,
+        "rig-web": 74,
+        "views": 0
+      }
+    }
+  },
+  "speed": {
+    "description": "Gate wall-clock (the CI 'build' job: lint + build + typecheck + test, run sequentially).",
+    "gateWallClockSeconds": 185,
+    "estimated": true,
+    "captureMethod": "This PR is what first adds a `typecheck` step to ci.yml's build job (previously a false-PASS hole: typecheck was soft-gated in agent instructions only, never run in CI). No real CI run of the new job shape exists yet, so this number is estimated: measured local step timings for the OLD shape (eslint 33.3s + pnpm -r build 40.8s + vitest run 57.6s = 131.7s) were compared against the real CI 'build' job duration for commit 8a8f5018 (153s, via `gh api repos/toon-protocol/toon-client/actions/runs/30014129025/jobs`), giving a local->CI overhead ratio of 1.162x. That ratio was applied to the local NEW-shape sum (131.7s + typecheck 27.6s = 159.3s) to project 185s. Refresh with the real measured duration after the first post-merge CI run of this workflow shape; the 20% tolerance is partly there to absorb this estimate's error margin in the meantime."
+  },
+  "performance": {
+    "description": "Gate resource cost, scoped to the same CI 'build' job as speed above (not the separate devbox-validate job, which is an unrelated environment-consistency check).",
+    "runnerMinutesEstimate": 3.08,
+    "imageSizeBytes": null,
+    "cacheHitRatePercent": null,
+    "captureMethod": "runnerMinutesEstimate = gateWallClockSeconds / 60 (single ubuntu-latest runner, no parallel jobs within 'build'), carrying the same estimate caveat as speed above. imageSizeBytes and cacheHitRatePercent have no baseline yet: no Docker daemon was available in the capture environment (imageSizeBytes), and no reproducible source for pnpm/actions cache hit-rate was available outside a live CI run (cacheHitRatePercent). Both are null so the guard SKIPS those checks rather than comparing against a fabricated number (no false FAIL) — see .sandcastle/gate-guard.ts. agent-image.yml now reports image size on its own runs so imageSizeBytes can be backfilled from there."
+  }
+}
