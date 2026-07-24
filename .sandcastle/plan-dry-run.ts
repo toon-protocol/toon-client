@@ -33,10 +33,10 @@ const planSchema = z.object({
   ),
 });
 
-// toon-client is a large pnpm monorepo — install with `--no-frozen-lockfile`
-// (mirrors main.ts and ci.yml; the committed lockfile is v9 while
-// packageManager pins pnpm@8.15.9). We do NOT copyToWorktree node_modules
-// (pnpm's symlinked store breaks across the bind-mount).
+// toon-client is a large pnpm monorepo. `packageManager` matches the committed
+// lockfileVersion 9 (pnpm@9.12.3, toon-client#425), so we install frozen,
+// mirroring main.ts and ci.yml. We do NOT copyToWorktree node_modules (pnpm's
+// symlinked store breaks across the bind-mount).
 const hooks = {
   sandbox: {
     onSandboxReady: [
@@ -47,9 +47,7 @@ const hooks = {
       // (guarded on GH_TOKEN so token-less local dev no-ops). See
       // ./agent-implement-issue.ts for the full note (store#51 / store#52).
       { command: 'if [ -n "$GH_TOKEN" ]; then gh auth setup-git; fi' },
-      // Install PRESERVED as-is (--no-frozen-lockfile): the committed lockfile
-      // is v9 while packageManager pins pnpm@8.15.9 (toon-client#425).
-      { command: "pnpm install --no-frozen-lockfile" },
+      { command: "pnpm install --frozen-lockfile" },
     ],
   },
 };

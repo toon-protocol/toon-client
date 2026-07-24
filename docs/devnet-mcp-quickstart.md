@@ -32,7 +32,7 @@ toon-mcp --version                        # sanity check the bin resolves
 ```bash
 cd <path-to>/toon-client
 git checkout main && git pull --ff-only origin main
-pnpm install --no-frozen-lockfile
+pnpm install
 pnpm -r build
 ls -l packages/client-mcp/dist/mcp.js     # the MCP server entry
 ```

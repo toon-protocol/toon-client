@@ -51,13 +51,10 @@ const planSchema = z.object({
 const MAX_ITERATIONS = 10;
 
 // Hooks run inside the sandbox before the agent starts each iteration.
-// toon-client is a large pnpm monorepo. We install with `--no-frozen-lockfile`
-// (NOT `--frozen-lockfile`) deliberately: the committed pnpm-lock.yaml is
-// lockfileVersion 9 while `packageManager` pins pnpm@8.15.9, so a frozen
-// install under pnpm 8 cannot consume the v9 lockfile. toon-client's own
-// ci.yml installs the same way (`pnpm install --no-frozen-lockfile`), so the
-// sandbox mirrors CI exactly. (See the factory PR notes for the lockfile-format
-// mismatch — a pre-existing repo condition, not introduced here.)
+// toon-client is a large pnpm monorepo. `packageManager` now matches the
+// committed lockfileVersion 9 (pnpm@9.12.3, toon-client#425), so a frozen
+// install is possible again — use it here so a lockfile/package.json drift
+// fails loudly instead of silently rewriting the lockfile.
 const hooks = {
   sandbox: {
     onSandboxReady: [
@@ -70,9 +67,7 @@ const hooks = {
       // rather than aborting setup. See ./agent-implement-issue.ts for the full
       // note (store#50 root cause; fixed in store#51, validated by store#52).
       { command: 'if [ -n "$GH_TOKEN" ]; then gh auth setup-git; fi' },
-      // Install PRESERVED as-is (--no-frozen-lockfile): the committed lockfile
-      // is v9 while packageManager pins pnpm@8.15.9 (toon-client#425).
-      { command: "pnpm install --no-frozen-lockfile" },
+      { command: "pnpm install --frozen-lockfile" },
     ],
   },
 };

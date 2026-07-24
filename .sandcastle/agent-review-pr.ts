@@ -60,10 +60,10 @@ if (!headRef) {
   throw new Error(`Could not resolve head branch for PR #${prNumber}.`);
 }
 
-// toon-client is a large pnpm monorepo. Install with `--no-frozen-lockfile`
-// (the committed lockfile is v9 while packageManager pins pnpm@8.15.9; mirrors
-// main.ts and ci.yml). We do NOT copyToWorktree node_modules (pnpm's symlinked
-// store breaks across the bind-mount).
+// toon-client is a large pnpm monorepo. `packageManager` matches the committed
+// lockfileVersion 9 (pnpm@9.12.3, toon-client#425), so we install frozen,
+// mirroring main.ts and ci.yml. We do NOT copyToWorktree node_modules (pnpm's
+// symlinked store breaks across the bind-mount).
 const hooks = {
   sandbox: {
     onSandboxReady: [
@@ -79,9 +79,7 @@ const hooks = {
           'if [ -n "$GH_TOKEN" ]; then gh auth setup-git; ' +
           "git config --unset-all 'http.https://github.com/.extraheader' 2>/dev/null || true; fi",
       },
-      // Install PRESERVED as-is (--no-frozen-lockfile): the committed lockfile
-      // is v9 while packageManager pins pnpm@8.15.9 (toon-client#425).
-      { command: "pnpm install --no-frozen-lockfile" },
+      { command: "pnpm install --frozen-lockfile" },
     ],
   },
 };
