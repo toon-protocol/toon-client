@@ -1,26 +1,28 @@
 name: Deploy rig-web
 
-# Builds packages/rig-web and deploys it to GitHub Pages
-# (https://toon-protocol.github.io/toon-client/) on every push to main that
-# touches the web app or its workspace deps, plus manual dispatch. This
-# replaces the old manual "build locally, push dist to the gh-pages branch"
-# flow — the live UI now tracks main automatically.
+# PERMANENT REDIRECT STUB DEPLOY — do not delete this workflow.
 #
-# Two build-time details matter and are handled below:
-#   * VITE_DEFAULT_RELAY is inlined by Vite AT BUILD TIME (not read at serve
-#     time), so it must be set on the build step or the app falls back to the
-#     baked-in localhost default and can't reach the network.
-#   * --base=/toon-client/ rewrites asset URLs for the project-pages subpath
-#     (the site is served under /toon-client/, not the domain root). The app
-#     uses hash routing (#/...), so no SPA 404.html fallback is needed.
+# rig-web (the SPA) moved to the `rig` repo and is now served at
+# https://toon-protocol.github.io/rig/ (toon-client#443, rig ADR-0001,
+# companion issue toon-protocol/rig#20). This repo no longer contains the
+# SPA's source (packages/rig-web is gone). But `rig push` has already
+# written https://toon-protocol.github.io/toon-client into NIP-34 rig
+# pointers uploaded to Arweave as the no-JS fallback URL — permanently and
+# immutably (DEFAULT_RIG_WEB_URL in the `rig` repo's
+# packages/rig/src/rig-pointer.ts). That URL must never 404, so this
+# workflow keeps publishing to the same Pages site, just with a tiny static
+# page (.github/rig-web-redirect/index.html) that redirects client-side to
+# /rig/, preserving the URL fragment (rig-web routes and relay hints live
+# entirely in the fragment, which a server-side redirect can't see).
+#
+# Keep the workflow name and Pages wiring unchanged so the deploy keeps
+# succeeding under the same GitHub Pages site/URL.
 
 on:
   push:
     branches: [main]
     paths:
-      - 'packages/rig-web/**'
-      - 'packages/arweave/**'
-      - 'packages/views/**'
+      - '.github/rig-web-redirect/**'
       - '.github/workflows/deploy-rig-web.yml'
   workflow_dispatch:
 
@@ -44,35 +46,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.12.3
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # Build all workspace packages in dependency order (same step release.yml
-      # uses) so rig-web's workspace deps (@toon-protocol/arweave, /views, …)
-      # are present, then rebuild ONLY rig-web with the Pages base + devnet
-      # relay baked in.
-      - run: pnpm -r build
-
-      - name: Build rig-web for Pages
-        env:
-          VITE_DEFAULT_RELAY: wss://relay-ws.devnet.toonprotocol.dev
-        run: |
-          pnpm --filter @toon-protocol/rig-web exec vite build --base=/toon-client/
-          touch packages/rig-web/dist/.nojekyll
-
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: packages/rig-web/dist
+          path: .github/rig-web-redirect
 
       - id: deployment
         uses: actions/deploy-pages@v4

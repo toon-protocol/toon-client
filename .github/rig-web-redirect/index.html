@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>rig-web has moved</title>
+    <!--
+      PERMANENT REDIRECT STUB — do not delete, do not stop deploying this page.
+
+      rig-web (the SPA) moved to the `rig` repo and now lives at
+      https://toon-protocol.github.io/rig/ (see toon-client#443, rig ADR-0001,
+      companion issue toon-protocol/rig#20). This repo's copy of the SPA is
+      gone, but `rig push` has already written
+      https://toon-protocol.github.io/toon-client as the no-JS fallback URL
+      into NIP-34 rig pointers uploaded to Arweave — permanently and
+      immutably (packages/rig/src/rig-pointer.ts, DEFAULT_RIG_WEB_URL, in the
+      `rig` repo). That URL can never 404, so this stub, and the Pages deploy
+      that publishes it, must never be removed.
+
+      The redirect must happen client-side: rig-web routes and relay hints
+      live entirely in the URL fragment (#/<npub>/<repo>, #relay=wss://...),
+      and a fragment is never sent to the server, so a server-side redirect
+      (HTTP 30x) cannot see it and would drop the very state these pointers
+      need. Reading location.hash here and appending it to the new origin
+      preserves it.
+    -->
+    <link rel="canonical" href="https://toon-protocol.github.io/rig/" />
+    <script>
+      location.replace('https://toon-protocol.github.io/rig/' + location.hash);
+    </script>
+  </head>
+  <body>
+    <noscript>
+      <p>
+        rig-web has moved. Continue to
+        <a href="https://toon-protocol.github.io/rig/">https://toon-protocol.github.io/rig/</a>.
+      </p>
+    </noscript>
+  </body>
+</html>
