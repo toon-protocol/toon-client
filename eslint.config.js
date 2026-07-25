@@ -66,6 +66,7 @@ export default tseslint.config(
       '.cache/**',
       '.claude/**',
       '.sandcastle/**',
+      '.github/rig-web-redirect/**',
       'packages/memvid-node/index.d.ts',
     ],
   }

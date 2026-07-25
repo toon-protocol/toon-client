@@ -24,8 +24,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # toon-client's one native dependency (better-sqlite3) is listed in
 # `pnpm.neverBuiltDependencies`, so `pnpm install` never compiles it, and every
 # other heavy dep (lightningcss, bufferutil, utf-8-validate, esbuild) ships
-# prebuilt binaries. The rig-web bundle builds with Vite (pure JS). Add
-# build-essential here only if a future dependency actually needs to compile.
+# prebuilt binaries. Add build-essential here only if a future dependency
+# actually needs to compile.
 RUN corepack enable && corepack prepare pnpm@9.12.3 --activate
 
 # Build-args for UID/GID alignment: sandcastle docker build-image
