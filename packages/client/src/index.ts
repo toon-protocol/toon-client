@@ -314,3 +314,30 @@ export {
   type EnsureOwnedMinaZkAppResult,
   type MinaZkAppDeployRecord,
 } from './channel/mina-channel-deploy.js';
+
+// The structured wire (ADR 0018): the OER envelope codec the terminating
+// connector speaks, replayed byte-for-byte against the connector's committed
+// cross-repo vectors (`src/wire/vectors/`). Additive and unconsumed — the
+// latin1 HTTP framing in `utils/store-envelope.ts` / `utils/fulfill-http.ts`
+// is still what the live send path uses; swapping it is a later child.
+export {
+  OerError,
+  OerErrorKind,
+  encodeVarUint,
+  decodeVarUint,
+  encodeVarOctetString,
+  decodeVarOctetString,
+  EnvelopeError,
+  EnvelopeErrorKind,
+  encodeEnvelope,
+  decodeEnvelope,
+  encodeEnvelopeRequest,
+  decodeEnvelopeRequest,
+  encodeEnvelopeResponse,
+  decodeEnvelopeResponse,
+  type Decoded,
+  type Envelope,
+  type EnvelopeHeader,
+  type EnvelopeRequest,
+  type EnvelopeResponse,
+} from './wire/index.js';
