@@ -1,13 +1,19 @@
 {
-  "$comment": "Where the vendored wire-vectors.json came from. Machine-read by wire-vectors.test.ts (integrity) and scripts/refresh-wire-vectors.mjs (drift). Hand-edit nothing here except via that script.",
+  "$comment": "Where the vendored wire-vectors.json came from. Machine-read by wire-vectors.test.ts (integrity) and scripts/refresh-wire-vectors.mjs (drift). The provenance fields are written by that script — hand-edit none of them. The two 'sections' lists are the exception: they describe THIS repo's harness, not the source file, so they are maintained by hand alongside wire-vectors.test.ts, which asserts they partition every section the file carries.",
   "sourceRepo": "toon-protocol/connector",
   "sourcePath": "vectors/wire-vectors.json",
   "sourceRawUrl": "https://raw.githubusercontent.com/toon-protocol/connector/{ref}/vectors/wire-vectors.json",
-  "connectorCommit": "a6518d919d8ae9f49dda6b180208c12ddf053929",
-  "connectorCommitDate": "2026-07-28T16:28:07-04:00",
-  "connectorCommitSubject": "Vectors are the cross-repo contract (#585)",
+  "connectorCommit": "425a8abb72e982f43955c35d9c0cf50fd5a2d55e",
+  "connectorCommitDate": "2026-07-28T21:14:33Z",
+  "connectorCommitSubject": "RALPH: connector-vectors: add claim vectors, document wire mechanism, gate seal-with-randomness (issue #587) (#588)",
   "schemaVersion": 1,
-  "sha256": "c8d14d9f705f0f1e79bd1e0ecb9cf1faebbbea1e9bdfa7b3135fa07b38574872",
-  "sectionsReplayed": ["envelope"],
-  "sectionsPresentNotYetReplayed": ["giftwrap", "fulfilment"]
+  "sha256": "a11bb7c333b5fab8516a7f687c746a2fdf87b2ffbc9bacf002c6603f784bca51",
+  "sectionsReplayed": [
+    "envelope",
+    "claim"
+  ],
+  "sectionsPresentNotYetReplayed": [
+    "giftwrap",
+    "fulfilment"
+  ]
 }

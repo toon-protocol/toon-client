@@ -10,7 +10,8 @@ reproducing these bytes is what conformance means for this client.
 
 `wire-vectors.provenance.json` records the connector commit it came from and the
 SHA-256 of the copy. `src/wire/wire-vectors.test.ts` replays the `envelope`
-section against `src/wire/envelope.ts`.
+section against `src/wire/envelope.ts` and the `claim` section against
+`src/signing/evm-signer.ts`.
 
 ## Why vendored, and not fetched or submoduled
 
@@ -51,16 +52,43 @@ signal, not a flake. Commit `wire-vectors.json` and
 
 ## Sections
 
-`schema_version` is `1`. The file carries three sections; this repo replays them
+`schema_version` is `1`. The file carries four sections; this repo replays them
 as its children land:
 
 - `envelope` — **replayed** (toon-client#448): 5 valid round-trips + 8 rejection
   cases.
-- `giftwrap` — present, not yet replayed (toon-client#449 owns the seal). The
-  HKDF salt/info labels and wrap framing are **not** documented in the
-  connector's `vectors/README.md`; they are only in
-  `crates/connector-signer/src/giftwrap.rs` (tracked as connector#587).
-- `fulfilment` — present, not yet replayed.
+- `giftwrap` — present, **not replayed** (toon-client#449 owns the seal). The
+  HKDF salt/info labels and wrap framing are now documented in the connector's
+  `vectors/README.md` (connector#588), so #449 no longer has to read Rust to
+  build the seal.
+- `fulfilment` — present, **not replayed**.
+- `claim` — **replayed** (connector#588 added it): the EIP-712 `BalanceProof` of
+  [connector ADR
+  0024](https://github.com/toon-protocol/connector/blob/main/docs/adr/0024-peer-wire-claims-sign-the-eip-712-balance-proof.md),
+  replayed against `src/signing/evm-signer.ts`. See below.
 
-`loadWireVectors()` in `load.ts` already exposes all three, so adding a section
-to the harness is a new `describe` block, not a restructure.
+`loadWireVectors()` in `load.ts` exposes all four, so adding a section to the
+harness is a new `describe` block, not a restructure. The **not replayed** label
+is enforced, not decorative: `WIRE_VECTOR_SECTIONS` in `load.ts` is a closed
+list, and the harness fails if the vendored file carries a section that is not
+in it, or one that is neither in `sectionsReplayed` nor in
+`sectionsPresentNotYetReplayed`. A section the connector adds therefore breaks
+the build until someone decides, in writing, what this repo does with it — which
+is how `claim` came to be replayed rather than ignored.
+
+### Why `claim` is replayed here
+
+The connector moved its *peer* wire onto EIP-712 `BalanceProof` in ADR 0024;
+this client does not sign peer-wire claims, so it would have been defensible to
+carry the section and skip it. It is replayed anyway because this client already
+signs **exactly that struct** on the *client edge*:
+`EvmSigner.signBalanceProof` uses a `TokenNetwork`/`1` domain with a per-channel
+`chainId`/`verifyingContract` and the same five-field `BalanceProof` with
+zeroed `lockedAmount`/`locksRoot`. It reproduces the published `digest_hex` and
+the published 65-byte signature byte-for-byte, so these vectors are real
+conformance evidence here — a drifted domain field, a reordered struct member or
+a dropped zero field would all change the digest and fail.
+
+The one representation difference is normalised in the harness rather than
+papered over: the vectors carry a raw `recovery_id` of `00`/`01`, while viem —
+like every wallet — emits `1b`/`1c`.
