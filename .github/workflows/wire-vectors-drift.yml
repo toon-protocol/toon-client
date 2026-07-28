@@ -1,0 +1,39 @@
+name: Wire vectors drift
+
+# `packages/client/src/wire/vectors/wire-vectors.json` is a VENDORED copy of the
+# cross-repo contract on toon-protocol/connector (connector ADR 0021). Vendoring
+# keeps `pnpm test` offline and keeps every wire change in this repo's history —
+# its one cost is that the copy can go stale silently. This is the thing that
+# stops it: the copy is compared against the connector's current `main`.
+#
+# A failure here is NOT a broken build. It means the wire moved and this client
+# has not adopted it yet: run
+#   pnpm --filter @toon-protocol/client vectors:refresh
+# and make the replay green again.
+
+on:
+  schedule:
+    # Daily, off the hour so it does not pile onto the top-of-hour queue.
+    - cron: '17 6 * * *'
+  pull_request:
+    paths:
+      - 'packages/client/src/wire/**'
+      - 'packages/client/scripts/refresh-wire-vectors.mjs'
+      - '.github/workflows/wire-vectors-drift.yml'
+  workflow_dispatch:
+
+jobs:
+  drift:
+    name: Vendored vectors match connector main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # No install step: the script uses only node: builtins and global fetch,
+      # so this stays a ~10s job.
+      - name: Compare against toon-protocol/connector@main
+        run: node packages/client/scripts/refresh-wire-vectors.mjs --check

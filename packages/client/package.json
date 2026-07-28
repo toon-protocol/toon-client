@@ -51,7 +51,9 @@
     "test:e2e:client:evm": "vitest run --config vitest.e2e.config.ts tests/e2e/docker-client-evm-e2e.test.ts",
     "test:e2e:client:solana": "vitest run --config vitest.e2e.config.ts tests/e2e/docker-client-solana-e2e.test.ts",
     "test:e2e:client:mina": "vitest run --config vitest.e2e.config.ts tests/e2e/docker-client-mina-e2e.test.ts",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "vectors:refresh": "node scripts/refresh-wire-vectors.mjs",
+    "vectors:check": "node scripts/refresh-wire-vectors.mjs --check"
   },
   "dependencies": {
     "@noble/curves": "^2.0.0",

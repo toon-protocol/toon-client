@@ -1,0 +1,13 @@
+{
+  "$comment": "Where the vendored wire-vectors.json came from. Machine-read by wire-vectors.test.ts (integrity) and scripts/refresh-wire-vectors.mjs (drift). Hand-edit nothing here except via that script.",
+  "sourceRepo": "toon-protocol/connector",
+  "sourcePath": "vectors/wire-vectors.json",
+  "sourceRawUrl": "https://raw.githubusercontent.com/toon-protocol/connector/{ref}/vectors/wire-vectors.json",
+  "connectorCommit": "a6518d919d8ae9f49dda6b180208c12ddf053929",
+  "connectorCommitDate": "2026-07-28T16:28:07-04:00",
+  "connectorCommitSubject": "Vectors are the cross-repo contract (#585)",
+  "schemaVersion": 1,
+  "sha256": "c8d14d9f705f0f1e79bd1e0ecb9cf1faebbbea1e9bdfa7b3135fa07b38574872",
+  "sectionsReplayed": ["envelope"],
+  "sectionsPresentNotYetReplayed": ["giftwrap", "fulfilment"]
+}
