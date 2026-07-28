@@ -7,9 +7,14 @@
  * something the bundler inlines into the published package.
  *
  * The shape mirrors `vectors/README.md` on the connector: every section the
- * file carries is typed and returned, including the two this repo does not
+ * file carries is typed and returned, including the ones this repo does not
  * replay yet, so `giftwrap` (toon-client#449) and `fulfilment` become new
  * `describe` blocks in the harness rather than a restructure of it.
+ *
+ * `WIRE_VECTOR_SECTIONS` is the closed list of sections this loader has been
+ * taught. The harness asserts the file carries exactly these, so a section the
+ * connector ADDS (as `claim` was added in connector#588) fails loudly here
+ * instead of being quietly ignored by a replay that never looks at it.
  *
  * Test-only: nothing in `src/index.ts` reaches here, so it is not published.
  */
@@ -58,6 +63,36 @@ export interface EnvelopeInvalidVector {
   expected_error: VectorEnvelopeError;
 }
 
+/**
+ * A signed EIP-712 `BalanceProof` (connector ADR 0024) — the digest and
+ * signature scheme both the peer wire and the client edge are checked against.
+ *
+ * Integer fields are JSON numbers in the file; `nonce`, `transferred_amount`
+ * and `locked_amount` are `uint256` on the wire, so widen them to `bigint`
+ * before hashing. Hex fields carry no `0x` prefix (see `hexToBytes`).
+ */
+export interface ClaimVector {
+  name: string;
+  /** EIP-712 domain `chainId` — per channel, never a node-wide default. */
+  chain_id: number;
+  /** EIP-712 domain `verifyingContract`, 20 bytes. */
+  token_network_address_hex: string;
+  /** The channel's on-chain `bytes32` identifier. */
+  channel_id_hex: string;
+  nonce: number;
+  transferred_amount: number;
+  /** Always 0 on the wire today (ADR 0004), still part of the hashed struct. */
+  locked_amount: number;
+  /** Always zero today, still part of the hashed struct. */
+  locks_root_hex: string;
+  /** `keccak256(0x1901 || domainSeparator || structHash)`. */
+  digest_hex: string;
+  signer_secret_hex: string;
+  signer_address_hex: string;
+  /** 65 bytes, `r || s || recovery_id`; `recovery_id` is raw 0/1, not 27/28. */
+  signature_hex: string;
+}
+
 export interface WireVectors {
   schema_version: number;
   envelope: {
@@ -68,7 +103,21 @@ export interface WireVectors {
   giftwrap?: { cases?: Record<string, unknown>[] } & Record<string, unknown>;
   /** Not replayed yet. */
   fulfilment?: { cases?: Record<string, unknown>[] } & Record<string, unknown>;
+  /** Replayed against `src/signing/evm-signer.ts`. */
+  claim?: { cases: ClaimVector[] };
 }
+
+/**
+ * Every section this loader knows about. The harness asserts the vendored
+ * file's top-level sections are exactly this set (plus `schema_version`), so a
+ * newly-added connector section cannot pass through unreplayed and unnoticed.
+ */
+export const WIRE_VECTOR_SECTIONS = [
+  'envelope',
+  'giftwrap',
+  'fulfilment',
+  'claim',
+] as const;
 
 // ─── Provenance ─────────────────────────────────────────────────────────────
 
