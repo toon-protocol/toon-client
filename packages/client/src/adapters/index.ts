@@ -27,6 +27,18 @@ export {
   type SelectIlpTransportOptions,
 } from './selectIlpTransport.js';
 export {
+  ConnectorEdgeClient,
+  ConnectorEdgeError,
+  connectorEdgeBaseUrl,
+  decodeConnectorPublicKey,
+  parseConnectorIdentity,
+  parseConnectorRoutePrice,
+  type ConnectorEdgeClientConfig,
+  type ConnectorEdgeErrorCode,
+  type ConnectorIdentity,
+  type ConnectorRoutePrice,
+} from './ConnectorEdgeClient.js';
+export {
   Http402Client,
   parseX402Challenge,
   parseX402Body,
