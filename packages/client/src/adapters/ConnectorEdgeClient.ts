@@ -1,0 +1,390 @@
+/**
+ * Ask a terminating connector who it is and what it charges — the step that
+ * has to happen BEFORE a packet can be formed at all.
+ *
+ * ADR 0018 makes holding the terminating connector's public key a
+ * precondition of forming a packet: `Prepare.data` is sealed to that key, and
+ * sealing to the wrong one is a confidentiality failure, not a delivery
+ * failure. ADR 0022 says the connector *answers* — it never announces — so
+ * both facts are fetched from the connector's own client edge, on the same
+ * origin this client already POSTs `/ilp` to
+ * (`docs/protocol/client-edge-spec.md` §1.7):
+ *
+ * - `GET /ilp/identity` → `{ "keyId": "...", "publicKey": "0x04..." }` — the
+ *   uncompressed secp256k1 key, 65 bytes, `0x`-prefixed hex.
+ * - `GET /ilp/routes/price?destination=<ILP address>` →
+ *   `{ "destination": "...", "price": 100 }`, or `404` when no
+ *   locally-terminated route matches.
+ *
+ * Both are unauthenticated and neither changes state.
+ *
+ * ─── What this module refuses to do ────────────────────────────────────────
+ * Unlike the 402-challenge parser next door (which degrades gracefully so an
+ * unrecognised connector shape falls back to the vanilla 402), an identity is
+ * parsed STRICTLY. A key that is the wrong length, not `0x04`-prefixed, or not
+ * valid hex is refused with a distinguishable error rather than carried
+ * forward: a half-understood key would be sealed to, and the failure would be
+ * silent. There is no "best effort" reading of a public key.
+ *
+ * Pure transport + parsing: no keys are held, nothing is signed, and the only
+ * state is the identity cache.
+ */
+
+import { NetworkError, ToonClientError } from '../errors.js';
+
+// ─── Identity ───────────────────────────────────────────────────────────────
+
+/** The terminating connector's own identity, as reported by `GET /ilp/identity`. */
+export interface ConnectorIdentity {
+  /** The key id identifying the key (opaque to this client). */
+  keyId: string;
+  /** The uncompressed secp256k1 public key — exactly 65 raw bytes, leading `0x04`. */
+  publicKey: Uint8Array;
+  /** The key exactly as reported, `0x`-prefixed lowercase hex (65 bytes → 132 chars). */
+  publicKeyHex: string;
+  /** The normalized client-edge base URL this identity was read from. */
+  endpoint: string;
+}
+
+/** What a locally-terminated route costs, as reported by `GET /ilp/routes/price`. */
+export interface ConnectorRoutePrice {
+  /** The ILP destination that was asked about (echoed by the connector). */
+  destination: string;
+  /** The price in ILP base units of the route `destination` matched. */
+  price: bigint;
+}
+
+/**
+ * Every distinguishable way asking a connector for its identity or terms can
+ * fail. Each code names exactly one cause; there is no catch-all, because the
+ * caller's next move differs per cause (retry a transport failure; never
+ * retry a malformed key).
+ */
+export type ConnectorEdgeErrorCode =
+  /** Non-2xx from `GET /ilp/identity`. */
+  | 'IDENTITY_HTTP_STATUS'
+  /** `GET /ilp/identity` answered 2xx with a body that is not the documented object. */
+  | 'IDENTITY_MALFORMED'
+  /** `publicKey` is present but is not `0x`-prefixed even-length hex. */
+  | 'IDENTITY_KEY_NOT_HEX'
+  /** `publicKey` decodes, but not to exactly 65 bytes. */
+  | 'IDENTITY_KEY_LENGTH'
+  /** `publicKey` is 65 bytes but does not start with the SEC1 uncompressed tag `0x04`. */
+  | 'IDENTITY_KEY_NOT_UNCOMPRESSED'
+  /** Non-2xx, non-404 from `GET /ilp/routes/price` (404 is not an error — see below). */
+  | 'ROUTE_PRICE_HTTP_STATUS'
+  /** `GET /ilp/routes/price` answered 2xx with a body that is not the documented object. */
+  | 'ROUTE_PRICE_MALFORMED'
+  /** A destination that cannot be put in a query string was asked about. */
+  | 'INVALID_DESTINATION';
+
+/**
+ * A refusal to carry a connector's answer forward. Distinct from
+ * {@link NetworkError} (which this module throws for a transport failure), so
+ * "the connector is unreachable" and "the connector answered something I will
+ * not seal to" are never confused.
+ */
+export class ConnectorEdgeError extends ToonClientError {
+  /** Narrowed from `ToonClientError`'s `string`; type-only, no runtime field. */
+  declare readonly code: ConnectorEdgeErrorCode;
+
+  constructor(message: string, code: ConnectorEdgeErrorCode, cause?: Error) {
+    super(message, code, cause);
+    this.name = 'ConnectorEdgeError';
+  }
+}
+
+// ─── URL handling ───────────────────────────────────────────────────────────
+
+/**
+ * Normalize any client-edge URL a caller already holds into the base the
+ * `/ilp/*` routes hang off.
+ *
+ * Callers reach this module holding whatever the x402 offer or their config
+ * gave them — `https://apex.example`, `https://apex.example/`, or the
+ * `POST /ilp` endpoint `https://apex.example/ilp` itself. All three name the
+ * same client edge, so all three normalize to `https://apex.example`.
+ */
+export function connectorEdgeBaseUrl(endpoint: string): string {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch (error) {
+    throw new ConnectorEdgeError(
+      `not a valid connector endpoint URL: ${endpoint}`,
+      'IDENTITY_MALFORMED',
+      error instanceof Error ? error : undefined
+    );
+  }
+  // Drop a trailing `/ilp` (the POST endpoint) and any trailing slashes.
+  let path = url.pathname.replace(/\/+$/, '');
+  if (path.endsWith('/ilp')) path = path.slice(0, -'/ilp'.length);
+  url.pathname = path;
+  url.search = '';
+  url.hash = '';
+  return url.toString().replace(/\/+$/, '');
+}
+
+// ─── Parsing (pure, exported so the wire shape is testable without a server) ─
+
+const UNCOMPRESSED_KEY_BYTES = 65;
+const SEC1_UNCOMPRESSED_TAG = 0x04;
+
+/**
+ * Decode a `0x`-prefixed hex public key into its 65 raw bytes, refusing
+ * anything that is not exactly one uncompressed secp256k1 key.
+ */
+export function decodeConnectorPublicKey(publicKeyHex: string): Uint8Array {
+  const trimmed = publicKeyHex.trim();
+  if (!/^0x[0-9a-fA-F]*$/.test(trimmed) || trimmed.length % 2 !== 0) {
+    throw new ConnectorEdgeError(
+      `connector publicKey is not 0x-prefixed hex: ${publicKeyHex}`,
+      'IDENTITY_KEY_NOT_HEX'
+    );
+  }
+  const hex = trimmed.slice(2);
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  if (bytes.length !== UNCOMPRESSED_KEY_BYTES) {
+    throw new ConnectorEdgeError(
+      `connector publicKey must be ${UNCOMPRESSED_KEY_BYTES} bytes, got ${bytes.length}`,
+      'IDENTITY_KEY_LENGTH'
+    );
+  }
+  const tag = bytes[0] ?? 0;
+  if (tag !== SEC1_UNCOMPRESSED_TAG) {
+    throw new ConnectorEdgeError(
+      `connector publicKey must be SEC1-uncompressed (0x04 prefix), got 0x${tag.toString(16).padStart(2, '0')}`,
+      'IDENTITY_KEY_NOT_UNCOMPRESSED'
+    );
+  }
+  return bytes;
+}
+
+/**
+ * Parse an already-decoded `GET /ilp/identity` body. Exported so the shape the
+ * connector actually emits can be pinned without standing up a server.
+ */
+export function parseConnectorIdentity(
+  body: unknown,
+  endpoint: string
+): ConnectorIdentity {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    throw new ConnectorEdgeError(
+      'GET /ilp/identity did not answer a JSON object',
+      'IDENTITY_MALFORMED'
+    );
+  }
+  const record = body as Record<string, unknown>;
+  const keyId = record['keyId'];
+  const publicKeyHex = record['publicKey'];
+  if (typeof keyId !== 'string' || keyId.length === 0) {
+    throw new ConnectorEdgeError(
+      'GET /ilp/identity answered without a keyId',
+      'IDENTITY_MALFORMED'
+    );
+  }
+  if (typeof publicKeyHex !== 'string' || publicKeyHex.length === 0) {
+    throw new ConnectorEdgeError(
+      'GET /ilp/identity answered without a publicKey',
+      'IDENTITY_MALFORMED'
+    );
+  }
+  return {
+    keyId,
+    publicKey: decodeConnectorPublicKey(publicKeyHex),
+    publicKeyHex: publicKeyHex.trim().toLowerCase(),
+    endpoint,
+  };
+}
+
+/** Parse an already-decoded `GET /ilp/routes/price` 200 body. */
+export function parseConnectorRoutePrice(body: unknown): ConnectorRoutePrice {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    throw new ConnectorEdgeError(
+      'GET /ilp/routes/price did not answer a JSON object',
+      'ROUTE_PRICE_MALFORMED'
+    );
+  }
+  const record = body as Record<string, unknown>;
+  const destination = record['destination'];
+  const price = record['price'];
+  if (typeof destination !== 'string' || destination.length === 0) {
+    throw new ConnectorEdgeError(
+      'GET /ilp/routes/price answered without a destination',
+      'ROUTE_PRICE_MALFORMED'
+    );
+  }
+  if (
+    typeof price !== 'number' ||
+    !Number.isFinite(price) ||
+    !Number.isInteger(price) ||
+    price < 0
+  ) {
+    throw new ConnectorEdgeError(
+      `GET /ilp/routes/price answered a non-integer price: ${String(price)}`,
+      'ROUTE_PRICE_MALFORMED'
+    );
+  }
+  return { destination, price: BigInt(price) };
+}
+
+// ─── Client ─────────────────────────────────────────────────────────────────
+
+export interface ConnectorEdgeClientConfig {
+  /** HTTP fetch implementation. Default: global `fetch`. Injectable for tests. */
+  fetch?: typeof fetch;
+  /** Per-request timeout in milliseconds. Default 10_000. */
+  timeout?: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+/**
+ * Asks connectors for their identity and their terms, caching each identity
+ * per client-edge endpoint.
+ *
+ * The cache is per endpoint rather than per client instance because a sender
+ * routinely speaks to several connectors, and re-fetching a key per packet
+ * would put a network round trip in front of every send. Nothing here expires
+ * on a timer: an operator key rotation is a deliberate event, so
+ * {@link invalidateIdentity} is the way a stale key is dropped.
+ */
+export class ConnectorEdgeClient {
+  private readonly fetchImpl: typeof fetch;
+  private readonly timeout: number;
+  private readonly identities = new Map<string, Promise<ConnectorIdentity>>();
+
+  constructor(config: ConnectorEdgeClientConfig = {}) {
+    this.fetchImpl = config.fetch ?? globalThis.fetch.bind(globalThis);
+    this.timeout = config.timeout ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  /**
+   * The terminating connector's public key, fetched once per endpoint.
+   *
+   * @param endpoint any client-edge URL (`https://apex`, `https://apex/ilp`).
+   * @param options `forceRefresh` bypasses (and replaces) the cache entry.
+   */
+  async getIdentity(
+    endpoint: string,
+    options: { forceRefresh?: boolean } = {}
+  ): Promise<ConnectorIdentity> {
+    const base = connectorEdgeBaseUrl(endpoint);
+    if (options.forceRefresh) this.identities.delete(base);
+
+    const cached = this.identities.get(base);
+    if (cached) return cached;
+
+    // Cache the in-flight promise so concurrent senders share one round trip;
+    // drop it again on failure so a transient error is not cached forever.
+    const inFlight = this.fetchIdentity(base).catch((error: unknown) => {
+      this.identities.delete(base);
+      throw error;
+    });
+    this.identities.set(base, inFlight);
+    return inFlight;
+  }
+
+  /**
+   * Drop a cached identity — one endpoint's, or every endpoint's when
+   * `endpoint` is omitted. The way to react to a key rotation.
+   */
+  invalidateIdentity(endpoint?: string): void {
+    if (endpoint === undefined) {
+      this.identities.clear();
+      return;
+    }
+    this.identities.delete(connectorEdgeBaseUrl(endpoint));
+  }
+
+  /** Whether an identity for `endpoint` is already held (no request is made). */
+  hasCachedIdentity(endpoint: string): boolean {
+    return this.identities.has(connectorEdgeBaseUrl(endpoint));
+  }
+
+  /**
+   * What `destination` costs at this connector, or `null` when the connector
+   * answers `404` — no locally-terminated route matches it.
+   *
+   * `null` is the answer to "you do not terminate this", which is information;
+   * a transport failure throws {@link NetworkError} instead, so a caller can
+   * always tell "not mine" from "could not ask".
+   */
+  async getRoutePrice(
+    endpoint: string,
+    destination: string
+  ): Promise<ConnectorRoutePrice | null> {
+    if (typeof destination !== 'string' || destination.trim().length === 0) {
+      throw new ConnectorEdgeError(
+        'a route price needs a non-empty ILP destination',
+        'INVALID_DESTINATION'
+      );
+    }
+    const base = connectorEdgeBaseUrl(endpoint);
+    const url = `${base}/ilp/routes/price?destination=${encodeURIComponent(destination)}`;
+    const response = await this.get(url);
+
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new ConnectorEdgeError(
+        `GET /ilp/routes/price answered ${response.status}`,
+        'ROUTE_PRICE_HTTP_STATUS'
+      );
+    }
+    return parseConnectorRoutePrice(
+      await this.readJson(response, 'ROUTE_PRICE_MALFORMED')
+    );
+  }
+
+  private async fetchIdentity(base: string): Promise<ConnectorIdentity> {
+    const response = await this.get(`${base}/ilp/identity`);
+    if (!response.ok) {
+      throw new ConnectorEdgeError(
+        `GET /ilp/identity answered ${response.status}`,
+        'IDENTITY_HTTP_STATUS'
+      );
+    }
+    return parseConnectorIdentity(
+      await this.readJson(response, 'IDENTITY_MALFORMED'),
+      base
+    );
+  }
+
+  private async readJson(
+    response: Response,
+    code: ConnectorEdgeErrorCode
+  ): Promise<unknown> {
+    try {
+      return await response.json();
+    } catch (error) {
+      throw new ConnectorEdgeError(
+        'connector answered a body that is not JSON',
+        code,
+        error instanceof Error ? error : undefined
+      );
+    }
+  }
+
+  /** GET with a timeout, mapping any transport failure onto {@link NetworkError}. */
+  private async get(url: string): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+    try {
+      return await this.fetchImpl(url, {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw new NetworkError(
+        `could not reach the connector client edge at ${url}`,
+        error instanceof Error ? error : undefined
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
