@@ -12,36 +12,46 @@
  * from those bytes — the caller never sees ILP.
  *
  * ─── x402 wire contract (the 402 challenge body) ────────────────────────────
- * The connector side (the 402 greeting + the `accepts` entries) is a separate,
- * NOT-YET-BUILT dependency, so we parse DEFENSIVELY (mirroring
- * `readDiscoveredIlpPeer` in selectIlpTransport.ts): a slightly different
- * connector shape should degrade gracefully (fall back to the vanilla 402)
- * rather than throw.
+ * The shipped connector answers x402 **v2** terms (`client-edge-spec.md` §1.4,
+ * `crates/connector-client-edge/src/lib.rs`), and that is the shape pinned by
+ * `Http402Client.connectorTerms.test.ts`:
  *
- * Expected 402 JSON body (x402 v1-ish):
  * ```jsonc
  * {
- *   "x402Version": 1,
+ *   "x402Version": 2,
+ *   "resource": { "url": "g.example.app" },
  *   "accepts": [
  *     {
- *       "scheme": "toon-channel",      // REQUIRED — selects the TOON option.
- *       "network": "evm:base:8453",    // optional — chain key (informational).
- *       "destination": "g.toon.apex",  // ILP destination address to pay (the
- *                                      //   connector route that fronts the URL).
- *       "amount": "1000",              // price in ILP base units (string|number).
- *       "httpEndpoint": "https://apex/ilp", // the connector's POST /ilp URL.
- *       "supportsUpgrade": true        // optional — host accepts the BTP upgrade.
+ *       "scheme": "toon-channel",
+ *       "network": "g.example.app",
+ *       "amount": "100",
+ *       "payTo": "g.example.app",
+ *       "maxTimeoutSeconds": 60,
+ *       "httpEndpoint": "/ilp",          // RELATIVE to the resource's origin.
+ *       "extra": { "ilpAddress": "g.example.app", "endpoint": "/ilp", "price": "100" }
  *     }
  *   ]
  * }
  * ```
  *
- * Field aliases read defensively (first present wins):
- *   - destination: `destination` | `ilpAddress` | `payTo` | `maxAmountRequired`'s
- *     sibling `payTo`. (We do NOT invent a value — a missing destination makes
- *     the entry unusable and we fall back to the vanilla 402.)
- *   - amount:      `amount` | `price` | `maxAmountRequired`.
- *   - httpEndpoint:`httpEndpoint` | `ilpEndpoint` | `endpoint`.
+ * Two things that shape forces, both easy to get wrong:
+ *   - The ILP address, the endpoint and the price live under **`extra`**. The
+ *     top-level `payTo` happens to equal the destination today, so reading it
+ *     appears to work — that is a coincidence of the connector's current code,
+ *     not a contract, so `extra` is read first.
+ *   - `httpEndpoint` is **relative**; it is resolved against the URL that
+ *     answered `402` (`Response.url`, or `parseX402Body`'s `baseUrl` argument).
+ *
+ * Everything is still parsed DEFENSIVELY (mirroring `readDiscoveredIlpPeer` in
+ * selectIlpTransport.ts): an unrecognised connector shape degrades to the
+ * vanilla 402 rather than throwing. Field aliases (first present wins):
+ *   - destination: `extra.ilpAddress` | `extra.destination` | `destination` |
+ *     `ilpAddress` | `payTo`. (We do NOT invent a value — a missing
+ *     destination makes the entry unusable and we fall back to the vanilla 402.)
+ *   - amount:      `extra.price` | `extra.amount` | `amount` | `price` |
+ *     `maxAmountRequired`.
+ *   - httpEndpoint:`httpEndpoint` | `ilpEndpoint` | `extra.httpEndpoint` |
+ *     `extra.endpoint` | `endpoint`.
  *   - upgrade:     `supportsUpgrade` | `upgradable`.
  *
  * ─── HTTP-in-ILP framing ────────────────────────────────────────────────────
@@ -353,10 +363,35 @@ function readAmount(
   for (const k of keys) {
     const v = obj[k];
     if (typeof v === 'bigint') return v;
-    if (typeof v === 'number' && Number.isFinite(v)) return BigInt(Math.trunc(v));
-    if (typeof v === 'string' && /^\d+$/.test(v.trim())) return BigInt(v.trim());
+    if (typeof v === 'number' && Number.isFinite(v))
+      return BigInt(Math.trunc(v));
+    if (typeof v === 'string' && /^\d+$/.test(v.trim()))
+      return BigInt(v.trim());
   }
   return undefined;
+}
+
+/**
+ * Turn an `httpEndpoint` into something fetchable.
+ *
+ * The Rust connector emits a RELATIVE endpoint (`"/ilp"`), because the terms
+ * describe an endpoint on the origin that answered. Resolved against the
+ * resource URL it becomes the absolute `POST /ilp` URL this adapter needs. An
+ * already-absolute endpoint is returned unchanged; a relative one with no base
+ * to resolve against is passed through as before, so nothing that worked
+ * previously stops working.
+ */
+function resolveEndpoint(
+  endpoint: string | undefined,
+  baseUrl: string | undefined
+): string | undefined {
+  if (!endpoint || !baseUrl) return endpoint;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(endpoint)) return endpoint;
+  try {
+    return new URL(endpoint, baseUrl).toString();
+  } catch {
+    return endpoint;
+  }
 }
 
 /**
@@ -375,11 +410,23 @@ export async function parseX402Challenge(
   } catch {
     return {};
   }
-  return parseX402Body(body);
+  // `response.url` is the resource that answered 402 — the base a relative
+  // `httpEndpoint` (which is what the Rust connector actually emits: `/ilp`)
+  // has to be resolved against.
+  return parseX402Body(body, response.url || undefined);
 }
 
-/** Pure parser over an already-decoded x402 body (testable without a Response). */
-export function parseX402Body(body: unknown): ParsedX402Challenge {
+/**
+ * Pure parser over an already-decoded x402 body (testable without a Response).
+ *
+ * `baseUrl`, when given, is the absolute URL of the resource that answered
+ * `402`; a relative `httpEndpoint` is resolved against it. Omitting it keeps
+ * the old behaviour of passing the endpoint through verbatim.
+ */
+export function parseX402Body(
+  body: unknown,
+  baseUrl?: string
+): ParsedX402Challenge {
   if (typeof body !== 'object' || body === null) return {};
   const b = body as Record<string, unknown>;
 
@@ -398,17 +445,28 @@ export function parseX402Body(body: unknown): ParsedX402Challenge {
     const scheme = readString(entry, ['scheme']);
     if (scheme !== 'toon-channel') continue;
 
-    const destination = readString(entry, [
-      'destination',
-      'ilpAddress',
-      'payTo',
-    ]);
-    const httpEndpoint = readString(entry, [
-      'httpEndpoint',
-      'ilpEndpoint',
-      'endpoint',
-    ]);
-    const amount = readAmount(entry, ['amount', 'price', 'maxAmountRequired']);
+    // The Rust connector puts the ILP address, the endpoint and the price
+    // under `extra` (`crates/connector-client-edge/src/lib.rs`, client-edge-spec
+    // §1.4) — NOT at the entry's top level. `extra` is therefore read as a
+    // first-class source, not a fallback: reading `payTo` instead only ever
+    // worked because that connector happens to set it to the destination too,
+    // which is a coincidence of today's code and not part of the contract.
+    const extra =
+      typeof entry['extra'] === 'object' && entry['extra'] !== null
+        ? (entry['extra'] as Record<string, unknown>)
+        : {};
+
+    const destination =
+      readString(extra, ['ilpAddress', 'destination']) ??
+      readString(entry, ['destination', 'ilpAddress', 'payTo']);
+    const rawEndpoint =
+      readString(entry, ['httpEndpoint', 'ilpEndpoint']) ??
+      readString(extra, ['httpEndpoint', 'endpoint']) ??
+      readString(entry, ['endpoint']);
+    const httpEndpoint = resolveEndpoint(rawEndpoint, baseUrl);
+    const amount =
+      readAmount(extra, ['price', 'amount']) ??
+      readAmount(entry, ['amount', 'price', 'maxAmountRequired']);
 
     // A usable entry MUST carry where to pay, how much, and how to reach /ilp.
     if (!destination || !httpEndpoint || amount === undefined) continue;
@@ -518,17 +576,14 @@ export function parseHttpResponse(bytes: Uint8Array): Response {
   const headerEnd = findHeaderEnd(bytes);
   // No header/body separator: treat the whole payload as a header block (some
   // bodiless responses may omit the trailing CRLFCRLF); fall back to end.
-  const headBytes =
-    headerEnd === -1 ? bytes : bytes.subarray(0, headerEnd - 2);
+  const headBytes = headerEnd === -1 ? bytes : bytes.subarray(0, headerEnd - 2);
   const body = headerEnd === -1 ? new Uint8Array(0) : bytes.subarray(headerEnd);
 
   const headText = decodeUtf8(headBytes);
   const lines = headText.split(CRLF).filter((l) => l.length > 0);
   const statusLine = lines.shift();
   if (!statusLine) {
-    throw new ConnectorError(
-      'h402 response payload had no HTTP status line'
-    );
+    throw new ConnectorError('h402 response payload had no HTTP status line');
   }
 
   // `HTTP/1.1 200 OK` — tolerate a missing reason phrase.
