@@ -1,5 +1,6 @@
 import type { IlpPeerInfo } from '@toon-protocol/core';
 import type { NostrEvent } from 'nostr-tools/pure';
+import type { EnvelopeResponse } from './wire/envelope.js';
 
 /**
  * Solana payment-channel parameters supplied via `ToonClientConfig.solanaChannel`.
@@ -457,11 +458,29 @@ export interface PublishEventResult {
   /** ID of the published event */
   eventId?: string;
 
-  /** FULFILL response data (base64-encoded), e.g. Arweave tx ID from DVM */
-  data?: string;
+  /**
+   * The destination's answer, opened from the sealed FULFILL: status, headers
+   * and body, exactly as the app behind the terminated route gave them.
+   *
+   * Present whenever the packet FULFILLED — including for a non-2xx status,
+   * which is envelope content rather than a packet outcome (ADR 0020): the
+   * answer arrived and value moved. Absent only when the packet was rejected.
+   */
+  response?: EnvelopeResponse;
 
   /** Error message if success is false */
   error?: string;
+
+  /**
+   * Who refused, when one did. `'destination'` is provable — the reject was
+   * sealed with this packet's own secret, which only the terminating
+   * connector could hold. `'path'` is a hop short of the termination, which
+   * shares no secret and so cannot authenticate anything it says.
+   */
+  refusedBy?: 'destination' | 'path';
+
+  /** The ILP reject code, when the packet was rejected. */
+  code?: string;
 }
 
 /**

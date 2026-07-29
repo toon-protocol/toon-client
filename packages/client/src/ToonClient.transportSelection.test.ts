@@ -11,8 +11,9 @@
  * neither transport can send a packet+claim.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ToonClient } from './ToonClient.js';
+import { FakeTerminatingConnector } from './wire/fake-connector.test-support.js';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type { SignedBalanceProof } from './types.js';
 
@@ -56,12 +57,33 @@ function makeProof(): SignedBalanceProof {
   } as unknown as SignedBalanceProof;
 }
 
+// `publishEvent` now seals to the terminating connector's identity, so every
+// send in this file needs one to seal to and one that can answer. Which
+// TRANSPORT carried the packet is what these tests are about; the seal is just
+// what a packet is made of now.
+let connector: FakeTerminatingConnector;
+let realFetch: typeof fetch;
+
+beforeEach(() => {
+  connector = new FakeTerminatingConnector();
+  realFetch = globalThis.fetch;
+  globalThis.fetch = connector.fetch;
+});
+
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
+/** A transport that answers as the fake connector would. */
+const sealedSend = () =>
+  vi.fn(async (params: { data: string }) => connector.fulfill(params.data));
+
 describe('ToonClient paid-write transport selection', () => {
   it('publishEvent routes through runtimeClient (HTTP proxy) when it implements sendIlpPacketWithClaim', async () => {
     const client = new ToonClient(baseConfig());
 
-    const httpSend = vi.fn(async () => ({ accepted: true }));
-    const btpSend = vi.fn(async () => ({ accepted: true }));
+    const httpSend = sealedSend();
+    const btpSend = sealedSend();
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (client as any).state = {
@@ -84,8 +106,8 @@ describe('ToonClient paid-write transport selection', () => {
 
   it('prefers runtimeClient over btpClient when both implement the claim method', async () => {
     const client = new ToonClient(baseConfig());
-    const httpSend = vi.fn(async () => ({ accepted: true }));
-    const btpSend = vi.fn(async () => ({ accepted: true }));
+    const httpSend = sealedSend();
+    const btpSend = sealedSend();
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (client as any).state = {
@@ -103,7 +125,7 @@ describe('ToonClient paid-write transport selection', () => {
 
   it('falls back to btpClient when runtimeClient lacks the claim method', async () => {
     const client = new ToonClient(baseConfig());
-    const btpSend = vi.fn(async () => ({ accepted: true }));
+    const btpSend = sealedSend();
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (client as any).state = {

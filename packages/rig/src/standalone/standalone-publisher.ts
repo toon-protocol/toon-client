@@ -36,7 +36,7 @@ import type {
   SignedBalanceProof,
   ToonClientConfig,
 } from '@toon-protocol/client';
-import { ToonClient, parseFulfillHttp } from '@toon-protocol/client';
+import { ToonClient, extractArweaveTxId } from '@toon-protocol/client';
 import { MAX_OBJECT_SIZE } from '../objects.js';
 import { contentTypeForPath, DEFAULT_CONTENT_TYPE } from '../mime.js';
 import type { UnsignedEvent } from '../nip34-events.js';
@@ -258,69 +258,19 @@ export function deriveRouteDestinations(anchor: string): {
 }
 
 // ---------------------------------------------------------------------------
-// FULFILL → Arweave txId (mirrors @toon-protocol/client blob-storage.ts,
-// whose extractor is not exported; uses the exported parseFulfillHttp)
+// FULFILL → Arweave txId
 // ---------------------------------------------------------------------------
 
-/** Arweave tx IDs are base64url-encoded 32-byte values (43 chars). */
-const ARWEAVE_TX_ID_REGEX = /^[A-Za-z0-9_-]{43}$/;
-
 /**
- * Decode the Arweave txId from a store-write FULFILL. The deployed payment
- * proxy returns the store's verbatim HTTP/1.1 response
- * (`{"accept":true,"txId":…}` body); legacy non-proxy providers return bare
- * `base64(utf8(txId))`.
+ * Decode the Arweave txId from a store-write answer.
  *
- * @throws {StandalonePublishError} when no valid txId can be extracted.
+ * Re-exported from `@toon-protocol/client` rather than reimplemented: this
+ * file used to carry its own copy because the client's extractor was thought
+ * not to be exported. It is (and always was), and now that the answer is a
+ * sealed response envelope rather than HTTP text there is exactly one shape
+ * to read — a second reader of it could only drift.
  */
-export function extractArweaveTxId(base64Data: string): string {
-  const http = parseFulfillHttp(base64Data);
-
-  if (!http.isHttp) {
-    const legacy = Buffer.from(base64Data, 'base64').toString('utf8');
-    if (!ARWEAVE_TX_ID_REGEX.test(legacy)) {
-      throw new StandalonePublishError(
-        `FULFILL data is not a valid Arweave tx ID: "${legacy}"`
-      );
-    }
-    return legacy;
-  }
-
-  if (http.status < 200 || http.status >= 300) {
-    throw new StandalonePublishError(
-      `git-object upload failed: store returned HTTP ${http.status}` +
-        (http.body ? ` - ${http.body}` : '')
-    );
-  }
-
-  let parsed: { accept?: boolean; txId?: unknown; data?: unknown; error?: unknown };
-  try {
-    parsed = JSON.parse(http.body) as typeof parsed;
-  } catch {
-    throw new StandalonePublishError(
-      `git-object upload response body was not valid JSON: "${http.body}"`
-    );
-  }
-
-  if (parsed.accept === false) {
-    const reason = typeof parsed.error === 'string' ? `: ${parsed.error}` : '';
-    throw new StandalonePublishError(
-      `git-object upload rejected by store (accept:false)${reason}`
-    );
-  }
-
-  if (typeof parsed.txId === 'string' && ARWEAVE_TX_ID_REGEX.test(parsed.txId)) {
-    return parsed.txId;
-  }
-  if (typeof parsed.data === 'string' && parsed.data.length > 0) {
-    const decoded = Buffer.from(parsed.data, 'base64').toString('utf8');
-    if (ARWEAVE_TX_ID_REGEX.test(decoded)) return decoded;
-  }
-
-  throw new StandalonePublishError(
-    `git-object upload response did not contain a valid Arweave tx ID: "${http.body}"`
-  );
-}
+export { extractArweaveTxId };
 
 // ---------------------------------------------------------------------------
 // Channel-resume introspection (#262)
@@ -1034,12 +984,12 @@ export class StandalonePublisher implements Publisher {
         `git-object upload rejected (${upload.sha}): ${result.error ?? 'store rejected the write'}`
       );
     }
-    if (!result.data) {
+    if (!result.response) {
       throw new StandalonePublishError(
-        `git-object upload FULFILL carried no data (${upload.sha}); expected the Arweave tx ID`
+        `git-object upload FULFILL carried no sealed response (${upload.sha}); expected the Arweave tx ID`
       );
     }
-    return { txId: extractArweaveTxId(result.data), feePaid: fee };
+    return { txId: extractArweaveTxId(result.response), feePaid: fee };
   }
 
   /**
@@ -1085,12 +1035,12 @@ export class StandalonePublisher implements Publisher {
         `blob upload rejected: ${result.error ?? 'store rejected the write'}`
       );
     }
-    if (!result.data) {
+    if (!result.response) {
       throw new StandalonePublishError(
-        'blob upload FULFILL carried no data; expected the Arweave tx ID'
+        'blob upload FULFILL carried no sealed response; expected the Arweave tx ID'
       );
     }
-    return { txId: extractArweaveTxId(result.data), feePaid: fee };
+    return { txId: extractArweaveTxId(result.response), feePaid: fee };
   }
 
   /**
