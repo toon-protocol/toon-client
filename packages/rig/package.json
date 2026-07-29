@@ -1,16 +1,15 @@
 {
   "name": "@toon-protocol/rig",
-  "version": "2.14.0",
+  "version": "3.0.0",
   "description": "Git-to-TOON write path core — build git objects and NIP-34 events for the Rig control plane",
   "license": "MIT",
   "author": "Jonathan Green",
+  "//": "NOT PUBLISHED FROM THIS REPO. @toon-protocol/rig on npm is owned by github.com/toon-protocol/rig. This copy stays in the workspace because client-mcp bundles it and the local `rig` CLI builds from here; `private: true` is what keeps changesets from publishing it again.",
+  "private": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/toon-protocol/toon-client.git",
     "directory": "packages/rig"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "keywords": [
     "git",

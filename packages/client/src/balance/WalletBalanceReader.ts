@@ -75,6 +75,31 @@ export function parseEvmChainId(chainKey: string): number {
   return id;
 }
 
+/**
+ * Per-request network timeout (ms) for ONE wallet-balance RPC/GraphQL call.
+ * Node's global `fetch` has NO default timeout, so a single stalled socket would
+ * otherwise hang the entire multi-chain read until the caller's outer bound —
+ * making one flaky endpoint hide the balances of every chain. Bounding each call
+ * (viem's own `timeout` for EVM; an AbortSignal for the Solana/Mina `fetch`)
+ * lets a slow endpoint degrade only its own chain to `unreadable`. Env override
+ * `TOON_WALLET_RPC_TIMEOUT_MS` (`0` disables).
+ */
+const RPC_TIMEOUT_ENV = 'TOON_WALLET_RPC_TIMEOUT_MS';
+const DEFAULT_RPC_TIMEOUT_MS = 8_000;
+
+function rpcTimeoutMs(): number {
+  const raw =
+    typeof process !== 'undefined' ? process.env?.[RPC_TIMEOUT_ENV] : undefined;
+  const n = raw === undefined || raw === '' ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RPC_TIMEOUT_MS;
+}
+
+/** AbortSignal firing after {@link rpcTimeoutMs}; undefined when disabled (`0`). */
+function rpcAbortSignal(): AbortSignal | undefined {
+  const ms = rpcTimeoutMs();
+  return ms > 0 ? AbortSignal.timeout(ms) : undefined;
+}
+
 /** Read an ERC-20 token balance (balance + decimals + symbol) for `owner`. */
 export async function readEvmTokenBalance(opts: {
   rpcUrl: string;
@@ -84,7 +109,7 @@ export async function readEvmTokenBalance(opts: {
 }): Promise<WalletBalance> {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
-    transport: http(opts.rpcUrl),
+    transport: http(opts.rpcUrl, { timeout: rpcTimeoutMs() || undefined, retryCount: 1 }),
     chain: defineChain({
       id: chainId,
       name: opts.chainKey,
@@ -113,7 +138,7 @@ export async function readEvmNativeBalance(opts: {
 }): Promise<WalletTokenAmount> {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
-    transport: http(opts.rpcUrl),
+    transport: http(opts.rpcUrl, { timeout: rpcTimeoutMs() || undefined, retryCount: 1 }),
     chain: defineChain({
       id: chainId,
       name: opts.chainKey,
@@ -141,6 +166,7 @@ export async function readSolanaNativeBalance(opts: {
       method: 'getBalance',
       params: [opts.owner, { commitment: 'confirmed' }],
     }),
+    signal: rpcAbortSignal(),
   });
   if (!res.ok) throw new Error(`Solana RPC request failed: HTTP ${res.status}`);
   const json = (await res.json()) as {
@@ -169,6 +195,7 @@ export async function readSolanaTokenBalance(opts: {
       method: 'getTokenAccountsByOwner',
       params: [opts.owner, { mint: opts.mint }, { encoding: 'jsonParsed', commitment: 'confirmed' }],
     }),
+    signal: rpcAbortSignal(),
   });
   if (!res.ok) throw new Error(`Solana RPC request failed: HTTP ${res.status}`);
   const json = (await res.json()) as {
@@ -200,6 +227,7 @@ export async function readMinaBalance(opts: {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query, variables: { pk: opts.owner } }),
+    signal: rpcAbortSignal(),
   });
   if (!res.ok) throw new Error(`Mina GraphQL request failed: HTTP ${res.status}`);
   const json = (await res.json()) as {
@@ -274,7 +302,8 @@ export function minaTokenIdToBase58(tokenId: string): string {
  * Unlike {@link readMinaBalance} (native MINA), this passes the settlement
  * `tokenId` so the GraphQL `account(publicKey, token)` query returns the
  * token-specific balance. An account holding none of the token resolves to
- * `null` → reported as `0`. Same 9-decimal scale as native Mina amounts.
+ * `null` → reported as `0`. Reported at the 6-decimal settlement-USDC scale —
+ * NOT native MINA's 9 (see the `assetScale` comment below).
  */
 export async function readMinaTokenBalance(opts: {
   graphqlUrl: string;
@@ -290,6 +319,7 @@ export async function readMinaTokenBalance(opts: {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query, variables: { pk: opts.owner, t: token } }),
+    signal: rpcAbortSignal(),
   });
   if (!res.ok) throw new Error(`Mina GraphQL request failed: HTTP ${res.status}`);
   const json = (await res.json()) as {
@@ -304,7 +334,10 @@ export async function readMinaTokenBalance(opts: {
     address: opts.owner,
     amount: String(json.data?.account?.balance?.total ?? '0'),
     asset: 'USDC',
-    assetScale: 9,
+    // TOON's settlement USDC is 6-decimal on every chain (assetScale 6), unlike
+    // native MINA's 9. The Mina custom-token amount is a raw u64, so scale it at
+    // 6 — otherwise a 50 USDC balance (50_000000) misreads as 0.05.
+    assetScale: 6,
   };
 }
 

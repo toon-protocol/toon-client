@@ -18,7 +18,9 @@ jobs:
 
       - name: Require changeset when publishable packages change
         run: |
-          PUBLISHABLE="packages/client packages/client-mcp packages/views packages/rig packages/arweave"
+          # packages/rig is deliberately absent: @toon-protocol/rig on npm is
+          # published from github.com/toon-protocol/rig, not from here.
+          PUBLISHABLE="packages/client packages/client-mcp packages/views packages/arweave"
           changed=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
           needs_changeset=false
           for pkg in $PUBLISHABLE; do
