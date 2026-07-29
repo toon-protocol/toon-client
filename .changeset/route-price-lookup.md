@@ -1,5 +1,5 @@
 ---
-'@toon-protocol/client': major
+'@toon-protocol/client': minor
 '@toon-protocol/rig': major
 '@toon-protocol/client-mcp': minor
 ---
