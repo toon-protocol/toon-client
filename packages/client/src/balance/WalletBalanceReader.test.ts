@@ -178,7 +178,8 @@ describe('readMinaTokenBalance', () => {
       address: 'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im4oG6',
       amount: '4200000',
       asset: 'USDC',
-      assetScale: 9,
+      // 6-decimal settlement USDC (not native MINA's 9): 4_200000 → 4.2 USDC.
+      assetScale: 6,
     });
   });
 
@@ -349,7 +350,7 @@ describe('readWalletBalances (grouped multi-chain view)', () => {
       chainKey: 'mina',
       address: 'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im4oG6',
       native: { symbol: 'MINA', amount: '3000000000', decimals: 9 },
-      tokens: [{ symbol: 'USDC', amount: '4200000', decimals: 9 }],
+      tokens: [{ symbol: 'USDC', amount: '4200000', decimals: 6 }],
     });
   });
 
