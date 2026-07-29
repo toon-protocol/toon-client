@@ -22,11 +22,12 @@
  *   - an untracked channel still falls back to the EVM claim.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ToonClient } from './ToonClient.js';
 import { ChannelManager } from './channel/ChannelManager.js';
 import { EvmSigner } from './signing/evm-signer.js';
 import { SolanaSigner } from './signing/solana-signer.js';
+import { FakeTerminatingConnector } from './wire/fake-connector.test-support.js';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type { SignedBalanceProof } from './types.js';
 
@@ -98,11 +99,26 @@ function makeEvmProof(): SignedBalanceProof {
   } as unknown as SignedBalanceProof;
 }
 
+// The claim's SHAPE is what this file is about, but a publish now has to form
+// a real sealed packet to get as far as attaching one — so there is a fake
+// terminating connector here to seal to, and to answer.
+let connector: FakeTerminatingConnector;
+let realFetch: typeof fetch;
+
+beforeEach(() => {
+  connector = new FakeTerminatingConnector();
+  realFetch = globalThis.fetch;
+  globalThis.fetch = connector.fetch;
+});
+
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
 function injectState(client: ToonClient) {
-  const sendIlpPacketWithClaim = vi.fn(async () => ({
-    accepted: true,
-    data: undefined,
-  }));
+  const sendIlpPacketWithClaim = vi.fn(async (params: { data: string }) =>
+    connector.fulfill(params.data)
+  );
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (client as any).state = {
     bootstrapService: {},

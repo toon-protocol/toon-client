@@ -33,7 +33,6 @@ export {
   type HttpIlpClientConfig,
   httpEndpointToBtpUrl,
   ILP_CLAIM_HEADER,
-  ILP_CLAIM_WRAPPED_HEADER,
   ILP_PEER_ID_HEADER,
   selectIlpTransport,
   readDiscoveredIlpPeer,
@@ -153,12 +152,6 @@ export {
 
 // Utilities
 export { withRetry, type RetryOptions } from './utils/index.js';
-export { buildStoreWriteEnvelope } from './utils/store-envelope.js';
-export {
-  parseFulfillHttp,
-  parseFulfillHttpBytes,
-  type ParsedFulfillHttp,
-} from './utils/fulfill-http.js';
 
 // Sender-chosen ILP execution conditions (toon-client#350, rolling-swap
 // prerequisite; contract: connector docs/local-delivery-fulfillment-contract.md)
@@ -325,13 +318,16 @@ export {
   type MinaZkAppDeployRecord,
 } from './channel/mina-channel-deploy.js';
 
-// The structured wire (ADR 0018): the OER envelope codec the terminating
-// connector speaks, the gift wrap that seals it to that connector's identity
-// key, and the fulfilment a sealed request's shared secret derives (ADR 0019)
-// — all replayed byte-for-byte against the connector's committed cross-repo
-// vectors (`src/wire/vectors/`). Additive and unconsumed — the latin1 HTTP
-// framing in `utils/store-envelope.ts` / `utils/fulfill-http.ts` is still what
-// the live send path uses; swapping it is a later child (toon-client#450).
+// The structured wire (ADR 0018/0019/0020): the OER envelope codec the
+// terminating connector speaks, the gift wrap that seals it to that
+// connector's identity key, the fulfilment a sealed request's shared secret
+// derives (ADR 0019), and the exchange that binds all three into one packet —
+// all replayed byte-for-byte against the connector's committed cross-repo
+// vectors (`src/wire/vectors/`).
+//
+// This IS the live paid-write path as of toon-client#450: the latin1 HTTP
+// framing that preceded it (`utils/store-envelope.ts`, `utils/fulfill-http.ts`)
+// is gone, along with its exports.
 //
 // `fulfillmentMatchesCondition` is deliberately NOT re-exported from
 // `wire/giftwrap.ts`: the one exported above from `utils/condition.ts` is the
@@ -373,7 +369,14 @@ export {
   type EnvelopeHeader,
   type EnvelopeRequest,
   type EnvelopeResponse,
+  sealExchange,
+  readExchangeOutcome,
+  envelopeHeader,
+  SealedResponseError,
   type GiftWrapEcdh,
   type OpenedRequest,
   type SealedRequest,
+  type SealedExchange,
+  type ExchangeOutcome,
+  type SealedResponseErrorKind,
 } from './wire/index.js';

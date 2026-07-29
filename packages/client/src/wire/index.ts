@@ -6,8 +6,10 @@
  * derives (ADR 0019) — each checked against the connector's committed
  * cross-repo vectors in `wire-vectors.test.ts`.
  *
- * Additive and unconsumed: rewiring the live send path onto them is
- * toon-client#450.
+ * `sealed-exchange.ts` binds them into the one thing a sender actually forms:
+ * a sealed request, the condition that matches it, and the reader for the
+ * answer that comes back. It is what `ToonClient.publishEvent` sends
+ * (toon-client#450).
  */
 
 export {
@@ -57,3 +59,13 @@ export {
   type OpenedRequest,
   type SealedRequest,
 } from './giftwrap.js';
+
+export {
+  sealExchange,
+  readExchangeOutcome,
+  envelopeHeader,
+  SealedResponseError,
+  type SealedExchange,
+  type ExchangeOutcome,
+  type SealedResponseErrorKind,
+} from './sealed-exchange.js';

@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { MAX_OBJECT_SIZE, type RemoteState } from '@toon-protocol/rig';
+import type { PublishEventResult } from '@toon-protocol/client';
 import { registerRoutes } from './routes.js';
 import { ClientRunner, type ToonClientLike } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
@@ -126,12 +127,16 @@ function txIdFor(sha: string): string {
   return `${sha}AAA`; // 40 hex + 3 pad = 43 chars, all in [A-Za-z0-9_-]
 }
 
-/** FULFILL data: the payment-proxy's verbatim HTTP response, base64. */
-function storeFulfill(txId: string): string {
-  const body = JSON.stringify({ accept: true, txId });
-  return Buffer.from(
-    `HTTP/1.1 200 OK\r\ncontent-length: ${body.length}\r\n\r\n${body}`
-  ).toString('base64');
+/**
+ * The store's answer as the terminating connector seals it (ADR 0018): a
+ * response envelope, which `publishEvent` opens and returns as `response`.
+ */
+function storeAnswer(txId: string) {
+  return {
+    status: 200,
+    headers: [['content-type', 'application/json']] as [string, string][],
+    body: new TextEncoder().encode(JSON.stringify({ accept: true, txId })),
+  };
 }
 
 interface RecordedPublish {
@@ -174,7 +179,7 @@ class FakeClient implements ToonClientLike {
   async publishEvent(
     event: NostrEvent,
     options?: RecordedPublish['options']
-  ): Promise<{ success: boolean; eventId?: string; data?: string; error?: string }> {
+  ): Promise<PublishEventResult> {
     this.publishes.push({ event, ...(options ? { options } : {}) });
     if (options?.proxyPath === '/store') {
       if (this.storeFailure) return { success: false, error: this.storeFailure };
@@ -182,7 +187,7 @@ class FakeClient implements ToonClientLike {
       return {
         success: true,
         eventId: event.id,
-        data: storeFulfill(txIdFor(sha)),
+        response: storeAnswer(txIdFor(sha)),
       };
     }
     return { success: true, eventId: event.id };

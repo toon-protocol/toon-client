@@ -8,9 +8,20 @@ import type {
 } from '@toon-protocol/core';
 import type { NetworkFamilyStatus } from '@toon-protocol/core';
 import { validateConfig, applyDefaults, getNetworkStatus } from './config.js';
-import { toBase64 } from './utils/binary.js';
-import { buildStoreWriteEnvelope } from './utils/store-envelope.js';
-import { parseFulfillHttp } from './utils/fulfill-http.js';
+import {
+  toBase64,
+  fromBase64,
+  encodeUtf8,
+  decodeUtf8,
+} from './utils/binary.js';
+import {
+  ConnectorEdgeClient,
+  connectorEdgeBaseUrl,
+} from './adapters/ConnectorEdgeClient.js';
+import {
+  readExchangeOutcome,
+  sealExchange,
+} from './wire/sealed-exchange.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import { ToonClientError } from './errors.js';
@@ -150,6 +161,17 @@ export class ToonClient {
   /** Concrete on-chain client, kept so deposit/withdraw can reach chain methods. */
   private onChainChannelClient?: OnChainChannelClient;
   private readonly peerNegotiations = new Map<string, PeerNegotiation>();
+  /**
+   * Asks terminating connectors for their identity key, caching one per
+   * client edge. A packet cannot be formed without the key of the connector
+   * that terminates it (ADR 0018), so this is reached on every paid write.
+   */
+  private readonly connectorEdge = new ConnectorEdgeClient({
+    // Resolve `fetch` per call rather than binding it once: a host that
+    // installs its own global (and a test that swaps one in) must be the one
+    // this reaches, whenever it is reached.
+    fetch: (input, init) => globalThis.fetch(input, init),
+  });
 
   /**
    * Creates a new ToonClient instance.
@@ -525,15 +547,37 @@ export class ToonClient {
   }
 
   /**
-   * Publishes a Nostr event to the relay via ILP payment.
+   * Publishes a Nostr event through the connector that terminates
+   * `destination`, as a sealed, condition-bearing paid write (ADR 0018/0019).
    *
-   * The event must already be finalized (signed with id, pubkey, sig).
+   * What crosses the wire, in order:
+   *
+   * 1. **The terminating connector's identity is fetched first.** `data` is
+   *    sealed to that key, so a packet cannot be formed without it — and
+   *    there is no default to fall back to, because sealing to the wrong key
+   *    is a confidentiality failure that merely presents as undeliverable.
+   * 2. **The event becomes an OER `EnvelopeRequest`** — `POST <proxyPath>`
+   *    carrying `{"event": …}` — never HTTP text.
+   * 3. **The PREPARE carries a real execution condition**, minted as
+   *    `sha256` of the fulfilment derived from the secret sealed inside the
+   *    wrap. The transport verifies the returned preimage against it, so a
+   *    FULFILL nobody could have earned is counted failed rather than
+   *    accepted.
+   * 4. **The answer is opened with that same secret.** A FULFILL carries a
+   *    sealed response envelope; a REJECT sealed at the termination means the
+   *    destination refused, and a plaintext one means somebody on the path
+   *    did. `refusedBy` keeps those apart.
+   *
+   * An HTTP status inside the response envelope is envelope CONTENT, not a
+   * packet outcome (ADR 0020): a 404 rides home on a FULFILL and value moved.
+   * This method still reports a non-2xx as `success: false` — the event did
+   * not persist — but `response` is populated either way, so a caller can see
+   * exactly what it paid for.
    *
    * @param event - Signed Nostr event to publish
-   * @param options - Optional options including destination and signed balance proof claim
-   * @returns Result with success status and event ID
-   * @throws {ToonClientError} If client is not started
-   * @throws {ToonClientError} If event publishing fails
+   * @param options - Optional destination, claim, amount and request target
+   * @throws {ToonClientError} If the client is not started, the terminating
+   *   connector's identity cannot be obtained, or the send fails outright.
    */
   async publishEvent(
     event: NostrEvent,
@@ -541,8 +585,8 @@ export class ToonClient {
       destination?: string;
       claim?: SignedBalanceProof;
       ilpAmount?: bigint;
-      /** HTTP request-target the payment-proxy replays (default '/write', the
-       *  relay; use '/store' for the Arweave store/DVM backend). */
+      /** Request-target inside the envelope (default '/write', the relay;
+       *  use '/store' for the Arweave store backend). */
       proxyPath?: string;
     }
   ): Promise<PublishEventResult> {
@@ -554,36 +598,36 @@ export class ToonClient {
     }
 
     try {
-      // Encode event to TOON format. This is used ONLY to PRICE the write
-      // (basePricePerByte * encoded size); the bytes sent on the wire are the
-      // HTTP store-write envelope built below.
+      // Encode the event to TOON only to PRICE the write; the bytes on the
+      // wire are the sealed envelope built below.
       const toonData = this.config.toonEncoder(event);
-
-      // Calculate payment amount: basePricePerByte * encoded size.
-      // Callers may override via options.ilpAmount (e.g. 0n for free relays).
       const basePricePerByte = 10n;
       const amount =
         options?.ilpAmount !== undefined
           ? String(options.ilpAmount)
           : String(BigInt(toonData.length) * basePricePerByte);
 
-      // The deployed connector is a payment-proxy: it terminates the paid write
-      // as HTTP-in-ILP, decoding the ILP PREPARE `data` as a literal HTTP/1.1
-      // request and reverse-proxying it to the relay store's `POST /write`. The
-      // wire data must therefore be a full HTTP request envelope carrying the
-      // signed event as `{"event": <event object>}` JSON — NOT the bare TOON
-      // bytes (those make the proxy reject with F01 - malformed request-line).
-      // See utils/store-envelope.ts. `sendSwapPacket` (swap peer swaps) is a separate
-      // surface with a raw-TOON contract and is intentionally NOT wrapped here.
-      const writeData = buildStoreWriteEnvelope(event, options?.proxyPath);
-
-      // Use provided destination or fall back to config default
       const destination =
         options?.destination ?? this.config.destinationAddress;
 
-      // Resolve the active paid-write transport (proxy ILP-over-HTTP or BTP).
-      const transport = this.getClaimTransport();
+      // (1) The key first — no packet exists without it.
+      const identity = await this.connectorEdge.getIdentity(
+        this.resolveClientEdgeEndpoint()
+      );
 
+      // (2)+(3) One call mints the envelope's seal and the condition that
+      // matches it, so the two can never drift apart.
+      const exchange = sealExchange(
+        {
+          method: 'POST',
+          target: options?.proxyPath ?? '/write',
+          headers: [['content-type', 'application/json']],
+          body: encodeUtf8(JSON.stringify({ event })),
+        },
+        identity.publicKey
+      );
+
+      const transport = this.getClaimTransport();
       const claimMessage = await this.resolveClaimForDestination(
         destination,
         BigInt(amount),
@@ -594,44 +638,47 @@ export class ToonClient {
         {
           destination,
           amount,
-          data: toBase64(writeData),
+          data: toBase64(exchange.data),
+          executionCondition: exchange.condition,
         },
         claimMessage
       );
 
-      if (!response.accepted) {
+      // (4) Open the answer with the secret this packet sealed.
+      const outcome = readExchangeOutcome(
+        response,
+        response.data === undefined ? undefined : fromBase64(response.data),
+        exchange.sharedSecret
+      );
+
+      if (outcome.kind === 'destination-refused') {
         return {
           success: false,
-          error: `Event rejected: ${response.code} - ${response.message}`,
+          refusedBy: 'destination',
+          code: outcome.code,
+          error: `Destination refused the write: ${outcome.code} - ${outcome.message}`,
+        };
+      }
+      if (outcome.kind === 'path-refused') {
+        return {
+          success: false,
+          refusedBy: 'path',
+          code: outcome.code,
+          error: `A connector on the path refused the write: ${outcome.code} - ${outcome.message}`,
         };
       }
 
-      // The connector is a payment-proxy: an ACCEPTED ILP FULFILL only means
-      // the PAYMENT cleared, not that the relay STORE persisted the event. The
-      // FULFILL `data` carries the relay's verbatim HTTP/1.1 response, so a
-      // write can FAIL (e.g. `HTTP/1.1 404 Not Found`) inside a successful
-      // FULFILL. Parse the envelope and fail the publish on a non-2xx status so
-      // we never report a fake `eventId` for a write that did not persist.
-      //
-      // DEFENSIVE: if the FULFILL data is not HTTP-enveloped (legacy / non-proxy
-      // relays may return bare data), `isHttp` is false and we preserve the
-      // prior behavior (treat an accepted FULFILL as success).
-      if (response.data) {
-        const httpResult = parseFulfillHttp(response.data);
-        if (httpResult.isHttp && (httpResult.status < 200 || httpResult.status >= 300)) {
-          const detail = httpResult.body ? ` - ${httpResult.body}` : '';
-          return {
-            success: false,
-            error: `Write failed: relay returned HTTP ${httpResult.status} ${httpResult.statusText}`.trimEnd() + detail,
-          };
-        }
+      const { response: answer } = outcome;
+      if (answer.status < 200 || answer.status >= 300) {
+        const detail = answer.body.length > 0 ? ` - ${decodeUtf8(answer.body)}` : '';
+        return {
+          success: false,
+          response: answer,
+          error: `Write failed: the destination answered HTTP ${answer.status}${detail}`,
+        };
       }
 
-      return {
-        success: true,
-        eventId: event.id,
-        data: response.data,
-      };
+      return { success: true, eventId: event.id, response: answer };
     } catch (error) {
       console.error(
         '[ToonClient.publishEvent] ROOT CAUSE:',
@@ -644,6 +691,36 @@ export class ToonClient {
         error instanceof Error ? error : undefined
       );
     }
+  }
+
+  /**
+   * The client edge `/ilp/identity` and `/ilp/routes/price` hang off — the
+   * same origin paid writes already POST `/ilp` to.
+   *
+   * Preferring the live transport's own endpoint over config is deliberate:
+   * transport selection may have followed a discovered `httpEndpoint`, and
+   * the identity must come from the connector actually being paid, not from
+   * whatever URL was configured before discovery ran.
+   *
+   * @throws {ToonClientError} NO_CONNECTOR_EDGE when no origin is known.
+   */
+  private resolveClientEdgeEndpoint(): string {
+    const runtime = this.state?.runtimeClient as
+      | { clientEdgeEndpoint?: string }
+      | undefined;
+    const endpoint =
+      runtime?.clientEdgeEndpoint ??
+      this.config.proxyUrl ??
+      this.config.connectorUrl;
+    if (!endpoint) {
+      throw new ToonClientError(
+        'No connector client edge to ask for an identity. Configure `proxyUrl` or ' +
+          '`connectorUrl`; a payload cannot be sealed without the terminating ' +
+          "connector's key (ADR 0018).",
+        'NO_CONNECTOR_EDGE'
+      );
+    }
+    return connectorEdgeBaseUrl(endpoint);
   }
 
   /**

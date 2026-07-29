@@ -20,7 +20,6 @@ import {
 import { DaemonIdentityConflictError, StandaloneLockError } from './nonce-guard.js';
 import {
   StandalonePublisher,
-  StandalonePublishError,
   deriveRouteDestinations,
   extractArweaveTxId,
   type SignedNostrEvent,
@@ -30,12 +29,17 @@ import {
 const PUBKEY = 'c'.repeat(64);
 const TX_ID = 'A'.repeat(43); // valid 43-char base64url Arweave tx id
 
-/** Base64 FULFILL data carrying the proxy's verbatim HTTP store response. */
-function httpFulfill(body: string, status = 200): string {
-  const message =
-    `HTTP/1.1 ${status} ${status === 200 ? 'OK' : 'Bad Request'}\r\n` +
-    `content-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
-  return Buffer.from(message, 'utf8').toString('base64');
+/**
+ * The store's answer as the terminating connector now seals it: a response
+ * envelope (ADR 0018), which `publishEvent` opens and hands back verbatim.
+ * There is no plaintext-HTTP shape on this wire any more.
+ */
+function storeAnswer(body: string, status = 200) {
+  return {
+    status,
+    headers: [['content-type', 'application/json']] as [string, string][],
+    body: new TextEncoder().encode(body),
+  };
 }
 
 interface MockCalls {
@@ -97,7 +101,7 @@ function mockClient(overrides?: {
         overrides?.publishResult?.(event) ?? {
           success: true,
           eventId: event.id,
-          data: httpFulfill(JSON.stringify({ accept: true, txId: TX_ID })),
+          response: storeAnswer(JSON.stringify({ accept: true, txId: TX_ID })),
         }
       );
     },
@@ -290,12 +294,17 @@ describe('StandalonePublisher', () => {
       await publisher.stop();
     });
 
-    it('decodes a legacy bare-base64 txId FULFILL (non-proxy providers)', async () => {
+    it('reads the txId out of the answer’s `data` field when `txId` is absent', async () => {
       const { client } = mockClient({
         publishResult: (event) => ({
           success: true,
           eventId: event.id,
-          data: Buffer.from(TX_ID, 'utf8').toString('base64'),
+          response: storeAnswer(
+            JSON.stringify({
+              accept: true,
+              data: Buffer.from(TX_ID, 'utf8').toString('base64'),
+            })
+          ),
         }),
       });
       const publisher = build(client);
@@ -323,7 +332,7 @@ describe('StandalonePublisher', () => {
         publishResult: (event) => ({
           success: true,
           eventId: event.id,
-          data: httpFulfill(
+          response: storeAnswer(
             JSON.stringify({ accept: false, error: 'disk full' })
           ),
         }),
@@ -335,13 +344,13 @@ describe('StandalonePublisher', () => {
       await publisher.stop();
     });
 
-    it('throws when the FULFILL has no data', async () => {
+    it('throws when the FULFILL carried no sealed response', async () => {
       const { client } = mockClient({
         publishResult: (event) => ({ success: true, eventId: event.id }),
       });
       const publisher = build(client);
       await expect(publisher.uploadGitObject(upload)).rejects.toThrow(
-        /no data/
+        /no sealed response/
       );
       await publisher.stop();
     });
@@ -1315,29 +1324,33 @@ describe('StandalonePublisher', () => {
 });
 
 describe('extractArweaveTxId', () => {
-  it('rejects an invalid legacy payload', () => {
-    expect(() =>
-      extractArweaveTxId(Buffer.from('nope', 'utf8').toString('base64'))
-    ).toThrow(StandalonePublishError);
+  const answer = (status: number, body: string) => ({
+    status,
+    headers: [['content-type', 'application/json']] as [string, string][],
+    body: new TextEncoder().encode(body),
+  });
+
+  it('rejects a body that is not JSON', () => {
+    expect(() => extractArweaveTxId(answer(200, 'nope'))).toThrow(
+      /not valid JSON/
+    );
   });
 
   it('reads the txId from the data-field fallback', () => {
-    const body = JSON.stringify({
-      accept: true,
-      data: Buffer.from(TX_ID, 'utf8').toString('base64'),
-    });
-    const data = Buffer.from(
-      `HTTP/1.1 200 OK\r\ncontent-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
-      'utf8'
-    ).toString('base64');
-    expect(extractArweaveTxId(data)).toBe(TX_ID);
+    expect(
+      extractArweaveTxId(
+        answer(
+          200,
+          JSON.stringify({
+            accept: true,
+            data: Buffer.from(TX_ID, 'utf8').toString('base64'),
+          })
+        )
+      )
+    ).toBe(TX_ID);
   });
 
   it('rejects a non-2xx store response', () => {
-    const data = Buffer.from(
-      'HTTP/1.1 500 Internal Server Error\r\ncontent-length: 4\r\n\r\noops',
-      'utf8'
-    ).toString('base64');
-    expect(() => extractArweaveTxId(data)).toThrow(/HTTP 500/);
+    expect(() => extractArweaveTxId(answer(500, 'oops'))).toThrow(/HTTP 500/);
   });
 });

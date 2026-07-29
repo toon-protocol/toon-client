@@ -153,6 +153,7 @@ import {
   type PersistedApexTarget,
 } from './targets-store.js';
 import { discoverApex } from './apex-discovery.js';
+import type { PublishEventResult } from '@toon-protocol/client';
 
 /** The subset of `ToonClient` the runner depends on. */
 export interface ToonClientLike {
@@ -169,16 +170,11 @@ export interface ToonClientLike {
       destination?: string;
       claim?: unknown;
       ilpAmount?: bigint;
-      /** HTTP request-target the payment-proxy replays (default '/write';
+      /** Request-target inside the sealed envelope (default '/write';
        *  '/store' routes to the Arweave store/DVM backend). */
       proxyPath?: string;
     }
-  ): Promise<{
-    success: boolean;
-    eventId?: string;
-    data?: string;
-    error?: string;
-  }>;
+  ): Promise<PublishEventResult>;
   signBalanceProof(channelId: string, amount: bigint): Promise<unknown>;
   /**
    * Sign an unsigned event template with the daemon-held Nostr key (the key
@@ -1248,7 +1244,11 @@ export class ClientRunner {
     }
     return {
       eventId: result.eventId ?? req.event.id,
-      ...(result.data !== undefined ? { data: result.data } : {}),
+      // The relay's answer is now a sealed response envelope (ADR 0018); this
+      // control-plane field stays base64 bytes, so carry its body across.
+      ...(result.response !== undefined
+        ? { data: Buffer.from(result.response.body).toString('base64') }
+        : {}),
       channelId,
       nonce: apex.client.getChannelNonce(channelId),
       feePaid: fee.toString(),
@@ -2302,14 +2302,14 @@ export class ClientRunner {
           `${this.config.storeDestination}): ${result.error ?? 'store rejected the write'}`
       );
     }
-    if (!result.data) {
+    if (!result.response) {
       throw new PublishRejectedError(
-        `git object ${upload.sha} upload FULFILL carried no data — expected the Arweave tx ID`
+        `git object ${upload.sha} upload FULFILL carried no sealed response — expected the Arweave tx ID`
       );
     }
     let txId: string;
     try {
-      txId = extractArweaveTxId(result.data);
+      txId = extractArweaveTxId(result.response);
     } catch (err) {
       throw new PublishRejectedError(
         `git object ${upload.sha} upload: ${errMsg(err)}`

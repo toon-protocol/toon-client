@@ -39,7 +39,7 @@
 import type { NostrEvent } from 'nostr-tools/pure';
 import { buildBlobStorageRequest } from '@toon-protocol/core';
 import { fromBase64, decodeUtf8 } from './utils/binary.js';
-import { parseFulfillHttp } from './utils/fulfill-http.js';
+import type { EnvelopeResponse } from './wire/envelope.js';
 import type { ToonClient } from './ToonClient.js';
 import type { SignedBalanceProof } from './types.js';
 
@@ -178,17 +178,18 @@ export async function requestBlobStorage(
     };
   }
 
-  if (!result.data) {
+  if (!result.response) {
     return {
       success: false,
       eventId: event.id,
-      error: 'FULFILL contained no data; expected an HTTP response with the Arweave tx ID',
+      error:
+        'FULFILL carried no sealed response envelope; expected the store\'s answer with the Arweave tx ID',
     };
   }
 
   let txId: string;
   try {
-    txId = extractArweaveTxId(result.data);
+    txId = extractArweaveTxId(result.response);
   } catch (error) {
     return {
       success: false,
@@ -207,22 +208,15 @@ export async function requestBlobStorage(
 /**
  * Extract the Arweave tx ID from the FULFILL `data` of a successful blob upload.
  *
- * The deployed payment-proxy returns the DVM's verbatim HTTP/1.1 response inside
- * the FULFILL `data`. For a successful single-packet upload that response is:
+ * The terminating connector seals the store's answer as a response envelope
+ * (ADR 0018), which `publishEvent` opens and hands back as
+ * `PublishEventResult.response`. For a successful single-packet upload its
+ * body is `{"accept":true,"txId":"<43-char base64url>","data":"<base64 of
+ * txId>",…}`.
  *
- *   HTTP/1.1 200 OK\r\n
- *   content-length: 189\r\n
- *   \r\n
- *   {"accept":true,"txId":"<43-char base64url>","data":"<base64 of txId>",...}
- *
- * We parse the HTTP envelope, fail on a non-2xx status or `accept:false`, then
- * read `txId` (preferred) from the JSON body — falling back to base64-decoding
- * the `data` field when `txId` is absent.
- *
- * LEGACY FALLBACK: older / non-proxy providers returned the bare tx ID as
- * `base64(utf8(txId))` directly in the FULFILL data (no HTTP envelope). When the
- * payload is not HTTP-enveloped we preserve that original decode so non-HTTP
- * FULFILLs do not regress.
+ * We fail on a non-2xx status or `accept:false`, then read `txId` (preferred)
+ * from the JSON body — falling back to base64-decoding the `data` field when
+ * `txId` is absent.
  *
  * Exported for callers that drive `publishEvent` directly with a hand-built
  * kind:5094 event (e.g. git-object uploads carrying Git-SHA/Git-Type/Repo
@@ -232,35 +226,21 @@ export async function requestBlobStorage(
  * @throws {Error} If the response is non-2xx, `accept:false`, the body is not
  *   parseable JSON, or no valid Arweave tx ID can be extracted.
  */
-export function extractArweaveTxId(base64Data: string): string {
-  const http = parseFulfillHttp(base64Data);
-
-  // Legacy / non-HTTP FULFILL: bare base64(utf8(txId)).
-  if (!http.isHttp) {
-    const legacy = decodeUtf8(fromBase64(base64Data));
-    if (!ARWEAVE_TX_ID_REGEX.test(legacy)) {
-      throw new Error(
-        `Decoded FULFILL data is not a valid Arweave tx ID: "${legacy}"`
-      );
-    }
-    return legacy;
-  }
-
-  if (http.status < 200 || http.status >= 300) {
-    const detail = http.body ? ` - ${http.body}` : '';
+export function extractArweaveTxId(response: EnvelopeResponse): string {
+  if (response.status < 200 || response.status >= 300) {
+    const detail =
+      response.body.length > 0 ? ` - ${decodeUtf8(response.body)}` : '';
     throw new Error(
-      `Blob upload failed: DVM returned HTTP ${http.status} ${http.statusText}`.trimEnd() +
-        detail
+      `Blob upload failed: the store answered HTTP ${response.status}${detail}`
     );
   }
 
+  const text = decodeUtf8(response.body);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(http.body);
+    parsed = JSON.parse(text);
   } catch {
-    throw new Error(
-      `Blob upload response body was not valid JSON: "${http.body}"`
-    );
+    throw new Error(`Blob upload response body was not valid JSON: "${text}"`);
   }
 
   const body = parsed as {
@@ -271,8 +251,7 @@ export function extractArweaveTxId(base64Data: string): string {
   };
 
   if (body.accept === false) {
-    const reason =
-      typeof body.error === 'string' ? `: ${body.error}` : '';
+    const reason = typeof body.error === 'string' ? `: ${body.error}` : '';
     throw new Error(`Blob upload rejected by DVM (accept:false)${reason}`);
   }
 
@@ -290,6 +269,6 @@ export function extractArweaveTxId(base64Data: string): string {
   }
 
   throw new Error(
-    `Blob upload response did not contain a valid Arweave tx ID: "${http.body}"`
+    `Blob upload response did not contain a valid Arweave tx ID: "${text}"`
   );
 }

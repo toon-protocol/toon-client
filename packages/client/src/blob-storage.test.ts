@@ -5,6 +5,7 @@ import { BLOB_STORAGE_REQUEST_KIND } from '@toon-protocol/core';
 import { requestBlobStorage } from './blob-storage.js';
 import type { ToonClient } from './ToonClient.js';
 import type { PublishEventResult } from './types.js';
+import type { EnvelopeResponse } from './wire/envelope.js';
 
 /**
  * Builds a minimal ToonClient stub whose `publishEvent` records the event +
@@ -20,24 +21,24 @@ function mockClient(result: PublishEventResult): {
 }
 
 /**
- * LEGACY FULFILL data: bare `base64(utf8(txId))` (no HTTP envelope). Still
- * supported via the non-HTTP fallback path.
+ * The store's answer as `publishEvent` now hands it back: the response
+ * envelope the terminating connector sealed (ADR 0018), not HTTP text.
+ *
+ * There is no longer a "legacy, non-enveloped FULFILL" shape to fall back to
+ * — a terminated route always seals a response envelope — so every case below
+ * is expressed in the one shape that can now arrive.
  */
-function fulfillData(txId: string): string {
-  return Buffer.from(txId, 'utf-8').toString('base64');
+function answer(status: number, body: string): EnvelopeResponse {
+  return {
+    status,
+    headers: [['content-type', 'application/json']],
+    body: new TextEncoder().encode(body),
+  };
 }
 
-/**
- * HTTP-over-ILP FULFILL data: a full HTTP/1.1 response carrying the DVM's JSON
- * body, base64-encoded (the shape `IlpSendResult.data` carries from the proxy).
- */
-function httpFulfill(status: number, statusText: string, body: string): string {
-  const head =
-    `HTTP/1.1 ${status} ${statusText}\r\n` +
-    `content-type: application/json\r\n` +
-    `content-length: ${Buffer.byteLength(body, 'utf-8')}\r\n` +
-    `\r\n`;
-  return Buffer.from(head + body, 'utf-8').toString('base64');
+/** The store's success body, carrying the Arweave tx ID. */
+function storedBody(txId: string): string {
+  return JSON.stringify({ accept: true, txId });
 }
 
 describe('requestBlobStorage', () => {
@@ -50,7 +51,7 @@ describe('requestBlobStorage', () => {
     const { client, publishEvent } = mockClient({
       success: true,
       eventId: 'evt',
-      data: fulfillData(TX_ID),
+      response: answer(200, storedBody(TX_ID)),
     });
 
     await requestBlobStorage(client, secretKey, {
@@ -92,11 +93,11 @@ describe('requestBlobStorage', () => {
     expect(options.destination).toBe('g.toon.peer1');
   });
 
-  it('decodes the base64 FULFILL data into an Arweave tx ID', async () => {
+  it('reads the Arweave tx ID out of the sealed response envelope', async () => {
     const { client } = mockClient({
       success: true,
       eventId: 'evt',
-      data: fulfillData(TX_ID),
+      response: answer(200, storedBody(TX_ID)),
     });
 
     const result = await requestBlobStorage(client, secretKey, {
@@ -113,7 +114,7 @@ describe('requestBlobStorage', () => {
   it('derives the bid from ilpAmount when bid is omitted', async () => {
     const { client, publishEvent } = mockClient({
       success: true,
-      data: fulfillData(TX_ID),
+      response: answer(200, storedBody(TX_ID)),
     });
 
     await requestBlobStorage(client, secretKey, {
@@ -161,7 +162,7 @@ describe('requestBlobStorage', () => {
     expect(result.txId).toBeUndefined();
   });
 
-  it('errors when FULFILL data is missing', async () => {
+  it('errors when the FULFILL carried no response envelope', async () => {
     const { client } = mockClient({ success: true, eventId: 'evt' });
 
     const result = await requestBlobStorage(client, secretKey, {
@@ -170,13 +171,13 @@ describe('requestBlobStorage', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/no data/i);
+    expect(result.error).toMatch(/no sealed response/i);
   });
 
-  it('errors when decoded FULFILL data is not a valid Arweave tx ID', async () => {
+  it('errors when the answered txId is not a valid Arweave tx ID', async () => {
     const { client } = mockClient({
       success: true,
-      data: fulfillData('not-a-tx-id'),
+      response: answer(200, JSON.stringify({ accept: true, txId: 'not-a-tx-id' })),
     });
 
     const result = await requestBlobStorage(client, secretKey, {
@@ -185,12 +186,12 @@ describe('requestBlobStorage', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/not a valid Arweave tx ID/i);
+    expect(result.error).toMatch(/did not contain a valid Arweave tx ID/i);
   });
 
-  // --- Bug 2: HTTP-over-ILP FULFILL envelope ---------------------------------
+  // --- The sealed response envelope (ADR 0018) --------------------------------
 
-  it('extracts txId from a 200 HTTP-over-ILP store FULFILL JSON body', async () => {
+  it('extracts txId from a 200 response envelope JSON body', async () => {
     const body = JSON.stringify({
       accept: true,
       txId: TX_ID,
@@ -202,7 +203,7 @@ describe('requestBlobStorage', () => {
     const { client } = mockClient({
       success: true,
       eventId: 'evt',
-      data: httpFulfill(200, 'OK', body),
+      response: answer(200, body),
     });
 
     const result = await requestBlobStorage(client, secretKey, {
@@ -222,7 +223,7 @@ describe('requestBlobStorage', () => {
     });
     const { client } = mockClient({
       success: true,
-      data: httpFulfill(200, 'OK', body),
+      response: answer(200, body),
     });
 
     const result = await requestBlobStorage(client, secretKey, {
@@ -234,10 +235,10 @@ describe('requestBlobStorage', () => {
     expect(result.txId).toBe(TX_ID);
   });
 
-  it('errors on a non-2xx HTTP-over-ILP store FULFILL', async () => {
+  it('errors on a non-2xx response envelope', async () => {
     const { client } = mockClient({
       success: true,
-      data: httpFulfill(404, 'Not Found', '404 Not Found'),
+      response: answer(404, '404 Not Found'),
     });
 
     const result = await requestBlobStorage(client, secretKey, {
@@ -250,11 +251,11 @@ describe('requestBlobStorage', () => {
     expect(result.txId).toBeUndefined();
   });
 
-  it('errors on an accept:false store FULFILL', async () => {
+  it('errors on an accept:false response envelope', async () => {
     const body = JSON.stringify({ accept: false, error: 'insufficient bid' });
     const { client } = mockClient({
       success: true,
-      data: httpFulfill(200, 'OK', body),
+      response: answer(200, body),
     });
 
     const result = await requestBlobStorage(client, secretKey, {

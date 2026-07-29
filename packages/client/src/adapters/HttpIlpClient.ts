@@ -43,8 +43,6 @@ import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
 
 /** Header carrying the base64(JSON) payment-channel claim. */
 export const ILP_CLAIM_HEADER = 'ILP-Payment-Channel-Claim';
-/** Header carrying a NIP-59 wrapped (gift-wrapped) claim. */
-export const ILP_CLAIM_WRAPPED_HEADER = 'ILP-Payment-Channel-Claim-Wrapped';
 /** Header carrying the peer identity. */
 export const ILP_PEER_ID_HEADER = 'ILP-Peer-Id';
 
@@ -102,6 +100,16 @@ export class HttpIlpClient implements IlpClient {
     };
     this.httpClient = config.httpClient ?? fetch;
     this.createWebSocket = config.createWebSocket;
+  }
+
+  /**
+   * The client edge this transport pays — the origin `GET /ilp/identity` and
+   * `GET /ilp/routes/price` hang off (`ConnectorEdgeClient` normalizes the
+   * trailing `/ilp` away). Exposed because a sealed write must ask the
+   * connector it is ACTUALLY paying for its key, not a configured guess.
+   */
+  get clientEdgeEndpoint(): string {
+    return this.httpEndpoint;
   }
 
   /**
