@@ -10,10 +10,9 @@
   "sha256": "a11bb7c333b5fab8516a7f687c746a2fdf87b2ffbc9bacf002c6603f784bca51",
   "sectionsReplayed": [
     "envelope",
+    "giftwrap",
+    "fulfilment",
     "claim"
   ],
-  "sectionsPresentNotYetReplayed": [
-    "giftwrap",
-    "fulfilment"
-  ]
+  "sectionsPresentNotYetReplayed": []
 }

@@ -7,9 +7,10 @@
  * something the bundler inlines into the published package.
  *
  * The shape mirrors `vectors/README.md` on the connector: every section the
- * file carries is typed and returned, including the ones this repo does not
- * replay yet, so `giftwrap` (toon-client#449) and `fulfilment` become new
- * `describe` blocks in the harness rather than a restructure of it.
+ * file carries is typed and returned. All four are now replayed — `giftwrap`
+ * and `fulfilment` were the last two, against `src/wire/giftwrap.ts`
+ * (toon-client#449), and arrived as new `describe` blocks in the harness
+ * rather than a restructure of it, exactly as this module was shaped for.
  *
  * `WIRE_VECTOR_SECTIONS` is the closed list of sections this loader has been
  * taught. The harness asserts the file carries exactly these, so a section the
@@ -93,16 +94,71 @@ export interface ClaimVector {
   signature_hex: string;
 }
 
+/**
+ * A sealed request/response pair (connector ADR 0018). Every value a real seal
+ * draws at random is pinned, so `request_wrap_hex` and `response_wrap_hex` are
+ * reproducible byte-for-byte rather than merely round-trippable — a seal that
+ * derived its AEAD key differently would still open its own output and would
+ * only fail against these bytes.
+ *
+ * Hex fields carry no `0x` prefix (see `hexToBytes`).
+ */
+export interface GiftWrapVector {
+  name: string;
+  /** The sender's per-packet ephemeral secp256k1 secret, 32 bytes. */
+  ephemeral_secret_hex: string;
+  /** The 32 random bytes sealed inside the request. */
+  shared_secret_hex: string;
+  /** ChaCha20-Poly1305 nonce for the request, 12 bytes. */
+  request_nonce_hex: string;
+  /** ChaCha20-Poly1305 nonce for the response, 12 bytes. */
+  response_nonce_hex: string;
+  request_envelope: VectorEnvelope;
+  /** `request_envelope` encoded — the plaintext the request wrap seals. */
+  request_envelope_hex: string;
+  /** `0x01 ‖ ephemeral_public(65) ‖ nonce(12) ‖ ciphertext`. */
+  request_wrap_hex: string;
+  response_envelope: VectorEnvelope;
+  response_envelope_hex: string;
+  /** `0x02 ‖ nonce(12) ‖ ciphertext`, sealed with `shared_secret_hex`. */
+  response_wrap_hex: string;
+}
+
+export interface GiftWrapVectors {
+  /** The fixture identity secret a replaying SDK opens the request with. */
+  receiver_identity_secret_hex: string;
+  /** 65-byte uncompressed — what a real connector reports at `/ilp/identity`. */
+  receiver_identity_public_hex: string;
+  cases: GiftWrapVector[];
+}
+
+/**
+ * A derived fulfilment and the condition it is checked against (connector ADR
+ * 0019). `matches` is `false` for the case whose fulfilment belongs to a
+ * DIFFERENT secret than the one that minted `condition_hex`, so rejection is
+ * exercised as well as acceptance.
+ */
+export interface FulfilmentVector {
+  name: string;
+  shared_secret_hex: string;
+  /** `HKDF-SHA256(shared_secret, "toon-giftwrap-fulfillment")`. */
+  fulfilment_hex: string;
+  /** The condition a sender mints: `sha256(fulfilment)`. */
+  condition_hex: string;
+  /** Whether `fulfilment_hex` is the preimage of `condition_hex`. */
+  matches: boolean;
+}
+
 export interface WireVectors {
   schema_version: number;
   envelope: {
     valid: EnvelopeValidVector[];
     invalid: EnvelopeInvalidVector[];
   };
-  /** Not replayed yet — toon-client#449 owns the seal. Typed loosely on purpose. */
-  giftwrap?: { cases?: Record<string, unknown>[] } & Record<string, unknown>;
-  /** Not replayed yet. */
-  fulfilment?: { cases?: Record<string, unknown>[] } & Record<string, unknown>;
+  /** Replayed against `src/wire/giftwrap.ts` (toon-client#449). */
+  giftwrap?: GiftWrapVectors;
+  /** Replayed against `src/wire/giftwrap.ts` (toon-client#449). */
+  fulfilment?: { cases: FulfilmentVector[] };
   /** Replayed against `src/signing/evm-signer.ts`. */
   claim?: { cases: ClaimVector[] };
 }
