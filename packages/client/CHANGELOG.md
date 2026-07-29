@@ -1,5 +1,232 @@
 # @toon-protocol/client
 
+## 0.22.0
+
+### Minor Changes
+
+- 4656411: Ask the terminating connector for its identity and its terms (toon-client#447).
+
+  Adds `ConnectorEdgeClient` — `GET /ilp/identity` (the uncompressed secp256k1 key
+  a packet's payload must be sealed to, per ADR 0018) and
+  `GET /ilp/routes/price?destination=` (client-edge-spec §1.7), with per-endpoint
+  identity caching and a distinguishable refusal for every malformed answer. A
+  `404` from the price endpoint answers `null` (no locally-terminated route)
+  rather than throwing, so it is never confused with a transport failure.
+
+  Also fixes `parseX402Body` against the terms the shipped connector actually
+  emits: the ILP address, endpoint and price live under `extra`, and
+  `httpEndpoint` is relative (`"/ilp"`) and is now resolved against the URL that
+  answered `402`. Both are additive — no existing export changes signature.
+
+- 1d2ca72: Fold `Http402Client` onto the one envelope (#451).
+
+  `packages/client` carried two independent HTTP/1.1 codecs. #450 deleted the
+  first (`store-envelope.ts` / `fulfill-http.ts`); this removes the second, so
+  the package now has exactly one encoder and no HTTP text is serialised or
+  parsed anywhere in it.
+
+  `Http402Client`'s paid path (`payOverToon`) now fetches the terminating
+  connector's identity from the endpoint the 402 named, builds an OER
+  `EnvelopeRequest`, seals it under a condition derived from the sealed secret,
+  and opens the answer with `readExchangeOutcome` — the same `sealExchange` /
+  `readExchangeOutcome` pair `publishEvent` uses. Previously it sent a
+  zero-condition packet, which the Rust connector refuses outright.
+
+  **Breaking:** `serializeHttpRequest` and `parseHttpResponse` are removed from
+  `@toon-protocol/client`'s published surface. Neither is imported by
+  `packages/rig`, `packages/client-mcp`, or the standalone `toon-protocol/rig`.
+
+  Two deliberate behaviour changes on the paid path:
+
+  - **`Host` and `Content-Length` are no longer synthesised.** The connector
+    strips both by name and lets its HTTP client recompute them
+    (`connector-runtime/src/app_client.rs`), and the envelope already carries the
+    body length as an OER length determinant. A caller that sets either
+    explicitly still has it carried verbatim.
+  - **`Response.statusText` is empty.** An `EnvelopeResponse` status is two bytes
+    with no reason phrase, so there is no `Created` to report; the status is the
+    fact to read.
+
+  A malformed answer now fails as `SealedResponseError`, the same way it does
+  everywhere else in the package, resolving the two codecs' divergent failure
+  modes (`ConnectorError` on a bad status line here versus `{isHttp:false}`
+  there).
+
+  The unpaid path is unchanged: a non-402 passes through, and a 402 with no
+  `toon-channel` entry or no claim resolver is returned to the caller as-is.
+
+- 6006645: `publishEvent` now speaks the sealed wire (toon-client#450). **Breaking.**
+
+  A paid write is no longer a latin1 HTTP/1.1 request in `Prepare.data`. It is a
+  gift wrap addressed to the connector that TERMINATES the destination, around an
+  OER `EnvelopeRequest` (ADR 0018) — so `publishEvent` fetches that connector's
+  identity from its own client edge (`GET /ilp/identity`) before a packet can be
+  formed at all, and refuses to form one without it rather than falling back to
+  any default.
+
+  **The condition is now real.** Every publish previously sent an ALL-ZERO
+  execution condition — `publishEvent` passed none and both transports
+  zero-filled — which the Rust connector refuses outright (`condition_is_present`
+  in `connector-domain`). It now mints `sha256(deriveFulfillment(sharedSecret))`
+  from the secret it sealed (ADR 0019): derived, never random, never caller
+  supplied, and verified against the returned preimage by the transport. This is
+  what makes the publish path work against that connector at all.
+
+  **The answer is opened, not re-parsed.** A FULFILL's `data` is a sealed
+  response envelope, opened with the same secret and returned whole as
+  `PublishEventResult.response` — status, headers and body. A non-2xx status
+  rides home on a FULFILL and value moved (ADR 0020), so `response` is populated
+  either way. A reject sealed at the termination is reported as the DESTINATION
+  refusing (`refusedBy: 'destination'`, provable — only the termination holds the
+  secret); a plaintext one as a PATH refusal (`refusedBy: 'path'`).
+
+  ### Removed from the published surface
+  - `buildStoreWriteEnvelope`, `parseFulfillHttp`, `parseFulfillHttpBytes` and
+    `ParsedFulfillHttp` — `utils/store-envelope.ts` and `utils/fulfill-http.ts`
+    are deleted. There is no HTTP text on this wire to parse.
+  - `ILP_CLAIM_WRAPPED_HEADER` — a declared NIP-59 hook never set or read
+    anywhere.
+  - `PublishEventResult.data` (raw base64 FULFILL bytes) → `response`, the opened
+    envelope. `extractArweaveTxId` takes that envelope rather than a base64
+    string.
+
+  ### Added
+  - `sealExchange` / `readExchangeOutcome` (`src/wire/sealed-exchange.ts`): the
+    seal, the condition and the reader for the answer, produced together so they
+    cannot drift apart, plus `envelopeHeader` and `SealedResponseError`.
+
+  ### Downstream
+
+  `packages/rig` and `packages/client-mcp` in this repo move with it. The
+  standalone `toon-protocol/rig` repo pins the published `^0.21.1` and needs its
+  own release: `standalone-publisher.ts` imports `parseFulfillHttp` and keeps a
+  duplicated `extractArweaveTxId` — both go, since the client's extractor is
+  exported (the comment claiming otherwise is stale).
+
+  The ILP layer is unchanged: same `POST /ilp`, same OER PREPARE/FULFILL/REJECT,
+  same `ILP-Payment-Channel-Claim` header, same channel and watermark machinery.
+  Only `data` and the condition changed.
+
+- 29fc8d2: Stop computing a per-byte price; ask for the route's price (#452).
+
+  ADR 0020 makes a price flat per handler: one handler, one price, and an app
+  that wants to charge differently exposes more handlers. Byte-proportional
+  pricing has no successor — the route table is the price list. A 100-byte and a
+  100 KB write to the same handler now cost the same, and the connector charges
+  accordingly regardless of what a client computes.
+
+  Four independent `10n` rates existed, each with a comment asserting it matched
+  the others. All four are gone, not centralised:
+
+  - `ToonClient.publishEvent`'s `basePricePerByte`, along with the TOON encoding
+    produced only to be measured.
+  - `modes/http.ts`'s `basePricePerByte` bootstrap option.
+  - `client-runner.ts`'s `UPLOAD_FEE_PER_BYTE`.
+  - `StandalonePublisher`'s `uploadFeePerByte`.
+
+  A packet's amount now comes from `GET /ilp/routes/price?destination=` at the
+  terminating connector — the same longest-prefix lookup the claim gate charges
+  against, so it can never state a price a real request would not be charged.
+  Prices are cached per (endpoint, destination) by `ConnectorEdgeClient`, so this
+  is one round trip per destination rather than one per packet.
+
+  **Breaking — `@toon-protocol/client`**
+
+  - `publishEvent` fetches a price when `options.ilpAmount` is omitted. An
+    explicit `ilpAmount` still overrides and skips the lookup entirely.
+  - A destination the connector terminates no route for now raises
+    `NO_TERMINATED_ROUTE` before any packet is formed, rather than being priced
+    at zero or at a local fallback.
+  - New: `ToonClient.getRoutePrice(destination)`, and
+    `ConnectorEdgeClient.invalidateRoutePrice` / `hasCachedRoutePrice`.
+
+  **Breaking — `@toon-protocol/rig`**
+
+  - `FeeRates.uploadFeePerByte` and `FeeRates.minUploadFee` are replaced by a
+    single flat `FeeRates.uploadFee`. With a flat price there is no floor to
+    apply, because the route's price is the whole fee rather than a lower bound
+    on one.
+  - `flooredUploadFee` is removed from the published surface.
+  - `StandalonePublisher`'s `uploadFeePerByte` constructor option is removed;
+    `routePrices.store` is the upload fee. With no announced store price the
+    publisher quotes 0 and lets the connector refuse, rather than inventing a
+    rate.
+
+  The standalone `toon-protocol/rig` repository carries its own copy of
+  `standalone-publisher.ts` and pins the published client, so it needs the same
+  removal and its own release.
+
+  Note: `@toon-protocol/core`'s `BootstrapService` retains an internal
+  `basePricePerByte` default for its own bootstrap/discovery pricing surface.
+  That is a separate package and a separate concern; nothing in this repository
+  states a per-byte rate any more.
+
+- af19e7a: A structured OER envelope codec, replaying the committed cross-repo vectors
+  (toon-client#448).
+
+  Adds `src/wire/` — canonical OER length primitives and the request/response
+  envelope codec, a faithful port of `connector_domain::envelope`. Header order
+  and duplicate header names survive a round trip; non-canonical, zero-length-alias
+  and over-wide length determinants are each refused with their own reason (ADR
+  0023); arbitrary bytes never throw anything but an `EnvelopeError`.
+
+  The connector's `vectors/wire-vectors.json` is vendored under
+  `src/wire/vectors/` with its provenance and a SHA-256 integrity check, refreshed
+  by `pnpm --filter @toon-protocol/client vectors:refresh` and watched for drift
+  daily by `.github/workflows/wire-vectors-drift.yml`.
+
+  Additive: the existing `utils/store-envelope.ts` / `utils/fulfill-http.ts` HTTP
+  framing is untouched and still what the send path uses.
+
+- e38677d: The gift wrap and the fulfilment a shared secret derives (toon-client#449).
+
+  Adds `src/wire/giftwrap.ts` — a faithful port of `connector_signer::giftwrap`:
+  `sealRequest`/`openRequest` (ECDH to the terminating connector's identity key
+  over the raw X-coordinate, `0x01 ‖ ephemeral_public(65) ‖ nonce(12) ‖
+ciphertext` around `shared_secret ‖ encoded_envelope`),
+  `sealResponse`/`openResponse` (`0x02 ‖ nonce ‖ ciphertext`, sealed with the
+  request's own secret — no second key exchange), `looksLikeSealedResponse`,
+  `deriveFulfillment` (HKDF-SHA256, no salt, info `toon-giftwrap-fulfillment`)
+  and `deriveCondition` (`sha256`). AEAD is ChaCha20-Poly1305.
+
+  The vendored vector file's `giftwrap` and `fulfilment` sections are now
+  replayed: every pinned `request_wrap_hex`, `response_wrap_hex`, fulfilment and
+  condition is reproduced byte-for-byte, so all four sections the connector
+  publishes are replayed and none is carried unreplayed.
+
+  Failure modes stay separable by type: a wrap that cannot be opened is a
+  `GiftWrapError`; a wrap that opens cleanly but decodes to a malformed envelope
+  is an `EnvelopeError`.
+
+  New dependency: `@noble/ciphers` (ChaCha20-Poly1305). `@noble/curves` and
+  `@noble/hashes` already covered secp256k1 and HKDF-SHA256.
+
+  Additive: nothing in the send path calls this yet — `publishEvent` still uses
+  the latin1 HTTP framing in `utils/store-envelope.ts`.
+
+### Patch Changes
+
+- 7b8176a: Refresh the vendored cross-repo wire vectors to connector `main` (#588), and
+  replay the new `claim` section against `signing/evm-signer.ts`.
+
+  The drift check added in toon-client#454 fired for the first time: connector#588
+  added a `claim` section to `vectors/wire-vectors.json`. The vendored copy and its
+  provenance now pin connector `425a8abb72e982f43955c35d9c0cf50fd5a2d55e`.
+
+  `claim` is the EIP-712 `BalanceProof` of connector ADR 0024 — the same struct and
+  the same per-channel `TokenNetwork` domain that `EvmSigner.signBalanceProof`
+  already signs on the client edge — so it is replayed, not carried unreplayed:
+  this client reproduces the published digest and the published 65-byte signature
+  byte-for-byte.
+
+  The harness can no longer ignore a section it does not understand. `load.ts`
+  exports a closed `WIRE_VECTOR_SECTIONS` list, and the suite fails if the vendored
+  file carries a section outside it, or one that is neither declared replayed nor
+  declared deliberately-not-yet-replayed.
+
+  Test-only: nothing under `src/wire/vectors/` is reachable from `src/index.ts`, so
+  the published surface is unchanged.
+
 ## 0.21.3
 
 ### Patch Changes
