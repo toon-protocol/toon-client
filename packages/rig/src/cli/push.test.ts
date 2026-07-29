@@ -19,7 +19,10 @@ import { join } from 'node:path';
 import type { Publisher } from '../publisher.js';
 import type { RemoteState } from '../remote-state.js';
 import { readToonConfig, writeToonConfig } from './git-config.js';
-import { readRigPointerRecord, writeRigPointerRecord } from './rig-pointer-record.js';
+import {
+  readRigPointerRecord,
+  writeRigPointerRecord,
+} from './rig-pointer-record.js';
 import { runPush, selectRefspecs, type CliIo, type PushDeps } from './push.js';
 import { GitRepoReader } from '../repo-reader.js';
 import type {
@@ -139,7 +142,11 @@ interface FakeStandalone {
   uploads: { sha: string; size: number }[];
   blobs: { contentType: string; size: number; body: string }[];
   published: { kind: number; relayUrls: string[] }[];
-  remoteRequests: { ownerPubkey: string; repoId: string; relayUrls: string[] }[];
+  remoteRequests: {
+    ownerPubkey: string;
+    repoId: string;
+    relayUrls: string[];
+  }[];
   loadedWith: StandaloneLoadOptions[];
   stopped: boolean;
   load: PushDeps['loadStandalone'];
@@ -163,7 +170,7 @@ function makeStandalone(
   const remoteRequests: FakeStandalone['remoteRequests'] = [];
   const loadedWith: FakeStandalone['loadedWith'] = [];
   const publisher: Publisher = {
-    getFeeRates: async () => ({ uploadFeePerByte: 10n, eventFee: 1n }),
+    getFeeRates: async () => ({ uploadFee: 1000n, eventFee: 1n }),
     uploadGitObject: async (upload) => {
       uploads.push({ sha: upload.sha, size: upload.body.length });
       return { txId: TX_ID, feePaid: BigInt(upload.body.length) * 10n };
@@ -174,10 +181,7 @@ function makeStandalone(
     },
     ...(options.withBlobUpload
       ? {
-          uploadBlob: async (upload: {
-            body: Buffer;
-            contentType: string;
-          }) => {
+          uploadBlob: async (upload: { body: Buffer; contentType: string }) => {
             if (options.blobUploadError) {
               throw new Error(options.blobUploadError);
             }
@@ -250,10 +254,9 @@ describe('selectRefspecs', () => {
     expect(await selectRefspecs(reader, [], false, false)).toEqual([
       'refs/heads/main',
     ]);
-    expect(await selectRefspecs(reader, ['feature', 'v1'], false, false)).toEqual([
-      'refs/heads/feature',
-      'refs/tags/v1',
-    ]);
+    expect(
+      await selectRefspecs(reader, ['feature', 'v1'], false, false)
+    ).toEqual(['refs/heads/feature', 'refs/tags/v1']);
     expect(await selectRefspecs(reader, [], true, true)).toEqual([
       'refs/heads/feature',
       'refs/heads/main',
@@ -481,8 +484,12 @@ describe('standalone push (Publisher seam)', () => {
     expect(fake2.published).toHaveLength(0);
     expect(fake2.blobs).toHaveLength(1);
     expect(h2.out.join('\n')).toContain('the Rig page is stale');
-    expect(h2.out.join('\n')).toContain(`Rig page: https://ar-io.dev/${POINTER_TX}`);
-    expect(readRigPointerRecord(env, 'demo')?.contentHash).not.toBe('f0'.repeat(32));
+    expect(h2.out.join('\n')).toContain(
+      `Rig page: https://ar-io.dev/${POINTER_TX}`
+    );
+    expect(readRigPointerRecord(env, 'demo')?.contentHash).not.toBe(
+      'f0'.repeat(32)
+    );
   });
 
   it('--no-rig-page skips the pointer entirely', async () => {
@@ -700,7 +707,9 @@ describe('remote resolution (#249)', () => {
     const code = await runPush(['upstream', 'main', '--yes'], h.deps);
     expect(code).toBe(1);
     const text = h.err.join('\n');
-    expect(text).toContain('neither a configured remote nor a local branch/tag');
+    expect(text).toContain(
+      'neither a configured remote nor a local branch/tag'
+    );
     expect(text).toContain('rig remote add upstream');
     expect(fake.loadedWith).toHaveLength(0);
     expect(fake.published).toHaveLength(0);
@@ -889,16 +898,15 @@ describe('daemon delegation (#279)', () => {
   let SELF: string;
 
   beforeEach(async () => {
-    const { deriveNostrKeyFromMnemonic } = await import(
-      '@toon-protocol/client'
-    );
+    const { deriveNostrKeyFromMnemonic } =
+      await import('@toon-protocol/client');
     SELF = deriveNostrKeyFromMnemonic(TEST_MNEMONIC, 0).pubkey;
     await writeToonConfig(repoDir, { repoId: 'demo' });
     git(['remote', 'add', 'origin', 'wss://origin-relay.example'], repoDir);
   });
 
-  const sameIdentityProbe = (): NonNullable<PushDeps['probeDaemon']> =>
-    async () => ({
+  const sameIdentityProbe =
+    (): NonNullable<PushDeps['probeDaemon']> => async () => ({
       baseUrl: 'http://127.0.0.1:8787',
       reachable: true,
       identity: SELF,
@@ -909,8 +917,8 @@ describe('daemon delegation (#279)', () => {
     });
 
   /** A same-identity daemon too old for the /git/* routes (no capabilities). */
-  const oldDaemonProbe = (): NonNullable<PushDeps['probeDaemon']> =>
-    async () => ({
+  const oldDaemonProbe =
+    (): NonNullable<PushDeps['probeDaemon']> => async () => ({
       baseUrl: 'http://127.0.0.1:8787',
       reachable: true,
       identity: SELF,
@@ -918,7 +926,9 @@ describe('daemon delegation (#279)', () => {
       // No `capabilities` field — an old client-mcp build (#306).
     });
 
-  function daemonPlan(overrides: Partial<GitEstimateResponse> = {}): GitEstimateResponse {
+  function daemonPlan(
+    overrides: Partial<GitEstimateResponse> = {}
+  ): GitEstimateResponse {
     return {
       repoId: 'demo',
       refUpdates: [
@@ -978,15 +988,11 @@ describe('daemon delegation (#279)', () => {
   it('delegates estimate + execute to the daemon; standalone loader untouched', async () => {
     const fake = makeStandalone(emptyRemoteState());
     const { posts, fetchImpl } = daemonFetch(daemonPlan());
-    const h = makeDeps(
-      { ...env, RIG_MNEMONIC: TEST_MNEMONIC },
-      repoDir,
-      {
-        loadStandalone: fake.load,
-        probeDaemon: sameIdentityProbe(),
-        fetchImpl,
-      }
-    );
+    const h = makeDeps({ ...env, RIG_MNEMONIC: TEST_MNEMONIC }, repoDir, {
+      loadStandalone: fake.load,
+      probeDaemon: sameIdentityProbe(),
+      fetchImpl,
+    });
     const code = await runPush(['--yes', '--json'], h.deps);
     expect(code).toBe(0);
 
@@ -1002,9 +1008,7 @@ describe('daemon delegation (#279)', () => {
     ]);
     expect(posts[0]?.body['repoId']).toBe('demo');
     expect(posts[0]?.body['refspecs']).toEqual(['refs/heads/main']);
-    expect(posts[0]?.body['relayUrls']).toEqual([
-      'wss://origin-relay.example',
-    ]);
+    expect(posts[0]?.body['relayUrls']).toEqual(['wss://origin-relay.example']);
     expect(posts[1]?.body['confirm']).toBe(true);
 
     const doc = JSON.parse(h.out.join('\n')) as Record<string, unknown>;

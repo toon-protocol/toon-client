@@ -243,19 +243,51 @@ export interface ConnectorEdgeClientConfig {
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /**
+ * Separator between a client-edge base URL and an ILP destination in a price
+ * cache key. NUL can appear in neither, so no pair can be spelled two ways
+ * and no two pairs can collide.
+ */
+const PRICE_KEY_SEPARATOR = '\u0000';
+
+/** Cache key for one (client edge, destination) pair. */
+function priceCacheKey(base: string, destination: string): string {
+  return `${base}${PRICE_KEY_SEPARATOR}${destination}`;
+}
+
+/**
+ * The prefix every key for `base` shares — `priceCacheKey`'s own output for
+ * an empty destination, so the two cannot drift into disagreeing about the
+ * separator. They once did, and the endpoint-wide invalidation below then
+ * silently matched nothing.
+ */
+function priceCacheKeyPrefix(base: string): string {
+  return priceCacheKey(base, '');
+}
+
+/**
  * Asks connectors for their identity and their terms, caching each identity
- * per client-edge endpoint.
+ * per client-edge endpoint and each route price per (endpoint, destination).
  *
  * The cache is per endpoint rather than per client instance because a sender
  * routinely speaks to several connectors, and re-fetching a key per packet
  * would put a network round trip in front of every send. Nothing here expires
- * on a timer: an operator key rotation is a deliberate event, so
- * {@link invalidateIdentity} is the way a stale key is dropped.
+ * on a timer: an operator key rotation, or a route being repriced, is a
+ * deliberate event, so {@link invalidateIdentity} / {@link invalidateRoutePrice}
+ * are how a stale answer is dropped.
+ *
+ * A price is cached the same way and for the same reason (toon-client#452):
+ * under ADR 0020 a route's price is FLAT — one handler, one price — so it does
+ * not vary with what is being sent, and asking again per packet would buy
+ * nothing but latency.
  */
 export class ConnectorEdgeClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeout: number;
   private readonly identities = new Map<string, Promise<ConnectorIdentity>>();
+  private readonly prices = new Map<
+    string,
+    Promise<ConnectorRoutePrice | null>
+  >();
 
   constructor(config: ConnectorEdgeClientConfig = {}) {
     this.fetchImpl = config.fetch ?? globalThis.fetch.bind(globalThis);
@@ -312,10 +344,18 @@ export class ConnectorEdgeClient {
    * `null` is the answer to "you do not terminate this", which is information;
    * a transport failure throws {@link NetworkError} instead, so a caller can
    * always tell "not mine" from "could not ask".
+   *
+   * Fetched once per (endpoint, destination) and reused. ADR 0020 makes a
+   * price flat per handler, so it does not vary with the packet — a route
+   * being repriced is an operator event, and {@link invalidateRoutePrice} is
+   * how a caller reacts to one.
+   *
+   * @param options `forceRefresh` bypasses (and replaces) the cache entry.
    */
   async getRoutePrice(
     endpoint: string,
-    destination: string
+    destination: string,
+    options: { forceRefresh?: boolean } = {}
   ): Promise<ConnectorRoutePrice | null> {
     if (typeof destination !== 'string' || destination.trim().length === 0) {
       throw new ConnectorEdgeError(
@@ -324,6 +364,60 @@ export class ConnectorEdgeClient {
       );
     }
     const base = connectorEdgeBaseUrl(endpoint);
+    const key = priceCacheKey(base, destination);
+    if (options.forceRefresh) this.prices.delete(key);
+
+    const cached = this.prices.get(key);
+    if (cached) return cached;
+
+    // Cache the in-flight promise so concurrent senders share one round trip;
+    // drop it again on failure so a transient error is not cached forever. A
+    // `404` IS cached: "this connector does not terminate that" is an answer.
+    const inFlight = this.fetchRoutePrice(base, destination).catch(
+      (error: unknown) => {
+        this.prices.delete(key);
+        throw error;
+      }
+    );
+    this.prices.set(key, inFlight);
+    return inFlight;
+  }
+
+  /**
+   * Drop a cached route price — one (endpoint, destination)'s, every
+   * destination's at one endpoint when `destination` is omitted, or all of
+   * them when both are. The way to react to a route being repriced.
+   */
+  invalidateRoutePrice(endpoint?: string, destination?: string): void {
+    if (endpoint === undefined) {
+      this.prices.clear();
+      return;
+    }
+    const base = connectorEdgeBaseUrl(endpoint);
+    if (destination !== undefined) {
+      this.prices.delete(priceCacheKey(base, destination));
+      return;
+    }
+    const prefix = priceCacheKeyPrefix(base);
+    for (const key of this.prices.keys()) {
+      if (key.startsWith(prefix)) this.prices.delete(key);
+    }
+  }
+
+  /**
+   * Whether a price for `(endpoint, destination)` is already held (no request
+   * is made).
+   */
+  hasCachedRoutePrice(endpoint: string, destination: string): boolean {
+    return this.prices.has(
+      priceCacheKey(connectorEdgeBaseUrl(endpoint), destination)
+    );
+  }
+
+  private async fetchRoutePrice(
+    base: string,
+    destination: string
+  ): Promise<ConnectorRoutePrice | null> {
     const url = `${base}/ilp/routes/price?destination=${encodeURIComponent(destination)}`;
     const response = await this.get(url);
 

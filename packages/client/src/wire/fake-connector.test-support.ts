@@ -66,6 +66,13 @@ export class FakeTerminatingConnector {
     body: new TextEncoder().encode('{"ok":true}'),
   };
 
+  /**
+   * What every destination costs here — the flat per-handler price ADR 0020
+   * makes a route's whole fee. `null` means this connector terminates no
+   * matching route, which it reports as the `404` a real one does.
+   */
+  routePrice: bigint | null = 1000n;
+
   constructor(options: FakeTerminatingConnectorOptions = {}) {
     this.identitySecret = options.identitySecret ?? new Uint8Array(32).fill(9);
     this.identityPublic = secp256k1.getPublicKey(this.identitySecret, false);
@@ -80,14 +87,28 @@ export class FakeTerminatingConnector {
   }
 
   /**
-   * A `fetch` that serves this connector's `/ilp/identity`. Anything else
-   * 404s, so a test that reaches an unexpected route fails loudly.
+   * A `fetch` serving this connector's client edge — `/ilp/identity` and
+   * `/ilp/routes/price`, the two endpoints a sender must consult before it
+   * can form a packet. Anything else 404s, so a test that reaches an
+   * unexpected route fails loudly.
    */
   fetch: typeof fetch = async (input) => {
     const url = String(input);
     if (url.endsWith('/ilp/identity')) {
       return new Response(
         JSON.stringify({ keyId: 'fake', publicKey: this.publicKeyHex }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    }
+    if (url.includes('/ilp/routes/price')) {
+      if (this.routePrice === null) {
+        return new Response('no route', { status: 404 });
+      }
+      const destination =
+        new URL(url, 'http://x.invalid').searchParams.get('destination') ?? '';
+      return new Response(
+        // `price` is a JSON NUMBER on this endpoint, as the connector emits it.
+        JSON.stringify({ destination, price: Number(this.routePrice) }),
         { status: 200, headers: { 'content-type': 'application/json' } }
       );
     }

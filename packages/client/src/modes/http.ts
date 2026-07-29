@@ -144,7 +144,9 @@ export async function initializeHttpMode(
     ownIlpAddress: config.ilpInfo.ilpAddress,
     toonEncoder: config.toonEncoder,
     toonDecoder: config.toonDecoder,
-    basePricePerByte: 10n, // Match network default (10 micro-USDC per byte)
+    // No `basePricePerByte`: ADR 0020 removed per-byte pricing, and a packet's
+    // amount now comes from `GET /ilp/routes/price` at the terminating
+    // connector (toon-client#452). Nothing here may state a local rate.
   };
 
   const bootstrapService = new BootstrapService(

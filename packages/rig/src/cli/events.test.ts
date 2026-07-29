@@ -27,10 +27,7 @@ import {
 } from './events.js';
 import { writeToonConfig } from './git-config.js';
 import type { CliIo } from './push.js';
-import {
-  filterEvents,
-  makeMockRelayFactory,
-} from './read-testkit.js';
+import { filterEvents, makeMockRelayFactory } from './read-testkit.js';
 import type { StandaloneContext } from './standalone-context.js';
 import type { NostrEvent } from '../remote-state.js';
 
@@ -159,7 +156,7 @@ interface FakeStandalone {
 function makeStandalone(): FakeStandalone {
   const published: FakeStandalone['published'] = [];
   const publisher: Publisher = {
-    getFeeRates: async () => ({ uploadFeePerByte: 10n, eventFee: 3n }),
+    getFeeRates: async () => ({ uploadFee: 1000n, eventFee: 3n }),
     uploadGitObject: async () => {
       throw new Error('single-event commands never upload objects');
     },
@@ -219,12 +216,24 @@ describe('rig issue create', () => {
   it('publishes the issue event with the config-resolved repo address', async () => {
     const h = deps();
     const code = await runIssue(
-      ['create', '--title', 'Fix the flux', '--body', 'It broke.', '--label', 'bug', '--label', 'ui', '--yes'],
+      [
+        'create',
+        '--title',
+        'Fix the flux',
+        '--body',
+        'It broke.',
+        '--label',
+        'bug',
+        '--label',
+        'ui',
+        '--yes',
+      ],
       h.deps
     );
     expect(code).toBe(0);
     expect(fake.published).toHaveLength(1);
-    const { event, relayUrls } = fake.published[0] as FakeStandalone['published'][0];
+    const { event, relayUrls } = fake
+      .published[0] as FakeStandalone['published'][0];
     expect(event.kind).toBe(1621);
     expect(event.content).toBe('It broke.');
     expect(event.tags).toContainEqual(['a', `30617:${CONFIG_OWNER}:demo`]);
@@ -239,7 +248,9 @@ describe('rig issue create', () => {
     expect(text).toContain('30617:' + CONFIG_OWNER + ':demo');
     expect(text).toContain(`Identity: ${OWNER} (from /repo/.env)`);
     expect(text).toContain('permanent and non-refundable');
-    expect(text).toContain(`Published kind:1621 issue "Fix the flux": ${EVENT_ID}`);
+    expect(text).toContain(
+      `Published kind:1621 issue "Fix the flux": ${EVENT_ID}`
+    );
     expect(text).toContain('paid 3 base units');
   });
 
@@ -282,7 +293,18 @@ describe('rig issue create', () => {
   it('--repo-id and --owner override the git config address', async () => {
     const h = deps();
     const code = await runIssue(
-      ['create', '--title', 't', '--body', 'b', '--yes', '--repo-id', 'other', '--owner', OWNER],
+      [
+        'create',
+        '--title',
+        't',
+        '--body',
+        'b',
+        '--yes',
+        '--repo-id',
+        'other',
+        '--owner',
+        OWNER,
+      ],
       h.deps
     );
     expect(code).toBe(0);
@@ -295,7 +317,16 @@ describe('rig issue create', () => {
   it('rejects a non-hex --owner before doing anything (exit 2)', async () => {
     const h = deps();
     const code = await runIssue(
-      ['create', '--title', 't', '--body', 'b', '--yes', '--owner', 'npub1notahexkey'],
+      [
+        'create',
+        '--title',
+        't',
+        '--body',
+        'b',
+        '--yes',
+        '--owner',
+        'npub1notahexkey',
+      ],
       h.deps
     );
     expect(code).toBe(2);
@@ -338,7 +369,10 @@ describe('rig issue create', () => {
 
       const j = makeDeps(env, bare, { loadStandalone: fake.load });
       expect(
-        await runIssue(['create', '--title', 't', '--body', 'b', '--yes', '--json'], j.deps)
+        await runIssue(
+          ['create', '--title', 't', '--body', 'b', '--yes', '--json'],
+          j.deps
+        )
       ).toBe(1);
       expect(JSON.parse(j.out.join('\n'))).toMatchObject({
         command: 'issue',
@@ -410,7 +444,10 @@ describe('confirm gating', () => {
 describe('rig comment', () => {
   it('publishes kind:1622 with the default root marker and owner p-tag', async () => {
     const h = deps();
-    const code = await runComment([ROOT_EVENT, '--body', 'nice catch', '--yes'], h.deps);
+    const code = await runComment(
+      [ROOT_EVENT, '--body', 'nice catch', '--yes'],
+      h.deps
+    );
     expect(code).toBe(0);
     const { event } = fake.published[0] as FakeStandalone['published'][0];
     expect(event.kind).toBe(1622);
@@ -424,7 +461,16 @@ describe('rig comment', () => {
   it('passes --parent-author and --marker reply through', async () => {
     const h = deps();
     const code = await runComment(
-      [ROOT_EVENT, '--body', 'b', '--parent-author', OWNER, '--marker', 'reply', '--yes'],
+      [
+        ROOT_EVENT,
+        '--body',
+        'b',
+        '--parent-author',
+        OWNER,
+        '--marker',
+        'reply',
+        '--yes',
+      ],
       h.deps
     );
     expect(code).toBe(0);
@@ -436,7 +482,10 @@ describe('rig comment', () => {
   it('validates the root event id, marker, and body (exit 2)', async () => {
     expect(await runComment(['not-hex', '--body', 'b'], deps().deps)).toBe(2);
     expect(
-      await runComment([ROOT_EVENT, '--body', 'b', '--marker', 'sideways'], deps().deps)
+      await runComment(
+        [ROOT_EVENT, '--body', 'b', '--marker', 'sideways'],
+        deps().deps
+      )
     ).toBe(2);
     expect(await runComment([ROOT_EVENT], deps().deps)).toBe(2);
     expect(await runComment([], deps().deps)).toBe(2);
@@ -449,7 +498,16 @@ describe('rig pr create (real format-patch)', () => {
     const [first, second] = addSecondCommit(repoDir);
     const h = deps();
     const code = await runPr(
-      ['create', '--title', 'Add feature', '--range', `${first}..${second}`, '--branch', 'feature', '--yes'],
+      [
+        'create',
+        '--title',
+        'Add feature',
+        '--range',
+        `${first}..${second}`,
+        '--branch',
+        'feature',
+        '--yes',
+      ],
       h.deps
     );
     expect(code).toBe(0);
@@ -578,11 +636,23 @@ describe('rig pr create (real format-patch)', () => {
     const h = deps();
     expect(
       await runPr(
-        ['create', '--title', 't', '--range', 'a..b', '--body', 'x', '--body-file', 'y'],
+        [
+          'create',
+          '--title',
+          't',
+          '--range',
+          'a..b',
+          '--body',
+          'x',
+          '--body-file',
+          'y',
+        ],
         h.deps
       )
     ).toBe(2);
-    expect(h.err.join('\n')).toContain('--body and --body-file are mutually exclusive');
+    expect(h.err.join('\n')).toContain(
+      '--body and --body-file are mutually exclusive'
+    );
     expect(fake.published).toHaveLength(0);
   });
 
@@ -601,7 +671,9 @@ describe('rig pr create (real format-patch)', () => {
   it('requires exactly one of --range | --patch-file (exit 2)', async () => {
     const h = deps();
     expect(await runPr(['create', '--title', 't'], h.deps)).toBe(2);
-    expect(h.err.join('\n')).toContain('exactly one of --range or --patch-file');
+    expect(h.err.join('\n')).toContain(
+      'exactly one of --range or --patch-file'
+    );
     expect(
       await runPr(
         ['create', '--title', 't', '--range', 'a..b', '--patch-file', 'x'],
@@ -626,7 +698,10 @@ describe('rig pr create (real format-patch)', () => {
 describe('rig pr status', () => {
   it('publishes the mapped status kind with the repo a-tag', async () => {
     const h = deps();
-    const code = await runPr(['status', ROOT_EVENT, 'applied', '--yes'], h.deps);
+    const code = await runPr(
+      ['status', ROOT_EVENT, 'applied', '--yes'],
+      h.deps
+    );
     expect(code).toBe(0);
     const { event } = fake.published[0] as FakeStandalone['published'][0];
     expect(event.kind).toBe(1631);
@@ -718,7 +793,10 @@ describe('relay selection (#249)', () => {
       relays: ['wss://one.example', 'wss://two.example'],
     });
     const h = deps();
-    const code = await runIssue(['create', '--title', 't', '--body', 'b', '--yes'], h.deps);
+    const code = await runIssue(
+      ['create', '--title', 't', '--body', 'b', '--yes'],
+      h.deps
+    );
     expect(code).toBe(1);
     const text = h.err.join('\n');
     expect(text).toContain('single relay');
@@ -732,7 +810,16 @@ describe('relay selection (#249)', () => {
   it('an explicit single --relay overrides the configured remotes', async () => {
     const h = deps();
     const code = await runIssue(
-      ['create', '--title', 't', '--body', 'b', '--yes', '--relay', 'wss://chosen.example'],
+      [
+        'create',
+        '--title',
+        't',
+        '--body',
+        'b',
+        '--yes',
+        '--relay',
+        'wss://chosen.example',
+      ],
       h.deps
     );
     expect(code).toBe(0);
@@ -832,7 +919,10 @@ describe('error mapping', () => {
         throw new Error('publish exploded');
       },
     });
-    const code = await runPr(['status', ROOT_EVENT, 'open', '--json', '--yes'], h.deps);
+    const code = await runPr(
+      ['status', ROOT_EVENT, 'open', '--json', '--yes'],
+      h.deps
+    );
     expect(code).toBe(1);
     expect(JSON.parse(h.out.join('\n'))).toMatchObject({
       command: 'pr status',
@@ -866,12 +956,17 @@ describe('usage', () => {
 
   it('rejects unknown flags (incl. the removed --daemon mode flag) with usage (exit 2)', async () => {
     const h = deps();
-    expect(await runPr(['status', ROOT_EVENT, 'open', '--frobnicate'], h.deps)).toBe(2);
+    expect(
+      await runPr(['status', ROOT_EVENT, 'open', '--frobnicate'], h.deps)
+    ).toBe(2);
     expect(h.err.join('\n')).toContain('Usage: rig pr status');
     // --daemon was removed and stays unknown; --standalone/--no-daemon are now
     // valid force-standalone flags (covered in the delegation describe below).
     expect(
-      await runIssue(['create', '--title', 't', '--body', 'b', '--daemon'], deps().deps)
+      await runIssue(
+        ['create', '--title', 't', '--body', 'b', '--daemon'],
+        deps().deps
+      )
     ).toBe(2);
     expect(fake.published).toHaveLength(0);
   });
@@ -888,14 +983,15 @@ describe('daemon delegation (#279)', () => {
   let SELF: string;
 
   beforeEach(async () => {
-    const { deriveNostrKeyFromMnemonic } = await import(
-      '@toon-protocol/client'
-    );
+    const { deriveNostrKeyFromMnemonic } =
+      await import('@toon-protocol/client');
     SELF = deriveNostrKeyFromMnemonic(TEST_MNEMONIC, 0).pubkey;
   });
 
   const sameIdentityProbe =
-    (relayUrl = 'wss://origin-relay.example'): NonNullable<EventCommandDeps['probeDaemon']> =>
+    (
+      relayUrl = 'wss://origin-relay.example'
+    ): NonNullable<EventCommandDeps['probeDaemon']> =>
     async () => ({
       baseUrl: 'http://127.0.0.1:8787',
       reachable: true,
@@ -997,10 +1093,7 @@ describe('daemon delegation (#279)', () => {
       probeDaemon: sameIdentityProbe('wss://daemon-relay.example'),
       fetchImpl,
     });
-    const code = await runComment(
-      [ROOT_EVENT, '--body', 'B', '--yes'],
-      h.deps
-    );
+    const code = await runComment([ROOT_EVENT, '--body', 'B', '--yes'], h.deps);
     expect(code).toBe(0);
     expect(h.err.join('\n')).toContain(
       'daemon publishes via its configured relay'
@@ -1060,10 +1153,7 @@ describe('daemon delegation (#279)', () => {
         return new Response('Not Found', { status: 404 });
       }) as typeof fetch,
     });
-    const code = await runComment(
-      [ROOT_EVENT, '--body', 'B', '--yes'],
-      h.deps
-    );
+    const code = await runComment([ROOT_EVENT, '--body', 'B', '--yes'], h.deps);
     expect(code).toBe(1);
     const text = h.err.join('\n');
     expect(text).toContain('too old to handle git operations');
@@ -1089,7 +1179,8 @@ describe('daemon delegation (#279)', () => {
   });
 
   it('pr create --patch-file delegates the EXACT local patch text', async () => {
-    const patch = 'From 0123456789012345678901234567890123456789 Mon Sep 17\n---\npatch body\n';
+    const patch =
+      'From 0123456789012345678901234567890123456789 Mon Sep 17\n---\npatch body\n';
     const patchPath = join(repoDir, 'x.patch');
     writeFileSync(patchPath, patch);
     const receipt = { eventId: EVENT_ID, feePaid: '7', kind: 1617 };
@@ -1109,7 +1200,8 @@ describe('daemon delegation (#279)', () => {
   });
 
   it('pr create --body delegates the description to /git/patch', async () => {
-    const patch = 'From 0123456789012345678901234567890123456789 Mon Sep 17\n---\npatch body\n';
+    const patch =
+      'From 0123456789012345678901234567890123456789 Mon Sep 17\n---\npatch body\n';
     const patchPath = join(repoDir, 'x.patch');
     writeFileSync(patchPath, patch);
     const receipt = { eventId: EVENT_ID, feePaid: '7', kind: 1617 };
@@ -1119,7 +1211,16 @@ describe('daemon delegation (#279)', () => {
       fetchImpl,
     });
     const code = await runPr(
-      ['create', '--title', 'P', '--patch-file', patchPath, '--body', 'the why', '--yes'],
+      [
+        'create',
+        '--title',
+        'P',
+        '--patch-file',
+        patchPath,
+        '--body',
+        'the why',
+        '--yes',
+      ],
       h.deps
     );
     expect(code).toBe(0);

@@ -67,6 +67,15 @@ class FakeClient implements ToonClientLike {
     this.nonce += 1;
     return {};
   }
+
+  /**
+   * The flat route price this fake connector charges for any destination
+   * (ADR 0020). `null` would mean it terminates no matching route.
+   */
+  routePrice: bigint | null = 1000n;
+  async getRoutePrice(): Promise<bigint | null> {
+    return this.routePrice;
+  }
   signEvent(template: EventTemplate): NostrEvent {
     return {
       id: `signed-${template.kind}`,
@@ -103,26 +112,44 @@ class FakeClient implements ToonClientLike {
   getChannelDepositTotal(): bigint {
     return 1_000_000n;
   }
-  async getBalances(): Promise<{ chain: string; address: string; amount: string }[]> {
+  async getBalances(): Promise<
+    { chain: string; address: string; amount: string }[]
+  > {
     return [{ chain: 'evm', address: '0xself', amount: '5000000' }];
   }
   async depositToChannel(
     channelId: string,
     amount: string
   ): Promise<{ channelId: string; txHash?: string; depositTotal: string }> {
-    return { channelId, txHash: '0xdeposit', depositTotal: String(1_000_000n + BigInt(amount)) };
+    return {
+      channelId,
+      txHash: '0xdeposit',
+      depositTotal: String(1_000_000n + BigInt(amount)),
+    };
   }
   closeStateValue: 'open' | 'closing' | 'settleable' | 'settled' = 'open';
   settleableAtValue?: bigint;
   settleError?: Error;
   async closeChannel(
     channelId: string
-  ): Promise<{ channelId: string; txHash?: string; closedAt: string; settleableAt: string }> {
+  ): Promise<{
+    channelId: string;
+    txHash?: string;
+    closedAt: string;
+    settleableAt: string;
+  }> {
     this.closeStateValue = 'closing';
     this.settleableAtValue = 2000n;
-    return { channelId, txHash: '0xclose', closedAt: '1000', settleableAt: '2000' };
+    return {
+      channelId,
+      txHash: '0xclose',
+      closedAt: '1000',
+      settleableAt: '2000',
+    };
   }
-  async settleChannel(channelId: string): Promise<{ channelId: string; txHash?: string }> {
+  async settleChannel(
+    channelId: string
+  ): Promise<{ channelId: string; txHash?: string }> {
     if (this.settleError) throw this.settleError;
     this.closeStateValue = 'settled';
     return { channelId, txHash: '0xsettle' };
@@ -266,7 +293,11 @@ describe('control API routes', () => {
       const res = await app.inject({
         method: 'POST',
         url: '/upload-media',
-        payload: { dataBase64: Buffer.from('x').toString('base64'), mime: 'image/png', kind: 20 },
+        payload: {
+          dataBase64: Buffer.from('x').toString('base64'),
+          mime: 'image/png',
+          kind: 20,
+        },
       });
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({
@@ -295,14 +326,20 @@ describe('control API routes', () => {
         payload: { filePath: path, mime: 'image/png', kind: 20 },
       });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ url: 'https://ar-io.dev/tx-routes', txId: 'tx-routes' });
+      expect(res.json()).toMatchObject({
+        url: 'https://ar-io.dev/tx-routes',
+        txId: 'tx-routes',
+      });
     });
 
     it('POST /upload-media rejects supplying BOTH dataBase64 and filePath with 400', async () => {
       const res = await app.inject({
         method: 'POST',
         url: '/upload-media',
-        payload: { dataBase64: Buffer.from('x').toString('base64'), filePath: '/tmp/x.bin' },
+        payload: {
+          dataBase64: Buffer.from('x').toString('base64'),
+          filePath: '/tmp/x.bin',
+        },
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBe('invalid_payload');
@@ -319,7 +356,11 @@ describe('control API routes', () => {
     });
 
     it('POST /query rejects a missing filter with 400', async () => {
-      const res = await app.inject({ method: 'POST', url: '/query', payload: {} });
+      const res = await app.inject({
+        method: 'POST',
+        url: '/query',
+        payload: {},
+      });
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBe('invalid_filters');
     });
@@ -360,7 +401,9 @@ describe('control API routes', () => {
 
     it('GET /balances returns the wallet balances', async () => {
       const res = await app.inject({ method: 'GET', url: '/balances' });
-      expect(res.json().balances).toEqual([{ chain: 'evm', address: '0xself', amount: '5000000' }]);
+      expect(res.json().balances).toEqual([
+        { chain: 'evm', address: '0xself', amount: '5000000' },
+      ]);
     });
 
     it('POST /channels/deposit adds the delta and returns the new total', async () => {
@@ -383,7 +426,11 @@ describe('control API routes', () => {
         payload: { channelId: 'chan-1' },
       });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ channelId: 'chan-1', closedAt: '1000', settleableAt: '2000' });
+      expect(res.json()).toMatchObject({
+        channelId: 'chan-1',
+        closedAt: '1000',
+        settleableAt: '2000',
+      });
     });
 
     it('POST /channels/settle too-early returns 425 retryable', async () => {
@@ -397,7 +444,10 @@ describe('control API routes', () => {
         payload: { channelId: 'chan-1' },
       });
       expect(res.statusCode).toBe(425);
-      expect(res.json()).toMatchObject({ error: 'settle_too_early', retryable: true });
+      expect(res.json()).toMatchObject({
+        error: 'settle_too_early',
+        retryable: true,
+      });
     });
 
     it('POST /channels maps a settlement-gas revert to 402 insufficient_gas (#65)', async () => {
@@ -410,9 +460,16 @@ describe('control API routes', () => {
         ),
         { name: 'ChannelFundingError', retryable: true }
       );
-      const res = await app.inject({ method: 'POST', url: '/channels', payload: {} });
+      const res = await app.inject({
+        method: 'POST',
+        url: '/channels',
+        payload: {},
+      });
       expect(res.statusCode).toBe(402);
-      expect(res.json()).toMatchObject({ error: 'insufficient_gas', retryable: true });
+      expect(res.json()).toMatchObject({
+        error: 'insufficient_gas',
+        retryable: true,
+      });
       expect(res.json().detail).toContain('toon_fund_wallet');
     });
 
@@ -420,16 +477,29 @@ describe('control API routes', () => {
       // On the upload/publish path the tagged error is wrapped in a
       // ToonClientError('Failed to publish event'); the mapper must walk the
       // `cause` chain to find the actionable message.
-      const funding = Object.assign(new Error('Settlement wallet 0x1 has no gas on evm — fund it.'), {
-        name: 'ChannelFundingError',
+      const funding = Object.assign(
+        new Error('Settlement wallet 0x1 has no gas on evm — fund it.'),
+        {
+          name: 'ChannelFundingError',
+        }
+      );
+      client.openChannelError = Object.assign(
+        new Error('Failed to publish event'),
+        {
+          name: 'ToonClientError',
+          cause: funding,
+        }
+      );
+      const res = await app.inject({
+        method: 'POST',
+        url: '/channels',
+        payload: {},
       });
-      client.openChannelError = Object.assign(new Error('Failed to publish event'), {
-        name: 'ToonClientError',
-        cause: funding,
-      });
-      const res = await app.inject({ method: 'POST', url: '/channels', payload: {} });
       expect(res.statusCode).toBe(402);
-      expect(res.json()).toMatchObject({ error: 'insufficient_gas', retryable: true });
+      expect(res.json()).toMatchObject({
+        error: 'insufficient_gas',
+        retryable: true,
+      });
       expect(res.json().detail).toContain('fund it');
     });
 

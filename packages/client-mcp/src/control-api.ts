@@ -879,7 +879,7 @@ export interface GitPlannedObject {
 export interface GitFeeEstimate {
   objectCount: number;
   totalObjectBytes: number;
-  /** Σ size × uploadFeePerByte. */
+  /** objectCount × the store route's flat price. */
   uploadFee: string;
   /** Events to publish (refs event + announcement on first push). */
   eventCount: number;

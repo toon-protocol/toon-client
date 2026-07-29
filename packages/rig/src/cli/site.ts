@@ -27,9 +27,11 @@
  */
 
 import { parseArgs } from 'node:util';
-import { buildArweaveManifest, type ManifestEntry } from '../arweave-manifest.js';
+import {
+  buildArweaveManifest,
+  type ManifestEntry,
+} from '../arweave-manifest.js';
 import { resolveConflictingPath } from '../mime.js';
-import { flooredUploadFee } from '../publisher.js';
 import { GitRepoReader } from '../repo-reader.js';
 import type { RemoteState } from '../remote-state.js';
 import {
@@ -220,10 +222,7 @@ export async function runSite(args: string[], deps: SiteDeps): Promise<number> {
 // site publish
 // ---------------------------------------------------------------------------
 
-async function runSitePublish(
-  args: string[],
-  deps: SiteDeps
-): Promise<number> {
+async function runSitePublish(args: string[], deps: SiteDeps): Promise<number> {
   const { io } = deps;
 
   let flags: SiteFlags;
@@ -249,7 +248,12 @@ async function runSitePublish(
     const reader = new GitRepoReader(repoRoot);
 
     // ── Ref selection (single ref; default current branch) ─────────────────
-    const selected = await selectRefspecs(reader, flags.positionals, false, false);
+    const selected = await selectRefspecs(
+      reader,
+      flags.positionals,
+      false,
+      false
+    );
     if (selected.length !== 1) {
       throw new Error(
         `rig site publish builds ONE ref into a site — got ${selected.length} ` +
@@ -314,7 +318,8 @@ async function runSitePublish(
     }
 
     // ── Fallback (SPA) path resolution ─────────────────────────────────────
-    const fallbackPath = flags.fallback ?? (flags.spa ? flags.index : undefined);
+    const fallbackPath =
+      flags.fallback ?? (flags.spa ? flags.index : undefined);
     const pathSet = new Set(blobs.map((b) => b.path));
     if (fallbackPath !== undefined && !pathSet.has(fallbackPath)) {
       throw new Error(
@@ -345,10 +350,10 @@ async function runSitePublish(
     }
 
     // ── Fee estimate ───────────────────────────────────────────────────────
-    // Per-upload fees are floored at the store route's announced price
-    // (minUploadFee) — the same math the publisher claims per packet.
+    // An upload costs the store route's flat price whatever its size (ADR
+    // 0020) — the same figure the publisher claims per packet.
     const feeRates = await ctx.publisher.getFeeRates();
-    const { uploadFeePerByte, minUploadFee } = feeRates;
+    const { uploadFee } = feeRates;
     // Preview manifest with known/placeholder 43-char txids: byte-accurate for
     // the fee (every txid is 43 chars, so the real manifest is the same size).
     const previewEntries: ManifestEntry[] = blobs.map((b) => ({
@@ -367,19 +372,13 @@ async function runSitePublish(
     if (flags.forceReupload) {
       const { objects } = await reader.statObjects(uniqueShas);
       reuploadBytes = objects.reduce((sum, o) => sum + o.size, 0);
-      reuploadFee = objects.reduce(
-        (sum, o) => sum + flooredUploadFee(o.size, uploadFeePerByte, minUploadFee),
-        0n
-      );
+      reuploadFee = BigInt(objects.length) * uploadFee;
     }
-    const manifestFee = flooredUploadFee(
-      manifestBytes,
-      uploadFeePerByte,
-      minUploadFee
-    );
+    const manifestFee = uploadFee;
     const totalFee = manifestFee + reuploadFee;
 
-    const gateway = flags.gateway ?? deps.env['RIG_ARWEAVE_GATEWAY'] ?? DEFAULT_GATEWAY;
+    const gateway =
+      flags.gateway ?? deps.env['RIG_ARWEAVE_GATEWAY'] ?? DEFAULT_GATEWAY;
 
     const baseJson = (): Omit<SitePublishJson, 'executed'> => ({
       command: 'site publish',
@@ -401,10 +400,14 @@ async function runSitePublish(
     if (!flags.json) {
       io.out(`Site publish plan for ${ref} (repo ${repoId}):`);
       io.out(`  files:    ${blobs.length}`);
-      io.out(`  index:    ${flags.index}${pathSet.has(flags.index) ? '' : ' (missing!)'}`);
+      io.out(
+        `  index:    ${flags.index}${pathSet.has(flags.index) ? '' : ' (missing!)'}`
+      );
       if (fallbackPath) io.out(`  fallback: ${fallbackPath}`);
       if (flags.forceReupload) {
-        io.out(`  re-upload ${uniqueShas.length} blob(s), ${reuploadBytes} bytes (paid)`);
+        io.out(
+          `  re-upload ${uniqueShas.length} blob(s), ${reuploadBytes} bytes (paid)`
+        );
       }
       io.out(`  manifest: ${manifestBytes} bytes`);
       io.out(`  total fee: ${totalFee} base units`);
@@ -547,7 +550,12 @@ async function runSiteUrl(args: string[], deps: SiteDeps): Promise<number> {
     if (!repoId) throw new UnconfiguredRepoAddressError('repository id');
     const reader = new GitRepoReader(repoRoot);
 
-    const selected = await selectRefspecs(reader, flags.positionals, false, false);
+    const selected = await selectRefspecs(
+      reader,
+      flags.positionals,
+      false,
+      false
+    );
     if (selected.length !== 1) {
       throw new Error(
         `rig site url takes ONE ref — got ${selected.length} (${selected.join(', ')})`

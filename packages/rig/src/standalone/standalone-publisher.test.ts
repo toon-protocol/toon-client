@@ -17,7 +17,10 @@ import {
   type ChannelMapRecord,
   type PersistedChannelContext,
 } from './channel-map.js';
-import { DaemonIdentityConflictError, StandaloneLockError } from './nonce-guard.js';
+import {
+  DaemonIdentityConflictError,
+  StandaloneLockError,
+} from './nonce-guard.js';
 import {
   StandalonePublisher,
   deriveRouteDestinations,
@@ -116,10 +119,11 @@ const noDaemon = vi.fn(async () => {
 
 /** fetch mock: daemon /status answering with the given pubkey. */
 function daemonWith(pubkey: string): typeof fetch {
-  return vi.fn(async () =>
-    new Response(JSON.stringify({ identity: { nostrPubkey: pubkey } }), {
-      status: 200,
-    })
+  return vi.fn(
+    async () =>
+      new Response(JSON.stringify({ identity: { nostrPubkey: pubkey } }), {
+        status: 200,
+      })
   ) as unknown as typeof fetch;
 }
 
@@ -185,20 +189,25 @@ describe('StandalonePublisher', () => {
   });
 
   describe('getFeeRates', () => {
-    it('returns the daemon-convention defaults (eventFee 1, 10/byte uploads)', async () => {
+    it('reports 0 for an upload when no store route price is known', async () => {
+      // This class never invents a rate: with nothing announced it quotes 0
+      // and lets the connector be the one to refuse (F06).
       const { client } = mockClient();
       const publisher = build(client);
       await expect(publisher.getFeeRates()).resolves.toEqual({
-        uploadFeePerByte: 10n,
+        uploadFee: 0n,
         eventFee: 1n,
       });
     });
 
-    it('honours configured overrides', async () => {
+    it('honours the configured event fee and the announced store price', async () => {
       const { client } = mockClient();
-      const publisher = build(client, { eventFee: 7n, uploadFeePerByte: 3n });
+      const publisher = build(client, {
+        eventFee: 7n,
+        routePrices: { store: 3n },
+      });
       await expect(publisher.getFeeRates()).resolves.toEqual({
-        uploadFeePerByte: 3n,
+        uploadFee: 3n,
         eventFee: 7n,
       });
     });
@@ -265,12 +274,12 @@ describe('StandalonePublisher', () => {
       repoId: 'toon-meta',
     };
 
-    it('publishes a kind:5094 Git-SHA/Git-Type/Repo-tagged store write, bytes × rate fee, one claim', async () => {
+    it('publishes a kind:5094 Git-SHA/Git-Type/Repo-tagged store write at the flat route price, one claim', async () => {
       const { client, calls } = mockClient();
-      const publisher = build(client, { uploadFeePerByte: 10n });
+      const publisher = build(client, { routePrices: { store: 1000n } });
 
       const receipt = await publisher.uploadGitObject(upload);
-      const expectedFee = BigInt(upload.body.length) * 10n;
+      const expectedFee = 1000n;
       expect(receipt).toEqual({ txId: TX_ID, feePaid: expectedFee });
 
       expect(calls.claims).toEqual([
@@ -385,7 +394,7 @@ describe('StandalonePublisher', () => {
   describe('uploadBlob (#368 — raw manifest, no git envelope)', () => {
     it('publishes a kind:5094 with i/bid/output/Repo tags (no Git-* tags), one claim', async () => {
       const { client, calls } = mockClient();
-      const publisher = build(client, { uploadFeePerByte: 10n });
+      const publisher = build(client, { routePrices: { store: 1000n } });
       const body = Buffer.from('{"manifest":"arweave/paths"}');
 
       const receipt = await publisher.uploadBlob({
@@ -393,7 +402,7 @@ describe('StandalonePublisher', () => {
         contentType: 'application/x.arweave-manifest+json',
         repoId: 'toon-meta',
       });
-      const expectedFee = BigInt(body.length) * 10n;
+      const expectedFee = 1000n;
       expect(receipt).toEqual({ txId: TX_ID, feePaid: expectedFee });
       expect(calls.claims).toEqual([
         { channelId: 'channel-1', amount: expectedFee },
@@ -422,9 +431,9 @@ describe('StandalonePublisher', () => {
         body: Buffer.from('x'),
         contentType: 'text/plain',
       });
-      expect(
-        calls.publishes[0]!.event.tags.some((t) => t[0] === 'Repo')
-      ).toBe(false);
+      expect(calls.publishes[0]!.event.tags.some((t) => t[0] === 'Repo')).toBe(
+        false
+      );
       await publisher.stop();
     });
 
@@ -442,7 +451,7 @@ describe('StandalonePublisher', () => {
     });
   });
 
-  describe('route-price floors (the connector gates packets at the route price — F06)', () => {
+  describe('flat route pricing (the connector gates packets at the route price — F06)', () => {
     const gitUpload = (bytes: number) => ({
       sha: '1234567890abcdef1234567890abcdef12345678',
       type: 'blob' as const,
@@ -452,15 +461,15 @@ describe('StandalonePublisher', () => {
     /** The devnet announce's flat prices: 1000 per packet on both routes. */
     const routePrices = { publish: 1000n, store: 1000n };
 
-    it('floors a small upload claim at the store route price (74 B × 10 = 740 → 1000)', async () => {
+    it('charges the store route price for a small upload', async () => {
       const { client, calls } = mockClient();
-      const publisher = build(client, { uploadFeePerByte: 10n, routePrices });
+      const publisher = build(client, { routePrices });
       const receipt = await publisher.uploadGitObject(gitUpload(74));
       expect(receipt.feePaid).toBe(1000n);
       expect(calls.claims).toEqual([{ channelId: 'channel-1', amount: 1000n }]);
       const pub = calls.publishes[0]!;
       expect(pub.options?.ilpAmount).toBe(1000n);
-      // The bid rides the floored fee too — the store is paid what it is bid.
+      // The bid rides the same fee — the store is paid what it is bid.
       expect(pub.event.tags.find((t) => t[0] === 'bid')).toEqual([
         'bid',
         '1000',
@@ -469,20 +478,20 @@ describe('StandalonePublisher', () => {
       await publisher.stop();
     });
 
-    it('leaves a large upload claim unchanged (1835 B × 10 = 18350 > 1000)', async () => {
+    it('charges a 25× larger upload exactly the same — the ADR 0020 change', async () => {
       const { client, calls } = mockClient();
-      const publisher = build(client, { uploadFeePerByte: 10n, routePrices });
+      const publisher = build(client, { routePrices });
       const receipt = await publisher.uploadGitObject(gitUpload(1835));
-      expect(receipt.feePaid).toBe(18350n);
-      expect(calls.claims).toEqual([
-        { channelId: 'channel-1', amount: 18350n },
-      ]);
+      // Under per-byte pricing this was 18350. A price is now flat per
+      // handler, so size does not enter the fee at all.
+      expect(receipt.feePaid).toBe(1000n);
+      expect(calls.claims).toEqual([{ channelId: 'channel-1', amount: 1000n }]);
       await publisher.stop();
     });
 
-    it('floors a raw-blob upload claim the same way', async () => {
+    it('charges a raw-blob upload the same way', async () => {
       const { client, calls } = mockClient();
-      const publisher = build(client, { uploadFeePerByte: 10n, routePrices });
+      const publisher = build(client, { routePrices });
       const receipt = await publisher.uploadBlob({
         body: Buffer.alloc(74, 0x61),
         contentType: 'text/html',
@@ -502,46 +511,40 @@ describe('StandalonePublisher', () => {
       await publisher.stop();
     });
 
-    it('keeps pre-floor behavior when no route prices are known (740 / 0)', async () => {
+    it('quotes 0 rather than a made-up rate when no price is known', async () => {
       const { client, calls } = mockClient();
-      const publisher = build(client, { uploadFeePerByte: 10n, eventFee: 0n });
+      const publisher = build(client, { eventFee: 0n });
       const receipt = await publisher.uploadGitObject(gitUpload(74));
-      expect(receipt.feePaid).toBe(740n);
+      expect(receipt.feePaid).toBe(0n);
       const publishReceipt = await publisher.publishEvent(EVENT, []);
       expect(publishReceipt.feePaid).toBe(0n);
       expect(calls.claims).toEqual([
-        { channelId: 'channel-1', amount: 740n },
+        { channelId: 'channel-1', amount: 0n },
         { channelId: 'channel-1', amount: 0n },
       ]);
       await publisher.stop();
     });
 
-    it('getFeeRates folds the floors in (estimate === claims)', async () => {
+    it('getFeeRates reports both flat prices (estimate === claims)', async () => {
       const { client } = mockClient();
-      const publisher = build(client, {
-        eventFee: 1n,
-        uploadFeePerByte: 10n,
-        routePrices,
-      });
+      const publisher = build(client, { eventFee: 1n, routePrices });
       await expect(publisher.getFeeRates()).resolves.toEqual({
-        uploadFeePerByte: 10n,
+        uploadFee: 1000n, // the store route price, whole
         eventFee: 1000n, // flat fee pre-floored at the publish route price
-        minUploadFee: 1000n, // per-upload floor (store route price)
       });
       await publisher.stop();
     });
 
-    it('a floor only applies to its own route (publish-only price)', async () => {
+    it('a price only applies to its own route (publish-only price)', async () => {
       const { client, calls } = mockClient();
       const publisher = build(client, {
-        uploadFeePerByte: 10n,
         eventFee: 1n,
         routePrices: { publish: 1000n },
       });
       await publisher.uploadGitObject(gitUpload(74));
-      expect(calls.claims).toEqual([{ channelId: 'channel-1', amount: 740n }]);
+      expect(calls.claims).toEqual([{ channelId: 'channel-1', amount: 0n }]);
       await expect(publisher.getFeeRates()).resolves.toEqual({
-        uploadFeePerByte: 10n,
+        uploadFee: 0n,
         eventFee: 1000n,
       });
       await publisher.stop();
@@ -846,9 +849,7 @@ describe('StandalonePublisher', () => {
 
       // ONE channel total: run 2 resumed instead of opening on-chain.
       expect(callsB.onChainOpens).toBe(0);
-      expect(callsB.claims).toEqual([
-        { channelId: '0xchannel-1', amount: 1n },
-      ]);
+      expect(callsB.claims).toEqual([{ channelId: '0xchannel-1', amount: 1n }]);
       // trackChannel got the persisted chain context — the client rehydrates
       // the nonce/cumulative watermark from channels.json off exactly this
       // call (covered by @toon-protocol/client's ChannelManager tests).

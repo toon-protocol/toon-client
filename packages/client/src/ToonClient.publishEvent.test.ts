@@ -401,3 +401,163 @@ describe('ToonClient.publishEvent reads the sealed answer (toon-client#450)', ()
     ).rejects.toThrow(/Failed to publish event/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pricing — asked for, never computed (toon-client#452, ADR 0020)
+// ---------------------------------------------------------------------------
+
+describe('ToonClient.publishEvent asks the route for its price (toon-client#452)', () => {
+  /** Every URL the client fetched, in order. */
+  function urlsFetched(): string[] {
+    const spy = globalThis.fetch as unknown as {
+      mock?: { calls: unknown[][] };
+    };
+    return (spy.mock?.calls ?? []).map((c) => String(c[0]));
+  }
+
+  function spyOnConnectorFetch(): void {
+    globalThis.fetch = vi.fn(connector.fetch) as unknown as typeof fetch;
+  }
+
+  it('prices the packet at the destination route price, not at any local rate', async () => {
+    connector.routePrice = 1234n;
+    spyOnConnectorFetch();
+    const client = new ToonClient(baseConfig());
+    const sendIlpPacketWithClaim = vi.fn(async (params: { data: string }) =>
+      connector.fulfill(params.data)
+    );
+    attachTransport(client, { sendIlpPacketWithClaim });
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    const [params] = sendIlpPacketWithClaim.mock.calls[0] ?? [];
+    expect((params as { amount: string }).amount).toBe('1234');
+
+    // It really came off the wire, from the documented endpoint.
+    expect(
+      urlsFetched().some((u) =>
+        u.includes('/ilp/routes/price?destination=g.proxy')
+      )
+    ).toBe(true);
+  });
+
+  it('does not multiply the price by anything — a bigger event costs the same', async () => {
+    // The whole point of ADR 0020: byte-proportional pricing has no successor.
+    connector.routePrice = 1000n;
+    const amountFor = async (encodedLength: number): Promise<string> => {
+      const local = new FakeTerminatingConnector();
+      local.routePrice = 1000n;
+      globalThis.fetch = local.fetch;
+      const config = baseConfig() as unknown as {
+        toonEncoder: (e: unknown) => Uint8Array;
+      };
+      config.toonEncoder = () => new Uint8Array(encodedLength);
+      const client = new ToonClient(
+        config as unknown as ConstructorParameters<typeof ToonClient>[0]
+      );
+      const send = vi.fn(async (params: { data: string }) =>
+        local.fulfill(params.data)
+      );
+      attachTransport(client, { sendIlpPacketWithClaim: send });
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+      return (send.mock.calls[0]?.[0] as { amount: string }).amount;
+    };
+
+    expect(await amountFor(4)).toBe('1000');
+    expect(await amountFor(100_000)).toBe('1000');
+  });
+
+  it('an explicit ilpAmount still overrides, and never asks for a price', async () => {
+    spyOnConnectorFetch();
+    const client = new ToonClient(baseConfig());
+    const sendIlpPacketWithClaim = vi.fn(async (params: { data: string }) =>
+      connector.fulfill(params.data)
+    );
+    attachTransport(client, { sendIlpPacketWithClaim });
+
+    await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+      ilpAmount: 7n,
+    });
+
+    const [params] = sendIlpPacketWithClaim.mock.calls[0] ?? [];
+    expect((params as { amount: string }).amount).toBe('7');
+    // The identity is still fetched (a packet cannot be sealed without it);
+    // the price is not, because the caller already stated one.
+    expect(urlsFetched().some((u) => u.includes('/ilp/identity'))).toBe(true);
+    expect(urlsFetched().some((u) => u.includes('/ilp/routes/price'))).toBe(
+      false
+    );
+  });
+
+  it('refuses a destination the connector terminates no route for, rather than pricing it at zero', async () => {
+    connector.routePrice = null; // the connector answers 404
+    const client = new ToonClient(baseConfig());
+    const sendIlpPacketWithClaim = vi.fn(async (params: { data: string }) =>
+      connector.fulfill(params.data)
+    );
+    attachTransport(client, { sendIlpPacketWithClaim });
+
+    // Distinguishable, and no packet is formed at all — pricing an unroutable
+    // write at 0 would send one certain to be rejected for an unreadable
+    // reason.
+    await expect(
+      client.publishEvent(makeEvent(), { claim: makeProof() })
+    ).rejects.toThrow(/terminates no route/);
+    expect(sendIlpPacketWithClaim).not.toHaveBeenCalled();
+  });
+
+  it('fetches a price once per destination and reuses it, not once per packet', async () => {
+    spyOnConnectorFetch();
+    const client = new ToonClient(baseConfig());
+    attachTransport(client, {
+      sendIlpPacketWithClaim: vi.fn(async (params: { data: string }) =>
+        connector.fulfill(params.data)
+      ),
+    });
+
+    await client.publishEvent(makeEvent(), { claim: makeProof() });
+    await client.publishEvent(makeEvent(), { claim: makeProof() });
+    await client.publishEvent(makeEvent(), { claim: makeProof() });
+
+    const priceCalls = urlsFetched().filter((u) =>
+      u.includes('/ilp/routes/price')
+    );
+    expect(priceCalls).toHaveLength(1);
+  });
+
+  it('asks separately for a second destination', async () => {
+    spyOnConnectorFetch();
+    const client = new ToonClient(baseConfig());
+    attachTransport(client, {
+      sendIlpPacketWithClaim: vi.fn(async (params: { data: string }) =>
+        connector.fulfill(params.data)
+      ),
+    });
+
+    await client.publishEvent(makeEvent(), { claim: makeProof() });
+    await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+      destination: 'g.proxy.store',
+    });
+
+    const priceCalls = urlsFetched().filter((u) =>
+      u.includes('/ilp/routes/price')
+    );
+    expect(priceCalls).toHaveLength(2);
+    expect(priceCalls[1]).toContain('destination=g.proxy.store');
+  });
+
+  it('getRoutePrice exposes the same lookup, and reports an unterminated route as null', async () => {
+    const client = new ToonClient(baseConfig());
+    connector.routePrice = 4321n;
+    await expect(client.getRoutePrice('g.proxy')).resolves.toBe(4321n);
+
+    const other = new ToonClient(baseConfig());
+    connector.routePrice = null;
+    await expect(other.getRoutePrice('g.nowhere')).resolves.toBeNull();
+  });
+});

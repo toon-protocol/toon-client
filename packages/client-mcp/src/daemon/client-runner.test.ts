@@ -233,6 +233,15 @@ class FakeClient implements ToonClientLike {
     ch.cumulative += amount;
     return { channelId, signature: '0xsig' };
   }
+
+  /**
+   * The flat route price this fake connector charges for any destination
+   * (ADR 0020). `null` would mean it terminates no matching route.
+   */
+  routePrice: bigint | null = 1000n;
+  async getRoutePrice(): Promise<bigint | null> {
+    return this.routePrice;
+  }
   /** Records the last template signed, and returns a deterministic signed event. */
   lastSigned?: EventTemplate;
   signEvent(template: EventTemplate): NostrEvent {

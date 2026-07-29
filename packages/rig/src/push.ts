@@ -30,7 +30,6 @@ import {
   type GitObjectType,
 } from './objects.js';
 import {
-  flooredUploadFee,
   type FeeRates,
   type PublishReceipt,
   type Publisher,
@@ -85,9 +84,7 @@ export class OversizeObjectsError extends Error {
   ) {
     super(
       `${objects.length} object(s) exceed the ${MAX_OBJECT_SIZE} byte upload limit: ` +
-        objects
-          .map((o) => `${o.path ?? o.sha} (${o.size} bytes)`)
-          .join(', ')
+        objects.map((o) => `${o.path ?? o.sha} (${o.size} bytes)`).join(', ')
     );
     this.name = 'OversizeObjectsError';
   }
@@ -137,7 +134,7 @@ export interface PushFeeEstimate {
   objectCount: number;
   /** Total bytes across all planned object bodies. */
   totalObjectBytes: number;
-  /** Σ max(size × uploadFeePerByte, minUploadFee) — smallest asset unit. */
+  /** objectCount × the store route's flat price — smallest asset unit. */
   uploadFee: bigint;
   /** Number of events to publish (refs event + announcement on first push). */
   eventCount: number;
@@ -258,11 +255,21 @@ export async function planPush(options: PlanPushOptions): Promise<PushPlan> {
   for (const ref of selected) {
     const remoteSha = remoteState.refs.get(ref.refname) ?? null;
     if (remoteSha === null) {
-      refUpdates.push({ refname: ref.refname, localSha: ref.sha, remoteSha, kind: 'new' });
+      refUpdates.push({
+        refname: ref.refname,
+        localSha: ref.sha,
+        remoteSha,
+        kind: 'new',
+      });
       continue;
     }
     if (remoteSha === ref.sha) {
-      refUpdates.push({ refname: ref.refname, localSha: ref.sha, remoteSha, kind: 'up-to-date' });
+      refUpdates.push({
+        refname: ref.refname,
+        localSha: ref.sha,
+        remoteSha,
+        kind: 'up-to-date',
+      });
       continue;
     }
     let fastForward = false;
@@ -275,9 +282,19 @@ export async function planPush(options: PlanPushOptions): Promise<PushPlan> {
       fastForward = false;
     }
     if (fastForward) {
-      refUpdates.push({ refname: ref.refname, localSha: ref.sha, remoteSha, kind: 'fast-forward' });
+      refUpdates.push({
+        refname: ref.refname,
+        localSha: ref.sha,
+        remoteSha,
+        kind: 'fast-forward',
+      });
     } else if (force) {
-      refUpdates.push({ refname: ref.refname, localSha: ref.sha, remoteSha, kind: 'forced' });
+      refUpdates.push({
+        refname: ref.refname,
+        localSha: ref.sha,
+        remoteSha,
+        kind: 'forced',
+      });
     } else {
       rejected.push({ refname: ref.refname, localSha: ref.sha, remoteSha });
     }
@@ -369,17 +386,14 @@ export async function planPush(options: PlanPushOptions): Promise<PushPlan> {
   }
 
   // 6. Fee estimate. ---------------------------------------------------------
-  // Per-object pricing, each upload floored at the destination route's
-  // announced price (`minUploadFee`) — the exact same math the publisher
-  // claims per packet, so the confirm table always equals what is paid.
+  // A price is FLAT per packet (ADR 0020), so an upload costs the store
+  // route's price whatever its size: one price × one packet per object, the
+  // exact same figure the publisher claims per packet, so the confirm table
+  // always equals what is paid. `totalObjectBytes` is still reported — it is
+  // what a user wants to see about a push — but it no longer prices it.
   const announceNeeded = !remoteState.announced;
   const totalObjectBytes = objects.reduce((sum, o) => sum + o.size, 0);
-  const uploadFee = objects.reduce(
-    (sum, o) =>
-      sum +
-      flooredUploadFee(o.size, feeRates.uploadFeePerByte, feeRates.minUploadFee),
-    0n
-  );
+  const uploadFee = BigInt(objects.length) * feeRates.uploadFee;
   const eventCount = 1 + (announceNeeded ? 1 : 0);
   const eventFees = BigInt(eventCount) * feeRates.eventFee;
 

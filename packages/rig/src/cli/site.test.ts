@@ -117,7 +117,11 @@ function makeDeps(
   env: NodeJS.ProcessEnv,
   cwd: string,
   shaToTxId: Map<string, string>,
-  opts: { interactive?: boolean; answer?: boolean; hasUploadBlob?: boolean } = {}
+  opts: {
+    interactive?: boolean;
+    answer?: boolean;
+    hasUploadBlob?: boolean;
+  } = {}
 ): Harness {
   const out: string[] = [];
   const err: string[] = [];
@@ -131,11 +135,14 @@ function makeDeps(
     confirm: async () => opts.answer ?? false,
   };
   const publisher: Publisher = {
-    getFeeRates: async () => ({ uploadFeePerByte: 10n, eventFee: 1n }),
+    getFeeRates: async () => ({ uploadFee: 1000n, eventFee: 1n }),
     uploadGitObject: async (u): Promise<UploadReceipt> => {
       gitUploads.push({ sha: u.sha, ...(u.path ? { path: u.path } : {}) });
       // A FRESH txid on re-upload (proves the manifest uses the new one).
-      return { txId: u.sha.padEnd(43, 'N'), feePaid: BigInt(u.body.length) * 10n };
+      return {
+        txId: u.sha.padEnd(43, 'N'),
+        feePaid: BigInt(u.body.length) * 10n,
+      };
     },
     publishEvent: async () => ({ eventId: 'e'.repeat(64), feePaid: 1n }),
   };
@@ -268,7 +275,14 @@ describe('site publish — execute', () => {
   it('--gateway overrides the printed URL host', async () => {
     const h = makeDeps(env, repoDir, fullMap);
     await runSite(
-      ['publish', '--relay', RELAY, '--gateway', 'https://arweave.net/', '--yes'],
+      [
+        'publish',
+        '--relay',
+        RELAY,
+        '--gateway',
+        'https://arweave.net/',
+        '--yes',
+      ],
       h.deps
     );
     expect(h.out.join('\n')).toContain(`https://arweave.net/${MANIFEST_TX}/`);
@@ -410,7 +424,10 @@ describe('site — usage + errors', () => {
     git(['commit', '-m', 'c'], bare);
     try {
       const h = makeDeps(env, bare, fullMap);
-      const code = await runSite(['publish', '--relay', RELAY, '--json'], h.deps);
+      const code = await runSite(
+        ['publish', '--relay', RELAY, '--json'],
+        h.deps
+      );
       expect(code).toBe(1);
       expect(JSON.parse(h.out.join('\n'))).toMatchObject({
         error: 'unconfigured_repo_address',

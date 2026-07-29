@@ -83,41 +83,31 @@ export interface PublishReceipt {
   feePaid: bigint;
 }
 
-/** Fee rates used by `planPush` for the pre-push estimate. */
+/**
+ * Fee rates used by `planPush` for the pre-push estimate.
+ *
+ * Both figures are FLAT per packet. ADR 0020 (toon-client#452) removed
+ * byte-proportional pricing from the protocol: one handler, one price, and an
+ * app that wants to charge differently exposes more handlers. A 100-byte and
+ * a 100 KB upload to the same store route now cost the same, and the
+ * connector charges accordingly regardless of what a client computes — so
+ * there is no `uploadFeePerByte` to multiply and no floor to apply, because
+ * the route's price is the whole fee rather than a lower bound on one.
+ */
 export interface FeeRates {
-  /** Upload cost per body byte (smallest asset unit). */
-  uploadFeePerByte: bigint;
+  /**
+   * Flat cost per git-object/blob upload (smallest asset unit): the store
+   * destination's route price, as reported by the terminating connector's
+   * `GET /ilp/routes/price`. The connector gates every paid packet at that
+   * price, so an estimate built from it is exactly what a push pays.
+   */
+  uploadFee: bigint;
   /**
    * Flat cost per published event (smallest asset unit). Implementations
    * already fold any per-packet route-price floor into this flat value, so
    * estimates using it match the claims actually signed.
    */
   eventFee: bigint;
-  /**
-   * FLAT minimum per upload claim (smallest asset unit): the store
-   * destination's announced route price. The connector gates every paid
-   * packet at the destination route's price — a balance-proof claim
-   * advancing the channel by less is rejected (F06) — so each per-upload fee
-   * is `max(bytes × uploadFeePerByte, minUploadFee)`. Absent: no floor
-   * (pre-floor behavior, e.g. when the peer announces no capability prices).
-   */
-  minUploadFee?: bigint;
-}
-
-/**
- * Per-upload fee: `bytes × ratePerByte`, floored at `minFee` (the
- * destination's announced flat route price — see
- * {@link FeeRates.minUploadFee}). The single shared implementation keeps
- * every estimate site equal to what the publisher actually claims.
- */
-export function flooredUploadFee(
-  bytes: number,
-  ratePerByte: bigint,
-  minFee?: bigint
-): bigint {
-  const fee = BigInt(bytes) * ratePerByte;
-  const min = minFee ?? 0n;
-  return fee > min ? fee : min;
 }
 
 /**

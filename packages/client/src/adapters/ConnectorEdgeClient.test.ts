@@ -371,3 +371,150 @@ describe('ConnectorEdgeClient.getRoutePrice', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+describe('ConnectorEdgeClient route-price caching (toon-client#452)', () => {
+  // A FRESH Response per call: a Response body is single-use, so a shared one
+  // would fail the second read rather than the assertion under test.
+  const priced = (price: number) =>
+    vi
+      .fn<[string, RequestInit?], Promise<Response>>()
+      .mockImplementation(async () =>
+        jsonResponse({ destination: 'g.example.app', price })
+      );
+
+  it('fetches once per (endpoint, destination) and reuses the answer', async () => {
+    const fetchImpl = priced(100);
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    await client.getRoutePrice('https://apex.example', 'g.example.app');
+    await client.getRoutePrice('https://apex.example/ilp', 'g.example.app');
+    await client.getRoutePrice('https://apex.example', 'g.example.app');
+
+    // The trailing `/ilp` normalizes away, so all three are the same route.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(
+      client.hasCachedRoutePrice('https://apex.example', 'g.example.app')
+    ).toBe(true);
+  });
+
+  it('shares one round trip between concurrent callers', async () => {
+    const fetchImpl = priced(100);
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    await Promise.all([
+      client.getRoutePrice('https://apex.example', 'g.example.app'),
+      client.getRoutePrice('https://apex.example', 'g.example.app'),
+      client.getRoutePrice('https://apex.example', 'g.example.app'),
+    ]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('keys the cache by destination, not only by endpoint', async () => {
+    const fetchImpl = priced(100);
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    await client.getRoutePrice('https://apex.example', 'g.example.app');
+    await client.getRoutePrice('https://apex.example', 'g.example.other');
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches a 404 — "I do not terminate that" is an answer, not a failure', async () => {
+    const fetchImpl = vi
+      .fn<[string, RequestInit?], Promise<Response>>()
+      .mockImplementation(
+        async () => new Response('no route', { status: 404 })
+      );
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    await expect(
+      client.getRoutePrice('https://apex.example', 'g.nowhere')
+    ).resolves.toBeNull();
+    await expect(
+      client.getRoutePrice('https://apex.example', 'g.nowhere')
+    ).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT cache a transport failure — a transient error must be retryable', async () => {
+    const fetchImpl = vi
+      .fn<[string, RequestInit?], Promise<Response>>()
+      .mockResolvedValueOnce(new Response('boom', { status: 503 }))
+      .mockResolvedValue(
+        jsonResponse({ destination: 'g.example.app', price: 100 })
+      );
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    await expect(
+      client.getRoutePrice('https://apex.example', 'g.example.app')
+    ).rejects.toMatchObject({ code: 'ROUTE_PRICE_HTTP_STATUS' });
+    await expect(
+      client.getRoutePrice('https://apex.example', 'g.example.app')
+    ).resolves.toEqual({ destination: 'g.example.app', price: 100n });
+  });
+
+  it('forceRefresh replaces the cached answer', async () => {
+    const fetchImpl = vi
+      .fn<[string, RequestInit?], Promise<Response>>()
+      .mockResolvedValueOnce(
+        jsonResponse({ destination: 'g.example.app', price: 100 })
+      )
+      .mockResolvedValue(
+        jsonResponse({ destination: 'g.example.app', price: 250 })
+      );
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    await client.getRoutePrice('https://apex.example', 'g.example.app');
+    const repriced = await client.getRoutePrice(
+      'https://apex.example',
+      'g.example.app',
+      { forceRefresh: true }
+    );
+    expect(repriced?.price).toBe(250n);
+  });
+
+  it('invalidateRoutePrice drops one route, one endpoint, or all of them', async () => {
+    const fetchImpl = priced(100);
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    await client.getRoutePrice('https://apex.example', 'g.a');
+    await client.getRoutePrice('https://apex.example', 'g.b');
+    await client.getRoutePrice('https://other.example', 'g.a');
+
+    client.invalidateRoutePrice('https://apex.example', 'g.a');
+    expect(client.hasCachedRoutePrice('https://apex.example', 'g.a')).toBe(
+      false
+    );
+    expect(client.hasCachedRoutePrice('https://apex.example', 'g.b')).toBe(
+      true
+    );
+
+    client.invalidateRoutePrice('https://apex.example');
+    expect(client.hasCachedRoutePrice('https://apex.example', 'g.b')).toBe(
+      false
+    );
+    expect(client.hasCachedRoutePrice('https://other.example', 'g.a')).toBe(
+      true
+    );
+
+    client.invalidateRoutePrice();
+    expect(client.hasCachedRoutePrice('https://other.example', 'g.a')).toBe(
+      false
+    );
+  });
+});

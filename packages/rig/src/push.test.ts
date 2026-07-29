@@ -18,7 +18,6 @@ import { join } from 'node:path';
 import { EMPTY_BLOB_SHA, hashGitObject, MAX_OBJECT_SIZE } from './objects.js';
 import type { UnsignedEvent } from './nip34-events.js';
 import {
-  flooredUploadFee,
   type FeeRates,
   type GitObjectUpload,
   type PublishReceipt,
@@ -55,7 +54,7 @@ let allObjects: string[] = [];
 
 const REPO_ID = 'push-fixture';
 const RELAYS = ['wss://relay.test'];
-const FEE_RATES: FeeRates = { uploadFeePerByte: 10n, eventFee: 500n };
+const FEE_RATES: FeeRates = { uploadFee: 1000n, eventFee: 500n };
 const UNKNOWN_SHA = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
 function git(args: string[], cwd: string): string {
@@ -192,7 +191,7 @@ class MockPublisher implements Publisher {
     this.uploads.push(upload);
     return {
       txId: `tx-${upload.sha}`,
-      feePaid: BigInt(upload.body.length) * FEE_RATES.uploadFeePerByte,
+      feePaid: FEE_RATES.uploadFee,
     };
   }
 
@@ -201,7 +200,10 @@ class MockPublisher implements Publisher {
     relayUrls: string[]
   ): Promise<PublishReceipt> {
     this.published.push({ event, relayUrls });
-    return { eventId: `ev-${this.published.length}`, feePaid: FEE_RATES.eventFee };
+    return {
+      eventId: `ev-${this.published.length}`,
+      feePaid: FEE_RATES.eventFee,
+    };
   }
 }
 
@@ -241,16 +243,20 @@ describe('planPush', () => {
     expect(plan.newRefs['refs/heads/feature/x']).toBe(featureCommit);
     expect(plan.newRefs['refs/tags/v1']).toBe(tagSha);
 
-    // Fees: Σ bytes × rate + 2 events (announce + refs).
+    // Fees: one flat route price per object + 2 events (announce + refs).
     const totalBytes = plan.objects.reduce((sum, o) => sum + o.size, 0);
     expect(plan.estimate.objectCount).toBe(plan.objects.length);
     expect(plan.estimate.totalObjectBytes).toBe(totalBytes);
-    expect(plan.estimate.uploadFee).toBe(BigInt(totalBytes) * 10n);
+    const uploadFees = BigInt(plan.objects.length) * FEE_RATES.uploadFee;
+    expect(plan.estimate.uploadFee).toBe(uploadFees);
     expect(plan.announceNeeded).toBe(true);
     expect(plan.estimate.eventCount).toBe(2);
     expect(plan.estimate.eventFees).toBe(1000n);
-    expect(plan.estimate.totalFee).toBe(BigInt(totalBytes) * 10n + 1000n);
-    expect(plan.announcement).toEqual({ name: 'Push Fixture', description: 'a test repo' });
+    expect(plan.estimate.totalFee).toBe(uploadFees + 1000n);
+    expect(plan.announcement).toEqual({
+      name: 'Push Fixture',
+      description: 'a test repo',
+    });
 
     // Sizes are real: the README blob's size matches its content.
     const readmeSha = git(['rev-parse', 'main:README.md'], repoDir);
@@ -286,9 +292,7 @@ describe('planPush', () => {
     ]);
 
     // Delta = objects of commit2 not reachable from commit1.
-    const expected = allObjects.filter(
-      (sha) => !commit1Objects.includes(sha)
-    );
+    const expected = allObjects.filter((sha) => !commit1Objects.includes(sha));
     const expectedMain = reachableObjects([commit2, `^${commit1}`], repoDir);
     expect(plan.objects.map((o) => o.sha).sort()).toEqual(
       [...new Set(expectedMain)].sort()
@@ -480,9 +484,7 @@ describe('planPush', () => {
     const nonTipIndexes = plan.objects
       .map((o, i) => (tips.has(o.sha) ? -1 : i))
       .filter((i) => i !== -1);
-    expect(Math.min(...tipIndexes)).toBeGreaterThan(
-      Math.max(...nonTipIndexes)
-    );
+    expect(Math.min(...tipIndexes)).toBeGreaterThan(Math.max(...nonTipIndexes));
     for (const o of plan.objects) {
       expect(o.isRefTip).toBe(tips.has(o.sha));
     }
@@ -518,9 +520,7 @@ describe('executePush', () => {
     expect(publisher.uploads.map((u) => u.sha)).toEqual(
       plan.objects.map((o) => o.sha)
     );
-    expect(publisher.uploads.at(-1)!.sha).toBe(
-      plan.objects.at(-1)!.sha
-    );
+    expect(publisher.uploads.at(-1)!.sha).toBe(plan.objects.at(-1)!.sha);
     expect(plan.objects.at(-1)!.isRefTip).toBe(true);
     for (const upload of publisher.uploads) {
       expect(hashGitObject(upload.type, upload.body).sha).toBe(upload.sha);
@@ -600,9 +600,9 @@ describe('executePush', () => {
     const arweaveTags = new Map(
       tagValues(refsEvent, 'arweave').map(([k, v]) => [k, v])
     );
-    expect(
-      arweaveTags.get('1111111111111111111111111111111111111111')
-    ).toBe('ancient-tx');
+    expect(arweaveTags.get('1111111111111111111111111111111111111111')).toBe(
+      'ancient-tx'
+    );
     for (const sha of commit1Objects) {
       expect(arweaveTags.get(sha)).toBe(`old-${sha}`);
     }
@@ -660,16 +660,18 @@ describe('executePush', () => {
     // …but they still appear in the result (skipped, fee 0) and the map.
     for (const sha of paid.keys()) {
       const step = result.uploads.find((u) => u.sha === sha)!;
-      expect(step).toMatchObject({ txId: `tx-${sha}`, feePaid: 0n, skipped: true });
+      expect(step).toMatchObject({
+        txId: `tx-${sha}`,
+        feePaid: 0n,
+        skipped: true,
+      });
       expect(result.arweaveMap.get(sha)).toBe(`tx-${sha}`);
     }
 
-    // Fees: only the remaining uploads + both events were paid.
-    const skippedBytes = plan.objects
-      .filter((o) => paid.has(o.sha))
-      .reduce((sum, o) => sum + o.size, 0);
+    // Fees: only the remaining uploads + both events were paid. A skipped
+    // upload costs one whole route price now, not its bytes' worth.
     expect(result.totalFeePaid).toBe(
-      plan.estimate.totalFee - BigInt(skippedBytes) * FEE_RATES.uploadFeePerByte
+      plan.estimate.totalFee - BigInt(paid.size) * FEE_RATES.uploadFee
     );
 
     // Announce still happened exactly once across the two attempts.
@@ -733,17 +735,18 @@ describe('empty-blob handling', () => {
     ]);
     expect(plan.estimate.skippedEmptyCount).toBe(1);
     // The non-empty sibling blob IS uploaded.
-    const filledSha = hashGitObject(
-      'blob',
-      Buffer.from('not empty\n')
-    ).sha;
+    const filledSha = hashGitObject('blob', Buffer.from('not empty\n')).sha;
     expect(uploadShas).toContain(filledSha);
     // The empty blob has no txId and is never added to the arweave map.
     expect(plan.knownShaToTxId.has(EMPTY_BLOB_SHA)).toBe(false);
-    // Its zero body contributes nothing to the fee.
+    // It is excluded from the upload set, so it is not one of the packets
+    // priced — the saving is a whole route price, not its (zero) bytes.
     const totalBytes = plan.objects.reduce((sum, o) => sum + o.size, 0);
     expect(plan.estimate.totalObjectBytes).toBe(totalBytes);
-    expect(plan.estimate.uploadFee).toBe(BigInt(totalBytes) * 10n);
+    expect(plan.objects.some((o) => o.sha === EMPTY_BLOB_SHA)).toBe(false);
+    expect(plan.estimate.uploadFee).toBe(
+      BigInt(plan.objects.length) * FEE_RATES.uploadFee
+    );
   });
 
   it('executePush never uploads the empty blob (Publisher.uploadGitObject not called for it)', async () => {
@@ -792,7 +795,9 @@ describe('empty-blob handling', () => {
     expect(plan.skippedEmptyObjects).toHaveLength(0);
     expect(plan.estimate.skippedEmptyCount).toBe(0);
     // Sanity: the branch really does carry the empty tree.
-    expect(reachableObjects([emptyTreeCommit], repoDir)).toContain(emptyTreeSha);
+    expect(reachableObjects([emptyTreeCommit], repoDir)).toContain(
+      emptyTreeSha
+    );
   });
 
   it('pushes the non-empty objects and skips ONLY the empty one', async () => {
@@ -826,35 +831,24 @@ describe('empty-blob handling', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Route-price floors — estimate/actual parity
+// Flat route pricing — estimate/actual parity
 // ---------------------------------------------------------------------------
 
-describe('route-price floors (estimate === claims parity)', () => {
-  /** Devnet-shaped rates: 10/byte uploads floored at a flat 1000 per packet. */
-  const FLOORED_RATES: FeeRates = {
-    uploadFeePerByte: 10n,
-    eventFee: 1000n, // flat per-event fee arrives pre-floored from getFeeRates
-    minUploadFee: 1000n,
-  };
+describe('flat route pricing (estimate === claims parity)', () => {
+  /** Devnet-shaped rates: a flat 1000 per packet, upload or event alike. */
+  const FLAT_RATES: FeeRates = { uploadFee: 1000n, eventFee: 1000n };
 
-  /** Publisher paying the EXACT per-packet fees a floored publisher claims. */
-  class FlooredMockPublisher extends MockPublisher {
+  /** Publisher paying the EXACT per-packet fees a flat-priced publisher claims. */
+  class FlatMockPublisher extends MockPublisher {
     override async getFeeRates(): Promise<FeeRates> {
-      return FLOORED_RATES;
+      return FLAT_RATES;
     }
 
     override async uploadGitObject(
       upload: GitObjectUpload
     ): Promise<UploadReceipt> {
       const receipt = await super.uploadGitObject(upload);
-      return {
-        ...receipt,
-        feePaid: flooredUploadFee(
-          upload.body.length,
-          FLOORED_RATES.uploadFeePerByte,
-          FLOORED_RATES.minUploadFee
-        ),
-      };
+      return { ...receipt, feePaid: FLAT_RATES.uploadFee };
     }
 
     override async publishEvent(
@@ -862,34 +856,44 @@ describe('route-price floors (estimate === claims parity)', () => {
       relayUrls: string[]
     ): Promise<PublishReceipt> {
       const receipt = await super.publishEvent(event, relayUrls);
-      return { ...receipt, feePaid: FLOORED_RATES.eventFee };
+      return { ...receipt, feePaid: FLAT_RATES.eventFee };
     }
   }
 
-  it('planPush floors each object at minUploadFee', async () => {
+  it('planPush prices every object at the route price, whatever its size', async () => {
     const plan = await planPush({
       repoReader: reader,
       remoteState: cannedRemote(),
-      feeRates: FLOORED_RATES,
+      feeRates: FLAT_RATES,
       repoId: REPO_ID,
       refs: ['refs/heads/main'],
     });
 
-    // The fixture has small objects (< 100 bytes), so the floor really bites.
-    const floored = plan.objects.filter((o) => BigInt(o.size) * 10n < 1000n);
-    expect(floored.length).toBeGreaterThan(0);
+    // Objects of different sizes cost the same — that IS the ADR 0020 change.
+    const sizes = new Set(plan.objects.map((o) => o.size));
+    expect(sizes.size).toBeGreaterThan(1);
 
-    const expectedUploadFee = plan.objects.reduce(
-      (sum, o) => sum + flooredUploadFee(o.size, 10n, 1000n),
-      0n
-    );
-    expect(plan.estimate.uploadFee).toBe(expectedUploadFee);
-    // Strictly more than the unfloored Σ bytes × rate.
-    expect(plan.estimate.uploadFee).toBeGreaterThan(
-      BigInt(plan.estimate.totalObjectBytes) * 10n
+    expect(plan.estimate.uploadFee).toBe(
+      BigInt(plan.objects.length) * FLAT_RATES.uploadFee
     );
     expect(plan.estimate.totalFee).toBe(
-      expectedUploadFee + BigInt(plan.estimate.eventCount) * 1000n
+      plan.estimate.uploadFee + BigInt(plan.estimate.eventCount) * 1000n
+    );
+  });
+
+  it('a 1-byte and a 100 KB object are quoted the same', async () => {
+    const plan = await planPush({
+      repoReader: reader,
+      remoteState: cannedRemote(),
+      feeRates: FLAT_RATES,
+      repoId: REPO_ID,
+      refs: ['refs/heads/main'],
+    });
+    // Size no longer appears in the fee at all: the estimate is a packet
+    // count times a price, and totalObjectBytes is reported but unpriced.
+    expect(plan.estimate.uploadFee % FLAT_RATES.uploadFee).toBe(0n);
+    expect(plan.estimate.uploadFee / FLAT_RATES.uploadFee).toBe(
+      BigInt(plan.estimate.objectCount)
     );
   });
 
@@ -897,11 +901,11 @@ describe('route-price floors (estimate === claims parity)', () => {
     const plan = await planPush({
       repoReader: reader,
       remoteState: cannedRemote(),
-      feeRates: FLOORED_RATES,
+      feeRates: FLAT_RATES,
       repoId: REPO_ID,
       refs: ['refs/heads/main'],
     });
-    const publisher = new FlooredMockPublisher();
+    const publisher = new FlatMockPublisher();
     const result = await executePush({
       plan,
       publisher,
@@ -910,18 +914,5 @@ describe('route-price floors (estimate === claims parity)', () => {
       relayUrls: RELAYS,
     });
     expect(result.totalFeePaid).toBe(plan.estimate.totalFee);
-  });
-
-  it('rates without a floor keep the historical Σ bytes × rate estimate', async () => {
-    const plan = await planPush({
-      repoReader: reader,
-      remoteState: cannedRemote(),
-      feeRates: FEE_RATES, // no minUploadFee
-      repoId: REPO_ID,
-      refs: ['refs/heads/main'],
-    });
-    expect(plan.estimate.uploadFee).toBe(
-      BigInt(plan.estimate.totalObjectBytes) * FEE_RATES.uploadFeePerByte
-    );
   });
 });
