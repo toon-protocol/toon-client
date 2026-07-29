@@ -70,7 +70,7 @@ function makeHarness(
     identitySource: 'env',
     identitySourceLabel: 'RIG_MNEMONIC env',
     publisher: {
-      getFeeRates: async () => ({ uploadFeePerByte: 10n, eventFee: 1n }),
+      getFeeRates: async () => ({ uploadFee: 1000n, eventFee: 1n }),
       uploadGitObject: async () => {
         throw new Error('balance never uploads');
       },
@@ -187,7 +187,9 @@ describe('rig balance', () => {
       chainKey: 'solana',
       address: SOL_ADDR,
       native: { symbol: 'SOL', amount: '2000000000', decimals: 9 },
-      tokens: [{ symbol: 'USDC', amount: '0', decimals: 6, address: 'MintUSDC' }],
+      tokens: [
+        { symbol: 'USDC', amount: '0', decimals: 6, address: 'MintUSDC' },
+      ],
     },
     {
       chain: 'mina',
@@ -291,7 +293,9 @@ describe('rig balance', () => {
   it('--json carries the full per-chain native+tokens shape', async () => {
     const h = makeHarness({ TOON_CLIENT_HOME: dir }, WALLET);
     expect(await runBalance(['--json'], h.deps)).toBe(0);
-    const parsed = JSON.parse(h.out.join('\n')) as { wallet: WalletChainBalanceInfo[] };
+    const parsed = JSON.parse(h.out.join('\n')) as {
+      wallet: WalletChainBalanceInfo[];
+    };
     expect(parsed.wallet).toEqual(WALLET);
     expect(parsed.wallet[0]).toMatchObject({
       chain: 'evm',
@@ -327,7 +331,10 @@ describe('rig balance', () => {
     const h = makeHarness({ TOON_CLIENT_HOME: dir });
     expect(await runBalance(['--json'], h.deps)).toBe(0);
     const parsed = JSON.parse(h.out.join('\n')) as {
-      channels: { available: string | null; cumulativeClaimed: string | null }[];
+      channels: {
+        available: string | null;
+        cumulativeClaimed: string | null;
+      }[];
     };
     expect(parsed.channels[0]).toMatchObject({
       available: null,
@@ -520,9 +527,9 @@ describe('rig balance', () => {
     });
 
     it('resolves with the value when the read finishes in time', async () => {
-      await expect(readWalletBounded(async () => WALLET, 1000)).resolves.toEqual(
-        WALLET
-      );
+      await expect(
+        readWalletBounded(async () => WALLET, 1000)
+      ).resolves.toEqual(WALLET);
     });
 
     it('a non-positive timeout opts out of the bound (waits for the read)', async () => {
@@ -532,13 +539,15 @@ describe('rig balance', () => {
     });
 
     it('parses the env override; falls back to the default on junk/absent', () => {
-      expect(walletReadTimeoutMs({ RIG_BALANCE_WALLET_TIMEOUT_MS: '500' })).toBe(
-        500
+      expect(
+        walletReadTimeoutMs({ RIG_BALANCE_WALLET_TIMEOUT_MS: '500' })
+      ).toBe(500);
+      expect(walletReadTimeoutMs({ RIG_BALANCE_WALLET_TIMEOUT_MS: '0' })).toBe(
+        0
       );
-      expect(walletReadTimeoutMs({ RIG_BALANCE_WALLET_TIMEOUT_MS: '0' })).toBe(0);
-      expect(walletReadTimeoutMs({ RIG_BALANCE_WALLET_TIMEOUT_MS: 'nope' })).toBe(
-        20_000
-      );
+      expect(
+        walletReadTimeoutMs({ RIG_BALANCE_WALLET_TIMEOUT_MS: 'nope' })
+      ).toBe(20_000);
       expect(walletReadTimeoutMs({})).toBe(20_000);
     });
   });

@@ -177,6 +177,13 @@ export interface ToonClientLike {
   ): Promise<PublishEventResult>;
   signBalanceProof(channelId: string, amount: bigint): Promise<unknown>;
   /**
+   * Flat price of one packet to `destination`, from the connector that
+   * terminates it (`GET /ilp/routes/price`); `null` when it terminates no
+   * matching route. ADR 0020 prices a packet per handler, so this figure is
+   * the whole fee — there is no per-byte rate to multiply it by.
+   */
+  getRoutePrice(destination: string): Promise<bigint | null>;
+  /**
    * Sign an unsigned event template with the daemon-held Nostr key (the key
    * never leaves the daemon). Backs the `publish-unsigned` / `upload-media`
    * paths so a UI/agent supplies only the event shell.
@@ -2257,10 +2264,36 @@ export class ClientRunner {
    *    write routing (config-seeded relay via the apex), so the advisory
    *    `relayUrls` list is not consulted here — remote-state reads DO use it.
    */
+  /**
+   * What one store write costs: the store destination's flat route price, as
+   * the terminating connector reports it.
+   *
+   * This used to be `bytes × 10n`, a constant kept in step with three other
+   * copies by comment. ADR 0020 removed byte-proportional pricing from the
+   * protocol — one handler, one price — so there is nothing left to compute
+   * and nothing local that could disagree with what the connector charges.
+   * The bid tag, the signed claim and the ILP amount all still use this one
+   * figure, so a pre-push estimate remains exactly what a push pays.
+   *
+   * @throws {PublishRejectedError} when the connector terminates no store
+   *   route — a distinguishable refusal rather than a zero-priced packet that
+   *   would be rejected downstream for a reason nobody could read.
+   */
+  private async storeUploadFee(apex: ApexConnection): Promise<bigint> {
+    const price = await apex.client.getRoutePrice(this.config.storeDestination);
+    if (price === null) {
+      throw new PublishRejectedError(
+        `The connector terminates no store route for "${this.config.storeDestination}", ` +
+          'so it cannot say what an upload costs. Check `storeDestination`.'
+      );
+    }
+    return price;
+  }
+
   private gitPublisher(apex: ApexConnection): Publisher {
     return {
       getFeeRates: async () => ({
-        uploadFeePerByte: UPLOAD_FEE_PER_BYTE,
+        uploadFee: await this.storeUploadFee(apex),
         eventFee: apex.feePerEvent,
       }),
       uploadGitObject: (upload) => this.gitUploadObject(apex, upload),
@@ -2274,7 +2307,7 @@ export class ClientRunner {
     upload: GitObjectUpload
   ): Promise<UploadReceipt> {
     const channelId = await this.ensureApexChannel(apex);
-    const fee = BigInt(upload.body.length) * UPLOAD_FEE_PER_BYTE;
+    const fee = await this.storeUploadFee(apex);
     const claim = await apex.client.signBalanceProof(channelId, fee);
     const signed = await apex.client.signEvent({
       kind: 5094,
@@ -2615,15 +2648,6 @@ export class BalancesUnavailableError extends Error {
     if (providerError !== undefined) this.providerError = providerError;
   }
 }
-
-/**
- * Upload price per git-object body byte, micro-USDC. Matches the network
- * default `basePricePerByte` (10) the ToonClient prices writes with and the
- * seed pipeline bids (`bytes × 10`); the bid tag, the signed claim, and the
- * ILP amount all use this same figure so the pre-push estimate is exactly
- * what a push pays.
- */
-const UPLOAD_FEE_PER_BYTE = 10n;
 
 /** NIP-34 status kinds by wire value (`GitStatusRequest.status`). */
 const STATUS_KIND_BY_VALUE: Record<string, StatusKind> = {

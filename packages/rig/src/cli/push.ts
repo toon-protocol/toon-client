@@ -49,10 +49,12 @@ import {
 } from '../rig-pointer.js';
 import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import { hexToNpub } from '../npub.js';
-import { flooredUploadFee } from '../publisher.js';
 import { planPush, executePush } from '../push.js';
 import { GitRepoReader } from '../repo-reader.js';
-import { readRigPointerRecord, writeRigPointerRecord } from './rig-pointer-record.js';
+import {
+  readRigPointerRecord,
+  writeRigPointerRecord,
+} from './rig-pointer-record.js';
 import { renderIdentityLine, renderPlan, renderResult } from './render.js';
 import {
   serializePushPlan,
@@ -68,10 +70,17 @@ import {
 } from './daemon-session.js';
 import { RIG_STANDALONE_ENV } from '../standalone/nonce-guard.js';
 import { emitCliError, UnconfiguredRepoAddressError } from './errors.js';
-import { listGitRemotes, readToonConfig, resolveRepoRoot } from './git-config.js';
+import {
+  listGitRemotes,
+  readToonConfig,
+  resolveRepoRoot,
+} from './git-config.js';
 import type { IdentitySourceKind } from './identity.js';
 import { resolveRelays, singleRelayRefusal } from './remote.js';
-import type { LoadStandalone, StandaloneContext } from './standalone-context.js';
+import type {
+  LoadStandalone,
+  StandaloneContext,
+} from './standalone-context.js';
 
 // ---------------------------------------------------------------------------
 // Dependency seam (real wiring in rig.ts; tests inject fakes)
@@ -420,9 +429,8 @@ function planRigPointer(args: {
   ownerPubkey: string;
   repoId: string;
   relay: string;
-  uploadFeePerByte: bigint;
-  /** Per-upload route-price floor (see FeeRates.minUploadFee). */
-  minUploadFee?: bigint;
+  /** Flat cost of one upload — the store route's price (see FeeRates.uploadFee). */
+  uploadFee: bigint;
 }): RigPointerPlan {
   const html = generateRigPointerHtml({
     bundle: {
@@ -431,9 +439,10 @@ function planRigPointer(args: {
       entryCss:
         args.env[RIG_WEB_ENTRY_CSS_ENV] ?? DEFAULT_RIG_WEB_BUNDLE.entryCss,
     },
-    gateway: (
-      args.env[RIG_WEB_GATEWAY_ENV] ?? DEFAULT_RIG_WEB_GATEWAY
-    ).replace(/\/+$/, ''),
+    gateway: (args.env[RIG_WEB_GATEWAY_ENV] ?? DEFAULT_RIG_WEB_GATEWAY).replace(
+      /\/+$/,
+      ''
+    ),
     rigWebUrl: args.env[RIG_WEB_URL_ENV] ?? DEFAULT_RIG_WEB_URL,
     relay: args.relay,
     ownerNpub: hexToNpub(args.ownerPubkey),
@@ -461,7 +470,7 @@ function planRigPointer(args: {
     html,
     contentHash,
     bytes,
-    fee: flooredUploadFee(bytes, args.uploadFeePerByte, args.minUploadFee),
+    fee: args.uploadFee,
   };
 }
 
@@ -643,10 +652,7 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
           ownerPubkey: ctx.ownerPubkey,
           repoId,
           relay: relaysUsed[0],
-          uploadFeePerByte: feeRates.uploadFeePerByte,
-          ...(feeRates.minUploadFee !== undefined
-            ? { minUploadFee: feeRates.minUploadFee }
-            : {}),
+          uploadFee: feeRates.uploadFee,
         });
       }
     } else {
@@ -669,7 +675,8 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
         });
       // The delegated daemon owns the paid pipeline but exposes no raw-blob
       // upload route yet — the pointer refreshes on the next standalone push.
-      rigPageSkipDetail = 'skipped on the daemon path (refreshes on the next standalone push)';
+      rigPageSkipDetail =
+        'skipped on the daemon path (refreshes on the next standalone push)';
     }
 
     // ── Rig-page pointer publish (shared by the normal path and the
@@ -717,7 +724,9 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
       if (rigPage.url) {
         io.out(
           `Rig page: ${rigPage.url}` +
-            (rigPage.status === 'published' ? `  paid ${rigPage.feePaid}` : '') +
+            (rigPage.status === 'published'
+              ? `  paid ${rigPage.feePaid}`
+              : '') +
             '  (renders this repo from Arweave)'
         );
         const mirror = rigPage.txId ? mirrorGateway(gateway) : undefined;
@@ -861,7 +870,10 @@ export async function runPush(args: string[], deps: PushDeps): Promise<number> {
     // ── Rig-page pointer (after the push succeeded; never fails it) ─────────
     let rigPage: RigPageReport;
     if (!pointerPlan) {
-      rigPage = { status: 'skipped', ...(rigPageSkipDetail ? { detail: rigPageSkipDetail } : {}) };
+      rigPage = {
+        status: 'skipped',
+        ...(rigPageSkipDetail ? { detail: rigPageSkipDetail } : {}),
+      };
     } else if (pointerPlan.action === 'unchanged') {
       rigPage = {
         status: 'unchanged',

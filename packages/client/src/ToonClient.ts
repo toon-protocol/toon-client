@@ -1,4 +1,8 @@
-import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+} from 'nostr-tools/pure';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import type {
   BootstrapService,
@@ -18,10 +22,7 @@ import {
   ConnectorEdgeClient,
   connectorEdgeBaseUrl,
 } from './adapters/ConnectorEdgeClient.js';
-import {
-  readExchangeOutcome,
-  sealExchange,
-} from './wire/sealed-exchange.js';
+import { readExchangeOutcome, sealExchange } from './wire/sealed-exchange.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import { ToonClientError } from './errors.js';
@@ -556,14 +557,18 @@ export class ToonClient {
    *    sealed to that key, so a packet cannot be formed without it — and
    *    there is no default to fall back to, because sealing to the wrong key
    *    is a confidentiality failure that merely presents as undeliverable.
-   * 2. **The event becomes an OER `EnvelopeRequest`** — `POST <proxyPath>`
+   * 2. **The price is ASKED for, not computed.** ADR 0020 makes a price flat
+   *    per handler, so `GET /ilp/routes/price` — the same longest-prefix
+   *    lookup the claim gate charges against — is the only thing that can
+   *    state what this write costs. `options.ilpAmount` still overrides.
+   * 3. **The event becomes an OER `EnvelopeRequest`** — `POST <proxyPath>`
    *    carrying `{"event": …}` — never HTTP text.
-   * 3. **The PREPARE carries a real execution condition**, minted as
+   * 4. **The PREPARE carries a real execution condition**, minted as
    *    `sha256` of the fulfilment derived from the secret sealed inside the
    *    wrap. The transport verifies the returned preimage against it, so a
    *    FULFILL nobody could have earned is counted failed rather than
    *    accepted.
-   * 4. **The answer is opened with that same secret.** A FULFILL carries a
+   * 5. **The answer is opened with that same secret.** A FULFILL carries a
    *    sealed response envelope; a REJECT sealed at the termination means the
    *    destination refused, and a plaintext one means somebody on the path
    *    did. `refusedBy` keeps those apart.
@@ -577,7 +582,8 @@ export class ToonClient {
    * @param event - Signed Nostr event to publish
    * @param options - Optional destination, claim, amount and request target
    * @throws {ToonClientError} If the client is not started, the terminating
-   *   connector's identity cannot be obtained, or the send fails outright.
+   *   connector's identity or route price cannot be obtained, or the send
+   *   fails outright.
    */
   async publishEvent(
     event: NostrEvent,
@@ -598,24 +604,24 @@ export class ToonClient {
     }
 
     try {
-      // Encode the event to TOON only to PRICE the write; the bytes on the
-      // wire are the sealed envelope built below.
-      const toonData = this.config.toonEncoder(event);
-      const basePricePerByte = 10n;
+      const destination =
+        options?.destination ?? this.config.destinationAddress;
+      const edge = this.resolveClientEdgeEndpoint();
+
+      // (1) The key first — no packet exists without it.
+      const identity = await this.connectorEdge.getIdentity(edge);
+
+      // (2) The price is ASKED for, not computed. ADR 0020 makes a price flat
+      // per handler — the route table is the price list — so there is no
+      // per-byte rate to multiply and nothing local that could disagree with
+      // what the connector will actually charge. An explicit `ilpAmount`
+      // still overrides, and never triggers the lookup.
       const amount =
         options?.ilpAmount !== undefined
           ? String(options.ilpAmount)
-          : String(BigInt(toonData.length) * basePricePerByte);
+          : String(await this.routePriceFor(edge, destination));
 
-      const destination =
-        options?.destination ?? this.config.destinationAddress;
-
-      // (1) The key first — no packet exists without it.
-      const identity = await this.connectorEdge.getIdentity(
-        this.resolveClientEdgeEndpoint()
-      );
-
-      // (2)+(3) One call mints the envelope's seal and the condition that
+      // (3)+(4) One call mints the envelope's seal and the condition that
       // matches it, so the two can never drift apart.
       const exchange = sealExchange(
         {
@@ -644,7 +650,7 @@ export class ToonClient {
         claimMessage
       );
 
-      // (4) Open the answer with the secret this packet sealed.
+      // (5) Open the answer with the secret this packet sealed.
       const outcome = readExchangeOutcome(
         response,
         response.data === undefined ? undefined : fromBase64(response.data),
@@ -670,7 +676,8 @@ export class ToonClient {
 
       const { response: answer } = outcome;
       if (answer.status < 200 || answer.status >= 300) {
-        const detail = answer.body.length > 0 ? ` - ${decodeUtf8(answer.body)}` : '';
+        const detail =
+          answer.body.length > 0 ? ` - ${decodeUtf8(answer.body)}` : '';
         return {
           success: false,
           response: answer,
@@ -685,12 +692,83 @@ export class ToonClient {
         String(error),
         error instanceof Error ? error.stack : ''
       );
+      // Two conditions are raised by THIS method before any packet exists, and
+      // name a thing the caller can fix: the destination is not terminated
+      // here, or there is no client edge to ask at all. Wrapping either in
+      // `PUBLISH_ERROR` would hide the one fact worth surfacing behind the
+      // most generic code this method has. Everything else — including a
+      // connector that will not answer for its identity — keeps the existing
+      // wrapping, so `PUBLISH_ERROR` still means "the publish itself failed".
+      if (
+        error instanceof ToonClientError &&
+        (error.code === 'NO_TERMINATED_ROUTE' ||
+          error.code === 'NO_CONNECTOR_EDGE')
+      ) {
+        throw error;
+      }
       throw new ToonClientError(
         'Failed to publish event',
         'PUBLISH_ERROR',
         error instanceof Error ? error : undefined
       );
     }
+  }
+
+  /**
+   * What a destination costs, asked of the connector that terminates it —
+   * `null` when it terminates no route matching it.
+   *
+   * The public form of the lookup `publishEvent` makes, for callers that need
+   * a price BEFORE they build a packet: a pre-push estimate that must equal
+   * what the push will actually pay, a fee quote shown to a user for consent.
+   * Since ADR 0020 a price is flat per handler, so the figure is the whole
+   * fee for one packet to that destination — there is nothing to multiply it
+   * by. Cached per destination, so this is cheap to call repeatedly.
+   *
+   * @throws {ToonClientError} NO_CONNECTOR_EDGE when no client edge is known.
+   * @throws {ConnectorEdgeError} when the connector cannot be asked.
+   */
+  async getRoutePrice(destination: string): Promise<bigint | null> {
+    const price = await this.connectorEdge.getRoutePrice(
+      this.resolveClientEdgeEndpoint(),
+      destination
+    );
+    return price === null ? null : price.price;
+  }
+
+  /**
+   * What this destination costs, from the connector that terminates it.
+   *
+   * ADR 0020 makes a price flat per handler: one handler, one price, and an
+   * app that wants to charge differently exposes more handlers. There is
+   * therefore nothing to compute — the route table IS the price list, and
+   * `GET /ilp/routes/price` is the same longest-prefix lookup the claim gate
+   * charges against, so it can never state a price a real request would not
+   * be charged.
+   *
+   * Cached per (edge, destination) by {@link ConnectorEdgeClient}, so this is
+   * one round trip per destination rather than one per packet.
+   *
+   * @throws {ToonClientError} NO_TERMINATED_ROUTE when the connector answers
+   *   `404` — it does not terminate this destination. That is a refusal to
+   *   guess, not a zero: pricing an unroutable write at 0 (or at some local
+   *   fallback rate) would send a packet certain to be rejected, and report
+   *   the wrong reason for it.
+   */
+  private async routePriceFor(
+    edge: string,
+    destination: string
+  ): Promise<bigint> {
+    const price = await this.connectorEdge.getRoutePrice(edge, destination);
+    if (price === null) {
+      throw new ToonClientError(
+        `The connector at ${edge} terminates no route for "${destination}", so it ` +
+          'cannot say what a write there costs. Check the destination, or pass an ' +
+          'explicit `ilpAmount` to price it yourself.',
+        'NO_TERMINATED_ROUTE'
+      );
+    }
+    return price.price;
   }
 
   /**
@@ -1078,14 +1156,20 @@ export class ToonClient {
   ): Promise<{ channelId: string; txHash?: string; depositTotal: string }> {
     if (!this.channelManager) throw new Error('ChannelManager not initialized');
     if (!this.onChainChannelClient) {
-      throw new Error('On-chain channel client not configured (no chainRpcUrls).');
+      throw new Error(
+        'On-chain channel client not configured (no chainRpcUrls).'
+      );
     }
     const delta = BigInt(amount);
     if (delta <= 0n) throw new Error('Deposit amount must be positive.');
     const currentDeposit = this.channelManager.getDepositTotal(channelId);
-    const result = await this.onChainChannelClient.depositToChannel(channelId, delta, {
-      currentDeposit,
-    });
+    const result = await this.onChainChannelClient.depositToChannel(
+      channelId,
+      delta,
+      {
+        currentDeposit,
+      }
+    );
     this.channelManager.setDepositTotal(channelId, result.depositTotal);
     return {
       channelId,
@@ -1102,10 +1186,17 @@ export class ToonClient {
    */
   async closeChannel(
     channelId: string
-  ): Promise<{ channelId: string; txHash?: string; closedAt: string; settleableAt: string }> {
+  ): Promise<{
+    channelId: string;
+    txHash?: string;
+    closedAt: string;
+    settleableAt: string;
+  }> {
     if (!this.channelManager) throw new Error('ChannelManager not initialized');
     if (!this.onChainChannelClient) {
-      throw new Error('On-chain channel client not configured (no chainRpcUrls).');
+      throw new Error(
+        'On-chain channel client not configured (no chainRpcUrls).'
+      );
     }
     const r = await this.onChainChannelClient.closeChannel(channelId);
     this.channelManager.setChannelClosed(channelId, r.closedAt, r.settleableAt);
@@ -1123,14 +1214,20 @@ export class ToonClient {
    * a retryable error (carrying the remaining seconds) BEFORE spending gas — the
    * contract would revert anyway. Spends on-chain. EVM today.
    */
-  async settleChannel(channelId: string): Promise<{ channelId: string; txHash?: string }> {
+  async settleChannel(
+    channelId: string
+  ): Promise<{ channelId: string; txHash?: string }> {
     if (!this.channelManager) throw new Error('ChannelManager not initialized');
     if (!this.onChainChannelClient) {
-      throw new Error('On-chain channel client not configured (no chainRpcUrls).');
+      throw new Error(
+        'On-chain channel client not configured (no chainRpcUrls).'
+      );
     }
     const settleableAt = this.channelManager.getSettleableAt(channelId);
     if (settleableAt === undefined) {
-      throw new Error(`Channel "${channelId}" is not closed; call closeChannel first.`);
+      throw new Error(
+        `Channel "${channelId}" is not closed; call closeChannel first.`
+      );
     }
     const nowSec = BigInt(Math.floor(Date.now() / 1000));
     if (nowSec < settleableAt) {
@@ -1139,7 +1236,11 @@ export class ToonClient {
         new Error(
           `Channel "${channelId}" is not settleable yet — ${remaining}s remain (settleable at ${settleableAt}).`
         ),
-        { name: 'SettleTooEarlyError', retryable: true, settleableAt: settleableAt.toString() }
+        {
+          name: 'SettleTooEarlyError',
+          retryable: true,
+          settleableAt: settleableAt.toString(),
+        }
       );
     }
     const r = await this.onChainChannelClient.settleChannel(channelId);
@@ -1206,7 +1307,9 @@ export class ToonClient {
   }
 
   /** Where a tracked channel sits in the withdraw journey. */
-  getChannelCloseState(channelId: string): 'open' | 'closing' | 'settleable' | 'settled' {
+  getChannelCloseState(
+    channelId: string
+  ): 'open' | 'closing' | 'settleable' | 'settled' {
     if (!this.channelManager) throw new Error('ChannelManager not initialized');
     return this.channelManager.getChannelCloseState(channelId);
   }
@@ -1233,12 +1336,14 @@ export class ToonClient {
     if (!this.channelManager || !this.onChainChannelClient) return undefined;
     const participant = this.getEvmAddress();
     if (!participant) return undefined;
-    const { deposit } = await this.onChainChannelClient.readEvmParticipantState({
-      chain: opts.chain,
-      tokenNetworkAddress: opts.tokenNetworkAddress,
-      channelId,
-      participant,
-    });
+    const { deposit } = await this.onChainChannelClient.readEvmParticipantState(
+      {
+        chain: opts.chain,
+        tokenNetworkAddress: opts.tokenNetworkAddress,
+        channelId,
+        participant,
+      }
+    );
     this.channelManager.setDepositTotal(channelId, deposit);
     return deposit;
   }
@@ -1277,7 +1382,14 @@ export class ToonClient {
       const tokenAddress = chainKey ? tokens[chainKey] : undefined;
       if (chainKey && rpcUrl && tokenAddress) {
         try {
-          out.push(await readEvmTokenBalance({ rpcUrl, chainKey, tokenAddress, owner: evmAddress }));
+          out.push(
+            await readEvmTokenBalance({
+              rpcUrl,
+              chainKey,
+              tokenAddress,
+              owner: evmAddress,
+            })
+          );
         } catch {
           /* best-effort: drop EVM on read failure */
         }
@@ -1290,7 +1402,11 @@ export class ToonClient {
     if (solAddress && sol?.rpcUrl && sol.tokenMint) {
       try {
         out.push(
-          await readSolanaTokenBalance({ rpcUrl: sol.rpcUrl, mint: sol.tokenMint, owner: solAddress })
+          await readSolanaTokenBalance({
+            rpcUrl: sol.rpcUrl,
+            mint: sol.tokenMint,
+            owner: solAddress,
+          })
         );
       } catch {
         /* best-effort */
@@ -1302,7 +1418,12 @@ export class ToonClient {
     const mina = this.config.minaChannel;
     if (minaAddress && mina?.graphqlUrl) {
       try {
-        out.push(await readMinaBalance({ graphqlUrl: mina.graphqlUrl, owner: minaAddress }));
+        out.push(
+          await readMinaBalance({
+            graphqlUrl: mina.graphqlUrl,
+            owner: minaAddress,
+          })
+        );
       } catch {
         /* best-effort */
       }
@@ -1362,10 +1483,12 @@ export class ToonClient {
     const rpcUrls = this.config.chainRpcUrls;
     const tokens = this.config.preferredTokens;
     if (evmAddress && rpcUrls) {
-      const usableEvm = (c: string): boolean => c.startsWith('evm') && Boolean(rpcUrls[c]);
+      const usableEvm = (c: string): boolean =>
+        c.startsWith('evm') && Boolean(rpcUrls[c]);
       const settlementKeys = Object.keys(this.config.settlementAddresses ?? {});
       const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
-      const chainKey = settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
+      const chainKey =
+        settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
       if (chainKey && rpcUrls[chainKey]) {
         sources.evm = {
           chainKey,
@@ -1380,7 +1503,8 @@ export class ToonClient {
     // wins; else the caller's wallet-view fallback (e.g. network preset RPC).
     const sol = this.config.solanaChannel ?? fallback?.solanaChannel;
     if (sol?.rpcUrl) {
-      const solAddress = this.getSolanaAddress() ?? (await ensureDerived())?.solana.publicKey;
+      const solAddress =
+        this.getSolanaAddress() ?? (await ensureDerived())?.solana.publicKey;
       if (solAddress) {
         sources.solana = {
           chainKey: 'solana',
@@ -1398,7 +1522,8 @@ export class ToonClient {
     // Explicit config wins; else the caller's wallet-view fallback.
     const mina = this.config.minaChannel ?? fallback?.minaChannel;
     if (mina?.graphqlUrl) {
-      const minaAddress = this.getMinaAddress() ?? (await ensureDerived())?.mina.publicKey;
+      const minaAddress =
+        this.getMinaAddress() ?? (await ensureDerived())?.mina.publicKey;
       if (minaAddress) {
         sources.mina = {
           chainKey: 'mina',

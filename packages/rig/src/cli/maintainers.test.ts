@@ -52,7 +52,7 @@ interface Fake {
 function makeStandalone(identity = OWNER): Fake {
   const published: Fake['published'] = [];
   const publisher: Publisher = {
-    getFeeRates: async () => ({ uploadFeePerByte: 10n, eventFee: 5n }),
+    getFeeRates: async () => ({ uploadFee: 1000n, eventFee: 5n }),
     uploadGitObject: async () => {
       throw new Error('maintainers never uploads objects');
     },
@@ -256,9 +256,9 @@ describe('rig maintainers add/remove (paid, owner-only)', () => {
     expect(
       await runMaintainers(['add', 'nothex', ...ADDR], makeDeps(io, fake, []))
     ).toBe(2);
-    expect(
-      await runMaintainers(['bogus'], makeDeps(makeIo(), fake, []))
-    ).toBe(2);
+    expect(await runMaintainers(['bogus'], makeDeps(makeIo(), fake, []))).toBe(
+      2
+    );
     expect(fake.published).toHaveLength(0);
   });
 });

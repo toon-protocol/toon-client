@@ -12,7 +12,15 @@
  *     Arweave txId, mirroring the deployed payment-proxy contract.
  */
 
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  afterEach,
+  vi,
+} from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,6 +47,8 @@ let commit1Objects: string[] = [];
 let mainObjects: string[] = [];
 /** sha → body size for every object reachable from main. */
 const sizeBySha = new Map<string, number>();
+/** The flat store-route price the fake connector quotes (ADR 0020). */
+const ROUTE_PRICE = 1000;
 
 const UNKNOWN_SHA = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 const OWNER = 'ab'.repeat(32);
@@ -182,7 +192,8 @@ class FakeClient implements ToonClientLike {
   ): Promise<PublishEventResult> {
     this.publishes.push({ event, ...(options ? { options } : {}) });
     if (options?.proxyPath === '/store') {
-      if (this.storeFailure) return { success: false, error: this.storeFailure };
+      if (this.storeFailure)
+        return { success: false, error: this.storeFailure };
       const sha = event.tags.find((t) => t[0] === 'Git-SHA')?.[1] ?? 'no-sha';
       return {
         success: true,
@@ -195,6 +206,15 @@ class FakeClient implements ToonClientLike {
   async signBalanceProof(): Promise<unknown> {
     this.nonce += 1;
     return {};
+  }
+
+  /**
+   * The flat route price this fake connector charges for any destination
+   * (ADR 0020). `null` would mean it terminates no matching route.
+   */
+  routePrice: bigint | null = 1000n;
+  async getRoutePrice(): Promise<bigint | null> {
+    return this.routePrice;
   }
   signEvent(template: EventTemplate): NostrEvent {
     this.signedCount += 1;
@@ -264,7 +284,10 @@ function config(): ResolvedDaemonConfig {
     storeDestination: 'g.proxy.store',
     feePerEvent: 1n,
     chain: 'evm',
-    apexChannelStorePath: join(tmpdir(), `toon-git-routes-apex-${process.pid}.json`),
+    apexChannelStorePath: join(
+      tmpdir(),
+      `toon-git-routes-apex-${process.pid}.json`
+    ),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     toonClientConfig: { btpUrl: 'ws://apex/btp' } as any,
   };
@@ -288,7 +311,10 @@ describe('/git/* control API routes', () => {
   let remote: RemoteState;
   let fetchRemote: ReturnType<typeof vi.fn>;
 
-  async function build(ready = true, remoteState = cannedRemote()): Promise<void> {
+  async function build(
+    ready = true,
+    remoteState = cannedRemote()
+  ): Promise<void> {
     client = new FakeClient();
     remote = remoteState;
     fetchRemote = vi.fn(async () => remote);
@@ -329,23 +355,33 @@ describe('/git/* control API routes', () => {
     expect(plan.repoId).toBe('fixture-repo');
     expect(plan.announceNeeded).toBe(true);
     expect(plan.refUpdates).toEqual([
-      { refname: 'refs/heads/main', localSha: commit2, remoteSha: null, kind: 'new' },
+      {
+        refname: 'refs/heads/main',
+        localSha: commit2,
+        remoteSha: null,
+        kind: 'new',
+      },
     ]);
     expect(plan.newRefs).toEqual({ 'refs/heads/main': commit2 });
     expect(plan.headSymref).toBe('refs/heads/main');
     expect(plan.knownShaToTxId).toEqual({});
 
-    // Full first-push delta, priced at bytes × 10 + 2 events × feePerEvent(1).
+    // Full first-push delta, priced at the store route's FLAT price per
+    // object (ADR 0020) + 2 events × feePerEvent(1). Size does not enter it.
     const shas = plan.objects.map((o: { sha: string }) => o.sha).sort();
     expect(shas).toEqual([...mainObjects].sort());
-    const totalBytes = mainObjects.reduce((sum, sha) => sum + sizeBySha.get(sha)!, 0);
+    const totalBytes = mainObjects.reduce(
+      (sum, sha) => sum + sizeBySha.get(sha)!,
+      0
+    );
+    const uploadFees = mainObjects.length * ROUTE_PRICE;
     expect(plan.estimate).toEqual({
       objectCount: mainObjects.length,
       totalObjectBytes: totalBytes,
-      uploadFee: String(totalBytes * 10),
+      uploadFee: String(uploadFees),
       eventCount: 2,
       eventFees: '2',
-      totalFee: String(totalBytes * 10 + 2),
+      totalFee: String(uploadFees + 2),
     });
 
     // Remote state was read for the daemon identity on the default relay.
@@ -398,20 +434,31 @@ describe('/git/* control API routes', () => {
   });
 
   it('maps a non-fast-forward plan to 409 with the structured refs', async () => {
-    await build(true, cannedRemote({
-      announced: true,
-      refs: new Map([['refs/heads/main', UNKNOWN_SHA]]),
-    }));
+    await build(
+      true,
+      cannedRemote({
+        announced: true,
+        refs: new Map([['refs/heads/main', UNKNOWN_SHA]]),
+      })
+    );
     const res = await app.inject({
       method: 'POST',
       url: '/git/estimate',
-      payload: { repoPath: repoDir, repoId: 'fixture-repo', refspecs: ['refs/heads/main'] },
+      payload: {
+        repoPath: repoDir,
+        repoId: 'fixture-repo',
+        refspecs: ['refs/heads/main'],
+      },
     });
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({
       error: 'non_fast_forward',
       refs: [
-        { refname: 'refs/heads/main', localSha: commit2, remoteSha: UNKNOWN_SHA },
+        {
+          refname: 'refs/heads/main',
+          localSha: commit2,
+          remoteSha: UNKNOWN_SHA,
+        },
       ],
     });
   });
@@ -421,7 +468,11 @@ describe('/git/* control API routes', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/git/estimate',
-      payload: { repoPath: repoDir, repoId: 'fixture-repo', refspecs: ['refs/heads/big'] },
+      payload: {
+        repoPath: repoDir,
+        repoId: 'fixture-repo',
+        refspecs: ['refs/heads/big'],
+      },
     });
     expect(res.statusCode).toBe(413);
     const body = res.json();
@@ -442,7 +493,10 @@ describe('/git/* control API routes', () => {
       payload: { repoPath: repoDir, repoId: 'fixture-repo' },
     });
     expect(res.statusCode).toBe(503);
-    expect(res.json()).toMatchObject({ error: 'bootstrapping', retryable: true });
+    expect(res.json()).toMatchObject({
+      error: 'bootstrapping',
+      retryable: true,
+    });
   });
 
   // ── /git/push ──────────────────────────────────────────────────────────────
@@ -475,12 +529,17 @@ describe('/git/* control API routes', () => {
     expect(res.statusCode).toBe(200);
     const result = res.json();
 
-    // Per-object receipts: paid at bytes × 10, txId decoded from the FULFILL.
+    // Per-object receipts: every object costs the route's flat price whatever
+    // its size, txId decoded from the sealed answer.
     expect(result.uploads).toHaveLength(mainObjects.length);
+    const sizes = new Set(
+      result.uploads.map((u: { sha: string }) => sizeBySha.get(u.sha))
+    );
+    expect(sizes.size).toBeGreaterThan(1); // objects really do differ in size
     for (const step of result.uploads) {
       expect(step.skipped).toBe(false);
       expect(step.txId).toBe(txIdFor(step.sha));
-      expect(step.feePaid).toBe(String(sizeBySha.get(step.sha)! * 10));
+      expect(step.feePaid).toBe(String(ROUTE_PRICE));
     }
 
     // Store writes: one kind:5094 per object, Git-tagged, routed to the store.
@@ -528,20 +587,25 @@ describe('/git/* control API routes', () => {
       feePaid: '1',
     });
 
-    // Total = Σ upload fees + 2 events × feePerEvent(1) — matches the estimate.
-    const totalBytes = mainObjects.reduce((sum, sha) => sum + sizeBySha.get(sha)!, 0);
-    expect(result.totalFeePaid).toBe(String(totalBytes * 10 + 2));
+    // Total = objectCount × route price + 2 events × feePerEvent(1) — matches
+    // the estimate.
+    expect(result.totalFeePaid).toBe(
+      String(mainObjects.length * ROUTE_PRICE + 2)
+    );
     expect(result.estimate.totalFee).toBe(result.totalFeePaid);
   });
 
   it('second push is delta-only: known objects are not re-paid, no re-announce', async () => {
     const shaToTxId = new Map(commit1Objects.map((sha) => [sha, txIdFor(sha)]));
-    await build(true, cannedRemote({
-      announced: true,
-      refs: new Map([['refs/heads/main', commit1]]),
-      headSymref: 'refs/heads/main',
-      shaToTxId,
-    }));
+    await build(
+      true,
+      cannedRemote({
+        announced: true,
+        refs: new Map([['refs/heads/main', commit1]]),
+        headSymref: 'refs/heads/main',
+        shaToTxId,
+      })
+    );
     const res = await app.inject({
       method: 'POST',
       url: '/git/push',

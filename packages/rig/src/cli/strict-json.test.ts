@@ -119,7 +119,7 @@ function emptyRemoteState(): RemoteState {
  */
 function makeNoisyStandalone(): { load: LoadStandalone } {
   const publisher: Publisher = {
-    getFeeRates: async () => ({ uploadFeePerByte: 10n, eventFee: 1n }),
+    getFeeRates: async () => ({ uploadFee: 1000n, eventFee: 1n }),
     uploadGitObject: async (upload) => ({
       txId: TX_ID,
       feePaid: BigInt(upload.body.length) * 10n,
@@ -157,7 +157,11 @@ function makeNoisyStandalone(): { load: LoadStandalone } {
           chain: 'evm',
           chainKey: 'evm:31337',
           address: '0x' + '1'.repeat(40),
-          native: { symbol: 'ETH', amount: '1000000000000000000', decimals: 18 },
+          native: {
+            symbol: 'ETH',
+            amount: '1000000000000000000',
+            decimals: 18,
+          },
           tokens: [{ symbol: 'USDC', amount: '424242', decimals: 6 }],
         },
       ],
@@ -169,8 +173,13 @@ function makeNoisyStandalone(): { load: LoadStandalone } {
       // Third-party stdout noise (vitest intercepts the global console, so
       // write the way console.log ultimately does: through the stream —
       // directly and via a stream-bound Console instance).
-      process.stdout.write('[Bootstrap] Connecting to wss://relay.example...\n');
-      new Console(process.stdout).log('[Bootstrap] Query filter:', '{"kinds":[10032]}');
+      process.stdout.write(
+        '[Bootstrap] Connecting to wss://relay.example...\n'
+      );
+      new Console(process.stdout).log(
+        '[Bootstrap] Query filter:',
+        '{"kinds":[10032]}'
+      );
       // The #264 discovery-fallback warning through the warn seam.
       options.warn(
         'rig: no payment-peer announce (kind:10032) found on wss://relay.example — falling back to the genesis peer seed'
@@ -221,12 +230,12 @@ async function run(
   const guard = redirectStdoutToStderr((text) => {
     stdoutChunks.push(text);
   });
-  const stderrSpy = vi
-    .spyOn(process.stderr, 'write')
-    .mockImplementation(((chunk: unknown) => {
-      stderrChunks.push(String(chunk));
-      return true;
-    }) as never);
+  const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((
+    chunk: unknown
+  ) => {
+    stderrChunks.push(String(chunk));
+    return true;
+  }) as never);
   try {
     const io = makeCliIo({
       jsonMode,
@@ -414,7 +423,14 @@ describe('strict --json stdout: every rig-owned command emits exactly one JSON d
     await writeToonConfig(repo, { repoId: 'demo', owner: OWNER });
     // Empty arweave map + --force-reupload → a pure estimate needs no uploads.
     const result = await run(
-      ['site', 'publish', '--relay', 'wss://relay.example', '--force-reupload', '--json'],
+      [
+        'site',
+        'publish',
+        '--relay',
+        'wss://relay.example',
+        '--force-reupload',
+        '--json',
+      ],
       { cwd: repo, loadStandalone: makeNoisyStandalone().load }
     );
     expect(result.code).toBe(0);
@@ -486,7 +502,10 @@ describe('strict --json stdout: every rig-owned command emits exactly one JSON d
   it('pr create --json --yes publishes a patch file and emits one envelope', async () => {
     const dir = makeTempDir('toon-rig-json-patch-');
     const patchPath = join(dir, 'series.patch');
-    writeFileSync(patchPath, 'From 1234 Mon Sep 17 00:00:00 2001\npatch body\n');
+    writeFileSync(
+      patchPath,
+      'From 1234 Mon Sep 17 00:00:00 2001\npatch body\n'
+    );
     const result = await run(
       [
         'pr',
@@ -604,7 +623,9 @@ describe('strict --json stdout: every rig-owned command emits exactly one JSON d
           undernameLimit: 10,
         }),
         ant: async () => ({
-          getRecords: async () => ({ '@': { transactionId: TX_ID, ttlSeconds: 3600 } }),
+          getRecords: async () => ({
+            '@': { transactionId: TX_ID, ttlSeconds: 3600 },
+          }),
           setBaseNameRecord: async () => ({ id: 'm' }),
           setUndernameRecord: async () => ({ id: 'm' }),
         }),
@@ -702,10 +723,13 @@ describe('strict --json stdout: the #278 read commands', () => {
   it('fetch --json emits one envelope (in a cloned repo, up to date)', async () => {
     const world = makeReadWorld();
     const cwd = makeTempDir('toon-rig-json-fetch-');
-    const cloned = await run(['clone', RELAY, `${OWNER}/demo`, 'cl', '--json'], {
-      cwd,
-      seams: world.seams,
-    });
+    const cloned = await run(
+      ['clone', RELAY, `${OWNER}/demo`, 'cl', '--json'],
+      {
+        cwd,
+        seams: world.seams,
+      }
+    );
     expect(cloned.code).toBe(0);
     const result = await run(['fetch', '--json'], {
       cwd: join(cwd, 'cl'),
@@ -762,7 +786,17 @@ describe('strict --json stdout: the #278 read commands', () => {
     expect(parseSingleJsonDoc(shown)).toMatchObject({ command: 'issue show' });
 
     const prList = await run(
-      ['pr', 'list', '--repo-id', 'demo', '--owner', OWNER, '--relay', RELAY, '--json'],
+      [
+        'pr',
+        'list',
+        '--repo-id',
+        'demo',
+        '--owner',
+        OWNER,
+        '--relay',
+        RELAY,
+        '--json',
+      ],
       { seams }
     );
     expect(prList.code).toBe(0);
@@ -845,18 +879,21 @@ describe('redirectStdoutToStderr', () => {
   it('reroutes every process.stdout write to stderr; only guard.write reaches stdout', () => {
     const real: string[] = [];
     const stderrChunks: string[] = [];
-    const stderrSpy = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation(((chunk: unknown) => {
-        stderrChunks.push(String(chunk));
-        return true;
-      }) as never);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((
+      chunk: unknown
+    ) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    }) as never);
     const guard = redirectStdoutToStderr((text) => {
       real.push(text);
     });
     try {
       process.stdout.write('[Bootstrap] direct write\n');
-      new Console(process.stdout).log('[Bootstrap] via console %s', 'formatted');
+      new Console(process.stdout).log(
+        '[Bootstrap] via console %s',
+        'formatted'
+      );
       guard.write('{"machine":true}\n');
     } finally {
       guard.restore();
@@ -864,7 +901,9 @@ describe('redirectStdoutToStderr', () => {
     }
     expect(real).toEqual(['{"machine":true}\n']);
     expect(stderrChunks.join('')).toContain('[Bootstrap] direct write');
-    expect(stderrChunks.join('')).toContain('[Bootstrap] via console formatted');
+    expect(stderrChunks.join('')).toContain(
+      '[Bootstrap] via console formatted'
+    );
   });
 
   it('restore() reinstates the original writer', () => {

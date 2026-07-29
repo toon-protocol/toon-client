@@ -126,7 +126,7 @@ function makeMoney(identity: string = IDENTITY): FakeMoney {
     identitySource: 'env',
     identitySourceLabel: 'RIG_MNEMONIC env',
     publisher: {
-      getFeeRates: async () => ({ uploadFeePerByte: 10n, eventFee: 1n }),
+      getFeeRates: async () => ({ uploadFee: 1000n, eventFee: 1n }),
       uploadGitObject: async () => {
         throw new Error('channel commands never upload');
       },
@@ -323,7 +323,10 @@ describe('rig channel', () => {
         { loadStandalone: fake.load }
       );
       expect(
-        await runChannel(['open', '--peer', 'g.other.relay.store', '--yes'], h.deps)
+        await runChannel(
+          ['open', '--peer', 'g.other.relay.store', '--yes'],
+          h.deps
+        )
       ).toBe(0);
       expect(fake.loads[0]?.channelDestination).toBe('g.other.relay.store');
     });
@@ -369,7 +372,9 @@ describe('rig channel', () => {
           { TOON_CLIENT_HOME: dir },
           { loadStandalone: fake.load }
         );
-        expect(await runChannel(['open', '--deposit', bad, '--yes'], h.deps)).toBe(2);
+        expect(
+          await runChannel(['open', '--deposit', bad, '--yes'], h.deps)
+        ).toBe(2);
         expect(fake.openCalls).toEqual([]);
       }
     });
@@ -598,7 +603,9 @@ describe('rig channel', () => {
         { TOON_CLIENT_HOME: dir },
         { loadStandalone: fake.load }
       );
-      expect(await runChannel(['close', CHANNEL_ID, '--json'], plan.deps)).toBe(0);
+      expect(await runChannel(['close', CHANNEL_ID, '--json'], plan.deps)).toBe(
+        0
+      );
       const parsed = JSON.parse(plan.out.join('\n')) as Record<string, unknown>;
       expect(parsed).toMatchObject({
         command: 'channel close',

@@ -41,7 +41,6 @@ import { MAX_OBJECT_SIZE } from '../objects.js';
 import { contentTypeForPath, DEFAULT_CONTENT_TYPE } from '../mime.js';
 import type { UnsignedEvent } from '../nip34-events.js';
 import {
-  flooredUploadFee,
   type BlobUpload,
   type FeeRates,
   type GitObjectUpload,
@@ -174,17 +173,21 @@ export interface StandalonePublisherOptions {
   channelDestination?: string;
   /** Flat fee per published event (daemon `feePerEvent` convention). Default 1n. */
   eventFee?: bigint;
-  /** Upload fee per object body byte (seed pipeline's bid rate). Default 10n. */
-  uploadFeePerByte?: bigint;
   /**
-   * FLAT per-packet route prices the payment peer announces for the
-   * publish/store destinations (kind:10032 `capabilities` — e.g.
-   * `{capability:'os.publish', address:'g.proxy.relay', price:'1000'}`).
-   * The connector gates every paid packet at the destination route's price:
-   * a balance-proof claim advancing the channel by less is rejected (F06).
-   * Applied as a FLOOR on the computed per-packet fee — `publish` floors
-   * event claims, `store` floors upload claims. A destination without a
-   * known price keeps the computed fee unchanged (pre-floor behavior).
+   * FLAT per-packet route prices for the publish/store destinations, as the
+   * payment peer announces them (kind:10032 `capabilities` — e.g.
+   * `{capability:'os.publish', address:'g.proxy.relay', price:'1000'}`) or as
+   * the terminating connector reports them from `GET /ilp/routes/price`.
+   *
+   * The connector gates every paid packet at the destination route's price: a
+   * balance-proof claim advancing the channel by less is rejected (F06). Since
+   * ADR 0020 (toon-client#452) a price is flat per handler, so `store` is the
+   * WHOLE upload fee rather than a floor under a per-byte computation — an
+   * upload of any size costs it. `publish` still floors {@link eventFee},
+   * which remains a caller-chosen flat figure.
+   *
+   * A destination without a known price prices its packets at 0 here and lets
+   * the connector be the one to refuse — this class never invents a rate.
    */
   routePrices?: { publish?: bigint; store?: bigint };
   /** Daemon control API port probed by the nonce guard. */
@@ -351,7 +354,6 @@ export class StandalonePublisher implements Publisher {
   private readonly storeDestination: string | undefined;
   private readonly channelDestination: string | undefined;
   private readonly eventFee: bigint;
-  private readonly uploadFeePerByte: bigint;
   private readonly routePrices:
     | StandalonePublisherOptions['routePrices']
     | undefined;
@@ -403,7 +405,6 @@ export class StandalonePublisher implements Publisher {
     this.channelDestination = options.channelDestination;
 
     this.eventFee = options.eventFee ?? 1n;
-    this.uploadFeePerByte = options.uploadFeePerByte ?? 10n;
     this.routePrices = options.routePrices;
     this.daemonPort = options.daemonPort;
     this.skipDaemonCheck = options.skipDaemonCheck ?? false;
@@ -412,8 +413,7 @@ export class StandalonePublisher implements Publisher {
     this.channelMap = options.channelMap;
     this.channelAnchor = anchor;
     this.negotiationFallbacks = options.negotiationFallbacks;
-    this.warn =
-      options.warn ?? ((line) => process.stderr.write(`${line}\n`));
+    this.warn = options.warn ?? ((line) => process.stderr.write(`${line}\n`));
   }
 
   /** Hex Nostr pubkey of the embedded identity (available before start). */
@@ -555,7 +555,11 @@ export class StandalonePublisher implements Publisher {
     // Corruption check happens HERE, before any on-chain open (throws).
     const candidates = map.listFor(identity, anchor);
     const internals = channelInternals(this.client);
-    const resumed = await this.resumeRecordedChannel(map, candidates, internals);
+    const resumed = await this.resumeRecordedChannel(
+      map,
+      candidates,
+      internals
+    );
 
     // Idempotent — returns the (resumed or existing) channel for the peer if
     // one is tracked, else opens lazily on-chain.
@@ -892,20 +896,15 @@ export class StandalonePublisher implements Publisher {
   // ── Publisher ─────────────────────────────────────────────────────────────
 
   /**
-   * Fee rates for `planPush` estimation: the flat per-event fee and the
-   * per-byte upload rate this publisher pays (daemon `feePerEvent` and seed
-   * bid-rate conventions; override via options), with the announced route
-   * prices folded in so the ESTIMATE always equals the CLAIMS: the flat
-   * `eventFee` is returned pre-floored at the publish route price, and the
-   * store route price rides as `minUploadFee` (the per-upload floor —
-   * per-byte pricing can't fold a flat floor into the rate).
+   * Fee rates for `planPush` estimation, both flat per packet (ADR 0020),
+   * with the announced route prices folded in so the ESTIMATE always equals
+   * the CLAIMS: `eventFee` is returned pre-floored at the publish route price,
+   * and `uploadFee` IS the store route price.
    */
   getFeeRates(): Promise<FeeRates> {
-    const minUploadFee = this.routePrices?.store;
     return Promise.resolve({
-      uploadFeePerByte: this.uploadFeePerByte,
+      uploadFee: this.uploadFee(),
       eventFee: this.effectiveEventFee(),
-      ...(minUploadFee !== undefined ? { minUploadFee } : {}),
     });
   }
 
@@ -919,22 +918,21 @@ export class StandalonePublisher implements Publisher {
   }
 
   /**
-   * The per-upload claim: `bytes × uploadFeePerByte`, floored at the store
-   * route's announced price (the connector rejects a claim below it — F06).
+   * The per-upload claim: the store route's flat price, whatever the object's
+   * size. Byte-proportional pricing has no successor (ADR 0020) — the route
+   * table is the price list — and the connector charges this figure whether
+   * the body is 100 bytes or 100 KB.
    */
-  private uploadFee(bytes: number): bigint {
-    return flooredUploadFee(
-      bytes,
-      this.uploadFeePerByte,
-      this.routePrices?.store
-    );
+  private uploadFee(): bigint {
+    return this.routePrices?.store ?? 0n;
   }
 
   /**
    * Upload one git object as a kind:5094 store write (Git-SHA/Git-Type/Repo
    * tagged — the proven seed-pipeline shape), signing one balance-proof claim
-   * for `body.length × uploadFeePerByte`, floored at the store route's
-   * announced price ({@link StandalonePublisherOptions.routePrices}).
+   * for the store route's flat price
+   * ({@link StandalonePublisherOptions.routePrices}) — ADR 0020 prices a
+   * packet per handler, not per byte.
    *
    * #368: a blob's `Content-Type` is derived from its path extension (else
    * octet-stream) and sent in the `output` tag, which the store forwards onto
@@ -956,7 +954,7 @@ export class StandalonePublisher implements Publisher {
         ? contentTypeForPath(upload.path)
         : DEFAULT_CONTENT_TYPE;
 
-    const fee = this.uploadFee(upload.body.length);
+    const fee = this.uploadFee();
     const event = this.client.signEvent({
       kind: 5094,
       content: '',
@@ -998,8 +996,7 @@ export class StandalonePublisher implements Publisher {
    * tags (and an optional `Repo` provenance tag), NOT the Git-SHA/Git-Type
    * tags. Without those the store keeps the bytes verbatim instead of
    * re-deriving a git envelope, which is exactly what the ar.io path manifest
-   * needs. One balance-proof claim for `body.length × uploadFeePerByte`,
-   * floored at the store route's announced price.
+   * needs. One balance-proof claim for the store route's flat price.
    */
   async uploadBlob(upload: BlobUpload): Promise<UploadReceipt> {
     if (upload.body.length > MAX_OBJECT_SIZE) {
@@ -1010,7 +1007,7 @@ export class StandalonePublisher implements Publisher {
     await this.start();
     const channelId = this.requireChannel();
 
-    const fee = this.uploadFee(upload.body.length);
+    const fee = this.uploadFee();
     const event = this.client.signEvent({
       kind: 5094,
       content: '',

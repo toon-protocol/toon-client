@@ -39,8 +39,27 @@ export {
   type UnsignedEvent,
 } from './nip34-events.js';
 
-export { GitError, GitRepoReader, type GitRef, type ObjectStat, type ObjectWithPath, type ReadGitObject, type ReadObjectsResult, type RepoRefs, type StatObjectsResult } from './repo-reader.js';
-export { fetchRemoteState, queryRelay, type FetchRemoteStateOptions, type NostrEvent, type NostrFilter, type RemoteState, type WebSocketFactory, type WebSocketLike } from './remote-state.js';
+export {
+  GitError,
+  GitRepoReader,
+  type GitRef,
+  type ObjectStat,
+  type ObjectWithPath,
+  type ReadGitObject,
+  type ReadObjectsResult,
+  type RepoRefs,
+  type StatObjectsResult,
+} from './repo-reader.js';
+export {
+  fetchRemoteState,
+  queryRelay,
+  type FetchRemoteStateOptions,
+  type NostrEvent,
+  type NostrFilter,
+  type RemoteState,
+  type WebSocketFactory,
+  type WebSocketLike,
+} from './remote-state.js';
 
 // The #278 read path: gateway download + verification, closure walking, the
 // clone/fetch collection engine, and repo materialization via git plumbing.
@@ -77,7 +96,6 @@ export {
 export { hexToNpub, npubToHex, ownerToHex } from './npub.js';
 
 export {
-  flooredUploadFee,
   type FeeRates,
   type GitObjectUpload,
   type PublishReceipt,
