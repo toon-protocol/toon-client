@@ -760,6 +760,11 @@ export class ToonClient {
     // Pay only when a channel manager is configured; otherwise the engine still
     // probes and transparently surfaces the vanilla 402 (no resolveClaim hook).
     const client = new Http402Client({
+      // Share this client's identity cache rather than letting each per-call
+      // engine fetch the same connector's key again: `h402Fetch` builds a
+      // fresh Http402Client per call (below), and a paid request now needs a
+      // terminating key.
+      connectorEdge: this.connectorEdge,
       ...(this.channelManager
         ? {
             resolveClaim: (destination: string, amount: bigint) =>

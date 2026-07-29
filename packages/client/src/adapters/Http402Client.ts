@@ -54,12 +54,32 @@
  *     `extra.endpoint` | `endpoint`.
  *   - upgrade:     `supportsUpgrade` | `upgradable`.
  *
- * ─── HTTP-in-ILP framing ────────────────────────────────────────────────────
- * The raw HTTP request/response is serialized as minimal HTTP/1.1 wire bytes
- * (request-line / status-line + headers + CRLFCRLF + body) and carried as the
- * ILP packet `data` (base64). See {@link serializeHttpRequest} /
- * {@link parseHttpResponse}. This keeps the connector free to forward the bytes
- * verbatim and lets us rebuild a standard `Response`.
+ * ─── What the paid request is made of ───────────────────────────────────────
+ * The paid re-send is an OER `EnvelopeRequest` sealed to the terminating
+ * connector's identity, under a condition derived from the secret that seal
+ * carries — the same `sealExchange` / `readExchangeOutcome` pair
+ * `ToonClient.publishEvent` uses (ADR 0018/0019, toon-client#450, #451). This
+ * adapter used to carry its own HTTP/1.1 codec; it does not any more, and
+ * `packages/client` now has exactly one encoder.
+ *
+ * Two consequences of the envelope replacing HTTP text, both deliberate:
+ *
+ *   - **`Host` and `Content-Length` are not synthesised.** The old codec added
+ *     both. The connector strips them either way and lets its HTTP client
+ *     recompute them (`connector-runtime/src/app_client.rs` skips `host` and
+ *     `content-length` by name), and the envelope already carries the body
+ *     length as an OER length determinant, so emitting them was writing bytes
+ *     the far side throws away. A caller that sets either explicitly still has
+ *     it carried verbatim, and the connector still drops it.
+ *   - **A response has no reason phrase.** An `EnvelopeResponse` status is two
+ *     bytes; `HTTP/1.1 201 Created`'s "Created" has nowhere to live on this
+ *     wire. `Response.statusText` is therefore empty, and the status is the
+ *     fact to read.
+ *
+ * A malformed answer now fails the way it fails everywhere else in this
+ * package — `SealedResponseError` from `readExchangeOutcome` — rather than
+ * this file's old `ConnectorError` on a bad status line while `fulfill-http.ts`
+ * quietly returned `{isHttp:false}` for the very same bytes.
  *
  * Claim signing/construction is owned by the CALLER (ToonClient wires the live
  * ChannelManager + signer). This adapter never builds or validates claims —
@@ -73,13 +93,11 @@ import {
   type DiscoveredIlpPeer,
   type IlpTransportChoice,
 } from './selectIlpTransport.js';
+import { ConnectorEdgeClient } from './ConnectorEdgeClient.js';
 import { ConnectorError, ToonClientError } from '../errors.js';
-import {
-  toBase64,
-  fromBase64,
-  encodeUtf8,
-  decodeUtf8,
-} from '../utils/binary.js';
+import { toBase64, fromBase64, encodeUtf8 } from '../utils/binary.js';
+import type { EnvelopeHeader, EnvelopeResponse } from '../wire/envelope.js';
+import { readExchangeOutcome, sealExchange } from '../wire/sealed-exchange.js';
 
 // ─── x402 challenge types (documented wire contract above) ──────────────────
 
@@ -167,6 +185,14 @@ export interface Http402ClientConfig {
    * returned session in a later iteration.
    */
   needsDuplex?: boolean;
+  /**
+   * Asks the connector named by the 402 offer for its identity key, so the
+   * paid request can be sealed to it. Default: a fresh
+   * {@link ConnectorEdgeClient} over this config's `fetch`. Injectable so a
+   * caller that already holds one shares its identity cache rather than
+   * re-fetching a key per paid request.
+   */
+  connectorEdge?: ConnectorEdgeClient;
 }
 
 /**
@@ -178,6 +204,7 @@ export class Http402Client {
   private readonly resolveClaim?: ClaimResolver;
   private readonly createIlpClient: HttpIlpClientFactory;
   private readonly needsDuplex: boolean;
+  private readonly connectorEdge: ConnectorEdgeClient;
 
   constructor(config: Http402ClientConfig = {}) {
     this.fetchImpl = config.fetch ?? fetch;
@@ -186,6 +213,13 @@ export class Http402Client {
       config.createIlpClient ??
       ((httpEndpoint) => new HttpIlpClient({ httpEndpoint }));
     this.needsDuplex = config.needsDuplex ?? false;
+    this.connectorEdge =
+      config.connectorEdge ??
+      new ConnectorEdgeClient({
+        // Same `fetch` the probe uses: a host that installs its own (and a
+        // test that swaps one in) must be the one the identity comes from.
+        fetch: (input, init) => this.fetchImpl(input, init),
+      });
   }
 
   /**
@@ -224,9 +258,13 @@ export class Http402Client {
   }
 
   /**
-   * Open/reuse a channel (via the injected claim resolver), serialize the HTTP
-   * request into the ILP packet `data`, send it to `POST /ilp` with the claim,
-   * and reconstruct the origin `Response` from the FULFILL `data`.
+   * Open/reuse a channel (via the injected claim resolver), seal the request
+   * envelope to the terminating connector, send it to `POST /ilp` with the
+   * claim and the matching condition, and open the answer.
+   *
+   * The identity is fetched BEFORE a packet is formed, and there is no default
+   * to fall back to: sealing to the wrong key is a confidentiality failure
+   * that merely presents as an undeliverable packet (ADR 0018).
    */
   private async payOverToon(
     url: string,
@@ -240,13 +278,16 @@ export class Http402Client {
     // Sign the balance-proof claim for the demanded price (caller-owned).
     const claim = await resolveClaim(destination, accept.amount);
 
-    // Serialize the raw HTTP request into HTTP/1.1 wire bytes for `data`.
-    const requestBytes = serializeHttpRequest({
-      method,
-      url,
-      headers: opts.headers,
-      body: opts.body,
-    });
+    // The key first — no packet exists without it. The 402 named the endpoint
+    // to pay, so that is the connector whose identity must seal this.
+    const identity = await this.connectorEdge.getIdentity(accept.httpEndpoint);
+
+    // One call mints the seal and the condition that matches it, so the two
+    // cannot drift apart.
+    const exchange = sealExchange(
+      toEnvelopeRequest(url, method, opts),
+      identity.publicKey
+    );
 
     // AC4: drive transport SELECTION through selectIlpTransport. A streaming
     // response (`needsDuplex`) selects the BTP upgrade path; the one-shot case
@@ -269,31 +310,39 @@ export class Http402Client {
       {
         destination,
         amount: String(accept.amount),
-        data: toBase64(requestBytes),
+        data: toBase64(exchange.data),
+        executionCondition: exchange.condition,
         ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
       },
       claim
     );
 
-    if (!result.accepted) {
+    // Open the answer with the secret this packet sealed. A REJECT sealed at
+    // the termination is the DESTINATION refusing; a plaintext one is somebody
+    // on the path. Both are `ConnectorError` here — `fetch()` has one failure
+    // channel — but they no longer read as the same event.
+    const outcome = readExchangeOutcome(
+      result,
+      result.data === undefined ? undefined : fromBase64(result.data),
+      exchange.sharedSecret
+    );
+
+    if (outcome.kind === 'destination-refused') {
       throw new ConnectorError(
-        `h402 payment rejected by connector: ${result.code ?? 'F00'} ${
-          result.message ?? ''
-        }`.trim()
+        `h402 request refused by the destination: ${outcome.code} ${outcome.message}`.trim()
       );
     }
-    if (!result.data) {
+    if (outcome.kind === 'path-refused') {
       throw new ConnectorError(
-        'h402 FULFILL carried no data (expected an HTTP response payload)'
+        `h402 request refused by a connector on the path: ${outcome.code} ${outcome.message}`.trim()
       );
     }
 
-    // Reconstruct the standard Response from the FULFILL `data` bytes.
-    return parseHttpResponse(fromBase64(result.data));
+    return toWebResponse(outcome.response);
   }
 
   /**
-   * Send the serialized HTTP-in-ILP PREPARE over the selected transport.
+   * Send the sealed PREPARE over the selected transport.
    *
    * - `http` / `http-upgradable`: stateless one-shot `POST /ilp` with the claim.
    * - `http-upgradable` additionally exercises {@link HttpIlpClient.upgradeToBtp}
@@ -310,6 +359,7 @@ export class Http402Client {
       destination: string;
       amount: string;
       data: string;
+      executionCondition: Uint8Array;
       timeout?: number;
     },
     claim: unknown
@@ -491,18 +541,7 @@ export function parseX402Body(
   return version !== undefined ? { x402Version: version } : {};
 }
 
-// ─── HTTP-in-ILP framing (minimal HTTP/1.1 serialize/parse) ─────────────────
-
-const CRLF = '\r\n';
-
-/** Bytes of a string concatenated with a Uint8Array body (no extra copies of body). */
-function concatHeadAndBody(head: string, body: Uint8Array): Uint8Array {
-  const headBytes = encodeUtf8(head);
-  const out = new Uint8Array(headBytes.length + body.length);
-  out.set(headBytes, 0);
-  out.set(body, headBytes.length);
-  return out;
-}
+// ─── The one envelope, in and out ───────────────────────────────────────────
 
 /** Normalize an optional string|Uint8Array body to bytes. */
 function bodyToBytes(body: string | Uint8Array | undefined): Uint8Array {
@@ -511,111 +550,70 @@ function bodyToBytes(body: string | Uint8Array | undefined): Uint8Array {
 }
 
 /**
- * Serialize a raw HTTP request to HTTP/1.1 wire bytes:
- * `METHOD path HTTP/1.1\r\n` + `Host:` + headers + `\r\n\r\n` + body.
+ * Turn a caller's `fetch`-shaped request into the `EnvelopeRequest` that is
+ * sealed into the packet.
  *
- * The request-line target is the URL's path+query (origin-form); we add a
- * `Host` header from the URL authority and a `Content-Length` when there's a
- * body, unless the caller already supplied them. Header names are matched
- * case-insensitively so we never duplicate `Host`/`Content-Length`.
+ * The target is origin-form (`path` + `search`), which is what the connector
+ * appends to the handler URL it forwards to — an absolute URL here would be
+ * routed by the ILP destination anyway and only confuse the far side.
+ *
+ * Headers are carried in the caller's own order, names verbatim. The envelope
+ * is a LIST of pairs, not a map, so order and duplicates both survive — which
+ * the old `Map`-based serializer destroyed. Nothing is synthesised: `Host` and
+ * `Content-Length` are the connector's to recompute (see the module docs).
  */
-export function serializeHttpRequest(req: {
+function toEnvelopeRequest(
+  url: string,
+  method: string,
+  opts: H402FetchOptions
+): {
   method: string;
-  url: string;
-  headers?: Record<string, string>;
-  body?: string | Uint8Array;
-}): Uint8Array {
-  const u = new URL(req.url);
-  const target = `${u.pathname}${u.search}` || '/';
-  const bodyBytes = bodyToBytes(req.body);
-
-  const headers = new Map<string, string>(); // lower-name → "Name: value"
-  const put = (name: string, value: string) =>
-    headers.set(name.toLowerCase(), `${name}: ${value}`);
-  const has = (name: string) => headers.has(name.toLowerCase());
-
-  for (const [name, value] of Object.entries(req.headers ?? {})) {
-    put(name, value);
-  }
-  if (!has('host')) put('Host', u.host);
-  if (bodyBytes.length > 0 && !has('content-length')) {
-    put('Content-Length', String(bodyBytes.length));
-  }
-
-  const lines = [
-    `${req.method.toUpperCase()} ${target} HTTP/1.1`,
-    ...headers.values(),
-  ];
-  const head = lines.join(CRLF) + CRLF + CRLF;
-  return concatHeadAndBody(head, bodyBytes);
-}
-
-/** Find the index just past the first `\r\n\r\n` (header/body boundary). */
-function findHeaderEnd(bytes: Uint8Array): number {
-  for (let i = 0; i + 3 < bytes.length; i++) {
-    if (
-      bytes[i] === 0x0d &&
-      bytes[i + 1] === 0x0a &&
-      bytes[i + 2] === 0x0d &&
-      bytes[i + 3] === 0x0a
-    ) {
-      return i + 4;
-    }
-  }
-  return -1;
+  target: string;
+  headers: EnvelopeHeader[];
+  body: Uint8Array;
+} {
+  const u = new URL(url);
+  const headers: EnvelopeHeader[] = Object.entries(opts.headers ?? {}).map(
+    ([name, value]) => [name, value] as EnvelopeHeader
+  );
+  return {
+    method: method.toUpperCase(),
+    target: `${u.pathname}${u.search}` || '/',
+    headers,
+    body: bodyToBytes(opts.body),
+  };
 }
 
 /**
- * Parse HTTP/1.1 wire bytes (status-line + headers + CRLFCRLF + body) into a
- * standard Web `Response`. Used to reconstruct the origin response from the ILP
- * FULFILL `data`.
+ * Present a decoded {@link EnvelopeResponse} as the standard Web `Response`
+ * this adapter's callers expect.
  *
- * @throws {ConnectorError} If the bytes are not a parseable HTTP/1.1 response.
+ * An adaptation, not a codec: nothing is parsed here, because the status,
+ * headers and body arrived already separated by the envelope decoder.
+ *
+ * `statusText` is left empty — the envelope carries a two-byte status and no
+ * reason phrase, so there is no "Created" to report. `Headers.append` keeps
+ * duplicates (`set-cookie`), and a null-body status never gets one, which
+ * `Response` would throw over.
  */
-export function parseHttpResponse(bytes: Uint8Array): Response {
-  const headerEnd = findHeaderEnd(bytes);
-  // No header/body separator: treat the whole payload as a header block (some
-  // bodiless responses may omit the trailing CRLFCRLF); fall back to end.
-  const headBytes = headerEnd === -1 ? bytes : bytes.subarray(0, headerEnd - 2);
-  const body = headerEnd === -1 ? new Uint8Array(0) : bytes.subarray(headerEnd);
-
-  const headText = decodeUtf8(headBytes);
-  const lines = headText.split(CRLF).filter((l) => l.length > 0);
-  const statusLine = lines.shift();
-  if (!statusLine) {
-    throw new ConnectorError('h402 response payload had no HTTP status line');
-  }
-
-  // `HTTP/1.1 200 OK` — tolerate a missing reason phrase.
-  const match = /^HTTP\/\d\.\d\s+(\d{3})(?:\s+(.*))?$/.exec(statusLine.trim());
-  if (!match) {
-    throw new ConnectorError(
-      `h402 response payload had a malformed status line: "${statusLine}"`
-    );
-  }
-  const status = parseInt(match[1] as string, 10);
-  const statusText = match[2] ?? '';
-
+function toWebResponse(envelope: EnvelopeResponse): Response {
   const headers = new Headers();
-  for (const line of lines) {
-    const idx = line.indexOf(':');
-    if (idx === -1) continue;
-    const name = line.slice(0, idx).trim();
-    const value = line.slice(idx + 1).trim();
-    if (name.length === 0) continue;
-    // 204/304 etc. must not carry these on a Web Response — Headers tolerates
-    // them, but Response construction below sets the real body length anyway.
+  for (const [name, value] of envelope.headers) {
+    // Hop-by-hop framing headers describe an HTTP/1.1 connection that no
+    // longer exists once the answer is an envelope; `Response` recomputes its
+    // own body length regardless.
+    if (name.toLowerCase() === 'content-length') continue;
     headers.append(name, value);
   }
 
-  // `Response` forbids a body for null-body statuses (101/204/205/304).
+  const status = envelope.status;
   const nullBodyStatus =
     status === 101 || status === 204 || status === 205 || status === 304;
-  const init: ResponseInit = { status, headers };
-  if (statusText) init.statusText = statusText;
 
   return new Response(
-    nullBodyStatus || body.length === 0 ? null : body.slice(),
-    init
+    nullBodyStatus || envelope.body.length === 0
+      ? null
+      : (envelope.body.slice() as unknown as BodyInit),
+    { status, headers }
   );
 }
