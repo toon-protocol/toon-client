@@ -302,7 +302,8 @@ export function minaTokenIdToBase58(tokenId: string): string {
  * Unlike {@link readMinaBalance} (native MINA), this passes the settlement
  * `tokenId` so the GraphQL `account(publicKey, token)` query returns the
  * token-specific balance. An account holding none of the token resolves to
- * `null` → reported as `0`. Same 9-decimal scale as native Mina amounts.
+ * `null` → reported as `0`. Reported at the 6-decimal settlement-USDC scale —
+ * NOT native MINA's 9 (see the `assetScale` comment below).
  */
 export async function readMinaTokenBalance(opts: {
   graphqlUrl: string;
