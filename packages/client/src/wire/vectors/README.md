@@ -9,9 +9,9 @@ termination wire ([connector ADR
 reproducing these bytes is what conformance means for this client.
 
 `wire-vectors.provenance.json` records the connector commit it came from and the
-SHA-256 of the copy. `src/wire/wire-vectors.test.ts` replays the `envelope`
-section against `src/wire/envelope.ts` and the `claim` section against
-`src/signing/evm-signer.ts`.
+SHA-256 of the copy. `src/wire/wire-vectors.test.ts` replays all four sections:
+`envelope` against `src/wire/envelope.ts`, `giftwrap` and `fulfilment` against
+`src/wire/giftwrap.ts`, and `claim` against `src/signing/evm-signer.ts`.
 
 ## Why vendored, and not fetched or submoduled
 
@@ -52,24 +52,31 @@ signal, not a flake. Commit `wire-vectors.json` and
 
 ## Sections
 
-`schema_version` is `1`. The file carries four sections; this repo replays them
-as its children land:
+`schema_version` is `1`. The file carries four sections, and as of
+toon-client#449 this repo replays **all four**:
 
 - `envelope` — **replayed** (toon-client#448): 5 valid round-trips + 8 rejection
   cases.
-- `giftwrap` — present, **not replayed** (toon-client#449 owns the seal). The
-  HKDF salt/info labels and wrap framing are now documented in the connector's
-  `vectors/README.md` (connector#588), so #449 no longer has to read Rust to
-  build the seal.
-- `fulfilment` — present, **not replayed**.
+- `giftwrap` — **replayed** (toon-client#449), against `src/wire/giftwrap.ts`:
+  the pinned `request_wrap_hex` and `response_wrap_hex` are reproduced
+  byte-for-byte from each case's pinned ephemeral secret, shared secret and
+  nonces, and re-opened with the fixture identity secret. The HKDF `info`
+  strings and the wrap framing are recorded in `src/wire/giftwrap.ts`'s module
+  comment, cited to `crates/connector-signer/src/giftwrap.rs`, and are also
+  documented in the connector's own `vectors/README.md` (connector#588).
+- `fulfilment` — **replayed** (toon-client#449): both the matching and the
+  non-matching case, including that the condition a sender mints is `sha256` of
+  the derived fulfilment
+  (`crates/connector-domain/src/condition.rs`'s `derive_condition`).
 - `claim` — **replayed** (connector#588 added it): the EIP-712 `BalanceProof` of
   [connector ADR
   0024](https://github.com/toon-protocol/connector/blob/main/docs/adr/0024-peer-wire-claims-sign-the-eip-712-balance-proof.md),
   replayed against `src/signing/evm-signer.ts`. See below.
 
 `loadWireVectors()` in `load.ts` exposes all four, so adding a section to the
-harness is a new `describe` block, not a restructure. The **not replayed** label
-is enforced, not decorative: `WIRE_VECTOR_SECTIONS` in `load.ts` is a closed
+harness is a new `describe` block, not a restructure — which is exactly how
+`giftwrap` and `fulfilment` arrived. The **not replayed** label is enforced, not
+decorative: `WIRE_VECTOR_SECTIONS` in `load.ts` is a closed
 list, and the harness fails if the vendored file carries a section that is not
 in it, or one that is neither in `sectionsReplayed` nor in
 `sectionsPresentNotYetReplayed`. A section the connector adds therefore breaks

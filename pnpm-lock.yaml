@@ -114,6 +114,9 @@ importers:
 
   packages/client:
     dependencies:
+      '@noble/ciphers':
+        specifier: ^2.0.0
+        version: 2.1.1
       '@noble/curves':
         specifier: ^2.0.0
         version: 2.2.0

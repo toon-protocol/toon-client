@@ -326,10 +326,16 @@ export {
 } from './channel/mina-channel-deploy.js';
 
 // The structured wire (ADR 0018): the OER envelope codec the terminating
-// connector speaks, replayed byte-for-byte against the connector's committed
-// cross-repo vectors (`src/wire/vectors/`). Additive and unconsumed — the
-// latin1 HTTP framing in `utils/store-envelope.ts` / `utils/fulfill-http.ts`
-// is still what the live send path uses; swapping it is a later child.
+// connector speaks, the gift wrap that seals it to that connector's identity
+// key, and the fulfilment a sealed request's shared secret derives (ADR 0019)
+// — all replayed byte-for-byte against the connector's committed cross-repo
+// vectors (`src/wire/vectors/`). Additive and unconsumed — the latin1 HTTP
+// framing in `utils/store-envelope.ts` / `utils/fulfill-http.ts` is still what
+// the live send path uses; swapping it is a later child (toon-client#450).
+//
+// `fulfillmentMatchesCondition` is deliberately NOT re-exported from
+// `wire/giftwrap.ts`: the one exported above from `utils/condition.ts` is the
+// same sha256 check and stays the single spelling of it.
 export {
   OerError,
   OerErrorKind,
@@ -345,9 +351,29 @@ export {
   decodeEnvelopeRequest,
   encodeEnvelopeResponse,
   decodeEnvelopeResponse,
+  GiftWrapError,
+  GiftWrapErrorKind,
+  GIFTWRAP_NONCE_LENGTH,
+  GIFTWRAP_PUBLIC_KEY_LENGTH,
+  GIFTWRAP_SECRET_LENGTH,
+  GIFTWRAP_TYPE_REQUEST,
+  GIFTWRAP_TYPE_RESPONSE,
+  deriveCondition,
+  deriveFulfillment,
+  localGiftWrapEcdh,
+  looksLikeSealedResponse,
+  openRequest,
+  openResponse,
+  sealRequest,
+  sealRequestWithRandomness,
+  sealResponse,
+  sealResponseWithRandomness,
   type Decoded,
   type Envelope,
   type EnvelopeHeader,
   type EnvelopeRequest,
   type EnvelopeResponse,
+  type GiftWrapEcdh,
+  type OpenedRequest,
+  type SealedRequest,
 } from './wire/index.js';
