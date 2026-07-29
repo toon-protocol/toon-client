@@ -160,7 +160,9 @@ console.log(`Mode: ${result.mode}, Peers: ${result.peersDiscovered}`);
 
 ### `publishEvent(event: NostrEvent, options?: PublishEventOptions): Promise<PublishEventResult>`
 
-Publishes a signed Nostr event to the relay via ILP micropayment.
+Publishes a signed Nostr event to the relay via ILP micropayment, as a sealed,
+condition-bearing paid write. See [How a paid write works](../README.md#how-a-paid-write-works-the-sealed-wire)
+for what crosses the wire.
 
 **Parameters:**
 
@@ -168,22 +170,34 @@ Publishes a signed Nostr event to the relay via ILP micropayment.
 - `options` - Optional configuration:
   - `destination?: string` - ILP destination address (defaults to `config.destinationAddress`)
   - `claim?: SignedBalanceProof` - Signed balance proof for payment channel settlement
+  - `ilpAmount?: bigint` - Override the packet amount. When omitted, the price is fetched from the terminating connector (`GET /ilp/routes/price`); an explicit amount skips the lookup entirely.
+  - `proxyPath?: string` - Request-target inside the sealed envelope (default `'/write'`, the relay; `'/store'` for the Arweave store backend)
 
 **Returns:**
 
 ```typescript
 {
-  success: boolean,       // Whether event was successfully published
-  eventId?: string,       // Event ID (if success)
-  fulfillment?: string,   // ILP fulfillment proof (if success)
-  error?: string          // Error message (if failure)
+  success: boolean,                        // false for a rejected packet AND for a non-2xx answer
+  eventId?: string,                        // Event ID (if success)
+  response?: EnvelopeResponse,             // The opened answer ({ status, headers, body }) —
+                                           // present whenever the packet FULFILLED, including
+                                           // for a non-2xx status (that is envelope content,
+                                           // not a packet outcome)
+  refusedBy?: 'destination' | 'path',      // Who refused, when one did. 'destination' is
+                                           // provable (the reject was sealed with this
+                                           // packet's own secret); 'path' cannot be
+                                           // authenticated by anyone
+  code?: string,                           // ILP reject code, when rejected
+  error?: string                           // Error message (if failure)
 }
 ```
 
 **Throws:**
 
 - `TOONClientError` - If client is not started
-- `TOONClientError` - If publishing fails (network/connector error)
+- `TOONClientError` (`NO_CONNECTOR_EDGE`) - If no HTTP client edge is configured (`proxyUrl` / `connectorUrl`); the terminating connector's key cannot be fetched, so no packet can be sealed
+- `TOONClientError` (`NO_TERMINATED_ROUTE`) - If the connector terminates no route matching `destination`
+- `TOONClientError` (`PUBLISH_ERROR`) - If publishing fails (network/connector error)
 
 **Examples:**
 
@@ -220,6 +234,31 @@ const result = await client.publishEvent(event, {
   destination: 'g.toon.peer1',
   claim,
 });
+```
+
+---
+
+### `getRoutePrice(destination: string): Promise<bigint | null>`
+
+What one packet to `destination` costs, asked of the connector that terminates it
+(`GET /ilp/routes/price`). A price is **flat per handler**, so the figure is the whole fee for
+one packet — there is nothing to multiply it by.
+
+`null` means the connector terminates no route matching `destination`. Cached per destination,
+so this is cheap to call repeatedly. This is the same lookup `publishEvent` makes, so a
+pre-write estimate here equals what the write actually pays.
+
+**Throws:**
+
+- `TOONClientError` (`NO_CONNECTOR_EDGE`) - If no client edge is configured
+- `ConnectorEdgeError` / `NetworkError` - If the connector cannot be asked
+
+**Example:**
+
+```typescript
+const price = await client.getRoutePrice('g.proxy.relay');
+if (price === null) throw new Error('nothing terminates that destination');
+console.log(`this write will cost ${price} base units`);
 ```
 
 ---

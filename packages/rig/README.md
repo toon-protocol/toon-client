@@ -5,9 +5,13 @@ repository to the TOON network — a decentralized control plane where repo stat
 lives in NIP-34 Nostr events and the objects live on Arweave.
 
 - **Reads are free** — clone, fetch, and browse issues/PRs need no identity, no
-  wallet, nothing configured.
+  wallet, nothing configured. `rig clone` in particular touches no payment code at
+  all: relay reads plus Arweave downloads, and nothing else.
 - **Writes are paid** — pushing objects and publishing events spends from a
   payment channel funded by your wallet. Writes are permanent and non-refundable.
+  The peer you pay, and the flat price of each write, are resolved from a
+  **kind:10032 announce on the relay your `origin` remote names** — see
+  [What a write costs](#what-a-write-costs-flat-per-route--not-per-byte).
 - **Standalone by default** — `rig` embeds its own payment client built from your
   seed phrase. No daemon is required (though a running `toon-clientd` makes paid
   commands faster — see [Daemon as accelerator](#daemon-as-accelerator)).
@@ -197,7 +201,7 @@ rig pr status <event-id> applied
 | `rig remote add/remove/list` | free | relays as REAL git remotes (`origin` = default publish target) |
 | `rig fund [chain]` | free | devnet USDC drip (gas assumed) to the active identity's wallet; `chain` = evm \| sol \| mina \| all; prints addresses to fund externally off-devnet |
 | `rig balance` | free | the active wallet's multi-chain balances |
-| `rig clone <relay-url> <owner>/<repo-id> [dir]` | free | bootstrap a repo from TOON: relay state + SHA-verified Arweave objects → a real git repo. Shadows `git clone` |
+| `rig clone <relay-url> <owner>/<repo-id> [dir]` | free | bootstrap a repo from TOON: relay state + SHA-verified Arweave objects → a real git repo, with `toon.owner`/`toon.repoid` and the relay as `origin` already configured (no `rig init` needed). No identity, wallet or channel required. Shadows `git clone` |
 | `rig fetch [remote]` | free | download the missing object delta + update `refs/remotes/<remote>/*`. Shadows `git fetch` |
 | `rig push [remote] [refspecs...]` | **paid** | the TOON push: Arweave upload + NIP-34 refs publish. Shadows `git push` |
 | `rig issue list` / `rig issue show <id>` | free | the repo's issues + comments from the terminal |
@@ -242,6 +246,29 @@ claim. You rarely touch this directly:
 The `open`/`close`/`settle` lifecycle commands are on-chain wallet operations (gas +
 collateral movement), so they follow the same confirm idiom as `push`: they print
 what will happen, then require `--yes` or an interactive confirm.
+
+### What a write costs (flat, per route — not per byte)
+
+**A price is flat per packet, and it comes from the route.** Byte-proportional pricing
+is gone from the protocol (connector
+[ADR 0020](https://github.com/toon-protocol/connector/blob/main/docs/adr/0020-a-price-is-flat-and-attaches-to-a-handler.md)):
+one handler, one price, and an app that wants to charge differently exposes more
+handlers, so the route table *is* the price list. A 100-byte object and a 100 KB
+object uploaded to the same store route now cost **the same**.
+
+rig reads those prices out of the `capabilities` field of the payment peer's kind:10032
+announce — one flat price per ILP destination (`os.publish` → the publish route,
+`os.store` → the store route) — and the connector gates every paid packet at exactly
+that figure, so the estimate rig quotes is what rig claims. A push's total is therefore
+`objects × store price + events × publish price`: the object **count** drives it, not
+the byte total. The fee table still prints bytes, because bytes are what determines
+whether an object fits under the 95KB cap — not what it costs.
+
+If the peer announces no price for a route, rig quotes `0` and lets the connector
+refuse, rather than inventing a rate. There is no `uploadFeePerByte` or `minUploadFee`
+to configure any more (both were removed along with `flooredUploadFee`); `feePerEvent`
+in `~/.toon-client/config.json` is a flat per-event figure that is floored at the
+announced publish price.
 
 ---
 
@@ -500,7 +527,9 @@ content-addressed — a re-push never re-pays for known objects) and publishes t
 NIP-34 refs event (kind:30618; plus the kind:30617 announcement on first push). It
 renders the fee table (refs with classification, objects, bytes, itemized + total
 fee) and asks for confirmation before spending — writes are permanent and
-non-refundable. `--yes` skips the prompt (and is required when stdin is not a TTY);
+non-refundable. The fee is `objects × the store route's flat price + events × the
+publish route's flat price`; the bytes column is there for the 95KB per-object cap,
+not for pricing (see [What a write costs](#what-a-write-costs-flat-per-route--not-per-byte)). `--yes` skips the prompt (and is required when stdin is not a TTY);
 `--json` without `--yes` is a pure estimate (nothing executed). `--force` allows
 non-fast-forward updates; `--repo-id <id>` overrides the configured repo id.
 
@@ -527,6 +556,40 @@ as long as the URL is `ws://`/`wss://`/`http://`/`https://`):
 - One relay URL per remote: a remote with multiple URLs is refused **before**
   anything is uploaded, published, or paid.
 
+**The remote URL *is* the relay** — rig has no separate relay setting, so plain git
+retargets it and `rig remote` is only a convenience wrapper:
+
+```sh
+git remote set-url origin ws://localhost:7100   # point rig at a different relay
+git remote -v                                   # rig reads exactly this
+```
+
+`ws://`, `wss://`, `http://` and `https://` are all accepted at add time, but the
+relay read is a **NIP-01 WebSocket REQ**, so in practice use `ws://`/`wss://` — an
+`http(s)://` remote is stored happily and then fails the read with
+`Invalid relay URL protocol (must be ws:// or wss://)`. An origin that is not a relay
+URL at all (a GitHub clone URL, say) is *skipped*, not an error: rig shares git's
+remote namespace, so a pre-existing git origin never breaks a rig command.
+
+> **Pointing rig at a relay that is not the devnet? Set `TOON_GENESIS_PEERS`.**
+> The relay is where rig *reads*; who it *pays* is resolved from a kind:10032
+> announce found on that relay. When the relay serves no valid announce, rig falls
+> back to `@toon-protocol/core`'s **committed genesis peer seed** — which ships the
+> live devnet apex — so it will happily bootstrap against the devnet's uplink, ILP
+> anchor and settlement no matter which relay the remote names, and the failure looks
+> like a confusing payment error rather than "no peer here". `TOON_GENESIS_PEERS`
+> **replaces** that bundled seed entirely (same JSON array shape:
+> `[{"pubkey","relayUrl","ilpAddress","btpEndpoint"}]`); set it to `[]` to disable
+> the seed outright for a private network or a hermetic test. A genesis-seeded pubkey
+> also *wins* announce selection when several peers announce on one relay, so a stale
+> seed can pick the wrong peer even on a relay that does carry announces.
+>
+> ```sh
+> export TOON_GENESIS_PEERS='[]'                    # no bootstrap fallback at all
+> # …or name your own apex:
+> export TOON_GENESIS_PEERS='[{"pubkey":"<hex>","relayUrl":"ws://localhost:7100","ilpAddress":"g.proxy","btpEndpoint":"ws://localhost:3000/btp"}]'
+> ```
+
 The single-event subcommands follow the same paid-write discipline as push — the
 per-event fee is quoted and confirmed before publishing; `--yes` skips, `--json`
 without `--yes` is a free estimate:
@@ -547,15 +610,36 @@ don't own).
 ## Cloning & fetching (free reads)
 
 `rig clone <relay-url> <owner>/<repo-id> [dir]` reconstructs the repository from
-public data alone: the kind:30618 `arweave` sha→txId map drives parallel downloads
-across the gateway fallback chain (SHAs the map misses resolve via the Arweave
-GraphQL `Git-SHA` tag index), **every body is verified against its SHA-1 before it
-is written**, and the repository is materialized through git's own plumbing
-(`git hash-object -w`, `git update-ref`, HEAD from the 30618 symref, checked-out
-worktree). Everything happens in a temp dir moved into place on success, so a failed
-clone never leaves a partial repo. `rig fetch [remote]` is the same pipeline as a
-delta: only locally-missing objects are downloaded, and `refs/remotes/<remote>/*`
-(tags → `refs/tags/*`) move with a `git fetch`-style report.
+public data alone. It is **genuinely free** — relay reads plus Arweave gateway
+downloads, no payment, no payment channel, and **no identity at all**: you can clone
+someone else's repo on a machine that has never run `rig identity create`.
+
+The kind:30618 `arweave` sha→txId map drives parallel downloads across the gateway
+fallback chain (SHAs the map misses resolve via the Arweave GraphQL `Git-SHA` tag
+index), **every body is verified against its SHA-1 before it is written**, and the
+repository is materialized through git's own plumbing (`git hash-object -w`,
+`git update-ref`, HEAD from the 30618 symref, checked-out worktree). Everything
+happens in a temp dir moved into place on success, so a failed clone never leaves a
+partial repo.
+
+**A clone is immediately push/pull capable**, because `rig clone` keeps the
+coordinates it was given: `<relay-url>` becomes the `origin` remote, and `<owner>` /
+`<repo-id>` are written to the `toon.owner` / `toon.repoid` git config keys. There is
+no `rig init` to run afterwards — `rig fetch`, `rig push` and the issue/pr commands
+work in the fresh clone straight away. `<relay-url>` must be `ws://` or `wss://`
+here (the relay read is a WebSocket REQ), and `<owner>` may be an `npub1…` or a
+64-char hex pubkey; `[dir]` defaults to the repo id.
+
+```sh
+rig clone wss://relay-ws.devnet.toonprotocol.dev npub1owner…/hello-toon
+cd hello-toon
+git config --local --get-regexp '^toon\.'   # toon.owner, toon.repoid
+git remote -v                               # origin = the relay you cloned from
+```
+
+`rig fetch [remote]` is the same pipeline as a delta: only locally-missing objects
+are downloaded, and `refs/remotes/<remote>/*` (tags → `refs/tags/*`) move with a
+`git fetch`-style report.
 
 `rig issue list|show` and `rig pr list|show` are pure relay reads (kind:1621/1617 by
 the repo `#a` tag; state from kind:1630-1633, latest wins; kind:1622 comments under

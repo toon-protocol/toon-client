@@ -20,7 +20,7 @@ A vendored copy that can drift silently is the worst option, so this one cannot:
 | | |
 |---|---|
 | **Integrity** | `wire-vectors.test.ts` hashes the vendored file every run and fails if it does not match `provenance.sha256`. Hand-editing the copy to make a failing replay pass is therefore not possible without also editing the provenance, which shows up in review as exactly what it is. |
-| **Drift** | `pnpm --filter @toon-protocol/client vectors:check` fetches the connector's current `main` copy and fails if it differs. `.github/workflows/wire-vectors-drift.yml` runs it daily and on any PR that touches `src/wire/**`. |
+| **Drift** | `pnpm --filter @toon-protocol/client vectors:check` fetches the connector's current `main` copy and fails if it differs, printing both SHA-256s. `.github/workflows/wire-vectors-drift.yml` runs it daily (06:17 UTC), on `workflow_dispatch`, and on any PR touching `src/wire/**`, `scripts/refresh-wire-vectors.mjs` or the workflow itself. It installs nothing (node builtins + global `fetch` only), so it is a ~10s job. **A red drift job is not a broken build** — it means the wire moved and this client has not adopted it yet; the fix is a refresh, below. |
 | **Refresh** | `pnpm --filter @toon-protocol/client vectors:refresh` rewrites both files from connector `main` (or `--ref <sha>`). The diff it produces is the wire change. |
 
 The rejected alternatives:
@@ -37,6 +37,12 @@ the record of every wire change this client has adopted — while the check abov
 removes the one thing vendoring costs.
 
 ## Refreshing
+
+Run `vectors:refresh` when — and only when — you are **deliberately adopting a wire
+change**: the drift job has gone red, or you are landing a client change against a
+connector commit that moved these bytes. It is never a fix for a failing replay on
+its own; it is the act of accepting a new contract, and the diff it produces *is* the
+wire change, so it belongs in a commit of its own with that framing.
 
 ```sh
 # Adopt connector main:

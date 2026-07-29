@@ -6,7 +6,7 @@ The **client library** for TOON Protocol — _pay-to-write Nostr over Interledge
 
 ## Which call pays which node
 
-Every write is an ILP packet carrying a signed payment-channel claim. The client reaches all node types **through a relay apex** (`g.proxy`): the apex validates the claim, takes its fee, and forwards the packet to the destination node, which returns FULFILL (accepted) or REJECT. The method you call determines which node type you pay:
+Every write is an ILP packet carrying a signed payment-channel claim, and its payload is **sealed to the connector that terminates the destination** (see [How a paid write works](#how-a-paid-write-works-the-sealed-wire)). The client reaches all node types **through a relay apex** (`g.proxy`): the apex validates the claim, takes its fee, and forwards the packet to the destination node, which returns FULFILL (accepted) or REJECT. The method you call determines which node type you pay:
 
 | Client call                       | Node type | What it does                                                                                                                                              |
 | --------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -19,6 +19,7 @@ Every write is an ILP packet carrying a signed payment-channel claim. The client
 This client handles:
 
 - **ILP Micropayments**: Pay to publish Nostr events (reads are free)
+- **The sealed wire**: Every paid write is an OER envelope gift-wrapped to the terminating connector's identity key, under an execution condition derived from the secret inside that wrap — see [How a paid write works](#how-a-paid-write-works-the-sealed-wire)
 - **Payment Channels**: Automatic on-chain channel creation with off-chain settlement via signed balance proofs
 - **Unified Identity**: One Nostr key = one EVM address (both secp256k1, derived automatically) — or a single BIP-39 **mnemonic** to derive a full multi-chain identity
 - **Multi-Chain Settlement**: Sign payment-channel claims on EVM (EIP-712), Solana (Ed25519), and Mina (Pallas) from one mnemonic. A relay apex validates the claim and redeems it on-chain on the matching chain (EVM/Solana credit the recipient; Mina redeems each claim on-chain with recipient credit-at-close deferred — see [Multi-Chain Settlement notes](#identity--multi-chain-settlement))
@@ -43,7 +44,11 @@ pnpm add mina-signer
 - **A TOON apex to pay.** You don't run any node yourself; you connect to a running
   [`@toon-protocol/relay`](https://www.npmjs.com/package/@toon-protocol/relay) apex (or any
   TOON connector) and pay it. From its operator you need:
-  - a **connector endpoint** — an HTTP `connectorUrl` and/or a BTP WebSocket `btpUrl`;
+  - a **connector endpoint** — an HTTP `connectorUrl` (or `proxyUrl`), optionally plus a BTP
+    WebSocket `btpUrl`. The HTTP client edge is **required even when packets travel over BTP**:
+    the identity a payload is sealed to and the price of a route are read from `GET /ilp/identity`
+    and `GET /ilp/routes/price` on it. Without one, `publishEvent` raises `NO_CONNECTOR_EDGE`
+    before forming a packet;
   - a **settlement-chain RPC URL** and a **funded key** on that chain, so the client can open a
     payment channel and sign EIP-712 claims;
   - the **token** and **TokenNetwork** contract addresses that apex accepts on that chain (e.g. USDC).
@@ -114,6 +119,199 @@ if (result.success) {
 // 5. Clean up
 await client.stop();
 ```
+
+---
+
+## How a paid write works (the sealed wire)
+
+`publishEvent` does all of this for you. It is spelled out because every step shows up in
+the result, and because each piece is exported for anyone forming a packet by hand.
+
+A paid write used to be an HTTP/1.1 request as **text** in `Prepare.data`, under an all-zero
+execution condition. Both are gone. A write is now an **OER envelope, gift-wrapped to the
+identity of the connector that terminates the destination**, under a condition **derived from
+the secret inside that wrap**. The rules come from the connector's ADRs — sealing
+([0018](https://github.com/toon-protocol/connector/blob/main/docs/adr/0018-a-payload-is-sealed-to-the-terminating-connector.md)),
+fulfilment derivation
+([0019](https://github.com/toon-protocol/connector/blob/main/docs/adr/0019-a-terminating-connector-derives-the-fulfilment.md)),
+flat pricing
+([0020](https://github.com/toon-protocol/connector/blob/main/docs/adr/0020-a-price-is-flat-and-attaches-to-a-handler.md)),
+vectors as the normative contract
+([0021](https://github.com/toon-protocol/connector/blob/main/docs/adr/0021-vectors-are-normative-prose-is-not.md)),
+and answering-but-not-announcing
+([0022](https://github.com/toon-protocol/connector/blob/main/docs/adr/0022-a-connector-answers-it-does-not-announce.md)).
+
+The ILP layer around it is unchanged: same `POST /ilp`, same PREPARE/FULFILL/REJECT, same
+`ILP-Payment-Channel-Claim` header, same channels and watermarks. Only `data` and the
+condition changed.
+
+### 1. Ask the connector who it is
+
+A packet cannot be formed without the terminating connector's public key, and there is no
+default to fall back on: sealing to the wrong key is a **confidentiality** failure that merely
+_presents_ as an undeliverable packet. A connector answers when asked and never announces, so
+the key is read straight off its client edge — the same origin the client `POST`s `/ilp` to.
+
+```typescript
+import { ConnectorEdgeClient } from '@toon-protocol/client';
+
+const edge = new ConnectorEdgeClient(); // { fetch?, timeout? }
+
+// GET /ilp/identity — cached per endpoint; 'http://apex/ilp' and 'http://apex' are the same edge
+const identity = await edge.getIdentity('http://localhost:8080');
+identity.publicKey; // Uint8Array, exactly 65 bytes, SEC1-uncompressed secp256k1 (leading 0x04)
+identity.keyId; // opaque to this client
+```
+
+A key of the wrong length, without the `0x04` tag, or not `0x`-hex is refused with a
+`ConnectorEdgeError` (`IDENTITY_KEY_LENGTH`, `IDENTITY_KEY_NOT_UNCOMPRESSED`,
+`IDENTITY_KEY_NOT_HEX`) rather than carried forward — there is no best-effort reading of a
+public key. An unreachable edge throws `NetworkError` instead, so "will not seal to that" and
+"could not ask" are never confused. Rotation is a deliberate event, so nothing expires on a
+timer: `invalidateIdentity(endpoint?)` is how a stale key is dropped.
+
+### 2. Ask the route what it costs
+
+There is no per-byte rate to multiply any more. A price is **flat per handler** — one handler,
+one price, and an app that wants to charge differently exposes more handlers — so the route
+table *is* the price list and only the connector can state it:
+
+```typescript
+// GET /ilp/routes/price?destination= — cached per (endpoint, destination)
+const quote = await edge.getRoutePrice('http://localhost:8080', 'g.proxy.relay');
+quote?.price; // bigint, in ILP base units — the whole fee for ONE packet
+
+// Or, from a started client, against the edge it already resolved:
+const price = await client.getRoutePrice('g.proxy.relay'); // bigint | null
+```
+
+`null` means the connector terminates no route matching that destination — an answer, not a
+failure, and distinct from the `NetworkError` an unreachable edge throws. `publishEvent`
+raises `NO_TERMINATED_ROUTE` on it before any packet exists. This is the same longest-prefix
+lookup the claim gate charges against, so it cannot quote a price a real request would not be
+charged; use it for a pre-write estimate that is guaranteed to equal what the write pays.
+
+### 3. Seal the envelope and mint the condition together
+
+`sealExchange` produces the wrap, the condition and the secret in one call, because getting
+any of them separately wrong is silent. A random condition would never be fulfilled; an
+all-zero one the connector refuses outright.
+
+```typescript
+import { sealExchange } from '@toon-protocol/client';
+
+const exchange = sealExchange(
+  {
+    method: 'POST',
+    target: '/write', // the terminated route's handler; '/store' for the Arweave store
+    headers: [['content-type', 'application/json']],
+    body: new TextEncoder().encode(JSON.stringify({ event })),
+  },
+  identity.publicKey,
+);
+
+exchange.data; // Uint8Array — the gift wrap, to carry as the PREPARE's `data`
+exchange.condition; // Uint8Array — sha256(deriveFulfillment(sharedSecret))
+exchange.sharedSecret; // Uint8Array(32) — keep it; nothing else opens the answer
+exchange.fulfillment; // Uint8Array — the preimage the connector will return
+```
+
+The condition is exactly `deriveCondition(deriveFulfillment(secret))`, and both are exported
+if you want to check the derivation yourself:
+
+```typescript
+import { deriveCondition, deriveFulfillment } from '@toon-protocol/client';
+
+// deriveFulfillment = HKDF-SHA256(sharedSecret, "toon-giftwrap-fulfillment"), 32 bytes
+// deriveCondition   = sha256 of that fulfilment
+deriveCondition(deriveFulfillment(exchange.sharedSecret)); // === exchange.condition
+```
+
+The terminating connector opens the wrap, recovers the same secret and derives the same
+preimage — **the app behind the route supplies nothing and holds no key**, which is what keeps
+"any HTTP service is a TOON node app" true. Never reuse a secret for a second packet.
+
+### 4. Send it, then open the answer with the same secret
+
+`exchange.data` goes on the PREPARE as base64 `data` and `exchange.condition` as its
+`executionCondition`; the claim rides in the `ILP-Payment-Channel-Claim` header as before.
+Whatever comes back — a FULFILL or a REJECT — is read by one function:
+
+```typescript
+import { readExchangeOutcome, envelopeHeader } from '@toon-protocol/client';
+
+// `sent` is the transport's `{ accepted, code?, message? }`; `payload` is the packet's
+// data bytes (`undefined` when it carried none).
+const outcome = readExchangeOutcome(sent, payload, exchange.sharedSecret);
+
+switch (outcome.kind) {
+  case 'answered':
+    outcome.response.status; // number — any status; a non-2xx is still a paid answer
+    outcome.response.headers; // readonly [name, value][]
+    outcome.response.body; // Uint8Array
+    envelopeHeader(outcome.response, 'content-type'); // case-insensitive lookup
+    break;
+  case 'destination-refused': // provable: only the termination could have sealed this
+    outcome.code, outcome.message, outcome.detail;
+    break;
+  case 'path-refused': // unauthenticated by construction — a hint, not a verdict
+    outcome.code, outcome.message;
+    break;
+}
+```
+
+A FULFILL
+that is not a readable sealed response envelope throws `SealedResponseError`, whose `kind` is
+`'not-sealed'`, `'unopenable'` or `'malformed-envelope'` — value moved, so bytes that are none
+of those mean a broken counterparty rather than an outcome to invent.
+
+**A reject raised short of the termination is plaintext, and that is distinguishable.** Only
+the terminating connector holds the shared secret, so only it can seal a refusal; an
+intermediate hop rejecting for no-route, expiry, a ceiling or a rejected claim shares no secret
+and cannot seal anything. A reject whose `data` actually **opens** under this packet's secret
+is therefore proof the destination said no — a leading type byte alone is a claim, not
+evidence, and one that fails to open is classified as a path reject. This distinction did not
+exist before the seal, and it is why the outcome is a three-way union rather than one error
+string.
+
+### What `publishEvent` returns
+
+```typescript
+const result = await client.publishEvent(event, {
+  destination: 'g.proxy.relay', // defaults to config.destinationAddress
+  claim, // optional pre-signed balance proof; otherwise auto-signed
+  ilpAmount: 1000n, // optional override — skips the route-price lookup entirely
+  proxyPath: '/write', // request-target inside the envelope ('/store' for the store)
+});
+
+result.success; // false for a rejected packet AND for a non-2xx answer
+result.eventId; // set on success
+result.response; // EnvelopeResponse — the opened answer; present whenever the packet FULFILLED
+result.refusedBy; // 'destination' (provable) | 'path' (unauthenticated), when rejected
+result.code; // the ILP reject code, when rejected
+```
+
+An HTTP status inside the response envelope is envelope **content**, not a packet outcome: a
+404 rides home on a FULFILL and value moved. `publishEvent` still reports that as
+`success: false` — the event did not persist — but `response` is populated either way, so you
+can see exactly what you paid for.
+
+### Conformance
+
+`src/wire/` is held to the connector's committed cross-repo vector set, vendored at
+[`src/wire/vectors/`](src/wire/vectors/README.md) and SHA-256 pinned: reproducing those bytes
+is what conformance means here. `pnpm --filter @toon-protocol/client vectors:check` compares
+the vendored copy against connector `main`, and a CI job runs it daily and on any PR touching
+`src/wire/**`.
+
+### Removed with the plaintext path
+
+`buildStoreWriteEnvelope`, `parseFulfillHttp`, `parseFulfillHttpBytes`, `ParsedFulfillHttp`,
+`serializeHttpRequest`, `parseHttpResponse` and `ILP_CLAIM_WRAPPED_HEADER` are gone — no HTTP
+text is serialised or parsed anywhere in this package. `PublishEventResult.data` (raw base64
+FULFILL bytes) became `response`, and `extractArweaveTxId` now takes that `EnvelopeResponse`
+rather than a base64 string. Per-byte pricing is gone with them: `basePricePerByte`,
+`uploadFeePerByte`, `minUploadFee` and `flooredUploadFee` have no successor.
 
 ---
 
