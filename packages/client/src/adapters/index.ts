@@ -41,8 +41,6 @@ export {
   Http402Client,
   parseX402Challenge,
   parseX402Body,
-  serializeHttpRequest,
-  parseHttpResponse,
   type H402FetchOptions,
   type Http402ClientConfig,
   type ClaimResolver,
