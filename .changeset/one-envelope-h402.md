@@ -1,5 +1,5 @@
 ---
-'@toon-protocol/client': major
+'@toon-protocol/client': minor
 ---
 
 Fold `Http402Client` onto the one envelope (#451).
