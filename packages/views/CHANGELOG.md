@@ -1,5 +1,27 @@
 # @toon-protocol/views
 
+## 0.21.0
+
+### Patch Changes
+
+- 582d931: Declare `@testing-library/dom` as an explicit devDependency.
+
+  It is a required peer of `@testing-library/react@16` and was only resolvable
+  because `packages/rig-web` happened to declare it. With rig-web removed from
+  this workspace, views' own test suite could no longer resolve it (18 failed
+  suites: `Cannot find module '@testing-library/dom'`, plus 40 `TS2305` errors
+  for the re-exported `screen`/`fireEvent`/`waitFor`/`within` bindings).
+  No runtime or published-output change.
+
+- Updated dependencies [4656411]
+- Updated dependencies [1d2ca72]
+- Updated dependencies [6006645]
+- Updated dependencies [29fc8d2]
+- Updated dependencies [af19e7a]
+- Updated dependencies [e38677d]
+- Updated dependencies [7b8176a]
+  - @toon-protocol/client@0.22.0
+
 ## 0.20.7
 
 ### Patch Changes
