@@ -122,6 +122,7 @@ can supply your own via env or an imported keystore.
   "network": "testnet",                       // settlement presets (#209)
   "keystorePath": "~/.toon-client/keystore.json",
   "btpUrl": "ws://<apex-host>:3000/btp",
+  "proxyUrl": "http://<apex-host>:8080",      // the connector's HTTP client edge
   "relayUrl": "ws://<relay-host>:7100",       // free reads
   "destination": "g.proxy",
   "feePerEvent": "1",
@@ -142,12 +143,21 @@ can supply your own via env or an imported keystore.
 ```
 
 Environment overrides: `TOON_CLIENT_MNEMONIC`, `TOON_CLIENT_KEYSTORE_PASSWORD`,
-`TOON_CLIENT_BTP_URL`, `TOON_CLIENT_RELAY_URL`,
+`TOON_CLIENT_BTP_URL`, `TOON_CLIENT_PROXY_URL`, `TOON_CLIENT_RELAY_URL`,
 `TOON_CLIENT_HTTP_PORT`, `TOON_CLIENT_NETWORK`, `TOON_CLIENT_HOME`.
 
 `btpUrl` (paid writes over BTP) and `relayUrl` (free reads over Nostr-WS) are
 dialed directly as-is. The first bootstrap brings up the BTP session **once** —
 the detached daemon then stays up.
+
+> **A paid write needs the connector's HTTP client edge, even over BTP.** Every
+> write is sealed to the terminating connector's identity key and priced from its
+> route, and both are read over plain HTTP (`GET /ilp/identity`,
+> `GET /ilp/routes/price`) — see
+> [How a paid write works](../client/README.md#how-a-paid-write-works-the-sealed-wire).
+> A config carrying only `btpUrl` has no edge to ask (the daemon fills in an
+> unreachable placeholder to satisfy client validation), so set `proxyUrl` to the
+> apex's HTTP origin alongside `btpUrl`. Free reads are unaffected.
 
 ### Create an encrypted keystore
 
