@@ -1,5 +1,78 @@
 # @toon-protocol/client
 
+## 0.23.0
+
+### Minor Changes
+
+- 3148741: Envelope targets are now handler-relative (ADR 0025), which is what makes a
+  paid write actually land on the deployed Rust connector.
+
+  The connector resolves an envelope's target STRICTLY BENEATH the route's
+  configured handler path (connector #596): `''` means "the handler's own
+  path", and an absolute `/write` or `/store` is refused as an escape attempt
+  (F00) before the app is ever reached. Until this change every default
+  `publishEvent` — and every `Http402Client` fetch — sent an absolute target,
+  so the deployed edge refused them all while the suite stayed green (the fake
+  connector never enforced the rule; it does now).
+
+  - `publishEvent`: default target `'/write'` → `''`. `proxyPath` is now a
+    sub-path resolved beneath the route's handler — the DESTINATION picks the
+    endpoint. Callers passing an absolute `proxyPath` must drop the leading
+    `/`.
+  - `blob-storage`: no longer passes `proxyPath: '/store'`; the store
+    destination's route already terminates at the store endpoint.
+  - `Http402Client`: targets are the URL path relative to the origin root (no
+    leading `/`).
+
+  Proven live: the new opt-in integration test
+  (`src/__integration__/rust-edge-devnet.integration.test.ts`) paid for a real
+  relay write through the deployed devnet Rust connector — sealed wire, EIP-712
+  TokenNetwork claim from a chain-resolved channel, relay 200, claim journaled
+  durably on the box.
+
+### Patch Changes
+
+- 658f613: Documentation only: bring the READMEs in line with the sealed wire (#447–#452).
+
+  - `packages/client/README.md` gains **How a paid write works (the sealed wire)** —
+    ask the terminating connector for its identity (`GET /ilp/identity`), ask the route
+    for its price (`GET /ilp/routes/price`), seal an OER envelope carrying a shared
+    secret, mint the condition as `deriveCondition(deriveFulfillment(secret))`, send,
+    and open the answer with the same secret. Records that a reject raised short of the
+    termination is necessarily plaintext and therefore distinguishable from one the
+    destination sealed, and lists what went away with the plaintext path.
+  - `docs/api-reference.md`: `publishEvent`'s documented result was still the
+    pre-sealed-wire shape (a `fulfillment` field that no longer exists, no `response` /
+    `refusedBy` / `code`, no `ilpAmount` / `proxyPath` options). Adds `getRoutePrice`.
+  - Both note that the HTTP client edge is now required even when packets travel over
+    BTP, since identity and price are read over HTTP — the same note lands in
+    `packages/client-mcp/README.md`, whose config example only ever showed `btpUrl`.
+  - `packages/rig/README.md`: what a write costs is now flat per route (from the
+    kind:10032 announce's `capabilities`), not per byte; `rig clone` is documented as
+    the free, identity-less read it is, including that it leaves `toon.owner`,
+    `toon.repoid` and the relay as `origin` preconfigured; the relay is read from the
+    git remote URL (`git remote set-url origin ws://…`); and `TOON_GENESIS_PEERS` is
+    documented as load-bearing when pointing rig at anything other than the devnet.
+  - `src/wire/vectors/README.md`: sharpens when `vectors:refresh` is the right move and
+    what the drift job actually covers.
+
+- d40ef79: Two wallet-balance reader fixes.
+
+  **Mina settlement USDC is 6-decimal, not native MINA's 9.** `readMinaTokenBalance`
+  reported the custom settlement-token balance at `assetScale` 9 — nanomina's scale —
+  so a 50 USDC balance (`50_000000`) misdisplayed as `0.05`. TOON's settlement USDC is
+  6-decimal on every chain; the Mina custom-token amount is a raw u64, so it is now
+  scaled at 6 to match EVM and Solana. Native MINA is untouched and still reads at 9.
+
+  **Bound each wallet-balance request independently.** The multi-chain read wraps all
+  three chains in one `Promise.all` under a single outer bound, and the individual
+  reads had no per-request timeout — Node's global `fetch` (Solana/Mina) has none by
+  default — so one stalled socket hung the whole read and surfaced as "wallet balances
+  unavailable" with _no_ chains at all. Each request is now bounded on its own (viem's
+  `timeout` + `retryCount` for EVM, an `AbortSignal` for the Solana/Mina `fetch`), so a
+  slow endpoint degrades only its own chain to `unreadable` and the others still
+  render. Env override `TOON_WALLET_RPC_TIMEOUT_MS` (default 8000; `0` disables).
+
 ## 0.22.0
 
 ### Minor Changes
