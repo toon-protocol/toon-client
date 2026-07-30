@@ -566,3 +566,78 @@ describe('ToonClient.publishEvent asks the route for its price (toon-client#452)
     await expect(other.getRoutePrice('g.nowhere')).resolves.toBeNull();
   });
 });
+
+describe('announce-less channel bootstrap (connector #617)', () => {
+  const GREETING_SETTLEMENT = {
+    chain: 'evm:84532',
+    settlementAddress: '0x' + 'a'.repeat(40),
+    tokenNetworkRegistry: '0x' + 'b'.repeat(40),
+    tokenNetwork: '0x' + 'e'.repeat(40),
+    tokenAddress: '0x' + 'f'.repeat(40),
+    decimals: 6,
+  };
+
+  it('synthesizes the negotiation from the greeting and opens the channel', async () => {
+    const client = new ToonClient(baseConfig());
+    connector.settlementTerms = GREETING_SETTLEMENT;
+    attachTransport(client, {
+      sendIlpPacketWithClaim: async (params: { data: string }) =>
+        connector.fulfill(params.data),
+    });
+    const ensureChannel = vi.fn(async () => 'chan-1');
+    const signBalanceProof = vi.fn(async () => makeProof());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).channelManager = {
+      ensureChannel,
+      signBalanceProof,
+      isTracking: () => false,
+      getSignerForChannel: () => ({
+        buildClaimMessage: (proof: unknown, sender: unknown) => ({
+          proof,
+          sender,
+        }),
+      }),
+    };
+
+    const result = await client.publishEvent(makeEvent());
+
+    expect(result.success).toBe(true);
+    // The negotiation ensureChannel received was built from the greeting's
+    // own facts — nothing announced, nothing configured.
+    expect(ensureChannel).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        chain: 'evm:84532',
+        chainType: 'evm',
+        chainId: 84532,
+        settlementAddress: GREETING_SETTLEMENT.settlementAddress,
+        tokenNetwork: GREETING_SETTLEMENT.tokenNetwork,
+        tokenAddress: GREETING_SETTLEMENT.tokenAddress,
+      })
+    );
+    // The claim then advanced by the asked price, exactly as a negotiated
+    // peer's would have.
+    expect(signBalanceProof).toHaveBeenCalledWith('chan-1', 1000n);
+  });
+
+  it('still refuses precisely when the greeting carries no settlement facts', async () => {
+    const client = new ToonClient(baseConfig());
+    connector.settlementTerms = null;
+    attachTransport(client, {
+      sendIlpPacketWithClaim: async (params: { data: string }) =>
+        connector.fulfill(params.data),
+    });
+    const ensureChannel = vi.fn();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).channelManager = {
+      ensureChannel,
+      signBalanceProof: vi.fn(),
+      isTracking: () => false,
+    };
+
+    await expect(client.publishEvent(makeEvent())).rejects.toThrow(
+      /No negotiation metadata/
+    );
+    expect(ensureChannel).not.toHaveBeenCalled();
+  });
+});

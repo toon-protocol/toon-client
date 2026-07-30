@@ -73,6 +73,20 @@ export class FakeTerminatingConnector {
    */
   routePrice: bigint | null = 1000n;
 
+  /**
+   * The channel-opening facts the 402 greeting carries (connector #617).
+   * `null` — the default — is a settlement-less node: the greeting has no
+   * `settlement` key at all, exactly as the real edge omits it.
+   */
+  settlementTerms: {
+    chain: string;
+    settlementAddress: string;
+    tokenNetworkRegistry: string;
+    tokenNetwork: string;
+    tokenAddress: string;
+    decimals: number;
+  } | null = null;
+
   constructor(options: FakeTerminatingConnectorOptions = {}) {
     this.identitySecret = options.identitySecret ?? new Uint8Array(32).fill(9);
     this.identityPublic = secp256k1.getPublicKey(this.identitySecret, false);
@@ -111,6 +125,41 @@ export class FakeTerminatingConnector {
         JSON.stringify({ destination, price: Number(this.routePrice) }),
         { status: 200, headers: { 'content-type': 'application/json' } }
       );
+    }
+    // A claimless POST /ilp to a priced route: the x402 greeting
+    // (client-edge-spec.md §1.4), including the channel-opening facts when
+    // this fake "has a settlement backend" (connector #617). The real edge
+    // answers 402 without routing the packet, so the fake does not decode
+    // the PREPARE either — the greeting depends only on the route's price.
+    if (url.endsWith('/ilp') && this.routePrice !== null) {
+      const destination = 'g.fake.route';
+      const price = String(this.routePrice);
+      const body = JSON.stringify({
+        x402Version: 2,
+        resource: { url: destination },
+        accepts: [
+          {
+            scheme: 'toon-channel',
+            network: destination,
+            amount: price,
+            payTo: destination,
+            maxTimeoutSeconds: 60,
+            httpEndpoint: '/ilp',
+            extra: {
+              ilpAddress: destination,
+              endpoint: '/ilp',
+              price,
+              ...(this.settlementTerms
+                ? { settlement: this.settlementTerms }
+                : {}),
+            },
+          },
+        ],
+      });
+      return new Response(body, {
+        status: 402,
+        headers: { 'content-type': 'application/json' },
+      });
     }
     return new Response('not found', { status: 404 });
   };

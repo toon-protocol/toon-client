@@ -145,6 +145,22 @@ export interface ClientConfigFile {
 }
 
 /** An identity was resolved, but there is no way to send paid writes. */
+/**
+ * The official TOON relay implementation's client edge — the Rust connector
+ * on the devnet apex (connector #616: the parallel-fleet comparison
+ * concluded and the Rust fleet serves the protocol's own `g.toon`
+ * namespace). This is rig's DEFAULT uplink: paid writes go here unless an
+ * entry is explicitly configured (`rig entry <url>` / `rig entry sandbox` /
+ * the TOON_CLIENT_* env overrides). The channel bootstrap needs no
+ * announce: the edge's x402 greeting carries the channel-opening facts
+ * (connector #617), which the embedded client synthesizes a negotiation
+ * from.
+ */
+export const OFFICIAL_PROXY_URL =
+  'https://proxy.devnet.toonprotocol.dev/rust/ilp';
+/** The official relay-write route on that edge. */
+export const OFFICIAL_PUBLISH_DESTINATION = 'g.toon.relay';
+
 export class MissingUplinkError extends Error {
   constructor(configPath: string, relayUrl: string | undefined) {
     const discovered = relayUrl
@@ -444,21 +460,19 @@ export async function resolveNetworkTopology(
     ...(file.tokenNetworks ? { tokenNetworks: file.tokenNetworks } : {}),
   };
 
-  // ── Uplink: explicit > announce (http > btp) > genesis seed ──────────────
+  // ── Uplink: explicit > THE OFFICIAL EDGE ─────────────────────────────────
+  // The cutover (connector #616): the Rust connector is the official TOON
+  // relay implementation, so with no explicit entry the uplink IS the
+  // official edge — the live announce and the genesis seed no longer place
+  // the uplink (they still inform the destination anchor, routes, prices
+  // and bootstrap peers below). Opting onto another fleet is what
+  // `rig entry <url>` / `rig entry sandbox` and the TOON_CLIENT_* env
+  // overrides are for, and those are all EXPLICIT. `MissingUplinkError`
+  // can no longer fire from here — an uplink always resolves.
   let proxyUrl = explicitProxyUrl;
   let btpUrl = explicitBtpUrl;
   if (!proxyUrl && !btpUrl) {
-    if (announce?.info.httpEndpoint) {
-      proxyUrl = proxyBaseOf(announce.info.httpEndpoint);
-    } else if (announce?.info.btpEndpoint) {
-      btpUrl = announce.info.btpEndpoint;
-    } else if (genesisSeed?.btpEndpoint) {
-      btpUrl = genesisSeed.btpEndpoint;
-    } else if (inputs.requireUplink !== false) {
-      // Free reads (`rig balance`, #263) tolerate a missing uplink; paid
-      // commands fail here, after every source has been tried.
-      throw new MissingUplinkError(configPath, relayUrl);
-    }
+    proxyUrl = OFFICIAL_PROXY_URL;
   }
 
   // ── Destination anchor + publish/store routes ────────────────────────────
@@ -471,7 +485,12 @@ export async function resolveNetworkTopology(
     announce?.info.ilpAddress ??
     genesisSeed?.ilpAddress ??
     'g.proxy';
-  const publishDestination = explicitPublish ?? announce?.routes?.publish;
+  const publishDestination =
+    explicitPublish ??
+    announce?.routes?.publish ??
+    (proxyUrl === OFFICIAL_PROXY_URL
+      ? OFFICIAL_PUBLISH_DESTINATION
+      : undefined);
   const storeDestination = explicitStore ?? announce?.routes?.store;
 
   // ── Route-price floors ───────────────────────────────────────────────────
