@@ -30,6 +30,10 @@ import {
 } from './giftwrap.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { toBase64, fromBase64 } from '../utils/binary.js';
+import type {
+  ConnectorSettlementTerms,
+  ConnectorSolanaSettlementTerms,
+} from '../adapters/ConnectorEdgeClient.js';
 
 /** What a request, once opened, turns out to have been. */
 export interface OpenedPrepare {
@@ -78,14 +82,7 @@ export class FakeTerminatingConnector {
    * `null` — the default — is a settlement-less node: the greeting has no
    * `settlement` key at all, exactly as the real edge omits it.
    */
-  settlementTerms: {
-    chain: string;
-    settlementAddress: string;
-    tokenNetworkRegistry: string;
-    tokenNetwork: string;
-    tokenAddress: string;
-    decimals: number;
-  } | null = null;
+  settlementTerms: ConnectorSettlementTerms | null = null;
 
   /**
    * The additive per-chain `settlements` list the greeting carries beside
@@ -95,23 +92,7 @@ export class FakeTerminatingConnector {
    * does.
    */
   settlements:
-    | (
-        | {
-            chain: string;
-            settlementAddress: string;
-            tokenNetworkRegistry: string;
-            tokenNetwork: string;
-            tokenAddress: string;
-            decimals: number;
-          }
-        | {
-            chain: string;
-            settlementAddress: string;
-            programId: string;
-            tokenAddress: string;
-            decimals: number;
-          }
-      )[]
+    | (ConnectorSettlementTerms | ConnectorSolanaSettlementTerms)[]
     | null = null;
 
   constructor(options: FakeTerminatingConnectorOptions = {}) {

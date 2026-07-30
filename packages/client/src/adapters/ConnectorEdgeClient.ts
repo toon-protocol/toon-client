@@ -623,10 +623,7 @@ export class ConnectorEdgeClient {
 }
 
 /** A required-string reader over a raw settlement-facts record, refusing a missing/empty field. */
-function settlementStr(
-  s: Record<string, unknown>,
-  key: string
-): string {
+function settlementStr(s: Record<string, unknown>, key: string): string {
   const value = s[key];
   if (typeof value !== 'string' || value.length === 0) {
     throw new ConnectorEdgeError(
@@ -772,7 +769,9 @@ export function parseConnectorRouteTerms(body: unknown): ConnectorRouteTerms {
   return {
     destination,
     price: option['amount'],
-    settlement: parseEvmSettlementTerms(rawSettlement as Record<string, unknown>),
+    settlement: parseEvmSettlementTerms(
+      rawSettlement as Record<string, unknown>
+    ),
     ...(settlements ? { settlements } : {}),
   };
 }

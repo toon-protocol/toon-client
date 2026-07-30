@@ -552,7 +552,12 @@ describe('parseConnectorRouteTerms — per-chain settlements (connector #632)', 
         {
           scheme: 'toon-channel',
           amount: '1000',
-          extra: { ilpAddress: 'g.fake.route', endpoint: '/ilp', price: '1000', ...extra },
+          extra: {
+            ilpAddress: 'g.fake.route',
+            endpoint: '/ilp',
+            price: '1000',
+            ...extra,
+          },
         },
       ],
     };

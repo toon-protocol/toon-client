@@ -1666,14 +1666,12 @@ export class ToonClient {
   /**
    * Build the Solana {@link PeerNegotiation} from a `settlements` entry
    * (connector #632). Unlike the EVM leg there is no numeric chain id to
-   * parse or validate — `chain` is always the literal `'solana'` — so this
-   * cannot fail; the `PeerNegotiation | undefined` return keeps it
-   * interchangeable with {@link evmNegotiationFromSettlement} at the call
-   * site.
+   * parse or validate — `chain` is always the literal `'solana'` — so,
+   * unlike {@link evmNegotiationFromSettlement}, this cannot fail.
    */
   private solanaNegotiationFromSettlement(
     settlement: ConnectorSolanaSettlementTerms
-  ): PeerNegotiation | undefined {
+  ): PeerNegotiation {
     return {
       chain: 'solana',
       chainType: 'solana',
