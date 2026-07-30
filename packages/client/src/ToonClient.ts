@@ -591,8 +591,10 @@ export class ToonClient {
       destination?: string;
       claim?: SignedBalanceProof;
       ilpAmount?: bigint;
-      /** Request-target inside the envelope (default '/write', the relay;
-       *  use '/store' for the Arweave store backend). */
+      /** Sub-path resolved strictly BENEATH the route's handler path (ADR
+       *  0025). Default '' — the handler's own path, correct whenever the
+       *  destination terminates at exactly one endpoint. Never absolute:
+       *  a leading '/' is refused by the connector (F00). */
       proxyPath?: string;
     }
   ): Promise<PublishEventResult> {
@@ -626,7 +628,15 @@ export class ToonClient {
       const exchange = sealExchange(
         {
           method: 'POST',
-          target: options?.proxyPath ?? '/write',
+          // ADR 0025 (connector #596): the envelope target is resolved
+          // STRICTLY BENEATH the route's configured handler path — it can
+          // extend that path, never replace it. '' means "the handler's own
+          // path", which is the whole answer for a route that terminates at
+          // exactly one endpoint (g.rust.relay → …/write, g.rust.store →
+          // …/store): the DESTINATION picks the endpoint, not the target.
+          // An absolute target like '/write' is refused as an escape
+          // attempt (F00) before the app is ever reached.
+          target: options?.proxyPath ?? '',
           headers: [['content-type', 'application/json']],
           body: encodeUtf8(JSON.stringify({ event })),
         },

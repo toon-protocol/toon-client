@@ -39,7 +39,8 @@ const RECEIVER_PUBLIC = secp256k1.getPublicKey(RECEIVER_SECRET, false);
 
 const request: EnvelopeRequest = {
   method: 'POST',
-  target: '/write',
+  // '' = the handler's own path (ADR 0025) — what a real write sends.
+  target: '',
   headers: [['content-type', 'application/json']],
   body: new TextEncoder().encode('{"event":{}}'),
 };

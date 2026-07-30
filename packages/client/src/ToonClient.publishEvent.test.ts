@@ -198,7 +198,9 @@ describe('ToonClient.publishEvent forms a sealed packet (toon-client#450)', () =
     expect(connector.opened).toHaveLength(1);
     const { request } = onlyOpened(connector);
     expect(request.method).toBe('POST');
-    expect(request.target).toBe('/write');
+    // '' resolves to the handler's own path (ADR 0025); the deployed edge
+    // refuses an absolute '/write' with F00.
+    expect(request.target).toBe('');
     expect(request.headers).toContainEqual([
       'content-type',
       'application/json',
@@ -221,12 +223,15 @@ describe('ToonClient.publishEvent forms a sealed packet (toon-client#450)', () =
         connector.fulfill(params.data),
     });
 
+    // Handler-RELATIVE (ADR 0025): a sub-path beneath the route's handler.
+    // The absolute '/store' this test used to send is now refused by the
+    // connector (and by the fake) as an escape attempt.
     await client.publishEvent(makeEvent(), {
       claim: makeProof(),
-      proxyPath: '/store',
+      proxyPath: 'v2',
     });
 
-    expect(onlyOpened(connector).request.target).toBe('/store');
+    expect(onlyOpened(connector).request.target).toBe('v2');
   });
 
   it('mints a real execution condition matching the fulfilment the connector derives', async () => {
