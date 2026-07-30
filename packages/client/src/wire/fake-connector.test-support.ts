@@ -87,6 +87,33 @@ export class FakeTerminatingConnector {
     decimals: number;
   } | null = null;
 
+  /**
+   * The additive per-chain `settlements` list the greeting carries beside
+   * `settlementTerms` (connector #632) — untagged on the wire, one entry per
+   * chain this fake "settles on". `null` — the default — omits the key
+   * entirely, exactly as a pre-#632 (or settlement-less) node's greeting
+   * does.
+   */
+  settlements:
+    | (
+        | {
+            chain: string;
+            settlementAddress: string;
+            tokenNetworkRegistry: string;
+            tokenNetwork: string;
+            tokenAddress: string;
+            decimals: number;
+          }
+        | {
+            chain: string;
+            settlementAddress: string;
+            programId: string;
+            tokenAddress: string;
+            decimals: number;
+          }
+      )[]
+    | null = null;
+
   constructor(options: FakeTerminatingConnectorOptions = {}) {
     this.identitySecret = options.identitySecret ?? new Uint8Array(32).fill(9);
     this.identityPublic = secp256k1.getPublicKey(this.identitySecret, false);
@@ -152,6 +179,7 @@ export class FakeTerminatingConnector {
               ...(this.settlementTerms
                 ? { settlement: this.settlementTerms }
                 : {}),
+              ...(this.settlements ? { settlements: this.settlements } : {}),
             },
           },
         ],

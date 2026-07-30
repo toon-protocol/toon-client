@@ -641,3 +641,152 @@ describe('announce-less channel bootstrap (connector #617)', () => {
     expect(ensureChannel).not.toHaveBeenCalled();
   });
 });
+
+describe('Solana greeting-bootstrap (connector #632, issue #470)', () => {
+  const EVM_SETTLEMENT = {
+    chain: 'evm:84532',
+    settlementAddress: '0x' + 'a'.repeat(40),
+    tokenNetworkRegistry: '0x' + 'b'.repeat(40),
+    tokenNetwork: '0x' + 'e'.repeat(40),
+    tokenAddress: '0x' + 'f'.repeat(40),
+    decimals: 6,
+  };
+  const SOLANA_SETTLEMENT = {
+    chain: 'solana',
+    settlementAddress: 'ApexSolanaSettlementAddress11111111111111',
+    programId: 'PaymentChannelProgram1111111111111111111',
+    tokenAddress: 'UsdcMint1111111111111111111111111111111',
+    decimals: 6,
+  };
+
+  /** Wire a mocked ChannelManager + a stubbed getBalances() onto `client`. */
+  function wireClient(
+    client: ToonClient,
+    balances: { chain: 'evm' | 'solana' | 'mina'; amount: string }[]
+  ) {
+    attachTransport(client, {
+      sendIlpPacketWithClaim: async (params: { data: string }) =>
+        connector.fulfill(params.data),
+    });
+    const ensureChannel = vi.fn(async () => 'chan-1');
+    const signBalanceProof = vi.fn(async () => makeProof());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).channelManager = {
+      ensureChannel,
+      signBalanceProof,
+      isTracking: () => false,
+      getSignerForChannel: () => ({
+        buildClaimMessage: (proof: unknown, sender: unknown) => ({
+          proof,
+          sender,
+        }),
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).getBalances = vi.fn(async () => balances);
+    return { ensureChannel, signBalanceProof };
+  }
+
+  it('selects Solana when the wallet holds Solana funds and no EVM funds', async () => {
+    const client = new ToonClient(baseConfig());
+    connector.settlementTerms = EVM_SETTLEMENT;
+    connector.settlements = [EVM_SETTLEMENT, SOLANA_SETTLEMENT];
+    const { ensureChannel } = wireClient(client, [
+      { chain: 'evm', amount: '0' },
+      { chain: 'solana', amount: '5000000' },
+    ]);
+
+    const result = await client.publishEvent(makeEvent());
+
+    expect(result.success).toBe(true);
+    expect(ensureChannel).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        chain: 'solana',
+        chainType: 'solana',
+        settlementAddress: SOLANA_SETTLEMENT.settlementAddress,
+        tokenAddress: SOLANA_SETTLEMENT.tokenAddress,
+        tokenNetwork: SOLANA_SETTLEMENT.programId,
+      })
+    );
+  });
+
+  it('still selects EVM from a two-chain greeting when the wallet holds EVM funds (unaffected)', async () => {
+    const client = new ToonClient(baseConfig());
+    connector.settlementTerms = EVM_SETTLEMENT;
+    connector.settlements = [EVM_SETTLEMENT, SOLANA_SETTLEMENT];
+    const { ensureChannel } = wireClient(client, [
+      { chain: 'evm', amount: '1000000' },
+      { chain: 'solana', amount: '5000000' },
+    ]);
+
+    const result = await client.publishEvent(makeEvent());
+
+    expect(result.success).toBe(true);
+    expect(ensureChannel).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        chain: EVM_SETTLEMENT.chain,
+        chainType: 'evm',
+        settlementAddress: EVM_SETTLEMENT.settlementAddress,
+      })
+    );
+  });
+
+  it('still selects EVM from a two-chain greeting when the wallet holds no funds anywhere (unaffected default)', async () => {
+    const client = new ToonClient(baseConfig());
+    connector.settlementTerms = EVM_SETTLEMENT;
+    connector.settlements = [EVM_SETTLEMENT, SOLANA_SETTLEMENT];
+    const { ensureChannel } = wireClient(client, [
+      { chain: 'evm', amount: '0' },
+      { chain: 'solana', amount: '0' },
+    ]);
+
+    const result = await client.publishEvent(makeEvent());
+
+    expect(result.success).toBe(true);
+    expect(ensureChannel).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ chainType: 'evm' })
+    );
+  });
+
+  it('selects Solana unconditionally from a Solana-only greeting (no EVM leg to compare funds against)', async () => {
+    const client = new ToonClient(baseConfig());
+    connector.settlementTerms = null;
+    connector.settlements = [SOLANA_SETTLEMENT];
+    const { ensureChannel } = wireClient(client, []);
+
+    const result = await client.publishEvent(makeEvent());
+
+    expect(result.success).toBe(true);
+    expect(ensureChannel).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        chain: 'solana',
+        chainType: 'solana',
+        settlementAddress: SOLANA_SETTLEMENT.settlementAddress,
+        tokenAddress: SOLANA_SETTLEMENT.tokenAddress,
+        tokenNetwork: SOLANA_SETTLEMENT.programId,
+      })
+    );
+  });
+
+  it('EVM-only legacy greeting (no settlements list at all) is unaffected', async () => {
+    const client = new ToonClient(baseConfig());
+    connector.settlementTerms = EVM_SETTLEMENT;
+    connector.settlements = null;
+    const { ensureChannel } = wireClient(client, []);
+
+    const result = await client.publishEvent(makeEvent());
+
+    expect(result.success).toBe(true);
+    expect(ensureChannel).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        chain: EVM_SETTLEMENT.chain,
+        chainType: 'evm',
+      })
+    );
+  });
+});

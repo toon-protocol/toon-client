@@ -6,6 +6,7 @@ import {
   decodeConnectorPublicKey,
   parseConnectorIdentity,
   parseConnectorRoutePrice,
+  parseConnectorRouteTerms,
 } from './ConnectorEdgeClient.js';
 import { NetworkError } from '../errors.js';
 
@@ -516,5 +517,87 @@ describe('ConnectorEdgeClient route-price caching (toon-client#452)', () => {
     expect(client.hasCachedRoutePrice('https://other.example', 'g.a')).toBe(
       false
     );
+  });
+});
+
+/**
+ * Connector #632: the x402 greeting additively carries a per-chain
+ * `settlements` list beside the legacy EVM-shaped `settlement` object — a
+ * two-chain node advertises both an EVM and a Solana entry, disambiguated
+ * structurally (untagged wire, `tokenNetworkRegistry` for EVM vs `programId`
+ * for Solana) since the connector adds no explicit tag.
+ */
+describe('parseConnectorRouteTerms — per-chain settlements (connector #632)', () => {
+  const EVM_SETTLEMENT = {
+    chain: 'evm:84532',
+    settlementAddress: '0x' + 'a'.repeat(40),
+    tokenNetworkRegistry: '0x' + 'b'.repeat(40),
+    tokenNetwork: '0x' + 'e'.repeat(40),
+    tokenAddress: '0x' + 'f'.repeat(40),
+    decimals: 6,
+  };
+  const SOLANA_SETTLEMENT = {
+    chain: 'solana',
+    settlementAddress: 'ApexSolanaSettlementAddress11111111111111',
+    programId: 'PaymentChannelProgram1111111111111111111',
+    tokenAddress: 'UsdcMint1111111111111111111111111111111',
+    decimals: 6,
+  };
+
+  function greetingBody(extra: Record<string, unknown>) {
+    return {
+      x402Version: 2,
+      resource: { url: 'g.fake.route' },
+      accepts: [
+        {
+          scheme: 'toon-channel',
+          amount: '1000',
+          extra: { ilpAddress: 'g.fake.route', endpoint: '/ilp', price: '1000', ...extra },
+        },
+      ],
+    };
+  }
+
+  it('leaves settlements undefined on a settlement-less greeting (pre-#632 shape unaffected)', () => {
+    const terms = parseConnectorRouteTerms(greetingBody({}));
+    expect(terms.settlement).toBeUndefined();
+    expect(terms.settlements).toBeUndefined();
+  });
+
+  it('parses an EVM-only one-entry settlements list beside the unchanged legacy object', () => {
+    const terms = parseConnectorRouteTerms(
+      greetingBody({
+        settlement: EVM_SETTLEMENT,
+        settlements: [EVM_SETTLEMENT],
+      })
+    );
+    expect(terms.settlement).toEqual(EVM_SETTLEMENT);
+    expect(terms.settlements).toEqual([{ kind: 'evm', ...EVM_SETTLEMENT }]);
+  });
+
+  it('parses a two-chain settlements list, disambiguating EVM and Solana structurally', () => {
+    const terms = parseConnectorRouteTerms(
+      greetingBody({
+        settlement: EVM_SETTLEMENT,
+        settlements: [EVM_SETTLEMENT, SOLANA_SETTLEMENT],
+      })
+    );
+    expect(terms.settlements).toEqual([
+      { kind: 'evm', ...EVM_SETTLEMENT },
+      { kind: 'solana', ...SOLANA_SETTLEMENT },
+    ]);
+  });
+
+  it('refuses a settlements entry missing required fields rather than dropping it silently', () => {
+    const malformed = { ...SOLANA_SETTLEMENT, programId: undefined };
+    expect(() =>
+      parseConnectorRouteTerms(greetingBody({ settlements: [malformed] }))
+    ).toThrow(ConnectorEdgeError);
+  });
+
+  it('refuses a settlements list that is not an array', () => {
+    expect(() =>
+      parseConnectorRouteTerms(greetingBody({ settlements: 'nope' }))
+    ).toThrow(ConnectorEdgeError);
   });
 });
