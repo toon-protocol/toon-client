@@ -166,7 +166,8 @@ describe('Http402Client.fetch — 402 → pay → 200', () => {
     expect(connector.opened).toHaveLength(1);
     const { request } = first(connector.opened, 'opened request');
     expect(request.method).toBe('GET');
-    expect(request.target).toBe('/resource?q=1');
+    // Handler-relative (ADR 0025): no leading '/'.
+    expect(request.target).toBe('resource?q=1');
     expect(request.body).toHaveLength(0);
   });
 
@@ -219,7 +220,8 @@ describe('Http402Client.fetch — 402 → pay → 200', () => {
 
     const { request } = first(connector.opened, 'opened request');
     expect(request.method).toBe('POST');
-    expect(request.target).toBe('/items');
+    // Handler-relative (ADR 0025): no leading '/'.
+    expect(request.target).toBe('items');
     expect(request.headers).toEqual([['Content-Type', 'application/json']]);
     expect(decodeUtf8(request.body)).toBe('{"name":"alice"}');
   });

@@ -166,8 +166,11 @@ export async function requestBlobStorage(
     destination: params.destination,
     claim: params.claim,
     ilpAmount: params.ilpAmount,
-    // The store/DVM backend serves POST /store (not the relay's /write).
-    proxyPath: '/store',
+    // No proxyPath: the store DESTINATION's route already terminates at the
+    // store backend's own endpoint, and ADR 0025 resolves the envelope
+    // target strictly beneath that handler path — '' (the default) means
+    // "the handler's own path". The old absolute '/store' is refused by the
+    // connector as an escape attempt (F00).
   });
 
   if (!result.success) {

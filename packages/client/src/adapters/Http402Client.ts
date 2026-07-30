@@ -553,9 +553,12 @@ function bodyToBytes(body: string | Uint8Array | undefined): Uint8Array {
  * Turn a caller's `fetch`-shaped request into the `EnvelopeRequest` that is
  * sealed into the packet.
  *
- * The target is origin-form (`path` + `search`), which is what the connector
- * appends to the handler URL it forwards to — an absolute URL here would be
- * routed by the ILP destination anyway and only confuse the far side.
+ * The target is the URL's path RELATIVE to the origin root (no leading `/`),
+ * plus `search`. ADR 0025 (connector #596) resolves an envelope target
+ * strictly BENEATH the route's configured handler path — `''` means "the
+ * handler's own path", and an absolute `/…` target is refused outright
+ * (F00) as an escape attempt, so origin-form is no longer speakable on this
+ * wire.
  *
  * Headers are carried in the caller's own order, names verbatim. The envelope
  * is a LIST of pairs, not a map, so order and duplicates both survive — which
@@ -578,7 +581,9 @@ function toEnvelopeRequest(
   );
   return {
     method: method.toUpperCase(),
-    target: `${u.pathname}${u.search}` || '/',
+    // Strip the leading '/' — ADR 0025 targets are handler-relative, and
+    // the empty string ('' + no search) is exactly "the handler's path".
+    target: `${u.pathname.replace(/^\/+/, '')}${u.search}`,
     headers,
     body: bodyToBytes(opts.body),
   };

@@ -118,16 +118,28 @@ export class FakeTerminatingConnector {
   /**
    * Open a base64 PREPARE `data` as this connector would, recording it.
    *
+   * Enforces ADR 0025 (connector #596) on the envelope's target exactly as
+   * `resolve_target_under_handler` does: a target is resolved strictly
+   * beneath the route's handler path, so `''` and `'/'` mean "the handler's
+   * own path" and anything else starting with `/`, containing a `..`/`.`
+   * segment, a backslash, or a scheme is refused. A fake that accepted
+   * `'/write'` here while the real edge answers F00 is exactly the drift
+   * ADR 0007 forbids — and is how the suite stayed green while the deployed
+   * connector refused every default-target write.
+   *
    * @throws whatever `openRequest`/`decodeEnvelopeRequest` throw — a test
    *   sending unsealed or misdirected bytes should fail here, loudly.
+   * @throws {Error} on a target ADR 0025 refuses, mirroring the F00 reject.
    */
   open(dataBase64: string): OpenedPrepare {
     const { envelopeBytes, sharedSecret } = openRequest(
       fromBase64(dataBase64),
       localGiftWrapEcdh(this.identitySecret)
     );
+    const request = decodeEnvelopeRequest(envelopeBytes);
+    assertTargetStaysUnderHandler(request.target);
     const entry: OpenedPrepare = {
-      request: decodeEnvelopeRequest(envelopeBytes),
+      request,
       sharedSecret,
       fulfillment: deriveFulfillment(sharedSecret),
     };
@@ -172,6 +184,34 @@ export class FakeTerminatingConnector {
       message,
       data: toBase64(sealResponse(sharedSecret, detail)),
     };
+  }
+}
+
+/**
+ * ADR 0025's target rule, the fake's copy of the connector's
+ * `resolve_target_under_handler` core: `''`/`'/'` name the handler's own
+ * path; any other leading `/` is an absolute-path escape; `..`/`.` segments,
+ * backslashes and schemes (plus their percent-encoded forms) are refusals.
+ */
+function assertTargetStaysUnderHandler(target: string): void {
+  const path = target.split('?')[0] ?? '';
+  if (path === '' || path === '/') return;
+  if (path.startsWith('/')) {
+    throw new Error(
+      `F00: envelope target '${target}' is an absolute path -- it must be ` +
+        "relative to the route's handler path, never in place of it"
+    );
+  }
+  const decoded = decodeURIComponent(path);
+  const escapes =
+    decoded.startsWith('/') ||
+    decoded.includes('\\') ||
+    /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(decoded) ||
+    decoded.split('/').some((segment) => segment === '..' || segment === '.');
+  if (escapes) {
+    throw new Error(
+      `F00: envelope target '${target}' attempts to escape the route's handler path`
+    );
   }
 }
 
