@@ -21,6 +21,8 @@ import {
 import {
   ConnectorEdgeClient,
   connectorEdgeBaseUrl,
+  type ConnectorSettlementTerms,
+  type ConnectorSolanaSettlementTerms,
 } from './adapters/ConnectorEdgeClient.js';
 import { readExchangeOutcome, sealExchange } from './wire/sealed-exchange.js';
 import type { ResolvedConfig } from './config.js';
@@ -1616,20 +1618,15 @@ export class ToonClient {
       );
       if (!evmSettlement && !solanaSettlement) return undefined;
 
-      const negotiation =
+      let negotiation: PeerNegotiation | undefined;
+      if (
         solanaSettlement &&
         (!evmSettlement || (await this.walletPrefersSolana()))
-          ? {
-              chain: 'solana',
-              chainType: 'solana',
-              chainId: 'solana',
-              settlementAddress: solanaSettlement.settlementAddress,
-              tokenAddress: solanaSettlement.tokenAddress,
-              tokenNetwork: solanaSettlement.programId,
-            }
-          : evmSettlement
-            ? this.evmNegotiationFromSettlement(evmSettlement)
-            : undefined;
+      ) {
+        negotiation = this.solanaNegotiationFromSettlement(solanaSettlement);
+      } else if (evmSettlement) {
+        negotiation = this.evmNegotiationFromSettlement(evmSettlement);
+      }
       if (!negotiation) return undefined;
 
       this.peerNegotiations.set(peerId, negotiation);
@@ -1650,12 +1647,9 @@ export class ToonClient {
    * than a chain this client cannot open, so bootstrap declines instead of
    * opening against unverified facts.
    */
-  private evmNegotiationFromSettlement(settlement: {
-    chain: string;
-    settlementAddress: string;
-    tokenAddress: string;
-    tokenNetwork: string;
-  }): PeerNegotiation | undefined {
+  private evmNegotiationFromSettlement(
+    settlement: ConnectorSettlementTerms
+  ): PeerNegotiation | undefined {
     const [chainType, chainIdText] = settlement.chain.split(':');
     const chainId = Number(chainIdText);
     if (chainType !== 'evm' || !Number.isFinite(chainId)) return undefined;
@@ -1666,6 +1660,27 @@ export class ToonClient {
       settlementAddress: settlement.settlementAddress,
       tokenAddress: settlement.tokenAddress,
       tokenNetwork: settlement.tokenNetwork,
+    };
+  }
+
+  /**
+   * Build the Solana {@link PeerNegotiation} from a `settlements` entry
+   * (connector #632). Unlike the EVM leg there is no numeric chain id to
+   * parse or validate — `chain` is always the literal `'solana'` — so this
+   * cannot fail; the `PeerNegotiation | undefined` return keeps it
+   * interchangeable with {@link evmNegotiationFromSettlement} at the call
+   * site.
+   */
+  private solanaNegotiationFromSettlement(
+    settlement: ConnectorSolanaSettlementTerms
+  ): PeerNegotiation | undefined {
+    return {
+      chain: 'solana',
+      chainType: 'solana',
+      chainId: 'solana',
+      settlementAddress: settlement.settlementAddress,
+      tokenAddress: settlement.tokenAddress,
+      tokenNetwork: settlement.programId,
     };
   }
 
