@@ -37,7 +37,7 @@ import { EvmSigner } from '../signing/evm-signer.js';
 const EDGE =
   process.env.RUST_EDGE_E2E_EDGE ??
   'https://proxy.devnet.toonprotocol.dev/rust/ilp';
-const DESTINATION = process.env.RUST_EDGE_E2E_DESTINATION ?? 'g.rust.relay';
+const DESTINATION = process.env.RUST_EDGE_E2E_DESTINATION ?? 'g.toon.relay';
 const CHAIN_ID = Number(process.env.RUST_EDGE_E2E_CHAIN_ID ?? 84532);
 const TOKEN_NETWORK =
   process.env.RUST_EDGE_E2E_TOKEN_NETWORK ??
