@@ -79,8 +79,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Check out the PR head so the reviewer operates on the right branch.
-          ref: ${{ github.event.pull_request.head.ref }}
+          # Check out MAIN, not the PR head: sandcastle checks the PR head out
+          # in its own worktree, and git refuses one branch in two worktrees at
+          # once (proven live in connector#634, fixed in connector#636).
+          ref: main
 
       - uses: actions/setup-node@v4
         with:
