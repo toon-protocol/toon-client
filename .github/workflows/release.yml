@@ -35,6 +35,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # The App token, NOT the default GITHUB_TOKEN. changesets/action
+          # pushes `changeset-release/main` with the git credentials checkout
+          # persists — and a push made by GITHUB_TOKEN triggers no workflows,
+          # so the Version Packages PR sat permanently BLOCKED on the required
+          # `build` check that never ran (while the PR itself could still be
+          # CREATED, because PR creation uses the env token below, which was
+          # already the App's). With the App as the push author, the PR's
+          # pull_request events fire CI like any human push would.
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
       - uses: pnpm/action-setup@v4
         with:
