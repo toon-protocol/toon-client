@@ -31,6 +31,7 @@
  */
 
 import { NetworkError, ToonClientError } from '../errors.js';
+import { ILPPacketType, serializeIlpPrepare } from '../btp/protocol.js';
 
 // ─── Identity ───────────────────────────────────────────────────────────────
 
@@ -44,6 +45,37 @@ export interface ConnectorIdentity {
   publicKeyHex: string;
   /** The normalized client-edge base URL this identity was read from. */
   endpoint: string;
+}
+
+/**
+ * The channel-opening facts a settling connector carries in its x402
+ * greeting (connector #617): everything a buyer needs to OPEN a channel
+ * with the node, learned by ASKING (ADR 0022) rather than from a
+ * kind:10032 announce the Rust fleet never makes.
+ */
+export interface ConnectorSettlementTerms {
+  /** `evm:<chainId>` — the chain the node's settlement backend runs on. */
+  chain: string;
+  /** The on-chain counterparty a buyer opens a channel WITH. */
+  settlementAddress: string;
+  /** The stable TokenNetworkRegistry factory address. */
+  tokenNetworkRegistry: string;
+  /** The resolved TokenNetwork — the EIP-712 verifyingContract. */
+  tokenNetwork: string;
+  tokenAddress: string;
+  /** Informational; claims are already in base units. */
+  decimals: number;
+}
+
+/**
+ * A route's terms as the x402 greeting states them: the price, plus (from a
+ * settling node) the channel-opening facts. `settlement` is absent exactly
+ * when the node has no settlement backend — the wire's own shape.
+ */
+export interface ConnectorRouteTerms {
+  destination: string;
+  price: string;
+  settlement?: ConnectorSettlementTerms;
 }
 
 /** What a locally-terminated route costs, as reported by `GET /ilp/routes/price`. */
@@ -76,7 +108,11 @@ export type ConnectorEdgeErrorCode =
   /** `GET /ilp/routes/price` answered 2xx with a body that is not the documented object. */
   | 'ROUTE_PRICE_MALFORMED'
   /** A destination that cannot be put in a query string was asked about. */
-  | 'INVALID_DESTINATION';
+  | 'INVALID_DESTINATION'
+  /** A 402 greeting whose body is not the documented x402 shape (or whose
+   *  optional `settlement` facts are present but malformed — refused rather
+   *  than silently dropped, since they would be opened AGAINST). */
+  | 'TERMS_MALFORMED';
 
 /**
  * A refusal to carry a connector's answer forward. Distinct from
@@ -384,6 +420,76 @@ export class ConnectorEdgeClient {
   }
 
   /**
+   * Ask a route for its full x402 terms — the greeting a claimless PREPARE
+   * is answered with (client-edge-spec.md §1.4) — including, from a settling
+   * node, the channel-opening facts (connector #617).
+   *
+   * This is a real `POST /ilp` carrying a minimal PREPARE with no claim
+   * header. It is free by the wire's own contract: an unpaid request to a
+   * priced route is answered with terms instead of performed, and nothing
+   * is charged for asking. `null` when the connector does not price the
+   * destination (the request would be routed or refused, not greeted) —
+   * mapped from anything other than a 402 answer.
+   */
+  async getRouteTerms(
+    endpoint: string,
+    destination: string
+  ): Promise<ConnectorRouteTerms | null> {
+    if (typeof destination !== 'string' || destination.trim().length === 0) {
+      throw new ConnectorEdgeError(
+        'route terms need a non-empty ILP destination',
+        'INVALID_DESTINATION'
+      );
+    }
+    const base = connectorEdgeBaseUrl(endpoint);
+    // A syntactically complete PREPARE the greeting gate answers before the
+    // packet is ever routed: a non-zero condition (an all-zero one is F01),
+    // a near-term expiry, no data. Amount is irrelevant to the greeting.
+    const condition = new Uint8Array(32);
+    condition[0] = 1;
+    const prepare = serializeIlpPrepare({
+      type: ILPPacketType.PREPARE,
+      amount: 0n,
+      destination,
+      executionCondition: condition,
+      expiresAt: new Date(Date.now() + 30_000),
+      data: new Uint8Array(0),
+    });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${base}/ilp`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: prepare.slice(),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw new NetworkError(
+        `could not reach the connector client edge at ${base}/ilp`,
+        error instanceof Error ? error : undefined
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (response.status !== 402) return null;
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (error) {
+      throw new ConnectorEdgeError(
+        'connector answered 402 with a body that is not JSON',
+        'TERMS_MALFORMED',
+        error instanceof Error ? error : undefined
+      );
+    }
+    return parseConnectorRouteTerms(body);
+  }
+
+  /**
    * Drop a cached route price — one (endpoint, destination)'s, every
    * destination's at one endpoint when `destination` is omitted, or all of
    * them when both are. The way to react to a route being repriced.
@@ -481,4 +587,80 @@ export class ConnectorEdgeClient {
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * Parse an x402 v2 greeting body into {@link ConnectorRouteTerms}. Pure and
+ * exported so the wire shape is testable without a server. Refuses a body
+ * that is not the documented greeting; a malformed OPTIONAL `settlement`
+ * object is also a refusal rather than a silent drop — half-understood
+ * channel-opening facts would be opened AGAINST.
+ */
+export function parseConnectorRouteTerms(body: unknown): ConnectorRouteTerms {
+  if (typeof body !== 'object' || body === null) {
+    throw new ConnectorEdgeError(
+      'x402 greeting is not an object',
+      'TERMS_MALFORMED'
+    );
+  }
+  const greeting = body as {
+    resource?: { url?: unknown };
+    accepts?: unknown;
+  };
+  const accepts = Array.isArray(greeting.accepts) ? greeting.accepts : [];
+  const option = accepts.find(
+    (entry): entry is Record<string, unknown> =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      (entry as { scheme?: unknown }).scheme === 'toon-channel'
+  );
+  if (!option || typeof option['amount'] !== 'string') {
+    throw new ConnectorEdgeError(
+      'x402 greeting carries no toon-channel option',
+      'TERMS_MALFORMED'
+    );
+  }
+  const destination =
+    typeof greeting.resource?.url === 'string' ? greeting.resource.url : '';
+  const extra = option['extra'] as { settlement?: unknown } | undefined;
+  const rawSettlement = extra?.settlement;
+  if (rawSettlement === undefined) {
+    return { destination, price: option['amount'] };
+  }
+  if (typeof rawSettlement !== 'object' || rawSettlement === null) {
+    throw new ConnectorEdgeError(
+      'x402 greeting settlement facts are malformed',
+      'TERMS_MALFORMED'
+    );
+  }
+  const s = rawSettlement as Record<string, unknown>;
+  const str = (key: string): string => {
+    const value = s[key];
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new ConnectorEdgeError(
+        `x402 greeting settlement facts lack '${key}'`,
+        'TERMS_MALFORMED'
+      );
+    }
+    return value;
+  };
+  const decimals = s['decimals'];
+  if (typeof decimals !== 'number') {
+    throw new ConnectorEdgeError(
+      "x402 greeting settlement facts lack 'decimals'",
+      'TERMS_MALFORMED'
+    );
+  }
+  return {
+    destination,
+    price: option['amount'],
+    settlement: {
+      chain: str('chain'),
+      settlementAddress: str('settlementAddress'),
+      tokenNetworkRegistry: str('tokenNetworkRegistry'),
+      tokenNetwork: str('tokenNetwork'),
+      tokenAddress: str('tokenAddress'),
+      decimals,
+    },
+  };
 }

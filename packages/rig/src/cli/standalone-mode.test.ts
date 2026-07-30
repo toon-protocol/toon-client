@@ -20,6 +20,8 @@ import {
 import { MinaZkAppStore } from '../standalone/mina-zkapp-store.js';
 import {
   MissingUplinkError,
+  OFFICIAL_PROXY_URL,
+  OFFICIAL_PUBLISH_DESTINATION,
   buildMinaAutoDeploy,
   resolveNetworkTopology,
   type ClientConfigFile,
@@ -104,20 +106,25 @@ function inputs(
 // ---------------------------------------------------------------------------
 
 describe('resolveNetworkTopology — uplink', () => {
-  it('derives the proxy uplink from the announce httpEndpoint (no config)', async () => {
+  // The cutover (connector #616): the Rust connector is the official TOON
+  // relay implementation, so with no EXPLICIT entry the uplink is the
+  // official edge — even when a live announce names another fleet's
+  // endpoints. The announce keeps informing the destination anchor, routes,
+  // prices and bootstrap peers; it just no longer places the uplink.
+  it('defaults the uplink to the official edge, announce or not', async () => {
     const topology = await resolveNetworkTopology(inputs());
-    expect(topology.proxyUrl).toBe('https://proxy.devnet.toonprotocol.dev');
+    expect(topology.proxyUrl).toBe(OFFICIAL_PROXY_URL);
     expect(topology.btpUrl).toBeUndefined();
   });
 
-  it('explicit env proxy beats the announce', async () => {
+  it('explicit env proxy beats the official default', async () => {
     const topology = await resolveNetworkTopology(
       inputs({ env: { TOON_CLIENT_PROXY_URL: 'https://my-proxy.example' } })
     );
     expect(topology.proxyUrl).toBe('https://my-proxy.example');
   });
 
-  it('explicit config-file btpUrl beats the announce', async () => {
+  it('explicit config-file btpUrl beats the official default', async () => {
     const topology = await resolveNetworkTopology(
       inputs({ file: { btpUrl: 'wss://my-btp.example:443' } })
     );
@@ -125,27 +132,19 @@ describe('resolveNetworkTopology — uplink', () => {
     expect(topology.proxyUrl).toBeUndefined();
   });
 
-  it('announce btpEndpoint is used when it has no httpEndpoint', async () => {
+  it('an announce without an httpEndpoint still does not place the uplink', async () => {
     const topology = await resolveNetworkTopology(
       inputs({ announce: apexAnnounce({ httpEndpoint: undefined }) })
     );
-    expect(topology.proxyUrl).toBeUndefined();
-    expect(topology.btpUrl).toBe('wss://proxy.devnet.toonprotocol.dev:443');
+    expect(topology.proxyUrl).toBe(OFFICIAL_PROXY_URL);
+    expect(topology.btpUrl).toBeUndefined();
   });
 
-  it('falls back to the genesis seed btpEndpoint without an announce', async () => {
+  it('needs neither an announce nor a genesis seed for an uplink', async () => {
     const topology = await resolveNetworkTopology(
-      inputs({ announce: undefined })
+      inputs({ announce: undefined, genesisSeed: undefined })
     );
-    expect(topology.btpUrl).toBe(GENESIS.btpEndpoint);
-  });
-
-  it('throws MissingUplinkError when no source yields an uplink', async () => {
-    await expect(
-      resolveNetworkTopology(
-        inputs({ announce: undefined, genesisSeed: undefined })
-      )
-    ).rejects.toThrow(MissingUplinkError);
+    expect(topology.proxyUrl).toBe(OFFICIAL_PROXY_URL);
   });
 });
 
@@ -190,8 +189,9 @@ describe('resolveNetworkTopology — destination and routes', () => {
       inputs({ announce: undefined })
     );
     expect(topology.destination).toBe('g.proxy');
-    // No routes derivable — the publisher's anchor convention takes over.
-    expect(topology.publishDestination).toBeUndefined();
+    // The uplink defaulted to the official edge, so the publish route is
+    // that edge's own (connector #616); store has no official default yet.
+    expect(topology.publishDestination).toBe(OFFICIAL_PUBLISH_DESTINATION);
     expect(topology.storeDestination).toBeUndefined();
   });
 
@@ -767,11 +767,14 @@ describe('resolveNetworkTopology — route prices', () => {
         env: { TOON_CLIENT_DESTINATION: 'g.proxy.relay.store' },
       })
     );
-    // No announced routes: the publisher's `<base>.relay.store` derivation
-    // yields g.proxy.relay / g.proxy.store — the priced routes.
-    expect(topology.publishDestination).toBeUndefined();
+    // The uplink defaulted to the official edge, so the effective publish
+    // destination is g.toon.relay — which this announce's capabilities do
+    // NOT price. A floor from one fleet's announce must not bind a write
+    // that targets another fleet's edge; only the still-derived store
+    // route keeps its announced floor.
+    expect(topology.publishDestination).toBe(OFFICIAL_PUBLISH_DESTINATION);
     expect(topology.storeDestination).toBeUndefined();
-    expect(topology.routePrices).toEqual({ publish: '1000', store: '1500' });
+    expect(topology.routePrices).toEqual({ store: '1500' });
   });
 });
 

@@ -702,17 +702,21 @@ export class ToonClient {
         String(error),
         error instanceof Error ? error.stack : ''
       );
-      // Two conditions are raised by THIS method before any packet exists, and
-      // name a thing the caller can fix: the destination is not terminated
-      // here, or there is no client edge to ask at all. Wrapping either in
-      // `PUBLISH_ERROR` would hide the one fact worth surfacing behind the
-      // most generic code this method has. Everything else — including a
-      // connector that will not answer for its identity — keeps the existing
-      // wrapping, so `PUBLISH_ERROR` still means "the publish itself failed".
+      // Three conditions are raised by THIS method before any packet exists,
+      // and name a thing the caller can fix: the destination is not
+      // terminated here, there is no client edge to ask at all, or no
+      // channel negotiation exists AND the greeting-based bootstrap
+      // (connector #617) found nothing to synthesize one from. Wrapping any
+      // of them in `PUBLISH_ERROR` would hide the one fact worth surfacing
+      // behind the most generic code this method has. Everything else —
+      // including a connector that will not answer for its identity — keeps
+      // the existing wrapping, so `PUBLISH_ERROR` still means "the publish
+      // itself failed".
       if (
         error instanceof ToonClientError &&
         (error.code === 'NO_TERMINATED_ROUTE' ||
-          error.code === 'NO_CONNECTOR_EDGE')
+          error.code === 'NO_CONNECTOR_EDGE' ||
+          error.code === 'PEER_NOT_NEGOTIATED')
       ) {
         throw error;
       }
@@ -1028,11 +1032,14 @@ export class ToonClient {
       return this.buildClaimMessageForProof(explicitClaim);
     }
     if (this.channelManager) {
-      const peerId = this.resolvePeerId(destination);
-      const negotiation = this.peerNegotiations.get(peerId);
+      const peerId = this.peerIdForClaim(destination);
+      const negotiation =
+        this.peerNegotiations.get(peerId) ??
+        (await this.negotiateFromGreeting(destination, peerId));
       if (!negotiation) {
         throw new ToonClientError(
-          `No negotiation metadata for peer "${peerId}" — was bootstrap completed?`,
+          `No negotiation metadata for peer "${peerId}" — was bootstrap completed?` +
+            " (and the route's x402 greeting carried no settlement facts to bootstrap from)",
           'PEER_NOT_NEGOTIATED'
         );
       }
@@ -1110,11 +1117,14 @@ export class ToonClient {
         'NO_DESTINATION'
       );
     }
-    const peerId = this.resolvePeerId(dest);
-    const negotiation = this.peerNegotiations.get(peerId);
+    const peerId = this.peerIdForClaim(dest);
+    const negotiation =
+      this.peerNegotiations.get(peerId) ??
+      (await this.negotiateFromGreeting(dest, peerId));
     if (!negotiation) {
       throw new ToonClientError(
-        `No negotiation metadata for peer "${peerId}" — was bootstrap completed?`,
+        `No negotiation metadata for peer "${peerId}" — was bootstrap completed?` +
+          " (and the route's x402 greeting carried no settlement facts to bootstrap from)",
         'PEER_NOT_NEGOTIATED'
       );
     }
@@ -1194,9 +1204,7 @@ export class ToonClient {
    * channel — persisted, so the grace timer survives a daemon restart. Spends
    * on-chain. EVM today; Solana/Mina are follow-ups.
    */
-  async closeChannel(
-    channelId: string
-  ): Promise<{
+  async closeChannel(channelId: string): Promise<{
     channelId: string;
     txHash?: string;
     closedAt: string;
@@ -1552,6 +1560,74 @@ export class ToonClient {
    * Convention: destination "g.toon.peer1" → peerId "peer1" (last segment).
    * Falls back to first known peer if no match.
    */
+  /**
+   * The peer id a claim for `destination` accounts under. Normally
+   * `resolvePeerId` — but where that throws `PEER_NOT_FOUND` (an empty
+   * negotiation map: nothing announced, nothing registered), the
+   * destination itself is the key, so the announce-less greeting bootstrap
+   * (connector #617) has a stable identity to remember its synthesized
+   * negotiation under.
+   */
+  private peerIdForClaim(destination: string): string {
+    try {
+      return this.resolvePeerId(destination);
+    } catch {
+      return destination;
+    }
+  }
+
+  /**
+   * The announce-less channel bootstrap (connector #617): when nothing has
+   * negotiated with this destination's peer — no kind:10032 announce, no
+   * connector-admin registration — ask the route itself. A settling
+   * connector's x402 greeting carries the channel-opening facts, and ADR
+   * 0022 makes the greeting the ONLY place the Rust fleet will ever state
+   * them. Synthesizes a {@link PeerNegotiation} from those facts, remembers
+   * it, and returns it; `undefined` when there is no edge to ask, the
+   * greeting carries no settlement facts, or the chain is not one this
+   * client opens channels on (EVM only today — Solana/Mina channel opening
+   * still needs announce-shaped metadata).
+   *
+   * Never throws: this is a fallback on a path that already has a precise
+   * error (`PEER_NOT_NEGOTIATED`), and a transport failure while ASKING
+   * must not mask it.
+   */
+  private async negotiateFromGreeting(
+    destination: string,
+    peerId: string
+  ): Promise<PeerNegotiation | undefined> {
+    let edge: string;
+    try {
+      edge = this.resolveClientEdgeEndpoint();
+    } catch {
+      return undefined;
+    }
+    try {
+      const terms = await this.connectorEdge.getRouteTerms(edge, destination);
+      const settlement = terms?.settlement;
+      if (!settlement) return undefined;
+      const [chainType, chainIdText] = settlement.chain.split(':');
+      const chainId = Number(chainIdText);
+      if (chainType !== 'evm' || !Number.isFinite(chainId)) return undefined;
+      const negotiation: PeerNegotiation = {
+        chain: settlement.chain,
+        chainType,
+        chainId,
+        settlementAddress: settlement.settlementAddress,
+        tokenAddress: settlement.tokenAddress,
+        tokenNetwork: settlement.tokenNetwork,
+      };
+      this.peerNegotiations.set(peerId, negotiation);
+      return negotiation;
+    } catch (error) {
+      console.warn(
+        '[ToonClient] channel bootstrap from the x402 greeting failed:',
+        String(error)
+      );
+      return undefined;
+    }
+  }
+
   private resolvePeerId(destination: string): string {
     // Check if destination matches a known peer's ILP address pattern
     const segments = destination.split('.');
