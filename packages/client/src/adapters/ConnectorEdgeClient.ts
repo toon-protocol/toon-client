@@ -68,14 +68,47 @@ export interface ConnectorSettlementTerms {
 }
 
 /**
+ * The Solana twin of {@link ConnectorSettlementTerms} (connector #632): what
+ * an unaffiliated buyer needs to open a channel against a Solana settlement
+ * backend's deployed `payment-channel` program instance.
+ */
+export interface ConnectorSolanaSettlementTerms {
+  /** Always `'solana'` — unlike EVM there is no chain id to append. */
+  chain: string;
+  /** The on-chain counterparty a buyer opens a channel WITH, base58. */
+  settlementAddress: string;
+  /** The deployed `payment-channel` program instance, base58. */
+  programId: string;
+  /** The SPL mint every channel this backend opens settles in, base58. */
+  tokenAddress: string;
+  /** Informational; claims are already in base units. */
+  decimals: number;
+}
+
+/**
+ * One chain's entry in the x402 greeting's per-chain `settlements` list
+ * (connector #632). `kind` is added by this parser, not present on the wire
+ * — the wire is untagged, disambiguated structurally (`tokenNetworkRegistry`
+ * names EVM, `programId` names Solana).
+ */
+export type ConnectorChainSettlementTerms =
+  | ({ kind: 'evm' } & ConnectorSettlementTerms)
+  | ({ kind: 'solana' } & ConnectorSolanaSettlementTerms);
+
+/**
  * A route's terms as the x402 greeting states them: the price, plus (from a
  * settling node) the channel-opening facts. `settlement` is absent exactly
- * when the node has no settlement backend — the wire's own shape.
+ * when the node has no settlement backend — the wire's own shape. `settlements`
+ * is the additive per-chain list (connector #632): one entry per chain the
+ * node settles on, including the same EVM entry `settlement` already carries.
+ * Absent — not an empty array — on a node with no settlement backend, or one
+ * still answering the pre-#632 greeting shape.
  */
 export interface ConnectorRouteTerms {
   destination: string;
   price: string;
   settlement?: ConnectorSettlementTerms;
+  settlements?: ConnectorChainSettlementTerms[];
 }
 
 /** What a locally-terminated route costs, as reported by `GET /ilp/routes/price`. */
@@ -589,12 +622,93 @@ export class ConnectorEdgeClient {
   }
 }
 
+/** A required-string reader over a raw settlement-facts record, refusing a missing/empty field. */
+function settlementStr(s: Record<string, unknown>, key: string): string {
+  const value = s[key];
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new ConnectorEdgeError(
+      `x402 greeting settlement facts lack '${key}'`,
+      'TERMS_MALFORMED'
+    );
+  }
+  return value;
+}
+
+/** A required-`decimals` reader, shared by every chain's settlement-facts shape. */
+function settlementDecimals(s: Record<string, unknown>): number {
+  const decimals = s['decimals'];
+  if (typeof decimals !== 'number') {
+    throw new ConnectorEdgeError(
+      "x402 greeting settlement facts lack 'decimals'",
+      'TERMS_MALFORMED'
+    );
+  }
+  return decimals;
+}
+
+/** Parse one already-object-checked EVM settlement-facts record (legacy `settlement` shape). */
+function parseEvmSettlementTerms(
+  s: Record<string, unknown>
+): ConnectorSettlementTerms {
+  return {
+    chain: settlementStr(s, 'chain'),
+    settlementAddress: settlementStr(s, 'settlementAddress'),
+    tokenNetworkRegistry: settlementStr(s, 'tokenNetworkRegistry'),
+    tokenNetwork: settlementStr(s, 'tokenNetwork'),
+    tokenAddress: settlementStr(s, 'tokenAddress'),
+    decimals: settlementDecimals(s),
+  };
+}
+
+/** Parse one already-object-checked Solana settlement-facts record (connector #632). */
+function parseSolanaSettlementTerms(
+  s: Record<string, unknown>
+): ConnectorSolanaSettlementTerms {
+  return {
+    chain: settlementStr(s, 'chain'),
+    settlementAddress: settlementStr(s, 'settlementAddress'),
+    programId: settlementStr(s, 'programId'),
+    tokenAddress: settlementStr(s, 'tokenAddress'),
+    decimals: settlementDecimals(s),
+  };
+}
+
+/**
+ * Parse one entry of the greeting's `extra.settlements` list (connector
+ * #632). The wire is untagged — serde on the connector side, and this parser
+ * on the client side, both disambiguate structurally: `programId` names a
+ * Solana entry, `tokenNetworkRegistry` names an EVM one. Anything else (both
+ * fields present, neither present, or a field of the wrong shape) is refused
+ * rather than guessed at.
+ */
+function parseChainSettlementEntry(
+  raw: unknown
+): ConnectorChainSettlementTerms {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new ConnectorEdgeError(
+      'x402 greeting settlements entry is not an object',
+      'TERMS_MALFORMED'
+    );
+  }
+  const s = raw as Record<string, unknown>;
+  if (typeof s['programId'] === 'string') {
+    return { kind: 'solana', ...parseSolanaSettlementTerms(s) };
+  }
+  if (typeof s['tokenNetworkRegistry'] === 'string') {
+    return { kind: 'evm', ...parseEvmSettlementTerms(s) };
+  }
+  throw new ConnectorEdgeError(
+    "x402 greeting settlements entry names neither an EVM ('tokenNetworkRegistry') nor a Solana ('programId') chain",
+    'TERMS_MALFORMED'
+  );
+}
+
 /**
  * Parse an x402 v2 greeting body into {@link ConnectorRouteTerms}. Pure and
  * exported so the wire shape is testable without a server. Refuses a body
  * that is not the documented greeting; a malformed OPTIONAL `settlement`
- * object is also a refusal rather than a silent drop — half-understood
- * channel-opening facts would be opened AGAINST.
+ * object (or `settlements` entry) is also a refusal rather than a silent
+ * drop — half-understood channel-opening facts would be opened AGAINST.
  */
 export function parseConnectorRouteTerms(body: unknown): ConnectorRouteTerms {
   if (typeof body !== 'object' || body === null) {
@@ -622,10 +736,29 @@ export function parseConnectorRouteTerms(body: unknown): ConnectorRouteTerms {
   }
   const destination =
     typeof greeting.resource?.url === 'string' ? greeting.resource.url : '';
-  const extra = option['extra'] as { settlement?: unknown } | undefined;
+  const extra = option['extra'] as
+    | { settlement?: unknown; settlements?: unknown }
+    | undefined;
+
+  const rawSettlements = extra?.settlements;
+  let settlements: ConnectorChainSettlementTerms[] | undefined;
+  if (rawSettlements !== undefined) {
+    if (!Array.isArray(rawSettlements)) {
+      throw new ConnectorEdgeError(
+        'x402 greeting settlements is not an array',
+        'TERMS_MALFORMED'
+      );
+    }
+    settlements = rawSettlements.map(parseChainSettlementEntry);
+  }
+
   const rawSettlement = extra?.settlement;
   if (rawSettlement === undefined) {
-    return { destination, price: option['amount'] };
+    return {
+      destination,
+      price: option['amount'],
+      ...(settlements ? { settlements } : {}),
+    };
   }
   if (typeof rawSettlement !== 'object' || rawSettlement === null) {
     throw new ConnectorEdgeError(
@@ -633,34 +766,12 @@ export function parseConnectorRouteTerms(body: unknown): ConnectorRouteTerms {
       'TERMS_MALFORMED'
     );
   }
-  const s = rawSettlement as Record<string, unknown>;
-  const str = (key: string): string => {
-    const value = s[key];
-    if (typeof value !== 'string' || value.length === 0) {
-      throw new ConnectorEdgeError(
-        `x402 greeting settlement facts lack '${key}'`,
-        'TERMS_MALFORMED'
-      );
-    }
-    return value;
-  };
-  const decimals = s['decimals'];
-  if (typeof decimals !== 'number') {
-    throw new ConnectorEdgeError(
-      "x402 greeting settlement facts lack 'decimals'",
-      'TERMS_MALFORMED'
-    );
-  }
   return {
     destination,
     price: option['amount'],
-    settlement: {
-      chain: str('chain'),
-      settlementAddress: str('settlementAddress'),
-      tokenNetworkRegistry: str('tokenNetworkRegistry'),
-      tokenNetwork: str('tokenNetwork'),
-      tokenAddress: str('tokenAddress'),
-      decimals,
-    },
+    settlement: parseEvmSettlementTerms(
+      rawSettlement as Record<string, unknown>
+    ),
+    ...(settlements ? { settlements } : {}),
   };
 }

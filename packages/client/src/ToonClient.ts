@@ -21,6 +21,8 @@ import {
 import {
   ConnectorEdgeClient,
   connectorEdgeBaseUrl,
+  type ConnectorSettlementTerms,
+  type ConnectorSolanaSettlementTerms,
 } from './adapters/ConnectorEdgeClient.js';
 import { readExchangeOutcome, sealExchange } from './wire/sealed-exchange.js';
 import type { ResolvedConfig } from './config.js';
@@ -1583,10 +1585,16 @@ export class ToonClient {
    * connector's x402 greeting carries the channel-opening facts, and ADR
    * 0022 makes the greeting the ONLY place the Rust fleet will ever state
    * them. Synthesizes a {@link PeerNegotiation} from those facts, remembers
-   * it, and returns it; `undefined` when there is no edge to ask, the
-   * greeting carries no settlement facts, or the chain is not one this
-   * client opens channels on (EVM only today — Solana/Mina channel opening
-   * still needs announce-shaped metadata).
+   * it, and returns it; `undefined` when there is no edge to ask or the
+   * greeting carries no settlement facts this client can open a channel on.
+   *
+   * A two-chain greeting (connector #632's `extra.settlements`) prefers EVM
+   * — the long-standing default — UNLESS the wallet holds Solana
+   * settlement-token/native funds and holds none on EVM (issue #470), in
+   * which case it opens the Solana leg instead: a wallet funded only with
+   * Solana devnet assets can bootstrap exactly as an EVM one does. A
+   * Solana-only greeting (no EVM leg at all) always opens Solana — there is
+   * nothing to compare funds against.
    *
    * Never throws: this is a fallback on a path that already has a precise
    * error (`PEER_NOT_NEGOTIATED`), and a transport failure while ASKING
@@ -1604,19 +1612,23 @@ export class ToonClient {
     }
     try {
       const terms = await this.connectorEdge.getRouteTerms(edge, destination);
-      const settlement = terms?.settlement;
-      if (!settlement) return undefined;
-      const [chainType, chainIdText] = settlement.chain.split(':');
-      const chainId = Number(chainIdText);
-      if (chainType !== 'evm' || !Number.isFinite(chainId)) return undefined;
-      const negotiation: PeerNegotiation = {
-        chain: settlement.chain,
-        chainType,
-        chainId,
-        settlementAddress: settlement.settlementAddress,
-        tokenAddress: settlement.tokenAddress,
-        tokenNetwork: settlement.tokenNetwork,
-      };
+      const evmSettlement = terms?.settlement;
+      const solanaSettlement = terms?.settlements?.find(
+        (entry) => entry.kind === 'solana'
+      );
+      if (!evmSettlement && !solanaSettlement) return undefined;
+
+      let negotiation: PeerNegotiation | undefined;
+      if (
+        solanaSettlement &&
+        (!evmSettlement || (await this.walletPrefersSolana()))
+      ) {
+        negotiation = this.solanaNegotiationFromSettlement(solanaSettlement);
+      } else if (evmSettlement) {
+        negotiation = this.evmNegotiationFromSettlement(evmSettlement);
+      }
+      if (!negotiation) return undefined;
+
       this.peerNegotiations.set(peerId, negotiation);
       return negotiation;
     } catch (error) {
@@ -1625,6 +1637,67 @@ export class ToonClient {
         String(error)
       );
       return undefined;
+    }
+  }
+
+  /**
+   * Build the EVM {@link PeerNegotiation} from the greeting's legacy
+   * `settlement` object (connector #617). `undefined` when `chain` is not
+   * the documented `evm:<chainId>` shape — the greeting is malformed rather
+   * than a chain this client cannot open, so bootstrap declines instead of
+   * opening against unverified facts.
+   */
+  private evmNegotiationFromSettlement(
+    settlement: ConnectorSettlementTerms
+  ): PeerNegotiation | undefined {
+    const [chainType, chainIdText] = settlement.chain.split(':');
+    const chainId = Number(chainIdText);
+    if (chainType !== 'evm' || !Number.isFinite(chainId)) return undefined;
+    return {
+      chain: settlement.chain,
+      chainType,
+      chainId,
+      settlementAddress: settlement.settlementAddress,
+      tokenAddress: settlement.tokenAddress,
+      tokenNetwork: settlement.tokenNetwork,
+    };
+  }
+
+  /**
+   * Build the Solana {@link PeerNegotiation} from a `settlements` entry
+   * (connector #632). Unlike the EVM leg there is no numeric chain id to
+   * parse or validate — `chain` is always the literal `'solana'` — so,
+   * unlike {@link evmNegotiationFromSettlement}, this cannot fail.
+   */
+  private solanaNegotiationFromSettlement(
+    settlement: ConnectorSolanaSettlementTerms
+  ): PeerNegotiation {
+    return {
+      chain: 'solana',
+      chainType: 'solana',
+      chainId: 'solana',
+      settlementAddress: settlement.settlementAddress,
+      tokenAddress: settlement.tokenAddress,
+      tokenNetwork: settlement.programId,
+    };
+  }
+
+  /**
+   * Whether a two-chain greeting-bootstrap should open the Solana leg
+   * instead of the default EVM one (issue #470): the wallet holds Solana
+   * settlement funds and holds none on EVM. Reads {@link getBalances}, which
+   * is itself best-effort per chain (a missing config or failed RPC read
+   * just omits that chain) — this never throws, degrading to "prefer EVM"
+   * (the pre-existing default) on any read failure.
+   */
+  private async walletPrefersSolana(): Promise<boolean> {
+    try {
+      const balances = await this.getBalances();
+      const hasFunds = (chain: 'evm' | 'solana'): boolean =>
+        balances.some((b) => b.chain === chain && BigInt(b.amount) > 0n);
+      return hasFunds('solana') && !hasFunds('evm');
+    } catch {
+      return false;
     }
   }
 
