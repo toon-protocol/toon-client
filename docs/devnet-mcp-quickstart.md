@@ -67,7 +67,7 @@ Windows/WSL bridge in §3 trivial.
   "feePerEvent": "1000",
   "httpPort": 8787,
   "supportedChains": ["evm:anvil:31337"],
-  "settlementAddresses": { "evm:anvil:31337": "0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab" },
+  "settlementAddresses": { "evm:anvil:31337": "0xF29fD62C4848B9573C9b90adbF61b664F386d9CF" },
   "tokenNetworks":       { "evm:anvil:31337": "0xcafac3dd18ac6c6e92c921884f9e4176737c052c" },
   "preferredTokens":     { "evm:anvil:31337": "0x5FbDB2315678afecb367f032d93F642f64180aa3" },
   "chainRpcUrls":        { "evm:anvil:31337": "https://evm-rpc.devnet.toonprotocol.dev" }
@@ -232,7 +232,7 @@ Daemon log on a good boot:
 | EVM RPC (Anvil, chainId 31337) | `https://evm-rpc.devnet.toonprotocol.dev` |
 | USDC token (6 dp) | `0x5FbDB2315678afecb367f032d93F642f64180aa3` |
 | USDC TokenNetwork | `0xcafac3dd18ac6c6e92c921884f9e4176737c052c` |
-| Connector EVM settlement (receive) addr | `0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab` |
+| Connector EVM settlement (receive) addr | `0xF29fD62C4848B9573C9b90adbF61b664F386d9CF` |
 
 > Devnet addresses are redeployed when boxes are reset — if channel-open starts failing, re-check
 > these against the current deployment before debugging your config.

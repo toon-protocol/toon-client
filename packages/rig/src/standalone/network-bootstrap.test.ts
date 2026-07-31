@@ -54,7 +54,7 @@ const APEX_CONTENT = {
   relayUrl: 'wss://relay-ws.devnet.toonprotocol.dev',
   supportedChains: ['evm:31337', 'solana:devnet', 'mina:devnet'],
   settlementAddresses: {
-    'evm:31337': '0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab',
+    'evm:31337': '0xF29fD62C4848B9573C9b90adbF61b664F386d9CF',
     'solana:devnet': 'A3FG5y6rfBNJQrsGYTNNR7UHAXCREPJgV362LdTQGNwK',
     'mina:devnet': 'B62qkEx3MsKtaEJqJMg8ZC2eXtz8FNpZy4huVpBnnUHVRUEf5f1vqdq',
   },

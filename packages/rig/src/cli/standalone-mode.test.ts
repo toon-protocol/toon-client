@@ -53,7 +53,7 @@ function apexAnnounce(
     relayUrl: RELAY,
     supportedChains: ['evm:31337', 'solana:devnet', 'mina:devnet'],
     settlementAddresses: {
-      'evm:31337': '0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab',
+      'evm:31337': '0xF29fD62C4848B9573C9b90adbF61b664F386d9CF',
       'solana:devnet': 'A3FG5y6rfBNJQrsGYTNNR7UHAXCREPJgV362LdTQGNwK',
       'mina:devnet': 'B62qkEx3MsKtaEJqJMg8ZC2eXtz8FNpZy4huVpBnnUHVRUEf5f1vqdq',
     },
@@ -264,7 +264,7 @@ describe('resolveNetworkTopology — settlement', () => {
         announce: apexAnnounce({
           supportedChains: ['solana:devnet', 'evm:anvil:31337'],
           settlementAddresses: {
-            'evm:anvil:31337': '0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab',
+            'evm:anvil:31337': '0xF29fD62C4848B9573C9b90adbF61b664F386d9CF',
             'solana:devnet': 'A3FG5y6rfBNJQrsGYTNNR7UHAXCREPJgV362LdTQGNwK',
           },
         }),
@@ -560,7 +560,7 @@ describe('resolveNetworkTopology — settlement', () => {
           announce: apexAnnounce({
             supportedChains: ['evm:31337', 'solana:localnet'],
             settlementAddresses: {
-              'evm:31337': '0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab',
+              'evm:31337': '0xF29fD62C4848B9573C9b90adbF61b664F386d9CF',
               'solana:localnet': 'A3FG5y6rfBNJQrsGYTNNR7UHAXCREPJgV362LdTQGNwK',
             },
           }),
@@ -646,7 +646,7 @@ describe('resolveNetworkTopology — settlement', () => {
       relayUrl: 'wss://relay.example.com',
       supportedChains: ['evm:base:8453'],
       settlementAddresses: {
-        'evm:base:8453': '0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab',
+        'evm:base:8453': '0xF29fD62C4848B9573C9b90adbF61b664F386d9CF',
       },
       tokenNetworks: { 'evm:base:8453': '0xMAINNETTN' },
     });
@@ -674,7 +674,7 @@ describe('resolveNetworkTopology — settlement', () => {
       relayUrl: 'wss://relay.example.com',
       supportedChains: ['evm:base:8453'],
       settlementAddresses: {
-        'evm:base:8453': '0xC0E55cD2E967a4F625627DaE5d4946f54267C7ab',
+        'evm:base:8453': '0xF29fD62C4848B9573C9b90adbF61b664F386d9CF',
       },
     });
     await expect(
