@@ -1,5 +1,12 @@
 # @toon-protocol/views
 
+## 0.35.1
+
+### Patch Changes
+
+- Updated dependencies [f16918e]
+  - @toon-protocol/client@0.25.1
+
 ## 0.35.0
 
 Numbering-only jump. **No functional change from `0.21.3`** — the code is byte-identical.
