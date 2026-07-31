@@ -341,7 +341,18 @@ export class ToonClient {
         const store = this.config.channelStorePath
           ? new JsonFileChannelStore(this.config.channelStorePath)
           : undefined;
-        this.channelManager = new ChannelManager(this.evmSigner, store);
+        // `initialDeposit`/`settlementTimeout` are documented ToonClientConfig
+        // knobs; thread them through so the collateral an open locks is
+        // configurable on every chain (they were previously accepted and
+        // silently dropped, pinning every open to ChannelManager's defaults).
+        this.channelManager = new ChannelManager(this.evmSigner, store, {
+          ...(this.config.initialDeposit !== undefined
+            ? { initialDeposit: this.config.initialDeposit }
+            : {}),
+          ...(this.config.settlementTimeout !== undefined
+            ? { settlementTimeout: this.config.settlementTimeout }
+            : {}),
+        });
 
         // When constructed from a mnemonic, derive the non-secp256k1 keys
         // (Solana Ed25519, Mina Pallas) and register their signers so the

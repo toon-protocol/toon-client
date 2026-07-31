@@ -34,6 +34,11 @@ interface ChannelTracking {
 }
 
 export interface ChannelManagerConfig {
+  /**
+   * Collateral (base units) locked on-chain by {@link ChannelManager.ensureChannel}
+   * when it opens a channel, on every settlement chain. Default `'100000'`
+   * (0.1 USDC at 6 decimals); a peer's negotiated `initialDeposit` wins over it.
+   */
   initialDeposit?: string;
   settlementTimeout?: number;
 }
@@ -246,9 +251,15 @@ export class ChannelManager {
           depositTotal: chainContext?.depositTotal,
           // Resume the withdraw-flow timers so a daemon restart mid-grace
           // doesn't strand funds (the gate can't be evaluated without them).
-          ...(persisted.closedAt !== undefined ? { closedAt: persisted.closedAt } : {}),
-          ...(persisted.settleableAt !== undefined ? { settleableAt: persisted.settleableAt } : {}),
-          ...(persisted.settledAt !== undefined ? { settledAt: persisted.settledAt } : {}),
+          ...(persisted.closedAt !== undefined
+            ? { closedAt: persisted.closedAt }
+            : {}),
+          ...(persisted.settleableAt !== undefined
+            ? { settleableAt: persisted.settleableAt }
+            : {}),
+          ...(persisted.settledAt !== undefined
+            ? { settledAt: persisted.settledAt }
+            : {}),
         });
         return;
       }
@@ -422,7 +433,11 @@ export class ChannelManager {
    * Record that a channel was closed (withdraw flow): stores `closedAt` +
    * `settleableAt` (unix SECONDS) so the grace timer survives a daemon restart.
    */
-  setChannelClosed(channelId: string, closedAt: bigint, settleableAt: bigint): void {
+  setChannelClosed(
+    channelId: string,
+    closedAt: bigint,
+    settleableAt: bigint
+  ): void {
     const tracking = this.channels.get(channelId);
     if (!tracking) {
       throw new Error(`Channel "${channelId}" is not being tracked.`);
@@ -459,7 +474,8 @@ export class ChannelManager {
     const t = this.channels.get(channelId);
     if (!t || t.closedAt === undefined) return 'open';
     if (t.settledAt !== undefined) return 'settled';
-    if (t.settleableAt !== undefined && nowSec >= t.settleableAt) return 'settleable';
+    if (t.settleableAt !== undefined && nowSec >= t.settleableAt)
+      return 'settleable';
     return 'closing';
   }
 

@@ -31,6 +31,7 @@
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { base58Encode, base58Decode } from '@toon-protocol/core';
+import { ChannelFundingError } from '../errors.js';
 
 // ---------------------------------------------------------------------------
 // Constants (must match the Rust program + connector SDK exactly)
@@ -188,16 +189,23 @@ export function deriveChannelPDA(
  * @param tokenMint - base58 SPL mint.
  * @returns base58 ATA address.
  */
-export function deriveAssociatedTokenAccount(owner: string, tokenMint: string): string {
+export function deriveAssociatedTokenAccount(
+  owner: string,
+  tokenMint: string
+): string {
   // Canonical mainnet/devnet SPL program ids (same on every cluster).
   const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-  const ASSOCIATED_TOKEN_PROGRAM_ID = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+  const ASSOCIATED_TOKEN_PROGRAM_ID =
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
   const seeds = [
     padTo32(base58Decode(owner)),
     padTo32(base58Decode(TOKEN_PROGRAM_ID)),
     padTo32(base58Decode(tokenMint)),
   ];
-  const { pda } = findProgramAddress(seeds, padTo32(base58Decode(ASSOCIATED_TOKEN_PROGRAM_ID)));
+  const { pda } = findProgramAddress(
+    seeds,
+    padTo32(base58Decode(ASSOCIATED_TOKEN_PROGRAM_ID))
+  );
   return base58Encode(pda);
 }
 
@@ -328,6 +336,64 @@ async function getAccountInfo(
     { encoding: 'base64', commitment: 'confirmed' },
   ])) as { value: AccountInfo | null };
   return result.value;
+}
+
+/**
+ * Balance (base units) of an SPL token account, or `null` when the account does
+ * not exist on-chain yet (an owner who has never held the mint has no ATA — the
+ * RPC answers with an error rather than a zero balance).
+ */
+async function getTokenAccountBalance(
+  rpcUrl: string,
+  tokenAccount: string
+): Promise<bigint | null> {
+  try {
+    const result = (await solanaRpc(rpcUrl, 'getTokenAccountBalance', [
+      tokenAccount,
+      { commitment: 'confirmed' },
+    ])) as { value?: { amount?: string } } | null;
+    const amount = result?.value?.amount;
+    return amount === undefined ? null : BigInt(amount);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fail an on-chain open BEFORE spending anything when the payer cannot fund it.
+ *
+ * The Solana program pulls the deposit from `payerTokenAccount` with an SPL
+ * transfer, so an absent or short token account aborts the deposit instruction
+ * with an opaque program error AFTER `initialize_channel` has already created a
+ * (rent-paying, 0-collateral) channel — exactly the state connector#646
+ * observed. Reading the balance first turns that into an actionable
+ * {@link ChannelFundingError}.
+ */
+async function assertOpenFunding(opts: {
+  rpcUrl: string;
+  tokenMint: string;
+  deposit?: { amount: bigint; payerTokenAccount: string };
+}): Promise<void> {
+  const { rpcUrl, tokenMint, deposit } = opts;
+  if (!deposit || deposit.amount <= 0n) return;
+
+  const held = await getTokenAccountBalance(rpcUrl, deposit.payerTokenAccount);
+  if (held === null) {
+    throw new ChannelFundingError(
+      `Solana token account ${deposit.payerTokenAccount} does not exist, so the ` +
+        `${deposit.amount} base-unit channel deposit of mint ${tokenMint} cannot ` +
+        `be funded. Fund the settlement wallet with that token (which creates the ` +
+        `associated token account) and retry.`
+    );
+  }
+  if (held < deposit.amount) {
+    throw new ChannelFundingError(
+      `Solana token account ${deposit.payerTokenAccount} holds ${held} base units ` +
+        `of mint ${tokenMint}, short of the ${deposit.amount} base-unit channel ` +
+        `deposit. Fund the settlement wallet, or lower the deposit ` +
+        `(\`solanaChannel.deposit.amount\` / \`initialDeposit\`), and retry.`
+    );
+  }
 }
 
 async function waitForConfirmation(
@@ -628,6 +694,10 @@ export async function openSolanaChannel(
     return { channelPDA, opened: false };
   }
 
+  // Only a FRESH open pays rent + collateral, so the funding preflight runs
+  // after the idempotency check — a re-open of an existing channel needs neither.
+  await assertOpenFunding({ rpcUrl, tokenMint, deposit: params.deposit });
+
   const payerPublicKey = padTo32(base58Decode(payerPubkey));
   const payer: Signer = { publicKey: payerPublicKey, privateKey: payerSeed };
 
@@ -696,8 +766,15 @@ export interface DepositSolanaChannelParams {
 export async function depositSolanaChannel(
   params: DepositSolanaChannelParams
 ): Promise<{ depositTxSignature: string }> {
-  const { rpcUrl, programId, channelPDA, payerSeed, payerPubkey, payerTokenAccount, amount } =
-    params;
+  const {
+    rpcUrl,
+    programId,
+    channelPDA,
+    payerSeed,
+    payerPubkey,
+    payerTokenAccount,
+    amount,
+  } = params;
   if (amount <= 0n) throw new Error('Solana deposit amount must be positive.');
 
   const payer: Signer = {
