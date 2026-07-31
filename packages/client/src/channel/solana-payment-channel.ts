@@ -411,9 +411,8 @@ async function getLamports(rpcUrl: string, pubkey: string): Promise<bigint> {
 const LAMPORTS_PER_SIGNATURE = 5_000n;
 
 /**
- * Native SOL (lamports) a FRESH channel open must be able to spend, computed
- * rather than guessed so the floor cannot reject an open that would have
- * succeeded:
+ * Native SOL (lamports) a FRESH channel open must be able to SPEND, computed
+ * rather than guessed:
  *
  *   rent-exempt(178-byte channel account) = (128 + 178) × 6960 = 2_129_760
  *   rent-exempt(165-byte SPL vault)       = (128 + 165) × 6960 = 2_039_280
@@ -424,12 +423,28 @@ const LAMPORTS_PER_SIGNATURE = 5_000n;
  * (6960 lamports/byte-year × 2 years is Solana's rent-exemption rate, and 128
  * bytes is the fixed per-account overhead.) The devnet open behind
  * connector#646 spent ≈0.0042 SOL end to end, which matches.
+ *
+ * This bounds the SPEND, which is not quite the chain's whole requirement:
+ * Solana additionally rejects a transaction that leaves the fee payer
+ * rent-paying rather than rent-exempt (`RentState::transition_allowed`), so a
+ * payer must really end at either 0 or ≥ the 890_880-lamport minimum. A payer
+ * holding somewhere in [4_179_040, 5_069_920) therefore passes this preflight
+ * and is still rejected on-chain with `InsufficientFundsForRent`.
+ *
+ * That window is left deliberately un-padded. Adding 890_880 here would reject
+ * the payer who spends down to exactly 0 — which the chain permits — and this
+ * preflight exists to REPLACE opaque failures with actionable ones, not to
+ * invent refusals of its own. A payer inside the window still gets the chain's
+ * error, exactly as it did before this preflight existed; everyone below the
+ * floor gets a message naming the wallet and the shortfall.
  */
 export const MIN_LAMPORTS_FOR_CHANNEL_OPEN = 4_179_040n;
 
 /**
- * Native SOL (lamports) a standalone top-up of an EXISTING channel needs: one
- * signature, no rent — both accounts already exist and are already rent-exempt.
+ * Native SOL (lamports) a standalone top-up of an EXISTING channel must be able
+ * to spend: one signature, no rent — both accounts already exist and are
+ * already rent-exempt. The same rent-state caveat as
+ * {@link MIN_LAMPORTS_FOR_CHANNEL_OPEN} applies, over [5_000, 895_880).
  */
 export const MIN_LAMPORTS_FOR_DEPOSIT = LAMPORTS_PER_SIGNATURE;
 
@@ -701,11 +716,37 @@ export interface SolanaChannelAccountState {
   state?: 'opened' | 'closed' | 'settled';
   participantA?: string;
   participantB?: string;
+  /**
+   * PER-PARTICIPANT collateral (base units), as the program tracks it.
+   *
+   * These are what bound redeemability, NOT the vault's token balance: the
+   * vault holds `deposit_a + deposit_b`, but `Claim` rejects a claim whose
+   * `transferred_amount` exceeds the CLAIMER'S OWN deposit
+   * (`TransferredAmountExceedsDeposit`). A peer-funded vault can therefore look
+   * amply funded while this client's own collateral is still 0.
+   */
+  depositA?: bigint;
+  depositB?: bigint;
 }
 
 const STATE_MAP = ['opened', 'closed', 'settled'] as const;
 
-/** Fetch + minimally parse the on-chain channel account at a PDA. */
+/** Read a little-endian u64 at `offset`. */
+function readU64LE(data: Uint8Array, offset: number): bigint {
+  let value = 0n;
+  for (let i = 7; i >= 0; i--) {
+    value = (value << 8n) | BigInt(data[offset + i] ?? 0);
+  }
+  return value;
+}
+
+/**
+ * Fetch + minimally parse the on-chain channel account at a PDA.
+ *
+ * Offsets mirror the program's `state.rs` layout (178-byte account):
+ * `[8..40]` participant_a, `[40..72]` participant_b, `[104..112]` deposit_a,
+ * `[112..120]` deposit_b, `[160]` state.
+ */
 export async function getChannelAccountState(
   rpcUrl: string,
   channelPDA: string
@@ -722,7 +763,31 @@ export async function getChannelAccountState(
     state: STATE_MAP[data[160] ?? 0] ?? 'opened',
     participantA: base58Encode(data.slice(8, 40)),
     participantB: base58Encode(data.slice(40, 72)),
+    depositA: readU64LE(data, 104),
+    depositB: readU64LE(data, 112),
   };
+}
+
+/**
+ * This payer's OWN recorded collateral on an existing channel — the quantity
+ * that bounds what its claims can redeem.
+ *
+ * @throws when the payer is neither participant. Unreachable via the normal
+ *   path (the channel PDA is derived from `[b"channel", min(payer,peer),
+ *   max(payer,peer), mint]`, so membership is structural), which is exactly why
+ *   a mismatch must be surfaced rather than silently skipped: it means the
+ *   account we parsed is not the channel we think it is.
+ */
+function ownDeposit(
+  account: SolanaChannelAccountState,
+  payerPubkey: string
+): bigint {
+  if (account.participantA === payerPubkey) return account.depositA ?? 0n;
+  if (account.participantB === payerPubkey) return account.depositB ?? 0n;
+  throw new Error(
+    `Solana channel participants (${account.participantA}, ${account.participantB}) ` +
+      `do not include the payer ${payerPubkey} — refusing to reason about its collateral.`
+  );
 }
 
 export interface OpenSolanaChannelParams {
@@ -758,14 +823,20 @@ export interface OpenSolanaChannelResult {
 }
 
 /**
- * Bring an ALREADY-OPEN channel's vault up to the target collateral, depositing
- * only the shortfall. A no-op when the vault already holds the target, when no
- * deposit is requested, or when the vault account cannot be read as a token
- * account at all (an anomaly we decline to guess about, rather than firing a
- * transfer that the program would reject).
+ * Bring an ALREADY-OPEN channel up to the target collateral, depositing only
+ * the shortfall. A no-op when no deposit is requested or when the payer's own
+ * collateral already meets the target.
+ *
+ * Measures the PAYER'S OWN `deposit_a`/`deposit_b`, never the vault's token
+ * balance. The vault holds BOTH participants' collateral, but `Claim` bounds a
+ * claim by the claimer's own deposit alone — so a vault funded by the peer can
+ * read at or above target while this client's collateral is still 0, and
+ * comparing against it would no-op in exactly the case a top-up is needed. The
+ * figure is read from the channel account already fetched for the idempotency
+ * check, so this costs no extra RPC.
  *
  * This is what makes the fix reach channels that already exist: the connector#646
- * devnet channel is open with a 0 vault, and a client that merely skipped it
+ * devnet channel is open with 0 collateral, and a client that merely skipped it
  * would go on signing claims that cannot be redeemed.
  */
 async function topUpExistingChannel(opts: {
@@ -775,18 +846,25 @@ async function topUpExistingChannel(opts: {
   channelPDA: string;
   payerSeed: Uint8Array;
   payerPubkey: string;
+  /** The channel account already read for the idempotency check. */
+  existing: SolanaChannelAccountState;
   deposit?: { amount: bigint; payerTokenAccount: string };
 }): Promise<{ depositTxSignature?: string; depositTotal?: bigint }> {
-  const { rpcUrl, programId, tokenMint, channelPDA, payerPubkey, deposit } =
-    opts;
+  const {
+    rpcUrl,
+    programId,
+    tokenMint,
+    channelPDA,
+    payerPubkey,
+    existing,
+    deposit,
+  } = opts;
   if (!deposit || deposit.amount <= 0n) return {};
 
-  const { pda: vaultPDA } = deriveVaultPDA(channelPDA, programId);
-  const vaultBalance = await getTokenAccountBalance(rpcUrl, vaultPDA);
-  if (vaultBalance === null) return {};
-  if (vaultBalance >= deposit.amount) return { depositTotal: vaultBalance };
+  const own = ownDeposit(existing, payerPubkey);
+  if (own >= deposit.amount) return { depositTotal: own };
 
-  const shortfall = deposit.amount - vaultBalance;
+  const shortfall = deposit.amount - own;
   // No rent here — both accounts already exist — so only the signature fee.
   await assertOpenFunding({
     rpcUrl,
@@ -808,7 +886,7 @@ async function topUpExistingChannel(opts: {
     payerTokenAccount: deposit.payerTokenAccount,
     amount: shortfall,
   });
-  return { depositTxSignature, depositTotal: vaultBalance + shortfall };
+  return { depositTxSignature, depositTotal: own + shortfall };
 }
 
 /**
@@ -850,6 +928,15 @@ export async function openSolanaChannel(
   // instead; already-collateralized channels are a no-op.
   const existing = await getChannelAccountState(rpcUrl, channelPDA);
   if (existing.exists) {
+    // …but ONLY an `Opened` channel can take a deposit: the program rejects
+    // `Deposit` on a closed/settled channel (`ChannelNotOpened`). Resuming a
+    // channel this client has CLOSED is a supported, persisted state (the
+    // withdraw flow), so returning it unchanged is the correct answer — firing
+    // a doomed deposit would turn that flow into an opaque `custom program
+    // error`. Collateral is a question for a channel that can still spend.
+    if (existing.state !== 'opened') {
+      return { channelPDA, opened: false };
+    }
     const topUp = await topUpExistingChannel({
       rpcUrl,
       programId,
@@ -857,6 +944,7 @@ export async function openSolanaChannel(
       channelPDA,
       payerSeed,
       payerPubkey,
+      existing,
       deposit: params.deposit,
     });
     return { channelPDA, opened: false, ...topUp };

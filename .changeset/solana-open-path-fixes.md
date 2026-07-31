@@ -17,10 +17,15 @@ the same single policy the EVM opener uses (`negotiation.initialDeposit ??`
 payer's derived ATA, and reports the resulting vault balance as `depositTotal`
 for display and logging (reporting only; nothing gates spending on it). An
 ALREADY-OPEN channel is topped up to the same target rather than skipped, so
-channels opened before this fix stop signing unredeemable claims. A short or
-absent token account, or a wallet without the native SOL for rent and fees,
-fails BEFORE any transaction with an actionable `ChannelFundingError` instead of
-half-opening a rent-paying, 0-collateral channel.
+channels opened before this fix stop signing unredeemable claims — measured
+against this payer's OWN on-chain `deposit_a`/`deposit_b`, which is what bounds
+redeemability, not the vault's token balance (the vault holds both
+participants', so a peer-funded vault can look full while our own collateral is
+0). A channel that is closed or settled is returned unchanged, since the program
+only accepts a deposit on an open one. A short or absent token account, or a
+wallet without the native SOL for rent and fees, fails BEFORE any transaction
+with an actionable `ChannelFundingError` instead of half-opening a rent-paying,
+0-collateral channel.
 
 **The open honours the greeting's `programId`** (#473). The open ran against
 config `solanaChannel.programId` while the claim's metadata reported the
