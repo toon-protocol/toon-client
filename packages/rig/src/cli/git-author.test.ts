@@ -15,7 +15,7 @@ import {
 
 // A real 64-char hex pubkey (mnemonic "abandon…about", account 0).
 const PUBKEY =
-  '2813187eb66741f9509de2055161f328a0f04e01e1fc20188610b8dbd0591ea5';
+  '3f12da6d0cf10c91094894b88fc520757fc2860a1a5efb6664d3340ff97cfe40';
 const NPUB = hexToNpub(PUBKEY);
 const EMAIL = `${NPUB}@nostr`;
 const RELAY = 'wss://relay.example';
