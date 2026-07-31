@@ -27,6 +27,7 @@ import {
   FakeTerminatingConnector,
   plaintextReject,
 } from './wire/fake-connector.test-support.js';
+import { ChannelFundingError } from './errors.js';
 import { isZeroCondition } from './utils/condition.js';
 import { fromBase64 } from './utils/binary.js';
 
@@ -770,6 +771,104 @@ describe('Solana greeting-bootstrap (connector #632, issue #470)', () => {
         tokenNetwork: SOLANA_SETTLEMENT.programId,
       })
     );
+  });
+
+  // ── #474(a): don't hide a Solana leg behind a generic EVM funding error ────
+  //
+  // `getBalances` can only read Solana when `solanaChannel` is configured, so a
+  // Solana-funded client without that config reads as broke, takes the EVM leg,
+  // and dies with an EVM funding message that never mentions Solana at all.
+  describe('unreadable Solana leg (#474)', () => {
+    /** Wire a ChannelManager whose open fails with `error`. */
+    function wireFailingOpen(client: ToonClient, error: Error) {
+      attachTransport(client, {
+        sendIlpPacketWithClaim: async (params: { data: string }) =>
+          connector.fulfill(params.data),
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).channelManager = {
+        ensureChannel: vi.fn(async () => {
+          throw error;
+        }),
+        signBalanceProof: vi.fn(),
+        isTracking: () => false,
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).getBalances = vi.fn(async () => []);
+    }
+
+    /** The message `publishEvent`/`openChannel` actually rejected with. */
+    async function rejectionMessage(op: Promise<unknown>): Promise<string> {
+      try {
+        await op;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      throw new Error('expected a rejection');
+    }
+
+    it('names the missing solanaChannel config on an EVM funding failure', async () => {
+      const client = new ToonClient(baseConfig());
+      connector.settlementTerms = EVM_SETTLEMENT;
+      connector.settlements = [EVM_SETTLEMENT, SOLANA_SETTLEMENT];
+      wireFailingOpen(
+        client,
+        new ChannelFundingError('Settlement wallet 0xabc has no gas on evm.')
+      );
+
+      // Surfaced through publishEvent — the path a user actually hits — not
+      // buried under the generic PUBLISH_ERROR wrapper.
+      const message = await rejectionMessage(client.publishEvent(makeEvent()));
+      expect(message).toMatch(/solanaChannel/);
+      // …and the original diagnosis survives alongside the hint.
+      expect(message).toMatch(/has no gas on evm/);
+    });
+
+    it('leaves the error alone when the greeting had no Solana leg', async () => {
+      const client = new ToonClient(baseConfig());
+      connector.settlementTerms = EVM_SETTLEMENT;
+      connector.settlements = [EVM_SETTLEMENT];
+      wireFailingOpen(
+        client,
+        new ChannelFundingError('Settlement wallet 0xabc has no gas on evm.')
+      );
+
+      const message = await rejectionMessage(client.openChannel('g.proxy'));
+      expect(message).toBe('Settlement wallet 0xabc has no gas on evm.');
+    });
+
+    it('leaves NON-funding failures alone — the chain choice is not their cause', async () => {
+      const client = new ToonClient(baseConfig());
+      connector.settlementTerms = EVM_SETTLEMENT;
+      connector.settlements = [EVM_SETTLEMENT, SOLANA_SETTLEMENT];
+      wireFailingOpen(client, new Error('RPC connection reset'));
+
+      const message = await rejectionMessage(client.openChannel('g.proxy'));
+      expect(message).toBe('RPC connection reset');
+    });
+
+    it('stays quiet when the Solana balance WAS readable — the config is not the gap', async () => {
+      const client = new ToonClient({
+        ...baseConfig(),
+        solanaChannel: {
+          rpcUrl: 'http://solana.test',
+          programId: SOLANA_SETTLEMENT.programId,
+          tokenMint: SOLANA_SETTLEMENT.tokenAddress,
+        },
+      } as unknown as ConstructorParameters<typeof ToonClient>[0]);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).getSolanaAddress = () =>
+        'SoLanaWallet1111111111111111111111111111111';
+      connector.settlementTerms = EVM_SETTLEMENT;
+      connector.settlements = [EVM_SETTLEMENT, SOLANA_SETTLEMENT];
+      wireFailingOpen(
+        client,
+        new ChannelFundingError('Settlement wallet 0xabc has no gas on evm.')
+      );
+
+      const message = await rejectionMessage(client.openChannel('g.proxy'));
+      expect(message).toBe('Settlement wallet 0xabc has no gas on evm.');
+    });
   });
 
   it('EVM-only legacy greeting (no settlements list at all) is unaffected', async () => {

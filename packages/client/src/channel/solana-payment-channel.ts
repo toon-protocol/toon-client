@@ -31,6 +31,7 @@
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { base58Encode, base58Decode } from '@toon-protocol/core';
+import { ChannelFundingError } from '../errors.js';
 
 // ---------------------------------------------------------------------------
 // Constants (must match the Rust program + connector SDK exactly)
@@ -188,16 +189,23 @@ export function deriveChannelPDA(
  * @param tokenMint - base58 SPL mint.
  * @returns base58 ATA address.
  */
-export function deriveAssociatedTokenAccount(owner: string, tokenMint: string): string {
+export function deriveAssociatedTokenAccount(
+  owner: string,
+  tokenMint: string
+): string {
   // Canonical mainnet/devnet SPL program ids (same on every cluster).
   const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-  const ASSOCIATED_TOKEN_PROGRAM_ID = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+  const ASSOCIATED_TOKEN_PROGRAM_ID =
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
   const seeds = [
     padTo32(base58Decode(owner)),
     padTo32(base58Decode(TOKEN_PROGRAM_ID)),
     padTo32(base58Decode(tokenMint)),
   ];
-  const { pda } = findProgramAddress(seeds, padTo32(base58Decode(ASSOCIATED_TOKEN_PROGRAM_ID)));
+  const { pda } = findProgramAddress(
+    seeds,
+    padTo32(base58Decode(ASSOCIATED_TOKEN_PROGRAM_ID))
+  );
   return base58Encode(pda);
 }
 
@@ -278,6 +286,41 @@ interface Signer {
 
 let rpcIdCounter = 1;
 
+/**
+ * A JSON-RPC-level error — the node answered, and said no. Distinct from a
+ * TRANSPORT fault (DNS, timeout, 429, 5xx, malformed body), which surfaces as
+ * whatever `fetch`/`json()` threw. Callers must not conflate the two: "the node
+ * says this account does not exist" is a fact about the chain, while "the node
+ * did not answer" is a fact about the network, and treating the latter as the
+ * former turns a transient blip into a false accusation that the user's wallet
+ * is unfunded.
+ */
+export class SolanaRpcError extends Error {
+  constructor(
+    readonly method: string,
+    readonly code: number,
+    readonly rpcMessage: string
+  ) {
+    super(`Solana RPC error [${method}]: ${rpcMessage} (code ${code})`);
+    this.name = 'SolanaRpcError';
+  }
+}
+
+/**
+ * True when `err` is the node reporting that the queried account does not
+ * exist. Solana answers `getTokenAccountBalance` for an absent account with a
+ * JSON-RPC error (`-32602 Invalid param: could not find account`) rather than a
+ * zero balance, so absence is only ever observable as an error — which is
+ * exactly why it must be told apart from transport faults by CONTENT, not by
+ * "something threw".
+ */
+function isAccountNotFoundError(err: unknown): boolean {
+  if (!(err instanceof SolanaRpcError)) return false;
+  return /could not find account|account not found|account does not exist/i.test(
+    err.rpcMessage
+  );
+}
+
 async function solanaRpc(
   rpcUrl: string,
   method: string,
@@ -299,9 +342,7 @@ async function solanaRpc(
     error?: { message: string; code: number };
   };
   if (json.error) {
-    throw new Error(
-      `Solana RPC error [${method}]: ${json.error.message} (code ${json.error.code})`
-    );
+    throw new SolanaRpcError(method, json.error.code, json.error.message);
   }
   return json.result;
 }
@@ -328,6 +369,136 @@ async function getAccountInfo(
     { encoding: 'base64', commitment: 'confirmed' },
   ])) as { value: AccountInfo | null };
   return result.value;
+}
+
+/**
+ * Balance (base units) of an SPL token account, or `null` when the node reports
+ * that the account does not exist (an owner who has never held the mint has no
+ * ATA).
+ *
+ * ONLY that one answer becomes `null`. A transport fault — timeout, 429, 5xx,
+ * DNS — propagates, because "the RPC is unreachable" is not evidence about the
+ * user's balance, and swallowing it here would turn a transient blip into a
+ * hard `ChannelFundingError` telling the user to fund an already-funded wallet.
+ */
+async function getTokenAccountBalance(
+  rpcUrl: string,
+  tokenAccount: string
+): Promise<bigint | null> {
+  try {
+    const result = (await solanaRpc(rpcUrl, 'getTokenAccountBalance', [
+      tokenAccount,
+      { commitment: 'confirmed' },
+    ])) as { value?: { amount?: string } } | null;
+    const amount = result?.value?.amount;
+    return amount === undefined ? null : BigInt(amount);
+  } catch (err) {
+    if (isAccountNotFoundError(err)) return null;
+    throw err;
+  }
+}
+
+/** Native SOL balance (lamports) of an account; 0 for an account that does not exist. */
+async function getLamports(rpcUrl: string, pubkey: string): Promise<bigint> {
+  const result = (await solanaRpc(rpcUrl, 'getBalance', [
+    pubkey,
+    { commitment: 'confirmed' },
+  ])) as { value?: number | string } | null;
+  return BigInt(result?.value ?? 0);
+}
+
+/** Base fee per signature (lamports). Each of our txs carries exactly one. */
+const LAMPORTS_PER_SIGNATURE = 5_000n;
+
+/**
+ * Native SOL (lamports) a FRESH channel open must be able to SPEND, computed
+ * rather than guessed:
+ *
+ *   rent-exempt(178-byte channel account) = (128 + 178) × 6960 = 2_129_760
+ *   rent-exempt(165-byte SPL vault)       = (128 + 165) × 6960 = 2_039_280
+ *   2 signatures (initialize_channel, deposit) × 5_000        =    10_000
+ *                                                              ──────────
+ *                                                               4_179_040
+ *
+ * (6960 lamports/byte-year × 2 years is Solana's rent-exemption rate, and 128
+ * bytes is the fixed per-account overhead.) The devnet open behind
+ * connector#646 spent ≈0.0042 SOL end to end, which matches.
+ *
+ * This bounds the SPEND, which is not quite the chain's whole requirement:
+ * Solana additionally rejects a transaction that leaves the fee payer
+ * rent-paying rather than rent-exempt (`RentState::transition_allowed`), so a
+ * payer must really end at either 0 or ≥ the 890_880-lamport minimum. A payer
+ * holding somewhere in [4_179_040, 5_069_920) therefore passes this preflight
+ * and is still rejected on-chain with `InsufficientFundsForRent`.
+ *
+ * That window is left deliberately un-padded. Adding 890_880 here would reject
+ * the payer who spends down to exactly 0 — which the chain permits — and this
+ * preflight exists to REPLACE opaque failures with actionable ones, not to
+ * invent refusals of its own. A payer inside the window still gets the chain's
+ * error, exactly as it did before this preflight existed; everyone below the
+ * floor gets a message naming the wallet and the shortfall.
+ */
+export const MIN_LAMPORTS_FOR_CHANNEL_OPEN = 4_179_040n;
+
+/**
+ * Native SOL (lamports) a standalone top-up of an EXISTING channel must be able
+ * to spend: one signature, no rent — both accounts already exist and are
+ * already rent-exempt. The same rent-state caveat as
+ * {@link MIN_LAMPORTS_FOR_CHANNEL_OPEN} applies, over [5_000, 895_880).
+ */
+export const MIN_LAMPORTS_FOR_DEPOSIT = LAMPORTS_PER_SIGNATURE;
+
+/**
+ * Fail an on-chain open BEFORE spending anything when the payer cannot fund it.
+ *
+ * Two distinct assets are required and neither implies the other: native SOL
+ * pays the rent for the channel + vault accounts and the signature fees, while
+ * the SPL settlement token is what the `deposit` instruction moves into the
+ * vault. A wallet holding USDC but no SOL fails partway through the open; a
+ * wallet holding SOL but no USDC aborts the deposit AFTER `initialize_channel`
+ * has already created a (rent-paying, 0-collateral) channel — exactly the state
+ * connector#646 observed. Reading both up front turns either case into an
+ * actionable {@link ChannelFundingError}.
+ */
+async function assertOpenFunding(opts: {
+  rpcUrl: string;
+  payerPubkey: string;
+  tokenMint: string;
+  /** Lamport floor for the transactions about to be sent. */
+  minLamports: bigint;
+  deposit?: { amount: bigint; payerTokenAccount: string };
+}): Promise<void> {
+  const { rpcUrl, payerPubkey, tokenMint, minLamports, deposit } = opts;
+
+  const lamports = await getLamports(rpcUrl, payerPubkey);
+  if (lamports < minLamports) {
+    throw new ChannelFundingError(
+      `Solana settlement wallet ${payerPubkey} holds ${lamports} lamports, below the ` +
+        `${minLamports} needed here (rent for the channel + vault accounts, plus ` +
+        `signature fees). Native SOL is separate from the settlement token: holding ` +
+        `the SPL token is not enough. Airdrop/fund SOL to that address and retry.`
+    );
+  }
+
+  if (!deposit || deposit.amount <= 0n) return;
+
+  const held = await getTokenAccountBalance(rpcUrl, deposit.payerTokenAccount);
+  if (held === null) {
+    throw new ChannelFundingError(
+      `Solana token account ${deposit.payerTokenAccount} does not exist, so the ` +
+        `${deposit.amount} base-unit channel deposit of mint ${tokenMint} cannot ` +
+        `be funded. Fund the settlement wallet with that token (which creates the ` +
+        `associated token account) and retry.`
+    );
+  }
+  if (held < deposit.amount) {
+    throw new ChannelFundingError(
+      `Solana token account ${deposit.payerTokenAccount} holds ${held} base units ` +
+        `of mint ${tokenMint}, short of the ${deposit.amount} base-unit channel ` +
+        `deposit. Fund the settlement wallet, or lower the deposit ` +
+        `(\`solanaChannel.deposit.amount\` / \`initialDeposit\`), and retry.`
+    );
+  }
 }
 
 async function waitForConfirmation(
@@ -545,11 +716,37 @@ export interface SolanaChannelAccountState {
   state?: 'opened' | 'closed' | 'settled';
   participantA?: string;
   participantB?: string;
+  /**
+   * PER-PARTICIPANT collateral (base units), as the program tracks it.
+   *
+   * These are what bound redeemability, NOT the vault's token balance: the
+   * vault holds `deposit_a + deposit_b`, but `Claim` rejects a claim whose
+   * `transferred_amount` exceeds the CLAIMER'S OWN deposit
+   * (`TransferredAmountExceedsDeposit`). A peer-funded vault can therefore look
+   * amply funded while this client's own collateral is still 0.
+   */
+  depositA?: bigint;
+  depositB?: bigint;
 }
 
 const STATE_MAP = ['opened', 'closed', 'settled'] as const;
 
-/** Fetch + minimally parse the on-chain channel account at a PDA. */
+/** Read a little-endian u64 at `offset`. */
+function readU64LE(data: Uint8Array, offset: number): bigint {
+  let value = 0n;
+  for (let i = 7; i >= 0; i--) {
+    value = (value << 8n) | BigInt(data[offset + i] ?? 0);
+  }
+  return value;
+}
+
+/**
+ * Fetch + minimally parse the on-chain channel account at a PDA.
+ *
+ * Offsets mirror the program's `state.rs` layout (178-byte account):
+ * `[8..40]` participant_a, `[40..72]` participant_b, `[104..112]` deposit_a,
+ * `[112..120]` deposit_b, `[160]` state.
+ */
 export async function getChannelAccountState(
   rpcUrl: string,
   channelPDA: string
@@ -566,7 +763,31 @@ export async function getChannelAccountState(
     state: STATE_MAP[data[160] ?? 0] ?? 'opened',
     participantA: base58Encode(data.slice(8, 40)),
     participantB: base58Encode(data.slice(40, 72)),
+    depositA: readU64LE(data, 104),
+    depositB: readU64LE(data, 112),
   };
+}
+
+/**
+ * This payer's OWN recorded collateral on an existing channel — the quantity
+ * that bounds what its claims can redeem.
+ *
+ * @throws when the payer is neither participant. Unreachable via the normal
+ *   path (the channel PDA is derived from `[b"channel", min(payer,peer),
+ *   max(payer,peer), mint]`, so membership is structural), which is exactly why
+ *   a mismatch must be surfaced rather than silently skipped: it means the
+ *   account we parsed is not the channel we think it is.
+ */
+function ownDeposit(
+  account: SolanaChannelAccountState,
+  payerPubkey: string
+): bigint {
+  if (account.participantA === payerPubkey) return account.depositA ?? 0n;
+  if (account.participantB === payerPubkey) return account.depositB ?? 0n;
+  throw new Error(
+    `Solana channel participants (${account.participantA}, ${account.participantB}) ` +
+      `do not include the payer ${payerPubkey} — refusing to reason about its collateral.`
+  );
 }
 
 export interface OpenSolanaChannelParams {
@@ -591,12 +812,89 @@ export interface OpenSolanaChannelResult {
   opened: boolean;
   initTxSignature?: string;
   depositTxSignature?: string;
+  /**
+   * Collateral in the channel vault (base units) after this call. Present
+   * whenever it was established here — read from chain on the existing-channel
+   * path, known by construction on the fresh-open path. REPORTING only: nothing
+   * gates spending on it (the Solana balance-proof signer never reads it), it
+   * exists so callers can show and log real collateral instead of 0.
+   */
+  depositTotal?: bigint;
 }
 
 /**
- * Open (initialize) — and optionally deposit into — a real on-chain Solana
- * payment channel at the connector-parity PDA. Idempotent: if the channel
- * account already exists on-chain, returns the PDA without re-initializing.
+ * Bring an ALREADY-OPEN channel up to the target collateral, depositing only
+ * the shortfall. A no-op when no deposit is requested or when the payer's own
+ * collateral already meets the target.
+ *
+ * Measures the PAYER'S OWN `deposit_a`/`deposit_b`, never the vault's token
+ * balance. The vault holds BOTH participants' collateral, but `Claim` bounds a
+ * claim by the claimer's own deposit alone — so a vault funded by the peer can
+ * read at or above target while this client's collateral is still 0, and
+ * comparing against it would no-op in exactly the case a top-up is needed. The
+ * figure is read from the channel account already fetched for the idempotency
+ * check, so this costs no extra RPC.
+ *
+ * This is what makes the fix reach channels that already exist: the connector#646
+ * devnet channel is open with 0 collateral, and a client that merely skipped it
+ * would go on signing claims that cannot be redeemed.
+ */
+async function topUpExistingChannel(opts: {
+  rpcUrl: string;
+  programId: string;
+  tokenMint: string;
+  channelPDA: string;
+  payerSeed: Uint8Array;
+  payerPubkey: string;
+  /** The channel account already read for the idempotency check. */
+  existing: SolanaChannelAccountState;
+  deposit?: { amount: bigint; payerTokenAccount: string };
+}): Promise<{ depositTxSignature?: string; depositTotal?: bigint }> {
+  const {
+    rpcUrl,
+    programId,
+    tokenMint,
+    channelPDA,
+    payerPubkey,
+    existing,
+    deposit,
+  } = opts;
+  if (!deposit || deposit.amount <= 0n) return {};
+
+  const own = ownDeposit(existing, payerPubkey);
+  if (own >= deposit.amount) return { depositTotal: own };
+
+  const shortfall = deposit.amount - own;
+  // No rent here — both accounts already exist — so only the signature fee.
+  await assertOpenFunding({
+    rpcUrl,
+    payerPubkey,
+    tokenMint,
+    minLamports: MIN_LAMPORTS_FOR_DEPOSIT,
+    deposit: {
+      amount: shortfall,
+      payerTokenAccount: deposit.payerTokenAccount,
+    },
+  });
+
+  const { depositTxSignature } = await depositSolanaChannel({
+    rpcUrl,
+    programId,
+    channelPDA,
+    payerSeed: opts.payerSeed,
+    payerPubkey,
+    payerTokenAccount: deposit.payerTokenAccount,
+    amount: shortfall,
+  });
+  return { depositTxSignature, depositTotal: own + shortfall };
+}
+
+/**
+ * Open (initialize) and collateralize a real on-chain Solana payment channel at
+ * the connector-parity PDA. Idempotent in the only sense that matters: an
+ * existing channel is never re-initialized, but its vault IS topped up to the
+ * requested collateral, so the outcome — "an open channel holding `deposit`" —
+ * is the same whether or not the channel existed beforehand.
  *
  * The Ed25519 keypair derives both the participant-A identity and the fee
  * payer; the apex pubkey is participant B. The returned `channelPDA` (base58) is
@@ -622,11 +920,44 @@ export async function openSolanaChannel(
     programId
   );
 
-  // Idempotent: skip initialize if the channel account already exists.
+  // Idempotent: skip initialize if the channel account already exists — but do
+  // NOT skip the collateral. A channel opened before connector#646 was fixed
+  // exists on-chain with a 0-balance vault, and returning here would let the
+  // client keep signing uncollateralized claims against it forever, which is
+  // the very defect this path is meant to close. Top it up to the target
+  // instead; already-collateralized channels are a no-op.
   const existing = await getChannelAccountState(rpcUrl, channelPDA);
   if (existing.exists) {
-    return { channelPDA, opened: false };
+    // …but ONLY an `Opened` channel can take a deposit: the program rejects
+    // `Deposit` on a closed/settled channel (`ChannelNotOpened`). Resuming a
+    // channel this client has CLOSED is a supported, persisted state (the
+    // withdraw flow), so returning it unchanged is the correct answer — firing
+    // a doomed deposit would turn that flow into an opaque `custom program
+    // error`. Collateral is a question for a channel that can still spend.
+    if (existing.state !== 'opened') {
+      return { channelPDA, opened: false };
+    }
+    const topUp = await topUpExistingChannel({
+      rpcUrl,
+      programId,
+      tokenMint,
+      channelPDA,
+      payerSeed,
+      payerPubkey,
+      existing,
+      deposit: params.deposit,
+    });
+    return { channelPDA, opened: false, ...topUp };
   }
+
+  // Only a FRESH open pays rent, so the full rent+fee floor is required here.
+  await assertOpenFunding({
+    rpcUrl,
+    payerPubkey,
+    tokenMint,
+    minLamports: MIN_LAMPORTS_FOR_CHANNEL_OPEN,
+    deposit: params.deposit,
+  });
 
   const payerPublicKey = padTo32(base58Decode(payerPubkey));
   const payer: Signer = { publicKey: payerPublicKey, privateKey: payerSeed };
@@ -669,7 +1000,13 @@ export async function openSolanaChannel(
     }));
   }
 
-  return { channelPDA, opened: true, initTxSignature, depositTxSignature };
+  return {
+    channelPDA,
+    opened: true,
+    initTxSignature,
+    depositTxSignature,
+    ...(depositTxSignature ? { depositTotal: params.deposit?.amount } : {}),
+  };
 }
 
 export interface DepositSolanaChannelParams {
@@ -696,8 +1033,15 @@ export interface DepositSolanaChannelParams {
 export async function depositSolanaChannel(
   params: DepositSolanaChannelParams
 ): Promise<{ depositTxSignature: string }> {
-  const { rpcUrl, programId, channelPDA, payerSeed, payerPubkey, payerTokenAccount, amount } =
-    params;
+  const {
+    rpcUrl,
+    programId,
+    channelPDA,
+    payerSeed,
+    payerPubkey,
+    payerTokenAccount,
+    amount,
+  } = params;
   if (amount <= 0n) throw new Error('Solana deposit amount must be positive.');
 
   const payer: Signer = {

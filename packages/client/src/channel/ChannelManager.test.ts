@@ -148,7 +148,9 @@ describe('ChannelManager', () => {
     });
 
     it('throws for an untracked channel', () => {
-      expect(() => manager.setDepositTotal('0x' + 'ff'.repeat(32), 1n)).toThrow('not being tracked');
+      expect(() => manager.setDepositTotal('0x' + 'ff'.repeat(32), 1n)).toThrow(
+        'not being tracked'
+      );
     });
   });
 
@@ -160,7 +162,9 @@ describe('ChannelManager', () => {
       expect(manager.getSettleableAt(CHANNEL_ID)).toBe(2000n);
       // Before the grace elapses → closing; after → settleable.
       expect(manager.getChannelCloseState(CHANNEL_ID, 1500n)).toBe('closing');
-      expect(manager.getChannelCloseState(CHANNEL_ID, 2000n)).toBe('settleable');
+      expect(manager.getChannelCloseState(CHANNEL_ID, 2000n)).toBe(
+        'settleable'
+      );
       manager.setChannelSettled(CHANNEL_ID, 2100n);
       expect(manager.getChannelCloseState(CHANNEL_ID, 3000n)).toBe('settled');
     });
@@ -209,7 +213,10 @@ describe('ChannelManager', () => {
         }
       })();
       const m = new ChannelManager(signer, store);
-      m.trackChannel(CHANNEL_ID, { chainId: 31337, tokenNetworkAddress: '0x' + '11'.repeat(20) });
+      m.trackChannel(CHANNEL_ID, {
+        chainId: 31337,
+        tokenNetworkAddress: '0x' + '11'.repeat(20),
+      });
       m.setChannelClosed(CHANNEL_ID, 1000n, 2000n);
       await m.signBalanceProof(CHANNEL_ID, 100n);
       // The persisted entry must still carry the close timers.
@@ -345,6 +352,59 @@ describe('ChannelManager', () => {
 
       expect(mgr.getNonce(CHANNEL_ID)).toBe(3);
       expect(mgr.getCumulativeAmount(CHANNEL_ID)).toBe(300n);
+    });
+  });
+
+  // The collateral an open locks is ONE policy for every settlement chain
+  // (connector#646): whatever `ensureChannel` puts in `initialDeposit` is what
+  // the EVM `setTotalDeposit` and the Solana `deposit` instruction each lock.
+  describe('ensureChannel initialDeposit', () => {
+    const NEGOTIATION = {
+      chain: 'solana',
+      chainType: 'solana',
+      chainId: 'solana',
+      settlementAddress: 'ApexSolanaSettlement111111111111111111111',
+      tokenAddress: 'UsdcMint1111111111111111111111111111111',
+      tokenNetwork: 'PaymentChannelProgram1111111111111111111',
+    };
+
+    function managerWithSpy(config?: { initialDeposit?: string }) {
+      const openChannel = vi.fn(async () => ({
+        channelId: 'chan-1',
+        status: 'opening',
+      }));
+      const mgr = new ChannelManager(signer, undefined, config);
+      mgr.setChannelClient({
+        openChannel,
+      } as unknown as Parameters<ChannelManager['setChannelClient']>[0]);
+      return { mgr, openChannel };
+    }
+
+    it('defaults to 100000 base units', async () => {
+      const { mgr, openChannel } = managerWithSpy();
+      await mgr.ensureChannel('apex', NEGOTIATION);
+      expect(openChannel).toHaveBeenCalledWith(
+        expect.objectContaining({ initialDeposit: '100000' })
+      );
+    });
+
+    it('honours a configured default', async () => {
+      const { mgr, openChannel } = managerWithSpy({ initialDeposit: '250' });
+      await mgr.ensureChannel('apex', NEGOTIATION);
+      expect(openChannel).toHaveBeenCalledWith(
+        expect.objectContaining({ initialDeposit: '250' })
+      );
+    });
+
+    it("lets the peer's negotiated deposit win over the configured default", async () => {
+      const { mgr, openChannel } = managerWithSpy({ initialDeposit: '250' });
+      await mgr.ensureChannel('apex', {
+        ...NEGOTIATION,
+        initialDeposit: '999',
+      });
+      expect(openChannel).toHaveBeenCalledWith(
+        expect.objectContaining({ initialDeposit: '999' })
+      );
     });
   });
 });

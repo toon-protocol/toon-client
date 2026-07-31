@@ -95,7 +95,15 @@ interface TOONClientConfig {
   /** Maps chain identifier to RPC URL (e.g., {"evm:anvil:31337": "http://localhost:8545"}) */
   chainRpcUrls?: Record<string, string>;
 
-  /** Amount to deposit when opening channel (default: "0") */
+  /**
+   * Collateral locked on-chain when a channel opens, in the SETTLEMENT TOKEN's
+   * base units (6-decimal USDC: "100000" = 0.10 USDC) — never a native-coin or
+   * wei amount. Applies to every chain (EVM `setTotalDeposit`, Solana
+   * `deposit`); a peer's negotiated deposit wins over it. Default: "100000".
+   * "0" opts out and accepts claims that cannot be redeemed on-chain.
+   *
+   * Honoured since 0.25.0 — previously accepted and silently ignored.
+   */
   initialDeposit?: string;
 
   /** Challenge period in seconds (default: 86400) */

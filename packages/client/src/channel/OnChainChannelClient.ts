@@ -140,6 +140,12 @@ export interface SolanaChannelConfig {
    * 32 bytes are the signing seed; the public key is derived from it.
    */
   keypair: Uint8Array;
+  /**
+   * DEFAULT payment-channel program id (base58). The per-channel negotiated
+   * program (`OpenChannelParams.tokenNetwork`, i.e. the greeting's `programId`)
+   * takes precedence when present — see {@link SolanaChannelConfig.tokenMint},
+   * which works the same way.
+   */
   programId: string;
   /**
    * SPL token mint (base58) for PDA derivation. Optional — the per-channel
@@ -152,11 +158,16 @@ export interface SolanaChannelConfig {
    */
   challengeDuration?: number;
   /**
-   * Optional deposit amount (base units, string) + the payer's funded SPL token
-   * account (ATA, base58). When omitted, the channel is opened (initialized)
-   * without an on-chain deposit — the connector accepts the claim on channel
-   * `opened` status + participant membership; deposit is only consumed at
-   * on-chain claim/settle time.
+   * OVERRIDE for the on-chain deposit made at open time: `amount` in base units
+   * and/or `payerTokenAccount`, the payer's funded SPL token account (ATA,
+   * base58; derived from owner+mint when left empty).
+   *
+   * Normally left unset — the open deposits `OpenChannelParams.initialDeposit`,
+   * the same negotiated amount the EVM opener locks. Set this only to pin a
+   * different amount or a non-ATA source account. A 0 amount opts out of the
+   * deposit entirely and leaves the channel UNCOLLATERALIZED: the connector
+   * accepts claims on channel `opened` status + participant membership, but
+   * those claims cannot be redeemed for value on-chain (connector#646).
    */
   deposit?: { amount: string; payerTokenAccount: string };
 }
@@ -384,7 +395,15 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     }
     const chainPrefix = ctx.chain.split(':')[0];
     if (chainPrefix === 'solana') {
-      return this.depositSolana(channelId, amount, opts.currentDeposit);
+      // Both PDA seeds come from the channel's own context, never from config:
+      // `tokenNetworkAddress` is the program the channel was OPENED on (the
+      // greeting's, when it named one — the only program whose vault PDA holds
+      // this collateral), and `tokenAddress` is the mint the open derived the
+      // payer ATA from. Reading either from config would re-open the #473 split.
+      return this.depositSolana(channelId, amount, opts.currentDeposit, {
+        programId: ctx.tokenNetworkAddress,
+        ...(ctx.tokenAddress ? { tokenMint: ctx.tokenAddress } : {}),
+      });
     }
     if (chainPrefix === 'mina') {
       throw new Error(
@@ -399,11 +418,18 @@ export class OnChainChannelClient implements ConnectorChannelClient {
    * vault. Incremental on-chain (the program adds `amount`), so the new total is
    * the caller-tracked current plus the delta. Requires the funded payer token
    * account (the funded ATA) from the Solana channel config.
+   *
+   * `channel` carries the program and mint the channel was actually OPENED
+   * with (the greeting's, when it named them — see
+   * {@link OnChainChannelClient.openSolanaChannel}), NOT
+   * `solanaConfig.programId`/`tokenMint`. Both PDAs this deposit addresses are
+   * derived from those: the vault from the program, the payer ATA from the mint.
    */
   private async depositSolana(
     channelId: string,
     amount: bigint,
-    currentDeposit: bigint
+    currentDeposit: bigint,
+    channel: { programId: string; tokenMint?: string }
   ): Promise<{ txHash: string; depositTotal: bigint }> {
     if (!this.solanaConfig) {
       throw new Error('Solana channel config not set — cannot deposit.');
@@ -413,24 +439,22 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     const payerPubkey = base58Encode(
       new Uint8Array(ed25519.getPublicKey(payerSeed))
     );
-    // The funded token account is deterministically the payer's ATA for the
-    // channel mint, so derive it when the caller didn't pass one explicitly
+    // The funded token account is deterministically the payer's ATA for THIS
+    // CHANNEL's mint, so derive it when the caller didn't pass one explicitly
     // (config need not carry payerTokenAccount — it's owner+mint, both known here).
+    const tokenMint = channel.tokenMint ?? cfg.tokenMint;
     let payerTokenAccount = cfg.deposit?.payerTokenAccount;
     if (!payerTokenAccount) {
-      if (!cfg.tokenMint) {
+      if (!tokenMint) {
         throw new Error(
-          'Solana deposit requires solanaConfig.deposit.payerTokenAccount or solanaConfig.tokenMint to derive the payer ATA.'
+          'Solana deposit requires solanaConfig.deposit.payerTokenAccount or a known channel mint to derive the payer ATA.'
         );
       }
-      payerTokenAccount = deriveAssociatedTokenAccount(
-        payerPubkey,
-        cfg.tokenMint
-      );
+      payerTokenAccount = deriveAssociatedTokenAccount(payerPubkey, tokenMint);
     }
     const { depositTxSignature } = await depositSolanaChannel({
       rpcUrl: cfg.rpcUrl,
-      programId: cfg.programId,
+      programId: channel.programId,
       channelPDA: channelId,
       payerSeed,
       payerPubkey,
@@ -497,9 +521,7 @@ export class OnChainChannelClient implements ConnectorChannelClient {
    * `closedAt` + `settlementTimeout` (block-timestamp seconds) and compute
    * `settleableAt = closedAt + settlementTimeout`. Solana/Mina are follow-ups.
    */
-  async closeChannel(
-    channelId: string
-  ): Promise<{
+  async closeChannel(channelId: string): Promise<{
     txHash?: string;
     closedAt: bigint;
     settlementTimeout: bigint;
@@ -653,11 +675,18 @@ export class OnChainChannelClient implements ConnectorChannelClient {
    *
    * Derives the connector-parity channel PDA
    * (`[b"channel", min_pubkey, max_pubkey, token_mint]`), submits the
-   * `initialize_channel` instruction (+ optional `deposit`) to the deployed
-   * payment-channel program, and returns the base58 PDA as the channel id. That
+   * `initialize_channel` instruction plus the `deposit` that collateralizes the
+   * channel, and returns the base58 PDA as the channel id. That
    * PDA is what the claim carries as `channelAccount`, and the on-chain channel
    * is what the connector's `verifySolanaClaim` reads via
    * `provider.getChannelState` before accepting the claim.
+   *
+   * Both PDA seeds are NEGOTIATED, not configured: the mint is
+   * `OpenChannelParams.token` and the program is `OpenChannelParams.tokenNetwork`
+   * — the greeting's `tokenAddress`/`programId` as threaded through by
+   * `ChannelManager.ensureChannel` — each falling back to the `solanaConfig`
+   * default only when the negotiation named none. That is what keeps the channel
+   * this opens and the channel the signed claim asserts the same object (#473).
    *
    * Mirrors `openEvmChannel`'s open(+deposit) structure. Idempotent: if the
    * channel account already exists on-chain, returns its PDA without
@@ -687,6 +716,14 @@ export class OnChainChannelClient implements ConnectorChannelClient {
         'Solana channel requires a token mint (OpenChannelParams.token or solanaConfig.tokenMint)'
       );
     }
+    // PDA program: the negotiated program (the greeting's `programId`, which
+    // `ChannelManager` threads through as `tokenNetwork`) takes precedence over
+    // the config default — exactly as the negotiated mint already does (#473).
+    // The claim's metadata reports this negotiated program, so opening against
+    // anything else would open on one program and assert another; ADR 0022
+    // makes the greeting the authoritative source of settlement facts, and a
+    // stale client preset must not silently override it.
+    const programId = params.tokenNetwork ?? cfg.programId;
     if (!params.peerAddress) {
       throw new Error(
         'Solana channel requires peerAddress (apex settlement pubkey, base58)'
@@ -697,20 +734,32 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       cfg.challengeDuration ?? params.settlementTimeout ?? 86400
     );
 
-    const deposit = cfg.deposit
-      ? {
-          amount: BigInt(cfg.deposit.amount),
-          // Derive the payer ATA (owner + channel mint) when not supplied — it is
-          // deterministic, so the caller need not thread payerTokenAccount through.
-          payerTokenAccount:
-            cfg.deposit.payerTokenAccount ||
-            deriveAssociatedTokenAccount(payerPubkey, tokenMint),
-        }
-      : undefined;
+    // Deposit amount — the SAME policy the EVM opener uses (connector#646):
+    // `OpenChannelParams.initialDeposit`, which `ChannelManager.ensureChannel`
+    // fills from `negotiation.initialDeposit ?? ChannelManagerConfig.initialDeposit`.
+    // Before this, the Solana branch consulted ONLY `solanaConfig.deposit` — an
+    // operator-only field nothing on the rig/daemon/preset path ever sets — so
+    // every negotiated open silently skipped the `deposit` instruction and left
+    // the vault at 0, making accepted claims uncollateralized. `solanaConfig.deposit`
+    // remains an explicit override of the amount and/or the funded token account.
+    const depositAmount = BigInt(
+      cfg.deposit?.amount ?? params.initialDeposit ?? '0'
+    );
+    const deposit =
+      depositAmount > 0n
+        ? {
+            amount: depositAmount,
+            // Derive the payer ATA (owner + channel mint) when not supplied — it is
+            // deterministic, so the caller need not thread payerTokenAccount through.
+            payerTokenAccount:
+              cfg.deposit?.payerTokenAccount ||
+              deriveAssociatedTokenAccount(payerPubkey, tokenMint),
+          }
+        : undefined;
 
-    const { channelPDA } = await openSolanaChannelOnChain({
+    const { channelPDA, depositTotal } = await openSolanaChannelOnChain({
       rpcUrl: cfg.rpcUrl,
-      programId: cfg.programId,
+      programId,
       tokenMint,
       payerSeed,
       payerPubkey,
@@ -719,13 +768,25 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       deposit,
     });
 
-    // Cache context (PDA is the channel id / channelAccount).
+    // Cache context (PDA is the channel id / channelAccount). Record BOTH seeds
+    // the channel was actually opened with — program and mint — so a later
+    // deposit addresses this channel's vault and this channel's payer ATA,
+    // rather than re-deriving either from config (#473).
     this.channelContext.set(channelPDA, {
       chain: params.chain,
-      tokenNetworkAddress: cfg.programId,
+      tokenNetworkAddress: programId,
+      tokenAddress: tokenMint,
     });
 
-    return { channelId: channelPDA, status: 'opening' };
+    return {
+      channelId: channelPDA,
+      status: 'opening',
+      // Report the collateral now in the vault, when this call established it
+      // (locked here on a fresh open, read from chain on a top-up). Reporting
+      // only — no spend decision reads it; it exists so callers can show and
+      // log real collateral instead of 0.
+      ...(depositTotal !== undefined ? { depositTotal } : {}),
+    };
   }
 
   /**

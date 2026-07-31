@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { generatePrivateKey } from 'viem/accounts';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { base58Encode } from '@toon-protocol/core';
+import { base58Encode, base58Decode } from '@toon-protocol/core';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { OnChainChannelClient } from './OnChainChannelClient.js';
 import { ChannelFundingError } from '../errors.js';
-import { deriveChannelPDA } from './solana-payment-channel.js';
+import {
+  deriveChannelPDA,
+  deriveVaultPDA,
+  deriveAssociatedTokenAccount,
+  MIN_LAMPORTS_FOR_CHANNEL_OPEN,
+} from './solana-payment-channel.js';
 
 // Mock viem module
 const mockReadContract = vi.fn();
@@ -368,29 +373,108 @@ describe('OnChainChannelClient', () => {
     let fetchMock: ReturnType<typeof vi.fn>;
     const origFetch = globalThis.fetch;
 
-    /** Queue an account-exists/absent + tx-confirm RPC sequence. */
-    function mockRpc(channelExists: boolean): void {
+    /** Options describing the on-chain channel account the mock serves. */
+    interface ChannelAccountOpts {
+      /** participant_a — the payer, unless a test says otherwise. */
+      participantA?: string;
+      /** participant_b — the apex. */
+      participantB?: string;
+      /** PER-PARTICIPANT collateral, as the program records it. */
+      depositA?: bigint;
+      depositB?: bigint;
+      channelState?: 'opened' | 'closed' | 'settled';
+    }
+
+    /**
+     * A real 178-byte `pchannel` account, laid out exactly as the program's
+     * `state.rs` does: `[0..8]` discriminator, `[8..40]` participant_a,
+     * `[40..72]` participant_b, `[72..104]` token_mint, `[104..112]` deposit_a,
+     * `[112..120]` deposit_b, `[160]` state.
+     *
+     * Built field-by-field rather than as a zero-filled stub, because the two
+     * fields that drive top-up decisions — the participants and their SEPARATE
+     * deposits — are precisely what a zero stub cannot express.
+     */
+    function channelAccountData(o: ChannelAccountOpts): Buffer {
+      const data = Buffer.alloc(178);
+      Buffer.from([0x70, 0x63, 0x68, 0x61, 0x6e, 0x6e, 0x65, 0x6c]).copy(
+        data,
+        0
+      );
+      Buffer.from(base58Decode(o.participantA ?? clientPubkey)).copy(data, 8);
+      Buffer.from(base58Decode(o.participantB ?? APEX_PUBKEY)).copy(data, 40);
+      Buffer.from(base58Decode(TOKEN_MINT)).copy(data, 72);
+      data.writeBigUInt64LE(o.depositA ?? 0n, 104);
+      data.writeBigUInt64LE(o.depositB ?? 0n, 112);
+      data[160] = { opened: 0, closed: 1, settled: 2 }[
+        o.channelState ?? 'opened'
+      ];
+      return data;
+    }
+
+    /**
+     * Queue an account-exists/absent + tx-confirm RPC sequence.
+     *
+     * `tokenBalance` is what `getTokenAccountBalance` reports (base units) for
+     * every SPL account; `tokenBalanceFor` overrides it per account (the vault
+     * PDA and the payer ATA hold different amounts on the top-up path). `null`
+     * models an account that does not exist — which real Solana reports as the
+     * JSON-RPC error reproduced verbatim below, NOT as a zero balance.
+     * `rpcThrowsFor` makes the named methods fail at the TRANSPORT level (fetch
+     * rejects), which must never be read as evidence about a balance.
+     * `lamports` is the payer's native SOL balance (default: comfortably above
+     * the rent + fee floor a fresh open needs).
+     */
+    function mockRpc(
+      channelExists: boolean,
+      opts: ChannelAccountOpts & {
+        tokenBalance?: string | null;
+        tokenBalanceFor?: (account: string) => string | null;
+        rpcThrowsFor?: string[];
+        lamports?: number;
+      } = {}
+    ): void {
+      const flat =
+        opts.tokenBalance === undefined ? '1000000000' : opts.tokenBalance;
+      const tokenBalanceFor = opts.tokenBalanceFor ?? (() => flat);
+      const lamports = opts.lamports ?? 1_000_000_000;
       fetchMock = vi.fn(async (_url: unknown, init: RequestInit) => {
-        const body = JSON.parse(init.body as string) as { method: string };
+        const body = JSON.parse(init.body as string) as {
+          method: string;
+          params: unknown[];
+        };
+        if (opts.rpcThrowsFor?.includes(body.method)) {
+          throw new TypeError('fetch failed');
+        }
         let result: unknown;
         switch (body.method) {
+          case 'getBalance':
+            result = { value: lamports };
+            break;
+          case 'getTokenAccountBalance': {
+            const balance = tokenBalanceFor(body.params[0] as string);
+            if (balance === null) {
+              return {
+                ok: true,
+                json: async () => ({
+                  jsonrpc: '2.0',
+                  id: 1,
+                  error: {
+                    code: -32602,
+                    message: 'Invalid param: could not find account',
+                  },
+                }),
+              } as unknown as Response;
+            }
+            result = { value: { amount: balance, decimals: 6 } };
+            break;
+          }
           case 'getAccountInfo':
             result = {
               value: channelExists
-                ? // 178-byte "pchannel" discriminator account (opened)
-                  {
+                ? {
                     data: [
-                      Buffer.from([
-                        0x70,
-                        0x63,
-                        0x68,
-                        0x61,
-                        0x6e,
-                        0x6e,
-                        0x65,
-                        0x6c,
-                        ...new Array(170).fill(0),
-                      ]).toString('base64'),
+                      channelAccountData(opts).toString('base64'),
                       'base64',
                     ],
                     owner: PROGRAM_ID,
@@ -517,6 +601,494 @@ describe('OnChainChannelClient', () => {
       ).rejects.toThrow(/token mint/i);
     });
 
+    // ── #473: the open runs on the NEGOTIATED program ─────────────────────────
+    //
+    // The greeting's `programId` reaches the opener as
+    // `OpenChannelParams.tokenNetwork`, and the signed claim's metadata reports
+    // that same program. The open used to ignore it and use config's, so a
+    // divergence would open a channel on one program and assert another.
+    describe('negotiated programId (#473)', () => {
+      // A DIFFERENT program from the client's configured PROGRAM_ID.
+      const GREETING_PROGRAM = '2aEVJ8koWQqLptzTBvPTgcrDsPYtC1jvDVzHVjkGpump';
+
+      it('derives the PDA against the greeting programId, not the config one', async () => {
+        mockRpc(false);
+        const c = makeClient();
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          tokenNetwork: GREETING_PROGRAM,
+          peerAddress: APEX_PUBKEY,
+        });
+
+        expect(result.channelId).toBe(
+          deriveChannelPDA(
+            clientPubkey,
+            APEX_PUBKEY,
+            TOKEN_MINT,
+            GREETING_PROGRAM
+          ).pda
+        );
+        expect(result.channelId).not.toBe(
+          deriveChannelPDA(clientPubkey, APEX_PUBKEY, TOKEN_MINT, PROGRAM_ID)
+            .pda
+        );
+      });
+
+      it('falls back to the config programId when the negotiation names none', async () => {
+        mockRpc(false);
+        const c = makeClient();
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+        });
+
+        expect(result.channelId).toBe(
+          deriveChannelPDA(clientPubkey, APEX_PUBKEY, TOKEN_MINT, PROGRAM_ID)
+            .pda
+        );
+      });
+
+      it('sends a later deposit to the program the channel was opened on', async () => {
+        mockRpc(false);
+        const c = new OnChainChannelClient({
+          evmSigner: signer,
+          chainRpcUrls: {},
+          solanaConfig: {
+            rpcUrl: 'http://localhost:8899',
+            keypair: seed,
+            programId: PROGRAM_ID,
+            tokenMint: TOKEN_MINT,
+          },
+        });
+        const { channelId } = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          tokenNetwork: GREETING_PROGRAM,
+          peerAddress: APEX_PUBKEY,
+        });
+        fetchMock.mockClear();
+
+        await c.depositToChannel(channelId, 100n, { currentDeposit: 0n });
+
+        // The vault PDA is program-scoped: the deposit must carry the vault of
+        // the GREETING program, never the config program's.
+        const txs = fetchMock.mock.calls
+          .map(
+            (call) =>
+              JSON.parse((call[1] as RequestInit).body as string) as {
+                method: string;
+                params: unknown[];
+              }
+          )
+          .filter((b) => b.method === 'sendTransaction')
+          .map((b) => Buffer.from(b.params[0] as string, 'base64'));
+        const negotiatedVault = Buffer.from(
+          base58Decode(deriveVaultPDA(channelId, GREETING_PROGRAM).pda)
+        );
+        const configVault = Buffer.from(
+          base58Decode(deriveVaultPDA(channelId, PROGRAM_ID).pda)
+        );
+        expect(txs.some((tx) => tx.indexOf(negotiatedVault) !== -1)).toBe(true);
+        expect(txs.some((tx) => tx.indexOf(configVault) !== -1)).toBe(false);
+      });
+    });
+
+    // ── connector#646: the open must COLLATERALIZE the channel ────────────────
+    //
+    // The Solana branch used to read only `solanaConfig.deposit` — an
+    // operator-only field nothing on the rig/daemon/preset path sets — so every
+    // negotiated open skipped the `deposit` instruction and left the vault at 0
+    // while the connector happily accepted claims against it. It now honours
+    // `OpenChannelParams.initialDeposit`, exactly as the EVM opener does.
+    describe('deposit at open (connector#646)', () => {
+      /** Raw bytes of every submitted transaction. */
+      function sentTxBytes(): Uint8Array[] {
+        return fetchMock.mock.calls
+          .map(
+            (call) =>
+              JSON.parse((call[1] as RequestInit).body as string) as {
+                method: string;
+                params: unknown[];
+              }
+          )
+          .filter((body) => body.method === 'sendTransaction')
+          .map(
+            (body) =>
+              new Uint8Array(Buffer.from(body.params[0] as string, 'base64'))
+          );
+      }
+
+      /** The 16-byte `deposit` instruction data for `amount` (discriminator 0x02). */
+      function depositIxData(amount: bigint): Buffer {
+        const data = Buffer.alloc(16);
+        data[0] = 0x02;
+        data.writeBigUInt64LE(amount, 8);
+        return data;
+      }
+
+      /** True when some submitted tx carries the `deposit` ix for `amount`. */
+      function depositedAmount(amount: bigint): boolean {
+        const needle = depositIxData(amount);
+        return sentTxBytes().some(
+          (tx) => Buffer.from(tx).indexOf(needle) !== -1
+        );
+      }
+
+      it('locks the negotiated initialDeposit on-chain and reports it as depositTotal', async () => {
+        mockRpc(false);
+        const c = makeClient();
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          // What ChannelManager.ensureChannel always passes — and what the
+          // Solana branch used to drop on the floor.
+          initialDeposit: '100000',
+        });
+
+        expect(depositedAmount(100000n)).toBe(true);
+        expect(result.depositTotal).toBe(100000n);
+      });
+
+      it('pulls the deposit from the payer ATA derived from owner + mint', async () => {
+        mockRpc(false);
+        const c = makeClient();
+        await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+
+        const ata = deriveAssociatedTokenAccount(clientPubkey, TOKEN_MINT);
+        // The balance preflight reads exactly the account the deposit spends from.
+        const checked = fetchMock.mock.calls.map(
+          (call) =>
+            JSON.parse((call[1] as RequestInit).body as string) as {
+              method: string;
+              params: unknown[];
+            }
+        );
+        expect(
+          checked.some(
+            (b) => b.method === 'getTokenAccountBalance' && b.params[0] === ata
+          )
+        ).toBe(true);
+        // …and that account's 32 raw bytes ride in the deposit transaction.
+        const ataBytes = Buffer.from(base58Decode(ata));
+        expect(
+          sentTxBytes().some((tx) => Buffer.from(tx).indexOf(ataBytes) !== -1)
+        ).toBe(true);
+      });
+
+      it('lets an explicit solanaConfig.deposit override the negotiated amount', async () => {
+        mockRpc(false);
+        const c = new OnChainChannelClient({
+          evmSigner: signer,
+          chainRpcUrls: {},
+          solanaConfig: {
+            rpcUrl: 'http://localhost:8899',
+            keypair: seed,
+            programId: PROGRAM_ID,
+            tokenMint: TOKEN_MINT,
+            deposit: { amount: '7', payerTokenAccount: APEX_PUBKEY },
+          },
+        });
+        await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+
+        expect(depositedAmount(7n)).toBe(true);
+        expect(depositedAmount(100000n)).toBe(false);
+      });
+
+      it('opts out of the deposit entirely on an explicit 0 amount', async () => {
+        mockRpc(false);
+        const c = new OnChainChannelClient({
+          evmSigner: signer,
+          chainRpcUrls: {},
+          solanaConfig: {
+            rpcUrl: 'http://localhost:8899',
+            keypair: seed,
+            programId: PROGRAM_ID,
+            tokenMint: TOKEN_MINT,
+            deposit: { amount: '0', payerTokenAccount: APEX_PUBKEY },
+          },
+        });
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+
+        expect(sentTxBytes()).toHaveLength(1); // initialize_channel only
+        expect(result.depositTotal).toBeUndefined();
+      });
+
+      it('refuses BEFORE spending rent when the token account is short', async () => {
+        mockRpc(false, { tokenBalance: '1000' });
+        const c = makeClient();
+        await expect(
+          c.openChannel({
+            peerId: 'apex',
+            chain: SOLANA_CHAIN,
+            token: TOKEN_MINT,
+            peerAddress: APEX_PUBKEY,
+            initialDeposit: '100000',
+          })
+        ).rejects.toThrow(ChannelFundingError);
+        // Nothing was submitted — no half-open, rent-paying, 0-collateral channel.
+        expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      it('refuses when the payer has no token account for the mint at all', async () => {
+        mockRpc(false, { tokenBalance: null });
+        const c = makeClient();
+        await expect(
+          c.openChannel({
+            peerId: 'apex',
+            chain: SOLANA_CHAIN,
+            token: TOKEN_MINT,
+            peerAddress: APEX_PUBKEY,
+            initialDeposit: '100000',
+          })
+        ).rejects.toThrow(/does not exist/i);
+        expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      // A node that does not ANSWER says nothing about the user's balance.
+      // Collapsing that into "account does not exist" would accuse a fully
+      // funded wallet of being empty every time the RPC hiccups.
+      it('does NOT turn a transient RPC failure into a funding error', async () => {
+        mockRpc(false, { rpcThrowsFor: ['getTokenAccountBalance'] });
+        const c = makeClient();
+        const open = c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+        await expect(open).rejects.toThrow(/fetch failed/);
+        await expect(open).rejects.not.toBeInstanceOf(ChannelFundingError);
+        expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      it('never re-initializes an existing channel, and needs no rent for it', async () => {
+        // Own collateral already at target, so nothing to top up — and no rent
+        // floor, since both accounts already exist and are already rent-exempt.
+        mockRpc(true, { depositA: 100000n, lamports: 5_000 });
+        const c = makeClient();
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+        expect(result.status).toBe('opening');
+        expect(result.depositTotal).toBe(100000n);
+        expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      // ── an EXISTING 0-collateral channel must not stay that way ─────────────
+      //
+      // The connector#646 channel is open on devnet with 0 collateral. A fix
+      // that only collateralized FRESH opens would leave it — and every client
+      // that resumes it — signing unredeemable claims forever.
+      it('tops up an already-open channel whose own collateral is 0', async () => {
+        const channelPDA = deriveChannelPDA(
+          clientPubkey,
+          APEX_PUBKEY,
+          TOKEN_MINT,
+          PROGRAM_ID
+        ).pda;
+        // The #646 state exactly: channel open, own deposit 0, payer funded.
+        mockRpc(true, { depositA: 0n, tokenBalance: '50000000' });
+        const c = makeClient();
+
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+
+        expect(result.channelId).toBe(channelPDA);
+        expect(depositedAmount(100000n)).toBe(true);
+        expect(result.depositTotal).toBe(100000n);
+      });
+
+      it('deposits only the SHORTFALL on a partially-collateralized channel', async () => {
+        mockRpc(true, { depositA: 40000n, tokenBalance: '50000000' });
+        const c = makeClient();
+
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+
+        expect(depositedAmount(60000n)).toBe(true); // 100000 − 40000
+        expect(depositedAmount(100000n)).toBe(false);
+        expect(result.depositTotal).toBe(100000n);
+      });
+
+      // ── the collateral that counts is the CLAIMER'S OWN ─────────────────────
+      //
+      // The vault holds deposit_a + deposit_b, but `Claim` bounds a claim by the
+      // claimer's own deposit alone (`TransferredAmountExceedsDeposit`). Measuring
+      // the vault would no-op here — a peer-funded vault reading at target while
+      // this client's own collateral is 0 — reproducing the #646 harm inside the
+      // code written to prevent it.
+      it('tops up when the PEER funded the vault but our own deposit is 0', async () => {
+        const channelPDA = deriveChannelPDA(
+          clientPubkey,
+          APEX_PUBKEY,
+          TOKEN_MINT,
+          PROGRAM_ID
+        ).pda;
+        const vault = deriveVaultPDA(channelPDA, PROGRAM_ID).pda;
+        mockRpc(true, {
+          depositA: 0n, // ours
+          depositB: 5_000_000n, // the apex's
+          // The vault token account is amply funded — by the PEER. Reading it
+          // would say "nothing to do".
+          tokenBalanceFor: (account) =>
+            account === vault ? '5000000' : '50000000',
+        });
+        const c = makeClient();
+
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+
+        expect(depositedAmount(100000n)).toBe(true);
+        expect(result.depositTotal).toBe(100000n); // ours, not 5_100_000
+      });
+
+      it('reads OUR deposit from deposit_b when we are participant B', async () => {
+        mockRpc(true, {
+          // Roles reversed: the apex initialized, so we are participant B.
+          participantA: APEX_PUBKEY,
+          participantB: clientPubkey,
+          depositA: 5_000_000n, // theirs
+          depositB: 40000n, // ours
+          tokenBalance: '50000000',
+        });
+        const c = makeClient();
+
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+
+        expect(depositedAmount(60000n)).toBe(true); // 100000 − our 40000
+        expect(result.depositTotal).toBe(100000n);
+      });
+
+      // ── a channel that cannot take a deposit must not be sent one ───────────
+      //
+      // The program rejects `Deposit` unless the state is `Opened`. Resuming a
+      // channel this client has CLOSED is a supported, persisted state (the
+      // withdraw flow), so it must come back unchanged — not as an opaque
+      // `custom program error` surfacing as a daemon 500.
+      it.each(['closed', 'settled'] as const)(
+        'returns a %s channel untouched instead of firing a doomed deposit',
+        async (channelState) => {
+          mockRpc(true, {
+            channelState,
+            depositA: 0n,
+            tokenBalance: '50000000',
+          });
+          const c = makeClient();
+
+          const result = await c.openChannel({
+            peerId: 'apex',
+            chain: SOLANA_CHAIN,
+            token: TOKEN_MINT,
+            peerAddress: APEX_PUBKEY,
+            initialDeposit: '100000',
+          });
+
+          expect(result.status).toBe('opening');
+          expect(result.depositTotal).toBeUndefined();
+          expect(sentTxBytes()).toHaveLength(0);
+        }
+      );
+
+      // ── #474(b): native SOL is a SEPARATE requirement from the SPL token ────
+      //
+      // Rent for the channel + vault accounts and the signature fees are paid
+      // in SOL. A wallet full of USDC but empty of SOL used to get as far as
+      // submitting the open and fail on-chain, with nothing naming SOL.
+      it('refuses when the payer holds the settlement token but no SOL for rent/fees', async () => {
+        mockRpc(false, { lamports: 1000 });
+        const c = makeClient();
+        await expect(
+          c.openChannel({
+            peerId: 'apex',
+            chain: SOLANA_CHAIN,
+            token: TOKEN_MINT,
+            peerAddress: APEX_PUBKEY,
+            initialDeposit: '100000',
+          })
+        ).rejects.toThrow(/lamports.*payment channel|SOL/i);
+        expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      it('checks SOL even for a deposit-less open — the accounts still cost rent', async () => {
+        mockRpc(false, { lamports: 0 });
+        const c = makeClient();
+        await expect(
+          c.openChannel({
+            peerId: 'apex',
+            chain: SOLANA_CHAIN,
+            token: TOKEN_MINT,
+            peerAddress: APEX_PUBKEY,
+          })
+        ).rejects.toThrow(ChannelFundingError);
+        expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      it('proceeds once the wallet clears the rent + fee floor', async () => {
+        mockRpc(false, { lamports: Number(MIN_LAMPORTS_FOR_CHANNEL_OPEN) });
+        const c = makeClient();
+        await expect(
+          c.openChannel({
+            peerId: 'apex',
+            chain: SOLANA_CHAIN,
+            token: TOKEN_MINT,
+            peerAddress: APEX_PUBKEY,
+            initialDeposit: '100000',
+          })
+        ).resolves.toMatchObject({ status: 'opening' });
+      });
+    });
+
     function depositClient(): OnChainChannelClient {
       return new OnChainChannelClient({
         evmSigner: signer,
@@ -543,14 +1115,19 @@ describe('OnChainChannelClient', () => {
       });
       fetchMock.mockClear();
 
-      const out = await c.depositToChannel(channelId, 100n, { currentDeposit: 500n });
+      const out = await c.depositToChannel(channelId, 100n, {
+        currentDeposit: 500n,
+      });
 
       expect(out.txHash).toBe('tx-signature-stub');
       expect(out.depositTotal).toBe(600n); // incremental: 500 + 100
       const sent = fetchMock.mock.calls.some(
         (call) =>
-          (JSON.parse((call[1] as RequestInit).body as string) as { method: string }).method ===
-          'sendTransaction'
+          (
+            JSON.parse((call[1] as RequestInit).body as string) as {
+              method: string;
+            }
+          ).method === 'sendTransaction'
       );
       expect(sent).toBe(true);
     });
@@ -562,7 +1139,12 @@ describe('OnChainChannelClient', () => {
         chainRpcUrls: {},
         // tokenMint present, but NO deposit.payerTokenAccount — it is derived
         // (the payer's ATA for the mint) rather than required from config.
-        solanaConfig: { rpcUrl: 'http://localhost:8899', keypair: seed, programId: PROGRAM_ID, tokenMint: TOKEN_MINT },
+        solanaConfig: {
+          rpcUrl: 'http://localhost:8899',
+          keypair: seed,
+          programId: PROGRAM_ID,
+          tokenMint: TOKEN_MINT,
+        },
       });
       const { channelId } = await c.openChannel({
         peerId: 'apex',
@@ -571,14 +1153,68 @@ describe('OnChainChannelClient', () => {
         peerAddress: APEX_PUBKEY,
       });
       fetchMock.mockClear();
-      const out = await c.depositToChannel(channelId, 100n, { currentDeposit: 0n });
+      const out = await c.depositToChannel(channelId, 100n, {
+        currentDeposit: 0n,
+      });
       expect(out.txHash).toBe('tx-signature-stub');
       const sent = fetchMock.mock.calls.some(
         (call) =>
-          (JSON.parse((call[1] as RequestInit).body as string) as { method: string }).method ===
-          'sendTransaction'
+          (
+            JSON.parse((call[1] as RequestInit).body as string) as {
+              method: string;
+            }
+          ).method === 'sendTransaction'
       );
       expect(sent).toBe(true);
+    });
+
+    // The mint half of the #473 split: the ATA a deposit spends from must come
+    // from the mint the CHANNEL was opened with, not from config. Every other
+    // deposit test sets `cfg.tokenMint === params.token`, so only a divergence
+    // can tell the two apart.
+    it('depositToChannel derives the ATA from the NEGOTIATED mint, not the configured one', async () => {
+      const NEGOTIATED_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+      mockRpc(false);
+      const c = new OnChainChannelClient({
+        evmSigner: signer,
+        chainRpcUrls: {},
+        solanaConfig: {
+          rpcUrl: 'http://localhost:8899',
+          keypair: seed,
+          programId: PROGRAM_ID,
+          tokenMint: TOKEN_MINT, // config default — the greeting overrides it
+        },
+      });
+      const { channelId } = await c.openChannel({
+        peerId: 'apex',
+        chain: SOLANA_CHAIN,
+        token: NEGOTIATED_MINT,
+        peerAddress: APEX_PUBKEY,
+      });
+      fetchMock.mockClear();
+
+      await c.depositToChannel(channelId, 100n, { currentDeposit: 0n });
+
+      const txs = fetchMock.mock.calls
+        .map(
+          (call) =>
+            JSON.parse((call[1] as RequestInit).body as string) as {
+              method: string;
+              params: unknown[];
+            }
+        )
+        .filter((b) => b.method === 'sendTransaction')
+        .map((b) => Buffer.from(b.params[0] as string, 'base64'));
+      const negotiatedAta = Buffer.from(
+        base58Decode(
+          deriveAssociatedTokenAccount(clientPubkey, NEGOTIATED_MINT)
+        )
+      );
+      const configAta = Buffer.from(
+        base58Decode(deriveAssociatedTokenAccount(clientPubkey, TOKEN_MINT))
+      );
+      expect(txs.some((tx) => tx.indexOf(negotiatedAta) !== -1)).toBe(true);
+      expect(txs.some((tx) => tx.indexOf(configAta) !== -1)).toBe(false);
     });
   });
 
@@ -735,7 +1371,9 @@ describe('OnChainChannelClient', () => {
       mockWaitForTransactionReceipt.mockResolvedValueOnce({});
       mockWriteContract.mockResolvedValueOnce('0xopen');
       mockWaitForTransactionReceipt.mockResolvedValueOnce({
-        logs: [{ topics: ['0xev', TEST_CHANNEL_ID, '0xp1', '0xp2'], data: '0x' }],
+        logs: [
+          { topics: ['0xev', TEST_CHANNEL_ID, '0xp1', '0xp2'], data: '0x' },
+        ],
       });
       mockWriteContract.mockResolvedValueOnce('0xdeposit');
       mockWaitForTransactionReceipt.mockResolvedValueOnce({});
@@ -758,7 +1396,9 @@ describe('OnChainChannelClient', () => {
       mockWriteContract.mockResolvedValueOnce('0xdep');
       mockWaitForTransactionReceipt.mockResolvedValueOnce({});
 
-      const out = await client.depositToChannel(channelId, 50_000n, { currentDeposit: 100_000n });
+      const out = await client.depositToChannel(channelId, 50_000n, {
+        currentDeposit: 100_000n,
+      });
 
       expect(out.depositTotal).toBe(150_000n);
       // Only the setTotalDeposit write (allowance was sufficient → no approve).
@@ -783,13 +1423,21 @@ describe('OnChainChannelClient', () => {
 
       // approve + setTotalDeposit
       expect(mockWriteContract).toHaveBeenCalledTimes(2);
-      expect((mockWriteContract.mock.calls[0]![0] as { functionName: string }).functionName).toBe('approve');
-      expect((mockWriteContract.mock.calls[1]![0] as { functionName: string }).functionName).toBe('setTotalDeposit');
+      expect(
+        (mockWriteContract.mock.calls[0]![0] as { functionName: string })
+          .functionName
+      ).toBe('approve');
+      expect(
+        (mockWriteContract.mock.calls[1]![0] as { functionName: string })
+          .functionName
+      ).toBe('setTotalDeposit');
     });
 
     it('rejects a non-positive amount', async () => {
       const channelId = await openEvmChannel();
-      await expect(client.depositToChannel(channelId, 0n, { currentDeposit: 0n })).rejects.toThrow(/positive/i);
+      await expect(
+        client.depositToChannel(channelId, 0n, { currentDeposit: 0n })
+      ).rejects.toThrow(/positive/i);
     });
 
     it('rejects an unknown channel (no on-chain context)', async () => {
@@ -807,7 +1455,9 @@ describe('OnChainChannelClient', () => {
       mockWaitForTransactionReceipt.mockResolvedValueOnce({});
       mockWriteContract.mockResolvedValueOnce('0xopen');
       mockWaitForTransactionReceipt.mockResolvedValueOnce({
-        logs: [{ topics: ['0xev', TEST_CHANNEL_ID, '0xp1', '0xp2'], data: '0x' }],
+        logs: [
+          { topics: ['0xev', TEST_CHANNEL_ID, '0xp1', '0xp2'], data: '0x' },
+        ],
       });
       mockWriteContract.mockResolvedValueOnce('0xdeposit');
       mockWaitForTransactionReceipt.mockResolvedValueOnce({});
@@ -829,11 +1479,21 @@ describe('OnChainChannelClient', () => {
       mockWriteContract.mockResolvedValueOnce('0xclose');
       mockWaitForTransactionReceipt.mockResolvedValueOnce({});
       // channels() view: [settlementTimeout=100, state=2 (closed), closedAt=1000, ...]
-      mockReadContract.mockResolvedValueOnce([100n, 2, 1000n, 900n, '0xa', '0xb']);
+      mockReadContract.mockResolvedValueOnce([
+        100n,
+        2,
+        1000n,
+        900n,
+        '0xa',
+        '0xb',
+      ]);
 
       const out = await client.closeChannel(channelId);
 
-      expect((mockWriteContract.mock.calls[0]![0] as { functionName: string }).functionName).toBe('closeChannel');
+      expect(
+        (mockWriteContract.mock.calls[0]![0] as { functionName: string })
+          .functionName
+      ).toBe('closeChannel');
       expect(out.closedAt).toBe(1000n);
       expect(out.settlementTimeout).toBe(100n);
       expect(out.settleableAt).toBe(1100n); // closedAt + settlementTimeout
@@ -847,12 +1507,19 @@ describe('OnChainChannelClient', () => {
       const out = await client.settleChannel(channelId);
 
       expect(out.txHash).toBe('0xsettle');
-      expect((mockWriteContract.mock.calls[0]![0] as { functionName: string }).functionName).toBe('settleChannel');
+      expect(
+        (mockWriteContract.mock.calls[0]![0] as { functionName: string })
+          .functionName
+      ).toBe('settleChannel');
     });
 
     it('close/settle throw for an unknown channel', async () => {
-      await expect(client.closeChannel('0xunknown')).rejects.toThrow(/context/i);
-      await expect(client.settleChannel('0xunknown')).rejects.toThrow(/context/i);
+      await expect(client.closeChannel('0xunknown')).rejects.toThrow(
+        /context/i
+      );
+      await expect(client.settleChannel('0xunknown')).rejects.toThrow(
+        /context/i
+      );
     });
   });
 });

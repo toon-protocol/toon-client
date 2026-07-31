@@ -22,10 +22,13 @@ export interface SolanaChannelClientOptions {
   /** Challenge-period duration (seconds) for `initialize_channel`. */
   challengeDuration?: number;
   /**
-   * Optional on-chain deposit when opening the channel: `amount` in base units
-   * (string) drawn from `payerTokenAccount` (the client's funded SPL token
-   * account / ATA, base58). When omitted, the channel is opened without a
-   * deposit (connector accepts on `opened` status + participant membership).
+   * OVERRIDE for the on-chain deposit made when opening the channel: `amount`
+   * in base units (string) drawn from `payerTokenAccount` (the client's funded
+   * SPL token account / ATA, base58 — derived from owner+mint when empty).
+   *
+   * Normally left unset: the open locks {@link ToonClientConfig.initialDeposit},
+   * the same negotiated amount an EVM open locks. A 0 amount opts out and leaves
+   * the channel uncollateralized — its claims cannot be redeemed on-chain.
    */
   deposit?: { amount: string; payerTokenAccount: string };
 }
@@ -344,7 +347,13 @@ export interface ToonClientConfig {
   /** Maps chain identifier to RPC URL (e.g., {"evm:anvil:31337": "http://localhost:8545"}) */
   chainRpcUrls?: Record<string, string>;
 
-  /** Amount to deposit when opening channel (default: "0") */
+  /**
+   * Collateral (base units, string) locked on-chain when a channel is opened,
+   * on EVERY settlement chain (EVM `setTotalDeposit`, Solana `deposit`).
+   * Defaults to `"100000"` — 0.1 USDC at 6 decimals. A peer's negotiated
+   * `initialDeposit` still wins over this. Set `"0"` only if you accept
+   * uncollateralized claims (they cannot be redeemed for value on-chain).
+   */
   initialDeposit?: string;
 
   /** Challenge period in seconds (default: 86400) */

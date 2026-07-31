@@ -413,7 +413,10 @@ const client = new ToonClient({
   chainRpcUrls: { 'evm:anvil:31337': 'http://localhost:8545' },
   settlementAddresses: { 'evm:anvil:31337': client.getEvmAddress()! },
   tokenNetworks: { 'evm:anvil:31337': '0xCafac3dD18aC6c6e92c921884f9E4176737C052c' },
-  initialDeposit: '1000000000000000000', // 1 ETH in wei
+  // Collateral locked on-chain per channel open, in the SETTLEMENT TOKEN's base
+  // units (USDC has 6 decimals — this is 0.10 USDC), not in wei. Optional;
+  // '100000' is the default. See "Channel collateral" below.
+  initialDeposit: '100000',
 });
 
 await client.start();
@@ -427,6 +430,30 @@ const channelId = channels[0];
 const claim = await client.signBalanceProof(channelId, 1000n);
 await client.publishEvent(event, { claim });
 ```
+
+### Channel collateral
+
+`initialDeposit` is the collateral locked on-chain when a channel opens, in the
+**settlement token's base units** — for 6-decimal USDC, `'100000'` is 0.10 USDC.
+It is not a native-coin amount and never in wei. The same value governs every
+chain: EVM locks it with `setTotalDeposit`, Solana with the payment-channel
+`deposit` instruction. A peer's negotiated deposit, when it states one, wins.
+
+Off-chain claims are only worth what the channel is collateralized for, so an
+under-funded channel signs claims that cannot be redeemed. The open therefore
+fails fast — naming the wallet, the token and the shortfall — rather than
+opening an uncollateralized channel; fund the settlement wallet or lower
+`initialDeposit`. Setting `'0'` opts out explicitly and accepts unredeemable
+claims.
+
+> **Changed in 0.25.0** — `initialDeposit` (and `settlementTimeout`) were
+> previously accepted by `ToonClient` and **silently ignored**; every open used
+> the built-in defaults. They are honoured now, so a value that was inert before
+> takes effect on upgrade. If you copied the old README example
+> (`'1000000000000000000'`, described as "1 ETH in wei"), it is now a 1e18
+> base-unit ERC-20 deposit — a trillion USDC — which will revert and fail the
+> open. Drop the field to take the `'100000'` default, or set the amount you
+> actually mean in the token's base units.
 
 ### How It Works
 
