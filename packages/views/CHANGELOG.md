@@ -1,5 +1,17 @@
 # @toon-protocol/views
 
+## 0.35.0
+
+Numbering-only jump. **No functional change from `0.21.3`** — the code is byte-identical.
+
+Carried along because `@toon-protocol/views` and `@toon-protocol/client-mcp` are a
+changesets `fixed` group (#162): client-mcp bakes the views bundle at build time, so the
+two must always release together at the same version. `client-mcp` needed to step over an
+orphaned `0.26.2`–`0.34.3` block on npm left by the pre-extraction `toon-protocol/town`
+monorepo; `views` has no orphans of its own and moves only to keep the group in lockstep.
+
+See toon-client#477 and `packages/client-mcp/CHANGELOG.md` for the full story.
+
 ## 0.21.3
 
 ### Patch Changes
