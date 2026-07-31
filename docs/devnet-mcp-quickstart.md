@@ -17,9 +17,15 @@ endpoints, funding, and the Windows/WSL bridge.
 
 ## 1. Install the MCP server
 
-`@toon-protocol/client-mcp@0.3.0` (or newer) is on npm and is the first version whose paid-publish
-path FULFILLs on the devnet (it includes proxy-mode apex negotiation and the `POST /write` envelope
-fix). A global install is the simplest path:
+Install `@toon-protocol/client-mcp@latest`. Anything older than `0.21.0` predates the sealed wire
+(#450) and sends an all-zero execution condition that today's connector rejects outright, so it
+cannot complete a paid write at all — always take `@latest` rather than pinning.
+
+> Note: npm also carries `0.26.2`–`0.34.3`. Despite the higher numbers those are **older and
+> non-functional** — an orphaned line from the pre-extraction `toon-protocol/town` monorepo, since
+> deprecated. The live line runs `0.1.0` → `0.21.3` → `0.35.0` and up. See #477.
+
+A global install is the simplest path:
 
 ```bash
 pnpm add -g @toon-protocol/client-mcp     # installs the toon-mcp + toon-clientd bins
@@ -242,5 +248,6 @@ Daemon log on a good boot:
 - **`command not found` from Claude Desktop on Windows** → you bridged with bare `wsl toon-mcp`;
   switch to the `wsl bash -lic "exec toon-mcp"` form (sources nvm).
 - **Publish paid but read times out** → confirm the daemon log shows `injected apex negotiation for
-  peer "store"`; on `< 0.3.0` the paid path will not FULFILL — upgrade.
+  peer "store"`. On anything older than `0.21.0` the paid path will not FULFILL (pre-sealed-wire) —
+  upgrade to `@latest`.
 - The daemon log lives at `~/.toon-client/daemon.log` (or `$TOON_CLIENT_HOME/daemon.log`).
