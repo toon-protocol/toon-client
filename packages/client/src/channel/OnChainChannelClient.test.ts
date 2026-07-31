@@ -7,6 +7,7 @@ import { OnChainChannelClient } from './OnChainChannelClient.js';
 import { ChannelFundingError } from '../errors.js';
 import {
   deriveChannelPDA,
+  deriveVaultPDA,
   deriveAssociatedTokenAccount,
 } from './solana-payment-channel.js';
 
@@ -541,6 +542,103 @@ describe('OnChainChannelClient', () => {
           peerAddress: APEX_PUBKEY,
         })
       ).rejects.toThrow(/token mint/i);
+    });
+
+    // ── #473: the open runs on the NEGOTIATED program ─────────────────────────
+    //
+    // The greeting's `programId` reaches the opener as
+    // `OpenChannelParams.tokenNetwork`, and the signed claim's metadata reports
+    // that same program. The open used to ignore it and use config's, so a
+    // divergence would open a channel on one program and assert another.
+    describe('negotiated programId (#473)', () => {
+      // A DIFFERENT program from the client's configured PROGRAM_ID.
+      const GREETING_PROGRAM = '2aEVJ8koWQqLptzTBvPTgcrDsPYtC1jvDVzHVjkGpump';
+
+      it('derives the PDA against the greeting programId, not the config one', async () => {
+        mockRpc(false);
+        const c = makeClient();
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          tokenNetwork: GREETING_PROGRAM,
+          peerAddress: APEX_PUBKEY,
+        });
+
+        expect(result.channelId).toBe(
+          deriveChannelPDA(
+            clientPubkey,
+            APEX_PUBKEY,
+            TOKEN_MINT,
+            GREETING_PROGRAM
+          ).pda
+        );
+        expect(result.channelId).not.toBe(
+          deriveChannelPDA(clientPubkey, APEX_PUBKEY, TOKEN_MINT, PROGRAM_ID)
+            .pda
+        );
+      });
+
+      it('falls back to the config programId when the negotiation names none', async () => {
+        mockRpc(false);
+        const c = makeClient();
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+        });
+
+        expect(result.channelId).toBe(
+          deriveChannelPDA(clientPubkey, APEX_PUBKEY, TOKEN_MINT, PROGRAM_ID)
+            .pda
+        );
+      });
+
+      it('sends a later deposit to the program the channel was opened on', async () => {
+        mockRpc(false);
+        const c = new OnChainChannelClient({
+          evmSigner: signer,
+          chainRpcUrls: {},
+          solanaConfig: {
+            rpcUrl: 'http://localhost:8899',
+            keypair: seed,
+            programId: PROGRAM_ID,
+            tokenMint: TOKEN_MINT,
+          },
+        });
+        const { channelId } = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          tokenNetwork: GREETING_PROGRAM,
+          peerAddress: APEX_PUBKEY,
+        });
+        fetchMock.mockClear();
+
+        await c.depositToChannel(channelId, 100n, { currentDeposit: 0n });
+
+        // The vault PDA is program-scoped: the deposit must carry the vault of
+        // the GREETING program, never the config program's.
+        const txs = fetchMock.mock.calls
+          .map(
+            (call) =>
+              JSON.parse((call[1] as RequestInit).body as string) as {
+                method: string;
+                params: unknown[];
+              }
+          )
+          .filter((b) => b.method === 'sendTransaction')
+          .map((b) => Buffer.from(b.params[0] as string, 'base64'));
+        const negotiatedVault = Buffer.from(
+          base58Decode(deriveVaultPDA(channelId, GREETING_PROGRAM).pda)
+        );
+        const configVault = Buffer.from(
+          base58Decode(deriveVaultPDA(channelId, PROGRAM_ID).pda)
+        );
+        expect(txs.some((tx) => tx.indexOf(negotiatedVault) !== -1)).toBe(true);
+        expect(txs.some((tx) => tx.indexOf(configVault) !== -1)).toBe(false);
+      });
     });
 
     // ── connector#646: the open must COLLATERALIZE the channel ────────────────
