@@ -1,5 +1,25 @@
 # @toon-protocol/client-mcp
 
+## 0.35.0
+
+Numbering-only jump. **No functional change from `0.21.3`** — the code is byte-identical.
+
+This version steps the line over an orphaned block of versions (`0.26.2`–`0.34.3`,
+published 13–16 Jun 2026) that exist on npm but never existed in this repo. They were
+published by the pre-extraction `toon-protocol/town` monorepo, which used a single
+repo-wide `semantic-release` version and shipped every workspace package at the repo
+version, ignoring this package's own `0.1.0`. When `toon-client` was carved out and moved
+to changesets, the line restarted at `0.1.0` and has been climbing toward those numbers
+ever since.
+
+`changeset publish` skips (rather than fails) a version that already exists on npm, so
+growing into that block would have produced silently phantom releases: green CI, a git tag
+and changelog entry, but nothing on the registry, no `.mcpb` bundle, and a broken
+`fixed`-group invariant with `@toon-protocol/views` (which has no orphans). Jumping to
+`0.35.0` clears the block permanently.
+
+The orphaned versions are separately deprecated on npm. See toon-client#477.
+
 ## 0.21.3
 
 ## 0.21.2
