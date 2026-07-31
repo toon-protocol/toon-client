@@ -376,38 +376,60 @@ describe('OnChainChannelClient', () => {
     /**
      * Queue an account-exists/absent + tx-confirm RPC sequence.
      *
-     * `tokenBalance` is what `getTokenAccountBalance` reports for the payer's
-     * SPL account (base units); `null` models an account that does not exist.
+     * `tokenBalance` is what `getTokenAccountBalance` reports (base units) for
+     * every SPL account; `tokenBalanceFor` overrides it per account (the vault
+     * PDA and the payer ATA hold different amounts on the top-up path). `null`
+     * models an account that does not exist — which real Solana reports as the
+     * JSON-RPC error reproduced verbatim below, NOT as a zero balance.
+     * `rpcThrowsFor` makes the named methods fail at the TRANSPORT level (fetch
+     * rejects), which must never be read as evidence about a balance.
      * `lamports` is the payer's native SOL balance (default: comfortably above
      * the rent + fee floor a fresh open needs).
      */
     function mockRpc(
       channelExists: boolean,
-      opts: { tokenBalance?: string | null; lamports?: number } = {}
+      opts: {
+        tokenBalance?: string | null;
+        tokenBalanceFor?: (account: string) => string | null;
+        rpcThrowsFor?: string[];
+        lamports?: number;
+      } = {}
     ): void {
-      const tokenBalance =
+      const flat =
         opts.tokenBalance === undefined ? '1000000000' : opts.tokenBalance;
+      const tokenBalanceFor = opts.tokenBalanceFor ?? (() => flat);
       const lamports = opts.lamports ?? 1_000_000_000;
       fetchMock = vi.fn(async (_url: unknown, init: RequestInit) => {
-        const body = JSON.parse(init.body as string) as { method: string };
+        const body = JSON.parse(init.body as string) as {
+          method: string;
+          params: unknown[];
+        };
+        if (opts.rpcThrowsFor?.includes(body.method)) {
+          throw new TypeError('fetch failed');
+        }
         let result: unknown;
         switch (body.method) {
           case 'getBalance':
             result = { value: lamports };
             break;
-          case 'getTokenAccountBalance':
-            if (tokenBalance === null) {
+          case 'getTokenAccountBalance': {
+            const balance = tokenBalanceFor(body.params[0] as string);
+            if (balance === null) {
               return {
                 ok: true,
                 json: async () => ({
                   jsonrpc: '2.0',
                   id: 1,
-                  error: { code: -32602, message: 'could not find account' },
+                  error: {
+                    code: -32602,
+                    message: 'Invalid param: could not find account',
+                  },
                 }),
               } as unknown as Response;
             }
-            result = { value: { amount: tokenBalance, decimals: 6 } };
+            result = { value: { amount: balance, decimals: 6 } };
             break;
+          }
           case 'getAccountInfo':
             result = {
               value: channelExists
@@ -819,8 +841,28 @@ describe('OnChainChannelClient', () => {
         expect(sentTxBytes()).toHaveLength(0);
       });
 
-      it('skips the funding preflight on the idempotent re-open path', async () => {
-        mockRpc(true, { tokenBalance: null, lamports: 0 });
+      // A node that does not ANSWER says nothing about the user's balance.
+      // Collapsing that into "account does not exist" would accuse a fully
+      // funded wallet of being empty every time the RPC hiccups.
+      it('does NOT turn a transient RPC failure into a funding error', async () => {
+        mockRpc(false, { rpcThrowsFor: ['getTokenAccountBalance'] });
+        const c = makeClient();
+        const open = c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+        await expect(open).rejects.toThrow(/fetch failed/);
+        await expect(open).rejects.not.toBeInstanceOf(ChannelFundingError);
+        expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      it('never re-initializes an existing channel, and needs no rent for it', async () => {
+        // Vault already at target, so nothing to top up — and no rent floor,
+        // since both accounts already exist and are already rent-exempt.
+        mockRpc(true, { tokenBalance: '100000', lamports: 5_000 });
         const c = makeClient();
         const result = await c.openChannel({
           peerId: 'apex',
@@ -830,7 +872,67 @@ describe('OnChainChannelClient', () => {
           initialDeposit: '100000',
         });
         expect(result.status).toBe('opening');
+        expect(result.depositTotal).toBe(100000n);
         expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      // ── an EXISTING 0-collateral channel must not stay that way ─────────────
+      //
+      // The connector#646 channel is open on devnet with an empty vault. A fix
+      // that only collateralized FRESH opens would leave it — and every client
+      // that resumes it — signing unredeemable claims forever.
+      it('tops up an already-open channel whose vault is under-collateralized', async () => {
+        const channelPDA = deriveChannelPDA(
+          clientPubkey,
+          APEX_PUBKEY,
+          TOKEN_MINT,
+          PROGRAM_ID
+        ).pda;
+        const vault = deriveVaultPDA(channelPDA, PROGRAM_ID).pda;
+        mockRpc(true, {
+          // The #646 state exactly: channel open, vault empty, payer funded.
+          tokenBalanceFor: (account) => (account === vault ? '0' : '50000000'),
+        });
+        const c = makeClient();
+
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+
+        expect(result.channelId).toBe(channelPDA);
+        expect(depositedAmount(100000n)).toBe(true);
+        expect(result.depositTotal).toBe(100000n);
+      });
+
+      it('deposits only the SHORTFALL on a partially-collateralized channel', async () => {
+        const channelPDA = deriveChannelPDA(
+          clientPubkey,
+          APEX_PUBKEY,
+          TOKEN_MINT,
+          PROGRAM_ID
+        ).pda;
+        const vault = deriveVaultPDA(channelPDA, PROGRAM_ID).pda;
+        mockRpc(true, {
+          tokenBalanceFor: (account) =>
+            account === vault ? '40000' : '50000000',
+        });
+        const c = makeClient();
+
+        const result = await c.openChannel({
+          peerId: 'apex',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          peerAddress: APEX_PUBKEY,
+          initialDeposit: '100000',
+        });
+
+        expect(depositedAmount(60000n)).toBe(true); // 100000 − 40000
+        expect(depositedAmount(100000n)).toBe(false);
+        expect(result.depositTotal).toBe(100000n);
       });
 
       // ── #474(b): native SOL is a SEPARATE requirement from the SPL token ────
