@@ -27,7 +27,11 @@ import {
 import { readExchangeOutcome, sealExchange } from './wire/sealed-exchange.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
-import { ToonClientError } from './errors.js';
+import {
+  ToonClientError,
+  ChannelFundingError,
+  isInsufficientGasError,
+} from './errors.js';
 import { EvmSigner } from './signing/evm-signer.js';
 import { SolanaSigner } from './signing/solana-signer.js';
 import { MinaSigner } from './signing/mina-signer.js';
@@ -164,6 +168,14 @@ export class ToonClient {
   /** Concrete on-chain client, kept so deposit/withdraw can reach chain methods. */
   private onChainChannelClient?: OnChainChannelClient;
   private readonly peerNegotiations = new Map<string, PeerNegotiation>();
+  /**
+   * Peers whose x402 greeting advertised a Solana settlement leg that this
+   * client could not weigh, because `config.solanaChannel` is unset and
+   * {@link getBalances} therefore reports no Solana balance at all (issue
+   * #474). The EVM leg was taken by default for these; if opening it then
+   * fails for lack of funds, {@link withSolanaLegHint} says so.
+   */
+  private readonly unreadableSolanaLegs = new Set<string>();
   /**
    * Asks terminating connectors for their identity key, caching one per
    * client edge. A packet cannot be formed without the key of the connector
@@ -715,21 +727,24 @@ export class ToonClient {
         String(error),
         error instanceof Error ? error.stack : ''
       );
-      // Three conditions are raised by THIS method before any packet exists,
-      // and name a thing the caller can fix: the destination is not
-      // terminated here, there is no client edge to ask at all, or no
-      // channel negotiation exists AND the greeting-based bootstrap
-      // (connector #617) found nothing to synthesize one from. Wrapping any
-      // of them in `PUBLISH_ERROR` would hide the one fact worth surfacing
-      // behind the most generic code this method has. Everything else —
-      // including a connector that will not answer for its identity — keeps
-      // the existing wrapping, so `PUBLISH_ERROR` still means "the publish
-      // itself failed".
+      // These conditions are raised before any packet exists and name a thing
+      // the caller can fix: the destination is not terminated here, there is
+      // no client edge to ask at all, no channel negotiation exists AND the
+      // greeting-based bootstrap (connector #617) found nothing to synthesize
+      // one from, or the settlement wallet cannot fund the one-time on-chain
+      // channel open (`CHANNEL_FUNDING` — which carries the wallet, the chain,
+      // and, for an unreadable Solana leg, the missing config, see
+      // {@link withSolanaLegHint}). Wrapping any of them in `PUBLISH_ERROR`
+      // would hide the one fact worth surfacing behind the most generic code
+      // this method has. Everything else — including a connector that will not
+      // answer for its identity — keeps the existing wrapping, so
+      // `PUBLISH_ERROR` still means "the publish itself failed".
       if (
         error instanceof ToonClientError &&
         (error.code === 'NO_TERMINATED_ROUTE' ||
           error.code === 'NO_CONNECTOR_EDGE' ||
-          error.code === 'PEER_NOT_NEGOTIATED')
+          error.code === 'PEER_NOT_NEGOTIATED' ||
+          error.code === 'CHANNEL_FUNDING')
       ) {
         throw error;
       }
@@ -1056,10 +1071,15 @@ export class ToonClient {
           'PEER_NOT_NEGOTIATED'
         );
       }
-      const channelId = await this.channelManager.ensureChannel(
-        peerId,
-        negotiation
-      );
+      let channelId: string;
+      try {
+        channelId = await this.channelManager.ensureChannel(
+          peerId,
+          negotiation
+        );
+      } catch (error) {
+        throw this.withSolanaLegHint(peerId, error);
+      }
       const proof = await this.channelManager.signBalanceProof(
         channelId,
         amount
@@ -1141,7 +1161,11 @@ export class ToonClient {
         'PEER_NOT_NEGOTIATED'
       );
     }
-    return this.channelManager.ensureChannel(peerId, negotiation);
+    try {
+      return await this.channelManager.ensureChannel(peerId, negotiation);
+    } catch (error) {
+      throw this.withSolanaLegHint(peerId, error);
+    }
   }
 
   /**
@@ -1601,11 +1625,18 @@ export class ToonClient {
    *
    * A two-chain greeting (connector #632's `extra.settlements`) prefers EVM
    * — the long-standing default — UNLESS the wallet holds Solana
-   * settlement-token/native funds and holds none on EVM (issue #470), in
-   * which case it opens the Solana leg instead: a wallet funded only with
-   * Solana devnet assets can bootstrap exactly as an EVM one does. A
-   * Solana-only greeting (no EVM leg at all) always opens Solana — there is
-   * nothing to compare funds against.
+   * settlement-token funds and holds none on EVM (issue #470), in which case
+   * it opens the Solana leg instead: a wallet funded only with Solana devnet
+   * assets can bootstrap exactly as an EVM one does. A Solana-only greeting
+   * (no EVM leg at all) always opens Solana — there is nothing to compare
+   * funds against.
+   *
+   * That comparison is only as good as what {@link getBalances} can SEE: with
+   * no `solanaChannel` config it cannot read the Solana side at all, so a
+   * Solana-funded client silently looks broke and takes the EVM leg (issue
+   * #474). We cannot fix the read here — the config genuinely isn't there —
+   * but we remember the peer so the resulting EVM funding failure names the
+   * missing config instead of reading as a plain "fund your wallet".
    *
    * Never throws: this is a fallback on a path that already has a precise
    * error (`PEER_NOT_NEGOTIATED`), and a transport failure while ASKING
@@ -1637,6 +1668,10 @@ export class ToonClient {
         negotiation = this.solanaNegotiationFromSettlement(solanaSettlement);
       } else if (evmSettlement) {
         negotiation = this.evmNegotiationFromSettlement(evmSettlement);
+        // EVM chosen while the greeting also offered Solana we could not read.
+        if (solanaSettlement && !this.canReadSolanaBalance()) {
+          this.unreadableSolanaLegs.add(peerId);
+        }
       }
       if (!negotiation) return undefined;
 
@@ -1696,10 +1731,20 @@ export class ToonClient {
   /**
    * Whether a two-chain greeting-bootstrap should open the Solana leg
    * instead of the default EVM one (issue #470): the wallet holds Solana
-   * settlement funds and holds none on EVM. Reads {@link getBalances}, which
-   * is itself best-effort per chain (a missing config or failed RPC read
-   * just omits that chain) — this never throws, degrading to "prefer EVM"
-   * (the pre-existing default) on any read failure.
+   * SETTLEMENT-TOKEN funds and holds none on EVM.
+   *
+   * Reads {@link getBalances}, which reports one balance per chain — the SPL
+   * settlement token on Solana, NOT native SOL (issue #474). That is
+   * deliberate: SOL alone cannot collateralize a channel, so a SOL-only
+   * wallet must not steer the negotiation to Solana. The native SOL a fresh
+   * open needs for rent + fees is checked separately, at open time, by the
+   * Solana opener's funding preflight.
+   *
+   * `getBalances` is itself best-effort per chain (a missing config or failed
+   * RPC read just omits that chain) — this never throws, degrading to "prefer
+   * EVM" (the pre-existing default) on any read failure. When Solana is
+   * omitted because `solanaChannel` is unset, see
+   * {@link canReadSolanaBalance} / {@link unreadableSolanaLegs}.
    */
   private async walletPrefersSolana(): Promise<boolean> {
     try {
@@ -1710,6 +1755,42 @@ export class ToonClient {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Whether {@link getBalances} can report a Solana balance at all — the exact
+   * condition that reader gates on. False means a Solana-funded wallet reads
+   * as empty, so `walletPrefersSolana` cannot see its funds.
+   */
+  private canReadSolanaBalance(): boolean {
+    const sol = this.config.solanaChannel;
+    return Boolean(this.getSolanaAddress() && sol?.rpcUrl && sol.tokenMint);
+  }
+
+  /**
+   * Re-throw a channel-open failure with the missing-`solanaChannel` diagnosis
+   * attached (issue #474).
+   *
+   * When the peer's greeting advertised a Solana leg this client could not
+   * evaluate, "the EVM wallet has no funds/gas" is a symptom, not the cause:
+   * the funds may be sitting on Solana, invisible because `solanaChannel` is
+   * unconfigured. Only funding failures are rewritten — every other error is
+   * returned untouched, since a transport/RPC/contract fault has nothing to do
+   * with which chain was picked.
+   */
+  private withSolanaLegHint(peerId: string, error: unknown): unknown {
+    if (!this.unreadableSolanaLegs.has(peerId)) return error;
+    const isFunding =
+      error instanceof ChannelFundingError || isInsufficientGasError(error);
+    if (!isFunding) return error;
+    const detail = error instanceof Error ? error.message : String(error);
+    return new ChannelFundingError(
+      `${detail} NOTE: the route also offered a Solana settlement leg, but this ` +
+        `client has no \`solanaChannel\` config (rpcUrl + tokenMint), so its Solana ` +
+        `balance could not be read and the EVM leg was chosen by default. If the ` +
+        `wallet is funded on Solana, configure \`solanaChannel\` and retry.`,
+      error instanceof Error ? error : undefined
+    );
   }
 
   private resolvePeerId(destination: string): string {

@@ -359,22 +359,56 @@ async function getTokenAccountBalance(
   }
 }
 
+/** Native SOL balance (lamports) of an account; 0 for an account that does not exist. */
+async function getLamports(rpcUrl: string, pubkey: string): Promise<bigint> {
+  const result = (await solanaRpc(rpcUrl, 'getBalance', [
+    pubkey,
+    { commitment: 'confirmed' },
+  ])) as { value?: number | string } | null;
+  return BigInt(result?.value ?? 0);
+}
+
+/**
+ * Native SOL (lamports) a FRESH channel open must be able to spend: rent
+ * exemption for the 178-byte channel account (~0.00212 SOL) plus the 165-byte
+ * SPL vault token account (~0.00204 SOL) plus signature fees. The devnet open
+ * behind connector#646 spent ≈0.0042 SOL end to end, which is what this floor
+ * records — deliberately not padded, so the check only ever rejects an open
+ * that could not have succeeded anyway.
+ */
+export const MIN_LAMPORTS_FOR_CHANNEL_OPEN = 4_200_000n;
+
 /**
  * Fail an on-chain open BEFORE spending anything when the payer cannot fund it.
  *
- * The Solana program pulls the deposit from `payerTokenAccount` with an SPL
- * transfer, so an absent or short token account aborts the deposit instruction
- * with an opaque program error AFTER `initialize_channel` has already created a
- * (rent-paying, 0-collateral) channel — exactly the state connector#646
- * observed. Reading the balance first turns that into an actionable
- * {@link ChannelFundingError}.
+ * Two distinct assets are required and neither implies the other: native SOL
+ * pays the rent for the channel + vault accounts and the signature fees, while
+ * the SPL settlement token is what the `deposit` instruction moves into the
+ * vault. A wallet holding USDC but no SOL fails partway through the open; a
+ * wallet holding SOL but no USDC aborts the deposit AFTER `initialize_channel`
+ * has already created a (rent-paying, 0-collateral) channel — exactly the state
+ * connector#646 observed. Reading both up front turns either case into an
+ * actionable {@link ChannelFundingError}.
  */
 async function assertOpenFunding(opts: {
   rpcUrl: string;
+  payerPubkey: string;
   tokenMint: string;
   deposit?: { amount: bigint; payerTokenAccount: string };
 }): Promise<void> {
-  const { rpcUrl, tokenMint, deposit } = opts;
+  const { rpcUrl, payerPubkey, tokenMint, deposit } = opts;
+
+  const lamports = await getLamports(rpcUrl, payerPubkey);
+  if (lamports < MIN_LAMPORTS_FOR_CHANNEL_OPEN) {
+    throw new ChannelFundingError(
+      `Solana settlement wallet ${payerPubkey} holds ${lamports} lamports, below the ` +
+        `~${MIN_LAMPORTS_FOR_CHANNEL_OPEN} needed to open a payment channel (rent for the ` +
+        `channel + vault accounts, plus signature fees). Native SOL is separate from the ` +
+        `settlement token: holding the SPL token is not enough. Airdrop/fund SOL to that ` +
+        `address and retry.`
+    );
+  }
+
   if (!deposit || deposit.amount <= 0n) return;
 
   const held = await getTokenAccountBalance(rpcUrl, deposit.payerTokenAccount);
@@ -696,7 +730,12 @@ export async function openSolanaChannel(
 
   // Only a FRESH open pays rent + collateral, so the funding preflight runs
   // after the idempotency check — a re-open of an existing channel needs neither.
-  await assertOpenFunding({ rpcUrl, tokenMint, deposit: params.deposit });
+  await assertOpenFunding({
+    rpcUrl,
+    payerPubkey,
+    tokenMint,
+    deposit: params.deposit,
+  });
 
   const payerPublicKey = padTo32(base58Decode(payerPubkey));
   const payer: Signer = { publicKey: payerPublicKey, privateKey: payerSeed };

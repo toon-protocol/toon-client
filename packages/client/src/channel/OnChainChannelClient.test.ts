@@ -9,6 +9,7 @@ import {
   deriveChannelPDA,
   deriveVaultPDA,
   deriveAssociatedTokenAccount,
+  MIN_LAMPORTS_FOR_CHANNEL_OPEN,
 } from './solana-payment-channel.js';
 
 // Mock viem module
@@ -377,17 +378,23 @@ describe('OnChainChannelClient', () => {
      *
      * `tokenBalance` is what `getTokenAccountBalance` reports for the payer's
      * SPL account (base units); `null` models an account that does not exist.
+     * `lamports` is the payer's native SOL balance (default: comfortably above
+     * the rent + fee floor a fresh open needs).
      */
     function mockRpc(
       channelExists: boolean,
-      opts: { tokenBalance?: string | null } = {}
+      opts: { tokenBalance?: string | null; lamports?: number } = {}
     ): void {
       const tokenBalance =
         opts.tokenBalance === undefined ? '1000000000' : opts.tokenBalance;
+      const lamports = opts.lamports ?? 1_000_000_000;
       fetchMock = vi.fn(async (_url: unknown, init: RequestInit) => {
         const body = JSON.parse(init.body as string) as { method: string };
         let result: unknown;
         switch (body.method) {
+          case 'getBalance':
+            result = { value: lamports };
+            break;
           case 'getTokenAccountBalance':
             if (tokenBalance === null) {
               return {
@@ -813,7 +820,7 @@ describe('OnChainChannelClient', () => {
       });
 
       it('skips the funding preflight on the idempotent re-open path', async () => {
-        mockRpc(true, { tokenBalance: null });
+        mockRpc(true, { tokenBalance: null, lamports: 0 });
         const c = makeClient();
         const result = await c.openChannel({
           peerId: 'apex',
@@ -824,6 +831,54 @@ describe('OnChainChannelClient', () => {
         });
         expect(result.status).toBe('opening');
         expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      // ── #474(b): native SOL is a SEPARATE requirement from the SPL token ────
+      //
+      // Rent for the channel + vault accounts and the signature fees are paid
+      // in SOL. A wallet full of USDC but empty of SOL used to get as far as
+      // submitting the open and fail on-chain, with nothing naming SOL.
+      it('refuses when the payer holds the settlement token but no SOL for rent/fees', async () => {
+        mockRpc(false, { lamports: 1000 });
+        const c = makeClient();
+        await expect(
+          c.openChannel({
+            peerId: 'apex',
+            chain: SOLANA_CHAIN,
+            token: TOKEN_MINT,
+            peerAddress: APEX_PUBKEY,
+            initialDeposit: '100000',
+          })
+        ).rejects.toThrow(/lamports.*payment channel|SOL/i);
+        expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      it('checks SOL even for a deposit-less open — the accounts still cost rent', async () => {
+        mockRpc(false, { lamports: 0 });
+        const c = makeClient();
+        await expect(
+          c.openChannel({
+            peerId: 'apex',
+            chain: SOLANA_CHAIN,
+            token: TOKEN_MINT,
+            peerAddress: APEX_PUBKEY,
+          })
+        ).rejects.toThrow(ChannelFundingError);
+        expect(sentTxBytes()).toHaveLength(0);
+      });
+
+      it('proceeds once the wallet clears the rent + fee floor', async () => {
+        mockRpc(false, { lamports: Number(MIN_LAMPORTS_FOR_CHANNEL_OPEN) });
+        const c = makeClient();
+        await expect(
+          c.openChannel({
+            peerId: 'apex',
+            chain: SOLANA_CHAIN,
+            token: TOKEN_MINT,
+            peerAddress: APEX_PUBKEY,
+            initialDeposit: '100000',
+          })
+        ).resolves.toMatchObject({ status: 'opening' });
       });
     });
 
