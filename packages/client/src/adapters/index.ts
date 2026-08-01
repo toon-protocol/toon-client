@@ -12,6 +12,12 @@ export {
   type BtpRuntimeClientConfig,
 } from './BtpRuntimeClient.js';
 export {
+  BtpPaidWriteTransport,
+  type BtpPaidWriteTransportConfig,
+  type ClaimSendingTransport,
+  type OrderedBtpSession,
+} from './BtpPaidWriteTransport.js';
+export {
   HttpIlpClient,
   type HttpIlpClientConfig,
   httpEndpointToBtpUrl,

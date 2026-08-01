@@ -331,6 +331,28 @@ export interface ToonClientConfig {
   connectorSupportsUpgrade?: boolean;
 
   /**
+   * Prefer the persistent, strictly-ordered {@link BtpPaidWriteTransport} for
+   * paid writes (`publishEvent`/`sendSwapPacket`/`sendPayment`) over the
+   * default stateless HTTP one-shot transport, when a `btpUrl` is configured.
+   *
+   * The BTP client-facing websocket ingress processes claims on one session
+   * strictly in arrival order (client-edge-spec.md §1.9), which is what a
+   * burst of concurrent paid writes on one channel needs to avoid racing
+   * itself into `F01 NonceNotAdvancing` — a failure mode possible on the
+   * default stateless HTTP transport, where each write is an independent
+   * request. Set this when the consumer sends many paid writes on one
+   * channel in quick succession (e.g. relay-native huddle audio frames);
+   * leave it unset for ordinary publish-and-forget usage.
+   *
+   * Default: `false` — paid writes keep going through the existing HTTP
+   * transport unchanged (toon-client#482 productizes BTP as an opt-in
+   * upgrade, not a default-behavior change). When `true` and no `btpUrl`
+   * (directly or derived) resolves, this has no effect — the existing
+   * transport selection is unchanged.
+   */
+  preferBtpForPaidWrites?: boolean;
+
+  /**
    * ILP destination address for event publishing.
    * Defaults to the connector's local address (derived from connectorUrl host).
    * For multi-hop routing, set this to the target node's ILP address.
