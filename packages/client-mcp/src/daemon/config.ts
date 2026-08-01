@@ -418,10 +418,17 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     | ToonClientConfig['network']
     | undefined;
 
-  // Active settlement chain + the matching apex negotiation.
-  const chain = (process.env['TOON_CLIENT_CHAIN'] ??
-    file.chain ??
-    'evm') as SettlementChain;
+  // Active settlement chain + the matching apex negotiation. `explicitChain`
+  // is undefined unless the user actually set TOON_CLIENT_CHAIN or `chain` —
+  // it is threaded into `toonClientConfig.preferredChain` as-is (#485) so
+  // ToonClient can tell "explicitly evm" apart from "defaulted to evm" and
+  // only enforces/throws in the former case; `chain` keeps its silent
+  // 'evm' default for the apex-negotiation selection below, which always
+  // needs a concrete value.
+  const explicitChain = (process.env['TOON_CLIENT_CHAIN'] ?? file.chain) as
+    | SettlementChain
+    | undefined;
+  const chain = explicitChain ?? 'evm';
   // Negotiation precedence: explicit per-chain → explicit single apex → a
   // proxy-mode negotiation synthesized from the flat settlement config. The last
   // one lets a proxy-only daemon settle paid writes WITHOUT a manual `apex`
@@ -466,6 +473,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     knownPeers: [],
     channelStorePath,
     ...(network ? { network } : {}),
+    ...(explicitChain ? { preferredChain: explicitChain } : {}),
     ...(file.supportedChains ? { supportedChains: file.supportedChains } : {}),
     ...(file.settlementAddresses
       ? { settlementAddresses: file.settlementAddresses }
