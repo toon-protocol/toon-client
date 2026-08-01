@@ -108,6 +108,7 @@ import type {
   GitStatusRequest,
   HttpFetchPaidRequest,
   HttpFetchPaidResponse,
+  Nip59UnwrapResponse,
   NostrFilter,
   PublishResponse,
   PublishUnsignedRequest,
@@ -189,6 +190,17 @@ export interface ToonClientLike {
    * paths so a UI/agent supplies only the event shell.
    */
   signEvent(template: EventTemplate): NostrEvent | Promise<NostrEvent>;
+  /**
+   * Unwrap a NIP-59 gift wrap (kind:1059) addressed to this identity,
+   * decrypting both NIP-44 layers with the daemon-held Nostr key (the key
+   * never leaves the daemon). Backs `POST /nip59-unwrap` (toon-meta#256).
+   * Throws `GiftWrapAddressError` (malformed/wrong-kind/not-addressed) or
+   * `GiftWrapDecryptError` (a NIP-44 layer failed, or seal verification
+   * failed) — see `@toon-protocol/client`'s `nip59.ts`.
+   */
+  unwrapGiftWrap(
+    wrap: NostrEvent
+  ): Nip59UnwrapResponse | Promise<Nip59UnwrapResponse>;
   /**
    * Upload bytes to Arweave via the kind:5094 blob-storage DVM (single-packet),
    * returning the Arweave tx id. Reuses the client's claim/channel plumbing.
@@ -1299,6 +1311,22 @@ export class ClientRunner {
       ...(req.fee ? { fee: req.fee } : {}),
       ...(req.btpUrl ? { btpUrl: req.btpUrl } : {}),
     });
+  }
+
+  /**
+   * Unwrap a NIP-59 gift wrap addressed to this daemon's identity, using the
+   * daemon-held Nostr key for both NIP-44 layers (toon-meta#256). Free — no
+   * apex/BTP/channel involved, since decryption is a pure identity-level
+   * operation, not a paid write. Reaches `identityClient` (not a specific
+   * apex) because the Nostr identity — and its secret key — is shared across
+   * every apex; there is exactly one to unwrap with regardless of which
+   * apexes are registered.
+   *
+   * Errors (`GiftWrapAddressError` / `GiftWrapDecryptError`) propagate as-is
+   * for `routes.ts` to map to 400 / 422.
+   */
+  async nip59Unwrap(wrap: NostrEvent): Promise<Nip59UnwrapResponse> {
+    return this.identityClient.unwrapGiftWrap(wrap);
   }
 
   /**

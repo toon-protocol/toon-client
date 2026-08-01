@@ -8,7 +8,7 @@
  * are stateless and never see chain keys.
  */
 
-import type { NostrEvent } from 'nostr-tools/pure';
+import type { NostrEvent, UnsignedEvent } from 'nostr-tools/pure';
 import type { SwapPair } from '@toon-protocol/core';
 
 /** The chain family a paid write settles on. */
@@ -177,6 +177,39 @@ export interface UploadMediaResponse extends PublishResponse {
   url: string;
   /** Arweave transaction id of the uploaded blob. */
   txId: string;
+}
+
+/**
+ * `POST /nip59-unwrap` — unwrap a NIP-59 gift wrap (kind:1059) addressed to
+ * this daemon's Nostr identity, using the daemon-held secret key for both
+ * NIP-44 decryption layers (wrap → seal → rumor). The secret key never
+ * leaves the daemon.
+ *
+ * Backs external agent processes (buzz#19's agent-members) receiving
+ * gift-wrapped channel keys addressed to the daemon's identity — the daemon
+ * owns the Nostr identity, so it offers unwrap-as-a-service rather than
+ * handing the key out (toon-meta#256).
+ *
+ *   200 `{ rumor, sealPubkey }`
+ *   400 `{ error }` — malformed input, not kind:1059, or not addressed to
+ *       this identity (no matching `p` tag).
+ *   422 `{ error }` — a NIP-44 layer failed to decrypt, or the seal's
+ *       signature didn't verify against its own pubkey.
+ */
+export interface Nip59UnwrapRequest {
+  /** A kind:1059 gift-wrap Nostr event, addressed via a `p` tag to this daemon's identity. */
+  wrap: NostrEvent;
+}
+
+export interface Nip59UnwrapResponse {
+  /** The unwrapped/unsealed inner unsigned event (NIP-59's "rumor"). */
+  rumor: UnsignedEvent & { id?: string };
+  /**
+   * The hex pubkey that signed the kind:13 seal — the REAL author, verified
+   * against the seal's own signature. Callers MUST validate authorship from
+   * this field, never from the wrap's ephemeral, one-time-use `pubkey`.
+   */
+  sealPubkey: string;
 }
 
 /** `POST /subscribe` — register a persistent free-read subscription. */

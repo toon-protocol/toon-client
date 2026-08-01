@@ -23,6 +23,7 @@ import {
   NonFastForwardError,
   OversizeObjectsError,
 } from '@toon-protocol/rig';
+import { GiftWrapAddressError, GiftWrapDecryptError } from '@toon-protocol/client';
 import type {
   AddApexRequest,
   AddRelayRequest,
@@ -38,6 +39,7 @@ import type {
   ChannelDepositRequest,
   CloseChannelRequest,
   SettleChannelRequest,
+  Nip59UnwrapRequest,
   OpenChannelRequest,
   PublishRequest,
   PublishUnsignedRequest,
@@ -82,6 +84,23 @@ export function registerRoutes(
       }
       try {
         return await runner.publishUnsigned(body);
+      } catch (err) {
+        return mapError(reply, err);
+      }
+    }
+  );
+
+  app.post<{ Body: Nip59UnwrapRequest }>(
+    '/nip59-unwrap',
+    async (req, reply) => {
+      const body = req.body;
+      if (!body || typeof body.wrap !== 'object' || body.wrap === null) {
+        return sendError(reply, 400, 'invalid_wrap', {
+          detail: 'body.wrap (a kind:1059 gift-wrap Nostr event) is required.',
+        });
+      }
+      try {
+        return await runner.nip59Unwrap(body.wrap);
       } catch (err) {
         return mapError(reply, err);
       }
@@ -464,6 +483,16 @@ function isSignedEvent(event: unknown): event is NostrEvent {
 }
 
 function mapError(reply: FastifyReply, err: unknown): FastifyReply {
+  if (err instanceof GiftWrapAddressError) {
+    // Malformed, wrong kind, or not addressed to this identity — all
+    // caller-fixable without retrying the crypto.
+    return sendError(reply, 400, 'invalid_wrap', { detail: err.message });
+  }
+  if (err instanceof GiftWrapDecryptError) {
+    // 422 Unprocessable Entity: the wrap was addressable but a NIP-44 layer
+    // didn't decrypt, or the seal's signature didn't verify.
+    return sendError(reply, 422, 'decrypt_failed', { detail: err.message });
+  }
   if (err instanceof NotReadyError) {
     return sendError(reply, 503, 'bootstrapping', {
       detail: err.message,

@@ -47,6 +47,40 @@ describe('ControlClient', () => {
     expect(JSON.parse(init.body)).toEqual({ event: { id: 'e1' } });
   });
 
+  it('POSTs nip59Unwrap with a JSON body and content-type', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        rumor: { kind: 30078, content: 'x', tags: [], created_at: 1, pubkey: 'p1' },
+        sealPubkey: 'seal-pubkey',
+      })
+    );
+    const client = new ControlClient({
+      baseUrl: 'http://127.0.0.1:8787',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res = await client.nip59Unwrap({ wrap: { id: 'w1' } as any });
+    expect(res.sealPubkey).toBe('seal-pubkey');
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe('http://127.0.0.1:8787/nip59-unwrap');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ wrap: { id: 'w1' } });
+  });
+
+  it('throws ControlApiError 422 when nip59Unwrap fails to decrypt', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ error: 'decrypt_failed' }, 422));
+    const client = new ControlClient({
+      baseUrl: 'http://127.0.0.1:8787',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client.nip59Unwrap({ wrap: { id: 'w1' } as any })
+    ).rejects.toMatchObject({ name: 'ControlApiError', status: 422 });
+  });
+
   it('builds the events query string', async () => {
     const fetchImpl = vi
       .fn()

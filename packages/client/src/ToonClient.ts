@@ -25,6 +25,10 @@ import {
   type ConnectorSolanaSettlementTerms,
 } from './adapters/ConnectorEdgeClient.js';
 import { readExchangeOutcome, sealExchange } from './wire/sealed-exchange.js';
+import {
+  unwrapGiftWrapWithKey,
+  type UnwrappedGiftWrap,
+} from './nip59.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import {
@@ -237,6 +241,31 @@ export class ToonClient {
    */
   signEvent(template: EventTemplate): NostrEvent {
     return finalizeEvent(template, this.config.secretKey);
+  }
+
+  /**
+   * Unwrap a NIP-59 gift wrap (kind:1059) addressed to this client's own
+   * Nostr identity, decrypting both NIP-44 layers with the identity's secret
+   * key. The secret key never leaves this call — only the decrypted rumor
+   * and the seal's (signature-verified) signer pubkey come back out.
+   *
+   * Backs the daemon's `POST /nip59-unwrap` control-API endpoint (buzz#19
+   * agent-members receiving gift-wrapped channel keys addressed to the
+   * daemon's identity). Callers MUST validate authorship from the returned
+   * `sealPubkey` — never from `wrap.pubkey`, which NIP-59 mints fresh and
+   * throws away per wrap.
+   *
+   * @throws {GiftWrapAddressError} malformed input, wrong kind, or not
+   *   addressed to this identity.
+   * @throws {GiftWrapDecryptError} a NIP-44 layer failed to decrypt, or the
+   *   seal's signature didn't verify.
+   */
+  unwrapGiftWrap(wrap: NostrEvent): UnwrappedGiftWrap {
+    return unwrapGiftWrapWithKey(
+      this.config.secretKey,
+      this.getPublicKey(),
+      wrap
+    );
   }
 
   /**

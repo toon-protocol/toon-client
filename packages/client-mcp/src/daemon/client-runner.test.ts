@@ -256,6 +256,9 @@ class FakeClient implements ToonClientLike {
       content: template.content,
     };
   }
+  unwrapGiftWrap(): never {
+    throw new Error('unwrapGiftWrap not exercised by client-runner tests');
+  }
   uploadImpl: () => Promise<{
     success: boolean;
     txId?: string;
