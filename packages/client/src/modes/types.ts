@@ -4,6 +4,7 @@ import type { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
 import type { HttpIlpClient } from '../adapters/HttpIlpClient.js';
 import type { HttpConnectorAdmin } from '../adapters/HttpConnectorAdmin.js';
 import type { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
+import type { BtpPaidWriteTransport } from '../adapters/BtpPaidWriteTransport.js';
 import type { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
 
 /**
@@ -30,8 +31,14 @@ export interface HttpModeInitialization {
   /** HTTP client for connector admin operations (add/remove peers). Null when admin not wired. */
   adminClient: HttpConnectorAdmin | null;
 
-  /** BTP client for WebSocket transport. Null when btpUrl not configured. */
-  btpClient: BtpRuntimeClient | null;
+  /**
+   * BTP client for WebSocket transport. Null when btpUrl not configured.
+   * A `BtpPaidWriteTransport` (persistent + strictly-ordered + HTTP
+   * fallback, wrapping the same underlying session) when
+   * `config.preferBtpForPaidWrites` is set (toon-client#482); the raw
+   * `BtpRuntimeClient` otherwise — unchanged default behavior.
+   */
+  btpClient: BtpRuntimeClient | BtpPaidWriteTransport | null;
 
   /** On-chain channel client. Null when EVM not configured. */
   onChainChannelClient: OnChainChannelClient | null;

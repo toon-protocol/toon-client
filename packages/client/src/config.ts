@@ -104,7 +104,9 @@ export function getNetworkStatus(
  *
  * Returns `undefined` for an empty/falsy input so callers can `??`-chain it.
  */
-export function proxyIlpEndpoint(proxyUrl: string | undefined): string | undefined {
+export function proxyIlpEndpoint(
+  proxyUrl: string | undefined
+): string | undefined {
   if (!proxyUrl) return undefined;
   const trimmed = proxyUrl.replace(/\/+$/, '');
   return /\/ilp$/i.test(trimmed) ? trimmed : `${trimmed}/ilp`;
@@ -446,6 +448,7 @@ export function applyDefaults(rawConfig: ToonClientConfig): ResolvedConfig {
     queryTimeout: config.queryTimeout ?? 30000,
     maxRetries: config.maxRetries ?? 3,
     retryDelay: config.retryDelay ?? 1000,
+    preferBtpForPaidWrites: config.preferBtpForPaidWrites ?? false,
     btpUrl,
     destinationAddress: destinationAddress as string, // Always set by logic above
   };

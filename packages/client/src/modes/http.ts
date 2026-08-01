@@ -3,6 +3,7 @@ import type { BootstrapServiceConfig } from '@toon-protocol/core';
 import { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
 import { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
 import { HttpIlpClient } from '../adapters/HttpIlpClient.js';
+import { BtpPaidWriteTransport } from '../adapters/BtpPaidWriteTransport.js';
 import {
   selectIlpTransport,
   readDiscoveredIlpPeer,
@@ -119,6 +120,21 @@ export async function initializeHttpMode(
       retryDelay: config.retryDelay,
     });
 
+  // Wrap the BTP session as the productized paid-write transport
+  // (toon-client#482) when the caller opted in. `preferBtpForPaidWrites`
+  // keeps the DEFAULT behavior above (HTTP-over-`/ilp` for one-shot writes)
+  // unchanged — this only takes effect when a consumer explicitly asks for
+  // strictly-ordered claim dispatch (e.g. a paid-write burst on one
+  // channel), and even then falls back to `httpIlpClient` when the BTP
+  // session's reconnect budget is exhausted.
+  const paidWriteBtpClient: BtpRuntimeClient | BtpPaidWriteTransport | null =
+    btpClient && config.preferBtpForPaidWrites
+      ? new BtpPaidWriteTransport({
+          session: btpClient,
+          ...(httpIlpClient ? { fallback: httpIlpClient } : {}),
+        })
+      : btpClient;
+
   // Create on-chain channel client when chain RPC URLs are configured.
   // evmPrivateKey is always present (derived from secretKey by default).
   let onChainChannelClient: OnChainChannelClient | null = null;
@@ -177,7 +193,7 @@ export async function initializeHttpMode(
     discoveryTracker,
     runtimeClient,
     adminClient: null,
-    btpClient,
+    btpClient: paidWriteBtpClient,
     onChainChannelClient,
   };
 }

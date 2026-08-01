@@ -56,6 +56,7 @@ import {
   type RequestBlobStorageResult,
 } from './blob-storage.js';
 import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
+import type { BtpPaidWriteTransport } from './adapters/BtpPaidWriteTransport.js';
 import type { IlpSendParams } from './adapters/ilp-send.js';
 import {
   Http402Client,
@@ -106,7 +107,7 @@ interface ToonClientState {
   discoveryTracker: DiscoveryTracker;
   runtimeClient: IlpClient;
   peersDiscovered: number;
-  btpClient?: BtpRuntimeClient;
+  btpClient?: BtpRuntimeClient | BtpPaidWriteTransport;
 }
 
 /**
@@ -1005,6 +1006,13 @@ export class ToonClient {
    *      `connectorHttpEndpoint` is configured, else the BtpRuntimeClient.
    *   2. `btpClient` as an explicit fallback (always present when `btpUrl` is set).
    *
+   * `config.preferBtpForPaidWrites` (toon-client#482) SWAPS that order: when
+   * set, `btpClient` — which `modes/http.ts` wraps in a
+   * {@link BtpPaidWriteTransport} for this case, giving persistent,
+   * strictly-ordered claim dispatch with its own fallback to `runtimeClient`
+   * — is tried first, and `runtimeClient` remains as a second candidate.
+   * Default `false` reproduces the exact precedence above, unchanged.
+   *
    * The level-3 `HttpRuntimeClient` (connector-admin HTTP, no `btpUrl` AND no
    * proxy) does NOT implement `sendIlpPacketWithClaim`; in that case there is no
    * paid-write transport and we throw a clear, actionable error.
@@ -1028,10 +1036,14 @@ export class ToonClient {
         'INVALID_STATE'
       );
     }
-    const candidates: (IlpClient | BtpRuntimeClient | undefined)[] = [
-      state.runtimeClient,
-      state.btpClient,
-    ];
+    const candidates: (
+      | IlpClient
+      | BtpRuntimeClient
+      | BtpPaidWriteTransport
+      | undefined
+    )[] = this.config.preferBtpForPaidWrites
+      ? [state.btpClient, state.runtimeClient]
+      : [state.runtimeClient, state.btpClient];
     for (const candidate of candidates) {
       if (
         candidate &&
