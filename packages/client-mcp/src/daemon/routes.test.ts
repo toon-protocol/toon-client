@@ -30,6 +30,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { wrapEvent } from 'nostr-tools/nip59';
+import {
+  unwrapGiftWrapWithKey,
+  type UnwrappedGiftWrap,
+} from '@toon-protocol/client';
 import { registerRoutes } from './routes.js';
 import { ClientRunner, type ToonClientLike } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
@@ -86,6 +92,17 @@ class FakeClient implements ToonClientLike {
       tags: template.tags,
       content: template.content,
     };
+  }
+  /**
+   * A real secp256k1 identity, independent of `getPublicKey()`'s fake `'pk'`
+   * string — used ONLY by the `/nip59-unwrap` route tests (toon-meta#256),
+   * which need genuine NIP-44 crypto to exercise a real wrap→unwrap round
+   * trip through the HTTP layer.
+   */
+  readonly nip59SecretKey = generateSecretKey();
+  readonly nip59Pubkey = getPublicKey(this.nip59SecretKey);
+  unwrapGiftWrap(wrap: NostrEvent): UnwrappedGiftWrap {
+    return unwrapGiftWrapWithKey(this.nip59SecretKey, this.nip59Pubkey, wrap);
   }
   async uploadBlob(): Promise<{
     success: boolean;
@@ -287,6 +304,84 @@ describe('control API routes', () => {
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBe('invalid_event');
+    });
+
+    it('POST /nip59-unwrap unwraps a real gift wrap, returning rumor + sealPubkey', async () => {
+      const senderSecretKey = generateSecretKey();
+      const senderPubkey = getPublicKey(senderSecretKey);
+      const wrap = wrapEvent(
+        { kind: 30078, content: 'super-secret-channel-key', tags: [['d', 'chan']] },
+        senderSecretKey,
+        client.nip59Pubkey
+      );
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/nip59-unwrap',
+        payload: { wrap },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.rumor).toMatchObject({
+        kind: 30078,
+        content: 'super-secret-channel-key',
+        tags: [['d', 'chan']],
+      });
+      // The real author, read off the SEAL — not the wrap's ephemeral pubkey.
+      expect(body.sealPubkey).toBe(senderPubkey);
+      expect(body.sealPubkey).not.toBe(wrap.pubkey);
+    });
+
+    it('POST /nip59-unwrap rejects a wrap addressed to someone else with 400', async () => {
+      const senderSecretKey = generateSecretKey();
+      const someoneElsePubkey = getPublicKey(generateSecretKey());
+      const wrap = wrapEvent(
+        { kind: 1, content: 'not for you' },
+        senderSecretKey,
+        someoneElsePubkey
+      );
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/nip59-unwrap',
+        payload: { wrap },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('invalid_wrap');
+    });
+
+    it('POST /nip59-unwrap rejects a missing wrap with 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/nip59-unwrap',
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('invalid_wrap');
+    });
+
+    it('POST /nip59-unwrap rejects garbage ciphertext with 422', async () => {
+      const senderPubkey = getPublicKey(generateSecretKey());
+      const garbageWrap: NostrEvent = {
+        kind: 1059,
+        pubkey: senderPubkey,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['p', client.nip59Pubkey]],
+        content: 'not-nip44-ciphertext-at-all',
+        id: 'a'.repeat(64),
+        sig: 'b'.repeat(128),
+      };
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/nip59-unwrap',
+        payload: { wrap: garbageWrap },
+      });
+
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error).toBe('decrypt_failed');
     });
 
     it('POST /upload-media uploads + publishes, returning url + txId', async () => {

@@ -21,6 +21,17 @@ export {
   isInsufficientGasError,
 } from './errors.js';
 
+// NIP-59 gift-wrap unwrap (receiver side) — backs the daemon's
+// `POST /nip59-unwrap` control-API endpoint (toon-meta#256).
+export {
+  GiftWrapAddressError,
+  GiftWrapDecryptError,
+  unwrapGiftWrapWithKey,
+  GIFT_WRAP_KIND,
+  SEAL_KIND,
+  type UnwrappedGiftWrap,
+} from './nip59.js';
+
 // HTTP Adapters
 export {
   HttpRuntimeClient,

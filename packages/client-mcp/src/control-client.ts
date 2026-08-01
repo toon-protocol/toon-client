@@ -33,6 +33,8 @@ import type {
   GitStatusRequest,
   HttpFetchPaidRequest,
   HttpFetchPaidResponse,
+  Nip59UnwrapRequest,
+  Nip59UnwrapResponse,
   OpenChannelRequest,
   PublishRequest,
   PublishResponse,
@@ -131,6 +133,16 @@ export class ControlClient {
 
   uploadMedia(body: UploadMediaRequest): Promise<UploadMediaResponse> {
     return this.request<UploadMediaResponse>('POST', '/upload-media', body);
+  }
+
+  /**
+   * Unwrap a NIP-59 gift wrap (kind:1059) addressed to the daemon's own
+   * Nostr identity. Throws `ControlApiError` with `status: 400` (malformed /
+   * wrong kind / not addressed to this identity) or `422` (a NIP-44 layer
+   * failed to decrypt, or the seal's signature didn't verify).
+   */
+  nip59Unwrap(body: Nip59UnwrapRequest): Promise<Nip59UnwrapResponse> {
+    return this.request<Nip59UnwrapResponse>('POST', '/nip59-unwrap', body);
   }
 
   subscribe(body: SubscribeRequest): Promise<SubscribeResponse> {

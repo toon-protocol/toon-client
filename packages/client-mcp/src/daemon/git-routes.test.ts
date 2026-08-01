@@ -228,6 +228,9 @@ class FakeClient implements ToonClientLike {
       content: template.content,
     };
   }
+  unwrapGiftWrap(): never {
+    throw new Error('unwrapGiftWrap not exercised by git-routes tests');
+  }
   async uploadBlob(): Promise<{ success: boolean; txId?: string }> {
     return { success: true, txId: 'tx-unused' };
   }
