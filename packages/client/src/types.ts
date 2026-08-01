@@ -259,6 +259,18 @@ export interface ToonClientConfig {
   /** Supported settlement chain identifiers (e.g., ["evm:anvil:31337"]) */
   supportedChains?: string[];
 
+  /**
+   * Explicitly-configured settlement chain FAMILY (e.g. from the daemon's
+   * `TOON_CLIENT_CHAIN` env var / `chain` config field, #485). When set,
+   * default-chain resolution (`getDefaultChainContext`, the lightweight
+   * bootstrap-fallback chain match) MUST pick the `supportedChains` entry
+   * whose family (the part before the first `:`) matches this value —
+   * throwing a clear error instead of silently substituting a different
+   * chain when none matches. Leave unset to keep the pre-#485 behavior of
+   * defaulting to `supportedChains[0]`.
+   */
+  preferredChain?: 'evm' | 'solana' | 'mina';
+
   /** Maps chain identifier to EVM settlement address */
   settlementAddresses?: Record<string, string>;
 

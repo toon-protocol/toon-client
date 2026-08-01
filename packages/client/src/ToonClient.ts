@@ -452,9 +452,11 @@ export class ToonClient {
           };
           const peerChains = peerInfo.supportedChains ?? [];
           const ourChains = this.config.supportedChains ?? [];
-          // Find the first chain both sides support
-          const matchedChain =
-            ourChains.find((c) => peerChains.includes(c)) ?? ourChains[0];
+          const matchedChain = this.matchNegotiatedChain(
+            ourChains,
+            peerChains,
+            result.registeredPeerId
+          );
           if (matchedChain) {
             const peerAddr = peerInfo.settlementAddresses?.[matchedChain];
             const parts = matchedChain.split(':');
@@ -1859,13 +1861,68 @@ export class ToonClient {
   }
 
   /**
-   * Gets the default chain context from the first supported chain in config.
+   * Picks the settlement chain both `ourChains` and `peerChains` support,
+   * used by the lightweight bootstrap-fallback negotiation (peer discovered
+   * but no connector admin registered a chain). Prefers
+   * `this.config.preferredChain`'s family (#485) over array order; falls
+   * back to the first mutually-supported chain (legacy behavior) when
+   * unconfigured.
+   *
+   * @throws {ToonClientError} `CHAIN_NOT_SUPPORTED` if a chain is explicitly
+   *   configured but the peer doesn't support any chain in that family —
+   *   this must fail loudly rather than silently negotiate a different chain.
+   */
+  private matchNegotiatedChain(
+    ourChains: string[],
+    peerChains: string[],
+    peerId: string
+  ): string | undefined {
+    const preferred = this.config.preferredChain;
+    if (preferred) {
+      const matched = ourChains.find(
+        (c) => c.split(':')[0] === preferred && peerChains.includes(c)
+      );
+      if (!matched) {
+        throw new ToonClientError(
+          `Configured chain "${preferred}" is not supported by peer ` +
+            `"${peerId}" (peer supportedChains: ` +
+            `${peerChains.join(', ') || '(none)'}).`,
+          'CHAIN_NOT_SUPPORTED'
+        );
+      }
+      return matched;
+    }
+    return ourChains.find((c) => peerChains.includes(c)) ?? ourChains[0];
+  }
+
+  /**
+   * Gets the default chain context: the explicitly-configured
+   * `preferredChain` family when set (#485 — e.g. `TOON_CLIENT_CHAIN=evm`
+   * must not silently pin to `supportedChains[0]` when that happens to be a
+   * different chain, such as Solana), else the first supported chain.
+   *
+   * @throws {ToonClientError} `CHAIN_NOT_SUPPORTED` if `preferredChain` is
+   *   set but none of `supportedChains` belong to that family — this must
+   *   fail loudly rather than fall back to a chain the caller didn't choose.
    */
   private getDefaultChainContext():
     | { chainId: number; tokenNetworkAddress: string; tokenAddress?: string }
     | undefined {
     const chains = this.config.supportedChains;
     if (!chains?.length) return undefined;
+    const preferred = this.config.preferredChain;
+    if (preferred) {
+      const match = chains.find((c) => c.split(':')[0] === preferred);
+      if (!match) {
+        throw new ToonClientError(
+          `Configured chain "${preferred}" is not supported by this peer ` +
+            `(supportedChains: ${chains.join(', ')}). Set a matching ` +
+            `TOON_CLIENT_CHAIN / preferredChain, or fund a supported chain.`,
+          'CHAIN_NOT_SUPPORTED'
+        );
+      }
+      return this.getChainContext(match);
+    }
     return this.getChainContext(chains[0]);
   }
 

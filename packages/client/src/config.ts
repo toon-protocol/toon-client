@@ -282,6 +282,7 @@ export type ResolvedConfig = Required<
     | 'evmPrivateKey'
     | 'network'
     | 'supportedChains'
+    | 'preferredChain'
     | 'settlementAddresses'
     | 'preferredTokens'
     | 'tokenNetworks'
@@ -321,6 +322,7 @@ export type ResolvedConfig = Required<
   /** Named network tier, retained for `getNetworkStatus()`. */
   network?: ToonClientConfig['network'];
   supportedChains?: string[];
+  preferredChain?: ToonClientConfig['preferredChain'];
   settlementAddresses?: Record<string, string>;
   preferredTokens?: Record<string, string>;
   tokenNetworks?: Record<string, string>;
