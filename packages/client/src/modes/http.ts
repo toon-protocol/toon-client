@@ -4,6 +4,7 @@ import { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
 import { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
 import { HttpIlpClient } from '../adapters/HttpIlpClient.js';
 import { BtpPaidWriteTransport } from '../adapters/BtpPaidWriteTransport.js';
+import { createJobMessageHandler } from '../serve-job.js';
 import {
   selectIlpTransport,
   readDiscoveredIlpPeer,
@@ -83,6 +84,13 @@ export async function initializeHttpMode(
       btpUrl: effectiveBtpUrl,
       peerId: config.btpPeerId ?? `client`,
       authToken: config.btpAuthToken ?? '',
+      // Serve-side job registration (toon-client#494): a connector-originated
+      // MESSAGE carrying a PREPARE is answered by the configured handler.
+      // Unset `jobHandler` leaves `onMessage` unset too, so an inbound job
+      // MESSAGE is dropped unanswered — unchanged from the pre-#494 default.
+      ...(config.jobHandler
+        ? { onMessage: createJobMessageHandler(config.jobHandler) }
+        : {}),
     });
     await btpClient.connect();
   }

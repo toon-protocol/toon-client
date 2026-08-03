@@ -92,6 +92,8 @@ export interface ILPFulfillPacket {
 export interface ILPRejectPacket {
   type: typeof ILPPacketType.REJECT;
   code: string;
+  /** The ILP address that raised the reject. Empty when the raiser is unknown/unset. */
+  triggeredBy?: string;
   message: string;
   data: Uint8Array;
 }
@@ -238,6 +240,37 @@ function encodeGeneralizedTime(date: Date): Uint8Array {
   return textEncoder.encode(`${y}${mo}${d}${h}${mi}${s}.${ms}Z`);
 }
 
+/** Fixed-length `YYYYMMDDHHMMSS.mmmZ` — {@link encodeGeneralizedTime}'s mirror. */
+const GENERALIZED_TIME_LENGTH = 19;
+
+function decodeGeneralizedTime(
+  buf: Uint8Array,
+  offset: number
+): { value: Date; bytesRead: number } {
+  if (offset + GENERALIZED_TIME_LENGTH > buf.length) {
+    throw new Error('Buffer underflow reading GeneralizedTime');
+  }
+  const text = sliceUtf8(buf, offset, GENERALIZED_TIME_LENGTH);
+  const match =
+    /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.(\d{3})Z$/.exec(text);
+  if (!match) {
+    throw new Error(`Malformed GeneralizedTime: "${text}"`);
+  }
+  const [, y, mo, d, h, mi, s, ms] = match;
+  const value = new Date(
+    Date.UTC(
+      Number(y),
+      Number(mo) - 1,
+      Number(d),
+      Number(h),
+      Number(mi),
+      Number(s),
+      Number(ms)
+    )
+  );
+  return { value, bytesRead: GENERALIZED_TIME_LENGTH };
+}
+
 // ─── ILP packet serialization ───────────────────────────────────────────────
 
 export function serializeIlpPrepare(packet: ILPPreparePacket): Uint8Array {
@@ -253,6 +286,52 @@ export function serializeIlpPrepare(packet: ILPPreparePacket): Uint8Array {
     encodeVarOctetString(textEncoder.encode(packet.destination)),
     encodeVarOctetString(packet.data)
   );
+}
+
+/**
+ * Decode an inbound PREPARE — the server-role mirror of {@link serializeIlpPrepare}
+ * (toon-client#494: a connector-originated MESSAGE carries a PREPARE for this
+ * client to answer). Byte-for-byte the same layout `connector-domain::Prepare::decode`
+ * reads.
+ */
+export function deserializeIlpPrepare(buf: Uint8Array): ILPPreparePacket {
+  if (buf.length === 0) throw new Error('Empty ILP packet');
+  const type = buf[0]!;
+  if (type !== ILPPacketType.PREPARE) {
+    throw new Error(`Expected PREPARE (type ${ILPPacketType.PREPARE}), got type ${type}`);
+  }
+  let offset = 1;
+
+  const { value: amount, bytesRead: amountBytes } = decodeVarUInt(buf, offset);
+  offset += amountBytes;
+
+  const { value: expiresAt, bytesRead: timeBytes } = decodeGeneralizedTime(
+    buf,
+    offset
+  );
+  offset += timeBytes;
+
+  if (offset + 32 > buf.length) {
+    throw new Error('Buffer underflow reading PREPARE executionCondition');
+  }
+  const executionCondition = buf.slice(offset, offset + 32);
+  offset += 32;
+
+  const { value: destinationBytes, bytesRead: destBytes } =
+    decodeVarOctetString(buf, offset);
+  offset += destBytes;
+  const destination = textDecoder.decode(destinationBytes);
+
+  const { value: data } = decodeVarOctetString(buf, offset);
+
+  return {
+    type: ILPPacketType.PREPARE,
+    amount,
+    destination,
+    executionCondition,
+    expiresAt,
+    data,
+  };
 }
 
 export function deserializeIlpPacket(buf: Uint8Array): ILPResponsePacket {
@@ -281,9 +360,13 @@ function deserializeIlpReject(buf: Uint8Array): ILPRejectPacket {
   // 3-byte error code
   const code = sliceUtf8(buf, offset, 3);
   offset += 3;
-  // triggeredBy (skip)
-  const { bytesRead: tbBytes } = decodeVarOctetString(buf, offset);
+  // triggeredBy
+  const { value: tbBuf, bytesRead: tbBytes } = decodeVarOctetString(
+    buf,
+    offset
+  );
   offset += tbBytes;
+  const triggeredBy = textDecoder.decode(tbBuf);
   // message
   const { value: msgBuf, bytesRead: msgBytes } = decodeVarOctetString(
     buf,
@@ -293,7 +376,58 @@ function deserializeIlpReject(buf: Uint8Array): ILPRejectPacket {
   const message = textDecoder.decode(msgBuf);
   // data
   const { value: data } = decodeVarOctetString(buf, offset);
-  return { type: ILPPacketType.REJECT, code, message, data };
+  return { type: ILPPacketType.REJECT, code, triggeredBy, message, data };
+}
+
+/**
+ * Encode an outbound FULFILL — the server-role mirror of {@link deserializeIlpPacket}'s
+ * FULFILL arm (toon-client#494: answering a connector-originated job PREPARE).
+ * Byte-for-byte the same layout `connector-domain::Fulfill::encode` reads.
+ *
+ * @throws {Error} `fulfillment` is not exactly 32 bytes — silently zero-filling
+ *   or truncating it would produce a preimage that provably cannot satisfy the
+ *   PREPARE's execution condition.
+ */
+export function serializeIlpFulfill(packet: {
+  fulfillment: Uint8Array;
+  data: Uint8Array;
+}): Uint8Array {
+  if (packet.fulfillment.length !== 32) {
+    throw new Error(
+      `FULFILL fulfillment must be exactly 32 bytes, got ${packet.fulfillment.length}`
+    );
+  }
+  return concat(
+    writeUint8(ILPPacketType.FULFILL),
+    packet.fulfillment,
+    encodeVarOctetString(packet.data)
+  );
+}
+
+/**
+ * Encode an outbound REJECT — the server-role mirror of {@link deserializeIlpPacket}'s
+ * REJECT arm. Byte-for-byte the same layout `connector-domain::Reject::encode`
+ * reads. `accumulated_cost` is deliberately absent from the wire, matching the
+ * Rust struct's own doc: it rides beside the packet, never inside it.
+ *
+ * @throws {Error} `code` is not exactly 3 ASCII characters (RFC-0027 §3.3).
+ */
+export function serializeIlpReject(packet: {
+  code: string;
+  triggeredBy?: string;
+  message: string;
+  data: Uint8Array;
+}): Uint8Array {
+  if (!/^[A-Za-z0-9]{3}$/.test(packet.code)) {
+    throw new Error(`REJECT code must be exactly 3 ASCII characters, got "${packet.code}"`);
+  }
+  return concat(
+    writeUint8(ILPPacketType.REJECT),
+    textEncoder.encode(packet.code),
+    encodeVarOctetString(textEncoder.encode(packet.triggeredBy ?? '')),
+    encodeVarOctetString(textEncoder.encode(packet.message)),
+    encodeVarOctetString(packet.data)
+  );
 }
 
 // ─── BTP message serialization ──────────────────────────────────────────────

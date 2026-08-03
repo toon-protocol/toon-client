@@ -4,6 +4,9 @@ import {
   BTPMessageType,
   serializeIlpPrepare,
   deserializeIlpPacket,
+  deserializeIlpPrepare,
+  serializeIlpFulfill,
+  serializeIlpReject,
   parseBtpMessage,
   serializeBtpMessage,
   type BTPErrorData,
@@ -202,5 +205,102 @@ describe('parseBtpMessage — TRANSFER decode', () => {
     });
     const decoded = parseBtpMessage(encoded);
     expect('amount' in decoded.data).toBe(false);
+  });
+});
+
+describe('deserializeIlpPrepare — server-role decode (toon-client#494)', () => {
+  it('round-trips every field through serializeIlpPrepare', () => {
+    const condition = new Uint8Array(32).map((_, i) => i + 1);
+    const expiresAt = new Date('2026-07-12T00:00:00.000Z');
+    const wire = serializeIlpPrepare({
+      type: ILPPacketType.PREPARE,
+      amount: 12345n,
+      destination: 'g.toon.provider',
+      executionCondition: condition,
+      expiresAt,
+      data: new Uint8Array([1, 2, 3]),
+    });
+    const decoded = deserializeIlpPrepare(wire);
+    expect(decoded.amount).toBe(12345n);
+    expect(decoded.destination).toBe('g.toon.provider');
+    expect(decoded.executionCondition).toEqual(condition);
+    expect(decoded.expiresAt.toISOString()).toBe(expiresAt.toISOString());
+    expect(decoded.data).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('throws on a non-PREPARE type byte', () => {
+    const wire = serializeIlpFulfill({
+      fulfillment: new Uint8Array(32),
+      data: new Uint8Array(0),
+    });
+    expect(() => deserializeIlpPrepare(wire)).toThrow(/PREPARE/);
+  });
+
+  it('throws on a truncated PREPARE', () => {
+    const wire = serializeIlpPrepare({
+      type: ILPPacketType.PREPARE,
+      amount: 1n,
+      destination: 'g.toon.provider',
+      executionCondition: new Uint8Array(32),
+      expiresAt: new Date('2026-07-12T00:00:00.000Z'),
+      data: new Uint8Array(0),
+    });
+    expect(() => deserializeIlpPrepare(wire.slice(0, wire.length - 5))).toThrow(
+      /underflow/i
+    );
+  });
+});
+
+describe('serializeIlpFulfill — server-role encode (toon-client#494)', () => {
+  it('round-trips through deserializeIlpPacket', () => {
+    const fulfillment = new Uint8Array(32).map((_, i) => i);
+    const data = new Uint8Array([9, 8, 7]);
+    const wire = serializeIlpFulfill({ fulfillment, data });
+    const decoded = deserializeIlpPacket(wire);
+    expect(decoded.type).toBe(ILPPacketType.FULFILL);
+    if (decoded.type !== ILPPacketType.FULFILL) return;
+    expect(decoded.fulfillment).toEqual(fulfillment);
+    expect(decoded.data).toEqual(data);
+  });
+
+  it('throws when the fulfillment is not exactly 32 bytes', () => {
+    expect(() =>
+      serializeIlpFulfill({ fulfillment: new Uint8Array(31), data: new Uint8Array(0) })
+    ).toThrow(/32 bytes/);
+  });
+});
+
+describe('serializeIlpReject — server-role encode (toon-client#494)', () => {
+  it('round-trips code/triggeredBy/message/data through deserializeIlpPacket', () => {
+    const wire = serializeIlpReject({
+      code: 'F99',
+      triggeredBy: 'g.toon.provider',
+      message: 'handler declined',
+      data: new Uint8Array([1]),
+    });
+    const decoded = deserializeIlpPacket(wire);
+    expect(decoded.type).toBe(ILPPacketType.REJECT);
+    if (decoded.type !== ILPPacketType.REJECT) return;
+    expect(decoded.code).toBe('F99');
+    expect(decoded.triggeredBy).toBe('g.toon.provider');
+    expect(decoded.message).toBe('handler declined');
+    expect(decoded.data).toEqual(new Uint8Array([1]));
+  });
+
+  it('defaults triggeredBy to an empty string when omitted', () => {
+    const wire = serializeIlpReject({
+      code: 'F00',
+      message: 'malformed',
+      data: new Uint8Array(0),
+    });
+    const decoded = deserializeIlpPacket(wire);
+    if (decoded.type !== ILPPacketType.REJECT) throw new Error('expected REJECT');
+    expect(decoded.triggeredBy).toBe('');
+  });
+
+  it('throws when code is not exactly 3 ASCII characters', () => {
+    expect(() =>
+      serializeIlpReject({ code: 'F9', message: 'x', data: new Uint8Array(0) })
+    ).toThrow(/3 ASCII characters/);
   });
 });

@@ -693,4 +693,33 @@ export class ChannelManager {
   isTracking(channelId: string): boolean {
     return this.channels.has(channelId);
   }
+
+  /**
+   * The chain context a tracked channel was opened/resumed with — the
+   * chainType/chainId/tokenNetworkAddress a caller needs to build a
+   * `POST /ilp/claim-state` request (toon-client#494) without re-deriving
+   * them from the peer negotiation. `undefined` when `channelId` is not
+   * tracked.
+   */
+  getChannelContext(channelId: string):
+    | {
+        chainType: string;
+        chainId: number;
+        tokenNetworkAddress: string;
+        tokenAddress?: string;
+        recipient?: string;
+      }
+    | undefined {
+    const tracking = this.channels.get(channelId);
+    if (!tracking) return undefined;
+    return {
+      chainType: tracking.chainType,
+      chainId: tracking.chainId,
+      tokenNetworkAddress: tracking.tokenNetworkAddress,
+      ...(tracking.tokenAddress !== undefined
+        ? { tokenAddress: tracking.tokenAddress }
+        : {}),
+      ...(tracking.recipient !== undefined ? { recipient: tracking.recipient } : {}),
+    };
+  }
 }

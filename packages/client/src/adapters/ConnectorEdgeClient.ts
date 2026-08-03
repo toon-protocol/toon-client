@@ -119,6 +119,66 @@ export interface ConnectorRoutePrice {
   price: bigint;
 }
 
+// ─── Claim state (client-edge-spec.md §1.10, connector #693) ──────────────
+
+/**
+ * One `POST /ilp/claim-state` request entry: proof of ownership of a channel
+ * this client controls, via a signature over a challenge distinct from a
+ * real claim's balance-proof (never reusable as one). `signature` is
+ * `EvmSigner.signClaimStateChallenge`'s `0x`-prefixed 65-byte hex for `evm`,
+ * `SolanaSigner.signClaimStateChallenge`'s base64 64-byte Ed25519 for
+ * `solana`.
+ */
+export type ClaimStateRequestEntry =
+  | { blockchain: 'evm'; channelId: string; expires: number; signature: string }
+  | {
+      blockchain: 'solana';
+      channelAccount: string;
+      expires: number;
+      signature: string;
+    };
+
+/**
+ * The credited/spendable position of one channel this client asked about —
+ * the runway source of truth (toon-meta#261/#262 decision 9). Money fields
+ * are decimal strings (never a bare JS number, which cannot represent a
+ * value past 2^53 exactly).
+ */
+export interface ClaimStateOk {
+  blockchain: 'evm' | 'solana';
+  channelId?: string;
+  channelAccount?: string;
+  ok: true;
+  /** On-chain deposit, or `null` for a channel this connector only DECLARED. */
+  depositTotal: string | null;
+  /** The channel's watermark; `"0"` if this connector has never accepted a claim. */
+  cumulativeClaimed: string;
+  /** `depositTotal - cumulativeClaimed`; `null` exactly when `depositTotal` is. */
+  available: string | null;
+  nonce: number;
+  /**
+   * Best-effort and non-durable (unlike every other field here): `null`
+   * means "unknown", NEVER "never claimed" — see client-edge-spec.md §1.10.
+   */
+  lastClaimTime: number | null;
+}
+
+/**
+ * A failed claim-state entry. `error` is deliberately collapsed to two
+ * causes (unlike a claim's own refusal taxonomy) so a caller learns nothing
+ * about a channel it does not control: `"unverified"` covers "no such
+ * channel" and "bad signature" identically.
+ */
+export interface ClaimStateFailed {
+  blockchain: 'evm' | 'solana';
+  channelId?: string;
+  channelAccount?: string;
+  ok: false;
+  error: 'expired' | 'unverified';
+}
+
+export type ClaimStateResult = ClaimStateOk | ClaimStateFailed;
+
 /**
  * Every distinguishable way asking a connector for its identity or terms can
  * fail. Each code names exactly one cause; there is no catch-all, because the
@@ -145,7 +205,11 @@ export type ConnectorEdgeErrorCode =
   /** A 402 greeting whose body is not the documented x402 shape (or whose
    *  optional `settlement` facts are present but malformed — refused rather
    *  than silently dropped, since they would be opened AGAINST). */
-  | 'TERMS_MALFORMED';
+  | 'TERMS_MALFORMED'
+  /** Non-2xx from `POST /ilp/claim-state`. */
+  | 'CLAIM_STATE_HTTP_STATUS'
+  /** `POST /ilp/claim-state` answered 2xx with a body that is not the documented shape. */
+  | 'CLAIM_STATE_MALFORMED';
 
 /**
  * A refusal to carry a connector's answer forward. Distinct from
@@ -298,6 +362,135 @@ export function parseConnectorRoutePrice(body: unknown): ConnectorRoutePrice {
     );
   }
   return { destination, price: BigInt(price) };
+}
+
+/** A required-string reader, refusing a missing/wrong-typed field by name. */
+function claimStr(
+  e: Record<string, unknown>,
+  key: string,
+  entryIndex: number
+): string {
+  const value = e[key];
+  if (typeof value !== 'string') {
+    throw new ConnectorEdgeError(
+      `claim-state channel entry ${entryIndex} lacks a string '${key}'`,
+      'CLAIM_STATE_MALFORMED'
+    );
+  }
+  return value;
+}
+
+/** A nullable-string reader: `null` passes through, anything else must be a string. */
+function claimNullableStr(
+  e: Record<string, unknown>,
+  key: string,
+  entryIndex: number
+): string | null {
+  const value = e[key];
+  if (value === null) return null;
+  if (typeof value !== 'string') {
+    throw new ConnectorEdgeError(
+      `claim-state channel entry ${entryIndex}'s '${key}' is neither a string nor null`,
+      'CLAIM_STATE_MALFORMED'
+    );
+  }
+  return value;
+}
+
+/** Parse one already-object-checked claim-state response entry. */
+function parseClaimStateEntry(raw: unknown, entryIndex: number): ClaimStateResult {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new ConnectorEdgeError(
+      `claim-state channel entry ${entryIndex} is not an object`,
+      'CLAIM_STATE_MALFORMED'
+    );
+  }
+  const e = raw as Record<string, unknown>;
+  const blockchain = e['blockchain'];
+  if (blockchain !== 'evm' && blockchain !== 'solana') {
+    throw new ConnectorEdgeError(
+      `claim-state channel entry ${entryIndex} names neither 'evm' nor 'solana'`,
+      'CLAIM_STATE_MALFORMED'
+    );
+  }
+  const channelId = typeof e['channelId'] === 'string' ? e['channelId'] : undefined;
+  const channelAccount =
+    typeof e['channelAccount'] === 'string' ? e['channelAccount'] : undefined;
+  const identity = {
+    ...(channelId !== undefined ? { channelId } : {}),
+    ...(channelAccount !== undefined ? { channelAccount } : {}),
+  };
+
+  if (e['ok'] === false) {
+    const error = e['error'];
+    if (error !== 'expired' && error !== 'unverified') {
+      throw new ConnectorEdgeError(
+        `claim-state channel entry ${entryIndex} has an undocumented error: ${String(error)}`,
+        'CLAIM_STATE_MALFORMED'
+      );
+    }
+    return { blockchain, ...identity, ok: false, error };
+  }
+  if (e['ok'] !== true) {
+    throw new ConnectorEdgeError(
+      `claim-state channel entry ${entryIndex} lacks a boolean 'ok'`,
+      'CLAIM_STATE_MALFORMED'
+    );
+  }
+
+  const nonce = e['nonce'];
+  if (typeof nonce !== 'number' || !Number.isInteger(nonce) || nonce < 0) {
+    throw new ConnectorEdgeError(
+      `claim-state channel entry ${entryIndex} has a non-integer nonce`,
+      'CLAIM_STATE_MALFORMED'
+    );
+  }
+  const lastClaimTime = e['lastClaimTime'];
+  if (
+    lastClaimTime !== null &&
+    (typeof lastClaimTime !== 'number' || !Number.isInteger(lastClaimTime))
+  ) {
+    throw new ConnectorEdgeError(
+      `claim-state channel entry ${entryIndex}'s lastClaimTime is neither an integer nor null`,
+      'CLAIM_STATE_MALFORMED'
+    );
+  }
+
+  return {
+    blockchain,
+    ...identity,
+    ok: true,
+    depositTotal: claimNullableStr(e, 'depositTotal', entryIndex),
+    cumulativeClaimed: claimStr(e, 'cumulativeClaimed', entryIndex),
+    available: claimNullableStr(e, 'available', entryIndex),
+    nonce,
+    lastClaimTime,
+  };
+}
+
+/**
+ * Parse an already-decoded `POST /ilp/claim-state` body. Exported so the wire
+ * shape is testable without a server. Refuses a body that is not the
+ * documented `{ channels: [...] }` object, or any entry within it that is
+ * not the documented ok/failed shape — a half-understood credited balance
+ * would misreport an agent's runway, which is the one thing this endpoint
+ * exists to get right (toon-meta#262 decision 9).
+ */
+export function parseClaimStateResponse(body: unknown): ClaimStateResult[] {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    throw new ConnectorEdgeError(
+      'POST /ilp/claim-state did not answer a JSON object',
+      'CLAIM_STATE_MALFORMED'
+    );
+  }
+  const channels = (body as Record<string, unknown>)['channels'];
+  if (!Array.isArray(channels)) {
+    throw new ConnectorEdgeError(
+      "POST /ilp/claim-state answered without a 'channels' array",
+      'CLAIM_STATE_MALFORMED'
+    );
+  }
+  return channels.map((entry, i) => parseClaimStateEntry(entry, i));
 }
 
 // ─── Client ─────────────────────────────────────────────────────────────────
@@ -520,6 +713,63 @@ export class ConnectorEdgeClient {
       );
     }
     return parseConnectorRouteTerms(body);
+  }
+
+  /**
+   * The credited/spendable position of one or more channels this client
+   * controls (`POST /ilp/claim-state`, client-edge-spec.md §1.10) — the
+   * runway source of truth (toon-meta#261/#262 decision 9): earnings net
+   * off-chain on the same channel a client spends from, so this is also
+   * where a credited balance is read. Never cached: unlike identity/price,
+   * a claim watermark changes on every accepted claim, on EITHER side.
+   *
+   * Each entry is independently authenticated (own signature, own
+   * blockchain) — a request MAY mix EVM and Solana channels. Returns `[]`
+   * without a request when `channels` is empty.
+   *
+   * @throws {NetworkError} the connector could not be reached.
+   * @throws {ConnectorEdgeError} a non-2xx status, or a body that is not the
+   *   documented shape.
+   */
+  async getClaimState(
+    endpoint: string,
+    channels: ClaimStateRequestEntry[]
+  ): Promise<ClaimStateResult[]> {
+    if (channels.length === 0) return [];
+    const base = connectorEdgeBaseUrl(endpoint);
+    const url = `${base}/ilp/claim-state`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+        },
+        body: JSON.stringify({ channels }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw new NetworkError(
+        `could not reach the connector client edge at ${url}`,
+        error instanceof Error ? error : undefined
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!response.ok) {
+      throw new ConnectorEdgeError(
+        `POST /ilp/claim-state answered ${response.status}`,
+        'CLAIM_STATE_HTTP_STATUS'
+      );
+    }
+    return parseClaimStateResponse(
+      await this.readJson(response, 'CLAIM_STATE_MALFORMED')
+    );
   }
 
   /**

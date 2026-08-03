@@ -7,6 +7,7 @@ import {
   parseConnectorIdentity,
   parseConnectorRoutePrice,
   parseConnectorRouteTerms,
+  parseClaimStateResponse,
 } from './ConnectorEdgeClient.js';
 import { NetworkError } from '../errors.js';
 
@@ -604,5 +605,242 @@ describe('parseConnectorRouteTerms — per-chain settlements (connector #632)', 
     expect(() =>
       parseConnectorRouteTerms(greetingBody({ settlements: 'nope' }))
     ).toThrow(ConnectorEdgeError);
+  });
+});
+
+describe('parseClaimStateResponse — POST /ilp/claim-state (§1.10)', () => {
+  it('parses an ok EVM entry', () => {
+    const results = parseClaimStateResponse({
+      channels: [
+        {
+          blockchain: 'evm',
+          channelId: '0x' + '11'.repeat(32),
+          ok: true,
+          depositTotal: '1000000',
+          cumulativeClaimed: '250000',
+          available: '750000',
+          nonce: 3,
+          lastClaimTime: 1735680000,
+        },
+      ],
+    });
+    expect(results).toEqual([
+      {
+        blockchain: 'evm',
+        channelId: '0x' + '11'.repeat(32),
+        ok: true,
+        depositTotal: '1000000',
+        cumulativeClaimed: '250000',
+        available: '750000',
+        nonce: 3,
+        lastClaimTime: 1735680000,
+      },
+    ]);
+  });
+
+  it('parses a declared (unresolved) channel with null depositTotal/available', () => {
+    const results = parseClaimStateResponse({
+      channels: [
+        {
+          blockchain: 'solana',
+          channelAccount: 'GfHq2tTVk9z4eXgZ8nWz3vWqkXBQ8K9aBcDeFgHiJkLm',
+          ok: true,
+          depositTotal: null,
+          cumulativeClaimed: '0',
+          available: null,
+          nonce: 0,
+          lastClaimTime: null,
+        },
+      ],
+    });
+    expect(results[0]).toMatchObject({
+      ok: true,
+      depositTotal: null,
+      available: null,
+      lastClaimTime: null,
+    });
+  });
+
+  it('parses a failed entry, carrying only blockchain/id/ok/error', () => {
+    const results = parseClaimStateResponse({
+      channels: [
+        {
+          blockchain: 'evm',
+          channelId: '0x' + '22'.repeat(32),
+          ok: false,
+          error: 'unverified',
+        },
+      ],
+    });
+    expect(results).toEqual([
+      {
+        blockchain: 'evm',
+        channelId: '0x' + '22'.repeat(32),
+        ok: false,
+        error: 'unverified',
+      },
+    ]);
+  });
+
+  it('preserves request order across mixed ok/failed EVM/Solana entries', () => {
+    const results = parseClaimStateResponse({
+      channels: [
+        { blockchain: 'evm', channelId: '0xaa', ok: false, error: 'expired' },
+        {
+          blockchain: 'solana',
+          channelAccount: 'acct',
+          ok: true,
+          depositTotal: '1',
+          cumulativeClaimed: '0',
+          available: '1',
+          nonce: 0,
+          lastClaimTime: null,
+        },
+      ],
+    });
+    expect(results.map((r) => r.blockchain)).toEqual(['evm', 'solana']);
+    expect(results[0]!.ok).toBe(false);
+    expect(results[1]!.ok).toBe(true);
+  });
+
+  it('throws on a body that is not { channels: [...] }', () => {
+    expect(() => parseClaimStateResponse({ nope: true })).toThrow(ConnectorEdgeError);
+    expect(() => parseClaimStateResponse([])).toThrow(ConnectorEdgeError);
+    expect(() => parseClaimStateResponse(null)).toThrow(ConnectorEdgeError);
+  });
+
+  it('throws on an undocumented error code', () => {
+    expect(() =>
+      parseClaimStateResponse({
+        channels: [{ blockchain: 'evm', ok: false, error: 'nope' }],
+      })
+    ).toThrow(ConnectorEdgeError);
+  });
+
+  it('throws when an ok entry is missing cumulativeClaimed', () => {
+    expect(() =>
+      parseClaimStateResponse({
+        channels: [
+          {
+            blockchain: 'evm',
+            ok: true,
+            depositTotal: '1',
+            available: '1',
+            nonce: 0,
+            lastClaimTime: null,
+          },
+        ],
+      })
+    ).toThrow(ConnectorEdgeError);
+  });
+
+  it('throws when money fields are numbers instead of decimal strings', () => {
+    expect(() =>
+      parseClaimStateResponse({
+        channels: [
+          {
+            blockchain: 'evm',
+            ok: true,
+            depositTotal: 1000000,
+            cumulativeClaimed: '0',
+            available: '1000000',
+            nonce: 0,
+            lastClaimTime: null,
+          },
+        ],
+      })
+    ).toThrow(ConnectorEdgeError);
+  });
+});
+
+describe('ConnectorEdgeClient.getClaimState', () => {
+  it('POSTs { channels } to /ilp/claim-state and parses the response', async () => {
+    const fetchImpl = vi
+      .fn<[string, RequestInit?], Promise<Response>>()
+      .mockResolvedValue(
+        jsonResponse({
+          channels: [
+            {
+              blockchain: 'evm',
+              channelId: '0x' + '11'.repeat(32),
+              ok: true,
+              depositTotal: '100',
+              cumulativeClaimed: '10',
+              available: '90',
+              nonce: 1,
+              lastClaimTime: null,
+            },
+          ],
+        })
+      );
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    const results = await client.getClaimState('https://apex.example/ilp', [
+      {
+        blockchain: 'evm',
+        channelId: '0x' + '11'.repeat(32),
+        expires: 1735689600,
+        signature: '0xdead',
+      },
+    ]);
+
+    expect(requestedUrl(fetchImpl)).toBe('https://apex.example/ilp/claim-state');
+    const init = fetchImpl.mock.calls[0]?.[1];
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(init?.body as string)).toEqual({
+      channels: [
+        {
+          blockchain: 'evm',
+          channelId: '0x' + '11'.repeat(32),
+          expires: 1735689600,
+          signature: '0xdead',
+        },
+      ],
+    });
+    expect(results[0]).toMatchObject({ ok: true, cumulativeClaimed: '10' });
+  });
+
+  it('returns [] without a request when channels is empty', async () => {
+    const fetchImpl = vi.fn<[string, RequestInit?], Promise<Response>>();
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    await expect(client.getClaimState('https://apex.example', [])).resolves.toEqual(
+      []
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('throws NetworkError on a transport failure', async () => {
+    const fetchImpl = vi
+      .fn<[string, RequestInit?], Promise<Response>>()
+      .mockRejectedValue(new Error('ECONNRESET'));
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    await expect(
+      client.getClaimState('https://apex.example', [
+        { blockchain: 'evm', channelId: '0xaa', expires: 1, signature: '0x00' },
+      ])
+    ).rejects.toThrow(NetworkError);
+  });
+
+  it('throws ConnectorEdgeError on a non-2xx status', async () => {
+    const fetchImpl = vi
+      .fn<[string, RequestInit?], Promise<Response>>()
+      .mockResolvedValue(new Response('boom', { status: 500 }));
+    const client = new ConnectorEdgeClient({
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+
+    await expect(
+      client.getClaimState('https://apex.example', [
+        { blockchain: 'evm', channelId: '0xaa', expires: 1, signature: '0x00' },
+      ])
+    ).rejects.toMatchObject({ code: 'CLAIM_STATE_HTTP_STATUS' });
   });
 });

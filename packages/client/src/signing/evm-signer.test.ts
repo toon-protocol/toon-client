@@ -168,6 +168,109 @@ describe('EvmSigner', () => {
     });
   });
 
+  describe('signClaimStateChallenge', () => {
+    it('produces a signature that recovers to the signer address under the ClaimStateChallenge type', async () => {
+      const signer = new EvmSigner(generatePrivateKey());
+      const channelId = '0x' + '11'.repeat(32);
+      const expires = 1_735_689_600;
+
+      const signature = await signer.signClaimStateChallenge({
+        chainId: TEST_CHAIN_ID,
+        tokenNetworkAddress: TEST_TOKEN_NETWORK,
+        channelId,
+        expires,
+      });
+
+      const recoveredAddress = await recoverTypedDataAddress({
+        domain: {
+          name: 'TokenNetwork',
+          version: '1',
+          chainId: TEST_CHAIN_ID,
+          verifyingContract: TEST_TOKEN_NETWORK as `0x${string}`,
+        },
+        types: {
+          ClaimStateChallenge: [
+            { name: 'channelId', type: 'bytes32' },
+            { name: 'expires', type: 'uint256' },
+          ],
+        },
+        primaryType: 'ClaimStateChallenge',
+        message: {
+          channelId: channelId as `0x${string}`,
+          expires: BigInt(expires),
+        },
+        signature: signature as `0x${string}`,
+      });
+
+      expect(recoveredAddress.toLowerCase()).toBe(signer.address.toLowerCase());
+    });
+
+    it('does NOT recover under the BalanceProof type — a challenge cannot be replayed as a claim', async () => {
+      const signer = new EvmSigner(generatePrivateKey());
+      const channelId = '0x' + '11'.repeat(32);
+      const expires = 1_735_689_600;
+
+      const signature = await signer.signClaimStateChallenge({
+        chainId: TEST_CHAIN_ID,
+        tokenNetworkAddress: TEST_TOKEN_NETWORK,
+        channelId,
+        expires,
+      });
+
+      // A BalanceProof recovery attempt using the challenge's own fields
+      // (padded/coerced to fit the different type) must NOT recover to the
+      // signer — the two typed-data structs hash differently by design.
+      const recoveredAddress = await recoverTypedDataAddress({
+        domain: {
+          name: 'TokenNetwork',
+          version: '1',
+          chainId: TEST_CHAIN_ID,
+          verifyingContract: TEST_TOKEN_NETWORK as `0x${string}`,
+        },
+        types: {
+          BalanceProof: [
+            { name: 'channelId', type: 'bytes32' },
+            { name: 'nonce', type: 'uint256' },
+            { name: 'transferredAmount', type: 'uint256' },
+            { name: 'lockedAmount', type: 'uint256' },
+            { name: 'locksRoot', type: 'bytes32' },
+          ],
+        },
+        primaryType: 'BalanceProof',
+        message: {
+          channelId: channelId as `0x${string}`,
+          nonce: BigInt(expires),
+          transferredAmount: 0n,
+          lockedAmount: 0n,
+          locksRoot: ZERO_BYTES32 as `0x${string}`,
+        },
+        signature: signature as `0x${string}`,
+      });
+
+      expect(recoveredAddress.toLowerCase()).not.toBe(signer.address.toLowerCase());
+    });
+
+    it('produces different signatures for different expires values', async () => {
+      const signer = new EvmSigner(generatePrivateKey());
+      const channelId = '0x' + '22'.repeat(32);
+
+      const sig1 = await signer.signClaimStateChallenge({
+        chainId: TEST_CHAIN_ID,
+        tokenNetworkAddress: TEST_TOKEN_NETWORK,
+        channelId,
+        expires: 1_735_689_600,
+      });
+      const sig2 = await signer.signClaimStateChallenge({
+        chainId: TEST_CHAIN_ID,
+        tokenNetworkAddress: TEST_TOKEN_NETWORK,
+        channelId,
+        expires: 1_735_689_601,
+      });
+
+      expect(sig1).not.toBe(sig2);
+    });
+  });
+
   describe('buildClaimMessage', () => {
     it('should produce valid EVMClaimMessage shape with envelope fields', () => {
       const proof: SignedBalanceProof = {

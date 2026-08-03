@@ -54,6 +54,16 @@ export {
   type IncrementPrepare,
 } from './hashlock-delivery.js';
 
+// Serve-side job handling (toon-client#494, toon-meta#262 "agents earning")
+// — a provider's handler for connector-originated jobs, wired via
+// `ToonClientConfig.jobHandler`.
+export {
+  createJobMessageHandler,
+  type JobHandler,
+  type JobRequest,
+  type JobAnswer,
+} from './serve-job.js';
+
 // HTTP Adapters
 export {
   HttpRuntimeClient,
@@ -82,10 +92,15 @@ export {
   decodeConnectorPublicKey,
   parseConnectorIdentity,
   parseConnectorRoutePrice,
+  parseClaimStateResponse,
   type ConnectorEdgeClientConfig,
   type ConnectorEdgeErrorCode,
   type ConnectorIdentity,
   type ConnectorRoutePrice,
+  type ClaimStateRequestEntry,
+  type ClaimStateOk,
+  type ClaimStateFailed,
+  type ClaimStateResult,
   Http402Client,
   parseX402Challenge,
   parseX402Body,

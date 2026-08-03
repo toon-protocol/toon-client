@@ -302,6 +302,7 @@ export type ResolvedConfig = Required<
     | 'channelStorePath'
     | 'knownPeers'
     | 'destinationAddress'
+    | 'jobHandler'
   >
 > & {
   connector?: unknown;
@@ -346,6 +347,7 @@ export type ResolvedConfig = Required<
     btpEndpoint?: string;
   }[];
   destinationAddress: string;
+  jobHandler?: ToonClientConfig['jobHandler'];
 };
 
 /**

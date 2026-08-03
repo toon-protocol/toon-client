@@ -424,6 +424,37 @@ const artifact = decryptArtifact(ciphertext, fulfillment, prepare.executionCondi
 
 ---
 
+## Earning: serve paid jobs and read credited balance
+
+`toon-meta#262` ("agents earning") is the other direction: registering as a provider, receiving a job, and reading what it earned. The connector originates a BTP MESSAGE carrying a PREPARE for this client's own ILP address (RFC-0023's symmetric grammar) instead of the client always being the one to send one.
+
+**Serving a job.** Configure `jobHandler` — a plain function, never a payments integration (the app stays payment-oblivious, mirroring `connector-runtime/src/app_client.rs`'s handler contract). It receives the job's data and returns the fulfillment preimage it already minted at quote time (reuse `encryptArtifact`/`fulfillIncrement` above — this library never derives a condition/preimage relationship a second time):
+
+```typescript
+const client = new ToonClient({
+  // ...
+  btpUrl: 'wss://apex.example/ilp/btp',
+  jobHandler: async (job) => {
+    // job: { amount, destination, executionCondition, expiresAt, data }
+    const key = lookUpKeyForThisIncrement(job); // minted earlier via encryptArtifact
+    return { fulfillment: fulfillIncrement(key), data: answerBytes };
+  },
+});
+```
+
+A handler that throws, or whose fulfillment does not satisfy `job.executionCondition`, answers the PREPARE with an `F99` REJECT (RFC-0027's own "Application Error" code) — never left unanswered. An already-expired PREPARE is refused `R00` without ever invoking the handler.
+
+**Reading the credited balance.** Earnings net off-chain on the same channel a client spends from (decision 9) — there is no separate "earned" ledger to read. `getClaimState()` asks the connector's `POST /ilp/claim-state` (the same runway source of truth `#261` already established) for the netted deposit/claimed/available position of one or more tracked channels:
+
+```typescript
+const state = await client.getClaimState(); // every tracked channel
+// [{ blockchain: 'evm', channelId, ok: true, depositTotal, cumulativeClaimed, available, nonce, lastClaimTime }, ...]
+```
+
+There is no agent-published money-report event (decision 4/15 forbid self-reported balances) — this is always a live read from the connector.
+
+---
+
 ## Payment Channels
 
 The client supports payment channels for off-chain settlement on EVM, Solana, and Mina. With a raw `secretKey` you get EVM only; construct from a `mnemonic` (above) to settle on Solana/Mina. Your EVM identity is derived automatically — no separate EVM key needed.

@@ -38,10 +38,15 @@ export {
   decodeConnectorPublicKey,
   parseConnectorIdentity,
   parseConnectorRoutePrice,
+  parseClaimStateResponse,
   type ConnectorEdgeClientConfig,
   type ConnectorEdgeErrorCode,
   type ConnectorIdentity,
   type ConnectorRoutePrice,
+  type ClaimStateRequestEntry,
+  type ClaimStateOk,
+  type ClaimStateFailed,
+  type ClaimStateResult,
 } from './ConnectorEdgeClient.js';
 export {
   Http402Client,

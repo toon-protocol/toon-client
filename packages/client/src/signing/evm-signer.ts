@@ -61,6 +61,19 @@ const BALANCE_PROOF_TYPES = {
 } as const;
 
 /**
+ * EIP-712 types for a claim-state challenge (client-edge-spec.md §1.10,
+ * connector issue #693) — a message DISTINCT from {@link BALANCE_PROOF_TYPES}
+ * so a captured challenge can never be replayed as a payment or vice versa.
+ * Signed under the SAME domain as a real claim (`getBalanceProofDomain`).
+ */
+const CLAIM_STATE_CHALLENGE_TYPES = {
+  ClaimStateChallenge: [
+    { name: 'channelId', type: 'bytes32' },
+    { name: 'expires', type: 'uint256' },
+  ],
+} as const;
+
+/**
  * EVM signer for EIP-712 balance proofs and on-chain transactions.
  *
  * Encapsulates the private key — no getPrivateKey() method is exposed.
@@ -142,6 +155,38 @@ export class EvmSigner {
       tokenNetworkAddress: params.tokenNetworkAddress,
       ...(params.tokenAddress && { tokenAddress: params.tokenAddress }),
     };
+  }
+
+  /**
+   * Signs a `POST /ilp/claim-state` claim-state challenge (client-edge-spec.md
+   * §1.10): proves ownership of `channelId` without moving any value or
+   * advancing the channel's nonce — this is a READ, not a claim. Read the
+   * connector's answer for the actual credited/available balance (toon-meta#262
+   * decision 9); this signature only unlocks the read.
+   *
+   * @param params.expires - Unix seconds the signature stops verifying.
+   *   Reissue with a fresh value whenever an outstanding one should stop
+   *   being trusted — the endpoint has no other replay bound.
+   */
+  async signClaimStateChallenge(params: {
+    chainId: number;
+    tokenNetworkAddress: string;
+    channelId: string;
+    expires: number;
+  }): Promise<string> {
+    const domain = getBalanceProofDomain(
+      params.chainId,
+      params.tokenNetworkAddress
+    );
+    return this._account.signTypedData({
+      domain,
+      types: CLAIM_STATE_CHALLENGE_TYPES,
+      primaryType: 'ClaimStateChallenge',
+      message: {
+        channelId: params.channelId as Hex,
+        expires: BigInt(params.expires),
+      },
+    });
   }
 
   /**
