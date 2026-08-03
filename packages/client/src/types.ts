@@ -445,7 +445,16 @@ export interface ToonClientConfig {
   // PERSISTENCE (optional)
   // ============================================================================
 
-  /** File path for persisting payment channel nonce/amount state across restarts */
+  /**
+   * File path for persisting payment channel nonce/amount state across restarts.
+   *
+   * Also enables CHANNEL RESUME (#489): a sibling file (`channels.json` →
+   * `channels.peers.json`) records which on-chain channel this identity holds
+   * with each peer, so a restarted client re-attaches to it — with its claim
+   * watermark — instead of opening a second channel and locking a second lot of
+   * collateral. Never delete these files for a live channel: the collateral
+   * stays locked on-chain and the watermark is unrecoverable.
+   */
   channelStorePath?: string;
 
   // ============================================================================

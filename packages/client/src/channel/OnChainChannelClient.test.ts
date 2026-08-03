@@ -4,7 +4,7 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Encode, base58Decode } from '@toon-protocol/core';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { OnChainChannelClient } from './OnChainChannelClient.js';
-import { ChannelFundingError } from '../errors.js';
+import { ChannelFundingError, StaleRpcReadError } from '../errors.js';
 import {
   deriveChannelPDA,
   deriveVaultPDA,
@@ -63,6 +63,7 @@ const TEST_TOKEN_NETWORK = '0x5FbDB2315678afecb367f032d93F642f64180aa3'; // Mock
 const TEST_TOKEN = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512';
 const TEST_PEER_ADDRESS = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const TEST_CHANNEL_ID = '0x' + 'ab'.repeat(32);
+const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
 
 describe('OnChainChannelClient', () => {
   let signer: EvmSigner;
@@ -75,6 +76,18 @@ describe('OnChainChannelClient', () => {
       evmSigner: signer,
       chainRpcUrls: { [TEST_CHAIN]: 'http://localhost:8545' },
     });
+    // Base (un-queued) `readContract` answer: the `channels()` view of a
+    // freshly opened, VISIBLE channel. The #489 read-after-write poll reads it
+    // between `openChannel` and `setTotalDeposit`; queued `mockResolvedValueOnce`
+    // values still take priority, so per-test sequences are unaffected.
+    mockReadContract.mockResolvedValue([
+      86400n,
+      1,
+      0n,
+      1000n,
+      signer.address,
+      TEST_PEER_ADDRESS,
+    ]);
   });
 
   describe('openChannel', () => {
@@ -305,6 +318,157 @@ describe('OnChainChannelClient', () => {
       });
       await expect(promise).rejects.toThrow('channel already exists');
       await expect(promise).rejects.not.toBeInstanceOf(ChannelFundingError);
+    });
+  });
+
+  /**
+   * Read-after-write on a load-balanced RPC (#489).
+   *
+   * `https://sepolia.base.org` fans out across replicas: the `setTotalDeposit`
+   * that follows a CONFIRMED `openChannel` can land on one that hasn't seen the
+   * open and reverts `InvalidChannelState()` (`0xf806e9d9`), leaving a channel
+   * open on-chain with zero collateral (and, before the resume fix, a caller
+   * that just opened another one).
+   */
+  describe('EVM open survives a stale-read RPC (#489)', () => {
+    /** `channels()` as a replica that hasn't seen the open reports it. */
+    const UNSEEN = [0n, 0, 0n, 0n, ZERO_ADDR, ZERO_ADDR];
+    const OPEN_RECEIPT = {
+      logs: [{ topics: ['0xev', TEST_CHANNEL_ID, '0xp1', '0xp2'], data: '0x' }],
+    };
+
+    function fastClient() {
+      return new OnChainChannelClient({
+        evmSigner: signer,
+        chainRpcUrls: { [TEST_CHAIN]: 'https://sepolia.base.org' },
+        readConsistency: { attempts: 4, delayMs: 0, depositRetries: 2 },
+      });
+    }
+
+    const OPEN_PARAMS = {
+      peerId: 'apex',
+      chain: TEST_CHAIN,
+      tokenNetwork: TEST_TOKEN_NETWORK,
+      peerAddress: TEST_PEER_ADDRESS,
+      initialDeposit: '100000',
+    };
+
+    it('waits for the RPC to report the channel before depositing into it', async () => {
+      mockWriteContract.mockResolvedValueOnce('0xopen');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce(OPEN_RECEIPT);
+      // Two replicas behind, then the open shows up.
+      mockReadContract.mockResolvedValueOnce(UNSEEN);
+      mockReadContract.mockResolvedValueOnce(UNSEEN);
+      mockWriteContract.mockResolvedValueOnce('0xdeposit');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+
+      const result = await fastClient().openChannel(OPEN_PARAMS);
+
+      expect(result.channelId).toBe(TEST_CHANNEL_ID);
+      expect(mockReadContract).toHaveBeenCalledTimes(3);
+      expect(mockWriteContract).toHaveBeenCalledTimes(2);
+      expect(
+        (mockWriteContract.mock.calls[1]![0] as { functionName: string })
+          .functionName
+      ).toBe('setTotalDeposit');
+    });
+
+    it('retries setTotalDeposit when a stale replica reverts InvalidChannelState()', async () => {
+      mockWriteContract.mockResolvedValueOnce('0xopen');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce(OPEN_RECEIPT);
+      // The read agreed (base mock), but the WRITE still hit a stale node.
+      mockWriteContract.mockRejectedValueOnce(
+        new Error(
+          'The contract function "setTotalDeposit" reverted. ' +
+            'Details: execution reverted, data: 0xf806e9d9'
+        )
+      );
+      mockWriteContract.mockResolvedValueOnce('0xdeposit');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+
+      const result = await fastClient().openChannel(OPEN_PARAMS);
+
+      expect(result.channelId).toBe(TEST_CHANNEL_ID);
+      // open + failed deposit + retried deposit
+      expect(mockWriteContract).toHaveBeenCalledTimes(3);
+    });
+
+    it('does NOT retry a deposit that reverted for any other reason', async () => {
+      mockWriteContract.mockResolvedValueOnce('0xopen');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce(OPEN_RECEIPT);
+      mockWriteContract.mockRejectedValueOnce(
+        new Error('execution reverted: ERC20: insufficient allowance')
+      );
+
+      await expect(fastClient().openChannel(OPEN_PARAMS)).rejects.toThrow(
+        /insufficient allowance/
+      );
+      expect(mockWriteContract).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails with an actionable StaleRpcReadError when the RPC never converges', async () => {
+      mockWriteContract.mockResolvedValueOnce('0xopen');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce(OPEN_RECEIPT);
+      mockReadContract.mockResolvedValue(UNSEEN);
+
+      let thrown: unknown;
+      try {
+        await fastClient().openChannel(OPEN_PARAMS);
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeInstanceOf(StaleRpcReadError);
+      const stale = thrown as StaleRpcReadError;
+      expect(stale.code).toBe('STALE_RPC_READ');
+      expect(stale.message).toContain('sepolia.base.org');
+      expect(stale.message).toContain('base-sepolia-rpc.publicnode.com');
+      // The deposit was never attempted against a channel the RPC denies.
+      expect(mockWriteContract).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the consistency wait entirely when the open locks no collateral', async () => {
+      mockWriteContract.mockResolvedValueOnce('0xopen');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce(OPEN_RECEIPT);
+
+      await fastClient().openChannel({ ...OPEN_PARAMS, initialDeposit: '0' });
+
+      expect(mockReadContract).not.toHaveBeenCalled();
+      expect(mockWriteContract).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('adoptChannel (resumed channels, #489)', () => {
+    it('gives a channel this process never opened its on-chain context back', async () => {
+      // A restarted client that only knows the channel from its channel store.
+      client.adoptChannel(TEST_CHANNEL_ID, {
+        chain: TEST_CHAIN,
+        tokenNetworkAddress: TEST_TOKEN_NETWORK,
+        tokenAddress: TEST_TOKEN,
+      });
+
+      mockReadContract.mockResolvedValueOnce([
+        86400n,
+        1,
+        0n,
+        1000n,
+        signer.address,
+        TEST_PEER_ADDRESS,
+      ]);
+      const state = await client.getChannelState(TEST_CHANNEL_ID);
+      expect(state.status).toBe('open');
+
+      // …and it can top the resumed channel up, which needs the token address
+      // for the approve leg.
+      mockReadContract.mockResolvedValueOnce(0n); // allowance
+      mockWriteContract.mockResolvedValueOnce('0xapprove');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+      mockWriteContract.mockResolvedValueOnce('0xdeposit');
+      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
+      const out = await client.depositToChannel(TEST_CHANNEL_ID, 5n, {
+        currentDeposit: 10n,
+      });
+      expect(out.depositTotal).toBe(15n);
     });
   });
 

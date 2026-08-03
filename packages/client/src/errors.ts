@@ -97,6 +97,39 @@ export class ChannelFundingError extends ToonClientError {
 }
 
 /**
+ * Thrown when a persisted peer→channel binding names a channel whose CLAIM
+ * WATERMARK (nonce + cumulative amount) is missing from the channel store.
+ *
+ * Resuming it anyway would re-track the live channel at nonce 0, and the
+ * connector rejects every claim below the nonce it has already seen — the F01
+ * failure from the live measurement runs. Opening a fresh channel instead would
+ * silently strand the collateral in the existing one. Neither is safe to do
+ * quietly, so this is a hard error: the operator decides (settle the old
+ * channel, or restore the watermark file). Never delete a channel store for a
+ * live channel.
+ */
+export class ChannelResumeError extends ToonClientError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'CHANNEL_RESUME', cause);
+    this.name = 'ChannelResumeError';
+  }
+}
+
+/**
+ * Thrown when an EVM RPC never converges on a just-confirmed channel open —
+ * the read-after-write hole behind `sepolia.base.org`'s load balancer, whose
+ * replicas can serve a state that predates the `openChannel` receipt, making
+ * the follow-up `setTotalDeposit` revert `InvalidChannelState()` (#489).
+ */
+export class StaleRpcReadError extends ToonClientError {
+  readonly retryable = true;
+  constructor(message: string, cause?: Error) {
+    super(message, 'STALE_RPC_READ', cause);
+    this.name = 'StaleRpcReadError';
+  }
+}
+
+/**
  * Substrings that mark an insufficient-native-gas revert from an on-chain
  * channel-open tx. viem surfaces the node's message verbatim and the exact
  * phrasing varies by RPC (anvil/geth/hardhat), so we match a set of known

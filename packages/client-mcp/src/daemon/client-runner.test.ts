@@ -556,6 +556,63 @@ describe('ClientRunner', () => {
     expect(res.channelId).toBe('existing-chan');
   });
 
+  it('ADOPTS the resumed channel so the first paid write cannot open a second (#489)', async () => {
+    writeFileSync(
+      join(tmpDir, 'apex-channels.json'),
+      JSON.stringify({
+        'g.proxy|evm': {
+          channelId: 'existing-chan',
+          context: {
+            chainType: 'evm',
+            chainId: 84532,
+            tokenNetworkAddress: '0xtn',
+            recipient: '0xapex',
+          },
+        },
+      })
+    );
+    const adopted: [string, string][] = [];
+    const trackingClient = new FakeClient();
+    (
+      trackingClient as unknown as {
+        channelManager: unknown;
+        adoptChannel: (d: string, c: string) => Promise<void>;
+      }
+    ).channelManager = {
+      trackChannel: (id: string) => {
+        trackingClient.channels[id] = { nonce: 7, cumulative: 7n };
+      },
+    };
+    (
+      trackingClient as unknown as {
+        adoptChannel: (d: string, c: string) => Promise<void>;
+      }
+    ).adoptChannel = async (destination: string, channelId: string) => {
+      adopted.push([destination, channelId]);
+    };
+
+    const r = new ClientRunner({
+      config: makeConfig({
+        apex: {
+          destination: 'g.proxy',
+          peerId: 'proxy',
+          chain: 'evm',
+          chainKey: 'evm:base:84532',
+          chainId: 84532,
+          settlementAddress: '0xapex',
+          tokenNetwork: '0xtn',
+        },
+      }),
+      createClient: () => trackingClient,
+      createRelay: fakeRelay,
+    });
+    await r.bootstrap();
+
+    // Tracking alone left the client's lazy-open path unaware of the channel —
+    // this is the hand-off that stops the next write locking new collateral.
+    expect(adopted).toEqual([['g.proxy', 'existing-chan']]);
+  });
+
   it('records lastError when bootstrap fails and stays not-ready', async () => {
     client.startImpl = async () => {
       throw new Error('BTP never connected');

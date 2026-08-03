@@ -17,7 +17,11 @@ import type {
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Encode } from '@toon-protocol/core';
 import type { EvmSigner } from '../signing/evm-signer.js';
-import { ChannelFundingError, isInsufficientGasError } from '../errors.js';
+import {
+  ChannelFundingError,
+  StaleRpcReadError,
+  isInsufficientGasError,
+} from '../errors.js';
 import {
   openSolanaChannel as openSolanaChannelOnChain,
   getChannelAccountState as getSolanaChannelAccountState,
@@ -242,6 +246,57 @@ export interface OnChainChannelClientConfig {
   chainRpcUrls: Record<string, string>;
   solanaConfig?: SolanaChannelConfig;
   minaConfig?: MinaChannelConfig;
+  /**
+   * How hard the EVM opener works to survive a STALE-READ RPC (#489).
+   *
+   * Public Base Sepolia (`sepolia.base.org`) is a load balancer: the
+   * `setTotalDeposit` that follows a just-confirmed `openChannel` can land on a
+   * replica that has not seen the open yet and reverts `InvalidChannelState()`
+   * (`0xf806e9d9`). So the opener polls the channel back until the RPC agrees
+   * it exists, and retries the deposit on that specific revert.
+   */
+  readConsistency?: EvmReadConsistencyConfig;
+}
+
+/** Read-after-write polling knobs for the EVM open path (#489). */
+export interface EvmReadConsistencyConfig {
+  /** Reads of the freshly opened channel before giving up. Default 12. */
+  attempts?: number;
+  /** Delay between those reads, ms. Default 1000. */
+  delayMs?: number;
+  /** `setTotalDeposit` retries on `InvalidChannelState()`. Default 3. */
+  depositRetries?: number;
+}
+
+const DEFAULT_READ_CONSISTENCY: Required<EvmReadConsistencyConfig> = {
+  attempts: 12,
+  delayMs: 1000,
+  depositRetries: 3,
+};
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+/**
+ * `InvalidChannelState()` — the TokenNetwork revert a stale replica produces
+ * when `setTotalDeposit` runs against a channel it hasn't observed yet. viem
+ * surfaces the raw selector and/or the decoded name depending on whether the
+ * ABI carried the error, so both markers are matched.
+ */
+function isInvalidChannelStateRevert(err: unknown): boolean {
+  const parts: string[] = [];
+  let cur: unknown = err;
+  for (let i = 0; i < 10 && cur != null; i++) {
+    parts.push(cur instanceof Error ? cur.message : String(cur));
+    cur = cur instanceof Error ? (cur as { cause?: unknown }).cause : undefined;
+  }
+  const text = parts.join(' | ').toLowerCase();
+  return text.includes('0xf806e9d9') || text.includes('invalidchannelstate');
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms > 0
+    ? new Promise((resolve) => setTimeout(resolve, ms))
+    : Promise.resolve();
 }
 
 /**
@@ -259,12 +314,35 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     string,
     { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
   >();
+  private readonly readConsistency: Required<EvmReadConsistencyConfig>;
 
   constructor(config: OnChainChannelClientConfig) {
     this.evmSigner = config.evmSigner;
     this.chainRpcUrls = config.chainRpcUrls;
     this.solanaConfig = config.solanaConfig;
     this.minaConfig = config.minaConfig;
+    this.readConsistency = {
+      ...DEFAULT_READ_CONSISTENCY,
+      ...config.readConsistency,
+    };
+  }
+
+  /**
+   * Adopt a channel this process did NOT open — a RESUMED one (#489), whose
+   * chain/token-network/token context came back from the channel store rather
+   * than from an `openChannel` call. Without it a restarted client can track
+   * and pay on a resumed channel but cannot deposit into, close, or read it,
+   * because those all look up the in-memory `channelContext` this seeds.
+   */
+  adoptChannel(
+    channelId: string,
+    ctx: { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
+  ): void {
+    this.channelContext.set(channelId, {
+      chain: ctx.chain,
+      tokenNetworkAddress: ctx.tokenNetworkAddress,
+      ...(ctx.tokenAddress ? { tokenAddress: ctx.tokenAddress } : {}),
+    });
   }
 
   /**
@@ -1033,16 +1111,125 @@ export class OnChainChannelClient implements ConnectorChannelClient {
 
     // Deposit initial funds if specified
     if (deposit > 0n) {
-      const depositHash = await walletClient.writeContract({
-        address: tokenNetworkAddr,
-        abi: TOKEN_NETWORK_ABI,
-        functionName: 'setTotalDeposit',
-        args: [channelId as Hex, this.evmSigner.address as Hex, deposit],
+      // READ-AFTER-WRITE (#489): the open receipt is confirmed, but a
+      // load-balanced RPC (Base Sepolia's `sepolia.base.org`) can route this
+      // next call to a replica that hasn't seen the open, which reverts
+      // `InvalidChannelState()` and strands the just-opened channel with no
+      // collateral. Wait for the RPC to agree the channel exists first.
+      await this.waitForEvmChannelVisible(
+        publicClient,
+        tokenNetworkAddr,
+        channelId,
+        chain
+      );
+      await this.setTotalDepositWithRetry({
+        publicClient,
+        walletClient,
+        tokenNetworkAddr,
+        channelId,
+        total: deposit,
+        chain,
       });
-      await publicClient.waitForTransactionReceipt({ hash: depositHash });
     }
 
     return { channelId, status: 'opening' };
+  }
+
+  /**
+   * Poll the TokenNetwork until it reports the just-opened channel (non-zero
+   * `participant1`). Tolerates a read that throws or returns nothing — a stale
+   * replica does both — and surfaces a {@link StaleRpcReadError} naming the RPC
+   * when the endpoint never converges.
+   */
+  private async waitForEvmChannelVisible(
+    publicClient: ReturnType<
+      OnChainChannelClient['createClients']
+    >['publicClient'],
+    tokenNetworkAddr: Hex,
+    channelId: string,
+    chain: string
+  ): Promise<void> {
+    const { attempts, delayMs } = this.readConsistency;
+    let lastError: Error | undefined;
+    for (let i = 0; i < attempts; i++) {
+      if (i > 0) await sleep(delayMs);
+      try {
+        const res = (await publicClient.readContract({
+          address: tokenNetworkAddr,
+          abi: TOKEN_NETWORK_ABI,
+          functionName: 'channels',
+          args: [channelId as Hex],
+        })) as readonly [bigint, number, bigint, bigint, string, string] | null;
+        const participant1 = res?.[4];
+        if (
+          typeof participant1 === 'string' &&
+          participant1.toLowerCase() !== ZERO_ADDRESS
+        ) {
+          return;
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+    throw new StaleRpcReadError(
+      `Channel ${channelId} was opened on ${chain} but ${this.chainRpcUrls[chain] ?? 'the configured RPC'} ` +
+        `still does not report it after ${attempts} reads. This is the ` +
+        'stale-read failure of a load-balanced endpoint (e.g. ' +
+        '`https://sepolia.base.org`) — point `chainRpcUrls` at a ' +
+        'read-after-write consistent RPC such as ' +
+        '`https://base-sepolia-rpc.publicnode.com` and retry. The channel IS ' +
+        'open on-chain; it just has no collateral yet.',
+      lastError
+    );
+  }
+
+  /**
+   * `setTotalDeposit`, retried on `InvalidChannelState()` — the revert a stale
+   * replica produces for a channel it hasn't observed. Every other revert
+   * propagates immediately (an under-funded wallet must not be retried).
+   */
+  private async setTotalDepositWithRetry(args: {
+    publicClient: ReturnType<
+      OnChainChannelClient['createClients']
+    >['publicClient'];
+    walletClient: ReturnType<
+      OnChainChannelClient['createClients']
+    >['walletClient'];
+    tokenNetworkAddr: Hex;
+    channelId: string;
+    total: bigint;
+    chain: string;
+  }): Promise<void> {
+    const { depositRetries, delayMs } = this.readConsistency;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const depositHash = await args.walletClient.writeContract({
+          address: args.tokenNetworkAddr,
+          abi: TOKEN_NETWORK_ABI,
+          functionName: 'setTotalDeposit',
+          args: [
+            args.channelId as Hex,
+            this.evmSigner.address as Hex,
+            args.total,
+          ],
+        });
+        await args.publicClient.waitForTransactionReceipt({
+          hash: depositHash,
+        });
+        return;
+      } catch (err) {
+        if (attempt >= depositRetries || !isInvalidChannelStateRevert(err)) {
+          throw err;
+        }
+        await sleep(delayMs);
+        await this.waitForEvmChannelVisible(
+          args.publicClient,
+          args.tokenNetworkAddr,
+          args.channelId,
+          args.chain
+        );
+      }
+    }
   }
 
   /**

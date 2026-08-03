@@ -18,6 +18,8 @@ export {
   ConnectorError,
   ValidationError,
   ChannelFundingError,
+  ChannelResumeError,
+  StaleRpcReadError,
   isInsufficientGasError,
 } from './errors.js';
 
@@ -94,7 +96,14 @@ export {
 export {
   OnChainChannelClient,
   type OnChainChannelClientConfig,
+  type EvmReadConsistencyConfig,
   ChannelManager,
+  JsonFileChannelStore,
+  InMemoryChannelStore,
+  type ChannelStore,
+  type ChannelStoreEntry,
+  type ChannelBinding,
+  type ChannelBindingContext,
   readMinaDepositTotal,
   readMinaChannelState,
   MINA_CHANNEL_STATE,

@@ -1,6 +1,7 @@
 import { EvmSigner } from '../signing/evm-signer.js';
 import type { ChainSigner, ChainMetadata } from '../signing/types.js';
 import type { SignedBalanceProof } from '../types.js';
+import { ChannelResumeError } from '../errors.js';
 import type { ChannelStore } from './ChannelStore.js';
 import type { ConnectorChannelClient } from '@toon-protocol/core';
 
@@ -144,20 +145,49 @@ export class ChannelManager {
   }
 
   /**
+   * The key a peer's channel binding is persisted under: the peer, the
+   * negotiated chain, and the token network the channel lives on. All three
+   * matter — the same peer on a second chain (or a redeployed token network) is
+   * a DIFFERENT channel.
+   */
+  private static bindingKey(
+    peerId: string,
+    negotiation: PeerNegotiation
+  ): string {
+    return `${peerId}|${negotiation.chain}|${negotiation.tokenNetwork ?? ''}`;
+  }
+
+  /**
    * Lazily open a channel for a peer. Idempotent — returns existing channel
    * if already open. Deduplicates concurrent opens for the same peer.
+   *
+   * RESUME (#489): before opening anything on-chain, the persisted peer→channel
+   * binding is consulted, so a restarted process re-attaches to the channel it
+   * already holds instead of locking a second lot of collateral. Solana got this
+   * for free (its channel id is a deterministic PDA, so a re-open re-derived the
+   * same channel); EVM mints a fresh `bytes32` per `openChannel` call, so every
+   * restart stranded a deposit until this binding existed.
    */
   async ensureChannel(
     peerId: string,
     negotiation: PeerNegotiation
   ): Promise<string> {
+    // Keyed by peer AND chain AND token network: one peer can be settled with
+    // on several chains, and each is a separate channel. (Keying the in-memory
+    // map by peer alone handed the EVM channel back for a Solana negotiation.)
+    const key = ChannelManager.bindingKey(peerId, negotiation);
+
     // Return existing channel
-    const existing = this.peerChannels.get(peerId);
+    const existing = this.peerChannels.get(key);
     if (existing) return existing;
 
     // Deduplicate concurrent opens
-    const pending = this.pendingOpens.get(peerId);
+    const pending = this.pendingOpens.get(key);
     if (pending) return pending;
+
+    // Resume a channel this identity already holds with the peer.
+    const resumed = this.resumeChannel(peerId, negotiation);
+    if (resumed) return resumed;
 
     if (!this.channelClient) {
       throw new Error(
@@ -180,33 +210,204 @@ export class ChannelManager {
             negotiation.settlementTimeout ?? this.defaultSettlementTimeout,
         });
 
-        this.trackChannel(result.channelId, {
+        const context = {
           chainType: negotiation.chainType,
           chainId:
             typeof negotiation.chainId === 'number' ? negotiation.chainId : 0,
           tokenNetworkAddress: negotiation.tokenNetwork ?? '',
           tokenAddress: negotiation.tokenAddress,
           recipient: negotiation.settlementAddress,
+        };
+        this.trackChannel(result.channelId, {
+          ...context,
           // On-chain depositTotal (Mina only) — needed so the Mina signer binds
           // balanceB = depositTotal − balanceA (connector#133).
           depositTotal: result.depositTotal,
         });
-        this.peerChannels.set(peerId, result.channelId);
+        this.peerChannels.set(key, result.channelId);
+        // Remember WHICH channel this peer holds, and seed its watermark, so
+        // the next process resumes it instead of opening a second one (#489).
+        this.bindChannel(key, result.channelId, context, {
+          ...(result.depositTotal !== undefined
+            ? { depositTotal: result.depositTotal }
+            : {}),
+        });
         return result.channelId;
       } finally {
-        this.pendingOpens.delete(peerId);
+        this.pendingOpens.delete(key);
       }
     })();
 
-    this.pendingOpens.set(peerId, openPromise);
+    this.pendingOpens.set(key, openPromise);
     return openPromise;
   }
 
   /**
-   * Get channel ID for a peer (if any).
+   * Adopt an ALREADY-OPEN channel as this peer's channel: track it (rehydrating
+   * its watermark from the store), bind it so later lazy opens RESUME it rather
+   * than opening a second one, and hand the on-chain client its context back.
+   *
+   * For a host that persisted the channel id itself before the client could
+   * (the MCP daemon's apex-channel store, rig's channel map): those hosts used
+   * to `trackChannel` on restart, which left `ensureChannel` unaware — so the
+   * first paid write opened a SECOND on-chain channel anyway (#489).
+   */
+  adoptChannel(
+    peerId: string,
+    negotiation: PeerNegotiation,
+    channelId: string
+  ): void {
+    const key = ChannelManager.bindingKey(peerId, negotiation);
+    const context = {
+      chainType: negotiation.chainType,
+      chainId:
+        typeof negotiation.chainId === 'number' ? negotiation.chainId : 0,
+      tokenNetworkAddress: negotiation.tokenNetwork ?? '',
+      tokenAddress: negotiation.tokenAddress,
+      recipient: negotiation.settlementAddress,
+    };
+    this.trackChannel(channelId, context);
+    this.peerChannels.set(key, channelId);
+    this.bindChannel(key, channelId, context, {});
+    this.adoptOnChainContext(channelId, negotiation);
+  }
+
+  /**
+   * Re-attach to the channel this identity already holds with `peerId`, from the
+   * store's peer→channel binding. Returns the resumed channel id, or undefined
+   * when there is nothing to resume (no store, no binding, or a binding whose
+   * channel is closing/settled — a spent channel must not be reused).
+   *
+   * `trackChannel` rehydrates the nonce/cumulative watermark from the store, so
+   * the resumed channel keeps signing ABOVE the last claim the connector saw.
+   *
+   * @throws {ChannelResumeError} when the binding's watermark is missing —
+   *   resuming would silently reset the nonce and every later claim would be
+   *   rejected (F01), so the caller is told loudly instead.
+   */
+  private resumeChannel(
+    peerId: string,
+    negotiation: PeerNegotiation
+  ): string | undefined {
+    const store = this.store;
+    if (!store?.loadBinding) return undefined;
+
+    const key = ChannelManager.bindingKey(peerId, negotiation);
+    const binding = store.loadBinding(key);
+    if (!binding) return undefined;
+
+    const watermark = store.load(binding.channelId);
+    if (!watermark) {
+      throw new ChannelResumeError(
+        `Payment channel "${binding.channelId}" is bound to peer "${peerId}" on ` +
+          `${negotiation.chain}, but its claim watermark is missing from the ` +
+          'channel store. Resuming would restart the nonce at 0 and the ' +
+          'connector would reject every claim; opening a new channel would ' +
+          'strand the collateral already locked in this one. Restore the ' +
+          'channel store file, or settle the channel on-chain and remove its ' +
+          `binding (key "${key}") before retrying.`
+      );
+    }
+
+    // A channel in the withdraw flow is spent, not resumable: its collateral is
+    // being released, so bind nothing and let the caller open a fresh channel.
+    if (watermark.closedAt !== undefined || watermark.settledAt !== undefined) {
+      store.deleteBinding?.(key);
+      return undefined;
+    }
+
+    this.trackChannel(binding.channelId, {
+      ...binding.context,
+      ...(binding.depositTotal !== undefined
+        ? { depositTotal: binding.depositTotal }
+        : {}),
+    });
+    this.peerChannels.set(key, binding.channelId);
+    // Hand the on-chain client back the context it only kept in memory, so
+    // deposit/close/state reads work on a channel this process never opened.
+    this.adoptOnChainContext(binding.channelId, negotiation);
+    return binding.channelId;
+  }
+
+  /**
+   * Persist a freshly opened channel as this peer's binding, and SEED its
+   * watermark entry (`nonce 0`) so a later resume can tell "never claimed
+   * against" apart from "watermark lost" (which is a hard
+   * {@link ChannelResumeError}).
+   */
+  private bindChannel(
+    key: string,
+    channelId: string,
+    context: {
+      chainType: string;
+      chainId: number;
+      tokenNetworkAddress: string;
+      tokenAddress?: string;
+      recipient?: string;
+    },
+    extra: { depositTotal?: bigint }
+  ): void {
+    const store = this.store;
+    if (!store?.saveBinding) return;
+    if (!store.load(channelId)) {
+      const tracking = this.channels.get(channelId);
+      store.save(channelId, {
+        nonce: tracking?.nonce ?? 0,
+        cumulativeAmount: tracking?.cumulativeAmount ?? 0n,
+      });
+    }
+    store.saveBinding(key, {
+      channelId,
+      context,
+      ...(extra.depositTotal !== undefined
+        ? { depositTotal: extra.depositTotal }
+        : {}),
+    });
+  }
+
+  /**
+   * Re-seed the on-chain client's per-channel context for a RESUMED channel.
+   * `OnChainChannelClient` caches `chain`/`tokenNetwork`/`token` only for
+   * channels it opened in this process, so without this a resumed channel
+   * cannot be deposited into or closed. Optional capability — a channel client
+   * that doesn't implement `adoptChannel` is simply left alone.
+   */
+  private adoptOnChainContext(
+    channelId: string,
+    negotiation: PeerNegotiation
+  ): void {
+    const client = this.channelClient as
+      | (ConnectorChannelClient & {
+          adoptChannel?: (
+            channelId: string,
+            ctx: {
+              chain: string;
+              tokenNetworkAddress: string;
+              tokenAddress?: string;
+            }
+          ) => void;
+        })
+      | undefined;
+    if (!client?.adoptChannel || !negotiation.tokenNetwork) return;
+    client.adoptChannel(channelId, {
+      chain: negotiation.chain,
+      tokenNetworkAddress: negotiation.tokenNetwork,
+      ...(negotiation.tokenAddress
+        ? { tokenAddress: negotiation.tokenAddress }
+        : {}),
+    });
+  }
+
+  /**
+   * Get channel ID for a peer (if any). Channels are held per peer AND chain
+   * AND token network, so a peer settled with on two chains has two — this
+   * returns the first one tracked for the peer.
    */
   getChannelForPeer(peerId: string): string | undefined {
-    return this.peerChannels.get(peerId);
+    for (const [key, channelId] of this.peerChannels) {
+      if (key === peerId || key.startsWith(`${peerId}|`)) return channelId;
+    }
+    return undefined;
   }
 
   /**
