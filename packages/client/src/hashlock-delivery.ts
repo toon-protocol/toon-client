@@ -38,8 +38,9 @@ import {
 } from './utils/condition.js';
 import { fromHex } from './utils/binary.js';
 
-/** ChaCha20-Poly1305 nonce length, and the Poly1305 tag length. */
+/** ChaCha20-Poly1305 nonce length (RFC 8439). */
 const NONCE_LENGTH = 12;
+/** Poly1305 authentication tag length (RFC 8439). */
 const TAG_LENGTH = 16;
 
 /** What encrypting an artifact produces (provider side). */
