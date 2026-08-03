@@ -1,5 +1,165 @@
 # @toon-protocol/client
 
+## 0.26.0
+
+### Minor Changes
+
+- 05ec8fc: Add `BtpPaidWriteTransport` (issue #482): a persistent, strictly-ordered BTP
+  transport for paid writes, built on the connector's client-facing BTP
+  websocket ingress (client-edge-spec.md §1.9). It wraps a `BtpRuntimeClient`
+  session to give:
+
+  - a persistent socket, connected once and reused across many writes instead
+    of the per-call open/close pattern `Http402Client.upgradeToBtp()` uses;
+  - strictly ordered claim dispatch — writes are enqueued FIFO and the next one
+    is not sent until the previous has settled, which is what lets a burst of
+    paid writes on one channel avoid racing itself into `F01
+NonceNotAdvancing` (measured on the huddle-over-ILP prototype: 0 F01
+    rejects across 4,156 events at a sustained 50fps);
+  - reconnect-and-resume on a connection-level failure, without losing a
+    write's place in the queue or reordering the writes behind it;
+  - automatic fallback to a configured HTTP transport once the reconnect
+    budget for one write is exhausted.
+
+  `ToonClient` gets a new opt-in `preferBtpForPaidWrites` config flag (default
+  `false`) that routes `publishEvent`/`sendSwapPacket`/`sendPayment` through
+  this transport instead of the default stateless HTTP one-shot path, when a
+  `btpUrl` is configured. The default is unchanged: paid writes keep going
+  through HTTP unless a consumer explicitly opts in for a paid-write burst
+  (the motivating case is relay-native huddle audio, which needs sustained
+  strictly-ordered writes).
+
+- 5197f47: BTP client: accept server-originated MESSAGE and TRANSFER (issue #493, toon-meta#262 "agents earning"). The client dialect (`btp/protocol.ts`) was asymmetric — it only ever sent MESSAGE and resolved the reply through `pendingRequests`, so an agent behind NAT could spend but never be paid or handed a job. RFC-0023 says both sides "play identical roles" after auth; connector issue #697 landed the symmetric grammar server-side, and this closes the client half.
+
+  Adds `BTPMessageType.TRANSFER` (type 7, `amount` + `protocolData`, byte-compatible with `crates/connector-client-edge/src/btp.rs`'s own unit vectors — no ILP-packet field in either direction) to `serializeBtpMessage`/`parseBtpMessage`, and `ERROR`-frame serialization (previously decode-only). `IsomorphicBtpClient` gains `onMessage`/`onTransfer` config handlers: a server-originated request is dispatched to the handler and answered with a RESPONSE/ERROR under the same requestId — never through `pendingRequests`, which only ever correlates this client's own outbound sends (the two id spaces are distinguished by BTP frame type, not by whether an id value collides). An unset `onTransfer` still gets an empty RESPONSE ack, mirroring the connector's own default; an unset `onMessage` is dropped unanswered, matching the pre-#493 dialect exactly. `onInboundError` surfaces in-flight inbound work orphaned by a disconnect instead of it silently vanishing. `BtpRuntimeClientConfig` threads all three handlers through on both `connect()` and `reconnect()`, since a reconnect constructs a fresh `IsomorphicBtpClient`.
+
+  Additive throughout: a client that never sends TRANSFER and is never sent a server-originated MESSAGE behaves exactly as before.
+
+- d54324c: Add the earning API (issue #494, toon-meta#262 "agents earning"): serve paid jobs over BTP and read the credited balance.
+
+  Serve-side: `ToonClientConfig.jobHandler` registers a plain function for a connector-originated BTP MESSAGE carrying a PREPARE (RFC-0023 symmetric grammar, #493) — the handler stays payment-oblivious (no amount/payer/chain parameters), receives the job's opaque `data`, and returns the fulfillment preimage it already minted via `encryptArtifact`/`fulfillIncrement` (#495). A handler that throws, or whose fulfillment does not satisfy the PREPARE's condition, answers `F99` (RFC-0027's own "Application Error" code); an already-expired PREPARE is refused `R00` without invoking the handler. New `btp/protocol.ts` codec: `deserializeIlpPrepare`, `serializeIlpFulfill`, `serializeIlpReject`.
+
+  Read-side: `ToonClient.getClaimState()` asks the connector's `POST /ilp/claim-state` (client-edge-spec.md §1.10) for the netted deposit/claimed/available/nonce position of one or more tracked channels — the same runway source of truth `#261` already established, never a self-reported figure (decision 4/15 forbid agent-published money reports). Adds `EvmSigner.signClaimStateChallenge` (EIP-712, distinct typed struct from a real balance-proof claim) and `SolanaSigner.signClaimStateChallenge` (Ed25519 over a tagged, length-distinct message) so a captured read-only challenge can never be replayed as a payment.
+
+- a3f9e09: Resume the EVM payment channel across restarts instead of opening (and funding)
+  a new one every time (toon-client#489).
+
+  `ChannelManager` only knew a peer's channel **in memory**, so a restarted
+  process re-entered the lazy-open path and called `TokenNetwork.openChannel`
+  again — which mints a fresh `bytes32` per call, stranding the previous
+  channel's collateral. Solana never showed the bug only because its channel id
+  is a deterministic PDA: the re-open re-derived the SAME channel and
+  `trackChannel` rehydrated the watermark from the store. Live measurement runs
+  burned ~20 USDC of collateral per run in abandoned EVM channels (~560 USDC
+  across 28) while the Solana runs reused 16 channels across 12 runs with zero
+  new opens.
+
+  `channelStorePath` now persists a peer→channel **binding** (which on-chain
+  channel this identity holds with a peer, per chain + token network) in a
+  sibling file — `channels.json` → `channels.peers.json`; the watermark file
+  keeps its existing schema. `ensureChannel` consults it before opening
+  anything on-chain and re-attaches to the recorded channel **with its
+  nonce/cumulative watermark**, so claims continue above the last one the
+  connector saw. A binding whose watermark is missing is a hard
+  `ChannelResumeError` rather than a silent nonce reset (which would have every
+  later claim rejected); a channel already in the withdraw flow is not resumed.
+  `ChannelManager` also keys channels per peer AND chain AND token network, so a
+  peer settled with on two chains no longer hands back the wrong chain's channel.
+
+  New API: `ToonClient.adoptChannel(destination, channelId)` binds an
+  already-open channel for hosts that persisted the id themselves (the MCP
+  daemon's apex-channel store, rig's channel map) — tracking alone left the
+  lazy-open path unaware, so their first paid write after a restart still opened
+  a second channel. `OnChainChannelClient.adoptChannel()` re-seeds the on-chain
+  context so a resumed channel can also be deposited into and closed.
+  `InMemoryChannelStore` is exported for tests and short-lived processes.
+
+  Also hardens the EVM open against a **stale-read RPC**: `https://sepolia.base.org`
+  is a load balancer whose replicas can serve state predating a confirmed
+  `openChannel`, making the follow-up `setTotalDeposit` revert
+  `InvalidChannelState()` (`0xf806e9d9`) and leaving an uncollateralized channel.
+  The opener now polls the channel back before depositing, retries that specific
+  revert, and otherwise fails with an actionable `StaleRpcReadError` naming a
+  consistent endpoint (`https://base-sepolia-rpc.publicnode.com`, which core's
+  `base-sepolia` preset already carries). Tunable via
+  `OnChainChannelClientConfig.readConsistency`.
+
+  `@toon-protocol/client-mcp`: the daemon's resume path now calls
+  `client.adoptChannel()` after re-tracking its saved apex channel.
+
+- 949768f: Add hashlock delivery helpers (issue #495, toon-meta#262 decision 5): `encryptArtifact`, `fulfillIncrement`, `decryptArtifact`, and `buildIncrementPrepare`, symmetric between the provider and buyer sides of a factory-job increment (`docs/factory-job-protocol.md` §4 in toon-meta).
+
+  The provider encrypts an increment's artifact under a freshly minted 32-byte key and sets the ILP `executionCondition` to `sha256(key)`; the only way to claim the increment's payment is to reveal `key` as the fulfillment, which is the same instant the buyer can decrypt. `encryptArtifact` takes only the artifact bytes — no caller-supplied key or condition — so the condition can never be derived from anything other than the key that actually decrypts the artifact. `decryptArtifact` verifies `sha256(key)` against the condition the buyer paid before decrypting, throwing `HashlockConditionMismatchError` on a mismatch or `HashlockDecryptError` on a tampered ciphertext; neither error ever carries the key.
+
+- 5e28f05: Add a NIP-59 gift-wrap unwrap primitive (toon-meta#256), so external agent
+  processes (buzz#19's agent-members) can receive gift-wrapped channel keys
+  addressed to the daemon's own Nostr identity without its secret key ever
+  leaving the daemon.
+
+  `@toon-protocol/client` gains `ToonClient.unwrapGiftWrap(wrap)`: decrypts a
+  kind:1059 gift wrap's two NIP-44 layers with the client's own identity key
+  (nostr-tools `nip44`, no hand-rolled crypto) and returns the decrypted rumor
+  plus the kind:13 seal's SIGNATURE-VERIFIED signer pubkey
+  (`GiftWrapAddressError` / `GiftWrapDecryptError` on failure). Callers must
+  read authorship off the seal, never off the wrap's ephemeral, one-time-use
+  `pubkey`.
+
+  `@toon-protocol/client-mcp`'s daemon control API adds `POST /nip59-unwrap`
+  (body `{ wrap }` → `{ rumor, sealPubkey }`; 400 malformed/wrong-kind/wrong-
+  recipient, 422 decrypt/verification failure) plus a matching
+  `ControlClient.nip59Unwrap()` method.
+
+- 98106f6: Add `ToonClient.sendTransfer()` (issue #491): a plain, non-custodial send of the
+  settlement token or native gas from the caller's own key to an arbitrary
+  address, on evm/solana/mina. `@toon-protocol/client` was built around payment
+  channels, not transfers — this is the missing primitive underneath
+  provisioning a buzz agent (toon-protocol/buzz#74): the owner's treasury has to
+  fund a freshly-derived agent address with USDC and native gas before that
+  address can open a channel.
+
+  Every send is confirmed by an OBSERVED balance delta at the destination, never
+  by the send call/transaction merely landing — the devnet faucet's Solana leg
+  has been seen returning success with a real transaction signature while
+  delivering 0 lamports (toon-protocol/connector#691); a send that trusted its
+  own receipt would report a funded agent that in fact holds nothing.
+
+  New typed errors distinguish preflight failures from delivery failures:
+  `InsufficientBalanceError`, `UnknownChainError`, `InvalidAddressError` (all
+  checked before anything is submitted), `TransferNotDeliveredError` (accepted
+  on-chain/by-node but the destination balance never moved), and
+  `TransferUnsupportedError` (a chain/asset combination not implemented yet —
+  currently the Mina settlement token; native MINA is unaffected).
+
+  The standalone `sendTransfer()` function and its config/result types are also
+  exported from the package root for callers that want to build a
+  `TransferConfig` outside a `ToonClient`.
+
+### Patch Changes
+
+- 473b917: Fix #485: `ToonClient.getDefaultChainContext()` always picked
+  `supportedChains[0]`, ignoring any explicitly configured settlement chain. On
+  a multi-chain devnet announce this silently pinned a daemon configured for
+  `evm` (`TOON_CLIENT_CHAIN=evm`) to Solana whenever Solana happened to sort
+  first (buzz#47), leaving self-serve onboarding on a chain the user didn't
+  choose and may have no gas on.
+
+  `ToonClientConfig` gains an optional `preferredChain` field (`'evm' |
+'solana' | 'mina'`). When set, `getDefaultChainContext()` and the lightweight
+  bootstrap-fallback chain negotiation (`ToonClient.matchNegotiatedChain`, the
+  same one-line `X.find(...) ?? X[0]` pattern) now honor it — matching by chain
+  family regardless of `supportedChains` array order — and throw a clear
+  `CHAIN_NOT_SUPPORTED` error naming both the configured chain and the
+  available chains when no match exists, instead of silently substituting a
+  different one. Leaving `preferredChain` unset keeps the previous
+  `supportedChains[0]` fallback unchanged.
+
+  `@toon-protocol/client-mcp`'s daemon config now threads the resolved
+  `TOON_CLIENT_CHAIN` env var / `chain` config file field into
+  `toonClientConfig.preferredChain` — but only when it was actually set
+  explicitly, distinct from the `chain` variable's own silent `'evm'` default
+  used for apex-negotiation selection — so an unconfigured daemon keeps the
+  legacy fallback behavior.
+
 ## 0.25.1
 
 ### Patch Changes
