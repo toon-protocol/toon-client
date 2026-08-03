@@ -486,15 +486,15 @@ export class IsomorphicBtpClient {
 
   private handleInboundTransfer(requestId: number, data: BTPTransferData): void {
     const handler = this.config.onTransfer;
-    const invoke = handler
-      ? () =>
-          handler({
+    this.dispatchInbound(requestId, () =>
+      handler
+        ? handler({
             requestId,
             amount: data.amount,
             protocolData: data.protocolData ?? [],
           })
-      : (): BtpHandlerResponse => ({});
-    this.dispatchInbound(requestId, invoke);
+        : {}
+    );
   }
 
   private dispatchInbound(
@@ -517,47 +517,23 @@ export class IsomorphicBtpClient {
 
   private replyToInbound(requestId: number, result: BtpHandlerResponse): void {
     if (!this.takeInFlight(requestId)) return;
-    if (!this._isConnected || !this.ws) {
-      this.config.onInboundError?.(
-        new BtpConnectionError(
-          `Cannot answer inbound request ${requestId}: not connected`
-        ),
-        requestId
-      );
-      return;
-    }
-    try {
-      const btpMessage = serializeBtpMessage({
+    this.sendInboundReply(requestId, '', () =>
+      serializeBtpMessage({
         type: BTPMessageType.RESPONSE,
         requestId,
         data: {
           protocolData: result.protocolData ?? [],
           ilpPacket: result.ilpPacket ?? new Uint8Array(0),
         },
-      });
-      this.ws.send(btpMessage);
-    } catch (err) {
-      this.config.onInboundError?.(
-        err instanceof Error ? err : new Error(String(err)),
-        requestId
-      );
-    }
+      })
+    );
   }
 
   private replyToInboundError(requestId: number, error: unknown): void {
     if (!this.takeInFlight(requestId)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (!this._isConnected || !this.ws) {
-      this.config.onInboundError?.(
-        new BtpConnectionError(
-          `Cannot answer inbound request ${requestId}: not connected (handler error: ${message})`
-        ),
-        requestId
-      );
-      return;
-    }
-    try {
-      const btpMessage = serializeBtpMessage({
+    this.sendInboundReply(requestId, ` (handler error: ${message})`, () =>
+      serializeBtpMessage({
         type: BTPMessageType.ERROR,
         requestId,
         data: {
@@ -567,8 +543,33 @@ export class IsomorphicBtpClient {
           message,
           data: textEncoder.encode(message),
         },
-      });
-      this.ws.send(btpMessage);
+      })
+    );
+  }
+
+  /**
+   * Sends a RESPONSE/ERROR frame answering an inbound request, reporting
+   * through `onInboundError` (never throwing) if the socket is gone or
+   * `send` itself fails. `notConnectedSuffix` lets the caller fold in extra
+   * context (e.g. the handler error that `replyToInboundError` is reporting)
+   * when the "not connected" case fires.
+   */
+  private sendInboundReply(
+    requestId: number,
+    notConnectedSuffix: string,
+    build: () => Uint8Array
+  ): void {
+    if (!this._isConnected || !this.ws) {
+      this.config.onInboundError?.(
+        new BtpConnectionError(
+          `Cannot answer inbound request ${requestId}: not connected${notConnectedSuffix}`
+        ),
+        requestId
+      );
+      return;
+    }
+    try {
+      this.ws.send(build());
     } catch (err) {
       this.config.onInboundError?.(
         err instanceof Error ? err : new Error(String(err)),
