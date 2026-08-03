@@ -199,6 +199,54 @@ async function waitForBalanceDelta(opts: {
   }
 }
 
+/**
+ * {@link waitForBalanceDelta}, then throw {@link TransferNotDeliveredError}
+ * if the final observed balance still doesn't reflect the transfer — the
+ * shared tail end of every chain's send path below.
+ */
+async function confirmDelivered(opts: {
+  readBalance: () => Promise<bigint>;
+  before: bigint;
+  amount: bigint;
+  timeoutMs: number;
+  pollIntervalMs?: number;
+  notDeliveredMessage: (observedDelta: bigint) => string;
+}): Promise<bigint> {
+  const after = await waitForBalanceDelta({
+    readBalance: opts.readBalance,
+    before: opts.before,
+    minDelta: opts.amount,
+    timeoutMs: opts.timeoutMs,
+    pollIntervalMs: opts.pollIntervalMs,
+  });
+  if (after - opts.before < opts.amount) {
+    throw new TransferNotDeliveredError(
+      opts.notDeliveredMessage(after - opts.before)
+    );
+  }
+  return after;
+}
+
+function buildResult(
+  chain: TransferChain,
+  asset: TransferAssetKind,
+  to: string,
+  amount: bigint,
+  txHash: string,
+  before: bigint,
+  after: bigint
+): SendTransferResult {
+  return {
+    chain,
+    asset,
+    to,
+    amount: amount.toString(),
+    txHash,
+    balanceBefore: before.toString(),
+    balanceAfter: after.toString(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // EVM
 // ---------------------------------------------------------------------------
@@ -273,28 +321,17 @@ async function sendEvmTransfer(
         `EVM native transfer ${txHash} reverted on-chain — no funds reached ${to}.`
       );
     }
-    const after = await waitForBalanceDelta({
+    const after = await confirmDelivered({
       readBalance: readDest,
       before,
-      minDelta: amount,
+      amount,
       timeoutMs,
       pollIntervalMs: params.confirmPollIntervalMs,
-    });
-    if (after - before < amount) {
-      throw new TransferNotDeliveredError(
+      notDeliveredMessage: (delta) =>
         `EVM native transfer ${txHash} confirmed on-chain, but ${to}'s balance only rose by ` +
-          `${after - before} wei (expected ${amount}) within the wait window.`
-      );
-    }
-    return {
-      chain: 'evm',
-      asset: 'native',
-      to: params.to,
-      amount: amount.toString(),
-      txHash,
-      balanceBefore: before.toString(),
-      balanceAfter: after.toString(),
-    };
+        `${delta} wei (expected ${amount}) within the wait window.`,
+    });
+    return buildResult('evm', 'native', params.to, amount, txHash, before, after);
   }
 
   // Settlement token (ERC-20).
@@ -340,28 +377,17 @@ async function sendEvmTransfer(
       `EVM token transfer ${txHash} reverted on-chain — no funds reached ${to}.`
     );
   }
-  const after = await waitForBalanceDelta({
+  const after = await confirmDelivered({
     readBalance: readDest,
     before,
-    minDelta: amount,
+    amount,
     timeoutMs,
     pollIntervalMs: params.confirmPollIntervalMs,
-  });
-  if (after - before < amount) {
-    throw new TransferNotDeliveredError(
+    notDeliveredMessage: (delta) =>
       `EVM token transfer ${txHash} confirmed on-chain, but ${to}'s balance only rose by ` +
-        `${after - before} base units (expected ${amount}) within the wait window.`
-    );
-  }
-  return {
-    chain: 'evm',
-    asset: 'token',
-    to: params.to,
-    amount: amount.toString(),
-    txHash,
-    balanceBefore: before.toString(),
-    balanceAfter: after.toString(),
-  };
+      `${delta} base units (expected ${amount}) within the wait window.`,
+  });
+  return buildResult('evm', 'token', params.to, amount, txHash, before, after);
 }
 
 // ---------------------------------------------------------------------------
@@ -425,30 +451,27 @@ async function sendSolanaTransfer(
       },
     ]);
 
-    const after = await waitForBalanceDelta({
+    const after = await confirmDelivered({
       readBalance: readDest,
       before,
-      minDelta: amount,
+      amount,
       timeoutMs,
       pollIntervalMs: params.confirmPollIntervalMs,
-    });
-    if (after - before < amount) {
-      throw new TransferNotDeliveredError(
+      notDeliveredMessage: (delta) =>
         `Solana native transfer ${txHash} confirmed on-chain, but ${params.to}'s balance only rose by ` +
-          `${after - before} lamports (expected ${amount}) within the wait window — the devnet ` +
-          `faucet's Solana leg has shown exactly this shape (connector#691): a real transaction ` +
-          `signature with 0 lamports delivered.`
-      );
-    }
-    return {
-      chain: 'solana',
-      asset: 'native',
-      to: params.to,
-      amount: amount.toString(),
+        `${delta} lamports (expected ${amount}) within the wait window — the devnet ` +
+        `faucet's Solana leg has shown exactly this shape (connector#691): a real transaction ` +
+        `signature with 0 lamports delivered.`,
+    });
+    return buildResult(
+      'solana',
+      'native',
+      params.to,
+      amount,
       txHash,
-      balanceBefore: before.toString(),
-      balanceAfter: after.toString(),
-    };
+      before,
+      after
+    );
   }
 
   // Settlement token (SPL).
@@ -514,28 +537,17 @@ async function sendSolanaTransfer(
     transferIx,
   ]);
 
-  const after = await waitForBalanceDelta({
+  const after = await confirmDelivered({
     readBalance: readDest,
     before,
-    minDelta: amount,
+    amount,
     timeoutMs,
     pollIntervalMs: params.confirmPollIntervalMs,
-  });
-  if (after - before < amount) {
-    throw new TransferNotDeliveredError(
+    notDeliveredMessage: (delta) =>
       `Solana token transfer ${txHash} confirmed on-chain, but ${destAta}'s balance only rose by ` +
-        `${after - before} base units (expected ${amount}) within the wait window (connector#691 shape).`
-    );
-  }
-  return {
-    chain: 'solana',
-    asset: 'token',
-    to: params.to,
-    amount: amount.toString(),
-    txHash,
-    balanceBefore: before.toString(),
-    balanceAfter: after.toString(),
-  };
+      `${delta} base units (expected ${amount}) within the wait window (connector#691 shape).`,
+  });
+  return buildResult('solana', 'token', params.to, amount, txHash, before, after);
 }
 
 // ---------------------------------------------------------------------------
@@ -724,28 +736,17 @@ async function sendMinaTransfer(
     fetchImpl
   );
 
-  const after = await waitForBalanceDelta({
+  const after = await confirmDelivered({
     readBalance: readDest,
     before,
-    minDelta: amount,
+    amount,
     timeoutMs,
     pollIntervalMs: params.confirmPollIntervalMs,
-  });
-  if (after - before < amount) {
-    throw new TransferNotDeliveredError(
+    notDeliveredMessage: (delta) =>
       `Mina native transfer ${txHash} was accepted by the node, but ${params.to}'s balance only rose ` +
-        `by ${after - before} nanomina (expected ${amount}) within the wait window.`
-    );
-  }
-  return {
-    chain: 'mina',
-    asset: 'native',
-    to: params.to,
-    amount: amount.toString(),
-    txHash,
-    balanceBefore: before.toString(),
-    balanceAfter: after.toString(),
-  };
+      `by ${delta} nanomina (expected ${amount}) within the wait window.`,
+  });
+  return buildResult('mina', 'native', params.to, amount, txHash, before, after);
 }
 
 // ---------------------------------------------------------------------------

@@ -1568,6 +1568,51 @@ export class ToonClient {
   }
 
   /**
+   * Lazily derive the mnemonic's full multi-chain identity, at most once per
+   * call to the returned function. Solana/Mina keys are only registered as
+   * signers during `start()`; this lets an UNSTARTED client (e.g. `rig
+   * balance`, or `sendTransfer` before `start()`) derive them on demand
+   * instead. Shared by {@link getWalletBalances} and {@link sendTransfer}.
+   */
+  private createIdentityDeriver(): () => Promise<
+    Awaited<ReturnType<typeof deriveFullIdentity>> | undefined
+  > {
+    let derived: Awaited<ReturnType<typeof deriveFullIdentity>> | undefined;
+    let derivedTried = false;
+    return async () => {
+      if (derivedTried) return derived;
+      derivedTried = true;
+      if (this.config.mnemonic) {
+        derived = await deriveFullIdentity(
+          this.config.mnemonic,
+          this.config.mnemonicAccountIndex ?? 0
+        );
+      }
+      return derived;
+    };
+  }
+
+  /**
+   * The EVM chain key + RPC URL to use for a settlement-token/native-gas
+   * operation: the settlement chain wins over the preset-first chain, mirroring
+   * {@link getBalances}. Shared by {@link getWalletBalances} and
+   * {@link sendTransfer}.
+   */
+  private resolveSettlementEvmChain():
+    | { chainKey: string; rpcUrl: string }
+    | undefined {
+    const rpcUrls = this.config.chainRpcUrls;
+    if (!rpcUrls) return undefined;
+    const usableEvm = (c: string): boolean =>
+      c.startsWith('evm') && Boolean(rpcUrls[c]);
+    const settlementKeys = Object.keys(this.config.settlementAddresses ?? {});
+    const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
+    const chainKey = settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
+    const rpcUrl = chainKey ? rpcUrls[chainKey] : undefined;
+    return chainKey && rpcUrl ? { chainKey, rpcUrl } : undefined;
+  }
+
+  /**
    * The FULL multi-chain wallet view (#299): for every chain the identity is
    * configured for, the native coin (ETH / SOL / MINA) AND every configured
    * token (USDC), grouped per chain with the identity's address on that chain.
@@ -1598,40 +1643,22 @@ export class ToonClient {
     // Solana/Mina keys are only registered as signers during start(); derive
     // them from the retained mnemonic on demand so an unstarted client (e.g.
     // `rig balance`) still reports every configured chain. Derived once, lazily.
-    let derived: Awaited<ReturnType<typeof deriveFullIdentity>> | undefined;
-    let derivedTried = false;
-    const ensureDerived = async (): Promise<typeof derived> => {
-      if (derivedTried) return derived;
-      derivedTried = true;
-      if (this.config.mnemonic) {
-        derived = await deriveFullIdentity(
-          this.config.mnemonic,
-          this.config.mnemonicAccountIndex ?? 0
-        );
-      }
-      return derived;
-    };
+    const ensureDerived = this.createIdentityDeriver();
 
     // EVM: native ETH + settlement USDC. Pick the settlement chain key the same
     // way getBalances does (settlement chain wins over the preset primary).
     const evmAddress = this.getEvmAddress();
-    const rpcUrls = this.config.chainRpcUrls;
+    const evmChain = this.resolveSettlementEvmChain();
     const tokens = this.config.preferredTokens;
-    if (evmAddress && rpcUrls) {
-      const usableEvm = (c: string): boolean =>
-        c.startsWith('evm') && Boolean(rpcUrls[c]);
-      const settlementKeys = Object.keys(this.config.settlementAddresses ?? {});
-      const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
-      const chainKey =
-        settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
-      if (chainKey && rpcUrls[chainKey]) {
-        sources.evm = {
-          chainKey,
-          rpcUrl: rpcUrls[chainKey],
-          owner: evmAddress,
-          ...(tokens?.[chainKey] ? { tokenAddress: tokens[chainKey] } : {}),
-        };
-      }
+    if (evmAddress && evmChain) {
+      sources.evm = {
+        chainKey: evmChain.chainKey,
+        rpcUrl: evmChain.rpcUrl,
+        owner: evmAddress,
+        ...(tokens?.[evmChain.chainKey]
+          ? { tokenAddress: tokens[evmChain.chainKey] }
+          : {}),
+      };
     }
 
     // Solana: native SOL + SPL USDC (the negotiated mint). Explicit config
@@ -1704,45 +1731,24 @@ export class ToonClient {
 
     // EVM: same settlement-chain-first resolution as getBalances/getWalletBalances.
     if (this.evmSigner) {
-      const rpcUrls = this.config.chainRpcUrls;
-      if (rpcUrls) {
+      const evmChain = this.resolveSettlementEvmChain();
+      if (evmChain) {
         const tokens = this.config.preferredTokens;
-        const usableEvm = (c: string): boolean =>
-          c.startsWith('evm') && Boolean(rpcUrls[c]);
-        const settlementKeys = Object.keys(
-          this.config.settlementAddresses ?? {}
-        );
-        const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
-        const chainKey =
-          settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
-        const rpcUrl = chainKey ? rpcUrls[chainKey] : undefined;
-        if (chainKey && rpcUrl) {
-          config.evm = {
-            chainKey,
-            rpcUrl,
-            signer: this.evmSigner,
-            ...(tokens?.[chainKey] ? { tokenAddress: tokens[chainKey] } : {}),
-          };
-        }
+        config.evm = {
+          chainKey: evmChain.chainKey,
+          rpcUrl: evmChain.rpcUrl,
+          signer: this.evmSigner,
+          ...(tokens?.[evmChain.chainKey]
+            ? { tokenAddress: tokens[evmChain.chainKey] }
+            : {}),
+        };
       }
     }
 
     // Solana/Mina keys are only registered as signers during start(); derive
     // them from the retained mnemonic on demand otherwise (mirrors
     // getWalletBalances' `ensureDerived`).
-    let derived: Awaited<ReturnType<typeof deriveFullIdentity>> | undefined;
-    let derivedTried = false;
-    const ensureDerived = async (): Promise<typeof derived> => {
-      if (derivedTried) return derived;
-      derivedTried = true;
-      if (this.config.mnemonic) {
-        derived = await deriveFullIdentity(
-          this.config.mnemonic,
-          this.config.mnemonicAccountIndex ?? 0
-        );
-      }
-      return derived;
-    };
+    const ensureDerived = this.createIdentityDeriver();
 
     const sol = this.config.solanaChannel;
     if (sol?.rpcUrl) {
