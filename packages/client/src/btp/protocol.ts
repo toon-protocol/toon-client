@@ -23,6 +23,12 @@ export const BTPMessageType = {
   RESPONSE: 1,
   ERROR: 2,
   MESSAGE: 6,
+  /**
+   * RFC-0023's symmetric grammar (connector issue #697, toon-client#493):
+   * `Transfer ::= SEQUENCE { amount, protocolData }` — settlement value, no
+   * ILP-packet field. Byte-compatible with the connector's `btp.rs`.
+   */
+  TRANSFER: 7,
 } as const;
 
 export const ILPPacketType = {
@@ -42,10 +48,16 @@ export interface BTPMessageData {
   ilpPacket?: Uint8Array;
 }
 
+/** A TRANSFER's body — no `ilpPacket` field exists in this frame type, ever. */
+export interface BTPTransferData {
+  amount: bigint;
+  protocolData: BTPProtocolData[];
+}
+
 export interface BTPMessage {
   type: number;
   requestId: number;
-  data: BTPMessageData | BTPErrorData;
+  data: BTPMessageData | BTPErrorData | BTPTransferData;
 }
 
 export interface BTPErrorData {
@@ -122,6 +134,16 @@ function readUint32BE(buf: Uint8Array, offset: number): number {
   );
 }
 
+function readUint64BE(buf: Uint8Array, offset: number): bigint {
+  if (offset + 8 > buf.length)
+    throw new Error('Buffer underflow reading uint64');
+  let value = 0n;
+  for (let i = 0; i < 8; i++) {
+    value = (value << 8n) | BigInt(buf[offset + i]!);
+  }
+  return value;
+}
+
 function writeUint8(value: number): Uint8Array {
   return new Uint8Array([value]);
 }
@@ -137,6 +159,16 @@ function writeUint32BE(value: number): Uint8Array {
     (value >> 8) & 0xff,
     value & 0xff,
   ]);
+}
+
+function writeUint64BE(value: bigint): Uint8Array {
+  const bytes = new Uint8Array(8);
+  let remaining = value;
+  for (let i = 7; i >= 0; i--) {
+    bytes[i] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+  return bytes;
 }
 
 function sliceUtf8(buf: Uint8Array, offset: number, length: number): string {
@@ -266,19 +298,9 @@ function deserializeIlpReject(buf: Uint8Array): ILPRejectPacket {
 
 // ─── BTP message serialization ──────────────────────────────────────────────
 
-export function serializeBtpMessage(message: BTPMessage): Uint8Array {
-  const parts: Uint8Array[] = [
-    writeUint8(message.type),
-    writeUint32BE(message.requestId),
-  ];
-
-  const data = message.data as BTPMessageData;
-  const protocolData = data.protocolData ?? [];
-
-  // Protocol data count
+/** `protocolData count` + each entry — the layout every frame type shares. */
+function pushProtocolData(parts: Uint8Array[], protocolData: BTPProtocolData[]): void {
   parts.push(writeUint8(protocolData.length));
-
-  // Each protocol data entry
   for (const pd of protocolData) {
     const nameBytes = textEncoder.encode(pd.protocolName);
     parts.push(writeUint8(nameBytes.length));
@@ -287,6 +309,65 @@ export function serializeBtpMessage(message: BTPMessage): Uint8Array {
     parts.push(writeUint32BE(pd.data.length));
     if (pd.data.length > 0) parts.push(pd.data);
   }
+}
+
+function readProtocolData(
+  buf: Uint8Array,
+  offset: number
+): { protocolData: BTPProtocolData[]; offset: number } {
+  const pdCount = readUint8(buf, offset);
+  offset += 1;
+  const protocolData: BTPProtocolData[] = [];
+  for (let i = 0; i < pdCount; i++) {
+    const nameLen = readUint8(buf, offset);
+    offset += 1;
+    const protocolName = sliceUtf8(buf, offset, nameLen);
+    offset += nameLen;
+    const contentType = readUint16BE(buf, offset);
+    offset += 2;
+    const dataLen = readUint32BE(buf, offset);
+    offset += 4;
+    const data = buf.slice(offset, offset + dataLen);
+    offset += dataLen;
+    protocolData.push({ protocolName, contentType, data });
+  }
+  return { protocolData, offset };
+}
+
+export function serializeBtpMessage(message: BTPMessage): Uint8Array {
+  const parts: Uint8Array[] = [
+    writeUint8(message.type),
+    writeUint32BE(message.requestId),
+  ];
+
+  if (message.type === BTPMessageType.ERROR) {
+    // code/name/triggeredAt as 1-byte-length-prefixed strings, then the
+    // diagnostic text as a u32-length-prefixed trailer — the layout
+    // `parseBtpMessage`'s ERROR arm reads, mirroring the connector's own
+    // `encode_error`.
+    const data = message.data as BTPErrorData;
+    for (const field of [data.code, data.name, data.triggeredAt ?? '']) {
+      const bytes = textEncoder.encode(field);
+      parts.push(writeUint8(bytes.length));
+      parts.push(bytes);
+    }
+    const errorData = data.data ?? textEncoder.encode(data.message ?? '');
+    parts.push(writeUint32BE(errorData.length));
+    if (errorData.length > 0) parts.push(errorData);
+    return concat(...parts);
+  }
+
+  if (message.type === BTPMessageType.TRANSFER) {
+    // RFC-0023 `Transfer ::= SEQUENCE { amount, protocolData }`: amount
+    // immediately follows requestId, then protocolData — no ILP trailer.
+    const data = message.data as BTPTransferData;
+    parts.push(writeUint64BE(data.amount));
+    pushProtocolData(parts, data.protocolData ?? []);
+    return concat(...parts);
+  }
+
+  const data = message.data as BTPMessageData;
+  pushProtocolData(parts, data.protocolData ?? []);
 
   // ILP packet
   const ilpPacket = data.ilpPacket ?? new Uint8Array(0);
@@ -333,23 +414,23 @@ export function parseBtpMessage(buf: Uint8Array): BTPMessage {
     };
   }
 
-  // MESSAGE or RESPONSE
-  const pdCount = readUint8(buf, offset);
-  offset += 1;
-  const protocolData: BTPProtocolData[] = [];
-  for (let i = 0; i < pdCount; i++) {
-    const nameLen = readUint8(buf, offset);
-    offset += 1;
-    const protocolName = sliceUtf8(buf, offset, nameLen);
-    offset += nameLen;
-    const contentType = readUint16BE(buf, offset);
-    offset += 2;
-    const dataLen = readUint32BE(buf, offset);
-    offset += 4;
-    const data = buf.slice(offset, offset + dataLen);
-    offset += dataLen;
-    protocolData.push({ protocolName, contentType, data });
+  if (type === BTPMessageType.TRANSFER) {
+    // RFC-0023 `Transfer ::= SEQUENCE { amount, protocolData }`: amount
+    // precedes protocolData, and there is no ILP-packet trailer to read —
+    // unlike MESSAGE/RESPONSE, a TRANSFER carries settlement value, not a
+    // routed packet.
+    const amount = readUint64BE(buf, offset);
+    offset += 8;
+    const { protocolData } = readProtocolData(buf, offset);
+    return { type, requestId, data: { amount, protocolData } };
   }
+
+  // MESSAGE or RESPONSE
+  const { protocolData, offset: afterProtocolData } = readProtocolData(
+    buf,
+    offset
+  );
+  offset = afterProtocolData;
 
   let ilpPacket: Uint8Array | undefined;
   if (offset + 4 <= buf.length) {

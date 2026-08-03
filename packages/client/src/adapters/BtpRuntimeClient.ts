@@ -1,6 +1,8 @@
 import {
   IsomorphicBtpClient,
   BtpConnectionError,
+  type BtpMessageHandler,
+  type BtpTransferHandler,
 } from '../btp/IsomorphicBtpClient.js';
 import { type BTPProtocolData } from '../btp/protocol.js';
 import type { IlpClient, IlpSendResult } from '@toon-protocol/core';
@@ -19,6 +21,16 @@ export interface BtpRuntimeClientConfig {
   retryDelay?: number;
   /** Custom WebSocket constructor (for testing / custom transports). */
   createWebSocket?: (url: string) => WebSocket;
+  /**
+   * Handles a server-originated MESSAGE (RFC-0023 symmetric grammar,
+   * toon-client#493). Re-registered on every `connect()`/`reconnect()` since
+   * each creates a fresh `IsomorphicBtpClient` for the new socket.
+   */
+  onMessage?: BtpMessageHandler;
+  /** Handles a server-originated TRANSFER. Re-registered the same way as `onMessage`. */
+  onTransfer?: BtpTransferHandler;
+  /** Surfaces in-flight inbound work orphaned by a disconnect instead of silently vanishing. */
+  onInboundError?: (error: Error, requestId: number) => void;
 }
 
 /**
@@ -60,6 +72,9 @@ export class BtpRuntimeClient implements IlpClient {
       peerId: this.config.peerId,
       authToken: this.config.authToken,
       createWebSocket: this.config.createWebSocket,
+      onMessage: this.config.onMessage,
+      onTransfer: this.config.onTransfer,
+      onInboundError: this.config.onInboundError,
     });
 
     await this.btpClient.connect();

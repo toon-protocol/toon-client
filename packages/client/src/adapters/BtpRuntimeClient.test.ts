@@ -30,6 +30,7 @@ vi.mock('../btp/IsomorphicBtpClient.js', () => {
 });
 
 import { BtpRuntimeClient } from './BtpRuntimeClient.js';
+import { IsomorphicBtpClient } from '../btp/IsomorphicBtpClient.js';
 import { mintExecutionCondition } from '../utils/condition.js';
 import {
   FULFILLMENT_MISMATCH_CODE,
@@ -455,6 +456,34 @@ describe('BtpRuntimeClient', () => {
 
       await client.reconnect();
       expect(client.isConnected).toBe(true);
+    });
+  });
+
+  describe('inbound handler threading (toon-client#493)', () => {
+    it('re-registers onMessage/onTransfer/onInboundError on the fresh IsomorphicBtpClient created by reconnect', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockDisconnect.mockResolvedValue(undefined);
+
+      const onMessage = vi.fn();
+      const onTransfer = vi.fn();
+      const onInboundError = vi.fn();
+      const handlerClient = new BtpRuntimeClient({
+        btpUrl: 'ws://localhost:3000',
+        peerId: 'test-peer',
+        authToken: 'test-token',
+        onMessage,
+        onTransfer,
+        onInboundError,
+      });
+
+      await handlerClient.connect();
+      await handlerClient.reconnect();
+
+      const ctor = IsomorphicBtpClient as unknown as ReturnType<typeof vi.fn>;
+      expect(ctor).toHaveBeenCalledTimes(2);
+      for (const call of ctor.mock.calls) {
+        expect(call[0]).toMatchObject({ onMessage, onTransfer, onInboundError });
+      }
     });
   });
 });

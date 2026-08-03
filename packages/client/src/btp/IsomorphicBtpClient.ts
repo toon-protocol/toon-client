@@ -16,12 +16,41 @@ import {
   deserializeIlpPacket,
   type BTPProtocolData,
   type BTPMessageData,
+  type BTPTransferData,
   type BTPErrorData,
   type ILPPreparePacket,
   type ILPResponsePacket,
 } from './protocol.js';
 
 const textEncoder = new TextEncoder();
+
+/** A server-originated MESSAGE (RFC-0023 symmetric grammar, toon-client#493). */
+export interface InboundBtpMessage {
+  requestId: number;
+  protocolData: BTPProtocolData[];
+  ilpPacket?: Uint8Array;
+}
+
+/** A server-originated TRANSFER — settlement value, never an ILP packet. */
+export interface InboundBtpTransfer {
+  requestId: number;
+  amount: bigint;
+  protocolData: BTPProtocolData[];
+}
+
+/** What an inbound handler answers with — becomes the RESPONSE frame's body. */
+export interface BtpHandlerResponse {
+  protocolData?: BTPProtocolData[];
+  ilpPacket?: Uint8Array;
+}
+
+export type BtpMessageHandler = (
+  message: InboundBtpMessage
+) => Promise<BtpHandlerResponse> | BtpHandlerResponse;
+
+export type BtpTransferHandler = (
+  transfer: InboundBtpTransfer
+) => Promise<BtpHandlerResponse> | BtpHandlerResponse;
 
 export interface IsomorphicBtpClientConfig {
   url: string;
@@ -31,6 +60,25 @@ export interface IsomorphicBtpClientConfig {
   authTimeoutMs?: number;
   /** Custom WebSocket constructor (e.g., the Node `ws` package, or for testing). */
   createWebSocket?: (url: string) => WebSocket;
+  /**
+   * Handles a server-originated MESSAGE. Unset: an inbound MESSAGE is
+   * dropped unanswered, matching the pre-#493 dialect (the server never
+   * originated one).
+   */
+  onMessage?: BtpMessageHandler;
+  /**
+   * Handles a server-originated TRANSFER. Unset: every inbound TRANSFER
+   * still gets an empty RESPONSE ack — RFC-0023 requires every request be
+   * answered, and this mirrors the connector's own default (`btp.rs`:
+   * received, not yet accounted).
+   */
+  onTransfer?: BtpTransferHandler;
+  /**
+   * Called when in-flight inbound work (a MESSAGE/TRANSFER handler that had
+   * not yet replied) is orphaned by a disconnect, instead of silently
+   * vanishing.
+   */
+  onInboundError?: (error: Error, requestId: number) => void;
 }
 
 interface PendingRequest {
@@ -62,10 +110,27 @@ export class IsomorphicBtpClient {
   private _isConnected = false;
   private requestIdCounter = 0;
   private readonly pendingRequests = new Map<number, PendingRequest>();
+  /**
+   * requestIds of server-originated MESSAGE/TRANSFER frames whose handler
+   * has not yet replied. A wholly separate space from `pendingRequests`
+   * (client-allocated ids awaiting a RESPONSE/ERROR): this client never
+   * resolves a `pendingRequests` entry from an inbound MESSAGE/TRANSFER, and
+   * never answers an inbound MESSAGE/TRANSFER as though it were one of its
+   * own — the two are correlated purely by BTP frame type, not by whether an
+   * id happens to collide (toon-client#493).
+   */
+  private readonly inFlightInbound = new Set<number>();
+  /** Config keys that stay optional after defaults are applied — everything else becomes required. */
   private readonly config: Required<
-    Omit<IsomorphicBtpClientConfig, 'createWebSocket'>
+    Omit<
+      IsomorphicBtpClientConfig,
+      'createWebSocket' | 'onMessage' | 'onTransfer' | 'onInboundError'
+    >
   > &
-    Pick<IsomorphicBtpClientConfig, 'createWebSocket'>;
+    Pick<
+      IsomorphicBtpClientConfig,
+      'createWebSocket' | 'onMessage' | 'onTransfer' | 'onInboundError'
+    >;
 
   constructor(config: IsomorphicBtpClientConfig) {
     this.config = {
@@ -139,6 +204,7 @@ export class IsomorphicBtpClient {
           pending.reject(new BtpConnectionError('Connection closed'));
           this.pendingRequests.delete(id);
         }
+        this.failInFlightInbound('Connection closed before inbound request could be answered');
       };
     });
   }
@@ -154,6 +220,7 @@ export class IsomorphicBtpClient {
       pending.reject(new BtpConnectionError('Disconnected'));
       this.pendingRequests.delete(id);
     }
+    this.failInFlightInbound('Disconnected before inbound request could be answered');
   }
 
   /**
@@ -359,6 +426,9 @@ export class IsomorphicBtpClient {
       const data = this.toUint8Array(raw);
       const message = parseBtpMessage(data);
 
+      // RESPONSE/ERROR answers a request THIS client originated — correlate
+      // against `pendingRequests` only, never `inFlightInbound` (toon-client#493:
+      // the two id spaces are distinguished by frame type, not by value).
       if (
         message.type === BTPMessageType.RESPONSE ||
         message.type === BTPMessageType.ERROR
@@ -382,10 +452,138 @@ export class IsomorphicBtpClient {
           const ilpResponse = deserializeIlpPacket(msgData.ilpPacket);
           pending.resolve(ilpResponse);
         }
+        return;
+      }
+
+      // MESSAGE/TRANSFER carrying a requestId this client never allocated —
+      // a server-originated request (RFC-0023's symmetric grammar). Dispatch
+      // to the configured handler and answer with the same requestId; never
+      // consult or touch `pendingRequests`.
+      if (message.type === BTPMessageType.MESSAGE) {
+        this.handleInboundMessage(message.requestId, message.data as BTPMessageData);
+        return;
+      }
+      if (message.type === BTPMessageType.TRANSFER) {
+        this.handleInboundTransfer(message.requestId, message.data as BTPTransferData);
+        return;
       }
     } catch {
       // Unparseable message — ignore
     }
+  }
+
+  private handleInboundMessage(requestId: number, data: BTPMessageData): void {
+    const handler = this.config.onMessage;
+    if (!handler) return; // additive: no handler configured, no answer (pre-#493 behavior)
+    this.dispatchInbound(requestId, () =>
+      handler({
+        requestId,
+        protocolData: data.protocolData ?? [],
+        ilpPacket: data.ilpPacket,
+      })
+    );
+  }
+
+  private handleInboundTransfer(requestId: number, data: BTPTransferData): void {
+    const handler = this.config.onTransfer;
+    this.dispatchInbound(requestId, () =>
+      handler
+        ? handler({
+            requestId,
+            amount: data.amount,
+            protocolData: data.protocolData ?? [],
+          })
+        : {}
+    );
+  }
+
+  private dispatchInbound(
+    requestId: number,
+    invoke: () => Promise<BtpHandlerResponse> | BtpHandlerResponse
+  ): void {
+    this.inFlightInbound.add(requestId);
+    Promise.resolve()
+      .then(invoke)
+      .then(
+        (result) => this.replyToInbound(requestId, result ?? {}),
+        (err) => this.replyToInboundError(requestId, err)
+      );
+  }
+
+  /** True if the reply is still owed — false means a disconnect already failed it loudly. */
+  private takeInFlight(requestId: number): boolean {
+    return this.inFlightInbound.delete(requestId);
+  }
+
+  private replyToInbound(requestId: number, result: BtpHandlerResponse): void {
+    if (!this.takeInFlight(requestId)) return;
+    this.sendInboundReply(requestId, '', () =>
+      serializeBtpMessage({
+        type: BTPMessageType.RESPONSE,
+        requestId,
+        data: {
+          protocolData: result.protocolData ?? [],
+          ilpPacket: result.ilpPacket ?? new Uint8Array(0),
+        },
+      })
+    );
+  }
+
+  private replyToInboundError(requestId: number, error: unknown): void {
+    if (!this.takeInFlight(requestId)) return;
+    const message = error instanceof Error ? error.message : String(error);
+    this.sendInboundReply(requestId, ` (handler error: ${message})`, () =>
+      serializeBtpMessage({
+        type: BTPMessageType.ERROR,
+        requestId,
+        data: {
+          code: 'F00',
+          name: 'NotAcceptedError',
+          triggeredAt: '',
+          message,
+          data: textEncoder.encode(message),
+        },
+      })
+    );
+  }
+
+  /**
+   * Sends a RESPONSE/ERROR frame answering an inbound request, reporting
+   * through `onInboundError` (never throwing) if the socket is gone or
+   * `send` itself fails. `notConnectedSuffix` lets the caller fold in extra
+   * context (e.g. the handler error that `replyToInboundError` is reporting)
+   * when the "not connected" case fires.
+   */
+  private sendInboundReply(
+    requestId: number,
+    notConnectedSuffix: string,
+    build: () => Uint8Array
+  ): void {
+    if (!this._isConnected || !this.ws) {
+      this.config.onInboundError?.(
+        new BtpConnectionError(
+          `Cannot answer inbound request ${requestId}: not connected${notConnectedSuffix}`
+        ),
+        requestId
+      );
+      return;
+    }
+    try {
+      this.ws.send(build());
+    } catch (err) {
+      this.config.onInboundError?.(
+        err instanceof Error ? err : new Error(String(err)),
+        requestId
+      );
+    }
+  }
+
+  /** Fail every inbound request still awaiting its handler, loudly rather than silently. */
+  private failInFlightInbound(reason: string): void {
+    for (const requestId of this.inFlightInbound) {
+      this.config.onInboundError?.(new BtpConnectionError(reason), requestId);
+    }
+    this.inFlightInbound.clear();
   }
 
   private toUint8Array(data: unknown): Uint8Array {
