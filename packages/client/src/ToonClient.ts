@@ -59,6 +59,12 @@ import {
   requestBlobStorage,
   type RequestBlobStorageResult,
 } from './blob-storage.js';
+import {
+  sendTransfer as executeTransfer,
+  type SendTransferParams,
+  type SendTransferResult,
+  type TransferConfig,
+} from './transfer.js';
 import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
 import type { BtpPaidWriteTransport } from './adapters/BtpPaidWriteTransport.js';
 import type { IlpSendParams } from './adapters/ilp-send.js';
@@ -1562,6 +1568,51 @@ export class ToonClient {
   }
 
   /**
+   * Lazily derive the mnemonic's full multi-chain identity, at most once per
+   * call to the returned function. Solana/Mina keys are only registered as
+   * signers during `start()`; this lets an UNSTARTED client (e.g. `rig
+   * balance`, or `sendTransfer` before `start()`) derive them on demand
+   * instead. Shared by {@link getWalletBalances} and {@link sendTransfer}.
+   */
+  private createIdentityDeriver(): () => Promise<
+    Awaited<ReturnType<typeof deriveFullIdentity>> | undefined
+  > {
+    let derived: Awaited<ReturnType<typeof deriveFullIdentity>> | undefined;
+    let derivedTried = false;
+    return async () => {
+      if (derivedTried) return derived;
+      derivedTried = true;
+      if (this.config.mnemonic) {
+        derived = await deriveFullIdentity(
+          this.config.mnemonic,
+          this.config.mnemonicAccountIndex ?? 0
+        );
+      }
+      return derived;
+    };
+  }
+
+  /**
+   * The EVM chain key + RPC URL to use for a settlement-token/native-gas
+   * operation: the settlement chain wins over the preset-first chain, mirroring
+   * {@link getBalances}. Shared by {@link getWalletBalances} and
+   * {@link sendTransfer}.
+   */
+  private resolveSettlementEvmChain():
+    | { chainKey: string; rpcUrl: string }
+    | undefined {
+    const rpcUrls = this.config.chainRpcUrls;
+    if (!rpcUrls) return undefined;
+    const usableEvm = (c: string): boolean =>
+      c.startsWith('evm') && Boolean(rpcUrls[c]);
+    const settlementKeys = Object.keys(this.config.settlementAddresses ?? {});
+    const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
+    const chainKey = settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
+    const rpcUrl = chainKey ? rpcUrls[chainKey] : undefined;
+    return chainKey && rpcUrl ? { chainKey, rpcUrl } : undefined;
+  }
+
+  /**
    * The FULL multi-chain wallet view (#299): for every chain the identity is
    * configured for, the native coin (ETH / SOL / MINA) AND every configured
    * token (USDC), grouped per chain with the identity's address on that chain.
@@ -1592,40 +1643,22 @@ export class ToonClient {
     // Solana/Mina keys are only registered as signers during start(); derive
     // them from the retained mnemonic on demand so an unstarted client (e.g.
     // `rig balance`) still reports every configured chain. Derived once, lazily.
-    let derived: Awaited<ReturnType<typeof deriveFullIdentity>> | undefined;
-    let derivedTried = false;
-    const ensureDerived = async (): Promise<typeof derived> => {
-      if (derivedTried) return derived;
-      derivedTried = true;
-      if (this.config.mnemonic) {
-        derived = await deriveFullIdentity(
-          this.config.mnemonic,
-          this.config.mnemonicAccountIndex ?? 0
-        );
-      }
-      return derived;
-    };
+    const ensureDerived = this.createIdentityDeriver();
 
     // EVM: native ETH + settlement USDC. Pick the settlement chain key the same
     // way getBalances does (settlement chain wins over the preset primary).
     const evmAddress = this.getEvmAddress();
-    const rpcUrls = this.config.chainRpcUrls;
+    const evmChain = this.resolveSettlementEvmChain();
     const tokens = this.config.preferredTokens;
-    if (evmAddress && rpcUrls) {
-      const usableEvm = (c: string): boolean =>
-        c.startsWith('evm') && Boolean(rpcUrls[c]);
-      const settlementKeys = Object.keys(this.config.settlementAddresses ?? {});
-      const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
-      const chainKey =
-        settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
-      if (chainKey && rpcUrls[chainKey]) {
-        sources.evm = {
-          chainKey,
-          rpcUrl: rpcUrls[chainKey],
-          owner: evmAddress,
-          ...(tokens?.[chainKey] ? { tokenAddress: tokens[chainKey] } : {}),
-        };
-      }
+    if (evmAddress && evmChain) {
+      sources.evm = {
+        chainKey: evmChain.chainKey,
+        rpcUrl: evmChain.rpcUrl,
+        owner: evmAddress,
+        ...(tokens?.[evmChain.chainKey]
+          ? { tokenAddress: tokens[evmChain.chainKey] }
+          : {}),
+      };
     }
 
     // Solana: native SOL + SPL USDC (the negotiated mint). Explicit config
@@ -1664,6 +1697,82 @@ export class ToonClient {
     }
 
     return readWalletBalances(sources);
+  }
+
+  /**
+   * Send the settlement token or native gas from THIS client's own wallet to
+   * an arbitrary address, on any chain this client is configured for.
+   * Non-custodial plain send (issue #491) — distinct from the payment-channel
+   * machinery, and the missing primitive underneath provisioning a buzz agent
+   * (toon-protocol/buzz#74): the owner's treasury funds a freshly-derived
+   * agent address with USDC + gas before that address can open a channel.
+   *
+   * Confirmed by an OBSERVED balance delta at the destination, never by the
+   * send call/transaction merely landing — see `transfer.ts` module docs
+   * (the devnet faucet's Solana leg has returned a real tx signature while
+   * delivering 0 lamports, connector#691).
+   *
+   * Chain resolution mirrors {@link getWalletBalances}: EVM picks the
+   * settlement chain key (falling back to the first usable EVM chain) from
+   * `chainRpcUrls`/`settlementAddresses`; Solana/Mina need `solanaChannel`/
+   * `minaChannel` configured, and their signing keys are either already
+   * derived (client was `start()`-ed) or derived on demand from `mnemonic`.
+   *
+   * @throws {UnknownChainError} `params.chain` isn't configured on this client.
+   * @throws {InvalidAddressError} `params.to` is malformed for the chain.
+   * @throws {InsufficientBalanceError} the sender can't cover amount (+ fees).
+   * @throws {TransferNotDeliveredError} accepted on-chain/by-node, but the
+   *   destination balance never reflected it within the wait window.
+   * @throws {TransferUnsupportedError} chain/asset combination not implemented
+   *   yet (currently: the Mina settlement token).
+   */
+  async sendTransfer(params: SendTransferParams): Promise<SendTransferResult> {
+    const config: TransferConfig = {};
+
+    // EVM: same settlement-chain-first resolution as getBalances/getWalletBalances.
+    if (this.evmSigner) {
+      const evmChain = this.resolveSettlementEvmChain();
+      if (evmChain) {
+        const tokens = this.config.preferredTokens;
+        config.evm = {
+          chainKey: evmChain.chainKey,
+          rpcUrl: evmChain.rpcUrl,
+          signer: this.evmSigner,
+          ...(tokens?.[evmChain.chainKey]
+            ? { tokenAddress: tokens[evmChain.chainKey] }
+            : {}),
+        };
+      }
+    }
+
+    // Solana/Mina keys are only registered as signers during start(); derive
+    // them from the retained mnemonic on demand otherwise (mirrors
+    // getWalletBalances' `ensureDerived`).
+    const ensureDerived = this.createIdentityDeriver();
+
+    const sol = this.config.solanaChannel;
+    if (sol?.rpcUrl) {
+      const seed =
+        this.solanaSeed ?? (await ensureDerived())?.solana.secretKey.slice(0, 32);
+      if (seed) {
+        config.solana = {
+          rpcUrl: sol.rpcUrl,
+          keypair: seed,
+          ...(sol.tokenMint ? { tokenMint: sol.tokenMint } : {}),
+        };
+      }
+    }
+
+    const mina = this.config.minaChannel;
+    if (mina?.graphqlUrl) {
+      const privateKey =
+        this.minaPrivateKey ?? (await ensureDerived())?.mina.privateKey;
+      if (privateKey) {
+        config.mina = { graphqlUrl: mina.graphqlUrl, privateKey };
+      }
+    }
+
+    return executeTransfer(config, params);
   }
 
   /**

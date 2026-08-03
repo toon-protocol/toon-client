@@ -116,6 +116,19 @@ export class ChannelResumeError extends ToonClientError {
 }
 
 /**
+ * Thrown by {@link ../transfer.js!sendTransfer} when the sender cannot cover
+ * the requested amount (plus, where applicable, the chain's own transaction
+ * fee) on the source chain. A PREFLIGHT failure — thrown before any
+ * transaction is built or submitted, so it never costs gas/fees.
+ */
+export class InsufficientBalanceError extends ToonClientError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'INSUFFICIENT_BALANCE', cause);
+    this.name = 'InsufficientBalanceError';
+  }
+}
+
+/**
  * Thrown when an EVM RPC never converges on a just-confirmed channel open —
  * the read-after-write hole behind `sepolia.base.org`'s load balancer, whose
  * replicas can serve a state that predates the `openChannel` receipt, making
@@ -126,6 +139,66 @@ export class StaleRpcReadError extends ToonClientError {
   constructor(message: string, cause?: Error) {
     super(message, 'STALE_RPC_READ', cause);
     this.name = 'StaleRpcReadError';
+  }
+}
+
+/**
+ * Thrown by {@link ../transfer.js!sendTransfer} when `chain` is not one this
+ * client can send on — either an unrecognized chain identifier, or a
+ * recognized chain the client instance has no configuration for (no
+ * `chainRpcUrls` entry, no `solanaChannel`, no `minaChannel`). Distinct from
+ * {@link InvalidAddressError} (the chain is fine, the destination isn't) and
+ * from a plain unsupported chain/asset combination (see the transfer module
+ * for chain-specific gaps, e.g. the Mina settlement token).
+ */
+export class UnknownChainError extends ToonClientError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'UNKNOWN_CHAIN', cause);
+    this.name = 'UnknownChainError';
+  }
+}
+
+/**
+ * Thrown by {@link ../transfer.js!sendTransfer} when the destination address
+ * is malformed for the target chain (wrong format, wrong length, invalid
+ * charset) — checked BEFORE any transaction is built, so a typo never costs
+ * gas/fees or risks sending funds into a black hole.
+ */
+export class InvalidAddressError extends ToonClientError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'INVALID_ADDRESS', cause);
+    this.name = 'InvalidAddressError';
+  }
+}
+
+/**
+ * Thrown by {@link ../transfer.js!sendTransfer} when a send was ACCEPTED by
+ * the chain (a landed, non-reverted transaction / a node-accepted payment)
+ * but the destination's observed balance never rose by the sent amount
+ * within the bounded wait. This is the failure {@link sendTransfer} exists to
+ * catch: the devnet faucet's Solana leg has been observed returning success
+ * with a real transaction signature while delivering 0 lamports
+ * (toon-protocol/connector#691) — trusting the send call's return value alone
+ * would report a funded destination that in fact holds nothing.
+ */
+export class TransferNotDeliveredError extends ToonClientError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'TRANSFER_NOT_DELIVERED', cause);
+    this.name = 'TransferNotDeliveredError';
+  }
+}
+
+/**
+ * Thrown by {@link ../transfer.js!sendTransfer} for a chain/asset combination
+ * that is not implemented yet — e.g. the Mina settlement token (a custom
+ * token transfer needs an o1js zkApp-approval path this client doesn't build
+ * yet; native MINA is unaffected). Mirrors the documented Mina
+ * deposit/close/settle gaps in {@link ../channel/OnChainChannelClient.js!OnChainChannelClient}.
+ */
+export class TransferUnsupportedError extends ToonClientError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'TRANSFER_UNSUPPORTED', cause);
+    this.name = 'TransferUnsupportedError';
   }
 }
 

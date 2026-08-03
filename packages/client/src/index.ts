@@ -21,6 +21,11 @@ export {
   ChannelResumeError,
   StaleRpcReadError,
   isInsufficientGasError,
+  InsufficientBalanceError,
+  UnknownChainError,
+  InvalidAddressError,
+  TransferNotDeliveredError,
+  TransferUnsupportedError,
 } from './errors.js';
 
 // NIP-59 gift-wrap unwrap (receiver side) — backs the daemon's
@@ -233,6 +238,23 @@ export {
   type RequestBlobStorageParams,
   type RequestBlobStorageResult,
 } from './blob-storage.js';
+
+// Plain token transfer — send the settlement token or native gas to an
+// arbitrary address, confirmed by observed destination balance delta (#491).
+// `ToonClient.sendTransfer` is the documented entry point; the standalone
+// `sendTransfer` here is for callers building a `TransferConfig` outside a
+// ToonClient.
+export {
+  sendTransfer,
+  type TransferChain,
+  type TransferAssetKind,
+  type SendTransferParams,
+  type SendTransferResult,
+  type TransferConfig,
+  type EvmTransferConfig,
+  type SolanaTransferConfig,
+  type MinaTransferConfig,
+} from './transfer.js';
 
 // Wallet balance readers — the full multi-chain wallet view (#299) plus the
 // per-chain primitives, for callers that read balances outside a ToonClient.
