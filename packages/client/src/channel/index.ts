@@ -1,6 +1,7 @@
 export {
   OnChainChannelClient,
   type OnChainChannelClientConfig,
+  type EvmReadConsistencyConfig,
 } from './OnChainChannelClient.js';
 export { ChannelManager } from './ChannelManager.js';
 export {
@@ -11,8 +12,11 @@ export {
 } from './mina-deposit.js';
 export {
   JsonFileChannelStore,
+  InMemoryChannelStore,
   type ChannelStore,
   type ChannelStoreEntry,
+  type ChannelBinding,
+  type ChannelBindingContext,
 } from './ChannelStore.js';
 export {
   JsonFileReceivedClaimStore,

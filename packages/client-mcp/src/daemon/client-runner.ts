@@ -249,6 +249,12 @@ export interface ToonClientLike {
     channelId: string,
     opts: { chain: string; tokenNetworkAddress: string }
   ): Promise<bigint | undefined>;
+  /**
+   * Bind an already-open channel to a destination so the client's lazy-open
+   * path RESUMES it instead of opening a second one (#489). Optional for the
+   * same reason as `rehydrateChannelDeposit`; best-effort — callers catch.
+   */
+  adoptChannel?(destination: string, channelId: string): Promise<void>;
   sendSwapPacket(params: {
     destination: string;
     amount: bigint;
@@ -886,6 +892,19 @@ export class ClientRunner {
 
     if (saved && cm && typeof cm.trackChannel === 'function') {
       cm.trackChannel(saved.channelId, saved.context);
+      // Tracking alone leaves the client's LAZY-open path unaware of this
+      // channel, so the first paid write used to open (and fund) a second one
+      // (#489). `adoptChannel` binds it to the destination — with its claim
+      // watermark — so every later write resumes it. Best-effort: on an older
+      // client (or before the peer negotiation is known) the tracked channel
+      // above is still the pre-#489 behaviour.
+      await apex.client
+        .adoptChannel?.(destination, saved.channelId)
+        .catch((err) =>
+          this.log(
+            `[runner] adopt of resumed channel ${saved.channelId} failed: ${errMsg(err)}`
+          )
+        );
       // Persisted channel state omits the on-chain deposit, so re-read it from
       // chain — otherwise the wallet shows 0 spendable on a funded channel.
       if (saved.context.chainType === 'evm') {

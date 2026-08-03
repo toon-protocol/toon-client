@@ -1212,6 +1212,37 @@ export class ToonClient {
   }
 
   /**
+   * Adopt an ALREADY-OPEN payment channel for `destination` — the restart path
+   * for a host that persisted the channel id itself (#489).
+   *
+   * Tracking a channel is not enough: the lazy-open path keys off the peer, so
+   * a host that only re-tracked its saved channel still opened (and funded) a
+   * SECOND one on the first paid write. This binds it, so every later write
+   * resumes it, with its claim watermark, and the on-chain client can deposit
+   * into and close it too. Idempotent.
+   */
+  async adoptChannel(destination: string, channelId: string): Promise<void> {
+    if (!this.channelManager) {
+      throw new ToonClientError(
+        'No channel manager configured. Provide evmPrivateKey in config.',
+        'NO_EVM_SIGNER'
+      );
+    }
+    const peerId = this.peerIdForClaim(destination);
+    const negotiation =
+      this.peerNegotiations.get(peerId) ??
+      (await this.negotiateFromGreeting(destination, peerId));
+    if (!negotiation) {
+      throw new ToonClientError(
+        `No negotiation metadata for peer "${peerId}" — cannot adopt channel ` +
+          `"${channelId}" without knowing its chain and token network.`,
+        'PEER_NOT_NEGOTIATED'
+      );
+    }
+    this.channelManager.adoptChannel(peerId, negotiation, channelId);
+  }
+
+  /**
    * Gets list of tracked payment channel IDs.
    */
   getTrackedChannels(): string[] {

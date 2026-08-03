@@ -455,6 +455,56 @@ claims.
 > open. Drop the field to take the `'100000'` default, or set the amount you
 > actually mean in the token's base units.
 
+### Resuming a channel across restarts
+
+Set **`channelStorePath`** whenever the process can restart (a daemon, a CLI, an
+agent with its own wallet). It persists two things:
+
+| File | Contents |
+| --- | --- |
+| `channels.json` (`channelStorePath`) | the claim watermark — nonce + cumulative amount — per channel |
+| `channels.peers.json` (sibling) | which on-chain channel this identity holds with each peer, per chain + token network |
+
+With both, `openChannel()` / the lazy open on the first paid write **resume** the
+existing channel instead of opening a new one. Without them, every restart locks
+a fresh deposit: Solana happened to survive this (its channel id is a
+deterministic PDA, so the re-open re-derived the same channel), but EVM's
+`TokenNetwork.openChannel` mints a new `bytes32` per call — one abandoned channel,
+and its collateral, per restart. That is multiplied by N when every agent runs
+its own wallet.
+
+```typescript
+const client = new ToonClient({
+  /* … */
+  channelStorePath: `${process.env.HOME}/.toon-client/channels.json`,
+});
+```
+
+Rules of the road:
+
+- **Never delete these files for a live channel.** The collateral stays locked
+  on-chain and the watermark is unrecoverable. If the watermark for a bound
+  channel goes missing, the client throws `ChannelResumeError` rather than
+  silently restarting the nonce at 0 — which the connector would reject for
+  every subsequent claim.
+- A host that persists the channel id itself can hand it back with
+  `await client.adoptChannel(destination, channelId)`; the client then treats it
+  as the peer's channel for later writes, deposits and closes.
+- A channel that entered the withdraw flow (closed/settled) is not resumed — the
+  next open is a fresh channel.
+
+### Choosing an EVM RPC
+
+`chainRpcUrls` must point at a **read-after-write consistent** endpoint. Base
+Sepolia's public `https://sepolia.base.org` is a load balancer: the
+`setTotalDeposit` that follows a just-confirmed `openChannel` can land on a
+replica that has not seen the open and reverts `InvalidChannelState()`
+(`0xf806e9d9`), leaving an open channel with no collateral. The client now polls
+the channel back before depositing and retries that specific revert, and gives up
+with a `StaleRpcReadError` naming the endpoint — but the cure is a consistent
+RPC. `https://base-sepolia-rpc.publicnode.com` behaves correctly and is what
+`@toon-protocol/core`'s `base-sepolia` preset carries.
+
 ### How It Works
 
 1. **Bootstrap**: Client discovers peers via NIP-02 and kind:10032 events, negotiating a settlement chain with each
