@@ -381,7 +381,7 @@ async function getAccountInfo(
  * user's balance, and swallowing it here would turn a transient blip into a
  * hard `ChannelFundingError` telling the user to fund an already-funded wallet.
  */
-async function getTokenAccountBalance(
+export async function getTokenAccountBalance(
   rpcUrl: string,
   tokenAccount: string
 ): Promise<bigint | null> {
@@ -399,7 +399,7 @@ async function getTokenAccountBalance(
 }
 
 /** Native SOL balance (lamports) of an account; 0 for an account that does not exist. */
-async function getLamports(rpcUrl: string, pubkey: string): Promise<bigint> {
+export async function getLamports(rpcUrl: string, pubkey: string): Promise<bigint> {
   const result = (await solanaRpc(rpcUrl, 'getBalance', [
     pubkey,
     { commitment: 'confirmed' },
@@ -566,8 +566,14 @@ interface AccountEntry {
 /**
  * Build, sign, and send a Solana legacy transaction over raw JSON-RPC, then wait
  * for confirmation. Mirrors the SDK reference E2E's `buildAndSendTransaction`.
+ *
+ * Exported (along with {@link getLamports} and {@link getTokenAccountBalance})
+ * so `../transfer.js` can build plain System/SPL-Token instructions on the
+ * SAME wire-format code this module already gets connector-parity-tested
+ * against, rather than re-deriving Solana's compact transaction encoding a
+ * second time.
  */
-async function buildAndSendTransaction(
+export async function buildAndSendTransaction(
   rpcUrl: string,
   feePayer: Signer,
   instructions: RawInstruction[],

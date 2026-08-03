@@ -59,6 +59,12 @@ import {
   requestBlobStorage,
   type RequestBlobStorageResult,
 } from './blob-storage.js';
+import {
+  sendTransfer as executeTransfer,
+  type SendTransferParams,
+  type SendTransferResult,
+  type TransferConfig,
+} from './transfer.js';
 import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
 import type { BtpPaidWriteTransport } from './adapters/BtpPaidWriteTransport.js';
 import type { IlpSendParams } from './adapters/ilp-send.js';
@@ -1664,6 +1670,103 @@ export class ToonClient {
     }
 
     return readWalletBalances(sources);
+  }
+
+  /**
+   * Send the settlement token or native gas from THIS client's own wallet to
+   * an arbitrary address, on any chain this client is configured for.
+   * Non-custodial plain send (issue #491) — distinct from the payment-channel
+   * machinery, and the missing primitive underneath provisioning a buzz agent
+   * (toon-protocol/buzz#74): the owner's treasury funds a freshly-derived
+   * agent address with USDC + gas before that address can open a channel.
+   *
+   * Confirmed by an OBSERVED balance delta at the destination, never by the
+   * send call/transaction merely landing — see `transfer.ts` module docs
+   * (the devnet faucet's Solana leg has returned a real tx signature while
+   * delivering 0 lamports, connector#691).
+   *
+   * Chain resolution mirrors {@link getWalletBalances}: EVM picks the
+   * settlement chain key (falling back to the first usable EVM chain) from
+   * `chainRpcUrls`/`settlementAddresses`; Solana/Mina need `solanaChannel`/
+   * `minaChannel` configured, and their signing keys are either already
+   * derived (client was `start()`-ed) or derived on demand from `mnemonic`.
+   *
+   * @throws {UnknownChainError} `params.chain` isn't configured on this client.
+   * @throws {InvalidAddressError} `params.to` is malformed for the chain.
+   * @throws {InsufficientBalanceError} the sender can't cover amount (+ fees).
+   * @throws {TransferNotDeliveredError} accepted on-chain/by-node, but the
+   *   destination balance never reflected it within the wait window.
+   * @throws {TransferUnsupportedError} chain/asset combination not implemented
+   *   yet (currently: the Mina settlement token).
+   */
+  async sendTransfer(params: SendTransferParams): Promise<SendTransferResult> {
+    const config: TransferConfig = {};
+
+    // EVM: same settlement-chain-first resolution as getBalances/getWalletBalances.
+    if (this.evmSigner) {
+      const rpcUrls = this.config.chainRpcUrls;
+      if (rpcUrls) {
+        const tokens = this.config.preferredTokens;
+        const usableEvm = (c: string): boolean =>
+          c.startsWith('evm') && Boolean(rpcUrls[c]);
+        const settlementKeys = Object.keys(
+          this.config.settlementAddresses ?? {}
+        );
+        const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
+        const chainKey =
+          settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
+        const rpcUrl = chainKey ? rpcUrls[chainKey] : undefined;
+        if (chainKey && rpcUrl) {
+          config.evm = {
+            chainKey,
+            rpcUrl,
+            signer: this.evmSigner,
+            ...(tokens?.[chainKey] ? { tokenAddress: tokens[chainKey] } : {}),
+          };
+        }
+      }
+    }
+
+    // Solana/Mina keys are only registered as signers during start(); derive
+    // them from the retained mnemonic on demand otherwise (mirrors
+    // getWalletBalances' `ensureDerived`).
+    let derived: Awaited<ReturnType<typeof deriveFullIdentity>> | undefined;
+    let derivedTried = false;
+    const ensureDerived = async (): Promise<typeof derived> => {
+      if (derivedTried) return derived;
+      derivedTried = true;
+      if (this.config.mnemonic) {
+        derived = await deriveFullIdentity(
+          this.config.mnemonic,
+          this.config.mnemonicAccountIndex ?? 0
+        );
+      }
+      return derived;
+    };
+
+    const sol = this.config.solanaChannel;
+    if (sol?.rpcUrl) {
+      const seed =
+        this.solanaSeed ?? (await ensureDerived())?.solana.secretKey.slice(0, 32);
+      if (seed) {
+        config.solana = {
+          rpcUrl: sol.rpcUrl,
+          keypair: seed,
+          ...(sol.tokenMint ? { tokenMint: sol.tokenMint } : {}),
+        };
+      }
+    }
+
+    const mina = this.config.minaChannel;
+    if (mina?.graphqlUrl) {
+      const privateKey =
+        this.minaPrivateKey ?? (await ensureDerived())?.mina.privateKey;
+      if (privateKey) {
+        config.mina = { graphqlUrl: mina.graphqlUrl, privateKey };
+      }
+    }
+
+    return executeTransfer(config, params);
   }
 
   /**
