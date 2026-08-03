@@ -1,5 +1,5 @@
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { base58Encode } from '@toon-protocol/core';
+import { base58Encode, base58Decode } from '@toon-protocol/core';
 import type { SignedBalanceProof } from '../types.js';
 import type {
   ChainSigner,
@@ -27,6 +27,11 @@ import { buildBalanceProofMessage } from '../channel/solana-payment-channel.js';
  * so it must sign the connector's on-chain payment-channel message. `channelId`
  * MUST be the base58 channel PDA (produced by `OnChainChannelClient.openChannel`).
  */
+/** {@link SolanaSigner.signClaimStateChallenge}'s tag (client-edge-spec.md §1.10). */
+const CLAIM_STATE_CHALLENGE_TAG = new TextEncoder().encode(
+  'toon-claim-state-challenge-v1'
+);
+
 export class SolanaSigner implements ChainSigner {
   readonly chainType = 'solana' as const;
   /** 32-byte Ed25519 seed. */
@@ -102,6 +107,41 @@ export class SolanaSigner implements ChainSigner {
       tokenNetworkAddress: params.metadata.programId,
       recipient: params.recipient,
     };
+  }
+
+  /**
+   * Signs a `POST /ilp/claim-state` claim-state challenge (client-edge-spec.md
+   * §1.10): `"toon-claim-state-challenge-v1" || channelAccount(32) ||
+   * expires(u64 LE)` — a tagged message distinct in both content and length
+   * from a real 48-byte balance-proof message, so a captured challenge can
+   * never be replayed as a payment or vice versa. Returns base64 (the
+   * connector's documented wire encoding for this endpoint, unlike the
+   * hex-encoded balance-proof signature elsewhere in this class).
+   *
+   * @param params.expires - Unix seconds the signature stops verifying.
+   */
+  async signClaimStateChallenge(params: {
+    channelAccount: string;
+    expires: number;
+  }): Promise<string> {
+    const accountBytes = base58Decode(params.channelAccount);
+    if (accountBytes.length !== 32) {
+      throw new Error(
+        `channelAccount must decode to 32 bytes, got ${accountBytes.length}`
+      );
+    }
+    const tag = CLAIM_STATE_CHALLENGE_TAG;
+    const message = new Uint8Array(tag.length + 32 + 8);
+    message.set(tag, 0);
+    message.set(accountBytes, tag.length);
+    new DataView(message.buffer).setBigUint64(
+      tag.length + 32,
+      BigInt(params.expires),
+      true // little-endian
+    );
+
+    const signature = ed25519.sign(message, this.privateKey);
+    return Buffer.from(signature).toString('base64');
   }
 
   buildClaimMessage(proof: SignedBalanceProof, senderId: string): ClaimMessage {

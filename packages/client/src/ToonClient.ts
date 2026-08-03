@@ -23,6 +23,8 @@ import {
   connectorEdgeBaseUrl,
   type ConnectorSettlementTerms,
   type ConnectorSolanaSettlementTerms,
+  type ClaimStateRequestEntry,
+  type ClaimStateResult,
 } from './adapters/ConnectorEdgeClient.js';
 import { readExchangeOutcome, sealExchange } from './wire/sealed-exchange.js';
 import {
@@ -1269,6 +1271,83 @@ export class ToonClient {
   getChannelCumulativeAmount(channelId: string): bigint {
     if (!this.channelManager) throw new Error('ChannelManager not initialized');
     return this.channelManager.getCumulativeAmount(channelId);
+  }
+
+  /**
+   * The credited balance — earning's read surface (toon-client#494,
+   * toon-meta#262 decision 9). Asks the connector's `POST /ilp/claim-state`
+   * (client-edge-spec.md §1.10) for the netted off-chain position of one or
+   * more tracked channels: deposit, cumulative claimed, available, nonce and
+   * last-claim time — the SAME place `getBalances`'s on-chain reads and a
+   * paid write's claim gate both already treat as this channel's runway
+   * source of truth, rather than a parallel figure this client derives
+   * itself (#262 decision 4 forbids self-reported money).
+   *
+   * `channelIds` defaults to every tracked channel. A channel this client has
+   * no signer for (e.g. Mina — unsupported by this endpoint) or no recorded
+   * chain context for is silently skipped, matching `getBalances`'s
+   * best-effort-per-chain posture.
+   *
+   * @param opts.expiresInSeconds - How long the signed challenge stays valid
+   *   (default 300s). This is a READ signature, distinct from a real claim —
+   *   it moves no value and advances no nonce.
+   */
+  async getClaimState(
+    channelIds?: string[],
+    opts?: { expiresInSeconds?: number }
+  ): Promise<ClaimStateResult[]> {
+    if (!this.channelManager) {
+      throw new ToonClientError(
+        'No channel manager configured. Provide evmPrivateKey in config.',
+        'NO_EVM_SIGNER'
+      );
+    }
+    const channelManager = this.channelManager;
+    const ids = channelIds ?? channelManager.getTrackedChannels();
+    if (ids.length === 0) return [];
+
+    const expires =
+      Math.floor(Date.now() / 1000) + (opts?.expiresInSeconds ?? 300);
+
+    const entries = await Promise.all(
+      ids.map(async (channelId): Promise<ClaimStateRequestEntry | null> => {
+        const context = channelManager.getChannelContext(channelId);
+        if (!context) return null;
+
+        if (context.chainType === 'evm') {
+          if (!this.evmSigner) return null;
+          const signature = await this.evmSigner.signClaimStateChallenge({
+            chainId: context.chainId,
+            tokenNetworkAddress: context.tokenNetworkAddress,
+            channelId,
+            expires,
+          });
+          return { blockchain: 'evm', channelId, expires, signature };
+        }
+
+        if (context.chainType === 'solana') {
+          if (!this.solanaSigner) return null;
+          const signature = await this.solanaSigner.signClaimStateChallenge({
+            channelAccount: channelId,
+            expires,
+          });
+          return { blockchain: 'solana', channelAccount: channelId, expires, signature };
+        }
+
+        // Mina (and any other chain type): §1.10 documents evm/solana only.
+        return null;
+      })
+    );
+
+    const requests = entries.filter(
+      (e): e is ClaimStateRequestEntry => e !== null
+    );
+    if (requests.length === 0) return [];
+
+    return this.connectorEdge.getClaimState(
+      this.resolveClientEdgeEndpoint(),
+      requests
+    );
   }
 
   /**

@@ -114,6 +114,42 @@ describe('ChannelManager', () => {
     });
   });
 
+  describe('getChannelContext (toon-client#494)', () => {
+    it('returns undefined for an untracked channel', () => {
+      expect(manager.getChannelContext(CHANNEL_ID)).toBeUndefined();
+    });
+
+    it('returns the chain context a channel was tracked with', () => {
+      manager.trackChannel(CHANNEL_ID, {
+        chainType: 'evm',
+        chainId: 421614,
+        tokenNetworkAddress: '0x91d62b1F7C5d1129A64EE3915c480DBF288B1cBa',
+        tokenAddress: '0xToken',
+        recipient: '0xRecipient',
+      });
+
+      expect(manager.getChannelContext(CHANNEL_ID)).toEqual({
+        chainType: 'evm',
+        chainId: 421614,
+        tokenNetworkAddress: '0x91d62b1F7C5d1129A64EE3915c480DBF288B1cBa',
+        tokenAddress: '0xToken',
+        recipient: '0xRecipient',
+      });
+    });
+
+    it('omits tokenAddress/recipient when unset', () => {
+      manager.trackChannel(CHANNEL_ID, {
+        chainId: 421614,
+        tokenNetworkAddress: '0x91d62b1F7C5d1129A64EE3915c480DBF288B1cBa',
+      });
+
+      const context = manager.getChannelContext(CHANNEL_ID);
+      expect(context?.chainType).toBe('evm');
+      expect('tokenAddress' in (context ?? {})).toBe(false);
+      expect('recipient' in (context ?? {})).toBe(false);
+    });
+  });
+
   describe('isTracking', () => {
     it('should return false for untracked channel', () => {
       expect(manager.isTracking('0x' + 'ff'.repeat(32))).toBe(false);

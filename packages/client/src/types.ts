@@ -1,6 +1,7 @@
 import type { IlpPeerInfo } from '@toon-protocol/core';
 import type { NostrEvent } from 'nostr-tools/pure';
 import type { EnvelopeResponse } from './wire/envelope.js';
+import type { JobHandler } from './serve-job.js';
 
 /**
  * Solana payment-channel parameters supplied via `ToonClientConfig.solanaChannel`.
@@ -363,6 +364,19 @@ export interface ToonClientConfig {
    * transport selection is unchanged.
    */
   preferBtpForPaidWrites?: boolean;
+
+  /**
+   * Serve-side registration (toon-client#494, toon-meta#262 "agents
+   * earning"): a handler for connector-originated jobs addressed to this
+   * client's own ILP address. When set, a server-originated BTP MESSAGE
+   * carrying a PREPARE (RFC-0023 symmetric grammar, toon-client#493) is
+   * decoded, handed to this function, and answered with the FULFILL/REJECT
+   * it produces — see `serve-job.ts` for the exact error-code policy. Only
+   * takes effect when a `btpUrl` is configured (job serving rides the same
+   * persistent BTP session paid writes use); unset means this client never
+   * answers a connector-originated job, unchanged from the pre-#494 default.
+   */
+  jobHandler?: JobHandler;
 
   /**
    * ILP destination address for event publishing.

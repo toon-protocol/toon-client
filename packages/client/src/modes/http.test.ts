@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { initializeHttpMode } from './http.js';
+import { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
 import type { ResolvedConfig } from '../config.js';
 
 // Mock BtpRuntimeClient to avoid real WebSocket connections
@@ -126,6 +127,27 @@ describe('initializeHttpMode', () => {
       expect(result.runtimeClient).toBeDefined();
       // It should be an HttpRuntimeClient (not BtpRuntimeClient)
       expect(result.runtimeClient.constructor.name).toBe('HttpRuntimeClient');
+    });
+
+    it('does not set onMessage when no jobHandler is configured (toon-client#494)', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+
+      await initializeHttpMode(config);
+
+      const call = (BtpRuntimeClient as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0]![0];
+      expect(call.onMessage).toBeUndefined();
+    });
+
+    it('wires jobHandler into BtpRuntimeClient.onMessage (toon-client#494)', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+      config.jobHandler = () => ({ fulfillment: new Uint8Array(32) });
+
+      await initializeHttpMode(config);
+
+      const call = (BtpRuntimeClient as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0]![0];
+      expect(call.onMessage).toBeTypeOf('function');
     });
   });
 
