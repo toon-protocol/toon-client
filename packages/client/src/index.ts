@@ -34,6 +34,21 @@ export {
   type UnwrappedGiftWrap,
 } from './nip59.js';
 
+// Hashlock delivery helpers (toon-meta#262 decision 5, factory job
+// increments) — symmetric between the provider and buyer sides of one
+// hashlocked artifact delivery.
+export {
+  encryptArtifact,
+  fulfillIncrement,
+  decryptArtifact,
+  buildIncrementPrepare,
+  HashlockConditionMismatchError,
+  HashlockDecryptError,
+  type EncryptedArtifact,
+  type IncrementOfferTags,
+  type IncrementPrepare,
+} from './hashlock-delivery.js';
+
 // HTTP Adapters
 export {
   HttpRuntimeClient,

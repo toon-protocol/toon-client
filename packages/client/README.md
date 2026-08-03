@@ -392,6 +392,38 @@ if (result.success) {
 
 ---
 
+## Hashlock delivery (factory job increments)
+
+Factory job increments (`toon-meta#262` decision 5, `docs/factory-job-protocol.md` §4 in `toon-meta`) are delivered atomically: the provider encrypts the increment's artifact and sets the ILP `executionCondition` to `sha256(key)`. Revealing `key` to claim payment and handing the buyer the decryption key are the same act — neither party moves first. `encryptArtifact` / `fulfillIncrement` / `decryptArtifact` / `buildIncrementPrepare` are the only place this join is implemented, so a caller cannot accidentally derive a condition from anything other than the key that decrypts the artifact:
+
+```typescript
+import {
+  encryptArtifact,
+  fulfillIncrement,
+  decryptArtifact,
+  buildIncrementPrepare,
+} from '@toon-protocol/client';
+
+// Provider: encrypt the increment, upload `ciphertext` to Arweave, advertise
+// `toHex(condition)` on the kind:7000 offer's `condition` tag.
+const { ciphertext, key, condition } = encryptArtifact(artifactBytes);
+
+// Buyer: turn the offer's advertised `condition`/`amount` tags into PREPARE
+// fields, then pay with client.sendSwapPacket({ destination, ...prepare, toonData }).
+const prepare = buildIncrementPrepare({ conditionHex, amountUsdc });
+
+// Provider: reveal `key` as the FULFILL's fulfillment.
+const fulfillment = fulfillIncrement(key);
+
+// Buyer: verify against the condition it actually PAID (not one re-derived
+// from `key`), then decrypt.
+const artifact = decryptArtifact(ciphertext, fulfillment, prepare.executionCondition);
+```
+
+`decryptArtifact` throws `HashlockConditionMismatchError` when `sha256(key)` doesn't match the paid condition, and `HashlockDecryptError` on a tampered/corrupted ciphertext — neither error ever carries the key.
+
+---
+
 ## Payment Channels
 
 The client supports payment channels for off-chain settlement on EVM, Solana, and Mina. With a raw `secretKey` you get EVM only; construct from a `mnemonic` (above) to settle on Solana/Mina. Your EVM identity is derived automatically — no separate EVM key needed.
