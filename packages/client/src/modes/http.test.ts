@@ -195,6 +195,53 @@ describe('initializeHttpMode', () => {
     });
   });
 
+  describe('BTP peer id defaulting (toon-client#503)', () => {
+    it('defaults BtpRuntimeClient peerId to the client\'s own ILP address when btpPeerId is unset', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+
+      await initializeHttpMode(config);
+
+      const call = (BtpRuntimeClient as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0]![0];
+      expect(call.peerId).toBe('g.test.address');
+    });
+
+    it('honors an explicit config.btpPeerId over the ILP-address default', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+      config.btpPeerId = 'my-explicit-peer-id';
+
+      await initializeHttpMode(config);
+
+      const call = (BtpRuntimeClient as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0]![0];
+      expect(call.peerId).toBe('my-explicit-peer-id');
+    });
+
+    it('defaults HttpIlpClient peerId to the client\'s own ILP address when btpPeerId is unset', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+      config.connectorHttpEndpoint = 'http://localhost:3000/ilp';
+
+      const result = await initializeHttpMode(config);
+
+      expect(result.runtimeClient.constructor.name).toBe('HttpIlpClient');
+      expect((result.runtimeClient as unknown as { peerId?: string }).peerId).toBe(
+        'g.test.address'
+      );
+    });
+
+    it('honors an explicit config.btpPeerId for HttpIlpClient over the ILP-address default', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+      config.connectorHttpEndpoint = 'http://localhost:3000/ilp';
+      config.btpPeerId = 'my-explicit-peer-id';
+
+      const result = await initializeHttpMode(config);
+
+      expect((result.runtimeClient as unknown as { peerId?: string }).peerId).toBe(
+        'my-explicit-peer-id'
+      );
+    });
+  });
+
   describe('on-chain channel client', () => {
     it('should create OnChainChannelClient when chainRpcUrls configured', async () => {
       config.chainRpcUrls = { 'evm:anvil:31337': 'http://localhost:8545' };
