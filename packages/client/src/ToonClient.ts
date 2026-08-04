@@ -112,6 +112,44 @@ function parseMakerMinaSignature(
 }
 
 /**
+ * Canonical id for chain-negotiation comparisons (#500): `evm:base:84532`
+ * (this client's family-qualified preset form,
+ * `@toon-protocol/core`'s `resolveClientNetwork`) and `evm:84532` (the
+ * unqualified form the live devnet apex's `kind:10032` announce actually
+ * uses, matching `rig`'s own README tables) name the SAME deployed chain —
+ * only the numeric chain id disambiguates on-chain. Solana/Mina ids
+ * (`solana:devnet`, `mina:devnet`) have no such qualifier drift and pass
+ * through unchanged. The unqualified form is canonical (it's what the
+ * network actually announces); qualified strings collapse onto it for
+ * comparison only — this never rewrites a chain string a caller stored.
+ */
+function canonicalChainId(chain: string): string {
+  const parts = chain.split(':');
+  return parts[0] === 'evm' && parts.length >= 3
+    ? `evm:${parts[2]}`
+    : chain;
+}
+
+/**
+ * Looks up `chain` in `map` by exact key first, falling back to a
+ * canonical-id match (#500) so a value keyed under this client's own
+ * family-qualified form (`evm:base:84532`) is still found when `chain` is
+ * the peer's unqualified announce form (`evm:84532`), or vice versa.
+ */
+function lookupByCanonicalChain(
+  map: Record<string, string> | undefined,
+  chain: string
+): string | undefined {
+  if (!map) return undefined;
+  if (map[chain] !== undefined) return map[chain];
+  const canonical = canonicalChainId(chain);
+  for (const [key, value] of Object.entries(map)) {
+    if (canonicalChainId(key) === canonical) return value;
+  }
+  return undefined;
+}
+
+/**
  * Internal state for ToonClient after initialization.
  */
 interface ToonClientState {
@@ -511,10 +549,16 @@ export class ToonClient {
                 settlementAddress: peerAddr,
                 tokenAddress:
                   peerInfo.preferredTokens?.[matchedChain] ??
-                  this.config.preferredTokens?.[matchedChain],
+                  lookupByCanonicalChain(
+                    this.config.preferredTokens,
+                    matchedChain
+                  ),
                 tokenNetwork:
                   peerInfo.tokenNetworks?.[matchedChain] ??
-                  this.config.tokenNetworks?.[matchedChain],
+                  lookupByCanonicalChain(
+                    this.config.tokenNetworks,
+                    matchedChain
+                  ),
               });
             }
           }
@@ -2112,35 +2156,54 @@ export class ToonClient {
    * Picks the settlement chain both `ourChains` and `peerChains` support,
    * used by the lightweight bootstrap-fallback negotiation (peer discovered
    * but no connector admin registered a chain). Prefers
-   * `this.config.preferredChain`'s family (#485) over array order; falls
-   * back to the first mutually-supported chain (legacy behavior) when
-   * unconfigured.
+   * `this.config.preferredChain`'s family (#485) over array order; picks the
+   * first mutually-supported chain (legacy behavior) when unconfigured.
    *
-   * @throws {ToonClientError} `CHAIN_NOT_SUPPORTED` if a chain is explicitly
-   *   configured but the peer doesn't support any chain in that family —
-   *   this must fail loudly rather than silently negotiate a different chain.
+   * Chains are matched by {@link canonicalChainId} rather than exact string
+   * equality (#500): the devnet preset's family-qualified `evm:base:84532`
+   * and the live apex's unqualified `evm:84532` name the same chain, and
+   * exact matching skipped straight past it to the next mutually-supported
+   * chain (`solana:devnet`) — negotiating a chain nobody asked for instead
+   * of failing loudly. The PEER's own chain string is returned (not ours),
+   * since callers index the peer's own `settlementAddresses` /
+   * `preferredTokens` / `tokenNetworks` maps with it.
+   *
+   * @throws {ToonClientError} `CHAIN_NOT_SUPPORTED` naming both chain sets
+   *   when no common chain exists — a caller explicitly configured this
+   *   peer as a counterparty, so silently negotiating a different chain (or
+   *   returning nothing) would hide a real incompatibility behind an
+   *   unrelated failure several layers downstream (#500).
    */
   private matchNegotiatedChain(
     ourChains: string[],
     peerChains: string[],
     peerId: string
-  ): string | undefined {
+  ): string {
+    const peerByCanonical = new Map(
+      peerChains.map((c) => [canonicalChainId(c), c])
+    );
     const preferred = this.config.preferredChain;
-    if (preferred) {
-      const matched = ourChains.find(
-        (c) => c.split(':')[0] === preferred && peerChains.includes(c)
-      );
-      if (!matched) {
-        throw new ToonClientError(
-          `Configured chain "${preferred}" is not supported by peer ` +
-            `"${peerId}" (peer supportedChains: ` +
-            `${peerChains.join(', ') || '(none)'}).`,
-          'CHAIN_NOT_SUPPORTED'
-        );
-      }
-      return matched;
+    const candidates = preferred
+      ? ourChains.filter((c) => c.split(':')[0] === preferred)
+      : ourChains;
+    for (const c of candidates) {
+      const peerMatch = peerByCanonical.get(canonicalChainId(c));
+      if (peerMatch) return peerMatch;
     }
-    return ourChains.find((c) => peerChains.includes(c)) ?? ourChains[0];
+    if (preferred) {
+      throw new ToonClientError(
+        `Configured chain "${preferred}" is not supported by peer ` +
+          `"${peerId}" (peer supportedChains: ` +
+          `${peerChains.join(', ') || '(none)'}).`,
+        'CHAIN_NOT_SUPPORTED'
+      );
+    }
+    throw new ToonClientError(
+      `No common settlement chain with peer "${peerId}" ` +
+        `(our supportedChains: ${ourChains.join(', ') || '(none)'}; ` +
+        `peer supportedChains: ${peerChains.join(', ') || '(none)'}).`,
+      'CHAIN_NOT_SUPPORTED'
+    );
   }
 
   /**
