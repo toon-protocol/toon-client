@@ -58,4 +58,5 @@ export {
   type HttpIlpClientFactory,
   type ToonChannelAccept,
   type ParsedX402Challenge,
+  type X402ChannelExtra,
 } from './Http402Client.js';

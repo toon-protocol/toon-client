@@ -56,7 +56,54 @@ describe("the connector's own 402 terms", () => {
       amount: 100n,
       httpEndpoint: 'https://apex.example/ilp',
       supportsUpgrade: false,
+      extra: {
+        ilpAddress: 'g.example.app',
+        endpoint: '/ilp',
+        price: '100',
+      },
     });
+  });
+
+  it('surfaces connector#722\'s session_lease_ttl_ms from accepts[0].extra (issue #506)', () => {
+    // The shape `the_x402_greeting_advertises_the_session_lease_ttl` pins on
+    // the Rust side: `extra` gains `session_lease_ttl_ms` alongside the
+    // fields this fixture already carries.
+    const body = {
+      ...CONNECTOR_402_BODY,
+      accepts: [
+        {
+          ...CONNECTOR_402_BODY.accepts[0],
+          extra: {
+            ...CONNECTOR_402_BODY.accepts[0].extra,
+            session_lease_ttl_ms: 120_000,
+          },
+        },
+      ],
+    };
+
+    const parsed = parseX402Body(body, 'https://apex.example/some/resource');
+    expect(parsed.toonChannel?.extra?.session_lease_ttl_ms).toBe(120_000);
+  });
+
+  it('yields extra.session_lease_ttl_ms: undefined for a connector predating #722', () => {
+    // No `extra` field at all on the accepts entry: absent, not a default.
+    const body = {
+      ...CONNECTOR_402_BODY,
+      accepts: [
+        {
+          scheme: 'toon-channel',
+          network: 'g.example.app',
+          amount: '100',
+          payTo: 'g.example.app',
+          maxTimeoutSeconds: 60,
+          httpEndpoint: '/ilp',
+        },
+      ],
+    };
+
+    const parsed = parseX402Body(body, 'https://apex.example/some/resource');
+    expect(parsed.toonChannel?.extra).toBeUndefined();
+    expect(parsed.toonChannel?.extra?.session_lease_ttl_ms).toBeUndefined();
   });
 
   it('reads the destination from extra.ilpAddress, not from payTo', () => {
