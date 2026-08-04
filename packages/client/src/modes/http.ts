@@ -72,6 +72,15 @@ export async function initializeHttpMode(
       ? selectIlpTransport(discoveredPeer, { needsDuplex: false })
       : null;
 
+  // The id this client announces to the connector — BTP greeting `peerId` /
+  // `ILP-Peer-Id` header — becomes the key connector#743's SessionRegistry
+  // binds this session under, so it must be unique per client rather than a
+  // shared literal (toon-client#503). Default to the client's own ILP
+  // address, which `validateConfig` already guarantees is a non-empty string
+  // by this point; an explicit `config.btpPeerId` always wins. Both call
+  // sites below MUST derive it this same way.
+  const btpPeerId = config.btpPeerId ?? config.ilpInfo.ilpAddress;
+
   // Create BTP runtime client — the duplex transport for the client SDK.
   // The client connects to the connector via BTP WebSocket to send ILP packets
   // AND to receive server-initiated packets / act as a peer. We always open it
@@ -82,7 +91,7 @@ export async function initializeHttpMode(
   if (effectiveBtpUrl) {
     btpClient = new BtpRuntimeClient({
       btpUrl: effectiveBtpUrl,
-      peerId: config.btpPeerId ?? `client`,
+      peerId: btpPeerId,
       authToken: config.btpAuthToken ?? '',
       // Serve-side job registration (toon-client#494): a connector-originated
       // MESSAGE carrying a PREPARE is answered by the configured handler.
@@ -104,7 +113,7 @@ export async function initializeHttpMode(
   ) {
     httpIlpClient = new HttpIlpClient({
       httpEndpoint: transportChoice.httpEndpoint,
-      ...(config.btpPeerId !== undefined ? { peerId: config.btpPeerId } : {}),
+      peerId: btpPeerId,
       ...(config.btpAuthToken !== undefined
         ? { authToken: config.btpAuthToken }
         : {}),
