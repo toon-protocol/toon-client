@@ -95,6 +95,14 @@ export class FakeTerminatingConnector {
     | (ConnectorSettlementTerms | ConnectorSolanaSettlementTerms)[]
     | null = null;
 
+  /**
+   * Additional members merged into the greeting's `accepts[0].extra` bag
+   * beside `settlement`/`settlements` (issue #509, e.g.
+   * `session_lease_ttl_ms`). `null` — the default — adds nothing beyond the
+   * fixture's own `ilpAddress`/`endpoint`/`price` fields.
+   */
+  extraFields: Record<string, unknown> | null = null;
+
   constructor(options: FakeTerminatingConnectorOptions = {}) {
     this.identitySecret = options.identitySecret ?? new Uint8Array(32).fill(9);
     this.identityPublic = secp256k1.getPublicKey(this.identitySecret, false);
@@ -161,6 +169,7 @@ export class FakeTerminatingConnector {
                 ? { settlement: this.settlementTerms }
                 : {}),
               ...(this.settlements ? { settlements: this.settlements } : {}),
+              ...(this.extraFields ?? {}),
             },
           },
         ],

@@ -32,6 +32,7 @@
 
 import { NetworkError, ToonClientError } from '../errors.js';
 import { ILPPacketType, serializeIlpPrepare } from '../btp/protocol.js';
+import type { X402ChannelExtra } from './Http402Client.js';
 
 // ─── Identity ───────────────────────────────────────────────────────────────
 
@@ -109,6 +110,14 @@ export interface ConnectorRouteTerms {
   price: string;
   settlement?: ConnectorSettlementTerms;
   settlements?: ConnectorChainSettlementTerms[];
+  /**
+   * The `toon-channel` accepts entry's raw `extra` bag, preserved as-is
+   * (issue #509 — the same posture #506/#507 established for
+   * `Http402Client`'s parser, e.g. `extra.session_lease_ttl_ms`,
+   * connector#722). `undefined` when the entry carried no `extra` at all —
+   * distinct from an `extra` that merely omits a given key.
+   */
+  extra?: X402ChannelExtra;
 }
 
 /** What a locally-terminated route costs, as reported by `GET /ilp/routes/price`. */
@@ -986,11 +995,18 @@ export function parseConnectorRouteTerms(body: unknown): ConnectorRouteTerms {
   }
   const destination =
     typeof greeting.resource?.url === 'string' ? greeting.resource.url : '';
-  const extra = option['extra'] as
-    | { settlement?: unknown; settlements?: unknown }
-    | undefined;
+  const rawExtra = option['extra'];
+  // Preserved verbatim on the returned terms below (issue #509, mirroring
+  // #506's `Http402Client` posture) — `extraForReads` stays the source for
+  // the fields this parser already knows (settlement/settlements) without
+  // narrowing the bag a caller sees.
+  const extra: X402ChannelExtra | undefined =
+    typeof rawExtra === 'object' && rawExtra !== null
+      ? (rawExtra as X402ChannelExtra)
+      : undefined;
+  const extraForReads = extra ?? {};
 
-  const rawSettlements = extra?.settlements;
+  const rawSettlements = extraForReads['settlements'];
   let settlements: ConnectorChainSettlementTerms[] | undefined;
   if (rawSettlements !== undefined) {
     if (!Array.isArray(rawSettlements)) {
@@ -1002,12 +1018,13 @@ export function parseConnectorRouteTerms(body: unknown): ConnectorRouteTerms {
     settlements = rawSettlements.map(parseChainSettlementEntry);
   }
 
-  const rawSettlement = extra?.settlement;
+  const rawSettlement = extraForReads['settlement'];
   if (rawSettlement === undefined) {
     return {
       destination,
       price: option['amount'],
       ...(settlements ? { settlements } : {}),
+      ...(extra !== undefined ? { extra } : {}),
     };
   }
   if (typeof rawSettlement !== 'object' || rawSettlement === null) {
@@ -1023,5 +1040,6 @@ export function parseConnectorRouteTerms(body: unknown): ConnectorRouteTerms {
       rawSettlement as Record<string, unknown>
     ),
     ...(settlements ? { settlements } : {}),
+    ...(extra !== undefined ? { extra } : {}),
   };
 }

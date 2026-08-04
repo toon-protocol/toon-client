@@ -21,6 +21,7 @@ import {
 import {
   ConnectorEdgeClient,
   connectorEdgeBaseUrl,
+  type ConnectorRouteTerms,
   type ConnectorSettlementTerms,
   type ConnectorSolanaSettlementTerms,
   type ClaimStateRequestEntry,
@@ -209,6 +210,17 @@ export class ToonClient {
    * {@link getLastX402Terms} without re-issuing the probe by hand.
    */
   private lastX402Terms?: ToonChannelAccept;
+  /**
+   * The most recently parsed `ConnectorRouteTerms`, from the last
+   * `negotiateFromGreeting` call — the greeting parse that ordinary channel
+   * bootstrap (`publishEvent`/`openChannel`/`adoptChannel`) already goes
+   * through, with no separate `h402Fetch` probe needed (issue #509).
+   * Captured whether or not the greeting carried settlement facts to
+   * bootstrap from, so its `extra` bag (e.g. `session_lease_ttl_ms`) is
+   * readable via {@link getLastConnectorRouteTerms} even when the bootstrap
+   * declined to open a channel from that greeting.
+   */
+  private lastConnectorRouteTerms?: ConnectorRouteTerms;
   private readonly evmSigner?: EvmSigner;
   private solanaSigner?: SolanaSigner;
   /**
@@ -1005,6 +1017,22 @@ export class ToonClient {
    */
   getLastX402Terms(): ToonChannelAccept | undefined {
     return this.lastX402Terms;
+  }
+
+  /**
+   * The `ConnectorRouteTerms` from the most recent ordinary channel
+   * bootstrap (`publishEvent`/`openChannel`/`adoptChannel`, via
+   * `negotiateFromGreeting`) — including its `extra` bag (issue #509, e.g.
+   * `extra.session_lease_ttl_ms`, connector#722) — or `undefined` if no
+   * greeting has been parsed on this path yet. Unlike
+   * {@link getLastX402Terms}, this populates from a client that only ever
+   * calls `start()`/`publishEvent()`: `ConnectorEdgeClient.getRouteTerms` is
+   * the parser the live path actually negotiates through, so a caller does
+   * not need to issue a separate `h402Fetch` probe purely to read the lease
+   * TTL.
+   */
+  getLastConnectorRouteTerms(): ConnectorRouteTerms | undefined {
+    return this.lastConnectorRouteTerms;
   }
 
   /**
@@ -1987,6 +2015,7 @@ export class ToonClient {
     }
     try {
       const terms = await this.connectorEdge.getRouteTerms(edge, destination);
+      this.lastConnectorRouteTerms = terms ?? undefined;
       const evmSettlement = terms?.settlement;
       const solanaSettlement = terms?.settlements?.find(
         (entry) => entry.kind === 'solana'
