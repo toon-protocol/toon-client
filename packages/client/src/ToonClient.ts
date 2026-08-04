@@ -212,13 +212,13 @@ export class ToonClient {
   private lastX402Terms?: ToonChannelAccept;
   /**
    * The most recently parsed `ConnectorRouteTerms`, from the last
-   * `negotiateFromGreeting` call — the greeting parse ordinary channel
+   * `negotiateFromGreeting` call — the greeting parse that ordinary channel
    * bootstrap (`publishEvent`/`openChannel`/`adoptChannel`) already goes
    * through, with no separate `h402Fetch` probe needed (issue #509).
    * Captured whether or not the greeting carried settlement facts to
    * bootstrap from, so its `extra` bag (e.g. `session_lease_ttl_ms`) is
-   * readable via {@link getLastConnectorRouteTerms} even for a greeting
-   * bootstrap declined to open a channel from.
+   * readable via {@link getLastConnectorRouteTerms} even when the bootstrap
+   * declined to open a channel from that greeting.
    */
   private lastConnectorRouteTerms?: ConnectorRouteTerms;
   private readonly evmSigner?: EvmSigner;
