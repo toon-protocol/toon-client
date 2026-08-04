@@ -527,40 +527,40 @@ export class ToonClient {
           };
           const peerChains = peerInfo.supportedChains ?? [];
           const ourChains = this.config.supportedChains ?? [];
+          // Throws CHAIN_NOT_SUPPORTED if no common chain exists, so
+          // matchedChain is always a real, mutually-supported chain here.
           const matchedChain = this.matchNegotiatedChain(
             ourChains,
             peerChains,
             result.registeredPeerId
           );
-          if (matchedChain) {
-            const peerAddr = peerInfo.settlementAddresses?.[matchedChain];
-            const parts = matchedChain.split(':');
-            const chainId =
-              parts.length >= 3
-                ? parseInt(parts[2] ?? '0', 10)
-                : parts.length >= 2
-                  ? parseInt(parts[1] ?? '0', 10)
-                  : 0;
-            if (peerAddr) {
-              this.peerNegotiations.set(result.registeredPeerId, {
-                chain: matchedChain,
-                chainType: parts[0] ?? 'evm',
-                chainId: isNaN(chainId) ? 0 : chainId,
-                settlementAddress: peerAddr,
-                tokenAddress:
-                  peerInfo.preferredTokens?.[matchedChain] ??
-                  lookupByCanonicalChain(
-                    this.config.preferredTokens,
-                    matchedChain
-                  ),
-                tokenNetwork:
-                  peerInfo.tokenNetworks?.[matchedChain] ??
-                  lookupByCanonicalChain(
-                    this.config.tokenNetworks,
-                    matchedChain
-                  ),
-              });
-            }
+          const peerAddr = peerInfo.settlementAddresses?.[matchedChain];
+          const parts = matchedChain.split(':');
+          const chainId =
+            parts.length >= 3
+              ? parseInt(parts[2] ?? '0', 10)
+              : parts.length >= 2
+                ? parseInt(parts[1] ?? '0', 10)
+                : 0;
+          if (peerAddr) {
+            this.peerNegotiations.set(result.registeredPeerId, {
+              chain: matchedChain,
+              chainType: parts[0] ?? 'evm',
+              chainId: isNaN(chainId) ? 0 : chainId,
+              settlementAddress: peerAddr,
+              tokenAddress:
+                peerInfo.preferredTokens?.[matchedChain] ??
+                lookupByCanonicalChain(
+                  this.config.preferredTokens,
+                  matchedChain
+                ),
+              tokenNetwork:
+                peerInfo.tokenNetworks?.[matchedChain] ??
+                lookupByCanonicalChain(
+                  this.config.tokenNetworks,
+                  matchedChain
+                ),
+            });
           }
         }
         // Track any pre-opened channels (backwards compat)

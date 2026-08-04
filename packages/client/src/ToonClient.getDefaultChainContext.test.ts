@@ -52,6 +52,16 @@ function getDefaultChainContext(client: ToonClient) {
   return (client as any).getDefaultChainContext();
 }
 
+function matchNegotiatedChain(
+  client: ToonClient,
+  ourChains: string[],
+  peerChains: string[],
+  peerId = 'peer1'
+) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (client as any).matchNegotiatedChain(ourChains, peerChains, peerId);
+}
+
 describe('ToonClient.getDefaultChainContext (#485)', () => {
   it('honors an explicitly configured chain that IS supported, even when it does not sort first', () => {
     const client = new ToonClient(baseConfig({ preferredChain: 'evm' }));
@@ -95,16 +105,6 @@ describe('ToonClient.getDefaultChainContext (#485)', () => {
  * "pick the first mutually-supported chain, ignoring configuration" pattern.
  */
 describe('ToonClient.matchNegotiatedChain (#485 sibling)', () => {
-  function matchNegotiatedChain(
-    client: ToonClient,
-    ourChains: string[],
-    peerChains: string[],
-    peerId = 'peer1'
-  ) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (client as any).matchNegotiatedChain(ourChains, peerChains, peerId);
-  }
-
   it('honors the configured chain over array order when both sides support it', () => {
     const client = new ToonClient(baseConfig({ preferredChain: 'evm' }));
     const matched = matchNegotiatedChain(
@@ -189,16 +189,6 @@ describe('ToonClient.matchNegotiatedChain (#485 sibling)', () => {
  * of failing loudly or matching the equivalent chain.
  */
 describe('ToonClient.matchNegotiatedChain — devnet preset vs live announce (#500)', () => {
-  function matchNegotiatedChain(
-    client: ToonClient,
-    ourChains: string[],
-    peerChains: string[],
-    peerId = 'devnetApex'
-  ) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (client as any).matchNegotiatedChain(ourChains, peerChains, peerId);
-  }
-
   it('negotiates the devnet preset\'s EVM chain against an announce using the unqualified form', () => {
     const client = new ToonClient(baseConfig({}));
     // The real `network: 'devnet'` preset — pins this test to whatever chain
