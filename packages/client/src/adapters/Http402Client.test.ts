@@ -556,4 +556,41 @@ describe('x402 challenge parsing', () => {
     });
     expect(parsed.toonChannel).toBeUndefined();
   });
+
+  it('preserves the extra bag, including session_lease_ttl_ms and unknown keys (issue #506)', () => {
+    const parsed = parseX402Body({
+      accepts: [
+        {
+          scheme: 'toon-channel',
+          payTo: 'g.toon.alt',
+          amount: '42',
+          httpEndpoint: 'https://alt/ilp',
+          extra: {
+            ilpAddress: 'g.toon.alt',
+            session_lease_ttl_ms: 120_000,
+            some_future_field: 'unknown-but-preserved',
+          },
+        },
+      ],
+    });
+    expect(parsed.toonChannel?.extra).toEqual({
+      ilpAddress: 'g.toon.alt',
+      session_lease_ttl_ms: 120_000,
+      some_future_field: 'unknown-but-preserved',
+    });
+  });
+
+  it('yields extra: undefined — not a default, not a throw — when the entry has no extra bag', () => {
+    const parsed = parseX402Body({
+      accepts: [
+        {
+          scheme: 'toon-channel',
+          payTo: 'g.toon.alt',
+          amount: '42',
+          httpEndpoint: 'https://alt/ilp',
+        },
+      ],
+    });
+    expect(parsed.toonChannel?.extra).toBeUndefined();
+  });
 });

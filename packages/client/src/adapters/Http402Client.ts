@@ -101,6 +101,23 @@ import { readExchangeOutcome, sealExchange } from '../wire/sealed-exchange.js';
 
 // ─── x402 challenge types (documented wire contract above) ──────────────────
 
+/**
+ * The `extra` bag of an `accepts` entry — an open set of terms from the peer,
+ * not a fixed contract. `session_lease_ttl_ms` (connector#722,
+ * `session_registry::SESSION_LEASE_BACKSTOP_TTL`) is the one member this
+ * client currently reads by name; everything else is preserved untouched
+ * (issue #506) rather than stripped by a narrower type, so a future field
+ * survives the round trip even before this package knows its name.
+ */
+export interface X402ChannelExtra {
+  /**
+   * The connector's session lease TTL in milliseconds. Absent on a connector
+   * predating #722 — `undefined`, never a substituted default.
+   */
+  session_lease_ttl_ms?: number;
+  [key: string]: unknown;
+}
+
 /** A single parsed `accepts` entry that offers the `toon-channel` scheme. */
 export interface ToonChannelAccept {
   /** Always `'toon-channel'` for a matched entry. */
@@ -115,6 +132,12 @@ export interface ToonChannelAccept {
   httpEndpoint: string;
   /** Whether the host accepts the BTP upgrade over the HTTP endpoint. */
   supportsUpgrade: boolean;
+  /**
+   * The entry's raw `extra` bag, preserved as-is. `undefined` when the entry
+   * carried no `extra` at all — distinct from an `extra` that merely omits a
+   * given key (issue #506).
+   */
+  extra?: X402ChannelExtra;
 }
 
 /** The parsed x402 402 body, with the selected `toon-channel` entry (if any). */
@@ -155,6 +178,9 @@ export type ClaimResolver = (
 /** Factory for an {@link HttpIlpClient} given a resolved `POST /ilp` endpoint. */
 export type HttpIlpClientFactory = (httpEndpoint: string) => HttpIlpClient;
 
+/** Caller-supplied hook invoked with every parsed x402 challenge. */
+export type ChallengeHandler = (challenge: ParsedX402Challenge) => void;
+
 export interface Http402ClientConfig {
   /**
    * Underlying HTTP fetch for the INITIAL (un-paid) request that probes for a
@@ -193,6 +219,16 @@ export interface Http402ClientConfig {
    * re-fetching a key per paid request.
    */
   connectorEdge?: ConnectorEdgeClient;
+  /**
+   * Called with the parsed challenge whenever a `402` body is parsed —
+   * before the pay/pass-through decision, so it fires whether or not a
+   * `toon-channel` entry is offered or a claim resolver is configured. The
+   * one-shot `fetch()` return is a plain `Response`; this is how a caller
+   * (e.g. `ToonClient.getLastX402Terms`) reaches the negotiated terms —
+   * including the `extra` bag (issue #506) — without re-issuing the probe
+   * itself.
+   */
+  onChallenge?: ChallengeHandler;
 }
 
 /**
@@ -205,10 +241,12 @@ export class Http402Client {
   private readonly createIlpClient: HttpIlpClientFactory;
   private readonly needsDuplex: boolean;
   private readonly connectorEdge: ConnectorEdgeClient;
+  private readonly onChallenge?: ChallengeHandler;
 
   constructor(config: Http402ClientConfig = {}) {
     this.fetchImpl = config.fetch ?? fetch;
     this.resolveClaim = config.resolveClaim;
+    this.onChallenge = config.onChallenge;
     this.createIlpClient =
       config.createIlpClient ??
       ((httpEndpoint) => new HttpIlpClient({ httpEndpoint }));
@@ -248,6 +286,7 @@ export class Http402Client {
     //    `accepts`; clone first so we can still return the ORIGINAL 402 on
     //    fallback (a Response body is single-use).
     const challenge = await parseX402Challenge(probe.clone());
+    this.onChallenge?.(challenge);
     const accept = challenge.toonChannel;
 
     // AC5: no toon-channel offer (or no signer) → surface the vanilla challenge.
@@ -501,21 +540,26 @@ export function parseX402Body(
     // first-class source, not a fallback: reading `payTo` instead only ever
     // worked because that connector happens to set it to the destination too,
     // which is a coincidence of today's code and not part of the contract.
-    const extra =
-      typeof entry['extra'] === 'object' && entry['extra'] !== null
-        ? (entry['extra'] as Record<string, unknown>)
-        : {};
+    const rawExtra = entry['extra'];
+    // Preserved verbatim on the returned entry below (issue #506) — `extra`
+    // stays a first-class read source for the fields this adapter already
+    // knows (destination/endpoint/price), via `extraForReads`.
+    const extra: X402ChannelExtra | undefined =
+      typeof rawExtra === 'object' && rawExtra !== null
+        ? (rawExtra as X402ChannelExtra)
+        : undefined;
+    const extraForReads = extra ?? {};
 
     const destination =
-      readString(extra, ['ilpAddress', 'destination']) ??
+      readString(extraForReads, ['ilpAddress', 'destination']) ??
       readString(entry, ['destination', 'ilpAddress', 'payTo']);
     const rawEndpoint =
       readString(entry, ['httpEndpoint', 'ilpEndpoint']) ??
-      readString(extra, ['httpEndpoint', 'endpoint']) ??
+      readString(extraForReads, ['httpEndpoint', 'endpoint']) ??
       readString(entry, ['endpoint']);
     const httpEndpoint = resolveEndpoint(rawEndpoint, baseUrl);
     const amount =
-      readAmount(extra, ['price', 'amount']) ??
+      readAmount(extraForReads, ['price', 'amount']) ??
       readAmount(entry, ['amount', 'price', 'maxAmountRequired']);
 
     // A usable entry MUST carry where to pay, how much, and how to reach /ilp.
@@ -534,6 +578,7 @@ export function parseX402Body(
         amount,
         httpEndpoint,
         supportsUpgrade,
+        ...(extra !== undefined ? { extra } : {}),
       },
     };
   }

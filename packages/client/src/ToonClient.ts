@@ -73,6 +73,7 @@ import type { IlpSendParams } from './adapters/ilp-send.js';
 import {
   Http402Client,
   type H402FetchOptions,
+  type ToonChannelAccept,
 } from './adapters/Http402Client.js';
 import type { SettlementBundle } from '@toon-protocol/sdk';
 import {
@@ -200,6 +201,14 @@ interface ToonClientState {
 export class ToonClient {
   private readonly config: ResolvedConfig;
   private state: ToonClientState | null = null;
+  /**
+   * The most recently parsed `toon-channel` x402 accepts entry, from the last
+   * `h402Fetch` call that saw a `402` (issue #506) — including its `extra`
+   * bag (e.g. `session_lease_ttl_ms`). Captured whether or not that fetch
+   * went on to pay, so a caller can read the negotiated terms via
+   * {@link getLastX402Terms} without re-issuing the probe by hand.
+   */
+  private lastX402Terms?: ToonChannelAccept;
   private readonly evmSigner?: EvmSigner;
   private solanaSigner?: SolanaSigner;
   /**
@@ -969,6 +978,11 @@ export class ToonClient {
       // fresh Http402Client per call (below), and a paid request now needs a
       // terminating key.
       connectorEdge: this.connectorEdge,
+      // Capture the negotiated terms (issue #506) regardless of the
+      // pay/pass-through outcome — see `lastX402Terms`'s own doc comment.
+      onChallenge: (challenge) => {
+        this.lastX402Terms = challenge.toonChannel;
+      },
       ...(this.channelManager
         ? {
             resolveClaim: (destination: string, amount: bigint) =>
@@ -978,6 +992,19 @@ export class ToonClient {
     });
 
     return client.fetch(url, opts);
+  }
+
+  /**
+   * The `toon-channel` accepts entry from the most recent `h402Fetch` 402
+   * probe — including its `extra` bag (issue #506, e.g.
+   * `extra.session_lease_ttl_ms`, connector#722) — or `undefined` if
+   * `h402Fetch` has not yet been called or its last probe offered no
+   * `toon-channel` entry. Captured whether or not that fetch went on to pay,
+   * so a caller (e.g. buzz#84's mesh refresh cadence) can read the
+   * negotiated terms without re-issuing a probe by hand.
+   */
+  getLastX402Terms(): ToonChannelAccept | undefined {
+    return this.lastX402Terms;
   }
 
   /**
