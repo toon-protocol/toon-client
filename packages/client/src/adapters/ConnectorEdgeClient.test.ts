@@ -608,6 +608,60 @@ describe('parseConnectorRouteTerms — per-chain settlements (connector #632)', 
   });
 });
 
+describe('parseConnectorRouteTerms — extra bag (issue #509)', () => {
+  function greetingBody(extra?: Record<string, unknown>) {
+    return {
+      x402Version: 2,
+      resource: { url: 'g.fake.route' },
+      accepts: [
+        {
+          scheme: 'toon-channel',
+          amount: '1000',
+          ...(extra !== undefined ? { extra } : {}),
+        },
+      ],
+    };
+  }
+
+  it('surfaces session_lease_ttl_ms from accepts[0].extra after ordinary bootstrap parsing', () => {
+    const terms = parseConnectorRouteTerms(
+      greetingBody({ session_lease_ttl_ms: 120_000 })
+    );
+    expect(terms.extra?.session_lease_ttl_ms).toBe(120_000);
+  });
+
+  it('yields extra: undefined for a greeting with no extra bag at all, not a default', () => {
+    const terms = parseConnectorRouteTerms(greetingBody());
+    expect(terms.extra).toBeUndefined();
+  });
+
+  it('preserves unknown keys in the extra bag', () => {
+    const terms = parseConnectorRouteTerms(
+      greetingBody({ some_future_field: 'unknown-but-preserved' })
+    );
+    expect(terms.extra?.['some_future_field']).toBe('unknown-but-preserved');
+  });
+
+  it('keeps existing settlement/settlements extraction unchanged when extra also carries session_lease_ttl_ms', () => {
+    const EVM_SETTLEMENT = {
+      chain: 'evm:84532',
+      settlementAddress: '0x' + 'a'.repeat(40),
+      tokenNetworkRegistry: '0x' + 'b'.repeat(40),
+      tokenNetwork: '0x' + 'e'.repeat(40),
+      tokenAddress: '0x' + 'f'.repeat(40),
+      decimals: 6,
+    };
+    const terms = parseConnectorRouteTerms(
+      greetingBody({
+        settlement: EVM_SETTLEMENT,
+        session_lease_ttl_ms: 120_000,
+      })
+    );
+    expect(terms.settlement).toEqual(EVM_SETTLEMENT);
+    expect(terms.extra?.session_lease_ttl_ms).toBe(120_000);
+  });
+});
+
 describe('parseClaimStateResponse — POST /ilp/claim-state (§1.10)', () => {
   it('parses an ok EVM entry', () => {
     const results = parseClaimStateResponse({
