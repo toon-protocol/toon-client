@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { resolveClientNetwork } from '@toon-protocol/core';
 import { ToonClient } from './ToonClient.js';
 import { ToonClientError } from './errors.js';
 import type { NostrEvent } from 'nostr-tools/pure';
@@ -49,6 +50,16 @@ function baseConfig(overrides: Partial<ToonClientConfig>): ToonClientConfig {
 function getDefaultChainContext(client: ToonClient) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (client as any).getDefaultChainContext();
+}
+
+function matchNegotiatedChain(
+  client: ToonClient,
+  ourChains: string[],
+  peerChains: string[],
+  peerId = 'peer1'
+) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (client as any).matchNegotiatedChain(ourChains, peerChains, peerId);
 }
 
 describe('ToonClient.getDefaultChainContext (#485)', () => {
@@ -94,16 +105,6 @@ describe('ToonClient.getDefaultChainContext (#485)', () => {
  * "pick the first mutually-supported chain, ignoring configuration" pattern.
  */
 describe('ToonClient.matchNegotiatedChain (#485 sibling)', () => {
-  function matchNegotiatedChain(
-    client: ToonClient,
-    ourChains: string[],
-    peerChains: string[],
-    peerId = 'peer1'
-  ) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (client as any).matchNegotiatedChain(ourChains, peerChains, peerId);
-  }
-
   it('honors the configured chain over array order when both sides support it', () => {
     const client = new ToonClient(baseConfig({ preferredChain: 'evm' }));
     const matched = matchNegotiatedChain(
@@ -148,5 +149,79 @@ describe('ToonClient.matchNegotiatedChain (#485 sibling)', () => {
       ['evm:base:84532']
     );
     expect(matched).toBe('evm:base:84532');
+  });
+
+  it('throws naming both chain sets when nothing overlaps at all, instead of silently substituting a different chain (#500)', () => {
+    const client = new ToonClient(baseConfig({}));
+    expect(() =>
+      matchNegotiatedChain(
+        client,
+        ['evm:base:84532'],
+        ['evm:999999'],
+        'peerNoOverlap'
+      )
+    ).toThrow(ToonClientError);
+    try {
+      matchNegotiatedChain(
+        client,
+        ['evm:base:84532'],
+        ['evm:999999'],
+        'peerNoOverlap'
+      );
+      expect.unreachable('expected matchNegotiatedChain to throw');
+    } catch (err) {
+      expect((err as ToonClientError).code).toBe('CHAIN_NOT_SUPPORTED');
+      expect((err as Error).message).toContain('evm:base:84532');
+      expect((err as Error).message).toContain('evm:999999');
+      expect((err as Error).message).toContain('peerNoOverlap');
+    }
+  });
+});
+
+/**
+ * Regression tests for #500: `network: 'devnet'`'s preset names its EVM chain
+ * in the family-qualified form (`evm:base:84532`, from
+ * `@toon-protocol/core`'s `resolveClientNetwork`), but the live devnet apex's
+ * `kind:10032` announce names the SAME chain unqualified (`evm:84532`). Exact
+ * string matching never intersects the two sets, so `matchNegotiatedChain`
+ * skipped straight past EVM to the next mutually-supported chain
+ * (`solana:devnet`) — silently negotiating a chain nobody asked for instead
+ * of failing loudly or matching the equivalent chain.
+ */
+describe('ToonClient.matchNegotiatedChain — devnet preset vs live announce (#500)', () => {
+  it('negotiates the devnet preset\'s EVM chain against an announce using the unqualified form', () => {
+    const client = new ToonClient(baseConfig({}));
+    // The real `network: 'devnet'` preset — pins this test to whatever chain
+    // id @toon-protocol/core actually resolves, so a future core bump that
+    // changes the id still exercises the real drift this issue found.
+    const presets = resolveClientNetwork('devnet');
+    const evmId = presets.supportedChains.find((c) => c.startsWith('evm:'));
+    expect(evmId).toBeDefined();
+    const numericChainId = evmId!.split(':').pop();
+
+    // The live devnet apex's kind:10032 announce, unqualified.
+    const announceChains = [
+      `evm:${numericChainId}`,
+      'solana:devnet',
+      'mina:devnet',
+    ];
+
+    const matched = matchNegotiatedChain(
+      client,
+      presets.supportedChains,
+      announceChains
+    );
+    expect(matched).toBe(`evm:${numericChainId}`);
+    expect(matched).not.toBe('solana:devnet');
+  });
+
+  it('honors an explicitly configured evm preferredChain against the unqualified announce form', () => {
+    const client = new ToonClient(baseConfig({ preferredChain: 'evm' }));
+    const matched = matchNegotiatedChain(
+      client,
+      ['solana:devnet:0', 'evm:base:84532'],
+      ['solana:devnet:0', 'evm:84532']
+    );
+    expect(matched).toBe('evm:84532');
   });
 });
