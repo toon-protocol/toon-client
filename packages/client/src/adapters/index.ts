@@ -55,6 +55,7 @@ export {
   type H402FetchOptions,
   type Http402ClientConfig,
   type ClaimResolver,
+  type ChallengeHandler,
   type HttpIlpClientFactory,
   type ToonChannelAccept,
   type ParsedX402Challenge,

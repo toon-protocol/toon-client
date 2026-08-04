@@ -178,6 +178,9 @@ export type ClaimResolver = (
 /** Factory for an {@link HttpIlpClient} given a resolved `POST /ilp` endpoint. */
 export type HttpIlpClientFactory = (httpEndpoint: string) => HttpIlpClient;
 
+/** Caller-supplied hook invoked with every parsed x402 challenge. */
+export type ChallengeHandler = (challenge: ParsedX402Challenge) => void;
+
 export interface Http402ClientConfig {
   /**
    * Underlying HTTP fetch for the INITIAL (un-paid) request that probes for a
@@ -225,7 +228,7 @@ export interface Http402ClientConfig {
    * including the `extra` bag (issue #506) — without re-issuing the probe
    * itself.
    */
-  onChallenge?: (challenge: ParsedX402Challenge) => void;
+  onChallenge?: ChallengeHandler;
 }
 
 /**
@@ -238,7 +241,7 @@ export class Http402Client {
   private readonly createIlpClient: HttpIlpClientFactory;
   private readonly needsDuplex: boolean;
   private readonly connectorEdge: ConnectorEdgeClient;
-  private readonly onChallenge?: (challenge: ParsedX402Challenge) => void;
+  private readonly onChallenge?: ChallengeHandler;
 
   constructor(config: Http402ClientConfig = {}) {
     this.fetchImpl = config.fetch ?? fetch;
