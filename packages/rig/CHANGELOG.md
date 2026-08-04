@@ -1,5 +1,12 @@
 # @toon-protocol/rig
 
+## 3.1.4
+
+### Patch Changes
+
+- Updated dependencies [9c15a0f]
+  - @toon-protocol/client@0.27.0
+
 ## 3.1.3
 
 ### Patch Changes
