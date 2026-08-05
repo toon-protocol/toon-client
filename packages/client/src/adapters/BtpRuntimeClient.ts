@@ -5,14 +5,14 @@ import {
   type BtpMessageHandler,
   type BtpTransferHandler,
 } from '../btp/IsomorphicBtpClient.js';
-
-export type { BtpChannelDeclaration } from '../btp/IsomorphicBtpClient.js';
 import { type BTPProtocolData } from '../btp/protocol.js';
 import type { IlpClient, IlpSendResult } from '@toon-protocol/core';
 import { withRetry } from '../utils/retry.js';
 import { fromBase64, encodeUtf8 } from '../utils/binary.js';
 import { mapIlpResponse, resolveExpiresAt, type IlpSendParams } from './ilp-send.js';
 import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
+
+export type { BtpChannelDeclaration };
 
 export interface BtpRuntimeClientConfig {
   btpUrl: string;

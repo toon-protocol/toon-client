@@ -1397,29 +1397,18 @@ export class ToonClient {
   }
 
   /**
-   * Signs a claim-state-challenge declaration for `this.declaredChannelId`
-   * (toon-client#513) — the same signature scheme `getClaimState` already
-   * uses to prove channel ownership, over the SAME domain-separated message
-   * so it can never be replayed as a payment. Wired as the BTP session's
-   * `getChannelDeclaration` hook, so it is called on every auth greeting
-   * (initial connect, explicit reauthenticate, and every reconnect) —
-   * `undefined` (no declared channel yet, or a chain this endpoint doesn't
-   * cover) leaves that greeting exactly as it was before this feature
-   * existed.
+   * Signs a claim-state-challenge declaration for one channel — the shared
+   * scheme both `getClaimState` and `buildChannelDeclaration` (toon-client#513)
+   * use to prove channel ownership without moving value or advancing a nonce,
+   * so it can never be replayed as a payment. `undefined` for a chain type
+   * neither signer covers (Mina, or any chain this client has no signer for)
+   * — matching `getClaimState`'s existing evm/solana-only posture.
    */
-  private async buildChannelDeclaration(): Promise<
-    BtpChannelDeclaration | undefined
-  > {
-    const channelId = this.declaredChannelId;
-    if (!channelId || !this.channelManager) return undefined;
-    const context = this.channelManager.getChannelContext(channelId);
-    if (!context) return undefined;
-
-    // Matches getClaimState's default: the connector verifies this the
-    // moment the greeting is processed, so it only needs to outlast network
-    // latency and clock skew, not the session's lifetime.
-    const expires = Math.floor(Date.now() / 1000) + 300;
-
+  private async signClaimStateChallenge(
+    channelId: string,
+    context: { chainType: string; chainId: number; tokenNetworkAddress: string },
+    expires: number
+  ): Promise<BtpChannelDeclaration | undefined> {
     if (context.chainType === 'evm' && this.evmSigner) {
       const signature = await this.evmSigner.signClaimStateChallenge({
         chainId: context.chainId,
@@ -1438,10 +1427,31 @@ export class ToonClient {
       return { blockchain: 'solana', channelAccount: channelId, expires, signature };
     }
 
-    // Mina (and any other chain type): out of scope, same as getClaimState
-    // (§1.10 documents evm/solana only) — a client on such a chain
-    // authenticates exactly as it does today.
     return undefined;
+  }
+
+  /**
+   * Signs a claim-state-challenge declaration for `this.declaredChannelId`
+   * (toon-client#513). Wired as the BTP session's `getChannelDeclaration`
+   * hook, so it is called on every auth greeting (initial connect, explicit
+   * reauthenticate, and every reconnect) — `undefined` (no declared channel
+   * yet, or a chain this endpoint doesn't cover) leaves that greeting
+   * exactly as it was before this feature existed.
+   */
+  private async buildChannelDeclaration(): Promise<
+    BtpChannelDeclaration | undefined
+  > {
+    const channelId = this.declaredChannelId;
+    if (!channelId || !this.channelManager) return undefined;
+    const context = this.channelManager.getChannelContext(channelId);
+    if (!context) return undefined;
+
+    // Matches getClaimState's default: the connector verifies this the
+    // moment the greeting is processed, so it only needs to outlast network
+    // latency and clock skew, not the session's lifetime.
+    const expires = Math.floor(Date.now() / 1000) + 300;
+
+    return this.signClaimStateChallenge(channelId, context, expires);
   }
 
   /**
@@ -1507,29 +1517,12 @@ export class ToonClient {
       ids.map(async (channelId): Promise<ClaimStateRequestEntry | null> => {
         const context = channelManager.getChannelContext(channelId);
         if (!context) return null;
-
-        if (context.chainType === 'evm') {
-          if (!this.evmSigner) return null;
-          const signature = await this.evmSigner.signClaimStateChallenge({
-            chainId: context.chainId,
-            tokenNetworkAddress: context.tokenNetworkAddress,
-            channelId,
-            expires,
-          });
-          return { blockchain: 'evm', channelId, expires, signature };
-        }
-
-        if (context.chainType === 'solana') {
-          if (!this.solanaSigner) return null;
-          const signature = await this.solanaSigner.signClaimStateChallenge({
-            channelAccount: channelId,
-            expires,
-          });
-          return { blockchain: 'solana', channelAccount: channelId, expires, signature };
-        }
-
-        // Mina (and any other chain type): §1.10 documents evm/solana only.
-        return null;
+        // Mina (and any other chain type this client has no signer for):
+        // §1.10 documents evm/solana only.
+        return (
+          (await this.signClaimStateChallenge(channelId, context, expires)) ??
+          null
+        );
       })
     );
 
