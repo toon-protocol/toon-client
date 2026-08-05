@@ -357,7 +357,7 @@ export class IsomorphicBtpClient {
     const authData = JSON.stringify({
       peerId: this.config.peerId,
       secret: this.config.authToken,
-      ...(declaration ? { channel: declaration } : {}),
+      ...(declaration ?? {}),
     });
 
     const requestId = this.nextRequestId();

@@ -384,9 +384,10 @@ describe('IsomorphicBtpClient — channel declaration on the greeting (toon-clie
     );
     await connectPromise;
 
-    expect(decodeAuthGreeting(fakeWs.sent[0]!)['channel']).toEqual(
-      declaration
-    );
+    // Flat, not nested: the connector's `auth_channel_proof` reads
+    // `channelId`/`expires`/`signature` off the greeting root, beside
+    // `peerId` and `secret` (connector#791, vector in connector#795).
+    expect(decodeAuthGreeting(fakeWs.sent[0]!)).toMatchObject(declaration);
   });
 
   it('reauthenticate() re-declares a channel that became known after connect, without a new socket', async () => {
@@ -414,8 +415,8 @@ describe('IsomorphicBtpClient — channel declaration on the greeting (toon-clie
     );
     await reauthPromise;
 
-    expect(decodeAuthGreeting(fakeWs.sent[0]!)['channel']).toEqual(
-      known.declaration
+    expect(decodeAuthGreeting(fakeWs.sent[0]!)).toMatchObject(
+      known.declaration!
     );
     expect(fakeWs.closed).toBe(false);
   });
