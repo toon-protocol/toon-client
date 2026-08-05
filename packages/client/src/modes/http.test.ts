@@ -151,6 +151,56 @@ describe('initializeHttpMode', () => {
     });
   });
 
+  describe('channel declaration on the BTP session (toon-client#513)', () => {
+    it('exposes the raw btpClient as btpSession', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+
+      const result = await initializeHttpMode(config);
+
+      expect(result.btpSession).toBe(result.btpClient);
+    });
+
+    it('btpSession is null when btpUrl is not configured', async () => {
+      delete (config as any).btpUrl;
+
+      const result = await initializeHttpMode(config);
+
+      expect(result.btpSession).toBeNull();
+    });
+
+    it('does not set getChannelDeclaration on BtpRuntimeClient when no hook is passed', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+
+      await initializeHttpMode(config);
+
+      const call = (BtpRuntimeClient as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0]![0];
+      expect(call.getChannelDeclaration).toBeUndefined();
+    });
+
+    it('threads hooks.getChannelDeclaration into BtpRuntimeClient', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+      const getChannelDeclaration = vi.fn();
+
+      await initializeHttpMode(config, { getChannelDeclaration });
+
+      const call = (BtpRuntimeClient as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0]![0];
+      expect(call.getChannelDeclaration).toBe(getChannelDeclaration);
+    });
+
+    it('btpSession stays the raw BtpRuntimeClient even when btpClient is wrapped in BtpPaidWriteTransport (toon-client#482)', async () => {
+      config.btpUrl = 'ws://localhost:3000';
+      config.preferBtpForPaidWrites = true;
+
+      const result = await initializeHttpMode(config);
+
+      expect(result.btpClient).not.toBe(result.btpSession);
+      expect(result.btpClient?.constructor.name).toBe('BtpPaidWriteTransport');
+      expect(result.btpSession).toHaveProperty('connect');
+    });
+  });
+
   describe('ILP-over-HTTP transport selection', () => {
     it('uses HttpIlpClient when connectorHttpEndpoint is advertised', async () => {
       config.btpUrl = 'ws://localhost:3000';

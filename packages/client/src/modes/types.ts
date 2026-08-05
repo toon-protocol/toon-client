@@ -3,9 +3,27 @@ import type { DiscoveryTracker } from '@toon-protocol/core';
 import type { HttpRuntimeClient } from '../adapters/HttpRuntimeClient.js';
 import type { HttpIlpClient } from '../adapters/HttpIlpClient.js';
 import type { HttpConnectorAdmin } from '../adapters/HttpConnectorAdmin.js';
-import type { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
+import type {
+  BtpRuntimeClient,
+  BtpChannelDeclaration,
+} from '../adapters/BtpRuntimeClient.js';
 import type { BtpPaidWriteTransport } from '../adapters/BtpPaidWriteTransport.js';
 import type { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
+
+/**
+ * Hooks a caller (ToonClient) wires into HTTP mode initialization —
+ * behavior that depends on state (channel manager, signers) not yet built
+ * when `initializeHttpMode` runs.
+ */
+export interface HttpModeHooks {
+  /**
+   * Fetches the client's current payment channel to declare on the BTP
+   * greeting, so a connector crediting earned increments knows which
+   * channel to pay (toon-client#513). Unset (or an `undefined` result)
+   * leaves the greeting unchanged.
+   */
+  getChannelDeclaration?: () => Promise<BtpChannelDeclaration | undefined>;
+}
 
 /**
  * Result of HTTP mode initialization.
@@ -39,6 +57,16 @@ export interface HttpModeInitialization {
    * `BtpRuntimeClient` otherwise — unchanged default behavior.
    */
   btpClient: BtpRuntimeClient | BtpPaidWriteTransport | null;
+
+  /**
+   * The raw BTP session — the SAME underlying instance `btpClient` wraps
+   * when `preferBtpForPaidWrites` is set, always unwrapped here. A caller
+   * that needs to declare a channel on the live session
+   * ({@link BtpRuntimeClient.reauthenticate}, toon-client#513) uses this,
+   * never `btpClient`, since `BtpPaidWriteTransport` doesn't expose it. Null
+   * exactly when `btpClient` is null.
+   */
+  btpSession: BtpRuntimeClient | null;
 
   /** On-chain channel client. Null when EVM not configured. */
   onChainChannelClient: OnChainChannelClient | null;

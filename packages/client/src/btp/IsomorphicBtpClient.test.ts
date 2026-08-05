@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   IsomorphicBtpClient,
+  type BtpChannelDeclaration,
   type BtpHandlerResponse,
 } from './IsomorphicBtpClient.js';
 import {
@@ -67,8 +68,11 @@ async function createConnectedClient(configOverrides: Record<string, unknown> = 
   const connectPromise = client.connect();
   fakeWs.triggerOpen();
 
-  // The auth MESSAGE was sent synchronously inside authenticate()'s Promise
-  // executor — answer it with a bare RESPONSE under the same requestId.
+  // authenticate() awaits getChannelDeclaration() before building the
+  // greeting (toon-client#513), so the auth MESSAGE is no longer sent
+  // synchronously inside triggerOpen()'s call stack — flush the microtask
+  // queue first, then answer it with a bare RESPONSE under the same requestId.
+  await flush();
   const authFrame = parseBtpMessage(fakeWs.sent[0]!);
   fakeWs.triggerMessage(
     serializeBtpMessage({
@@ -307,5 +311,126 @@ describe('IsomorphicBtpClient — disconnect fails in-flight inbound work loudly
 
     expect(onInboundError).toHaveBeenCalledTimes(1);
     expect(onInboundError.mock.calls[0]![1]).toBe(11);
+  });
+});
+
+/** Decodes the JSON body of a greeting frame's `auth` protocolData entry. */
+function decodeAuthGreeting(frame: Uint8Array): Record<string, unknown> {
+  const message = parseBtpMessage(frame);
+  const data = message.data as BTPMessageData;
+  const authEntry = data.protocolData.find((pd) => pd.protocolName === 'auth');
+  if (!authEntry) throw new Error('frame carries no auth protocolData entry');
+  return JSON.parse(new TextDecoder().decode(authEntry.data)) as Record<
+    string,
+    unknown
+  >;
+}
+
+describe('IsomorphicBtpClient — channel declaration on the greeting (toon-client#513)', () => {
+  it('sends the greeting exactly as before when getChannelDeclaration is unset', async () => {
+    const fakeWs = new FakeWebSocket();
+    const client = new IsomorphicBtpClient({
+      url: 'ws://test',
+      peerId: 'p',
+      authToken: 's',
+      createWebSocket: () => fakeWs as unknown as WebSocket,
+    });
+
+    const connectPromise = client.connect();
+    fakeWs.triggerOpen();
+    await flush();
+    const authFrame = parseBtpMessage(fakeWs.sent[0]!);
+    fakeWs.triggerMessage(
+      serializeBtpMessage({
+        type: BTPMessageType.RESPONSE,
+        requestId: authFrame.requestId,
+        data: { protocolData: [], ilpPacket: new Uint8Array(0) },
+      })
+    );
+    await connectPromise;
+
+    expect(decodeAuthGreeting(fakeWs.sent[0]!)).toEqual({
+      peerId: 'p',
+      secret: 's',
+    });
+  });
+
+  it('declares the channel on the initial greeting when one is already known', async () => {
+    const declaration: BtpChannelDeclaration = {
+      blockchain: 'evm',
+      channelId: '0x' + '1'.repeat(64),
+      expires: 1234,
+      signature: '0xsig',
+    };
+    const fakeWs = new FakeWebSocket();
+    const client = new IsomorphicBtpClient({
+      url: 'ws://test',
+      peerId: 'p',
+      authToken: 's',
+      createWebSocket: () => fakeWs as unknown as WebSocket,
+      getChannelDeclaration: () => declaration,
+    });
+
+    const connectPromise = client.connect();
+    fakeWs.triggerOpen();
+    await flush();
+    const authFrame = parseBtpMessage(fakeWs.sent[0]!);
+    fakeWs.triggerMessage(
+      serializeBtpMessage({
+        type: BTPMessageType.RESPONSE,
+        requestId: authFrame.requestId,
+        data: { protocolData: [], ilpPacket: new Uint8Array(0) },
+      })
+    );
+    await connectPromise;
+
+    // Flat, not nested: the connector's `auth_channel_proof` reads
+    // `channelId`/`expires`/`signature` off the greeting root, beside
+    // `peerId` and `secret` (connector#791, vector in connector#795).
+    expect(decodeAuthGreeting(fakeWs.sent[0]!)).toMatchObject(declaration);
+  });
+
+  it('reauthenticate() re-declares a channel that became known after connect, without a new socket', async () => {
+    const known: { declaration?: BtpChannelDeclaration } = {};
+    const { client, fakeWs } = await createConnectedClient({
+      getChannelDeclaration: () => known.declaration,
+    });
+
+    known.declaration = {
+      blockchain: 'solana',
+      channelAccount: 'ChanAcct11111111111111111111111111111111',
+      expires: 999,
+      signature: 'base64sig',
+    };
+
+    const reauthPromise = client.reauthenticate();
+    await flush();
+    const authFrame = parseBtpMessage(fakeWs.sent[0]!);
+    fakeWs.triggerMessage(
+      serializeBtpMessage({
+        type: BTPMessageType.RESPONSE,
+        requestId: authFrame.requestId,
+        data: { protocolData: [], ilpPacket: new Uint8Array(0) },
+      })
+    );
+    await reauthPromise;
+
+    expect(decodeAuthGreeting(fakeWs.sent[0]!)).toMatchObject(
+      known.declaration!
+    );
+    expect(fakeWs.closed).toBe(false);
+  });
+
+  it('reauthenticate() is a no-op when not connected', async () => {
+    const fakeWs = new FakeWebSocket();
+    const client = new IsomorphicBtpClient({
+      url: 'ws://test',
+      peerId: 'p',
+      authToken: 's',
+      createWebSocket: () => fakeWs as unknown as WebSocket,
+    });
+
+    await expect(client.reauthenticate()).resolves.toBeUndefined();
+    expect(fakeWs.sent).toHaveLength(0);
   });
 });

@@ -10,6 +10,7 @@ export {
 export {
   BtpRuntimeClient,
   type BtpRuntimeClientConfig,
+  type BtpChannelDeclaration,
 } from './BtpRuntimeClient.js';
 export {
   BtpPaidWriteTransport,

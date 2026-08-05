@@ -11,6 +11,7 @@ const ILP_PACKET_TYPE = {
 const mockConnect = vi.fn();
 const mockDisconnect = vi.fn();
 const mockSendPacket = vi.fn();
+const mockReauthenticate = vi.fn();
 
 // Mock ../btp/IsomorphicBtpClient (the actual import used by BtpRuntimeClient)
 vi.mock('../btp/IsomorphicBtpClient.js', () => {
@@ -19,6 +20,7 @@ vi.mock('../btp/IsomorphicBtpClient.js', () => {
       connect: mockConnect,
       disconnect: mockDisconnect,
       sendPacket: mockSendPacket,
+      reauthenticate: mockReauthenticate,
     })),
     BtpConnectionError: class BtpConnectionError extends Error {
       constructor(message: string) {
@@ -483,6 +485,60 @@ describe('BtpRuntimeClient', () => {
       expect(ctor).toHaveBeenCalledTimes(2);
       for (const call of ctor.mock.calls) {
         expect(call[0]).toMatchObject({ onMessage, onTransfer, onInboundError });
+      }
+    });
+  });
+
+  describe('channel declaration (toon-client#513)', () => {
+    it('threads getChannelDeclaration through to the underlying IsomorphicBtpClient', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      const getChannelDeclaration = vi.fn();
+      const declaringClient = new BtpRuntimeClient({
+        btpUrl: 'ws://localhost:3000',
+        peerId: 'test-peer',
+        authToken: 'test-token',
+        getChannelDeclaration,
+      });
+
+      await declaringClient.connect();
+
+      const ctor = IsomorphicBtpClient as unknown as ReturnType<typeof vi.fn>;
+      expect(ctor.mock.calls[0]![0]).toMatchObject({ getChannelDeclaration });
+    });
+
+    it('reauthenticate() re-sends the greeting on the live session', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockReauthenticate.mockResolvedValue(undefined);
+
+      await client.connect();
+      await client.reauthenticate();
+
+      expect(mockReauthenticate).toHaveBeenCalledTimes(1);
+    });
+
+    it('reauthenticate() is a no-op when not connected', async () => {
+      await client.reauthenticate();
+      expect(mockReauthenticate).not.toHaveBeenCalled();
+    });
+
+    it('reconnect() re-threads getChannelDeclaration onto the fresh IsomorphicBtpClient, so a reconnected session re-declares', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockDisconnect.mockResolvedValue(undefined);
+      const getChannelDeclaration = vi.fn();
+      const declaringClient = new BtpRuntimeClient({
+        btpUrl: 'ws://localhost:3000',
+        peerId: 'test-peer',
+        authToken: 'test-token',
+        getChannelDeclaration,
+      });
+
+      await declaringClient.connect();
+      await declaringClient.reconnect();
+
+      const ctor = IsomorphicBtpClient as unknown as ReturnType<typeof vi.fn>;
+      expect(ctor).toHaveBeenCalledTimes(2);
+      for (const call of ctor.mock.calls) {
+        expect(call[0]).toMatchObject({ getChannelDeclaration });
       }
     });
   });

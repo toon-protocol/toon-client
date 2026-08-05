@@ -38,6 +38,24 @@ export interface InboundBtpTransfer {
   protocolData: BTPProtocolData[];
 }
 
+/**
+ * The client's payment channel, declared on the BTP auth greeting so a
+ * connector that credits earned increments knows which channel to pay
+ * (toon-client#513, connector#790). `signature` is a
+ * `signClaimStateChallenge` signature over `(channelId, expires)` —
+ * deliberately the SAME domain-separated scheme `POST /ilp/claim-state`
+ * already uses to prove channel ownership, never a real balance proof, so it
+ * can never be replayed as a payment.
+ */
+export type BtpChannelDeclaration =
+  | { blockchain: 'evm'; channelId: string; expires: number; signature: string }
+  | {
+      blockchain: 'solana';
+      channelAccount: string;
+      expires: number;
+      signature: string;
+    };
+
 /** What an inbound handler answers with — becomes the RESPONSE frame's body. */
 export interface BtpHandlerResponse {
   protocolData?: BTPProtocolData[];
@@ -79,6 +97,17 @@ export interface IsomorphicBtpClientConfig {
    * vanishing.
    */
   onInboundError?: (error: Error, requestId: number) => void;
+  /**
+   * Called every time the auth greeting is (re-)sent — initial `connect()`
+   * and every explicit {@link IsomorphicBtpClient.reauthenticate}. Returns
+   * the caller's current channel to declare, or `undefined` when none is
+   * known yet. Additive: unset (or an `undefined` result) sends the
+   * greeting exactly as it was before this hook existed (toon-client#513).
+   */
+  getChannelDeclaration?: () =>
+    | Promise<BtpChannelDeclaration | undefined>
+    | BtpChannelDeclaration
+    | undefined;
 }
 
 interface PendingRequest {
@@ -124,12 +153,20 @@ export class IsomorphicBtpClient {
   private readonly config: Required<
     Omit<
       IsomorphicBtpClientConfig,
-      'createWebSocket' | 'onMessage' | 'onTransfer' | 'onInboundError'
+      | 'createWebSocket'
+      | 'onMessage'
+      | 'onTransfer'
+      | 'onInboundError'
+      | 'getChannelDeclaration'
     >
   > &
     Pick<
       IsomorphicBtpClientConfig,
-      'createWebSocket' | 'onMessage' | 'onTransfer' | 'onInboundError'
+      | 'createWebSocket'
+      | 'onMessage'
+      | 'onTransfer'
+      | 'onInboundError'
+      | 'getChannelDeclaration'
     >;
 
   constructor(config: IsomorphicBtpClientConfig) {
@@ -297,14 +334,30 @@ export class IsomorphicBtpClient {
     this.ws.send(btpMessage);
   }
 
+  /**
+   * Re-sends the auth greeting on the EXISTING session — no socket
+   * reconnect — so a channel that became known (or changed) after the
+   * initial `connect()` is declared on the live session. The connector
+   * treats a second auth as a rebind under a fresh generation, so no new
+   * message type is needed (toon-client#513). A no-op when not connected;
+   * the next `connect()`/reconnect already re-declares via
+   * `getChannelDeclaration`.
+   */
+  async reauthenticate(): Promise<void> {
+    if (!this._isConnected || !this.ws) return;
+    await this.authenticate();
+  }
+
   // ─── Private ────────────────────────────────────────────────────────────
 
   private async authenticate(): Promise<void> {
     if (!this.ws) throw new BtpAuthError('WebSocket not connected');
 
+    const declaration = await this.config.getChannelDeclaration?.();
     const authData = JSON.stringify({
       peerId: this.config.peerId,
       secret: this.config.authToken,
+      ...(declaration ?? {}),
     });
 
     const requestId = this.nextRequestId();

@@ -13,7 +13,7 @@ import { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { buildSettlementInfo } from '../config.js';
 import type { ResolvedConfig } from '../config.js';
-import type { HttpModeInitialization } from './types.js';
+import type { HttpModeHooks, HttpModeInitialization } from './types.js';
 
 /**
  * Initializes HTTP mode for ToonClient.
@@ -22,10 +22,13 @@ import type { HttpModeInitialization } from './types.js';
  * This function creates all necessary clients and services for operating in HTTP mode.
  *
  * @param config - ToonClient configuration (must have connectorUrl)
+ * @param hooks - Caller-provided behavior that depends on state ToonClient
+ *   builds before calling this (e.g. `getChannelDeclaration`, toon-client#513)
  * @returns Initialized HTTP mode components
  */
 export async function initializeHttpMode(
-  config: ResolvedConfig
+  config: ResolvedConfig,
+  hooks: HttpModeHooks = {}
 ): Promise<HttpModeInitialization> {
   const effectiveBtpUrl = config.btpUrl;
   const effectiveConnectorUrl = config.connectorUrl;
@@ -99,6 +102,9 @@ export async function initializeHttpMode(
       // MESSAGE is dropped unanswered — unchanged from the pre-#494 default.
       ...(config.jobHandler
         ? { onMessage: createJobMessageHandler(config.jobHandler) }
+        : {}),
+      ...(hooks.getChannelDeclaration
+        ? { getChannelDeclaration: hooks.getChannelDeclaration }
         : {}),
     });
     await btpClient.connect();
@@ -211,6 +217,7 @@ export async function initializeHttpMode(
     runtimeClient,
     adminClient: null,
     btpClient: paidWriteBtpClient,
+    btpSession: btpClient,
     onChainChannelClient,
   };
 }
