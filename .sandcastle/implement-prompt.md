@@ -42,9 +42,25 @@ toon-client is a large pnpm monorepo (packages: arweave, client, client-mcp, rig
 - typecheck: `pnpm run typecheck` (runs `tsc --noEmit` recursively in every package, including `rig-web`)
 - test: `vitest run`
 
-## Typecheck is a SOFT gate (known pre-existing debt)
+## Lint and typecheck are gated MECHANICALLY against a frozen baseline
 
-`pnpm run typecheck` has ~82 pre-existing errors on `main` (tracked in #423), most of them in `rig-web`. Do **not** try to clear that backlog inside this issue. The rule is narrower: **your change must not ADD new type errors.** Check the delta — run `pnpm run typecheck` before and after your change (or scope it to the package you touched, e.g. `pnpm --filter @toon-protocol/client run typecheck`) and confirm you introduced none. `lint`, `test`, and `build` must be fully green.
+The pre-existing lint/typecheck debt (tracked in #423) is frozen in
+`.sandcastle/gate-baseline.json`, and CI enforces it — this is not a soft delta you eyeball.
+ci.yml's `build` job runs `npx eslint . -f json` and `pnpm -r --no-bail run typecheck` (both
+`continue-on-error`), then `.sandcastle/gate-guard.ts` compares the measured counts against the
+frozen baseline and **fails the job on any NEW violation**:
+
+- eslint: more errors or more warnings than the frozen counts fails (currently 16 errors /
+  718 warnings — read `gate-baseline.json` for the live numbers).
+- typecheck: more total errors than frozen fails (currently 75), and every package is capped
+  individually (`rig` 1, `rig-web` 74, all others 0) — a new error in one package is a FAIL
+  even if you fixed one somewhere else.
+
+Do **not** try to clear the frozen backlog inside this issue, and do **not** edit
+`gate-baseline.json` to get green. Your change must add zero new eslint or typecheck
+violations: check the counts before and after (`npx eslint .`, `pnpm run typecheck`; or scope
+typecheck to the package you touched, e.g. `pnpm --filter @toon-protocol/client run typecheck`,
+which must stay at its per-package cap). `test` and `build` must be fully green.
 
 # COMMIT
 
@@ -75,4 +91,17 @@ Once complete, output <promise>COMPLETE</promise>.
 ONLY WORK ON A SINGLE TASK.
 
 ## Context budget
-If you approach ~60% of your context window, STOP: write a structured handoff note (current state + remaining steps) to `.sandcastle/logs/handoff-<task-id>.md` and end your turn so a fresh agent continues. Do not push past ~60% — small, resumable units beat one degraded run.
+
+Operate as if your context is capped at **~200k tokens**, whatever your model's actual window
+is (org policy: toon-meta's `CLAUDE.md` → *Context budget policy* — the cap is absolute, not a
+percentage of the window, because a percentage means different things on different models).
+Treat ~200k as a hard ceiling, not a target, and do the real work well below it.
+
+Start preparing a handoff at roughly **120k** tokens of context, and hand off no later than
+roughly **160k** — never run to the ceiling. Handing off means: write a structured handoff note
+(goal and remaining work as a concrete task list; what has been done and where — files,
+branches, commits; key decisions and why; exact paths/line numbers instead of "see above") to
+`.sandcastle/logs/handoff-<task-id>.md`, **commit it on this branch** (use `git add -f` —
+`.sandcastle/.gitignore` ignores `logs/`, and the sandbox is destroyed when the run ends, so an
+uncommitted note is lost), and end your turn so a fresh agent continues. Small, resumable units
+beat one degraded run.

@@ -47,7 +47,7 @@ Review the code changes on branch `{{BRANCH}}` and improve code clarity, consist
 If you find improvements to make:
 
 1. Make the changes directly on this branch
-2. Run toon-client's gate to ensure nothing is broken — in order: `eslint .`, then `pnpm -r run build`, then `pnpm run typecheck`, then `vitest run` (build must precede typecheck so cross-package `dist/*.d.ts` exist). `typecheck` is a SOFT gate with ~82 known pre-existing errors (#423) — just don't ADD new ones; `lint`, `build`, and `test` must be green. If you touched a publishable package (`client`, `client-mcp`, `views`, `rig`, `arweave`), add a changeset (`pnpm changeset`).
+2. Run toon-client's gate to ensure nothing is broken — in order: `eslint .`, then `pnpm -r run build`, then `pnpm run typecheck`, then `vitest run` (build must precede typecheck so cross-package `dist/*.d.ts` exist). Lint and typecheck are gated MECHANICALLY: CI runs `.sandcastle/gate-guard.ts` against the frozen `.sandcastle/gate-baseline.json` and fails on any NEW violation beyond the frozen counts (currently 16 eslint errors / 718 warnings; 75 typecheck errors with per-package caps — read the baseline for live numbers). The branch must add zero new violations, and never edit `gate-baseline.json` to get green; `build` and `test` must be fully green. If you touched a publishable package (`client`, `client-mcp`, `views`, `rig`, `arweave`), add a changeset (`pnpm changeset`).
 3. Commit describing the refinements
 
 If the code is already clean and well-structured, do nothing.
@@ -55,4 +55,14 @@ If the code is already clean and well-structured, do nothing.
 Once complete, output <promise>COMPLETE</promise>.
 
 ## Context budget
-If you approach ~60% of your context window, STOP: write a structured handoff note (current state + remaining steps) to `.sandcastle/logs/handoff-<task-id>.md` and end your turn so a fresh agent continues. Do not push past ~60% — small, resumable units beat one degraded run.
+
+Operate as if your context is capped at **~200k tokens**, whatever your model's actual window
+is (org policy: toon-meta's `CLAUDE.md` → *Context budget policy* — the cap is absolute, not a
+percentage of the window). Treat ~200k as a hard ceiling, not a target.
+
+Start preparing a handoff at roughly **120k** tokens of context, and hand off no later than
+roughly **160k** — never run to the ceiling. Handing off means: write a structured handoff note
+(what you reviewed, what you changed, what is left to check, and exact file/line pointers) to
+`.sandcastle/logs/handoff-<task-id>.md`, **commit it on this branch** (use `git add -f` —
+`.sandcastle/.gitignore` ignores `logs/`, and the sandbox is destroyed when the run ends, so an
+uncommitted note is lost), and end your turn so a fresh agent continues.
