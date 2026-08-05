@@ -1,7 +1,0 @@
----
-"@toon-protocol/client": minor
----
-
-Declares the client's payment channel on its BTP session, so a connector can credit an earning agent (toon-client#513, connector#790). The connector previously learned the `session -> channel` association only from an inbound claim — i.e. only when the client **paid** — so a client that only serves paid increments (earns) was never credited: `"no channel is associated with this session yet -- crediting nothing"`.
-
-`IsomorphicBtpClient.authenticate()`'s greeting now carries an optional `channel` declaration — `channelId`/`channelAccount`, `expires`, and a `signClaimStateChallenge` signature over them, the same domain-separated scheme `POST /ilp/claim-state` already uses to prove channel ownership without moving value or advancing a nonce, so it can never be replayed as a payment. `ToonClient.openChannel()`/`adoptChannel()` now declare the channel on the live BTP session via a new `IsomorphicBtpClient.reauthenticate()`/`BtpRuntimeClient.reauthenticate()` (re-sends the auth greeting on the existing session — no socket reconnect), and a reconnect's own greeting re-declares it automatically. Both EVM (`EvmSigner.signClaimStateChallenge`) and Solana (`SolanaSigner.signClaimStateChallenge`) channels are covered; Mina is out of scope, matching `getClaimState`'s existing evm/solana-only posture. A client with no channel yet, or one talking to a connector that doesn't understand the new greeting fields, authenticates exactly as it did before — fully additive.

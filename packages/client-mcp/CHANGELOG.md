@@ -1,5 +1,7 @@
 # @toon-protocol/client-mcp
 
+## 0.36.5
+
 ## 0.36.4
 
 ## 0.36.3
