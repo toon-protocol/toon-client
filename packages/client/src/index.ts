@@ -72,6 +72,7 @@ export {
   type HttpConnectorAdminConfig,
   BtpRuntimeClient,
   type BtpRuntimeClientConfig,
+  type BtpChannelDeclaration,
   BtpPaidWriteTransport,
   type BtpPaidWriteTransportConfig,
   type ClaimSendingTransport,

@@ -1,9 +1,12 @@
 import {
   IsomorphicBtpClient,
   BtpConnectionError,
+  type BtpChannelDeclaration,
   type BtpMessageHandler,
   type BtpTransferHandler,
 } from '../btp/IsomorphicBtpClient.js';
+
+export type { BtpChannelDeclaration } from '../btp/IsomorphicBtpClient.js';
 import { type BTPProtocolData } from '../btp/protocol.js';
 import type { IlpClient, IlpSendResult } from '@toon-protocol/core';
 import { withRetry } from '../utils/retry.js';
@@ -31,6 +34,16 @@ export interface BtpRuntimeClientConfig {
   onTransfer?: BtpTransferHandler;
   /** Surfaces in-flight inbound work orphaned by a disconnect instead of silently vanishing. */
   onInboundError?: (error: Error, requestId: number) => void;
+  /**
+   * Called on every `connect()`/`reconnect()` and every explicit
+   * {@link BtpRuntimeClient.reauthenticate} to fetch the caller's current
+   * channel to declare on the greeting. Additive: unset (or an `undefined`
+   * result) leaves the greeting unchanged (toon-client#513).
+   */
+  getChannelDeclaration?: () =>
+    | Promise<BtpChannelDeclaration | undefined>
+    | BtpChannelDeclaration
+    | undefined;
 }
 
 /**
@@ -75,10 +88,22 @@ export class BtpRuntimeClient implements IlpClient {
       onMessage: this.config.onMessage,
       onTransfer: this.config.onTransfer,
       onInboundError: this.config.onInboundError,
+      getChannelDeclaration: this.config.getChannelDeclaration,
     });
 
     await this.btpClient.connect();
     this._isConnected = true;
+  }
+
+  /**
+   * Re-sends the auth greeting on the EXISTING session — no reconnect — so a
+   * channel that became known (or changed) after `connect()` is declared on
+   * the live session (toon-client#513). A no-op when not connected; the next
+   * `connect()`/`reconnect()` already re-declares via `getChannelDeclaration`.
+   */
+  async reauthenticate(): Promise<void> {
+    if (!this._isConnected || !this.btpClient) return;
+    await this.btpClient.reauthenticate();
   }
 
   /**

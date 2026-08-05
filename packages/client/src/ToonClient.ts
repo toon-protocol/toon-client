@@ -68,7 +68,10 @@ import {
   type SendTransferResult,
   type TransferConfig,
 } from './transfer.js';
-import type { BtpRuntimeClient } from './adapters/BtpRuntimeClient.js';
+import type {
+  BtpRuntimeClient,
+  BtpChannelDeclaration,
+} from './adapters/BtpRuntimeClient.js';
 import type { BtpPaidWriteTransport } from './adapters/BtpPaidWriteTransport.js';
 import type { IlpSendParams } from './adapters/ilp-send.js';
 import {
@@ -160,6 +163,12 @@ interface ToonClientState {
   runtimeClient: IlpClient;
   peersDiscovered: number;
   btpClient?: BtpRuntimeClient | BtpPaidWriteTransport;
+  /**
+   * The raw BTP session, unwrapped even when `btpClient` is a
+   * `BtpPaidWriteTransport` — used to declare a channel on the live session
+   * (toon-client#513) since the wrapper doesn't expose `reauthenticate`.
+   */
+  btpSession?: BtpRuntimeClient;
 }
 
 /**
@@ -221,6 +230,15 @@ export class ToonClient {
    * declined to open a channel from that greeting.
    */
   private lastConnectorRouteTerms?: ConnectorRouteTerms;
+  /**
+   * The channel most recently opened (via `openChannel()`) or adopted (via
+   * `adoptChannel()`) — the one declared on the BTP session so a connector
+   * crediting earned increments knows which channel to pay (toon-client#513,
+   * connector#790). Read by `buildChannelDeclaration`'s `getChannelDeclaration`
+   * hook on every auth greeting, including a reconnect's, so a fresh session
+   * re-declares it without this client tracking reconnects itself.
+   */
+  private declaredChannelId?: string;
   private readonly evmSigner?: EvmSigner;
   private solanaSigner?: SolanaSigner;
   /**
@@ -478,10 +496,17 @@ export class ToonClient {
       }
 
       // Initialize HTTP mode components
-      const initialization = await initializeHttpMode(this.config);
+      const initialization = await initializeHttpMode(this.config, {
+        getChannelDeclaration: () => this.buildChannelDeclaration(),
+      });
 
-      const { bootstrapService, discoveryTracker, runtimeClient, btpClient } =
-        initialization;
+      const {
+        bootstrapService,
+        discoveryTracker,
+        runtimeClient,
+        btpClient,
+        btpSession,
+      } = initialization;
 
       // Wire claim signer to bootstrap service if we have channel manager
       if (this.channelManager) {
@@ -662,6 +687,7 @@ export class ToonClient {
         runtimeClient,
         peersDiscovered: bootstrapResults.length,
         btpClient: btpClient ?? undefined,
+        btpSession: btpSession ?? undefined,
       };
 
       return {
@@ -1311,11 +1337,16 @@ export class ToonClient {
         'PEER_NOT_NEGOTIATED'
       );
     }
+    let channelId: string;
     try {
-      return await this.channelManager.ensureChannel(peerId, negotiation);
+      channelId = await this.channelManager.ensureChannel(peerId, negotiation);
     } catch (error) {
       throw this.withSolanaLegHint(peerId, error);
     }
+    // Covers BOTH a fresh open and ensureChannel's internal resume path
+    // (toon-client#513's "and after resuming an existing channel").
+    await this.declareChannelOnBtpSession(channelId);
+    return channelId;
   }
 
   /**
@@ -1347,6 +1378,7 @@ export class ToonClient {
       );
     }
     this.channelManager.adoptChannel(peerId, negotiation, channelId);
+    await this.declareChannelOnBtpSession(channelId);
   }
 
   /**
@@ -1362,6 +1394,69 @@ export class ToonClient {
   getChannelNonce(channelId: string): number {
     if (!this.channelManager) throw new Error('ChannelManager not initialized');
     return this.channelManager.getNonce(channelId);
+  }
+
+  /**
+   * Signs a claim-state-challenge declaration for `this.declaredChannelId`
+   * (toon-client#513) — the same signature scheme `getClaimState` already
+   * uses to prove channel ownership, over the SAME domain-separated message
+   * so it can never be replayed as a payment. Wired as the BTP session's
+   * `getChannelDeclaration` hook, so it is called on every auth greeting
+   * (initial connect, explicit reauthenticate, and every reconnect) —
+   * `undefined` (no declared channel yet, or a chain this endpoint doesn't
+   * cover) leaves that greeting exactly as it was before this feature
+   * existed.
+   */
+  private async buildChannelDeclaration(): Promise<
+    BtpChannelDeclaration | undefined
+  > {
+    const channelId = this.declaredChannelId;
+    if (!channelId || !this.channelManager) return undefined;
+    const context = this.channelManager.getChannelContext(channelId);
+    if (!context) return undefined;
+
+    // Matches getClaimState's default: the connector verifies this the
+    // moment the greeting is processed, so it only needs to outlast network
+    // latency and clock skew, not the session's lifetime.
+    const expires = Math.floor(Date.now() / 1000) + 300;
+
+    if (context.chainType === 'evm' && this.evmSigner) {
+      const signature = await this.evmSigner.signClaimStateChallenge({
+        chainId: context.chainId,
+        tokenNetworkAddress: context.tokenNetworkAddress,
+        channelId,
+        expires,
+      });
+      return { blockchain: 'evm', channelId, expires, signature };
+    }
+
+    if (context.chainType === 'solana' && this.solanaSigner) {
+      const signature = await this.solanaSigner.signClaimStateChallenge({
+        channelAccount: channelId,
+        expires,
+      });
+      return { blockchain: 'solana', channelAccount: channelId, expires, signature };
+    }
+
+    // Mina (and any other chain type): out of scope, same as getClaimState
+    // (§1.10 documents evm/solana only) — a client on such a chain
+    // authenticates exactly as it does today.
+    return undefined;
+  }
+
+  /**
+   * Declares `channelId` as this client's channel on its live BTP session
+   * (toon-client#513) — called after `openChannel()`/`adoptChannel()`
+   * establish or resume one, so a connector crediting earned increments
+   * learns the association without this client ever paying. Re-sends the
+   * auth greeting on the EXISTING session; does not reconnect the socket.
+   * A no-op when no BTP session is live (e.g. `btpUrl` not configured, or
+   * the session is momentarily down) — the next reconnect's own greeting
+   * already re-declares via `buildChannelDeclaration`.
+   */
+  private async declareChannelOnBtpSession(channelId: string): Promise<void> {
+    this.declaredChannelId = channelId;
+    await this.state?.btpSession?.reauthenticate();
   }
 
   /**
