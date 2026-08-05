@@ -280,8 +280,12 @@ describe('pickPaymentPeer', () => {
     {
       ...APEX_CONTENT,
       ilpAddress: 'g.proxy.store',
-      httpEndpoint: 'https://proxy.store.devnet.toonprotocol.dev/ilp',
-      btpEndpoint: 'wss://proxy.store.devnet.toonprotocol.dev:443',
+      // `proxy.ario`, not `proxy.store` — the devnet store box's paid edge was
+      // renamed on 2026-08-05 (connector#774) and the old name is a deprecated
+      // alias slated for removal. The fixture asserts routing preference, not
+      // the hostname, but a fixture is the first thing anyone copies.
+      httpEndpoint: 'https://proxy.ario.devnet.toonprotocol.dev/ilp',
+      btpEndpoint: 'wss://proxy.ario.devnet.toonprotocol.dev:443',
       supportedChains: ['evm:31337'],
       settlementAddresses: { 'evm:31337': '0x1f4E' },
     },
