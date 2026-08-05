@@ -119,3 +119,59 @@ jobs:
 
       - name: Smoke build
         run: devbox run -- bash -c "pnpm install --no-frozen-lockfile && pnpm build"
+
+  # Fleet-wide aggregate required check per toon-meta#279. This job is the
+  # single check that branch protection requires. `if: always()` makes it run
+  # even when upstream jobs fail, are skipped, or are cancelled — a skipped or
+  # cancelled gating job must never read as a pass. `changeset` is skipped BY
+  # DESIGN on push events only; on pull_request it must succeed.
+  ci-ok:
+    name: CI OK
+    runs-on: ubuntu-latest
+    needs: [changeset, build, devbox-validate]
+    if: always()
+    steps:
+      - name: Verify all gating jobs succeeded
+        env:
+          CHANGESET_RESULT: ${{ needs.changeset.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          DEVBOX_RESULT: ${{ needs.devbox-validate.result }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          echo "event:           $EVENT_NAME"
+          echo "changeset:       $CHANGESET_RESULT"
+          echo "build:           $BUILD_RESULT"
+          echo "devbox-validate: $DEVBOX_RESULT"
+
+          ok=true
+
+          if [ "$BUILD_RESULT" != "success" ]; then
+            echo "::error::build result is '$BUILD_RESULT' (expected 'success')"
+            ok=false
+          fi
+
+          if [ "$DEVBOX_RESULT" != "success" ]; then
+            echo "::error::devbox-validate result is '$DEVBOX_RESULT' (expected 'success')"
+            ok=false
+          fi
+
+          # changeset only runs on pull_request; on push events 'skipped' is
+          # the expected, legitimate result. Failure/cancelled always fail.
+          case "$CHANGESET_RESULT" in
+            success) ;;
+            skipped)
+              if [ "$EVENT_NAME" != "push" ]; then
+                echo "::error::changeset was skipped on a '$EVENT_NAME' event (only legitimate on push)"
+                ok=false
+              fi
+              ;;
+            *)
+              echo "::error::changeset result is '$CHANGESET_RESULT' (expected 'success', or 'skipped' on push)"
+              ok=false
+              ;;
+          esac
+
+          if [ "$ok" != "true" ]; then
+            exit 1
+          fi
+          echo "All gating jobs green — CI OK"
