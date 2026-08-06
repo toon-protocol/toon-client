@@ -390,7 +390,10 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     process.env['TOON_CLIENT_DESTINATION'] ??
     file.destination ??
     genesisSeed?.ilpAddress ??
-    'g.proxy';
+    // `g.proxy` was the retired TypeScript connector; the live apex answers to
+    // `g.toon`. Only reachable with an empty genesis list, but a last-resort
+    // fallback naming a decommissioned node is never the right guess.
+    'g.toon';
   // Publishes (relay writes) and uploads (store/Arweave) terminate at DIFFERENT
   // backends behind the proxy and so route to different ILP destinations. When
   // not set explicitly they're DERIVED from the channel anchor (see
