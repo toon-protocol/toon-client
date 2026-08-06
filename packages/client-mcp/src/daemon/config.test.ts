@@ -294,8 +294,10 @@ describe('daemon config', () => {
     // No file/env overrides → defaults come from core's committed genesis peer
     // seed (core ≥2.0.1 ships the live devnet apex; the pre-seed last-resort
     // fallbacks were ws://localhost:7100 / g.proxy).
+    // core@3.2.0 re-pointed that seed at the Rust apex, which announces itself
+    // as `g.toon`; the retired TypeScript connector was the one called `g.proxy`.
     expect(cfg.relayUrl).toBe('wss://relay-ws.devnet.toonprotocol.dev');
-    expect(cfg.destination).toBe('g.proxy');
+    expect(cfg.destination).toBe('g.toon');
     expect(cfg.feePerEvent).toBe(1n);
     expect(cfg.toonClientConfig.btpUrl).toBe('ws://apex.test:3000/btp');
     // The legacy anon/HS transport overlay is gone — no transport knobs survive.
