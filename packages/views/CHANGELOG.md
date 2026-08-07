@@ -1,5 +1,7 @@
 # @toon-protocol/views
 
+## 0.36.8
+
 ## 0.36.7
 
 ### Patch Changes
