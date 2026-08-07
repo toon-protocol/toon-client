@@ -33,14 +33,19 @@ terminates itself.
    self-declared `ilpAddress`, no `ilpAddresses` array) — Epic-7's
    `ilpAddresses` lists every address a peer is reachable AT ("one per
    upstream peering"), a routing fact, not a namespace-ownership claim.
-2. Once discovery has produced at least one peer, a destination none of them
-   claims now throws a distinct `TERMINATOR_UNRESOLVED` `ToonClientError`
+2. Once a discovery tracker exists, a destination none of its discovered
+   peers claims now throws a distinct `TERMINATOR_UNRESOLVED` `ToonClientError`
    instead of silently falling back to the posting edge — refusing to
-   publish beats sealing a payload to a key that cannot open it. The
-   zero-peers-discovered fallback (and the no-tracker-at-all fallback for a
-   client that never wired up discovery) is deliberately unchanged: with no
-   discovery signal at all there is no ambiguity to fail closed on, and it is
-   still the common single-node case this client has always supported.
+   publish beats sealing a payload to a key that cannot open it. This
+   includes a tracker that has discovered zero peers: that is not evidence
+   the posting edge terminates the destination, only the absence of evidence
+   that anything does, and it is a live production window (not a
+   theoretical one) since a started client always constructs a discovery
+   tracker — a tracker reporting zero peers is exactly what the startup race
+   looks like before the first announce lands. Only the no-tracker-at-all
+   fallback, for a client that never wired up discovery, is unchanged: it is
+   still the common single-node case this client has always supported, and
+   carries no discovery signal at all to fail closed on.
 
 `@toon-protocol/client-mcp` is bumped alongside `client` because it inlines
 `client` at build time via a `devDependency` (tsup `noExternal`), and

@@ -437,9 +437,38 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     expect(router.opened).toHaveLength(0);
   });
 
-  it('still terminates locally when nothing discovered claims the destination', async () => {
-    // No regression: with no matching announce, identity comes from the
-    // posting edge — the only case that ever worked before #526.
+  it('still terminates locally when discovery is not wired up at all', async () => {
+    // No regression: with no discovery tracker present, identity comes from
+    // the posting edge — the only case that ever worked before #526. A
+    // tracker that IS present but has discovered zero peers no longer falls
+    // back this way (toon-client#533) — see the next test.
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+    });
+    globalThis.fetch = routedFetch(edge);
+
+    const client = new ToonClient(baseConfig());
+    attachTransport(client, {
+      sendIlpPacketWithClaim: async (params: { data: string }) =>
+        edge.fulfill(params.data),
+    });
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    expect(edge.opened).toHaveLength(1);
+  });
+
+  it('REFUSES rather than sealing to the posting edge when the tracker has discovered nothing yet (toon-client#533)', async () => {
+    // The startup-race window named by resolveTerminatorEndpoint's own doc
+    // comment: `discoveryTracker` is always constructed for a started client
+    // (modes/http.ts), so a tracker reporting zero peers is not evidence the
+    // posting edge terminates the destination — it is the absence of
+    // evidence that anything does. Deleting the zero-peers fallback is the
+    // whole fix: this destination isn't even a forwarded prefix, and it
+    // still must not seal to the edge on an empty tracker.
     const edge = new FakeTerminatingConnector({
       endpoint: 'http://connector.test',
     });
@@ -448,12 +477,16 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     const client = new ToonClient(baseConfig());
     attachDiscovery(client, [], edge);
 
-    const result = await client.publishEvent(makeEvent(), {
-      claim: makeProof(),
-    });
+    let caught: unknown;
+    try {
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+    } catch (error) {
+      caught = error;
+    }
 
-    expect(result.success).toBe(true);
-    expect(edge.opened).toHaveLength(1);
+    expect(caught).toBeInstanceOf(ToonClientError);
+    expect((caught as ToonClientError).code).toBe('TERMINATOR_UNRESOLVED');
+    expect(edge.opened).toHaveLength(0);
   });
 
   it('REFUSES rather than sealing to an ancestor router masquerading as the terminator (toon-client#533)', async () => {
