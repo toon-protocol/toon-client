@@ -685,7 +685,7 @@ describe('network targeting (#202)', () => {
   describe('applyNetworkPresets — tier resolution', () => {
     it('testnet resolves Base Sepolia + current (corrected) TokenNetwork', () => {
       const c = applyNetworkPresets(baseConfig({ network: 'testnet' }));
-      const evmId = 'evm:base:84532';
+      const evmId = 'evm:84532';
       expect(c.supportedChains).toContain(evmId);
       // core >=3.1.2 bakes the working publicnode RPC (the old sepolia.base.org
       // LB failed openChannel on stale reads).
@@ -704,7 +704,7 @@ describe('network targeting (#202)', () => {
 
     it('devnet emits the current Base Sepolia addresses (no stale 18-decimal token leaks)', () => {
       const c = applyNetworkPresets(baseConfig({ network: 'devnet' }));
-      const evmId = 'evm:base:84532';
+      const evmId = 'evm:84532';
       expect(c.preferredTokens?.[evmId]).toBe(
         '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce'
       );
@@ -748,7 +748,7 @@ describe('network targeting (#202)', () => {
 
     it('mainnet resolves Base mainnet but no settlement contracts (relay-only)', () => {
       const c = applyNetworkPresets(baseConfig({ network: 'mainnet' }));
-      const evmId = 'evm:base:8453';
+      const evmId = 'evm:8453';
       expect(c.chainRpcUrls?.[evmId]).toBe('https://mainnet.base.org');
       expect(c.tokenNetworks?.[evmId]).toBeUndefined();
       expect(c.solanaChannel).toBeUndefined();
@@ -758,7 +758,7 @@ describe('network targeting (#202)', () => {
 
   describe('explicit overrides win over the preset', () => {
     it('explicit chainRpcUrls / tokenNetworks override the preset value', () => {
-      const evmId = 'evm:base:84532';
+      const evmId = 'evm:84532';
       const c = applyNetworkPresets(
         baseConfig({
           network: 'testnet',
@@ -796,7 +796,7 @@ describe('network targeting (#202)', () => {
         })
       );
       expect(c.supportedChains).toContain('evm:anvil:31337');
-      expect(c.supportedChains).toContain('evm:base:84532');
+      expect(c.supportedChains).toContain('evm:84532');
     });
   });
 
@@ -829,8 +829,8 @@ describe('network targeting (#202)', () => {
   describe('applyDefaults + buildSettlementInfo wire the preset through', () => {
     it('applyDefaults(network: testnet) fills the resolved settlement maps', () => {
       const resolved = applyDefaults(baseConfig({ network: 'testnet' }));
-      expect(resolved.supportedChains).toContain('evm:base:84532');
-      expect(resolved.tokenNetworks?.['evm:base:84532']).toBe(
+      expect(resolved.supportedChains).toContain('evm:84532');
+      expect(resolved.tokenNetworks?.['evm:84532']).toBe(
         '0x1E95493fEF46707E034b4a1945f25a8C76A1823D'
       );
       expect(resolved.network).toBe('testnet');
@@ -839,8 +839,8 @@ describe('network targeting (#202)', () => {
     it('buildSettlementInfo(network: testnet) produces settlement info from the preset', () => {
       const info = buildSettlementInfo(baseConfig({ network: 'testnet' }));
       expect(info).toBeDefined();
-      expect(info!.supportedChains).toContain('evm:base:84532');
-      expect(info!.tokenNetworks?.['evm:base:84532']).toBe(
+      expect(info!.supportedChains).toContain('evm:84532');
+      expect(info!.tokenNetworks?.['evm:84532']).toBe(
         '0x1E95493fEF46707E034b4a1945f25a8C76A1823D'
       );
     });
