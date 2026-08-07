@@ -27,7 +27,7 @@ import {
   FakeTerminatingConnector,
   plaintextReject,
 } from './wire/fake-connector.test-support.js';
-import { ChannelFundingError } from './errors.js';
+import { ChannelFundingError, ToonClientError } from './errors.js';
 import { isZeroCondition } from './utils/condition.js';
 import { fromBase64 } from './utils/binary.js';
 
@@ -295,6 +295,239 @@ describe('ToonClient.publishEvent forms a sealed packet (toon-client#450)', () =
 
     // There is no fallback key to seal to, so nothing was sent at all.
     expect(sendIlpPacketWithClaim).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Identity resolved by destination, not by posting endpoint (issue #526)
+// ---------------------------------------------------------------------------
+
+describe('ToonClient.publishEvent resolves identity by destination (issue #526)', () => {
+  /** Route requests to whichever fake connector actually owns the origin. */
+  function routedFetch(
+    ...connectors: FakeTerminatingConnector[]
+  ): typeof fetch {
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const connector = connectors.find((c) => url.startsWith(c.endpoint));
+      if (!connector) throw new Error(`no fake connector owns ${url}`);
+      return connector.fetch(input as never, init);
+    }) as typeof fetch;
+  }
+
+  /**
+   * A discovered (but not necessarily peered) announce claiming `addresses` —
+   * the first is the announce's PRIMARY, the rest are secondary claims.
+   */
+  function announceFor(
+    addresses: string[],
+    httpEndpoint: string,
+    pubkey: string
+  ) {
+    return {
+      pubkey,
+      peerId: `nostr-${pubkey.slice(0, 8)}`,
+      discoveredAt: 0,
+      peerInfo: {
+        pubkey,
+        ilpAddress: addresses[0],
+        ilpAddresses: addresses,
+        btpEndpoint: `wss://${new URL(httpEndpoint).host}/btp`,
+        httpEndpoint,
+        assetCode: 'USD',
+        assetScale: 6,
+      },
+    };
+  }
+
+  /**
+   * A started client whose discovery has produced `announces`, sending over
+   * `transport` — the ONE connector whose `fulfill()` answers, so a packet
+   * sealed to any other connector's key cannot be opened at all.
+   */
+  function attachDiscovery(
+    client: ToonClient,
+    announces: ReturnType<typeof announceFor>[],
+    transport: FakeTerminatingConnector
+  ): void {
+    attachTransport(client, {
+      sendIlpPacketWithClaim: async (params: { data: string }) =>
+        transport.fulfill(params.data),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state.discoveryTracker = {
+      getAllDiscoveredPeers: () => announces,
+    };
+  }
+
+  it('seals to the TERMINATOR key for a forwarded prefix, not the posting edge', async () => {
+    // `connector.test` is the edge this client posts to (config.connectorUrl,
+    // set by baseConfig()); it forwards `g.toon.ario` on to `terminator.test`,
+    // which actually terminates it and holds a DIFFERENT identity key. Only
+    // the terminator's `fulfill()` is wired as the transport, so a packet
+    // sealed to the wrong (edge) key fails to open there — exactly the F01
+    // this client must never trigger having already paid.
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+      identitySecret: new Uint8Array(32).fill(1),
+    });
+    const terminator = new FakeTerminatingConnector({
+      endpoint: 'http://terminator.test',
+      identitySecret: new Uint8Array(32).fill(2),
+    });
+    globalThis.fetch = routedFetch(edge, terminator);
+
+    const client = new ToonClient(baseConfig());
+    attachDiscovery(
+      client,
+      [announceFor(['g.toon.ario'], terminator.endpoint, 'a'.repeat(64))],
+      terminator
+    );
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+      destination: 'g.toon.ario',
+    });
+
+    expect(result.success).toBe(true);
+    expect(terminator.opened).toHaveLength(1);
+    expect(edge.opened).toHaveLength(0);
+  });
+
+  it('prefers the announce whose PRIMARY address claims the destination', async () => {
+    // Both announces claim `g.toon.ario`, but the router lists it only as a
+    // secondary entry — it forwards the prefix, it does not own the identity
+    // behind it. The store, whose primary address it is, holds the key that
+    // can actually open the wrap (#526's own tie-break criterion).
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+      identitySecret: new Uint8Array(32).fill(1),
+    });
+    const router = new FakeTerminatingConnector({
+      endpoint: 'http://router.test',
+      identitySecret: new Uint8Array(32).fill(2),
+    });
+    const store = new FakeTerminatingConnector({
+      endpoint: 'http://store.test',
+      identitySecret: new Uint8Array(32).fill(3),
+    });
+    globalThis.fetch = routedFetch(edge, router, store);
+
+    const client = new ToonClient(baseConfig());
+    attachDiscovery(
+      client,
+      [
+        announceFor(
+          ['g.toon.router', 'g.toon.ario'],
+          router.endpoint,
+          'a'.repeat(64)
+        ),
+        announceFor(['g.toon.ario'], store.endpoint, 'b'.repeat(64)),
+      ],
+      store
+    );
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+      destination: 'g.toon.ario',
+    });
+
+    expect(result.success).toBe(true);
+    expect(store.opened).toHaveLength(1);
+    expect(router.opened).toHaveLength(0);
+  });
+
+  it('still terminates locally when discovery is not wired up at all', async () => {
+    // No regression: with no discovery tracker present, identity comes from
+    // the posting edge — the only case that ever worked before #526. A
+    // tracker that IS present but has discovered zero peers no longer falls
+    // back this way (toon-client#533) — see the next test.
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+    });
+    globalThis.fetch = routedFetch(edge);
+
+    const client = new ToonClient(baseConfig());
+    attachTransport(client, {
+      sendIlpPacketWithClaim: async (params: { data: string }) =>
+        edge.fulfill(params.data),
+    });
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    expect(edge.opened).toHaveLength(1);
+  });
+
+  it('REFUSES rather than sealing to the posting edge when the tracker has discovered nothing yet (toon-client#533)', async () => {
+    // The startup-race window named by resolveTerminatorEndpoint's own doc
+    // comment: `discoveryTracker` is always constructed for a started client
+    // (modes/http.ts), so a tracker reporting zero peers is not evidence the
+    // posting edge terminates the destination — it is the absence of
+    // evidence that anything does. Deleting the zero-peers fallback is the
+    // whole fix: this destination isn't even a forwarded prefix, and it
+    // still must not seal to the edge on an empty tracker.
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+    });
+    globalThis.fetch = routedFetch(edge);
+
+    const client = new ToonClient(baseConfig());
+    attachDiscovery(client, [], edge);
+
+    let caught: unknown;
+    try {
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ToonClientError);
+    expect((caught as ToonClientError).code).toBe('TERMINATOR_UNRESOLVED');
+    expect(edge.opened).toHaveLength(0);
+  });
+
+  it('REFUSES rather than sealing to an ancestor router masquerading as the terminator (toon-client#533)', async () => {
+    // Live topology observed in production: the router announces itself at
+    // `g.toon`, which — via the dot-separated ancestor rule alone — also
+    // "terminates" `g.toon.ario`, a prefix the STORE actually owns. With the
+    // store's own (more specific) announce absent — expired, or not yet
+    // discovered — the old resolver had nothing else to compare against and
+    // silently returned the ROUTER's endpoint, so the client would have paid
+    // and sealed to a key that can never open the wrap. A test where the
+    // correct announce is always present cannot catch this: it must be
+    // absent here too.
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+    });
+    const router = new FakeTerminatingConnector({
+      endpoint: 'http://router.test',
+    });
+    globalThis.fetch = routedFetch(edge, router);
+
+    const client = new ToonClient(baseConfig());
+    attachDiscovery(
+      client,
+      [announceFor(['g.toon', 'g.toon.relay'], router.endpoint, 'a'.repeat(64))],
+      router
+    );
+
+    let caught: unknown;
+    try {
+      await client.publishEvent(makeEvent(), {
+        claim: makeProof(),
+        destination: 'g.toon.ario',
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ToonClientError);
+    expect((caught as ToonClientError).code).toBe('TERMINATOR_UNRESOLVED');
+    expect(router.opened).toHaveLength(0);
+    expect(edge.opened).toHaveLength(0);
   });
 });
 

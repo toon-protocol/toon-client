@@ -6,9 +6,14 @@
  * precondition of forming a packet: `Prepare.data` is sealed to that key, and
  * sealing to the wrong one is a confidentiality failure, not a delivery
  * failure. ADR 0022 says the connector *answers* — it never announces — so
- * both facts are fetched from the connector's own client edge, on the same
- * origin this client already POSTs `/ilp` to
- * (`docs/protocol/client-edge-spec.md` §1.7):
+ * both facts are fetched from the connector's own client edge
+ * (`docs/protocol/client-edge-spec.md` §1.7). That edge is OFTEN the same
+ * origin this client already POSTs `/ilp` to, but never assume it: for a
+ * forwarded ILP prefix the posting edge and the terminating connector are
+ * different machines, and asking the posting edge seals to the wrong key
+ * (toon-client#526). Resolving `destination` to the terminator's own client
+ * edge — via discovery, before calling into this module — is the caller's
+ * job; see `ToonClient.resolveTerminatorEndpoint`.
  *
  * - `GET /ilp/identity` → `{ "keyId": "...", "publicKey": "0x04..." }` — the
  *   uncompressed secp256k1 key, 65 bytes, `0x`-prefixed hex.
@@ -568,7 +573,16 @@ export class ConnectorEdgeClient {
   /**
    * The terminating connector's public key, fetched once per endpoint.
    *
-   * @param endpoint any client-edge URL (`https://apex`, `https://apex/ilp`).
+   * `endpoint` MUST already be the TERMINATING connector's client edge, not
+   * merely whatever origin a caller is about to POST an ILP packet to —
+   * those are the same machine for most routes today, but never for a
+   * forwarded prefix (ADR 0022, toon-client#526). This method trusts
+   * `endpoint` and fetches exactly that origin's `/ilp/identity`; resolving
+   * a destination address to its terminator first is the caller's job.
+   *
+   * @param endpoint the TERMINATING connector's client-edge URL
+   *   (`https://apex`, `https://apex/ilp`) — already resolved from the
+   *   destination, never assumed to be the posting edge.
    * @param options `forceRefresh` bypasses (and replaces) the cache entry.
    */
   async getIdentity(
