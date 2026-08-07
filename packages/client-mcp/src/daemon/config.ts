@@ -521,8 +521,9 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
  * is REQUIRED to open a channel and is never fabricated (issue #69). When it
  * returns undefined the runner falls back to live kind:10032 discovery.
  *
- * The chainKey is taken from the first key in `settlementAddresses`/`tokenNetworks`
- * matching the chain family; absent that, returns undefined rather than guessing.
+ * The chainKey is the first key matching the chain family in `settlementAddresses`,
+ * then `tokenNetworks`, then `preferredTokens`; absent that, returns undefined
+ * rather than guessing one.
  */
 function buildProxyApexNegotiation(
   file: DaemonConfigFile,
@@ -543,6 +544,9 @@ function buildProxyApexNegotiation(
 
   // Without an explicit settlementAddress entry there is no on-chain
   // counterparty to open against — defer to relay discovery rather than guess.
+  // Deliberately no synthesized default here (#529): any such fallback would
+  // have to invent a chain-key format, and the last one drifted to the stale
+  // 3-part `evm:<network>:<chainId>` that toon#165 removed.
   if (!chainKey) return undefined;
   const settlementAddress = settlementAddresses[chainKey];
   if (!settlementAddress) return undefined;
