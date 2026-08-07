@@ -298,6 +298,120 @@ describe('ToonClient.publishEvent forms a sealed packet (toon-client#450)', () =
   });
 });
 
+// ---------------------------------------------------------------------------
+// Identity resolved by destination, not by posting endpoint (issue #526)
+// ---------------------------------------------------------------------------
+
+describe('ToonClient.publishEvent resolves identity by destination (issue #526)', () => {
+  /** Route requests to whichever fake connector actually owns the origin. */
+  function routedFetch(
+    ...connectors: FakeTerminatingConnector[]
+  ): typeof fetch {
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof URL ? input.toString() : input);
+      const connector = connectors.find((c) => url.startsWith(c.endpoint));
+      if (!connector) throw new Error(`no fake connector owns ${url}`);
+      return connector.fetch(input as never, init);
+    }) as typeof fetch;
+  }
+
+  /** A discovered (but not necessarily peered) announce claiming `address`. */
+  function announceFor(
+    address: string,
+    httpEndpoint: string,
+    pubkey: string
+  ) {
+    return {
+      pubkey,
+      peerId: `nostr-${pubkey.slice(0, 8)}`,
+      discoveredAt: 0,
+      peerInfo: {
+        pubkey,
+        ilpAddress: address,
+        ilpAddresses: [address],
+        btpEndpoint: `wss://${new URL(httpEndpoint).host}/btp`,
+        httpEndpoint,
+        assetCode: 'USD',
+        assetScale: 6,
+      },
+    };
+  }
+
+  it('seals to the TERMINATOR key for a forwarded prefix, not the posting edge', async () => {
+    // `connector.test` is the edge this client posts to (config.connectorUrl,
+    // set by baseConfig()); it forwards `g.toon.ario` on to `terminator.test`,
+    // which actually terminates it and holds a DIFFERENT identity key. Only
+    // the terminator's `fulfill()` is wired as the transport, so a packet
+    // sealed to the wrong (edge) key fails to open there — exactly the F01
+    // this client must never trigger having already paid.
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+      identitySecret: new Uint8Array(32).fill(1),
+    });
+    const terminator = new FakeTerminatingConnector({
+      endpoint: 'http://terminator.test',
+      identitySecret: new Uint8Array(32).fill(2),
+    });
+    globalThis.fetch = routedFetch(edge, terminator);
+
+    const client = new ToonClient(baseConfig());
+    const discoveryTracker = {
+      getAllDiscoveredPeers: () => [
+        announceFor('g.toon.ario', terminator.endpoint, 'a'.repeat(64)),
+      ],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker,
+      runtimeClient: {},
+      peersDiscovered: 0,
+      btpClient: {
+        sendIlpPacketWithClaim: async (params: { data: string }) =>
+          terminator.fulfill(params.data),
+      },
+    };
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+      destination: 'g.toon.ario',
+    });
+
+    expect(result.success).toBe(true);
+    expect(terminator.opened).toHaveLength(1);
+    expect(edge.opened).toHaveLength(0);
+  });
+
+  it('still terminates locally when nothing discovered claims the destination', async () => {
+    // No regression: with no matching announce, identity comes from the
+    // posting edge — the only case that ever worked before #526.
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+    });
+    globalThis.fetch = routedFetch(edge);
+
+    const client = new ToonClient(baseConfig());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: { getAllDiscoveredPeers: () => [] },
+      runtimeClient: {},
+      peersDiscovered: 0,
+      btpClient: {
+        sendIlpPacketWithClaim: async (params: { data: string }) =>
+          edge.fulfill(params.data),
+      },
+    };
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    expect(edge.opened).toHaveLength(1);
+  });
+});
+
 describe('ToonClient.publishEvent reads the sealed answer (toon-client#450)', () => {
   it('opens the response envelope and reports its status, headers and body', async () => {
     const client = new ToonClient(baseConfig());

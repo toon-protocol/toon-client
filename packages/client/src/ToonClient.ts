@@ -6,6 +6,7 @@ import {
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import type {
   BootstrapService,
+  DiscoveredPeer,
   DiscoveryTracker,
   IlpSendResult,
   IlpClient,
@@ -114,6 +115,58 @@ function parseMakerMinaSignature(
     return { r: raw.r, s: raw.s };
   }
   return undefined;
+}
+
+/**
+ * Whether `address` terminates `destination`: an exact match, or a proper
+ * ILP-address prefix of it (`g.toon.ario` terminates `g.toon.ario.inbox`,
+ * never `g.toon.ariose` — the '.' separator is required, not just a string
+ * prefix).
+ */
+function ilpAddressTerminates(address: string, destination: string): boolean {
+  return destination === address || destination.startsWith(`${address}.`);
+}
+
+/**
+ * The `httpEndpoint` of whichever discovered peer's announce (kind:10032)
+ * TERMINATES `destination` — i.e. resolution the way ADR 0022 requires:
+ * destination → the announce whose `ilpAddress`/`ilpAddresses` claims it →
+ * that announce's `httpEndpoint`. `ilpAddresses` is absent on pre-Epic-7
+ * events, so `[ilpAddress]` is the documented fallback (`IlpPeerInfo`).
+ *
+ * When more than one claim matches, the MOST SPECIFIC (longest) address
+ * wins — the same longest-prefix rule ILP routing uses elsewhere. A tie
+ * between two announces claiming the identical address is broken toward the
+ * one where that address is PRIMARY (`ilpAddresses[0]`): a peer that lists an
+ * address only as a secondary entry is declaring a forwarding ROUTE for it,
+ * not owning its identity (toon-client#526's own acceptance criterion).
+ *
+ * `undefined` when no discovered announce claims `destination` at all — the
+ * caller's job to fall back to the posting edge in that case.
+ */
+function resolveTerminatorHttpEndpoint(
+  destination: string,
+  peers: readonly DiscoveredPeer[]
+): string | undefined {
+  let best:
+    | { endpoint: string; segments: number; isPrimary: boolean }
+    | undefined;
+  for (const { peerInfo } of peers) {
+    const httpEndpoint = peerInfo.httpEndpoint;
+    if (!httpEndpoint) continue;
+    const addresses = peerInfo.ilpAddresses ?? [peerInfo.ilpAddress];
+    addresses.forEach((address, index) => {
+      if (!ilpAddressTerminates(address, destination)) return;
+      const segments = address.split('.').length;
+      const isPrimary = index === 0;
+      const better =
+        !best ||
+        segments > best.segments ||
+        (segments === best.segments && isPrimary && !best.isPrimary);
+      if (better) best = { endpoint: httpEndpoint, segments, isPrimary };
+    });
+  }
+  return best?.endpoint;
 }
 
 /**
@@ -766,8 +819,14 @@ export class ToonClient {
         options?.destination ?? this.config.destinationAddress;
       const edge = this.resolveClientEdgeEndpoint();
 
-      // (1) The key first — no packet exists without it.
-      const identity = await this.connectorEdge.getIdentity(edge);
+      // (1) The key first — no packet exists without it. Resolved from the
+      // connector that TERMINATES `destination`, never the posting edge: for
+      // a forwarded prefix those are different machines, and sealing to the
+      // forwarder's key is a confidentiality failure the wire only reports
+      // as an undeliverable packet (issue #526).
+      const identity = await this.connectorEdge.getIdentity(
+        this.resolveTerminatorEndpoint(destination)
+      );
 
       // (2) The price is ASKED for, not computed. ADR 0020 makes a price flat
       // per handler — the route table is the price list — so there is no
@@ -972,6 +1031,38 @@ export class ToonClient {
       );
     }
     return connectorEdgeBaseUrl(endpoint);
+  }
+
+  /**
+   * The client edge to fetch `destination`'s identity from — the connector
+   * that TERMINATES it, not the one this client happens to be posting to
+   * (issue #526). ADR 0022 makes identity answered-not-announced, so it is
+   * fetched from the terminator's own `/ilp/identity`; discovery is only
+   * used to find WHICH origin that is.
+   *
+   * Matches `destination` against every peer this client has discovered
+   * announcing itself via kind:10032 — including ones never peered with,
+   * since a forwarded prefix's terminator need not be a direct peer at all
+   * (that is precisely the shape a forwarded prefix has). Falls back to the
+   * posting edge when nothing discovered claims `destination`, which is
+   * exactly the (still-common) case where the posting node terminates it
+   * itself, and the only case that worked before this fix.
+   *
+   * @throws {ToonClientError} NO_CONNECTOR_EDGE when no origin is known at
+   *   all (propagated from {@link resolveClientEdgeEndpoint}).
+   */
+  private resolveTerminatorEndpoint(destination: string): string {
+    const edge = this.resolveClientEdgeEndpoint();
+    const tracker = this.state?.discoveryTracker as
+      | Pick<DiscoveryTracker, 'getAllDiscoveredPeers'>
+      | undefined;
+    if (typeof tracker?.getAllDiscoveredPeers !== 'function') return edge;
+
+    const httpEndpoint = resolveTerminatorHttpEndpoint(
+      destination,
+      tracker.getAllDiscoveredPeers()
+    );
+    return httpEndpoint ? connectorEdgeBaseUrl(httpEndpoint) : edge;
   }
 
   /**
