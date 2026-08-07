@@ -514,22 +514,6 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
 }
 
 /**
- * Default negotiated chain-key for a settlement family when none is configured
- * and none can be discovered. EVM carries `evm:<network>:<chainId>`; the devnet
- * Anvil chain is 31337. Solana/Mina carry no numeric id.
- */
-function defaultChainKey(chain: SettlementChain, chainId: number): string {
-  switch (chain) {
-    case 'evm':
-      return `evm:devnet:${chainId}`;
-    case 'solana':
-      return 'solana:devnet';
-    case 'mina':
-      return 'mina:devnet';
-  }
-}
-
-/**
  * Synthesize an apex negotiation for PROXY mode from the flat settlement config
  * (`settlementAddresses` / `tokenNetworks` / `preferredTokens`). Returns
  * undefined unless a proxy uplink AND the apex's settlement (receive) address
@@ -537,8 +521,9 @@ function defaultChainKey(chain: SettlementChain, chainId: number): string {
  * is REQUIRED to open a channel and is never fabricated (issue #69). When it
  * returns undefined the runner falls back to live kind:10032 discovery.
  *
- * The chainKey is taken from the first key in `settlementAddresses`/`tokenNetworks`
- * matching the chain family, else a sensible devnet default.
+ * The chainKey is the first key matching the chain family in `settlementAddresses`,
+ * then `tokenNetworks`, then `preferredTokens`; absent that, returns undefined
+ * rather than guessing one.
  */
 function buildProxyApexNegotiation(
   file: DaemonConfigFile,
@@ -559,6 +544,9 @@ function buildProxyApexNegotiation(
 
   // Without an explicit settlementAddress entry there is no on-chain
   // counterparty to open against — defer to relay discovery rather than guess.
+  // Deliberately no synthesized default here (#529): any such fallback would
+  // have to invent a chain-key format, and the last one drifted to the stale
+  // 3-part `evm:<network>:<chainId>` that toon#165 removed.
   if (!chainKey) return undefined;
   const settlementAddress = settlementAddresses[chainKey];
   if (!settlementAddress) return undefined;
@@ -575,7 +563,7 @@ function buildProxyApexNegotiation(
     destination,
     peerId,
     chain,
-    chainKey: chainKey || defaultChainKey(chain, chainId),
+    chainKey,
     chainId,
     settlementAddress,
     ...(file.preferredTokens?.[chainKey]
