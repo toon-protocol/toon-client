@@ -308,16 +308,19 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     ...connectors: FakeTerminatingConnector[]
   ): typeof fetch {
     return (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input instanceof URL ? input.toString() : input);
+      const url = String(input);
       const connector = connectors.find((c) => url.startsWith(c.endpoint));
       if (!connector) throw new Error(`no fake connector owns ${url}`);
       return connector.fetch(input as never, init);
     }) as typeof fetch;
   }
 
-  /** A discovered (but not necessarily peered) announce claiming `address`. */
+  /**
+   * A discovered (but not necessarily peered) announce claiming `addresses` —
+   * the first is the announce's PRIMARY, the rest are secondary claims.
+   */
   function announceFor(
-    address: string,
+    addresses: string[],
     httpEndpoint: string,
     pubkey: string
   ) {
@@ -327,13 +330,33 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
       discoveredAt: 0,
       peerInfo: {
         pubkey,
-        ilpAddress: address,
-        ilpAddresses: [address],
+        ilpAddress: addresses[0],
+        ilpAddresses: addresses,
         btpEndpoint: `wss://${new URL(httpEndpoint).host}/btp`,
         httpEndpoint,
         assetCode: 'USD',
         assetScale: 6,
       },
+    };
+  }
+
+  /**
+   * A started client whose discovery has produced `announces`, sending over
+   * `transport` — the ONE connector whose `fulfill()` answers, so a packet
+   * sealed to any other connector's key cannot be opened at all.
+   */
+  function attachDiscovery(
+    client: ToonClient,
+    announces: ReturnType<typeof announceFor>[],
+    transport: FakeTerminatingConnector
+  ): void {
+    attachTransport(client, {
+      sendIlpPacketWithClaim: async (params: { data: string }) =>
+        transport.fulfill(params.data),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state.discoveryTracker = {
+      getAllDiscoveredPeers: () => announces,
     };
   }
 
@@ -355,22 +378,11 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     globalThis.fetch = routedFetch(edge, terminator);
 
     const client = new ToonClient(baseConfig());
-    const discoveryTracker = {
-      getAllDiscoveredPeers: () => [
-        announceFor('g.toon.ario', terminator.endpoint, 'a'.repeat(64)),
-      ],
-    };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (client as any).state = {
-      bootstrapService: {},
-      discoveryTracker,
-      runtimeClient: {},
-      peersDiscovered: 0,
-      btpClient: {
-        sendIlpPacketWithClaim: async (params: { data: string }) =>
-          terminator.fulfill(params.data),
-      },
-    };
+    attachDiscovery(
+      client,
+      [announceFor(['g.toon.ario'], terminator.endpoint, 'a'.repeat(64))],
+      terminator
+    );
 
     const result = await client.publishEvent(makeEvent(), {
       claim: makeProof(),
@@ -382,6 +394,49 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     expect(edge.opened).toHaveLength(0);
   });
 
+  it('prefers the announce whose PRIMARY address claims the destination', async () => {
+    // Both announces claim `g.toon.ario`, but the router lists it only as a
+    // secondary entry — it forwards the prefix, it does not own the identity
+    // behind it. The store, whose primary address it is, holds the key that
+    // can actually open the wrap (#526's own tie-break criterion).
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+      identitySecret: new Uint8Array(32).fill(1),
+    });
+    const router = new FakeTerminatingConnector({
+      endpoint: 'http://router.test',
+      identitySecret: new Uint8Array(32).fill(2),
+    });
+    const store = new FakeTerminatingConnector({
+      endpoint: 'http://store.test',
+      identitySecret: new Uint8Array(32).fill(3),
+    });
+    globalThis.fetch = routedFetch(edge, router, store);
+
+    const client = new ToonClient(baseConfig());
+    attachDiscovery(
+      client,
+      [
+        announceFor(
+          ['g.toon.router', 'g.toon.ario'],
+          router.endpoint,
+          'a'.repeat(64)
+        ),
+        announceFor(['g.toon.ario'], store.endpoint, 'b'.repeat(64)),
+      ],
+      store
+    );
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+      destination: 'g.toon.ario',
+    });
+
+    expect(result.success).toBe(true);
+    expect(store.opened).toHaveLength(1);
+    expect(router.opened).toHaveLength(0);
+  });
+
   it('still terminates locally when nothing discovered claims the destination', async () => {
     // No regression: with no matching announce, identity comes from the
     // posting edge — the only case that ever worked before #526.
@@ -391,17 +446,7 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     globalThis.fetch = routedFetch(edge);
 
     const client = new ToonClient(baseConfig());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (client as any).state = {
-      bootstrapService: {},
-      discoveryTracker: { getAllDiscoveredPeers: () => [] },
-      runtimeClient: {},
-      peersDiscovered: 0,
-      btpClient: {
-        sendIlpPacketWithClaim: async (params: { data: string }) =>
-          edge.fulfill(params.data),
-      },
-    };
+    attachDiscovery(client, [], edge);
 
     const result = await client.publishEvent(makeEvent(), {
       claim: makeProof(),

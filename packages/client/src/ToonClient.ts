@@ -127,6 +127,22 @@ function ilpAddressTerminates(address: string, destination: string): boolean {
   return destination === address || destination.startsWith(`${address}.`);
 }
 
+/** One announce's claim on a destination, as {@link outranks} compares them. */
+interface TerminatorClaim {
+  /** The announcing peer's `httpEndpoint` — its client edge. */
+  endpoint: string;
+  /** Segment count of the claiming address: how specific the claim is. */
+  segments: number;
+  /** Whether the claiming address is the announce's primary (`ilpAddresses[0]`). */
+  isPrimary: boolean;
+}
+
+/** Whether `claim` beats `best`: more specific first, then primary over secondary. */
+function outranks(claim: TerminatorClaim, best: TerminatorClaim): boolean {
+  if (claim.segments !== best.segments) return claim.segments > best.segments;
+  return claim.isPrimary && !best.isPrimary;
+}
+
 /**
  * The `httpEndpoint` of whichever discovered peer's announce (kind:10032)
  * TERMINATES `destination` — i.e. resolution the way ADR 0022 requires:
@@ -148,23 +164,20 @@ function resolveTerminatorHttpEndpoint(
   destination: string,
   peers: readonly DiscoveredPeer[]
 ): string | undefined {
-  let best:
-    | { endpoint: string; segments: number; isPrimary: boolean }
-    | undefined;
+  let best: TerminatorClaim | undefined;
   for (const { peerInfo } of peers) {
     const httpEndpoint = peerInfo.httpEndpoint;
     if (!httpEndpoint) continue;
     const addresses = peerInfo.ilpAddresses ?? [peerInfo.ilpAddress];
-    addresses.forEach((address, index) => {
-      if (!ilpAddressTerminates(address, destination)) return;
-      const segments = address.split('.').length;
-      const isPrimary = index === 0;
-      const better =
-        !best ||
-        segments > best.segments ||
-        (segments === best.segments && isPrimary && !best.isPrimary);
-      if (better) best = { endpoint: httpEndpoint, segments, isPrimary };
-    });
+    for (const [index, address] of addresses.entries()) {
+      if (!ilpAddressTerminates(address, destination)) continue;
+      const claim: TerminatorClaim = {
+        endpoint: httpEndpoint,
+        segments: address.split('.').length,
+        isPrimary: index === 0,
+      };
+      if (!best || outranks(claim, best)) best = claim;
+    }
   }
   return best?.endpoint;
 }
@@ -1053,9 +1066,11 @@ export class ToonClient {
    */
   private resolveTerminatorEndpoint(destination: string): string {
     const edge = this.resolveClientEdgeEndpoint();
-    const tracker = this.state?.discoveryTracker as
-      | Pick<DiscoveryTracker, 'getAllDiscoveredPeers'>
-      | undefined;
+    // Probed, not assumed: a client whose state was assembled without a full
+    // tracker (a stub, a half-built runtime) still publishes — it just has
+    // nothing to resolve against and falls back to the posting edge.
+    const tracker: Partial<DiscoveryTracker> | undefined =
+      this.state?.discoveryTracker;
     if (typeof tracker?.getAllDiscoveredPeers !== 'function') return edge;
 
     const httpEndpoint = resolveTerminatorHttpEndpoint(
