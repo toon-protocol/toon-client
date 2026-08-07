@@ -118,10 +118,11 @@ function parseMakerMinaSignature(
 
 /**
  * Canonical id for chain-negotiation comparisons (#500): `evm:base:84532`
- * (this client's family-qualified preset form,
- * `@toon-protocol/core`'s `resolveClientNetwork`) and `evm:84532` (the
- * unqualified form the live devnet apex's `kind:10032` announce actually
- * uses, matching `rig`'s own README tables) name the SAME deployed chain —
+ * (the family-qualified form — what `@toon-protocol/core`'s
+ * `resolveClientNetwork` emitted before 3.2.1, and what callers may still
+ * have stored in their own config) and `evm:84532` (the unqualified form the
+ * live devnet apex's `kind:10032` announce uses, what core >=3.2.1 now emits
+ * too, and what `rig`'s own README tables show) name the SAME deployed chain —
  * only the numeric chain id disambiguates on-chain. Solana/Mina ids
  * (`solana:devnet`, `mina:devnet`) have no such qualifier drift and pass
  * through unchanged. The unqualified form is canonical (it's what the
@@ -137,9 +138,9 @@ function canonicalChainId(chain: string): string {
 
 /**
  * Looks up `chain` in `map` by exact key first, falling back to a
- * canonical-id match (#500) so a value keyed under this client's own
- * family-qualified form (`evm:base:84532`) is still found when `chain` is
- * the peer's unqualified announce form (`evm:84532`), or vice versa.
+ * canonical-id match (#500) so a value keyed under a family-qualified form
+ * (`evm:base:84532`) is still found when `chain` is the unqualified announce
+ * form (`evm:84532`), or vice versa.
  */
 function lookupByCanonicalChain(
   map: Record<string, string> | undefined,
@@ -2304,8 +2305,9 @@ export class ToonClient {
    * first mutually-supported chain (legacy behavior) when unconfigured.
    *
    * Chains are matched by {@link canonicalChainId} rather than exact string
-   * equality (#500): the devnet preset's family-qualified `evm:base:84532`
-   * and the live apex's unqualified `evm:84532` name the same chain, and
+   * equality (#500): a family-qualified `evm:base:84532` (a caller's config,
+   * or a preset from core <3.2.1) and the live apex's unqualified
+   * `evm:84532` name the same chain, and
    * exact matching skipped straight past it to the next mutually-supported
    * chain (`solana:devnet`) — negotiating a chain nobody asked for instead
    * of failing loudly. The PEER's own chain string is returned (not ours),
