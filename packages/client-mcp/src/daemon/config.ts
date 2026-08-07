@@ -514,22 +514,6 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
 }
 
 /**
- * Default negotiated chain-key for a settlement family when none is configured
- * and none can be discovered. EVM carries `evm:<network>:<chainId>`; the devnet
- * Anvil chain is 31337. Solana/Mina carry no numeric id.
- */
-function defaultChainKey(chain: SettlementChain, chainId: number): string {
-  switch (chain) {
-    case 'evm':
-      return `evm:devnet:${chainId}`;
-    case 'solana':
-      return 'solana:devnet';
-    case 'mina':
-      return 'mina:devnet';
-  }
-}
-
-/**
  * Synthesize an apex negotiation for PROXY mode from the flat settlement config
  * (`settlementAddresses` / `tokenNetworks` / `preferredTokens`). Returns
  * undefined unless a proxy uplink AND the apex's settlement (receive) address
@@ -538,7 +522,7 @@ function defaultChainKey(chain: SettlementChain, chainId: number): string {
  * returns undefined the runner falls back to live kind:10032 discovery.
  *
  * The chainKey is taken from the first key in `settlementAddresses`/`tokenNetworks`
- * matching the chain family, else a sensible devnet default.
+ * matching the chain family; absent that, returns undefined rather than guessing.
  */
 function buildProxyApexNegotiation(
   file: DaemonConfigFile,
@@ -575,7 +559,7 @@ function buildProxyApexNegotiation(
     destination,
     peerId,
     chain,
-    chainKey: chainKey || defaultChainKey(chain, chainId),
+    chainKey,
     chainId,
     settlementAddress,
     ...(file.preferredTokens?.[chainKey]
