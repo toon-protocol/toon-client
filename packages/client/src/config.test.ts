@@ -685,6 +685,10 @@ describe('network targeting (#202)', () => {
   describe('applyNetworkPresets — tier resolution', () => {
     it('testnet resolves Base Sepolia + current (corrected) TokenNetwork', () => {
       const c = applyNetworkPresets(baseConfig({ network: 'testnet' }));
+      // core >=3.2.1 (toon#165) emits the bare `evm:<chainId>` the fleet's
+      // kind:10032 announce uses, not the old family-qualified
+      // `evm:base:<chainId>` — chain-key equality has to be exact or
+      // negotiation falls through to the next shared chain (#527).
       const evmId = 'evm:84532';
       expect(c.supportedChains).toContain(evmId);
       // core >=3.1.2 bakes the working publicnode RPC (the old sepolia.base.org
