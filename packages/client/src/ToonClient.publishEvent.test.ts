@@ -27,7 +27,7 @@ import {
   FakeTerminatingConnector,
   plaintextReject,
 } from './wire/fake-connector.test-support.js';
-import { ChannelFundingError } from './errors.js';
+import { ChannelFundingError, ToonClientError } from './errors.js';
 import { isZeroCondition } from './utils/condition.js';
 import { fromBase64 } from './utils/binary.js';
 
@@ -454,6 +454,47 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
 
     expect(result.success).toBe(true);
     expect(edge.opened).toHaveLength(1);
+  });
+
+  it('REFUSES rather than sealing to an ancestor router masquerading as the terminator (toon-client#533)', async () => {
+    // Live topology observed in production: the router announces itself at
+    // `g.toon`, which — via the dot-separated ancestor rule alone — also
+    // "terminates" `g.toon.ario`, a prefix the STORE actually owns. With the
+    // store's own (more specific) announce absent — expired, or not yet
+    // discovered — the old resolver had nothing else to compare against and
+    // silently returned the ROUTER's endpoint, so the client would have paid
+    // and sealed to a key that can never open the wrap. A test where the
+    // correct announce is always present cannot catch this: it must be
+    // absent here too.
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+    });
+    const router = new FakeTerminatingConnector({
+      endpoint: 'http://router.test',
+    });
+    globalThis.fetch = routedFetch(edge, router);
+
+    const client = new ToonClient(baseConfig());
+    attachDiscovery(
+      client,
+      [announceFor(['g.toon', 'g.toon.relay'], router.endpoint, 'a'.repeat(64))],
+      router
+    );
+
+    let caught: unknown;
+    try {
+      await client.publishEvent(makeEvent(), {
+        claim: makeProof(),
+        destination: 'g.toon.ario',
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ToonClientError);
+    expect((caught as ToonClientError).code).toBe('TERMINATOR_UNRESOLVED');
+    expect(router.opened).toHaveLength(0);
+    expect(edge.opened).toHaveLength(0);
   });
 });
 

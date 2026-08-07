@@ -8,6 +8,7 @@ import type {
   BootstrapService,
   DiscoveredPeer,
   DiscoveryTracker,
+  IlpPeerInfo,
   IlpSendResult,
   IlpClient,
 } from '@toon-protocol/core';
@@ -127,6 +128,38 @@ function ilpAddressTerminates(address: string, destination: string): boolean {
   return destination === address || destination.startsWith(`${address}.`);
 }
 
+/**
+ * Whether `address` is a claim on `destination` trustworthy enough to name
+ * `peerInfo` the terminator (toon-client#533). An EXACT match is always
+ * trustworthy — the announce is claiming that literal address. An ANCESTOR
+ * (proper-prefix) match is trustworthy only when `peerInfo` used the
+ * pre-Epic-7 legacy form — a single self-declared `ilpAddress`, no
+ * `ilpAddresses` array at all.
+ *
+ * Epic-7's `ilpAddresses` lists every address a peer is reachable AT — "one
+ * per upstream peering" (`IlpPeerInfo`) — a ROUTING fact, not a claim that
+ * the peer owns everything nested under that prefix. Without this guard, a
+ * router that legitimately announces `g.toon` (among others) becomes a
+ * candidate terminator for `g.toon.ario`, a prefix the STORE — not the
+ * router — actually owns: verified against production, where the live
+ * router's announce is `ilpAddresses: ["g.toon", "g.toon.relay"]`, making
+ * `ilpAddressTerminates('g.toon', 'g.toon.ario')` true. Nothing but the
+ * store's own (600s-expiring) announce being in the tracker kept the router
+ * from being selected — a startup race or an expiry away from paying into a
+ * wrap nobody but the store can open.
+ */
+function claimsTermination(
+  peerInfo: Pick<IlpPeerInfo, 'ilpAddress' | 'ilpAddresses'>,
+  address: string,
+  destination: string
+): boolean {
+  if (destination === address) return true;
+  return (
+    peerInfo.ilpAddresses === undefined &&
+    ilpAddressTerminates(address, destination)
+  );
+}
+
 /** One announce's claim on a destination, as {@link outranks} compares them. */
 interface TerminatorClaim {
   /** The announcing peer's `httpEndpoint` — its client edge. */
@@ -170,7 +203,7 @@ function resolveTerminatorHttpEndpoint(
     if (!httpEndpoint) continue;
     const addresses = peerInfo.ilpAddresses ?? [peerInfo.ilpAddress];
     for (const [index, address] of addresses.entries()) {
-      if (!ilpAddressTerminates(address, destination)) continue;
+      if (!claimsTermination(peerInfo, address, destination)) continue;
       const claim: TerminatorClaim = {
         endpoint: httpEndpoint,
         segments: address.split('.').length,
@@ -948,7 +981,8 @@ export class ToonClient {
         (error.code === 'NO_TERMINATED_ROUTE' ||
           error.code === 'NO_CONNECTOR_EDGE' ||
           error.code === 'PEER_NOT_NEGOTIATED' ||
-          error.code === 'CHANNEL_FUNDING')
+          error.code === 'CHANNEL_FUNDING' ||
+          error.code === 'TERMINATOR_UNRESOLVED')
       ) {
         throw error;
       }
@@ -1058,12 +1092,24 @@ export class ToonClient {
    * announcing itself via kind:10032 — including ones never peered with,
    * since a forwarded prefix's terminator need not be a direct peer at all
    * (that is precisely the shape a forwarded prefix has). Falls back to the
-   * posting edge when nothing discovered claims `destination`, which is
-   * exactly the (still-common) case where the posting node terminates it
-   * itself, and the only case that worked before this fix.
+   * posting edge only when discovery has NOTHING to say at all — no tracker
+   * wired up, or a tracker that has discovered zero peers — preserving the
+   * (still-common) same-node case where the posting node terminates its own
+   * destination, and the only case that worked before #526.
+   *
+   * Once discovery HAS produced peers, silence from all of them is treated as
+   * a refusal, not a green light (toon-client#533): an ancestor-only claim
+   * (a router legitimately owning `g.toon`, which is not the same as owning
+   * everything under it) used to slip through here and get treated as
+   * coverage. `resolveTerminatorHttpEndpoint`'s own claim-gating fixes that,
+   * but the caller-visible half of the fix is this — refusing to publish
+   * beats sealing to a key that cannot open the wrap, for a defect whose
+   * symptom is "money spent, write lost".
    *
    * @throws {ToonClientError} NO_CONNECTOR_EDGE when no origin is known at
    *   all (propagated from {@link resolveClientEdgeEndpoint}).
+   * @throws {ToonClientError} TERMINATOR_UNRESOLVED when peers were
+   *   discovered but none of their announces claims `destination`.
    */
   private resolveTerminatorEndpoint(destination: string): string {
     const edge = this.resolveClientEdgeEndpoint();
@@ -1074,11 +1120,20 @@ export class ToonClient {
       this.state?.discoveryTracker;
     if (typeof tracker?.getAllDiscoveredPeers !== 'function') return edge;
 
-    const httpEndpoint = resolveTerminatorHttpEndpoint(
-      destination,
-      tracker.getAllDiscoveredPeers()
-    );
-    return httpEndpoint ? connectorEdgeBaseUrl(httpEndpoint) : edge;
+    const peers = tracker.getAllDiscoveredPeers();
+    if (peers.length === 0) return edge;
+
+    const httpEndpoint = resolveTerminatorHttpEndpoint(destination, peers);
+    if (!httpEndpoint) {
+      throw new ToonClientError(
+        `No discovered announce terminates "${destination}" (${peers.length} ` +
+          'peer(s) discovered, none claims it), so this client cannot confirm ' +
+          'the posting edge is who it would be paying. Refusing to publish ' +
+          'rather than seal to a key that may not be able to open the wrap.',
+        'TERMINATOR_UNRESOLVED'
+      );
+    }
+    return connectorEdgeBaseUrl(httpEndpoint);
   }
 
   /**
