@@ -85,23 +85,27 @@ export interface DaemonConfigFile {
   /** Relay WS URL for FREE reads. */
   relayUrl?: string;
   /**
-   * Apex CHANNEL ANCHOR (settlement peer). Defaults to the genesis seed apex's
+   * Apex CHANNEL ANCHOR (settlement peer). Defaults to the FIRST genesis peer's
    * ILP anchor (core's `genesis-peers.json`); its last segment becomes the apex
    * `peerId` the channel keys under. This is NOT a write route — see
    * `publishDestination`/`storeDestination`.
    */
   destination?: string;
   /**
-   * ILP route for PUBLISHES (relay writes → `POST /write`). When unset it is
-   * DERIVED from the `….relay.store` anchor (`g.proxy.relay.store` →
-   * `g.proxy.relay`) — never the bare anchor, which the apex forwards to the
-   * store and which 404s a `/write`. Env: `TOON_CLIENT_PUBLISH_DESTINATION`.
+   * ILP route for PUBLISHES (relay writes → `POST /write`). When unset it
+   * defaults to the first genesis peer's address; when `destination` is set
+   * EXPLICITLY it is instead DERIVED from that `….relay.store` anchor
+   * (`g.proxy.relay.store` → `g.proxy.relay`) — never the bare anchor, which
+   * the apex forwards to the store and which 404s a `/write`.
+   * Env: `TOON_CLIENT_PUBLISH_DESTINATION`.
    */
   publishDestination?: string;
   /**
-   * ILP route for UPLOADS (kind:5094 blob → `POST /store` → Arweave). When unset
-   * it is DERIVED from the `….relay.store` anchor (`g.proxy.relay.store` →
-   * `g.proxy.store`). Env: `TOON_CLIENT_STORE_DESTINATION`.
+   * ILP route for UPLOADS (kind:5094 blob → `POST /store` → Arweave). When
+   * unset it defaults to the genesis STORE peer's own address (issue #536);
+   * when `destination` is set EXPLICITLY it is instead DERIVED from that
+   * `….relay.store` anchor (`g.proxy.relay.store` → `g.proxy.store`).
+   * Env: `TOON_CLIENT_STORE_DESTINATION`.
    */
   storeDestination?: string;
   /** Default fee per paid write, base units. Default `1`. */
@@ -341,6 +345,13 @@ function parseCsvEnv(value: string | undefined): string[] | undefined {
  * to the store backend → HTTP 404. Anchors that don't match the convention fall
  * back to the anchor unchanged (back-compat for non-proxy / custom topologies).
  */
+/**
+ * Last ILP segment of the genesis STORE peer (`g.toon.ario` — the ar.io
+ * gateway box). The genesis entries carry no role field, so the address suffix
+ * is the only thing that tells the store node apart from the relay node.
+ */
+const STORE_ADDRESS_SUFFIX = '.ario';
+
 function deriveRouteDestinations(anchor: string): {
   publish: string;
   store: string;
@@ -385,7 +396,9 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   // The store's own genesis entry, independent of whichever entry `destination`
   // defaults to — NOT derived from it, since the two nodes no longer share an
   // address namespace to derive from (see deriveRouteDestinations below).
-  const genesisStorePeer = genesisPeers.find((p) => p.ilpAddress.endsWith('.ario'));
+  const genesisStorePeer = genesisPeers.find((p) =>
+    p.ilpAddress.endsWith(STORE_ADDRESS_SUFFIX)
+  );
   const relayUrl =
     process.env['TOON_CLIENT_RELAY_URL'] ??
     file.relayUrl ??
@@ -415,7 +428,10 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     ? deriveRouteDestinations(explicitDestination)
     : {
         publish: genesisSeed?.ilpAddress ?? destination,
-        store: genesisStorePeer?.ilpAddress ?? genesisSeed?.ilpAddress ?? destination,
+        store:
+          genesisStorePeer?.ilpAddress ??
+          genesisSeed?.ilpAddress ??
+          destination,
       };
   const publishDestination =
     process.env['TOON_CLIENT_PUBLISH_DESTINATION'] ??
