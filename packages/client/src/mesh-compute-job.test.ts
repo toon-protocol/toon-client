@@ -18,6 +18,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import type { NostrEvent } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
 import { ToonClient } from './ToonClient.js';
 import { createJobMessageHandler, type JobAnswer, type JobRequest } from './serve-job.js';
@@ -36,8 +37,10 @@ import type { InboundBtpMessage } from './btp/IsomorphicBtpClient.js';
 import { encodeUtf8, decodeUtf8 } from './utils/binary.js';
 import type { ToonClientConfig } from './types.js';
 
-const noopEncoder = () => new Uint8Array();
-const noopDecoder = () => ({}) as never;
+// This client never encodes or decodes a Nostr event here — the job rides the
+// ILP `data` field, not the TOON codec — but `ToonClientConfig` requires both.
+const noopEncoder = (_event: NostrEvent): Uint8Array => new Uint8Array();
+const noopDecoder = (_bytes: Uint8Array): NostrEvent => ({}) as NostrEvent;
 
 function sellerConfig(secretKey: Uint8Array): ToonClientConfig {
   return {

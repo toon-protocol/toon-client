@@ -376,10 +376,11 @@ export function sealRequest(
  * envelope and the shared secret carried alongside it.
  *
  * `identity` is either a 32-byte secp256k1 secret key or a {@link GiftWrapEcdh}
- * that never exposes one. Nothing in this client terminates packets today, so
- * this exists to make the seal testable from both ends — and to make the
- * vectors' "opening it with the fixture's secret key must recover the envelope
- * and the secret exactly" a check this repo can actually run.
+ * that never exposes one. `serve-job.ts` calls this for real (toon-client#537):
+ * when this client is itself the BTP destination, it is the party that opens
+ * the wrap. It also makes the seal testable from both ends — and the vectors'
+ * "opening it with the fixture's secret key must recover the envelope and the
+ * secret exactly" a check this repo can actually run.
  */
 export function openRequest(
   bytes: Uint8Array,

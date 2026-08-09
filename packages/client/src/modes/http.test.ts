@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { initializeHttpMode } from './http.js';
 import { BtpRuntimeClient } from '../adapters/BtpRuntimeClient.js';
+import { ILPPacketType, serializeIlpPrepare } from '../btp/protocol.js';
+import { giftWrapPublicKey, sealRequest } from '../wire/giftwrap.js';
+import type { JobRequest } from '../serve-job.js';
 import type { ResolvedConfig } from '../config.js';
 
 // Mock BtpRuntimeClient to avoid real WebSocket connections
@@ -55,7 +58,48 @@ describe('initializeHttpMode', () => {
       preferBtpForPaidWrites: false,
       jobHandlerSealed: false,
     };
+    wrappedJob = sealRequest(JOB_PLAINTEXT, giftWrapPublicKey(secretKey)).wrapped;
   });
+
+  const JOB_PLAINTEXT = new Uint8Array([4, 2]);
+  /** A job PREPARE's `data`, sealed to `config.secretKey`'s sealing identity. */
+  let wrappedJob: Uint8Array;
+
+  /**
+   * Drive one sealed job PREPARE through the `onMessage` handler
+   * `initializeHttpMode` wires onto the BtpRuntimeClient, and report the
+   * {@link JobRequest} the `jobHandler` saw — whose `data` is the one thing
+   * `jobHandlerSealed` changes (toon-client#537).
+   */
+  async function runSealedJob(jobHandlerSealed: boolean): Promise<JobRequest> {
+    config.btpUrl = 'ws://localhost:3000';
+    config.jobHandlerSealed = jobHandlerSealed;
+
+    let seen: JobRequest | undefined;
+    config.jobHandler = (job) => {
+      seen = job;
+      return { fulfillment: new Uint8Array(32) };
+    };
+
+    await initializeHttpMode(config);
+    const call = (BtpRuntimeClient as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0]![0];
+    await call.onMessage({
+      requestId: 1,
+      protocolData: [],
+      ilpPacket: serializeIlpPrepare({
+        type: ILPPacketType.PREPARE,
+        amount: 1n,
+        destination: 'g.test.address',
+        executionCondition: new Uint8Array(32),
+        expiresAt: new Date(Date.now() + 60_000),
+        data: wrappedJob,
+      }),
+    });
+
+    if (!seen) throw new Error('jobHandler was never invoked');
+    return seen;
+  }
 
   describe('HTTP mode initialization', () => {
     it('should create components from config', async () => {
@@ -150,6 +194,20 @@ describe('initializeHttpMode', () => {
       const call = (BtpRuntimeClient as unknown as ReturnType<typeof vi.fn>).mock
         .calls[0]![0];
       expect(call.onMessage).toBeTypeOf('function');
+    });
+
+    it('leaves the wired handler on the unsealed wire by default (toon-client#537)', async () => {
+      const { data } = await runSealedJob(false);
+
+      // Default `false`: the wrap rides through as opaque bytes, exactly as
+      // before #537 — devnet's factory-job dialect is unaffected.
+      expect(data).toEqual(wrappedJob);
+    });
+
+    it('unseals at this client\'s own identity when jobHandlerSealed is set (toon-client#537)', async () => {
+      const { data } = await runSealedJob(true);
+
+      expect(data).toEqual(JOB_PLAINTEXT);
     });
   });
 
