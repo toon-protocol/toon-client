@@ -10,9 +10,11 @@
  * loses cannot leave a silently-passing assertion behind.
  *
  * Structure: one top-level `describe` per section, each driven by `it.each`
- * over `loadWireVectors()`. `giftwrap` and `fulfilment` (toon-client#449)
- * arrived as exactly that — two new blocks, no restructure — and every section
- * the file carries is now replayed.
+ * over `loadWireVectors()`. `giftwrap` and `fulfilment` (toon-client#449) and
+ * `channel_control_declaration` (toon-client#540) each arrived as exactly that
+ * — a new block, no restructure. Every section the file carries is replayed
+ * except `peer_carriage`, the connector-to-connector wire no client SDK
+ * speaks, which is declared in `sectionsPresentNotYetReplayed` instead.
  *
  * A section this harness has NOT been taught is a failure, not a no-op — see
  * "accounts for every section the file carries" below.
@@ -728,13 +730,28 @@ describe('claim — the EIP-712 BalanceProof this client signs (connector ADR 00
  * client is the one producing.
  *
  * `auth_json`/`btp_message_hex` are deliberately NOT replayed: they pin one
- * example JSON serialization (the connector's own, key-alphabetised by
- * `serde_json`), but JSON key order carries no meaning to a JSON parser and
- * is not part of the contract — only the EIP-712 digest and signature are.
+ * example JSON serialization of the auth entry (the connector's own, key-
+ * alphabetised by `serde_json`), and this client's greeting is a DIFFERENT
+ * but equally valid encoding — `IsomorphicBtpClient.authenticate()` orders
+ * keys by insertion and spreads a `blockchain` tag in beside them, since its
+ * `BtpChannelDeclaration` covers the Solana shape too. Neither difference is
+ * observable to the verifier: the connector reads the entry field-by-field
+ * off a `serde_json::Value` (`connector-client-edge/src/btp.rs`'s
+ * `auth_channel_proof`), so the contract is which fields are present and what
+ * the EIP-712 digest and signature over them are — which is exactly what the
+ * cases below do replay.
  */
 describe('channel_control_declaration — the BTP auth channelId/expires/signature declaration (connector#795)', () => {
   const cases: ChannelControlDeclarationVector[] =
     vectors.channel_control_declaration?.cases ?? [];
+
+  /**
+   * The same `00`/`01` → `1b`/`1c` normalisation `claim` needs, minus this
+   * section's `0x` prefix — unlike every other section, its `signature_hex`
+   * is the literal string the auth entry's JSON body carries.
+   */
+  const signatureAsViem = (vector: ChannelControlDeclarationVector): Hex =>
+    claimSignatureToViem(vector.signature_hex.slice(2));
 
   it('carries at least one case to replay', () => {
     expect(cases.length).toBeGreaterThan(0);
@@ -786,9 +803,7 @@ describe('channel_control_declaration — the BTP auth channelId/expires/signatu
         channelId: vector.channel_id_hex,
         expires: vector.expires,
       });
-      expect(signature.toLowerCase()).toBe(
-        claimSignatureToViem(vector.signature_hex.slice(2))
-      );
+      expect(signature.toLowerCase()).toBe(signatureAsViem(vector));
     }
   );
 
@@ -801,11 +816,11 @@ describe('channel_control_declaration — the BTP auth channelId/expires/signatu
       // as this section's own doc comment above.
       const recovered = await recoverAddress({
         hash: prefix0x(vector.digest_hex),
-        signature: claimSignatureToViem(vector.signature_hex.slice(2)),
+        signature: signatureAsViem(vector),
       });
-      expect(recovered.toLowerCase() === prefix0x(vector.counterparty_address_hex)).toBe(
-        vector.signature_verifies
-      );
+      const signedByCounterparty =
+        recovered.toLowerCase() === prefix0x(vector.counterparty_address_hex);
+      expect(signedByCounterparty).toBe(vector.signature_verifies);
     }
   );
 
@@ -819,9 +834,7 @@ describe('channel_control_declaration — the BTP auth channelId/expires/signatu
         channelId: vector.channel_id_hex,
         expires: vector.expires,
       });
-      expect(elsewhere.toLowerCase()).not.toBe(
-        claimSignatureToViem(vector.signature_hex.slice(2))
-      );
+      expect(elsewhere.toLowerCase()).not.toBe(signatureAsViem(vector));
     }
   );
 });

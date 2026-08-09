@@ -179,8 +179,8 @@ export interface ChannelControlDeclarationVector {
   digest_hex: string;
   /** `0x`-prefixed, unlike this file's other hex fields. */
   signature_hex: string;
-  /** The auth entry's full JSON body — not byte-replayed here (see
-   * wire-vectors.test.ts): JSON key order is not part of the contract. */
+  /** The auth entry's full JSON body — one valid serialization of it, not
+   * byte-replayed here; see `wire-vectors.test.ts` for why. */
   auth_json: string;
   btp_message_hex: string;
   signature_verifies: boolean;

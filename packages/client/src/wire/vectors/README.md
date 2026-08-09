@@ -19,11 +19,11 @@ six sections: `envelope` against `src/wire/envelope.ts`, `giftwrap` and
 
 A vendored copy that can drift silently is the worst option, so this one cannot:
 
-| | |
-|---|---|
-| **Integrity** | `wire-vectors.test.ts` hashes the vendored file every run and fails if it does not match `provenance.sha256`. Hand-editing the copy to make a failing replay pass is therefore not possible without also editing the provenance, which shows up in review as exactly what it is. |
-| **Drift** | `pnpm --filter @toon-protocol/client vectors:check` fetches the connector's current `main` copy and fails if it differs, printing both SHA-256s. `.github/workflows/wire-vectors-drift.yml` runs it daily (06:17 UTC), on `workflow_dispatch`, and on any PR touching `src/wire/**`, `scripts/refresh-wire-vectors.mjs` or the workflow itself. It installs nothing (node builtins + global `fetch` only), so it is a ~10s job. **A red drift job is not a broken build** — it means the wire moved and this client has not adopted it yet; the fix is a refresh, below. |
-| **Refresh** | `pnpm --filter @toon-protocol/client vectors:refresh` rewrites both files from connector `main` (or `--ref <sha>`). The diff it produces is the wire change. |
+|               |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Integrity** | `wire-vectors.test.ts` hashes the vendored file every run and fails if it does not match `provenance.sha256`. Hand-editing the copy to make a failing replay pass is therefore not possible without also editing the provenance, which shows up in review as exactly what it is.                                                                                                                                                                                                                                                                                         |
+| **Drift**     | `pnpm --filter @toon-protocol/client vectors:check` fetches the connector's current `main` copy and fails if it differs, printing both SHA-256s. `.github/workflows/wire-vectors-drift.yml` runs it daily (06:17 UTC), on `workflow_dispatch`, and on any PR touching `src/wire/**`, `scripts/refresh-wire-vectors.mjs` or the workflow itself. It installs nothing (node builtins + global `fetch` only), so it is a ~10s job. **A red drift job is not a broken build** — it means the wire moved and this client has not adopted it yet; the fix is a refresh, below. |
+| **Refresh**   | `pnpm --filter @toon-protocol/client vectors:refresh` rewrites both files from connector `main` (or `--ref <sha>`). The diff it produces is the wire change.                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 The rejected alternatives:
 
@@ -43,7 +43,7 @@ removes the one thing vendoring costs.
 Run `vectors:refresh` when — and only when — you are **deliberately adopting a wire
 change**: the drift job has gone red, or you are landing a client change against a
 connector commit that moved these bytes. It is never a fix for a failing replay on
-its own; it is the act of accepting a new contract, and the diff it produces *is* the
+its own; it is the act of accepting a new contract, and the diff it produces _is_ the
 wire change, so it belongs in a commit of its own with that framing.
 
 ```sh
@@ -105,10 +105,10 @@ than any of the three silently passing through.
 
 ### Why `claim` is replayed here
 
-The connector moved its *peer* wire onto EIP-712 `BalanceProof` in ADR 0024;
+The connector moved its _peer_ wire onto EIP-712 `BalanceProof` in ADR 0024;
 this client does not sign peer-wire claims, so it would have been defensible to
 carry the section and skip it. It is replayed anyway because this client already
-signs **exactly that struct** on the *client edge*:
+signs **exactly that struct** on the _client edge_:
 `EvmSigner.signBalanceProof` uses a `TokenNetwork`/`1` domain with a per-channel
 `chainId`/`verifyingContract` and the same five-field `BalanceProof` with
 zeroed `lockedAmount`/`locksRoot`. It reproduces the published `digest_hex` and
@@ -135,10 +135,17 @@ byte-for-byte from the published fields and fixture secret, using the same
 `00`/`01` → `1b`/`1c` recovery-id normalisation as `claim`.
 
 Not replayed: `auth_json`/`btp_message_hex`, which pin one example JSON
-serialization (the connector's own, key-alphabetised by `serde_json`). JSON
-key order carries no meaning to a JSON parser and is not part of the
-contract — `IsomorphicBtpClient.ts` builds the same fields in a different
-(insertion) order, which is an equally valid encoding of the same object.
+serialization of the auth entry — the connector's own, key-alphabetised by
+`serde_json`. This client's greeting is a different but equally valid
+encoding of it: `IsomorphicBtpClient.authenticate()` orders keys by insertion
+and spreads a `blockchain` tag in beside them, because its
+`BtpChannelDeclaration` covers the Solana shape too. Neither difference is
+observable to the verifier — the connector reads the entry field-by-field off
+a `serde_json::Value` (`connector-client-edge/src/btp.rs`'s
+`auth_channel_proof`), so what the contract fixes is which fields are present
+and what the EIP-712 digest and signature over them are, which is exactly
+what is replayed above.
+
 Also not replayed: the `expires` wall-clock check — that is the verifier's
 (the connector's) job, not the declarer's; `channel_control_declaration_expired`
 carries a genuinely-verifying signature for exactly this reason (see the

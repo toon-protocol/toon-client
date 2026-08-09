@@ -58,8 +58,10 @@ jobs:
 
       # No install step: the script uses only node: builtins and global fetch,
       # so this stays a ~10s job.
+      # The three steps below key off this one's outcome via `failure()` /
+      # `success()`, so it deliberately carries no `continue-on-error`: a
+      # drifted run must still end red, issue or no issue.
       - name: Compare against toon-protocol/connector@main
-        id: check
         run: node packages/client/scripts/refresh-wire-vectors.mjs --check
 
       - name: Find existing drift tracking issue
