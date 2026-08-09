@@ -52,6 +52,8 @@ describe('initializeHttpMode', () => {
       maxRetries: 3,
       retryDelay: 1000,
       destinationAddress: 'g.toon.genesis',
+      preferBtpForPaidWrites: false,
+      jobHandlerSealed: false,
     };
   });
 

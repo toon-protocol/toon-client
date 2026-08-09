@@ -68,10 +68,14 @@
  * facts about a peer, and collapsing them loses the distinction at every call
  * site.
  *
- * ─── Additive ───────────────────────────────────────────────────────────────
- * Nothing in this client's live send path calls this yet — `publishEvent` is
- * still the latin1 HTTP framing in `utils/store-envelope.ts`. Rewiring it is a
- * later child (toon-client#450).
+ * ─── Callers ────────────────────────────────────────────────────────────────
+ * `ToonClient.publishEvent` (toon-client#450) seals to a connector that
+ * TERMINATES the destination and lets it derive the fulfilment (ADR 0019),
+ * via `wire/sealed-exchange.ts`. `serve-job.ts`'s `createJobMessageHandler`
+ * (toon-client#537) is the other direction: THIS client is the destination,
+ * so it opens a request addressed to its own {@link giftWrapPublicKey} and
+ * seals the answer back — never a connector-derived fulfilment, since the
+ * hashlock preimage there comes from `hashlock-delivery.ts` instead.
  */
 
 import { secp256k1 } from '@noble/curves/secp256k1.js';
@@ -266,6 +270,23 @@ export function localGiftWrapEcdh(secretKey: Uint8Array): GiftWrapEcdh {
     ecdh: (ephemeralPublicKey) =>
       ecdhXCoordinate(secretKey, ephemeralPublicKey),
   };
+}
+
+/**
+ * The 65-byte uncompressed secp256k1 public key a `secretKey` opens gift
+ * wraps under — the counterpart {@link openRequest}/{@link localGiftWrapEcdh}
+ * derive their ECDH from, and the same format a real connector reports from
+ * `GET /ilp/identity` (`ConnectorIdentity.publicKey`). A caller publishes
+ * this as a `kind:31990` advertisement's `seal_pubkey` tag (toon-meta#266
+ * §3.1) so a buyer can seal a job's PREPARE `data` to it directly, without a
+ * `GET /identity` this client cannot serve (ADR 0022).
+ */
+export function giftWrapPublicKey(secretKey: Uint8Array): Uint8Array {
+  try {
+    return secp256k1.getPublicKey(secretKey, false);
+  } catch {
+    throw new GiftWrapError(GiftWrapErrorKind.InvalidKey);
+  }
 }
 
 // ─── Request direction ──────────────────────────────────────────────────────

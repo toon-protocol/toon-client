@@ -438,6 +438,7 @@ export {
   GIFTWRAP_TYPE_RESPONSE,
   deriveCondition,
   deriveFulfillment,
+  giftWrapPublicKey,
   localGiftWrapEcdh,
   looksLikeSealedResponse,
   openRequest,
