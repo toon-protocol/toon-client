@@ -3,16 +3,19 @@
   "sourceRepo": "toon-protocol/connector",
   "sourcePath": "vectors/wire-vectors.json",
   "sourceRawUrl": "https://raw.githubusercontent.com/toon-protocol/connector/{ref}/vectors/wire-vectors.json",
-  "connectorCommit": "425a8abb72e982f43955c35d9c0cf50fd5a2d55e",
-  "connectorCommitDate": "2026-07-28T21:14:33Z",
-  "connectorCommitSubject": "RALPH: connector-vectors: add claim vectors, document wire mechanism, gate seal-with-randomness (issue #587) (#588)",
+  "connectorCommit": "33f10e2a00beae51d745409b6f29f9e5c19e20a1",
+  "connectorCommitDate": "2026-08-05T22:26:16Z",
+  "connectorCommitSubject": "The auth channel-control declaration has no wire vector, and toon-client must match it byte for byte (#795)",
   "schemaVersion": 1,
-  "sha256": "a11bb7c333b5fab8516a7f687c746a2fdf87b2ffbc9bacf002c6603f784bca51",
+  "sha256": "d9596ac5c07d87c5df767bbf4aa3cc4b6b4839b150c978ce07c7675df3fa7c40",
   "sectionsReplayed": [
     "envelope",
     "giftwrap",
     "fulfilment",
-    "claim"
+    "claim",
+    "channel_control_declaration"
   ],
-  "sectionsPresentNotYetReplayed": []
+  "sectionsPresentNotYetReplayed": [
+    "peer_carriage"
+  ]
 }

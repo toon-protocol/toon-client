@@ -9,9 +9,11 @@ termination wire ([connector ADR
 reproducing these bytes is what conformance means for this client.
 
 `wire-vectors.provenance.json` records the connector commit it came from and the
-SHA-256 of the copy. `src/wire/wire-vectors.test.ts` replays all four sections:
-`envelope` against `src/wire/envelope.ts`, `giftwrap` and `fulfilment` against
-`src/wire/giftwrap.ts`, and `claim` against `src/signing/evm-signer.ts`.
+SHA-256 of the copy. `src/wire/wire-vectors.test.ts` replays five of the file's
+six sections: `envelope` against `src/wire/envelope.ts`, `giftwrap` and
+`fulfilment` against `src/wire/giftwrap.ts`, and `claim` and
+`channel_control_declaration` against `src/signing/evm-signer.ts`.
+`peer_carriage` is carried but deliberately not replayed — see below.
 
 ## Why vendored, and not fetched or submoduled
 
@@ -58,8 +60,8 @@ signal, not a flake. Commit `wire-vectors.json` and
 
 ## Sections
 
-`schema_version` is `1`. The file carries four sections, and as of
-toon-client#449 this repo replays **all four**:
+`schema_version` is `1`. The file carries six sections; this repo replays
+**five** of them:
 
 - `envelope` — **replayed** (toon-client#448): 5 valid round-trips + 8 rejection
   cases.
@@ -78,16 +80,28 @@ toon-client#449 this repo replays **all four**:
   [connector ADR
   0024](https://github.com/toon-protocol/connector/blob/main/docs/adr/0024-peer-wire-claims-sign-the-eip-712-balance-proof.md),
   replayed against `src/signing/evm-signer.ts`. See below.
+- `peer_carriage` — **carried, NOT replayed** (connector#758): the
+  connector-to-connector peer wire (`docs/protocol/peer-carriage-spec.md` §10
+  on the connector). This client is not a peer connector — it never speaks BTP
+  claim-ack/flush carriage to another connector — so there is nothing in this
+  repo for these 20 items to be conformance evidence against. Declared in
+  `sectionsPresentNotYetReplayed` rather than silently dropped from the
+  loader's schema.
+- `channel_control_declaration` — **replayed** (connector#795 added it, toon-
+  client#540): the BTP auth greeting's `channelId`/`expires`/`signature`
+  declaration, replayed against `src/signing/evm-signer.ts`. See below.
 
-`loadWireVectors()` in `load.ts` exposes all four, so adding a section to the
+`loadWireVectors()` in `load.ts` exposes all six, so adding a section to the
 harness is a new `describe` block, not a restructure — which is exactly how
-`giftwrap` and `fulfilment` arrived. The **not replayed** label is enforced, not
-decorative: `WIRE_VECTOR_SECTIONS` in `load.ts` is a closed
-list, and the harness fails if the vendored file carries a section that is not
-in it, or one that is neither in `sectionsReplayed` nor in
-`sectionsPresentNotYetReplayed`. A section the connector adds therefore breaks
-the build until someone decides, in writing, what this repo does with it — which
-is how `claim` came to be replayed rather than ignored.
+`giftwrap`, `fulfilment` and `channel_control_declaration` arrived. The **not
+replayed** label is enforced, not decorative: `WIRE_VECTOR_SECTIONS` in
+`load.ts` is a closed list, and the harness fails if the vendored file carries
+a section that is not in it, or one that is neither in `sectionsReplayed` nor
+in `sectionsPresentNotYetReplayed`. A section the connector adds therefore
+breaks the build until someone decides, in writing, what this repo does with
+it — which is how `claim` and `channel_control_declaration` came to be
+replayed, and `peer_carriage` came to be carried-but-declared-skipped, rather
+than any of the three silently passing through.
 
 ### Why `claim` is replayed here
 
@@ -105,3 +119,27 @@ a dropped zero field would all change the digest and fail.
 The one representation difference is normalised in the harness rather than
 papered over: the vectors carry a raw `recovery_id` of `00`/`01`, while viem —
 like every wallet — emits `1b`/`1c`.
+
+### Why `channel_control_declaration` is replayed here
+
+This is the client-edge wire, not the peer wire (unlike `peer_carriage`
+above): it is the BTP auth entry a **client** sends to declare which channel
+it controls, and `btp/IsomorphicBtpClient.ts` already sends exactly this
+declaration on every `connect()`/`reauthenticate()` (toon-client#513). The
+signature is produced by `EvmSigner.signClaimStateChallenge`, under the same
+`TokenNetwork`/`1` domain as `claim` but a distinct
+`ClaimStateChallenge(bytes32 channelId,uint256 expires)` typehash — so a
+captured declaration and a captured claim can never stand in for each other.
+The vectors' `digest_hex` and 65-byte `signature_hex` are reproduced
+byte-for-byte from the published fields and fixture secret, using the same
+`00`/`01` → `1b`/`1c` recovery-id normalisation as `claim`.
+
+Not replayed: `auth_json`/`btp_message_hex`, which pin one example JSON
+serialization (the connector's own, key-alphabetised by `serde_json`). JSON
+key order carries no meaning to a JSON parser and is not part of the
+contract — `IsomorphicBtpClient.ts` builds the same fields in a different
+(insertion) order, which is an equally valid encoding of the same object.
+Also not replayed: the `expires` wall-clock check — that is the verifier's
+(the connector's) job, not the declarer's; `channel_control_declaration_expired`
+carries a genuinely-verifying signature for exactly this reason (see the
+vectors' own `signature_verifies`).
