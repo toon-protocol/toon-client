@@ -372,12 +372,20 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   // paid writes route through `POST /ilp` via HttpIlpClient.
   const hasUplink = Boolean(btpUrl || proxyUrl);
   // Network defaults are bootstrapped from the committed genesis peer list
-  // (`@toon-protocol/core` → discovery/genesis-peers.json) — the seed apex's
-  // relay + ILP anchor — rather than hardcoded per-network literals here. The
-  // seed is a pointer; the apex's kind:10032 announcement organically
-  // distributes the rest. Env/file values still win; the trailing literals are
-  // last-resort fallbacks for an empty genesis list.
-  const genesisSeed = GenesisPeerLoader.loadGenesisPeers()[0];
+  // (`@toon-protocol/core` → discovery/genesis-peers.json) rather than
+  // hardcoded per-network literals here. Since core@3.3.0 (issue #536) the
+  // seed carries TWO independent entries — the relay box (`g.toon.relay`)
+  // and the store box (`g.toon.ario`) — with no forwarding between them (the
+  // apex that used to bridge them is retired). Each is a pointer; every
+  // node's own kind:10032 announcement organically distributes the rest.
+  // Env/file values still win; the trailing literals are last-resort
+  // fallbacks for an empty genesis list.
+  const genesisPeers = GenesisPeerLoader.loadGenesisPeers();
+  const genesisSeed = genesisPeers[0];
+  // The store's own genesis entry, independent of whichever entry `destination`
+  // defaults to — NOT derived from it, since the two nodes no longer share an
+  // address namespace to derive from (see deriveRouteDestinations below).
+  const genesisStorePeer = genesisPeers.find((p) => p.ilpAddress.endsWith('.ario'));
   const relayUrl =
     process.env['TOON_CLIENT_RELAY_URL'] ??
     file.relayUrl ??
@@ -386,21 +394,29 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const httpPort = Number(
     process.env['TOON_CLIENT_HTTP_PORT'] ?? file.httpPort ?? 8787
   );
+  const explicitDestination =
+    process.env['TOON_CLIENT_DESTINATION'] ?? file.destination;
   const destination =
-    process.env['TOON_CLIENT_DESTINATION'] ??
-    file.destination ??
+    explicitDestination ??
     genesisSeed?.ilpAddress ??
     // `g.proxy` was the retired TypeScript connector; the live apex answers to
     // `g.toon`. Only reachable with an empty genesis list, but a last-resort
     // fallback naming a decommissioned node is never the right guess.
     'g.toon';
   // Publishes (relay writes) and uploads (store/Arweave) terminate at DIFFERENT
-  // backends behind the proxy and so route to different ILP destinations. When
-  // not set explicitly they're DERIVED from the channel anchor (see
-  // deriveRouteDestinations) — NOT reused verbatim, which would forward a
-  // `/write` to the store backend and 404. This makes a single-`destination`
-  // config (old or auto-discovered) publish correctly with zero extra keys.
-  const routes = deriveRouteDestinations(destination);
+  // backends and so route to different ILP destinations. An EXPLICIT
+  // destination (old apex/proxy topologies) is still split via the
+  // `<base>.relay.store` anchor convention (see deriveRouteDestinations) —
+  // NOT reused verbatim, which would forward a `/write` to the store backend
+  // and 404. Absent an explicit destination, the two genesis entries are used
+  // directly instead of parsed out of one anchor, since the relay and store
+  // boxes are independent and no longer share a common prefix to split.
+  const routes = explicitDestination
+    ? deriveRouteDestinations(explicitDestination)
+    : {
+        publish: genesisSeed?.ilpAddress ?? destination,
+        store: genesisStorePeer?.ilpAddress ?? genesisSeed?.ilpAddress ?? destination,
+      };
   const publishDestination =
     process.env['TOON_CLIENT_PUBLISH_DESTINATION'] ??
     file.publishDestination ??
