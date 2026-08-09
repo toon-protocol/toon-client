@@ -7,12 +7,21 @@ Take up `@toon-protocol/core@3.3.0`'s reseeded genesis peers so a fresh
 install bootstraps against both surviving devnet nodes and regains store
 access (issue #536, toon-meta#310).
 
-The devnet apex is retired: the relay (`g.toon.relay`) and store
-(`g.toon.ario`) are now two independent connectors with no forwarding
-between them (verified live — each returns `no route` for the other's
-address). `@toon-protocol/core@3.3.0`'s genesis seed carries both as
-separate entries; `@toon-protocol/sdk` is bumped to `^3.1.7` alongside it
-(a dependency of core's release).
+The devnet is moving to two nodes: the relay (`g.toon.relay`) and the store
+(`g.toon.ario`) are separate connectors, and `@toon-protocol/core@3.3.0`'s
+genesis seed carries both as separate entries. `@toon-protocol/sdk` is
+bumped to `^3.1.7` alongside it (a dependency of core's release).
+
+**The apex is still running**, and still prices both routes — verified live
+2026-08-09: `GET /ilp/routes/price` against
+`https://proxy.devnet.toonprotocol.dev` returns `g.toon.relay` at 1 and
+`g.toon.ario` at 1002, the second being the forwarding markup over the
+store's own price. Retiring it is toon-meta#313, which has not happened.
+What IS true today is that the two leaf connectors do not forward for each
+other yet: the relay's uplink returns `no route this connector serves
+matches 'g.toon.ario'`. Under the two-node target they will carry for each
+other for a fee (toon-meta#310), and until that peering exists a client
+whose only uplink is the relay cannot reach the store.
 
 `client-mcp`'s `resolveConfig` used to take only the seed's first entry and
 derive BOTH the publish and store destinations from it via the retired
