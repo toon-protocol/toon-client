@@ -54,10 +54,11 @@ The daemon reads `~/.toon-client/config.json` automatically (override the dir wi
 `TOON_CLIENT_HOME`). With this file present you need **no env vars at all**, which is what keeps the
 Windows/WSL bridge in §3 trivial.
 
-> Updated 2026-08-10 (issue #536): the devnet's old single apex is gone — the relay
-> (`g.toon.relay`) and the store (`g.toon.ario`) are now two INDEPENDENT connectors with no
-> forwarding between them. The `destination: g.proxy.relay.store` pin this doc used to show routes
-> to neither box on the current deployment (confirmed live: all three devnet connectors 404 it).
+> Updated 2026-08-10 (issue #536): the relay (`g.toon.relay`) and the store (`g.toon.ario`) are now
+> two INDEPENDENT connectors that do not forward for each other, and the devnet's old
+> `g.proxy.*` addressing is gone. The `destination: g.proxy.relay.store` pin this doc used to show
+> routes to neither box on the current deployment (confirmed live: all three devnet connectors
+> 404 it).
 > Leave `destination` **unset** instead — `@toon-protocol/core`'s genesis peer seed supplies both
 > addresses, and the daemon auto-registers a SECOND uplink for the store from the seed's own
 > `btpEndpoint` so writes and uploads route correctly without any settlement maps to hand-maintain:

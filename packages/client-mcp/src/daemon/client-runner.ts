@@ -525,9 +525,7 @@ export class ClientRunner {
         childPeers: [],
         destination: this.config.storeDestination,
         chain: this.config.chain,
-        channelStorePath: this.apexChannelStorePathFor(
-          this.defaultStoreBtpUrl
-        ),
+        channelStorePath: this.apexChannelStorePathFor(this.defaultStoreBtpUrl),
         feePerEvent: this.config.feePerEvent,
         isDefault: true,
       });
@@ -557,10 +555,9 @@ export class ClientRunner {
     // Read-only daemon (no proxy/BTP uplink): never bootstrap an apex — there is
     // no write transport and FREE reads run off the relay subscription (#69).
     if (!this.config.hasUplink) return Promise.resolve();
-    const targets = [this.apexes.get(this.defaultBtpUrl), this.defaultStoreApex()].filter(
+    const targets = [this.defaultApex(), this.defaultStoreApex()].filter(
       (a): a is ApexConnection => a !== undefined
     );
-    if (targets.length === 0) return Promise.resolve();
     return Promise.all(targets.map((a) => this.bootstrapApex(a))).then(
       () => undefined
     );
@@ -915,7 +912,10 @@ export class ClientRunner {
       // already registered in the constructor; `instantiateApex`'s own
       // `apexes.has` guard would no-op these anyway, but skip explicitly so
       // the intent reads at the call site.
-      if (a.btpUrl === this.defaultBtpUrl || a.btpUrl === this.defaultStoreBtpUrl)
+      if (
+        a.btpUrl === this.defaultBtpUrl ||
+        a.btpUrl === this.defaultStoreBtpUrl
+      )
         continue;
       void this.instantiateApex(a, false).catch((err) =>
         this.log(`[runner] replay apex ${a.btpUrl} failed: ${errMsg(err)}`)
@@ -2365,23 +2365,6 @@ export class ClientRunner {
   // ── Git write path (/git/*, epic #222 ticket #227) ────────────────────────
 
   /**
-   * The daemon `Publisher` implementation (see @toon-protocol/rig) for one
-   * apex. Maps the interface onto the runner's production paid-write
-   * machinery:
-   *
-   *  - `getFeeRates`: flat `apex.feePerEvent` per publish + the network
-   *    per-byte upload rate.
-   *  - `uploadGitObject`: kind:5094 store write with Git-SHA/Git-Type/Repo
-   *    tags (the proven seed-pipeline shape), signed with the daemon key,
-   *    paid via signBalanceProof on the apex channel, routed to the store
-   *    destination (`POST /store`); the Arweave txId is decoded from the
-   *    FULFILL HTTP envelope.
-   *  - `publishEvent`: sign with the daemon key + the standard paid publish
-   *    path (signBalanceProof → publishEvent → feePaid). The daemon owns its
-   *    write routing (config-seeded relay via the apex), so the advisory
-   *    `relayUrls` list is not consulted here — remote-state reads DO use it.
-   */
-  /**
    * What one store write costs: the store destination's flat route price, as
    * the terminating connector reports it.
    *
@@ -2408,11 +2391,27 @@ export class ClientRunner {
   }
 
   /**
-   * `apex` handles the RELAY leg (publishEvent — kind:30617/30618); `storeApex`
-   * handles the STORE leg (uploadGitObject + its route price) — two DIFFERENT
-   * connectors since core@3.3.0's two-node genesis seed (issue #536
-   * correction). The two coincide (same `ApexConnection`) whenever no
+   * The daemon `Publisher` implementation (see @toon-protocol/rig) for one
+   * push. `apex` handles the RELAY leg (publishEvent — kind:30617/30618);
+   * `storeApex` handles the STORE leg (uploadGitObject + its route price) —
+   * two DIFFERENT connectors since core@3.3.0's two-node genesis seed (issue
+   * #536 correction). The two coincide (same `ApexConnection`) whenever no
    * `storeBtpUrl` is configured, so this is a no-op split for that topology.
+   *
+   * Maps the interface onto the runner's production paid-write machinery:
+   *
+   *  - `getFeeRates`: flat `apex.feePerEvent` per publish + the store route's
+   *    flat price as `storeApex`'s connector reports it.
+   *  - `uploadGitObject`: kind:5094 store write with Git-SHA/Git-Type/Repo
+   *    tags (the proven seed-pipeline shape), signed with the daemon key,
+   *    paid via signBalanceProof on the STORE apex channel, routed to the
+   *    store destination (`POST /store`); the Arweave txId is decoded from
+   *    the FULFILL HTTP envelope.
+   *  - `publishEvent`: sign with the daemon key + the standard paid publish
+   *    path (signBalanceProof → publishEvent → feePaid) on the relay apex.
+   *    The daemon owns its write routing (config-seeded relay via the apex),
+   *    so the advisory `relayUrls` list is not consulted here — remote-state
+   *    reads DO use it.
    */
   private gitPublisher(
     apex: ApexConnection,

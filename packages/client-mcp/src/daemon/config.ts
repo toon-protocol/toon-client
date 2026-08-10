@@ -360,6 +360,13 @@ function parseCsvEnv(value: string | undefined): string[] | undefined {
 }
 
 /**
+ * Last ILP segment of the genesis STORE peer (`g.toon.ario` — the ar.io
+ * gateway box). The genesis entries carry no role field, so the address suffix
+ * is the only thing that tells the store node apart from the relay node.
+ */
+const STORE_ADDRESS_SUFFIX = '.ario';
+
+/**
  * Derive the publish/upload ROUTES from the apex channel anchor. Behind the
  * devnet proxy the anchor follows `<base>.relay.store` (e.g. `g.proxy.relay.store`):
  * publishes terminate at the relay (`<base>.relay`) and uploads at the store
@@ -367,13 +374,6 @@ function parseCsvEnv(value: string | undefined): string[] | undefined {
  * to the store backend → HTTP 404. Anchors that don't match the convention fall
  * back to the anchor unchanged (back-compat for non-proxy / custom topologies).
  */
-/**
- * Last ILP segment of the genesis STORE peer (`g.toon.ario` — the ar.io
- * gateway box). The genesis entries carry no role field, so the address suffix
- * is the only thing that tells the store node apart from the relay node.
- */
-const STORE_ADDRESS_SUFFIX = '.ario';
-
 function deriveRouteDestinations(anchor: string): {
   publish: string;
   store: string;
@@ -408,9 +408,9 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   // (`@toon-protocol/core` → discovery/genesis-peers.json) rather than
   // hardcoded per-network literals here. Since core@3.3.0 (issue #536) the
   // seed carries TWO independent entries — the relay box (`g.toon.relay`)
-  // and the store box (`g.toon.ario`) — with no forwarding between them (the
-  // apex that used to bridge them is retired). Each is a pointer; every
-  // node's own kind:10032 announcement organically distributes the rest.
+  // and the store box (`g.toon.ario`) — which do not forward for each other,
+  // so neither address can be derived from the other. Each is a pointer;
+  // every node's own kind:10032 announcement organically distributes the rest.
   // Env/file values still win; the trailing literals are last-resort
   // fallbacks for an empty genesis list.
   const genesisPeers = GenesisPeerLoader.loadGenesisPeers();
