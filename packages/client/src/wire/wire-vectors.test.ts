@@ -10,9 +10,11 @@
  * loses cannot leave a silently-passing assertion behind.
  *
  * Structure: one top-level `describe` per section, each driven by `it.each`
- * over `loadWireVectors()`. `giftwrap` and `fulfilment` (toon-client#449)
- * arrived as exactly that — two new blocks, no restructure — and every section
- * the file carries is now replayed.
+ * over `loadWireVectors()`. `giftwrap` and `fulfilment` (toon-client#449) and
+ * `channel_control_declaration` (toon-client#540) each arrived as exactly that
+ * — a new block, no restructure. Every section the file carries is replayed
+ * except `peer_carriage`, the connector-to-connector wire no client SDK
+ * speaks, which is declared in `sectionsPresentNotYetReplayed` instead.
  *
  * A section this harness has NOT been taught is a failure, not a no-op — see
  * "accounts for every section the file carries" below.
@@ -29,6 +31,7 @@ import {
   loadWireVectors,
   loadWireVectorsProvenance,
   wireVectorsSha256,
+  type ChannelControlDeclarationVector,
   type ClaimVector,
   type EnvelopeInvalidVector,
   type EnvelopeValidVector,
@@ -108,14 +111,22 @@ describe('the vendored vector file', () => {
   });
 
   it('replays the sections its provenance claims it replays', () => {
-    // Every section the file carries is now reproduced by this repo's own
-    // code: `envelope` and `giftwrap`/`fulfilment` against `src/wire/`, and
-    // `claim` against `src/signing/evm-signer.ts`. Nothing is carried for
-    // decoration.
+    // Every replayed section is reproduced by this repo's own code:
+    // `envelope` and `giftwrap`/`fulfilment` against `src/wire/`, and `claim`
+    // and `channel_control_declaration` against `src/signing/evm-signer.ts`.
+    // `peer_carriage` is the one deliberate exception — the
+    // connector-to-connector peer wire, which no client SDK speaks (see
+    // `PeerCarriageVectors`'s doc comment in `vectors/load.ts`).
     expect(new Set(provenance.sectionsReplayed)).toEqual(
-      new Set(['envelope', 'giftwrap', 'fulfilment', 'claim'])
+      new Set([
+        'envelope',
+        'giftwrap',
+        'fulfilment',
+        'claim',
+        'channel_control_declaration',
+      ])
     );
-    expect(provenance.sectionsPresentNotYetReplayed).toEqual([]);
+    expect(provenance.sectionsPresentNotYetReplayed).toEqual(['peer_carriage']);
   });
 });
 
@@ -697,6 +708,133 @@ describe('claim — the EIP-712 BalanceProof this client signs (connector ADR 00
       expect(elsewhere.signature.toLowerCase()).not.toBe(
         claimSignatureToViem(vector.signature_hex)
       );
+    }
+  );
+});
+
+// ─── channel_control_declaration ───────────────────────────────────────────
+
+/**
+ * Replayed against `signing/evm-signer.ts`'s `signClaimStateChallenge` — the
+ * BTP auth greeting's `channelId`/`expires`/`signature` declaration
+ * (connector#795, client-edge-spec.md §1.9 step 1), which this client already
+ * sends on every `connect()`/`reauthenticate()` (`btp/IsomorphicBtpClient.ts`,
+ * toon-client#513). Signed under the SAME `TokenNetwork`/`1` domain as
+ * `claim` above but a distinct `ClaimStateChallenge(bytes32,uint256)`
+ * typehash, so a captured declaration can never be replayed as a claim.
+ *
+ * Unlike `claim`, this section's `expires` is a wall-clock fact the verifier
+ * (the connector, not this client) checks separately from the signature
+ * (`channel_control_declaration_expired` has a genuinely verifying
+ * signature) — nothing here replays that half, only the EIP-712 scheme this
+ * client is the one producing.
+ *
+ * `auth_json`/`btp_message_hex` are deliberately NOT replayed: they pin one
+ * example JSON serialization of the auth entry (the connector's own, key-
+ * alphabetised by `serde_json`), and this client's greeting is a DIFFERENT
+ * but equally valid encoding — `IsomorphicBtpClient.authenticate()` orders
+ * keys by insertion and spreads a `blockchain` tag in beside them, since its
+ * `BtpChannelDeclaration` covers the Solana shape too. Neither difference is
+ * observable to the verifier: the connector reads the entry field-by-field
+ * off a `serde_json::Value` (`connector-client-edge/src/btp.rs`'s
+ * `auth_channel_proof`), so the contract is which fields are present and what
+ * the EIP-712 digest and signature over them are — which is exactly what the
+ * cases below do replay.
+ */
+describe('channel_control_declaration — the BTP auth channelId/expires/signature declaration (connector#795)', () => {
+  const cases: ChannelControlDeclarationVector[] =
+    vectors.channel_control_declaration?.cases ?? [];
+
+  /**
+   * The same `00`/`01` → `1b`/`1c` normalisation `claim` needs, minus this
+   * section's `0x` prefix — unlike every other section, its `signature_hex`
+   * is the literal string the auth entry's JSON body carries.
+   */
+  const signatureAsViem = (vector: ChannelControlDeclarationVector): Hex =>
+    claimSignatureToViem(vector.signature_hex.slice(2));
+
+  it('carries at least one case to replay', () => {
+    expect(cases.length).toBeGreaterThan(0);
+  });
+
+  it.each(cases.map((c) => [c.name, c] as const))(
+    "computes %s's published digest from the published fields",
+    (_name, vector) => {
+      const digest = hashTypedData({
+        domain: {
+          name: CLAIM_DOMAIN_NAME,
+          version: CLAIM_DOMAIN_VERSION,
+          chainId: vector.chain_id,
+          verifyingContract: prefix0x(vector.token_network_address_hex),
+        },
+        types: {
+          ClaimStateChallenge: [
+            { name: 'channelId', type: 'bytes32' },
+            { name: 'expires', type: 'uint256' },
+          ],
+        },
+        primaryType: 'ClaimStateChallenge',
+        message: {
+          channelId: vector.channel_id_hex as Hex,
+          expires: BigInt(vector.expires),
+        },
+      });
+      expect(digest).toBe(prefix0x(vector.digest_hex));
+    }
+  );
+
+  it.each(cases.map((c) => [c.name, c] as const))(
+    "derives %s's published signer address from its fixture secret",
+    (_name, vector) => {
+      const signer = new EvmSigner(prefix0x(vector.signer_secret_hex));
+      expect(signer.address.toLowerCase()).toBe(
+        prefix0x(vector.signer_address_hex)
+      );
+    }
+  );
+
+  it.each(cases.map((c) => [c.name, c] as const))(
+    'reproduces %s byte-for-byte through EvmSigner.signClaimStateChallenge',
+    async (_name, vector) => {
+      const signer = new EvmSigner(prefix0x(vector.signer_secret_hex));
+      const signature = await signer.signClaimStateChallenge({
+        chainId: vector.chain_id,
+        tokenNetworkAddress: prefix0x(vector.token_network_address_hex),
+        channelId: vector.channel_id_hex,
+        expires: vector.expires,
+      });
+      expect(signature.toLowerCase()).toBe(signatureAsViem(vector));
+    }
+  );
+
+  it.each(cases.map((c) => [c.name, c] as const))(
+    "recovers %s's signature to signature_verifies against the counterparty",
+    async (_name, vector) => {
+      // `signature_verifies` is `false` exactly when the signer is NOT the
+      // channel's registered counterparty (channel_control_declaration_wrong_key)
+      // — never about `expires`, which this test deliberately ignores, same
+      // as this section's own doc comment above.
+      const recovered = await recoverAddress({
+        hash: prefix0x(vector.digest_hex),
+        signature: signatureAsViem(vector),
+      });
+      const signedByCounterparty =
+        recovered.toLowerCase() === prefix0x(vector.counterparty_address_hex);
+      expect(signedByCounterparty).toBe(vector.signature_verifies);
+    }
+  );
+
+  it.each(cases.map((c) => [c.name, c] as const))(
+    'binds %s to its own channel domain, not a node-wide one',
+    async (_name, vector) => {
+      const signer = new EvmSigner(prefix0x(vector.signer_secret_hex));
+      const elsewhere = await signer.signClaimStateChallenge({
+        chainId: vector.chain_id + 1,
+        tokenNetworkAddress: prefix0x(vector.token_network_address_hex),
+        channelId: vector.channel_id_hex,
+        expires: vector.expires,
+      });
+      expect(elsewhere.toLowerCase()).not.toBe(signatureAsViem(vector));
     }
   );
 });

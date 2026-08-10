@@ -11,6 +11,18 @@ name: Wire vectors drift
 #   pnpm --filter @toon-protocol/client vectors:refresh
 # and make the replay green again.
 
+# A failure on `pull_request` is loud by construction — the PR's own check
+# goes red and its author sees it. A failure on `schedule` is not: nobody is
+# looking at a scheduled job's logs, so issue #540 (two consecutive silent
+# red runs, discovered only when it surfaced as a confusing failure on an
+# unrelated PR) added the "Report drift" / "Close resolved drift" steps below,
+# scoped to `schedule`/`workflow_dispatch` only — they turn a red run into an
+# open-or-updated tracking issue instead of a log nobody reads, and close it
+# again once a refresh lands. Idempotency is a hidden HTML-comment marker in
+# the issue body, searched for via `gh issue list --search`, so a second
+# consecutive drift day updates the existing issue instead of filing a
+# duplicate.
+
 on:
   schedule:
     # Daily, off the hour so it does not pile onto the top-of-hour queue.
@@ -21,6 +33,17 @@ on:
       - 'packages/client/scripts/refresh-wire-vectors.mjs'
       - '.github/workflows/wire-vectors-drift.yml'
   workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  # No colons or multi-word phrases: GitHub's issue search tokenizes on
+  # punctuation, and a `word:` immediately before another word can be
+  # misread as an (invalid) search qualifier. A single hyphenated token,
+  # quoted as an exact phrase in the search below, sidesteps that.
+  DRIFT_ISSUE_MARKER_TOKEN: 'wire-vectors-drift-tracker'
 
 jobs:
   drift:
@@ -35,5 +58,63 @@ jobs:
 
       # No install step: the script uses only node: builtins and global fetch,
       # so this stays a ~10s job.
+      # The three steps below key off this one's outcome via `failure()` /
+      # `success()`, so it deliberately carries no `continue-on-error`: a
+      # drifted run must still end red, issue or no issue.
       - name: Compare against toon-protocol/connector@main
         run: node packages/client/scripts/refresh-wire-vectors.mjs --check
+
+      - name: Find existing drift tracking issue
+        id: find
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "\"$DRIFT_ISSUE_MARKER_TOKEN\" in:body" --json number --jq '.[0].number // empty')
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Report drift as a tracking issue
+        if: failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EXISTING: ${{ steps.find.outputs.number }}
+        run: |
+          set -euo pipefail
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "Still drifted from \`toon-protocol/connector@main\` as of $(date -u +%Y-%m-%dT%H:%M:%SZ) — [run]($RUN_URL)."
+            echo "Updated existing tracking issue #$EXISTING."
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "Vendored wire vectors have drifted from connector@main" \
+              --body "<!-- $DRIFT_ISSUE_MARKER_TOKEN: do not remove, used to find this issue on the next drift run -->
+
+          The vendored wire vectors (\`packages/client/src/wire/vectors/wire-vectors.json\`) no longer match \`toon-protocol/connector@main\`. Every PR's own drift check will fail until this is refreshed — see [this run]($RUN_URL) for the exact SHA-256 mismatch.
+
+          Refresh and make the replay green again:
+          \`\`\`
+          pnpm --filter @toon-protocol/client vectors:refresh
+          pnpm --filter @toon-protocol/client test
+          \`\`\`
+
+          A failing replay after the refresh means the wire changed in a way this client has not adopted yet — that is itself the finding; see \`packages/client/src/wire/vectors/README.md\`.
+
+          This issue is filed automatically by \`.github/workflows/wire-vectors-drift.yml\` and closes itself once the daily check goes green again."
+            echo "Filed a new tracking issue."
+          fi
+
+      - name: Close resolved drift issue
+        if: success() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EXISTING: ${{ steps.find.outputs.number }}
+        run: |
+          set -euo pipefail
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "Back in sync with \`toon-protocol/connector@main\` as of $(date -u +%Y-%m-%dT%H:%M:%SZ) — [run]($RUN_URL). Closing."
+            gh issue close "$EXISTING" --repo "$GITHUB_REPOSITORY"
+            echo "Closed tracking issue #$EXISTING."
+          fi
