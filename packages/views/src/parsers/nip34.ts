@@ -5,6 +5,8 @@
  * kind:30618 repository refs/state   → RepoRefs
  * kind:1621  issue                   → IssueMetadata
  * kind:1617  patch/PR                → PRMetadata
+ * kind:1618  pull request            → PRMetadata
+ * kind:1619  PR update (moves tip)   → PRUpdateMetadata, resolved via resolvePRTip
  * kind:1622  comment                 → CommentMetadata
  * kind:1630-1633 status              → resolved via resolvePRStatus / resolveIssueStatus
  *
@@ -64,6 +66,22 @@ function parseMaintainerTags(tags: string[][]): string[] {
  */
 export function repoAuthorizedAuthors(repo: RepoMetadata): Set<string> {
   return new Set([repo.ownerPubkey.toLowerCase(), ...repo.maintainers]);
+}
+
+/**
+ * Collect every value out of a NIP-34 multi-value tag — e.g. `clone` is
+ * emitted as ONE tag carrying every URL (`["clone", url1, url2, …]`), unlike
+ * `t`/`commit`, which repeat as separate single-value tags. Distinct from
+ * {@link getTagValues} in `types.ts`, which grabs only index 1 per matching
+ * tag and would silently drop all but the first clone URL here.
+ */
+function getMultiValueTag(tags: string[][], name: string): string[] {
+  const out: string[] = [];
+  for (const tag of tags) {
+    if (tag[0] !== name) continue;
+    out.push(...tag.slice(1));
+  }
+  return out;
 }
 
 /** Maximum number of refs to parse from a single kind:30618 event. */
@@ -137,7 +155,13 @@ export interface IssueMetadata {
   status: 'open' | 'closed';
 }
 
-/** Parsed pull request metadata from a kind:1617 event. */
+/**
+ * Parsed pull request metadata from a kind:1617 (patch) or kind:1618 (pull
+ * request) event. The two carry the change differently — 1617's `content` is
+ * self-contained `git format-patch` output, 1618's is a markdown description
+ * and the change lives behind a `["c", "<tip-commit>"]` + `["clone", …]`
+ * pointer — hence `sourceKind` and the 1618-only optional fields below.
+ */
 export interface PRMetadata {
   eventId: string;
   title: string;
@@ -152,6 +176,18 @@ export interface PRMetadata {
    * from `content`, which is pure `git format-patch` output for `git am`.
    */
   description?: string;
+  /** Which event kind this was parsed from — 1617 fields are unaffected by 1618's additions. */
+  sourceKind: 1617 | 1618;
+  /** kind:1618 only: tip commit of the PR branch, from the `c` tag. */
+  tipCommit?: string;
+  /** kind:1618 only: clone URL(s) where `tipCommit` can be fetched, from the `clone` tag. */
+  cloneUrls?: string[];
+  /** kind:1618 only: recommended branch name, from the `branch-name` tag. */
+  branchName?: string;
+  /** kind:1618 only: most recent common ancestor with the target branch, from `merge-base`. */
+  mergeBase?: string;
+  /** kind:1618 only: labels, from `t` tags. */
+  labels?: string[];
 }
 
 /** Parsed comment metadata from a kind:1622 event. */
@@ -182,16 +218,16 @@ export function parseIssue(event: NostrEvent): IssueMetadata | null {
   };
 }
 
-/** Parse a kind:1617 patch/PR event into PRMetadata. */
+/** Parse a kind:1617 patch or kind:1618 pull-request event into PRMetadata. */
 export function parsePR(event: NostrEvent): PRMetadata | null {
-  if (event.kind !== 1617) return null;
+  if (event.kind !== 1617 && event.kind !== 1618) return null;
 
   const title = getTagValue(event.tags, 'subject') ?? '';
   const commitShas = getTagValues(event.tags, 'commit');
   const baseBranch = getTagValue(event.tags, 'branch') ?? 'main';
   const description = getTagValue(event.tags, 'description');
 
-  return {
+  const base: PRMetadata = {
     eventId: event.id,
     title,
     content: event.content,
@@ -200,8 +236,97 @@ export function parsePR(event: NostrEvent): PRMetadata | null {
     commitShas,
     baseBranch,
     status: 'open',
+    sourceKind: event.kind === 1618 ? 1618 : 1617,
     ...(description !== undefined ? { description } : {}),
   };
+
+  if (event.kind !== 1618) return base;
+
+  const tipCommit = getTagValue(event.tags, 'c');
+  const cloneUrls = getMultiValueTag(event.tags, 'clone');
+  const branchName = getTagValue(event.tags, 'branch-name');
+  const mergeBase = getTagValue(event.tags, 'merge-base');
+  const labels = getTagValues(event.tags, 't');
+
+  return {
+    ...base,
+    ...(tipCommit !== undefined ? { tipCommit } : {}),
+    ...(cloneUrls.length > 0 ? { cloneUrls } : {}),
+    ...(branchName !== undefined ? { branchName } : {}),
+    ...(mergeBase !== undefined ? { mergeBase } : {}),
+    ...(labels.length > 0 ? { labels } : {}),
+  };
+}
+
+/**
+ * Parsed pull-request-update metadata from a kind:1619 event. Moves the tip
+ * of a referenced kind:1618 pull request without republishing the PR itself.
+ */
+export interface PRUpdateMetadata {
+  eventId: string;
+  /** The pull-request event this update targets — from the NIP-22 **uppercase** `E` tag. */
+  prEventId: string;
+  /** Updated tip commit, from the `c` tag. */
+  tipCommit?: string;
+  /** Clone URL(s) where the updated tip can be fetched, from the `clone` tag. */
+  cloneUrls: string[];
+  /** Most recent common ancestor with the target branch, from `merge-base`. */
+  mergeBase?: string;
+  authorPubkey: string;
+  createdAt: number;
+}
+
+/**
+ * Parse a kind:1619 PR-update event into PRUpdateMetadata. The PR reference
+ * is the NIP-22 **uppercase** `E` tag, not `e` — a lowercase `e` tag does
+ * NOT satisfy this and the event is rejected as unreferenced.
+ */
+export function parsePRUpdate(event: NostrEvent): PRUpdateMetadata | null {
+  if (event.kind !== 1619) return null;
+
+  const prEventId = getTagValue(event.tags, 'E');
+  if (!prEventId) return null;
+
+  const tipCommit = getTagValue(event.tags, 'c');
+  const cloneUrls = getMultiValueTag(event.tags, 'clone');
+  const mergeBase = getTagValue(event.tags, 'merge-base');
+
+  return {
+    eventId: event.id,
+    prEventId,
+    cloneUrls,
+    authorPubkey: event.pubkey,
+    createdAt: event.created_at,
+    ...(tipCommit !== undefined ? { tipCommit } : {}),
+    ...(mergeBase !== undefined ? { mergeBase } : {}),
+  };
+}
+
+/**
+ * Resolve the current tip of a pull request from its kind:1619 update
+ * events, honoring ONLY updates signed by an AUTHORIZED author — the repo
+ * owner ∪ declared maintainers (#287; see {@link repoAuthorizedAuthors}).
+ * Same rationale as {@link resolvePRStatus}: the relay is permissionless, so
+ * without this filter any funded stranger could repoint someone else's PR at
+ * their own commit. Among authorized updates the latest (by created_at)
+ * wins. Returns `null` when no authorized update references the PR.
+ */
+export function resolvePRTip(
+  prEventId: string,
+  updateEvents: NostrEvent[],
+  authorized: Iterable<string>
+): PRUpdateMetadata | null {
+  const authors = authorized instanceof Set ? authorized : new Set(authorized);
+
+  let latest: NostrEvent | null = null;
+  for (const evt of updateEvents) {
+    if (evt.kind !== 1619) continue;
+    if (!authors.has(evt.pubkey.toLowerCase())) continue;
+    if (getTagValue(evt.tags, 'E') !== prEventId) continue;
+    if (latest === null || evt.created_at > latest.created_at) latest = evt;
+  }
+
+  return latest === null ? null : parsePRUpdate(latest);
 }
 
 /** Parse a kind:1622 comment event into CommentMetadata. */
