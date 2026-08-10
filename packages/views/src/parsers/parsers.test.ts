@@ -349,6 +349,31 @@ describe('nip34 pull-request kinds (1618/1619, #446)', () => {
     expect(tip?.tipCommit).toBe('c'.repeat(40));
   });
 
+  it('resolvePRTip picks the newest authorized update, ignoring other PRs', () => {
+    const authorized = new Set([owner]);
+    const update = (createdAt: number, prId: string, tip: string) =>
+      evt({
+        kind: 1619,
+        pubkey: owner,
+        created_at: createdAt,
+        tags: [['E', prId], ['c', tip]],
+      });
+
+    // Out of order on purpose, plus an update for a DIFFERENT PR at the
+    // highest created_at — neither may decide prEvt1's tip.
+    const tip = resolvePRTip(
+      'prEvt1',
+      [
+        update(20, 'prEvt1', 'b'.repeat(40)),
+        update(30, 'prEvt2', 'd'.repeat(40)),
+        update(10, 'prEvt1', 'a'.repeat(40)),
+      ],
+      authorized
+    );
+    expect(tip?.tipCommit).toBe('b'.repeat(40));
+    expect(tip?.prEventId).toBe('prEvt1');
+  });
+
   it('resolvePRTip returns null when nothing authorized references the PR', () => {
     expect(resolvePRTip('prEvt1', [], new Set([owner]))).toBeNull();
   });

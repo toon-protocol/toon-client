@@ -42,18 +42,31 @@ export interface RepoMetadata {
 const MAINTAINERS_TAG = 'maintainers';
 const HEX64_RE = /^[0-9a-f]{64}$/;
 
+/**
+ * Collect every value out of a NIP-34 multi-value tag — `maintainers` and
+ * `clone` are each emitted as ONE tag carrying every value
+ * (`["clone", url1, url2, …]`), unlike `t`/`commit`, which repeat as separate
+ * single-value tags. Distinct from {@link getTagValues} in `types.ts`, which
+ * takes only index 1 per matching tag and would drop all but the first URL.
+ */
+function getMultiValueTag(tags: string[][], name: string): string[] {
+  const out: string[] = [];
+  for (const tag of tags) {
+    if (tag[0] !== name) continue;
+    out.push(...tag.slice(1));
+  }
+  return out;
+}
+
 /** Collect the lowercased-hex maintainer pubkeys from 30617 tags (#287). */
 function parseMaintainerTags(tags: string[][]): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const tag of tags) {
-    if (tag[0] !== MAINTAINERS_TAG) continue;
-    for (const value of tag.slice(1)) {
-      const hex = value.toLowerCase();
-      if (HEX64_RE.test(hex) && !seen.has(hex)) {
-        seen.add(hex);
-        out.push(hex);
-      }
+  for (const value of getMultiValueTag(tags, MAINTAINERS_TAG)) {
+    const hex = value.toLowerCase();
+    if (HEX64_RE.test(hex) && !seen.has(hex)) {
+      seen.add(hex);
+      out.push(hex);
     }
   }
   return out;
@@ -66,22 +79,6 @@ function parseMaintainerTags(tags: string[][]): string[] {
  */
 export function repoAuthorizedAuthors(repo: RepoMetadata): Set<string> {
   return new Set([repo.ownerPubkey.toLowerCase(), ...repo.maintainers]);
-}
-
-/**
- * Collect every value out of a NIP-34 multi-value tag — e.g. `clone` is
- * emitted as ONE tag carrying every URL (`["clone", url1, url2, …]`), unlike
- * `t`/`commit`, which repeat as separate single-value tags. Distinct from
- * {@link getTagValues} in `types.ts`, which grabs only index 1 per matching
- * tag and would silently drop all but the first clone URL here.
- */
-function getMultiValueTag(tags: string[][], name: string): string[] {
-  const out: string[] = [];
-  for (const tag of tags) {
-    if (tag[0] !== name) continue;
-    out.push(...tag.slice(1));
-  }
-  return out;
 }
 
 /** Maximum number of refs to parse from a single kind:30618 event. */
@@ -176,7 +173,7 @@ export interface PRMetadata {
    * from `content`, which is pure `git format-patch` output for `git am`.
    */
   description?: string;
-  /** Which event kind this was parsed from — 1617 fields are unaffected by 1618's additions. */
+  /** Which event kind this was parsed from; every field below is 1618-only. */
   sourceKind: 1617 | 1618;
   /** kind:1618 only: tip commit of the PR branch, from the `c` tag. */
   tipCommit?: string;
@@ -218,16 +215,39 @@ export function parseIssue(event: NostrEvent): IssueMetadata | null {
   };
 }
 
+/**
+ * The kind:1618-only half of {@link PRMetadata}: a 1618 does not carry the
+ * change, it points at it (tip commit + clone url(s)), plus presentation
+ * hints. Absent tags stay absent from the object, so a 1617's parsed shape is
+ * exactly what it was before 1618 support (#446).
+ */
+function parsePullRequestPointer(tags: string[][]): Partial<PRMetadata> {
+  const tipCommit = getTagValue(tags, 'c');
+  const cloneUrls = getMultiValueTag(tags, 'clone');
+  const branchName = getTagValue(tags, 'branch-name');
+  const mergeBase = getTagValue(tags, 'merge-base');
+  const labels = getTagValues(tags, 't');
+
+  return {
+    ...(tipCommit !== undefined ? { tipCommit } : {}),
+    ...(cloneUrls.length > 0 ? { cloneUrls } : {}),
+    ...(branchName !== undefined ? { branchName } : {}),
+    ...(mergeBase !== undefined ? { mergeBase } : {}),
+    ...(labels.length > 0 ? { labels } : {}),
+  };
+}
+
 /** Parse a kind:1617 patch or kind:1618 pull-request event into PRMetadata. */
 export function parsePR(event: NostrEvent): PRMetadata | null {
   if (event.kind !== 1617 && event.kind !== 1618) return null;
+  const isPullRequest = event.kind === 1618;
 
   const title = getTagValue(event.tags, 'subject') ?? '';
   const commitShas = getTagValues(event.tags, 'commit');
   const baseBranch = getTagValue(event.tags, 'branch') ?? 'main';
   const description = getTagValue(event.tags, 'description');
 
-  const base: PRMetadata = {
+  return {
     eventId: event.id,
     title,
     content: event.content,
@@ -236,25 +256,9 @@ export function parsePR(event: NostrEvent): PRMetadata | null {
     commitShas,
     baseBranch,
     status: 'open',
-    sourceKind: event.kind === 1618 ? 1618 : 1617,
+    sourceKind: isPullRequest ? 1618 : 1617,
     ...(description !== undefined ? { description } : {}),
-  };
-
-  if (event.kind !== 1618) return base;
-
-  const tipCommit = getTagValue(event.tags, 'c');
-  const cloneUrls = getMultiValueTag(event.tags, 'clone');
-  const branchName = getTagValue(event.tags, 'branch-name');
-  const mergeBase = getTagValue(event.tags, 'merge-base');
-  const labels = getTagValues(event.tags, 't');
-
-  return {
-    ...base,
-    ...(tipCommit !== undefined ? { tipCommit } : {}),
-    ...(cloneUrls.length > 0 ? { cloneUrls } : {}),
-    ...(branchName !== undefined ? { branchName } : {}),
-    ...(mergeBase !== undefined ? { mergeBase } : {}),
-    ...(labels.length > 0 ? { labels } : {}),
+    ...(isPullRequest ? parsePullRequestPointer(event.tags) : {}),
   };
 }
 
@@ -316,17 +320,34 @@ export function resolvePRTip(
   updateEvents: NostrEvent[],
   authorized: Iterable<string>
 ): PRUpdateMetadata | null {
+  const latest = latestAuthorizedEvent(
+    updateEvents,
+    authorized,
+    (evt) => evt.kind === 1619 && getTagValue(evt.tags, 'E') === prEventId
+  );
+  return latest === null ? null : parsePRUpdate(latest);
+}
+
+/**
+ * The newest (by `created_at`) event satisfying `matches` that was signed by
+ * an AUTHORIZED author — the shared core of the #287 consumer-side spoof
+ * filter used by {@link resolvePRStatus} and {@link resolvePRTip}. `authorized`
+ * is the lowercased-hex author set; ties keep the first match in array order.
+ */
+function latestAuthorizedEvent(
+  events: NostrEvent[],
+  authorized: Iterable<string>,
+  matches: (event: NostrEvent) => boolean
+): NostrEvent | null {
   const authors = authorized instanceof Set ? authorized : new Set(authorized);
 
   let latest: NostrEvent | null = null;
-  for (const evt of updateEvents) {
-    if (evt.kind !== 1619) continue;
+  for (const evt of events) {
     if (!authors.has(evt.pubkey.toLowerCase())) continue;
-    if (getTagValue(evt.tags, 'E') !== prEventId) continue;
+    if (!matches(evt)) continue;
     if (latest === null || evt.created_at > latest.created_at) latest = evt;
   }
-
-  return latest === null ? null : parsePRUpdate(latest);
+  return latest;
 }
 
 /** Parse a kind:1622 comment event into CommentMetadata. */
@@ -345,6 +366,14 @@ export function parseComment(event: NostrEvent): CommentMetadata | null {
   };
 }
 
+/** kind:1630-1633 → the PR status each one sets. */
+const KIND_STATUS_MAP: Record<number, 'open' | 'applied' | 'closed' | 'draft'> = {
+  1630: 'open',
+  1631: 'applied',
+  1632: 'closed',
+  1633: 'draft',
+};
+
 /**
  * Resolve the status of a PR from status events (kind:1630-1633), honoring
  * ONLY events signed by an AUTHORIZED author — the repo owner ∪ declared
@@ -362,32 +391,12 @@ export function resolvePRStatus(
   statusEvents: NostrEvent[],
   authorized: Iterable<string>
 ): 'open' | 'applied' | 'closed' | 'draft' {
-  const KIND_STATUS_MAP: Record<number, 'open' | 'applied' | 'closed' | 'draft'> = {
-    1630: 'open',
-    1631: 'applied',
-    1632: 'closed',
-    1633: 'draft',
-  };
-  const authors = authorized instanceof Set ? authorized : new Set(authorized);
-
-  const relevant = statusEvents.filter((evt) => {
-    const eTag = getTagValue(evt.tags, 'e');
-    return (
-      eTag === prEventId &&
-      evt.kind >= 1630 &&
-      evt.kind <= 1633 &&
-      authors.has(evt.pubkey.toLowerCase())
-    );
-  });
-
-  if (relevant.length === 0) return 'open';
-
-  let latest = relevant[0] as (typeof relevant)[number];
-  for (let i = 1; i < relevant.length; i++) {
-    const entry = relevant[i] as (typeof relevant)[number];
-    if (entry.created_at > latest.created_at) latest = entry;
-  }
-
+  const latest = latestAuthorizedEvent(
+    statusEvents,
+    authorized,
+    (evt) => evt.kind >= 1630 && evt.kind <= 1633 && getTagValue(evt.tags, 'e') === prEventId
+  );
+  if (latest === null) return 'open';
   return KIND_STATUS_MAP[latest.kind] ?? 'open';
 }
 
