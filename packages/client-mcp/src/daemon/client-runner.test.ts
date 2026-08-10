@@ -882,6 +882,104 @@ describe('ClientRunner', () => {
     expect(c.lastPublishDest).toBe('g.proxy.relay'); // NIP-94 ref event → relay
   });
 
+  // ── Split store UPLINK: a second connector, not just a renamed destination
+  //    (issue #536 correction — the relay and store connectors are
+  //    independent boxes with no forwarding between them, so reaching the
+  //    store needs its own BTP endpoint). ──────────────────────────────────
+  describe('split store uplink (issue #536 correction)', () => {
+    const STORE_BTP_URL = 'ws://store-apex.test/btp';
+
+    function storeSplitRunner(
+      relayClient: FakeClient,
+      storeClient: FakeClient
+    ): ClientRunner {
+      return new ClientRunner({
+        config: makeConfig({
+          destination: 'g.toon.relay',
+          publishDestination: 'g.toon.relay',
+          storeDestination: 'g.toon.ario',
+          storeBtpUrl: STORE_BTP_URL,
+        }),
+        createClient: (cfg) =>
+          cfg.btpUrl === STORE_BTP_URL ? storeClient : relayClient,
+        createRelay: fakeRelay,
+      });
+    }
+
+    it('auto-registers a second (store) apex from storeBtpUrl and bootstraps it', async () => {
+      const relayClient = new FakeClient();
+      const storeClient = new FakeClient();
+      const r = storeSplitRunner(relayClient, storeClient);
+      await r.bootstrap();
+      const apexes = r.getTargets().apexes;
+      const btpUrls = apexes.map((a) => a.btpUrl).sort();
+      expect(btpUrls).toEqual([STORE_BTP_URL, 'ws://apex.test/btp'].sort());
+      const storeTarget = apexes.find((a) => a.btpUrl === STORE_BTP_URL);
+      expect(storeTarget?.isDefault).toBe(true);
+      expect(storeTarget?.ready).toBe(true);
+      expect(storeClient.started).toBe(true);
+    });
+
+    it('the auto-registered store apex is not removable (config-seeded default)', async () => {
+      const relayClient = new FakeClient();
+      const storeClient = new FakeClient();
+      const r = storeSplitRunner(relayClient, storeClient);
+      await r.bootstrap();
+      await expect(r.removeApex(STORE_BTP_URL)).rejects.toThrow(/default/i);
+    });
+
+    it('uploadMedia sends the blob through the store apex and the reference event through the relay apex', async () => {
+      const relayClient = new FakeClient();
+      const storeClient = new FakeClient();
+      const r = storeSplitRunner(relayClient, storeClient);
+      await r.bootstrap();
+      await r.uploadMedia({
+        dataBase64: Buffer.from('img').toString('base64'),
+        kind: 20,
+      });
+      // The blob leg went through the STORE client, never the relay client.
+      expect(storeClient.lastUploadDest).toBe('g.toon.ario');
+      expect(relayClient.lastUploadDest).toBeUndefined();
+      // The NIP-94 reference event went through the RELAY client, never store.
+      expect(relayClient.lastPublishDest).toBe('g.toon.relay');
+      expect(storeClient.lastPublishDest).toBeUndefined();
+    });
+
+    it('falls back to the single (default) apex when storeBtpUrl is unset — back-compat', async () => {
+      const c = new FakeClient();
+      const r = new ClientRunner({
+        config: makeConfig({
+          destination: 'g.toon.relay',
+          publishDestination: 'g.toon.relay',
+          storeDestination: 'g.toon.ario',
+        }),
+        createClient: () => c,
+        createRelay: fakeRelay,
+      });
+      await r.bootstrap();
+      expect(r.getTargets().apexes).toHaveLength(1);
+      await r.uploadMedia({
+        dataBase64: Buffer.from('img').toString('base64'),
+      });
+      expect(c.lastUploadDest).toBe('g.toon.ario');
+      expect(c.lastPublishDest).toBe('g.toon.relay');
+    });
+
+    it('an explicit btpUrl still pins BOTH legs to the same named apex', async () => {
+      const relayClient = new FakeClient();
+      const storeClient = new FakeClient();
+      const r = storeSplitRunner(relayClient, storeClient);
+      await r.bootstrap();
+      await r.uploadMedia({
+        dataBase64: Buffer.from('img').toString('base64'),
+        btpUrl: STORE_BTP_URL,
+      });
+      // Both the blob upload AND the signing client are the named (store) apex.
+      expect(storeClient.lastUploadDest).toBe('g.toon.ario');
+      expect(storeClient.lastSigned).toBeDefined();
+    });
+  });
+
   it('lists channels with nonce, cumulative, deposit total + available balance', async () => {
     await runner.bootstrap();
     await runner.publish({ event: { id: 'e1' } as NostrEvent, fee: '5' });

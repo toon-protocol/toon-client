@@ -6,8 +6,7 @@ ILP-over-HTTP, returns a FULFILL, and you read the note back for free over the N
 
 This is the **proxy-mode devnet** path. The package [README](../packages/client-mcp/README.md)
 covers generic install, the daemon, and BTP-mode config; this doc adds only what the public devnet
-needs — the explicit settlement maps (the `@toon-protocol/core` devnet preset is still stale), the
-endpoints, funding, and the Windows/WSL bridge.
+needs — the endpoints, funding, and the Windows/WSL bridge.
 
 > **Verified end-to-end on 2026-06-23** against the deployed Linode devnet: a paid `kind:1` publish
 > FULFILLed (connector `HTTP/1.1 200 OK` store receipt) and was read back through `toon_read`. See
@@ -52,9 +51,16 @@ A source build's server entry is `<path-to>/toon-client/packages/client-mcp/dist
 ## 2. The known-good devnet config (`~/.toon-client/config.json`)
 
 The daemon reads `~/.toon-client/config.json` automatically (override the dir with
-`TOON_CLIENT_HOME`). This is the **minimal config that makes channel-open succeed** against the
-stale-preset devnet — with this file present you need **no env vars at all**, which is what keeps the
+`TOON_CLIENT_HOME`). With this file present you need **no env vars at all**, which is what keeps the
 Windows/WSL bridge in §3 trivial.
+
+> Updated 2026-08-10 (issue #536): the devnet's old single apex is gone — the relay
+> (`g.toon.relay`) and the store (`g.toon.ario`) are now two INDEPENDENT connectors with no
+> forwarding between them. The `destination: g.proxy.relay.store` pin this doc used to show routes
+> to neither box on the current deployment (confirmed live: all three devnet connectors 404 it).
+> Leave `destination` **unset** instead — `@toon-protocol/core`'s genesis peer seed supplies both
+> addresses, and the daemon auto-registers a SECOND uplink for the store from the seed's own
+> `btpEndpoint` so writes and uploads route correctly without any settlement maps to hand-maintain:
 
 ```json
 {
@@ -62,15 +68,10 @@ Windows/WSL bridge in §3 trivial.
   "proxyUrl": "https://proxy.devnet.toonprotocol.dev",
   "faucetUrl": "https://faucet.devnet.toonprotocol.dev",
   "relayUrl": "wss://relay-ws.devnet.toonprotocol.dev",
-  "destination": "g.proxy.relay.store",
   "chain": "evm",
   "feePerEvent": "1000",
   "httpPort": 8787,
-  "supportedChains": ["evm:anvil:31337"],
-  "settlementAddresses": { "evm:anvil:31337": "0xF29fD62C4848B9573C9b90adbF61b664F386d9CF" },
-  "tokenNetworks":       { "evm:anvil:31337": "0xcafac3dd18ac6c6e92c921884f9e4176737c052c" },
-  "preferredTokens":     { "evm:anvil:31337": "0x5FbDB2315678afecb367f032d93F642f64180aa3" },
-  "chainRpcUrls":        { "evm:anvil:31337": "https://evm-rpc.devnet.toonprotocol.dev" }
+  "chainRpcUrls": { "evm:84532": "https://sepolia.base.org" }
 }
 ```
 
@@ -81,23 +82,32 @@ keystore on first run, or add a `"mnemonic"` field / set `TOON_CLIENT_MNEMONIC`.
 
 - `proxyUrl` → routes paid writes through the connector's `POST /ilp` (ILP-over-HTTP); **no BTP
   socket needed**. Omit it and tools report *"read-only — no write uplink configured."*
-- `destination: g.proxy.relay.store` → the ILP destination. Its last segment (`store`) becomes the
-  apex `peerId` the negotiation keys under; a good boot logs `injected apex negotiation for peer
-  "store"`.
-- The four `evm:anvil:31337` maps are the part the stale core preset gets wrong. They synthesize the
-  apex negotiation deterministically (see `buildProxyApexNegotiation` in `daemon/config.ts`) instead
-  of trusting the relay's `kind:10032` announcement:
-  - `settlementAddresses` — the connector's EVM receive address (the on-chain channel counterparty).
-  - `tokenNetworks` — the USDC `TokenNetwork` contract (channels open here).
-  - `preferredTokens` — the USDC token contract (6 decimals).
-  - `chainRpcUrls` — the Anvil RPC, keyed by the **exact** chainKey `evm:anvil:31337`
-    (`evm:{network}:{chainId}`; the network label is cosmetic — only chainId `31337` + the RPC
-    matter). Drop this and channel-open fails with *"No RPC URL configured for chain evm:…"*.
+- No `destination` → the daemon defaults it (and `publishDestination`/`storeDestination`/
+  `storeBtpUrl`) from `@toon-protocol/core`'s genesis peer list: relay writes go to `g.toon.relay`
+  over the config-seeded default uplink, and store uploads go to `g.toon.ario` over a SECOND
+  uplink the daemon opens automatically to the store's own `btpEndpoint`. A good boot logs BOTH:
+  `injected apex negotiation for peer "relay"` and `injected apex negotiation for peer "ario"`, and
+  `GET /targets` lists two `apexes` entries. Settlement params for each are read live off the
+  relay's `kind:10032` announcements — no settlement maps to synthesize by hand anymore (the old
+  `evm:anvil:31337` maps this doc used to show were the stale-preset workaround for that; the live
+  devnet now negotiates chain `evm:84532`, Base Sepolia, directly).
+- `chainRpcUrls` — still required for on-chain balance reads / channel funding math (chain
+  `evm:84532`, keyed by the **exact** chainKey — the network label is cosmetic, only the chainId +
+  RPC matter). The devnet's own `evm-rpc.devnet.toonprotocol.dev` no longer answers (TLS handshake
+  failure, confirmed live 2026-08-10); use the public Base Sepolia RPC above instead. Drop this and
+  balance reads fail with *"the on-chain provider stalled"*.
 - `feePerEvent: "1000"` — base units paid per write (1000 = 0.001 USDC at 6 dp); `"1"` also works.
 
-Everything except the four settlement maps also has an env override (`TOON_CLIENT_PROXY_URL`,
-`TOON_CLIENT_RELAY_URL`, `TOON_CLIENT_FAUCET_URL`, `TOON_CLIENT_DESTINATION`, `TOON_CLIENT_HOME`, …).
-The settlement maps are config-file-only, so the devnet needs this file regardless.
+Everything above also has an env override (`TOON_CLIENT_PROXY_URL`, `TOON_CLIENT_RELAY_URL`,
+`TOON_CLIENT_FAUCET_URL`, `TOON_CLIENT_HOME`, …) except `chainRpcUrls`, which is config-file-only —
+the devnet needs this file regardless.
+
+> The rest of this doc (§4 funding, §6 proof) predates issue #536 and was **not** re-verified in
+> this pass beyond what's noted above. In particular, §4's faucet request shape has since changed —
+> confirmed live 2026-08-10: `POST /api/base-sepolia/request` now drips 1000 USDC only; the ETH leg
+> is `"skipped": true, "reason": "ETH drip disabled (amount 0)"`, so a brand-new wallet has no gas
+> for its first on-chain channel-open. §4/§6 need their own follow-up pass — treat them as
+> historical until then.
 
 ---
 
@@ -226,28 +236,34 @@ Daemon log on a good boot:
 
 | What | Value |
 |------|-------|
-| Proxy ILP ingress | `https://proxy.devnet.toonprotocol.dev` (`POST /ilp`), dest `g.proxy.relay.store` |
+| Proxy ILP ingress | `https://proxy.devnet.toonprotocol.dev` (`POST /ilp`), relay dest `g.toon.relay` |
+| Store (Arweave uploads, separate box, #536) | dest `g.toon.ario`, btp `wss://proxy.ario.devnet.toonprotocol.dev/ilp/btp` — auto-registered, no config needed |
 | Relay (free reads) | `wss://relay-ws.devnet.toonprotocol.dev` |
-| Faucet | `https://faucet.devnet.toonprotocol.dev` (`POST /api/request {address}`) |
-| EVM RPC (Anvil, chainId 31337) | `https://evm-rpc.devnet.toonprotocol.dev` |
-| USDC token (6 dp) | `0x5FbDB2315678afecb367f032d93F642f64180aa3` |
-| USDC TokenNetwork | `0xcafac3dd18ac6c6e92c921884f9e4176737c052c` |
-| Connector EVM settlement (receive) addr | `0xF29fD62C4848B9573C9b90adbF61b664F386d9CF` |
+| Faucet | `https://faucet.devnet.toonprotocol.dev` (`POST /api/base-sepolia/request {address}`, USDC only — see §2 note) |
+| EVM RPC (Base Sepolia, chainId 84532) | `https://sepolia.base.org` |
+| USDC token (6 dp) | `0x49beE1Bca5d15Fb0963117923403F9498119a9Ce` |
 
-> Devnet addresses are redeployed when boxes are reset — if channel-open starts failing, re-check
-> these against the current deployment before debugging your config.
+> Settlement addresses (per-connector on-chain receive addr, TokenNetwork, …) are no longer listed
+> here — since #536 they're negotiated LIVE off each connector's own `kind:10032` announcement
+> (§2), so a config file never needs to hardcode them. Devnet addresses are redeployed when boxes
+> are reset — if channel-open starts failing, re-check the live announcements before debugging your
+> config.
 
 ---
 
 ## 8. Troubleshooting
 
 - **"read-only / no write uplink configured"** → `proxyUrl` missing from config.
-- **Channel never opens / "No RPC URL configured for chain evm:…"** → a settlement map key doesn't
-  match `evm:anvil:31337` exactly, or `chainRpcUrls` is missing.
+- **Balance reads fail with "the on-chain provider stalled"** → `chainRpcUrls` is missing or points
+  at a dead RPC (the old `evm-rpc.devnet.toonprotocol.dev` no longer answers — use
+  `https://sepolia.base.org` for `evm:84532`, per §2).
+- **"The connector terminates no store route for …"** → you set an explicit `destination` (old
+  single-apex convention); remove it and let the genesis defaults populate `storeBtpUrl`
+  automatically (§2), or set `storeBtpUrl` yourself to the store's own `btpEndpoint`.
 - **"Apex is still bootstrapping … retry"** → first call after start; retry in a few seconds.
 - **`command not found` from Claude Desktop on Windows** → you bridged with bare `wsl toon-mcp`;
   switch to the `wsl bash -lic "exec toon-mcp"` form (sources nvm).
 - **Publish paid but read times out** → confirm the daemon log shows `injected apex negotiation for
-  peer "store"`. On anything older than `0.21.0` the paid path will not FULFILL (pre-sealed-wire) —
-  upgrade to `@latest`.
+  peer "relay"` (and, once you touch uploads, `peer "ario"` too). On anything older than `0.21.0`
+  the paid path will not FULFILL (pre-sealed-wire) — upgrade to `@latest`.
 - The daemon log lives at `~/.toon-client/daemon.log` (or `$TOON_CLIENT_HOME/daemon.log`).

@@ -16,6 +16,7 @@ const ENV_KEYS = [
   'TOON_CLIENT_DESTINATION',
   'TOON_CLIENT_PUBLISH_DESTINATION',
   'TOON_CLIENT_STORE_DESTINATION',
+  'TOON_CLIENT_STORE_BTP_URL',
   'TOON_CLIENT_KEYSTORE_PASSWORD',
   'TOON_CLIENT_ARWEAVE_GATEWAYS',
 ];
@@ -263,6 +264,54 @@ describe('daemon config', () => {
     expect(cfg.destination).toBe('g.toon.relay');
     expect(cfg.publishDestination).toBe('g.toon.relay');
     expect(cfg.storeDestination).toBe('g.toon.ario');
+  });
+
+  it('storeBtpUrl defaults to the genesis STORE peer own BTP endpoint (issue #536 correction)', () => {
+    // The relay and store connectors are independent boxes with no forwarding
+    // between them: reaching g.toon.ario needs a SECOND uplink connected to
+    // the store's own btpEndpoint, not just a renamed destination on the
+    // relay's uplink.
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.test:3000/btp',
+    });
+    expect(cfg.storeBtpUrl).toBe(
+      'wss://proxy.ario.devnet.toonprotocol.dev/ilp/btp'
+    );
+  });
+
+  it('storeBtpUrl is absent when an explicit destination is configured (custom/legacy topology)', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      destination: 'g.proxy.relay.store',
+    });
+    expect(cfg.storeBtpUrl).toBeUndefined();
+  });
+
+  it('storeBtpUrl is absent when it matches the default btpUrl (single-connector topology)', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'wss://proxy.ario.devnet.toonprotocol.dev/ilp/btp',
+    });
+    expect(cfg.storeBtpUrl).toBeUndefined();
+  });
+
+  it('file storeBtpUrl and TOON_CLIENT_STORE_BTP_URL env override the genesis default', () => {
+    const fromFile = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.test:3000/btp',
+      storeBtpUrl: 'ws://custom-store.test/btp',
+    });
+    expect(fromFile.storeBtpUrl).toBe('ws://custom-store.test/btp');
+
+    process.env['TOON_CLIENT_STORE_BTP_URL'] = 'ws://env-store.test/btp';
+    const fromEnv = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.test:3000/btp',
+      storeBtpUrl: 'ws://custom-store.test/btp',
+    });
+    expect(fromEnv.storeBtpUrl).toBe('ws://env-store.test/btp');
   });
 
   it('publishDestination / storeDestination use explicit file values', () => {

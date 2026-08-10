@@ -108,6 +108,21 @@ export interface DaemonConfigFile {
    * Env: `TOON_CLIENT_STORE_DESTINATION`.
    */
   storeDestination?: string;
+  /**
+   * BTP endpoint of the connector that actually terminates `storeDestination`.
+   * Since core@3.3.0's two-node genesis seed (issue #536) the relay and store
+   * are INDEPENDENT boxes with no forwarding between them, so a client that
+   * only ever connects to the relay's uplink can never reach the store no
+   * matter what `storeDestination` string it sends — the packet has nowhere
+   * to route. When set (or genesis-defaulted below), the runner opens a
+   * SECOND uplink to this endpoint and sends store writes (blob uploads, git
+   * objects, `getRoutePrice(storeDestination)`) through it, while publishes
+   * keep using the default (relay) uplink. Unset unless it differs from the
+   * default `btpUrl` — a single-connector topology (tests, custom/legacy
+   * proxies where one box still forwards) needs no second uplink.
+   * Env: `TOON_CLIENT_STORE_BTP_URL`.
+   */
+  storeBtpUrl?: string;
   /** Default fee per paid write, base units. Default `1`. */
   feePerEvent?: string;
   /** Channel nonce-watermark persistence file. Default `<dir>/channels.json`. */
@@ -219,6 +234,13 @@ export interface ResolvedDaemonConfig {
   publishDestination: string;
   /** Resolved default destination for store/Arweave uploads (falls back to `destination`). */
   storeDestination: string;
+  /**
+   * BTP endpoint of the connector terminating `storeDestination`, when it is
+   * a DIFFERENT box than the default uplink (issue #536). Absent means store
+   * writes route through the default apex like everything else — the
+   * single-connector case.
+   */
+  storeBtpUrl?: string;
   feePerEvent: bigint;
   apex?: ApexNegotiationConfig;
   /** Apex child peers reached via the same apex channel (e.g. store, swap). */
@@ -441,6 +463,22 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     process.env['TOON_CLIENT_STORE_DESTINATION'] ??
     file.storeDestination ??
     routes.store;
+  // A renamed destination string is not a route: the store connector is a
+  // SEPARATE box from the default uplink's, so reaching it needs its own BTP
+  // endpoint (issue #536 correction). Only genesis-defaulted (not derived)
+  // when no explicit `destination` is configured — an explicit anchor names a
+  // single-connector topology (old apex/proxy) that this runner has always
+  // reached through one uplink. Skip the genesis default when it is the same
+  // endpoint as the default uplink (single-connector test/dev topologies) —
+  // there is no second box to connect to.
+  const genesisStoreBtpEndpoint =
+    !explicitDestination && genesisStorePeer?.btpEndpoint !== btpUrl
+      ? genesisStorePeer?.btpEndpoint
+      : undefined;
+  const storeBtpUrl =
+    process.env['TOON_CLIENT_STORE_BTP_URL'] ??
+    file.storeBtpUrl ??
+    genesisStoreBtpEndpoint;
   const feePerEvent = BigInt(file.feePerEvent ?? '1');
   const arweaveGateways =
     parseCsvEnv(process.env['TOON_CLIENT_ARWEAVE_GATEWAYS']) ??
@@ -530,6 +568,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     destination,
     publishDestination,
     storeDestination,
+    ...(storeBtpUrl ? { storeBtpUrl } : {}),
     feePerEvent,
     ...(apex ? { apex } : {}),
     ...(file.apexChildPeers ? { apexChildPeers: file.apexChildPeers } : {}),
