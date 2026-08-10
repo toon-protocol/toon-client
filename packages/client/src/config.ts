@@ -453,6 +453,7 @@ export function applyDefaults(rawConfig: ToonClientConfig): ResolvedConfig {
     maxRetries: config.maxRetries ?? 3,
     retryDelay: config.retryDelay ?? 1000,
     preferBtpForPaidWrites: config.preferBtpForPaidWrites ?? false,
+    jobHandlerSealed: config.jobHandlerSealed ?? false,
     btpUrl,
     destinationAddress: destinationAddress as string, // Always set by logic above
   };

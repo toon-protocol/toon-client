@@ -19,6 +19,7 @@ import {
   fromBase64,
   encodeUtf8,
   decodeUtf8,
+  toHex,
 } from './utils/binary.js';
 import {
   ConnectorEdgeClient,
@@ -30,6 +31,7 @@ import {
   type ClaimStateResult,
 } from './adapters/ConnectorEdgeClient.js';
 import { readExchangeOutcome, sealExchange } from './wire/sealed-exchange.js';
+import { giftWrapPublicKey } from './wire/giftwrap.js';
 import {
   unwrapGiftWrapWithKey,
   type UnwrappedGiftWrap,
@@ -414,6 +416,30 @@ export class ToonClient {
    */
   getPublicKey(): string {
     return getPublicKey(this.config.secretKey);
+  }
+
+  /**
+   * This client's own ADR 0018 sealing public key — the 65-byte uncompressed
+   * secp256k1 identity a buyer seals a job PREPARE's `data` to when this
+   * client IS the destination (toon-client#537, toon-meta#266 §3.1/§7), in
+   * the same format a real connector reports from `GET /ilp/identity`
+   * (`ConnectorIdentity.publicKey`). Publish it as a `kind:31990`
+   * advertisement's `seal_pubkey` tag ({@link getSealingPublicKeyHex}) so a
+   * buyer can address this client without a `GET /identity` it cannot serve
+   * behind NAT (ADR 0022).
+   *
+   * Derived from the same `secretKey` as {@link getPublicKey}'s Nostr
+   * identity — stable across daemon restarts and reconnects, never a fresh
+   * key per call, so a durable advertisement stays valid. Works before
+   * `start()` is called.
+   */
+  getSealingPublicKey(): Uint8Array {
+    return giftWrapPublicKey(this.config.secretKey);
+  }
+
+  /** {@link getSealingPublicKey}, hex-encoded — the exact `seal_pubkey` tag value. */
+  getSealingPublicKeyHex(): string {
+    return toHex(this.getSealingPublicKey());
   }
 
   /**

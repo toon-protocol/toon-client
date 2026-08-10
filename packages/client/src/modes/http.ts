@@ -100,8 +100,16 @@ export async function initializeHttpMode(
       // MESSAGE carrying a PREPARE is answered by the configured handler.
       // Unset `jobHandler` leaves `onMessage` unset too, so an inbound job
       // MESSAGE is dropped unanswered — unchanged from the pre-#494 default.
+      // `jobHandlerSealed` (toon-client#537) additionally unseals/reseals at
+      // this client's own identity (toon-meta#266 §7); default `false` keeps
+      // every existing `jobHandler` on the unsealed pre-#537 wire.
       ...(config.jobHandler
-        ? { onMessage: createJobMessageHandler(config.jobHandler) }
+        ? {
+            onMessage: createJobMessageHandler(
+              config.jobHandler,
+              config.jobHandlerSealed ? config.secretKey : undefined
+            ),
+          }
         : {}),
       ...(hooks.getChannelDeclaration
         ? { getChannelDeclaration: hooks.getChannelDeclaration }
