@@ -24,9 +24,14 @@ export function buildIssueListFilter(ownerPubkey: string, repoId: string): Nostr
   return { kinds: [1621], '#a': [`30617:${ownerPubkey}:${repoId}`], limit: 100 };
 }
 
-/** kind:1617 patches/PRs for a repository. */
+/** kind:1617 patches + kind:1618 pull requests for a repository. */
 export function buildPRListFilter(ownerPubkey: string, repoId: string): NostrFilter {
-  return { kinds: [1617], '#a': [`30617:${ownerPubkey}:${repoId}`], limit: 100 };
+  return { kinds: [1617, 1618], '#a': [`30617:${ownerPubkey}:${repoId}`], limit: 100 };
+}
+
+/** kind:1619 PR updates by referenced pull-request event id(s) (NIP-22 uppercase `E`). */
+export function buildPRUpdateFilter(prEventIds: string[]): NostrFilter {
+  return { kinds: [1619], '#E': prEventIds, limit: 500 };
 }
 
 /** kind:1622 comments by parent event id(s). */
