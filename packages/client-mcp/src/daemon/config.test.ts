@@ -62,8 +62,12 @@ describe('daemon config', () => {
   it('resolves read-only (no uplink) with hasUplink=false — reads need none (#69)', () => {
     const cfg = resolveConfig({ mnemonic: MNEMONIC });
     expect(cfg.hasUplink).toBe(false);
-    // A read-only daemon still builds a usable ToonClientConfig (relay reads),
-    // with a dummy connectorUrl satisfying validateConfig (no proxy/BTP).
+    // A read-only daemon still builds a usable ToonClientConfig (relay reads).
+    // With NEITHER btpUrl nor proxyUrl configured, nothing can derive a real
+    // client edge, so the dummy connectorUrl still satisfies validateConfig
+    // here — unlike the BTP-only path (issue #462), nothing would ever dial
+    // it, since a read-only client never publishes.
+    expect(cfg.toonClientConfig.connectorUrl).toBe('http://127.0.0.1:1');
     expect(cfg.toonClientConfig.btpUrl).toBeUndefined();
     expect(cfg.proxyUrl).toBeUndefined();
     expect(cfg.apex).toBeUndefined();
@@ -276,12 +280,20 @@ describe('daemon config', () => {
     expect(cfg.storeDestination).toBe('g.env.store');
   });
 
-  it('still injects a dummy connectorUrl on the BTP-only path', () => {
+  // issue #462: the BTP-only path used to inject an inert
+  // `http://127.0.0.1:1` connectorUrl placeholder purely to satisfy
+  // ToonClient's validateConfig. Every paid write now dials that origin for
+  // `GET /ilp/identity` / `GET /ilp/routes/price` (ADR 0018/0020), so a
+  // BTP-only daemon must get a REAL client edge instead — `applyDefaults`
+  // (packages/client) derives one from `btpUrl` (connector PR #181 serves
+  // ILP-over-HTTP and BTP on the same port).
+  it('does NOT inject a dummy connectorUrl on the BTP-only path — no explicit connectorUrl at all', () => {
     const cfg = resolveConfig({
       mnemonic: MNEMONIC,
       btpUrl: 'ws://apex.test:3000/btp',
     });
-    expect(cfg.toonClientConfig.connectorUrl).toBe('http://127.0.0.1:1');
+    expect(cfg.toonClientConfig.connectorUrl).toBeUndefined();
+    expect(cfg.toonClientConfig.btpUrl).toBe('ws://apex.test:3000/btp');
     expect(cfg.proxyUrl).toBeUndefined();
   });
 

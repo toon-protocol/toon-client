@@ -184,6 +184,48 @@ describe('ToonClient.publishEvent claim delivery mechanism (Story 50.3 AC#1)', (
   });
 });
 
+describe('ToonClient.publishEvent works end-to-end from a BTP-only config (issue #462)', () => {
+  it('derives the client edge from btpUrl instead of dialling the 127.0.0.1:1 placeholder', async () => {
+    // A daemon that supplies ONLY btpUrl — no connectorUrl, no proxyUrl. This
+    // used to require callers to inject an inert `http://127.0.0.1:1`
+    // connectorUrl just to satisfy validateConfig; the sealed wire then
+    // dialled that placeholder for `GET /ilp/identity` / `GET /ilp/routes/price`
+    // on every paid write and failed to connect.
+    const config = baseConfig() as unknown as Record<string, unknown>;
+    delete config['connectorUrl'];
+    config['btpUrl'] = 'ws://apex.test:9999/btp';
+
+    const requestedUrls: string[] = [];
+    const recordingFetch: typeof fetch = async (input, init) => {
+      requestedUrls.push(String(input));
+      return connector.fetch(input, init);
+    };
+    globalThis.fetch = recordingFetch;
+
+    const client = new ToonClient(
+      config as unknown as ConstructorParameters<typeof ToonClient>[0]
+    );
+
+    const sendIlpPacketWithClaim = vi.fn(async (params: { data: string }) =>
+      connector.fulfill(params.data)
+    );
+    attachTransport(client, { sendIlpPacketWithClaim });
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    // Identity + price were asked of the btpUrl's own origin, not a
+    // discarded default.
+    expect(
+      requestedUrls.some((u) => u.startsWith('http://apex.test:9999/ilp'))
+    ).toBe(true);
+    // The old placeholder is never dialled.
+    expect(requestedUrls.every((u) => !u.includes('127.0.0.1:1'))).toBe(true);
+  });
+});
+
 describe('ToonClient.publishEvent forms a sealed packet (toon-client#450)', () => {
   it('seals an OER envelope to the terminating connector, and no HTTP text is produced', async () => {
     const client = new ToonClient(baseConfig());

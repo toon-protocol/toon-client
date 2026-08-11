@@ -64,12 +64,12 @@ describe('validateConfig', () => {
   });
 
   describe('connectorUrl validation (AC: 4)', () => {
-    it('should throw error when neither connectorUrl nor proxyUrl is set', () => {
+    it('should throw error when none of connectorUrl, proxyUrl or btpUrl is set', () => {
       const config = createValidConfig({ connectorUrl: undefined });
 
       expect(() => validateConfig(config)).toThrow(ValidationError);
       expect(() => validateConfig(config)).toThrow(
-        'connectorUrl (or proxyUrl) is required'
+        'connectorUrl (or proxyUrl, or btpUrl) is required'
       );
     });
 
@@ -77,7 +77,7 @@ describe('validateConfig', () => {
       const config = createValidConfig({ connectorUrl: undefined });
 
       expect(() => validateConfig(config)).toThrow(
-        'connectorUrl (or proxyUrl) is required for HTTP mode. Example: "http://localhost:8080"'
+        'connectorUrl (or proxyUrl, or btpUrl) is required for HTTP mode. Example: "http://localhost:8080"'
       );
     });
 
@@ -85,6 +85,19 @@ describe('validateConfig', () => {
       const config = createValidConfig({
         connectorUrl: undefined,
         proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      });
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    // issue #462: connectorUrl's `http://127.0.0.1:1` placeholder was dialled
+    // by every paid write once identity/price fetches became mandatory
+    // (ADR 0018) — a BTP-only config (btpUrl, no connectorUrl/proxyUrl) must
+    // be a valid, load-bearing config on its own, not one that needs a fake
+    // HTTP edge to pass validation.
+    it('should accept a btpUrl in place of connectorUrl/proxyUrl', () => {
+      const config = createValidConfig({
+        connectorUrl: undefined,
+        btpUrl: 'ws://apex.test:3000/btp',
       });
       expect(() => validateConfig(config)).not.toThrow();
     });
@@ -568,6 +581,57 @@ describe('applyDefaults', () => {
         connectorHttpEndpoint: 'https://explicit.example/ilp',
       });
       expect(result.connectorHttpEndpoint).toBe('https://explicit.example/ilp');
+    });
+  });
+
+  // issue #462: a BTP-only daemon (btpUrl set, no connectorUrl/proxyUrl) must
+  // get a REAL client edge — connector PR #181 serves ILP-over-HTTP and BTP on
+  // the SAME port, so the BTP origin IS the HTTP client edge. Before this fix
+  // callers papered over validateConfig's requirement with an inert
+  // `http://127.0.0.1:1` placeholder, which every paid write now dials for
+  // `GET /ilp/identity` / `GET /ilp/routes/price` (ADR 0018/0020).
+  describe('BTP-derived client edge (issue #462)', () => {
+    const btpOnlyConfig = (btpUrl: string): ToonClientConfig => {
+      const c = createMinimalConfig();
+      delete (c as { connectorUrl?: string }).connectorUrl;
+      return { ...c, btpUrl, destinationAddress: 'g.apex' };
+    };
+
+    it('derives connectorUrl (http origin) from a ws:// btpUrl', () => {
+      const result = applyDefaults(btpOnlyConfig('ws://apex.test:3000/btp'));
+      expect(result.connectorUrl).toBe('http://apex.test:3000');
+    });
+
+    it('derives connectorHttpEndpoint (POST /ilp) from a ws:// btpUrl', () => {
+      const result = applyDefaults(btpOnlyConfig('ws://apex.test:3000/btp'));
+      expect(result.connectorHttpEndpoint).toBe('http://apex.test:3000/ilp');
+    });
+
+    it('derives an https/wss connectorUrl from a wss:// btpUrl', () => {
+      const result = applyDefaults(btpOnlyConfig('wss://apex.test/btp'));
+      expect(result.connectorUrl).toBe('https://apex.test');
+      expect(result.connectorHttpEndpoint).toBe('https://apex.test/ilp');
+    });
+
+    it('never falls back to the 127.0.0.1:1 placeholder', () => {
+      const result = applyDefaults(btpOnlyConfig('ws://apex.test:3000/btp'));
+      expect(result.connectorUrl).not.toContain('127.0.0.1:1');
+    });
+
+    it('lets an explicit connectorUrl win over btpUrl derivation', () => {
+      const config = btpOnlyConfig('ws://apex.test:3000/btp');
+      config.connectorUrl = 'http://explicit.example:9999';
+      const result = applyDefaults(config);
+      expect(result.connectorUrl).toBe('http://explicit.example:9999');
+    });
+
+    it('lets an explicit proxyUrl win over btpUrl derivation', () => {
+      const config = btpOnlyConfig('ws://apex.test:3000/btp');
+      config.proxyUrl = 'https://proxy.devnet.toonprotocol.dev';
+      const result = applyDefaults(config);
+      expect(result.connectorHttpEndpoint).toBe(
+        'https://proxy.devnet.toonprotocol.dev/ilp'
+      );
     });
   });
 });

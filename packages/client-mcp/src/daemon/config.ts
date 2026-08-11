@@ -453,11 +453,19 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     file.receivedClaimStorePath ?? join(configDir(), 'received-claims.json');
 
   const toonClientConfig: ToonClientConfig = {
-    // validateConfig requires connectorUrl OR proxyUrl. When only BTP is set
-    // we pass a dummy connectorUrl (unused at runtime — BTP transport is used);
-    // when a proxy is configured, `proxyUrl` satisfies the requirement and the
-    // client derives the `POST /ilp` endpoint + routes writes over HTTP.
-    ...(proxyUrl ? { proxyUrl } : { connectorUrl: 'http://127.0.0.1:1' }),
+    // validateConfig requires connectorUrl, proxyUrl, OR btpUrl. When a proxy
+    // is configured, `proxyUrl` satisfies it and the client derives the
+    // `POST /ilp` endpoint + routes writes over HTTP. When only BTP is set,
+    // `btpUrl` alone satisfies it too — `applyDefaults` (packages/client)
+    // derives a REAL connectorUrl/connectorHttpEndpoint from it (connector
+    // PR #181 serves ILP-over-HTTP and BTP on the same port), rather than
+    // this daemon injecting an inert `http://127.0.0.1:1` placeholder that
+    // every paid write's `GET /ilp/identity` / `GET /ilp/routes/price` would
+    // otherwise dial and fail to connect to (issue #462). With NEITHER
+    // proxyUrl nor btpUrl (the free-read-only daemon, issue #69) there is
+    // nothing to derive a client edge from, so the dummy connectorUrl still
+    // stands in — a read-only client never publishes, so it is never dialled.
+    ...(proxyUrl ? { proxyUrl } : btpUrl ? {} : { connectorUrl: 'http://127.0.0.1:1' }),
     ...(faucetUrl ? { faucetUrl } : {}),
     mnemonic,
     mnemonicAccountIndex: file.mnemonicAccountIndex ?? 0,
