@@ -993,7 +993,8 @@ function chainRecordsFor(
 
 /**
  * The `connectorUrl`/`proxyUrl` fields to merge into a `ToonClientConfig`
- * built from a resolved {@link NetworkTopology} (issue #462).
+ * built from a resolved {@link NetworkTopology} (issue #462). Mirrors the
+ * daemon's `connectorEdgeFields` (`packages/client-mcp/src/daemon/config.ts`).
  *
  * `validateConfig` (packages/client) requires one of `connectorUrl`,
  * `proxyUrl`, or `btpUrl`. A `proxyUrl` topology satisfies it directly; a

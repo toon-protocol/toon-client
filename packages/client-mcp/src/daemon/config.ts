@@ -353,6 +353,35 @@ function deriveRouteDestinations(anchor: string): {
   return { publish: anchor, store: anchor };
 }
 
+/**
+ * The `connectorUrl`/`proxyUrl` fields to merge into the daemon's
+ * `ToonClientConfig` for a given uplink (issue #462). Mirrors rig's
+ * `connectorEdgeFields` (`packages/rig/src/cli/standalone-mode.ts`).
+ *
+ * `validateConfig` (packages/client) requires one of `connectorUrl`,
+ * `proxyUrl`, or `btpUrl`:
+ * - a proxy satisfies it directly, and the client derives the `POST /ilp`
+ *   endpoint from it and routes writes over HTTP;
+ * - a BTP-only uplink satisfies it via `btpUrl` alone — `applyDefaults`
+ *   derives a REAL `connectorUrl`/`connectorHttpEndpoint` from it (connector
+ *   PR #181 serves ILP-over-HTTP and BTP on the same port), so the daemon
+ *   must NOT inject an inert `http://127.0.0.1:1` placeholder here: every
+ *   paid write's `GET /ilp/identity` / `GET /ilp/routes/price` would dial it
+ *   and fail to connect;
+ * - with NEITHER (the free-read-only daemon, issue #69) there is nothing to
+ *   derive an edge from, so the dummy `connectorUrl` still stands in. Nothing
+ *   dials it: `assertApexReady` rejects a write on a `hasUplink === false`
+ *   daemon before any packet is formed.
+ */
+function connectorEdgeFields(uplink: {
+  proxyUrl: string | undefined;
+  btpUrl: string | undefined;
+}): Pick<ToonClientConfig, 'connectorUrl' | 'proxyUrl'> {
+  if (uplink.proxyUrl) return { proxyUrl: uplink.proxyUrl };
+  if (uplink.btpUrl) return {};
+  return { connectorUrl: 'http://127.0.0.1:1' };
+}
+
 export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const mnemonic = resolveMnemonic(file);
 
@@ -453,19 +482,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     file.receivedClaimStorePath ?? join(configDir(), 'received-claims.json');
 
   const toonClientConfig: ToonClientConfig = {
-    // validateConfig requires connectorUrl, proxyUrl, OR btpUrl. When a proxy
-    // is configured, `proxyUrl` satisfies it and the client derives the
-    // `POST /ilp` endpoint + routes writes over HTTP. When only BTP is set,
-    // `btpUrl` alone satisfies it too — `applyDefaults` (packages/client)
-    // derives a REAL connectorUrl/connectorHttpEndpoint from it (connector
-    // PR #181 serves ILP-over-HTTP and BTP on the same port), rather than
-    // this daemon injecting an inert `http://127.0.0.1:1` placeholder that
-    // every paid write's `GET /ilp/identity` / `GET /ilp/routes/price` would
-    // otherwise dial and fail to connect to (issue #462). With NEITHER
-    // proxyUrl nor btpUrl (the free-read-only daemon, issue #69) there is
-    // nothing to derive a client edge from, so the dummy connectorUrl still
-    // stands in — a read-only client never publishes, so it is never dialled.
-    ...(proxyUrl ? { proxyUrl } : btpUrl ? {} : { connectorUrl: 'http://127.0.0.1:1' }),
+    ...connectorEdgeFields({ proxyUrl, btpUrl }),
     ...(faucetUrl ? { faucetUrl } : {}),
     mnemonic,
     mnemonicAccountIndex: file.mnemonicAccountIndex ?? 0,
