@@ -1,6 +1,5 @@
 ---
 '@toon-protocol/client': patch
-'@toon-protocol/client-mcp': patch
 '@toon-protocol/rig': patch
 ---
 
