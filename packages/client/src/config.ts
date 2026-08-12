@@ -96,6 +96,24 @@ export function getNetworkStatus(
 }
 
 /**
+ * Derives the HTTP client edge (`connectorUrl` + its `POST /ilp` endpoint)
+ * from `btpUrl` — connector PR #181 serves ILP-over-HTTP and BTP on the SAME
+ * port, so the BTP origin doubles as the origin `GET /ilp/identity` and
+ * `GET /ilp/routes/price` hang off (issue #462). Only called with an
+ * already-validated `btpUrl` (`validateConfig` rejects a malformed one), so
+ * `new URL` is not expected to throw.
+ */
+function deriveConnectorEdgeFromBtpUrl(btpUrl: string): {
+  connectorUrl: string;
+  connectorHttpEndpoint: string;
+} {
+  const url = new URL(btpUrl);
+  const httpProtocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+  const connectorUrl = `${httpProtocol}//${url.host}`;
+  return { connectorUrl, connectorHttpEndpoint: `${connectorUrl}/ilp` };
+}
+
+/**
  * Normalize a connector-proxy base URL into its `POST /ilp` endpoint.
  *
  * `https://proxy.devnet.toonprotocol.dev`      → `https://proxy.devnet.toonprotocol.dev/ilp`
@@ -127,12 +145,17 @@ export function validateConfig(config: ToonClientConfig): void {
     );
   }
 
-  // Require an HTTP edge for HTTP mode — either an explicit `connectorUrl` or a
-  // connector-`proxyUrl` (the devnet payment-proxy). `applyDefaults` derives
-  // `connectorUrl` from `proxyUrl` when only the proxy is given.
-  if (!config.connectorUrl && !config.proxyUrl) {
+  // Require an HTTP edge for HTTP mode — an explicit `connectorUrl`, a
+  // connector-`proxyUrl` (the devnet payment-proxy), or a `btpUrl`.
+  // `applyDefaults` derives `connectorUrl` from `proxyUrl` when only the
+  // proxy is given, and from `btpUrl` when only BTP is given: connector PR
+  // #181 serves ILP-over-HTTP and BTP on the SAME port, so the BTP origin IS
+  // the HTTP client edge every paid write asks `GET /ilp/identity` /
+  // `GET /ilp/routes/price` at (ADR 0018/0020, issue #462) — there is no
+  // separate placeholder to invent.
+  if (!config.connectorUrl && !config.proxyUrl && !config.btpUrl) {
     throw new ValidationError(
-      'connectorUrl (or proxyUrl) is required for HTTP mode. Example: "http://localhost:8080"'
+      'connectorUrl (or proxyUrl, or btpUrl) is required for HTTP mode. Example: "http://localhost:8080"'
     );
   }
 
@@ -374,18 +397,37 @@ export function applyDefaults(rawConfig: ToonClientConfig): ResolvedConfig {
         ).secretKey
       : generateSecretKey());
 
+  // Derived ONLY when neither an explicit `connectorUrl` nor a `proxyUrl` is
+  // configured — both take precedence, matching the proxyUrl-derivation
+  // precedent below. This is what makes a BTP-only config (`btpUrl` alone) a
+  // real client edge instead of the inert `http://127.0.0.1:1` placeholder
+  // callers used to inject to satisfy `validateConfig` (issue #462): every
+  // paid write asks THIS origin for identity/price, regardless of which
+  // transport ends up carrying the packet.
+  const btpDerivedEdge =
+    !config.connectorUrl && !config.proxyUrl && config.btpUrl
+      ? deriveConnectorEdgeFromBtpUrl(config.btpUrl)
+      : undefined;
+
   // Derive the connector-proxy `POST /ilp` endpoint from `proxyUrl` (unless an
   // explicit `connectorHttpEndpoint` was given — explicit always wins). When set
   // this makes `selectIlpTransport` prefer the stateless HttpIlpClient transport
-  // for one-shot writes, routing through the devnet payment-proxy.
+  // for one-shot writes, routing through the devnet payment-proxy — or, via
+  // `btpDerivedEdge`, through the BTP-only connector's own HTTP-on-the-same-port
+  // edge.
   const connectorHttpEndpoint =
-    config.connectorHttpEndpoint ?? proxyIlpEndpoint(config.proxyUrl);
+    config.connectorHttpEndpoint ??
+    proxyIlpEndpoint(config.proxyUrl) ??
+    btpDerivedEdge?.connectorHttpEndpoint;
 
   // `connectorUrl` is required by validateConfig but can be satisfied by
-  // `proxyUrl`; fall back to the proxy base so downstream code (HttpRuntimeClient
-  // fallback, destination derivation) always has an HTTP edge URL.
+  // `proxyUrl` or `btpUrl`; fall back so downstream code (HttpRuntimeClient
+  // fallback, destination derivation, identity/price lookups) always has a
+  // real HTTP edge URL rather than a dummy one nothing answers on.
   const connectorUrl =
-    config.connectorUrl ?? config.proxyUrl?.replace(/\/+$/, '');
+    config.connectorUrl ??
+    config.proxyUrl?.replace(/\/+$/, '') ??
+    btpDerivedEdge?.connectorUrl;
 
   // Derive btpUrl from connectorUrl when not explicitly provided
   // http://host:8080 → ws://host:3000.
@@ -453,6 +495,7 @@ export function applyDefaults(rawConfig: ToonClientConfig): ResolvedConfig {
     maxRetries: config.maxRetries ?? 3,
     retryDelay: config.retryDelay ?? 1000,
     preferBtpForPaidWrites: config.preferBtpForPaidWrites ?? false,
+    jobHandlerSealed: config.jobHandlerSealed ?? false,
     btpUrl,
     destinationAddress: destinationAddress as string, // Always set by logic above
   };

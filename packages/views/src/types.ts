@@ -30,6 +30,8 @@ export interface NostrFilter {
   limit?: number;
   '#d'?: string[];
   '#e'?: string[];
+  /** NIP-22 uppercase root reference (e.g. kind:1619 PR updates → their kind:1618 PR). */
+  '#E'?: string[];
   '#a'?: string[];
   '#p'?: string[];
   '#t'?: string[];

@@ -23,6 +23,7 @@ import {
   OFFICIAL_PROXY_URL,
   OFFICIAL_PUBLISH_DESTINATION,
   buildMinaAutoDeploy,
+  connectorEdgeFields,
   resolveNetworkTopology,
   type ClientConfigFile,
   type GenesisSeedLike,
@@ -955,5 +956,52 @@ describe('buildMinaAutoDeploy — zkApp key persistence', () => {
       deployTxHash: 'tx-abc',
       vkHash: 'vk-1',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// connectorEdgeFields — the standalone publisher's client-edge derivation
+// (issue #462): a BTP-only topology used to get an inert
+// `http://127.0.0.1:1` connectorUrl placeholder just to satisfy
+// validateConfig. Every paid write's `GET /ilp/identity` /
+// `GET /ilp/routes/price` now dials the client edge regardless of which
+// transport carries the packet, so that placeholder became load-bearing and
+// broken. `applyDefaults` (packages/client) derives a real client edge from
+// `btpUrl` alone, so the standalone publisher no longer needs to inject
+// anything for the BTP-only case.
+// ---------------------------------------------------------------------------
+
+describe('connectorEdgeFields', () => {
+  it('uses proxyUrl when the topology has one', () => {
+    expect(
+      connectorEdgeFields({
+        proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+        btpUrl: undefined,
+      })
+    ).toEqual({ proxyUrl: 'https://proxy.devnet.toonprotocol.dev' });
+  });
+
+  it('injects nothing for a BTP-only topology — btpUrl alone satisfies validateConfig', () => {
+    expect(
+      connectorEdgeFields({
+        proxyUrl: undefined,
+        btpUrl: 'wss://proxy.devnet.toonprotocol.dev:443',
+      })
+    ).toEqual({});
+  });
+
+  it('falls back to the dummy placeholder only when NEITHER proxyUrl nor btpUrl is set (no uplink)', () => {
+    expect(
+      connectorEdgeFields({ proxyUrl: undefined, btpUrl: undefined })
+    ).toEqual({ connectorUrl: 'http://127.0.0.1:1' });
+  });
+
+  it('prefers proxyUrl over btpUrl when both are present', () => {
+    expect(
+      connectorEdgeFields({
+        proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+        btpUrl: 'wss://proxy.devnet.toonprotocol.dev:443',
+      })
+    ).toEqual({ proxyUrl: 'https://proxy.devnet.toonprotocol.dev' });
   });
 });

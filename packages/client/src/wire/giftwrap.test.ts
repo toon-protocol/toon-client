@@ -23,6 +23,7 @@ import {
   GiftWrapErrorKind,
   deriveCondition,
   deriveFulfillment,
+  giftWrapPublicKey,
   localGiftWrapEcdh,
   looksLikeSealedResponse,
   openRequest,
@@ -444,6 +445,36 @@ describe('the caller-supplied-randomness variants', () => {
           )
         ) as GiftWrapError
       ).kind
+    ).toBe(GiftWrapErrorKind.InvalidKey);
+  });
+});
+
+describe('giftWrapPublicKey', () => {
+  it('derives the same uncompressed public key a sender ECDHs against to reach this secret', () => {
+    const { secret, publicKey } = receiver();
+    expect(giftWrapPublicKey(secret)).toEqual(publicKey);
+  });
+
+  it('is stable across calls — the same secret always yields the same key', () => {
+    const { secret } = receiver();
+    expect(giftWrapPublicKey(secret)).toEqual(giftWrapPublicKey(secret));
+  });
+
+  it('is what a sealed request to it actually opens under', () => {
+    const { secret } = receiver();
+    const publicKey = giftWrapPublicKey(secret);
+
+    const { wrapped, sharedSecret } = sealRequest(PLAINTEXT, publicKey);
+    const opened = openRequest(wrapped, secret);
+
+    expect(opened.envelopeBytes).toEqual(PLAINTEXT);
+    expect(opened.sharedSecret).toEqual(sharedSecret);
+  });
+
+  it('throws GiftWrapError for a secret key that is not a valid scalar', () => {
+    expect(
+      (caught(() => giftWrapPublicKey(new Uint8Array(32))) as GiftWrapError)
+        .kind
     ).toBe(GiftWrapErrorKind.InvalidKey);
   });
 });

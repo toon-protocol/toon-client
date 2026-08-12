@@ -992,6 +992,28 @@ function chainRecordsFor(
 }
 
 /**
+ * The `connectorUrl`/`proxyUrl` fields to merge into a `ToonClientConfig`
+ * built from a resolved {@link NetworkTopology} (issue #462). Mirrors the
+ * daemon's `connectorEdgeFields` (`packages/client-mcp/src/daemon/config.ts`).
+ *
+ * `validateConfig` (packages/client) requires one of `connectorUrl`,
+ * `proxyUrl`, or `btpUrl`. A `proxyUrl` topology satisfies it directly; a
+ * BTP-only topology satisfies it via `btpUrl` alone — `applyDefaults`
+ * derives a REAL client edge from it (connector PR #181 serves
+ * ILP-over-HTTP and BTP on the same port), so nothing here needs to stand
+ * in. Only a topology with NEITHER (no uplink at all — a free-read-only
+ * embedded client) still needs the dummy `http://127.0.0.1:1`: nothing that
+ * never publishes ever dials it.
+ */
+export function connectorEdgeFields(
+  topo: Pick<NetworkTopology, 'proxyUrl' | 'btpUrl'>
+): Pick<ToonClientConfig, 'connectorUrl' | 'proxyUrl'> {
+  if (topo.proxyUrl) return { proxyUrl: topo.proxyUrl };
+  if (topo.btpUrl) return {};
+  return { connectorUrl: 'http://127.0.0.1:1' };
+}
+
+/**
  * Assemble an embedded-client standalone context: resolved identity + config
  * → network bootstrap (announce discovery / genesis seed) → ToonClientConfig
  * → nonce-guarded StandalonePublisher (guard + client start + channel open
@@ -1156,12 +1178,7 @@ export async function createStandaloneContext(
 
   const buildPublisher = (topo: NetworkTopology): StandalonePublisher => {
     const clientConfig: ToonClientConfig = {
-      // validateConfig requires connectorUrl OR proxyUrl; with BTP-only
-      // config a dummy connectorUrl satisfies it (unused at runtime — same
-      // convention as the daemon).
-      ...(topo.proxyUrl
-        ? { proxyUrl: topo.proxyUrl }
-        : { connectorUrl: 'http://127.0.0.1:1' }),
+      ...connectorEdgeFields(topo),
       mnemonic: identity.mnemonic,
       mnemonicAccountIndex: identity.accountIndex,
       ilpInfo: {

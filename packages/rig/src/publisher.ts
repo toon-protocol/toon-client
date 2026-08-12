@@ -97,9 +97,11 @@ export interface PublishReceipt {
 export interface FeeRates {
   /**
    * Flat cost per git-object/blob upload (smallest asset unit): the store
-   * destination's route price, as reported by the terminating connector's
-   * `GET /ilp/routes/price`. The connector gates every paid packet at that
-   * price, so an estimate built from it is exactly what a push pays.
+   * destination's route price. The connector gates every paid packet at that
+   * price, so an estimate built from it is exactly what a push pays. Sourced
+   * either from the terminating connector's `GET /ilp/routes/price` (the
+   * embedded/daemon client) or from an announce's `capabilities` (rig's
+   * standalone publisher) — both are legitimate readings of the same price.
    */
   uploadFee: bigint;
   /**

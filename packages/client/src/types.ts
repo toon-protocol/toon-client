@@ -379,6 +379,22 @@ export interface ToonClientConfig {
   jobHandler?: JobHandler;
 
   /**
+   * Serve `jobHandler` jobs at a CLIENT destination (toon-client#537,
+   * toon-meta#266 §7): unseal an inbound PREPARE's `data` as a gift wrap
+   * addressed to this client's own {@link ToonClientConfig.secretKey}
+   * (`ToonClient.getSealingPublicKey()`) before `jobHandler` runs, and seal
+   * its answer back with the same shared secret. Has no effect when
+   * `jobHandler` is unset.
+   *
+   * Default `false` — a `jobHandler` keeps receiving `data` unsealed,
+   * exactly as before #537 (devnet's existing factory-job dialect does not
+   * seal to this client, and must keep working unchanged). Set `true` only
+   * for a seller that advertised its sealing key in a `kind:31990` (toon-
+   * meta#266 §3.1) and expects buyers to seal to it.
+   */
+  jobHandlerSealed?: boolean;
+
+  /**
    * ILP destination address for event publishing.
    * Defaults to the connector's local address (derived from connectorUrl host).
    * For multi-hop routing, set this to the target node's ILP address.

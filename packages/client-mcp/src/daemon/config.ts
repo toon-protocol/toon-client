@@ -386,6 +386,35 @@ function deriveRouteDestinations(anchor: string): {
   return { publish: anchor, store: anchor };
 }
 
+/**
+ * The `connectorUrl`/`proxyUrl` fields to merge into the daemon's
+ * `ToonClientConfig` for a given uplink (issue #462). Mirrors rig's
+ * `connectorEdgeFields` (`packages/rig/src/cli/standalone-mode.ts`).
+ *
+ * `validateConfig` (packages/client) requires one of `connectorUrl`,
+ * `proxyUrl`, or `btpUrl`:
+ * - a proxy satisfies it directly, and the client derives the `POST /ilp`
+ *   endpoint from it and routes writes over HTTP;
+ * - a BTP-only uplink satisfies it via `btpUrl` alone — `applyDefaults`
+ *   derives a REAL `connectorUrl`/`connectorHttpEndpoint` from it (connector
+ *   PR #181 serves ILP-over-HTTP and BTP on the same port), so the daemon
+ *   must NOT inject an inert `http://127.0.0.1:1` placeholder here: every
+ *   paid write's `GET /ilp/identity` / `GET /ilp/routes/price` would dial it
+ *   and fail to connect;
+ * - with NEITHER (the free-read-only daemon, issue #69) there is nothing to
+ *   derive an edge from, so the dummy `connectorUrl` still stands in. Nothing
+ *   dials it: `assertApexReady` rejects a write on a `hasUplink === false`
+ *   daemon before any packet is formed.
+ */
+function connectorEdgeFields(uplink: {
+  proxyUrl: string | undefined;
+  btpUrl: string | undefined;
+}): Pick<ToonClientConfig, 'connectorUrl' | 'proxyUrl'> {
+  if (uplink.proxyUrl) return { proxyUrl: uplink.proxyUrl };
+  if (uplink.btpUrl) return {};
+  return { connectorUrl: 'http://127.0.0.1:1' };
+}
+
 export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
   const mnemonic = resolveMnemonic(file);
 
@@ -523,11 +552,7 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     file.receivedClaimStorePath ?? join(configDir(), 'received-claims.json');
 
   const toonClientConfig: ToonClientConfig = {
-    // validateConfig requires connectorUrl OR proxyUrl. When only BTP is set
-    // we pass a dummy connectorUrl (unused at runtime — BTP transport is used);
-    // when a proxy is configured, `proxyUrl` satisfies the requirement and the
-    // client derives the `POST /ilp` endpoint + routes writes over HTTP.
-    ...(proxyUrl ? { proxyUrl } : { connectorUrl: 'http://127.0.0.1:1' }),
+    ...connectorEdgeFields({ proxyUrl, btpUrl }),
     ...(faucetUrl ? { faucetUrl } : {}),
     mnemonic,
     mnemonicAccountIndex: file.mnemonicAccountIndex ?? 0,
