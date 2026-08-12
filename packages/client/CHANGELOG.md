@@ -1,5 +1,32 @@
 # @toon-protocol/client
 
+## 0.29.4
+
+### Patch Changes
+
+- 492eecd: Fix a BTP-only client (no `connectorUrl`/`proxyUrl`) failing every paid write (issue #462, toon-meta#345). Since the sealed wire (ADR 0018/0020) made `GET /ilp/identity` and `GET /ilp/routes/price` mandatory over the HTTP client edge before any packet is formed, callers that supplied only `btpUrl` had been papering over `validateConfig`'s edge requirement with an inert `http://127.0.0.1:1` placeholder — which every paid write now dialled and failed to connect to.
+
+  - `applyDefaults` (`packages/client`) now derives a REAL client edge (`connectorUrl` + `connectorHttpEndpoint`) from `btpUrl` when neither `connectorUrl` nor `proxyUrl` is configured: connector PR #181 serves ILP-over-HTTP and BTP on the same port, so the BTP origin doubles as the identity/price/one-shot-write endpoint. `validateConfig` now accepts `btpUrl` as a third alternative to `connectorUrl`/`proxyUrl`.
+  - `client-mcp`'s daemon config and `rig`'s standalone-mode publisher no longer inject the `127.0.0.1:1` placeholder for a BTP-only config — only the genuinely uplink-less (free-read-only) case still does, since nothing there ever publishes to dial it.
+  - `rig`: extracted `connectorEdgeFields()` (exported from `standalone-mode.ts`) so the client-edge selection is independently unit-testable.
+  - Corrected `FeeRates.uploadFee`'s docstring (`packages/rig/src/publisher.ts`), which described the price as sourced only from `GET /ilp/routes/price` when rig's standalone publisher also legitimately reads it from an announce's `capabilities`.
+
+- cde97f7: Refresh the vendored wire vectors to `toon-protocol/connector@33f10e2a00be` (issue #540), closing two days of drift that failed every PR's `Vendored vectors match connector main` check regardless of what the PR touched.
+
+  - The connector added two sections since the last vendored commit (`425a8abb`): `peer_carriage` (connector#758, the connector-to-connector peer wire) and `channel_control_declaration` (connector#795, the BTP auth greeting's `channelId`/`expires`/`signature` declaration).
+  - `channel_control_declaration` is now replayed against `EvmSigner.signClaimStateChallenge` — this client already signs exactly this EIP-712 `ClaimStateChallenge` struct and sends the declaration on every `connect()`/`reauthenticate()` (toon-client#513), so the vectors are real conformance evidence here, same reasoning as why `claim` is replayed.
+  - `peer_carriage` is carried but deliberately **not** replayed: it is the wire between two connectors, which this client never speaks. Declared in `wire-vectors.provenance.json`'s `sectionsPresentNotYetReplayed` rather than silently dropped from the loader's schema — see `packages/client/src/wire/vectors/README.md` for the full reasoning.
+  - `.github/workflows/wire-vectors-drift.yml`'s daily scheduled run now files-or-updates a tracking issue on drift (idempotent via a hidden marker) instead of only going red with nobody watching, and closes it again once a refresh lands.
+
+- c90cd38: Implement sealing at a BTP client destination (issue #537, toon-meta#266 §7): under mesh-compute's epic decision 6, a seller is a BTP client that is itself the destination and holds the preimage — not a connector. `sealExchange`'s connector-derived fulfilment (ADR 0019) never applied here; nothing let a client unseal a job addressed to itself, or advertise a key for a buyer to seal to.
+
+  - `ToonClient.getSealingPublicKey()` / `getSealingPublicKeyHex()` expose a stable ADR 0018 sealing identity (derived from the same `secretKey` as the Nostr identity) suitable for a `kind:31990` advertisement's `seal_pubkey` tag.
+  - `wire/giftwrap.ts` gains `giftWrapPublicKey(secretKey)`, the counterpart derivation the two new `ToonClient` getters and any other caller can share.
+  - `createJobMessageHandler(handler, identity?)` takes an optional second argument — this client's own ADR 0018 secret key (or a `GiftWrapEcdh`). When supplied, an inbound job PREPARE's `data` is opened as a gift wrap addressed to `identity` before the handler runs (`job.data` becomes the opened plaintext), and the handler's answer is sealed back with the same shared secret before it goes on the FULFILL. A wrap that will not open is refused (F00) before the handler ever sees it, distinct from a mismatched-fulfilment refusal (F99).
+  - Additive throughout: omitting `identity` (the default) reproduces the exact pre-#537 behaviour — `data` passes through unsealed in both directions. The new `ToonClientConfig.jobHandlerSealed` flag (default `false`) opts an existing `jobHandler` into the sealed wire; devnet's current factory-job dialect, which does not seal to this client, is unaffected.
+
+  `hashlock-delivery.ts`'s `encryptArtifact`/`fulfillIncrement`/`decryptArtifact` are unchanged and reused as-is for the fulfilment the handler supplies — this change only closes the sealing/unsealing seam around them.
+
 ## 0.29.3
 
 ### Patch Changes
