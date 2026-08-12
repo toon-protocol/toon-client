@@ -920,6 +920,50 @@ describe('ClientRunner', () => {
       expect(storeClient.started).toBe(true);
     });
 
+    it('bootstraps the two default apexes SEQUENTIALLY — both open channels from one wallet, so concurrent opens collide on the account nonce', async () => {
+      const relayClient = new FakeClient();
+      const storeClient = new FakeClient();
+      const order: string[] = [];
+      const trace = (name: string, client: FakeClient): void => {
+        client.startImpl = async (): Promise<void> => {
+          order.push(`${name}:enter`);
+          await Promise.resolve();
+          order.push(`${name}:exit`);
+        };
+      };
+      trace('relay', relayClient);
+      trace('store', storeClient);
+
+      const r = storeSplitRunner(relayClient, storeClient);
+      await r.bootstrap();
+
+      // Each leg's bootstrap completes before the next one starts. Under
+      // `Promise.all` the order interleaves (relay:enter, store:enter, …),
+      // which live on devnet meant the second on-chain `openChannel` was
+      // rejected as `already known` and that uplink never went ready.
+      expect(order).toEqual([
+        'relay:enter',
+        'relay:exit',
+        'store:enter',
+        'store:exit',
+      ]);
+    });
+
+    it('a failing relay leg still leaves the store leg bootstrapped', async () => {
+      const relayClient = new FakeClient();
+      const storeClient = new FakeClient();
+      relayClient.startImpl = async (): Promise<void> => {
+        throw new Error('nonce too low');
+      };
+      const r = storeSplitRunner(relayClient, storeClient);
+      await r.bootstrap();
+      const apexes = r.getTargets().apexes;
+      expect(apexes.find((a) => a.btpUrl === STORE_BTP_URL)?.ready).toBe(true);
+      expect(apexes.find((a) => a.btpUrl === 'ws://apex.test/btp')?.ready).toBe(
+        false
+      );
+    });
+
     it('the auto-registered store apex is not removable (config-seeded default)', async () => {
       const relayClient = new FakeClient();
       const storeClient = new FakeClient();

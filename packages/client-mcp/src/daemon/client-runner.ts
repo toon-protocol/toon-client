@@ -550,17 +550,26 @@ export class ClientRunner {
    * Await the default apex(es)' bootstrap (kicking it off if not already
    * running) — the relay apex, and the store apex too when `storeBtpUrl`
    * registered a second one (issue #536 correction).
+   *
+   * SEQUENTIAL, not `Promise.all`: each apex may open an on-chain payment
+   * channel, and both legs sign from the SAME wallet. Bootstrapping them
+   * concurrently builds two transactions against the same account nonce, so
+   * the second is rejected ("nonce ... lower than the current nonce of the
+   * account" / `already known`) and that uplink is left `ready: false` on
+   * every fresh install — observed live on devnet against the relay+store
+   * pair. Serializing the legs costs one extra round of latency on first
+   * start only; the on-chain open it protects is the slow part either way.
+   * A failing leg cannot strand the other: `doBootstrapApex` records its own
+   * `lastError` and never rejects.
    */
-  bootstrap(): Promise<void> {
+  async bootstrap(): Promise<void> {
     // Read-only daemon (no proxy/BTP uplink): never bootstrap an apex — there is
     // no write transport and FREE reads run off the relay subscription (#69).
-    if (!this.config.hasUplink) return Promise.resolve();
+    if (!this.config.hasUplink) return;
     const targets = [this.defaultApex(), this.defaultStoreApex()].filter(
       (a): a is ApexConnection => a !== undefined
     );
-    return Promise.all(targets.map((a) => this.bootstrapApex(a))).then(
-      () => undefined
-    );
+    for (const apex of targets) await this.bootstrapApex(apex);
   }
 
   // ── Relays (reads) ─────────────────────────────────────────────────────────
