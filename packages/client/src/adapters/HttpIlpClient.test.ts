@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HttpIlpClient, ILP_CLAIM_HEADER } from './HttpIlpClient.js';
-import { NetworkError, ConnectorError } from '../errors.js';
+import {
+  NetworkError,
+  ConnectorError,
+  Http402RequiresBtpError,
+} from '../errors.js';
 import { fromBase64 } from '../utils/binary.js';
 import { mintExecutionCondition } from '../utils/condition.js';
 import {
@@ -88,11 +92,12 @@ const SEND_PARAMS = {
 };
 
 function fetchReturning(body: Uint8Array, init?: ResponseInit): typeof fetch {
-  return vi.fn(async () =>
-    new Response(body.slice().buffer, {
-      status: 200,
-      ...init,
-    })
+  return vi.fn(
+    async () =>
+      new Response(body.slice().buffer, {
+        status: 200,
+        ...init,
+      })
   ) as unknown as typeof fetch;
 }
 
@@ -206,9 +211,7 @@ describe('HttpIlpClient', () => {
     });
 
     it('parses a REJECT from a 200 body (not accepted, with code/message)', async () => {
-      const httpClient = fetchReturning(
-        serializeReject('F02', 'Unreachable')
-      );
+      const httpClient = fetchReturning(serializeReject('F02', 'Unreachable'));
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
         httpClient,
@@ -227,8 +230,9 @@ describe('HttpIlpClient', () => {
 
   describe('transport-error mapping', () => {
     it('maps a 4xx to a non-retryable ConnectorError', async () => {
-      const httpClient = vi.fn(async () =>
-        new Response('bad claim', { status: 400, statusText: 'Bad Request' })
+      const httpClient = vi.fn(
+        async () =>
+          new Response('bad claim', { status: 400, statusText: 'Bad Request' })
       ) as unknown as typeof fetch;
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
@@ -243,17 +247,18 @@ describe('HttpIlpClient', () => {
     });
 
     it('maps a 401 to a ConnectorError (auth, transport-level)', async () => {
-      const httpClient = vi.fn(async () =>
-        new Response('', { status: 401, statusText: 'Unauthorized' })
+      const httpClient = vi.fn(
+        async () =>
+          new Response('', { status: 401, statusText: 'Unauthorized' })
       ) as unknown as typeof fetch;
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
         httpClient,
       });
 
-      await expect(
-        client.sendIlpPacket(SEND_PARAMS)
-      ).rejects.toBeInstanceOf(ConnectorError);
+      await expect(client.sendIlpPacket(SEND_PARAMS)).rejects.toBeInstanceOf(
+        ConnectorError
+      );
     });
 
     it('wraps a fetch network failure as a retryable NetworkError', async () => {
@@ -267,9 +272,9 @@ describe('HttpIlpClient', () => {
         retryDelay: 0,
       });
 
-      await expect(
-        client.sendIlpPacket(SEND_PARAMS)
-      ).rejects.toBeInstanceOf(NetworkError);
+      await expect(client.sendIlpPacket(SEND_PARAMS)).rejects.toBeInstanceOf(
+        NetworkError
+      );
       // 1 initial + 2 retries.
       expect(httpClient).toHaveBeenCalledTimes(3);
     });
@@ -281,8 +286,89 @@ describe('HttpIlpClient', () => {
         httpClient,
       });
 
+      await expect(client.sendIlpPacket(SEND_PARAMS)).rejects.toBeInstanceOf(
+        ConnectorError
+      );
+    });
+  });
+
+  // ─── issue #561: a 402 declaring requiredTransport in its BODY, never in ────
+  // the peer's kind:10032 announce — the live devnet relay's actual shape ────
+  describe('402 requiredTransport (issue #561)', () => {
+    /** The x402 402 body shape the live connector answers with. */
+    function x402Body(extra: Record<string, unknown>): string {
+      return JSON.stringify({
+        x402Version: 2,
+        resource: { url: 'g.toon.relay' },
+        accepts: [
+          {
+            scheme: 'toon-channel',
+            network: 'g.toon.relay',
+            amount: '1000',
+            payTo: 'g.toon.relay',
+            maxTimeoutSeconds: 60,
+            httpEndpoint: '/ilp',
+            extra,
+          },
+        ],
+      });
+    }
+
+    it('throws Http402RequiresBtpError on a 402 whose accepts[].extra declares requiredTransport: "btp"', async () => {
+      const httpClient = vi.fn(
+        async () =>
+          new Response(x402Body({ requiredTransport: 'btp' }), {
+            status: 402,
+            statusText: 'Payment Required',
+          })
+      ) as unknown as typeof fetch;
+      const client = new HttpIlpClient({
+        httpEndpoint: 'http://connector.test/ilp',
+        httpClient,
+      });
+
       await expect(
-        client.sendIlpPacket(SEND_PARAMS)
+        client.sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim())
+      ).rejects.toBeInstanceOf(Http402RequiresBtpError);
+      // Not retried — a repeat POST would only repeat the same 402.
+      expect(httpClient).toHaveBeenCalledTimes(1);
+    });
+
+    it('maps an ordinary 402 (no requiredTransport) to a plain ConnectorError', async () => {
+      const httpClient = vi.fn(
+        async () =>
+          new Response(x402Body({ price: '1000' }), {
+            status: 402,
+            statusText: 'Payment Required',
+          })
+      ) as unknown as typeof fetch;
+      const client = new HttpIlpClient({
+        httpEndpoint: 'http://connector.test/ilp',
+        httpClient,
+      });
+
+      const error = await client
+        .sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim())
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ConnectorError);
+      expect(error).not.toBeInstanceOf(Http402RequiresBtpError);
+    });
+
+    it('maps a 402 with an unparseable body to a plain ConnectorError, never throwing', async () => {
+      const httpClient = vi.fn(
+        async () =>
+          new Response('not json', {
+            status: 402,
+            statusText: 'Payment Required',
+          })
+      ) as unknown as typeof fetch;
+      const client = new HttpIlpClient({
+        httpEndpoint: 'http://connector.test/ilp',
+        httpClient,
+      });
+
+      await expect(
+        client.sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim())
       ).rejects.toBeInstanceOf(ConnectorError);
     });
   });

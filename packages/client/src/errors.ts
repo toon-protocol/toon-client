@@ -35,6 +35,27 @@ export class ConnectorError extends ToonClientError {
 }
 
 /**
+ * Thrown when a paid write over ILP-over-HTTP is refused with `402 Payment
+ * Required` whose x402 challenge body declares `requiredTransport: "btp"`
+ * in an `accepts[]` entry (toon-client#561). Distinct from a plain
+ * `ConnectorError` so a caller can retry the SAME write over an established
+ * BTP uplink instead of surfacing a generic transport failure.
+ *
+ * Exists because #558's guard reads `requiredTransport` off the peer's
+ * kind:10032 announce — but the live devnet relay's announce never carries
+ * that field at all (only the connector's 402 response does, and only once
+ * a client has already posted over HTTP). The announce-based guard stays in
+ * place for connectors that DO announce it; this error covers every other
+ * connector that enforces the requirement without announcing it.
+ */
+export class Http402RequiresBtpError extends ToonClientError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'HTTP_402_REQUIRES_BTP', cause);
+    this.name = 'Http402RequiresBtpError';
+  }
+}
+
+/**
  * Validation error for invalid input parameters.
  * These errors are thrown before making any HTTP requests.
  */

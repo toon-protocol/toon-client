@@ -27,7 +27,11 @@ import {
   FakeTerminatingConnector,
   plaintextReject,
 } from './wire/fake-connector.test-support.js';
-import { ChannelFundingError, ToonClientError } from './errors.js';
+import {
+  ChannelFundingError,
+  Http402RequiresBtpError,
+  ToonClientError,
+} from './errors.js';
 import { isZeroCondition } from './utils/condition.js';
 import { fromBase64 } from './utils/binary.js';
 
@@ -678,6 +682,119 @@ describe('ToonClient.publishEvent honors a requiring-BTP terminator (issue #558)
     expect(caught).toBeInstanceOf(ToonClientError);
     expect((caught as ToonClientError).code).toBe('BTP_REQUIRED');
     expect(httpSend).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The live devnet relay's announce carries NO `requiredTransport` field at
+// all — #558's guard reads only the announce and stays silent. The real
+// signal is a 402 whose x402 body declares it (issue #561).
+// ---------------------------------------------------------------------------
+
+describe('ToonClient.publishEvent retries onto BTP after a 402 declares requiredTransport (issue #561)', () => {
+  const TERMINATOR = 'a'.repeat(64);
+
+  /**
+   * A started client whose discovery mirrors the LIVE shape reported in
+   * #561: an announce with both `btpEndpoint` and `httpEndpoint`, and no
+   * `requiredTransport` at all (`requiredTransportFor` always answers
+   * `undefined`, exactly like a real `DiscoverySubscription` reading a real
+   * live announce). `httpSend` is what HTTP-ILP does when driven; `btpSend`,
+   * when given, is the BTP uplink.
+   */
+  function attachLiveShapedTransports(
+    client: ToonClient,
+    opts: {
+      httpSend: (params: { data: string }) => Promise<unknown>;
+      btpSend?: (params: { data: string }) => Promise<unknown>;
+    }
+  ): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: {
+        getAllDiscoveredPeers: () => [
+          announceFor(['g.proxy'], connector.endpoint, TERMINATOR),
+        ],
+      },
+      discoverySubscription: {
+        requiredTransportFor: () => undefined,
+      },
+      runtimeClient: { sendIlpPacketWithClaim: opts.httpSend },
+      peersDiscovered: 0,
+      ...(opts.btpSend
+        ? { btpClient: { sendIlpPacketWithClaim: opts.btpSend } }
+        : {}),
+    };
+  }
+
+  it('retries over BTP, and succeeds, when HTTP comes back 402 requiredTransport:"btp"', async () => {
+    const client = new ToonClient(baseConfig());
+    const httpSend = vi.fn(async () => {
+      throw new Http402RequiresBtpError(
+        'refused with 402, declaring requiredTransport: "btp"'
+      );
+    });
+    const btpSend = vi.fn(async (params: { data: string }) =>
+      connector.fulfill(params.data)
+    );
+    attachLiveShapedTransports(client, { httpSend, btpSend });
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    expect(httpSend).toHaveBeenCalledTimes(1);
+    expect(btpSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws a clear BTP_REQUIRED error when the 402 demands BTP but no BTP uplink is configured', async () => {
+    const client = new ToonClient(baseConfig());
+    const httpSend = vi.fn(async () => {
+      throw new Http402RequiresBtpError(
+        'refused with 402, declaring requiredTransport: "btp"'
+      );
+    });
+    // No `btpSend`: nothing to retry onto.
+    attachLiveShapedTransports(client, { httpSend });
+
+    let caught: unknown;
+    try {
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ToonClientError);
+    expect((caught as ToonClientError).code).toBe('BTP_REQUIRED');
+    expect(httpSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry an ordinary HTTP failure onto BTP', async () => {
+    const client = new ToonClient(baseConfig());
+    const httpSend = vi.fn(async () => {
+      throw new ToonClientError('boom', 'CONNECTOR_ERROR');
+    });
+    const btpSend = vi.fn(async (params: { data: string }) =>
+      connector.fulfill(params.data)
+    );
+    attachLiveShapedTransports(client, { httpSend, btpSend });
+
+    let caught: unknown;
+    try {
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ToonClientError);
+    expect((caught as ToonClientError).code).toBe('PUBLISH_ERROR');
+    expect((caught as ToonClientError).cause).toBeInstanceOf(ToonClientError);
+    expect(((caught as ToonClientError).cause as ToonClientError).message).toBe(
+      'boom'
+    );
+    expect(btpSend).not.toHaveBeenCalled();
   });
 });
 

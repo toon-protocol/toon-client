@@ -35,10 +35,18 @@ import {
   deserializeIlpPacket,
 } from '../btp/protocol.js';
 import { BtpRuntimeClient } from './BtpRuntimeClient.js';
-import { NetworkError, ConnectorError } from '../errors.js';
+import {
+  NetworkError,
+  ConnectorError,
+  Http402RequiresBtpError,
+} from '../errors.js';
 import { withRetry } from '../utils/retry.js';
 import { toBase64, fromBase64, encodeUtf8 } from '../utils/binary.js';
-import { mapIlpResponse, resolveExpiresAt, type IlpSendParams } from './ilp-send.js';
+import {
+  mapIlpResponse,
+  resolveExpiresAt,
+  type IlpSendParams,
+} from './ilp-send.js';
 import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
 
 /** Header carrying the base64(JSON) payment-channel claim. */
@@ -175,7 +183,8 @@ export class HttpIlpClient implements IlpClient {
     // connector pre-authenticates. Built lazily (Node-only) — browsers must
     // pass an explicit `createWebSocket` (they can't set handshake headers).
     const createWebSocket =
-      this.createWebSocket ?? (await makeBtpWebSocketFactory(this.authHeaders()));
+      this.createWebSocket ??
+      (await makeBtpWebSocketFactory(this.authHeaders()));
 
     const client = new BtpRuntimeClient({
       btpUrl,
@@ -231,9 +240,7 @@ export class HttpIlpClient implements IlpClient {
       ...this.authHeaders(),
     };
     if (claim !== undefined) {
-      headers[ILP_CLAIM_HEADER] = toBase64(
-        encodeUtf8(JSON.stringify(claim))
-      );
+      headers[ILP_CLAIM_HEADER] = toBase64(encodeUtf8(JSON.stringify(claim)));
     }
 
     const controller = new AbortController();
@@ -271,7 +278,9 @@ export class HttpIlpClient implements IlpClient {
     if (response.ok) {
       const buf = new Uint8Array(await response.arrayBuffer());
       if (buf.length === 0) {
-        throw new ConnectorError('Empty 200 body from /ilp (expected OER ILP response)');
+        throw new ConnectorError(
+          'Empty 200 body from /ilp (expected OER ILP response)'
+        );
       }
       return mapIlpResponse(deserializeIlpPacket(buf), sentCondition);
     }
@@ -279,6 +288,22 @@ export class HttpIlpClient implements IlpClient {
     // Transport-level error (400 malformed, 401 auth, 413 too large, 5xx).
     const body = await response.text().catch(() => '');
     const detail = body ? `: ${body}` : '';
+
+    // A 402 whose x402 challenge declares `requiredTransport: "btp"`
+    // (toon-client#561) is not an ordinary transport failure: the connector
+    // is refusing HTTP for this destination specifically, and repeating the
+    // same POST would only repeat the 402. Surfaced distinctly so a caller
+    // can retry over BTP instead.
+    if (response.status === 402) {
+      const requiredTransport = extractRequiredTransportFrom402Body(body);
+      if (requiredTransport === 'btp') {
+        throw new Http402RequiresBtpError(
+          `The connector at ${this.httpEndpoint} refused this paid write with ` +
+            '402, declaring requiredTransport: "btp" in its x402 challenge.'
+        );
+      }
+    }
+
     if (response.status >= 500) {
       throw new ConnectorError(
         `Connector transport error (${response.status} ${response.statusText})${detail}`
@@ -291,11 +316,22 @@ export class HttpIlpClient implements IlpClient {
   }
 
   private mapTransportError(error: unknown, requestTimeout: number): Error {
-    if (error instanceof ConnectorError || error instanceof NetworkError) {
+    if (
+      error instanceof ConnectorError ||
+      error instanceof NetworkError ||
+      // Thrown by `mapResponse` inside the same try — must pass through
+      // unwrapped so a caller can retry over BTP (toon-client#561). It is
+      // not a `ConnectorError` (a distinct code/type is the whole point of
+      // the class), so it needs its own check here.
+      error instanceof Http402RequiresBtpError
+    ) {
       return error;
     }
     if (error instanceof Error && error.name === 'AbortError') {
-      return new NetworkError(`Request timeout after ${requestTimeout}ms`, error);
+      return new NetworkError(
+        `Request timeout after ${requestTimeout}ms`,
+        error
+      );
     }
     if (
       error instanceof TypeError &&
@@ -305,7 +341,10 @@ export class HttpIlpClient implements IlpClient {
         error.message.includes('ETIMEDOUT') ||
         error.message.includes('network'))
     ) {
-      return new NetworkError(`Network connection failed: ${error.message}`, error);
+      return new NetworkError(
+        `Network connection failed: ${error.message}`,
+        error
+      );
     }
     return new ConnectorError(
       `Unexpected error during ILP-over-HTTP request: ${
@@ -314,6 +353,42 @@ export class HttpIlpClient implements IlpClient {
       error instanceof Error ? error : undefined
     );
   }
+}
+
+/**
+ * Reads `requiredTransport` off a 402 response body shaped like the x402
+ * challenge `Http402Client` parses (`{ accepts: [{ extra: { requiredTransport }
+ * }] }`, with `requiredTransport` also accepted at the entry's top level) —
+ * toon-client#561. Deliberately independent of `Http402Client.parseX402Body`:
+ * that parser requires a usable `destination`/`httpEndpoint`/`amount` to
+ * return anything, which a paid-write 402 need not carry, and importing it
+ * here would cycle (`Http402Client` already imports `HttpIlpClient`).
+ * Defensive by construction — malformed/unexpected JSON yields `undefined`,
+ * never a throw.
+ */
+function extractRequiredTransportFrom402Body(body: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const accepts = (parsed as Record<string, unknown>)['accepts'];
+  if (!Array.isArray(accepts)) return undefined;
+
+  for (const raw of accepts) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const entry = raw as Record<string, unknown>;
+    const extra = entry['extra'];
+    const fromExtra =
+      typeof extra === 'object' && extra !== null
+        ? (extra as Record<string, unknown>)['requiredTransport']
+        : undefined;
+    const value = fromExtra ?? entry['requiredTransport'];
+    if (typeof value === 'string') return value;
+  }
+  return undefined;
 }
 
 /**
