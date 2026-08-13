@@ -62,6 +62,13 @@ export interface StatusResponse {
   /** Last error observed during bootstrap, if any (non-fatal). */
   lastError?: string;
   /**
+   * The default apex's announce-carried operator notice. Absent unless that
+   * apex was resolved by reading a kind:10032 from a TRUSTED announcer which
+   * carried a well-formed `notice` — so absent on most reads. See
+   * {@link StatusNotice}.
+   */
+  notice?: StatusNotice;
+  /**
    * Optional-route capabilities this daemon build serves, so a version-skewed
    * client can gate BEFORE it commits to a route that a stale daemon 404s.
    * Currently: `'git'` — the `/git/estimate|push|issue|comment|patch|status`
@@ -74,6 +81,23 @@ export interface StatusResponse {
 
 /** A named optional-route capability advertised via `/status.capabilities`. */
 export type DaemonCapability = 'git';
+
+/**
+ * An operator notice (toon#183's `IlpPeerInfo.notice`), surfaced via
+ * `/status` when the daemon's default apex bootstrapped against a TRUSTED
+ * announcer that published one (issue #544, part of toon-meta#252). `url`
+ * is a POINTER to the durable notice text — the daemon never fetches it,
+ * and neither should a caller as a side effect of reading status.
+ */
+export interface StatusNotice {
+  /** Stable per notice, so a caller can show it once and not repeat it. */
+  id: string;
+  severity: 'info' | 'action-required';
+  /** One line, plain — the reason to go read `url`. */
+  summary: string;
+  /** Where the durable notice text lives. NEVER fetched by this daemon. */
+  url: string;
+}
 
 /** `POST /publish` — pay-to-write a single Nostr event. */
 export interface PublishRequest {

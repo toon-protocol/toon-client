@@ -10,12 +10,12 @@
  * primitives + the generic content tokens.
  */
 import { useEffect, useState, type FC, type ReactNode } from 'react';
-import { Activity, Loader2, Radio } from 'lucide-react';
+import { Activity, AlertTriangle, Info, Loader2, Radio } from 'lucide-react';
 import { Badge } from '@/components/ui/badge.js';
 import { Separator } from '@/components/ui/separator.js';
 import { MonoId } from '@/components/mono-id.js';
 import { useRefreshTick } from './use-refresh.js';
-import { type Atom, type AtomRenderProps, type AtomStatus } from './types.js';
+import { type Atom, type AtomNotice, type AtomRenderProps, type AtomStatus } from './types.js';
 
 /** Format an uptime in ms as a compact human string (e.g. "1d 2h", "5m"). */
 function formatUptime(ms: number): string {
@@ -36,6 +36,60 @@ const Row: FC<{ label: string; children: ReactNode }> = ({ label, children }) =>
     <dd className="min-w-0 text-right text-sm font-medium tabular-nums">{children}</dd>
   </div>
 );
+
+/**
+ * How each notice severity presents: `action-required` is a bordered,
+ * high-contrast `alert` callout that cannot be scrolled past unnoticed; `info`
+ * is a quieter inline `status` line. Anything the daemon didn't recognize as
+ * `action-required` already arrives as `info`, so this pair is exhaustive.
+ */
+const NOTICE_VARIANTS = {
+  actionRequired: {
+    role: 'alert',
+    label: 'Action required',
+    Icon: AlertTriangle,
+    className:
+      'flex flex-col gap-1.5 rounded-lg border-2 border-destructive bg-destructive/10 p-3 text-sm text-destructive',
+  },
+  info: {
+    role: 'status',
+    label: 'Notice',
+    Icon: Info,
+    className:
+      'flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm text-muted-foreground',
+  },
+} as const;
+
+/**
+ * The operator notice a resolved apex announce carried (toon#183, issue
+ * #544). `url` is a POINTER — this only ever displays it as a link; it is
+ * never fetched by the atom or the daemon as a side effect of a status read.
+ */
+const NoticeBanner: FC<{ notice: AtomNotice }> = ({ notice }) => {
+  const { role, label, Icon, className } =
+    notice.severity === 'action-required'
+      ? NOTICE_VARIANTS.actionRequired
+      : NOTICE_VARIANTS.info;
+  return (
+    <div role={role} className={className}>
+      <div className="flex items-center gap-1.5 font-semibold">
+        <Icon aria-hidden="true" className="size-4 shrink-0" />
+        {label}
+      </div>
+      <div className="flex flex-col gap-0.5">
+        <p>{notice.summary}</p>
+        <a
+          href={notice.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="truncate font-mono text-xs underline underline-offset-2"
+        >
+          {notice.url}
+        </a>
+      </div>
+    </div>
+  );
+};
 
 const ChainBadge: FC<{ chain: string; ready: boolean; detail?: string }> = ({
   chain,
@@ -136,6 +190,8 @@ const ClientStatus: FC<AtomRenderProps> = ({ readStatus, refreshNonce }) => {
       </div>
 
       <div className="flex flex-col gap-4 px-4 py-3">
+        {status.notice ? <NoticeBanner notice={status.notice} /> : null}
+
         {/* Settlement */}
         <dl className="flex flex-col gap-2">
           <Row label="Settlement chain">{status.settlementChain}</Row>

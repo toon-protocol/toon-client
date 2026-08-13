@@ -584,6 +584,52 @@ describe('ViewSpecRenderer', () => {
     expect(calls.find((c) => c.name === 'toon_publish_unsigned')).toBeUndefined();
   });
 
+  // ── operator notice passthrough (client-status, issue #544) ────────────────
+
+  function statusBridge(status: Record<string, unknown>): ViewBridge {
+    return {
+      async callTool(name) {
+        if (name === STATUS_TOOL) return { ok: true, data: status };
+        return { ok: true, data: {} };
+      },
+      notifyModel() {},
+      onSpec() {
+        return () => {};
+      },
+    };
+  }
+
+  it('client-status renders a trusted operator notice from toon_status', async () => {
+    const bridge = statusBridge({
+      feePerEvent: '1',
+      settlementChain: 'evm',
+      notice: {
+        id: 'n1',
+        severity: 'action-required',
+        summary: 'Rotate your keys',
+        url: 'https://example.test/notice/n1',
+      },
+    });
+    render(<ViewSpecRenderer bridge={bridge} spec={{ root: { atom: 'client-status' } }} />);
+    expect(await screen.findByText('Rotate your keys')).toBeTruthy();
+    const link = (await screen.findByText(
+      'https://example.test/notice/n1'
+    )) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('https://example.test/notice/n1');
+  });
+
+  it('client-status drops a malformed notice rather than rendering or crashing', async () => {
+    const bridge = statusBridge({
+      feePerEvent: '1',
+      settlementChain: 'evm',
+      notice: { severity: 'action-required' }, // missing id/summary/url
+    });
+    render(<ViewSpecRenderer bridge={bridge} spec={{ root: { atom: 'client-status' } }} />);
+    // The dashboard still renders (the malformed notice must not break status).
+    expect(await screen.findByText(/settlement chain/i)).toBeTruthy();
+    expect(screen.queryByText(/action required/i)).toBeNull();
+  });
+
   // ── post-action auto-refresh (refreshNonce) ────────────────────────────────
 
   /** A bridge whose status carries an identity (so the wallet renders Fund). */

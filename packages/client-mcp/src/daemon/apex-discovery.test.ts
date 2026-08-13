@@ -151,6 +151,87 @@ describe('discoverApex', () => {
     expect(result.btpUrl).toBe('ws://other.example/btp');
   });
 
+  it('surfaces a notice from a trusted announcer', async () => {
+    const { relay, open, emit } = controllableRelay();
+    open();
+    const withNotice: NostrEvent = {
+      ...announcement('g.proxy'),
+      content: JSON.stringify({
+        ilpAddress: 'g.proxy',
+        btpEndpoint: 'ws://apex.example/btp',
+        assetCode: 'USD',
+        assetScale: 6,
+        supportedChains: ['evm:base:84532'],
+        settlementAddresses: { 'evm:base:84532': '0xSettle' },
+        notice: {
+          id: 'n1',
+          severity: 'action-required',
+          summary: 'Rotate your keys',
+          url: 'https://example.test/notice/n1',
+        },
+      }),
+    };
+    emit(['EVENT', 'apex-discovery-g.proxy', withNotice]);
+    const result = await discoverApex({
+      relay,
+      ilpAddress: 'g.proxy',
+      trustedPubkeys: [withNotice.pubkey],
+      timeoutMs: 1000,
+      pollMs: 10,
+    });
+    expect(result.notice).toEqual({
+      id: 'n1',
+      severity: 'action-required',
+      summary: 'Rotate your keys',
+      url: 'https://example.test/notice/n1',
+    });
+  });
+
+  it('drops a notice from an untrusted announcer', async () => {
+    const { relay, open, emit } = controllableRelay();
+    open();
+    const withNotice: NostrEvent = {
+      ...announcement('g.proxy'),
+      content: JSON.stringify({
+        ilpAddress: 'g.proxy',
+        btpEndpoint: 'ws://apex.example/btp',
+        assetCode: 'USD',
+        assetScale: 6,
+        supportedChains: ['evm:base:84532'],
+        settlementAddresses: { 'evm:base:84532': '0xSettle' },
+        notice: {
+          id: 'n1',
+          severity: 'info',
+          summary: 'Untrusted',
+          url: 'https://example.test/notice/n1',
+        },
+      }),
+    };
+    emit(['EVENT', 'apex-discovery-g.proxy', withNotice]);
+    const result = await discoverApex({
+      relay,
+      ilpAddress: 'g.proxy',
+      trustedPubkeys: ['some-other-pubkey'],
+      timeoutMs: 1000,
+      pollMs: 10,
+    });
+    expect(result.notice).toBeUndefined();
+  });
+
+  it('is undefined when the announcement carries no notice', async () => {
+    const { relay, open, emit } = controllableRelay();
+    open();
+    emit(['EVENT', 'apex-discovery-g.proxy', announcement('g.proxy')]);
+    const result = await discoverApex({
+      relay,
+      ilpAddress: 'g.proxy',
+      trustedPubkeys: [announcement('g.proxy').pubkey],
+      timeoutMs: 1000,
+      pollMs: 10,
+    });
+    expect(result.notice).toBeUndefined();
+  });
+
   it('times out when no matching announcement arrives (retryable)', async () => {
     const { relay, open } = controllableRelay();
     open();
