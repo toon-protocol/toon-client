@@ -61,6 +61,7 @@
 
 import { execFileSync } from "node:child_process";
 import * as sandcastle from "@ai-hero/sandcastle";
+import type { Sandbox } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { sandboxSecrets } from "./sandbox-secrets.ts";
 import { mintAppToken } from "./mint-app-token.ts";
@@ -159,7 +160,14 @@ const TOKEN_PATH = "/tmp/.sandcastle-push-token";
 // treats credential.helper as a MULTI-VALUED config key and an empty value
 // RESETS the list, which is what stops `gh auth setup-git`'s container-global
 // helper (wired in onSandboxReady above, and holding the STALE token from
-// container start) from being consulted first and winning.
+// container start) from being consulted first and winning. The reset clears the
+// URL-scoped `credential.https://github.com.helper` entries `gh` actually writes
+// too, because git accumulates every matching helper into one list and `-c`
+// values are applied last.
+//
+// VERIFIED by `git credential fill` against a gitconfig carrying a
+// `gh`-shaped stale helper: without the reset git answers with the STALE
+// credential, with it git answers with the token read from TOKEN_PATH.
 //
 // The token reaches the container via `stdin`, and is read back from a file
 // rather than interpolated into the command, so it appears in no argv, no
@@ -167,8 +175,6 @@ const TOKEN_PATH = "/tmp/.sandcastle-push-token";
 const FRESH_CREDENTIAL_HELPER =
   `!f() { test "$1" = get && ` +
   `{ echo username=x-access-token; echo "password=$(cat ${TOKEN_PATH})"; }; }; f`;
-
-type Sandbox = Awaited<ReturnType<typeof sandcastle.createSandbox>>;
 
 /**
  * Push `branch` from inside the sandbox using a newly-minted App token.
@@ -180,37 +186,42 @@ type Sandbox = Awaited<ReturnType<typeof sandcastle.createSandbox>>;
  * `bestEffort` is for the early publish after the implementer phase: a failure
  * there costs us recoverability but must not abandon a run that still has a
  * review phase to do. The final push is never best-effort — it fails loud.
+ *
+ * Returns true when the branch reached origin.
  */
 async function pushBranch(
   sandbox: Sandbox,
   label: string,
   { bestEffort = false }: { bestEffort?: boolean } = {},
 ): Promise<boolean> {
+  // Every failure below is handled identically: the final push throws, the
+  // best-effort early publish warns and reports failure to its caller.
+  const fail = (reason: string): false => {
+    const message = `[${label}] ${reason}`;
+    if (!bestEffort) throw new Error(message);
+    console.warn(`  WARNING: ${message}`);
+    return false;
+  };
+
   let token: string;
   try {
     const minted = await mintAppToken();
     token = minted.token;
     // Keep the host in step with the container.
     process.env.GH_TOKEN = token;
-    console.log(`  [${label}] credential: freshly minted (source=${minted.source})`);
+    const provenance =
+      minted.source === "app"
+        ? "freshly minted (expiry clock reset)"
+        : "ambient GH_TOKEN (no App key on the host — expiry unchanged)";
+    console.log(`  [${label}] credential: ${provenance}`);
   } catch (err) {
-    const msg = `[${label}] could not obtain a push credential: ${(err as Error).message}`;
-    if (bestEffort) {
-      console.warn(`  WARNING: ${msg}`);
-      return false;
-    }
-    throw new Error(msg);
+    return fail(`could not obtain a push credential: ${(err as Error).message}`);
   }
 
   // `umask 077` so the file is 600 from creation — never briefly world-readable.
   const stage = await sandbox.exec(`umask 077 && cat > ${TOKEN_PATH}`, { stdin: token });
   if (stage.exitCode !== 0) {
-    const msg = `[${label}] failed to stage the push credential (exit ${stage.exitCode}).`;
-    if (bestEffort) {
-      console.warn(`  WARNING: ${msg}`);
-      return false;
-    }
-    throw new Error(msg);
+    return fail(`failed to stage the push credential (exit ${stage.exitCode}).`);
   }
 
   try {
@@ -220,12 +231,7 @@ async function pushBranch(
       { onLine: (line) => console.log(`  [${label}] ${line}`) },
     );
     if (push.exitCode !== 0) {
-      const msg = `[${label}] git push of '${branch}' failed (exit ${push.exitCode}).\n${push.stderr}`;
-      if (bestEffort) {
-        console.warn(`  WARNING: ${msg}`);
-        return false;
-      }
-      throw new Error(msg);
+      return fail(`git push of '${branch}' failed (exit ${push.exitCode}).\n${push.stderr}`);
     }
     return true;
   } finally {
