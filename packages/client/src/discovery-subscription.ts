@@ -67,6 +67,22 @@ export async function subscribeToDiscovery(
   const requiredTransportSeenAt = new Map<string, number>();
   const requiredTransportFor = (pubkey: string): string | undefined =>
     requiredTransports.get(pubkey);
+  /**
+   * Apply one announce to the map, newest-wins per pubkey — the same
+   * monotonic `created_at` guard `tracker.processEvent` applies internally,
+   * so the two can never disagree about which announce is current.
+   */
+  const recordRequiredTransport = (event: NostrEvent): void => {
+    const lastSeen = requiredTransportSeenAt.get(event.pubkey) ?? 0;
+    if (event.created_at <= lastSeen) return;
+    requiredTransportSeenAt.set(event.pubkey, event.created_at);
+    const requiredTransport = extractRequiredTransport(event);
+    if (requiredTransport === undefined) {
+      requiredTransports.delete(event.pubkey);
+    } else {
+      requiredTransports.set(event.pubkey, requiredTransport);
+    }
+  };
 
   if (urls.length === 0) {
     return { close: () => undefined, requiredTransportFor };
@@ -80,15 +96,7 @@ export async function subscribeToDiscovery(
     {
       onevent: (event: NostrEvent) => {
         tracker.processEvent(event);
-        const lastSeen = requiredTransportSeenAt.get(event.pubkey) ?? 0;
-        if (event.created_at <= lastSeen) return;
-        requiredTransportSeenAt.set(event.pubkey, event.created_at);
-        const requiredTransport = extractRequiredTransport(event);
-        if (requiredTransport === undefined) {
-          requiredTransports.delete(event.pubkey);
-        } else {
-          requiredTransports.set(event.pubkey, requiredTransport);
-        }
+        recordRequiredTransport(event);
       },
     }
   );
