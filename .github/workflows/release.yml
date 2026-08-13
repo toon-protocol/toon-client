@@ -70,16 +70,17 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # The artifact users actually install is this Claude Desktop extension
-      # (.mcpb), not the npm package — @toon-protocol/client-mcp stopped
-      # publishing to npm (#549: private + changesets `ignore`), so
+      # (.mcpb), not an npm package: @toon-protocol/client-mcp stopped
+      # publishing to npm (#549 — private + changesets `ignore`), so
       # `publishedPackages` never lists it and the old gate on
       # `contains(publishedPackages, '@toon-protocol/client-mcp')` can never
-      # fire again (issue #536's packaging gotcha, otherwise permanent: every
-      # future client-mcp fix would ship to nobody). build-mcpb.mjs packs the
-      # tarball straight from the `dist/` this job just built, not from the
-      # npm registry, so it doesn't need client-mcp's own (now-frozen) npm
-      # version to move — only that *something* published this run, so this
-      # doesn't also fire on a plain Release-PR-update push.
+      # fire again — every future client-mcp fix would ship to nobody. That is
+      # issue #536's packaging gotcha.
+      #
+      # So gate on "this run published *something*" instead, which still keeps
+      # the step off a plain Release-PR-update push. client-mcp's own (frozen)
+      # npm version never has to move: build-mcpb.mjs packs the tarball from
+      # the `dist/` this job just built, not from the npm registry.
       - name: Build & attach Desktop extension (.mcpb)
         if: steps.changesets.outputs.published == 'true'
         env:

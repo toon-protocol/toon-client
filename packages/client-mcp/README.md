@@ -76,16 +76,17 @@ JSON, no terminal:
 
 **Stable download:**
 [`releases/download/mcpb-latest/toon.mcpb`](https://github.com/toon-protocol/toon-client/releases/download/mcpb-latest/toon.mcpb)
-— always the newest build. For a pinned version, grab `toon-<version>.mcpb` from
-[Releases](https://github.com/toon-protocol/toon-client/releases).
+— always the newest build. This is the only published bundle: the release job
+re-points the `mcpb-latest` release at each new build rather than attaching a
+per-version asset, and its notes record the version and commit it was built from.
 
 1. Download `toon.mcpb`.
 2. Claude Desktop → **Settings → Extensions → Advanced → Install Extension…**
 3. Select the `.mcpb` and confirm.
 
-The bundle ships the **same** `toon-mcp` server (plus the daemon) as the npm
-package and the Claude Code plugin — it's built and attached to each release
-automatically. An identity auto-generates on first run (see below).
+The bundle ships the **same** `toon-mcp` server (plus the daemon) as the Claude
+Code plugin — it's rebuilt from this repo's sources on every release publish. An
+identity auto-generates on first run (see below).
 
 > **Trying the public devnet?** See [docs/devnet-mcp-quickstart.md](../../docs/devnet-mcp-quickstart.md)
 > for a known-good, end-to-end-verified proxy-mode config (the explicit settlement maps the core
