@@ -1555,25 +1555,19 @@ export class ToonClient {
     params: IlpSendParams,
     claim: unknown
   ): Promise<IlpSendResult> {
-    const state = this.state;
-    if (!state) {
-      throw new ToonClientError(
-        'Client not started. Call start() first.',
-        'INVALID_STATE'
-      );
-    }
-
     try {
       return await transport.sendIlpPacketWithClaim(params, claim);
     } catch (error) {
       if (!(error instanceof Http402RequiresBtpError)) throw error;
 
-      const btp: ClaimSendingTransport | undefined = sendsClaims(
-        state.btpClient
-      )
-        ? state.btpClient
+      // Widened to `ClaimSendingTransport` on purpose: `sendsClaims` would
+      // otherwise narrow to `BtpRuntimeClient & ClaimSendingTransport`, whose
+      // `claim` parameter is the stricter `Record<string, unknown>`.
+      const uplink = this.state?.btpClient;
+      const btp: ClaimSendingTransport | undefined = sendsClaims(uplink)
+        ? uplink
         : undefined;
-      if (btp && transport !== btp) {
+      if (btp && btp !== transport) {
         return btp.sendIlpPacketWithClaim(params, claim);
       }
       throw new ToonClientError(
