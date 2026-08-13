@@ -647,9 +647,13 @@ export class ToonClient {
       // Open the tracker's feed BEFORE bootstrap, so announces are landing
       // while bootstrap does its network work rather than only after it
       // (toon-client#550 — see `subscribeToDiscovery` for why the tracker
-      // needs feeding at all).
+      // needs feeding at all, and why it takes `config.relayUrl` AND every
+      // `knownPeers[].relayUrl` rather than just the former).
       const discoverySubscription = await subscribeToDiscovery(
-        this.config.relayUrl,
+        [
+          this.config.relayUrl,
+          ...(this.config.knownPeers ?? []).map((peer) => peer.relayUrl),
+        ],
         discoveryTracker
       );
 

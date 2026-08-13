@@ -8,7 +8,7 @@ export interface DiscoverySubscription {
 }
 
 /**
- * Subscribes to `relayUrl` for kind:10032 (`ILP_PEER_INFO_KIND`) announces
+ * Subscribes to `relayUrls` for kind:10032 (`ILP_PEER_INFO_KIND`) announces
  * and hands every one to `tracker.processEvent()` (toon-client#550).
  *
  * `createDiscoveryTracker` (`@toon-protocol/core`) does not own a
@@ -20,17 +20,33 @@ export interface DiscoverySubscription {
  * (`TERMINATOR_UNRESOLVED`) on every paid write past the peer(s) bootstrap
  * itself negotiated with directly. This is that feed.
  *
+ * Takes a LIST, not a single URL: both first-party consumers
+ * (`toon-clientd`, rig standalone) pin `config.relayUrl` to `''` and carry
+ * the relay(s) their announces actually live on per peer, in
+ * `knownPeers[].relayUrl` instead — `ToonClient.start()` passes both in.
+ * Empty strings are dropped and the list is deduped before subscribing; an
+ * empty/unset `relayUrl` must never reach `SimplePool.subscribeMany`, which
+ * throws synchronously (`Invalid URL: wss://`) on one. When the deduped set
+ * is empty this is a deliberate no-op (a tracker with nothing to subscribe
+ * to still falls back via `resolveTerminatorEndpoint`'s existing
+ * no-tracker-content path), not a start() failure.
+ *
  * Mirrors `keys/BackupService.ts`'s dynamic `import('nostr-tools/pool')` —
  * keeps `nostr-tools/pool` out of bundles that never start a client.
  */
 export async function subscribeToDiscovery(
-  relayUrl: string,
+  relayUrls: readonly string[],
   tracker: Pick<DiscoveryTracker, 'processEvent'>
 ): Promise<DiscoverySubscription> {
+  const urls = Array.from(new Set(relayUrls.filter((url) => url !== '')));
+  if (urls.length === 0) {
+    return { close: () => undefined };
+  }
+
   const { SimplePool } = await import('nostr-tools/pool');
   const pool = new SimplePool();
   const sub = pool.subscribeMany(
-    [relayUrl],
+    urls,
     { kinds: [ILP_PEER_INFO_KIND] },
     {
       onevent: (event: NostrEvent) => tracker.processEvent(event),
@@ -39,7 +55,7 @@ export async function subscribeToDiscovery(
   return {
     close: () => {
       sub.close();
-      pool.close([relayUrl]);
+      pool.close(urls);
     },
   };
 }

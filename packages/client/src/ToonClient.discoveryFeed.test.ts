@@ -127,3 +127,63 @@ describe('ToonClient.start — discovery tracker feed (toon-client#550)', () => 
     expect(subClose).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * PR #554 review correction: both first-party consumers (toon-clientd's
+ * daemon config, rig's standalone push) pin `config.relayUrl` to `''` and
+ * instead carry the relay their announces actually live on per peer, in
+ * `knownPeers[].relayUrl`. The original fix only subscribed to
+ * `config.relayUrl`, so on exactly these deployments — the ones the issue's
+ * live repro used — the tracker stayed unfed and `start()` even threw
+ * (`SimplePool.subscribeMany([''], …)` rejects synchronously) instead of
+ * just failing to fix the bug.
+ */
+describe('ToonClient.start — discovery feed on the daemon/rig shape (empty relayUrl, real relay via knownPeers)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    subscribeMany.mockReturnValue({ close: subClose });
+  });
+
+  function knownPeersConfig(): ToonClientConfig {
+    return {
+      ...baseConfig(),
+      relayUrl: '',
+      knownPeers: [{ pubkey: 'cc'.repeat(32), relayUrl: RELAY_URL }],
+    };
+  }
+
+  it('starts without throwing when config.relayUrl is empty', async () => {
+    const client = new ToonClient(knownPeersConfig());
+    await expect(client.start()).resolves.toBeDefined();
+  });
+
+  it('subscribes on knownPeers[].relayUrl, not the empty config.relayUrl', async () => {
+    const client = new ToonClient(knownPeersConfig());
+    await client.start();
+
+    const [relays] = subscribeMany.mock.calls[0] as [string[]];
+    expect(relays).toEqual([RELAY_URL]);
+  });
+
+  it('an announce on the knownPeers relay reaches the started client’s tracker', async () => {
+    const client = new ToonClient(knownPeersConfig());
+    await client.start();
+
+    relayEventHandler()(ANNOUNCE);
+
+    const peers = client.getDiscoveredPeers();
+    expect(peers).toHaveLength(1);
+    expect(peers[0]?.peerInfo.ilpAddress).toBe('g.toon.ario');
+  });
+
+  it('still starts, with no subscription opened, when relayUrl and knownPeers are both empty', async () => {
+    const client = new ToonClient({
+      ...baseConfig(),
+      relayUrl: '',
+      knownPeers: [],
+    });
+
+    await expect(client.start()).resolves.toBeDefined();
+    expect(subscribeMany).not.toHaveBeenCalled();
+  });
+});

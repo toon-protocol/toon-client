@@ -49,7 +49,7 @@ describe('subscribeToDiscovery', () => {
   it('subscribes on the given relay for kind:10032 only', async () => {
     const tracker = { processEvent: vi.fn() };
 
-    await subscribeToDiscovery('wss://relay.example', tracker);
+    await subscribeToDiscovery(['wss://relay.example'], tracker);
 
     expect(subscribeMany).toHaveBeenCalledTimes(1);
     const [relays, filter] = subscribeMany.mock.calls[0] as [
@@ -63,7 +63,7 @@ describe('subscribeToDiscovery', () => {
   it('forwards every event the relay sends to tracker.processEvent', async () => {
     const tracker = { processEvent: vi.fn() };
 
-    await subscribeToDiscovery('wss://relay.example', tracker);
+    await subscribeToDiscovery(['wss://relay.example'], tracker);
 
     const params = subscribeMany.mock.calls[0]?.[2] as {
       onevent: (event: NostrEvent) => void;
@@ -78,10 +78,45 @@ describe('subscribeToDiscovery', () => {
     subscribeMany.mockReturnValue({ close: subClose });
     const tracker = { processEvent: vi.fn() };
 
-    const sub = await subscribeToDiscovery('wss://relay.example', tracker);
+    const sub = await subscribeToDiscovery(['wss://relay.example'], tracker);
     sub.close();
 
     expect(subClose).toHaveBeenCalledTimes(1);
     expect(poolClose).toHaveBeenCalledWith(['wss://relay.example']);
+  });
+
+  // toon-client#550 correction (PR #554 review): both first-party consumers
+  // (toon-clientd, rig standalone) pin `config.relayUrl` to `''` and carry
+  // the real relay per peer in `knownPeers[].relayUrl` instead.
+  it('drops empty relay URLs instead of passing them to SimplePool', async () => {
+    const tracker = { processEvent: vi.fn() };
+
+    await subscribeToDiscovery(['', 'wss://relay.example', ''], tracker);
+
+    expect(subscribeMany).toHaveBeenCalledTimes(1);
+    const [relays] = subscribeMany.mock.calls[0] as [string[]];
+    expect(relays).toEqual(['wss://relay.example']);
+  });
+
+  it('dedupes repeated relay URLs into a single subscribeMany call', async () => {
+    const tracker = { processEvent: vi.fn() };
+
+    await subscribeToDiscovery(
+      ['wss://relay.example', 'wss://relay.example'],
+      tracker
+    );
+
+    const [relays] = subscribeMany.mock.calls[0] as [string[]];
+    expect(relays).toEqual(['wss://relay.example']);
+  });
+
+  it('is a no-op — no SimplePool constructed — when every relay URL is empty', async () => {
+    const tracker = { processEvent: vi.fn() };
+
+    const sub = await subscribeToDiscovery(['', ''], tracker);
+    sub.close();
+
+    expect(subscribeMany).not.toHaveBeenCalled();
+    expect(poolClose).not.toHaveBeenCalled();
   });
 });
