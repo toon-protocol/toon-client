@@ -16,6 +16,7 @@ const ENV_KEYS = [
   'TOON_CLIENT_DESTINATION',
   'TOON_CLIENT_PUBLISH_DESTINATION',
   'TOON_CLIENT_STORE_DESTINATION',
+  'TOON_CLIENT_STORE_BTP_URL',
   'TOON_CLIENT_KEYSTORE_PASSWORD',
   'TOON_CLIENT_ARWEAVE_GATEWAYS',
 ];
@@ -254,6 +255,69 @@ describe('daemon config', () => {
     expect(cfg.storeDestination).toBe('g.custom.apex');
   });
 
+  it('publishDestination / storeDestination default to the two independent genesis peers when nothing is set (issue #536)', () => {
+    // core@3.3.0's genesis seed carries two independent entries — relay
+    // (g.toon.relay) and store (g.toon.ario) — with no forwarding between
+    // them. A fresh install with no file/env destination must route uploads
+    // to the store's OWN address, not derive it from the relay anchor via
+    // the retired apex `<base>.relay.store` naming convention.
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.test:3000/btp',
+    });
+    expect(cfg.destination).toBe('g.toon.relay');
+    expect(cfg.publishDestination).toBe('g.toon.relay');
+    expect(cfg.storeDestination).toBe('g.toon.ario');
+  });
+
+  it('storeBtpUrl defaults to the genesis STORE peer own BTP endpoint (issue #536 correction)', () => {
+    // The relay and store connectors are independent boxes with no forwarding
+    // between them: reaching g.toon.ario needs a SECOND uplink connected to
+    // the store's own btpEndpoint, not just a renamed destination on the
+    // relay's uplink.
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.test:3000/btp',
+    });
+    expect(cfg.storeBtpUrl).toBe(
+      'wss://proxy.ario.devnet.toonprotocol.dev/ilp/btp'
+    );
+  });
+
+  it('storeBtpUrl is absent when an explicit destination is configured (custom/legacy topology)', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      proxyUrl: 'https://proxy.devnet.toonprotocol.dev',
+      destination: 'g.proxy.relay.store',
+    });
+    expect(cfg.storeBtpUrl).toBeUndefined();
+  });
+
+  it('storeBtpUrl is absent when it matches the default btpUrl (single-connector topology)', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'wss://proxy.ario.devnet.toonprotocol.dev/ilp/btp',
+    });
+    expect(cfg.storeBtpUrl).toBeUndefined();
+  });
+
+  it('file storeBtpUrl and TOON_CLIENT_STORE_BTP_URL env override the genesis default', () => {
+    const fromFile = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.test:3000/btp',
+      storeBtpUrl: 'ws://custom-store.test/btp',
+    });
+    expect(fromFile.storeBtpUrl).toBe('ws://custom-store.test/btp');
+
+    process.env['TOON_CLIENT_STORE_BTP_URL'] = 'ws://env-store.test/btp';
+    const fromEnv = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.test:3000/btp',
+      storeBtpUrl: 'ws://custom-store.test/btp',
+    });
+    expect(fromEnv.storeBtpUrl).toBe('ws://env-store.test/btp');
+  });
+
   it('publishDestination / storeDestination use explicit file values', () => {
     const cfg = resolveConfig({
       mnemonic: MNEMONIC,
@@ -308,8 +372,10 @@ describe('daemon config', () => {
     // fallbacks were ws://localhost:7100 / g.proxy).
     // core@3.2.0 re-pointed that seed at the Rust apex, which announces itself
     // as `g.toon`; the retired TypeScript connector was the one called `g.proxy`.
+    // core@3.3.0 (issue #536) retired the apex itself: the seed's first entry
+    // is now the relay box's own address, `g.toon.relay`.
     expect(cfg.relayUrl).toBe('wss://relay-ws.devnet.toonprotocol.dev');
-    expect(cfg.destination).toBe('g.toon');
+    expect(cfg.destination).toBe('g.toon.relay');
     expect(cfg.feePerEvent).toBe(1n);
     expect(cfg.toonClientConfig.btpUrl).toBe('ws://apex.test:3000/btp');
     // The legacy anon/HS transport overlay is gone — no transport knobs survive.
