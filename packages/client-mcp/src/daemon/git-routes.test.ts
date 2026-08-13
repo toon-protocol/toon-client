@@ -598,6 +598,65 @@ describe('/git/* control API routes', () => {
     expect(result.estimate.totalFee).toBe(result.totalFeePaid);
   });
 
+  it('routes store writes through a second (store) apex and relay writes through the default apex when storeBtpUrl is configured (issue #536 correction)', async () => {
+    // A renamed destination string alone is not a route: the relay and store
+    // connectors are independent boxes with no forwarding between them, so
+    // reaching the store needs its OWN uplink. `storeBtpUrl` names that
+    // uplink; prove uploads/store-writes go through it (not the relay's
+    // client) while relay publishes stay on the default apex.
+    const STORE_BTP_URL = 'ws://store-apex.test/btp';
+    const relayClient = new FakeClient();
+    const storeClient = new FakeClient();
+    const fetchRemote = vi.fn(async () => cannedRemote());
+    const r = new ClientRunner({
+      config: { ...config(), storeBtpUrl: STORE_BTP_URL },
+      createClient: (cfg) =>
+        cfg.btpUrl === STORE_BTP_URL ? storeClient : relayClient,
+      createRelay: fakeRelay,
+      gitDeps: { fetchRemoteState: fetchRemote as unknown as never },
+    });
+    await r.bootstrap();
+    const a = Fastify();
+    registerRoutes(a, r);
+    await a.ready();
+    try {
+      const res = await a.inject({
+        method: 'POST',
+        url: '/git/push',
+        payload: {
+          repoPath: repoDir,
+          repoId: 'fixture-repo',
+          refspecs: ['refs/heads/main'],
+          confirm: true,
+          announcement: { name: 'Fixture', description: 'a repo' },
+        },
+      });
+      expect(res.statusCode).toBe(200);
+
+      // Store writes (kind:5094, proxyPath /store) go through the STORE
+      // apex's client only.
+      expect(
+        relayClient.publishes.filter((p) => p.options?.proxyPath === '/store')
+      ).toHaveLength(0);
+      expect(
+        storeClient.publishes.filter((p) => p.options?.proxyPath === '/store')
+      ).toHaveLength(mainObjects.length);
+
+      // Relay writes (30617/30618) go through the RELAY (default) apex's
+      // client only.
+      expect(
+        storeClient.publishes.filter((p) => p.options?.proxyPath === undefined)
+      ).toHaveLength(0);
+      expect(
+        relayClient.publishes
+          .filter((p) => p.options?.proxyPath === undefined)
+          .map((p) => p.event.kind)
+      ).toEqual([30617, 30618]);
+    } finally {
+      await a.close();
+    }
+  });
+
   it('second push is delta-only: known objects are not re-paid, no re-announce', async () => {
     const shaToTxId = new Map(commit1Objects.map((sha) => [sha, txIdFor(sha)]));
     await build(

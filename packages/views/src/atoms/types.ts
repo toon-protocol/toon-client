@@ -56,6 +56,20 @@ export interface AtomChainStatus {
 }
 
 /**
+ * An operator notice surfaced from the resolved apex's kind:10032 announce
+ * (toon#183, client-mcp side: issue #544 / toon-meta#252). Present only when
+ * the daemon's default apex bootstrapped against a TRUSTED announcer that
+ * published one. `url` is a pointer to the durable notice text — atoms must
+ * display it and never fetch it.
+ */
+export interface AtomNotice {
+  id: string;
+  severity: 'info' | 'action-required';
+  summary: string;
+  url: string;
+}
+
+/**
  * The current daemon + pay-to-write status, as surfaced by the `toon_status`
  * tool. Atoms that show a fee (e.g. the pay-confirm receipt) read the
  * `feePerEvent`/`settlementChain`/`asset` fields via
@@ -98,6 +112,8 @@ export interface AtomStatus {
   network?: AtomChainStatus[];
   /** Last non-fatal bootstrap error, if any. */
   lastError?: string;
+  /** The default apex's announce-carried operator notice, when trusted. */
+  notice?: AtomNotice;
 }
 
 /**
