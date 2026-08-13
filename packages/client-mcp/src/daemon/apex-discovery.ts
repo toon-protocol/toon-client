@@ -105,7 +105,8 @@ export async function discoverApex(
       const { events, cursor: next } = relay.getEvents({ cursor });
       cursor = next;
       const match = events.find((e) => matchesApex(e, ilpAddress, pubkey));
-      if (match) return mapAnnouncement(match, { chain, childPeers, trustedPubkeys });
+      if (match)
+        return mapAnnouncement(match, { chain, childPeers, trustedPubkeys });
       await delay(pollMs);
     }
     throw new ApexDiscoveryError(
@@ -151,7 +152,8 @@ function mapAnnouncement(
   opts: {
     chain?: SettlementChain;
     childPeers?: string[];
-    trustedPubkeys?: readonly string[];
+    /** Announcer pubkeys whose `notice` is honoured — see `./notice.js`. */
+    trustedPubkeys: readonly string[];
   }
 ): DiscoveredApex {
   const info = parseIlpPeerInfo(event);
@@ -211,7 +213,7 @@ function mapAnnouncement(
   const notice = trustedNoticeFrom(
     event.pubkey,
     extractRawNotice(event),
-    opts.trustedPubkeys ?? []
+    opts.trustedPubkeys
   );
 
   return {

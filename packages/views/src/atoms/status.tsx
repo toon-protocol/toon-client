@@ -38,30 +38,43 @@ const Row: FC<{ label: string; children: ReactNode }> = ({ label, children }) =>
 );
 
 /**
+ * How each notice severity presents: `action-required` is a bordered,
+ * high-contrast `alert` callout that cannot be scrolled past unnoticed; `info`
+ * is a quieter inline `status` line. Anything the daemon didn't recognize as
+ * `action-required` already arrives as `info`, so this pair is exhaustive.
+ */
+const NOTICE_VARIANTS = {
+  actionRequired: {
+    role: 'alert',
+    label: 'Action required',
+    Icon: AlertTriangle,
+    className:
+      'flex flex-col gap-1.5 rounded-lg border-2 border-destructive bg-destructive/10 p-3 text-sm text-destructive',
+  },
+  info: {
+    role: 'status',
+    label: 'Notice',
+    Icon: Info,
+    className:
+      'flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm text-muted-foreground',
+  },
+} as const;
+
+/**
  * The operator notice a resolved apex announce carried (toon#183, issue
- * #544). `action-required` is rendered as a bordered, high-contrast callout
- * so it cannot be scrolled past unnoticed; `info` stays a quieter inline
- * line. `url` is a POINTER — this only ever displays it as a link; it is
+ * #544). `url` is a POINTER — this only ever displays it as a link; it is
  * never fetched by the atom or the daemon as a side effect of a status read.
  */
 const NoticeBanner: FC<{ notice: AtomNotice }> = ({ notice }) => {
-  const actionRequired = notice.severity === 'action-required';
+  const { role, label, Icon, className } =
+    notice.severity === 'action-required'
+      ? NOTICE_VARIANTS.actionRequired
+      : NOTICE_VARIANTS.info;
   return (
-    <div
-      role={actionRequired ? 'alert' : 'status'}
-      className={
-        actionRequired
-          ? 'flex flex-col gap-1.5 rounded-lg border-2 border-destructive bg-destructive/10 p-3 text-sm text-destructive'
-          : 'flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm text-muted-foreground'
-      }
-    >
+    <div role={role} className={className}>
       <div className="flex items-center gap-1.5 font-semibold">
-        {actionRequired ? (
-          <AlertTriangle aria-hidden="true" className="size-4 shrink-0" />
-        ) : (
-          <Info aria-hidden="true" className="size-4 shrink-0" />
-        )}
-        {actionRequired ? 'Action required' : 'Notice'}
+        <Icon aria-hidden="true" className="size-4 shrink-0" />
+        {label}
       </div>
       <div className="flex flex-col gap-0.5">
         <p>{notice.summary}</p>

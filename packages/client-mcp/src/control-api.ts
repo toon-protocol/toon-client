@@ -62,8 +62,9 @@ export interface StatusResponse {
   /** Last error observed during bootstrap, if any (non-fatal). */
   lastError?: string;
   /**
-   * The default apex's announce-carried operator notice, when present and
-   * from a trusted announcer. Absent on almost every read — see
+   * The default apex's announce-carried operator notice. Absent unless that
+   * apex was resolved by reading a kind:10032 from a TRUSTED announcer which
+   * carried a well-formed `notice` — so absent on most reads. See
    * {@link StatusNotice}.
    */
   notice?: StatusNotice;

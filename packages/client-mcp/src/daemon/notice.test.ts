@@ -31,7 +31,11 @@ describe('normalizeNotice', () => {
 
   it('defaults a missing severity to info', () => {
     expect(
-      normalizeNotice({ id: 'n1', summary: 'Read this', url: 'https://example.test/n1' })
+      normalizeNotice({
+        id: 'n1',
+        summary: 'Read this',
+        url: 'https://example.test/n1',
+      })
     ).toMatchObject({ severity: 'info' });
   });
 
@@ -74,7 +78,9 @@ describe('trustedNoticeFrom', () => {
   };
 
   it('surfaces the notice when the announcer pubkey is trusted', () => {
-    expect(trustedNoticeFrom('seed-pubkey', rawNotice, ['seed-pubkey'])).toEqual({
+    expect(
+      trustedNoticeFrom('seed-pubkey', rawNotice, ['seed-pubkey'])
+    ).toEqual({
       id: 'n1',
       severity: 'info',
       summary: 'Read this',
@@ -83,7 +89,9 @@ describe('trustedNoticeFrom', () => {
   });
 
   it('drops the notice when the announcer pubkey is untrusted', () => {
-    expect(trustedNoticeFrom('rando', rawNotice, ['seed-pubkey'])).toBeUndefined();
+    expect(
+      trustedNoticeFrom('rando', rawNotice, ['seed-pubkey'])
+    ).toBeUndefined();
   });
 
   it('drops the notice when there are no trusted pubkeys configured', () => {
@@ -91,6 +99,8 @@ describe('trustedNoticeFrom', () => {
   });
 
   it('is malformed-safe even from a trusted announcer', () => {
-    expect(trustedNoticeFrom('seed-pubkey', { id: '' }, ['seed-pubkey'])).toBeUndefined();
+    expect(
+      trustedNoticeFrom('seed-pubkey', { id: '' }, ['seed-pubkey'])
+    ).toBeUndefined();
   });
 });
