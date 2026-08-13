@@ -128,15 +128,17 @@ jobs:
     # maxIterations: 100 is a runaway-loop guard, not a time budget — an
     # iteration has no fixed duration, so no iteration count can "fit" a wall
     # clock. The wall clock is the real budget, and it is deliberately split:
-    # the runner STEP below gets timeout-minutes: 50 so an overlong run dies
+    # the runner STEP below gets timeout-minutes: 170 so an overlong run dies
     # as an ordinary step FAILURE, leaving the rest of the job budget for the
     # always() forensics steps (redact + upload) — a job-level kill would take
-    # those down with it. The job stays at 60 (NOT raised to connector's 180)
-    # because this repo still pushes with the App token minted at job start,
-    # which expires ONE HOUR in (connector#462): with a longer clock a run
-    # would finish its work and still lose the push. Raise to 180/170 only
-    # when the mid-run token mint is ported here (toon-meta#248).
-    timeout-minutes: 60
+    # those down with it. Raised from 60 to 180 now that the push credential is
+    # minted fresh at push time (toon-meta#248, ported from connector#462):
+    # before this the job stayed at 60 because a longer clock just meant a run
+    # finished its work and still lost the push at the App token's one-hour
+    # expiry. toon-client is one of the busiest factory repos (one run already
+    # hit 42 minutes against the old 50-minute step cap), so this row carries
+    # live headroom risk, not just preventive exposure.
+    timeout-minutes: 180
     concurrency:
       group: agent-implement-issue-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -166,6 +168,14 @@ jobs:
       # opened by the default GITHUB_TOKEN) triggers ci.yml, so the green gate
       # runs on the agent's PR. Requires the org/repo secrets APP_ID +
       # APP_PRIVATE_KEY (already used by the existing issue-executor loop).
+      #
+      # This token is the STARTING credential only. It expires one hour after
+      # issue, and pushes can happen well past that on a long run — which is
+      # exactly the failure this repo carries live headroom risk for (see the
+      # job timeout comment above). The runner therefore mints its OWN fresh
+      # token immediately before each push, from APP_ID + APP_PRIVATE_KEY below
+      # (toon-meta#248, ported from connector#462). See
+      # .sandcastle/mint-app-token.ts.
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v2
@@ -176,7 +186,10 @@ jobs:
       - name: Run sandcastle implement runner
         # Step-level timeout (toon-meta#278): below the job's, so a wall-clock
         # kill is a step failure and the always() forensics steps still run.
-        timeout-minutes: 50
+        # Raised from 50 to 170 alongside the job timeout above — see that
+        # comment for why this is only safe now that the push credential is
+        # minted fresh at push time.
+        timeout-minutes: 170
         env:
           SANDCASTLE_ISSUE_NUMBER: ${{ github.event.issue.number }}
           # PR mode (default). To re-enable auto-merge later, uncomment:
@@ -188,6 +201,13 @@ jobs:
           # .sandcastle/sandbox-secrets.ts) — the agent must never hold the
           # credential that approves its own output.
           FACTORY_OPS_TOKEN: ${{ secrets.FACTORY_OPS_TOKEN }}
+          # For minting a fresh push credential mid-run (toon-meta#248, ported
+          # from connector#462). These stay on the HOST: `PASSTHROUGH_KEYS` in
+          # .sandcastle/sandbox-secrets.ts lists only CLAUDE_CODE_OAUTH_TOKEN
+          # and GH_TOKEN, so the private key is never forwarded into the
+          # agent's container.
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
         run: pnpm sandcastle:implement
 
       # REDACT BEFORE UPLOAD — this repository is PUBLIC.
