@@ -2149,7 +2149,10 @@ function note(id: string): NostrEvent {
   };
 }
 
-function apexAnnouncement(ilpAddress: string): NostrEvent {
+function apexAnnouncement(
+  ilpAddress: string,
+  notice?: Record<string, unknown>
+): NostrEvent {
   return {
     id: 'd'.repeat(64),
     pubkey: 'e'.repeat(64),
@@ -2164,6 +2167,7 @@ function apexAnnouncement(ilpAddress: string): NostrEvent {
       assetScale: 6,
       supportedChains: ['evm:base:84532'],
       settlementAddresses: { 'evm:base:84532': '0xS2' },
+      ...(notice ? { notice } : {}),
     }),
   };
 }
@@ -2186,7 +2190,7 @@ describe('ClientRunner multi-target', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  function build() {
+  function build(opts: { trustedNoticePubkeys?: readonly string[] } = {}) {
     const { createRelay, emit } = relayFactory();
     const runner = new ClientRunner({
       config: makeConfig({
@@ -2196,6 +2200,7 @@ describe('ClientRunner multi-target', () => {
       createClient: () => new FakeClient(),
       createRelay,
       targetsPath,
+      trustedNoticePubkeys: opts.trustedNoticePubkeys ?? [],
     });
     return { runner, emit };
   }
@@ -2309,6 +2314,51 @@ describe('ClientRunner multi-target', () => {
     ]);
   });
 
+  // issue #550 round 3: config.ts now threads the daemon's resolved relay into
+  // `toonClientConfig.relayUrl` (previously pinned to `''`) so ToonClient's
+  // discoveryTracker feed has something to subscribe to. `deriveApexClientConfig`
+  // builds a DISCOVERED apex's client config by spreading that same base — this
+  // pins that the spread doesn't drop `relayUrl` along the way, so every
+  // per-apex client (not just the default/identity one) gets fed.
+  it('threads the daemon relay into a discovered apex client config too (issue #550)', async () => {
+    const { createRelay, emit } = relayFactory();
+    const createdConfigs: { relayUrl?: string }[] = [];
+    const runner = new ClientRunner({
+      config: makeConfig({
+        relayUrl: 'ws://relay.test',
+        apexChannelStorePath: join(dir, 'apex-channels.json'),
+        toonClientConfig: {
+          btpUrl: 'ws://apex.test/btp',
+          tokenNetworks: EVM_TOKEN_NETWORKS,
+          relayUrl: 'ws://relay.test',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      }),
+      createClient: (cfg) => {
+        createdConfigs.push(cfg);
+        return new FakeClient();
+      },
+      createRelay,
+      targetsPath,
+    });
+    runner.start();
+    emit(
+      'ws://relay.test',
+      'apex-discovery-g.other.town',
+      apexAnnouncement('g.other.town')
+    );
+    await runner.addApex({
+      ilpAddress: 'g.other.town',
+      relayUrl: 'ws://relay.test',
+    });
+
+    // One config for the default/identity client, one for the discovered apex.
+    expect(createdConfigs.length).toBe(2);
+    for (const cfg of createdConfigs) {
+      expect(cfg.relayUrl).toBe('ws://relay.test');
+    }
+  });
+
   it('publish to an unknown apex throws; default apex is not removable', async () => {
     const { runner } = build();
     runner.start();
@@ -2412,6 +2462,99 @@ describe('ClientRunner — proxy mode (#69)', () => {
     // A second publish reuses the channel (no second open).
     await runner.publish({ event: { id: 'evt2' } as NostrEvent });
     expect(openSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a trusted announcer notice via getStatus (default-apex discovery, #544)', async () => {
+    const { createRelay, emit } = relayFactory();
+    const runner = new ClientRunner({
+      config: makeConfig({
+        hasUplink: true,
+        proxyUrl: 'https://proxy.test',
+        destination: 'g.proxy.relay',
+        relayUrl: 'ws://relay.test',
+        apexChannelStorePath: join(tmpDir, 'apex-channels.json'),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        toonClientConfig: { proxyUrl: 'https://proxy.test' } as any,
+      }),
+      createClient: () => new FakeClient(),
+      createRelay,
+      trustedNoticePubkeys: ['e'.repeat(64)], // apexAnnouncement's pubkey
+    });
+    runner.start();
+    emit(
+      'ws://relay.test',
+      'apex-discovery-g.proxy.relay',
+      apexAnnouncement('g.proxy.relay', {
+        id: 'n1',
+        severity: 'action-required',
+        summary: 'Rotate your keys',
+        url: 'https://example.test/notice/n1',
+      })
+    );
+    await runner.bootstrap();
+    expect(runner.getStatus().notice).toEqual({
+      id: 'n1',
+      severity: 'action-required',
+      summary: 'Rotate your keys',
+      url: 'https://example.test/notice/n1',
+    });
+  });
+
+  it('omits notice from an untrusted announcer (default-apex discovery, #544)', async () => {
+    const { createRelay, emit } = relayFactory();
+    const runner = new ClientRunner({
+      config: makeConfig({
+        hasUplink: true,
+        proxyUrl: 'https://proxy.test',
+        destination: 'g.proxy.relay',
+        relayUrl: 'ws://relay.test',
+        apexChannelStorePath: join(tmpDir, 'apex-channels.json'),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        toonClientConfig: { proxyUrl: 'https://proxy.test' } as any,
+      }),
+      createClient: () => new FakeClient(),
+      createRelay,
+      trustedNoticePubkeys: ['not-the-announcer'],
+    });
+    runner.start();
+    emit(
+      'ws://relay.test',
+      'apex-discovery-g.proxy.relay',
+      apexAnnouncement('g.proxy.relay', {
+        id: 'n1',
+        severity: 'info',
+        summary: 'Untrusted',
+        url: 'https://example.test/notice/n1',
+      })
+    );
+    await runner.bootstrap();
+    expect(runner.getStatus().notice).toBeUndefined();
+  });
+
+  it('omits notice when the trusted announce carries none (default-apex discovery, #544)', async () => {
+    const { createRelay, emit } = relayFactory();
+    const runner = new ClientRunner({
+      config: makeConfig({
+        hasUplink: true,
+        proxyUrl: 'https://proxy.test',
+        destination: 'g.proxy.relay',
+        relayUrl: 'ws://relay.test',
+        apexChannelStorePath: join(tmpDir, 'apex-channels.json'),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        toonClientConfig: { proxyUrl: 'https://proxy.test' } as any,
+      }),
+      createClient: () => new FakeClient(),
+      createRelay,
+      trustedNoticePubkeys: ['e'.repeat(64)],
+    });
+    runner.start();
+    emit(
+      'ws://relay.test',
+      'apex-discovery-g.proxy.relay',
+      apexAnnouncement('g.proxy.relay')
+    );
+    await runner.bootstrap();
+    expect(runner.getStatus().notice).toBeUndefined();
   });
 
   it('read-only daemon (no uplink) serves reads but rejects writes (#69)', async () => {

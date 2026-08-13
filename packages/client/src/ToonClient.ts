@@ -39,6 +39,10 @@ import {
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import {
+  subscribeToDiscovery,
+  type DiscoverySubscription,
+} from './discovery-subscription.js';
+import {
   ToonClientError,
   ChannelFundingError,
   isInsufficientGasError,
@@ -262,6 +266,12 @@ function lookupByCanonicalChain(
 interface ToonClientState {
   bootstrapService: BootstrapService;
   discoveryTracker: DiscoveryTracker;
+  /**
+   * The feed for `discoveryTracker` — see {@link subscribeToDiscovery}. The
+   * tracker owns no subscription of its own, so without this it is
+   * constructed but never fed (toon-client#550).
+   */
+  discoverySubscription: DiscoverySubscription;
   runtimeClient: IlpClient;
   peersDiscovered: number;
   btpClient?: BtpRuntimeClient | BtpPaidWriteTransport;
@@ -634,6 +644,19 @@ export class ToonClient {
         btpSession,
       } = initialization;
 
+      // Open the tracker's feed BEFORE bootstrap, so announces are landing
+      // while bootstrap does its network work rather than only after it
+      // (toon-client#550 — see `subscribeToDiscovery` for why the tracker
+      // needs feeding at all, and why it takes `config.relayUrl` AND every
+      // `knownPeers[].relayUrl` rather than just the former).
+      const discoverySubscription = await subscribeToDiscovery(
+        [
+          this.config.relayUrl,
+          ...(this.config.knownPeers ?? []).map((peer) => peer.relayUrl),
+        ],
+        discoveryTracker
+      );
+
       // Wire claim signer to bootstrap service if we have channel manager
       if (this.channelManager) {
         const cm = this.channelManager;
@@ -810,6 +833,7 @@ export class ToonClient {
       this.state = {
         bootstrapService,
         discoveryTracker,
+        discoverySubscription,
         runtimeClient,
         peersDiscovered: bootstrapResults.length,
         btpClient: btpClient ?? undefined,
@@ -2634,6 +2658,11 @@ export class ToonClient {
     }
 
     try {
+      // Tear down the discovery relay subscription first — it is a local,
+      // synchronous close, so a BTP disconnect that rejects can't leave the
+      // relay socket open behind it (toon-client#550).
+      this.state.discoverySubscription.close();
+
       // Disconnect BTP client if connected
       if (this.state.btpClient) {
         await this.state.btpClient.disconnect();

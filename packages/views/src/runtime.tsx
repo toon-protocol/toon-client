@@ -33,6 +33,7 @@ import {
   type ActionOutcome,
   type AtomAction,
   type AtomStatus,
+  type AtomNotice,
   type AtomChannel,
   type AtomBalance,
   SPENDY_CANCELLED,
@@ -420,6 +421,27 @@ function buildQuery(bridge: ViewBridge): (filter: NostrFilterLike) => Promise<No
   };
 }
 
+/**
+ * Validate a raw `notice` payload from `toon_status` before trusting it as an
+ * {@link AtomNotice} (issue #544's client-status half of toon-meta#252). The
+ * daemon already trust-filters by announcer pubkey and normalizes the shape,
+ * but the runtime treats it as untrusted input at the render boundary too —
+ * a malformed or version-skewed payload is dropped, never rendered.
+ */
+function parseAtomNotice(value: unknown): AtomNotice | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { id, severity, summary, url } = value as Record<string, unknown>;
+  if (typeof id !== 'string' || id.length === 0) return undefined;
+  if (typeof summary !== 'string' || summary.length === 0) return undefined;
+  if (typeof url !== 'string' || url.length === 0) return undefined;
+  return {
+    id,
+    summary,
+    url,
+    severity: severity === 'action-required' ? 'action-required' : 'info',
+  };
+}
+
 /** Read the live pay-to-write status (`toon_status`) for the fee-confirm UX. */
 function buildReadStatus(bridge: ViewBridge): () => Promise<AtomStatus> {
   return async () => {
@@ -430,6 +452,7 @@ function buildReadStatus(bridge: ViewBridge): () => Promise<AtomStatus> {
     if (typeof data.feePerEvent !== 'string' || !data.feePerEvent) {
       throw new Error('fee unavailable');
     }
+    const notice = parseAtomNotice(data.notice);
     // Pass the richer daemon-health fields through verbatim (additive over the
     // fee/chain the pay-confirm receipt needs) so the client-status dashboard can
     // render uptime / relay / transport / per-chain readiness / identity from
@@ -447,6 +470,7 @@ function buildReadStatus(bridge: ViewBridge): () => Promise<AtomStatus> {
       ...(data.relay && typeof data.relay === 'object' ? { relay: data.relay } : {}),
       ...(Array.isArray(data.network) ? { network: data.network } : {}),
       ...(typeof data.lastError === 'string' ? { lastError: data.lastError } : {}),
+      ...(notice ? { notice } : {}),
     };
   };
 }

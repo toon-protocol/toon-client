@@ -22,7 +22,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
-import { decodeEventFromToon } from '@toon-protocol/core';
+import { decodeEventFromToon, GenesisPeerLoader } from '@toon-protocol/core';
 import {
   STATUS_APPLIED_KIND,
   STATUS_CLOSED_KIND,
@@ -154,6 +154,7 @@ import {
   type PersistedApexTarget,
 } from './targets-store.js';
 import { discoverApex } from './apex-discovery.js';
+import type { OperatorNotice } from './notice.js';
 import type { PublishEventResult } from '@toon-protocol/client';
 
 /** The subset of `ToonClient` the runner depends on. */
@@ -321,6 +322,15 @@ export interface ClientRunnerDeps {
   /** Path to the dynamic-targets store (tests override). */
   targetsPath?: string;
   /**
+   * Pubkeys whose announce-carried operator notice (issue #544's client-mcp
+   * half of toon-meta#252) is trusted and surfaced via `toon_status`.
+   * Defaults to the committed genesis-seed pubkeys
+   * (`GenesisPeerLoader.loadGenesisPeers()`), mirroring the trust rule
+   * toon-protocol/rig#78 settled on for the same field. Anyone can publish a
+   * kind:10032, so a notice from any other pubkey is silently dropped.
+   */
+  trustedNoticePubkeys?: readonly string[];
+  /**
    * Test seams for the `/git/*` pipeline (default: the real
    * @toon-protocol/rig implementations). `fetchRemoteState` opens relay
    * WebSockets, so tests inject a canned reader instead of hitting the network.
@@ -349,6 +359,8 @@ interface ApexConnection {
   bootstrapPromise?: Promise<void>;
   lastError?: string;
   isDefault: boolean;
+  /** The apex's announce-carried operator notice, when discovered from a trusted announcer. */
+  notice?: OperatorNotice;
 }
 
 /** A runner-level merged read-buffer entry, tagged with its source relay. */
@@ -384,6 +396,8 @@ export class ClientRunner {
   private readonly createRelay: CreateRelay;
   private readonly log: (msg: string) => void;
   private readonly targetsPath?: string;
+  /** Pubkeys whose announce-carried notice is trusted — see {@link ClientRunnerDeps.trustedNoticePubkeys}. */
+  private readonly trustedNoticePubkeys: readonly string[];
 
   /** Remote-state reader for `/git/*` (injectable — opens relay sockets). */
   private readonly fetchGitRemoteState: typeof fetchRemoteState;
@@ -456,6 +470,9 @@ export class ClientRunner {
     this.createClient = deps.createClient;
     this.log = deps.logger ?? ((): void => undefined);
     if (deps.targetsPath !== undefined) this.targetsPath = deps.targetsPath;
+    this.trustedNoticePubkeys =
+      deps.trustedNoticePubkeys ??
+      GenesisPeerLoader.loadGenesisPeers().map((p) => p.pubkey);
     this.fetchGitRemoteState =
       deps.gitDeps?.fetchRemoteState ?? fetchRemoteState;
     this.createRepoReader =
@@ -780,6 +797,7 @@ export class ClientRunner {
     const discovered = await discoverApex({
       relay,
       ilpAddress: req.ilpAddress,
+      trustedPubkeys: this.trustedNoticePubkeys,
       ...(req.pubkey ? { pubkey: req.pubkey } : {}),
       ...(req.chain ? { chain: req.chain } : {}),
       ...(req.childPeers ? { childPeers: req.childPeers } : {}),
@@ -809,6 +827,7 @@ export class ClientRunner {
         `Apex ${discovered.btpUrl} failed to register after discovery.`
       );
     }
+    apex.notice = discovered.notice;
     return {
       btpUrl: apex.btpUrl,
       destination: apex.destination,
@@ -1042,9 +1061,11 @@ export class ClientRunner {
       relay,
       ilpAddress: apex.destination,
       chain: apex.chain,
+      trustedPubkeys: this.trustedNoticePubkeys,
       ...(apex.childPeers.length > 0 ? { childPeers: apex.childPeers } : {}),
     });
     apex.negotiation = discovered.negotiation;
+    apex.notice = discovered.notice;
     if (discovered.apexChildPeers) apex.childPeers = discovered.apexChildPeers;
     this.log(
       `[runner] discovered apex negotiation for "${apex.destination}" ` +
@@ -1167,6 +1188,7 @@ export class ClientRunner {
       },
       ...(network ? { network } : {}),
       ...(apex?.lastError ? { lastError: apex.lastError } : {}),
+      ...(apex?.notice ? { notice: apex.notice } : {}),
       // Advertise the optional-route surface this daemon build serves so a
       // version-skewed rig CLI can capability-gate the `/git/*` write path
       // BEFORE delegating (an old daemon lacking these routes 404s otherwise —
