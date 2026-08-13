@@ -98,6 +98,41 @@ function onlyOpened(connector: FakeTerminatingConnector) {
   return first;
 }
 
+/** Route requests to whichever fake connector actually owns the origin. */
+function routedFetch(...connectors: FakeTerminatingConnector[]): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const connector = connectors.find((c) => url.startsWith(c.endpoint));
+    if (!connector) throw new Error(`no fake connector owns ${url}`);
+    return connector.fetch(input as never, init);
+  }) as typeof fetch;
+}
+
+/**
+ * A discovered (but not necessarily peered) announce claiming `addresses` —
+ * the first is the announce's PRIMARY, the rest are secondary claims.
+ */
+function announceFor(
+  addresses: string[],
+  httpEndpoint: string,
+  pubkey: string
+) {
+  return {
+    pubkey,
+    peerId: `nostr-${pubkey.slice(0, 8)}`,
+    discoveredAt: 0,
+    peerInfo: {
+      pubkey,
+      ilpAddress: addresses[0],
+      ilpAddresses: addresses,
+      btpEndpoint: `wss://${new URL(httpEndpoint).host}/btp`,
+      httpEndpoint,
+      assetCode: 'USD',
+      assetScale: 6,
+    },
+  };
+}
+
 /** Wire a client up with a paid-write transport, as `start()` would have. */
 function attachTransport(
   client: ToonClient,
@@ -345,43 +380,6 @@ describe('ToonClient.publishEvent forms a sealed packet (toon-client#450)', () =
 // ---------------------------------------------------------------------------
 
 describe('ToonClient.publishEvent resolves identity by destination (issue #526)', () => {
-  /** Route requests to whichever fake connector actually owns the origin. */
-  function routedFetch(
-    ...connectors: FakeTerminatingConnector[]
-  ): typeof fetch {
-    return (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const connector = connectors.find((c) => url.startsWith(c.endpoint));
-      if (!connector) throw new Error(`no fake connector owns ${url}`);
-      return connector.fetch(input as never, init);
-    }) as typeof fetch;
-  }
-
-  /**
-   * A discovered (but not necessarily peered) announce claiming `addresses` —
-   * the first is the announce's PRIMARY, the rest are secondary claims.
-   */
-  function announceFor(
-    addresses: string[],
-    httpEndpoint: string,
-    pubkey: string
-  ) {
-    return {
-      pubkey,
-      peerId: `nostr-${pubkey.slice(0, 8)}`,
-      discoveredAt: 0,
-      peerInfo: {
-        pubkey,
-        ilpAddress: addresses[0],
-        ilpAddresses: addresses,
-        btpEndpoint: `wss://${new URL(httpEndpoint).host}/btp`,
-        httpEndpoint,
-        assetCode: 'USD',
-        assetScale: 6,
-      },
-    };
-  }
-
   /**
    * A started client whose discovery has produced `announces`, sending over
    * `transport` — the ONE connector whose `fulfill()` answers, so a packet
@@ -585,48 +583,19 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
 // ---------------------------------------------------------------------------
 
 describe('ToonClient.publishEvent honors a requiring-BTP terminator (issue #558)', () => {
-  /** Route requests to whichever fake connector actually owns the origin. */
-  function routedFetch(
-    ...connectors: FakeTerminatingConnector[]
-  ): typeof fetch {
-    return (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const connector = connectors.find((c) => url.startsWith(c.endpoint));
-      if (!connector) throw new Error(`no fake connector owns ${url}`);
-      return connector.fetch(input as never, init);
-    }) as typeof fetch;
-  }
-
-  /** A discovered announce claiming `destination`, optionally requiring BTP. */
-  function announceFor(
-    destination: string,
-    httpEndpoint: string,
-    pubkey: string
-  ) {
-    return {
-      pubkey,
-      peerId: `nostr-${pubkey.slice(0, 8)}`,
-      discoveredAt: 0,
-      peerInfo: {
-        pubkey,
-        ilpAddress: destination,
-        btpEndpoint: `wss://${new URL(httpEndpoint).host}/btp`,
-        httpEndpoint,
-        assetCode: 'USD',
-        assetScale: 6,
-      },
-    };
-  }
-
-  /** A started client with BOTH an HTTP and a BTP paid-write transport wired. */
-  function attachBothTransports(
+  /**
+   * A started client whose discovery has produced `peers` and whose feed
+   * reports `requiredTransportFor`, sending over an HTTP paid-write transport
+   * plus — when `btpSend` is given — a BTP one. Omit `btpSend` for a client
+   * with no BTP uplink configured at all.
+   */
+  function attachTransports(
     client: ToonClient,
     opts: {
       httpSend: (params: { data: string }) => Promise<unknown>;
-      btpSend: (params: { data: string }) => Promise<unknown>;
+      btpSend?: (params: { data: string }) => Promise<unknown>;
       peers: ReturnType<typeof announceFor>[];
       requiredTransportFor: (pubkey: string) => string | undefined;
-      noBtpClient?: boolean;
     }
   ): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -638,9 +607,9 @@ describe('ToonClient.publishEvent honors a requiring-BTP terminator (issue #558)
       },
       runtimeClient: { sendIlpPacketWithClaim: opts.httpSend },
       peersDiscovered: 0,
-      ...(opts.noBtpClient
-        ? {}
-        : { btpClient: { sendIlpPacketWithClaim: opts.btpSend } }),
+      ...(opts.btpSend
+        ? { btpClient: { sendIlpPacketWithClaim: opts.btpSend } }
+        : {}),
     };
   }
 
@@ -658,10 +627,10 @@ describe('ToonClient.publishEvent honors a requiring-BTP terminator (issue #558)
     const btpSend = vi.fn(async (params: { data: string }) =>
       edge.fulfill(params.data)
     );
-    attachBothTransports(client, {
+    attachTransports(client, {
       httpSend,
       btpSend,
-      peers: [announceFor('g.proxy', edge.endpoint, pubkey)],
+      peers: [announceFor(['g.proxy'], edge.endpoint, pubkey)],
       requiredTransportFor: (pk) => (pk === pubkey ? 'btp' : undefined),
     });
 
@@ -688,10 +657,10 @@ describe('ToonClient.publishEvent honors a requiring-BTP terminator (issue #558)
     const btpSend = vi.fn(async (params: { data: string }) =>
       edge.fulfill(params.data)
     );
-    attachBothTransports(client, {
+    attachTransports(client, {
       httpSend,
       btpSend,
-      peers: [announceFor('g.proxy', edge.endpoint, pubkey)],
+      peers: [announceFor(['g.proxy'], edge.endpoint, pubkey)],
       requiredTransportFor: () => undefined,
     });
 
@@ -715,14 +684,12 @@ describe('ToonClient.publishEvent honors a requiring-BTP terminator (issue #558)
     const httpSend = vi.fn(async (params: { data: string }) =>
       edge.fulfill(params.data)
     );
-    attachBothTransports(client, {
+    // No `btpSend`: this client has no BTP uplink at all, which is exactly
+    // the case that must refuse rather than retry the write over HTTP.
+    attachTransports(client, {
       httpSend,
-      btpSend: async () => {
-        throw new Error('must not be called');
-      },
-      peers: [announceFor('g.proxy', edge.endpoint, pubkey)],
+      peers: [announceFor(['g.proxy'], edge.endpoint, pubkey)],
       requiredTransportFor: (pk) => (pk === pubkey ? 'btp' : undefined),
-      noBtpClient: true,
     });
 
     let caught: unknown;

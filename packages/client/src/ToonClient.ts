@@ -80,8 +80,10 @@ import type {
   BtpRuntimeClient,
   BtpChannelDeclaration,
 } from './adapters/BtpRuntimeClient.js';
-import type { BtpPaidWriteTransport } from './adapters/BtpPaidWriteTransport.js';
-import type { IlpSendParams } from './adapters/ilp-send.js';
+import type {
+  BtpPaidWriteTransport,
+  ClaimSendingTransport,
+} from './adapters/BtpPaidWriteTransport.js';
 import {
   Http402Client,
   type H402FetchOptions,
@@ -163,6 +165,24 @@ function claimsTermination(
   return (
     peerInfo.ilpAddresses === undefined &&
     ilpAddressTerminates(address, destination)
+  );
+}
+
+/**
+ * Whether `candidate` can carry a paid write, i.e. an ILP PREPARE plus the
+ * signed payment-channel claim. Both built-in transports (`HttpIlpClient`,
+ * `BtpRuntimeClient`) and the {@link BtpPaidWriteTransport} wrapper satisfy
+ * it; the level-3 `HttpRuntimeClient` (connector-admin HTTP) does not.
+ *
+ * `ClaimSendingTransport`'s `IlpSendParams` is the shape both built-in
+ * transports accept — the sender-chosen `executionCondition` + explicit
+ * `expiresAt` extensions (toon-client#350) — and both enforce FULFILL
+ * preimage verification.
+ */
+function sendsClaims(candidate: unknown): candidate is ClaimSendingTransport {
+  return (
+    typeof (candidate as ClaimSendingTransport | undefined)
+      ?.sendIlpPacketWithClaim === 'function'
   );
 }
 
@@ -1229,17 +1249,22 @@ export class ToonClient {
    * `resolveTerminatorEndpoint`'s own claim gating, not a replacement for it.
    */
   private terminatorRequiresBtp(destination: string): boolean {
+    // Probed, not assumed — as in {@link resolveTerminatorEndpoint}: a state
+    // assembled without a full tracker/subscription (a stub, a half-built
+    // runtime) simply has nothing to read the requirement off.
     const tracker: Partial<DiscoveryTracker> | undefined =
       this.state?.discoveryTracker;
     if (typeof tracker?.getAllDiscoveredPeers !== 'function') return false;
-    const requiredTransportFor =
-      this.state?.discoverySubscription?.requiredTransportFor;
-    if (typeof requiredTransportFor !== 'function') return false;
+    const subscription: Partial<DiscoverySubscription> | undefined =
+      this.state?.discoverySubscription;
+    if (typeof subscription?.requiredTransportFor !== 'function') return false;
 
-    const peers = tracker.getAllDiscoveredPeers();
-    const claim = findBestTerminatorClaim(destination, peers);
+    const claim = findBestTerminatorClaim(
+      destination,
+      tracker.getAllDiscoveredPeers()
+    );
     if (!claim) return false;
-    return requiredTransportFor(claim.pubkey) === 'btp';
+    return subscription.requiredTransportFor(claim.pubkey) === 'btp';
   }
 
   /**
@@ -1463,15 +1488,7 @@ export class ToonClient {
    * @throws {ToonClientError} BTP_REQUIRED when `destination`'s terminator
    *   requires BTP but this client has no `btpClient` configured at all.
    */
-  private getClaimTransport(destination?: string): {
-    // IlpSendParams: both built-in transports (HttpIlpClient / BtpRuntimeClient)
-    // accept the sender-chosen `executionCondition` + explicit `expiresAt`
-    // extensions (toon-client#350) and enforce FULFILL preimage verification.
-    sendIlpPacketWithClaim(
-      params: IlpSendParams,
-      claim: unknown
-    ): Promise<IlpSendResult>;
-  } {
+  private getClaimTransport(destination?: string): ClaimSendingTransport {
     const state = this.state;
     if (!state) {
       throw new ToonClientError(
@@ -1481,13 +1498,7 @@ export class ToonClient {
     }
 
     if (destination !== undefined && this.terminatorRequiresBtp(destination)) {
-      if (
-        state.btpClient &&
-        typeof (state.btpClient as IlpClient).sendIlpPacketWithClaim ===
-          'function'
-      ) {
-        return state.btpClient as ReturnType<ToonClient['getClaimTransport']>;
-      }
+      if (sendsClaims(state.btpClient)) return state.btpClient;
       throw new ToonClientError(
         `The connector terminating "${destination}" requires BTP for paid ` +
           'writes (its kind:10032 announce declares requiredTransport: ' +
@@ -1505,12 +1516,7 @@ export class ToonClient {
       ? [state.btpClient, state.runtimeClient]
       : [state.runtimeClient, state.btpClient];
     for (const candidate of candidates) {
-      if (
-        candidate &&
-        typeof (candidate as IlpClient).sendIlpPacketWithClaim === 'function'
-      ) {
-        return candidate as ReturnType<ToonClient['getClaimTransport']>;
-      }
+      if (sendsClaims(candidate)) return candidate;
     }
     throw new ToonClientError(
       'No ILP transport for paid writes. Configure `proxyUrl`/`connectorHttpEndpoint` ' +
