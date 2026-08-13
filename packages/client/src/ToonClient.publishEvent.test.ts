@@ -552,7 +552,13 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     const client = new ToonClient(baseConfig());
     attachDiscovery(
       client,
-      [announceFor(['g.toon', 'g.toon.relay'], router.endpoint, 'a'.repeat(64))],
+      [
+        announceFor(
+          ['g.toon', 'g.toon.relay'],
+          router.endpoint,
+          'a'.repeat(64)
+        ),
+      ],
       router
     );
 
@@ -570,6 +576,165 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     expect((caught as ToonClientError).code).toBe('TERMINATOR_UNRESOLVED');
     expect(router.opened).toHaveLength(0);
     expect(edge.opened).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A `requiredTransport: "btp"` announce must not be posted to over HTTP
+// (issue #558)
+// ---------------------------------------------------------------------------
+
+describe('ToonClient.publishEvent honors a requiring-BTP terminator (issue #558)', () => {
+  /** Route requests to whichever fake connector actually owns the origin. */
+  function routedFetch(
+    ...connectors: FakeTerminatingConnector[]
+  ): typeof fetch {
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const connector = connectors.find((c) => url.startsWith(c.endpoint));
+      if (!connector) throw new Error(`no fake connector owns ${url}`);
+      return connector.fetch(input as never, init);
+    }) as typeof fetch;
+  }
+
+  /** A discovered announce claiming `destination`, optionally requiring BTP. */
+  function announceFor(
+    destination: string,
+    httpEndpoint: string,
+    pubkey: string
+  ) {
+    return {
+      pubkey,
+      peerId: `nostr-${pubkey.slice(0, 8)}`,
+      discoveredAt: 0,
+      peerInfo: {
+        pubkey,
+        ilpAddress: destination,
+        btpEndpoint: `wss://${new URL(httpEndpoint).host}/btp`,
+        httpEndpoint,
+        assetCode: 'USD',
+        assetScale: 6,
+      },
+    };
+  }
+
+  /** A started client with BOTH an HTTP and a BTP paid-write transport wired. */
+  function attachBothTransports(
+    client: ToonClient,
+    opts: {
+      httpSend: (params: { data: string }) => Promise<unknown>;
+      btpSend: (params: { data: string }) => Promise<unknown>;
+      peers: ReturnType<typeof announceFor>[];
+      requiredTransportFor: (pubkey: string) => string | undefined;
+      noBtpClient?: boolean;
+    }
+  ): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: { getAllDiscoveredPeers: () => opts.peers },
+      discoverySubscription: {
+        requiredTransportFor: opts.requiredTransportFor,
+      },
+      runtimeClient: { sendIlpPacketWithClaim: opts.httpSend },
+      peersDiscovered: 0,
+      ...(opts.noBtpClient
+        ? {}
+        : { btpClient: { sendIlpPacketWithClaim: opts.btpSend } }),
+    };
+  }
+
+  it('routes over the established BTP uplink, never HTTP, when the announce requires it', async () => {
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+    });
+    globalThis.fetch = routedFetch(edge);
+    const pubkey = 'a'.repeat(64);
+
+    const client = new ToonClient(baseConfig());
+    const httpSend = vi.fn(async (params: { data: string }) =>
+      edge.fulfill(params.data)
+    );
+    const btpSend = vi.fn(async (params: { data: string }) =>
+      edge.fulfill(params.data)
+    );
+    attachBothTransports(client, {
+      httpSend,
+      btpSend,
+      peers: [announceFor('g.proxy', edge.endpoint, pubkey)],
+      requiredTransportFor: (pk) => (pk === pubkey ? 'btp' : undefined),
+    });
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    expect(btpSend).toHaveBeenCalledTimes(1);
+    expect(httpSend).not.toHaveBeenCalled();
+  });
+
+  it('still prefers HTTP when the announce does not require BTP (unaffected default)', async () => {
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+    });
+    globalThis.fetch = routedFetch(edge);
+    const pubkey = 'a'.repeat(64);
+
+    const client = new ToonClient(baseConfig());
+    const httpSend = vi.fn(async (params: { data: string }) =>
+      edge.fulfill(params.data)
+    );
+    const btpSend = vi.fn(async (params: { data: string }) =>
+      edge.fulfill(params.data)
+    );
+    attachBothTransports(client, {
+      httpSend,
+      btpSend,
+      peers: [announceFor('g.proxy', edge.endpoint, pubkey)],
+      requiredTransportFor: () => undefined,
+    });
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    expect(httpSend).toHaveBeenCalledTimes(1);
+    expect(btpSend).not.toHaveBeenCalled();
+  });
+
+  it('throws a clear BTP_REQUIRED error rather than falling back to HTTP when no BTP uplink is configured', async () => {
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+    });
+    globalThis.fetch = routedFetch(edge);
+    const pubkey = 'a'.repeat(64);
+
+    const client = new ToonClient(baseConfig());
+    const httpSend = vi.fn(async (params: { data: string }) =>
+      edge.fulfill(params.data)
+    );
+    attachBothTransports(client, {
+      httpSend,
+      btpSend: async () => {
+        throw new Error('must not be called');
+      },
+      peers: [announceFor('g.proxy', edge.endpoint, pubkey)],
+      requiredTransportFor: (pk) => (pk === pubkey ? 'btp' : undefined),
+      noBtpClient: true,
+    });
+
+    let caught: unknown;
+    try {
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ToonClientError);
+    expect((caught as ToonClientError).code).toBe('BTP_REQUIRED');
+    expect(httpSend).not.toHaveBeenCalled();
   });
 });
 

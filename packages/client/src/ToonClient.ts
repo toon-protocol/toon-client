@@ -174,6 +174,8 @@ interface TerminatorClaim {
   segments: number;
   /** Whether the claiming address is the announce's primary (`ilpAddresses[0]`). */
   isPrimary: boolean;
+  /** The announcing peer's pubkey — for looking up its `requiredTransport` (issue #558). */
+  pubkey: string;
 }
 
 /** Whether `claim` beats `best`: more specific first, then primary over secondary. */
@@ -203,8 +205,23 @@ function resolveTerminatorHttpEndpoint(
   destination: string,
   peers: readonly DiscoveredPeer[]
 ): string | undefined {
+  return findBestTerminatorClaim(destination, peers)?.endpoint;
+}
+
+/**
+ * The winning {@link TerminatorClaim} for `destination` — the same
+ * most-specific/primary-tiebreak search {@link resolveTerminatorHttpEndpoint}
+ * exposes as just an endpoint, kept here so a caller can also read WHICH
+ * peer won (its pubkey), e.g. to check whether that peer's announce declares
+ * `requiredTransport` (issue #558). `undefined` when no discovered announce
+ * claims `destination` at all.
+ */
+function findBestTerminatorClaim(
+  destination: string,
+  peers: readonly DiscoveredPeer[]
+): TerminatorClaim | undefined {
   let best: TerminatorClaim | undefined;
-  for (const { peerInfo } of peers) {
+  for (const { peerInfo, pubkey } of peers) {
     const httpEndpoint = peerInfo.httpEndpoint;
     if (!httpEndpoint) continue;
     const addresses = peerInfo.ilpAddresses ?? [peerInfo.ilpAddress];
@@ -214,11 +231,12 @@ function resolveTerminatorHttpEndpoint(
         endpoint: httpEndpoint,
         segments: address.split('.').length,
         isPrimary: index === 0,
+        pubkey,
       };
       if (!best || outranks(claim, best)) best = claim;
     }
   }
-  return best?.endpoint;
+  return best;
 }
 
 /**
@@ -955,7 +973,7 @@ export class ToonClient {
         identity.publicKey
       );
 
-      const transport = this.getClaimTransport();
+      const transport = this.getClaimTransport(destination);
       const claimMessage = await this.resolveClaimForDestination(
         destination,
         BigInt(amount),
@@ -1021,18 +1039,21 @@ export class ToonClient {
       // one from, or the settlement wallet cannot fund the one-time on-chain
       // channel open (`CHANNEL_FUNDING` — which carries the wallet, the chain,
       // and, for an unreadable Solana leg, the missing config, see
-      // {@link withSolanaLegHint}). Wrapping any of them in `PUBLISH_ERROR`
-      // would hide the one fact worth surfacing behind the most generic code
-      // this method has. Everything else — including a connector that will not
-      // answer for its identity — keeps the existing wrapping, so
-      // `PUBLISH_ERROR` still means "the publish itself failed".
+      // {@link withSolanaLegHint}). `BTP_REQUIRED` (issue #558) is the same
+      // shape: the terminator's own announce ruled HTTP out before a packet
+      // was formed. Wrapping any of them in `PUBLISH_ERROR` would hide the
+      // one fact worth surfacing behind the most generic code this method
+      // has. Everything else — including a connector that will not answer
+      // for its identity — keeps the existing wrapping, so `PUBLISH_ERROR`
+      // still means "the publish itself failed".
       if (
         error instanceof ToonClientError &&
         (error.code === 'NO_TERMINATED_ROUTE' ||
           error.code === 'NO_CONNECTOR_EDGE' ||
           error.code === 'PEER_NOT_NEGOTIATED' ||
           error.code === 'CHANNEL_FUNDING' ||
-          error.code === 'TERMINATOR_UNRESOLVED')
+          error.code === 'TERMINATOR_UNRESOLVED' ||
+          error.code === 'BTP_REQUIRED')
       ) {
         throw error;
       }
@@ -1193,6 +1214,35 @@ export class ToonClient {
   }
 
   /**
+   * Whether the announce that TERMINATES `destination` declares
+   * `requiredTransport: "btp"` (issue #558) — the connector accepts `POST
+   * /ilp` for identity/price reads, but rejects a PAID WRITE over HTTP with
+   * `402 Payment Required` unless it rode a BTP session.
+   *
+   * `requiredTransport` is read off the announce's raw content by
+   * `DiscoverySubscription.requiredTransportFor` (`discovery-subscription.ts`),
+   * never through the parsed `IlpPeerInfo`: the installed
+   * `@toon-protocol/core`'s `parseIlpPeerInfo` drops unknown fields, the same
+   * gap toon-client#544 hit for `notice`. Silent `false` (never sealed HTTP is
+   * fine) whenever a tracker, its winning claim, or the subscription's raw
+   * feed is unavailable — this is an ADDITIONAL constraint on top of
+   * `resolveTerminatorEndpoint`'s own claim gating, not a replacement for it.
+   */
+  private terminatorRequiresBtp(destination: string): boolean {
+    const tracker: Partial<DiscoveryTracker> | undefined =
+      this.state?.discoveryTracker;
+    if (typeof tracker?.getAllDiscoveredPeers !== 'function') return false;
+    const requiredTransportFor =
+      this.state?.discoverySubscription?.requiredTransportFor;
+    if (typeof requiredTransportFor !== 'function') return false;
+
+    const peers = tracker.getAllDiscoveredPeers();
+    const claim = findBestTerminatorClaim(destination, peers);
+    if (!claim) return false;
+    return requiredTransportFor(claim.pubkey) === 'btp';
+  }
+
+  /**
    * Payment-aware HTTP fetch over TOON (issue #50). A `fetch()`-like method that
    * makes paying for an HTTP resource transparent:
    *
@@ -1318,7 +1368,7 @@ export class ToonClient {
         'INVALID_STATE'
       );
     }
-    const transport = this.getClaimTransport();
+    const transport = this.getClaimTransport(params.destination);
 
     const claimMessage = await this.resolveClaimForDestination(
       params.destination,
@@ -1399,10 +1449,21 @@ export class ToonClient {
    * proxy) does NOT implement `sendIlpPacketWithClaim`; in that case there is no
    * paid-write transport and we throw a clear, actionable error.
    *
+   * `destination`, when given, is checked against {@link terminatorRequiresBtp}
+   * FIRST, overriding both orderings above (issue #558): a terminating
+   * announce that declares `requiredTransport: "btp"` gets `btpClient`
+   * exclusively — never `runtimeClient`, even when HTTP would otherwise have
+   * been tried first — because the connector enforces that requirement with
+   * a `402` on every paid write, so a retry over HTTP can only ever repeat
+   * the same failure. Omitting `destination` (or a tracker that cannot
+   * resolve one) reproduces the exact precedence above, unchanged.
+   *
    * @throws {ToonClientError} NO_ILP_TRANSPORT when no active transport can send
    *   a packet+claim.
+   * @throws {ToonClientError} BTP_REQUIRED when `destination`'s terminator
+   *   requires BTP but this client has no `btpClient` configured at all.
    */
-  private getClaimTransport(): {
+  private getClaimTransport(destination?: string): {
     // IlpSendParams: both built-in transports (HttpIlpClient / BtpRuntimeClient)
     // accept the sender-chosen `executionCondition` + explicit `expiresAt`
     // extensions (toon-client#350) and enforce FULFILL preimage verification.
@@ -1418,6 +1479,23 @@ export class ToonClient {
         'INVALID_STATE'
       );
     }
+
+    if (destination !== undefined && this.terminatorRequiresBtp(destination)) {
+      if (
+        state.btpClient &&
+        typeof (state.btpClient as IlpClient).sendIlpPacketWithClaim ===
+          'function'
+      ) {
+        return state.btpClient as ReturnType<ToonClient['getClaimTransport']>;
+      }
+      throw new ToonClientError(
+        `The connector terminating "${destination}" requires BTP for paid ` +
+          'writes (its kind:10032 announce declares requiredTransport: ' +
+          '"btp"), but this client has no BTP uplink (`btpUrl`) configured.',
+        'BTP_REQUIRED'
+      );
+    }
+
     const candidates: (
       | IlpClient
       | BtpRuntimeClient
@@ -2634,7 +2712,7 @@ export class ToonClient {
         'MISSING_CLAIM'
       );
     }
-    const transport = this.getClaimTransport();
+    const transport = this.getClaimTransport(params.destination);
 
     const claimMessage = this.buildClaimMessageForProof(params.claim);
     return transport.sendIlpPacketWithClaim(

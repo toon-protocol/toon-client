@@ -119,4 +119,70 @@ describe('subscribeToDiscovery', () => {
     expect(subscribeMany).not.toHaveBeenCalled();
     expect(poolClose).not.toHaveBeenCalled();
   });
+
+  // toon-client#558: the installed @toon-protocol/core's parseIlpPeerInfo
+  // destructures a fixed field list and drops anything else (the same gap
+  // toon-client#544 hit for `notice`), so `requiredTransport` never survives
+  // into what `tracker.processEvent` sees. It must be read off the raw event.
+  describe('requiredTransportFor (issue #558)', () => {
+    function announceWith(
+      overrides: Record<string, unknown>,
+      pubkey = 'aa'.repeat(32)
+    ): NostrEvent {
+      return {
+        ...ANNOUNCE,
+        pubkey,
+        content: JSON.stringify({
+          ilpAddress: 'g.toon.relay',
+          assetCode: 'USD',
+          assetScale: 6,
+          ...overrides,
+        }),
+      };
+    }
+
+    function fireEvent(event: NostrEvent): void {
+      const params = subscribeMany.mock.calls[0]?.[2] as {
+        onevent: (event: NostrEvent) => void;
+      };
+      params.onevent(event);
+    }
+
+    it('reports requiredTransport from the raw announce content, keyed by pubkey', async () => {
+      const tracker = { processEvent: vi.fn() };
+      const sub = await subscribeToDiscovery(['wss://relay.example'], tracker);
+
+      fireEvent(announceWith({ requiredTransport: 'btp' }, 'aa'.repeat(32)));
+
+      expect(sub.requiredTransportFor('aa'.repeat(32))).toBe('btp');
+    });
+
+    it('reports undefined for a pubkey that never announced requiredTransport', async () => {
+      const tracker = { processEvent: vi.fn() };
+      const sub = await subscribeToDiscovery(['wss://relay.example'], tracker);
+
+      fireEvent(announceWith({}, 'bb'.repeat(32)));
+
+      expect(sub.requiredTransportFor('bb'.repeat(32))).toBeUndefined();
+      expect(sub.requiredTransportFor('never-seen')).toBeUndefined();
+    });
+
+    it('clears a stale requiredTransport once the peer republishes without it', async () => {
+      const tracker = { processEvent: vi.fn() };
+      const sub = await subscribeToDiscovery(['wss://relay.example'], tracker);
+
+      fireEvent(announceWith({ requiredTransport: 'btp' }, 'cc'.repeat(32)));
+      expect(sub.requiredTransportFor('cc'.repeat(32))).toBe('btp');
+
+      fireEvent(announceWith({}, 'cc'.repeat(32)));
+      expect(sub.requiredTransportFor('cc'.repeat(32))).toBeUndefined();
+    });
+
+    it('the no-op (all-empty relay URLs) subscription still answers requiredTransportFor', async () => {
+      const tracker = { processEvent: vi.fn() };
+      const sub = await subscribeToDiscovery(['', ''], tracker);
+
+      expect(sub.requiredTransportFor('anything')).toBeUndefined();
+    });
+  });
 });
