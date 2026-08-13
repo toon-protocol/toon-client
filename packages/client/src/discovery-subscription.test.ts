@@ -32,7 +32,11 @@ const ANNOUNCE: NostrEvent = {
   created_at: 1000,
   kind: 10032,
   tags: [],
-  content: '{"ilpAddress":"g.toon.relay"}',
+  content: JSON.stringify({
+    ilpAddress: 'g.toon.relay',
+    assetCode: 'USD',
+    assetScale: 6,
+  }),
   sig: 'sig',
 };
 

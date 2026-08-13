@@ -267,10 +267,9 @@ interface ToonClientState {
   bootstrapService: BootstrapService;
   discoveryTracker: DiscoveryTracker;
   /**
-   * Live relay subscription feeding `discoveryTracker.processEvent` with
-   * kind:10032 announces (toon-client#550) — without this, the tracker is
-   * constructed but never fed and `resolveTerminatorEndpoint` fails closed
-   * on every destination bootstrap didn't negotiate with directly.
+   * The feed for `discoveryTracker` — see {@link subscribeToDiscovery}. The
+   * tracker owns no subscription of its own, so without this it is
+   * constructed but never fed (toon-client#550).
    */
   discoverySubscription: DiscoverySubscription;
   runtimeClient: IlpClient;
@@ -645,12 +644,10 @@ export class ToonClient {
         btpSession,
       } = initialization;
 
-      // Feed the discovery tracker from a live relay subscription
-      // (toon-client#550) — `createDiscoveryTracker` never owns a
-      // subscription itself, so without this every kind:10032 announce
-      // discovered after bootstrap is invisible to `resolveTerminatorEndpoint`
-      // and every paid write to a destination bootstrap didn't negotiate with
-      // directly fails closed with TERMINATOR_UNRESOLVED.
+      // Open the tracker's feed BEFORE bootstrap, so announces are landing
+      // while bootstrap does its network work rather than only after it
+      // (toon-client#550 — see `subscribeToDiscovery` for why the tracker
+      // needs feeding at all).
       const discoverySubscription = await subscribeToDiscovery(
         this.config.relayUrl,
         discoveryTracker
@@ -2657,13 +2654,15 @@ export class ToonClient {
     }
 
     try {
+      // Tear down the discovery relay subscription first — it is a local,
+      // synchronous close, so a BTP disconnect that rejects can't leave the
+      // relay socket open behind it (toon-client#550).
+      this.state.discoverySubscription.close();
+
       // Disconnect BTP client if connected
       if (this.state.btpClient) {
         await this.state.btpClient.disconnect();
       }
-
-      // Tear down the discovery relay subscription (toon-client#550)
-      this.state.discoverySubscription.close();
 
       // Clear state
       this.state = null;
