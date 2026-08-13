@@ -438,6 +438,15 @@ export class ClientRunner {
 
   private readonly defaultBtpUrl: string;
   private readonly defaultRelayUrl: string;
+  /**
+   * BTP endpoint of the auto-registered STORE apex (issue #536 correction),
+   * when the config names one distinct from the default uplink. The relay
+   * and store connectors are independent boxes with no forwarding between
+   * them, so store writes need their OWN uplink — a renamed destination on
+   * the relay's uplink routes nowhere. Undefined means the single-apex
+   * behaviour (store writes use the default apex, same as publishes).
+   */
+  private readonly defaultStoreBtpUrl?: string;
 
   private stopped = false;
   private started = false;
@@ -454,6 +463,10 @@ export class ClientRunner {
       ((repoPath) => new GitRepoReader(repoPath));
     this.defaultBtpUrl = deps.config.toonClientConfig.btpUrl ?? '';
     this.defaultRelayUrl = deps.config.relayUrl;
+    this.defaultStoreBtpUrl =
+      deps.config.storeBtpUrl && deps.config.storeBtpUrl !== this.defaultBtpUrl
+        ? deps.config.storeBtpUrl
+        : undefined;
     this.receivedClaimStore = deps.config.receivedClaimStorePath
       ? new JsonFileReceivedClaimStore(deps.config.receivedClaimStorePath)
       : new InMemoryReceivedClaimStore();
@@ -492,6 +505,32 @@ export class ClientRunner {
       isDefault: true,
     });
     this.apexes.set(defaultApex.btpUrl, defaultApex);
+
+    // Second config-seeded apex: a store connector INDEPENDENT of the relay
+    // (issue #536 correction). Built the same way a discovered/added apex
+    // is (`deriveApexClientConfig`), so its packets reach the store's own
+    // connector instead of the default uplink's — the same derivation the
+    // `toon_add_apex` mechanism already relies on. No negotiation is
+    // supplied here; `doBootstrapApex` discovers it (proxy mode: from the
+    // default relay's kind:10032; BTP mode: via the client's own bootstrap),
+    // exactly like a manually-added apex.
+    if (this.defaultStoreBtpUrl) {
+      const storeClientConfig = this.deriveApexClientConfig(
+        this.defaultStoreBtpUrl,
+        this.config.storeDestination
+      );
+      const storeApex = this.makeApex({
+        btpUrl: this.defaultStoreBtpUrl,
+        client: this.createClient(storeClientConfig),
+        childPeers: [],
+        destination: this.config.storeDestination,
+        chain: this.config.chain,
+        channelStorePath: this.apexChannelStorePathFor(this.defaultStoreBtpUrl),
+        feePerEvent: this.config.feePerEvent,
+        isDefault: true,
+      });
+      this.apexes.set(storeApex.btpUrl, storeApex);
+    }
   }
 
   /**
@@ -507,14 +546,30 @@ export class ClientRunner {
     this.replayPersistedTargets();
   }
 
-  /** Await the default apex's bootstrap (kicking it off if not already running). */
-  bootstrap(): Promise<void> {
+  /**
+   * Await the default apex(es)' bootstrap (kicking it off if not already
+   * running) — the relay apex, and the store apex too when `storeBtpUrl`
+   * registered a second one (issue #536 correction).
+   *
+   * SEQUENTIAL, not `Promise.all`: each apex may open an on-chain payment
+   * channel, and both legs sign from the SAME wallet. Bootstrapping them
+   * concurrently builds two transactions against the same account nonce, so
+   * the second is rejected ("nonce ... lower than the current nonce of the
+   * account" / `already known`) and that uplink is left `ready: false` on
+   * every fresh install — observed live on devnet against the relay+store
+   * pair. Serializing the legs costs one extra round of latency on first
+   * start only; the on-chain open it protects is the slow part either way.
+   * A failing leg cannot strand the other: `doBootstrapApex` records its own
+   * `lastError` and never rejects.
+   */
+  async bootstrap(): Promise<void> {
     // Read-only daemon (no proxy/BTP uplink): never bootstrap an apex — there is
     // no write transport and FREE reads run off the relay subscription (#69).
-    if (!this.config.hasUplink) return Promise.resolve();
-    const apex = this.apexes.get(this.defaultBtpUrl);
-    if (!apex) return Promise.resolve();
-    return this.bootstrapApex(apex);
+    if (!this.config.hasUplink) return;
+    const targets = [this.defaultApex(), this.defaultStoreApex()].filter(
+      (a): a is ApexConnection => a !== undefined
+    );
+    for (const apex of targets) await this.bootstrapApex(apex);
   }
 
   // ── Relays (reads) ─────────────────────────────────────────────────────────
@@ -788,9 +843,12 @@ export class ClientRunner {
     await this.bootstrapApex(apex);
   }
 
-  /** Remove an apex write target. The config-seeded default cannot be removed. */
+  /**
+   * Remove an apex write target. Neither config-seeded default (relay or,
+   * when configured, store — issue #536) can be removed.
+   */
   async removeApex(btpUrl: string): Promise<void> {
-    if (btpUrl === this.defaultBtpUrl) {
+    if (btpUrl === this.defaultBtpUrl || btpUrl === this.defaultStoreBtpUrl) {
       throw new TargetError('Cannot remove the default (config-seeded) apex.');
     }
     const apex = this.apexes.get(btpUrl);
@@ -859,7 +917,15 @@ export class ClientRunner {
       );
     }
     for (const a of store.apexes) {
-      if (a.btpUrl === this.defaultBtpUrl) continue;
+      // Both config-seeded defaults (relay + the auto store apex, #536) are
+      // already registered in the constructor; `instantiateApex`'s own
+      // `apexes.has` guard would no-op these anyway, but skip explicitly so
+      // the intent reads at the call site.
+      if (
+        a.btpUrl === this.defaultBtpUrl ||
+        a.btpUrl === this.defaultStoreBtpUrl
+      )
+        continue;
       void this.instantiateApex(a, false).catch((err) =>
         this.log(`[runner] replay apex ${a.btpUrl} failed: ${errMsg(err)}`)
       );
@@ -1047,6 +1113,13 @@ export class ClientRunner {
 
   private defaultApex(): ApexConnection | undefined {
     return this.apexes.get(this.defaultBtpUrl);
+  }
+
+  /** The auto-registered STORE apex (issue #536 correction), when configured. */
+  private defaultStoreApex(): ApexConnection | undefined {
+    return this.defaultStoreBtpUrl
+      ? this.apexes.get(this.defaultStoreBtpUrl)
+      : undefined;
   }
 
   /** Whether any apex has finished bootstrapping. */
@@ -1355,7 +1428,12 @@ export class ClientRunner {
    */
   async uploadMedia(req: UploadMediaRequest): Promise<UploadMediaResponse> {
     const apex = this.selectApex(req.btpUrl);
+    // The blob leg terminates at the store backend, a DIFFERENT connector
+    // than the relay apex above (issue #536 correction) — an explicit
+    // `req.btpUrl` still pins BOTH legs to the same apex (back-compat).
+    const storeApex = this.selectStoreApex(req.btpUrl);
     this.assertApexReady(apex);
+    this.assertApexReady(storeApex);
     // Source the bytes from EXACTLY ONE of inline base64 or an on-disk path.
     // `filePath` lets agent callers skip materializing the whole payload as a
     // tool argument (it never touches the model context); `dataBase64` stays for
@@ -1370,15 +1448,16 @@ export class ClientRunner {
     const blobData = hasPath
       ? await this.readUploadFile(req.filePath as string)
       : new Uint8Array(Buffer.from(req.dataBase64 as string, 'base64'));
-    const fee = req.fee !== undefined ? BigInt(req.fee) : apex.feePerEvent;
+    const fee = req.fee !== undefined ? BigInt(req.fee) : storeApex.feePerEvent;
     // ── Leg 1: Arweave blob upload ──────────────────────────────────────────
     // Blob storage terminates at the store/DVM backend (POST /store → Arweave),
     // so it routes to the configured store destination (e.g. g.proxy.store,
-    // derived from the `….relay.store` anchor by #143). This makes uploads work
-    // via the default apex without the caller hand-passing a store `btpUrl`. A
+    // derived from the `….relay.store` anchor by #143) THROUGH the store
+    // apex — the relay's uplink serves no route there (issue #536). This
+    // makes uploads work without the caller hand-passing a store `btpUrl`. A
     // failure here is distinct from the kind:1-equivalent publish below; label
     // it so the UI/agent can tell the upload leg apart from the publish leg.
-    const upload = await apex.client.uploadBlob({
+    const upload = await storeApex.client.uploadBlob({
       blobData,
       destination: this.config.storeDestination,
       ...(req.mime ? { contentType: req.mime } : {}),
@@ -2295,23 +2374,6 @@ export class ClientRunner {
   // ── Git write path (/git/*, epic #222 ticket #227) ────────────────────────
 
   /**
-   * The daemon `Publisher` implementation (see @toon-protocol/rig) for one
-   * apex. Maps the interface onto the runner's production paid-write
-   * machinery:
-   *
-   *  - `getFeeRates`: flat `apex.feePerEvent` per publish + the network
-   *    per-byte upload rate.
-   *  - `uploadGitObject`: kind:5094 store write with Git-SHA/Git-Type/Repo
-   *    tags (the proven seed-pipeline shape), signed with the daemon key,
-   *    paid via signBalanceProof on the apex channel, routed to the store
-   *    destination (`POST /store`); the Arweave txId is decoded from the
-   *    FULFILL HTTP envelope.
-   *  - `publishEvent`: sign with the daemon key + the standard paid publish
-   *    path (signBalanceProof → publishEvent → feePaid). The daemon owns its
-   *    write routing (config-seeded relay via the apex), so the advisory
-   *    `relayUrls` list is not consulted here — remote-state reads DO use it.
-   */
-  /**
    * What one store write costs: the store destination's flat route price, as
    * the terminating connector reports it.
    *
@@ -2337,13 +2399,39 @@ export class ClientRunner {
     return price;
   }
 
-  private gitPublisher(apex: ApexConnection): Publisher {
+  /**
+   * The daemon `Publisher` implementation (see @toon-protocol/rig) for one
+   * push. `apex` handles the RELAY leg (publishEvent — kind:30617/30618);
+   * `storeApex` handles the STORE leg (uploadGitObject + its route price) —
+   * two DIFFERENT connectors since core@3.3.0's two-node genesis seed (issue
+   * #536 correction). The two coincide (same `ApexConnection`) whenever no
+   * `storeBtpUrl` is configured, so this is a no-op split for that topology.
+   *
+   * Maps the interface onto the runner's production paid-write machinery:
+   *
+   *  - `getFeeRates`: flat `apex.feePerEvent` per publish + the store route's
+   *    flat price as `storeApex`'s connector reports it.
+   *  - `uploadGitObject`: kind:5094 store write with Git-SHA/Git-Type/Repo
+   *    tags (the proven seed-pipeline shape), signed with the daemon key,
+   *    paid via signBalanceProof on the STORE apex channel, routed to the
+   *    store destination (`POST /store`); the Arweave txId is decoded from
+   *    the FULFILL HTTP envelope.
+   *  - `publishEvent`: sign with the daemon key + the standard paid publish
+   *    path (signBalanceProof → publishEvent → feePaid) on the relay apex.
+   *    The daemon owns its write routing (config-seeded relay via the apex),
+   *    so the advisory `relayUrls` list is not consulted here — remote-state
+   *    reads DO use it.
+   */
+  private gitPublisher(
+    apex: ApexConnection,
+    storeApex: ApexConnection
+  ): Publisher {
     return {
       getFeeRates: async () => ({
-        uploadFee: await this.storeUploadFee(apex),
+        uploadFee: await this.storeUploadFee(storeApex),
         eventFee: apex.feePerEvent,
       }),
-      uploadGitObject: (upload) => this.gitUploadObject(apex, upload),
+      uploadGitObject: (upload) => this.gitUploadObject(storeApex, upload),
       publishEvent: (event) => this.gitPublishEvent(apex, event),
     };
   }
@@ -2418,6 +2506,7 @@ export class ClientRunner {
    */
   private async planGitPush(
     apex: ApexConnection,
+    storeApex: ApexConnection,
     req: GitEstimateRequest
   ): Promise<{
     plan: PushPlan;
@@ -2443,7 +2532,7 @@ export class ClientRunner {
       ownerPubkey,
       repoId: req.repoId,
     });
-    const publisher = this.gitPublisher(apex);
+    const publisher = this.gitPublisher(apex, storeApex);
     const feeRates = await publisher.getFeeRates();
     const plan = await planPush({
       repoReader,
@@ -2462,8 +2551,10 @@ export class ClientRunner {
   /** Plan + price a push WITHOUT paying (backs `POST /git/estimate`). */
   async gitEstimate(req: GitEstimateRequest): Promise<GitEstimateResponse> {
     const apex = this.selectApex();
+    const storeApex = this.selectStoreApex();
     this.assertApexReady(apex);
-    const { plan } = await this.planGitPush(apex, req);
+    this.assertApexReady(storeApex);
+    const { plan } = await this.planGitPush(apex, storeApex, req);
     return serializePushPlan(plan);
   }
 
@@ -2476,9 +2567,11 @@ export class ClientRunner {
       );
     }
     const apex = this.selectApex();
+    const storeApex = this.selectStoreApex();
     this.assertApexReady(apex);
+    this.assertApexReady(storeApex);
     const { plan, remoteState, repoReader, relayUrls, publisher } =
-      await this.planGitPush(apex, req);
+      await this.planGitPush(apex, storeApex, req);
     const result = await executePush({
       plan,
       publisher,
@@ -2624,6 +2717,20 @@ export class ClientRunner {
     const def = this.defaultApex();
     if (!def) throw new NotReadyError('No apex configured.');
     return def;
+  }
+
+  /**
+   * Select the apex for STORE-bound writes (blob uploads, git objects, the
+   * store route price). An explicit `btpUrl` always wins (back-compat with
+   * the manual `toon_add_apex` single-target flow — both legs of a write use
+   * the SAME apex it names). With none, prefer the auto-registered store
+   * apex (issue #536 correction); fall back to the default apex when no
+   * `storeBtpUrl` is configured — the single-connector topology where store
+   * writes have always shared the default apex's uplink.
+   */
+  private selectStoreApex(btpUrl?: string): ApexConnection {
+    if (btpUrl) return this.selectApex(btpUrl);
+    return this.defaultStoreApex() ?? this.selectApex();
   }
 
   private assertApexReady(apex: ApexConnection): void {
