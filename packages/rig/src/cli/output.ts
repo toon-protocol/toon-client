@@ -277,8 +277,18 @@ export function calmBootstrapNoise(): StderrCalmer {
         reframed = true;
       }
     }
+    // `original` is the OVERLOADED `process.stderr.write`. `.call()` resolves
+    // an overloaded type to its LAST signature only — `(chunk, encoding?, cb?)`
+    // — so passing the callback positionally in the two-arg form is checked
+    // against `BufferEncoding` and fails (TS2345). Narrowing to the callback
+    // signature at the call site keeps both real overloads reachable without
+    // widening `original` itself.
+    type WriteWithCb = (
+      chunk: unknown,
+      cb?: (err?: Error | null) => void,
+    ) => boolean;
     return typeof encodingOrCb === 'function'
-      ? original.call(process.stderr, text, encodingOrCb)
+      ? (original as unknown as WriteWithCb).call(process.stderr, text, encodingOrCb)
       : original.call(process.stderr, text, encodingOrCb, cb);
   }) as typeof process.stderr.write;
   process.stderr.write = patched;
