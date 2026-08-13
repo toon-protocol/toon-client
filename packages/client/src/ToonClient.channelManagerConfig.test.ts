@@ -32,6 +32,12 @@ vi.mock('./modes/http.js', () => ({
   })),
 }));
 
+// `start()` also opens a live discovery relay subscription (toon-client#550);
+// stub it too so this test never touches the network.
+vi.mock('./discovery-subscription.js', () => ({
+  subscribeToDiscovery: vi.fn(async () => ({ close: vi.fn() })),
+}));
+
 const MNEMONIC = 'test test test test test test test test test test test junk';
 
 function baseConfig(overrides: Partial<ToonClientConfig>): ToonClientConfig {

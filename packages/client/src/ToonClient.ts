@@ -39,6 +39,10 @@ import {
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import {
+  subscribeToDiscovery,
+  type DiscoverySubscription,
+} from './discovery-subscription.js';
+import {
   ToonClientError,
   ChannelFundingError,
   isInsufficientGasError,
@@ -262,6 +266,13 @@ function lookupByCanonicalChain(
 interface ToonClientState {
   bootstrapService: BootstrapService;
   discoveryTracker: DiscoveryTracker;
+  /**
+   * Live relay subscription feeding `discoveryTracker.processEvent` with
+   * kind:10032 announces (toon-client#550) — without this, the tracker is
+   * constructed but never fed and `resolveTerminatorEndpoint` fails closed
+   * on every destination bootstrap didn't negotiate with directly.
+   */
+  discoverySubscription: DiscoverySubscription;
   runtimeClient: IlpClient;
   peersDiscovered: number;
   btpClient?: BtpRuntimeClient | BtpPaidWriteTransport;
@@ -634,6 +645,17 @@ export class ToonClient {
         btpSession,
       } = initialization;
 
+      // Feed the discovery tracker from a live relay subscription
+      // (toon-client#550) — `createDiscoveryTracker` never owns a
+      // subscription itself, so without this every kind:10032 announce
+      // discovered after bootstrap is invisible to `resolveTerminatorEndpoint`
+      // and every paid write to a destination bootstrap didn't negotiate with
+      // directly fails closed with TERMINATOR_UNRESOLVED.
+      const discoverySubscription = await subscribeToDiscovery(
+        this.config.relayUrl,
+        discoveryTracker
+      );
+
       // Wire claim signer to bootstrap service if we have channel manager
       if (this.channelManager) {
         const cm = this.channelManager;
@@ -810,6 +832,7 @@ export class ToonClient {
       this.state = {
         bootstrapService,
         discoveryTracker,
+        discoverySubscription,
         runtimeClient,
         peersDiscovered: bootstrapResults.length,
         btpClient: btpClient ?? undefined,
@@ -2638,6 +2661,9 @@ export class ToonClient {
       if (this.state.btpClient) {
         await this.state.btpClient.disconnect();
       }
+
+      // Tear down the discovery relay subscription (toon-client#550)
+      this.state.discoverySubscription.close();
 
       // Clear state
       this.state = null;
