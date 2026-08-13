@@ -321,6 +321,24 @@ describe('daemon config', () => {
     ).toBeUndefined();
   });
 
+  // issue #550 round 3: `toonClientConfig.relayUrl` used to be pinned to `''`
+  // unconditionally (reads route through the daemon's own RelaySubscription,
+  // not ToonClient's). But ToonClient.start() ALSO uses `config.relayUrl` to
+  // feed its `discoveryTracker` (subscribeToDiscovery) — with it empty, the
+  // tracker never discovers a peer for the write destination and every paid
+  // write throws TERMINATOR_UNRESOLVED. `toonClientConfig.relayUrl` must
+  // carry the daemon's own resolved relay so that feed has something to
+  // subscribe to, without disturbing RelaySubscription's separate reads.
+  it('feeds the daemon-resolved relay into toonClientConfig.relayUrl (issue #550)', () => {
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      btpUrl: 'ws://apex.test:3000/btp',
+      relayUrl: 'wss://relay.test',
+    });
+    expect(cfg.relayUrl).toBe('wss://relay.test');
+    expect(cfg.toonClientConfig.relayUrl).toBe('wss://relay.test');
+  });
+
   it('env overrides win over the config file', () => {
     process.env['TOON_CLIENT_BTP_URL'] = 'ws://env-apex/btp';
     process.env['TOON_CLIENT_RELAY_URL'] = 'ws://env-relay';
