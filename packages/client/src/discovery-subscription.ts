@@ -16,6 +16,13 @@ export interface DiscoverySubscription {
    * list and drops anything else — the same gap toon-client#544 hit for the
    * `notice` field — so `requiredTransport` never survives into what
    * `DiscoveryTracker.getAllDiscoveredPeers()` reports.
+   *
+   * Applies the same monotonic `created_at` guard per pubkey that
+   * `tracker.processEvent` applies internally (toon-client#558 correction):
+   * on a multi-relay subscription a stale replay can race in behind a fresh
+   * announce, and without the guard an older, field-absent replay would
+   * silently clear a live `requiredTransport` and misroute paid writes back
+   * onto HTTP-ILP until the peer's next fresh announce.
    */
   requiredTransportFor(pubkey: string): string | undefined;
 }
@@ -57,6 +64,7 @@ export async function subscribeToDiscovery(
 ): Promise<DiscoverySubscription> {
   const urls = Array.from(new Set(relayUrls.filter((url) => url !== '')));
   const requiredTransports = new Map<string, string>();
+  const requiredTransportSeenAt = new Map<string, number>();
   const requiredTransportFor = (pubkey: string): string | undefined =>
     requiredTransports.get(pubkey);
 
@@ -72,6 +80,9 @@ export async function subscribeToDiscovery(
     {
       onevent: (event: NostrEvent) => {
         tracker.processEvent(event);
+        const lastSeen = requiredTransportSeenAt.get(event.pubkey) ?? 0;
+        if (event.created_at <= lastSeen) return;
+        requiredTransportSeenAt.set(event.pubkey, event.created_at);
         const requiredTransport = extractRequiredTransport(event);
         if (requiredTransport === undefined) {
           requiredTransports.delete(event.pubkey);

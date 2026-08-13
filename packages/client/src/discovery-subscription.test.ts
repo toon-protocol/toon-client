@@ -127,11 +127,13 @@ describe('subscribeToDiscovery', () => {
   describe('requiredTransportFor (issue #558)', () => {
     function announceWith(
       overrides: Record<string, unknown>,
-      pubkey = 'aa'.repeat(32)
+      pubkey = 'aa'.repeat(32),
+      createdAt = ANNOUNCE.created_at
     ): NostrEvent {
       return {
         ...ANNOUNCE,
         pubkey,
+        created_at: createdAt,
         content: JSON.stringify({
           ilpAddress: 'g.toon.relay',
           assetCode: 'USD',
@@ -171,11 +173,32 @@ describe('subscribeToDiscovery', () => {
       const tracker = { processEvent: vi.fn() };
       const sub = await subscribeToDiscovery(['wss://relay.example'], tracker);
 
-      fireEvent(announceWith({ requiredTransport: 'btp' }, 'cc'.repeat(32)));
+      fireEvent(
+        announceWith({ requiredTransport: 'btp' }, 'cc'.repeat(32), 1000)
+      );
       expect(sub.requiredTransportFor('cc'.repeat(32))).toBe('btp');
 
-      fireEvent(announceWith({}, 'cc'.repeat(32)));
+      fireEvent(announceWith({}, 'cc'.repeat(32), 2000));
       expect(sub.requiredTransportFor('cc'.repeat(32))).toBeUndefined();
+    });
+
+    // toon-client#558 correction: createDiscoveryTracker.processEvent drops
+    // any event with created_at <= the last one applied for that pubkey.
+    // The requiredTransports map must apply the same monotonic guard, or a
+    // stale replay (older created_at, field absent) racing in on a
+    // multi-relay subscription can silently clear a live requiredTransport
+    // and permanently misroute paid writes back onto HTTP-ILP.
+    it('ignores a replayed older announce that omits requiredTransport', async () => {
+      const tracker = { processEvent: vi.fn() };
+      const sub = await subscribeToDiscovery(['wss://relay.example'], tracker);
+
+      fireEvent(
+        announceWith({ requiredTransport: 'btp' }, 'dd'.repeat(32), 2000)
+      );
+      expect(sub.requiredTransportFor('dd'.repeat(32))).toBe('btp');
+
+      fireEvent(announceWith({}, 'dd'.repeat(32), 1000));
+      expect(sub.requiredTransportFor('dd'.repeat(32))).toBe('btp');
     });
 
     it('the no-op (all-empty relay URLs) subscription still answers requiredTransportFor', async () => {
