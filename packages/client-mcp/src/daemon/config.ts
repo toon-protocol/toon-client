@@ -567,7 +567,13 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     toonDecoder: decodeEventFromToon,
     ...(btpUrl ? { btpUrl, btpAuthToken: '' } : {}),
     destinationAddress: destination,
-    relayUrl: '', // reads use our own RelaySubscription, not bootstrap discovery
+    // Free reads still route through our own RelaySubscription, not this.
+    // ToonClient.start() separately uses `config.relayUrl` to feed its
+    // discoveryTracker (toon-client#550) — pinning this to '' left every
+    // paid write from a fully-started daemon client throwing
+    // TERMINATOR_UNRESOLVED, since the tracker never discovered a peer for
+    // the write destination.
+    relayUrl,
     knownPeers: [],
     channelStorePath,
     ...(network ? { network } : {}),
