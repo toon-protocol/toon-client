@@ -85,9 +85,9 @@ describe('subscribeToDiscovery', () => {
     expect(poolClose).toHaveBeenCalledWith(['wss://relay.example']);
   });
 
-  // toon-client#550 correction (PR #554 review): both first-party consumers
-  // (toon-clientd, rig standalone) pin `config.relayUrl` to `''` and carry
-  // the real relay per peer in `knownPeers[].relayUrl` instead.
+  // toon-client#550 correction (PR #554 review): rig standalone pins
+  // `config.relayUrl` to `''` and carries the real relay per peer in
+  // `knownPeers[].relayUrl` instead, so an empty URL does reach this list.
   it('drops empty relay URLs instead of passing them to SimplePool', async () => {
     const tracker = { processEvent: vi.fn() };
 

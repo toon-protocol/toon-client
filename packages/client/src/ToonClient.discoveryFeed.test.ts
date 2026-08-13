@@ -136,9 +136,10 @@ describe('ToonClient.start — discovery tracker feed (toon-client#550)', () => 
  * even threw (`SimplePool.subscribeMany([''], …)` rejects synchronously)
  * instead of just failing to fix the bug.
  *
- * `toon-clientd` pins `relayUrl: ''` AND `knownPeers: []`, so it lands on the
- * all-empty case below — still unfed until client-mcp threads a relay into its
- * `toonClientConfig` (tracked separately on toon-client#550).
+ * `toon-clientd` takes the other shape: `knownPeers: []` with its own resolved
+ * relay threaded into `toonClientConfig.relayUrl` (`daemon/config.ts`), which
+ * the first describe above covers. The all-empty case below is the remaining
+ * shape — no relay from either source — and must still start.
  */
 describe('ToonClient.start — discovery feed on rig standalone’s shape (empty relayUrl, real relay via knownPeers)', () => {
   beforeEach(() => {

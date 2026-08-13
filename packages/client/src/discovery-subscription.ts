@@ -23,18 +23,17 @@ export interface DiscoverySubscription {
  * Takes a LIST, not a single URL: rig's standalone push pins
  * `config.relayUrl` to `''` and carries the relay its announces actually
  * live on per peer, in `knownPeers[].relayUrl` (`standalone-mode.ts`), so
- * `ToonClient.start()` passes both sources in. (`toon-clientd` pins BOTH to
- * empty — `daemon/config.ts` sets `relayUrl: ''` AND `knownPeers: []` — so
- * its clients still have no relay to subscribe to and their trackers stay
- * unfed; threading a relay into the daemon's `toonClientConfig` is a
- * client-mcp change tracked separately on toon-client#550.)
+ * `ToonClient.start()` passes both sources in. (`toon-clientd` carries its
+ * own resolved relay in `toonClientConfig.relayUrl` and pins
+ * `knownPeers: []` — see `daemon/config.ts`.)
  *
  * Empty strings are dropped and the list is deduped before subscribing; an
  * empty/unset `relayUrl` must never reach `SimplePool.subscribeMany`, which
  * throws synchronously (`Invalid URL: wss://`) on one. When the deduped set
- * is empty this is a deliberate no-op (a tracker with nothing to subscribe
- * to still falls back via `resolveTerminatorEndpoint`'s existing
- * no-tracker-content path), not a start() failure.
+ * is empty this is a deliberate no-op rather than a `start()` failure: a
+ * client configured with no relay at all has nothing to ingest, so its
+ * tracker simply stays empty and paid writes resolve exactly as they did
+ * before this feed existed.
  *
  * Mirrors `keys/BackupService.ts`'s dynamic `import('nostr-tools/pool')` —
  * keeps `nostr-tools/pool` out of bundles that never start a client.
