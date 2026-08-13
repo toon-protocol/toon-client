@@ -129,16 +129,18 @@ describe('ToonClient.start — discovery tracker feed (toon-client#550)', () => 
 });
 
 /**
- * PR #554 review correction: both first-party consumers (toon-clientd's
- * daemon config, rig's standalone push) pin `config.relayUrl` to `''` and
- * instead carry the relay their announces actually live on per peer, in
+ * PR #554 review correction: rig's standalone push pins `config.relayUrl` to
+ * `''` and instead carries the relay its announces live on per peer, in
  * `knownPeers[].relayUrl`. The original fix only subscribed to
- * `config.relayUrl`, so on exactly these deployments — the ones the issue's
- * live repro used — the tracker stayed unfed and `start()` even threw
- * (`SimplePool.subscribeMany([''], …)` rejects synchronously) instead of
- * just failing to fix the bug.
+ * `config.relayUrl`, so on that shape the tracker stayed unfed and `start()`
+ * even threw (`SimplePool.subscribeMany([''], …)` rejects synchronously)
+ * instead of just failing to fix the bug.
+ *
+ * `toon-clientd` pins `relayUrl: ''` AND `knownPeers: []`, so it lands on the
+ * all-empty case below — still unfed until client-mcp threads a relay into its
+ * `toonClientConfig` (tracked separately on toon-client#550).
  */
-describe('ToonClient.start — discovery feed on the daemon/rig shape (empty relayUrl, real relay via knownPeers)', () => {
+describe('ToonClient.start — discovery feed on rig standalone’s shape (empty relayUrl, real relay via knownPeers)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     subscribeMany.mockReturnValue({ close: subClose });

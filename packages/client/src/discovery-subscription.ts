@@ -20,10 +20,15 @@ export interface DiscoverySubscription {
  * (`TERMINATOR_UNRESOLVED`) on every paid write past the peer(s) bootstrap
  * itself negotiated with directly. This is that feed.
  *
- * Takes a LIST, not a single URL: both first-party consumers
- * (`toon-clientd`, rig standalone) pin `config.relayUrl` to `''` and carry
- * the relay(s) their announces actually live on per peer, in
- * `knownPeers[].relayUrl` instead — `ToonClient.start()` passes both in.
+ * Takes a LIST, not a single URL: rig's standalone push pins
+ * `config.relayUrl` to `''` and carries the relay its announces actually
+ * live on per peer, in `knownPeers[].relayUrl` (`standalone-mode.ts`), so
+ * `ToonClient.start()` passes both sources in. (`toon-clientd` pins BOTH to
+ * empty — `daemon/config.ts` sets `relayUrl: ''` AND `knownPeers: []` — so
+ * its clients still have no relay to subscribe to and their trackers stay
+ * unfed; threading a relay into the daemon's `toonClientConfig` is a
+ * client-mcp change tracked separately on toon-client#550.)
+ *
  * Empty strings are dropped and the list is deduped before subscribing; an
  * empty/unset `relayUrl` must never reach `SimplePool.subscribeMany`, which
  * throws synchronously (`Invalid URL: wss://`) on one. When the deduped set
