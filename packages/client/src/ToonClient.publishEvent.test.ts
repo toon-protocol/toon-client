@@ -98,6 +98,31 @@ function onlyOpened(connector: FakeTerminatingConnector) {
   return first;
 }
 
+/**
+ * A discovered (but not necessarily peered) announce claiming `addresses` —
+ * the first is the announce's PRIMARY, the rest are secondary claims.
+ */
+function announceFor(
+  addresses: string[],
+  httpEndpoint: string,
+  pubkey: string
+) {
+  return {
+    pubkey,
+    peerId: `nostr-${pubkey.slice(0, 8)}`,
+    discoveredAt: 0,
+    peerInfo: {
+      pubkey,
+      ilpAddress: addresses[0],
+      ilpAddresses: addresses,
+      btpEndpoint: `wss://${new URL(httpEndpoint).host}/btp`,
+      httpEndpoint,
+      assetCode: 'USD',
+      assetScale: 6,
+    },
+  };
+}
+
 /** Wire a client up with a paid-write transport, as `start()` would have. */
 function attachTransport(
   client: ToonClient,
@@ -358,31 +383,6 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
   }
 
   /**
-   * A discovered (but not necessarily peered) announce claiming `addresses` —
-   * the first is the announce's PRIMARY, the rest are secondary claims.
-   */
-  function announceFor(
-    addresses: string[],
-    httpEndpoint: string,
-    pubkey: string
-  ) {
-    return {
-      pubkey,
-      peerId: `nostr-${pubkey.slice(0, 8)}`,
-      discoveredAt: 0,
-      peerInfo: {
-        pubkey,
-        ilpAddress: addresses[0],
-        ilpAddresses: addresses,
-        btpEndpoint: `wss://${new URL(httpEndpoint).host}/btp`,
-        httpEndpoint,
-        assetCode: 'USD',
-        assetScale: 6,
-      },
-    };
-  }
-
-  /**
    * A started client whose discovery has produced `announces`, sending over
    * `transport` — the ONE connector whose `fulfill()` answers, so a packet
    * sealed to any other connector's key cannot be opened at all.
@@ -552,7 +552,13 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     const client = new ToonClient(baseConfig());
     attachDiscovery(
       client,
-      [announceFor(['g.toon', 'g.toon.relay'], router.endpoint, 'a'.repeat(64))],
+      [
+        announceFor(
+          ['g.toon', 'g.toon.relay'],
+          router.endpoint,
+          'a'.repeat(64)
+        ),
+      ],
       router
     );
 
@@ -570,6 +576,108 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     expect((caught as ToonClientError).code).toBe('TERMINATOR_UNRESOLVED');
     expect(router.opened).toHaveLength(0);
     expect(edge.opened).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A `requiredTransport: "btp"` announce must not be posted to over HTTP
+// (issue #558)
+// ---------------------------------------------------------------------------
+
+describe('ToonClient.publishEvent honors a requiring-BTP terminator (issue #558)', () => {
+  /** The pubkey of the announce terminating this client's destination. */
+  const TERMINATOR = 'a'.repeat(64);
+
+  /** A paid-write transport the ambient connector genuinely answers. */
+  function fulfillingSend() {
+    return vi.fn(async (params: { data: string }) =>
+      connector.fulfill(params.data)
+    );
+  }
+
+  /**
+   * A started client whose discovery has produced the `TERMINATOR` announce
+   * for `g.proxy` (this config's destination) and whose feed reports its
+   * `requiredTransport` — keyed by pubkey, so a lookup against the wrong
+   * announce reads as "no requirement". Sends over an HTTP paid-write
+   * transport plus — when `btpSend` is given — a BTP one; omit `btpSend` for
+   * a client with no BTP uplink configured at all.
+   */
+  function attachTransports(
+    client: ToonClient,
+    opts: {
+      httpSend: (params: { data: string }) => Promise<unknown>;
+      btpSend?: (params: { data: string }) => Promise<unknown>;
+      requiresBtp: boolean;
+    }
+  ): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: {
+        getAllDiscoveredPeers: () => [
+          announceFor(['g.proxy'], connector.endpoint, TERMINATOR),
+        ],
+      },
+      discoverySubscription: {
+        requiredTransportFor: (pubkey: string) =>
+          opts.requiresBtp && pubkey === TERMINATOR ? 'btp' : undefined,
+      },
+      runtimeClient: { sendIlpPacketWithClaim: opts.httpSend },
+      peersDiscovered: 0,
+      ...(opts.btpSend
+        ? { btpClient: { sendIlpPacketWithClaim: opts.btpSend } }
+        : {}),
+    };
+  }
+
+  it('routes over the established BTP uplink, never HTTP, when the announce requires it', async () => {
+    const client = new ToonClient(baseConfig());
+    const httpSend = fulfillingSend();
+    const btpSend = fulfillingSend();
+    attachTransports(client, { httpSend, btpSend, requiresBtp: true });
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    expect(btpSend).toHaveBeenCalledTimes(1);
+    expect(httpSend).not.toHaveBeenCalled();
+  });
+
+  it('still prefers HTTP when the announce does not require BTP (unaffected default)', async () => {
+    const client = new ToonClient(baseConfig());
+    const httpSend = fulfillingSend();
+    const btpSend = fulfillingSend();
+    attachTransports(client, { httpSend, btpSend, requiresBtp: false });
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    expect(httpSend).toHaveBeenCalledTimes(1);
+    expect(btpSend).not.toHaveBeenCalled();
+  });
+
+  it('throws a clear BTP_REQUIRED error rather than falling back to HTTP when no BTP uplink is configured', async () => {
+    const client = new ToonClient(baseConfig());
+    const httpSend = fulfillingSend();
+    // No `btpSend`: this client has no BTP uplink at all, which is exactly
+    // the case that must refuse rather than retry the write over HTTP.
+    attachTransports(client, { httpSend, requiresBtp: true });
+
+    let caught: unknown;
+    try {
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ToonClientError);
+    expect((caught as ToonClientError).code).toBe('BTP_REQUIRED');
+    expect(httpSend).not.toHaveBeenCalled();
   });
 });
 

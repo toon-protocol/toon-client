@@ -5,6 +5,26 @@ import type { NostrEvent } from 'nostr-tools/pure';
 /** A live subscription feeding a {@link DiscoveryTracker}. Tears down on `close()`. */
 export interface DiscoverySubscription {
   close(): void;
+  /**
+   * The `requiredTransport` value an announcer's kind:10032 most recently
+   * declared, keyed by its pubkey. `undefined` when that announcer has never
+   * published one, or its latest announce dropped it (toon-client#558).
+   *
+   * Read directly off the raw event content rather than through
+   * `tracker.processEvent`'s parsed `IlpPeerInfo`: the installed
+   * `@toon-protocol/core`'s `parseIlpPeerInfo` destructures a fixed field
+   * list and drops anything else — the same gap toon-client#544 hit for the
+   * `notice` field — so `requiredTransport` never survives into what
+   * `DiscoveryTracker.getAllDiscoveredPeers()` reports.
+   *
+   * Applies the same monotonic `created_at` guard per pubkey that
+   * `tracker.processEvent` applies internally (toon-client#558 correction):
+   * on a multi-relay subscription a stale replay can race in behind a fresh
+   * announce, and without the guard an older, field-absent replay would
+   * silently clear a live `requiredTransport` and misroute paid writes back
+   * onto HTTP-ILP until the peer's next fresh announce.
+   */
+  requiredTransportFor(pubkey: string): string | undefined;
 }
 
 /**
@@ -43,8 +63,29 @@ export async function subscribeToDiscovery(
   tracker: Pick<DiscoveryTracker, 'processEvent'>
 ): Promise<DiscoverySubscription> {
   const urls = Array.from(new Set(relayUrls.filter((url) => url !== '')));
+  const requiredTransports = new Map<string, string>();
+  const requiredTransportSeenAt = new Map<string, number>();
+  const requiredTransportFor = (pubkey: string): string | undefined =>
+    requiredTransports.get(pubkey);
+  /**
+   * Apply one announce to the map, newest-wins per pubkey — the same
+   * monotonic `created_at` guard `tracker.processEvent` applies internally,
+   * so the two can never disagree about which announce is current.
+   */
+  const recordRequiredTransport = (event: NostrEvent): void => {
+    const lastSeen = requiredTransportSeenAt.get(event.pubkey) ?? 0;
+    if (event.created_at <= lastSeen) return;
+    requiredTransportSeenAt.set(event.pubkey, event.created_at);
+    const requiredTransport = extractRequiredTransport(event);
+    if (requiredTransport === undefined) {
+      requiredTransports.delete(event.pubkey);
+    } else {
+      requiredTransports.set(event.pubkey, requiredTransport);
+    }
+  };
+
   if (urls.length === 0) {
-    return { close: () => undefined };
+    return { close: () => undefined, requiredTransportFor };
   }
 
   const { SimplePool } = await import('nostr-tools/pool');
@@ -53,7 +94,10 @@ export async function subscribeToDiscovery(
     urls,
     { kinds: [ILP_PEER_INFO_KIND] },
     {
-      onevent: (event: NostrEvent) => tracker.processEvent(event),
+      onevent: (event: NostrEvent) => {
+        tracker.processEvent(event);
+        recordRequiredTransport(event);
+      },
     }
   );
   return {
@@ -61,5 +105,22 @@ export async function subscribeToDiscovery(
       sub.close();
       pool.close(urls);
     },
+    requiredTransportFor,
   };
+}
+
+/**
+ * Read the raw `requiredTransport` value off an announce's content,
+ * independent of `parseIlpPeerInfo` — see {@link DiscoverySubscription.requiredTransportFor}.
+ * Returns `undefined` on any parse failure or non-string value.
+ */
+function extractRequiredTransport(event: NostrEvent): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(event.content);
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
+    const value = (parsed as Record<string, unknown>)['requiredTransport'];
+    return typeof value === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
