@@ -69,43 +69,35 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      # When a new client-mcp version is actually published, package it as a
-      # Claude Desktop extension (.mcpb) and attach it to the GitHub Release that
-      # changesets created for the `@toon-protocol/client-mcp@<version>` tag.
-      # Same server as the Claude Code plugin — this is the Desktop install path.
-      # Gated on `published` so it never runs on a plain Release-PR-update push.
+      # The artifact users actually install is this Claude Desktop extension
+      # (.mcpb), not an npm package: @toon-protocol/client-mcp stopped
+      # publishing to npm (#549 — private + changesets `ignore`), so
+      # `publishedPackages` never lists it and the old gate on
+      # `contains(publishedPackages, '@toon-protocol/client-mcp')` can never
+      # fire again — every future client-mcp fix would ship to nobody. That is
+      # issue #536's packaging gotcha.
+      #
+      # So gate on "this run published *something*" instead, which still keeps
+      # the step off a plain Release-PR-update push. client-mcp's own (frozen)
+      # npm version never has to move: build-mcpb.mjs packs the tarball from
+      # the `dist/` this job just built, not from the npm registry.
       - name: Build & attach Desktop extension (.mcpb)
-        if: steps.changesets.outputs.published == 'true' && contains(steps.changesets.outputs.publishedPackages, '@toon-protocol/client-mcp')
+        if: steps.changesets.outputs.published == 'true'
         env:
-          PUBLISHED: ${{ steps.changesets.outputs.publishedPackages }}
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          VERSION=$(echo "$PUBLISHED" | jq -r '.[] | select(.name=="@toon-protocol/client-mcp") | .version')
-          if [ -z "$VERSION" ]; then echo "client-mcp not in published set; skipping"; exit 0; fi
-          echo "Packaging .mcpb for @toon-protocol/client-mcp@$VERSION"
+          VERSION=$(node -p "require('./packages/client-mcp/package.json').version")
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "Packaging .mcpb for client-mcp@$VERSION (sha $SHORT_SHA)"
           OUT="toon-$VERSION.mcpb"
           # dist/ is already built by the `pnpm -r build` step above.
           node packages/client-mcp/scripts/build-mcpb.mjs --out "$OUT"
-          TAG="@toon-protocol/client-mcp@$VERSION"
-          # changesets opens the Release for this tag; wait briefly for it to
-          # appear, then attach the asset (create the Release if it's absent).
-          for i in 1 2 3 4 5; do
-            gh release view "$TAG" >/dev/null 2>&1 && break
-            echo "waiting for release $TAG ($i/5)…"; sleep 5
-          done
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$OUT" --clobber
-          else
-            gh release create "$TAG" "$OUT" \
-              --title "$TAG" \
-              --notes "Claude Desktop extension (.mcpb) for client-mcp $VERSION — install via Settings → Extensions → Advanced → Install Extension."
-          fi
 
-          # Maintain a stable, version-less download URL by re-pointing the
-          # `mcpb-latest` release at this build. The ugly auto-tag
-          # (`@toon-protocol/client-mcp@<ver>`) keeps the pinned/versioned asset;
-          # this gives a clean permanent link:
+          # No per-version GitHub Release to attach to anymore (changesets
+          # never creates one for an ignored package) — maintain only the
+          # stable, version-less download URL by re-pointing the
+          # `mcpb-latest` release at this build:
           #   …/releases/download/mcpb-latest/toon.mcpb
           # `--latest=false` so it never steals the repo's "Latest" badge from
           # the real version releases.
@@ -115,10 +107,10 @@ jobs:
             --target "$GITHUB_SHA" \
             --latest=false \
             --title "TOON Desktop extension — latest" \
-            --notes "Always the newest client-mcp .mcpb (currently $VERSION). Stable download: https://github.com/${GITHUB_REPOSITORY}/releases/download/mcpb-latest/toon.mcpb — install via Claude Desktop → Settings → Extensions → Advanced → Install Extension."
+            --notes "Always the newest client-mcp .mcpb (currently $VERSION, built from $SHORT_SHA). Stable download: https://github.com/${GITHUB_REPOSITORY}/releases/download/mcpb-latest/toon.mcpb — install via Claude Desktop → Settings → Extensions → Advanced → Install Extension."
 
       - name: Upload .mcpb as workflow artifact
-        if: steps.changesets.outputs.published == 'true' && contains(steps.changesets.outputs.publishedPackages, '@toon-protocol/client-mcp')
+        if: steps.changesets.outputs.published == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: toon-mcpb
