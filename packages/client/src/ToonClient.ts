@@ -32,10 +32,7 @@ import {
 } from './adapters/ConnectorEdgeClient.js';
 import { readExchangeOutcome, sealExchange } from './wire/sealed-exchange.js';
 import { giftWrapPublicKey } from './wire/giftwrap.js';
-import {
-  unwrapGiftWrapWithKey,
-  type UnwrappedGiftWrap,
-} from './nip59.js';
+import { unwrapGiftWrapWithKey, type UnwrappedGiftWrap } from './nip59.js';
 import type { ResolvedConfig } from './config.js';
 import { initializeHttpMode } from './modes/http.js';
 import {
@@ -45,8 +42,10 @@ import {
 import {
   ToonClientError,
   ChannelFundingError,
+  Http402RequiresBtpError,
   isInsufficientGasError,
 } from './errors.js';
+import type { IlpSendParams } from './adapters/ilp-send.js';
 import { EvmSigner } from './signing/evm-signer.js';
 import { SolanaSigner } from './signing/solana-signer.js';
 import { MinaSigner } from './signing/mina-signer.js';
@@ -274,9 +273,7 @@ function findBestTerminatorClaim(
  */
 function canonicalChainId(chain: string): string {
   const parts = chain.split(':');
-  return parts[0] === 'evm' && parts.length >= 3
-    ? `evm:${parts[2]}`
-    : chain;
+  return parts[0] === 'evm' && parts.length >= 3 ? `evm:${parts[2]}` : chain;
 }
 
 /**
@@ -789,10 +786,7 @@ export class ToonClient {
                 ),
               tokenNetwork:
                 peerInfo.tokenNetworks?.[matchedChain] ??
-                lookupByCanonicalChain(
-                  this.config.tokenNetworks,
-                  matchedChain
-                ),
+                lookupByCanonicalChain(this.config.tokenNetworks, matchedChain),
             });
           }
         }
@@ -1000,7 +994,9 @@ export class ToonClient {
         options?.claim
       );
 
-      const response = await transport.sendIlpPacketWithClaim(
+      const response = await this.sendClaimBearingPacket(
+        destination,
+        transport,
         {
           destination,
           amount,
@@ -1394,14 +1390,15 @@ export class ToonClient {
       );
     }
     const transport = this.getClaimTransport(params.destination);
-
     const claimMessage = await this.resolveClaimForDestination(
       params.destination,
       params.amount,
       params.claim
     );
 
-    return transport.sendIlpPacketWithClaim(
+    return this.sendClaimBearingPacket(
+      params.destination,
+      transport,
       {
         destination: params.destination,
         amount: String(params.amount),
@@ -1523,6 +1520,70 @@ export class ToonClient {
         '(route through the connector proxy over ILP-over-HTTP) or `btpUrl` (BTP socket).',
       'NO_ILP_TRANSPORT'
     );
+  }
+
+  /**
+   * Sends a claim-bearing PREPARE over the ALREADY-RESOLVED `transport` (a
+   * prior {@link getClaimTransport} call — kept as a separate argument so the
+   * NO_ILP_TRANSPORT/BTP_REQUIRED failure modes of resolving a transport at
+   * all still surface before any claim is resolved, matching every caller's
+   * existing behavior), retrying once over the BTP uplink when it comes back
+   * with {@link Http402RequiresBtpError} (issue #561).
+   *
+   * `getClaimTransport`'s own `requiredTransport` check ({@link
+   * terminatorRequiresBtp}) reads the peer's kind:10032 announce — but the
+   * live devnet relay's announce never carries that field, only its `402`
+   * response does, and only once a write has already been posted over HTTP.
+   * So the announce-based guard alone is dead code against that fleet: this
+   * is the fallback that actually avoids the repeat-402 loop, discovered
+   * live rather than assumed from the announce.
+   *
+   * A retry is attempted only when the failing transport was not already the
+   * BTP one (an `Http402RequiresBtpError` can only come from the HTTP
+   * transport in the first place — BTP has no HTTP status codes) and a BTP
+   * uplink is actually configured; otherwise this throws the same
+   * `BTP_REQUIRED` error `getClaimTransport` throws for the announce-based
+   * case, so callers see one consistent code regardless of which guard
+   * caught it.
+   *
+   * @throws {ToonClientError} BTP_REQUIRED when the terminator's 402 demands
+   *   BTP but this client has no BTP uplink (`btpUrl`) configured.
+   */
+  private async sendClaimBearingPacket(
+    destination: string,
+    transport: ClaimSendingTransport,
+    params: IlpSendParams,
+    claim: unknown
+  ): Promise<IlpSendResult> {
+    const state = this.state;
+    if (!state) {
+      throw new ToonClientError(
+        'Client not started. Call start() first.',
+        'INVALID_STATE'
+      );
+    }
+
+    try {
+      return await transport.sendIlpPacketWithClaim(params, claim);
+    } catch (error) {
+      if (!(error instanceof Http402RequiresBtpError)) throw error;
+
+      const btp: ClaimSendingTransport | undefined = sendsClaims(
+        state.btpClient
+      )
+        ? state.btpClient
+        : undefined;
+      if (btp && transport !== btp) {
+        return btp.sendIlpPacketWithClaim(params, claim);
+      }
+      throw new ToonClientError(
+        `The connector terminating "${destination}" requires BTP for paid ` +
+          'writes (its 402 response declared requiredTransport: "btp"), but ' +
+          'this client has no BTP uplink (`btpUrl`) configured.',
+        'BTP_REQUIRED',
+        error
+      );
+    }
   }
 
   /**
@@ -1708,7 +1769,11 @@ export class ToonClient {
    */
   private async signClaimStateChallenge(
     channelId: string,
-    context: { chainType: string; chainId: number; tokenNetworkAddress: string },
+    context: {
+      chainType: string;
+      chainId: number;
+      tokenNetworkAddress: string;
+    },
     expires: number
   ): Promise<BtpChannelDeclaration | undefined> {
     if (context.chainType === 'evm' && this.evmSigner) {
@@ -1726,7 +1791,12 @@ export class ToonClient {
         channelAccount: channelId,
         expires,
       });
-      return { blockchain: 'solana', channelAccount: channelId, expires, signature };
+      return {
+        blockchain: 'solana',
+        channelAccount: channelId,
+        expires,
+        signature,
+      };
     }
 
     return undefined;
@@ -2175,7 +2245,8 @@ export class ToonClient {
       c.startsWith('evm') && Boolean(rpcUrls[c]);
     const settlementKeys = Object.keys(this.config.settlementAddresses ?? {});
     const chainKeys = this.config.supportedChains ?? Object.keys(rpcUrls);
-    const chainKey = settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
+    const chainKey =
+      settlementKeys.find(usableEvm) ?? chainKeys.find(usableEvm);
     const rpcUrl = chainKey ? rpcUrls[chainKey] : undefined;
     return chainKey && rpcUrl ? { chainKey, rpcUrl } : undefined;
   }
@@ -2321,7 +2392,8 @@ export class ToonClient {
     const sol = this.config.solanaChannel;
     if (sol?.rpcUrl) {
       const seed =
-        this.solanaSeed ?? (await ensureDerived())?.solana.secretKey.slice(0, 32);
+        this.solanaSeed ??
+        (await ensureDerived())?.solana.secretKey.slice(0, 32);
       if (seed) {
         config.solana = {
           rpcUrl: sol.rpcUrl,
@@ -2719,9 +2791,10 @@ export class ToonClient {
       );
     }
     const transport = this.getClaimTransport(params.destination);
-
     const claimMessage = this.buildClaimMessageForProof(params.claim);
-    return transport.sendIlpPacketWithClaim(
+    return this.sendClaimBearingPacket(
+      params.destination,
+      transport,
       ilpParams,
       claimMessage as unknown as Record<string, unknown>
     );
