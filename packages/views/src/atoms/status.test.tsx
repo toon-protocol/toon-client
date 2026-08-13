@@ -85,4 +85,51 @@ describe('client-status', () => {
     render(<ClientStatus {...base} />);
     expect(screen.getByText(/status is unavailable/i)).toBeTruthy();
   });
+
+  it('renders an action-required notice as an alert, distinct from info', async () => {
+    const readStatus = vi.fn().mockResolvedValue({
+      ...fullStatus,
+      notice: {
+        id: 'n1',
+        severity: 'action-required',
+        summary: 'Rotate your keys',
+        url: 'https://example.test/notice/n1',
+      },
+    } satisfies AtomStatus);
+    render(<ClientStatus {...base} readStatus={readStatus} />);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Action required');
+    expect(alert.textContent).toContain('Rotate your keys');
+    // url is displayed as a link, never fetched.
+    const link = screen.getByText('https://example.test/notice/n1');
+    expect(link.tagName).toBe('A');
+    expect(link.getAttribute('href')).toBe('https://example.test/notice/n1');
+    // Not rendered under the quieter 'status' role reserved for 'info'.
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('renders an info notice as a quieter status line, not an alert', async () => {
+    const readStatus = vi.fn().mockResolvedValue({
+      ...fullStatus,
+      notice: {
+        id: 'n2',
+        severity: 'info',
+        summary: 'Routine maintenance window',
+        url: 'https://example.test/notice/n2',
+      },
+    } satisfies AtomStatus);
+    render(<ClientStatus {...base} readStatus={readStatus} />);
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toContain('Notice');
+    expect(status.textContent).toContain('Routine maintenance window');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('renders no notice section when the daemon reports none', async () => {
+    const readStatus = vi.fn().mockResolvedValue(fullStatus);
+    render(<ClientStatus {...base} readStatus={readStatus} />);
+    await screen.findByText('Ready');
+    expect(screen.queryByText(/action required/i)).toBeNull();
+    expect(screen.queryByText(/^notice$/i)).toBeNull();
+  });
 });

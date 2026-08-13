@@ -20,6 +20,7 @@ import type { NostrEvent } from 'nostr-tools/pure';
 import type { RelaySubscription } from '../relay-subscription.js';
 import type { ApexNegotiationConfig } from './config.js';
 import type { SettlementChain } from '../control-api.js';
+import { trustedNoticeFrom, type OperatorNotice } from './notice.js';
 
 export interface DiscoverApexParams {
   /** A started relay subscription to query for the apex's kind:10032. */
@@ -36,12 +37,22 @@ export interface DiscoverApexParams {
   timeoutMs?: number;
   /** Poll interval against the relay buffer, ms. Default 250. */
   pollMs?: number;
+  /**
+   * Pubkeys whose notice is trusted (issue #544's client-mcp half of
+   * toon-meta#252 — see `./notice.js`). Defaults to empty: a notice on the
+   * matched announcement is only surfaced when its author's pubkey is in
+   * this list. Anyone can publish a kind:10032, so an untrusted announcer's
+   * `notice` is silently dropped, never surfaced.
+   */
+  trustedPubkeys?: readonly string[];
 }
 
 export interface DiscoveredApex {
   btpUrl: string;
   negotiation: ApexNegotiationConfig;
   apexChildPeers?: string[];
+  /** The announce's operator notice, when present and from a trusted announcer. */
+  notice?: OperatorNotice;
 }
 
 /**
@@ -70,6 +81,7 @@ export async function discoverApex(
   const { relay, ilpAddress, pubkey, chain, childPeers } = params;
   const timeoutMs = params.timeoutMs ?? 15_000;
   const pollMs = params.pollMs ?? 250;
+  const trustedPubkeys = params.trustedPubkeys ?? [];
 
   const subId = relay.subscribe(
     [
@@ -93,7 +105,7 @@ export async function discoverApex(
       const { events, cursor: next } = relay.getEvents({ cursor });
       cursor = next;
       const match = events.find((e) => matchesApex(e, ilpAddress, pubkey));
-      if (match) return mapAnnouncement(match, { chain, childPeers });
+      if (match) return mapAnnouncement(match, { chain, childPeers, trustedPubkeys });
       await delay(pollMs);
     }
     throw new ApexDiscoveryError(
@@ -136,7 +148,11 @@ function matchesApex(
 /** Map a parsed kind:10032 announcement onto the daemon's negotiation config. */
 function mapAnnouncement(
   event: NostrEvent,
-  opts: { chain?: SettlementChain; childPeers?: string[] }
+  opts: {
+    chain?: SettlementChain;
+    childPeers?: string[];
+    trustedPubkeys?: readonly string[];
+  }
 ): DiscoveredApex {
   const info = parseIlpPeerInfo(event);
   const chains = info.supportedChains ?? [];
@@ -192,13 +208,39 @@ function mapAnnouncement(
       : {}),
   };
 
+  const notice = trustedNoticeFrom(
+    event.pubkey,
+    extractRawNotice(event),
+    opts.trustedPubkeys ?? []
+  );
+
   return {
     btpUrl,
     negotiation,
     ...(opts.childPeers && opts.childPeers.length > 0
       ? { apexChildPeers: opts.childPeers }
       : {}),
+    ...(notice ? { notice } : {}),
   };
+}
+
+/**
+ * Read the raw `notice` value off an announce's content, independent of
+ * `parseIlpPeerInfo` — the installed `@toon-protocol/core` predates toon#183
+ * and drops unknown fields, so `notice` must be read directly off the JSON
+ * rather than through the parsed `IlpPeerInfo`. Returns `undefined` on any
+ * parse failure; `matchesApex` already proved this event's content parses
+ * as the expected object shape before `mapAnnouncement` is reached, so this
+ * is defensive, not the primary validation.
+ */
+function extractRawNotice(event: NostrEvent): unknown {
+  try {
+    const parsed: unknown = JSON.parse(event.content);
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
+    return (parsed as Record<string, unknown>)['notice'];
+  } catch {
+    return undefined;
+  }
 }
 
 function delay(ms: number): Promise<void> {
