@@ -56,6 +56,32 @@ export class Http402RequiresBtpError extends ToonClientError {
 }
 
 /**
+ * Thrown when a paid write over ILP-over-HTTP is refused with a plain
+ * `401 Unauthorized` (toon-client#565). Distinct from a plain
+ * `ConnectorError` for the same reason `Http402RequiresBtpError` is: a
+ * caller can retry the SAME write over an established BTP uplink instead of
+ * surfacing a generic transport failure.
+ *
+ * Exists because the rust connector generation live on the two-box devnet
+ * (`rust-sha-415531a`) answers an authenticated ILP-over-HTTP POST from an
+ * unconfigured/discovered peer identity with `401` ("identity ... failed to
+ * authenticate") rather than the prior generation's `402` x402 greeting —
+ * so #561's 402-only fallback never fires and the write dies with an idle
+ * BTP session sitting right next to it. A discovered edge's `httpEndpoint`
+ * is never a peer this client is actually configured against, so a 401
+ * here is the connector rejecting the anonymous identity, not a signal the
+ * write itself is invalid — retrying over BTP (which authenticates the
+ * negotiated session, not a bare HTTP identity header) is the right
+ * response, mirroring the 402 case exactly.
+ */
+export class Http401RequiresBtpError extends ToonClientError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'HTTP_401_REQUIRES_BTP', cause);
+    this.name = 'Http401RequiresBtpError';
+  }
+}
+
+/**
  * Validation error for invalid input parameters.
  * These errors are thrown before making any HTTP requests.
  */

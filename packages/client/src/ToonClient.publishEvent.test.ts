@@ -30,6 +30,7 @@ import {
 import {
   ChannelFundingError,
   Http402RequiresBtpError,
+  Http401RequiresBtpError,
   ToonClientError,
 } from './errors.js';
 import { isZeroCondition } from './utils/condition.js';
@@ -795,6 +796,87 @@ describe('ToonClient.publishEvent retries onto BTP after a 402 declares required
       'boom'
     );
     expect(btpSend).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The rust connector generation live on the two-box devnet
+// (`rust-sha-415531a`) answers a claim-bearing write from a discovered/
+// unconfigured peer identity with a bare 401 ("identity ... failed to
+// authenticate") instead of the 402 x402 greeting #561 handles — so that
+// fallback never fired and the negotiated BTP session sat idle (issue #565).
+// ---------------------------------------------------------------------------
+
+describe('ToonClient.publishEvent retries onto BTP after a bare 401 (issue #565)', () => {
+  const TERMINATOR = 'a'.repeat(64);
+
+  function attachLiveShapedTransports(
+    client: ToonClient,
+    opts: {
+      httpSend: (params: { data: string }) => Promise<unknown>;
+      btpSend?: (params: { data: string }) => Promise<unknown>;
+    }
+  ): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).state = {
+      bootstrapService: {},
+      discoveryTracker: {
+        getAllDiscoveredPeers: () => [
+          announceFor(['g.proxy'], connector.endpoint, TERMINATOR),
+        ],
+      },
+      discoverySubscription: {
+        requiredTransportFor: () => undefined,
+      },
+      runtimeClient: { sendIlpPacketWithClaim: opts.httpSend },
+      peersDiscovered: 0,
+      ...(opts.btpSend
+        ? { btpClient: { sendIlpPacketWithClaim: opts.btpSend } }
+        : {}),
+    };
+  }
+
+  it('retries over BTP, and succeeds, when HTTP comes back a bare 401', async () => {
+    const client = new ToonClient(baseConfig());
+    const httpSend = vi.fn(async () => {
+      throw new Http401RequiresBtpError(
+        "refused with 401: identity 'g.toon.client' failed to authenticate"
+      );
+    });
+    const btpSend = vi.fn(async (params: { data: string }) =>
+      connector.fulfill(params.data)
+    );
+    attachLiveShapedTransports(client, { httpSend, btpSend });
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+
+    expect(result.success).toBe(true);
+    expect(httpSend).toHaveBeenCalledTimes(1);
+    expect(btpSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws a clear BTP_REQUIRED error when the 401 demands BTP but no BTP uplink is configured', async () => {
+    const client = new ToonClient(baseConfig());
+    const httpSend = vi.fn(async () => {
+      throw new Http401RequiresBtpError(
+        "refused with 401: identity 'g.toon.client' failed to authenticate"
+      );
+    });
+    // No `btpSend`: nothing to retry onto.
+    attachLiveShapedTransports(client, { httpSend });
+
+    let caught: unknown;
+    try {
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ToonClientError);
+    expect((caught as ToonClientError).code).toBe('BTP_REQUIRED');
+    expect(httpSend).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -43,6 +43,7 @@ import {
   ToonClientError,
   ChannelFundingError,
   Http402RequiresBtpError,
+  Http401RequiresBtpError,
   isInsufficientGasError,
 } from './errors.js';
 import type { IlpSendParams } from './adapters/ilp-send.js';
@@ -1538,16 +1539,23 @@ export class ToonClient {
    * is the fallback that actually avoids the repeat-402 loop, discovered
    * live rather than assumed from the announce.
    *
-   * A retry is attempted only when the failing transport was not already the
-   * BTP one (an `Http402RequiresBtpError` can only come from the HTTP
-   * transport in the first place — BTP has no HTTP status codes) and a BTP
-   * uplink is actually configured; otherwise this throws the same
-   * `BTP_REQUIRED` error `getClaimTransport` throws for the announce-based
-   * case, so callers see one consistent code regardless of which guard
-   * caught it.
+   * `Http401RequiresBtpError` (issue #565) is the same shape of problem from
+   * a different connector generation: the rust edge live on the two-box
+   * devnet answers a discovered/unconfigured peer identity with a bare `401`
+   * rather than the 402 x402 greeting, so it gets the identical retry — both
+   * error types are transport-signal-only and neither implies the write
+   * itself was invalid.
    *
-   * @throws {ToonClientError} BTP_REQUIRED when the terminator's 402 demands
-   *   BTP but this client has no BTP uplink (`btpUrl`) configured.
+   * A retry is attempted only when the failing transport was not already the
+   * BTP one (neither error can come from the BTP transport in the first
+   * place — BTP has no HTTP status codes) and a BTP uplink is actually
+   * configured; otherwise this throws the same `BTP_REQUIRED` error
+   * `getClaimTransport` throws for the announce-based case, so callers see
+   * one consistent code regardless of which guard caught it.
+   *
+   * @throws {ToonClientError} BTP_REQUIRED when the terminator's 401/402
+   *   response demands BTP but this client has no BTP uplink (`btpUrl`)
+   *   configured.
    */
   private async sendClaimBearingPacket(
     destination: string,
@@ -1558,7 +1566,10 @@ export class ToonClient {
     try {
       return await transport.sendIlpPacketWithClaim(params, claim);
     } catch (error) {
-      if (!(error instanceof Http402RequiresBtpError)) throw error;
+      const requiresBtpRetry =
+        error instanceof Http402RequiresBtpError ||
+        error instanceof Http401RequiresBtpError;
+      if (!requiresBtpRetry) throw error;
 
       // Widened to `ClaimSendingTransport` on purpose: `sendsClaims` would
       // otherwise narrow to `BtpRuntimeClient & ClaimSendingTransport`, whose
@@ -1570,10 +1581,14 @@ export class ToonClient {
       if (btp && btp !== transport) {
         return btp.sendIlpPacketWithClaim(params, claim);
       }
+      const cause =
+        error instanceof Http402RequiresBtpError
+          ? '402 response declared requiredTransport: "btp"'
+          : '401 response rejected the discovered/unconfigured peer identity';
       throw new ToonClientError(
         `The connector terminating "${destination}" requires BTP for paid ` +
-          'writes (its 402 response declared requiredTransport: "btp"), but ' +
-          'this client has no BTP uplink (`btpUrl`) configured.',
+          `writes (its ${cause}), but this client has no BTP uplink ` +
+          '(`btpUrl`) configured.',
         'BTP_REQUIRED',
         error
       );
