@@ -334,9 +334,9 @@ export class HttpIlpClient implements IlpClient {
       error instanceof ConnectorError ||
       error instanceof NetworkError ||
       // Thrown by `mapResponse` inside the same try — must pass through
-      // unwrapped so a caller can retry over BTP (toon-client#561, #565). It
-      // is not a `ConnectorError` (a distinct code/type is the whole point
-      // of the class), so it needs its own check here.
+      // unwrapped so a caller can retry over BTP (toon-client#561, #565).
+      // Neither is a `ConnectorError` (a distinct code/type is the whole
+      // point of those classes), so each needs its own check here.
       error instanceof Http402RequiresBtpError ||
       error instanceof Http401RequiresBtpError
     ) {

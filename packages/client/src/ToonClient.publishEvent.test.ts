@@ -692,43 +692,45 @@ describe('ToonClient.publishEvent honors a requiring-BTP terminator (issue #558)
 // signal is a 402 whose x402 body declares it (issue #561).
 // ---------------------------------------------------------------------------
 
-describe('ToonClient.publishEvent retries onto BTP after a 402 declares requiredTransport (issue #561)', () => {
-  const TERMINATOR = 'a'.repeat(64);
+const LIVE_TERMINATOR = 'a'.repeat(64);
 
-  /**
-   * A started client whose discovery mirrors the LIVE shape reported in
-   * #561: an announce with both `btpEndpoint` and `httpEndpoint`, and no
-   * `requiredTransport` at all (`requiredTransportFor` always answers
-   * `undefined`, exactly like a real `DiscoverySubscription` reading a real
-   * live announce). `httpSend` is what HTTP-ILP does when driven; `btpSend`,
-   * when given, is the BTP uplink.
-   */
-  function attachLiveShapedTransports(
-    client: ToonClient,
-    opts: {
-      httpSend: (params: { data: string }) => Promise<unknown>;
-      btpSend?: (params: { data: string }) => Promise<unknown>;
-    }
-  ): void {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (client as any).state = {
-      bootstrapService: {},
-      discoveryTracker: {
-        getAllDiscoveredPeers: () => [
-          announceFor(['g.proxy'], connector.endpoint, TERMINATOR),
-        ],
-      },
-      discoverySubscription: {
-        requiredTransportFor: () => undefined,
-      },
-      runtimeClient: { sendIlpPacketWithClaim: opts.httpSend },
-      peersDiscovered: 0,
-      ...(opts.btpSend
-        ? { btpClient: { sendIlpPacketWithClaim: opts.btpSend } }
-        : {}),
-    };
+/**
+ * A started client whose discovery mirrors the LIVE shape reported in #561:
+ * an announce with both `btpEndpoint` and `httpEndpoint`, and no
+ * `requiredTransport` at all (`requiredTransportFor` always answers
+ * `undefined`, exactly like a real `DiscoverySubscription` reading a real
+ * live announce). `httpSend` is what HTTP-ILP does when driven; `btpSend`,
+ * when given, is the BTP uplink. Shared by the 402 (#561) and 401 (#565)
+ * fallback suites — both describe the same live fleet, only the status code
+ * the edge answers with differs.
+ */
+function attachLiveShapedTransports(
+  client: ToonClient,
+  opts: {
+    httpSend: (params: { data: string }) => Promise<unknown>;
+    btpSend?: (params: { data: string }) => Promise<unknown>;
   }
+): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (client as any).state = {
+    bootstrapService: {},
+    discoveryTracker: {
+      getAllDiscoveredPeers: () => [
+        announceFor(['g.proxy'], connector.endpoint, LIVE_TERMINATOR),
+      ],
+    },
+    discoverySubscription: {
+      requiredTransportFor: () => undefined,
+    },
+    runtimeClient: { sendIlpPacketWithClaim: opts.httpSend },
+    peersDiscovered: 0,
+    ...(opts.btpSend
+      ? { btpClient: { sendIlpPacketWithClaim: opts.btpSend } }
+      : {}),
+  };
+}
 
+describe('ToonClient.publishEvent retries onto BTP after a 402 declares requiredTransport (issue #561)', () => {
   it('retries over BTP, and succeeds, when HTTP comes back 402 requiredTransport:"btp"', async () => {
     const client = new ToonClient(baseConfig());
     const httpSend = vi.fn(async () => {
@@ -808,34 +810,6 @@ describe('ToonClient.publishEvent retries onto BTP after a 402 declares required
 // ---------------------------------------------------------------------------
 
 describe('ToonClient.publishEvent retries onto BTP after a bare 401 (issue #565)', () => {
-  const TERMINATOR = 'a'.repeat(64);
-
-  function attachLiveShapedTransports(
-    client: ToonClient,
-    opts: {
-      httpSend: (params: { data: string }) => Promise<unknown>;
-      btpSend?: (params: { data: string }) => Promise<unknown>;
-    }
-  ): void {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (client as any).state = {
-      bootstrapService: {},
-      discoveryTracker: {
-        getAllDiscoveredPeers: () => [
-          announceFor(['g.proxy'], connector.endpoint, TERMINATOR),
-        ],
-      },
-      discoverySubscription: {
-        requiredTransportFor: () => undefined,
-      },
-      runtimeClient: { sendIlpPacketWithClaim: opts.httpSend },
-      peersDiscovered: 0,
-      ...(opts.btpSend
-        ? { btpClient: { sendIlpPacketWithClaim: opts.btpSend } }
-        : {}),
-    };
-  }
-
   it('retries over BTP, and succeeds, when HTTP comes back a bare 401', async () => {
     const client = new ToonClient(baseConfig());
     const httpSend = vi.fn(async () => {

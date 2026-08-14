@@ -186,6 +186,33 @@ function sendsClaims(candidate: unknown): candidate is ClaimSendingTransport {
   );
 }
 
+/**
+ * Recognizes the transport-level signals that say a claim-bearing
+ * ILP-over-HTTP write must be retried over BTP: a `402` whose x402 challenge
+ * declares `requiredTransport: "btp"` (issue #561), or a bare `401` refusing a
+ * discovered/unconfigured peer identity (issue #565). Both are
+ * transport-signal-only — neither implies the write itself was invalid.
+ *
+ * Returns the signalling error together with the phrase naming what happened
+ * (for the `BTP_REQUIRED` message raised when there is no BTP uplink to retry
+ * onto), or `undefined` for any other error — an ordinary failure to rethrow
+ * untouched.
+ */
+function btpFallbackSignal(
+  error: unknown
+): { error: Error; reason: string } | undefined {
+  if (error instanceof Http402RequiresBtpError) {
+    return { error, reason: '402 response declared requiredTransport: "btp"' };
+  }
+  if (error instanceof Http401RequiresBtpError) {
+    return {
+      error,
+      reason: '401 response rejected the discovered/unconfigured peer identity',
+    };
+  }
+  return undefined;
+}
+
 /** One announce's claim on a destination, as {@link outranks} compares them. */
 interface TerminatorClaim {
   /** The announcing peer's `httpEndpoint` — its client edge. */
@@ -1529,8 +1556,9 @@ export class ToonClient {
    * NO_ILP_TRANSPORT/BTP_REQUIRED failure modes of resolving a transport at
    * all still surface before any claim is resolved, matching every caller's
    * existing behavior), retrying once over the BTP uplink when it comes back
-   * with {@link Http402RequiresBtpError} (issue #561).
+   * with a transport signal that says so — {@link btpFallbackSignal}.
    *
+   * {@link Http402RequiresBtpError} (issue #561) is the first such signal.
    * `getClaimTransport`'s own `requiredTransport` check ({@link
    * terminatorRequiresBtp}) reads the peer's kind:10032 announce — but the
    * live devnet relay's announce never carries that field, only its `402`
@@ -1566,10 +1594,8 @@ export class ToonClient {
     try {
       return await transport.sendIlpPacketWithClaim(params, claim);
     } catch (error) {
-      const requiresBtpRetry =
-        error instanceof Http402RequiresBtpError ||
-        error instanceof Http401RequiresBtpError;
-      if (!requiresBtpRetry) throw error;
+      const signal = btpFallbackSignal(error);
+      if (!signal) throw error;
 
       // Widened to `ClaimSendingTransport` on purpose: `sendsClaims` would
       // otherwise narrow to `BtpRuntimeClient & ClaimSendingTransport`, whose
@@ -1581,16 +1607,12 @@ export class ToonClient {
       if (btp && btp !== transport) {
         return btp.sendIlpPacketWithClaim(params, claim);
       }
-      const cause =
-        error instanceof Http402RequiresBtpError
-          ? '402 response declared requiredTransport: "btp"'
-          : '401 response rejected the discovered/unconfigured peer identity';
       throw new ToonClientError(
         `The connector terminating "${destination}" requires BTP for paid ` +
-          `writes (its ${cause}), but this client has no BTP uplink ` +
+          `writes (its ${signal.reason}), but this client has no BTP uplink ` +
           '(`btpUrl`) configured.',
         'BTP_REQUIRED',
-        error
+        signal.error
       );
     }
   }
