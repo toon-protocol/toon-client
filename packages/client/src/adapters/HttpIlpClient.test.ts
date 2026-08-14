@@ -4,6 +4,7 @@ import {
   NetworkError,
   ConnectorError,
   Http402RequiresBtpError,
+  Http401RequiresBtpError,
 } from '../errors.js';
 import { fromBase64 } from '../utils/binary.js';
 import { mintExecutionCondition } from '../utils/condition.js';
@@ -246,7 +247,7 @@ describe('HttpIlpClient', () => {
       expect(httpClient).toHaveBeenCalledTimes(1);
     });
 
-    it('maps a 401 to a ConnectorError (auth, transport-level)', async () => {
+    it('maps a 401 to Http401RequiresBtpError, not a plain ConnectorError (issue #565)', async () => {
       const httpClient = vi.fn(
         async () =>
           new Response('', { status: 401, statusText: 'Unauthorized' })
@@ -256,9 +257,11 @@ describe('HttpIlpClient', () => {
         httpClient,
       });
 
-      await expect(client.sendIlpPacket(SEND_PARAMS)).rejects.toBeInstanceOf(
-        ConnectorError
-      );
+      const error = await client
+        .sendIlpPacket(SEND_PARAMS)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Http401RequiresBtpError);
+      expect(error).not.toBeInstanceOf(ConnectorError);
     });
 
     it('wraps a fetch network failure as a retryable NetworkError', async () => {
@@ -370,6 +373,50 @@ describe('HttpIlpClient', () => {
       await expect(
         client.sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim())
       ).rejects.toBeInstanceOf(ConnectorError);
+    });
+  });
+
+  // ─── issue #565: a bare 401 from a discovered/unconfigured peer identity ───
+  // — the rust connector generation live on the two-box devnet's answer to ───
+  // exactly the situation #561's 402 x402 greeting used to cover ────────────
+  describe('401 from a discovered edge (issue #565)', () => {
+    it('throws Http401RequiresBtpError on a bare 401, and does not retry', async () => {
+      const httpClient = vi.fn(
+        async () =>
+          new Response("identity 'g.toon.client' failed to authenticate", {
+            status: 401,
+            statusText: 'Unauthorized',
+          })
+      ) as unknown as typeof fetch;
+      const client = new HttpIlpClient({
+        httpEndpoint: 'http://connector.test/ilp',
+        httpClient,
+      });
+
+      await expect(
+        client.sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim())
+      ).rejects.toBeInstanceOf(Http401RequiresBtpError);
+      expect(httpClient).toHaveBeenCalledTimes(1);
+    });
+
+    it('a 401 is not confused with an ordinary ConnectorError', async () => {
+      const httpClient = vi.fn(
+        async () =>
+          new Response('nope', {
+            status: 401,
+            statusText: 'Unauthorized',
+          })
+      ) as unknown as typeof fetch;
+      const client = new HttpIlpClient({
+        httpEndpoint: 'http://connector.test/ilp',
+        httpClient,
+      });
+
+      const error = await client
+        .sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim())
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Http401RequiresBtpError);
+      expect(error).not.toBeInstanceOf(ConnectorError);
     });
   });
 

@@ -39,6 +39,7 @@ import {
   NetworkError,
   ConnectorError,
   Http402RequiresBtpError,
+  Http401RequiresBtpError,
 } from '../errors.js';
 import { withRetry } from '../utils/retry.js';
 import { toBase64, fromBase64, encodeUtf8 } from '../utils/binary.js';
@@ -304,6 +305,19 @@ export class HttpIlpClient implements IlpClient {
       }
     }
 
+    // A bare 401 (toon-client#565) is the newer rust connector generation's
+    // way of refusing an unconfigured/discovered peer identity outright —
+    // where an older generation answered the same situation with a 402 x402
+    // greeting (handled above). Not an ordinary auth failure to surface as-is:
+    // the caller can retry the SAME write over an already-negotiated BTP
+    // session instead.
+    if (response.status === 401) {
+      throw new Http401RequiresBtpError(
+        `The connector at ${this.httpEndpoint} refused this paid write with ` +
+          `401${detail}.`
+      );
+    }
+
     if (response.status >= 500) {
       throw new ConnectorError(
         `Connector transport error (${response.status} ${response.statusText})${detail}`
@@ -320,10 +334,11 @@ export class HttpIlpClient implements IlpClient {
       error instanceof ConnectorError ||
       error instanceof NetworkError ||
       // Thrown by `mapResponse` inside the same try — must pass through
-      // unwrapped so a caller can retry over BTP (toon-client#561). It is
-      // not a `ConnectorError` (a distinct code/type is the whole point of
-      // the class), so it needs its own check here.
-      error instanceof Http402RequiresBtpError
+      // unwrapped so a caller can retry over BTP (toon-client#561, #565).
+      // Neither is a `ConnectorError` (a distinct code/type is the whole
+      // point of those classes), so each needs its own check here.
+      error instanceof Http402RequiresBtpError ||
+      error instanceof Http401RequiresBtpError
     ) {
       return error;
     }
