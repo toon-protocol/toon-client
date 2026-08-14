@@ -163,6 +163,89 @@ describe('ToonClient paid-write transport selection', () => {
     ).rejects.toMatchObject({ code: 'NO_ILP_TRANSPORT' });
   });
 
+  /**
+   * Issue #565: `preferBtpForPaidWrites` is the knob the MCP daemon now
+   * DEFAULTS on, so it has to hold against the announce shape the live fleet
+   * actually publishes — one with NO `requiredTransport` field at all.
+   *
+   * #559's tests only ever built announces WITH that field, so they stayed
+   * green while production 402'd (and, before the identity fix, 401'd) on
+   * every HTTP-first paid write. These construct the field-ABSENT announce on
+   * purpose: `terminatorRequiresBtp` correctly answers "no requirement", and
+   * BTP must still be tried first because the caller asked for it.
+   */
+  describe('preferBtpForPaidWrites with a requiredTransport-LESS announce', () => {
+    /** Live-shaped discovery: an announce claiming `g.proxy`, no requiredTransport. */
+    function liveShapedDiscovery() {
+      return {
+        discoveryTracker: {
+          getAllDiscoveredPeers: () => [
+            {
+              pubkey: 'a'.repeat(64),
+              peerId: `nostr-${'a'.repeat(16)}`,
+              discoveredAt: 0,
+              peerInfo: {
+                pubkey: 'a'.repeat(64),
+                ilpAddress: 'g.proxy',
+                ilpAddresses: ['g.proxy'],
+                btpEndpoint: 'wss://edge.test/btp',
+                httpEndpoint: 'https://edge.test/ilp',
+                assetCode: 'USD',
+                assetScale: 6,
+              },
+            },
+          ],
+        },
+        // Exactly what a real DiscoverySubscription answers for an announce
+        // whose content carries no `requiredTransport` key.
+        discoverySubscription: { requiredTransportFor: () => undefined },
+      };
+    }
+
+    it('sends over btpClient FIRST even though the announce declares no requirement', async () => {
+      const client = new ToonClient({
+        ...baseConfig(),
+        preferBtpForPaidWrites: true,
+      } as unknown as ConstructorParameters<typeof ToonClient>[0]);
+      const httpSend = sealedSend();
+      const btpSend = sealedSend();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).state = {
+        bootstrapService: {},
+        ...liveShapedDiscovery(),
+        runtimeClient: { sendIlpPacketWithClaim: httpSend },
+        peersDiscovered: 1,
+        btpClient: { sendIlpPacketWithClaim: btpSend },
+      };
+
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+
+      expect(btpSend).toHaveBeenCalledTimes(1);
+      expect(httpSend).not.toHaveBeenCalled();
+    });
+
+    it('leaves the HTTP-first default untouched for the same announce', async () => {
+      const client = new ToonClient(baseConfig());
+      const httpSend = sealedSend();
+      const btpSend = sealedSend();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).state = {
+        bootstrapService: {},
+        ...liveShapedDiscovery(),
+        runtimeClient: { sendIlpPacketWithClaim: httpSend },
+        peersDiscovered: 1,
+        btpClient: { sendIlpPacketWithClaim: btpSend },
+      };
+
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+
+      expect(httpSend).toHaveBeenCalledTimes(1);
+      expect(btpSend).not.toHaveBeenCalled();
+    });
+  });
+
   it('sendPayment routes through the active transport (proxy) with the inline claim', async () => {
     const client = new ToonClient(baseConfig());
     const httpSend = vi.fn(async () => ({ accepted: true }));

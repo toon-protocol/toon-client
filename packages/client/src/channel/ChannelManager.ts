@@ -220,8 +220,11 @@ export class ChannelManager {
         };
         this.trackChannel(result.channelId, {
           ...context,
-          // On-chain depositTotal (Mina only) — needed so the Mina signer binds
-          // balanceB = depositTotal − balanceA (connector#133).
+          // On-chain depositTotal, reported by every opener since issue #565
+          // (it was Mina-only before, so an EVM channel's collateral read back
+          // as 0). The Mina signer needs it to bind balanceB = depositTotal −
+          // balanceA (connector#133); every chain needs it for the spendable
+          // balance `depositTotal - cumulativeAmount`.
           depositTotal: result.depositTotal,
         });
         this.peerChannels.set(key, result.channelId);
@@ -266,9 +269,21 @@ export class ChannelManager {
       tokenAddress: negotiation.tokenAddress,
       recipient: negotiation.settlementAddress,
     };
-    this.trackChannel(channelId, context);
+    // Carry the collateral the binding already recorded (issue #565). Adopting
+    // is a RESTART path: the deposit was locked in a previous process, so
+    // without this the adopted channel reports 0 spendable on a funded channel
+    // until something re-reads it from chain (which only the MCP daemon does).
+    const bound = this.store?.loadBinding?.(key);
+    const deposited =
+      bound?.channelId === channelId ? bound.depositTotal : undefined;
+    this.trackChannel(channelId, {
+      ...context,
+      ...(deposited !== undefined ? { depositTotal: deposited } : {}),
+    });
     this.peerChannels.set(key, channelId);
-    this.bindChannel(key, channelId, context, {});
+    this.bindChannel(key, channelId, context, {
+      ...(deposited !== undefined ? { depositTotal: deposited } : {}),
+    });
     this.adoptOnChainContext(channelId, negotiation);
   }
 
@@ -607,6 +622,10 @@ export class ChannelManager {
    * Update the tracked on-chain deposit total after a successful deposit, so the
    * available balance (`depositTotal - cumulativeAmount`) reflects the new
    * collateral on the next read.
+   *
+   * Also written through to the peer BINDING (issue #565) — the deposit is an
+   * on-chain fact, so a restart must resume with the collateral that is
+   * actually locked, not the amount recorded when the channel was first opened.
    */
   setDepositTotal(channelId: string, total: bigint): void {
     const tracking = this.channels.get(channelId);
@@ -614,6 +633,24 @@ export class ChannelManager {
       throw new Error(`Channel "${channelId}" is not being tracked.`);
     }
     tracking.depositTotal = total;
+    this.persistDepositTotal(channelId, total);
+  }
+
+  /**
+   * Write `total` into whichever peer binding names `channelId`. No-op without
+   * a store that persists bindings, or when no binding names this channel (an
+   * untracked/foreign channel has no collateral of ours to record).
+   */
+  private persistDepositTotal(channelId: string, total: bigint): void {
+    const store = this.store;
+    if (!store?.saveBinding || !store.loadBinding) return;
+    for (const [key, bound] of this.peerChannels) {
+      if (bound !== channelId) continue;
+      const binding = store.loadBinding(key);
+      if (!binding) continue;
+      store.saveBinding(key, { ...binding, depositTotal: total });
+      return;
+    }
   }
 
   /** Persist a channel's full nonce/amount + withdraw-timer state to the store. */

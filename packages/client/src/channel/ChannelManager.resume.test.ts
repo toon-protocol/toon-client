@@ -248,6 +248,57 @@ describe('ChannelManager channel resume (#489)', () => {
     });
   });
 
+  /**
+   * Locked collateral is an ON-CHAIN fact, so it must survive every path a
+   * channel re-enters this process by (issue #565). Live symptom: `toon_channels`
+   * reported `depositTotal: "0"` / `availableBalance: "0"` for channels the
+   * TokenNetwork's `participants(channelId, me)` said held 100000 base units.
+   */
+  describe('deposit tracking (issue #565)', () => {
+    it('adoptChannel carries the collateral the binding already recorded', async () => {
+      const store = new InMemoryChannelStore();
+      const first = managerWith(store, EVM_CHANNEL, {
+        depositTotal: 100_000n,
+      });
+      await first.mgr.ensureChannel('apex', EVM_NEGOTIATION);
+
+      // A restart where the HOST persisted the channel id itself (the MCP
+      // daemon's apex-channel store, rig's channel map) and adopts it.
+      const second = managerWith(store, SECOND_EVM_CHANNEL);
+      second.mgr.adoptChannel('apex', EVM_NEGOTIATION, EVM_CHANNEL);
+
+      expect(second.mgr.getDepositTotal(EVM_CHANNEL)).toBe(100_000n);
+    });
+
+    it('adoptChannel does not borrow a deposit from a DIFFERENT bound channel', async () => {
+      const store = new InMemoryChannelStore();
+      const first = managerWith(store, EVM_CHANNEL, {
+        depositTotal: 100_000n,
+      });
+      await first.mgr.ensureChannel('apex', EVM_NEGOTIATION);
+
+      const second = managerWith(store, SECOND_EVM_CHANNEL);
+      second.mgr.adoptChannel('apex', EVM_NEGOTIATION, SECOND_EVM_CHANNEL);
+
+      expect(second.mgr.getDepositTotal(SECOND_EVM_CHANNEL)).toBe(0n);
+    });
+
+    it('setDepositTotal writes through to the binding so a restart resumes the new total', async () => {
+      const store = new InMemoryChannelStore();
+      const first = managerWith(store, EVM_CHANNEL, {
+        depositTotal: 100_000n,
+      });
+      await first.mgr.ensureChannel('apex', EVM_NEGOTIATION);
+      // A top-up deposit (or an on-chain re-read) after the open.
+      first.mgr.setDepositTotal(EVM_CHANNEL, 250_000n);
+
+      const second = managerWith(store, SECOND_EVM_CHANNEL);
+      await second.mgr.ensureChannel('apex', EVM_NEGOTIATION);
+
+      expect(second.mgr.getDepositTotal(EVM_CHANNEL)).toBe(250_000n);
+    });
+  });
+
   describe('Solana (the already-correct contract, now shared)', () => {
     it('resumes the same PDA with its watermark and skips the on-chain open', async () => {
       const PDA = 'SolChannelPDA111111111111111111111111111';

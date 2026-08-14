@@ -19,6 +19,7 @@ const ENV_KEYS = [
   'TOON_CLIENT_STORE_BTP_URL',
   'TOON_CLIENT_KEYSTORE_PASSWORD',
   'TOON_CLIENT_ARWEAVE_GATEWAYS',
+  'TOON_CLIENT_PREFER_BTP',
 ];
 
 describe('daemon config', () => {
@@ -85,6 +86,43 @@ describe('daemon config', () => {
     expect(cfg.swapControllerStatePath).toMatch(/swap-controller-state\.json$/);
     // Unconfigured daemons carry no swap defaults (defenses stay opt-in).
     expect(resolveConfig({ mnemonic: MNEMONIC }).swapDefaults).toBeUndefined();
+  });
+
+  describe('preferBtpForPaidWrites (issue #565)', () => {
+    it('defaults to true whenever a btpUrl is configured', () => {
+      const cfg = resolveConfig({
+        mnemonic: MNEMONIC,
+        btpUrl: 'ws://apex:3000',
+      });
+      expect(cfg.toonClientConfig.preferBtpForPaidWrites).toBe(true);
+    });
+
+    it('is left unset with no btpUrl — there is no socket to prefer', () => {
+      const cfg = resolveConfig({
+        mnemonic: MNEMONIC,
+        proxyUrl: 'https://proxy.test',
+      });
+      expect(cfg.toonClientConfig.preferBtpForPaidWrites).toBeUndefined();
+    });
+
+    it('honors an explicit false in the config file', () => {
+      const cfg = resolveConfig({
+        mnemonic: MNEMONIC,
+        btpUrl: 'ws://apex:3000',
+        preferBtpForPaidWrites: false,
+      });
+      expect(cfg.toonClientConfig.preferBtpForPaidWrites).toBe(false);
+    });
+
+    it('TOON_CLIENT_PREFER_BTP env overrides the config file', () => {
+      process.env['TOON_CLIENT_PREFER_BTP'] = 'false';
+      const cfg = resolveConfig({
+        mnemonic: MNEMONIC,
+        btpUrl: 'ws://apex:3000',
+        preferBtpForPaidWrites: true,
+      });
+      expect(cfg.toonClientConfig.preferBtpForPaidWrites).toBe(false);
+    });
   });
 
   it('arweaveGateways defaults to the shared ar.io-first list', () => {

@@ -1132,7 +1132,16 @@ export class OnChainChannelClient implements ConnectorChannelClient {
       });
     }
 
-    return { channelId, status: 'opening' };
+    // Report the collateral this open actually LOCKED (issue #565). The Solana
+    // and Mina openers have always returned `depositTotal`; EVM did not, so
+    // `ChannelManager` tracked (and persisted in the peer binding) `undefined`
+    // for every EVM channel — and `getDepositTotal`'s `?? 0n` then reported a
+    // funded channel as `depositTotal: "0"`, `availableBalance: "0"` for the
+    // whole life of the process AND across restarts. `setTotalDeposit` takes
+    // the cumulative total and is awaited above, so on success `deposit` IS the
+    // on-chain total; a zero-deposit open reports 0 because that is the truth,
+    // not because nothing was captured.
+    return { channelId, status: 'opening', depositTotal: deposit };
   }
 
   /**
