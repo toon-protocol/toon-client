@@ -131,6 +131,10 @@ describe('OnChainChannelClient', () => {
 
       expect(result.channelId).toBe(TEST_CHANNEL_ID);
       expect(result.status).toBe('opening');
+      // The collateral this open LOCKED, reported so ChannelManager can track
+      // (and persist) it. Left undefined before issue #565, which is why every
+      // funded EVM channel read back as `depositTotal: "0"` / 0 spendable.
+      expect(result.depositTotal).toBe(100000n);
       // 3 write calls: approve, openChannel, setTotalDeposit
       expect(mockWriteContract).toHaveBeenCalledTimes(3);
     });
@@ -199,6 +203,9 @@ describe('OnChainChannelClient', () => {
       });
 
       expect(result.channelId).toBe(TEST_CHANNEL_ID);
+      // Zero collateral is REPORTED as zero, not left unknown — the caller can
+      // tell "opened uncollateralized" from "never captured".
+      expect(result.depositTotal).toBe(0n);
       // Only 1 write call: openChannel (no approve, no deposit)
       expect(mockWriteContract).toHaveBeenCalledTimes(1);
     });

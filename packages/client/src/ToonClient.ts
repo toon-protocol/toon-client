@@ -223,6 +223,14 @@ interface TerminatorClaim {
   isPrimary: boolean;
   /** The announcing peer's pubkey — for looking up its `requiredTransport` (issue #558). */
   pubkey: string;
+  /**
+   * The announcing peer's connector peer id (`nostr-<pubkey16>`) — the SAME id
+   * `BootstrapService` keys its results under, so a claim can be matched
+   * against `peerNegotiations` (issue #565).
+   */
+  peerId: string;
+  /** The announce itself — the counterparty's own settlement facts (issue #565). */
+  peerInfo: IlpPeerInfo;
 }
 
 /** Whether `claim` beats `best`: more specific first, then primary over secondary. */
@@ -268,7 +276,7 @@ function findBestTerminatorClaim(
   peers: readonly DiscoveredPeer[]
 ): TerminatorClaim | undefined {
   let best: TerminatorClaim | undefined;
-  for (const { peerInfo, pubkey } of peers) {
+  for (const { peerInfo, pubkey, peerId } of peers) {
     const httpEndpoint = peerInfo.httpEndpoint;
     if (!httpEndpoint) continue;
     const addresses = peerInfo.ilpAddresses ?? [peerInfo.ilpAddress];
@@ -279,6 +287,8 @@ function findBestTerminatorClaim(
         segments: address.split('.').length,
         isPrimary: index === 0,
         pubkey,
+        peerId,
+        peerInfo,
       };
       if (!best || outranks(claim, best)) best = claim;
     }
@@ -776,46 +786,14 @@ export class ToonClient {
           // Lightweight client fallback: bootstrap discovered the peer but didn't
           // negotiate a chain (no connector admin to register with). Extract the
           // peer's settlement info from their kind:10032 event data and match
-          // against our supported chains.
-          const peerInfo = result.peerInfo as typeof result.peerInfo & {
-            supportedChains?: string[];
-            settlementAddresses?: Record<string, string>;
-            preferredTokens?: Record<string, string>;
-            tokenNetworks?: Record<string, string>;
-          };
-          const peerChains = peerInfo.supportedChains ?? [];
-          const ourChains = this.config.supportedChains ?? [];
-          // Throws CHAIN_NOT_SUPPORTED if no common chain exists, so
-          // matchedChain is always a real, mutually-supported chain here.
-          const matchedChain = this.matchNegotiatedChain(
-            ourChains,
-            peerChains,
+          // against our supported chains. `negotiationFromAnnounce` still throws
+          // CHAIN_NOT_SUPPORTED when nothing is mutually supported, unchanged.
+          const announced = this.negotiationFromAnnounce(
+            result.peerInfo,
             result.registeredPeerId
           );
-          const peerAddr = peerInfo.settlementAddresses?.[matchedChain];
-          const parts = matchedChain.split(':');
-          const chainId =
-            parts.length >= 3
-              ? parseInt(parts[2] ?? '0', 10)
-              : parts.length >= 2
-                ? parseInt(parts[1] ?? '0', 10)
-                : 0;
-          if (peerAddr) {
-            this.peerNegotiations.set(result.registeredPeerId, {
-              chain: matchedChain,
-              chainType: parts[0] ?? 'evm',
-              chainId: isNaN(chainId) ? 0 : chainId,
-              settlementAddress: peerAddr,
-              tokenAddress:
-                peerInfo.preferredTokens?.[matchedChain] ??
-                lookupByCanonicalChain(
-                  this.config.preferredTokens,
-                  matchedChain
-                ),
-              tokenNetwork:
-                peerInfo.tokenNetworks?.[matchedChain] ??
-                lookupByCanonicalChain(this.config.tokenNetworks, matchedChain),
-            });
+          if (announced) {
+            this.peerNegotiations.set(result.registeredPeerId, announced);
           }
         }
         // Track any pre-opened channels (backwards compat)
@@ -1631,9 +1609,7 @@ export class ToonClient {
     }
     if (this.channelManager) {
       const peerId = this.peerIdForClaim(destination);
-      const negotiation =
-        this.peerNegotiations.get(peerId) ??
-        (await this.negotiateFromGreeting(destination, peerId));
+      const negotiation = await this.negotiationFor(destination, peerId);
       if (!negotiation) {
         throw new ToonClientError(
           `No negotiation metadata for peer "${peerId}" — was bootstrap completed?` +
@@ -1694,6 +1670,13 @@ export class ToonClient {
    * can force the open. Idempotent — returns the existing channel ID for the
    * peer if one is already open.
    *
+   * The counterparty is driven by `destination` (issue #565): the channel is
+   * opened against the settlement address of whoever TERMINATES it — an
+   * existing negotiation for that peer, else the terminating kind:10032
+   * announce's own `settlementAddresses`, else the route's x402 greeting. Two
+   * destinations that terminate at different nodes therefore get two channels,
+   * each with the right counterparty.
+   *
    * @param destination - Optional ILP destination address. Defaults to
    *   `config.destinationAddress`.
    * @returns The channel ID of the (now) open channel.
@@ -1721,9 +1704,7 @@ export class ToonClient {
       );
     }
     const peerId = this.peerIdForClaim(dest);
-    const negotiation =
-      this.peerNegotiations.get(peerId) ??
-      (await this.negotiateFromGreeting(dest, peerId));
+    const negotiation = await this.negotiationFor(dest, peerId);
     if (!negotiation) {
       throw new ToonClientError(
         `No negotiation metadata for peer "${peerId}" — was bootstrap completed?` +
@@ -1761,9 +1742,7 @@ export class ToonClient {
       );
     }
     const peerId = this.peerIdForClaim(destination);
-    const negotiation =
-      this.peerNegotiations.get(peerId) ??
-      (await this.negotiateFromGreeting(destination, peerId));
+    const negotiation = await this.negotiationFor(destination, peerId);
     if (!negotiation) {
       throw new ToonClientError(
         `No negotiation metadata for peer "${peerId}" — cannot adopt channel ` +
@@ -2447,17 +2426,19 @@ export class ToonClient {
   }
 
   /**
-   * Resolves an ILP destination address to a peer ID.
-   * Convention: destination "g.toon.peer1" → peerId "peer1" (last segment).
-   * Falls back to first known peer if no match.
-   */
-  /**
-   * The peer id a claim for `destination` accounts under. Normally
-   * `resolvePeerId` — but where that throws `PEER_NOT_FOUND` (an empty
-   * negotiation map: nothing announced, nothing registered), the
+   * The peer id a claim for `destination` accounts under — and therefore WHICH
+   * counterparty's channel that claim is drawn on. Normally `resolvePeerId`,
+   * which resolves by identity (an existing negotiation key, or the announce
+   * that terminates `destination`) — but where that throws `PEER_NOT_FOUND`
+   * (nothing announced, nothing registered, nothing unambiguous to guess), the
    * destination itself is the key, so the announce-less greeting bootstrap
    * (connector #617) has a stable identity to remember its synthesized
    * negotiation under.
+   *
+   * Never a positional guess across several peers (issue #565): keying a
+   * second destination onto the first peer's negotiation opens the channel
+   * against the WRONG settlement address, and the real terminator then rejects
+   * every claim (F01 — "names a channel this connector has no record of").
    */
   private peerIdForClaim(destination: string): string {
     try {
@@ -2668,15 +2649,145 @@ export class ToonClient {
       }
     }
 
-    // Fallback: return first peer
-    const firstPeerResult = this.peerNegotiations.keys().next();
-    if (!firstPeerResult.done && firstPeerResult.value)
-      return firstPeerResult.value;
+    // Ask DISCOVERY who actually terminates this destination (issue #565).
+    // Neither match above can succeed for a bootstrapped peer, because
+    // `BootstrapService` keys its results under `nostr-<pubkey16>` while the
+    // destination is an ILP address (`g.toon.ario`) — the two share no
+    // substring. So the announce is the only thing that binds a destination to
+    // a counterparty, and it must be consulted BEFORE any positional guess.
+    const claim = this.terminatorClaimFor(destination);
+    if (claim) return claim.peerId;
+
+    // Legacy single-uplink fallback: with exactly ONE negotiated peer and no
+    // announce claiming this destination, that peer IS the only counterparty
+    // this client could be paying. With SEVERAL, "the first one" is an
+    // arbitrary map-insertion-order pick — the bug this replaces
+    // (`openChannel('g.toon.ario')` opened against the RELAY's settlement
+    // address, and the store then rejected every claim with F01 "names a
+    // channel this connector has no record of"). Declining here lets
+    // `peerIdForClaim` key off the destination itself and negotiate from that
+    // destination's own greeting instead of settling with the wrong node.
+    if (this.peerNegotiations.size === 1) {
+      const only = this.peerNegotiations.keys().next();
+      if (!only.done && only.value) return only.value;
+    }
 
     throw new ToonClientError(
       `Cannot resolve peer for destination: ${destination}`,
       'PEER_NOT_FOUND'
     );
+  }
+
+  /**
+   * The winning kind:10032 claim on `destination` from this client's discovery
+   * tracker, or `undefined` when there is no tracker yet or no announce claims
+   * it. Probed rather than assumed, exactly as {@link terminatorRequiresBtp}
+   * does — a half-built state (a stub, a client mid-`start()`) simply has
+   * nothing to resolve against, and a missing announce is a normal state, not
+   * an error.
+   */
+  private terminatorClaimFor(destination: string): TerminatorClaim | undefined {
+    const tracker: Partial<DiscoveryTracker> | undefined =
+      this.state?.discoveryTracker;
+    if (typeof tracker?.getAllDiscoveredPeers !== 'function') return undefined;
+    return findBestTerminatorClaim(
+      destination,
+      tracker.getAllDiscoveredPeers()
+    );
+  }
+
+  /**
+   * The negotiation to settle `destination` with, in order of authority
+   * (issue #565):
+   *
+   *   1. an ALREADY-negotiated peer (bootstrap, or a host that injected one);
+   *   2. the terminating announce's OWN settlement facts — the counterparty
+   *      states its `settlementAddresses`/`tokenNetworks` in the same
+   *      kind:10032 event that claims the destination, so this is the
+   *      counterparty naming itself rather than us inferring one;
+   *   3. the route's x402 greeting ({@link negotiateFromGreeting}, connector
+   *      #617) for an announce-less route.
+   *
+   * Step 2 is what makes a SECOND destination openable at all: bootstrap only
+   * negotiates with `knownPeers`, so a client seeded with the relay had no
+   * negotiation for the store box and used to fall through to the relay's.
+   */
+  private async negotiationFor(
+    destination: string,
+    peerId: string
+  ): Promise<PeerNegotiation | undefined> {
+    const known = this.peerNegotiations.get(peerId);
+    if (known) return known;
+
+    const claim = this.terminatorClaimFor(destination);
+    if (claim && claim.peerId === peerId) {
+      // CHAIN_NOT_SUPPORTED here means this ANNOUNCE offers no chain we share
+      // — the greeting below may still offer one (a connector can settle on
+      // more than it advertises), so fall through rather than fail the write.
+      let announced: PeerNegotiation | undefined;
+      try {
+        announced = this.negotiationFromAnnounce(claim.peerInfo, peerId);
+      } catch {
+        announced = undefined;
+      }
+      if (announced) {
+        this.peerNegotiations.set(peerId, announced);
+        return announced;
+      }
+    }
+
+    return this.negotiateFromGreeting(destination, peerId);
+  }
+
+  /**
+   * The {@link PeerNegotiation} a peer's own kind:10032 announce supports: the
+   * chain both sides support, plus the settlement address / token / token
+   * network THAT PEER advertises for it (falling back to this client's
+   * configured maps only where the announce is silent).
+   *
+   * `undefined` when the announce names no settlement address for the matched
+   * chain — there is nothing to open a channel against, and guessing one is how
+   * a claim ends up unverifiable at the counterparty.
+   *
+   * @throws {ToonClientError} CHAIN_NOT_SUPPORTED when no mutually supported
+   *   chain exists (from {@link matchNegotiatedChain}) — bootstrap surfaces
+   *   this; the lazy per-destination path catches it.
+   */
+  private negotiationFromAnnounce(
+    peerInfo: IlpPeerInfo & {
+      supportedChains?: string[];
+      settlementAddresses?: Record<string, string>;
+      preferredTokens?: Record<string, string>;
+      tokenNetworks?: Record<string, string>;
+    },
+    peerId: string
+  ): PeerNegotiation | undefined {
+    const matchedChain = this.matchNegotiatedChain(
+      this.config.supportedChains ?? [],
+      peerInfo.supportedChains ?? [],
+      peerId
+    );
+    const peerAddr = peerInfo.settlementAddresses?.[matchedChain];
+    if (!peerAddr) return undefined;
+    const parts = matchedChain.split(':');
+    const chainId =
+      parts.length >= 3
+        ? parseInt(parts[2] ?? '0', 10)
+        : parts.length >= 2
+          ? parseInt(parts[1] ?? '0', 10)
+          : 0;
+    return {
+      chain: matchedChain,
+      chainType: parts[0] ?? 'evm',
+      chainId: isNaN(chainId) ? 0 : chainId,
+      settlementAddress: peerAddr,
+      tokenAddress:
+        peerInfo.preferredTokens?.[matchedChain] ??
+        lookupByCanonicalChain(this.config.preferredTokens, matchedChain),
+      tokenNetwork:
+        peerInfo.tokenNetworks?.[matchedChain] ??
+        lookupByCanonicalChain(this.config.tokenNetworks, matchedChain),
+    };
   }
 
   /**

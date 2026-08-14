@@ -174,6 +174,38 @@ describe('HttpIlpClient', () => {
       expect(headers['Authorization']).toBe('Bearer secret');
     });
 
+    /**
+     * Issue #565: the connector's client edge resolves a PRESENTED peer id
+     * BEFORE the route, and 401s when it can't authenticate it — while a
+     * request with no id at all is anonymous and gets its identity from the
+     * claim. So an id we hold no secret for must never reach the wire. The MCP
+     * daemon shipped exactly this pair (`g.toon.client` + `btpAuthToken: ''`),
+     * which 401'd every default paid write.
+     */
+    it.each([
+      ['no authToken at all', undefined],
+      ['an EMPTY authToken (the daemon default)', ''],
+    ])('omits ILP-Peer-Id with %s', async (_label, authToken) => {
+      const httpClient = fetchReturning(serializeFulfill(new Uint8Array(0)));
+      const client = new HttpIlpClient({
+        httpEndpoint: 'http://connector.test/ilp',
+        peerId: 'g.toon.client',
+        ...(authToken !== undefined ? { authToken } : {}),
+        httpClient,
+      });
+
+      await client.sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim());
+
+      const [, init] = (httpClient as ReturnType<typeof vi.fn>).mock
+        .calls[0] as [string, RequestInit];
+      const headers = init.headers as Record<string, string>;
+      expect(headers['ILP-Peer-Id']).toBeUndefined();
+      expect(headers['Authorization']).toBeUndefined();
+      // The claim still rides — anonymous + a valid claim is the supported
+      // permissionless path, and it is the whole point of dropping the id.
+      expect(headers[ILP_CLAIM_HEADER]).toBeDefined();
+    });
+
     it('omits the claim header on a plain sendIlpPacket', async () => {
       const httpClient = fetchReturning(serializeFulfill(new Uint8Array(0)));
       const client = new HttpIlpClient({

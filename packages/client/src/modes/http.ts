@@ -127,6 +127,12 @@ export async function initializeHttpMode(
   ) {
     httpIlpClient = new HttpIlpClient({
       httpEndpoint: transportChoice.httpEndpoint,
+      // Carried for the BTP-upgrade auth frame; it only reaches the `POST
+      // /ilp` wire as `ILP-Peer-Id` when a non-empty `btpAuthToken` backs it
+      // (issue #565 — see `HttpIlpClient.authHeaders`). The BTP greeting is a
+      // different contract: the connector accepts an unregistered id there and
+      // resolves the payer from the claim, which is why `btpPeerId` stays the
+      // per-client id `toon-client#503` made it.
       peerId: btpPeerId,
       ...(config.btpAuthToken !== undefined
         ? { authToken: config.btpAuthToken }

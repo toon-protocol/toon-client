@@ -12,7 +12,9 @@
  *      header:  `ILP-Payment-Channel-Claim: base64(JSON of the claim)` — the
  *               SAME claim JSON the BTP path attaches as the
  *               `payment-channel-claim` protocolData entry.
- *      optional: `ILP-Peer-Id` + `Authorization: Bearer <secret>` identity.
+ *      optional: `ILP-Peer-Id` + `Authorization: Bearer <secret>` identity —
+ *                sent as a PAIR or not at all (issue #565), since the connector
+ *                401s a presented id it cannot authenticate.
  *      response: `200 OK` with an OER FULFILL or REJECT body. HTTP non-2xx is
  *                reserved for TRANSPORT errors (400/401/413/5xx); ILP-level
  *                rejects come back as a 200 + REJECT body.
@@ -62,6 +64,10 @@ export interface HttpIlpClientConfig {
    * Optional peer identity. With no `peerId`/`authToken` the connector treats
    * the request as an anonymous no-auth peer (permissionless default) and
    * derives an ephemeral id from the claim signer.
+   *
+   * NOTE (issue #565): this is only PRESENTED on the wire when an `authToken`
+   * accompanies it — see {@link HttpIlpClient.authHeaders}. It is still used
+   * as the BTP auth-frame id on the {@link HttpIlpClient.upgradeToBtp} path.
    */
   peerId?: string;
   /** Bearer secret for `Authorization`. Omit for the no-auth peer path. */
@@ -201,11 +207,37 @@ export class HttpIlpClient implements IlpClient {
 
   // ─── Private ──────────────────────────────────────────────────────────────
 
+  /**
+   * The identity headers to present, if any.
+   *
+   * A peer id and its bearer secret are ONE credential, so both are sent or
+   * neither is (issue #565). Presenting a `peerId` this client cannot back
+   * with a secret is strictly WORSE than presenting nothing: the connector's
+   * client edge resolves a PRESENTED identity first and answers `401` before
+   * it ever looks at the route
+   * (connector `crates/connector-client-edge/src/lib.rs`, whose own comment
+   * reads "A request presenting no `ILP-Peer-Id` is unaffected here — it is
+   * anonymous, resolved once the claim (if any) has been admitted"), whereas
+   * anonymous + a valid payment-channel claim is the supported permissionless
+   * path. The live devnet daemon shipped `ILP-Peer-Id: g.toon.client` with an
+   * EMPTY token — an id no connector has a registration for — so every default
+   * paid write over `POST /ilp` 401'd before the claim was read at all.
+   *
+   * An empty-string token is not a credential; `''` is falsy here on purpose.
+   *
+   * This REMOVES the 401 rather than recovering from it, so it complements
+   * #569's {@link Http401RequiresBtpError} fallback instead of replacing it:
+   * that fallback still catches a 401 with any other cause, but it costs a
+   * failed round trip per write and can only rescue a client that has a BTP
+   * uplink — a proxy-only client had no route to a paid write at all, even
+   * though anonymous + claim is exactly the path that would have worked.
+   */
   private authHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {};
-    if (this.peerId) headers[ILP_PEER_ID_HEADER] = this.peerId;
-    if (this.authToken) headers['Authorization'] = `Bearer ${this.authToken}`;
-    return headers;
+    if (!this.peerId || !this.authToken) return {};
+    return {
+      [ILP_PEER_ID_HEADER]: this.peerId,
+      Authorization: `Bearer ${this.authToken}`,
+    };
   }
 
   /**

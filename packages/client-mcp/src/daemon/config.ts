@@ -71,6 +71,22 @@ export interface DaemonConfigFile {
    */
   proxyUrl?: string;
   /**
+   * Send paid writes over the BTP session rather than the proxy's `POST /ilp`.
+   *
+   * Defaults to TRUE whenever a `btpUrl` is configured (issue #565). The
+   * daemon opens that BTP socket regardless — every apex needs it for
+   * server-initiated packets — and the live fleet's connectors answer a paid
+   * write over HTTP with `402 requiredTransport: "btp"`, so the HTTP-first
+   * default only ever bought an extra round trip before #563's retry moved the
+   * same write onto BTP anyway. Riding BTP directly also gives strictly-ordered
+   * claim dispatch, which matters because claims are nonce-ordered.
+   * `BtpPaidWriteTransport` still falls back to the HTTP transport when the BTP
+   * session's reconnect budget is exhausted, so this is not a hard dependency
+   * on the socket. Set `false` to force the pre-#565 HTTP-first precedence.
+   * Env override: `TOON_CLIENT_PREFER_BTP` (`true`/`false`).
+   */
+  preferBtpForPaidWrites?: boolean;
+  /**
    * Devnet faucet base URL (e.g. `https://faucet.devnet.toonprotocol.dev`),
    * carried through to the ToonClient config for tooling/e2e funding. Env
    * override: `TOON_CLIENT_FAUCET_URL`.
@@ -349,6 +365,13 @@ export function resolveMnemonic(file: DaemonConfigFile): string {
  *   TOON_CLIENT_RELAY_URL, TOON_CLIENT_HTTP_PORT, TOON_CLIENT_NETWORK,
  *   TOON_CLIENT_DESTINATION.
  */
+/** Parse a `true`/`false` env value (anything else — including '' — is undefined). */
+function parseBoolEnv(value: string | undefined): boolean | undefined {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
+}
+
 /** Parse a comma-separated env value into a trimmed, non-empty list (or undefined). */
 function parseCsvEnv(value: string | undefined): string[] | undefined {
   if (!value) return undefined;
@@ -566,6 +589,17 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     toonEncoder: encodeEventToToon,
     toonDecoder: decodeEventFromToon,
     ...(btpUrl ? { btpUrl, btpAuthToken: '' } : {}),
+    // BTP-first for paid writes whenever there IS a socket (issue #565). See
+    // `DaemonConfigFile.preferBtpForPaidWrites` for why the HTTP-first library
+    // default is wrong for this host specifically.
+    ...(btpUrl
+      ? {
+          preferBtpForPaidWrites:
+            parseBoolEnv(process.env['TOON_CLIENT_PREFER_BTP']) ??
+            file.preferBtpForPaidWrites ??
+            true,
+        }
+      : {}),
     destinationAddress: destination,
     // Free reads still route through our own RelaySubscription, not this.
     // ToonClient.start() separately uses `config.relayUrl` to feed its
