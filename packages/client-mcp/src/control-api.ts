@@ -413,8 +413,28 @@ export interface SwapRequest {
    * sender-chosen fulfillment contract (connector#309) — the deployed
    * claim-issuing mill does NOT, so this is opt-in; the default (unset)
    * keeps today's legacy zero-condition packets.
+   *
+   * toon-client#573: a compliant maker rejects a sender-chosen condition on
+   * the legacy packet shape (`F99 "sender-chosen execution conditions are
+   * not supported on the legacy swap path"`) — only its ROLLING protocol
+   * path (spec §3) accepts one. Setting `senderConditions` therefore now
+   * REQUIRES `streamNonce` too: the daemon drives every packet through the
+   * rolling wire shape (mint `C_i`, leg-A fill payload, leg-B advance
+   * verify-before-reveal) instead of the legacy gift-wrap. Setting
+   * `senderConditions` without `streamNonce` is a validation error — sending
+   * a conditioned legacy packet is a known, unconditional maker-side F99.
    */
   senderConditions?: boolean;
+  /**
+   * Rolling-swap session id (toon-client#573, spec §2.1/§2.2): 16 bytes,
+   * lowercase hex. There is no RFQ (kind:20033/20034) session-negotiation
+   * transport yet — this streamNonce MUST already be registered with the
+   * maker out of band (`SwapNodeInstance.registerRollingSession` on the
+   * maker side) before the swap is issued, or every fill rejects with an
+   * unknown-session error. Required (and only meaningful) alongside
+   * `senderConditions: true`.
+   */
+  streamNonce?: string;
   /**
    * Hard floor on the per-packet exchange rate (sdk ≥2.1.0, rolling-swap
    * toon-meta#145 spec §5). Decimal string in `SwapPair.rate` format (target

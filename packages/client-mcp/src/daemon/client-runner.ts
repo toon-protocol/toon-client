@@ -45,10 +45,11 @@ import {
   InMemoryReceivedClaimStore,
   JsonFileReceivedClaimStore,
   InMemoryPreimageRetentionStore,
+  isValidStreamNonce,
+  encodeRollingFillPayload,
   type FaucetChain,
   type ReceivedClaimEntry,
   type ReceivedClaimStore,
-  type PreimageRetentionStore,
   type RevealFn,
 } from '@toon-protocol/client';
 import {
@@ -125,6 +126,7 @@ import type {
   SwapPacketOutcome,
   SwapResponse,
   SwapClaim,
+  SwapRejection,
   ListSwapClaimsResponse,
   ReceivedClaimInfo,
   SettleSwapClaimsRequest,
@@ -160,6 +162,7 @@ import {
 import { discoverApex } from './apex-discovery.js';
 import type { OperatorNotice } from './notice.js';
 import type { PublishEventResult } from '@toon-protocol/client';
+import { RollingSwapSessionRegistry } from './rolling-swap-sessions.js';
 
 /** The subset of `ToonClient` the runner depends on. */
 export interface ToonClientLike {
@@ -417,6 +420,14 @@ export class ClientRunner {
   private readonly createRepoReader: (repoPath: string) => GitRepoReader;
 
   /**
+   * Rolling-swap leg-B inbound router (toon-client#573) — installed as every
+   * apex client's `jobHandler` in the constructor (see `this.config`'s
+   * assignment below), so a maker→sender leg-B PREPARE reaches whichever
+   * `swap()` call currently has a matching `streamNonce` registered.
+   */
+  private readonly rollingSessions = new RollingSwapSessionRegistry();
+
+  /**
    * Identity-level chain-read client. Reading your OWN on-chain wallet balance is
    * a pure (wallet keys + chain RPC) operation that has nothing to do with the
    * ILP/payment peer, so it lives at the daemon level rather than inside an apex.
@@ -478,7 +489,22 @@ export class ClientRunner {
   private started = false;
 
   constructor(deps: ClientRunnerDeps) {
-    this.config = deps.config;
+    // Install the rolling-swap leg-B router as every apex's `jobHandler`
+    // (toon-client#573) — `ToonClientConfig.jobHandler` is fixed at client
+    // construction (toon-client#494), so this must happen before
+    // `this.createClient` is ever called below. `deriveApexClientConfig`
+    // spreads `this.config.toonClientConfig`, so every apex (default, store,
+    // dynamically added, replayed) inherits it from this one assignment. A
+    // caller-supplied `jobHandler` (none exist today) always wins.
+    this.config = {
+      ...deps.config,
+      toonClientConfig: {
+        ...deps.config.toonClientConfig,
+        jobHandler:
+          deps.config.toonClientConfig.jobHandler ??
+          this.rollingSessions.jobHandler,
+      },
+    };
     this.createClient = deps.createClient;
     this.log = deps.logger ?? ((): void => undefined);
     if (deps.targetsPath !== undefined) this.targetsPath = deps.targetsPath;
@@ -1826,13 +1852,12 @@ export class ClientRunner {
    * here (accepted claims with no `swapSignerAddress`) and surface a loud
    * `warning` on the response at swap time (#349).
    *
-   * With `req.senderConditions` set, every swap packet is sent with a FRESH
-   * sender-minted execution condition (`C_i = sha256(P_i)`, one per packet —
-   * toon-client#350, rolling-swap spec §3 R1/R2) and the transport verifies
-   * each FULFILL's preimage; a mismatch counts the packet failed. This
-   * requires a maker/connector implementing the sender-chosen fulfillment
-   * contract (connector#309) — the deployed claim-issuing mill cannot satisfy
-   * it — so it is opt-in and the default stays the legacy zero condition.
+   * `req.senderConditions` (with `req.streamNonce`) routes the ENTIRE call to
+   * {@link swapRolling} instead of the body below — a compliant maker only
+   * accepts a sender-chosen execution condition on its rolling protocol path
+   * (toon-client#573; a legacy-shaped conditioned packet is an unconditional
+   * maker-side F99). This body is the LEGACY path: always a zero-condition
+   * gift-wrap packet, unaffected by either field.
    *
    * Sender-side rolling-swap defenses (#351, sdk ≥2.1.0, spec §5/§6):
    *
@@ -1859,6 +1884,42 @@ export class ClientRunner {
   async swap(req: SwapRequest): Promise<SwapResponse> {
     const apex = this.selectApex(req.btpUrl);
     this.assertApexReady(apex);
+    // toon-client#573: a sender-chosen condition on the legacy gift-wrap
+    // packet shape is a KNOWN, unconditional maker-side F99 (a compliant
+    // maker's rolling engine only accepts sender-chosen conditions on its
+    // rolling wire shape). `streamNonce` selects that shape; requiring it
+    // here turns a silent guaranteed-fail into an actionable error.
+    if (req.senderConditions) {
+      if (req.streamNonce === undefined) {
+        throw new InvalidPayloadError(
+          '`senderConditions` requires `streamNonce`: a compliant maker only ' +
+            'accepts a sender-chosen execution condition on its ROLLING ' +
+            'protocol path (spec §3) — the legacy gift-wrap shape rejects ' +
+            'one F99 "sender-chosen execution conditions are not supported ' +
+            'on the legacy swap path". There is no RFQ session-negotiation ' +
+            'transport yet (toon-client#573), so `streamNonce` must already ' +
+            'be registered with the maker out of band before this call.'
+        );
+      }
+      // #351's rate floor / adaptive controller are NOT ported to the
+      // rolling path yet (a follow-up) — silently ignoring a caller's
+      // requested safety floor would be worse than not supporting it, so
+      // this fails loud rather than swallowing the params.
+      if (
+        req.minExchangeRate !== undefined ||
+        req.floorBps !== undefined ||
+        req.controller !== undefined
+      ) {
+        throw new InvalidPayloadError(
+          'the rolling-swap path (`senderConditions` + `streamNonce`, ' +
+            'toon-client#573) does not yet support `minExchangeRate` / ' +
+            '`floorBps` / `controller` — the rate floor and adaptive ' +
+            'controller have not been ported to it. Drop these params, or ' +
+            'omit `senderConditions`/`streamNonce` to use the legacy path.'
+        );
+      }
+      return this.swapRolling(req, apex);
+    }
     if (req.controller && req.packetCount !== undefined) {
       throw new InvalidPayloadError(
         '`controller` and `packetCount` are mutually exclusive: the adaptive ' +
@@ -1915,14 +1976,8 @@ export class ClientRunner {
     };
 
     const senderSecretKey = generateSecretKey();
-    // Session-scoped preimage retention (#360): populated only on the
-    // sender-chosen path, consumed by the leg-B reveal in `ingestAndReveal`.
-    const preimages = new InMemoryPreimageRetentionStore();
-    const swapClient = req.senderConditions
-      ? this.withSenderConditions(apex.client, preimages)
-      : apex.client;
     const result = await streamSwap({
-      client: swapClient as unknown as Parameters<
+      client: apex.client as unknown as Parameters<
         typeof streamSwap
       >[0]['client'],
       swapPubkey: req.swapPubkey,
@@ -1942,25 +1997,21 @@ export class ClientRunner {
     });
     const firstReject = result.rejections[0];
 
-    // #352/#360: receipt-time verification + durable ingestion composed
-    // ATOMICALLY with the leg-B reveal. Every FULFILLed claim with settlement
-    // metadata is verified (signature against the maker's advertised/pinned
-    // signer, recipient, chain, nonce/cumulative monotonicity vs the persisted
-    // watermark) and, only if it passes, persisted as the channel's
-    // highest-nonce watermark; the sender then reveals the retained preimage
-    // `P_i` to commit leg A. If the reveal is withheld or fails, the watermark
-    // advance is ROLLED BACK so it tracks only revealed packets (engine R8: the
-    // maker reuses the rolled-back nonce for the next fill, which must not be
-    // falsely rejected as non-monotonic). A claim that fails verification is
-    // NEVER revealed and NEVER counted. Claims MISSING settlement metadata take
-    // the legacy #349 path (warning, not persisted) unchanged.
+    // #352: receipt-time verification + durable ingestion. Every FULFILLed
+    // claim with settlement metadata is verified (signature against the
+    // maker's advertised/pinned signer, recipient, chain, nonce/cumulative
+    // monotonicity vs the persisted watermark) and, only if it passes,
+    // persisted as the channel's highest-nonce watermark. Claims MISSING
+    // settlement metadata take the legacy #349 path (warning, not
+    // persisted) unchanged.
     //
-    // In the deployed single-round-trip model the FULFILL already resolved
-    // leg A inline at `sendSwapPacket` time (the transport verified `P_i`), so
-    // the reveal here commits every verified claim — this wires the atomic seam
-    // and the retained preimages without withholding. The withhold/rollback
-    // branch is exercised by a maker-driven leg-B (spec §3.2) and covered by
-    // `ingestAndReveal`'s unit tests.
+    // This is the LEGACY (zero-condition) path — leg A already resolved
+    // inline at `sendSwapPacket` time (the transport verified nothing, since
+    // no condition was sent), so `reveal` always commits: there is nothing
+    // left here to withhold. The REAL verify-before-reveal seam
+    // (`ingestAndReveal`'s withhold/rollback branch) is exercised on the
+    // rolling path (toon-client#573, {@link swapRolling}), where leg A is
+    // still pending when this decision is made.
     const expectedChain = req.pair.to.chain;
     const minaSignerClient = expectedChain.startsWith('mina')
       ? await loadMinaSignerClient()
@@ -1982,10 +2033,8 @@ export class ClientRunner {
       ...(verifyTokenNetworks ? { tokenNetworks: verifyTokenNetworks } : {}),
       store: this.receivedClaimStore,
       ...(minaSignerClient ? { minaSignerClient } : {}),
-      preimages,
       reveal,
     });
-    preimages.clear();
     const verifiedSet = new Set(ingest.revealed.map((v) => v.claim));
     const rejectionByClaim = new Map(
       ingest.rejected.map((r) => [r.claim, r] as const)
@@ -2098,6 +2147,223 @@ export class ClientRunner {
             claimsVerified: ingest.revealed.length,
             claimsRejected: ingest.rejected.length,
             valueReceived: ingest.valueRevealed.toString(),
+          }
+        : {}),
+    };
+  }
+
+  /**
+   * Drive a swap against a ROLLING-capable maker (toon-client#573, spec §3):
+   * each fill packet's leg A (sender→maker) and leg B (maker→sender) share
+   * ONE sender-minted execution condition `C_i = sha256(P_i)`, so the legs
+   * commit or fail together. Unlike the legacy path (a single round trip
+   * whose FULFILL already carries the settlement metadata), this bypasses
+   * the sdk's `streamSwap` entirely: leg A is sent directly via
+   * `sendSwapPacket` with a rolling-shaped `data` payload
+   * (`encodeRollingFillPayload`), and leg B arrives as a SEPARATE inbound
+   * PREPARE the daemon's `jobHandler` (`RollingSwapSessionRegistry`,
+   * installed once in the constructor) routes to THIS call's registered
+   * session by `streamNonce`.
+   *
+   * The atomicity property (spec R5/R8 — a withheld/failed leg-B
+   * verification leaves leg A unfulfilled too) is not extra logic here: the
+   * daemon only learns `P_i` (via `handleRollingAdvance`'s
+   * verify-before-reveal) when it FULFILLs leg B, and the maker's connector
+   * can only FULFILL leg A upstream once it has relayed that SAME `P_i` —
+   * so an unrevealed leg B is, by construction, an unfulfilled leg A. The
+   * per-packet `sendSwapPacket` await below simply reports whichever
+   * happened.
+   *
+   * No RFQ (kind:20033/20034) session-negotiation transport exists yet, so
+   * `req.streamNonce` must already be registered with the maker out of band
+   * — `swap()` validates its presence before calling this. Packetization is
+   * a static even split (adaptive controller / rate floor are NOT ported to
+   * this path yet — a follow-up, since neither is required to make the
+   * coupled unwind reachable).
+   */
+  private async swapRolling(
+    req: SwapRequest,
+    apex: ApexConnection
+  ): Promise<SwapResponse> {
+    const streamNonce = req.streamNonce;
+    if (streamNonce === undefined || !isValidStreamNonce(streamNonce)) {
+      throw new InvalidPayloadError(
+        '`streamNonce` must be exactly 16 bytes, lowercase hex (32 chars).'
+      );
+    }
+    const packetCount = req.packetCount ?? 1;
+    if (!Number.isInteger(packetCount) || packetCount < 1) {
+      throw new InvalidPayloadError('`packetCount` must be a positive integer.');
+    }
+    const totalAmount = BigInt(req.amount);
+    const expectedChain = req.pair.to.chain;
+    const minaSignerClient = expectedChain.startsWith('mina')
+      ? await loadMinaSignerClient()
+      : undefined;
+    const preimages = new InMemoryPreimageRetentionStore();
+
+    const session = this.rollingSessions.register(streamNonce, {
+      pair: req.pair,
+      expectedChain,
+      chainRecipient: req.chainRecipient,
+      ...(req.swapSignerAddress
+        ? { expectedSignerAddress: req.swapSignerAddress }
+        : {}),
+      ...(this.config.toonClientConfig.tokenNetworks
+        ? { tokenNetworks: this.config.toonClientConfig.tokenNetworks }
+        : {}),
+      store: this.receivedClaimStore,
+      ...(minaSignerClient ? { minaSignerClient } : {}),
+      preimages,
+    });
+
+    const claims: SwapClaim[] = [];
+    const rejections: SwapRejection[] = [];
+    let cumulativeSource = 0n;
+    let cumulativeTarget = 0n;
+    let firstReject: { code: string; message: string } | undefined;
+    const recordRejection = (
+      packetIndex: number,
+      sourceAmount: bigint,
+      code: string,
+      message: string
+    ): void => {
+      rejections.push({
+        packetIndex,
+        sourceAmount: sourceAmount.toString(),
+        code,
+        message,
+      });
+      firstReject ??= { code, message };
+    };
+
+    // Even split, remainder folded into the last packet — mirrors the legacy
+    // static-split default (no adaptive controller on this path yet).
+    const evenSplitAmount = totalAmount / BigInt(packetCount);
+    const lastPacketAmount =
+      totalAmount - evenSplitAmount * BigInt(packetCount - 1);
+
+    try {
+      for (let seq = 1; seq <= packetCount; seq++) {
+        const packetIndex = seq - 1;
+        const sourceAmount =
+          seq === packetCount ? lastPacketAmount : evenSplitAmount;
+
+        const { preimage, condition } = mintExecutionCondition();
+        preimages.retain({ packetIndex, preimage, condition, retainedAt: Date.now() });
+        const toonData = encodeRollingFillPayload({ streamNonce, seq });
+
+        let result: { accepted: boolean; code?: string; message?: string };
+        try {
+          result = await apex.client.sendSwapPacket({
+            destination: req.destination,
+            amount: sourceAmount,
+            toonData,
+            executionCondition: condition,
+            ...(req.packetExpiryMs !== undefined
+              ? { expiresAt: new Date(Date.now() + req.packetExpiryMs) }
+              : {}),
+          });
+        } catch (err) {
+          result = {
+            accepted: false,
+            code: 'T00',
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
+
+        if (!result.accepted) {
+          // A leg-B verification failure is the INTERESTING rejection (spec
+          // R5/R8) and is the more precise diagnosis, so it wins over the
+          // leg-A reject the maker sent back once it unwound.
+          const rejection = session.rejections.get(seq);
+          const code = rejection?.code ?? result.code ?? 'F99';
+          const message =
+            rejection?.message ?? result.message ?? 'rolling fill rejected';
+          recordRejection(packetIndex, sourceAmount, code, message);
+          this.log(
+            `[runner] swap: rolling packet seq ${seq} REJECTED — ${code}: ${message}`
+          );
+          continue;
+        }
+
+        const outcome = session.outcomes.get(seq);
+        if (!outcome) {
+          // Unreachable in practice (a FULFILLed leg A implies our own
+          // reveal ran), but fail loud rather than silently under-counting.
+          recordRejection(
+            packetIndex,
+            sourceAmount,
+            'F99',
+            'leg-A fulfilled with no recorded leg-B outcome'
+          );
+          continue;
+        }
+
+        cumulativeSource += sourceAmount;
+        cumulativeTarget += outcome.claim.targetAmount;
+        claims.push({
+          sourceAmount: sourceAmount.toString(),
+          targetAmount: outcome.claim.targetAmount.toString(),
+          claim: Buffer.from(outcome.claim.claimBytes).toString('base64'),
+          ...(outcome.claim.channelId ? { channelId: outcome.claim.channelId } : {}),
+          ...(outcome.advance.recipient
+            ? { recipient: outcome.advance.recipient }
+            : {}),
+          ...(outcome.claim.swapSignerAddress
+            ? { swapSignerAddress: outcome.claim.swapSignerAddress }
+            : {}),
+          ...(outcome.advance.claimId ? { claimId: outcome.advance.claimId } : {}),
+          ...(outcome.claim.nonce ? { nonce: outcome.claim.nonce } : {}),
+          ...(outcome.claim.cumulativeAmount
+            ? { cumulativeAmount: outcome.claim.cumulativeAmount }
+            : {}),
+          verified: true,
+        });
+        this.log(
+          `[runner] swap: rolling packet seq ${seq}: ${sourceAmount} → ` +
+            `${outcome.claim.targetAmount} (verified)`
+        );
+      }
+    } finally {
+      this.rollingSessions.unregister(streamNonce);
+      preimages.clear();
+    }
+
+    const realizedRate = computeRealizedRate(
+      cumulativeSource,
+      cumulativeTarget,
+      req.pair
+    );
+    const warnings: string[] = [];
+    if (rejections.length > 0) {
+      warnings.push(
+        `${rejections.length} packet(s) failed on the rolling path (first: ` +
+          `${firstReject?.code} — ${firstReject?.message}). Per spec R5/R8 a ` +
+          'withheld/failed leg-B verification never reveals leg A — no ' +
+          'collectable claim advance for that packet.'
+      );
+    }
+    const hadIngestibleClaims = claims.length + rejections.length > 0;
+
+    return {
+      accepted: claims.length > 0,
+      packetsAccepted: claims.length,
+      claims,
+      cumulativeSource: cumulativeSource.toString(),
+      cumulativeTarget: cumulativeTarget.toString(),
+      state: rejections.length > 0 ? 'failed' : 'completed',
+      ...(rejections.length > 0 ? { rejections } : {}),
+      ...(realizedRate !== undefined ? { realizedRate } : {}),
+      ...(firstReject
+        ? { code: firstReject.code, message: firstReject.message }
+        : {}),
+      ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
+      ...(hadIngestibleClaims
+        ? {
+            claimsVerified: claims.length,
+            claimsRejected: rejections.length,
+            valueReceived: cumulativeTarget.toString(),
           }
         : {}),
     };
@@ -2313,45 +2579,6 @@ export class ClientRunner {
       }
     }
     return { results };
-  }
-
-  /**
-   * Wrap an apex client so each `sendSwapPacket` call carries a freshly
-   * minted sender-chosen execution condition (one preimage per packet, spec
-   * R1 — reuse would let an observer of packet *i* fulfill packet *i+1*).
-   * `streamSwap` calls `sendSwapPacket` once per packet, in strictly
-   * increasing `packetIndex` order, so minting here yields exactly one
-   * condition per packet and the local counter tracks `packetIndex`. The
-   * transports verify each FULFILL's preimage against the condition and fail
-   * the packet on mismatch.
-   *
-   * Preimage retention (toon-client#360, spec §3.2 leg-B reveal): every minted
-   * `P_i` is retained in `preimages`, keyed by `packetIndex` — the identifier
-   * shared with `AccumulatedClaim.packetIndex` — so the receive-side reveal
-   * step (`ingestAndReveal`) can correlate and consume the preimage for the
-   * claim it commits. Retention is session-scoped (one store per `swap()`
-   * call); a fresh stream mints fresh preimages.
-   */
-  private withSenderConditions(
-    client: ToonClientLike,
-    preimages: PreimageRetentionStore
-  ): ToonClientLike {
-    const wrapped: ToonClientLike = Object.create(client) as ToonClientLike;
-    let packetIndex = 0;
-    wrapped.sendSwapPacket = (params) => {
-      const { preimage, condition } = mintExecutionCondition();
-      preimages.retain({
-        packetIndex: packetIndex++,
-        preimage,
-        condition,
-        retainedAt: Date.now(),
-      });
-      return client.sendSwapPacket({
-        ...params,
-        executionCondition: condition,
-      });
-    };
-    return wrapped;
   }
 
   /**
