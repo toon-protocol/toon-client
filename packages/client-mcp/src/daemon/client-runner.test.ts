@@ -379,6 +379,105 @@ function fakeRelay(): RelaySubscription {
   });
 }
 
+/** A 16-byte lowercase-hex streamNonce for the rolling-swap tests (#573). */
+const STREAM_NONCE = '6e'.repeat(16);
+
+/**
+ * Build a signed rolling-swap leg-B advance payload (toon-client#573), as a
+ * compliant maker would send it: a `RollingAdvancePayload` JSON envelope
+ * carrying a REAL v2 EIP-712 signed EVM claim.
+ */
+async function rollingAdvanceBytes(opts: {
+  seq: number;
+  nonce: string;
+  cumulativeAmount: string;
+  sourceAmount: string;
+  targetAmount: string;
+  streamNonce?: string;
+  signer?: typeof SWAP_SIGNER_ACCOUNT;
+}): Promise<Uint8Array> {
+  const digest = evmClaimDigest(
+    { chainId: EVM_CHAIN_ID, verifyingContract: EVM_VERIFYING_CONTRACT },
+    {
+      channelId: EVM_CHANNEL,
+      cumulativeAmount: BigInt(opts.cumulativeAmount),
+      nonce: BigInt(opts.nonce),
+      recipient: EVM_RECIPIENT,
+    }
+  );
+  const sigHex = await (opts.signer ?? SWAP_SIGNER_ACCOUNT).sign({ hash: digest });
+  return new TextEncoder().encode(
+    JSON.stringify({
+      proto: 'rolling/1',
+      type: 'advance',
+      streamNonce: opts.streamNonce ?? STREAM_NONCE,
+      seq: opts.seq,
+      claim: Buffer.from(hexToBytes(sigHex)).toString('base64'),
+      channelId: EVM_CHANNEL,
+      nonce: opts.nonce,
+      cumulativeAmount: opts.cumulativeAmount,
+      recipient: EVM_RECIPIENT,
+      swapSignerAddress: SWAP_SIGNER,
+      rate: '1.0',
+      rateTimestamp: 1_700_000_000_000,
+      sourceAmount: opts.sourceAmount,
+      targetAmount: opts.targetAmount,
+    })
+  );
+}
+
+/**
+ * A fake ROLLING-capable maker (toon-client#573): its `sendSwapPacket`
+ * plays the maker's connector role — it reads the leg-A fill payload for
+ * `seq`, hands a leg-B advance to the SAME `jobHandler` the daemon installed
+ * on this client's config (captured via `createClient`), and reports the
+ * leg-A outcome exactly as the real protocol would: FULFILLed iff the
+ * daemon's handler revealed a matching preimage.
+ */
+class FakeRollingMakerClient extends FakeClient {
+  /** Captured from `ToonClientConfig.jobHandler` at `createClient(cfg)` time. */
+  jobHandler?: (job: {
+    amount: bigint;
+    destination: string;
+    executionCondition: Uint8Array;
+    expiresAt: Date;
+    data: Uint8Array;
+  }) => Promise<{ fulfillment: Uint8Array; data?: Uint8Array }>;
+  /** Per-seq advance builder; tests control validity. Defaults to "no advance". */
+  buildAdvance: (seq: number, streamNonce: string) => Promise<Uint8Array> =
+    async () => new Uint8Array();
+
+  override async sendSwapPacket(params: {
+    destination: string;
+    amount: bigint;
+    toonData: Uint8Array;
+    executionCondition?: Uint8Array;
+    expiresAt?: Date;
+  }): Promise<{ accepted: boolean; code?: string; message?: string }> {
+    const fill = JSON.parse(
+      new TextDecoder().decode(params.toonData)
+    ) as { streamNonce: string; seq: number };
+    if (!this.jobHandler) throw new Error('no jobHandler captured');
+    const data = await this.buildAdvance(fill.seq, fill.streamNonce);
+    try {
+      await this.jobHandler({
+        amount: params.amount,
+        destination: params.destination,
+        executionCondition: params.executionCondition ?? new Uint8Array(32),
+        expiresAt: params.expiresAt ?? new Date(Date.now() + 30_000),
+        data,
+      });
+      return { accepted: true };
+    } catch (err) {
+      return {
+        accepted: false,
+        code: 'F99',
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+}
+
 describe('ClientRunner', () => {
   let client: FakeClient;
   let runner: ClientRunner;
@@ -1214,54 +1313,82 @@ describe('ClientRunner', () => {
     expect(res.warning).toMatch(/millSignerAddress/);
   });
 
-  it('swap with senderConditions mints a FRESH non-zero condition per packet (#350)', async () => {
+  it('swap with senderConditions but no streamNonce throws — a compliant maker F99s that combination (#573)', async () => {
     await runner.bootstrap();
+    vi.mocked(streamSwap).mockClear();
     const pair = {
       from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
       to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
       rate: '1.0',
     };
-    const sendSpy = vi.spyOn(client, 'sendSwapPacket');
+    await expect(
+      runner.swap({
+        destination: 'g.proxy.swap',
+        amount: '1000',
+        swapPubkey: 'cd'.repeat(32),
+        pair,
+        chainRecipient: 'SoLrecipient',
+        senderConditions: true,
+      })
+    ).rejects.toThrow(InvalidPayloadError);
+    // streamSwap (the legacy path) must never even be tried.
+    expect(streamSwap).not.toHaveBeenCalled();
+  });
 
-    // Drive the wrapped client like the real sender: one sendSwapPacket call
-    // per packet, then return a minimal completed result.
-    vi.mocked(streamSwap).mockImplementation(async (params) => {
-      const swapClient = params.client as unknown as {
-        sendSwapPacket(p: {
-          destination: string;
-          amount: bigint;
-          toonData: Uint8Array;
-        }): Promise<unknown>;
-      };
-      for (let i = 0; i < 2; i++) {
-        await swapClient.sendSwapPacket({
-          destination: params.swapIlpAddress,
-          amount: 500n,
-          toonData: new Uint8Array([i]),
-        });
-      }
-      return {
-        state: 'completed',
-        claims: [],
-        rejections: [],
-        errors: [],
-        abortReason: 'complete',
-        cumulativeSource: 1000n,
-        cumulativeTarget: 999n,
-        packetsSent: 2,
-        packetsScheduled: 2,
-      } as unknown as Awaited<ReturnType<typeof streamSwap>>;
+  it('swap with senderConditions + streamNonce drives the ROLLING path: a FRESH non-zero condition per packet, verified via the maker leg-B advance (#573)', async () => {
+    const maker = new FakeRollingMakerClient();
+    let capturedJobHandler:
+      | typeof maker.jobHandler
+      | undefined;
+    const rollingRunner = new ClientRunner({
+      config: makeConfig({
+        apex: {
+          destination: 'g.proxy',
+          peerId: 'proxy',
+          chain: 'evm',
+          chainKey: 'evm:base:84532',
+          chainId: 84532,
+          settlementAddress: '0xapex',
+          tokenAddress: '0xusdc',
+          tokenNetwork: '0xtn',
+        },
+      }),
+      createClient: (cfg) => {
+        maker.jobHandler = cfg.jobHandler as typeof maker.jobHandler;
+        capturedJobHandler = maker.jobHandler;
+        return maker;
+      },
+      createRelay: fakeRelay,
     });
+    await rollingRunner.bootstrap();
+    expect(capturedJobHandler).toBeDefined();
 
-    await runner.swap({
+    maker.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: String(seq),
+        cumulativeAmount: String(500 * seq),
+        sourceAmount: '500',
+        targetAmount: '500',
+      });
+    const sendSpy = vi.spyOn(maker, 'sendSwapPacket');
+
+    const res = await rollingRunner.swap({
       destination: 'g.proxy.swap',
       amount: '1000',
       swapPubkey: 'cd'.repeat(32),
-      pair,
-      chainRecipient: 'SoLrecipient',
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
       packetCount: 2,
       senderConditions: true,
+      streamNonce: STREAM_NONCE,
     });
+
+    expect(res.accepted).toBe(true);
+    expect(res.packetsAccepted).toBe(2);
+    expect(res.claims).toHaveLength(2);
+    expect(res.claims.every((c) => c.verified)).toBe(true);
+    expect(res.cumulativeSource).toBe('1000');
 
     // The underlying client received one FRESH sender-chosen condition per packet.
     expect(sendSpy).toHaveBeenCalledTimes(2);
@@ -1276,6 +1403,57 @@ describe('ClientRunner', () => {
       expect(condition!.some((b) => b !== 0)).toBe(true);
     }
     expect(conditions[0]).not.toEqual(conditions[1]);
+  });
+
+  it("the CRUX (#573 AC): a withheld/failed leg-B verification never reveals leg A — no collectable claim for that packet", async () => {
+    const maker = new FakeRollingMakerClient();
+    const rollingRunner = new ClientRunner({
+      config: makeConfig(),
+      createClient: (cfg) => {
+        maker.jobHandler = cfg.jobHandler as typeof maker.jobHandler;
+        return maker;
+      },
+      createRelay: fakeRelay,
+    });
+    await rollingRunner.bootstrap();
+
+    // seq 1 is signed by the WRONG key — the daemon's leg-B verification
+    // must fail it, so no preimage is ever revealed and the maker's connector
+    // has nothing valid to relay upstream on leg A (spec R5/R8's coupled
+    // unwind — this is the property #573 makes reachable, not extra logic).
+    const OTHER_SIGNER = privateKeyToAccount(
+      '0x8975a7907e8f3b5db9d6ae3d44d16adaa3db1401b7a9fdfd433278077178bdc8'
+    );
+    maker.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: String(seq),
+        cumulativeAmount: String(500 * seq),
+        sourceAmount: '500',
+        targetAmount: '500',
+        ...(seq === 1 ? { signer: OTHER_SIGNER } : {}),
+      });
+
+    const res = await rollingRunner.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      packetCount: 2,
+      senderConditions: true,
+      streamNonce: STREAM_NONCE,
+    });
+
+    // Packet 1 (bad signature): no collectable claim — leg A never revealed.
+    expect(res.rejections).toHaveLength(1);
+    expect(res.rejections?.[0]?.packetIndex).toBe(0);
+    // Packet 2 (valid, maker reuses nonce 2 as its own watermark advances):
+    // still collected — one packet's withheld leg B doesn't sink the stream.
+    expect(res.claims).toHaveLength(1);
+    expect(res.claims[0]?.nonce).toBe('2');
+    expect(res.cumulativeSource).toBe('500');
+    expect(res.state).toBe('failed');
   });
 
   it('swap without senderConditions keeps the legacy path: no condition injected', async () => {
@@ -1719,39 +1897,24 @@ describe('ClientRunner', () => {
     expect(res.cumulativeTarget).toBe('1990');
   });
 
-  it('swap composes #354 senderConditions with the #351 defenses (floor + controller + conditions)', async () => {
+  it('swap rejects composing senderConditions+streamNonce with the #351 defenses — not yet ported to the rolling path (#573)', async () => {
     await runner.bootstrap();
     vi.mocked(streamSwap).mockReset();
     const sendSpy = vi.spyOn(client, 'sendSwapPacket');
-    vi.mocked(streamSwap).mockImplementation(async (params) => {
-      // Both wired at once: the defense params reached the sdk …
-      expect(params.minExchangeRate).toBe('3.98');
-      expect(params.controller).toBeDefined();
-      expect(params.packetCount).toBeUndefined();
-      // … and the client still mints a fresh sender-chosen condition.
-      await params.client.sendSwapPacket({
-        destination: params.swapIlpAddress,
-        amount: 500n,
-        toonData: new Uint8Array([0]),
-      });
-      return defenseSwapResult();
-    });
 
-    await runner.swap({
-      ...DEFENSE_SWAP,
-      senderConditions: true,
-      minExchangeRate: '3.98',
-      controller: { advertisedSpread: 0.004 },
-    });
+    await expect(
+      runner.swap({
+        ...DEFENSE_SWAP,
+        senderConditions: true,
+        streamNonce: STREAM_NONCE,
+        minExchangeRate: '3.98',
+        controller: { advertisedSpread: 0.004 },
+      })
+    ).rejects.toThrow(InvalidPayloadError);
 
-    expect(sendSpy).toHaveBeenCalledTimes(1);
-    const condition = (
-      sendSpy.mock.calls[0]![0] as unknown as {
-        executionCondition?: Uint8Array;
-      }
-    ).executionCondition;
-    expect(condition).toBeInstanceOf(Uint8Array);
-    expect(condition!.some((b) => b !== 0)).toBe(true);
+    // Neither path was ever driven — the guard fires before either fires.
+    expect(streamSwap).not.toHaveBeenCalled();
+    expect(sendSpy).not.toHaveBeenCalled();
   });
 
   // ── Receive-side claim ingestion/verification/settlement (#352) ────────────

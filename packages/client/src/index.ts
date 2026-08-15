@@ -213,6 +213,17 @@ export {
   type SwapSettlementBuild,
   type SubmitEvmSettlementParams,
   type SubmitEvmSettlementResult,
+  ROLLING_PROTOCOL,
+  isValidStreamNonce,
+  generateStreamNonce,
+  encodeRollingFillPayload,
+  parseRollingAdvancePayload,
+  handleRollingAdvance,
+  RollingAdvanceRejectedError,
+  type RollingFillPayload,
+  type RollingAdvancePayload,
+  type RollingAdvanceContext,
+  type RollingAdvanceOutcome,
 } from './swap/index.js';
 
 // Utilities

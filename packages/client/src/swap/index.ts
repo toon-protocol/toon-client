@@ -49,6 +49,21 @@ export {
   type SubmitEvmSettlementResult,
 } from './settle-received-claims.js';
 export {
+  ROLLING_PROTOCOL,
+  isValidStreamNonce,
+  generateStreamNonce,
+  encodeRollingFillPayload,
+  parseRollingAdvancePayload,
+  type RollingFillPayload,
+  type RollingAdvancePayload,
+} from './rolling-protocol.js';
+export {
+  handleRollingAdvance,
+  RollingAdvanceRejectedError,
+  type RollingAdvanceContext,
+  type RollingAdvanceOutcome,
+} from './rolling-reveal.js';
+export {
   buildMinaCoSignedClaim,
   submitMinaSettlement,
   createO1jsMinaClaimSubmitter,
