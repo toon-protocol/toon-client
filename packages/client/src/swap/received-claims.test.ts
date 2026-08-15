@@ -166,14 +166,20 @@ describe('ingestReceivedClaims (#352)', () => {
   it('does not pin verifyingContract on a non-EVM (Solana) watermark', () => {
     const res = ingestReceivedClaims({
       claims: [
-        solanaClaim({ nonce: '1', cumulativeAmount: '500', targetAmount: 500n }),
+        solanaClaim({
+          nonce: '1',
+          cumulativeAmount: '500',
+          targetAmount: 500n,
+        }),
       ],
       expectedChain: SOL_CHAIN,
       chainRecipient: SOL_RECIPIENT,
       store,
     });
     expect(res.verified).toHaveLength(1);
-    expect(store.load(SOL_CHAIN, SOL_CHANNEL)!.verifyingContract).toBeUndefined();
+    expect(
+      store.load(SOL_CHAIN, SOL_CHANNEL)!.verifyingContract
+    ).toBeUndefined();
   });
 
   it('verifies a valid Solana Ed25519 claim', () => {

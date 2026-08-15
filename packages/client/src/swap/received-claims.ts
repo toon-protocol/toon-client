@@ -99,16 +99,19 @@ export interface IngestReceivedClaimsParams {
   /**
    * Per-chain settlement contract addresses (the deployed `RollingSwapChannel`
    * / `verifyingContract`), keyed by the FULL chain key (e.g. `evm:base:8453`).
-   * Matches the daemon config's `tokenNetworks` map and what
-   * `buildSwapSettlements` already threads on the submit side.
+   * Shaped like the daemon config's `tokenNetworks` map, but sourced from the
+   * MAKER's own kind:10032 announce with that config layered on top as an
+   * operator override (`ClientRunner.swapVerificationTokenNetworks`, #572) —
+   * a claim can only be verified against the deployment it was signed for.
    *
    * REQUIRED for EVM claims under the v2 EIP-712 digest (connector#324 finding
    * #1): the claim signature is domain-separated over `(chainId,
    * verifyingContract)`, so an EVM claim whose chain key lacks a `tokenNetworks`
    * entry (or a numeric chain id) is rejected `MISSING_CHAIN_CONFIG` — it cannot
-   * be verified fail-closed without the domain. Supplied by the connector/swap
-   * session context (the RollingSwapChannel the client settles against). Unused
-   * for Solana/Mina claims, which fold their domain into the message itself.
+   * be verified fail-closed without the domain. The entry actually used is
+   * PINNED onto the persisted watermark (`ReceivedClaimEntry.verifyingContract`,
+   * #572) so settlement re-verifies against the same domain. Unused for
+   * Solana/Mina claims, which fold their domain into the message itself.
    */
   tokenNetworks?: Record<string, string>;
   /** Durable watermark store; verified claims are persisted here. */

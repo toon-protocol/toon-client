@@ -56,6 +56,10 @@ export interface BuildSwapSettlementsParams {
    * Per-chain settlement contract: EVM TokenNetwork address / Solana
    * programId, keyed by the FULL chain key (e.g. `evm:base:8453`). Matches the
    * daemon config's `tokenNetworks` map.
+   *
+   * FALLBACK only, for EVM entries persisted before #572: an entry that
+   * carries its own `verifyingContract` (pinned at receive-verify time)
+   * settles against THAT, never this map — see {@link buildSwapSettlements}.
    */
   tokenNetworks?: Record<string, string>;
   /** Pre-loaded `mina-signer` client for `mina:*` re-verification. */
@@ -67,8 +71,9 @@ export interface BuildSwapSettlementsParams {
    * against the **v2** EIP-712 domain-separated balance-proof digest, the SAME
    * digest the receive-side used (`ingestReceivedClaims`). Reconstructing that
    * EIP-712 domain needs `chainId` + `verifyingContract`, which this builder
-   * threads into the sdk signer config from `tokenNetworks` (for EVM claims) —
-   * so a claim verified at receipt re-verifies correctly here.
+   * threads into the sdk signer config from the entry's own pinned
+   * `verifyingContract` (else `tokenNetworks`) — so a claim verified at
+   * receipt re-verifies correctly here.
    *
    * Set `false` only to skip the settle-time re-verify entirely (e.g. when the
    * receive-side verify is treated as the sole authoritative gate); the sdk is
@@ -122,12 +127,11 @@ export function buildSwapSettlements(
     const base = { chain: entry.chain, channelId: entry.channelId };
     const signer: SwapSignerConfig = { address: entry.swapSignerAddress };
     // The contract this claim was ACTUALLY verified against (issue #572
-    // pin-on-first-use) takes priority over the daemon's `tokenNetworks`
-    // config — a config entry is a fallback for entries persisted before
-    // this fix, not an override of a claim's own pinned domain, so two
-    // makers with different RollingSwapChannel deployments each settle
-    // against the contract they were verified with.
-    const contract = entry.verifyingContract ?? params.tokenNetworks?.[entry.chain];
+    // pin-on-first-use) wins over the config map, so two makers with
+    // different RollingSwapChannel deployments each settle against the
+    // contract they were verified with.
+    const contract =
+      entry.verifyingContract ?? params.tokenNetworks?.[entry.chain];
     if (entry.chain.startsWith('evm')) {
       const chainId = parseEvmChainId(entry.chain);
       if (!contract || chainId === undefined) {

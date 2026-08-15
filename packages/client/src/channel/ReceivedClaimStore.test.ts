@@ -63,7 +63,9 @@ describe('JsonFileReceivedClaimStore', () => {
 
   it('omits verifyingContract when unpinned (pre-#572 entries / non-EVM chains)', () => {
     store.save(entry());
-    expect(store.load(entry().chain, entry().channelId)!.verifyingContract).toBeUndefined();
+    expect(
+      store.load(entry().chain, entry().channelId)!.verifyingContract
+    ).toBeUndefined();
   });
 
   it('creates the parent directory on first save', () => {
@@ -84,7 +86,9 @@ describe('JsonFileReceivedClaimStore', () => {
     store.save(entry({ nonce: 1n, cumulativeAmount: 100n }));
     store.save(entry({ nonce: 2n, cumulativeAmount: 200n }));
     expect(store.list()).toHaveLength(1);
-    expect(store.load(entry().chain, entry().channelId)!.cumulativeAmount).toBe(200n);
+    expect(store.load(entry().chain, entry().channelId)!.cumulativeAmount).toBe(
+      200n
+    );
   });
 
   it('survives a restart: a FRESH instance reads what the first wrote', () => {

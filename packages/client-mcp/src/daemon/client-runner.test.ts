@@ -1194,7 +1194,9 @@ describe('ClientRunner', () => {
     });
     vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
 
-    const res = await noConfig.swap(swapReq({ swapSignerAddress: SWAP_SIGNER }));
+    const res = await noConfig.swap(
+      swapReq({ swapSignerAddress: SWAP_SIGNER })
+    );
 
     expect(res.accepted).toBe(true);
     expect(res.claimsVerified).toBe(1);
