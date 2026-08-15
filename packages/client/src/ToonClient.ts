@@ -3018,4 +3018,22 @@ export class ToonClient {
 
     return this.state.discoveryTracker.getDiscoveredPeers();
   }
+
+  /**
+   * The `IlpPeerInfo` a discovered peer (a kind:10032 announce author)
+   * advertised, keyed by its Nostr pubkey — regardless of peering status
+   * (issue #572). A swap MAKER is a payment destination reached by pubkey,
+   * not necessarily a connector peer, so this reads `getAllDiscoveredPeers`
+   * (peered or not) rather than `getDiscoveredPeers` (unpeered only).
+   *
+   * @returns `undefined` when the client isn't started, has no tracker, or
+   *   has not (yet) seen an announce from `pubkey`.
+   */
+  getDiscoveredPeerInfo(pubkey: string): IlpPeerInfo | undefined {
+    const tracker: Partial<DiscoveryTracker> | undefined =
+      this.state?.discoveryTracker;
+    if (typeof tracker?.getAllDiscoveredPeers !== 'function') return undefined;
+    return tracker.getAllDiscoveredPeers().find((p) => p.pubkey === pubkey)
+      ?.peerInfo;
+  }
 }

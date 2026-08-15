@@ -56,6 +56,10 @@ export interface BuildSwapSettlementsParams {
    * Per-chain settlement contract: EVM TokenNetwork address / Solana
    * programId, keyed by the FULL chain key (e.g. `evm:base:8453`). Matches the
    * daemon config's `tokenNetworks` map.
+   *
+   * FALLBACK only, for EVM entries persisted before #572: an entry that
+   * carries its own `verifyingContract` (pinned at receive-verify time)
+   * settles against THAT, never this map — see {@link buildSwapSettlements}.
    */
   tokenNetworks?: Record<string, string>;
   /** Pre-loaded `mina-signer` client for `mina:*` re-verification. */
@@ -67,8 +71,9 @@ export interface BuildSwapSettlementsParams {
    * against the **v2** EIP-712 domain-separated balance-proof digest, the SAME
    * digest the receive-side used (`ingestReceivedClaims`). Reconstructing that
    * EIP-712 domain needs `chainId` + `verifyingContract`, which this builder
-   * threads into the sdk signer config from `tokenNetworks` (for EVM claims) —
-   * so a claim verified at receipt re-verifies correctly here.
+   * threads into the sdk signer config from the entry's own pinned
+   * `verifyingContract` (else `tokenNetworks`) — so a claim verified at
+   * receipt re-verifies correctly here.
    *
    * Set `false` only to skip the settle-time re-verify entirely (e.g. when the
    * receive-side verify is treated as the sole authoritative gate); the sdk is
@@ -121,7 +126,12 @@ export function buildSwapSettlements(
   return params.entries.map((entry) => {
     const base = { chain: entry.chain, channelId: entry.channelId };
     const signer: SwapSignerConfig = { address: entry.swapSignerAddress };
-    const contract = params.tokenNetworks?.[entry.chain];
+    // The contract this claim was ACTUALLY verified against (issue #572
+    // pin-on-first-use) wins over the config map, so two makers with
+    // different RollingSwapChannel deployments each settle against the
+    // contract they were verified with.
+    const contract =
+      entry.verifyingContract ?? params.tokenNetworks?.[entry.chain];
     if (entry.chain.startsWith('evm')) {
       const chainId = parseEvmChainId(entry.chain);
       if (!contract || chainId === undefined) {
@@ -135,7 +145,9 @@ export function buildSwapSettlements(
           },
         };
       }
-      signer.contractAddress = contract;
+      // The sdk's settlement-tx input validation requires a lowercase 0x+40
+      // hex address; the receive-side verifier accepts either case (#572).
+      signer.contractAddress = contract.toLowerCase();
       signer.chainId = chainId;
     } else if (entry.chain.startsWith('solana')) {
       if (!contract) {

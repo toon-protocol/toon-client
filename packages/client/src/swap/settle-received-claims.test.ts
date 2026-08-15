@@ -145,6 +145,58 @@ describe('buildSwapSettlements (#352)', () => {
     expect(build!.error?.code).toBe('MINA_VERIFICATION_UNSUPPORTED');
   });
 
+  it('prefers the entry-pinned verifyingContract over the config tokenNetworks entry (#572)', async () => {
+    // A different maker's deployment than the daemon's default config —
+    // pinned at receive-verify time onto the entry itself.
+    const otherContract = '0x' + '33'.repeat(20);
+    const hash = balanceProofHashEvm(
+      hexToBytes(CHANNEL),
+      900n,
+      3n,
+      hexToBytes(RECIPIENT),
+      CHAIN_ID,
+      hexToBytes(otherContract)
+    );
+    const sig = await SIGNER.sign({
+      hash: `0x${Buffer.from(hash).toString('hex')}`,
+    });
+    const entry = await evmEntry({
+      claimBytes: hexToBytes(sig),
+      verifyingContract: otherContract,
+    });
+    // Config still names the OTHER (default) contract — must not be used.
+    const [build] = buildSwapSettlements({
+      entries: [entry],
+      tokenNetworks: { [CHAIN]: CONTRACT },
+    });
+    expect(build!.error).toBeUndefined();
+    const { to } = decodeEvmSettlementTx(build!.bundle!);
+    expect(to).toBe(otherContract);
+  });
+
+  it('normalizes a mixed-case pinned/config contract address to lowercase (#572)', async () => {
+    const mixedCase = '0x' + 'aB'.repeat(20);
+    const hash = balanceProofHashEvm(
+      hexToBytes(CHANNEL),
+      900n,
+      3n,
+      hexToBytes(RECIPIENT),
+      CHAIN_ID,
+      hexToBytes(mixedCase)
+    );
+    const sig = await SIGNER.sign({
+      hash: `0x${Buffer.from(hash).toString('hex')}`,
+    });
+    const entry = await evmEntry({ claimBytes: hexToBytes(sig) });
+    const [build] = buildSwapSettlements({
+      entries: [entry],
+      tokenNetworks: { [CHAIN]: mixedCase },
+    });
+    expect(build!.error).toBeUndefined();
+    const { to } = decodeEvmSettlementTx(build!.bundle!);
+    expect(to).toBe(mixedCase.toLowerCase());
+  });
+
   it('entryToAccumulatedClaim carries every settlement-context field', async () => {
     const entry = await evmEntry({ claimId: 'c-3' });
     const claim = entryToAccumulatedClaim(entry);
