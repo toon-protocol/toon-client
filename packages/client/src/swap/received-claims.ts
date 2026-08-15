@@ -243,9 +243,14 @@ export function ingestReceivedClaims(
     // cross-deployment replay. Solana/Mina fold their domain into the message
     // itself and stay on the sdk `verifyAccumulatedClaim` path.
     let sig: { valid: true } | { valid: false; reason: string };
+    // Pinned on the persisted entry when set (EVM only, issue #572): the
+    // exact `verifyingContract` this claim's domain was reconstructed
+    // against, so settlement re-verification uses the SAME domain rather
+    // than whatever a shared `tokenNetworks` config happens to hold later.
+    let verifyingContract: string | undefined;
     if (chain.startsWith('evm')) {
       const chainId = parseEvmChainId(chain);
-      const verifyingContract = params.tokenNetworks?.[chain];
+      verifyingContract = params.tokenNetworks?.[chain];
       if (chainId === undefined || !verifyingContract) {
         reject(
           claim,
@@ -357,6 +362,7 @@ export function ingestReceivedClaims(
       cumulativeAmount,
       recipient: claim.recipient,
       swapSignerAddress: expectedSigner,
+      ...(verifyingContract !== undefined ? { verifyingContract } : {}),
       claimBytes: claim.claimBytes,
       ...(claim.claimId !== undefined ? { claimId: claim.claimId } : {}),
       pair: claim.pair,

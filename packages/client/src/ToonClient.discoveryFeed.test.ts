@@ -126,6 +126,19 @@ describe('ToonClient.start — discovery tracker feed (toon-client#550)', () => 
 
     expect(subClose).toHaveBeenCalledTimes(1);
   });
+
+  it('getDiscoveredPeerInfo (#572) resolves a discovered peer by pubkey, unpeered or not', async () => {
+    const client = new ToonClient(baseConfig());
+    await client.start();
+    expect(client.getDiscoveredPeerInfo(ANNOUNCE.pubkey)).toBeUndefined();
+
+    relayEventHandler()(ANNOUNCE);
+
+    expect(client.getDiscoveredPeerInfo(ANNOUNCE.pubkey)?.ilpAddress).toBe(
+      'g.toon.ario'
+    );
+    expect(client.getDiscoveredPeerInfo('unknown-pubkey')).toBeUndefined();
+  });
 });
 
 /**

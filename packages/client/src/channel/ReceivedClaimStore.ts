@@ -25,6 +25,17 @@ export interface ReceivedClaimEntry {
   recipient: string;
   /** Swap peer's on-chain signer address the signature verified against. */
   swapSignerAddress: string;
+  /**
+   * EVM only: the `verifyingContract` (RollingSwapChannel / TokenNetwork
+   * address) the claim's v2 EIP-712 domain was reconstructed against at
+   * VERIFY time (issue #572 pin-on-first-use) — sourced from the maker's own
+   * kind:10032 announce, not necessarily the local daemon's `tokenNetworks`
+   * config. Settlement re-verification prefers this pinned value over the
+   * (possibly stale, or another maker's) config entry for the chain, so a
+   * daemon that has received claims from two makers with different
+   * deployments settles each against the contract it actually verified with.
+   */
+  verifyingContract?: string;
   /** The verified signed claim bytes (chain-specific encoding). */
   claimBytes: Uint8Array;
   /** Optional swap-side claim id. */
@@ -62,6 +73,7 @@ interface JsonEntry {
   cumulativeAmount: string;
   recipient: string;
   swapSignerAddress: string;
+  verifyingContract?: string;
   /** base64 */
   claimBytes: string;
   claimId?: string;
@@ -98,6 +110,9 @@ export class JsonFileReceivedClaimStore implements ReceivedClaimStore {
       cumulativeAmount: entry.cumulativeAmount.toString(),
       recipient: entry.recipient,
       swapSignerAddress: entry.swapSignerAddress,
+      ...(entry.verifyingContract !== undefined
+        ? { verifyingContract: entry.verifyingContract }
+        : {}),
       claimBytes: Buffer.from(entry.claimBytes).toString('base64'),
       ...(entry.claimId !== undefined ? { claimId: entry.claimId } : {}),
       pair: entry.pair,
@@ -176,6 +191,9 @@ function fromJson(entry: JsonEntry): ReceivedClaimEntry {
     cumulativeAmount: BigInt(entry.cumulativeAmount),
     recipient: entry.recipient,
     swapSignerAddress: entry.swapSignerAddress,
+    ...(entry.verifyingContract !== undefined
+      ? { verifyingContract: entry.verifyingContract }
+      : {}),
     claimBytes: new Uint8Array(Buffer.from(entry.claimBytes, 'base64')),
     ...(entry.claimId !== undefined ? { claimId: entry.claimId } : {}),
     pair: entry.pair,

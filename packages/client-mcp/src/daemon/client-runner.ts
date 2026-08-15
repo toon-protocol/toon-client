@@ -22,7 +22,11 @@ import { readFile, stat } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
 import { generateSecretKey } from 'nostr-tools/pure';
-import { decodeEventFromToon, GenesisPeerLoader } from '@toon-protocol/core';
+import {
+  decodeEventFromToon,
+  GenesisPeerLoader,
+  type IlpPeerInfo,
+} from '@toon-protocol/core';
 import {
   STATUS_APPLIED_KIND,
   STATUS_CLOSED_KIND,
@@ -166,6 +170,14 @@ export interface ToonClientLike {
   getSolanaAddress(): string | undefined;
   getMinaAddress(): string | undefined;
   getNetworkStatus(): { evm: string; solana: string; mina: string } | undefined;
+  /**
+   * The `IlpPeerInfo` a discovered kind:10032 announce author advertised, by
+   * Nostr pubkey (issue #572) — used to source a swap MAKER's own
+   * `tokenNetworks`/`settlementAddresses` for receive-side claim
+   * verification instead of trusting only the local daemon config. Optional
+   * so lightweight fakes need not implement it — the real `ToonClient` does.
+   */
+  getDiscoveredPeerInfo?(pubkey: string): IlpPeerInfo | undefined;
   publishEvent(
     event: NostrEvent,
     options?: {
@@ -1769,6 +1781,30 @@ export class ClientRunner {
   }
 
   /**
+   * The chain-key → verifying-contract map for receive-side swap-claim
+   * verification (issue #572). Base: the swap MAKER's own kind:10032
+   * announce (`getDiscoveredPeerInfo(swapPubkey)`), read best-effort — a
+   * maker the daemon has not (yet) discovered simply contributes nothing,
+   * same as an unstarted/fake client without the optional method. Override:
+   * the daemon's configured `tokenNetworks`, applied ON TOP so an operator
+   * can still force a specific mapping. Returns `undefined` (letting
+   * `ingestAndReveal` fall back to its own default) only when NEITHER source
+   * has anything — merging `{}` with `{}` would otherwise thread an empty
+   * object through where "unset" is expected.
+   */
+  private swapVerificationTokenNetworks(
+    apex: ApexConnection,
+    swapPubkey: string
+  ): Record<string, string> | undefined {
+    const announced = safe(
+      () => apex.client.getDiscoveredPeerInfo?.(swapPubkey)
+    )?.tokenNetworks;
+    const configured = this.config.toonClientConfig.tokenNetworks;
+    if (!announced && !configured) return undefined;
+    return { ...announced, ...configured };
+  }
+
+  /**
    * Swap source→target asset against a swap peer via the selected apex.
    *
    * sdk ≥2.0.0 (the `mill`→`swap` vocabulary rename, toon commit `af4cd24`):
@@ -1920,6 +1956,20 @@ export class ClientRunner {
     const minaSignerClient = expectedChain.startsWith('mina')
       ? await loadMinaSignerClient()
       : undefined;
+    // v2 EIP-712 receive-side verify (#365, corrected by #572): EVM claims
+    // are domain-separated over `(chainId, verifyingContract)`. The
+    // verifying-contract map comes from the swap MAKER's OWN kind:10032
+    // announce — advertised precisely so a client can reconstruct the
+    // domain (toon-meta#394 T2) — with the daemon's `tokenNetworks` config
+    // layered on top as an explicit operator override, never the sole
+    // source (#572: sourcing only from config broke on live devnet — a
+    // config that names the relay's own TokenNetwork rejects every maker
+    // claim SIGNER_MISMATCH, and one daemon cannot hold two different
+    // makers' deployments in a single map).
+    const verifyTokenNetworks = this.swapVerificationTokenNetworks(
+      apex,
+      req.swapPubkey
+    );
     const reveal: RevealFn = () => ({ decision: 'revealed' });
     const ingest = await ingestAndReveal({
       claims: result.claims,
@@ -1928,13 +1978,7 @@ export class ClientRunner {
       ...(req.swapSignerAddress
         ? { expectedSignerAddress: req.swapSignerAddress }
         : {}),
-      // v2 EIP-712 receive-side verify (#365): EVM claims are domain-separated
-      // over `(chainId, verifyingContract)`, so the receive path needs the same
-      // `tokenNetworks` (chain key → RollingSwapChannel address) map the settle
-      // path already threads, or an EVM claim is rejected MISSING_CHAIN_CONFIG.
-      ...(this.config.toonClientConfig.tokenNetworks
-        ? { tokenNetworks: this.config.toonClientConfig.tokenNetworks }
-        : {}),
+      ...(verifyTokenNetworks ? { tokenNetworks: verifyTokenNetworks } : {}),
       store: this.receivedClaimStore,
       ...(minaSignerClient ? { minaSignerClient } : {}),
       preimages,

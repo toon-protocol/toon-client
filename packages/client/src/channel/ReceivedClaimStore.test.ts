@@ -49,6 +49,7 @@ describe('JsonFileReceivedClaimStore', () => {
       settledAt: 3333,
       settledNonce: 2n,
       settleTxHash: '0xdead',
+      verifyingContract: '0x' + '22'.repeat(20),
     });
     store.save(e);
     const loaded = store.load(e.chain, e.channelId);
@@ -57,6 +58,12 @@ describe('JsonFileReceivedClaimStore', () => {
     expect(loaded!.cumulativeAmount).toBe(123456789012345678901234567890n);
     expect(loaded!.claimBytes).toEqual(new Uint8Array([1, 2, 3, 255]));
     expect(loaded!.settledNonce).toBe(2n);
+    expect(loaded!.verifyingContract).toBe('0x' + '22'.repeat(20));
+  });
+
+  it('omits verifyingContract when unpinned (pre-#572 entries / non-EVM chains)', () => {
+    store.save(entry());
+    expect(store.load(entry().chain, entry().channelId)!.verifyingContract).toBeUndefined();
   });
 
   it('creates the parent directory on first save', () => {

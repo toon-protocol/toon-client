@@ -121,7 +121,13 @@ export function buildSwapSettlements(
   return params.entries.map((entry) => {
     const base = { chain: entry.chain, channelId: entry.channelId };
     const signer: SwapSignerConfig = { address: entry.swapSignerAddress };
-    const contract = params.tokenNetworks?.[entry.chain];
+    // The contract this claim was ACTUALLY verified against (issue #572
+    // pin-on-first-use) takes priority over the daemon's `tokenNetworks`
+    // config — a config entry is a fallback for entries persisted before
+    // this fix, not an override of a claim's own pinned domain, so two
+    // makers with different RollingSwapChannel deployments each settle
+    // against the contract they were verified with.
+    const contract = entry.verifyingContract ?? params.tokenNetworks?.[entry.chain];
     if (entry.chain.startsWith('evm')) {
       const chainId = parseEvmChainId(entry.chain);
       if (!contract || chainId === undefined) {
@@ -135,7 +141,9 @@ export function buildSwapSettlements(
           },
         };
       }
-      signer.contractAddress = contract;
+      // The sdk's settlement-tx input validation requires a lowercase 0x+40
+      // hex address; the receive-side verifier accepts either case (#572).
+      signer.contractAddress = contract.toLowerCase();
       signer.chainId = chainId;
     } else if (entry.chain.startsWith('solana')) {
       if (!contract) {
