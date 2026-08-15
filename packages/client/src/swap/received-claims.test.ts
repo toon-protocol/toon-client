@@ -157,6 +157,29 @@ describe('ingestReceivedClaims (#352)', () => {
     expect(entry.swapSignerAddress).toBe(ADDR_A);
     expect(entry.claimBytes).toEqual(claim.claimBytes);
     expect(entry.pair).toEqual(EVM_PAIR);
+    // #572: the verifyingContract the v2 domain was reconstructed against is
+    // pinned onto the entry, so settlement re-verification doesn't depend on
+    // whatever `tokenNetworks` config happens to hold later.
+    expect(entry.verifyingContract).toBe(EVM_CONTRACT);
+  });
+
+  it('does not pin verifyingContract on a non-EVM (Solana) watermark', () => {
+    const res = ingestReceivedClaims({
+      claims: [
+        solanaClaim({
+          nonce: '1',
+          cumulativeAmount: '500',
+          targetAmount: 500n,
+        }),
+      ],
+      expectedChain: SOL_CHAIN,
+      chainRecipient: SOL_RECIPIENT,
+      store,
+    });
+    expect(res.verified).toHaveLength(1);
+    expect(
+      store.load(SOL_CHAIN, SOL_CHANNEL)!.verifyingContract
+    ).toBeUndefined();
   });
 
   it('verifies a valid Solana Ed25519 claim', () => {

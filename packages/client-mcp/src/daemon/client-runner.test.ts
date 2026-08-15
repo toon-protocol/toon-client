@@ -45,7 +45,11 @@ import {
 } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
 import { RelaySubscription } from '../relay-subscription.js';
-import { ILP_PEER_INFO_KIND, hexToBytes } from '@toon-protocol/core';
+import {
+  ILP_PEER_INFO_KIND,
+  hexToBytes,
+  type IlpPeerInfo,
+} from '@toon-protocol/core';
 import { loadTargets } from './targets-store.js';
 
 // ── Received-claim fixtures (#352 / v2 #365): REAL secp256k1-signed EVM balance
@@ -176,6 +180,11 @@ class FakeClient implements ToonClientLike {
   peerNegotiations = new Map<string, unknown>();
   started = false;
   stopped = false;
+  /** kind:10032 announces "discovered" for #572's maker-tokenNetworks tests. */
+  discoveredPeerInfo = new Map<string, IlpPeerInfo>();
+  getDiscoveredPeerInfo(pubkey: string): IlpPeerInfo | undefined {
+    return this.discoveredPeerInfo.get(pubkey);
+  }
   channels: Record<
     string,
     { nonce: number; cumulative: bigint; depositTotal?: bigint }
@@ -1157,6 +1166,69 @@ describe('ClientRunner', () => {
     });
   });
 
+  it("swap sources verification tokenNetworks from the MAKER's own kind:10032 announce, not just local config (#572)", async () => {
+    // A daemon whose config carries NO tokenNetworks at all (the live-devnet
+    // failure mode: the operator hadn't hand-configured the maker's
+    // deployment locally) can still verify — the maker's own announce
+    // supplies the verifyingContract.
+    const noConfig = new ClientRunner({
+      config: makeConfig({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        toonClientConfig: { btpUrl: 'ws://apex.test/btp' } as any,
+      }),
+      createClient: () => client,
+      createRelay: fakeRelay,
+    });
+    client.discoveredPeerInfo.set('cd'.repeat(32), {
+      ilpAddress: 'g.proxy.swap',
+      btpEndpoint: 'ws://swap.test/btp',
+      assetCode: 'USD',
+      assetScale: 6,
+      tokenNetworks: EVM_TOKEN_NETWORKS,
+    });
+    await noConfig.bootstrap();
+    const claim = await signedEvmClaim({
+      nonce: '1',
+      cumulativeAmount: '999',
+      targetAmount: 999n,
+    });
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
+
+    const res = await noConfig.swap(
+      swapReq({ swapSignerAddress: SWAP_SIGNER })
+    );
+
+    expect(res.accepted).toBe(true);
+    expect(res.claimsVerified).toBe(1);
+    expect(res.claims[0]!.verified).toBe(true);
+    await noConfig.stop();
+  });
+
+  it("swap: local config tokenNetworks OVERRIDES the maker's announce (#572)", async () => {
+    // The announce carries a DIFFERENT (wrong/stale) contract for the chain;
+    // the daemon's own config, when set, wins — the claim is signed against
+    // the config's contract (EVM_TOKEN_NETWORKS, the default fixture).
+    client.discoveredPeerInfo.set('cd'.repeat(32), {
+      ilpAddress: 'g.proxy.swap',
+      btpEndpoint: 'ws://swap.test/btp',
+      assetCode: 'USD',
+      assetScale: 6,
+      tokenNetworks: { [EVM_PAIR.to.chain]: '0x' + '99'.repeat(20) },
+    });
+    await runner.bootstrap();
+    const claim = await signedEvmClaim({
+      nonce: '1',
+      cumulativeAmount: '999',
+      targetAmount: 999n,
+    });
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
+
+    const res = await runner.swap(swapReq({ swapSignerAddress: SWAP_SIGNER }));
+
+    expect(res.accepted).toBe(true);
+    expect(res.claimsVerified).toBe(1);
+  });
+
   it('swap warns when accepted claims are missing swapSignerAddress (pre-rename swap peer)', async () => {
     // A sdk <2.0.0 swap peer emits `millSignerAddress` in its FULFILL
     // settlement metadata; sdk ≥2's decodeFulfillMetadata silently drops the
@@ -1987,11 +2059,12 @@ describe('ClientRunner', () => {
     await settleRunner.stop();
   });
 
-  it('settleSwapClaims is result-shaped when chain plumbing is missing (env-gated seam, #352)', async () => {
+  it('settleSwapClaims survives config drift across a restart: the pinned verifyingContract (#572) carries the settle (env-gated seam, #352)', async () => {
     // The v2 receive path needs tokenNetworks to INGEST an EVM claim, so seed a
     // watermark with a configured runner, then settle with one whose
-    // tokenNetworks was dropped (config drift across a restart): the SETTLE path
-    // now has no verifyingContract for the chain.
+    // tokenNetworks was dropped (config drift across a restart). Issue #572:
+    // the contract the claim verified against is now PINNED onto the entry at
+    // ingest time, so settlement still finds it even though config drifted.
     const storePath = join(tmpDir, 'received-claims.json');
     const seeded = new ClientRunner({
       config: makeConfig({ receivedClaimStorePath: storePath }),
@@ -2012,7 +2085,54 @@ describe('ClientRunner', () => {
     expect(seeded.listSwapClaims().claims).toHaveLength(1);
     await seeded.stop();
 
-    // A runner reading the same store but with NO tokenNetworks configured →
+    // A runner reading the same store but with NO tokenNetworks configured
+    // still builds+settles: the entry's own pinned verifyingContract covers it.
+    const noConfig = new ClientRunner({
+      config: makeConfig({
+        receivedClaimStorePath: storePath,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        toonClientConfig: { btpUrl: 'ws://apex.test/btp' } as any,
+      }),
+      createClient: () => client,
+      createRelay: fakeRelay,
+    });
+    const res = await noConfig.settleSwapClaims({ submit: false });
+    expect(res.results).toHaveLength(1);
+    expect(res.results[0]!.built).toBe(true);
+    expect(res.results[0]!.error).toBeUndefined();
+  });
+
+  it('settleSwapClaims is result-shaped when a LEGACY entry (no pinned verifyingContract, pre-#572) also has no config (env-gated seam, #352)', async () => {
+    const storePath = join(tmpDir, 'received-claims.json');
+    const seeded = new ClientRunner({
+      config: makeConfig({ receivedClaimStorePath: storePath }),
+      createClient: () => client,
+      createRelay: fakeRelay,
+    });
+    await seeded.bootstrap();
+    vi.mocked(streamSwap).mockResolvedValue(
+      swapResult([
+        await signedEvmClaim({
+          nonce: '1',
+          cumulativeAmount: '999',
+          targetAmount: 999n,
+        }),
+      ])
+    );
+    await seeded.swap(swapReq());
+    expect(seeded.listSwapClaims().claims).toHaveLength(1);
+    await seeded.stop();
+
+    // Simulate a watermark persisted BEFORE #572 pinned verifyingContract at
+    // ingest time — strip it from the store file on disk.
+    const stored = JSON.parse(readFileSync(storePath, 'utf-8')) as Record<
+      string,
+      { verifyingContract?: string }
+    >;
+    for (const value of Object.values(stored)) delete value.verifyingContract;
+    writeFileSync(storePath, JSON.stringify(stored, null, 2), 'utf-8');
+
+    // A runner reading that legacy store with NO tokenNetworks configured →
     // the tx cannot even be BUILT; the failure is result-shaped with an
     // actionable code, never a throw.
     const noConfig = new ClientRunner({

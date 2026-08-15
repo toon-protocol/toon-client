@@ -99,16 +99,19 @@ export interface IngestReceivedClaimsParams {
   /**
    * Per-chain settlement contract addresses (the deployed `RollingSwapChannel`
    * / `verifyingContract`), keyed by the FULL chain key (e.g. `evm:base:8453`).
-   * Matches the daemon config's `tokenNetworks` map and what
-   * `buildSwapSettlements` already threads on the submit side.
+   * Shaped like the daemon config's `tokenNetworks` map, but sourced from the
+   * MAKER's own kind:10032 announce with that config layered on top as an
+   * operator override (`ClientRunner.swapVerificationTokenNetworks`, #572) —
+   * a claim can only be verified against the deployment it was signed for.
    *
    * REQUIRED for EVM claims under the v2 EIP-712 digest (connector#324 finding
    * #1): the claim signature is domain-separated over `(chainId,
    * verifyingContract)`, so an EVM claim whose chain key lacks a `tokenNetworks`
    * entry (or a numeric chain id) is rejected `MISSING_CHAIN_CONFIG` — it cannot
-   * be verified fail-closed without the domain. Supplied by the connector/swap
-   * session context (the RollingSwapChannel the client settles against). Unused
-   * for Solana/Mina claims, which fold their domain into the message itself.
+   * be verified fail-closed without the domain. The entry actually used is
+   * PINNED onto the persisted watermark (`ReceivedClaimEntry.verifyingContract`,
+   * #572) so settlement re-verifies against the same domain. Unused for
+   * Solana/Mina claims, which fold their domain into the message itself.
    */
   tokenNetworks?: Record<string, string>;
   /** Durable watermark store; verified claims are persisted here. */
@@ -243,9 +246,14 @@ export function ingestReceivedClaims(
     // cross-deployment replay. Solana/Mina fold their domain into the message
     // itself and stay on the sdk `verifyAccumulatedClaim` path.
     let sig: { valid: true } | { valid: false; reason: string };
+    // Pinned on the persisted entry when set (EVM only, issue #572): the
+    // exact `verifyingContract` this claim's domain was reconstructed
+    // against, so settlement re-verification uses the SAME domain rather
+    // than whatever a shared `tokenNetworks` config happens to hold later.
+    let verifyingContract: string | undefined;
     if (chain.startsWith('evm')) {
       const chainId = parseEvmChainId(chain);
-      const verifyingContract = params.tokenNetworks?.[chain];
+      verifyingContract = params.tokenNetworks?.[chain];
       if (chainId === undefined || !verifyingContract) {
         reject(
           claim,
@@ -357,6 +365,7 @@ export function ingestReceivedClaims(
       cumulativeAmount,
       recipient: claim.recipient,
       swapSignerAddress: expectedSigner,
+      ...(verifyingContract !== undefined ? { verifyingContract } : {}),
       claimBytes: claim.claimBytes,
       ...(claim.claimId !== undefined ? { claimId: claim.claimId } : {}),
       pair: claim.pair,
