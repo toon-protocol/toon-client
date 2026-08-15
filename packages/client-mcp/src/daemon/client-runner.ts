@@ -1844,7 +1844,18 @@ export class ClientRunner {
     // maker's rolling engine only accepts sender-chosen conditions on its
     // rolling wire shape). `streamNonce` selects that shape; requiring it
     // here turns a silent guaranteed-fail into an actionable error.
-    if (req.senderConditions && req.streamNonce !== undefined) {
+    if (req.senderConditions) {
+      if (req.streamNonce === undefined) {
+        throw new InvalidPayloadError(
+          '`senderConditions` requires `streamNonce`: a compliant maker only ' +
+            'accepts a sender-chosen execution condition on its ROLLING ' +
+            'protocol path (spec §3) — the legacy gift-wrap shape rejects ' +
+            'one F99 "sender-chosen execution conditions are not supported ' +
+            'on the legacy swap path". There is no RFQ session-negotiation ' +
+            'transport yet (toon-client#573), so `streamNonce` must already ' +
+            'be registered with the maker out of band before this call.'
+        );
+      }
       // #351's rate floor / adaptive controller are NOT ported to the
       // rolling path yet (a follow-up) — silently ignoring a caller's
       // requested safety floor would be worse than not supporting it, so
@@ -1863,17 +1874,6 @@ export class ClientRunner {
         );
       }
       return this.swapRolling(req, apex);
-    }
-    if (req.senderConditions && req.streamNonce === undefined) {
-      throw new InvalidPayloadError(
-        '`senderConditions` requires `streamNonce`: a compliant maker only ' +
-          'accepts a sender-chosen execution condition on its ROLLING ' +
-          'protocol path (spec §3) — the legacy gift-wrap shape rejects one ' +
-          'F99 "sender-chosen execution conditions are not supported on the ' +
-          'legacy swap path". There is no RFQ session-negotiation transport ' +
-          'yet (toon-client#573), so `streamNonce` must already be ' +
-          "registered with the maker out of band before this call."
-      );
     }
     if (req.controller && req.packetCount !== undefined) {
       throw new InvalidPayloadError(
@@ -2177,16 +2177,32 @@ export class ClientRunner {
     let cumulativeSource = 0n;
     let cumulativeTarget = 0n;
     let firstReject: { code: string; message: string } | undefined;
+    const recordRejection = (
+      packetIndex: number,
+      sourceAmount: bigint,
+      code: string,
+      message: string
+    ): void => {
+      rejections.push({
+        packetIndex,
+        sourceAmount: sourceAmount.toString(),
+        code,
+        message,
+      });
+      firstReject ??= { code, message };
+    };
+
+    // Even split, remainder folded into the last packet — mirrors the legacy
+    // static-split default (no adaptive controller on this path yet).
+    const evenSplitAmount = totalAmount / BigInt(packetCount);
+    const lastPacketAmount =
+      totalAmount - evenSplitAmount * BigInt(packetCount - 1);
 
     try {
       for (let seq = 1; seq <= packetCount; seq++) {
         const packetIndex = seq - 1;
-        // Even split, remainder folded into the last packet — mirrors the
-        // legacy static-split default (no adaptive controller here yet).
         const sourceAmount =
-          packetIndex === packetCount - 1
-            ? totalAmount - (totalAmount / BigInt(packetCount)) * BigInt(packetCount - 1)
-            : totalAmount / BigInt(packetCount);
+          seq === packetCount ? lastPacketAmount : evenSplitAmount;
 
         const { preimage, condition } = mintExecutionCondition();
         preimages.retain({ packetIndex, preimage, condition, retainedAt: Date.now() });
@@ -2212,17 +2228,14 @@ export class ClientRunner {
         }
 
         if (!result.accepted) {
+          // A leg-B verification failure is the INTERESTING rejection (spec
+          // R5/R8) and is the more precise diagnosis, so it wins over the
+          // leg-A reject the maker sent back once it unwound.
           const rejection = session.rejections.get(seq);
           const code = rejection?.code ?? result.code ?? 'F99';
           const message =
             rejection?.message ?? result.message ?? 'rolling fill rejected';
-          rejections.push({
-            packetIndex,
-            sourceAmount: sourceAmount.toString(),
-            code,
-            message,
-          });
-          firstReject ??= { code, message };
+          recordRejection(packetIndex, sourceAmount, code, message);
           this.log(
             `[runner] swap: rolling packet seq ${seq} REJECTED — ${code}: ${message}`
           );
@@ -2233,15 +2246,12 @@ export class ClientRunner {
         if (!outcome) {
           // Unreachable in practice (a FULFILLed leg A implies our own
           // reveal ran), but fail loud rather than silently under-counting.
-          const code = 'F99';
-          const message = 'leg-A fulfilled with no recorded leg-B outcome';
-          rejections.push({
+          recordRejection(
             packetIndex,
-            sourceAmount: sourceAmount.toString(),
-            code,
-            message,
-          });
-          firstReject ??= { code, message };
+            sourceAmount,
+            'F99',
+            'leg-A fulfilled with no recorded leg-B outcome'
+          );
           continue;
         }
 
