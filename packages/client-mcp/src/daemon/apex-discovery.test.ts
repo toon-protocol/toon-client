@@ -296,3 +296,95 @@ describe('discoverApex', () => {
     expect(err.retryable).toBe(false);
   });
 });
+
+/** An announcement whose advertised BTP endpoint is `btpEndpoint`. */
+function announcementAt(ilpAddress: string, btpEndpoint: string): NostrEvent {
+  const base = announcement(ilpAddress);
+  const content = JSON.parse(base.content) as Record<string, unknown>;
+  return { ...base, content: JSON.stringify({ ...content, btpEndpoint }) };
+}
+
+/**
+ * toon-client#593 — a kind:10032 is served forever (the relay implements
+ * neither NIP-40 expiry nor NIP-09 deletion, and only the original signing
+ * key can replace it), so a throwaway node's `ws://127.0.0.1:…` announce
+ * outlives the node. Dialling it opens a BTP session against whatever
+ * unrelated service holds that port on the CALLER's machine.
+ */
+describe('discoverApex endpoint reachability', () => {
+  const loopbackAnnounce = () =>
+    announcementAt('g.toon.swap.sol', 'ws://127.0.0.1:3401');
+
+  it('refuses a loopback endpoint announced to a PUBLIC relay, saying why', async () => {
+    const { relay, open, emit } = controllableRelay('wss://relay.example');
+    open();
+    emit(['EVENT', 'apex-discovery-g.toon.swap.sol', loopbackAnnounce()]);
+
+    const err = await discoverApex({
+      relay,
+      ilpAddress: 'g.toon.swap.sol',
+      relayUrl: 'wss://relay.example',
+      timeoutMs: 1000,
+      pollMs: 10,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ApexDiscoveryError);
+    const message = (err as ApexDiscoveryError).message;
+    expect(message).toContain('g.toon.swap.sol');
+    expect(message).toContain('ws://127.0.0.1:3401');
+    expect(message).toContain('THIS machine');
+    // Non-retryable: only the original signing key could republish it.
+    expect((err as ApexDiscoveryError).retryable).toBe(false);
+  });
+
+  it('accepts the same endpoint when the announce came off a LOCAL relay', async () => {
+    const { relay, open, emit } = controllableRelay('ws://localhost:7100');
+    open();
+    emit(['EVENT', 'apex-discovery-g.toon.swap.sol', loopbackAnnounce()]);
+
+    const result = await discoverApex({
+      relay,
+      ilpAddress: 'g.toon.swap.sol',
+      relayUrl: 'ws://localhost:7100',
+      timeoutMs: 1000,
+      pollMs: 10,
+    });
+
+    expect(result.btpUrl).toBe('ws://127.0.0.1:3401');
+  });
+
+  it('accepts a private-range endpoint — a LAN or docker maker is a real deployment', async () => {
+    const { relay, open, emit } = controllableRelay('wss://relay.example');
+    open();
+    emit([
+      'EVENT',
+      'apex-discovery-g.proxy',
+      announcementAt('g.proxy', 'ws://172.18.0.4:3000'),
+    ]);
+
+    const result = await discoverApex({
+      relay,
+      ilpAddress: 'g.proxy',
+      relayUrl: 'wss://relay.example',
+      timeoutMs: 1000,
+      pollMs: 10,
+    });
+
+    expect(result.btpUrl).toBe('ws://172.18.0.4:3000');
+  });
+
+  it('is safe-by-default when no relayUrl is supplied', async () => {
+    const { relay, open, emit } = controllableRelay();
+    open();
+    emit(['EVENT', 'apex-discovery-g.toon.swap.sol', loopbackAnnounce()]);
+
+    await expect(
+      discoverApex({
+        relay,
+        ilpAddress: 'g.toon.swap.sol',
+        timeoutMs: 1000,
+        pollMs: 10,
+      })
+    ).rejects.toThrow(/loopback/i);
+  });
+});

@@ -46,6 +46,12 @@ import {
   Http401RequiresBtpError,
   isInsufficientGasError,
 } from './errors.js';
+import {
+  announceEndpointPolicyFor,
+  rejectedAnnounceEndpoint,
+  type AnnounceEndpointPolicy,
+  type UnreachableAnnounceEndpoint,
+} from './announce-reachability.js';
 import type { IlpSendParams } from './adapters/ilp-send.js';
 import { EvmSigner } from './signing/evm-signer.js';
 import { SolanaSigner } from './signing/solana-signer.js';
@@ -274,9 +280,12 @@ function outranks(claim: TerminatorClaim, best: TerminatorClaim): boolean {
  */
 function resolveTerminatorHttpEndpoint(
   destination: string,
-  peers: readonly DiscoveredPeer[]
+  peers: readonly DiscoveredPeer[],
+  policy: AnnounceEndpointPolicy,
+  unreachable?: UnreachableAnnounceEndpoint[]
 ): string | undefined {
-  return findBestTerminatorClaim(destination, peers)?.endpoint;
+  return findBestTerminatorClaim(destination, peers, policy, unreachable)
+    ?.endpoint;
 }
 
 /**
@@ -286,15 +295,36 @@ function resolveTerminatorHttpEndpoint(
  * peer won (its pubkey), e.g. to check whether that peer's announce declares
  * `requiredTransport` (issue #558). `undefined` when no discovered announce
  * claims `destination` at all.
+ *
+ * An announce whose `httpEndpoint` is unreachable-by-construction for THIS
+ * reader — a loopback or link-local host, see `announce-reachability.ts` — is
+ * skipped as if it had never claimed the destination (toon-client#593), and
+ * recorded in `unreachable` so the caller can say WHY it refused rather than
+ * letting the client dial its own machine. A `kind:10032` is served forever
+ * (the relay implements neither NIP-40 expiry nor NIP-09 deletion), so a
+ * dead node's `ws://127.0.0.1:…` claim outlives the node itself and would
+ * otherwise win this search unopposed.
  */
 function findBestTerminatorClaim(
   destination: string,
-  peers: readonly DiscoveredPeer[]
+  peers: readonly DiscoveredPeer[],
+  policy: AnnounceEndpointPolicy,
+  unreachable?: UnreachableAnnounceEndpoint[]
 ): TerminatorClaim | undefined {
   let best: TerminatorClaim | undefined;
   for (const { peerInfo, pubkey, peerId } of peers) {
     const httpEndpoint = peerInfo.httpEndpoint;
     if (!httpEndpoint) continue;
+    const refusal = rejectedAnnounceEndpoint(httpEndpoint, policy);
+    if (refusal) {
+      if (
+        unreachable &&
+        !unreachable.some((u) => u.endpoint === refusal.endpoint)
+      ) {
+        unreachable.push(refusal);
+      }
+      continue;
+    }
     const addresses = peerInfo.ilpAddresses ?? [peerInfo.ilpAddress];
     for (const [index, address] of addresses.entries()) {
       if (!claimsTermination(peerInfo, address, destination)) continue;
@@ -1246,6 +1276,31 @@ export class ToonClient {
    *   is present but no discovered announce claims `destination` — including
    *   when it has discovered no peers at all yet.
    */
+  /**
+   * Which endpoint zones this client will accept off a DISCOVERED announce
+   * (toon-client#593). Derived once from the relays this client actually
+   * subscribes for announces on — `config.relayUrl` plus every
+   * `knownPeers[].relayUrl`, the same list `subscribeToDiscovery` is handed —
+   * so a local stack (local relay ⇒ local peers) keeps working with no
+   * configuration, while a loopback endpoint announced to a PUBLIC relay is
+   * refused. `TOON_CLIENT_ALLOW_LOOPBACK_PEERS=1` is the explicit override
+   * for a node that runs here but announces itself remotely.
+   *
+   * Memoized: the inputs cannot change over a client's life, and this is read
+   * on every paid write.
+   */
+  private announceEndpointPolicy(): AnnounceEndpointPolicy {
+    this.cachedAnnounceEndpointPolicy ??= announceEndpointPolicyFor({
+      discoveredFrom: [
+        this.config.relayUrl,
+        ...(this.config.knownPeers ?? []).map((peer) => peer.relayUrl),
+      ],
+    });
+    return this.cachedAnnounceEndpointPolicy;
+  }
+
+  private cachedAnnounceEndpointPolicy: AnnounceEndpointPolicy | undefined;
+
   private resolveTerminatorEndpoint(destination: string): string {
     const edge = this.resolveClientEdgeEndpoint();
     // Probed, not assumed: a client whose state was assembled without a full
@@ -1256,13 +1311,31 @@ export class ToonClient {
     if (typeof tracker?.getAllDiscoveredPeers !== 'function') return edge;
 
     const peers = tracker.getAllDiscoveredPeers();
-    const httpEndpoint = resolveTerminatorHttpEndpoint(destination, peers);
+    const unreachable: UnreachableAnnounceEndpoint[] = [];
+    const httpEndpoint = resolveTerminatorHttpEndpoint(
+      destination,
+      peers,
+      this.announceEndpointPolicy(),
+      unreachable
+    );
     if (!httpEndpoint) {
+      // Lead with the unreachable announces when there were any: "nobody
+      // claims it" and "the only claimant advertises an address on YOUR
+      // machine" are different problems with different fixes, and the second
+      // one reads as a mystery unless it is said out loud (toon-client#593).
+      const skipped =
+        unreachable.length > 0
+          ? ' ' +
+            `${unreachable.length} announce(s) claiming it were IGNORED as ` +
+            'unreachable from here: ' +
+            unreachable.map((u) => u.reason).join(' ')
+          : '';
       throw new ToonClientError(
         `No discovered announce terminates "${destination}" (${peers.length} ` +
           'peer(s) discovered, none claims it), so this client cannot confirm ' +
           'the posting edge is who it would be paying. Refusing to publish ' +
-          'rather than seal to a key that may not be able to open the wrap.',
+          'rather than seal to a key that may not be able to open the wrap.' +
+          skipped,
         'TERMINATOR_UNRESOLVED'
       );
     }
@@ -1297,7 +1370,8 @@ export class ToonClient {
 
     const claim = findBestTerminatorClaim(
       destination,
-      tracker.getAllDiscoveredPeers()
+      tracker.getAllDiscoveredPeers(),
+      this.announceEndpointPolicy()
     );
     if (!claim) return false;
     return subscription.requiredTransportFor(claim.pubkey) === 'btp';
@@ -2860,7 +2934,8 @@ export class ToonClient {
     if (typeof tracker?.getAllDiscoveredPeers !== 'function') return undefined;
     return findBestTerminatorClaim(
       destination,
-      tracker.getAllDiscoveredPeers()
+      tracker.getAllDiscoveredPeers(),
+      this.announceEndpointPolicy()
     );
   }
 

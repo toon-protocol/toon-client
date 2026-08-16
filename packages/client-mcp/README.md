@@ -145,7 +145,22 @@ can supply your own via env or an imported keystore.
 
 Environment overrides: `TOON_CLIENT_MNEMONIC`, `TOON_CLIENT_KEYSTORE_PASSWORD`,
 `TOON_CLIENT_BTP_URL`, `TOON_CLIENT_PROXY_URL`, `TOON_CLIENT_RELAY_URL`,
-`TOON_CLIENT_HTTP_PORT`, `TOON_CLIENT_NETWORK`, `TOON_CLIENT_HOME`.
+`TOON_CLIENT_HTTP_PORT`, `TOON_CLIENT_NETWORK`, `TOON_CLIENT_HOME`,
+`TOON_CLIENT_ALLOW_LOOPBACK_PEERS`.
+
+> **Discovered endpoints that point at your own machine are refused.** A
+> `kind:10032` announce is served forever — the relay implements neither NIP-40
+> expiry nor NIP-09 deletion, and replacing one needs its original signing key —
+> so a node that has been gone for months can still be advertising
+> `ws://127.0.0.1:3401`. That address names *your* machine, not the announcer's,
+> so `toon_add_apex` and the client's own terminator resolution refuse it (and
+> say why) rather than dialling whatever local service holds that port. Same for
+> link-local (`169.254/16`, `fe80::/10`). **Private ranges are still allowed** —
+> a LAN maker or a Docker-bridge rig is a real deployment. Local development
+> needs no configuration: an announce read off a *loopback relay* may advertise
+> loopback endpoints, because a local relay means a local stack. Set
+> `TOON_CLIENT_ALLOW_LOOPBACK_PEERS=1` only for the split case — a node running
+> here that announces itself to a remote relay.
 
 `btpUrl` (paid writes over BTP) and `relayUrl` (free reads over Nostr-WS) are
 dialed directly as-is. The first bootstrap brings up the BTP session **once** —

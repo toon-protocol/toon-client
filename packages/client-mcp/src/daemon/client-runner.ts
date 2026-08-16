@@ -945,6 +945,10 @@ export class ClientRunner {
     const discovered = await discoverApex({
       relay,
       ilpAddress: req.ilpAddress,
+      // Carried so the announce's endpoint can be judged against the relay it
+      // came off (toon-client#593): a loopback relay means a local stack, a
+      // public one means a loopback endpoint is pointing at the CALLER.
+      relayUrl: req.relayUrl,
       trustedPubkeys: this.trustedNoticePubkeys,
       ...(req.pubkey ? { pubkey: req.pubkey } : {}),
       ...(req.chain ? { chain: req.chain } : {}),
@@ -1266,6 +1270,7 @@ export class ClientRunner {
     const discovered = await discoverApex({
       relay,
       ilpAddress: apex.destination,
+      relayUrl: this.defaultRelayUrl,
       chain: apex.chain,
       trustedPubkeys: this.trustedNoticePubkeys,
       ...(apex.childPeers.length > 0 ? { childPeers: apex.childPeers } : {}),

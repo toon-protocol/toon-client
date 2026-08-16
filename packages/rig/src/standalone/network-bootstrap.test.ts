@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { WebSocketServer } from 'ws';
 import type { AddressInfo } from 'node:net';
 
+import { announceEndpointPolicyFor } from '@toon-protocol/client';
 import type { NostrEvent } from '../remote-state.js';
 import {
   MinaChannelUnderivableError,
@@ -328,6 +329,63 @@ describe('pickPaymentPeer', () => {
     });
     expect(pickPaymentPeer([noUplink, noSettlement], [])).toBeUndefined();
     expect(pickPaymentPeer([], [])).toBeUndefined();
+  });
+
+  // toon-client#593 — an announce is served forever, so a dead throwaway
+  // node's `ws://127.0.0.1:…` uplink stays discoverable and would otherwise
+  // be picked as the freshest payable peer, pointing rig at its OWN machine.
+  it('treats a loopback-only uplink as no uplink at all', () => {
+    const ghost = announcedPeer(
+      STORE_PUBKEY,
+      {
+        ...APEX_CONTENT,
+        ilpAddress: 'g.toon.swap.sol',
+        routes: undefined,
+        httpEndpoint: undefined,
+        btpEndpoint: 'ws://127.0.0.1:3401',
+      },
+      9000 // freshest — it would win on every other axis
+    );
+    expect(pickPaymentPeer([apex, ghost], [])).toBe(apex);
+    expect(pickPaymentPeer([ghost], [])).toBeUndefined();
+  });
+
+  it('still admits a private-range uplink (LAN / docker-bridge maker)', () => {
+    const lan = announcedPeer(
+      STORE_PUBKEY,
+      {
+        ...APEX_CONTENT,
+        ilpAddress: 'g.lan',
+        routes: undefined,
+        httpEndpoint: undefined,
+        btpEndpoint: 'ws://192.168.1.50:3000',
+      },
+      9000
+    );
+    // Compared against `store`, not `apex`: `apex` is the publish edge and
+    // wins on that axis regardless of reachability.
+    expect(pickPaymentPeer([store, lan], [])).toBe(lan);
+  });
+
+  it('admits a loopback uplink under a local-stack policy', () => {
+    const local = announcedPeer(
+      STORE_PUBKEY,
+      {
+        ...APEX_CONTENT,
+        ilpAddress: 'g.local',
+        routes: undefined,
+        httpEndpoint: undefined,
+        btpEndpoint: 'ws://127.0.0.1:3000',
+      },
+      9000
+    );
+    const localStack = announceEndpointPolicyFor({
+      discoveredFrom: 'ws://localhost:7100',
+      env: {},
+    });
+    expect(pickPaymentPeer([store, local], [], localStack)).toBe(local);
+    // …and refused under the default (public-relay) policy.
+    expect(pickPaymentPeer([local], [])).toBeUndefined();
   });
 });
 
