@@ -390,6 +390,19 @@ interface ApexConnection {
   isDefault: boolean;
   /** The apex's announce-carried operator notice, when discovered from a trusted announcer. */
   notice?: OperatorNotice;
+  /**
+   * This apex's negotiation came out of the PERSISTED targets store, so it must
+   * be re-validated against the live announce before it is trusted
+   * (toon-client#581). Set only on the replay path — a config-supplied
+   * negotiation is the operator's explicit instruction and wins, and a
+   * negotiation `addApex` just discovered is already the announce.
+   */
+  revalidateNegotiation?: boolean;
+  /**
+   * The persisted target this apex was replayed from, so a drifted announce can
+   * be written back once rather than re-corrected on every start.
+   */
+  replayedFrom?: PersistedApexTarget;
 }
 
 /** A runner-level merged read-buffer entry, tagged with its source relay. */
@@ -776,6 +789,8 @@ export class ClientRunner {
     channelStorePath: string;
     feePerEvent: bigint;
     isDefault: boolean;
+    revalidateNegotiation?: boolean;
+    replayedFrom?: PersistedApexTarget;
   }): ApexConnection {
     return {
       ...init,
@@ -799,6 +814,7 @@ export class ClientRunner {
 
   private async doBootstrapApex(apex: ApexConnection): Promise<void> {
     apex.bootstrapping = true;
+    let staleNegotiationWarning: string | undefined;
     try {
       // PROXY mode (no BTP discovery): if no negotiation was supplied via config,
       // discover the apex's settlement params from its kind:10032 on the default
@@ -806,6 +822,9 @@ export class ClientRunner {
       // In BTP mode the legacy bootstrap path handles discovery, so skip this.
       if (!apex.negotiation && this.config.proxyUrl) {
         await this.discoverApexNegotiation(apex);
+      } else if (apex.revalidateNegotiation && this.config.proxyUrl) {
+        // A REPLAYED negotiation is a cache, not a fact (toon-client#581).
+        staleNegotiationWarning = await this.revalidateApexNegotiation(apex);
       }
       await apex.client.start();
       this.injectApexNegotiation(apex);
@@ -821,7 +840,10 @@ export class ClientRunner {
       });
       this.routeChildPeersThroughApexChannel(apex);
       apex.ready = true;
-      apex.lastError = undefined;
+      // An apex that came up on an UNVERIFIED (persisted) negotiation is ready
+      // but not trustworthy — surface it rather than silently paying a ghost
+      // (toon-client#581). A clean bootstrap clears the field as before.
+      apex.lastError = staleNegotiationWarning;
       this.log(
         `[runner] apex ${apex.btpUrl || apex.destination} ready; channel ${
           apex.apexChannelId ?? '(deferred — open on first write)'
@@ -888,10 +910,18 @@ export class ClientRunner {
     };
   }
 
-  /** Build + register + bootstrap an apex from a (persisted) target record. */
+  /**
+   * Build + register + bootstrap an apex from a (persisted) target record.
+   *
+   * `opts.replayed` marks a target read back off disk, whose negotiation is a
+   * CACHE of an announce that may be years old — see
+   * {@link revalidateApexNegotiation}. `addApex` passes it false: its
+   * negotiation came straight off the live announce moments earlier.
+   */
   private async instantiateApex(
     target: PersistedApexTarget,
-    persist: boolean
+    persist: boolean,
+    opts: { replayed?: boolean } = {}
   ): Promise<void> {
     if (this.apexes.has(target.btpUrl)) return;
     const clientConfig = this.deriveApexClientConfig(
@@ -908,6 +938,9 @@ export class ClientRunner {
       channelStorePath: this.apexChannelStorePathFor(target.btpUrl),
       feePerEvent: BigInt(target.feePerEvent ?? this.config.feePerEvent),
       isDefault: false,
+      ...(opts.replayed
+        ? { revalidateNegotiation: true, replayedFrom: target }
+        : {}),
     });
     this.apexes.set(apex.btpUrl, apex);
     if (persist) saveApexTarget(target, this.targetsPath);
@@ -997,7 +1030,7 @@ export class ClientRunner {
         a.btpUrl === this.defaultStoreBtpUrl
       )
         continue;
-      void this.instantiateApex(a, false).catch((err) =>
+      void this.instantiateApex(a, false, { replayed: true }).catch((err) =>
         this.log(`[runner] replay apex ${a.btpUrl} failed: ${errMsg(err)}`)
       );
     }
@@ -1171,6 +1204,74 @@ export class ClientRunner {
         `(chain ${discovered.negotiation.chainKey}, settle ` +
         `${discovered.negotiation.settlementAddress})`
     );
+  }
+
+  /**
+   * Re-validate a REPLAYED apex negotiation against the live kind:10032
+   * announce, and prefer the announce (toon-client#581).
+   *
+   * `replayPersistedTargets` → `instantiateApex` used to take a persisted
+   * negotiation from `~/.toon-client/targets.json` VERBATIM, and
+   * `discoverApexNegotiation` only ran when there was no negotiation at all. So
+   * the "currently-announced" address that #578/#580's counterparty check
+   * compares a channel record against could itself be a stale cache: recorded
+   * `0xf29fd62c…` vs injected `0xf29fd62c…` read as `match`, and the dead
+   * channel was resumed exactly as before. `0xf29fd62c…` is the retired `g.toon`
+   * apex, destroyed 2026-08-14 — the one path where the whole guard was
+   * defeated, because a check is only as good as its right-hand side.
+   *
+   * The announce is the authority (the same "trust the announce, not the
+   * preset" rule as the sandbox contract-address drift). Discovery FAILING is a
+   * separate, louder problem than drift: an apex that no longer announces at all
+   * may be gone, so the persisted negotiation is kept as a last resort and the
+   * fact is returned for `lastError` rather than swallowed.
+   *
+   * Drift is re-persisted so it is corrected ONCE rather than on every start.
+   *
+   * @returns a warning to surface as the apex's `lastError`, or `undefined`
+   *   when the announce was reached (whether or not it had drifted).
+   */
+  private async revalidateApexNegotiation(
+    apex: ApexConnection
+  ): Promise<string | undefined> {
+    const persisted = apex.negotiation;
+    try {
+      await this.discoverApexNegotiation(apex);
+    } catch (err) {
+      apex.negotiation = persisted;
+      const warning =
+        `apex "${apex.destination}" could not be re-validated against a live ` +
+        `kind:10032 announce (${errMsg(err)}); falling back to the negotiation ` +
+        `persisted in ${this.targetsPath}, which may name a node that no longer ` +
+        'exists. Paid writes may be refused (F01) until it announces again.';
+      this.log(`[runner] ${warning}`);
+      return warning;
+    }
+
+    const fresh = apex.negotiation;
+    if (!fresh || !persisted || negotiationsAgree(persisted, fresh)) {
+      return undefined;
+    }
+
+    this.log(
+      `[runner] apex "${apex.destination}" announce has DRIFTED from the ` +
+        `persisted target: settlement ${persisted.settlementAddress} → ` +
+        `${fresh.settlementAddress}, tokenNetwork ${persisted.tokenNetwork} → ` +
+        `${fresh.tokenNetwork}. Preferring the announce and re-persisting.`
+    );
+    const replayed = apex.replayedFrom;
+    saveApexTarget(
+      {
+        ...(replayed ?? { btpUrl: apex.btpUrl, negotiation: fresh }),
+        btpUrl: apex.btpUrl,
+        negotiation: fresh,
+        ...(apex.childPeers.length > 0
+          ? { apexChildPeers: apex.childPeers }
+          : {}),
+      },
+      this.targetsPath
+    );
+    return undefined;
   }
 
   /** Inject the apex settlement negotiation directly into its ToonClient. */
@@ -3541,6 +3642,33 @@ function safe<T>(fn: () => T): T | undefined {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Whether a persisted apex negotiation still says what the live announce says
+ * (toon-client#581). Only the SETTLEMENT-BEARING fields are compared — these
+ * are exactly the values a payment channel is opened and claimed against, and
+ * the ones whose drift produced the retired-apex `F01`. Cosmetic differences
+ * (a re-derived `peerId`, a relabelled `chainKey`) are not drift worth
+ * rewriting the store for.
+ *
+ * Settlement addresses are compared case-insensitively: an EVM address is the
+ * same address whether or not it is EIP-55 checksummed, and treating a
+ * re-cased announce as drift would rewrite the store on every start.
+ */
+function negotiationsAgree(
+  persisted: ApexNegotiationConfig,
+  fresh: ApexNegotiationConfig
+): boolean {
+  return (
+    persisted.settlementAddress.toLowerCase() ===
+      fresh.settlementAddress.toLowerCase() &&
+    persisted.chain === fresh.chain &&
+    persisted.chainId === fresh.chainId &&
+    (persisted.tokenNetwork ?? '') === (fresh.tokenNetwork ?? '') &&
+    (persisted.tokenAddress ?? '') === (fresh.tokenAddress ?? '') &&
+    persisted.destination === fresh.destination
+  );
 }
 
 /**
