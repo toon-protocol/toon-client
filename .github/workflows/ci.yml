@@ -148,10 +148,29 @@ jobs:
   # even when upstream jobs fail, are skipped, or are cancelled — a skipped or
   # cancelled gating job must never read as a pass. `changeset` is skipped BY
   # DESIGN on push events only; on pull_request it must succeed.
+  # Fleet no-op merge guard (toon-meta#405), wired INTO this repo's aggregate
+  # required check so that it blocks a HUMAN merge and not just the fleet
+  # auto-merge pass (toon-meta#408). connector#1008 merged green, closed its
+  # ticket and changed zero files -- and it was a human who merged it, because
+  # a red NON-required check is only a warning on the merge button. This
+  # replaces the stand-alone empty-pr-guard-shim.yml, deleted in the same
+  # commit; running both would put two identical "No-op merge guard" check
+  # runs on every PR. Canonical caller snippet and full rationale:
+  # toon-meta scripts/factory/empty-pr-guard-gate-job.yml.
+  #
+  # No `secrets: inherit` -- the guard makes no API call and no write of any
+  # kind, so handing it FACTORY_OPS_TOKEN would widen a monitored credential
+  # for nothing. No `if:` either: this workflow also runs on push, where the
+  # guard passes with a plain "no merge result to evaluate"; a job-level `if:`
+  # would make it `skipped` there, and a skipped gating job must never read as
+  # a pass (toon-meta#279).
+  no-op-merge:
+    uses: toon-protocol/toon-meta/.github/workflows/empty-pr-guard.yml@main
+
   ci-ok:
     name: CI OK
     runs-on: ubuntu-latest
-    needs: [changeset, build, devbox-validate]
+    needs: [changeset, build, devbox-validate, no-op-merge]
     if: always()
     steps:
       - name: Verify all gating jobs succeeded
@@ -159,12 +178,14 @@ jobs:
           CHANGESET_RESULT: ${{ needs.changeset.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           DEVBOX_RESULT: ${{ needs.devbox-validate.result }}
+          NO_OP_MERGE_RESULT: ${{ needs.no-op-merge.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           echo "event:           $EVENT_NAME"
           echo "changeset:       $CHANGESET_RESULT"
           echo "build:           $BUILD_RESULT"
           echo "devbox-validate: $DEVBOX_RESULT"
+          echo "no-op-merge:     $NO_OP_MERGE_RESULT"
 
           ok=true
 
@@ -175,6 +196,13 @@ jobs:
 
           if [ "$DEVBOX_RESULT" != "success" ]; then
             echo "::error::devbox-validate result is '$DEVBOX_RESULT' (expected 'success')"
+            ok=false
+          fi
+
+          # The no-op merge guard runs on every event and passes on push with
+          # "no merge result to evaluate", so it is unconditional here.
+          if [ "$NO_OP_MERGE_RESULT" != "success" ]; then
+            echo "::error::no-op merge guard result is '$NO_OP_MERGE_RESULT' (expected 'success') — merging this PR would change nothing"
             ok=false
           fi
 
