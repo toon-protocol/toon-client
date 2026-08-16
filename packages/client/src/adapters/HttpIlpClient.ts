@@ -47,6 +47,7 @@ import { withRetry } from '../utils/retry.js';
 import { toBase64, fromBase64, encodeUtf8 } from '../utils/binary.js';
 import {
   mapIlpResponse,
+  resolveExecutionCondition,
   resolveExpiresAt,
   type IlpSendParams,
 } from './ilp-send.js';
@@ -254,7 +255,7 @@ export class HttpIlpClient implements IlpClient {
     // Sender-chosen condition (toon-client#350): validate length up front so
     // the OER serializer can never silently zero-fill a malformed condition
     // and downgrade the packet to the legacy unverified class.
-    const condition = params.executionCondition;
+    const condition = resolveExecutionCondition(params.executionCondition);
     if (condition !== undefined && !isZeroCondition(condition)) {
       assertValidCondition(condition);
     }

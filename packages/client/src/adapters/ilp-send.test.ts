@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   mapIlpResponse,
+  resolveExecutionCondition,
   FULFILLMENT_MISMATCH_CODE,
   FULFILLMENT_MISMATCH_MESSAGE,
 } from './ilp-send.js';
@@ -105,5 +106,35 @@ describe('mapIlpResponse — shared transport response mapping (#350)', () => {
       code: 'F06',
       message: 'nope',
     });
+  });
+});
+
+describe('resolveExecutionCondition — core ≥3.4.0 IlpClient base64 form', () => {
+  it('passes raw bytes through by identity (this package’s own senders)', () => {
+    const { condition } = mintExecutionCondition();
+    expect(resolveExecutionCondition(condition)).toBe(condition);
+  });
+
+  it('decodes the base64 form core’s IlpClient port declares', () => {
+    const { condition } = mintExecutionCondition();
+    const decoded = resolveExecutionCondition(toBase64(condition));
+    expect(decoded).toEqual(condition);
+  });
+
+  it('both representations of one condition agree byte-for-byte', () => {
+    const { condition } = mintExecutionCondition();
+    expect(resolveExecutionCondition(toBase64(condition))).toEqual(
+      resolveExecutionCondition(condition)
+    );
+  });
+
+  it('keeps absent absent — the legacy unverified class', () => {
+    expect(resolveExecutionCondition(undefined)).toBeUndefined();
+  });
+
+  it('preserves an all-zero condition as zero in either form', () => {
+    const zero = new Uint8Array(32);
+    expect(resolveExecutionCondition(zero)).toEqual(zero);
+    expect(resolveExecutionCondition(toBase64(zero))).toEqual(zero);
   });
 });
