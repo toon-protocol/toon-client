@@ -419,18 +419,25 @@ export interface SwapRequest {
    * step 2). Capability is discovered by PROBE, never by an announce field —
    * swap#135 deliberately ships no flag:
    *
-   * - `'auto'` (default; overridable by `swapDefaults.rolling`) — send a
-   *   kind:20033 RFQ first. A kind:20034 quote back means the maker
-   *   registered the session and the swap runs on the rolling path; ANY other
-   *   outcome falls back to the legacy path **silently and successfully**.
-   * - `'off'` — never probe. No RFQ packet is sent or paid for.
-   * - `'require'` — probe, and FAIL with the reason instead of falling back.
-   *   For verification/debugging: silence is right in production and wrong
-   *   when you are trying to find out why rolling did not engage.
+   * - `'require'` — **the default** since toon-client#595 (overridable by
+   *   `swapDefaults.rolling`). Send a kind:20033 RFQ; a kind:20034 quote back
+   *   means the maker registered the session and the swap runs on the rolling
+   *   path. ANY other outcome FAILS with `rolling_unavailable` (HTTP 502)
+   *   naming the maker pubkey, its ILP address and the reason discriminator.
+   *   ADR 0003: the rolling swap is the only swap, so a maker that stops
+   *   answering is a fault to report, not a reason to silently serve every
+   *   caller the weaker protocol.
+   * - `'auto'` — probe, then fall back to the legacy path on any failure.
+   *   The transitional escape hatch, kept for exactly one release and removed
+   *   with the legacy sender (Stage 4, toon-client#598).
+   * - `'off'` — never probe. No RFQ packet is sent or paid for; the swap runs
+   *   legacy. Still reachable because #592's own diagnosis points at it when a
+   *   rolling fill cannot be DELIVERED (swap#148).
    *
    * The rolling outcome (probed / used / quote / fallback reason) is always
-   * echoed on {@link SwapResponse.rolling}, so an `'auto'` fallback is silent
-   * but never invisible.
+   * echoed on {@link SwapResponse.rolling}, and a legacy run — from either
+   * escape hatch — also raises a {@link SwapResponse.warning}. Neither
+   * downgrade is silent.
    */
   rolling?: 'auto' | 'off' | 'require';
   /**
@@ -731,9 +738,9 @@ export interface SwapResponse {
   valueReceived?: string;
   /**
    * What rolling capability discovery decided (toon-client#585). Present on
-   * every swap that could have taken the rolling path — including the ones
-   * that fell back — so an intentionally SILENT fallback is still observable.
-   * Absent only when `rolling: 'off'` took rolling out of play entirely.
+   * EVERY swap — including `rolling: 'off'`, which since toon-client#595
+   * reports itself as `fallbackReason: 'off'` rather than leaving the block
+   * absent. A legacy run is never inferred from a missing field.
    */
   rolling?: SwapRollingInfo;
 }
@@ -765,8 +772,13 @@ export interface SwapRollingInfo {
   /**
    * Why the swap fell back to legacy. One of the RFQ failure reasons
    * (`send-failed`, `rejected` — the ordinary "legacy maker" signal —
-   * `no-response`, `not-a-quote`, `nonce-mismatch`) or a local one
-   * (`controller`, `no-sender-address`). Present iff `!used`.
+   * `no-response`, `not-a-quote`, `nonce-mismatch`), a local one
+   * (`controller`, `no-sender-address`), or `off` — the caller (or
+   * `swapDefaults`) disabled the probe outright. Present iff `!used`.
+   *
+   * Under the default `rolling: 'require'` none of these reach a caller as a
+   * fallback: they arrive as the `reason` field of a `rolling_unavailable`
+   * error instead. This block is what an explicit `'auto'` / `'off'` reports.
    */
   fallbackReason?: string;
   /** Human-readable detail behind `fallbackReason`. */

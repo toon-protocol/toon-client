@@ -673,12 +673,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       'Pay a swap peer (asset A) to receive asset B plus a signed target-chain ' +
       'claim. The maker is probed once with a rolling-swap RFQ: a maker that ' +
       'answers runs the ROLLING protocol (coupled legs, verify-before-reveal, ' +
-      'a per-fill rate floor), and one that does not falls back automatically ' +
-      'to the legacy gift-wrapped kind:20032 stream — no flag to set either ' +
-      'way. The source-asset claim is signed against the open apex channel. ' +
-      'Returns the accumulated target-chain claim(s), settlement metadata, and ' +
-      'a `rolling` block saying which path ran and why. PAID + IRREVERSIBLE: ' +
-      'on a text-only host, confirm the amount with the user before calling.',
+      'a per-fill rate floor). TOON supports rolling ONLY — a maker that does ' +
+      'not answer fails the call with `rolling_unavailable`, naming the maker ' +
+      'and the reason; it is no longer downgraded to the legacy stream ' +
+      'behind your back. The source-asset claim is signed against the open ' +
+      'apex channel. Returns the accumulated target-chain claim(s), ' +
+      'settlement metadata, and a `rolling` block saying which path ran and ' +
+      'why. PAID + IRREVERSIBLE: on a text-only host, confirm the amount with ' +
+      'the user before calling.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -747,12 +749,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: 'string',
           enum: ['auto', 'off', 'require'],
           description:
-            'Rolling-swap path selection. "auto" (default) probes the maker ' +
-            'with a kind:20033 RFQ and falls back to the legacy path silently ' +
-            'if it does not answer; "off" never probes; "require" fails with ' +
-            'the reason instead of falling back (use it to find out WHY ' +
-            'rolling did not engage). The outcome is always echoed on the ' +
-            'response as `rolling`.',
+            'Rolling-swap path selection. "require" (the DEFAULT) probes the ' +
+            'maker with a kind:20033 RFQ and FAILS with the named reason if ' +
+            'it does not answer. "auto" and "off" are transitional escape ' +
+            'hatches that take the legacy path instead ("auto" probes first, ' +
+            '"off" does not probe at all): legacy verifies the target-chain ' +
+            'claim only AFTER the payment commits, so ask the user before ' +
+            'choosing one. The outcome is always echoed on the response as ' +
+            '`rolling`, and a legacy run also raises a `warning`.',
         },
         senderIlpAddress: {
           type: 'string',
@@ -1564,6 +1568,28 @@ export async function dispatchTool(
             'hard error (paid blob storage for larger objects is the epic #222 ' +
             'follow-up, toon-client#235). Remove or shrink the listed paths ' +
             '(e.g. git filter-repo) and re-run the estimate.',
+        })
+      );
+    }
+    // #595: the maker did not establish a rolling session. The daemon's detail
+    // already names the maker, its ILP address and the reason; keep the
+    // discriminator machine-readable beside it, and be explicit that the
+    // remedies are PAID retries the user has to agree to — a model that reads
+    // "repeat with rolling: off" as a free retry would spend value silently.
+    if (e instanceof ControlApiError && e.message === 'rolling_unavailable') {
+      return err(
+        JSON.stringify({
+          error: 'rolling_unavailable',
+          detail: e.detail,
+          reason: e.data?.['reason'],
+          swapPubkey: e.data?.['swapPubkey'],
+          destination: e.data?.['destination'],
+          hint:
+            'The swap did NOT run and nothing was spent beyond the RFQ probe. ' +
+            'Do not retry blindly: report the reason to the user. The legacy ' +
+            'downgrade (`rolling: "auto"` / `rolling: "off"`) is a PAID, ' +
+            'less safe retry — it verifies the target-chain claim only after ' +
+            'the payment commits — so ask before using it.',
         })
       );
     }

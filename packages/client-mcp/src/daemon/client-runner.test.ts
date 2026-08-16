@@ -45,6 +45,7 @@ import {
   InvalidPayloadError,
   NotReadyError,
   PublishRejectedError,
+  RollingUnavailableError,
   TargetError,
   deriveFloorRate,
   type ToonClientLike,
@@ -1483,6 +1484,8 @@ describe('ClientRunner', () => {
       swapPubkey: 'cd'.repeat(32),
       pair: EVM_PAIR,
       chainRecipient: EVM_RECIPIENT,
+      // #595: legacy is opt-in now — this suite exercises the legacy body.
+      rolling: 'auto' as const,
       swapSignerAddress: SWAP_SIGNER,
     });
 
@@ -1512,8 +1515,11 @@ describe('ClientRunner', () => {
     expect(res.claimsVerified).toBe(1);
     expect(res.claimsRejected).toBe(0);
     expect(res.valueReceived).toBe('999');
-    // Settlement metadata survived the round trip — no wire-skew warning.
-    expect(res.warning).toBeUndefined();
+    // Settlement metadata survived the round trip — no wire-skew warning. The
+    // only warning here is #595's legacy-path notice, which this call opted
+    // into explicitly (`rolling: 'auto'`).
+    expect(res.warning).not.toMatch(/swapSignerAddress/);
+    expect(res.warning).toMatch(/LEGACY/);
 
     // The verified claim is PERSISTED as the channel watermark, reflected in
     // the received-claims surface (`GET /swap/claims`).
@@ -1632,6 +1638,8 @@ describe('ClientRunner', () => {
       swapPubkey: 'cd'.repeat(32),
       pair,
       chainRecipient: 'SoLrecipient',
+      // #595: legacy is opt-in now — this suite exercises the legacy body.
+      rolling: 'auto' as const,
     });
 
     // Claims still surface (the payment already happened) …
@@ -1723,7 +1731,7 @@ describe('ClientRunner', () => {
     await logged.stop();
   });
 
-  it('[#585] senderConditions with no streamNonce no longer throws — the RFQ probe decides the path, and a maker that cannot answer keeps the legacy one', async () => {
+  it('[#585] senderConditions with no streamNonce no longer throws — the RFQ probe decides the path, and under explicit `auto` a maker that cannot answer keeps the legacy one', async () => {
     await runner.bootstrap();
     vi.mocked(streamSwap).mockClear();
     vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
@@ -1734,13 +1742,17 @@ describe('ClientRunner', () => {
     };
     // `swapPubkey` here is a placeholder, not a real secp256k1 point, so the
     // gift wrap cannot even be built — the harshest way the probe can fail.
-    // It STILL falls through to a working legacy swap rather than throwing.
+    // With `rolling: 'auto'` asked for explicitly it STILL falls through to a
+    // working legacy swap rather than throwing (#595 changed only the
+    // DEFAULT: `senderConditions` is not, and never was, a path selector).
     const res = await runner.swap({
       destination: 'g.proxy.swap',
       amount: '1000',
       swapPubkey: 'cd'.repeat(32),
       pair,
       chainRecipient: 'SoLrecipient',
+      // #595: legacy is opt-in now — this suite exercises the legacy body.
+      rolling: 'auto' as const,
       senderConditions: true,
     });
     expect(streamSwap).toHaveBeenCalledTimes(1);
@@ -1977,7 +1989,46 @@ describe('ClientRunner', () => {
     await r.stop();
   });
 
-  it('[#585] CONTROL — the SAME call against a maker with no RFQ intake completes SILENTLY on the legacy path', async () => {
+  it('[#595] the SAME call against a maker with no RFQ intake THROWS, naming the maker, its ILP address and the reason', async () => {
+    vi.mocked(streamSwap).mockClear();
+    const { runner: r, maker } = await rfqRunner((m) => {
+      m.rfqCapable = false;
+    });
+    const sendSpy = vi.spyOn(maker, 'sendSwapPacket');
+
+    const err = await r
+      .swap({
+        destination: 'g.proxy.swap',
+        amount: '1000',
+        swapPubkey: maker.pubkey,
+        pair: EVM_PAIR,
+        chainRecipient: EVM_RECIPIENT,
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    // The failure is the named one, not a silent downgrade.
+    expect(err).toBeInstanceOf(RollingUnavailableError);
+    const unavailable = err as RollingUnavailableError;
+    expect(unavailable.reason).toBe('rejected');
+    expect(unavailable.swapPubkey).toBe(maker.pubkey);
+    expect(unavailable.destination).toBe('g.proxy.swap');
+    expect(unavailable.probed).toBe(true);
+    // Everything a stranded caller needs is IN the message, not only in fields.
+    expect(unavailable.message).toContain(maker.pubkey);
+    expect(unavailable.message).toContain('g.proxy.swap');
+    expect(unavailable.message).toContain('rejected');
+    expect(unavailable.message).toContain('F06');
+    // Exactly ONE packet left this client: the probe. No legacy swap ran.
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(maker.sessions.size).toBe(0);
+    expect(streamSwap).not.toHaveBeenCalled();
+    await r.stop();
+  });
+
+  it('[#595] an explicit `rolling: "auto"` still falls back to legacy — annotated AND warned, never silent', async () => {
     vi.mocked(streamSwap).mockClear();
     const claim = await signedEvmClaim({
       nonce: '1',
@@ -1988,7 +2039,6 @@ describe('ClientRunner', () => {
     const { runner: r, maker } = await rfqRunner((m) => {
       m.rfqCapable = false;
     });
-    const sendSpy = vi.spyOn(maker, 'sendSwapPacket');
 
     const res = await r.swap({
       destination: 'g.proxy.swap',
@@ -1996,39 +2046,44 @@ describe('ClientRunner', () => {
       swapPubkey: maker.pubkey,
       pair: EVM_PAIR,
       chainRecipient: EVM_RECIPIENT,
+      rolling: 'auto',
     });
 
-    // Succeeded — no throw, no degraded result.
+    // Succeeded — the escape hatch still WORKS, unchanged.
     expect(res.accepted).toBe(true);
     expect(streamSwap).toHaveBeenCalledTimes(1);
-    // Exactly ONE packet left this client: the probe. No rolling fill was
-    // sent to a maker that never registered a session.
-    expect(sendSpy).toHaveBeenCalledTimes(1);
-    expect(maker.sessions.size).toBe(0);
-    // Silent, but not invisible.
     expect(res.rolling).toMatchObject({
       probed: true,
       used: false,
       fallbackReason: 'rejected',
     });
     expect(res.rolling?.fallbackMessage).toContain('F06');
+    // …and it is no longer possible to take the weaker path without seeing it.
+    expect(res.warning).toMatch(/LEGACY/);
+    expect(res.warning).toMatch(/rejected/);
     await r.stop();
   });
 
-  it('[#585] a probe that THROWS locally still falls back to legacy', async () => {
+  it('[#595] a probe that THROWS locally throws by default, and falls back under explicit `auto`', async () => {
     vi.mocked(streamSwap).mockClear();
     vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
     const { runner: r, maker } = await rfqRunner();
     vi.spyOn(maker, 'sendSwapPacket').mockRejectedValue(
       new Error('PEER_NOT_NEGOTIATED (g.proxy.swap)')
     );
-    const res = await r.swap({
+    const req = {
       destination: 'g.proxy.swap',
       amount: '1000',
       swapPubkey: maker.pubkey,
       pair: EVM_PAIR,
       chainRecipient: EVM_RECIPIENT,
-    });
+    };
+
+    await expect(r.swap(req)).rejects.toThrow(RollingUnavailableError);
+    await expect(r.swap(req)).rejects.toThrow(/PEER_NOT_NEGOTIATED/);
+    expect(streamSwap).not.toHaveBeenCalled();
+
+    const res = await r.swap({ ...req, rolling: 'auto' });
     expect(streamSwap).toHaveBeenCalledTimes(1);
     expect(res.rolling).toMatchObject({
       probed: true,
@@ -2038,7 +2093,7 @@ describe('ClientRunner', () => {
     await r.stop();
   });
 
-  it('[#585] `rolling: "require"` refuses instead of falling back, and says why', async () => {
+  it('[#595] an explicit `rolling: "require"` is the default, and refuses the same way', async () => {
     vi.mocked(streamSwap).mockClear();
     const { runner: r, maker } = await rfqRunner((m) => {
       m.rfqCapable = false;
@@ -2052,12 +2107,12 @@ describe('ClientRunner', () => {
         chainRecipient: EVM_RECIPIENT,
         rolling: 'require',
       })
-    ).rejects.toThrow(/rolling path is unavailable \(rejected\)/);
+    ).rejects.toThrow(/did not establish a rolling session \(reason: rejected\)/);
     expect(streamSwap).not.toHaveBeenCalled();
     await r.stop();
   });
 
-  it('[#585] `rolling: "off"` pays for no probe at all', async () => {
+  it('[#595] `rolling: "off"` pays for no probe at all — and says so on the response', async () => {
     vi.mocked(streamSwap).mockClear();
     vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
     const { runner: r, maker } = await rfqRunner();
@@ -2073,11 +2128,18 @@ describe('ClientRunner', () => {
     expect(sendSpy).not.toHaveBeenCalled();
     expect(maker.rfqRequests).toHaveLength(0);
     expect(streamSwap).toHaveBeenCalledTimes(1);
-    expect(res.rolling).toBeUndefined();
+    // #595: it used to leave NO `rolling` block at all, so a legacy swap was
+    // indistinguishable from a rolling one downstream.
+    expect(res.rolling).toMatchObject({
+      probed: false,
+      used: false,
+      fallbackReason: 'off',
+    });
+    expect(res.warning).toMatch(/LEGACY/);
     await r.stop();
   });
 
-  it('[#585] `swapDefaults.rolling: "off"` turns the probe off daemon-wide', async () => {
+  it('[#595] `swapDefaults.rolling: "off"` turns the probe off daemon-wide, still annotated', async () => {
     vi.mocked(streamSwap).mockClear();
     vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
     const maker = new FakeRfqMakerClient();
@@ -2087,7 +2149,7 @@ describe('ClientRunner', () => {
       createRelay: fakeRelay,
     });
     await r.bootstrap();
-    await r.swap({
+    const res = await r.swap({
       destination: 'g.proxy.swap',
       amount: '1000',
       swapPubkey: maker.pubkey,
@@ -2096,6 +2158,30 @@ describe('ClientRunner', () => {
     });
     expect(maker.rfqRequests).toHaveLength(0);
     expect(streamSwap).toHaveBeenCalledTimes(1);
+    expect(res.rolling).toMatchObject({ fallbackReason: 'off' });
+    await r.stop();
+  });
+
+  it('[#595] `swapDefaults.rolling: "auto"` restores the fleet-wide fallback for one release', async () => {
+    vi.mocked(streamSwap).mockClear();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
+    const maker = new FakeRfqMakerClient();
+    maker.rfqCapable = false;
+    const r = new ClientRunner({
+      config: makeConfig({ swapDefaults: { rolling: 'auto' } }),
+      createClient: () => maker,
+      createRelay: fakeRelay,
+    });
+    await r.bootstrap();
+    const res = await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+    });
+    expect(streamSwap).toHaveBeenCalledTimes(1);
+    expect(res.rolling).toMatchObject({ used: false, probed: true });
     await r.stop();
   });
 
@@ -2115,19 +2201,25 @@ describe('ClientRunner', () => {
     await r.stop();
   });
 
-  it('[#585] a client that cannot state its own receive address never opens a session whose leg B cannot arrive', async () => {
+  it('[#585/#595] a client that cannot state its own receive address never opens a session whose leg B cannot arrive — and now says so out loud', async () => {
     vi.mocked(streamSwap).mockClear();
     vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
     const { runner: r, maker } = await rfqRunner((m) => {
       m.ownIlpAddress = undefined;
     });
-    const res = await r.swap({
+    const req = {
       destination: 'g.proxy.swap',
       amount: '1000',
       swapPubkey: maker.pubkey,
       pair: EVM_PAIR,
       chainRecipient: EVM_RECIPIENT,
-    });
+    };
+    // A LOCAL reason still names itself rather than downgrading quietly.
+    await expect(r.swap(req)).rejects.toThrow(/no-sender-address/);
+    expect(maker.rfqRequests).toHaveLength(0);
+    expect(streamSwap).not.toHaveBeenCalled();
+
+    const res = await r.swap({ ...req, rolling: 'auto' });
     expect(maker.rfqRequests).toHaveLength(0);
     expect(res.rolling).toMatchObject({
       probed: false,
@@ -2396,6 +2488,8 @@ describe('ClientRunner', () => {
       swapPubkey: 'cd'.repeat(32),
       pair,
       chainRecipient: 'SoLrecipient',
+      // #595: legacy is opt-in now — this suite exercises the legacy body.
+      rolling: 'auto' as const,
     });
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
@@ -2438,6 +2532,8 @@ describe('ClientRunner', () => {
       swapPubkey: 'cd'.repeat(32),
       pair,
       chainRecipient: 'SoLrecipient',
+      // #595: legacy is opt-in now — this suite exercises the legacy body.
+      rolling: 'auto' as const,
     });
     expect(res.accepted).toBe(false);
     expect(res.packetsAccepted).toBe(0);
@@ -2459,6 +2555,10 @@ describe('ClientRunner', () => {
     swapPubkey: 'cd'.repeat(32),
     pair: DEFENSE_PAIR,
     chainRecipient: 'SoLrecipient',
+    // #595: the #351 sender defenses under test here are `streamSwap`
+    // features, so this fixture asks for the legacy path EXPLICITLY. Under
+    // the default (`rolling: 'require'`) an unanswered probe now throws.
+    rolling: 'auto' as const,
   };
   /** Minimal completed StreamSwapResult, override what the test needs. */
   function defenseSwapResult(
@@ -2853,6 +2953,10 @@ describe('ClientRunner', () => {
     swapPubkey: 'cd'.repeat(32),
     pair: EVM_PAIR,
     chainRecipient: EVM_RECIPIENT,
+    // #595: these suites are about receive-side claim ingestion on the LEGACY
+    // path, which is opt-in now — the default `rolling: 'require'` throws when
+    // the probe (unbuildable against this placeholder pubkey) fails.
+    rolling: 'auto' as const,
     ...over,
   });
 
@@ -3497,6 +3601,8 @@ describe('ClientRunner multi-target', () => {
       swapPubkey: 'cd'.repeat(32),
       pair: EVM_PAIR,
       chainRecipient: EVM_RECIPIENT,
+      // #595: legacy is opt-in now — this suite exercises the legacy body.
+      rolling: 'auto' as const,
       btpUrl: 'ws://apex2.example/btp',
     });
 
@@ -3556,6 +3662,8 @@ describe('ClientRunner multi-target', () => {
       swapPubkey: 'cd'.repeat(32),
       pair: EVM_PAIR,
       chainRecipient: EVM_RECIPIENT,
+      // #595: legacy is opt-in now — this suite exercises the legacy body.
+      rolling: 'auto' as const,
       // NO btpUrl — the destination alone must find its apex.
     });
 
