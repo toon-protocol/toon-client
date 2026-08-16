@@ -2865,6 +2865,70 @@ describe('ClientRunner multi-target', () => {
     await runner.stop();
   });
 
+  // Same maker, no `btpUrl` on the request. The negotiation for a registered
+  // apex is injected into THAT apex's client alone, under the peer id
+  // `resolvePeerId` returns for its destination (`g.toon.swap.maker` →
+  // `maker`). Defaulting the swap to the config-seeded apex therefore hands
+  // `sendSwapPacket` a destination that client never negotiated: resolution
+  // falls back to the raw destination as the key, nothing is registered under
+  // a full ILP address, and every packet dies locally with
+  // `No negotiation metadata for peer "g.toon.swap.maker"` (observed on
+  // devnet). The destination must pick the apex that owns it.
+  it('swap without btpUrl streams on the apex that OWNS the destination, whose client holds the negotiation', async () => {
+    const { createRelay, emit } = relayFactory();
+    const created: FakeClient[] = [];
+    const runner = new ClientRunner({
+      config: makeConfig({
+        relayUrl: 'ws://relay.test',
+        apexChannelStorePath: join(dir, 'apex-channels.json'),
+      }),
+      createClient: () => {
+        const c = new FakeClient();
+        created.push(c);
+        return c;
+      },
+      createRelay,
+      targetsPath,
+    });
+    runner.start();
+    emit(
+      'ws://relay.test',
+      'apex-discovery-g.toon.swap.maker',
+      apexAnnouncement('g.toon.swap.maker')
+    );
+    await runner.addApex({
+      ilpAddress: 'g.toon.swap.maker',
+      relayUrl: 'ws://relay.test',
+    });
+    await runner.bootstrap();
+
+    vi.mocked(streamSwap).mockClear();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
+    await runner.swap({
+      destination: 'g.toon.swap.maker',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      // NO btpUrl — the destination alone must find its apex.
+    });
+
+    const defaultClient = created[0];
+    const makerClient = created[1];
+    expect(makerClient).toBeDefined();
+    const usedClient = vi.mocked(streamSwap).mock.calls[0]?.[0].client;
+    expect(usedClient).toBe(makerClient);
+    expect(usedClient).not.toBe(defaultClient);
+    // The seam the live send resolves through: the negotiation is registered
+    // under the peer id, on the client the swap actually streams on — so
+    // `resolvePeerId('g.toon.swap.maker')` hits `maker` on identity and never
+    // rides `peerIdForClaim`'s raw-destination fallback.
+    expect(makerClient?.peerNegotiations.has('maker')).toBe(true);
+    expect(makerClient?.peerNegotiations.has('g.toon.swap.maker')).toBe(false);
+    expect(defaultClient?.peerNegotiations.has('maker')).toBe(false);
+    await runner.stop();
+  });
+
   it('swap to an unregistered apex throws TargetError instead of silently using the default', async () => {
     const { runner } = build();
     runner.start();

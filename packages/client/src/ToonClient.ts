@@ -1613,7 +1613,8 @@ export class ToonClient {
       if (!negotiation) {
         throw new ToonClientError(
           `No negotiation metadata for peer "${peerId}" — was bootstrap completed?` +
-            " (and the route's x402 greeting carried no settlement facts to bootstrap from)",
+            " (and the route's x402 greeting carried no settlement facts to bootstrap from)" +
+            this.rawDestinationKeyHint(destination, peerId),
           'PEER_NOT_NEGOTIATED'
         );
       }
@@ -1708,7 +1709,8 @@ export class ToonClient {
     if (!negotiation) {
       throw new ToonClientError(
         `No negotiation metadata for peer "${peerId}" — was bootstrap completed?` +
-          " (and the route's x402 greeting carried no settlement facts to bootstrap from)",
+          " (and the route's x402 greeting carried no settlement facts to bootstrap from)" +
+          this.rawDestinationKeyHint(dest, peerId),
         'PEER_NOT_NEGOTIATED'
       );
     }
@@ -2446,6 +2448,35 @@ export class ToonClient {
     } catch {
       return destination;
     }
+  }
+
+  /**
+   * The extra sentence a `PEER_NOT_NEGOTIATED` error carries when the peer id
+   * IS the raw destination — the signature of {@link peerIdForClaim}'s
+   * `PEER_NOT_FOUND` fallback, and the ONLY case where the greeting bootstrap
+   * was the last hope. Nothing is ever registered under a full ILP address, so
+   * that lookup could not have hit on identity: this client holds no
+   * negotiation for `destination` at all.
+   *
+   * Worth saying out loud because the daemon runs ONE `ToonClient` per apex
+   * and injects a `toon_add_apex` target's negotiation into that client alone
+   * (`injectApexNegotiation`, under the peer id `resolvePeerId` returns —
+   * `g.toon.swap.maker` → `maker`). A swap or publish streamed on a DIFFERENT
+   * apex's client therefore reads exactly like a bootstrap that never
+   * happened. Listing the peers this client did negotiate names the real
+   * fault instead of leaving the fallback silent.
+   */
+  private rawDestinationKeyHint(destination: string, peerId: string): string {
+    if (peerId !== destination) return '';
+    const known = [...this.peerNegotiations.keys()];
+    return (
+      ` NOTE: "${peerId}" is the DESTINATION, not a peer id — no negotiation is ` +
+      'ever registered under a full ILP address, so this client holds none for ' +
+      'it. Negotiated peers on this client: ' +
+      (known.length > 0 ? known.join(', ') : '(none)') +
+      '. If the destination belongs to a registered apex, the write must go ' +
+      "out on THAT apex's client."
+    );
   }
 
   /**
