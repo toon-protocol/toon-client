@@ -49,6 +49,7 @@ import {
   type UploadReceipt,
 } from '../publisher.js';
 import {
+  counterpartyMatch,
   recordKey,
   type ChannelMapRecord,
   type ChannelMapStore,
@@ -608,6 +609,35 @@ export class StandalonePublisher implements Publisher {
         continue;
       }
 
+      // ...and it must still be the SAME counterparty. The map key is
+      // `identity|destination|chain|tokenNetwork` — it names a ROUTE, and a
+      // route can change hands (the devnet apex `g.toon` was retired and
+      // another node took over `g.toon.relay`). All four key fields kept
+      // matching, so rig resumed a channel opened against the retired node
+      // and signed claims against it; the new connector holds no record of
+      // that channel and refused every packet with `F01 - claim rejected:
+      // names a channel this connector has no record of`. Re-checking the
+      // announced settlement address turns that dead end into a
+      // re-resolution: the record is superseded (kept, so its on-chain
+      // deposit stays reachable from `rig channel`, but never resumed again)
+      // and `openChannel` below binds whatever channel this identity holds
+      // with the CURRENT counterparty — an existing one where there is one,
+      // which is the whole point of not hard-erroring.
+      const announced = negotiation.settlementAddress;
+      const counterparty = counterpartyMatch(record, announced);
+      if (counterparty === 'mismatch') {
+        this.warn(
+          `rig: recorded channel ${record.channelId} for ${record.destination} ` +
+            `was opened against counterparty ${record.context.recipient} but ` +
+            `${record.destination} now announces ${announced} — the node ` +
+            'terminating that route was replaced. Re-resolving the channel; ' +
+            `the old record is kept in ${map.mapPath} (superseded) so ` +
+            '`rig channel list/close/settle` can still reclaim its deposit.'
+        );
+        map.supersede(record);
+        continue;
+      }
+
       // Never resume a channel the withdraw flow already closed/settled.
       const watermark = map.readWatermark(record.channelId);
       if (
@@ -629,10 +659,25 @@ export class StandalonePublisher implements Publisher {
         );
       }
 
+      // MIGRATION: records written before the counterparty was validated (and
+      // peers that announced no settlement address at open time) carry no
+      // `context.recipient`. There is nothing to contradict, so the resume
+      // proceeds — but with the announced address filled in, both for this
+      // run's `trackChannel` (Solana/Mina proofs need a recipient) and, below,
+      // written back so the NEXT run is verifiable rather than unverifiable
+      // forever.
+      const context =
+        counterparty === 'unrecorded' && announced
+          ? { ...record.context, recipient: announced }
+          : record.context;
+
       // trackChannel rehydrates nonce/cumulative from the watermark store;
       // seeding peerChannels makes ensureChannel/openChannel reuse the id.
-      cm.trackChannel(record.channelId, record.context);
+      cm.trackChannel(record.channelId, context);
       cm.peerChannels.set(record.peerId, record.channelId);
+      if (context !== record.context) {
+        map.touch(recordKey(record), { recipient: announced });
+      }
 
       // Persisted channel state omits the on-chain deposit — re-read it so
       // fee/balance accounting is right (EVM only; mirrors the daemon).

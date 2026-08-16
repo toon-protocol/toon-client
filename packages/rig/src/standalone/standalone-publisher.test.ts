@@ -990,6 +990,100 @@ describe('StandalonePublisher', () => {
       expect(callsB.onChainOpens).toBe(1);
     });
 
+    // Regression: the map key is `identity|destination|chain|tokenNetwork` —
+    // it names a ROUTE, and a route can change hands (the devnet apex
+    // `g.toon` was retired 2026-08-14 and another node took over
+    // `g.toon.relay`). Every key field still matched, so rig resumed a
+    // channel opened against the retired node and signed claims against it;
+    // the new connector had no record of it and refused every packet with
+    // `F01 - claim rejected: names a channel this connector has no record
+    // of`. Deleting the cache entry by hand was the only recovery.
+    it('a REPLACED counterparty (same route, new node) is never resumed — it re-resolves', async () => {
+      const { client: clientA } = mockChannelClient();
+      const runA = buildPersistent(clientA);
+      await runA.publishEvent(EVENT, []);
+      await runA.stop();
+      expect(map.list()[0]?.context.recipient).toBe(
+        NEGOTIATION.settlementAddress
+      );
+
+      // Same peer, same chain, same tokenNetwork — only the settlement
+      // address changed, exactly what a node takeover looks like from here.
+      const takeover = new Map([
+        [
+          PEER_ID,
+          { ...NEGOTIATION, settlementAddress: '0x' + '55'.repeat(20) },
+        ],
+      ]);
+      const { client: clientB, calls: callsB } = mockChannelClient({
+        negotiations: takeover,
+      });
+      const runB = buildPersistent(clientB);
+      await runB.publishEvent(EVENT, []);
+      await runB.stop();
+
+      // The dead channel is neither tracked nor claimed against.
+      expect(callsB.trackChannel).toEqual([]);
+      expect(callsB.claims).toEqual([{ channelId: '0xchannel-1', amount: 1n }]);
+      expect(warnings.join('\n')).toMatch(/was opened against counterparty/);
+
+      // The stale record is retired from the resume path but KEPT, so its
+      // on-chain deposit stays reachable from `rig channel close/settle`.
+      const records = map.list();
+      expect(records).toHaveLength(2);
+      const retired = records.find((r) => r.supersededAt !== undefined);
+      expect(retired?.context.recipient).toBe(NEGOTIATION.settlementAddress);
+      const live = map.listFor(PUBKEY, ANCHOR);
+      expect(live).toHaveLength(1);
+      expect(live[0]?.context.recipient).toBe('0x' + '55'.repeat(20));
+
+      // Run 3 (still the takeover node) resumes the re-resolved channel —
+      // the supersession is not a per-run re-open.
+      const { client: clientC, calls: callsC } = mockChannelClient({
+        negotiations: takeover,
+      });
+      const runC = buildPersistent(clientC);
+      await runC.publishEvent(EVENT, []);
+      await runC.stop();
+      expect(callsC.onChainOpens).toBe(0);
+    });
+
+    // Migration: entries written before the counterparty was validated carry
+    // no `context.recipient`. Nothing contradicts the announce, so they still
+    // resume (no fresh on-chain open, no hand-editing) — and get enriched so
+    // the NEXT run is verifiable.
+    it('a record with NO recorded counterparty resumes and is back-filled from the announce', async () => {
+      const { client: clientA } = mockChannelClient();
+      const runA = buildPersistent(clientA);
+      await runA.publishEvent(EVENT, []);
+      await runA.stop();
+
+      const mapPath = join(stateDir, 'rig-channels.json');
+      const raw = JSON.parse(readFileSync(mapPath, 'utf8')) as {
+        channels: Record<string, { context: { recipient?: string } }>;
+      };
+      for (const record of Object.values(raw.channels)) {
+        delete record.context.recipient; // the pre-validation shape
+      }
+      writeFileSync(mapPath, JSON.stringify(raw, null, 2));
+
+      const { client: clientB, calls: callsB } = mockChannelClient();
+      const runB = buildPersistent(clientB);
+      await runB.publishEvent(EVENT, []);
+      await runB.stop();
+
+      expect(callsB.onChainOpens).toBe(0); // resumed, not re-opened
+      // trackChannel got the announced recipient (Solana/Mina proofs need it).
+      expect(callsB.trackChannel[0]?.context.recipient).toBe(
+        NEGOTIATION.settlementAddress
+      );
+      // …and the record now carries it, so the next run can verify it.
+      expect(map.list()[0]?.context.recipient).toBe(
+        NEGOTIATION.settlementAddress
+      );
+      expect(warnings).toEqual([]);
+    });
+
     it('without a channelMap nothing is recorded (historical behaviour)', async () => {
       const { client, calls } = mockChannelClient();
       const publisher = build(client); // no channelMap
