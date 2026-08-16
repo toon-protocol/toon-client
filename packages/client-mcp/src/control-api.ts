@@ -401,8 +401,17 @@ export interface SwapRequest {
   /** Split the swap into N equal packets (default 1). */
   packetCount?: number;
   /**
-   * Which apex to settle the source-asset claim through (default: the
-   * config-seeded apex). The swap peer must be a child peer of this apex.
+   * Which apex to send the swap on and settle the source-asset claim through
+   * (default: the config-seeded apex). The swap peer must be reachable from
+   * the apex this names — either as one of its child peers, or, for a
+   * DIRECT-DIALLED maker (one deliberately kept out of a relay connector's
+   * routing table and reached at its own advertised `btpEndpoint`), by
+   * naming the maker's OWN apex here after registering it with
+   * `POST /apexes` (`toon_add_apex`). Selection is by BTP URL only — the
+   * daemon keys its apex map on `btpUrl` (`ClientRunner.selectApex`), the
+   * same selector `POST /publish` uses; there is no ILP-destination selector.
+   * Without it every swap goes to the seeded apex, where an unrouted
+   * destination fails peer resolution (`PEER_NOT_NEGOTIATED`).
    */
   btpUrl?: string;
   /**
@@ -547,6 +556,29 @@ export interface SwapRejection {
   message: string;
 }
 
+/**
+ * One packet that never reached the maker: it THREW before (or while) being
+ * sent, so there is no ILP rejection to report. The sdk records these on
+ * `StreamSwapResult.errors` (`stream_swap.wrap_failed` /
+ * `stream_swap.send_failed`) — distinct from {@link SwapRejection}, which is a
+ * packet the maker/connector answered with a REJECT.
+ *
+ * The distinction is load-bearing for diagnosis: the sdk's `finalizeResult`
+ * rewrites `abortReason` to `'all-rejected'` only when there were rejections
+ * and NO errors, so `state: 'failed'` with `abortReason: 'complete'` and zero
+ * packets accepted means every packet died on THIS side — read `errors` for
+ * why (e.g. `PEER_NOT_NEGOTIATED`: the destination is not routable from the
+ * selected apex — see `SwapRequest.btpUrl`).
+ */
+export interface SwapError {
+  /** 0-indexed packet number. */
+  packetIndex: number;
+  /** The thrown error's message (the sdk's `cause.message`). */
+  message: string;
+  /** The thrown error's constructor name, when it carries one (e.g. `TargetError`). */
+  name?: string;
+}
+
 /** One accumulated, decrypted claim harvested from a single swap packet. */
 export interface SwapClaim {
   /** Source-asset amount sent for this packet (micro-units, decimal). */
@@ -617,7 +649,13 @@ export interface SwapResponse {
    * Why the stream ended (sdk `StreamSwapResult.abortReason`): `'complete'`,
    * `'aborted'` (signal / `timeoutMs`), `'stopped'`, `'callback-stop'`,
    * `'callback-throw'`, `'rate-deviation'`, `'below-floor'` (floor breach —
-   * pairs with a `BELOW_FLOOR` rejection), or `'all-rejected'`.
+   * pairs with a `BELOW_FLOOR` rejection), `'receipt-invalid'`, or
+   * `'all-rejected'`.
+   *
+   * Diagnostic note: the sdk only rewrites `'complete'` → `'all-rejected'`
+   * when there were rejections and NO errors, so `state: 'failed'` +
+   * `abortReason: 'complete'` + `packetsAccepted: 0` is the signature of the
+   * LOCAL error path — read {@link SwapResponse.errors}.
    */
   abortReason?: string;
   /**
@@ -630,6 +668,13 @@ export interface SwapResponse {
   packetsTruncated?: boolean;
   /** Per-packet rejections (floor breaches, maker rejects, stale-rate T99s). */
   rejections?: SwapRejection[];
+  /**
+   * Per-packet LOCAL failures: packets that threw before the maker ever
+   * answered (gift-wrap build failure, transport/peer-resolution throw). See
+   * {@link SwapError} — without this a swap that failed entirely on this side
+   * reported only `abortReason: 'complete'` with nothing else to go on.
+   */
+  errors?: SwapError[];
   /**
    * Realized-rate summary: `cumulativeTarget / cumulativeSource` in WHOLE
    * units (scale-adjusted per the pair). Display-only number; compare against

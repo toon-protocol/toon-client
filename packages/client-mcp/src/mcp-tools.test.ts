@@ -254,6 +254,47 @@ describe('dispatchTool', () => {
     });
   });
 
+  // A DIRECT-DIALLED maker (deliberately absent from the relay connector's
+  // routing table, reached at its own advertised btpEndpoint) is addressable
+  // ONLY by naming its apex. `SwapRequest.btpUrl` already existed and
+  // `POST /swap` already forwarded the whole body — the MCP tool was the one
+  // surface that dropped it, so every swap from an agent went to the seeded
+  // apex and failed peer resolution.
+  it('toon_swap forwards btpUrl so a non-default (direct-dialled) apex is addressable', async () => {
+    const swap = vi.fn().mockResolvedValue({ accepted: true, claims: [] });
+    const client = stubClient({ swap });
+    const pair = {
+      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+      rate: '1.0',
+    };
+    await dispatchTool(client, 'toon_swap', {
+      destination: 'g.toon.swap.maker',
+      amount: '100',
+      swapPubkey: 'cd'.repeat(32),
+      pair,
+      chainRecipient: 'SoLrecipient',
+      btpUrl: 'wss://proxy.relay.devnet.toonprotocol.dev/swap/ilp/btp',
+    });
+    expect(swap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destination: 'g.toon.swap.maker',
+        btpUrl: 'wss://proxy.relay.devnet.toonprotocol.dev/swap/ilp/btp',
+      })
+    );
+  });
+
+  it('toon_swap declares btpUrl in its input schema (the tool is the only surface that gates it)', () => {
+    const swapTool = TOOL_DEFINITIONS.find((t) => t.name === 'toon_swap');
+    expect(swapTool).toBeDefined();
+    const props = swapTool?.inputSchema['properties'] as
+      | Record<string, unknown>
+      | undefined;
+    expect(props?.['btpUrl']).toMatchObject({ type: 'string' });
+    // Optional: the seeded apex stays the default.
+    expect(swapTool?.inputSchema['required']).not.toContain('btpUrl');
+  });
+
   it('toon_balances returns the wallet balances as structuredContent (iframe seam)', async () => {
     const payload = {
       balances: [{ chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 }],
