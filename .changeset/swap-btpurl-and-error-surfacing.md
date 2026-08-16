@@ -1,0 +1,11 @@
+---
+"@toon-protocol/client-mcp": patch
+---
+
+Make swap failures both reachable and visible: `toon_swap` gains `btpUrl`, and the daemon stops swallowing the sdk's `errors[]`.
+
+Two independent defects made a failing swap impossible to address and impossible to diagnose.
+
+**`toon_swap` could not address any apex but the default.** The daemon's `swap()` has always selected its apex client via `selectApex(req.btpUrl)`, `SwapRequest.btpUrl` has always existed on the control API, and `POST /swap` has always forwarded the whole body — but the MCP tool schema never exposed `btpUrl`, so every swap issued from an agent surface went out on the config-seeded apex. A DIRECT-DIALLED maker — one deliberately kept out of a relay connector's routing table and reached at its own advertised `btpEndpoint` — was therefore unreachable from the MCP surface entirely, no matter that `toon_add_apex` could register it. `toon_swap` now takes `btpUrl` and forwards it, matching `toon_publish`. Selection stays keyed on BTP URL only (the daemon's apex map is keyed that way); no second ILP-destination selector was introduced.
+
+**Swap errors were silently swallowed.** A packet that THROWS before it is sent lands on the sdk's `StreamSwapResult.errors[]`, not `rejections[]`. The daemon's response mapper read only `rejections`, and `SwapResponse` had no `errors` field at all — so a swap that failed 100% locally returned nothing but `{accepted:false, packetsAccepted:0, state:'failed', abortReason:'complete'}`. Separately, `streamSwap` was called with no `logger`, so the sdk fell back to its no-op default and its `stream_swap.wrap_failed` / `stream_swap.send_failed` diagnostics were written nowhere. `SwapResponse` now carries a typed `errors[]` (`packetIndex`, `message`, `name`), a matching `warning`, a `code: 'LOCAL_SEND_FAILED'` fallback when there is no maker reject to report, and the daemon logger is threaded into `streamSwap`. The `abortReason: 'complete'` + `state: 'failed'` pair is preserved rather than papered over: the sdk only rewrites `'complete'` to `'all-rejected'` when there are rejections and NO errors, so that exact shape is the signature of the local error path and is now documented as such.

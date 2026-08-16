@@ -126,6 +126,7 @@ import type {
   SwapPacketOutcome,
   SwapResponse,
   SwapClaim,
+  SwapError,
   SwapRejection,
   ListSwapClaimsResponse,
   ReceivedClaimInfo,
@@ -1880,6 +1881,21 @@ export class ClientRunner {
    * - **Abort** — `req.timeoutMs` arms an `AbortSignal`; on expiry in-flight
    *   packets drain and the partial fill is reported exactly (partial
    *   `claims`, cumulatives, `state`/`abortReason`).
+   *
+   * Apex selection: `req.btpUrl` picks WHICH apex client the swap streams on
+   * ({@link selectApex}, keyed on BTP URL exactly as `publish` is). This is
+   * the only way to reach a DIRECT-DIALLED maker — one deliberately absent
+   * from a relay connector's routing table, reachable at its own advertised
+   * `btpEndpoint` after `addApex` registers it. Unset, the swap goes to the
+   * config-seeded apex, where an unrouted destination fails peer resolution
+   * and lands on the local-error path below.
+   *
+   * Failure visibility: `streamSwap` reports two DIFFERENT failure kinds —
+   * `rejections[]` (the maker/connector answered REJECT) and `errors[]` (the
+   * packet threw before it was ever sent). Both are mapped onto the response
+   * and the daemon's own logger is handed to the sdk, so a swap that failed
+   * entirely on this side says why instead of returning a bare
+   * `abortReason: 'complete'`.
    */
   async swap(req: SwapRequest): Promise<SwapResponse> {
     const apex = this.selectApex(req.btpUrl);
@@ -1994,6 +2010,11 @@ export class ClientRunner {
       ...(req.timeoutMs !== undefined
         ? { signal: AbortSignal.timeout(req.timeoutMs) }
         : {}),
+      // Without this the sdk falls back to a NO-OP logger and every
+      // `stream_swap.*` diagnostic — including `wrap_failed` / `send_failed`,
+      // the only account of a packet that never reached the maker — is
+      // written nowhere. Route them into the daemon log.
+      logger: this.structuredLogger('swap'),
     });
     const firstReject = result.rejections[0];
 
@@ -2110,6 +2131,36 @@ export class ClientRunner {
       );
     }
 
+    // Packets that THREW before the maker ever answered (the sdk's
+    // `errors[]`: gift-wrap build failure, transport/peer-resolution throw).
+    // These were previously dropped on the floor entirely — a swap that
+    // failed 100% locally returned `abortReason: 'complete'` and nothing
+    // else, because the sdk only rewrites that to 'all-rejected' when there
+    // are rejections and NO errors.
+    const errors: SwapError[] = result.errors.map((e) => ({
+      packetIndex: e.packetIndex,
+      message: errMsg(e.cause),
+      ...(e.cause instanceof Error && e.cause.name
+        ? { name: e.cause.name }
+        : {}),
+    }));
+    const firstError = errors[0];
+    if (firstError) {
+      warnings.push(
+        `${errors.length} packet(s) FAILED LOCALLY and never reached the ` +
+          `maker (first: ${firstError.name ?? 'Error'} — ` +
+          `${firstError.message}). See errors[]. A destination that is not ` +
+          'routable from the selected apex fails here — name the apex that ' +
+          'can reach it via `btpUrl` (toon_targets / toon_add_apex).'
+      );
+      for (const e of errors) {
+        this.log(
+          `[runner] swap: packet ${e.packetIndex} FAILED LOCALLY — ` +
+            `${e.name ?? 'Error'}: ${e.message}`
+        );
+      }
+    }
+
     const hadIngestibleClaims =
       ingest.revealed.length + ingest.rejected.length > 0;
     return {
@@ -2136,11 +2187,17 @@ export class ClientRunner {
             })),
           }
         : {}),
+      ...(errors.length > 0 ? { errors } : {}),
       ...(realizedRate !== undefined ? { realizedRate } : {}),
       ...(minExchangeRate !== undefined ? { minExchangeRate } : {}),
+      // A maker REJECT is the more specific diagnosis, so it wins `code` /
+      // `message`; with no reject at all, a local throw is what there is to
+      // report — without this fallback the failure had no message anywhere.
       ...(firstReject
         ? { code: firstReject.code, message: firstReject.message }
-        : {}),
+        : firstError
+          ? { code: 'LOCAL_SEND_FAILED', message: firstError.message }
+          : {}),
       ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
       ...(hadIngestibleClaims
         ? {
@@ -3002,6 +3059,39 @@ export class ClientRunner {
 
   // ── internals ────────────────────────────────────────────────────────────
 
+  /**
+   * Adapt the daemon's line-oriented `log` to the pino-shaped logger the sdk
+   * expects (`{ debug, info, warn, error }`, each called with ONE structured
+   * event object). The daemon has no pino, so each event is flattened to a
+   * single readable line — the alternative (the sdk's default) is a no-op
+   * logger that drops `stream_swap.wrap_failed` / `send_failed` on the floor.
+   */
+  private structuredLogger(scope: string): {
+    debug: (...a: unknown[]) => void;
+    info: (...a: unknown[]) => void;
+    warn: (...a: unknown[]) => void;
+    error: (...a: unknown[]) => void;
+  } {
+    const emit =
+      (level: string) =>
+      (...args: unknown[]): void => {
+        try {
+          const parts = args.map((a) =>
+            typeof a === 'string' ? a : formatStructuredEvent(a)
+          );
+          this.log(`[runner] ${scope} ${level}: ${parts.join(' ')}`);
+        } catch {
+          // Logging must never be able to break the operation it describes.
+        }
+      };
+    return {
+      debug: emit('debug'),
+      info: emit('info'),
+      warn: emit('warn'),
+      error: emit('error'),
+    };
+  }
+
   private selectApex(btpUrl?: string): ApexConnection {
     if (btpUrl) {
       const apex = this.apexes.get(btpUrl);
@@ -3295,6 +3385,28 @@ function safe<T>(fn: () => T): T | undefined {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Flatten one structured log event (the sdk calls its logger with a single
+ * object, pino-style) into a `k=v` line the daemon's line logger can carry.
+ * Falls back to `String(value)` for anything unserializable — a logger that
+ * throws would take the operation down with it.
+ */
+function formatStructuredEvent(value: unknown): string {
+  if (value === null || typeof value !== 'object') return String(value);
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) return '{}';
+  return entries
+    .map(([k, v]) => {
+      if (v === null || v === undefined) return `${k}=${String(v)}`;
+      if (typeof v === 'object') {
+        const json = safe(() => JSON.stringify(v));
+        return `${k}=${json ?? String(v)}`;
+      }
+      return `${k}=${String(v)}`;
+    })
+    .join(' ');
 }
 
 /** Filesystem-safe slug for a per-apex channel-store filename. */

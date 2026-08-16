@@ -676,6 +676,17 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             '(from kind:10032 discovery). When set, received claims signed by ' +
             'any other address are rejected (SWAP_SIGNER_MISMATCH).',
         },
+        btpUrl: {
+          type: 'string',
+          description:
+            'Which apex (BTP write target) to send the swap through (default: ' +
+            'the config-seeded apex). Use toon_targets to list registered ' +
+            'apexes and toon_add_apex to register one. A DIRECT-DIALLED maker ' +
+            "— one absent from the default apex's routing table, reachable " +
+            'only at its own btpEndpoint — is addressable ONLY this way; ' +
+            'without it the swap goes to the seeded apex and fails peer ' +
+            'resolution (PEER_NOT_NEGOTIATED).',
+        },
       },
       required: [
         'destination',
@@ -1247,6 +1258,9 @@ export async function dispatchTool(
               : {}),
             ...(typeof args['swapSignerAddress'] === 'string'
               ? { swapSignerAddress: args['swapSignerAddress'] }
+              : {}),
+            ...(typeof args['btpUrl'] === 'string'
+              ? { btpUrl: args['btpUrl'] }
               : {}),
           })
         );

@@ -1385,6 +1385,86 @@ describe('ClientRunner', () => {
     expect(res.warning).toMatch(/millSignerAddress/);
   });
 
+  // A packet that THROWS before it is sent lands on the sdk's `errors[]`, not
+  // `rejections[]`. The runner used to map only `rejections`, so this whole
+  // class of failure came back as a bare
+  // `{accepted:false, packetsAccepted:0, state:'failed', abortReason:'complete'}`
+  // with no cause anywhere — the sdk only rewrites 'complete' → 'all-rejected'
+  // when there are rejections and NO errors, so that exact shape IS the
+  // signature of the local error path.
+  it('swap surfaces sdk errors[] when a packet throws before it is sent — not a bare abortReason:"complete"', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockResolvedValue({
+      state: 'failed',
+      claims: [],
+      rejections: [],
+      errors: [
+        {
+          packetIndex: 0,
+          cause: Object.assign(
+            new Error(
+              'sendSwapPacket failed: PEER_NOT_NEGOTIATED (g.toon.swap.maker)'
+            ),
+            { name: 'TargetError' }
+          ),
+        },
+      ],
+      abortReason: 'complete',
+      cumulativeSource: 0n,
+      cumulativeTarget: 0n,
+      packetsSent: 0,
+      packetsScheduled: 1,
+    } as unknown as Awaited<ReturnType<typeof streamSwap>>);
+
+    const res = await runner.swap(swapReq());
+
+    expect(res.accepted).toBe(false);
+    expect(res.packetsAccepted).toBe(0);
+    // The diagnostic pair is preserved as-is …
+    expect(res.state).toBe('failed');
+    expect(res.abortReason).toBe('complete');
+    // … and the cause is now reachable without a debugger.
+    expect(res.errors).toHaveLength(1);
+    expect(res.errors?.[0]).toMatchObject({
+      packetIndex: 0,
+      name: 'TargetError',
+      message: expect.stringContaining('PEER_NOT_NEGOTIATED'),
+    });
+    // With no maker REJECT to report, the local throw supplies code/message.
+    expect(res.code).toBe('LOCAL_SEND_FAILED');
+    expect(res.message).toMatch(/PEER_NOT_NEGOTIATED/);
+    expect(res.warning).toMatch(/FAILED LOCALLY/);
+    expect(res.warning).toMatch(/btpUrl/);
+  });
+
+  it('swap passes the daemon logger into streamSwap so stream_swap.* events are written somewhere', async () => {
+    const lines: string[] = [];
+    const logged = new ClientRunner({
+      config: makeConfig(),
+      createClient: () => client,
+      createRelay: fakeRelay,
+      logger: (m) => lines.push(m),
+    });
+    await logged.bootstrap();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
+
+    await logged.swap(swapReq());
+
+    const lastCall = vi.mocked(streamSwap).mock.calls.at(-1);
+    expect(lastCall).toBeDefined();
+    const logger = lastCall?.[0].logger;
+    expect(logger).toBeDefined();
+    // Exercise the adapter the way the sdk does: ONE structured event object.
+    logger?.error({
+      event: 'stream_swap.send_failed',
+      packetIndex: 0,
+      error: 'PEER_NOT_NEGOTIATED',
+    });
+    expect(lines.some((l) => l.includes('stream_swap.send_failed'))).toBe(true);
+    expect(lines.some((l) => l.includes('PEER_NOT_NEGOTIATED'))).toBe(true);
+    await logged.stop();
+  });
+
   it('swap with senderConditions but no streamNonce throws — a compliant maker F99s that combination (#573)', async () => {
     await runner.bootstrap();
     vi.mocked(streamSwap).mockClear();
@@ -1712,18 +1792,20 @@ describe('ClientRunner', () => {
     expect(() => deriveFloorRate('4e-2', 50)).toThrow(InvalidPayloadError);
   });
 
-  it('swap with defaults off sends the byte-identical legacy request (only telemetry onPacket added)', async () => {
+  it('swap with defaults off sends the byte-identical legacy request (only local-only onPacket/logger added)', async () => {
     await runner.bootstrap();
     vi.mocked(streamSwap).mockReset();
     vi.mocked(streamSwap).mockResolvedValue(defenseSwapResult());
     await runner.swap(DEFENSE_SWAP);
     const arg = vi.mocked(streamSwap).mock.calls[0]![0];
-    // Exactly the legacy key set plus the local-only telemetry callback: no
-    // floor, no controller, no expiry stamping, no abort signal on the wire.
+    // Exactly the legacy key set plus the two LOCAL-ONLY observability hooks
+    // (`onPacket` telemetry, `logger` diagnostics — neither touches the wire):
+    // no floor, no controller, no expiry stamping, no abort signal.
     expect(Object.keys(arg).sort()).toEqual(
       [
         'chainRecipient',
         'client',
+        'logger',
         'onPacket',
         'pair',
         'packetCount',
@@ -2595,6 +2677,81 @@ describe('ClientRunner multi-target', () => {
     expect(loadTargets(targetsPath).apexes.map((a) => a.btpUrl)).toEqual([
       'ws://apex2.example/btp',
     ]);
+  });
+
+  // A direct-dialled swap maker (kept OUT of the relay connector's routing
+  // table on purpose, reached at its own advertised btpEndpoint) is
+  // unreachable through the seeded apex. `swap()` selects its apex client via
+  // `selectApex(req.btpUrl)`, so the request's btpUrl must actually get there
+  // — otherwise every swap goes out on the default apex regardless.
+  it('swap sends on the apex named by btpUrl, not the config-seeded default (selectApex)', async () => {
+    const { createRelay, emit } = relayFactory();
+    const created: FakeClient[] = [];
+    const runner = new ClientRunner({
+      config: makeConfig({
+        relayUrl: 'ws://relay.test',
+        apexChannelStorePath: join(dir, 'apex-channels.json'),
+      }),
+      createClient: () => {
+        const c = new FakeClient();
+        created.push(c);
+        return c;
+      },
+      createRelay,
+      targetsPath,
+    });
+    runner.start();
+    emit(
+      'ws://relay.test',
+      'apex-discovery-g.toon.swap.maker',
+      apexAnnouncement('g.toon.swap.maker')
+    );
+    const added = await runner.addApex({
+      ilpAddress: 'g.toon.swap.maker',
+      relayUrl: 'ws://relay.test',
+    });
+    expect(added.btpUrl).toBe('ws://apex2.example/btp');
+    await runner.bootstrap();
+
+    vi.mocked(streamSwap).mockClear();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
+    await runner.swap({
+      destination: 'g.toon.swap.maker',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      btpUrl: 'ws://apex2.example/btp',
+    });
+
+    // One client per apex: [0] is the default/identity client, [1] the
+    // discovered maker apex. The swap must have streamed on the LATTER.
+    const defaultClient = created[0];
+    const makerClient = created[1];
+    expect(makerClient).toBeDefined();
+    const usedClient = vi.mocked(streamSwap).mock.calls[0]?.[0].client;
+    expect(usedClient).toBe(makerClient);
+    expect(usedClient).not.toBe(defaultClient);
+    await runner.stop();
+  });
+
+  it('swap to an unregistered apex throws TargetError instead of silently using the default', async () => {
+    const { runner } = build();
+    runner.start();
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockClear();
+    await expect(
+      runner.swap({
+        destination: 'g.toon.swap.maker',
+        amount: '1000',
+        swapPubkey: 'cd'.repeat(32),
+        pair: EVM_PAIR,
+        chainRecipient: EVM_RECIPIENT,
+        btpUrl: 'ws://nope/btp',
+      })
+    ).rejects.toBeInstanceOf(TargetError);
+    expect(streamSwap).not.toHaveBeenCalled();
+    await runner.stop();
   });
 
   // issue #550 round 3: config.ts now threads the daemon's resolved relay into
