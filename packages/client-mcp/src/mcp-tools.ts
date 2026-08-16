@@ -152,15 +152,28 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       type: 'object',
       properties: {
         kind: { type: 'number', description: 'Event kind (integer 0–65535).' },
-        content: { type: 'string', description: 'Event content (default empty).' },
+        content: {
+          type: 'string',
+          description: 'Event content (default empty).',
+        },
         tags: {
           type: 'array',
           items: { type: 'array', items: { type: 'string' } },
           description: 'Event tags (array of string arrays).',
         },
-        destination: { type: 'string', description: 'Optional ILP destination override.' },
-        fee: { type: 'string', description: 'Optional fee override (base units).' },
-        btpUrl: { type: 'string', description: 'Which apex to publish through (default: config-seeded).' },
+        destination: {
+          type: 'string',
+          description: 'Optional ILP destination override.',
+        },
+        fee: {
+          type: 'string',
+          description: 'Optional fee override (base units).',
+        },
+        btpUrl: {
+          type: 'string',
+          description:
+            'Which apex to publish through (default: config-seeded).',
+        },
       },
       required: ['kind'],
       additionalProperties: false,
@@ -190,18 +203,35 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
         dataBase64: {
           type: 'string',
-          description: 'Inline base64-encoded media bytes (mutually exclusive with filePath).',
+          description:
+            'Inline base64-encoded media bytes (mutually exclusive with filePath).',
         },
-        mime: { type: 'string', description: "MIME type (default 'application/octet-stream')." },
-        kind: { type: 'number', description: 'Media event kind (default 1063).' },
-        caption: { type: 'string', description: 'Caption/content for the media event.' },
+        mime: {
+          type: 'string',
+          description: "MIME type (default 'application/octet-stream').",
+        },
+        kind: {
+          type: 'number',
+          description: 'Media event kind (default 1063).',
+        },
+        caption: {
+          type: 'string',
+          description: 'Caption/content for the media event.',
+        },
         tags: {
           type: 'array',
           items: { type: 'array', items: { type: 'string' } },
           description: 'Extra tags merged into the published media event.',
         },
-        fee: { type: 'string', description: 'Optional fee override (base units).' },
-        btpUrl: { type: 'string', description: 'Which apex to publish through (default: config-seeded).' },
+        fee: {
+          type: 'string',
+          description: 'Optional fee override (base units).',
+        },
+        btpUrl: {
+          type: 'string',
+          description:
+            'Which apex to publish through (default: config-seeded).',
+        },
       },
       // Exactly one of filePath | dataBase64 is required; enforced in the daemon
       // (ClientRunner.uploadMedia) since JSON Schema can't express one-of-required cleanly here.
@@ -367,7 +397,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: 'string',
           description: 'Repository identifier (NIP-34 `d` tag).',
         },
-        title: { type: 'string', description: 'Patch/PR title (`subject` tag).' },
+        title: {
+          type: 'string',
+          description: 'Patch/PR title (`subject` tag).',
+        },
         patchText: {
           type: 'string',
           description:
@@ -433,7 +466,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       'ViewSpecs, for composing a view to pass to toon_render. Never guess atom ' +
       'ids or kinds; always fetch them here first. This is how you build the ' +
       'user a generative UI for their journey.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
   },
   {
     name: 'toon_render',
@@ -453,7 +490,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         spec: {
           type: 'object',
-          description: 'A ViewSpec: { title?, root: ViewNode }. See toon_atoms examples.',
+          description:
+            'A ViewSpec: { title?, root: ViewNode }. See toon_atoms examples.',
         },
       },
       required: ['spec'],
@@ -472,7 +510,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       type: 'object',
       properties: {
         filter: { description: 'A NIP-01 filter object.' },
-        timeoutMs: { type: 'number', description: 'Bounded wait, ms (default 1200).' },
+        timeoutMs: {
+          type: 'number',
+          description: 'Bounded wait, ms (default 1200).',
+        },
       },
       required: ['filter'],
       additionalProperties: false,
@@ -579,8 +620,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        channelId: { type: 'string', description: 'The channel to deposit into.' },
-        amount: { type: 'string', description: 'Delta to add, base micro-units (decimal string).' },
+        channelId: {
+          type: 'string',
+          description: 'The channel to deposit into.',
+        },
+        amount: {
+          type: 'string',
+          description: 'Delta to add, base micro-units (decimal string).',
+        },
       },
       required: ['channelId', 'amount'],
       additionalProperties: false,
@@ -594,7 +641,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       'channel can be settled (collateral released) once now ≥ settleableAt.',
     inputSchema: {
       type: 'object',
-      properties: { channelId: { type: 'string', description: 'The channel to close.' } },
+      properties: {
+        channelId: { type: 'string', description: 'The channel to close.' },
+      },
       required: ['channelId'],
       additionalProperties: false,
     },
@@ -608,7 +657,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       'on-chain. EVM today.',
     inputSchema: {
       type: 'object',
-      properties: { channelId: { type: 'string', description: 'The closed channel to settle.' } },
+      properties: {
+        channelId: {
+          type: 'string',
+          description: 'The closed channel to settle.',
+        },
+      },
       required: ['channelId'],
       additionalProperties: false,
     },
@@ -617,12 +671,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'toon_swap',
     description:
       'Pay a swap peer (asset A) to receive asset B plus a signed target-chain ' +
-      'claim. Builds the NIP-59 gift-wrapped kind:20032 swap rumor and streams ' +
-      'it; the source-asset claim is signed against the open apex channel (the ' +
-      'swap peer must be routed via apexChildPeers). Returns the accumulated, ' +
-      'decrypted target-chain claim(s) and settlement metadata. PAID + ' +
-      'IRREVERSIBLE: on a text-only host, confirm the amount with the user ' +
-      'before calling.',
+      'claim. The maker is probed once with a rolling-swap RFQ: a maker that ' +
+      'answers runs the ROLLING protocol (coupled legs, verify-before-reveal, ' +
+      'a per-fill rate floor), and one that does not falls back automatically ' +
+      'to the legacy gift-wrapped kind:20032 stream — no flag to set either ' +
+      'way. The source-asset claim is signed against the open apex channel. ' +
+      'Returns the accumulated target-chain claim(s), settlement metadata, and ' +
+      'a `rolling` block saying which path ran and why. PAID + IRREVERSIBLE: ' +
+      'on a text-only host, confirm the amount with the user before calling.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -686,6 +742,34 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             'only at its own btpEndpoint — is addressable ONLY this way; ' +
             'without it the swap goes to the seeded apex and fails peer ' +
             'resolution (PEER_NOT_NEGOTIATED).',
+        },
+        rolling: {
+          type: 'string',
+          enum: ['auto', 'off', 'require'],
+          description:
+            'Rolling-swap path selection. "auto" (default) probes the maker ' +
+            'with a kind:20033 RFQ and falls back to the legacy path silently ' +
+            'if it does not answer; "off" never probes; "require" fails with ' +
+            'the reason instead of falling back (use it to find out WHY ' +
+            'rolling did not engage). The outcome is always echoed on the ' +
+            'response as `rolling`.',
+        },
+        senderIlpAddress: {
+          type: 'string',
+          description:
+            "Override the ILP address the maker sends this session's leg-B " +
+            "PREPAREs to (the RFQ's senderIlpAddress). Defaults to the " +
+            "daemon's own address — the id its BTP session is bound under, " +
+            'which the connector resolves by exact match. Only set this if ' +
+            'the default is wrong; a wrong value opens a session whose leg B ' +
+            'never arrives.',
+        },
+        rfqAmount: {
+          type: 'string',
+          description:
+            'What the RFQ probe packet itself pays, source micro-units. ' +
+            "Defaults to the terminating connector's flat packet price, or " +
+            '1 micro-unit when no price route answers.',
         },
       },
       required: [
@@ -815,7 +899,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         chain: {
           type: 'string',
           enum: ['evm', 'solana', 'mina'],
-          description: 'Only report the drip job for this chain (default: all).',
+          description:
+            'Only report the drip job for this chain (default: all).',
         },
       },
       additionalProperties: false,
@@ -989,7 +1074,11 @@ const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   toon_channel_close: { ...ONCHAIN_WRITE, destructiveHint: true }, // begins the irreversible settlement
   toon_http_fetch_paid: ONCHAIN_WRITE, // pays on 402, then returns the resource
   // receives faucet funds — mutates balances, but not a spend
-  toon_fund_wallet: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  toon_fund_wallet: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: true,
+  },
   // reversible, persisted config edits
   toon_add_relay: CONFIG_WRITE,
   toon_remove_relay: CONFIG_WRITE,
@@ -1001,12 +1090,15 @@ const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 // every UI-fireable write (WRITE_TOOLS) must be non-read-only so hosts gate it.
 for (const def of TOOL_DEFINITIONS) {
   const annotations = TOOL_ANNOTATIONS[def.name];
-  if (!annotations) throw new Error(`mcp-tools: missing annotations for tool ${def.name}`);
+  if (!annotations)
+    throw new Error(`mcp-tools: missing annotations for tool ${def.name}`);
   def.annotations = annotations;
 }
 for (const name of WRITE_TOOLS) {
   if (TOOL_ANNOTATIONS[name]?.readOnlyHint !== false) {
-    throw new Error(`mcp-tools: WRITE_TOOLS member ${name} must be annotated readOnlyHint:false`);
+    throw new Error(
+      `mcp-tools: WRITE_TOOLS member ${name} must be annotated readOnlyHint:false`
+    );
   }
 }
 
@@ -1025,7 +1117,10 @@ export async function dispatchTool(
     switch (name) {
       case 'toon_status': {
         const s = await client.status();
-        return okStructured(JSON.stringify(s, null, 2), s as unknown as Record<string, unknown>);
+        return okStructured(
+          JSON.stringify(s, null, 2),
+          s as unknown as Record<string, unknown>
+        );
       }
       case 'toon_identity': {
         const s = await client.status();
@@ -1039,7 +1134,9 @@ export async function dispatchTool(
         return ok(await client.publish(args as unknown as PublishRequest));
       case 'toon_publish_unsigned':
         return ok(
-          await client.publishUnsigned(args as unknown as PublishUnsignedRequest)
+          await client.publishUnsigned(
+            args as unknown as PublishUnsignedRequest
+          )
         );
       case 'toon_upload':
         return ok(
@@ -1055,7 +1152,9 @@ export async function dispatchTool(
           ...(Array.isArray(args['refspecs'])
             ? { refspecs: (args['refspecs'] as unknown[]).map(String) }
             : {}),
-          ...(typeof args['force'] === 'boolean' ? { force: args['force'] } : {}),
+          ...(typeof args['force'] === 'boolean'
+            ? { force: args['force'] }
+            : {}),
           ...(Array.isArray(args['relayUrls'])
             ? { relayUrls: (args['relayUrls'] as unknown[]).map(String) }
             : {}),
@@ -1122,7 +1221,9 @@ export async function dispatchTool(
           ...(typeof args['repoPath'] === 'string'
             ? { repoPath: args['repoPath'] }
             : {}),
-          ...(typeof args['range'] === 'string' ? { range: args['range'] } : {}),
+          ...(typeof args['range'] === 'string'
+            ? { range: args['range'] }
+            : {}),
           ...(typeof args['branch'] === 'string'
             ? { branch: args['branch'] }
             : {}),
@@ -1138,8 +1239,14 @@ export async function dispatchTool(
           })
         );
       case 'toon_atoms': {
-        const atomsPayload = { atoms: ATOM_CATALOG, examples: EXAMPLE_VIEWSPECS };
-        return okStructured(JSON.stringify(atomsPayload, null, 2), atomsPayload);
+        const atomsPayload = {
+          atoms: ATOM_CATALOG,
+          examples: EXAMPLE_VIEWSPECS,
+        };
+        return okStructured(
+          JSON.stringify(atomsPayload, null, 2),
+          atomsPayload
+        );
       }
       case 'toon_render': {
         const check = validateViewSpec(args['spec'], {
@@ -1173,7 +1280,9 @@ export async function dispatchTool(
         // alongside structuredContent: a NON-RENDERING host sees only the text,
         // so a bare "N event(s)." would strand it with no way to reason about
         // the feed/thread it just read (MCP-Apps text-fallback requirement).
-        return okStructured(summarizeEvents(res.events), { events: res.events });
+        return okStructured(summarizeEvents(res.events), {
+          events: res.events,
+        });
       }
       case 'toon_subscribe':
         return ok(
@@ -1189,9 +1298,15 @@ export async function dispatchTool(
         );
       case 'toon_read': {
         const res = await client.events({
-          ...(typeof args['subId'] === 'string' ? { subId: args['subId'] } : {}),
-          ...(typeof args['cursor'] === 'number' ? { cursor: args['cursor'] } : {}),
-          ...(typeof args['limit'] === 'number' ? { limit: args['limit'] } : {}),
+          ...(typeof args['subId'] === 'string'
+            ? { subId: args['subId'] }
+            : {}),
+          ...(typeof args['cursor'] === 'number'
+            ? { cursor: args['cursor'] }
+            : {}),
+          ...(typeof args['limit'] === 'number'
+            ? { limit: args['limit'] }
+            : {}),
           ...(typeof args['relayUrl'] === 'string'
             ? { relayUrl: args['relayUrl'] }
             : {}),
@@ -1236,9 +1351,17 @@ export async function dispatchTool(
           })
         );
       case 'toon_channel_close':
-        return ok(await client.closeChannel({ channelId: String(args['channelId'] ?? '') }));
+        return ok(
+          await client.closeChannel({
+            channelId: String(args['channelId'] ?? ''),
+          })
+        );
       case 'toon_channel_settle':
-        return ok(await client.settleChannel({ channelId: String(args['channelId'] ?? '') }));
+        return ok(
+          await client.settleChannel({
+            channelId: String(args['channelId'] ?? ''),
+          })
+        );
       case 'toon_swap':
         return ok(
           await client.swap({
@@ -1261,6 +1384,17 @@ export async function dispatchTool(
               : {}),
             ...(typeof args['btpUrl'] === 'string'
               ? { btpUrl: args['btpUrl'] }
+              : {}),
+            ...(args['rolling'] === 'auto' ||
+            args['rolling'] === 'off' ||
+            args['rolling'] === 'require'
+              ? { rolling: args['rolling'] }
+              : {}),
+            ...(typeof args['senderIlpAddress'] === 'string'
+              ? { senderIlpAddress: args['senderIlpAddress'] }
+              : {}),
+            ...(typeof args['rfqAmount'] === 'string'
+              ? { rfqAmount: args['rfqAmount'] }
               : {}),
           })
         );
@@ -1361,7 +1495,11 @@ export async function dispatchTool(
     // chain RPC/provider — NOT the relay/apex (#199). Name the real failing
     // subsystem and do not assert relay/apex is the probable cause; toon_status
     // stays `ready` throughout and the read succeeds on retry.
-    if (e instanceof ControlApiError && e.status === 504 && name === 'toon_balances') {
+    if (
+      e instanceof ControlApiError &&
+      e.status === 504 &&
+      name === 'toon_balances'
+    ) {
       return err(
         `${e.detail ?? e.message} — the balances control API (:8787 GET ` +
           `/balances) stalled reading on-chain balances; the relay and apex are ` +
@@ -1372,7 +1510,11 @@ export async function dispatchTool(
     // in ~75s), NOT the relay/apex. The drip may still land server-side — point
     // at the faucet and tell the user to re-check balances, not to chase the
     // relay (#199-class attribution on the /fund-wallet path).
-    if (e instanceof ControlApiError && e.status === 504 && name === 'toon_fund_wallet') {
+    if (
+      e instanceof ControlApiError &&
+      e.status === 504 &&
+      name === 'toon_fund_wallet'
+    ) {
       return err(
         `${e.detail ?? e.message} — the faucet drip did not return in time (the ` +
           `mina faucet settles slowly); the relay and apex are unaffected. The ` +
@@ -1625,7 +1767,8 @@ export function summarizeEvents(events: NostrEvent[], max = 20): string {
     }
     const body = excerpt(e.content ?? '');
     const likeCount = likes.get(e.id) ?? 0;
-    const likeSuffix = likeCount > 0 ? ` · ${likeCount} like${likeCount === 1 ? '' : 's'}` : '';
+    const likeSuffix =
+      likeCount > 0 ? ` · ${likeCount} like${likeCount === 1 ? '' : 's'}` : '';
     const bodySuffix = body ? ` · "${body}"` : '';
     return `• ${kindLabel(e.kind)} ${who} · ${when}${bodySuffix}${likeSuffix}`;
   });

@@ -415,33 +415,64 @@ export interface SwapRequest {
    */
   btpUrl?: string;
   /**
+   * Which path the swap takes (toon-client#585, rolling-swap spec §10.3
+   * step 2). Capability is discovered by PROBE, never by an announce field —
+   * swap#135 deliberately ships no flag:
+   *
+   * - `'auto'` (default; overridable by `swapDefaults.rolling`) — send a
+   *   kind:20033 RFQ first. A kind:20034 quote back means the maker
+   *   registered the session and the swap runs on the rolling path; ANY other
+   *   outcome falls back to the legacy path **silently and successfully**.
+   * - `'off'` — never probe. No RFQ packet is sent or paid for.
+   * - `'require'` — probe, and FAIL with the reason instead of falling back.
+   *   For verification/debugging: silence is right in production and wrong
+   *   when you are trying to find out why rolling did not engage.
+   *
+   * The rolling outcome (probed / used / quote / fallback reason) is always
+   * echoed on {@link SwapResponse.rolling}, so an `'auto'` fallback is silent
+   * but never invisible.
+   */
+  rolling?: 'auto' | 'off' | 'require';
+  /**
+   * The ILP address this client receives leg-B PREPAREs on, put on the RFQ as
+   * `senderIlpAddress` (spec §2.2). The maker uses it VERBATIM as the
+   * destination of every leg-B PREPARE in the session and has no fallback, and
+   * a connector resolves a client's BTP session by EXACT match on the id it
+   * greeted with — so a wrong value establishes a session whose leg B can
+   * never arrive. Defaults to the selected apex client's own address
+   * (`ToonClient.getOwnIlpAddress()`); set this only to override that.
+   */
+  senderIlpAddress?: string;
+  /**
+   * What the RFQ probe packet itself pays, source micro-units. The probe buys
+   * a quote rather than value, so it defaults to the terminating connector's
+   * flat packet price (`GET /ilp/routes/price`, ADR 0020), or 1 micro-unit
+   * when no price route answers.
+   */
+  rfqAmount?: string;
+  /**
    * Mint a FRESH sender-chosen execution condition per packet
    * (`C_i = sha256(P_i)`, toon-client#350 / rolling-swap toon-meta#145 §3)
-   * and verify each FULFILL's preimage client-side; a mismatch counts the
-   * packet failed. Requires a maker + connector implementing the
-   * sender-chosen fulfillment contract (connector#309) — the deployed
-   * claim-issuing mill does NOT, so this is opt-in; the default (unset)
-   * keeps today's legacy zero-condition packets.
+   * and verify each FULFILL's preimage client-side.
    *
-   * toon-client#573: a compliant maker rejects a sender-chosen condition on
-   * the legacy packet shape (`F99 "sender-chosen execution conditions are
-   * not supported on the legacy swap path"`) — only its ROLLING protocol
-   * path (spec §3) accepts one. Setting `senderConditions` therefore now
-   * REQUIRES `streamNonce` too: the daemon drives every packet through the
-   * rolling wire shape (mint `C_i`, leg-A fill payload, leg-B advance
-   * verify-before-reveal) instead of the legacy gift-wrap. Setting
-   * `senderConditions` without `streamNonce` is a validation error — sending
-   * a conditioned legacy packet is a known, unconditional maker-side F99.
+   * **No longer a path selector.** Since toon-client#585 the rolling path is
+   * chosen by the RFQ probe (`rolling`), and the rolling fill loop always
+   * mints per-packet conditions — that is what couples the legs. This field
+   * survives only so an existing caller does not break; it is meaningful
+   * solely as a companion to `streamNonce`, and combining it with
+   * `rolling: 'off'` is a validation error (that combination asks for a
+   * conditioned LEGACY packet, an unconditional maker-side F99).
    */
   senderConditions?: boolean;
   /**
-   * Rolling-swap session id (toon-client#573, spec §2.1/§2.2): 16 bytes,
-   * lowercase hex. There is no RFQ (kind:20033/20034) session-negotiation
-   * transport yet — this streamNonce MUST already be registered with the
-   * maker out of band (`SwapNodeInstance.registerRollingSession` on the
-   * maker side) before the swap is issued, or every fill rejects with an
-   * unknown-session error. Required (and only meaningful) alongside
-   * `senderConditions: true`.
+   * Rolling-swap session id (spec §2.1/§2.2): 16 bytes, lowercase hex.
+   *
+   * Setting it SKIPS the RFQ probe and fills against that session directly —
+   * the pre-#585 path for a nonce registered with the maker out of band
+   * (`SwapNodeInstance.registerRollingSession`). Leave it unset for the
+   * ordinary flow: {@link SwapRequest.rolling}'s probe mints and registers a
+   * nonce on the wire, which is the only route that works against a deployed
+   * (CLI-run) maker.
    */
   streamNonce?: string;
   /**
@@ -698,6 +729,48 @@ export interface SwapResponse {
    * NOTHING here. Absent when no claim carried settlement metadata (legacy).
    */
   valueReceived?: string;
+  /**
+   * What rolling capability discovery decided (toon-client#585). Present on
+   * every swap that could have taken the rolling path — including the ones
+   * that fell back — so an intentionally SILENT fallback is still observable.
+   * Absent only when `rolling: 'off'` took rolling out of play entirely.
+   */
+  rolling?: SwapRollingInfo;
+}
+
+/**
+ * The rolling-swap negotiation outcome for one `swap()` call (spec §10.3
+ * step 2 capability discovery).
+ */
+export interface SwapRollingInfo {
+  /** Whether a kind:20033 RFQ probe was actually sent (and paid for). */
+  probed: boolean;
+  /** Whether the swap ran on the rolling path. */
+  used: boolean;
+  /** The session id every fill referenced. Present iff `used`. */
+  streamNonce?: string;
+  /** `R₀` from the kind:20034 quote — target whole-units per source whole-unit. */
+  rate?: string;
+  /** Unix-ms tick time of the maker's rate source for `rate`. */
+  rateTimestamp?: number;
+  /**
+   * Unix-ms the QUOTE lapses. NOT the session lifetime — the maker keeps the
+   * session for its own store TTL and reprices every fill at a fresh `R_i`.
+   */
+  expiresAt?: number;
+  /** Maker's advertised freshness bound on its rate source, ms (spec §4). */
+  maxRateAge?: number;
+  /** Maker's advertised two-sided spread, basis points. */
+  spreadBps?: number;
+  /**
+   * Why the swap fell back to legacy. One of the RFQ failure reasons
+   * (`send-failed`, `rejected` — the ordinary "legacy maker" signal —
+   * `no-response`, `not-a-quote`, `nonce-mismatch`) or a local one
+   * (`controller`, `no-sender-address`). Present iff `!used`.
+   */
+  fallbackReason?: string;
+  /** Human-readable detail behind `fallbackReason`. */
+  fallbackMessage?: string;
 }
 
 // ── Received swap claims: persistence + settlement (#352) ────────────────────

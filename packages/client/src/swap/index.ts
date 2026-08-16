@@ -58,6 +58,24 @@ export {
   type RollingAdvancePayload,
 } from './rolling-protocol.js';
 export {
+  ROLLING_RFQ_REQUEST_KIND,
+  ROLLING_RFQ_RESPONSE_KIND,
+  sendRollingRfq,
+  buildRollingRfqRequest,
+  encodeRollingRfqPacket,
+  parseRollingRfqResponse,
+  decodeRollingRfqQuote,
+  type RollingRfqAsset,
+  type RollingRfqRequest,
+  type RollingRfqResponse,
+  type RollingRfqOutcome,
+  type RollingRfqSession,
+  type RollingRfqFailure,
+  type RollingRfqFailureReason,
+  type RollingRfqSender,
+  type SendRollingRfqParams,
+} from './rolling-rfq.js';
+export {
   handleRollingAdvance,
   RollingAdvanceRejectedError,
   type RollingAdvanceContext,

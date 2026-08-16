@@ -32,13 +32,16 @@ export function isValidStreamNonce(streamNonce: string): boolean {
 }
 
 /**
- * Mint a fresh session id for a rolling-swap stream. There is no RFQ
- * (kind:20033/20034) session-negotiation transport yet (rolling-engine.ts's
- * own comment: "its transport story registers sessions" — a distinct,
- * unimplemented story), so the streamNonce this mints must be registered with
- * the maker OUT OF BAND before a fill referencing it can succeed
- * (`RollingSessionStore.register` / `SwapNodeInstance.registerRollingSession`
- * on the maker side).
+ * Mint a fresh session id for a rolling-swap stream.
+ *
+ * The nonce must be REGISTERED with the maker before a fill referencing it can
+ * succeed — an unknown one is an F06 `unknown_session`. Since toon-client#585
+ * that registration is on the wire: `sendRollingRfq` (`rolling-rfq.ts`) carries this nonce
+ * in a kind:20033 RFQ and the maker commits the session before answering
+ * kind:20034 (swap#135). The former out-of-band route
+ * (`SwapNodeInstance.registerRollingSession`, an in-process method the
+ * CLI-run maker container never calls) is no longer the only one, and is not
+ * reachable against a deployed maker at all.
  */
 export function generateStreamNonce(): string {
   return toHex(randomBytes(16));
@@ -109,7 +112,9 @@ export function encodeRollingFillPayload(params: {
     );
   }
   if (!isSafePositiveInt(params.seq)) {
-    throw new Error(`seq must be a positive integer — got ${String(params.seq)}`);
+    throw new Error(
+      `seq must be a positive integer — got ${String(params.seq)}`
+    );
   }
   const payload: RollingFillPayload = {
     proto: ROLLING_PROTOCOL,
@@ -144,7 +149,8 @@ export function parseRollingAdvancePayload(
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
   const rec = parsed as Record<string, unknown>;
-  if (rec['proto'] !== ROLLING_PROTOCOL || rec['type'] !== 'advance') return null;
+  if (rec['proto'] !== ROLLING_PROTOCOL || rec['type'] !== 'advance')
+    return null;
 
   const streamNonce = rec['streamNonce'];
   const seq = rec['seq'];
@@ -162,8 +168,10 @@ export function parseRollingAdvancePayload(
   if (typeof rateTimestamp !== 'number' || !Number.isFinite(rateTimestamp)) {
     return null;
   }
-  if (typeof sourceAmount !== 'string' || sourceAmount.length === 0) return null;
-  if (typeof targetAmount !== 'string' || targetAmount.length === 0) return null;
+  if (typeof sourceAmount !== 'string' || sourceAmount.length === 0)
+    return null;
+  if (typeof targetAmount !== 'string' || targetAmount.length === 0)
+    return null;
 
   const optionalString = (key: string): string | undefined => {
     const v = rec[key];

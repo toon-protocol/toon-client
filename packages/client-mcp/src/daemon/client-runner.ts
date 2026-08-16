@@ -48,6 +48,8 @@ import {
   InMemoryPreimageRetentionStore,
   isValidStreamNonce,
   encodeRollingFillPayload,
+  sendRollingRfq,
+  type RollingRfqResponse,
   type FaucetChain,
   type ReceivedClaimEntry,
   type ReceivedClaimStore,
@@ -129,6 +131,7 @@ import type {
   SwapClaim,
   SwapError,
   SwapRejection,
+  SwapRollingInfo,
   ListSwapClaimsResponse,
   ReceivedClaimInfo,
   SettleSwapClaimsRequest,
@@ -285,11 +288,22 @@ export interface ToonClientLike {
    * same reason as `rehydrateChannelDeposit`; best-effort — callers catch.
    */
   adoptChannel?(destination: string, channelId: string): Promise<void>;
+  /**
+   * The ILP address this client RECEIVES on — the id its BTP session is bound
+   * under at the connector, resolved there by EXACT match. Used as the
+   * rolling-swap RFQ's `senderIlpAddress` (toon-client#585): the maker
+   * addresses every leg-B PREPARE of the session to it verbatim and has no
+   * fallback. Optional so lightweight fakes need not implement it; the real
+   * `ToonClient` does.
+   */
+  getOwnIlpAddress?(): string | undefined;
   sendSwapPacket(params: {
     destination: string;
     amount: bigint;
     toonData: Uint8Array;
     claim?: unknown;
+    /** Per-packet send timeout, ms (transport default ~30s). */
+    timeout?: number;
     /**
      * Sender-chosen 32-byte execution condition (toon-client#350). The
      * transport puts it on the PREPARE and verifies the FULFILL preimage
@@ -403,6 +417,66 @@ interface ApexConnection {
    * be written back once rather than re-corrected on every start.
    */
   replayedFrom?: PersistedApexTarget;
+}
+
+/**
+ * An ESTABLISHED rolling-swap session, ready to fill against (#585). Produced
+ * only by {@link ClientRunner.negotiateRollingSession} — either from a
+ * kind:20034 quote or from a caller-pinned, out-of-band-registered nonce.
+ */
+interface RollingSessionArm {
+  kind: 'rolling';
+  streamNonce: string;
+  /** The maker's kind:20034 quote; absent when the nonce was caller-pinned. */
+  quote?: RollingRfqResponse;
+  /** Whether an RFQ probe was actually sent for this session. */
+  probed: boolean;
+}
+
+/** The outcome of rolling capability discovery: a session, or "use legacy". */
+type RollingNegotiation =
+  | RollingSessionArm
+  | {
+      kind: 'legacy';
+      /**
+       * Why the swap is on the legacy path — echoed onto the response so a
+       * silent fallback is still an OBSERVABLE one. Absent when rolling was
+       * never in play (`rolling: 'off'`).
+       */
+      note?: SwapRollingInfo;
+    };
+
+/**
+ * Packets for a rolling stream when the caller pinned no `packetCount`: one,
+ * unless the quote caps per-packet size (`maxAmount`, spec §2.2), in which
+ * case the smallest split that respects the cap. Sending a single packet over
+ * the maker's own advertised cap is a guaranteed reject.
+ */
+function packetsForQuote(
+  totalAmount: bigint,
+  quote: RollingRfqResponse | undefined
+): number {
+  const cap = quote?.maxAmount;
+  if (cap === undefined) return 1;
+  let max: bigint;
+  try {
+    max = BigInt(cap);
+  } catch {
+    return 1;
+  }
+  if (max <= 0n || totalAmount <= max) return 1;
+  const packets = (totalAmount + max - 1n) / max;
+  return packets > BigInt(Number.MAX_SAFE_INTEGER) ? 1 : Number(packets);
+}
+
+/** A decimal-string amount as a bigint, or `undefined` if it is not one. */
+function sizeHintOf(amount: string): bigint | undefined {
+  if (!/^\d+$/.test(amount)) return undefined;
+  try {
+    return BigInt(amount);
+  } catch {
+    return undefined;
+  }
 }
 
 /** A runner-level merged read-buffer entry, tagged with its source relay. */
@@ -2024,12 +2098,17 @@ export class ClientRunner {
    * here (accepted claims with no `swapSignerAddress`) and surface a loud
    * `warning` on the response at swap time (#349).
    *
-   * `req.senderConditions` (with `req.streamNonce`) routes the ENTIRE call to
-   * {@link swapRolling} instead of the body below — a compliant maker only
-   * accepts a sender-chosen execution condition on its rolling protocol path
-   * (toon-client#573; a legacy-shaped conditioned packet is an unconditional
-   * maker-side F99). This body is the LEGACY path: always a zero-condition
-   * gift-wrap packet, unaffected by either field.
+   * **Path selection (toon-client#585)** is a PROBE, not a config read:
+   * {@link negotiateRollingSession} sends a kind:20033 RFQ, and the ENTIRE
+   * call goes to {@link swapRolling} only if the maker answered kind:20034
+   * and thereby registered the session (spec §10.3 step 2, swap#135). Every
+   * other outcome — a maker with no RFQ intake, a reject, an unreadable
+   * answer, a local throw — falls through to the body below, which is the
+   * unchanged LEGACY path: always a zero-condition gift-wrap packet. That
+   * fallback is silent and total by design: legacy works against the deployed
+   * maker today, and a failed rolling attempt must never turn a working swap
+   * into a broken one. `req.rolling` (`'auto' | 'off' | 'require'`, default
+   * `swapDefaults.rolling` then `'auto'`) is the only override.
    *
    * Sender-side rolling-swap defenses (#351, sdk ≥2.1.0, spec §5/§6):
    *
@@ -2077,42 +2156,16 @@ export class ClientRunner {
       `[runner] swap to ${req.destination} on apex ` +
         `${apex.btpUrl || apex.destination} (peer "${apex.negotiation?.peerId ?? '?'}")`
     );
-    // toon-client#573: a sender-chosen condition on the legacy gift-wrap
-    // packet shape is a KNOWN, unconditional maker-side F99 (a compliant
-    // maker's rolling engine only accepts sender-chosen conditions on its
-    // rolling wire shape). `streamNonce` selects that shape; requiring it
-    // here turns a silent guaranteed-fail into an actionable error.
-    if (req.senderConditions) {
-      if (req.streamNonce === undefined) {
-        throw new InvalidPayloadError(
-          '`senderConditions` requires `streamNonce`: a compliant maker only ' +
-            'accepts a sender-chosen execution condition on its ROLLING ' +
-            'protocol path (spec §3) — the legacy gift-wrap shape rejects ' +
-            'one F99 "sender-chosen execution conditions are not supported ' +
-            'on the legacy swap path". There is no RFQ session-negotiation ' +
-            'transport yet (toon-client#573), so `streamNonce` must already ' +
-            'be registered with the maker out of band before this call.'
-        );
-      }
-      // #351's rate floor / adaptive controller are NOT ported to the
-      // rolling path yet (a follow-up) — silently ignoring a caller's
-      // requested safety floor would be worse than not supporting it, so
-      // this fails loud rather than swallowing the params.
-      if (
-        req.minExchangeRate !== undefined ||
-        req.floorBps !== undefined ||
-        req.controller !== undefined
-      ) {
-        throw new InvalidPayloadError(
-          'the rolling-swap path (`senderConditions` + `streamNonce`, ' +
-            'toon-client#573) does not yet support `minExchangeRate` / ' +
-            '`floorBps` / `controller` — the rate floor and adaptive ' +
-            'controller have not been ported to it. Drop these params, or ' +
-            'omit `senderConditions`/`streamNonce` to use the legacy path.'
-        );
-      }
-      return this.swapRolling(req, apex);
+    // toon-client#585: probe for rolling capability, then take the rolling
+    // path only if the maker actually established a session. Everything else
+    // — including every way the probe can fail — falls through to the LEGACY
+    // body below, unchanged.
+    const negotiated = await this.negotiateRollingSession(req, apex);
+    if (negotiated.kind === 'rolling') {
+      return this.swapRolling(req, apex, negotiated);
     }
+    const rollingNote = negotiated.note;
+
     if (req.controller && req.packetCount !== undefined) {
       throw new InvalidPayloadError(
         '`controller` and `packetCount` are mutually exclusive: the adaptive ' +
@@ -2385,6 +2438,7 @@ export class ClientRunner {
             valueReceived: ingest.valueRevealed.toString(),
           }
         : {}),
+      ...(rollingNote ? { rolling: rollingNote } : {}),
     };
   }
 
@@ -2410,30 +2464,55 @@ export class ClientRunner {
    * per-packet `sendSwapPacket` await below simply reports whichever
    * happened.
    *
-   * No RFQ (kind:20033/20034) session-negotiation transport exists yet, so
-   * `req.streamNonce` must already be registered with the maker out of band
-   * — `swap()` validates its presence before calling this. Packetization is
-   * a static even split (adaptive controller / rate floor are NOT ported to
-   * this path yet — a follow-up, since neither is required to make the
-   * coupled unwind reachable).
+   * The session reaching here is ESTABLISHED — {@link negotiateRollingSession}
+   * either got a kind:20034 quote back (toon-client#585) or the caller pinned
+   * a `streamNonce` it registered itself. The maker commits the session before
+   * answering, so `seq 1` can go out immediately.
+   *
+   * Guards armed from that session (spec §5): the hard floor is
+   * `req.minExchangeRate`, else `R₀ × (1 − floorBps/10000)` derived from the
+   * QUOTE's `R₀` (falling back to the advertised `pair.rate` when the session
+   * was pinned without a quote). It is enforced at the verify-before-reveal
+   * seam, so a below-floor fill is WITHHELD rather than merely reported —
+   * leg A never fulfills and the packet costs nothing. `swapSignerAddress`
+   * likewise prefers the request's pin and falls back to the quote's, arming
+   * R5 before the first advance instead of trusting the first advance's echo.
+   *
+   * Packetization is a static even split, additionally capped by the quote's
+   * per-packet `maxAmount` when the caller pinned no `packetCount`. The
+   * adaptive δ/W controller is NOT ported to this path; a request that asks
+   * for one stays on the legacy path (see {@link negotiateRollingSession}).
    */
   private async swapRolling(
     req: SwapRequest,
-    apex: ApexConnection
+    apex: ApexConnection,
+    session: RollingSessionArm
   ): Promise<SwapResponse> {
-    const streamNonce = req.streamNonce;
-    if (streamNonce === undefined || !isValidStreamNonce(streamNonce)) {
+    const streamNonce = session.streamNonce;
+    if (!isValidStreamNonce(streamNonce)) {
       throw new InvalidPayloadError(
         '`streamNonce` must be exactly 16 bytes, lowercase hex (32 chars).'
       );
     }
-    const packetCount = req.packetCount ?? 1;
+    const totalAmount = BigInt(req.amount);
+    const quote = session.quote;
+    const packetCount = req.packetCount ?? packetsForQuote(totalAmount, quote);
     if (!Number.isInteger(packetCount) || packetCount < 1) {
       throw new InvalidPayloadError(
         '`packetCount` must be a positive integer.'
       );
     }
-    const totalAmount = BigInt(req.amount);
+    // Floor basis: the quote's R₀ when the session negotiated one (spec §5's
+    // `minExchangeRate = R₀ × (1 − tolerance)`), else the advertised rate —
+    // the same source the legacy path uses.
+    const minExchangeRate =
+      req.minExchangeRate ??
+      deriveFloorRate(
+        quote?.rate ?? req.pair.rate,
+        req.floorBps ?? this.config.swapDefaults?.floorBps
+      );
+    const expectedSignerAddress =
+      req.swapSignerAddress ?? quote?.swapSignerAddress;
     const expectedChain = req.pair.to.chain;
     const minaSignerClient = expectedChain.startsWith('mina')
       ? await loadMinaSignerClient()
@@ -2451,19 +2530,18 @@ export class ClientRunner {
       req.swapPubkey
     );
 
-    const session = this.rollingSessions.register(streamNonce, {
+    const live = this.rollingSessions.register(streamNonce, {
       pair: req.pair,
       expectedChain,
       chainRecipient: req.chainRecipient,
-      ...(req.swapSignerAddress
-        ? { expectedSignerAddress: req.swapSignerAddress }
-        : {}),
+      ...(expectedSignerAddress ? { expectedSignerAddress } : {}),
       ...(verifyingContracts
         ? { swapVerifyingContracts: verifyingContracts }
         : {}),
       store: this.receivedClaimStore,
       ...(minaSignerClient ? { minaSignerClient } : {}),
       preimages,
+      ...(minExchangeRate !== undefined ? { minExchangeRate } : {}),
     });
 
     const claims: SwapClaim[] = [];
@@ -2530,7 +2608,7 @@ export class ClientRunner {
           // A leg-B verification failure is the INTERESTING rejection (spec
           // R5/R8) and is the more precise diagnosis, so it wins over the
           // leg-A reject the maker sent back once it unwound.
-          const rejection = session.rejections.get(seq);
+          const rejection = live.rejections.get(seq);
           const code = rejection?.code ?? result.code ?? 'F99';
           const message =
             rejection?.message ?? result.message ?? 'rolling fill rejected';
@@ -2541,7 +2619,7 @@ export class ClientRunner {
           continue;
         }
 
-        const outcome = session.outcomes.get(seq);
+        const outcome = live.outcomes.get(seq);
         if (!outcome) {
           // Unreachable in practice (a FULFILLed leg A implies our own
           // reveal ran), but fail loud rather than silently under-counting.
@@ -2613,6 +2691,7 @@ export class ClientRunner {
       state: rejections.length > 0 ? 'failed' : 'completed',
       ...(rejections.length > 0 ? { rejections } : {}),
       ...(realizedRate !== undefined ? { realizedRate } : {}),
+      ...(minExchangeRate !== undefined ? { minExchangeRate } : {}),
       ...(firstReject
         ? { code: firstReject.code, message: firstReject.message }
         : {}),
@@ -2624,7 +2703,203 @@ export class ClientRunner {
             valueReceived: cumulativeTarget.toString(),
           }
         : {}),
+      rolling: {
+        probed: session.probed,
+        used: true,
+        streamNonce,
+        ...(quote
+          ? {
+              rate: quote.rate,
+              rateTimestamp: quote.rateTimestamp,
+              expiresAt: quote.expiresAt,
+              ...(quote.maxRateAge !== undefined
+                ? { maxRateAge: quote.maxRateAge }
+                : {}),
+              ...(quote.spreadBps !== undefined
+                ? { spreadBps: quote.spreadBps }
+                : {}),
+            }
+          : {}),
+      },
     };
+  }
+
+  /**
+   * Capability discovery for the rolling protocol — a PROBE, not an announce
+   * read (spec §10.3 step 2: *"A maker without it is legacy; `toon_swap`
+   * keeps the legacy path until the RFQ succeeds"*). swap#135 deliberately
+   * ships no `rollingCapable` flag, precisely so there is one source of truth
+   * and it is the round trip itself.
+   *
+   * One paid, zero-condition kind:20033 write goes out; a kind:20034 quote
+   * means the maker registered the session and the rolling path is live.
+   * ANY other outcome returns `{ kind: 'legacy' }` and the caller runs the
+   * unchanged legacy body — the fallback is silent and total, because legacy
+   * is what works against the deployed maker today.
+   *
+   * `req.rolling` overrides the probe:
+   * - `'auto'` (default, or `swapDefaults.rolling`) — probe, fall back quietly.
+   * - `'off'` — never probe; no RFQ packet is paid for at all.
+   * - `'require'` — probe, and THROW with the reason instead of falling back.
+   *   This exists for verification and debugging: silence is right for
+   *   production and wrong when you are trying to find out why rolling did
+   *   not engage.
+   *
+   * `req.streamNonce` skips the probe and uses that session id directly — the
+   * pre-#585 out-of-band registration path (toon-client#573), kept because a
+   * maker operator can still register one in-process.
+   */
+  private async negotiateRollingSession(
+    req: SwapRequest,
+    apex: ApexConnection
+  ): Promise<RollingNegotiation> {
+    const mode = req.rolling ?? this.config.swapDefaults?.rolling ?? 'auto';
+    const required = mode === 'require';
+
+    /** Fall back to legacy — or, under `require`, refuse loudly. */
+    const legacy = (
+      probed: boolean,
+      reason: string,
+      message: string
+    ): RollingNegotiation => {
+      if (required) {
+        throw new InvalidPayloadError(
+          `\`rolling: "require"\` but the rolling path is unavailable ` +
+            `(${reason}): ${message}. Set \`rolling: "auto"\` to fall back to ` +
+            'the legacy swap path instead.'
+        );
+      }
+      this.log(
+        `[runner] swap: rolling unavailable (${reason}) — legacy path: ${message}`
+      );
+      return {
+        kind: 'legacy',
+        note: {
+          probed,
+          used: false,
+          fallbackReason: reason,
+          fallbackMessage: message,
+        },
+      };
+    };
+
+    if (mode === 'off') {
+      if (req.streamNonce !== undefined || req.senderConditions) {
+        throw new InvalidPayloadError(
+          '`rolling: "off"` cannot be combined with `streamNonce` / ' +
+            '`senderConditions` — those select the rolling path, which "off" ' +
+            'disables. Drop one of them.'
+        );
+      }
+      return { kind: 'legacy' };
+    }
+
+    // Caller-pinned session: registered out of band (toon-client#573). No
+    // probe — the nonce IS the establishment, and re-RFQing it would mint a
+    // second session the maker never asked for.
+    if (req.streamNonce !== undefined) {
+      if (!isValidStreamNonce(req.streamNonce)) {
+        throw new InvalidPayloadError(
+          '`streamNonce` must be exactly 16 bytes, lowercase hex (32 chars).'
+        );
+      }
+      if (req.controller) {
+        // Contradictory: a pinned session names the ROLLING path, and the
+        // adaptive controller exists only on the legacy one. Silently
+        // dropping either would be worse than refusing.
+        throw new InvalidPayloadError(
+          '`streamNonce` (the rolling path) and `controller` (a legacy-path ' +
+            'feature, not implemented on the rolling fill loop) are mutually ' +
+            'exclusive. Drop `controller`, or drop `streamNonce` to let the ' +
+            'RFQ probe choose the path.'
+        );
+      }
+      return { kind: 'rolling', streamNonce: req.streamNonce, probed: false };
+    }
+
+    // The adaptive δ/W controller is a `streamSwap` feature and is not ported
+    // to the rolling fill loop. Asking for one is an explicit request for the
+    // legacy path; probing anyway would pay for a session we then would not
+    // use.
+    if (req.controller) {
+      return legacy(
+        false,
+        'controller',
+        'the adaptive δ/W controller (`controller`) is a legacy-path feature ' +
+          'and is not implemented on the rolling fill loop'
+      );
+    }
+
+    // The leg-B destination. Load-bearing with NO maker-side fallback: the
+    // maker addresses every leg-B PREPARE of the session to this string
+    // verbatim, and the connector resolves a client session by EXACT match on
+    // the id it greeted with. Without one, an RFQ would establish a session
+    // whose leg B can never arrive — worse than not having one.
+    const senderIlpAddress =
+      req.senderIlpAddress ?? safe(() => apex.client.getOwnIlpAddress?.());
+    if (senderIlpAddress === undefined || senderIlpAddress.length === 0) {
+      return legacy(
+        false,
+        'no-sender-address',
+        'this client cannot state the ILP address it receives leg-B PREPAREs ' +
+          'on — pass `senderIlpAddress` explicitly'
+      );
+    }
+
+    const outcome = await sendRollingRfq({
+      client: apex.client,
+      destination: req.destination,
+      swapPubkey: req.swapPubkey,
+      pair: req.pair,
+      chainRecipient: req.chainRecipient,
+      senderIlpAddress,
+      amount: await this.rfqProbeAmount(req, apex),
+      ...(sizeHintOf(req.amount) !== undefined
+        ? { sizeHint: sizeHintOf(req.amount) }
+        : {}),
+      ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
+    });
+    if (!outcome.ok) {
+      return legacy(outcome.sent, outcome.reason, outcome.message);
+    }
+
+    this.log(
+      `[runner] swap: rolling session ${outcome.streamNonce} established — ` +
+        `R₀ ${outcome.quote.rate} (leg B to ${senderIlpAddress})`
+    );
+    return {
+      kind: 'rolling',
+      streamNonce: outcome.streamNonce,
+      quote: outcome.quote,
+      probed: true,
+    };
+  }
+
+  /**
+   * What the RFQ probe packet itself pays. The probe buys a quote, not value,
+   * so the right figure is the terminating connector's flat packet price
+   * (`GET /ilp/routes/price`, ADR 0020) — not the swap notional. Falls back
+   * to one micro-unit when the price is unknown (a direct-dialled maker often
+   * serves no price route), and `req.rfqAmount` pins it outright.
+   */
+  private async rfqProbeAmount(
+    req: SwapRequest,
+    apex: ApexConnection
+  ): Promise<bigint> {
+    if (req.rfqAmount !== undefined) {
+      const pinned = sizeHintOf(req.rfqAmount);
+      if (pinned !== undefined && pinned > 0n) return pinned;
+      throw new InvalidPayloadError(
+        '`rfqAmount` must be a positive integer decimal string.'
+      );
+    }
+    let price: bigint | null = null;
+    try {
+      price = await apex.client.getRoutePrice(req.destination);
+    } catch {
+      price = null;
+    }
+    return price !== null && price > 0n ? price : 1n;
   }
 
   // ── Received swap claims: persistence + settlement surfaces (#352) ─────────

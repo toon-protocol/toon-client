@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { dispatchTool, summarizeEvents, TOOL_DEFINITIONS } from './mcp-tools.js';
+import {
+  dispatchTool,
+  summarizeEvents,
+  TOOL_DEFINITIONS,
+} from './mcp-tools.js';
 import type { NostrEvent } from 'nostr-tools/pure';
 import { WRITE_TOOLS } from '@toon-protocol/views';
 import { ControlApiError, DaemonUnreachableError } from './control-client.js';
@@ -69,7 +73,9 @@ describe('TOOL_DEFINITIONS', () => {
     expect(byName('toon_render')).toMatch(/toon_atoms first/);
 
     // toon_atoms is an imperative precursor.
-    expect(byName('toon_atoms')).toMatch(/REQUIRED first call before any toon_render/);
+    expect(byName('toon_atoms')).toMatch(
+      /REQUIRED first call before any toon_render/
+    );
 
     // Read/status tools nudge display routing through toon_render.
     for (const n of [
@@ -98,7 +104,12 @@ describe('TOOL_DEFINITIONS', () => {
 
     // Single-event git writes quote the per-event fee via toon_status / fee
     // config and require user confirmation (existing paid-write policy).
-    for (const n of ['toon_git_issue', 'toon_git_comment', 'toon_git_patch', 'toon_git_status']) {
+    for (const n of [
+      'toon_git_issue',
+      'toon_git_comment',
+      'toon_git_patch',
+      'toon_git_status',
+    ]) {
       expect(byName(n), n).toMatch(/PAID \+ IRREVERSIBLE/);
       expect(byName(n), n).toMatch(/toon_status/);
       expect(byName(n), n).toMatch(/confirm with the user/);
@@ -116,7 +127,13 @@ describe('TOOL_DEFINITIONS', () => {
     }
 
     // Free reads are read-only; paid/irreversible writes are destructive writes.
-    for (const n of ['toon_status', 'toon_query', 'toon_read', 'toon_balances', 'toon_render']) {
+    for (const n of [
+      'toon_status',
+      'toon_query',
+      'toon_read',
+      'toon_balances',
+      'toon_render',
+    ]) {
       expect(ann(n)?.readOnlyHint, n).toBe(true);
     }
     for (const n of [
@@ -176,7 +193,10 @@ describe('dispatchTool', () => {
       }),
     });
     const res = await dispatchTool(client, 'toon_status', {});
-    expect(res.structuredContent).toMatchObject({ feePerEvent: '500', asset: 'USDC' });
+    expect(res.structuredContent).toMatchObject({
+      feePerEvent: '500',
+      asset: 'USDC',
+    });
   });
 
   it('toon_identity projects the identity subset from status', async () => {
@@ -295,9 +315,68 @@ describe('dispatchTool', () => {
     expect(swapTool?.inputSchema['required']).not.toContain('btpUrl');
   });
 
+  it('[#585] toon_swap declares the rolling controls, all optional (auto-probe is the default)', () => {
+    const swapTool = TOOL_DEFINITIONS.find((t) => t.name === 'toon_swap');
+    const props = swapTool?.inputSchema['properties'] as
+      | Record<string, unknown>
+      | undefined;
+    expect(props?.['rolling']).toMatchObject({
+      type: 'string',
+      enum: ['auto', 'off', 'require'],
+    });
+    expect(props?.['senderIlpAddress']).toMatchObject({ type: 'string' });
+    expect(props?.['rfqAmount']).toMatchObject({ type: 'string' });
+    const required = swapTool?.inputSchema['required'];
+    expect(required).not.toContain('rolling');
+    expect(required).not.toContain('senderIlpAddress');
+    expect(required).not.toContain('rfqAmount');
+  });
+
+  it('[#585] toon_swap forwards rolling / senderIlpAddress / rfqAmount, and drops a bogus rolling value', async () => {
+    const swap = vi.fn().mockResolvedValue({ accepted: true, claims: [] });
+    const client = stubClient({ swap });
+    const pair = {
+      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+      rate: '1.0',
+    };
+    const base = {
+      destination: 'g.toon.swap.maker',
+      amount: '100',
+      swapPubkey: 'cd'.repeat(32),
+      pair,
+      chainRecipient: 'SoLrecipient',
+    };
+    await dispatchTool(client, 'toon_swap', {
+      ...base,
+      rolling: 'require',
+      senderIlpAddress: 'g.toon.client',
+      rfqAmount: '7',
+    });
+    expect(swap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rolling: 'require',
+        senderIlpAddress: 'g.toon.client',
+        rfqAmount: '7',
+      })
+    );
+    // An out-of-enum value is dropped, not forwarded as an invalid mode.
+    swap.mockClear();
+    await dispatchTool(client, 'toon_swap', { ...base, rolling: 'yes-please' });
+    expect(swap.mock.calls[0]?.[0]).not.toHaveProperty('rolling');
+  });
+
   it('toon_balances returns the wallet balances as structuredContent (iframe seam)', async () => {
     const payload = {
-      balances: [{ chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 }],
+      balances: [
+        {
+          chain: 'evm',
+          address: '0x1',
+          amount: '5000000',
+          asset: 'USDC',
+          assetScale: 6,
+        },
+      ],
     };
     const balances = vi.fn().mockResolvedValue(payload);
     const client = stubClient({ balances });
@@ -310,7 +389,9 @@ describe('dispatchTool', () => {
   });
 
   it('toon_channels returns the channels as structuredContent (iframe seam)', async () => {
-    const payload = { channels: [{ channelId: 'c1', nonce: 3, cumulativeAmount: '3000' }] };
+    const payload = {
+      channels: [{ channelId: 'c1', nonce: 3, cumulativeAmount: '3000' }],
+    };
     const channels = vi.fn().mockResolvedValue(payload);
     const client = stubClient({ channels });
     const res = await dispatchTool(client, 'toon_channels', {});
@@ -319,9 +400,19 @@ describe('dispatchTool', () => {
   });
 
   it('toon_balances always emits structuredContent.balances as a populated array for a non-empty read (#200)', async () => {
-    const row = { chain: 'evm', address: '0x1', amount: '5000000', asset: 'USDC', assetScale: 6 };
+    const row = {
+      chain: 'evm',
+      address: '0x1',
+      amount: '5000000',
+      asset: 'USDC',
+      assetScale: 6,
+    };
     const balances = vi.fn().mockResolvedValue({ balances: [row] });
-    const res = await dispatchTool(stubClient({ balances }), 'toon_balances', {});
+    const res = await dispatchTool(
+      stubClient({ balances }),
+      'toon_balances',
+      {}
+    );
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent).toBeDefined();
     const got = res.structuredContent?.['balances'];
@@ -334,9 +425,19 @@ describe('dispatchTool', () => {
     // If client.balances() ever regresses to returning a BARE ARRAY, the
     // tool boundary must still wrap it as { balances: [...] } so ok() does not
     // silently drop structuredContent (its Array.isArray guard).
-    const row = { chain: 'solana', address: 'So1', amount: '1000', asset: 'USDC', assetScale: 6 };
+    const row = {
+      chain: 'solana',
+      address: 'So1',
+      amount: '1000',
+      asset: 'USDC',
+      assetScale: 6,
+    };
     const balances = vi.fn().mockResolvedValue([row]);
-    const res = await dispatchTool(stubClient({ balances }), 'toon_balances', {});
+    const res = await dispatchTool(
+      stubClient({ balances }),
+      'toon_balances',
+      {}
+    );
     expect(res.structuredContent).toEqual({ balances: [row] });
     expect(Array.isArray(res.structuredContent?.['balances'])).toBe(true);
   });
@@ -344,7 +445,11 @@ describe('dispatchTool', () => {
   it('toon_channels wraps a bare-array regression so structuredContent is never dropped (#200)', async () => {
     const row = { channelId: 'c1', nonce: 3, cumulativeAmount: '3000' };
     const channels = vi.fn().mockResolvedValue([row]);
-    const res = await dispatchTool(stubClient({ channels }), 'toon_channels', {});
+    const res = await dispatchTool(
+      stubClient({ channels }),
+      'toon_channels',
+      {}
+    );
     expect(res.structuredContent).toEqual({ channels: [row] });
     expect(Array.isArray(res.structuredContent?.['channels'])).toBe(true);
   });
@@ -357,41 +462,80 @@ describe('dispatchTool', () => {
           'balances_unavailable',
           504,
           true,
-          'the balances control handler\'s chain RPC/provider read did not return'
+          "the balances control handler's chain RPC/provider read did not return"
         )
       );
-    const res = await dispatchTool(stubClient({ balances }), 'toon_balances', {});
+    const res = await dispatchTool(
+      stubClient({ balances }),
+      'toon_balances',
+      {}
+    );
     expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toMatch(/balances control API|balances handler|GET \/balances/);
-    expect(res.content[0]!.text).not.toMatch(/retry once the relay is reachable and the apex is online/);
+    expect(res.content[0]!.text).toMatch(
+      /balances control API|balances handler|GET \/balances/
+    );
+    expect(res.content[0]!.text).not.toMatch(
+      /retry once the relay is reachable and the apex is online/
+    );
   });
 
   it('toon_channel_deposit forwards channelId + amount', async () => {
     const depositToChannel = vi
       .fn()
-      .mockResolvedValue({ channelId: 'c1', txHash: '0xdep', depositTotal: '1500000' });
+      .mockResolvedValue({
+        channelId: 'c1',
+        txHash: '0xdep',
+        depositTotal: '1500000',
+      });
     const client = stubClient({ depositToChannel });
-    const res = await dispatchTool(client, 'toon_channel_deposit', { channelId: 'c1', amount: '500000' });
-    expect(depositToChannel).toHaveBeenCalledWith({ channelId: 'c1', amount: '500000' });
-    expect(JSON.parse(res.content[0]!.text)).toEqual({ channelId: 'c1', txHash: '0xdep', depositTotal: '1500000' });
+    const res = await dispatchTool(client, 'toon_channel_deposit', {
+      channelId: 'c1',
+      amount: '500000',
+    });
+    expect(depositToChannel).toHaveBeenCalledWith({
+      channelId: 'c1',
+      amount: '500000',
+    });
+    expect(JSON.parse(res.content[0]!.text)).toEqual({
+      channelId: 'c1',
+      txHash: '0xdep',
+      depositTotal: '1500000',
+    });
   });
 
   it('toon_channel_close forwards the channelId', async () => {
     const closeChannel = vi
       .fn()
-      .mockResolvedValue({ channelId: 'c1', txHash: '0xc', closedAt: '1000', settleableAt: '2000' });
+      .mockResolvedValue({
+        channelId: 'c1',
+        txHash: '0xc',
+        closedAt: '1000',
+        settleableAt: '2000',
+      });
     const client = stubClient({ closeChannel });
-    const res = await dispatchTool(client, 'toon_channel_close', { channelId: 'c1' });
+    const res = await dispatchTool(client, 'toon_channel_close', {
+      channelId: 'c1',
+    });
     expect(closeChannel).toHaveBeenCalledWith({ channelId: 'c1' });
-    expect(JSON.parse(res.content[0]!.text)).toMatchObject({ channelId: 'c1', settleableAt: '2000' });
+    expect(JSON.parse(res.content[0]!.text)).toMatchObject({
+      channelId: 'c1',
+      settleableAt: '2000',
+    });
   });
 
   it('toon_channel_settle forwards the channelId', async () => {
-    const settleChannel = vi.fn().mockResolvedValue({ channelId: 'c1', txHash: '0xs' });
+    const settleChannel = vi
+      .fn()
+      .mockResolvedValue({ channelId: 'c1', txHash: '0xs' });
     const client = stubClient({ settleChannel });
-    const res = await dispatchTool(client, 'toon_channel_settle', { channelId: 'c1' });
+    const res = await dispatchTool(client, 'toon_channel_settle', {
+      channelId: 'c1',
+    });
     expect(settleChannel).toHaveBeenCalledWith({ channelId: 'c1' });
-    expect(JSON.parse(res.content[0]!.text)).toMatchObject({ channelId: 'c1', txHash: '0xs' });
+    expect(JSON.parse(res.content[0]!.text)).toMatchObject({
+      channelId: 'c1',
+      txHash: '0xs',
+    });
   });
 
   it('toon_http_fetch_paid forwards inputs and returns { status, headers, body }', async () => {
@@ -460,7 +604,9 @@ describe('dispatchTool', () => {
     const client = stubClient({
       publish: vi
         .fn()
-        .mockRejectedValue(new ControlApiError('insufficient_gas', 402, true, detail)),
+        .mockRejectedValue(
+          new ControlApiError('insufficient_gas', 402, true, detail)
+        ),
     });
     const res = await dispatchTool(client, 'toon_publish', {
       event: { id: 'e' },
@@ -543,13 +689,20 @@ describe('dispatchTool', () => {
       status: 'pending',
       startedAt: 1,
     });
-    const res = await dispatchTool(stubClient({ fundWallet }), 'toon_fund_wallet', {});
+    const res = await dispatchTool(
+      stubClient({ fundWallet }),
+      'toon_fund_wallet',
+      {}
+    );
     expect(res.isError).toBeFalsy();
     expect(fundWallet).toHaveBeenCalledWith({});
     // Async submit: the text is a human message; the snapshot rides on
     // structuredContent (the iframe seam), not the JSON text body.
     expect(res.content[0]!.text).toMatch(/Drip submitted for evm to 0xabc/);
-    expect(res.structuredContent).toMatchObject({ chain: 'evm', status: 'pending' });
+    expect(res.structuredContent).toMatchObject({
+      chain: 'evm',
+      status: 'pending',
+    });
   });
 
   it('toon_fund_wallet forwards chain + address when provided', async () => {
@@ -564,18 +717,32 @@ describe('dispatchTool', () => {
       chain: 'solana',
       address: 'So1',
     });
-    expect(fundWallet).toHaveBeenCalledWith({ chain: 'solana', address: 'So1' });
+    expect(fundWallet).toHaveBeenCalledWith({
+      chain: 'solana',
+      address: 'So1',
+    });
   });
 
   it('toon_fund_status returns the tracked drip jobs', async () => {
     const fundStatus = vi.fn().mockResolvedValue({
       jobs: [
-        { chain: 'mina', address: 'B62', faucetUrl: 'u', status: 'success', startedAt: 1, finishedAt: 2 },
+        {
+          chain: 'mina',
+          address: 'B62',
+          faucetUrl: 'u',
+          status: 'success',
+          startedAt: 1,
+          finishedAt: 2,
+        },
       ],
     });
-    const res = await dispatchTool(stubClient({ fundStatus }), 'toon_fund_status', {
-      chain: 'mina',
-    });
+    const res = await dispatchTool(
+      stubClient({ fundStatus }),
+      'toon_fund_status',
+      {
+        chain: 'mina',
+      }
+    );
     expect(res.isError).toBeFalsy();
     expect(fundStatus).toHaveBeenCalledWith('mina');
     expect(JSON.parse(res.content[0]!.text).jobs).toHaveLength(1);
@@ -636,12 +803,17 @@ describe('dispatchTool', () => {
     expect(res.isError).toBeFalsy();
     const atoms = res.structuredContent?.['atoms'] as { id: string }[];
     expect(atoms.some((a) => a.id === 'note-card')).toBe(true);
-    const parsed = JSON.parse(res.content[0]!.text) as { atoms: { id: string }[] };
+    const parsed = JSON.parse(res.content[0]!.text) as {
+      atoms: { id: string }[];
+    };
     expect(parsed.atoms.some((a) => a.id === 'note-card')).toBe(true);
   });
 
   it('toon_render validates and echoes a ViewSpec', async () => {
-    const spec = { title: 'Feed', root: { atom: 'stack', children: [{ atom: 'note-card' }] } };
+    const spec = {
+      title: 'Feed',
+      root: { atom: 'stack', children: [{ atom: 'note-card' }] },
+    };
     const ok = await dispatchTool(stubClient({}), 'toon_render', { spec });
     expect(ok.isError).toBeFalsy();
     expect(ok.structuredContent?.['viewSpec']).toEqual(spec);
@@ -653,12 +825,17 @@ describe('dispatchTool', () => {
   });
 
   it('toon_query forwards the filter and returns events', async () => {
-    const query = vi.fn().mockResolvedValue({ events: [{ id: 'e1', kind: 1 }] });
+    const query = vi
+      .fn()
+      .mockResolvedValue({ events: [{ id: 'e1', kind: 1 }] });
     const res = await dispatchTool(stubClient({ query }), 'toon_query', {
       filter: { kinds: [1] },
       timeoutMs: 50,
     });
-    expect(query).toHaveBeenCalledWith({ filters: { kinds: [1] }, timeoutMs: 50 });
+    expect(query).toHaveBeenCalledWith({
+      filters: { kinds: [1] },
+      timeoutMs: 50,
+    });
     expect((res.structuredContent?.['events'] as unknown[]).length).toBe(1);
   });
 
@@ -688,18 +865,31 @@ describe('dispatchTool', () => {
   it('toon_read text summarizes events and surfaces the drain cursor', async () => {
     const events = vi.fn().mockResolvedValue({
       events: [
-        { id: 'n1', pubkey: 'cd'.repeat(32), created_at: 1_700_000_000, kind: 1, tags: [], content: 'hello', sig: 's' },
+        {
+          id: 'n1',
+          pubkey: 'cd'.repeat(32),
+          created_at: 1_700_000_000,
+          kind: 1,
+          tags: [],
+          content: 'hello',
+          sig: 's',
+        },
       ],
       cursor: 42,
       hasMore: true,
     });
-    const res = await dispatchTool(stubClient({ events }), 'toon_read', { limit: 1 });
+    const res = await dispatchTool(stubClient({ events }), 'toon_read', {
+      limit: 1,
+    });
     expect(res.content[0]!.text).toMatch(/cursor 42/);
     expect(res.structuredContent).toMatchObject({ cursor: 42, hasMore: true });
   });
 
   it('toon_render text names the composed atoms for a text-only host', async () => {
-    const spec = { title: 'Feed', root: { atom: 'stack', children: [{ atom: 'note-card' }] } };
+    const spec = {
+      title: 'Feed',
+      root: { atom: 'stack', children: [{ atom: 'note-card' }] },
+    };
     const res = await dispatchTool(stubClient({}), 'toon_render', { spec });
     expect(res.content[0]!.text).toMatch(/atoms: stack, note-card/);
     expect(res.content[0]!.text).toMatch(/toon_query \/ toon_read/);
@@ -710,13 +900,24 @@ describe('dispatchTool toon_git_*', () => {
   const plan = {
     repoId: 'demo',
     refUpdates: [
-      { refname: 'refs/heads/main', localSha: 'a'.repeat(40), remoteSha: null, kind: 'new' },
+      {
+        refname: 'refs/heads/main',
+        localSha: 'a'.repeat(40),
+        remoteSha: null,
+        kind: 'new',
+      },
     ],
     newRefs: { 'refs/heads/main': 'a'.repeat(40) },
     headSymref: 'refs/heads/main',
     objects: [
       { sha: 'a'.repeat(40), type: 'commit', size: 200, isRefTip: true },
-      { sha: 'b'.repeat(40), type: 'blob', size: 1000, path: 'README.md', isRefTip: false },
+      {
+        sha: 'b'.repeat(40),
+        type: 'blob',
+        size: 1000,
+        path: 'README.md',
+        isRefTip: false,
+      },
     ],
     knownShaToTxId: { ['c'.repeat(40)]: 'tx1' },
     announceNeeded: true,
@@ -734,20 +935,29 @@ describe('dispatchTool toon_git_*', () => {
   it('dry_run:true calls /git/estimate only and returns the itemized plan', async () => {
     const gitEstimate = vi.fn().mockResolvedValue(plan);
     const gitPush = vi.fn();
-    const res = await dispatchTool(stubClient({ gitEstimate, gitPush }), 'toon_git_push', {
+    const res = await dispatchTool(
+      stubClient({ gitEstimate, gitPush }),
+      'toon_git_push',
+      {
+        repoPath: '/repos/demo',
+        repoId: 'demo',
+        dry_run: true,
+      }
+    );
+    expect(res.isError).toBeFalsy();
+    expect(gitEstimate).toHaveBeenCalledWith({
       repoPath: '/repos/demo',
       repoId: 'demo',
-      dry_run: true,
     });
-    expect(res.isError).toBeFalsy();
-    expect(gitEstimate).toHaveBeenCalledWith({ repoPath: '/repos/demo', repoId: 'demo' });
     expect(gitPush).not.toHaveBeenCalled();
     // Text carries the fee table (the confirm quote) but compacts the
     // per-object manifest to counts; the full plan rides structuredContent.
     expect(res.content[0]!.text).toMatch(/"totalFee":"3200"/);
     expect(res.content[0]!.text).toMatch(/"plannedObjectCount":2/);
     expect(res.content[0]!.text).toMatch(/explicit confirmation/);
-    expect(res.structuredContent).toMatchObject({ estimate: { totalFee: '3200' } });
+    expect(res.structuredContent).toMatchObject({
+      estimate: { totalFee: '3200' },
+    });
     expect((res.structuredContent?.['objects'] as unknown[]).length).toBe(2);
   });
 
@@ -817,9 +1027,13 @@ describe('dispatchTool toon_git_*', () => {
   it('refuses a real push without confirm:true (dry_run-first gating)', async () => {
     const gitEstimate = vi.fn();
     const gitPush = vi.fn();
-    const res = await dispatchTool(stubClient({ gitEstimate, gitPush }), 'toon_git_push', {
-      repoPath: '/repos/demo',
-    });
+    const res = await dispatchTool(
+      stubClient({ gitEstimate, gitPush }),
+      'toon_git_push',
+      {
+        repoPath: '/repos/demo',
+      }
+    );
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toMatch(/confirm:true/);
     expect(res.content[0]!.text).toMatch(/dry_run:true/);
@@ -849,7 +1063,11 @@ describe('dispatchTool toon_git_*', () => {
       confirm: true,
     });
     expect(res.isError).toBeFalsy();
-    expect(gitPush).toHaveBeenCalledWith({ repoPath: '/repos/demo', repoId: 'demo', confirm: true });
+    expect(gitPush).toHaveBeenCalledWith({
+      repoPath: '/repos/demo',
+      repoId: 'demo',
+      confirm: true,
+    });
     expect(res.content[0]!.text).toMatch(/"totalFeePaid":"2200"/);
     expect(res.content[0]!.text).toMatch(/"skippedUploadCount":1/);
     expect(res.structuredContent).toMatchObject({ totalFeePaid: '2200' });
@@ -858,11 +1076,24 @@ describe('dispatchTool toon_git_*', () => {
 
   it('surfaces non_fast_forward with the rejected refs and a force-after-confirmation hint', async () => {
     const refs = [
-      { refname: 'refs/heads/main', localSha: 'a'.repeat(40), remoteSha: 'b'.repeat(40), kind: 'forced' },
+      {
+        refname: 'refs/heads/main',
+        localSha: 'a'.repeat(40),
+        remoteSha: 'b'.repeat(40),
+        kind: 'forced',
+      },
     ];
-    const gitPush = vi.fn().mockRejectedValue(
-      new ControlApiError('non_fast_forward', 409, false, 'refs/heads/main is not a fast-forward', { refs })
-    );
+    const gitPush = vi
+      .fn()
+      .mockRejectedValue(
+        new ControlApiError(
+          'non_fast_forward',
+          409,
+          false,
+          'refs/heads/main is not a fast-forward',
+          { refs }
+        )
+      );
     const res = await dispatchTool(stubClient({ gitPush }), 'toon_git_push', {
       repoPath: '/repos/demo',
       confirm: true,
@@ -877,15 +1108,32 @@ describe('dispatchTool toon_git_*', () => {
 
   it('surfaces oversize_objects with the offending paths and the follow-up reference', async () => {
     const objects = [
-      { sha: 'd'.repeat(40), type: 'blob', size: 200_000, path: 'assets/big.bin' },
+      {
+        sha: 'd'.repeat(40),
+        type: 'blob',
+        size: 200_000,
+        path: 'assets/big.bin',
+      },
     ];
-    const gitEstimate = vi.fn().mockRejectedValue(
-      new ControlApiError('oversize_objects', 413, false, '1 object exceeds the 95KB limit', { objects })
+    const gitEstimate = vi
+      .fn()
+      .mockRejectedValue(
+        new ControlApiError(
+          'oversize_objects',
+          413,
+          false,
+          '1 object exceeds the 95KB limit',
+          { objects }
+        )
+      );
+    const res = await dispatchTool(
+      stubClient({ gitEstimate }),
+      'toon_git_push',
+      {
+        repoPath: '/repos/demo',
+        dry_run: true,
+      }
     );
-    const res = await dispatchTool(stubClient({ gitEstimate }), 'toon_git_push', {
-      repoPath: '/repos/demo',
-      dry_run: true,
-    });
     expect(res.isError).toBe(true);
     const parsed = JSON.parse(res.content[0]!.text);
     expect(parsed.error).toBe('oversize_objects');
@@ -901,7 +1149,9 @@ describe('dispatchTool toon_git_*', () => {
       'Run toon_fund_wallet (or fund the wallet) and retry.';
     const gitIssue = vi
       .fn()
-      .mockRejectedValue(new ControlApiError('insufficient_gas', 402, true, detail));
+      .mockRejectedValue(
+        new ControlApiError('insufficient_gas', 402, true, detail)
+      );
     const res = await dispatchTool(stubClient({ gitIssue }), 'toon_git_issue', {
       repoOwnerPubkey: 'ab'.repeat(32),
       repoId: 'demo',
@@ -913,7 +1163,9 @@ describe('dispatchTool toon_git_*', () => {
   });
 
   it('toon_git_issue maps flattened args to the repoAddr wire shape', async () => {
-    const gitIssue = vi.fn().mockResolvedValue({ eventId: 'e1', kind: 1621, feePaid: '1000' });
+    const gitIssue = vi
+      .fn()
+      .mockResolvedValue({ eventId: 'e1', kind: 1621, feePaid: '1000' });
     const res = await dispatchTool(stubClient({ gitIssue }), 'toon_git_issue', {
       repoOwnerPubkey: 'ab'.repeat(32),
       repoId: 'demo',
@@ -927,11 +1179,16 @@ describe('dispatchTool toon_git_*', () => {
       body: 'steps to reproduce',
       labels: ['bug', 'p1'],
     });
-    expect(JSON.parse(res.content[0]!.text)).toMatchObject({ eventId: 'e1', kind: 1621 });
+    expect(JSON.parse(res.content[0]!.text)).toMatchObject({
+      eventId: 'e1',
+      kind: 1621,
+    });
   });
 
   it('toon_git_comment forwards threading params (only those provided)', async () => {
-    const gitComment = vi.fn().mockResolvedValue({ eventId: 'e2', kind: 1622, feePaid: '1000' });
+    const gitComment = vi
+      .fn()
+      .mockResolvedValue({ eventId: 'e2', kind: 1622, feePaid: '1000' });
     await dispatchTool(stubClient({ gitComment }), 'toon_git_comment', {
       repoOwnerPubkey: 'ab'.repeat(32),
       repoId: 'demo',
@@ -950,7 +1207,9 @@ describe('dispatchTool toon_git_*', () => {
   });
 
   it('toon_git_comment omits absent optional fields (daemon defaults apply)', async () => {
-    const gitComment = vi.fn().mockResolvedValue({ eventId: 'e2', kind: 1622, feePaid: '1000' });
+    const gitComment = vi
+      .fn()
+      .mockResolvedValue({ eventId: 'e2', kind: 1622, feePaid: '1000' });
     await dispatchTool(stubClient({ gitComment }), 'toon_git_comment', {
       repoOwnerPubkey: 'ab'.repeat(32),
       repoId: 'demo',
@@ -965,7 +1224,9 @@ describe('dispatchTool toon_git_*', () => {
   });
 
   it('toon_git_patch forwards literal patchText', async () => {
-    const gitPatch = vi.fn().mockResolvedValue({ eventId: 'e3', kind: 1617, feePaid: '1000' });
+    const gitPatch = vi
+      .fn()
+      .mockResolvedValue({ eventId: 'e3', kind: 1617, feePaid: '1000' });
     await dispatchTool(stubClient({ gitPatch }), 'toon_git_patch', {
       repoOwnerPubkey: 'ab'.repeat(32),
       repoId: 'demo',
@@ -980,7 +1241,9 @@ describe('dispatchTool toon_git_*', () => {
   });
 
   it('toon_git_patch forwards repoPath+range (+branch) for daemon-side format-patch', async () => {
-    const gitPatch = vi.fn().mockResolvedValue({ eventId: 'e3', kind: 1617, feePaid: '1000' });
+    const gitPatch = vi
+      .fn()
+      .mockResolvedValue({ eventId: 'e3', kind: 1617, feePaid: '1000' });
     await dispatchTool(stubClient({ gitPatch }), 'toon_git_patch', {
       repoOwnerPubkey: 'ab'.repeat(32),
       repoId: 'demo',
@@ -999,13 +1262,19 @@ describe('dispatchTool toon_git_*', () => {
   });
 
   it('toon_git_status forwards the status value', async () => {
-    const gitStatus = vi.fn().mockResolvedValue({ eventId: 'e4', kind: 1632, feePaid: '1000' });
-    const res = await dispatchTool(stubClient({ gitStatus }), 'toon_git_status', {
-      repoOwnerPubkey: 'ab'.repeat(32),
-      repoId: 'demo',
-      targetEventId: 'issue1',
-      status: 'closed',
-    });
+    const gitStatus = vi
+      .fn()
+      .mockResolvedValue({ eventId: 'e4', kind: 1632, feePaid: '1000' });
+    const res = await dispatchTool(
+      stubClient({ gitStatus }),
+      'toon_git_status',
+      {
+        repoOwnerPubkey: 'ab'.repeat(32),
+        repoId: 'demo',
+        targetEventId: 'issue1',
+        status: 'closed',
+      }
+    );
     expect(gitStatus).toHaveBeenCalledWith({
       repoAddr: { ownerPubkey: 'ab'.repeat(32), repoId: 'demo' },
       targetEventId: 'issue1',
@@ -1018,10 +1287,22 @@ describe('dispatchTool toon_git_*', () => {
 describe('summarizeEvents', () => {
   it('tallies reaction likes against the note they target', () => {
     const note: NostrEvent = {
-      id: 'note1', pubkey: 'aa'.repeat(32), created_at: 1_700_000_000, kind: 1, tags: [], content: 'hi', sig: 's',
+      id: 'note1',
+      pubkey: 'aa'.repeat(32),
+      created_at: 1_700_000_000,
+      kind: 1,
+      tags: [],
+      content: 'hi',
+      sig: 's',
     };
     const like = (id: string): NostrEvent => ({
-      id, pubkey: 'bb'.repeat(32), created_at: 1_700_000_001, kind: 7, tags: [['e', 'note1']], content: '+', sig: 's',
+      id,
+      pubkey: 'bb'.repeat(32),
+      created_at: 1_700_000_001,
+      kind: 7,
+      tags: [['e', 'note1']],
+      content: '+',
+      sig: 's',
     });
     const text = summarizeEvents([note, like('r1'), like('r2')]);
     expect(text).toMatch(/2 reactions/);
@@ -1031,6 +1312,8 @@ describe('summarizeEvents', () => {
   it('is robust to empty input and to partial wire events', () => {
     expect(summarizeEvents([])).toBe('No matching events.');
     // A bare event missing pubkey/created_at/content must not throw.
-    expect(() => summarizeEvents([{ id: 'e', kind: 1 } as unknown as NostrEvent])).not.toThrow();
+    expect(() =>
+      summarizeEvents([{ id: 'e', kind: 1 } as unknown as NostrEvent])
+    ).not.toThrow();
   });
 });

@@ -289,10 +289,20 @@ accretes permissionlessly, the same way the kind vocabulary does.
 
 `toon_swap({ destination, amount, swapPubkey, pair, chainRecipient, packetCount? })`
 pays a swap peer `amount` of asset A and receives asset B plus a signed
-target-chain claim. It builds the NIP-59 gift-wrapped kind:20032 swap rumor;
-`pair` is the swap pair (from kind:10032 discovery), `chainRecipient` is your
-payout address on `pair.to.chain`, and the swap peer must be routed via the apex's
-child peers. Returns the decrypted target-chain claim(s) + settlement metadata.
+target-chain claim. `pair` is the swap pair (from kind:10032 discovery),
+`chainRecipient` is your payout address on `pair.to.chain`, and the swap peer
+must be reachable from the selected apex (`btpUrl` names a direct-dialled one).
+Returns the decrypted target-chain claim(s) + settlement metadata.
+
+The maker is probed once with a rolling-swap RFQ (kind:20033). A maker that
+answers (kind:20034) runs the **rolling** protocol — both legs share one
+sender-minted condition, so the target-chain claim is verified BEFORE the
+payment commits, and a per-fill rate floor can withhold rather than merely
+report. A maker that does not answer falls back to the **legacy** gift-wrapped
+kind:20032 stream, silently and automatically. There is no capability flag to
+set; `rolling: 'off'` skips the probe and `rolling: 'require'` fails with the
+reason instead of falling back. The response's `rolling` block always says
+which path ran, and why not, if not.
 
 ## Paid HTTP (x402)
 
