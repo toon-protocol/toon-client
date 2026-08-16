@@ -38,6 +38,15 @@ export interface ChannelBinding {
   depositTotal?: bigint;
   /** ISO timestamp of the open that created this binding. */
   openedAt?: string;
+  /**
+   * ISO timestamp this binding was RETIRED from the resume path because its
+   * peer now announces a different settlement address than the channel was
+   * opened against (see `counterpartyMatch` / {@link ChannelStore.supersedeBinding}).
+   * A superseded binding is never resumed again, but stays in
+   * {@link ChannelStore.listBindings} so whatever it holds on-chain can still
+   * be found and reclaimed.
+   */
+  supersededAt?: string;
 }
 
 /**
@@ -61,6 +70,21 @@ export interface ChannelStore {
   listBindings?(): { key: string; binding: ChannelBinding }[];
   /** Forget a binding (its nonce watermark is deliberately left intact). */
   deleteBinding?(key: string): void;
+  /**
+   * Retire a binding from the resume path — the counterparty terminating its
+   * peer's route has been REPLACED, so the channel it names is dead to the
+   * node now answering (`F01 - claim rejected`) even though every key field
+   * still matches.
+   *
+   * ARCHIVES rather than deletes: the retired channel may still hold an
+   * on-chain deposit, so dropping it would strand those funds behind
+   * hand-editing the JSON. It disappears from {@link loadBinding} (never
+   * resumed again) and frees its live key for the re-resolved channel, while
+   * {@link listBindings} still shows it. Idempotent; a no-op for an unknown
+   * key. Optional, like the rest of the binding surface: a store that omits it
+   * simply keeps the pre-validation behaviour of overwriting the stale record.
+   */
+  supersedeBinding?(key: string): void;
 }
 
 interface JsonEntry {
@@ -79,6 +103,16 @@ interface JsonBinding {
   /** Stored as string to preserve bigint precision. */
   depositTotal?: string;
   openedAt?: string;
+  supersededAt?: string;
+}
+
+/**
+ * The archive key a superseded binding moves to: its live key plus the channel
+ * id, so the retired record survives the re-resolved channel being written
+ * under the live key, and several supersessions of one route never collide.
+ */
+function supersededKey(key: string, channelId: string): string {
+  return `${key}|superseded:${channelId}`;
 }
 
 /** `channels.json` → `channels.peers.json`. */
@@ -111,9 +145,15 @@ export class JsonFileChannelStore implements ChannelStore {
     data[channelId] = {
       nonce: tracking.nonce,
       cumulativeAmount: tracking.cumulativeAmount.toString(),
-      ...(tracking.closedAt !== undefined ? { closedAt: tracking.closedAt.toString() } : {}),
-      ...(tracking.settleableAt !== undefined ? { settleableAt: tracking.settleableAt.toString() } : {}),
-      ...(tracking.settledAt !== undefined ? { settledAt: tracking.settledAt.toString() } : {}),
+      ...(tracking.closedAt !== undefined
+        ? { closedAt: tracking.closedAt.toString() }
+        : {}),
+      ...(tracking.settleableAt !== undefined
+        ? { settleableAt: tracking.settleableAt.toString() }
+        : {}),
+      ...(tracking.settledAt !== undefined
+        ? { settledAt: tracking.settledAt.toString() }
+        : {}),
     };
     this.writeFile(data);
   }
@@ -125,9 +165,15 @@ export class JsonFileChannelStore implements ChannelStore {
     return {
       nonce: entry.nonce,
       cumulativeAmount: BigInt(entry.cumulativeAmount),
-      ...(entry.closedAt !== undefined ? { closedAt: BigInt(entry.closedAt) } : {}),
-      ...(entry.settleableAt !== undefined ? { settleableAt: BigInt(entry.settleableAt) } : {}),
-      ...(entry.settledAt !== undefined ? { settledAt: BigInt(entry.settledAt) } : {}),
+      ...(entry.closedAt !== undefined
+        ? { closedAt: BigInt(entry.closedAt) }
+        : {}),
+      ...(entry.settleableAt !== undefined
+        ? { settleableAt: BigInt(entry.settleableAt) }
+        : {}),
+      ...(entry.settledAt !== undefined
+        ? { settledAt: BigInt(entry.settledAt) }
+        : {}),
     };
   }
 
@@ -150,6 +196,9 @@ export class JsonFileChannelStore implements ChannelStore {
         ? { depositTotal: binding.depositTotal.toString() }
         : {}),
       openedAt: binding.openedAt ?? new Date().toISOString(),
+      ...(binding.supersededAt !== undefined
+        ? { supersededAt: binding.supersededAt }
+        : {}),
     };
     this.writeBindings(data);
   }
@@ -157,6 +206,9 @@ export class JsonFileChannelStore implements ChannelStore {
   loadBinding(key: string): ChannelBinding | undefined {
     const entry = this.readBindings()[key];
     if (!entry) return undefined;
+    // A retired record is not a resume candidate, even if something wrote one
+    // back under the live key.
+    if (entry.supersededAt !== undefined) return undefined;
     return toBinding(entry);
   }
 
@@ -172,6 +224,20 @@ export class JsonFileChannelStore implements ChannelStore {
     if (!(key in data)) return;
     const { [key]: _removed, ...rest } = data;
     this.writeBindings(rest);
+  }
+
+  supersedeBinding(key: string): void {
+    const data = this.readBindings();
+    const existing = data[key];
+    if (!existing || existing.supersededAt !== undefined) return;
+    const { [key]: _retired, ...rest } = data;
+    this.writeBindings({
+      ...rest,
+      [supersededKey(key, existing.channelId)]: {
+        ...existing,
+        supersededAt: new Date().toISOString(),
+      },
+    });
   }
 
   private readFile(): Record<string, JsonEntry> {
@@ -210,6 +276,9 @@ function toBinding(entry: JsonBinding): ChannelBinding {
       ? { depositTotal: BigInt(entry.depositTotal) }
       : {}),
     ...(entry.openedAt !== undefined ? { openedAt: entry.openedAt } : {}),
+    ...(entry.supersededAt !== undefined
+      ? { supersededAt: entry.supersededAt }
+      : {}),
   };
 }
 
@@ -248,7 +317,8 @@ export class InMemoryChannelStore implements ChannelStore {
 
   loadBinding(key: string): ChannelBinding | undefined {
     const binding = this.bindings.get(key);
-    return binding ? { ...binding } : undefined;
+    if (!binding || binding.supersededAt !== undefined) return undefined;
+    return { ...binding };
   }
 
   listBindings(): { key: string; binding: ChannelBinding }[] {
@@ -260,5 +330,15 @@ export class InMemoryChannelStore implements ChannelStore {
 
   deleteBinding(key: string): void {
     this.bindings.delete(key);
+  }
+
+  supersedeBinding(key: string): void {
+    const binding = this.bindings.get(key);
+    if (!binding || binding.supersededAt !== undefined) return;
+    this.bindings.delete(key);
+    this.bindings.set(supersededKey(key, binding.channelId), {
+      ...binding,
+      supersededAt: new Date().toISOString(),
+    });
   }
 }

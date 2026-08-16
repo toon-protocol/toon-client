@@ -1,0 +1,10 @@
+---
+'@toon-protocol/client': patch
+'@toon-protocol/client-mcp': patch
+---
+
+Stop resuming a payment channel after the node terminating its route has been replaced — every paid write failed `F01 - claim rejected: names a channel this connector has no record of`.
+
+Both of the daemon's channel stores key a record by a ROUTE with no counterparty in it: `channels.peers.json` by `peer|chain|tokenNetwork`, `apex-channels.json` by `destination|chain`. An ILP name can change hands — the devnet apex `g.toon` was retired and other nodes took over the names under it — and every key field kept matching, so the client resumed a channel opened against the retired node and signed balance proofs against it. The node now answering holds no record of that channel and refuses every packet. Live on 2026-08-16 this broke a `toon_upload` to `g.toon.ario` even though a correct, working binding for that destination sat in the same file; deleting the dead record by hand was the only fix.
+
+The records already carry the counterparty they were opened against (`recipient`), so it is now re-checked against the settlement address the destination announces TODAY before anything is resumed (`counterpartyMatch`/`sameSettlementAddress`, newly exported from `@toon-protocol/client` and mirroring rig's own copy). On a mismatch the record is superseded and the channel re-resolved: `openChannel` binds whatever channel this identity already holds with the new counterparty where one exists, rather than opening and funding a fresh one. A superseded record is MOVED to an archive key rather than deleted — it may still hold an on-chain deposit, and dropping it would strand those funds behind hand-editing the JSON — and is excluded from the resume path for good (`ChannelStore.supersedeBinding`, `supersedeApexChannel`). Records written by older versions carry no recorded counterparty: those read as unverified rather than stale, so the resume proceeds (no fresh on-chain open, nothing for the user to fix) and the record is back-filled from the announce so the next run is verifiable.

@@ -42,6 +42,7 @@ import {
   mintExecutionCondition,
   ingestAndReveal,
   buildSwapSettlements,
+  counterpartyMatch,
   InMemoryReceivedClaimStore,
   JsonFileReceivedClaimStore,
   InMemoryPreimageRetentionStore,
@@ -150,6 +151,7 @@ import {
 import {
   loadApexChannel,
   saveApexChannel,
+  supersedeApexChannel,
   type PersistedChannelContext,
 } from './apex-channel-store.js';
 import {
@@ -998,6 +1000,19 @@ export class ClientRunner {
    * With `resumeOnly`, only a persisted channel is resumed (no on-chain open);
    * returns undefined when none exists so the caller can defer the open to the
    * first write (funded-after-start demo flow, #69).
+   *
+   * A persisted record is only resumed while it still names the CURRENT
+   * counterparty. The store's key is `destination|chain` — an ILP name, not a
+   * node — so when the node terminating that name is replaced (the devnet apex
+   * `g.toon` was retired and other nodes took over the names under it) both key
+   * fields still match, and the runner used to resume, adopt AND re-bind a
+   * channel the node now answering has no record of: every paid write came back
+   * `F01 - claim rejected: names a channel this connector has no record of`
+   * until the record was deleted by hand. On a mismatch the record is
+   * superseded (archived, so its on-chain deposit stays reclaimable) and the
+   * channel re-resolved below — `openChannel` binds whatever channel this
+   * identity already holds with the new counterparty where one exists, rather
+   * than opening and funding a fresh one.
    */
   private async openOrResumeApexChannel(
     apex: ApexConnection,
@@ -1005,7 +1020,7 @@ export class ClientRunner {
   ): Promise<string | undefined> {
     const { destination, chain } = apex;
     const { apexChannelStorePath } = this.config;
-    const saved = loadApexChannel(apexChannelStorePath, destination, chain);
+    const recorded = loadApexChannel(apexChannelStorePath, destination, chain);
     const cm = (
       apex.client as unknown as {
         channelManager?: {
@@ -1014,8 +1029,42 @@ export class ClientRunner {
       }
     ).channelManager;
 
+    const announced = apex.negotiation?.settlementAddress;
+    let saved = recorded;
+    if (
+      recorded &&
+      counterpartyMatch(recorded.context, announced) === 'mismatch'
+    ) {
+      this.log(
+        `[runner] apex channel ${recorded.channelId} for ${destination} was opened ` +
+          `against counterparty ${recorded.context.recipient}, but ${destination} ` +
+          `now announces ${announced} — the node terminating that route was ` +
+          'replaced. Re-resolving the channel; the old record is kept ' +
+          `(superseded) in ${apexChannelStorePath} so its deposit stays reclaimable.`
+      );
+      supersedeApexChannel(apexChannelStorePath, destination, chain);
+      // Nothing to resume: fall through to the open path below, which resolves
+      // against the address announced NOW and binds the channel this identity
+      // already holds with that counterparty where there is one.
+      saved = null;
+    }
+
     if (saved && cm && typeof cm.trackChannel === 'function') {
-      cm.trackChannel(saved.channelId, saved.context);
+      // MIGRATION: records written before the counterparty was validated carry
+      // no `context.recipient`. Nothing contradicts them, so the resume
+      // proceeds — with the announced address filled in and written back, so
+      // the next start is verifiable rather than unverifiable forever.
+      const context =
+        saved.context.recipient === undefined && announced
+          ? { ...saved.context, recipient: announced }
+          : saved.context;
+      if (context !== saved.context) {
+        saveApexChannel(apexChannelStorePath, destination, chain, {
+          ...saved,
+          context,
+        });
+      }
+      cm.trackChannel(saved.channelId, context);
       // Tracking alone leaves the client's LAZY-open path unaware of this
       // channel, so the first paid write used to open (and fund) a second one
       // (#489). `adoptChannel` binds it to the destination — with its claim
@@ -2250,7 +2299,9 @@ export class ClientRunner {
     }
     const packetCount = req.packetCount ?? 1;
     if (!Number.isInteger(packetCount) || packetCount < 1) {
-      throw new InvalidPayloadError('`packetCount` must be a positive integer.');
+      throw new InvalidPayloadError(
+        '`packetCount` must be a positive integer.'
+      );
     }
     const totalAmount = BigInt(req.amount);
     const expectedChain = req.pair.to.chain;
@@ -2307,7 +2358,12 @@ export class ClientRunner {
           seq === packetCount ? lastPacketAmount : evenSplitAmount;
 
         const { preimage, condition } = mintExecutionCondition();
-        preimages.retain({ packetIndex, preimage, condition, retainedAt: Date.now() });
+        preimages.retain({
+          packetIndex,
+          preimage,
+          condition,
+          retainedAt: Date.now(),
+        });
         const toonData = encodeRollingFillPayload({ streamNonce, seq });
 
         let result: { accepted: boolean; code?: string; message?: string };
@@ -2363,14 +2419,18 @@ export class ClientRunner {
           sourceAmount: sourceAmount.toString(),
           targetAmount: outcome.claim.targetAmount.toString(),
           claim: Buffer.from(outcome.claim.claimBytes).toString('base64'),
-          ...(outcome.claim.channelId ? { channelId: outcome.claim.channelId } : {}),
+          ...(outcome.claim.channelId
+            ? { channelId: outcome.claim.channelId }
+            : {}),
           ...(outcome.advance.recipient
             ? { recipient: outcome.advance.recipient }
             : {}),
           ...(outcome.claim.swapSignerAddress
             ? { swapSignerAddress: outcome.claim.swapSignerAddress }
             : {}),
-          ...(outcome.advance.claimId ? { claimId: outcome.advance.claimId } : {}),
+          ...(outcome.advance.claimId
+            ? { claimId: outcome.advance.claimId }
+            : {}),
           ...(outcome.claim.nonce ? { nonce: outcome.claim.nonce } : {}),
           ...(outcome.claim.cumulativeAmount
             ? { cumulativeAmount: outcome.claim.cumulativeAmount }

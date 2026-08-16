@@ -3,6 +3,7 @@ import type { ChainSigner, ChainMetadata } from '../signing/types.js';
 import type { SignedBalanceProof } from '../types.js';
 import { ChannelResumeError } from '../errors.js';
 import type { ChannelStore } from './ChannelStore.js';
+import { counterpartyMatch } from './counterparty.js';
 import type { ConnectorChannelClient } from '@toon-protocol/core';
 
 interface ChannelTracking {
@@ -296,6 +297,16 @@ export class ChannelManager {
    * `trackChannel` rehydrates the nonce/cumulative watermark from the store, so
    * the resumed channel keeps signing ABOVE the last claim the connector saw.
    *
+   * COUNTERPARTY: the binding key is `peer|chain|tokenNetwork` — it names a
+   * ROUTE, not a node, and a route can change hands (the devnet apex `g.toon`
+   * was retired and other nodes took over the names under it). All three key
+   * fields kept matching, so this resumed a channel opened against the retired
+   * node and signed claims against it; the node now answering holds no record
+   * of that channel and refused every write with `F01 - claim rejected: names a
+   * channel this connector has no record of`. The recorded counterparty is
+   * therefore re-checked against the address the peer announces TODAY
+   * ({@link counterpartyMatch}) before anything is resumed.
+   *
    * @throws {ChannelResumeError} when the binding's watermark is missing —
    *   resuming would silently reset the nonce and every later claim would be
    *   rejected (F01), so the caller is told loudly instead.
@@ -310,6 +321,26 @@ export class ChannelManager {
     const key = ChannelManager.bindingKey(peerId, negotiation);
     const binding = store.loadBinding(key);
     if (!binding) return undefined;
+
+    // The counterparty rotated: retire the binding and let the caller
+    // re-resolve. `openChannel` binds whatever channel this identity already
+    // holds with the CURRENT counterparty where there is one — which is the
+    // whole point of not hard-erroring here. The retired record is ARCHIVED,
+    // not dropped: it may still hold an on-chain deposit.
+    const announced = negotiation.settlementAddress;
+    const counterparty = counterpartyMatch(binding.context, announced);
+    if (counterparty === 'mismatch') {
+      console.warn(
+        `[ChannelManager] channel ${binding.channelId} bound to peer "${peerId}" ` +
+          `on ${negotiation.chain} was opened against counterparty ` +
+          `${binding.context.recipient}, but that peer now announces ` +
+          `${announced} — the node terminating that route was replaced. ` +
+          'Re-resolving the channel; the old binding is kept (superseded) so ' +
+          'its on-chain deposit stays reclaimable.'
+      );
+      store.supersedeBinding?.(key);
+      return undefined;
+    }
 
     const watermark = store.load(binding.channelId);
     if (!watermark) {
@@ -331,12 +362,26 @@ export class ChannelManager {
       return undefined;
     }
 
+    // MIGRATION: bindings written before the counterparty was validated (and
+    // peers that announced no settlement address at open time) carry no
+    // `context.recipient`. There is nothing to contradict, so the resume
+    // proceeds — but with the announced address filled in, both for this run's
+    // `trackChannel` (Solana/Mina proofs need a recipient) and written back, so
+    // the NEXT run is verifiable rather than unverifiable forever.
+    const context =
+      counterparty === 'unrecorded' && announced
+        ? { ...binding.context, recipient: announced }
+        : binding.context;
+
     this.trackChannel(binding.channelId, {
-      ...binding.context,
+      ...context,
       ...(binding.depositTotal !== undefined
         ? { depositTotal: binding.depositTotal }
         : {}),
     });
+    if (context !== binding.context) {
+      store.saveBinding?.(key, { ...binding, context });
+    }
     this.peerChannels.set(key, binding.channelId);
     // Hand the on-chain client back the context it only kept in memory, so
     // deposit/close/state reads work on a channel this process never opened.
@@ -756,7 +801,9 @@ export class ChannelManager {
       ...(tracking.tokenAddress !== undefined
         ? { tokenAddress: tracking.tokenAddress }
         : {}),
-      ...(tracking.recipient !== undefined ? { recipient: tracking.recipient } : {}),
+      ...(tracking.recipient !== undefined
+        ? { recipient: tracking.recipient }
+        : {}),
     };
   }
 }
