@@ -17,7 +17,7 @@
 
 import type { IlpSendResult } from '@toon-protocol/core';
 import { ILPPacketType, type ILPResponsePacket } from '../btp/protocol.js';
-import { toBase64 } from '../utils/binary.js';
+import { fromBase64, toBase64 } from '../utils/binary.js';
 import {
   fulfillmentMatchesCondition,
   isZeroCondition,
@@ -40,14 +40,42 @@ export interface IlpSendParams {
    * Sender-chosen 32-byte execution condition `C = sha256(P)` (spec R2).
    * Absent or all-zero = legacy unverified packet (default — ordinary
    * publish/upload writes MUST keep this default).
+   *
+   * Accepts the raw 32 bytes or their base64 encoding. Bytes are the native
+   * form here — the whole condition/preimage subsystem in
+   * `../utils/condition.js` is bytes-native, as is `@toon-protocol/core`'s
+   * in-process `SendPacketParams.executionCondition`. The base64 form exists
+   * because `@toon-protocol/core` ≥3.4.0's `IlpClient` port — the JSON-shaped
+   * wire port — declares this field as a base64 `string`, exactly as it
+   * already does for {@link expiresAt}. Normalize with
+   * {@link resolveExecutionCondition} before touching the bytes.
    */
-  executionCondition?: Uint8Array;
+  executionCondition?: Uint8Array | string;
   /**
    * Explicit PREPARE `expiresAt` (spec R7). Defaults to `now + timeout`,
    * preserving pre-#350 behavior. Accepts a `Date` or an ISO 8601 string —
    * `@toon-protocol/core` ≥2.1.0's `IlpClient` passes the string form.
    */
   expiresAt?: Date | string;
+}
+
+/**
+ * Normalize an `IlpSendParams.executionCondition` to raw bytes.
+ *
+ * The two representations are the two callers: this package's own senders
+ * pass the bytes minted by `mintExecutionCondition`, while a caller typed
+ * only against `@toon-protocol/core`'s `IlpClient` port passes the base64
+ * string that port declares. Both mean the same 32 bytes.
+ *
+ * Length is NOT validated here — that stays with `assertValidCondition` at
+ * the transports, so a malformed condition fails with the same message on
+ * both paths regardless of which representation it arrived in.
+ */
+export function resolveExecutionCondition(
+  condition: Uint8Array | string | undefined
+): Uint8Array | undefined {
+  if (condition === undefined) return undefined;
+  return typeof condition === 'string' ? fromBase64(condition) : condition;
 }
 
 /** Normalize an `IlpSendParams.expiresAt` to a `Date` (default: now + timeout). */

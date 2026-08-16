@@ -9,7 +9,12 @@ import { type BTPProtocolData } from '../btp/protocol.js';
 import type { IlpClient, IlpSendResult } from '@toon-protocol/core';
 import { withRetry } from '../utils/retry.js';
 import { fromBase64, encodeUtf8 } from '../utils/binary.js';
-import { mapIlpResponse, resolveExpiresAt, type IlpSendParams } from './ilp-send.js';
+import {
+  mapIlpResponse,
+  resolveExecutionCondition,
+  resolveExpiresAt,
+  type IlpSendParams,
+} from './ilp-send.js';
 import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
 
 export type { BtpChannelDeclaration };
@@ -236,7 +241,7 @@ export class BtpRuntimeClient implements IlpClient {
     };
     condition: Uint8Array | undefined;
   } {
-    const condition = params.executionCondition;
+    const condition = resolveExecutionCondition(params.executionCondition);
     if (condition !== undefined && !isZeroCondition(condition)) {
       assertValidCondition(condition);
     }

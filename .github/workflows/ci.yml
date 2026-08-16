@@ -100,10 +100,27 @@ jobs:
             --wall-clock-seconds="$WALL_CLOCK" \
             --runner-minutes="$RUNNER_MINUTES"
 
+  # Deliberately NOT `continue-on-error`. This is the only job that installs
+  # with `--no-frozen-lockfile`, so it is the only place dependency drift is
+  # visible at all — every other job is pinned by the lockfile and stays green
+  # through an upstream breaking change.
+  #
+  # It used to carry `continue-on-error: true`, which made it useless as a
+  # signal: a job-level `continue-on-error` still reports the job's own
+  # conclusion as `failure`, but makes `needs.devbox-validate.result` evaluate
+  # to `success`, so the `DEVBOX_RESULT` check in `ci-ok` below was dead code.
+  # The job then sat red on every PR for a full day after
+  # `@toon-protocol/sdk@3.1.8` landed while six PRs merged past it, and nobody
+  # could tell the standing failure from a real regression.
+  #
+  # The trade-off is real and accepted: because this job re-resolves ranges,
+  # an upstream publish can turn it red with no change to this repo, wedging
+  # unrelated PRs until someone adapts the code and moves the lockfile. That
+  # is the intended cost — `ci-ok` already listed this job as gating, and a
+  # wedge that gets fixed in hours beats drift that hides for weeks.
   devbox-validate:
     name: Devbox Environment Validation
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
