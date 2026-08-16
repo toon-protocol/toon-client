@@ -3067,4 +3067,34 @@ export class ToonClient {
     return tracker.getAllDiscoveredPeers().find((p) => p.pubkey === pubkey)
       ?.peerInfo;
   }
+
+  /**
+   * The **leg-B** `swapVerifyingContracts` map a swap MAKER announced (chain
+   * key → its deployed `RollingSwapChannel` address), by Nostr pubkey
+   * (toon-client#583). This is the EIP-712 `verifyingContract` a received
+   * balance-proof claim from that maker must be verified under.
+   *
+   * NOT {@link getDiscoveredPeerInfo}'s `tokenNetworks`: that is **leg A**,
+   * the `TokenNetwork` this client opens its own payment channel against to
+   * pay the maker. swap#134 split them into separate announce keys because
+   * they are separate contracts — verifying a leg-B claim against the leg-A
+   * address recovers an unrelated address and looks like a key mismatch.
+   *
+   * Read off the announce's RAW content (`DiscoverySubscription`), because
+   * `@toon-protocol/core`'s `parseIlpPeerInfo` drops the field entirely — the
+   * same gap `terminatorRequiresBtp` works around for `requiredTransport`.
+   *
+   * @returns `undefined` when the client isn't started, has no discovery
+   *   subscription, or that maker's latest announce carries no usable map.
+   */
+  getSwapVerifyingContracts(
+    pubkey: string
+  ): Record<string, string> | undefined {
+    const subscription: Partial<DiscoverySubscription> | undefined =
+      this.state?.discoverySubscription;
+    if (typeof subscription?.swapVerifyingContractsFor !== 'function') {
+      return undefined;
+    }
+    return subscription.swapVerifyingContractsFor(pubkey);
+  }
 }

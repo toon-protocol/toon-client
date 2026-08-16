@@ -29,9 +29,14 @@
  *      else the claim's self-reported one). EVM claims verify against the
  *      **v2 EIP-712 domain-separated** balance-proof digest
  *      (`verifyEvmClaimSignature`, connector#324 finding #1) — the digest binds
- *      `chainId` + `verifyingContract`, so `tokenNetworks[chain]` (the
- *      RollingSwapChannel address) and a numeric chain id are REQUIRED (an EVM
- *      claim without them is rejected `MISSING_CHAIN_CONFIG`, fail-closed).
+ *      `chainId` + `verifyingContract`, so `swapVerifyingContracts[chain]` (the
+ *      maker's **leg-B** RollingSwapChannel address) and a numeric chain id are
+ *      REQUIRED. A missing contract is rejected
+ *      `MISSING_SWAP_VERIFYING_CONTRACT`, a missing chain id
+ *      `MISSING_CHAIN_CONFIG` — both fail-closed, and NEITHER ever falls back
+ *      to the leg-A `tokenNetworks` map (toon-client#583: that fallback made a
+ *      genuine live claim recover a garbage signer and report
+ *      `SIGNER_MISMATCH`, which reads as a key problem and is not one).
  *      Solana/Mina keep the sdk `verifyAccumulatedClaim` path (their domain is
  *      folded into the message).
  *   6. signer pinning — a claim may not silently rotate the signer of an
@@ -67,6 +72,7 @@ export type ReceivedClaimRejectionCode =
   | 'NON_MONOTONIC_CUMULATIVE'
   | 'CUMULATIVE_SHORTFALL'
   | 'MISSING_CHAIN_CONFIG'
+  | 'MISSING_SWAP_VERIFYING_CONTRACT'
   | 'MALFORMED_METADATA';
 
 export interface ReceivedClaimRejection {
@@ -97,23 +103,32 @@ export interface IngestReceivedClaimsParams {
    */
   expectedSignerAddress?: string;
   /**
-   * Per-chain settlement contract addresses (the deployed `RollingSwapChannel`
-   * / `verifyingContract`), keyed by the FULL chain key (e.g. `evm:base:8453`).
-   * Shaped like the daemon config's `tokenNetworks` map, but sourced from the
-   * MAKER's own kind:10032 announce with that config layered on top as an
-   * operator override (`ClientRunner.swapVerificationTokenNetworks`, #572) —
-   * a claim can only be verified against the deployment it was signed for.
+   * Per-chain **leg-B** verifying contracts — the maker's deployed
+   * `RollingSwapChannel` (the EIP-712 `verifyingContract`), keyed by the FULL
+   * chain key (e.g. `evm:base:8453`). Sourced from the MAKER's own kind:10032
+   * `swapVerifyingContracts` announce key (swap#134) with the local daemon
+   * config layered on top as an operator override
+   * (`ClientRunner.swapVerifyingContractsFor`, #572/#583) — a claim can only be
+   * verified against the deployment it was signed for, and a counterparty must
+   * never be the sole authority on what verifies its own signature.
+   *
+   * NOT `tokenNetworks`. That map is **leg A**: the `TokenNetwork` this client
+   * opens its own channel against to PAY the maker. The two are different
+   * contracts at different addresses, and using leg A here recovers an
+   * unrelated signer address (toon-client#583). There is deliberately no
+   * fallback between them.
    *
    * REQUIRED for EVM claims under the v2 EIP-712 digest (connector#324 finding
    * #1): the claim signature is domain-separated over `(chainId,
-   * verifyingContract)`, so an EVM claim whose chain key lacks a `tokenNetworks`
-   * entry (or a numeric chain id) is rejected `MISSING_CHAIN_CONFIG` — it cannot
-   * be verified fail-closed without the domain. The entry actually used is
-   * PINNED onto the persisted watermark (`ReceivedClaimEntry.verifyingContract`,
-   * #572) so settlement re-verifies against the same domain. Unused for
-   * Solana/Mina claims, which fold their domain into the message itself.
+   * verifyingContract)`, so an EVM claim whose chain key has no entry here is
+   * rejected `MISSING_SWAP_VERIFYING_CONTRACT` (and one with no numeric chain
+   * id `MISSING_CHAIN_CONFIG`) — it cannot be verified fail-closed without the
+   * domain. The entry actually used is PINNED onto the persisted watermark
+   * (`ReceivedClaimEntry.verifyingContract`, #572) so settlement re-verifies
+   * against the same domain. Unused for Solana/Mina claims, which fold their
+   * domain into the message itself.
    */
-  tokenNetworks?: Record<string, string>;
+  swapVerifyingContracts?: Record<string, string>;
   /** Durable watermark store; verified claims are persisted here. */
   store: ReceivedClaimStore;
   /** Pre-loaded `mina-signer` client — required to verify `mina:*` claims. */
@@ -249,18 +264,57 @@ export function ingestReceivedClaims(
     // Pinned on the persisted entry when set (EVM only, issue #572): the
     // exact `verifyingContract` this claim's domain was reconstructed
     // against, so settlement re-verification uses the SAME domain rather
-    // than whatever a shared `tokenNetworks` config happens to hold later.
+    // than whatever a shared config happens to hold later.
     let verifyingContract: string | undefined;
+    // Loaded up here (not just below with the monotonicity checks) so
+    // pin-on-first-use can be enforced BEFORE the signature is checked: a
+    // channel whose watermark already pinned a verifying contract may not
+    // have it silently swapped mid-stream (#583).
+    const wmKey = `${chain}|${claim.channelId}`;
+    const watermark =
+      watermarks.get(wmKey) ?? params.store.load(chain, claim.channelId);
     if (chain.startsWith('evm')) {
       const chainId = parseEvmChainId(chain);
-      verifyingContract = params.tokenNetworks?.[chain];
-      if (chainId === undefined || !verifyingContract) {
+      if (chainId === undefined) {
         reject(
           claim,
           'MISSING_CHAIN_CONFIG',
-          `EVM v2 balance-proof verification for ${chain} needs a numeric chain id in the ` +
-            `chain key AND tokenNetworks["${chain}"] (the RollingSwapChannel / verifyingContract) ` +
-            `to reconstruct the EIP-712 domain; supply it from the connector/swap session context.`
+          `EVM v2 balance-proof verification for "${chain}" needs a numeric chain id in the ` +
+            `chain key (e.g. "evm:84532" / "evm:base:8453") to reconstruct the EIP-712 domain.`
+        );
+        continue;
+      }
+      // Leg B, and ONLY leg B — never `tokenNetworks` (leg A, #583).
+      const announced = params.swapVerifyingContracts?.[chain];
+      // Pin-on-first-use: once a channel's watermark records the contract its
+      // claims verified under, that contract IS this channel's domain.
+      verifyingContract = watermark?.verifyingContract ?? announced;
+      if (!verifyingContract) {
+        reject(
+          claim,
+          'MISSING_SWAP_VERIFYING_CONTRACT',
+          `no leg-B verifying contract is known for "${chain}", so this maker's balance-proof ` +
+            `signature cannot be checked. The v2 EIP-712 domain binds the maker's deployed ` +
+            `RollingSwapChannel address, which is NOT the tokenNetworks["${chain}"] TokenNetwork ` +
+            `this client pays the maker through — the two are different contracts and the leg-A ` +
+            `address recovers an unrelated signer. Expected the maker's kind:10032 announce to ` +
+            `carry swapVerifyingContracts["${chain}"] (swap#134), or the local daemon config to ` +
+            `set swapVerifyingContracts["${chain}"] as an operator override.`
+        );
+        continue;
+      }
+      if (
+        watermark?.verifyingContract !== undefined &&
+        announced !== undefined &&
+        !sameAddress(chain, watermark.verifyingContract, announced)
+      ) {
+        reject(
+          claim,
+          'MISSING_SWAP_VERIFYING_CONTRACT',
+          `channel ${claim.channelId} pinned verifying contract ` +
+            `"${watermark.verifyingContract}" on first use; a claim offered under ` +
+            `"${announced}" may not rotate it mid-stream. Settle and close the channel ` +
+            `before switching the maker's RollingSwapChannel deployment.`
         );
         continue;
       }
@@ -313,10 +367,6 @@ export function ingestReceivedClaims(
       );
       continue;
     }
-
-    const wmKey = `${chain}|${claim.channelId}`;
-    const watermark =
-      watermarks.get(wmKey) ?? params.store.load(chain, claim.channelId);
 
     if (watermark) {
       if (!sameAddress(chain, watermark.swapSignerAddress, expectedSigner)) {

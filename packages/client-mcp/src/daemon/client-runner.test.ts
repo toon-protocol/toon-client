@@ -59,7 +59,8 @@ import { loadTargets } from './targets-store.js';
 //    same digest the client's receive-side verify (`verifyEvmClaimSignature`)
 //    recovers against — and ships the 65-byte r||s||v signature as claimBytes.
 //    The digest binds `(chainId, verifyingContract)`, so the receive path needs
-//    a matching `tokenNetworks` entry (see `EVM_TOKEN_NETWORKS`). ─────────────
+//    a matching LEG-B `swapVerifyingContracts` entry — never the leg-A
+//    `tokenNetworks` map (#583) — see `EVM_VERIFYING_CONTRACTS`. ─────────────
 
 /** The swap peer's chain-B signer (well-known dev key, never a live secret). */
 const SWAP_SIGNER_ACCOUNT = privateKeyToAccount(
@@ -77,12 +78,16 @@ const EVM_PAIR = {
 /** Numeric chain id embedded in `EVM_PAIR.to.chain` — the v2 domain `chainId`. */
 const EVM_CHAIN_ID = 31337;
 /** The deployed RollingSwapChannel / EIP-712 `verifyingContract` for the target
- *  chain. MUST match the `tokenNetworks` entry the runner is configured with so
- *  a fixture's v2 signature recovers under the receive-path domain. */
+ *  chain. MUST match the `swapVerifyingContracts` entry the runner is configured
+ *  with so a fixture's v2 signature recovers under the receive-path domain. */
 const EVM_VERIFYING_CONTRACT = '0x' + '22'.repeat(20);
-/** tokenNetworks map (chain key → verifyingContract) the v2 receive path needs
- *  to reconstruct the EIP-712 domain; wired into the daemon `toonClientConfig`. */
-const EVM_TOKEN_NETWORKS = { [EVM_PAIR.to.chain]: EVM_VERIFYING_CONTRACT };
+/** LEG-B `swapVerifyingContracts` map (chain key → RollingSwapChannel) the v2
+ *  receive path needs to reconstruct the EIP-712 domain; wired into the daemon
+ *  `toonClientConfig`. Deliberately NOT `tokenNetworks` (leg A, #583). */
+const EVM_VERIFYING_CONTRACTS = { [EVM_PAIR.to.chain]: EVM_VERIFYING_CONTRACT };
+/** The leg-A TokenNetwork the daemon pays the maker THROUGH — a different
+ *  contract, and never a valid leg-B verification domain (#583). */
+const EVM_TOKEN_NETWORKS = { [EVM_PAIR.to.chain]: '0x' + '44'.repeat(20) };
 
 /** Build a genuinely-signed accumulated EVM claim (v2 EIP-712, sdk wire shape). */
 async function signedEvmClaim(opts: {
@@ -158,11 +163,15 @@ function makeConfig(
     apexChannelStorePath: join(tmpDir, 'apex-channels.json'),
     // The v2 EIP-712 receive path verifies EVM claims against the
     // `(chainId, verifyingContract)` domain, so the daemon must carry a
-    // `tokenNetworks` entry for the target chain or every EVM claim is rejected
-    // MISSING_CHAIN_CONFIG at ingest. Mirror a configured deployment by default.
+    // LEG-B `swapVerifyingContracts` entry for the target chain or every EVM
+    // claim is rejected MISSING_SWAP_VERIFYING_CONTRACT at ingest. Mirror a
+    // configured deployment by default — and carry the leg-A `tokenNetworks`
+    // map too, pointing somewhere else, so any accidental fallback to it (the
+    // #583 bug) fails these tests loudly instead of passing by coincidence.
     toonClientConfig: {
       btpUrl: 'ws://apex.test/btp',
       tokenNetworks: EVM_TOKEN_NETWORKS,
+      swapVerifyingContracts: EVM_VERIFYING_CONTRACTS,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
     ...overrides,
@@ -180,10 +189,21 @@ class FakeClient implements ToonClientLike {
   peerNegotiations = new Map<string, unknown>();
   started = false;
   stopped = false;
-  /** kind:10032 announces "discovered" for #572's maker-tokenNetworks tests. */
+  /** kind:10032 announces "discovered" for #572's maker-announce tests. */
   discoveredPeerInfo = new Map<string, IlpPeerInfo>();
   getDiscoveredPeerInfo(pubkey: string): IlpPeerInfo | undefined {
     return this.discoveredPeerInfo.get(pubkey);
+  }
+  /**
+   * The maker's announced LEG-B `swapVerifyingContracts`, read off the raw
+   * announce content by the real client (core's `parseIlpPeerInfo` drops the
+   * field) — hence a separate map here, not a field of `discoveredPeerInfo`.
+   */
+  announcedSwapVerifyingContracts = new Map<string, Record<string, string>>();
+  getSwapVerifyingContracts(
+    pubkey: string
+  ): Record<string, string> | undefined {
+    return this.announcedSwapVerifyingContracts.get(pubkey);
   }
   channels: Record<
     string,
@@ -1397,10 +1417,10 @@ describe('ClientRunner', () => {
     });
   });
 
-  it("swap sources verification tokenNetworks from the MAKER's own kind:10032 announce, not just local config (#572)", async () => {
-    // A daemon whose config carries NO tokenNetworks at all (the live-devnet
-    // failure mode: the operator hadn't hand-configured the maker's
-    // deployment locally) can still verify — the maker's own announce
+  it("swap sources the leg-B verifying contract from the MAKER's own kind:10032 announce, not just local config (#572/#583)", async () => {
+    // A daemon whose config carries NO swapVerifyingContracts at all (the
+    // live-devnet failure mode: the operator hadn't hand-configured the
+    // maker's deployment locally) can still verify — the maker's own announce
     // supplies the verifyingContract.
     const noConfig = new ClientRunner({
       config: makeConfig({
@@ -1410,13 +1430,10 @@ describe('ClientRunner', () => {
       createClient: () => client,
       createRelay: fakeRelay,
     });
-    client.discoveredPeerInfo.set('cd'.repeat(32), {
-      ilpAddress: 'g.proxy.swap',
-      btpEndpoint: 'ws://swap.test/btp',
-      assetCode: 'USD',
-      assetScale: 6,
-      tokenNetworks: EVM_TOKEN_NETWORKS,
-    });
+    client.announcedSwapVerifyingContracts.set(
+      'cd'.repeat(32),
+      EVM_VERIFYING_CONTRACTS
+    );
     await noConfig.bootstrap();
     const claim = await signedEvmClaim({
       nonce: '1',
@@ -1435,16 +1452,13 @@ describe('ClientRunner', () => {
     await noConfig.stop();
   });
 
-  it("swap: local config tokenNetworks OVERRIDES the maker's announce (#572)", async () => {
+  it("swap: local config swapVerifyingContracts OVERRIDES the maker's announce (#572/#583)", async () => {
     // The announce carries a DIFFERENT (wrong/stale) contract for the chain;
-    // the daemon's own config, when set, wins — the claim is signed against
-    // the config's contract (EVM_TOKEN_NETWORKS, the default fixture).
-    client.discoveredPeerInfo.set('cd'.repeat(32), {
-      ilpAddress: 'g.proxy.swap',
-      btpEndpoint: 'ws://swap.test/btp',
-      assetCode: 'USD',
-      assetScale: 6,
-      tokenNetworks: { [EVM_PAIR.to.chain]: '0x' + '99'.repeat(20) },
+    // the daemon's own config, when set, wins — a counterparty must never be
+    // the sole authority on what verifies its own signature. The claim is
+    // signed against the config's contract (EVM_VERIFYING_CONTRACTS).
+    client.announcedSwapVerifyingContracts.set('cd'.repeat(32), {
+      [EVM_PAIR.to.chain]: '0x' + '99'.repeat(20),
     });
     await runner.bootstrap();
     const claim = await signedEvmClaim({
@@ -1685,6 +1699,112 @@ describe('ClientRunner', () => {
       expect(condition!.some((b) => b !== 0)).toBe(true);
     }
     expect(conditions[0]).not.toEqual(conditions[1]);
+  });
+
+  it('[#583] the ROLLING path sources the leg-B contract from the MAKER announce — a daemon holding only the leg-A tokenNetworks still verifies', async () => {
+    // The live 2026-08-16 failure, reproduced at the seam that produced it:
+    // a swap that succeeded on the wire (packet accepted, state completed)
+    // delivered `claimsVerified: 0` / `valueReceived: "0"` because this path
+    // seeded leg-B verification from the daemon's `tokenNetworks` — the
+    // leg-A TokenNetwork the client PAYS the maker through.
+    const maker = new FakeRollingMakerClient();
+    const legAOnly = new ClientRunner({
+      config: makeConfig({
+        toonClientConfig: {
+          btpUrl: 'ws://apex.test/btp',
+          // ONLY leg A configured, exactly like the live ~/.toon-client
+          // config.json. No swapVerifyingContracts anywhere locally.
+          tokenNetworks: EVM_TOKEN_NETWORKS,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      }),
+      createClient: (cfg) => {
+        maker.jobHandler = cfg.jobHandler as typeof maker.jobHandler;
+        return maker;
+      },
+      createRelay: fakeRelay,
+    });
+    // …and the maker announces its RollingSwapChannel (swap#134).
+    maker.announcedSwapVerifyingContracts.set(
+      'cd'.repeat(32),
+      EVM_VERIFYING_CONTRACTS
+    );
+    await legAOnly.bootstrap();
+    maker.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: String(seq),
+        cumulativeAmount: String(1000 * seq),
+        sourceAmount: '1000',
+        targetAmount: '1000',
+      });
+
+    const res = await legAOnly.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      packetCount: 1,
+      senderConditions: true,
+      streamNonce: STREAM_NONCE,
+    });
+
+    expect(res.accepted).toBe(true);
+    expect(res.packetsAccepted).toBe(1);
+    expect(res.claims).toHaveLength(1);
+    expect(res.claims[0]!.verified).toBe(true);
+    // The pinned watermark records the LEG-B contract, never leg A.
+    expect(legAOnly.listSwapClaims().claims[0]!.cumulativeAmount).toBe('1000');
+    await legAOnly.stop();
+  });
+
+  it('[#583] a rolling claim with NO leg-B contract from either source fails MISSING_SWAP_VERIFYING_CONTRACT, not SIGNER_MISMATCH', async () => {
+    const maker = new FakeRollingMakerClient();
+    const noneKnown = new ClientRunner({
+      config: makeConfig({
+        toonClientConfig: {
+          btpUrl: 'ws://apex.test/btp',
+          tokenNetworks: EVM_TOKEN_NETWORKS,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      }),
+      createClient: (cfg) => {
+        maker.jobHandler = cfg.jobHandler as typeof maker.jobHandler;
+        return maker;
+      },
+      createRelay: fakeRelay,
+    });
+    // The maker announces NOTHING for leg B (a pre-swap#134 maker).
+    await noneKnown.bootstrap();
+    maker.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: String(seq),
+        cumulativeAmount: String(1000 * seq),
+        sourceAmount: '1000',
+        targetAmount: '1000',
+      });
+
+    const res = await noneKnown.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      packetCount: 1,
+      senderConditions: true,
+      streamNonce: STREAM_NONCE,
+    });
+
+    expect(res.claims).toHaveLength(0);
+    const reject = res.rejections?.[0];
+    expect(reject).toBeDefined();
+    // The whole point: it names the missing contract instead of blaming a key.
+    expect(reject!.message).toContain('MISSING_SWAP_VERIFYING_CONTRACT');
+    expect(reject!.message).not.toContain('SIGNER_MISMATCH');
+    expect(reject!.message).toContain('RollingSwapChannel');
+    await noneKnown.stop();
   });
 
   it('the CRUX (#573 AC): a withheld/failed leg-B verification never reveals leg A — no collectable claim for that packet', async () => {
@@ -2364,13 +2484,13 @@ describe('ClientRunner', () => {
   });
 
   it('settleSwapClaims builds ONE settlement with the final watermark and submits it via the client (#352)', async () => {
-    // Chain plumbing configured: TokenNetwork + RPC for the target chain.
+    // Chain plumbing configured: RollingSwapChannel + RPC for the target chain.
     const settleRunner = new ClientRunner({
       config: makeConfig({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         toonClientConfig: {
           btpUrl: 'ws://apex.test/btp',
-          tokenNetworks: { [EVM_PAIR.to.chain]: '0x' + '22'.repeat(20) },
+          swapVerifyingContracts: EVM_VERIFYING_CONTRACTS,
           chainRpcUrls: { [EVM_PAIR.to.chain]: 'http://127.0.0.1:8545' },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
@@ -2435,9 +2555,9 @@ describe('ClientRunner', () => {
   });
 
   it('settleSwapClaims survives config drift across a restart: the pinned verifyingContract (#572) carries the settle (env-gated seam, #352)', async () => {
-    // The v2 receive path needs tokenNetworks to INGEST an EVM claim, so seed a
-    // watermark with a configured runner, then settle with one whose
-    // tokenNetworks was dropped (config drift across a restart). Issue #572:
+    // The v2 receive path needs swapVerifyingContracts to INGEST an EVM claim,
+    // so seed a watermark with a configured runner, then settle with one whose
+    // config was dropped (config drift across a restart). Issue #572:
     // the contract the claim verified against is now PINNED onto the entry at
     // ingest time, so settlement still finds it even though config drifted.
     const storePath = join(tmpDir, 'received-claims.json');
@@ -2460,8 +2580,9 @@ describe('ClientRunner', () => {
     expect(seeded.listSwapClaims().claims).toHaveLength(1);
     await seeded.stop();
 
-    // A runner reading the same store but with NO tokenNetworks configured
-    // still builds+settles: the entry's own pinned verifyingContract covers it.
+    // A runner reading the same store but with NO swapVerifyingContracts
+    // configured still builds+settles: the entry's own pinned
+    // verifyingContract covers it.
     const noConfig = new ClientRunner({
       config: makeConfig({
         receivedClaimStorePath: storePath,
@@ -2507,9 +2628,11 @@ describe('ClientRunner', () => {
     for (const value of Object.values(stored)) delete value.verifyingContract;
     writeFileSync(storePath, JSON.stringify(stored, null, 2), 'utf-8');
 
-    // A runner reading that legacy store with NO tokenNetworks configured →
-    // the tx cannot even be BUILT; the failure is result-shaped with an
-    // actionable code, never a throw.
+    // A runner reading that legacy store with NO swapVerifyingContracts
+    // configured → the tx cannot even be BUILT; the failure is result-shaped
+    // with an actionable code, never a throw. Post-#583 that code names the
+    // LEG-B contract specifically, so the next reader is not sent hunting for
+    // a key problem that does not exist.
     const noConfig = new ClientRunner({
       config: makeConfig({
         receivedClaimStorePath: storePath,
@@ -2523,18 +2646,19 @@ describe('ClientRunner', () => {
     expect(res.results).toHaveLength(1);
     expect(res.results[0]!.built).toBe(false);
     expect(res.results[0]!.submitted).toBe(false);
-    expect(res.results[0]!.error?.code).toBe('MISSING_CHAIN_CONFIG');
+    expect(res.results[0]!.error?.code).toBe('MISSING_SWAP_VERIFYING_CONTRACT');
+    expect(res.results[0]!.error?.message).toContain('RollingSwapChannel');
     await noConfig.stop();
   });
 
   it('settleSwapClaims submit:false builds without submitting; no RPC yields the tx unsubmitted (#352)', async () => {
     const dryRunner = new ClientRunner({
       config: makeConfig({
-        // TokenNetwork configured, but NO RPC url — build works, submit can't.
+        // Leg-B contract configured, but NO RPC url — build works, submit can't.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         toonClientConfig: {
           btpUrl: 'ws://apex.test/btp',
-          tokenNetworks: { [EVM_PAIR.to.chain]: '0x' + '22'.repeat(20) },
+          swapVerifyingContracts: EVM_VERIFYING_CONTRACTS,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       }),
@@ -2963,7 +3087,7 @@ describe('ClientRunner multi-target', () => {
         apexChannelStorePath: join(dir, 'apex-channels.json'),
         toonClientConfig: {
           btpUrl: 'ws://apex.test/btp',
-          tokenNetworks: EVM_TOKEN_NETWORKS,
+          swapVerifyingContracts: EVM_VERIFYING_CONTRACTS,
           relayUrl: 'ws://relay.test',
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,

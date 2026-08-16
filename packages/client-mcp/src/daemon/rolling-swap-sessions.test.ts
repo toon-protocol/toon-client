@@ -113,7 +113,7 @@ describe('RollingSwapSessionRegistry (#573)', () => {
       pair: PAIR,
       expectedChain: EVM_CHAIN,
       chainRecipient: RECIPIENT,
-      tokenNetworks: { [EVM_CHAIN]: EVM_CONTRACT },
+      swapVerifyingContracts: { [EVM_CHAIN]: EVM_CONTRACT },
       store,
       preimages,
     });
@@ -142,7 +142,7 @@ describe('RollingSwapSessionRegistry (#573)', () => {
       pair: PAIR,
       expectedChain: EVM_CHAIN,
       chainRecipient: RECIPIENT,
-      tokenNetworks: { [EVM_CHAIN]: EVM_CONTRACT },
+      swapVerifyingContracts: { [EVM_CHAIN]: EVM_CONTRACT },
       store,
       preimages, // no preimage retained for seq 1 -> withheld
     });
@@ -172,7 +172,7 @@ describe('RollingSwapSessionRegistry (#573)', () => {
       pair: PAIR,
       expectedChain: EVM_CHAIN,
       chainRecipient: RECIPIENT,
-      tokenNetworks: { [EVM_CHAIN]: EVM_CONTRACT },
+      swapVerifyingContracts: { [EVM_CHAIN]: EVM_CONTRACT },
       store,
       preimages,
     });

@@ -53,15 +53,23 @@ export interface BuildSwapSettlementsParams {
   /** Persisted watermarks to settle (typically `store.list()`, filtered). */
   entries: readonly ReceivedClaimEntry[];
   /**
-   * Per-chain settlement contract: EVM TokenNetwork address / Solana
-   * programId, keyed by the FULL chain key (e.g. `evm:base:8453`). Matches the
-   * daemon config's `tokenNetworks` map.
+   * Per-chain Solana settlement `programId`, keyed by the FULL chain key.
+   * Matches the daemon config's `tokenNetworks` map.
+   *
+   * NOT consulted for EVM entries (toon-client#583): an EVM leg-B claim
+   * settles on the maker's `RollingSwapChannel`, and `tokenNetworks` holds
+   * the leg-A `TokenNetwork` — see {@link swapVerifyingContracts}.
+   */
+  tokenNetworks?: Record<string, string>;
+  /**
+   * Per-chain **leg-B** `RollingSwapChannel` addresses (the EIP-712
+   * `verifyingContract`), keyed by the FULL chain key (e.g. `evm:base:8453`).
    *
    * FALLBACK only, for EVM entries persisted before #572: an entry that
    * carries its own `verifyingContract` (pinned at receive-verify time)
    * settles against THAT, never this map — see {@link buildSwapSettlements}.
    */
-  tokenNetworks?: Record<string, string>;
+  swapVerifyingContracts?: Record<string, string>;
   /** Pre-loaded `mina-signer` client for `mina:*` re-verification. */
   minaSignerClient?: MinaSignerClientLike;
   /**
@@ -72,7 +80,7 @@ export interface BuildSwapSettlementsParams {
    * digest the receive-side used (`ingestReceivedClaims`). Reconstructing that
    * EIP-712 domain needs `chainId` + `verifyingContract`, which this builder
    * threads into the sdk signer config from the entry's own pinned
-   * `verifyingContract` (else `tokenNetworks`) — so a claim verified at
+   * `verifyingContract` (else `swapVerifyingContracts`) — so a claim verified at
    * receipt re-verifies correctly here.
    *
    * Set `false` only to skip the settle-time re-verify entirely (e.g. when the
@@ -126,22 +134,37 @@ export function buildSwapSettlements(
   return params.entries.map((entry) => {
     const base = { chain: entry.chain, channelId: entry.channelId };
     const signer: SwapSignerConfig = { address: entry.swapSignerAddress };
-    // The contract this claim was ACTUALLY verified against (issue #572
-    // pin-on-first-use) wins over the config map, so two makers with
-    // different RollingSwapChannel deployments each settle against the
-    // contract they were verified with.
-    const contract =
-      entry.verifyingContract ?? params.tokenNetworks?.[entry.chain];
     if (entry.chain.startsWith('evm')) {
+      // The contract this claim was ACTUALLY verified against (issue #572
+      // pin-on-first-use) wins over the config map, so two makers with
+      // different RollingSwapChannel deployments each settle against the
+      // contract they were verified with. The fallback is the leg-B
+      // `swapVerifyingContracts` map — NEVER `tokenNetworks` (leg A, #583).
+      const contract =
+        entry.verifyingContract ?? params.swapVerifyingContracts?.[entry.chain];
       const chainId = parseEvmChainId(entry.chain);
-      if (!contract || chainId === undefined) {
+      if (!contract) {
+        return {
+          ...base,
+          error: {
+            code: 'MISSING_SWAP_VERIFYING_CONTRACT',
+            message:
+              `EVM settlement for ${entry.chain} needs the maker's leg-B RollingSwapChannel ` +
+              `address (the EIP-712 verifyingContract). The stored watermark pinned none, and ` +
+              `no swapVerifyingContracts["${entry.chain}"] is configured. This is NOT ` +
+              `tokenNetworks["${entry.chain}"] — that is the leg-A TokenNetwork this client pays ` +
+              `the maker through, a different contract.`,
+          },
+        };
+      }
+      if (chainId === undefined) {
         return {
           ...base,
           error: {
             code: 'MISSING_CHAIN_CONFIG',
             message:
-              `EVM settlement for ${entry.chain} needs tokenNetworks["${entry.chain}"] ` +
-              `(TokenNetwork contract) and a numeric chain id in the chain key.`,
+              `EVM settlement for ${entry.chain} needs a numeric chain id in the chain key ` +
+              `(e.g. "evm:84532" / "evm:base:8453").`,
           },
         };
       }
@@ -150,6 +173,8 @@ export function buildSwapSettlements(
       signer.contractAddress = contract.toLowerCase();
       signer.chainId = chainId;
     } else if (entry.chain.startsWith('solana')) {
+      const contract =
+        entry.verifyingContract ?? params.tokenNetworks?.[entry.chain];
       if (!contract) {
         return {
           ...base,

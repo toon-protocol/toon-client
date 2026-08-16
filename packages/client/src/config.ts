@@ -309,6 +309,7 @@ export type ResolvedConfig = Required<
     | 'settlementAddresses'
     | 'preferredTokens'
     | 'tokenNetworks'
+    | 'swapVerifyingContracts'
     | 'btpUrl'
     | 'btpAuthToken'
     | 'btpPeerId'
