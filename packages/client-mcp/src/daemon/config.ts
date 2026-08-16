@@ -235,10 +235,12 @@ export interface SwapDefaultsConfig {
   controller?: SwapControllerParams;
   /**
    * Default rolling-swap path selection when a request states none
-   * (toon-client#585). `'auto'` — the built-in default — probes every maker
-   * with a kind:20033 RFQ and falls back to the legacy path silently when it
-   * does not answer. Set `'off'` to stop paying for the probe against a fleet
-   * known to be legacy; `'require'` to make a failed probe an error.
+   * (toon-client#585, #595). `'require'` — the built-in default — probes every
+   * maker with a kind:20033 RFQ and FAILS with a named reason when it does not
+   * answer (ADR 0003: rolling is the only swap). Set `'auto'` to downgrade to
+   * the legacy path instead, or `'off'` to stop paying for the probe against a
+   * fleet known to be legacy; both are transitional and go away with the
+   * legacy sender, and both annotate `SwapResponse.rolling` plus a `warning`.
    */
   rolling?: 'auto' | 'off' | 'require';
 }

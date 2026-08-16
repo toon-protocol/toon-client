@@ -439,9 +439,11 @@ type RollingNegotiation =
   | {
       kind: 'legacy';
       /**
-       * Why the swap is on the legacy path — echoed onto the response so a
-       * silent fallback is still an OBSERVABLE one. Absent when rolling was
-       * never in play (`rolling: 'off'`).
+       * Why the swap is on the legacy path — echoed onto the response, and
+       * since #595 also raised as a `warning`, so an opted-into downgrade is
+       * never merely inferable. Set on EVERY legacy outcome including
+       * `rolling: 'off'` (`fallbackReason: 'off'`); absent only on the
+       * caller-pinned-nonce arm, which is not a legacy outcome at all.
        */
       note?: SwapRollingInfo;
     };
@@ -2103,17 +2105,19 @@ export class ClientRunner {
    * here (accepted claims with no `swapSignerAddress`) and surface a loud
    * `warning` on the response at swap time (#349).
    *
-   * **Path selection (toon-client#585)** is a PROBE, not a config read:
+   * **Path selection (toon-client#585, #595)** is a PROBE, not a config read:
    * {@link negotiateRollingSession} sends a kind:20033 RFQ, and the ENTIRE
    * call goes to {@link swapRolling} only if the maker answered kind:20034
    * and thereby registered the session (spec §10.3 step 2, swap#135). Every
    * other outcome — a maker with no RFQ intake, a reject, an unreadable
-   * answer, a local throw — falls through to the body below, which is the
-   * unchanged LEGACY path: always a zero-condition gift-wrap packet. That
-   * fallback is silent and total by design: legacy works against the deployed
-   * maker today, and a failed rolling attempt must never turn a working swap
-   * into a broken one. `req.rolling` (`'auto' | 'off' | 'require'`, default
-   * `swapDefaults.rolling` then `'auto'`) is the only override.
+   * answer, a local throw — now **throws** {@link RollingUnavailableError}
+   * naming the maker, its ILP address and the reason (ADR 0003: the rolling
+   * swap is the only swap). The body below is the unchanged LEGACY path — a
+   * zero-condition gift-wrap packet — and it is reached only when the caller
+   * asked for it: `req.rolling` / `swapDefaults.rolling` set to `'auto'`
+   * (probe, then downgrade) or `'off'` (never probe). Both annotate
+   * `SwapResponse.rolling` AND raise a `warning`; neither is silent, and both
+   * go with the legacy sender in Stage 4 (toon-client#598).
    *
    * Sender-side rolling-swap defenses (#351, sdk ≥2.1.0, spec §5/§6):
    *
@@ -2350,6 +2354,22 @@ export class ClientRunner {
       req.pair
     );
     const warnings: string[] = [];
+    // #595: reaching this body at all means the swap ran LEGACY, which only
+    // happens now because the caller explicitly asked for it. Say so on the
+    // response itself — `rolling.fallbackReason` alone is a field a host has
+    // to know to look at, and the point of this stage is that a downgrade to
+    // verify-after-commit is never something a caller finds out by accident.
+    if (rollingNote) {
+      warnings.push(
+        `This swap ran on the LEGACY zero-condition path (` +
+          `${rollingNote.fallbackReason ?? 'unknown'}` +
+          `), not the rolling one: the target-chain claim was verified only ` +
+          `AFTER leg A committed and the two legs were not coupled. ` +
+          `${rollingNote.fallbackMessage ?? ''} Legacy is being removed ` +
+          `(ADR 0003) — the default \`rolling: "require"\` turns this into an ` +
+          `error naming the maker.`
+      );
+    }
     if (missingSettlementSigner) {
       warnings.push(
         'Accepted claims are missing `swapSignerAddress` settlement ' +
@@ -2755,17 +2775,28 @@ export class ClientRunner {
    *
    * One paid, zero-condition kind:20033 write goes out; a kind:20034 quote
    * means the maker registered the session and the rolling path is live.
-   * ANY other outcome returns `{ kind: 'legacy' }` and the caller runs the
-   * unchanged legacy body — the fallback is silent and total, because legacy
-   * is what works against the deployed maker today.
    *
-   * `req.rolling` overrides the probe:
-   * - `'auto'` (default, or `swapDefaults.rolling`) — probe, fall back quietly.
-   * - `'off'` — never probe; no RFQ packet is paid for at all.
-   * - `'require'` — probe, and THROW with the reason instead of falling back.
-   *   This exists for verification and debugging: silence is right for
-   *   production and wrong when you are trying to find out why rolling did
-   *   not engage.
+   * **Any other outcome is now an ERROR, not a downgrade (toon-client#595).**
+   * ADR 0003 decides that the rolling swap is the only swap, so a maker that
+   * stops answering RFQs is a fault to be reported — not a reason to serve
+   * every caller the strictly less safe protocol (verify-after-commit against
+   * an unbounded held price, uncoupled legs) without telling them. The
+   * fallback existed to cope with makers that predate rolling; the deployed
+   * maker is rolling-capable, and a silent downgrade is exactly how a maker
+   * regression would go unnoticed fleet-wide.
+   *
+   * `req.rolling` (or `swapDefaults.rolling`) selects:
+   * - `'require'` — **the default**. Probe, and throw
+   *   {@link RollingUnavailableError} naming the maker pubkey, its ILP
+   *   address, the reason discriminator and the underlying diagnosis.
+   * - `'auto'` — probe, fall back to legacy on any failure, annotating
+   *   `SwapResponse.rolling` and adding a downgrade `warning`. A transitional
+   *   escape hatch: it survives exactly one release and is removed with the
+   *   legacy sender (Stage 4, toon-client#598).
+   * - `'off'` — never probe; no RFQ packet is paid for at all. Also annotated
+   *   and warned (`fallbackReason: 'off'`): under #592 this is the documented
+   *   move when a rolling fill cannot be DELIVERED (swap#148), so it must
+   *   remain reachable — but it is never silent.
    *
    * `req.streamNonce` skips the probe and uses that session id directly — the
    * pre-#585 out-of-band registration path (toon-client#573), kept because a
@@ -2775,21 +2806,23 @@ export class ClientRunner {
     req: SwapRequest,
     apex: ApexConnection
   ): Promise<RollingNegotiation> {
-    const mode = req.rolling ?? this.config.swapDefaults?.rolling ?? 'auto';
+    const mode = req.rolling ?? this.config.swapDefaults?.rolling ?? 'require';
     const required = mode === 'require';
 
-    /** Fall back to legacy — or, under `require`, refuse loudly. */
+    /** Fall back to legacy — or, by default (`require`), refuse loudly. */
     const legacy = (
       probed: boolean,
       reason: string,
       message: string
     ): RollingNegotiation => {
       if (required) {
-        throw new InvalidPayloadError(
-          `\`rolling: "require"\` but the rolling path is unavailable ` +
-            `(${reason}): ${message}. Set \`rolling: "auto"\` to fall back to ` +
-            'the legacy swap path instead.'
-        );
+        throw new RollingUnavailableError({
+          reason,
+          detail: message,
+          swapPubkey: req.swapPubkey,
+          destination: req.destination,
+          probed,
+        });
       }
       this.log(
         `[runner] swap: rolling unavailable (${reason}) — legacy path: ${message}`
@@ -2813,7 +2846,28 @@ export class ClientRunner {
             'disables. Drop one of them.'
         );
       }
-      return { kind: 'legacy' };
+      // #595: 'off' still works — it is the escape hatch #592's own warning
+      // points at — but it stops being INVISIBLE. Before this, a swap that ran
+      // legacy because the daemon default said so carried no `rolling` block
+      // at all, so nothing downstream could tell it apart from a rolling one.
+      this.log(
+        '[runner] swap: rolling DISABLED by `rolling: "off"` — no RFQ probe ' +
+          'sent; this swap runs the legacy zero-condition path'
+      );
+      return {
+        kind: 'legacy',
+        note: {
+          probed: false,
+          used: false,
+          fallbackReason: 'off',
+          fallbackMessage:
+            '`rolling: "off"` was set (on the request or as ' +
+            '`swapDefaults.rolling`), so no kind:20033 RFQ was sent and this ' +
+            'swap ran the LEGACY zero-condition path: the target-chain claim ' +
+            'is verified only AFTER leg A has committed, and the legs are not ' +
+            'coupled. The legacy path is being removed (ADR 0003).',
+        },
+      };
     }
 
     // Caller-pinned session: registered out of band (toon-client#573). No
@@ -3721,6 +3775,56 @@ export class InvalidPayloadError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'InvalidPayloadError';
+  }
+}
+
+/**
+ * Thrown when a swap could not run on the ROLLING path and the caller did not
+ * ask for the legacy downgrade (toon-client#595, ADR 0003 — "the rolling swap
+ * is the only swap"). This is a COUNTERPARTY fault, not a bad request: the
+ * request is well-formed and the maker did not establish a session, so it maps
+ * to 502 alongside `PublishRejectedError` rather than to 400.
+ *
+ * The message is the diagnosis a stranded caller needs — which maker, at which
+ * ILP address, which reason discriminator, and what to do — and the same facts
+ * are carried as fields so a host can branch on them without parsing prose.
+ */
+export class RollingUnavailableError extends Error {
+  /** The discriminator: `rejected`, `no-response`, `not-a-quote`, `nonce-mismatch`, `send-failed`, `controller`, `no-sender-address`. */
+  readonly reason: string;
+  /** The underlying diagnosis (maker reject code, decode failure, …). */
+  readonly detail: string;
+  /** The maker's kind:10032 pubkey — which counterparty to fix. */
+  readonly swapPubkey: string;
+  /** The maker's ILP address the probe was sent to. */
+  readonly destination: string;
+  /** Whether an RFQ packet actually left this client (and was paid for). */
+  readonly probed: boolean;
+  constructor(params: {
+    reason: string;
+    detail: string;
+    swapPubkey: string;
+    destination: string;
+    probed: boolean;
+  }) {
+    super(
+      `Rolling swap unavailable: maker ${params.swapPubkey} at ` +
+        `${params.destination} did not establish a rolling session ` +
+        `(reason: ${params.reason}) — ${params.detail}. TOON supports the ` +
+        'rolling swap protocol only (ADR 0003): the legacy zero-condition ' +
+        'path verifies the target-chain claim only AFTER leg A has ' +
+        'committed, so it is not taken silently. Fix the maker — it needs ' +
+        'kind:20033 RFQ intake and a `swapVerifyingContracts` announce — or, ' +
+        'to settle this one swap on the legacy path anyway, repeat it with ' +
+        '`rolling: "auto"` (probe, then downgrade) or `rolling: "off"` (no ' +
+        'probe at all). Both are removed when the legacy sender goes.'
+    );
+    this.name = 'RollingUnavailableError';
+    this.reason = params.reason;
+    this.detail = params.detail;
+    this.swapPubkey = params.swapPubkey;
+    this.destination = params.destination;
+    this.probed = params.probed;
   }
 }
 

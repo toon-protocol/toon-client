@@ -31,15 +31,19 @@
  * so it must be the address this client's BTP `jobHandler` actually receives
  * on or leg B never arrives.
  *
- * ## Failure policy — silent, total fallback
+ * ## Failure policy — total, typed, and never thrown
  *
  * {@link sendRollingRfq} NEVER throws and NEVER returns a partially-usable
  * result. Every outcome is either a complete, nonce-matched quote or a typed
- * failure the caller answers by taking the legacy path unchanged. A maker
- * without RFQ intake answers a kind:20033 with a legacy-handler reject, which
- * is precisely the negative signal this returns as
- * {@link RollingRfqFailure.reason} `'rejected'`. A rolling attempt that fails
- * must never turn a working legacy swap into a broken one.
+ * failure. A maker without RFQ intake answers a kind:20033 with a
+ * legacy-handler reject, which is precisely the negative signal this returns
+ * as {@link RollingRfqFailure.reason} `'rejected'`.
+ *
+ * What the CALLER does with a failure is the caller's policy, and it changed
+ * in toon-client#595: the daemon's default is now to fail the swap with that
+ * reason named (ADR 0003 — the rolling swap is the only swap) rather than to
+ * downgrade to legacy behind the caller's back. This module is unchanged by
+ * that: it still reports, and never decides.
  */
 
 import type { SwapPair } from '@toon-protocol/core';
@@ -429,8 +433,9 @@ function rejectReason(dataB64: string | undefined): string | undefined {
  * failure back.
  *
  * Never throws: every failure — a local send throw, a maker reject, an
- * undecodable or mismatched answer — comes back as {@link RollingRfqFailure}
- * so the caller can fall back to the legacy path silently and successfully.
+ * undecodable or mismatched answer — comes back as {@link RollingRfqFailure},
+ * with a `reason` the caller can name in its own diagnosis (toon-client#595)
+ * or use to select a fallback.
  */
 export async function sendRollingRfq(
   params: SendRollingRfqParams

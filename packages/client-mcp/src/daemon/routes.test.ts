@@ -612,10 +612,41 @@ describe('control API routes', () => {
             rate: '1.0',
           },
           chainRecipient: 'SoLrecipient',
+          // #595: the legacy body this fake maker exercises is opt-in now.
+          rolling: 'auto',
         },
       });
       expect(res.statusCode).toBe(200);
       expect(res.json().accepted).toBe(true);
+    });
+
+    it('[#595] POST /swap answers 502 rolling_unavailable — not 400 — when the maker establishes no session', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/swap',
+        payload: {
+          destination: 'g.toon.swap',
+          amount: '10',
+          swapPubkey: 'cd'.repeat(32),
+          pair: {
+            from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+            to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+            rate: '1.0',
+          },
+          chainRecipient: 'SoLrecipient',
+        },
+      });
+      // A counterparty fault, not a malformed request.
+      expect(res.statusCode).toBe(502);
+      expect(res.json()).toMatchObject({
+        error: 'rolling_unavailable',
+        reason: 'no-sender-address',
+        swapPubkey: 'cd'.repeat(32),
+        destination: 'g.toon.swap',
+      });
+      // The detail is the diagnosis, naming the maker and the way out.
+      expect(res.json().detail).toContain('g.toon.swap');
+      expect(res.json().detail).toContain('rolling: "auto"');
     });
 
     it('POST /swap rejects a missing destination with 400', async () => {

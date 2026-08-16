@@ -15,6 +15,7 @@ import {
   InvalidPayloadError,
   NotReadyError,
   PublishRejectedError,
+  RollingUnavailableError,
   TargetError,
 } from './client-runner.js';
 import { ApexDiscoveryError } from './apex-discovery.js';
@@ -502,6 +503,18 @@ function mapError(reply: FastifyReply, err: unknown): FastifyReply {
   if (err instanceof InvalidPayloadError) {
     return sendError(reply, 400, 'invalid_payload', { detail: err.message });
   }
+  if (err instanceof RollingUnavailableError) {
+    // #595: the maker did not establish a rolling session and the caller did
+    // not ask for the legacy downgrade. A counterparty fault, not a malformed
+    // request — 502, next to `rejected`, never 400. The reason discriminator
+    // rides alongside `detail` so a host can branch without parsing prose.
+    return sendError(reply, 502, 'rolling_unavailable', {
+      detail: err.message,
+      reason: err.reason,
+      swapPubkey: err.swapPubkey,
+      destination: err.destination,
+    });
+  }
   if (err instanceof PublishRejectedError) {
     return sendError(reply, 502, 'rejected', { detail: err.message });
   }
@@ -571,11 +584,23 @@ function sendError(
   reply: FastifyReply,
   status: number,
   error: string,
-  extra: { detail?: string; retryable?: boolean } = {}
+  extra: {
+    detail?: string;
+    retryable?: boolean;
+    /** #595: machine-readable discriminator behind `detail`, when there is one. */
+    reason?: string;
+    /** #595: the swap maker a `rolling_unavailable` names. */
+    swapPubkey?: string;
+    /** #595: that maker's ILP address. */
+    destination?: string;
+  } = {}
 ): FastifyReply {
   return reply.status(status).send({
     error,
     ...(extra.detail ? { detail: extra.detail } : {}),
     ...(extra.retryable ? { retryable: true } : {}),
+    ...(extra.reason ? { reason: extra.reason } : {}),
+    ...(extra.swapPubkey ? { swapPubkey: extra.swapPubkey } : {}),
+    ...(extra.destination ? { destination: extra.destination } : {}),
   });
 }

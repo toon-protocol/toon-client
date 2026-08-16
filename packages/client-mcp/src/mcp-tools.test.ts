@@ -315,7 +315,45 @@ describe('dispatchTool', () => {
     expect(swapTool?.inputSchema['required']).not.toContain('btpUrl');
   });
 
-  it('[#585] toon_swap declares the rolling controls, all optional (auto-probe is the default)', () => {
+  it('[#595] toon_swap surfaces rolling_unavailable with the reason, the maker, and a "this is a paid downgrade" hint', async () => {
+    const swap = vi
+      .fn()
+      .mockRejectedValue(
+        new ControlApiError(
+          'rolling_unavailable',
+          502,
+          false,
+          'Rolling swap unavailable: maker cd… at g.toon.swap.maker did not establish a rolling session (reason: rejected) — F06.',
+          {
+            reason: 'rejected',
+            swapPubkey: 'cd'.repeat(32),
+            destination: 'g.toon.swap.maker',
+          }
+        )
+      );
+    const res = await dispatchTool(stubClient({ swap }), 'toon_swap', {
+      destination: 'g.toon.swap.maker',
+      amount: '100',
+      swapPubkey: 'cd'.repeat(32),
+      pair: {
+        from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+        to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
+        rate: '1.0',
+      },
+      chainRecipient: 'SoLrecipient',
+    });
+    expect(res.isError).toBe(true);
+    const parsed = JSON.parse(res.content[0]!.text);
+    expect(parsed.error).toBe('rolling_unavailable');
+    expect(parsed.reason).toBe('rejected');
+    expect(parsed.swapPubkey).toBe('cd'.repeat(32));
+    expect(parsed.destination).toBe('g.toon.swap.maker');
+    // The legacy downgrade must not read as a free retry to a model.
+    expect(parsed.hint).toMatch(/PAID/);
+    expect(parsed.hint).toMatch(/ask before/i);
+  });
+
+  it('[#585/#595] toon_swap declares the rolling controls, all optional (`require` is the default)', () => {
     const swapTool = TOOL_DEFINITIONS.find((t) => t.name === 'toon_swap');
     const props = swapTool?.inputSchema['properties'] as
       | Record<string, unknown>
