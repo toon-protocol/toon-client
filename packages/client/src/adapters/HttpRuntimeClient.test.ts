@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { HttpRuntimeClient } from './HttpRuntimeClient.js';
+import {
+  HttpRuntimeClient,
+  SEALED_PACKET_UNSUPPORTED_MESSAGE,
+  EXPLICIT_EXPIRY_UNSUPPORTED_MESSAGE,
+} from './HttpRuntimeClient.js';
+import { toBase64 } from '../utils/binary.js';
 import { NetworkError, ConnectorError, ValidationError } from '../errors.js';
 
 describe('HttpRuntimeClient', () => {
@@ -780,6 +785,113 @@ describe('HttpRuntimeClient', () => {
           body: expect.stringContaining(largeAmount),
         })
       );
+    });
+  });
+
+  /**
+   * A sealed packet is REFUSED, never stripped (toon-client#581).
+   *
+   * The `executionCondition`/`expiresAt` parameters used to be omitted from
+   * this method's signature entirely. TypeScript's method-parameter bivariance
+   * let that satisfy `IlpClient` anyway, so a condition-bearing packet routed
+   * here compiled cleanly and went on the wire with its condition dropped — a
+   * swap leg that believes it is hash-locked and is not, visible only at
+   * runtime.
+   */
+  describe('sealed packets (toon-client#581)', () => {
+    const CONDITION = new Uint8Array(32).fill(7);
+
+    function client(mockFetch: ReturnType<typeof vi.fn>) {
+      return new HttpRuntimeClient({
+        connectorUrl: 'http://localhost:8080',
+        httpClient: mockFetch as typeof fetch,
+      });
+    }
+
+    it('refuses a sender-chosen executionCondition instead of dropping it', async () => {
+      const mockFetch = vi.fn();
+      await expect(
+        client(mockFetch).sendIlpPacket({
+          destination: 'g.toon.alice',
+          amount: '1000',
+          data: 'dGVzdA==',
+          executionCondition: CONDITION,
+        })
+      ).rejects.toThrow(ValidationError);
+      // The whole point: nothing reached the wire unsealed.
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses the base64 form of the condition too (core >=3.4.0 IlpClient port)', async () => {
+      const mockFetch = vi.fn();
+      await expect(
+        client(mockFetch).sendIlpPacket({
+          destination: 'g.toon.alice',
+          amount: '1000',
+          data: 'dGVzdA==',
+          executionCondition: toBase64(CONDITION),
+        })
+      ).rejects.toThrow(SEALED_PACKET_UNSUPPORTED_MESSAGE);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses an explicit expiresAt (rolling-swap R7) it cannot put on the wire', async () => {
+      const mockFetch = vi.fn();
+      await expect(
+        client(mockFetch).sendIlpPacket({
+          destination: 'g.toon.alice',
+          amount: '1000',
+          data: 'dGVzdA==',
+          expiresAt: new Date(Date.now() + 60_000),
+        })
+      ).rejects.toThrow(EXPLICIT_EXPIRY_UNSUPPORTED_MESSAGE);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses an undecodable condition rather than treating it as absent', async () => {
+      const mockFetch = vi.fn();
+      await expect(
+        client(mockFetch).sendIlpPacket({
+          destination: 'g.toon.alice',
+          amount: '1000',
+          data: 'dGVzdA==',
+          executionCondition: '!!! not base64 !!!',
+        })
+      ).rejects.toThrow(ValidationError);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('still sends the LEGACY class untouched: an all-zero condition', async () => {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ accepted: true }), { status: 200 })
+        );
+      const result = await client(mockFetch).sendIlpPacket({
+        destination: 'g.toon.alice',
+        amount: '1000',
+        data: 'dGVzdA==',
+        executionCondition: new Uint8Array(32),
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('still sends an ordinary unsealed write untouched', async () => {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ accepted: true }), { status: 200 })
+        );
+      const result = await client(mockFetch).sendIlpPacket({
+        destination: 'g.toon.alice',
+        amount: '1000',
+        data: 'dGVzdA==',
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 });
