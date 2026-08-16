@@ -2303,6 +2303,61 @@ describe('ClientRunner', () => {
     expect(res.state).toBe('failed');
   });
 
+  it('a rolling swap that delivers NOTHING says so, and names `rolling: "off"`', async () => {
+    // The live shape after swap#148: the RFQ succeeds, a session is
+    // established, and then every leg B is undeliverable — the maker unwinds
+    // and answers leg A with F99. `rolling: "auto"` cannot fall back here
+    // (its fallback covers RFQ *failure*), and re-running the fill as legacy
+    // is exactly what would risk double-paying. So the result has to be
+    // self-diagnosing instead: a caller reading only
+    // `leg B failed; fill not executed` has no way to know the legacy path is
+    // right there and working.
+    class UndeliverableLegBMaker extends FakeRollingMakerClient {
+      override async sendSwapPacket(): Promise<{
+        accepted: boolean;
+        code?: string;
+        message?: string;
+      }> {
+        // Never reaches the jobHandler — nothing crosses the wire to us.
+        return {
+          accepted: false,
+          code: 'F99',
+          message: 'leg B failed; fill not executed',
+        };
+      }
+    }
+    const maker = new UndeliverableLegBMaker();
+    const rollingRunner = new ClientRunner({
+      config: makeConfig(),
+      createClient: (cfg) => {
+        maker.jobHandler = cfg.jobHandler as typeof maker.jobHandler;
+        return maker;
+      },
+      createRelay: fakeRelay,
+    });
+    await rollingRunner.bootstrap();
+
+    const res = await rollingRunner.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      packetCount: 1,
+      senderConditions: true,
+      streamNonce: STREAM_NONCE,
+    });
+
+    expect(res.accepted).toBe(false);
+    expect(res.packetsAccepted).toBe(0);
+    // The diagnosis the old warning never gave.
+    expect(res.warning).toContain('rolling: "off"');
+    expect(res.warning).toContain('delivered');
+    // …without ever claiming it retried anything on the caller's behalf.
+    expect(res.warning).toContain('NOT retried as legacy');
+    await rollingRunner.stop();
+  });
+
   it('swap without senderConditions keeps the legacy path: no condition injected', async () => {
     await runner.bootstrap();
     const pair = {
