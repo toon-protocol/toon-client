@@ -249,6 +249,26 @@ export {
 // Utilities
 export { withRetry, type RetryOptions } from './utils/index.js';
 
+// Reachability of endpoints a DISCOVERED kind:10032 announce advertises
+// (toon-client#593). A loopback endpoint in an announce served by a remote
+// relay names the READER's machine, never the announcer's — see the module
+// doc for why loopback/link-local are refused by default while private
+// ranges are not.
+export {
+  ALLOW_LOOPBACK_PEERS_ENV,
+  DEFAULT_ANNOUNCE_ENDPOINT_POLICY,
+  announceEndpointPolicyFor,
+  classifyEndpointZone,
+  endpointHost,
+  isAnnounceEndpointUsable,
+  rejectedAnnounceEndpoint,
+  type AnnounceEndpointPolicy,
+  type AnnounceEndpointPolicyInput,
+  type EndpointZone,
+  type RejectableEndpointZone,
+  type UnreachableAnnounceEndpoint,
+} from './announce-reachability.js';
+
 // Sender-chosen ILP execution conditions (toon-client#350, rolling-swap
 // prerequisite; contract: connector docs/local-delivery-fulfillment-contract.md)
 export {

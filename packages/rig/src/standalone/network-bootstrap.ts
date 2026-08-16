@@ -54,6 +54,11 @@ import {
   type IlpPeerInfo,
 } from '@toon-protocol/core';
 import {
+  DEFAULT_ANNOUNCE_ENDPOINT_POLICY,
+  isAnnounceEndpointUsable,
+  type AnnounceEndpointPolicy,
+} from '@toon-protocol/client';
+import {
   queryRelay,
   type NostrEvent,
   type WebSocketFactory,
@@ -345,14 +350,23 @@ function defaultDiscoveryWebSocketFactory(): WebSocketFactory {
  *   1. the announce authored by a genesis-seed pubkey (the committed apex
  *      identity — the strongest signal),
  *   2. else an announce that can actually take paid writes: has an uplink
- *      endpoint AND `settlementAddresses`, preferring one whose own
- *      `ilpAddress` is its `routes.publish` (the publish edge — that is
- *      where rig pays first),
+ *      endpoint REACHABLE FROM HERE and `settlementAddresses`, preferring one
+ *      whose own `ilpAddress` is its `routes.publish` (the publish edge —
+ *      that is where rig pays first),
  *   3. freshest `created_at` breaks remaining ties.
+ *
+ * "Reachable from here" (toon-client#593) drops an announce whose only uplink
+ * is loopback or link-local: those name the READER's machine, not the
+ * announcer's, so dialling one connects rig to whatever unrelated local
+ * service holds the port. `policy` defaults to loopback/link-local out,
+ * private ranges IN — pass `announceEndpointPolicyFor({ discoveredFrom:
+ * relayUrl })` so a local relay (a local stack) still admits its own local
+ * peers.
  */
 export function pickPaymentPeer(
   peers: AnnouncedPeer[],
-  seedPubkeys: readonly string[]
+  seedPubkeys: readonly string[],
+  policy: AnnounceEndpointPolicy = DEFAULT_ANNOUNCE_ENDPOINT_POLICY
 ): AnnouncedPeer | undefined {
   const seeded = peers.filter((p) => seedPubkeys.includes(p.pubkey));
   if (seeded.length > 0) {
@@ -361,7 +375,7 @@ export function pickPaymentPeer(
 
   const payable = peers.filter(
     (p) =>
-      (p.info.httpEndpoint || p.info.btpEndpoint) &&
+      reachableUplink(p, policy) &&
       p.info.settlementAddresses &&
       Object.keys(p.info.settlementAddresses).length > 0
   );
@@ -371,6 +385,25 @@ export function pickPaymentPeer(
   );
   const pool = publishEdges.length > 0 ? publishEdges : payable;
   return pool.sort((a, b) => b.createdAt - a.createdAt)[0];
+}
+
+/**
+ * Whether a discovered announce offers at least one uplink endpoint this
+ * client could actually dial. An endpoint the policy refuses counts as
+ * absent, so a peer advertising ONLY `ws://127.0.0.1:3401` is not payable —
+ * exactly as if it had announced no endpoint at all.
+ */
+function reachableUplink(
+  peer: AnnouncedPeer,
+  policy: AnnounceEndpointPolicy
+): boolean {
+  const endpoints = [peer.info.httpEndpoint, peer.info.btpEndpoint];
+  return endpoints.some(
+    (endpoint) =>
+      typeof endpoint === 'string' &&
+      endpoint !== '' &&
+      isAnnounceEndpointUsable(endpoint, policy)
+  );
 }
 
 // ---------------------------------------------------------------------------

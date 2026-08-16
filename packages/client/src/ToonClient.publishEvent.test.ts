@@ -536,6 +536,70 @@ describe('ToonClient.publishEvent resolves identity by destination (issue #526)'
     expect(edge.opened).toHaveLength(0);
   });
 
+  it('REFUSES an announce whose endpoint points at THIS machine, and says so (toon-client#593)', async () => {
+    // The live devnet case: a throwaway maker announced `ws://127.0.0.1:3401`
+    // from an operator workstation that no longer exists. kind:10032 is
+    // parameterized-replaceable and the relay implements neither NIP-40
+    // expiry nor NIP-09 deletion, so the announce is served forever and only
+    // the (lost) original signing key could replace it. Selecting it would
+    // dial the CALLER's own port 3401 — connection-refused at best, an
+    // unrelated local service spoken BTP at, at worst.
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+    });
+    globalThis.fetch = routedFetch(edge);
+
+    const client = new ToonClient(baseConfig());
+    attachDiscovery(
+      client,
+      [announceFor(['g.proxy'], 'http://127.0.0.1:3401', 'd'.repeat(64))],
+      edge
+    );
+
+    let caught: unknown;
+    try {
+      await client.publishEvent(makeEvent(), { claim: makeProof() });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ToonClientError);
+    expect((caught as ToonClientError).code).toBe('TERMINATOR_UNRESOLVED');
+    // Loud at the point of SELECTION: the user is told the only candidate is
+    // unreachable, rather than being handed a connection error from their own
+    // machine.
+    const message = (caught as ToonClientError).message;
+    expect(message).toContain('IGNORED as unreachable');
+    expect(message).toContain('http://127.0.0.1:3401');
+    expect(message).toContain('THIS machine');
+    expect(message).toContain('TOON_CLIENT_ALLOW_LOOPBACK_PEERS');
+    expect(edge.opened).toHaveLength(0);
+  });
+
+  it('still accepts a private-range endpoint — a LAN deployment is legitimate (toon-client#593)', async () => {
+    const edge = new FakeTerminatingConnector({
+      endpoint: 'http://connector.test',
+      identitySecret: new Uint8Array(32).fill(1),
+    });
+    const terminator = new FakeTerminatingConnector({
+      endpoint: 'http://192.168.1.50:8080',
+      identitySecret: new Uint8Array(32).fill(2),
+    });
+    globalThis.fetch = routedFetch(edge, terminator);
+
+    const client = new ToonClient(baseConfig());
+    attachDiscovery(
+      client,
+      [announceFor(['g.proxy'], 'http://192.168.1.50:8080', 'e'.repeat(64))],
+      terminator
+    );
+
+    const result = await client.publishEvent(makeEvent(), {
+      claim: makeProof(),
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('REFUSES rather than sealing to an ancestor router masquerading as the terminator (toon-client#533)', async () => {
     // Live topology observed in production: the router announces itself at
     // `g.toon`, which — via the dot-separated ancestor rule alone — also

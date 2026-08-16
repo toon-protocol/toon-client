@@ -55,8 +55,10 @@ import { join } from 'node:path';
 import type { ToonClientConfig } from '@toon-protocol/client';
 import {
   EvmSigner,
+  announceEndpointPolicyFor,
   deriveFullIdentity,
   deriveNostrKeyFromMnemonic,
+  rejectedAnnounceEndpoint,
 } from '@toon-protocol/client';
 import {
   decodeEventFromToon,
@@ -1123,11 +1125,29 @@ export async function createStandaloneContext(
         const peers = await discoverAnnouncedPeers(relayUrl, {
           timeoutMs: DISCOVERY_TIMEOUT_MS,
         });
-        announce = pickPaymentPeer(peers, genesisSeedPubkeys());
+        // Judged against the relay they came off (toon-client#593): a local
+        // relay is a local stack, where a peer's `127.0.0.1` uplink really is
+        // reachable; a public relay serving a loopback uplink is advertising
+        // THIS machine, and rig must not dial it.
+        const endpointPolicy = announceEndpointPolicyFor({
+          discoveredFrom: relayUrl,
+        });
+        announce = pickPaymentPeer(peers, genesisSeedPubkeys(), endpointPolicy);
         if (!announce) {
+          const unreachable = peers
+            .flatMap((p) => [p.info.httpEndpoint, p.info.btpEndpoint])
+            .filter((e): e is string => Boolean(e))
+            .map((e) => rejectedAnnounceEndpoint(e, endpointPolicy))
+            .filter((r): r is NonNullable<typeof r> => r !== undefined);
           warn(
             `rig: no payment-peer announce (kind:10032) found on ${relayUrl} — ` +
-              'falling back to the genesis peer seed'
+              'falling back to the genesis peer seed' +
+              (unreachable.length > 0
+                ? `. ${unreachable.length} announce(s) were IGNORED as ` +
+                  `unreachable from here: ${unreachable
+                    .map((r) => r.reason)
+                    .join(' ')}`
+                : '')
           );
         }
       } catch (err) {

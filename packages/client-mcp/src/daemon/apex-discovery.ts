@@ -17,6 +17,11 @@ import {
   isEventExpired,
 } from '@toon-protocol/core';
 import type { NostrEvent } from 'nostr-tools/pure';
+import {
+  announceEndpointPolicyFor,
+  rejectedAnnounceEndpoint,
+  type AnnounceEndpointPolicy,
+} from '@toon-protocol/client';
 import type { RelaySubscription } from '../relay-subscription.js';
 import type { ApexNegotiationConfig } from './config.js';
 import type { SettlementChain } from '../control-api.js';
@@ -29,6 +34,14 @@ export interface DiscoverApexParams {
   ilpAddress: string;
   /** Optional apex Nostr pubkey to narrow the REQ filter (64-char hex). */
   pubkey?: string;
+  /**
+   * The relay URL `relay` is subscribed to. Used ONLY to decide whether a
+   * loopback endpoint in the announce can be meant for us (toon-client#593):
+   * a local relay implies a local stack, where `ws://127.0.0.1:…` genuinely
+   * IS the announcer. Omitted, the safe default applies — loopback and
+   * link-local endpoints are refused, private ranges are not.
+   */
+  relayUrl?: string;
   /** Preferred settlement chain family; defaults to the first supported chain. */
   chain?: SettlementChain;
   /** Child peers reached via this apex's channel (e.g. `["store","swap"]`). */
@@ -79,6 +92,9 @@ export async function discoverApex(
   params: DiscoverApexParams
 ): Promise<DiscoveredApex> {
   const { relay, ilpAddress, pubkey, chain, childPeers } = params;
+  const endpointPolicy = announceEndpointPolicyFor({
+    discoveredFrom: params.relayUrl,
+  });
   const timeoutMs = params.timeoutMs ?? 15_000;
   const pollMs = params.pollMs ?? 250;
   const trustedPubkeys = params.trustedPubkeys ?? [];
@@ -106,7 +122,12 @@ export async function discoverApex(
       cursor = next;
       const match = events.find((e) => matchesApex(e, ilpAddress, pubkey));
       if (match)
-        return mapAnnouncement(match, { chain, childPeers, trustedPubkeys });
+        return mapAnnouncement(match, {
+          chain,
+          childPeers,
+          trustedPubkeys,
+          endpointPolicy,
+        });
       await delay(pollMs);
     }
     throw new ApexDiscoveryError(
@@ -154,6 +175,8 @@ function mapAnnouncement(
     childPeers?: string[];
     /** Announcer pubkeys whose `notice` is honoured — see `./notice.js`. */
     trustedPubkeys: readonly string[];
+    /** Which endpoint zones this announce is allowed to advertise. */
+    endpointPolicy: AnnounceEndpointPolicy;
   }
 ): DiscoveredApex {
   const info = parseIlpPeerInfo(event);
@@ -187,6 +210,23 @@ function mapAnnouncement(
   if (!btpUrl) {
     throw new ApexDiscoveryError(
       `Apex "${info.ilpAddress}" announced an empty btpEndpoint — cannot open a BTP session.`
+    );
+  }
+  // toon-client#593: refuse an endpoint whose reachability claim is not
+  // meaningful to THIS client before anything dials it. A kind:10032 is
+  // parameterized-replaceable and the relay implements neither NIP-40 expiry
+  // nor NIP-09 deletion, so a dead node's announce is served forever and can
+  // only be replaced by its original signing key — which is exactly how a
+  // throwaway maker on an operator workstation ends up as the only
+  // advertised Solana→EVM pair on devnet, advertising `ws://127.0.0.1:3401`.
+  // Dialling that opens a BTP session against whatever unrelated service
+  // holds port 3401 on the CALLER's machine. Non-retryable: republishing is
+  // the only fix, and only the original key can do it.
+  const unreachable = rejectedAnnounceEndpoint(btpUrl, opts.endpointPolicy);
+  if (unreachable) {
+    throw new ApexDiscoveryError(
+      `Apex "${info.ilpAddress}" is not reachable from this client. ` +
+        unreachable.reason
     );
   }
 
