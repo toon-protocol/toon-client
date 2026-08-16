@@ -2680,6 +2680,23 @@ export class ClientRunner {
           'collectable claim advance for that packet.'
       );
     }
+    if (rejections.length > 0 && claims.length === 0) {
+      // NOT a silent retry. `rolling: "auto"` falls back when the RFQ FAILS,
+      // and this branch is the other shape: the RFQ succeeded, a session was
+      // established, and then every fill failed. Re-running the same swap on
+      // the legacy path from here is what would risk paying or delivering
+      // twice, so the caller decides — but a caller that is told only
+      // `leg B failed; fill not executed` has no way to know the legacy path
+      // is right there and working. Say so.
+      warnings.push(
+        'EVERY packet failed on the rolling path, so this swap delivered ' +
+          'nothing. It also cost nothing: no leg A was revealed and no claim ' +
+          'is collectable (spec R5/R8). This is NOT retried as legacy ' +
+          'automatically — re-running a fill after a rolling attempt is what ' +
+          'risks double-paying. To settle this swap on the legacy path, ' +
+          'repeat it with `rolling: "off"`.'
+      );
+    }
     const hadIngestibleClaims = claims.length + rejections.length > 0;
 
     return {
