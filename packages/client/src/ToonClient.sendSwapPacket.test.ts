@@ -174,6 +174,107 @@ describe('ToonClient.sendSwapPacket (Story 12.5 AC-3)', () => {
     expect(claimMessage).toBe(autoClaimMessage);
   });
 
+  // The daemon registers a `toon_add_apex` target's settlement facts on that
+  // apex's own client, under the peer id `resolvePeerId` returns for its
+  // destination (`injectApexNegotiation`: `g.toon.swap.maker` → `maker`). A
+  // swap send to that destination must resolve THAT key by identity — the
+  // full ILP address is never a key, so a lookup that ends up using it can
+  // only ever miss.
+  describe('apex-registered destination', () => {
+    function apexClient(): {
+      client: ToonClient;
+      ensureChannel: ReturnType<typeof vi.fn>;
+    } {
+      const client = new ToonClient(baseConfig());
+      const ensureChannel = vi.fn(async () => 'chan-1');
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      (client as any).state = {
+        bootstrapService: {},
+        discoveryTracker: {},
+        runtimeClient: {},
+        peersDiscovered: 0,
+        btpClient: {
+          sendIlpPacketWithClaim: vi.fn(async () => ({ accepted: true })),
+        },
+      };
+      (client as any).channelManager = {
+        ensureChannel,
+        signBalanceProof: vi.fn(async () => ({ channelId: 'chan-1' })),
+        getSignerForChannel: () => ({
+          buildClaimMessage: () => ({ ok: true }),
+        }),
+      };
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+      return { client, ensureChannel };
+    }
+
+    const NEGOTIATION = {
+      chain: 'evm:84532',
+      chainType: 'evm',
+      chainId: 84532,
+      settlementAddress: '0x5f68f3a1ab1eb59417dbe11b8d8c9db339a04005',
+      tokenAddress: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
+      tokenNetwork: '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478',
+    };
+
+    it('draws the claim on the apex peer id, not on the raw destination', async () => {
+      const { client, ensureChannel } = apexClient();
+      // Exactly what the daemon's `injectApexNegotiation` writes, alongside
+      // the `nostr-<pubkey16>` keys bootstrap leaves behind.
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      (client as any).peerNegotiations.set(
+        'nostr-30fdd01d55c3efeb',
+        NEGOTIATION
+      );
+      (client as any).peerNegotiations.set('maker', NEGOTIATION);
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+
+      const result = await client.sendSwapPacket({
+        destination: 'g.toon.swap.maker',
+        amount: 100n,
+        toonData: new Uint8Array([1]),
+      });
+
+      expect(result).toEqual({ accepted: true });
+      expect(ensureChannel).toHaveBeenCalledTimes(1);
+      expect(ensureChannel.mock.calls[0]?.[0]).toBe('maker');
+      expect(ensureChannel.mock.calls[0]?.[0]).not.toBe('g.toon.swap.maker');
+    });
+
+    it('names the raw-destination fallback when the client holds no negotiation for it', async () => {
+      const { client } = apexClient();
+      // A DIFFERENT apex's client: it negotiated its own peers, never the
+      // maker. This is the wrong-client failure the daemon used to produce.
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      (client as any).peerNegotiations.set('toon', NEGOTIATION);
+      (client as any).peerNegotiations.set(
+        'nostr-30fdd01d55c3efeb',
+        NEGOTIATION
+      );
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+
+      await expect(
+        client.sendSwapPacket({
+          destination: 'g.toon.swap.maker',
+          amount: 100n,
+          toonData: new Uint8Array([1]),
+        })
+      ).rejects.toMatchObject({ code: 'PEER_NOT_NEGOTIATED' });
+
+      await client
+        .sendSwapPacket({
+          destination: 'g.toon.swap.maker',
+          amount: 100n,
+          toonData: new Uint8Array([1]),
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          expect(message).toContain('is the DESTINATION, not a peer id');
+          expect(message).toContain('toon');
+        });
+    });
+  });
+
   it('forwards a sender-chosen executionCondition + expiresAt to the transport (#350)', async () => {
     const client = new ToonClient(baseConfig());
     const sendIlpPacketWithClaim = vi.fn(async () => ({ accepted: true }));

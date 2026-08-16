@@ -1931,13 +1931,15 @@ export class ClientRunner {
    *   packets drain and the partial fill is reported exactly (partial
    *   `claims`, cumulatives, `state`/`abortReason`).
    *
-   * Apex selection: `req.btpUrl` picks WHICH apex client the swap streams on
-   * ({@link selectApex}, keyed on BTP URL exactly as `publish` is). This is
-   * the only way to reach a DIRECT-DIALLED maker — one deliberately absent
-   * from a relay connector's routing table, reachable at its own advertised
-   * `btpEndpoint` after `addApex` registers it. Unset, the swap goes to the
-   * config-seeded apex, where an unrouted destination fails peer resolution
-   * and lands on the local-error path below.
+   * Apex selection ({@link selectSwapApex}): `req.btpUrl` picks WHICH apex
+   * client the swap streams on, keyed on BTP URL exactly as `publish` is —
+   * the way to reach a DIRECT-DIALLED maker, one deliberately absent from a
+   * relay connector's routing table and reachable at its own advertised
+   * `btpEndpoint` after `addApex` registers it (#579). Unset, the swap goes
+   * to the registered apex that OWNS `req.destination` rather than to the
+   * config-seeded default: only that apex's client holds the negotiation for
+   * the maker, so any other one resolves no peer for the destination and
+   * every packet dies locally on the error path below.
    *
    * Failure visibility: `streamSwap` reports two DIFFERENT failure kinds —
    * `rejections[]` (the maker/connector answered REJECT) and `errors[]` (the
@@ -1947,8 +1949,12 @@ export class ClientRunner {
    * `abortReason: 'complete'`.
    */
   async swap(req: SwapRequest): Promise<SwapResponse> {
-    const apex = this.selectApex(req.btpUrl);
+    const apex = this.selectSwapApex(req.destination, req.btpUrl);
     this.assertApexReady(apex);
+    this.log(
+      `[runner] swap to ${req.destination} on apex ` +
+        `${apex.btpUrl || apex.destination} (peer "${apex.negotiation?.peerId ?? '?'}")`
+    );
     // toon-client#573: a sender-chosen condition on the legacy gift-wrap
     // packet shape is a KNOWN, unconditional maker-side F99 (a compliant
     // maker's rolling engine only accepts sender-chosen conditions on its
@@ -3161,6 +3167,51 @@ export class ClientRunner {
     const def = this.defaultApex();
     if (!def) throw new NotReadyError('No apex configured.');
     return def;
+  }
+
+  /**
+   * Select the apex a SWAP streams on.
+   *
+   * An explicit `btpUrl` still wins and is still the only selector on the
+   * wire (#579) — this only decides where an otherwise-defaulted swap goes.
+   * With none, the swap goes to the REGISTERED apex that owns `destination`
+   * (its own ILP address, or the longest ILP prefix of it), not to the
+   * config-seeded default.
+   *
+   * Why this is load-bearing rather than a convenience: every apex has its
+   * OWN `ToonClient`, and the negotiation for a `toon_add_apex` target is
+   * injected into THAT client alone, under the peer id `resolvePeerId`
+   * returns for its destination ({@link injectApexNegotiation} — the last
+   * dot-segment, e.g. `g.toon.swap.maker` → `maker`). Streaming the swap on
+   * any other apex's client hands `ToonClient.sendSwapPacket` a destination
+   * that client has never negotiated: `resolvePeerId` throws PEER_NOT_FOUND,
+   * `peerIdForClaim` falls back to the raw destination as the key, nothing
+   * is registered under a full ILP address, and every packet dies locally
+   * with `No negotiation metadata for peer "g.toon.swap.maker"`. Routing to
+   * the owning apex makes the destination and its registered peer id agree,
+   * so the lookup hits on identity and never rides that fallback.
+   */
+  private selectSwapApex(destination: string, btpUrl?: string): ApexConnection {
+    if (btpUrl) return this.selectApex(btpUrl);
+    return this.apexOwning(destination) ?? this.selectApex();
+  }
+
+  /**
+   * The registered apex whose own ILP destination owns `destination` — an
+   * exact match, else the longest registered prefix (`g.toon.swap.maker` is
+   * owned by the maker apex over the `g.toon` default). `undefined` when no
+   * registered apex claims it at all.
+   */
+  private apexOwning(destination: string): ApexConnection | undefined {
+    let best: ApexConnection | undefined;
+    for (const apex of this.apexes.values()) {
+      const owned = apex.destination;
+      if (!owned) continue;
+      if (destination !== owned && !destination.startsWith(`${owned}.`))
+        continue;
+      if (!best || owned.length > best.destination.length) best = apex;
+    }
+    return best;
   }
 
   /**
