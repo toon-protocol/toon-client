@@ -19,6 +19,11 @@ export {
   type ChannelBindingContext,
 } from './ChannelStore.js';
 export {
+  counterpartyMatch,
+  sameSettlementAddress,
+  type CounterpartyVerdict,
+} from './counterparty.js';
+export {
   JsonFileReceivedClaimStore,
   InMemoryReceivedClaimStore,
   type ReceivedClaimStore,

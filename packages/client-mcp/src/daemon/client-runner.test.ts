@@ -414,7 +414,9 @@ async function rollingAdvanceBytes(opts: {
       recipient: EVM_RECIPIENT,
     }
   );
-  const sigHex = await (opts.signer ?? SWAP_SIGNER_ACCOUNT).sign({ hash: digest });
+  const sigHex = await (opts.signer ?? SWAP_SIGNER_ACCOUNT).sign({
+    hash: digest,
+  });
   return new TextEncoder().encode(
     JSON.stringify({
       proto: 'rolling/1',
@@ -463,9 +465,10 @@ class FakeRollingMakerClient extends FakeClient {
     executionCondition?: Uint8Array;
     expiresAt?: Date;
   }): Promise<{ accepted: boolean; code?: string; message?: string }> {
-    const fill = JSON.parse(
-      new TextDecoder().decode(params.toonData)
-    ) as { streamNonce: string; seq: number };
+    const fill = JSON.parse(new TextDecoder().decode(params.toonData)) as {
+      streamNonce: string;
+      seq: number;
+    };
     if (!this.jobHandler) throw new Error('no jobHandler captured');
     const data = await this.buildAdvance(fill.seq, fill.streamNonce);
     try {
@@ -719,6 +722,135 @@ describe('ClientRunner', () => {
     // Tracking alone left the client's lazy-open path unaware of the channel —
     // this is the hand-off that stops the next write locking new collateral.
     expect(adopted).toEqual([['g.proxy', 'existing-chan']]);
+  });
+
+  /**
+   * The apex store is keyed `destination|chain` — an ILP NAME, not a node. The
+   * devnet apex `g.toon` was retired 2026-08-14 and other nodes took over the
+   * names under it; both key fields kept matching, so the runner resumed,
+   * adopted AND re-bound a channel the node now answering has no record of.
+   * Every paid write came back `F01 - claim rejected: names a channel this
+   * connector has no record of` until the record was deleted by hand.
+   */
+  it('does NOT resume a saved channel whose counterparty was replaced — re-resolves instead', async () => {
+    writeFileSync(
+      join(tmpDir, 'apex-channels.json'),
+      JSON.stringify({
+        'g.proxy|evm': {
+          channelId: 'retired-chan',
+          context: {
+            chainType: 'evm',
+            chainId: 84532,
+            tokenNetworkAddress: '0xtn',
+            recipient: '0xretired',
+          },
+        },
+      })
+    );
+    const tracked: string[] = [];
+    const adopted: [string, string][] = [];
+    const trackingClient = new FakeClient();
+    const openSpy = vi.spyOn(trackingClient, 'openChannel');
+    (trackingClient as unknown as { channelManager: unknown }).channelManager =
+      {
+        trackChannel: (id: string) => tracked.push(id),
+      };
+    (
+      trackingClient as unknown as {
+        adoptChannel: (d: string, c: string) => Promise<void>;
+      }
+    ).adoptChannel = async (destination: string, channelId: string) => {
+      adopted.push([destination, channelId]);
+    };
+
+    const r = new ClientRunner({
+      config: makeConfig({
+        apex: {
+          destination: 'g.proxy',
+          peerId: 'proxy',
+          chain: 'evm',
+          chainKey: 'evm:base:84532',
+          chainId: 84532,
+          // The node answering `g.proxy` today is NOT the one the record names.
+          settlementAddress: '0xapex',
+          tokenNetwork: '0xtn',
+        },
+      }),
+      createClient: () => trackingClient,
+      createRelay: fakeRelay,
+    });
+    await r.bootstrap();
+
+    // Nothing dead was tracked, adopted or re-bound…
+    expect(tracked).not.toContain('retired-chan');
+    expect(adopted).toEqual([]);
+    // …the channel was re-resolved against the counterparty announced now
+    // (`openChannel` binds an existing channel with it where there is one)…
+    expect(openSpy).toHaveBeenCalledWith('g.proxy');
+
+    const saved = JSON.parse(
+      readFileSync(join(tmpDir, 'apex-channels.json'), 'utf8')
+    ) as Record<string, { channelId: string; supersededAt?: string }>;
+    expect(saved['g.proxy|evm']?.channelId).toBe('chan-1');
+    // …and the retired record is ARCHIVED, not dropped: it may still hold an
+    // on-chain deposit, so deleting it would strand those funds.
+    expect(saved['g.proxy|evm|superseded:retired-chan']?.channelId).toBe(
+      'retired-chan'
+    );
+    expect(saved['g.proxy|evm|superseded:retired-chan']?.supersededAt).toEqual(
+      expect.any(String)
+    );
+  });
+
+  it('resumes a LEGACY saved channel with no recorded counterparty and back-fills it', async () => {
+    // Written before the counterparty was validated: unverified, NOT stale.
+    // Refusing it would open (and fund) a second on-chain channel for nothing.
+    writeFileSync(
+      join(tmpDir, 'apex-channels.json'),
+      JSON.stringify({
+        'g.proxy|evm': {
+          channelId: 'legacy-chan',
+          context: {
+            chainType: 'evm',
+            chainId: 84532,
+            tokenNetworkAddress: '0xtn',
+          },
+        },
+      })
+    );
+    const tracked: string[] = [];
+    const trackingClient = new FakeClient();
+    const openSpy = vi.spyOn(trackingClient, 'openChannel');
+    (trackingClient as unknown as { channelManager: unknown }).channelManager =
+      {
+        trackChannel: (id: string) => tracked.push(id),
+      };
+
+    const r = new ClientRunner({
+      config: makeConfig({
+        apex: {
+          destination: 'g.proxy',
+          peerId: 'proxy',
+          chain: 'evm',
+          chainKey: 'evm:base:84532',
+          chainId: 84532,
+          settlementAddress: '0xapex',
+          tokenNetwork: '0xtn',
+        },
+      }),
+      createClient: () => trackingClient,
+      createRelay: fakeRelay,
+    });
+    await r.bootstrap();
+
+    expect(tracked).toEqual(['legacy-chan']);
+    expect(openSpy).not.toHaveBeenCalled();
+    // Back-filled from the announce, so the NEXT start is verifiable rather
+    // than unverifiable forever.
+    const saved = JSON.parse(
+      readFileSync(join(tmpDir, 'apex-channels.json'), 'utf8')
+    ) as Record<string, { context: { recipient?: string } }>;
+    expect(saved['g.proxy|evm']?.context.recipient).toBe('0xapex');
   });
 
   it('records lastError when bootstrap fails and stays not-ready', async () => {
@@ -1489,9 +1621,7 @@ describe('ClientRunner', () => {
 
   it('swap with senderConditions + streamNonce drives the ROLLING path: a FRESH non-zero condition per packet, verified via the maker leg-B advance (#573)', async () => {
     const maker = new FakeRollingMakerClient();
-    let capturedJobHandler:
-      | typeof maker.jobHandler
-      | undefined;
+    let capturedJobHandler: typeof maker.jobHandler | undefined;
     const rollingRunner = new ClientRunner({
       config: makeConfig({
         apex: {
@@ -1557,7 +1687,7 @@ describe('ClientRunner', () => {
     expect(conditions[0]).not.toEqual(conditions[1]);
   });
 
-  it("the CRUX (#573 AC): a withheld/failed leg-B verification never reveals leg A — no collectable claim for that packet", async () => {
+  it('the CRUX (#573 AC): a withheld/failed leg-B verification never reveals leg A — no collectable claim for that packet', async () => {
     const maker = new FakeRollingMakerClient();
     const rollingRunner = new ClientRunner({
       config: makeConfig(),
