@@ -27,6 +27,15 @@
  * whole lifetime — the same guard that serializes the claim watermark also
  * serializes this file for one identity. `rig channel list` reads only.
  *
+ * COUNTERPARTY: the key names a ROUTE, not a node — an ILP name can change
+ * hands (the devnet apex `g.toon` was retired and another node took over
+ * `g.toon.relay`). A record therefore also carries the counterparty
+ * settlement address it was opened against (`context.recipient`), which is
+ * re-checked against the destination's announced address before every resume
+ * ({@link counterpartyMatch}); a rotated counterparty
+ * {@link ChannelMapStore.supersede}s the record instead of signing claims a
+ * connector with no record of that channel refuses (`F01`).
+ *
  * CORRUPTION: an unreadable/invalid map file is a hard
  * {@link ChannelMapCorruptError} — surfaced BEFORE any on-chain open — never
  * an empty fallback. Falling back to "no channels" would silently open (and
@@ -119,6 +128,15 @@ export interface ChannelMapRecord {
   /** ISO timestamps. */
   openedAt: string;
   lastUsedAt: string;
+  /**
+   * ISO timestamp this record was RETIRED from the resume path because the
+   * destination now announces a different settlement address than the channel
+   * was opened against (see {@link counterpartyMatch} /
+   * {@link ChannelMapStore.supersede}). A superseded record is never resumed
+   * again, but stays in {@link ChannelMapStore.list} so `rig channel
+   * list/close/settle` can still reclaim whatever it holds on-chain.
+   */
+  supersededAt?: string;
 }
 
 /** The composite key a record is stored under. */
@@ -172,6 +190,59 @@ interface MapFile {
 
 function keyOf(key: ChannelMapKey): string {
   return `${key.identity}|${key.destination}|${key.chain}|${key.tokenNetwork}`;
+}
+
+/**
+ * Archive key a {@link ChannelMapStore.supersede}d record moves to: the live
+ * key plus the channel id, so the retired record survives the fresh channel
+ * being recorded under the live key (deposits it still holds stay reachable
+ * from `rig channel list/close/settle`) and several supersessions of the same
+ * route never collide.
+ */
+function supersededKeyOf(record: ChannelMapRecord): string {
+  return `${keyOf(recordKey(record))}|superseded:${record.channelId}`;
+}
+
+/**
+ * Compare settlement addresses. EVM addresses travel in mixed checksum case
+ * (an announce may say `0xF29f…` where the record says `0xf29f…`) and are
+ * compared case-insensitively; anything else (base58 Solana, base58check
+ * Mina) is case-SIGNIFICANT and compared verbatim.
+ */
+export function sameSettlementAddress(a: string, b: string): boolean {
+  const normalize = (v: string): string =>
+    /^0x[0-9a-fA-F]+$/.test(v) ? v.toLowerCase() : v;
+  return normalize(a) === normalize(b);
+}
+
+/**
+ * Does a recorded channel still belong to the counterparty the destination
+ * announces TODAY?
+ *
+ * The map key is `identity|destination|chain|tokenNetwork` — it carries no
+ * counterparty. When the node terminating an ILP name is REPLACED (the devnet
+ * apex `g.toon` was retired and another node took over `g.toon.relay`), all
+ * four key fields still match, so rig resumed a channel opened against the
+ * old node and signed claims against it. The new connector holds no record of
+ * that channel and refuses every packet: `F01 - claim rejected: names a
+ * channel this connector has no record of`. Every paid write failed until the
+ * cache entry was deleted by hand.
+ *
+ * - `'match'` — same counterparty, safe to resume.
+ * - `'mismatch'` — the counterparty rotated: the record must be superseded and
+ *   the channel re-resolved.
+ * - `'unrecorded'` — nothing to compare (a record written before this field
+ *   was validated, or a peer that announced no settlement address). Resume is
+ *   allowed and the caller should enrich the record with what the announce
+ *   says, so the NEXT run is verifiable.
+ */
+export function counterpartyMatch(
+  record: Pick<ChannelMapRecord, 'context'>,
+  announced: string | undefined
+): 'match' | 'mismatch' | 'unrecorded' {
+  const recorded = record.context.recipient;
+  if (!recorded || !announced) return 'unrecorded';
+  return sameSettlementAddress(recorded, announced) ? 'match' : 'mismatch';
 }
 
 /** The key fields of a full record. */
@@ -236,11 +307,16 @@ export class ChannelMapStore {
 
   /**
    * Recorded channels for one (identity, destination) pair — the resume
-   * candidates for a paid command. @throws {ChannelMapCorruptError}
+   * candidates for a paid command. Superseded records are EXCLUDED: they are
+   * retired from the resume path for good, and only `list()` (what `rig
+   * channel` enumerates) still shows them. @throws {ChannelMapCorruptError}
    */
   listFor(identity: string, destination: string): ChannelMapRecord[] {
     return this.list().filter(
-      (r) => r.identity === identity && r.destination === destination
+      (r) =>
+        r.identity === identity &&
+        r.destination === destination &&
+        r.supersededAt === undefined
     );
   }
 
@@ -266,10 +342,14 @@ export class ChannelMapStore {
   }
 
   /**
-   * Bump a record's `lastUsedAt` (and optionally its known on-chain deposit)
-   * after resuming it. Unknown keys are a no-op.
+   * Bump a record's `lastUsedAt` (and optionally its known on-chain deposit,
+   * or the counterparty a pre-validation record was written without) after
+   * resuming it. Unknown keys are a no-op.
    */
-  touch(key: ChannelMapKey, update?: { depositTotal?: string }): void {
+  touch(
+    key: ChannelMapKey,
+    update?: { depositTotal?: string; recipient?: string }
+  ): void {
     const data = this.readMap();
     const existing = data.channels[keyOf(key)];
     if (!existing) return;
@@ -277,7 +357,43 @@ export class ChannelMapStore {
     if (update?.depositTotal !== undefined) {
       existing.depositTotal = update.depositTotal;
     }
+    if (update?.recipient !== undefined) {
+      existing.context.recipient = update.recipient;
+    }
     this.writeMap(data);
+  }
+
+  /**
+   * Retire a record from the resume path — the counterparty that terminates
+   * its destination has been REPLACED, so the channel it names is dead to the
+   * new node (`F01 - claim rejected`) even though every key field still
+   * matches (see {@link counterpartyMatch}).
+   *
+   * The record is MOVED to an archive key rather than deleted: it may still
+   * hold an on-chain deposit, and `rig channel list/close/settle` find
+   * channels by scanning `list()`, so deleting it would strand those funds
+   * behind hand-editing the JSON. Moving it also frees the live key for the
+   * re-resolved channel. Idempotent, and a no-op for an unknown record.
+   */
+  supersede(record: ChannelMapRecord): void {
+    const data = this.readMap();
+    const liveKey = keyOf(recordKey(record));
+    const existing = data.channels[liveKey];
+    const isLive =
+      existing !== undefined && existing.channelId === record.channelId;
+    const retired: ChannelMapRecord = {
+      ...(isLive && existing ? existing : record),
+      supersededAt: record.supersededAt ?? new Date().toISOString(),
+    };
+    const channels: Record<string, ChannelMapRecord> = {};
+    for (const [key, value] of Object.entries(data.channels)) {
+      // The live key is FREED (not just re-pointed): the re-resolved channel
+      // is recorded under it moments later.
+      if (isLive && key === liveKey) continue;
+      channels[key] = value;
+    }
+    channels[supersededKeyOf(retired)] = retired;
+    this.writeMap({ ...data, channels });
   }
 
   /**

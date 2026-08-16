@@ -19,8 +19,10 @@ import {
   ChannelMapCorruptError,
   ChannelMapStore,
   channelStatus,
+  counterpartyMatch,
   recordKey,
   resolveChannelPaths,
+  sameSettlementAddress,
   type ChannelMapRecord,
 } from './channel-map.js';
 
@@ -110,6 +112,68 @@ describe('ChannelMapStore', () => {
     store.touch({ ...recordKey(before), chain: 'nope' });
   });
 
+  describe('supersede (the counterparty terminating a route was replaced)', () => {
+    it('retires the record from the resume candidates but KEEPS it listed', () => {
+      store.record(RECORD);
+      const [live] = store.list();
+      if (!live) throw new Error('record missing');
+
+      store.supersede(live);
+
+      // Never resumed again…
+      expect(store.listFor(IDENTITY, 'g.proxy.relay.store')).toEqual([]);
+      // …but still enumerable, so `rig channel close/settle <id>` (which
+      // scans list()) can reclaim the deposit it still holds on-chain.
+      const [retired] = store.list();
+      expect(retired?.channelId).toBe(RECORD.channelId);
+      expect(retired?.supersededAt).toBeTruthy();
+      expect(retired?.depositTotal).toBe('100000');
+    });
+
+    it('frees the live key so the re-resolved channel is recorded beside it', () => {
+      store.record(RECORD);
+      const [live] = store.list();
+      if (!live) throw new Error('record missing');
+      store.supersede(live);
+
+      store.record({ ...RECORD, channelId: '0xreresolved' });
+
+      expect(store.list()).toHaveLength(2);
+      expect(
+        store.listFor(IDENTITY, 'g.proxy.relay.store').map((r) => r.channelId)
+      ).toEqual(['0xreresolved']);
+    });
+
+    it('is idempotent and a no-op for an unknown record', () => {
+      store.record(RECORD);
+      const [live] = store.list();
+      if (!live) throw new Error('record missing');
+      store.supersede(live);
+      store.supersede(live);
+      expect(store.list()).toHaveLength(1);
+
+      store.supersede({
+        ...RECORD,
+        channelId: '0xnever-recorded',
+        openedAt: '2026-01-01T00:00:00.000Z',
+        lastUsedAt: '2026-01-01T00:00:00.000Z',
+      });
+      expect(store.list()).toHaveLength(2);
+      expect(store.listFor(IDENTITY, 'g.proxy.relay.store')).toEqual([]);
+    });
+  });
+
+  it('touch back-fills the counterparty on a record written without one', () => {
+    const { recipient: _dropped, ...contextWithoutRecipient } = RECORD.context;
+    store.record({ ...RECORD, context: contextWithoutRecipient });
+    const [before] = store.list();
+    if (!before) throw new Error('record missing');
+    expect(before.context.recipient).toBeUndefined();
+
+    store.touch(recordKey(before), { recipient: '0x' + '44'.repeat(20) });
+    expect(store.list()[0]?.context.recipient).toBe('0x' + '44'.repeat(20));
+  });
+
   describe('corruption is a hard error (never a silent duplicate open)', () => {
     it.each([
       ['invalid JSON', 'not-json{'],
@@ -184,6 +248,46 @@ describe('ChannelMapStore', () => {
     expect(Object.keys(parsed.channels)).toEqual([
       `${IDENTITY}|g.proxy.relay.store|evm:31337|${RECORD.tokenNetwork}`,
     ]);
+  });
+});
+
+describe('counterpartyMatch', () => {
+  const recorded = (recipient?: string): Pick<ChannelMapRecord, 'context'> => ({
+    context: {
+      chainType: 'evm',
+      chainId: 84532,
+      tokenNetworkAddress: '0x' + '22'.repeat(20),
+      ...(recipient ? { recipient } : {}),
+    },
+  });
+
+  it('matches the announced settlement address regardless of EVM checksum case', () => {
+    expect(
+      counterpartyMatch(
+        recorded('0x3f43d923a611bcb2d0bfb5d6ee2c3ac3efeaf308'),
+        '0x3F43d923a611BCb2d0BFb5D6ee2c3aC3EfEAf308'
+      )
+    ).toBe('match');
+  });
+
+  it('a REPLACED counterparty is a mismatch (the F01 defect)', () => {
+    // The retired devnet apex vs the node that took over `g.toon.relay`.
+    expect(
+      counterpartyMatch(
+        recorded('0xf29fD62C4848B9573C9b90adbF61b664F386d9CF'),
+        '0x3f43d923a611bcb2d0bfb5d6ee2c3ac3efeaf308'
+      )
+    ).toBe('mismatch');
+  });
+
+  it('non-hex (Solana/Mina) addresses compare case-SENSITIVELY', () => {
+    expect(sameSettlementAddress('B62qabc', 'B62qABC')).toBe(false);
+    expect(sameSettlementAddress('B62qabc', 'B62qabc')).toBe(true);
+  });
+
+  it('an old record with no recorded counterparty is unrecorded, not a mismatch', () => {
+    expect(counterpartyMatch(recorded(), '0xabc')).toBe('unrecorded');
+    expect(counterpartyMatch(recorded('0xabc'), undefined)).toBe('unrecorded');
   });
 });
 
