@@ -89,7 +89,7 @@ describe('handleRollingAdvance (#573)', () => {
       pair: PAIR,
       expectedChain: EVM_CHAIN,
       chainRecipient: RECIPIENT,
-      tokenNetworks: { [EVM_CHAIN]: EVM_CONTRACT },
+      swapVerifyingContracts: { [EVM_CHAIN]: EVM_CONTRACT },
       store,
       preimages,
     };
@@ -115,7 +115,7 @@ describe('handleRollingAdvance (#573)', () => {
     expect(preimages.get(0)).toBeUndefined();
   });
 
-  it("the CRUX (R5/R8): a claim that FAILS verification is never revealed, and never persisted", async () => {
+  it('the CRUX (R5/R8): a claim that FAILS verification is never revealed, and never persisted', async () => {
     const { preimage, condition } = mintExecutionCondition();
     preimages.retain({ packetIndex: 0, preimage, condition, retainedAt: 1 });
 

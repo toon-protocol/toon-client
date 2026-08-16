@@ -139,6 +139,48 @@ describe('ToonClient.start — discovery tracker feed (toon-client#550)', () => 
     );
     expect(client.getDiscoveredPeerInfo('unknown-pubkey')).toBeUndefined();
   });
+
+  it('getSwapVerifyingContracts (#583) surfaces the leg-B map core drops, and never the leg-A tokenNetworks', async () => {
+    // The LIVE devnet maker announce shape (swap#134): both maps present,
+    // different contracts. `parseIlpPeerInfo` keeps only `tokenNetworks`.
+    const LEG_A = '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478';
+    const LEG_B = '0xd329aBf86ceae23F904641F992ca90e3721FeF83';
+    const maker: NostrEvent = {
+      ...ANNOUNCE,
+      id: 'maker-announce',
+      pubkey: 'cc'.repeat(32),
+      content: JSON.stringify({
+        ilpAddress: 'g.toon.swap.maker',
+        assetCode: 'USD',
+        assetScale: 6,
+        tokenNetworks: { 'evm:84532': LEG_A },
+        swapVerifyingContracts: { 'evm:84532': LEG_B },
+      }),
+    };
+
+    const client = new ToonClient(baseConfig());
+    await client.start();
+    expect(client.getSwapVerifyingContracts(maker.pubkey)).toBeUndefined();
+
+    relayEventHandler()(maker);
+
+    expect(client.getSwapVerifyingContracts(maker.pubkey)).toEqual({
+      'evm:84532': LEG_B,
+    });
+    // The parsed IlpPeerInfo path cannot reach it — that is why the raw-content
+    // seam exists — and what it DOES carry is the leg-A contract, which must
+    // never be mistaken for this one (#583).
+    expect(
+      (
+        client.getDiscoveredPeerInfo(maker.pubkey) as unknown as {
+          swapVerifyingContracts?: unknown;
+        }
+      ).swapVerifyingContracts
+    ).toBeUndefined();
+    expect(client.getDiscoveredPeerInfo(maker.pubkey)?.tokenNetworks).toEqual({
+      'evm:84532': LEG_A,
+    });
+  });
 });
 
 /**

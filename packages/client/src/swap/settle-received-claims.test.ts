@@ -68,7 +68,7 @@ describe('buildSwapSettlements (#352)', () => {
     const entry = await evmEntry();
     const [build] = buildSwapSettlements({
       entries: [entry],
-      tokenNetworks: { [CHAIN]: CONTRACT },
+      swapVerifyingContracts: { [CHAIN]: CONTRACT },
     });
     expect(build!.error).toBeUndefined();
     const bundle = build!.bundle!;
@@ -97,23 +97,35 @@ describe('buildSwapSettlements (#352)', () => {
     entry.cumulativeAmount = 999999n;
     const [build] = buildSwapSettlements({
       entries: [entry],
-      tokenNetworks: { [CHAIN]: CONTRACT },
+      swapVerifyingContracts: { [CHAIN]: CONTRACT },
     });
     expect(build!.bundle).toBeUndefined();
     expect(build!.error?.code).toBe('SIGNER_MISMATCH');
   });
 
   it('reports missing EVM chain config result-shaped (MISSING_CHAIN_CONFIG)', async () => {
-    const [noContract] = buildSwapSettlements({ entries: [await evmEntry()] });
-    expect(noContract!.error?.code).toBe('MISSING_CHAIN_CONFIG');
-
     const badKey = await evmEntry({ chain: 'evm:nochainid' });
     badKey.pair = { ...PAIR, to: { ...PAIR.to, chain: 'evm:nochainid' } };
     const [noId] = buildSwapSettlements({
       entries: [badKey],
-      tokenNetworks: { 'evm:nochainid': CONTRACT },
+      swapVerifyingContracts: { 'evm:nochainid': CONTRACT },
     });
     expect(noId!.error?.code).toBe('MISSING_CHAIN_CONFIG');
+  });
+
+  it('[#583] an EVM entry with no leg-B contract at all fails MISSING_SWAP_VERIFYING_CONTRACT, and the leg-A tokenNetworks map is NEVER substituted', async () => {
+    const [noContract] = buildSwapSettlements({ entries: [await evmEntry()] });
+    expect(noContract!.error?.code).toBe('MISSING_SWAP_VERIFYING_CONTRACT');
+    expect(noContract!.error?.message).toContain('RollingSwapChannel');
+
+    // The leg-A map is present and names a real contract — and is still not
+    // used: substituting it is exactly the bug (#583), so this must NOT build.
+    const [legAOnly] = buildSwapSettlements({
+      entries: [await evmEntry()],
+      tokenNetworks: { [CHAIN]: CONTRACT },
+    });
+    expect(legAOnly!.bundle).toBeUndefined();
+    expect(legAOnly!.error?.code).toBe('MISSING_SWAP_VERIFYING_CONTRACT');
   });
 
   it('one bad channel never blocks another (per-entry isolation)', async () => {
@@ -122,7 +134,7 @@ describe('buildSwapSettlements (#352)', () => {
     bad.claimBytes = new Uint8Array([1, 2, 3]);
     const builds = buildSwapSettlements({
       entries: [bad, good],
-      tokenNetworks: { [CHAIN]: CONTRACT },
+      swapVerifyingContracts: { [CHAIN]: CONTRACT },
     });
     expect(builds[0]!.error).toBeDefined();
     expect(builds[1]!.bundle).toBeDefined();
@@ -167,7 +179,7 @@ describe('buildSwapSettlements (#352)', () => {
     // Config still names the OTHER (default) contract — must not be used.
     const [build] = buildSwapSettlements({
       entries: [entry],
-      tokenNetworks: { [CHAIN]: CONTRACT },
+      swapVerifyingContracts: { [CHAIN]: CONTRACT },
     });
     expect(build!.error).toBeUndefined();
     const { to } = decodeEvmSettlementTx(build!.bundle!);
@@ -190,7 +202,7 @@ describe('buildSwapSettlements (#352)', () => {
     const entry = await evmEntry({ claimBytes: hexToBytes(sig) });
     const [build] = buildSwapSettlements({
       entries: [entry],
-      tokenNetworks: { [CHAIN]: mixedCase },
+      swapVerifyingContracts: { [CHAIN]: mixedCase },
     });
     expect(build!.error).toBeUndefined();
     const { to } = decodeEvmSettlementTx(build!.bundle!);

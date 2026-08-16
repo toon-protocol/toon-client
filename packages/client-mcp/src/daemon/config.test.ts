@@ -163,9 +163,9 @@ describe('daemon config', () => {
     expect(cfg.destination).toBe('g.proxy');
     // No BTP socket is configured on the proxy path.
     expect(cfg.toonClientConfig.btpUrl).toBeUndefined();
-    expect(
-      (cfg.toonClientConfig as Record<string, unknown>)['proxyUrl']
-    ).toBe('https://proxy.devnet.toonprotocol.dev');
+    expect((cfg.toonClientConfig as Record<string, unknown>)['proxyUrl']).toBe(
+      'https://proxy.devnet.toonprotocol.dev'
+    );
     // connectorUrl is NOT injected as a dummy when proxyUrl is present.
     expect(cfg.toonClientConfig.connectorUrl).toBeUndefined();
   });
@@ -197,12 +197,8 @@ describe('daemon config', () => {
     expect(a.settlementAddress).toBe(
       '0x51d35a8a80377d0e70c226dc7abb97e200c68f04'
     );
-    expect(a.tokenNetwork).toBe(
-      '0xCafac3dD18aC6c6e92c921884f9E4176737C052c'
-    );
-    expect(a.tokenAddress).toBe(
-      '0x5FbDB2315678afecb367f032d93F642f64180aa3'
-    );
+    expect(a.tokenNetwork).toBe('0xCafac3dD18aC6c6e92c921884f9E4176737C052c');
+    expect(a.tokenAddress).toBe('0x5FbDB2315678afecb367f032d93F642f64180aa3');
   });
 
   it('proxy mode WITHOUT a settlement address defers to discovery (no apex)', () => {
@@ -252,9 +248,9 @@ describe('daemon config', () => {
     expect(cfg.proxyUrl).toBe('https://env-proxy/ilp');
     expect(cfg.faucetUrl).toBe('https://env-faucet');
     expect(cfg.destination).toBe('g.proxy.relay');
-    expect(
-      (cfg.toonClientConfig as Record<string, unknown>)['faucetUrl']
-    ).toBe('https://env-faucet');
+    expect((cfg.toonClientConfig as Record<string, unknown>)['faucetUrl']).toBe(
+      'https://env-faucet'
+    );
   });
 
   it('faucetTimeoutMs is unset by default (faucet picks a chain-aware default)', () => {
@@ -263,11 +259,17 @@ describe('daemon config', () => {
   });
 
   it('faucetTimeoutMs comes from the file and is overridden by the env var', () => {
-    const fromFile = resolveConfig({ mnemonic: MNEMONIC, faucetTimeoutMs: 90000 });
+    const fromFile = resolveConfig({
+      mnemonic: MNEMONIC,
+      faucetTimeoutMs: 90000,
+    });
     expect(fromFile.faucetTimeoutMs).toBe(90000);
 
     process.env['TOON_CLIENT_FAUCET_TIMEOUT_MS'] = '150000';
-    const fromEnv = resolveConfig({ mnemonic: MNEMONIC, faucetTimeoutMs: 90000 });
+    const fromEnv = resolveConfig({
+      mnemonic: MNEMONIC,
+      faucetTimeoutMs: 90000,
+    });
     expect(fromEnv.faucetTimeoutMs).toBe(150000);
   });
 
@@ -544,5 +546,26 @@ describe('daemon config', () => {
     });
     expect(cfg.toonClientConfig.solanaChannel?.programId).toBe('Prog');
     expect(cfg.toonClientConfig.minaChannel?.zkAppAddress).toBe('B62zk');
+  });
+
+  it('threads swapVerifyingContracts through as a SEPARATE map from tokenNetworks (#583)', () => {
+    const LEG_A = '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478';
+    const LEG_B = '0xd329aBf86ceae23F904641F992ca90e3721FeF83';
+    const cfg = resolveConfig({
+      mnemonic: MNEMONIC,
+      tokenNetworks: { 'evm:84532': LEG_A },
+      swapVerifyingContracts: { 'evm:84532': LEG_B },
+    });
+    // The operator override for LEG-B claim verification, distinct end to end:
+    // conflating the two is what made a valid live claim look key-mismatched.
+    expect(cfg.toonClientConfig.swapVerifyingContracts).toEqual({
+      'evm:84532': LEG_B,
+    });
+    expect(cfg.toonClientConfig.tokenNetworks).toEqual({ 'evm:84532': LEG_A });
+  });
+
+  it('leaves swapVerifyingContracts unset when the config file omits it (the normal case: the maker announces it)', () => {
+    const cfg = resolveConfig({ mnemonic: MNEMONIC });
+    expect(cfg.toonClientConfig.swapVerifyingContracts).toBeUndefined();
   });
 });

@@ -119,7 +119,7 @@ function retained(packetIndex: number): RetainedPreimage {
 const base = {
   expectedChain: EVM_CHAIN,
   chainRecipient: RECIPIENT,
-  tokenNetworks: EVM_TOKEN_NETWORKS,
+  swapVerifyingContracts: EVM_TOKEN_NETWORKS,
 };
 const reveal: RevealFn = () => ({ decision: 'revealed' });
 const withhold: RevealFn = () => ({

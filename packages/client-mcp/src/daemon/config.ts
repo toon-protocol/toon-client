@@ -21,10 +21,7 @@ import {
 } from '@toon-protocol/core';
 import { ARWEAVE_GATEWAYS } from '@toon-protocol/arweave';
 import type { ToonClientConfig } from '@toon-protocol/client';
-import type {
-  SettlementChain,
-  SwapControllerParams,
-} from '../control-api.js';
+import type { SettlementChain, SwapControllerParams } from '../control-api.js';
 
 /** Apex/relay settlement parameters injected as a peer negotiation. */
 export interface ApexNegotiationConfig {
@@ -179,6 +176,19 @@ export interface DaemonConfigFile {
   settlementAddresses?: Record<string, string>;
   preferredTokens?: Record<string, string>;
   tokenNetworks?: Record<string, string>;
+  /**
+   * OPERATOR OVERRIDE for leg-B swap-claim verification (toon-client#583):
+   * chain key → the maker's deployed `RollingSwapChannel` address (the EIP-712
+   * `verifyingContract` a received balance-proof claim is checked under).
+   *
+   * Normally unset — the maker's own kind:10032 announce carries
+   * `swapVerifyingContracts` (swap#134) and that is used. Set this to PIN a
+   * contract regardless of what a counterparty announces. Distinct from
+   * `tokenNetworks`, which is leg A (the `TokenNetwork` this daemon opens its
+   * own payment channel against); the two are different contracts and one
+   * must never stand in for the other.
+   */
+  swapVerifyingContracts?: Record<string, string>;
   chainRpcUrls?: Record<string, string>;
   /** Solana on-chain payment-channel params (required when `chain` is solana). */
   solanaChannel?: ToonClientConfig['solanaChannel'];
@@ -532,10 +542,10 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
     file.storeBtpUrl ??
     genesisStoreBtpEndpoint;
   const feePerEvent = BigInt(file.feePerEvent ?? '1');
-  const arweaveGateways =
-    parseCsvEnv(process.env['TOON_CLIENT_ARWEAVE_GATEWAYS']) ??
-    file.arweaveGateways ??
-    [...ARWEAVE_GATEWAYS];
+  const arweaveGateways = parseCsvEnv(
+    process.env['TOON_CLIENT_ARWEAVE_GATEWAYS']
+  ) ??
+    file.arweaveGateways ?? [...ARWEAVE_GATEWAYS];
   const uploadRoot =
     process.env['TOON_CLIENT_UPLOAD_ROOT'] ?? file.uploadAllowedRoot;
   const uploadAllowedRoot = uploadRoot ? resolve(uploadRoot) : undefined;
@@ -618,6 +628,9 @@ export function resolveConfig(file: DaemonConfigFile): ResolvedDaemonConfig {
       : {}),
     ...(file.preferredTokens ? { preferredTokens: file.preferredTokens } : {}),
     ...(file.tokenNetworks ? { tokenNetworks: file.tokenNetworks } : {}),
+    ...(file.swapVerifyingContracts
+      ? { swapVerifyingContracts: file.swapVerifyingContracts }
+      : {}),
     ...(file.chainRpcUrls ? { chainRpcUrls: file.chainRpcUrls } : {}),
     ...(file.solanaChannel ? { solanaChannel: file.solanaChannel } : {}),
     ...(file.minaChannel ? { minaChannel: file.minaChannel } : {}),

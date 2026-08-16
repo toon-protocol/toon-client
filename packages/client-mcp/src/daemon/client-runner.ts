@@ -179,11 +179,22 @@ export interface ToonClientLike {
   /**
    * The `IlpPeerInfo` a discovered kind:10032 announce author advertised, by
    * Nostr pubkey (issue #572) — used to source a swap MAKER's own
-   * `tokenNetworks`/`settlementAddresses` for receive-side claim
-   * verification instead of trusting only the local daemon config. Optional
-   * so lightweight fakes need not implement it — the real `ToonClient` does.
+   * `settlementAddresses`/`tokenNetworks` (leg A) instead of trusting only
+   * the local daemon config. Optional so lightweight fakes need not
+   * implement it — the real `ToonClient` does.
    */
   getDiscoveredPeerInfo?(pubkey: string): IlpPeerInfo | undefined;
+  /**
+   * The **leg-B** `swapVerifyingContracts` map a swap MAKER announced
+   * (toon-client#583) — chain key → its deployed `RollingSwapChannel`, the
+   * EIP-712 `verifyingContract` a received balance-proof claim verifies
+   * under. Read off the announce's raw content, since core's
+   * `parseIlpPeerInfo` drops the field, so it is NOT reachable through
+   * {@link getDiscoveredPeerInfo}. Optional for the same reason.
+   */
+  getSwapVerifyingContracts?(
+    pubkey: string
+  ): Record<string, string> | undefined;
   publishEvent(
     event: NostrEvent,
     options?: {
@@ -1857,34 +1868,44 @@ export class ClientRunner {
   }
 
   /**
-   * The chain-key → verifying-contract map the v2 EIP-712 receive-side verify
-   * reconstructs an EVM claim's `(chainId, verifyingContract)` domain from
-   * (#365, corrected by issue #572).
+   * The chain-key → **leg-B** verifying-contract map the v2 EIP-712
+   * receive-side verify reconstructs an EVM claim's `(chainId,
+   * verifyingContract)` domain from (#365, corrected by #572, fixed by #583).
    *
-   * Base: the swap MAKER's own kind:10032 announce
-   * (`getDiscoveredPeerInfo(swapPubkey)`) — advertised precisely so a client
-   * can reconstruct that domain (toon-meta#394 T2) — read best-effort, so a
-   * maker the daemon has not (yet) discovered simply contributes nothing,
-   * same as an unstarted/fake client without the optional method. Override:
-   * the daemon's configured `tokenNetworks`, applied ON TOP so an operator
-   * can still force a specific mapping.
+   * Base: the swap MAKER's own kind:10032 `swapVerifyingContracts` key
+   * (`getSwapVerifyingContracts(swapPubkey)`, swap#134) — the maker's deployed
+   * `RollingSwapChannel` per chain, advertised precisely so a client can
+   * reconstruct that domain (toon-meta#394 T2) — read best-effort, so a maker
+   * the daemon has not (yet) discovered simply contributes nothing, same as an
+   * unstarted/fake client without the optional method. Override: the daemon's
+   * configured `swapVerifyingContracts`, applied ON TOP so an operator can
+   * still pin a specific mapping and a counterparty is never the sole
+   * authority on what verifies its own signature (#574).
    *
-   * Config is never the SOLE source (#572: that broke on live devnet — a
-   * config naming the relay's own TokenNetwork rejects every maker claim
-   * `SIGNER_MISMATCH`, and one map cannot hold two makers' deployments).
+   * Config is never the SOLE source (#572: one map cannot hold two makers'
+   * deployments, and a daemon usually has none configured at all).
    *
-   * Returns `undefined` (letting `ingestAndReveal` fall back to its own
-   * default) only when NEITHER source has anything — merging `{}` with `{}`
-   * would otherwise thread an empty object through where "unset" is expected.
+   * What this deliberately does NOT read is `tokenNetworks` — from either
+   * source. That map is **leg A**: the `TokenNetwork` this daemon opens its
+   * own payment channel against to PAY the maker. Using it as the leg-B
+   * fallback is #583: on live devnet it made a genuine, correctly-signed maker
+   * claim recover an unrelated address and report `SIGNER_MISMATCH`, which
+   * reads as a key problem and is not one. A chain with no leg-B contract now
+   * fails `MISSING_SWAP_VERIFYING_CONTRACT` instead, which says what is
+   * missing.
+   *
+   * Returns `undefined` when NEITHER source has anything — merging `{}` with
+   * `{}` would otherwise thread an empty object through where "unset" is
+   * expected.
    */
-  private swapVerificationTokenNetworks(
+  private swapVerifyingContractsFor(
     client: ApexConnection['client'],
     swapPubkey: string
   ): Record<string, string> | undefined {
     const announced = safe(() =>
-      client.getDiscoveredPeerInfo?.(swapPubkey)
-    )?.tokenNetworks;
-    const configured = this.config.toonClientConfig.tokenNetworks;
+      client.getSwapVerifyingContracts?.(swapPubkey)
+    );
+    const configured = this.config.toonClientConfig.swapVerifyingContracts;
     if (!announced && !configured) return undefined;
     return { ...announced, ...configured };
   }
@@ -2092,9 +2113,9 @@ export class ClientRunner {
     const minaSignerClient = expectedChain.startsWith('mina')
       ? await loadMinaSignerClient()
       : undefined;
-    // The verifying-contract map the EVM claims' v2 EIP-712 domain is
-    // rebuilt from: this maker's own announce, config as override (#572).
-    const verifyTokenNetworks = this.swapVerificationTokenNetworks(
+    // The leg-B verifying-contract map the EVM claims' v2 EIP-712 domain is
+    // rebuilt from: this maker's own announce, config as override (#572/#583).
+    const verifyingContracts = this.swapVerifyingContractsFor(
       apex.client,
       req.swapPubkey
     );
@@ -2106,7 +2127,9 @@ export class ClientRunner {
       ...(req.swapSignerAddress
         ? { expectedSignerAddress: req.swapSignerAddress }
         : {}),
-      ...(verifyTokenNetworks ? { tokenNetworks: verifyTokenNetworks } : {}),
+      ...(verifyingContracts
+        ? { swapVerifyingContracts: verifyingContracts }
+        : {}),
       store: this.receivedClaimStore,
       ...(minaSignerClient ? { minaSignerClient } : {}),
       reveal,
@@ -2315,6 +2338,17 @@ export class ClientRunner {
       ? await loadMinaSignerClient()
       : undefined;
     const preimages = new InMemoryPreimageRetentionStore();
+    // The SAME leg-B source as the legacy path (#583): this maker's own
+    // announced `swapVerifyingContracts`, with local config as an operator
+    // override. Before #583 this path read the daemon's `tokenNetworks` — leg
+    // A, the contract the client PAYS the maker through — so a rolling claim
+    // that was correctly signed and accepted on the wire still recovered an
+    // unrelated address and was rejected `SIGNER_MISMATCH`, delivering zero
+    // verified value.
+    const verifyingContracts = this.swapVerifyingContractsFor(
+      apex.client,
+      req.swapPubkey
+    );
 
     const session = this.rollingSessions.register(streamNonce, {
       pair: req.pair,
@@ -2323,8 +2357,8 @@ export class ClientRunner {
       ...(req.swapSignerAddress
         ? { expectedSignerAddress: req.swapSignerAddress }
         : {}),
-      ...(this.config.toonClientConfig.tokenNetworks
-        ? { tokenNetworks: this.config.toonClientConfig.tokenNetworks }
+      ...(verifyingContracts
+        ? { swapVerifyingContracts: verifyingContracts }
         : {}),
       store: this.receivedClaimStore,
       ...(minaSignerClient ? { minaSignerClient } : {}),
@@ -2550,16 +2584,27 @@ export class ClientRunner {
       : undefined;
     const builds = buildSwapSettlements({
       entries: pending,
+      // Solana `programId` only — EVM settles on the leg-B contract below.
       ...(this.config.toonClientConfig.tokenNetworks
         ? { tokenNetworks: this.config.toonClientConfig.tokenNetworks }
+        : {}),
+      // EVM fallback for watermarks persisted before #572 pinned a contract.
+      // Entries written since carry their own `verifyingContract` and settle
+      // against THAT; this map is never the leg-A `tokenNetworks` (#583).
+      ...(this.config.toonClientConfig.swapVerifyingContracts
+        ? {
+            swapVerifyingContracts:
+              this.config.toonClientConfig.swapVerifyingContracts,
+          }
         : {}),
       // Re-verify the stored watermark's signature at settle time
       // (defense-in-depth over the store file). The published v2 sdk
       // (`@toon-protocol/sdk@^3`) verifies EVM claims against the SAME v2
       // EIP-712 domain-separated digest the receive-side used (#365), so a
       // valid v2 signature verifies correctly here — `buildSwapSettlements`
-      // threads `chainId` + `verifyingContract` (from `tokenNetworks`) into the
-      // sdk signer config so the EIP-712 domain is reconstructed.
+      // threads `chainId` + `verifyingContract` (the entry's pinned one, else
+      // `swapVerifyingContracts`) into the sdk signer config so the EIP-712
+      // domain is reconstructed.
       verifySignatures: true,
       ...(minaSignerClient ? { minaSignerClient } : {}),
     });

@@ -281,6 +281,26 @@ export interface ToonClientConfig {
   /** Maps chain identifier to TokenNetwork contract address (EVM only) */
   tokenNetworks?: Record<string, string>;
 
+  /**
+   * Maps chain identifier to a swap maker's `RollingSwapChannel` address —
+   * the EIP-712 `verifyingContract` a received **leg-B** balance-proof claim
+   * is verified under (toon-client#583).
+   *
+   * This is a DIFFERENT contract from {@link tokenNetworks}: `tokenNetworks`
+   * is **leg A**, the `TokenNetwork` the client opens its own payment channel
+   * against to PAY the maker; this is **leg B**, the contract the maker signs
+   * the claims it pays the client WITH. They have different ABIs and, on a
+   * live deployment, different addresses — verifying a leg-B claim under the
+   * leg-A address recovers a garbage signer, which reads as a key problem and
+   * is not one (the bug this key exists to make impossible).
+   *
+   * Normally sourced from the maker's own kind:10032 announce
+   * (`swapVerifyingContracts`, swap#134). Setting it here is an OPERATOR
+   * OVERRIDE that wins over the announce, so a counterparty can never tell
+   * this client what to verify its own signature against (toon-client#574).
+   */
+  swapVerifyingContracts?: Record<string, string>;
+
   // ============================================================================
   // BTP TRANSPORT (optional)
   // ============================================================================

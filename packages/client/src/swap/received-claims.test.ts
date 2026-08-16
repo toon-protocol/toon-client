@@ -36,8 +36,8 @@ const EVM_CHAIN = 'evm:anvil:31337';
 const EVM_CHAIN_ID = 31337;
 /** The deployed RollingSwapChannel / EIP-712 `verifyingContract`. */
 const EVM_CONTRACT = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
-/** tokenNetworks map the receive path needs to reconstruct the v2 domain. */
-const EVM_TOKEN_NETWORKS = { [EVM_CHAIN]: EVM_CONTRACT };
+/** Leg-B swapVerifyingContracts map the receive path needs for the v2 domain. */
+const EVM_VERIFYING_CONTRACTS = { [EVM_CHAIN]: EVM_CONTRACT };
 const EVM_PAIR = {
   from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
   to: { assetCode: 'USDC', assetScale: 6, chain: EVM_CHAIN },
@@ -130,7 +130,7 @@ describe('ingestReceivedClaims (#352)', () => {
   const base = {
     expectedChain: EVM_CHAIN,
     chainRecipient: RECIPIENT,
-    tokenNetworks: EVM_TOKEN_NETWORKS,
+    swapVerifyingContracts: EVM_VERIFYING_CONTRACTS,
   };
 
   beforeEach(() => {
@@ -159,7 +159,7 @@ describe('ingestReceivedClaims (#352)', () => {
     expect(entry.pair).toEqual(EVM_PAIR);
     // #572: the verifyingContract the v2 domain was reconstructed against is
     // pinned onto the entry, so settlement re-verification doesn't depend on
-    // whatever `tokenNetworks` config happens to hold later.
+    // whatever `swapVerifyingContracts` config happens to hold later.
     expect(entry.verifyingContract).toBe(EVM_CONTRACT);
   });
 
@@ -315,7 +315,7 @@ describe('ingestReceivedClaims (#352)', () => {
       ],
       expectedChain: EVM_CHAIN,
       chainRecipient: RECIPIENT.toUpperCase().replace('0X', '0x'),
-      tokenNetworks: EVM_TOKEN_NETWORKS,
+      swapVerifyingContracts: EVM_VERIFYING_CONTRACTS,
       store,
     });
     expect(res.verified).toHaveLength(1);
@@ -374,7 +374,7 @@ describe('ingestReceivedClaims (#352)', () => {
     expect(store.list()).toHaveLength(0);
   });
 
-  it('rejects an EVM claim when the v2 domain config is missing (MISSING_CHAIN_CONFIG, fail-closed)', async () => {
+  it('[#583] rejects an EVM claim with NO known leg-B verifying contract as MISSING_SWAP_VERIFYING_CONTRACT — never SIGNER_MISMATCH', async () => {
     const res = ingestReceivedClaims({
       claims: [
         await evmClaim({
@@ -385,12 +385,61 @@ describe('ingestReceivedClaims (#352)', () => {
       ],
       expectedChain: EVM_CHAIN,
       chainRecipient: RECIPIENT,
-      // no tokenNetworks → cannot reconstruct the EIP-712 domain
+      // no swapVerifyingContracts → cannot reconstruct the EIP-712 domain
+      store,
+    });
+    // The distinct code is the point: the pre-#583 code fell back to the
+    // leg-A `tokenNetworks` map and reported `SIGNER_MISMATCH`, which reads
+    // as "wrong key" and sent the last reader hunting for an hour.
+    expect(res.rejected[0]!.code).toBe('MISSING_SWAP_VERIFYING_CONTRACT');
+    expect(res.rejected[0]!.code).not.toBe('SIGNER_MISMATCH');
+    // The message must name what is missing AND warn off the leg-A map.
+    expect(res.rejected[0]!.message).toContain('swapVerifyingContracts');
+    expect(res.rejected[0]!.message).toContain('RollingSwapChannel');
+    expect(res.rejected[0]!.message).toContain('tokenNetworks');
+    expect(res.verified).toHaveLength(0);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it('[#583] a chain key with no numeric chain id is MISSING_CHAIN_CONFIG (distinct from the missing contract)', async () => {
+    const badChain = 'evm:nochainid';
+    const claim = await evmClaim({
+      nonce: '1',
+      cumulativeAmount: '999',
+      targetAmount: 999n,
+    });
+    claim.pair = { ...EVM_PAIR, to: { ...EVM_PAIR.to, chain: badChain } };
+    const res = ingestReceivedClaims({
+      claims: [claim],
+      expectedChain: badChain,
+      chainRecipient: RECIPIENT,
+      swapVerifyingContracts: { [badChain]: EVM_CONTRACT },
       store,
     });
     expect(res.rejected[0]!.code).toBe('MISSING_CHAIN_CONFIG');
-    expect(res.verified).toHaveLength(0);
-    expect(store.list()).toHaveLength(0);
+  });
+
+  it('[#583] the leg-A tokenNetworks map is NOT a fallback: passing it changes nothing', async () => {
+    // The live-devnet shape that broke: the daemon config holds ONLY the
+    // leg-A TokenNetwork, and the maker's leg-B RollingSwapChannel is a
+    // different contract. `ingestReceivedClaims` has no `tokenNetworks`
+    // parameter at all any more, so the leg-A address is unreachable from
+    // here by construction — this pins that the type has no such door.
+    const params = {
+      claims: [
+        await evmClaim({
+          nonce: '1',
+          cumulativeAmount: '999',
+          targetAmount: 999n,
+        }),
+      ],
+      expectedChain: EVM_CHAIN,
+      chainRecipient: RECIPIENT,
+      store,
+    };
+    expect('tokenNetworks' in params).toBe(false);
+    const res = ingestReceivedClaims(params);
+    expect(res.rejected[0]!.code).toBe('MISSING_SWAP_VERIFYING_CONTRACT');
   });
 
   it('rejects an EVM claim signed for a DIFFERENT contract (cross-deployment replay, finding #1)', async () => {
@@ -406,7 +455,7 @@ describe('ingestReceivedClaims (#352)', () => {
       ],
       expectedChain: EVM_CHAIN,
       chainRecipient: RECIPIENT,
-      tokenNetworks: {
+      swapVerifyingContracts: {
         [EVM_CHAIN]: '0x0000000000000000000000000000000000000009',
       },
       store,
@@ -608,5 +657,156 @@ describe('ingestReceivedClaims (#352)', () => {
     expect(after.nonce).toBe(2n);
     expect(after.settledNonce).toBe(1n);
     expect(after.settleTxHash).toBe('0xtx');
+  });
+});
+
+// ── The live devnet claim that motivated #583 ────────────────────────────────
+//
+// A REAL leg-B balance proof, signed by the devnet maker `g.toon.swap.maker`
+// and captured off a swap that succeeded on the wire on 2026-08-16 (1 packet
+// accepted, state "completed", 1000 → 1000 at rate 1) but delivered ZERO
+// verified value because the client verified it under the wrong contract.
+//
+// The two addresses below are the whole bug, and both were confirmed by
+// recovering this exact signature twice:
+//   verifyingContract = LEG_A (TokenNetwork)      → 0x977485ff59e2f556…e05
+//   verifyingContract = LEG_B (RollingSwapChannel) → 0x5f68f3a1ab1eb594…005  ✓
+// The first is the garbage address the shipped client reported as
+// `SIGNER_MISMATCH: recovered 0x977485ff…, expected 0x5f68f3a1…`.
+const LIVE = {
+  chain: 'evm:84532',
+  /** LEG B — the maker's RollingSwapChannel; the EIP-712 verifyingContract. */
+  rollingSwapChannel: '0xd329aBf86ceae23F904641F992ca90e3721FeF83',
+  /** LEG A — the TokenNetwork the client pays the maker THROUGH. Never leg B. */
+  tokenNetwork: '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478',
+  channelId:
+    '0x0124a370557b0c2d64b2acd05769e5300abc19aefb286bfba9aede2f263100b1',
+  nonce: '6',
+  cumulativeAmount: '5001000',
+  recipient: '0xd7d0d2f8269452c95a70a597d596899d3f01eeb0',
+  swapSignerAddress: '0x5f68f3a1ab1eb59417dbe11b8d8c9db339a04005',
+  claimBase64:
+    'UPLkiUXZKqCZFxsg2NzGJIVAj+QFoI+c6FadFzhnAUVW1aNdOgXxm1cqzvC+mMiLVuN1ID/uCxYTVo51TMTJDxw=',
+  targetAmount: 1000n,
+  /** The address the pre-#583 client recovered under the leg-A domain. */
+  wrongRecoveredUnderLegA: '0x977485ff59e2f55609f9c6e1275764731e045e05',
+} as const;
+
+const LIVE_PAIR = {
+  from: { assetCode: 'USDC', assetScale: 6, chain: LIVE.chain },
+  to: { assetCode: 'USDC', assetScale: 6, chain: LIVE.chain },
+  rate: '1.0',
+};
+
+function liveClaim(): AccumulatedClaim {
+  return {
+    packetIndex: 0,
+    sourceAmount: 1000n,
+    targetAmount: LIVE.targetAmount,
+    claimBytes: new Uint8Array(Buffer.from(LIVE.claimBase64, 'base64')),
+    swapEphemeralPubkey: '0'.repeat(64),
+    pair: LIVE_PAIR,
+    receivedAt: 1,
+    channelId: LIVE.channelId,
+    nonce: LIVE.nonce,
+    cumulativeAmount: LIVE.cumulativeAmount,
+    recipient: LIVE.recipient,
+    swapSignerAddress: LIVE.swapSignerAddress,
+  };
+}
+
+describe('#583 — the live devnet maker claim (real signed fixture)', () => {
+  let store: InMemoryReceivedClaimStore;
+  const base = {
+    expectedChain: LIVE.chain,
+    chainRecipient: LIVE.recipient,
+    expectedSignerAddress: LIVE.swapSignerAddress,
+  };
+
+  beforeEach(() => {
+    store = new InMemoryReceivedClaimStore();
+  });
+
+  it('[P0] VERIFIES under the maker-announced swapVerifyingContracts entry, and pins that contract onto the watermark', () => {
+    const res = ingestReceivedClaims({
+      claims: [liveClaim()],
+      ...base,
+      swapVerifyingContracts: { [LIVE.chain]: LIVE.rollingSwapChannel },
+      store,
+    });
+
+    expect(res.rejected).toEqual([]);
+    expect(res.verified).toHaveLength(1);
+    expect(res.valueReceived).toBe(5001000n);
+
+    const entry = store.load(LIVE.chain, LIVE.channelId)!;
+    expect(entry.nonce).toBe(6n);
+    expect(entry.cumulativeAmount).toBe(5001000n);
+    expect(entry.swapSignerAddress).toBe(LIVE.swapSignerAddress);
+    expect(entry.verifyingContract).toBe(LIVE.rollingSwapChannel);
+  });
+
+  it('[P0] the SAME claim under the leg-A TokenNetwork recovers the exact garbage address the live swap reported', () => {
+    // Not a hypothetical: this reproduces the shipped failure byte for byte,
+    // and is why the leg-A map may never be the leg-B fallback.
+    const digestSigner = evmClaimDigest(
+      { chainId: 84532, verifyingContract: LIVE.tokenNetwork },
+      {
+        channelId: LIVE.channelId,
+        cumulativeAmount: BigInt(LIVE.cumulativeAmount),
+        nonce: BigInt(LIVE.nonce),
+        recipient: LIVE.recipient,
+      }
+    );
+    const digestReal = evmClaimDigest(
+      { chainId: 84532, verifyingContract: LIVE.rollingSwapChannel },
+      {
+        channelId: LIVE.channelId,
+        cumulativeAmount: BigInt(LIVE.cumulativeAmount),
+        nonce: BigInt(LIVE.nonce),
+        recipient: LIVE.recipient,
+      }
+    );
+    // Different domain ⇒ different digest ⇒ different recovered signer.
+    expect(digestSigner).not.toBe(digestReal);
+
+    const res = ingestReceivedClaims({
+      claims: [liveClaim()],
+      ...base,
+      swapVerifyingContracts: { [LIVE.chain]: LIVE.tokenNetwork },
+      store,
+    });
+    expect(res.verified).toHaveLength(0);
+    expect(res.rejected[0]!.code).toBe('SIGNER_MISMATCH');
+    expect(res.rejected[0]!.message).toContain(LIVE.wrongRecoveredUnderLegA);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it('[P1] pin-on-first-use: once the channel verified under one contract, a later claim may not rotate it', () => {
+    ingestReceivedClaims({
+      claims: [liveClaim()],
+      ...base,
+      swapVerifyingContracts: { [LIVE.chain]: LIVE.rollingSwapChannel },
+      store,
+    });
+    expect(store.load(LIVE.chain, LIVE.channelId)!.verifyingContract).toBe(
+      LIVE.rollingSwapChannel
+    );
+
+    // The maker re-announces a DIFFERENT RollingSwapChannel mid-stream.
+    const next = liveClaim();
+    next.nonce = '7';
+    next.cumulativeAmount = '5002000';
+    const res = ingestReceivedClaims({
+      claims: [next],
+      ...base,
+      swapVerifyingContracts: { [LIVE.chain]: '0x' + '77'.repeat(20) },
+      store,
+    });
+    expect(res.verified).toHaveLength(0);
+    expect(res.rejected[0]!.code).toBe('MISSING_SWAP_VERIFYING_CONTRACT');
+    expect(res.rejected[0]!.message).toContain('may not rotate it mid-stream');
+    // Watermark untouched.
+    expect(store.load(LIVE.chain, LIVE.channelId)!.nonce).toBe(6n);
   });
 });

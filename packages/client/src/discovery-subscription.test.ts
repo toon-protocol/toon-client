@@ -209,3 +209,114 @@ describe('subscribeToDiscovery', () => {
     });
   });
 });
+
+// ── swapVerifyingContracts (toon-client#583) ─────────────────────────────────
+//
+// The maker's LEG-B RollingSwapChannel per chain. `@toon-protocol/core`'s
+// `parseIlpPeerInfo` (still, at core@3.4.0) destructures a fixed field list
+// and drops this one, so it can only be read off the raw announce content —
+// exactly as `requiredTransport` is.
+
+const MAKER = 'cd'.repeat(32);
+const LEG_B = { 'evm:84532': '0xd329aBf86ceae23F904641F992ca90e3721FeF83' };
+
+function makerAnnounce(
+  content: Record<string, unknown>,
+  createdAt = 1000
+): NostrEvent {
+  return {
+    id: 'maker-' + createdAt,
+    pubkey: MAKER,
+    created_at: createdAt,
+    kind: 10032,
+    tags: [],
+    content: JSON.stringify({
+      ilpAddress: 'g.toon.swap.maker',
+      assetCode: 'USD',
+      assetScale: 6,
+      ...content,
+    }),
+    sig: 'sig',
+  };
+}
+
+async function feed(events: NostrEvent[]) {
+  const tracker = { processEvent: vi.fn() };
+  const sub = await subscribeToDiscovery(['wss://relay.example'], tracker);
+  // The LAST call — a test may open more than one subscription.
+  const params = subscribeMany.mock.calls.at(-1)?.[2] as {
+    onevent: (event: NostrEvent) => void;
+  };
+  for (const event of events) params.onevent(event);
+  return sub;
+}
+
+describe('subscribeToDiscovery — swapVerifyingContracts (#583)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    subscribeMany.mockReturnValue({ close: vi.fn() });
+  });
+
+  it("exposes the maker's announced leg-B map, which parseIlpPeerInfo drops", async () => {
+    const sub = await feed([
+      makerAnnounce({
+        // Both keys present, as the live maker announces them (swap#134).
+        tokenNetworks: {
+          'evm:84532': '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478',
+        },
+        swapVerifyingContracts: LEG_B,
+      }),
+    ]);
+    expect(sub.swapVerifyingContractsFor(MAKER)).toEqual(LEG_B);
+    // Leg A is NOT what this returns — that substitution is the whole bug.
+    expect(sub.swapVerifyingContractsFor(MAKER)!['evm:84532']).not.toBe(
+      '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478'
+    );
+  });
+
+  it('is undefined for an announcer that carries no map, and for an unknown pubkey', async () => {
+    const sub = await feed([makerAnnounce({})]);
+    expect(sub.swapVerifyingContractsFor(MAKER)).toBeUndefined();
+    expect(sub.swapVerifyingContractsFor('ff'.repeat(32))).toBeUndefined();
+  });
+
+  it('a FRESH announce that drops the map clears it; a STALE replay changes nothing', async () => {
+    const sub = await feed([
+      makerAnnounce({ swapVerifyingContracts: LEG_B }, 1000),
+      // Stale replay with no map — must NOT clear the live one.
+      makerAnnounce({}, 900),
+    ]);
+    expect(sub.swapVerifyingContractsFor(MAKER)).toEqual(LEG_B);
+
+    const sub2 = await feed([
+      makerAnnounce({ swapVerifyingContracts: LEG_B }, 1000),
+      makerAnnounce({}, 2000),
+    ]);
+    expect(sub2.swapVerifyingContractsFor(MAKER)).toBeUndefined();
+  });
+
+  it('ignores non-string / non-object shapes rather than throwing', async () => {
+    const sub = await feed([
+      makerAnnounce({ swapVerifyingContracts: ['not', 'a', 'map'] }),
+    ]);
+    expect(sub.swapVerifyingContractsFor(MAKER)).toBeUndefined();
+
+    const sub2 = await feed([
+      makerAnnounce({
+        swapVerifyingContracts: { 'evm:84532': 42, 'evm:1': '0xabc' },
+      }),
+    ]);
+    expect(sub2.swapVerifyingContractsFor(MAKER)).toEqual({ 'evm:1': '0xabc' });
+  });
+
+  it('requiredTransport and swapVerifyingContracts advance off the SAME announce', async () => {
+    const sub = await feed([
+      makerAnnounce(
+        { requiredTransport: 'btp', swapVerifyingContracts: LEG_B },
+        1000
+      ),
+    ]);
+    expect(sub.requiredTransportFor(MAKER)).toBe('btp');
+    expect(sub.swapVerifyingContractsFor(MAKER)).toEqual(LEG_B);
+  });
+});
