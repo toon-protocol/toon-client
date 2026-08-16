@@ -50,7 +50,7 @@ import {
   hexToBytes,
   type IlpPeerInfo,
 } from '@toon-protocol/core';
-import { loadTargets } from './targets-store.js';
+import { loadTargets, saveApexTarget } from './targets-store.js';
 
 // ── Received-claim fixtures (#352 / v2 #365): REAL secp256k1-signed EVM balance
 //    proofs over the **v2 EIP-712 domain-separated** claim digest (connector#324
@@ -3484,5 +3484,231 @@ describe('ClientRunner — async faucet drip jobs', () => {
     expect(() => runner.fundWallet({ chain: 'mina' })).toThrow(
       InvalidPayloadError
     );
+  });
+});
+
+/**
+ * A REPLAYED apex target's negotiation is a CACHE, not a fact — re-validate it
+ * against the live announce before anything trusts it (toon-client#581).
+ *
+ * `replayPersistedTargets` → `instantiateApex` used to take
+ * `~/.toon-client/targets.json`'s negotiation verbatim, and
+ * `discoverApexNegotiation` only ran when there was no negotiation at all. So
+ * the "currently-announced" address the counterparty check #578/#580 added
+ * compares a channel record against could itself be the stale cache: recorded
+ * `0xf29fd62c…` vs injected `0xf29fd62c…` read as `match`, and the dead channel
+ * was resumed exactly as before. `0xf29fd62c…` is the retired `g.toon` apex,
+ * destroyed 2026-08-14 — the one path where that whole guard was defeated.
+ */
+describe('replayed apex negotiation revalidation (toon-client#581)', () => {
+  /** The retired `g.toon` apex, still sitting in the live targets.json. */
+  const RETIRED = '0xf29fd62c4848b9573c9b90adbf61b664f386d9cf';
+  /** What the node answering that name announces TODAY. */
+  const LIVE = '0x6b6c2dacf7ac1f1273f72bef2e6084f9ee6d3bff';
+  const RETIRED_BTP = 'ws://retired.example/btp';
+  const APEX_ADDRESS = 'g.other.town';
+
+  let dir: string;
+  let targetsPath: string;
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'toon-revalidate-'));
+    targetsPath = join(dir, 'targets.json');
+    prevHome = process.env['TOON_CLIENT_HOME'];
+    process.env['TOON_CLIENT_HOME'] = dir;
+    // `makeConfig` defaults `apexChannelStorePath` under the shared `tmpDir`.
+    tmpDir = dir;
+  });
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env['TOON_CLIENT_HOME'];
+    else process.env['TOON_CLIENT_HOME'] = prevHome;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * A kind:10032 for `APEX_ADDRESS`. `settlementAddress: null` announces the
+   * address away — a node that is up but can no longer settle, the fast
+   * stand-in for "this apex is gone" (a truly absent announce is the same
+   * branch, reached via a 15s discovery timeout).
+   */
+  function announce(settlementAddress: string | null) {
+    return {
+      id: '1'.repeat(64),
+      pubkey: 'e'.repeat(64),
+      created_at: 1,
+      kind: ILP_PEER_INFO_KIND,
+      tags: [],
+      sig: 'f'.repeat(128),
+      content: JSON.stringify({
+        ilpAddress: APEX_ADDRESS,
+        btpEndpoint: RETIRED_BTP,
+        assetCode: 'USD',
+        assetScale: 6,
+        supportedChains: ['evm:base:84532'],
+        settlementAddresses:
+          settlementAddress === null
+            ? {}
+            : { 'evm:base:84532': settlementAddress },
+      }),
+    } as NostrEvent;
+  }
+
+  /** Seed targets.json exactly as a previous session left it. */
+  function seedStaleTarget(): void {
+    saveApexTarget(
+      {
+        btpUrl: RETIRED_BTP,
+        negotiation: {
+          destination: APEX_ADDRESS,
+          peerId: 'town',
+          chain: 'evm',
+          chainKey: 'evm:base:84532',
+          chainId: 84532,
+          settlementAddress: RETIRED,
+        },
+        feePerEvent: '7',
+        discoveredFrom: 'ws://relay.test',
+      },
+      targetsPath
+    );
+  }
+
+  /** Start a runner over the seeded store, with the given announce buffered. */
+  async function replay(announced: NostrEvent | undefined): Promise<{
+    runner: ClientRunner;
+    clients: FakeClient[];
+  }> {
+    const { createRelay, emit } = relayFactory();
+    const clients: FakeClient[] = [];
+    const runner = new ClientRunner({
+      config: makeConfig({
+        relayUrl: 'ws://relay.test',
+        // Revalidation is the PROXY-mode path (BTP mode's legacy bootstrap
+        // does its own discovery).
+        proxyUrl: 'http://proxy.test',
+        apexChannelStorePath: join(dir, 'apex-channels.json'),
+      }),
+      createClient: () => {
+        const c = new FakeClient();
+        clients.push(c);
+        return c;
+      },
+      createRelay,
+      targetsPath,
+    });
+    runner.start();
+    if (announced) {
+      emit('ws://relay.test', `apex-discovery-${APEX_ADDRESS}`, announced);
+    }
+    // Discovery polls the relay buffer every 250ms.
+    await new Promise((r) => setTimeout(r, 600));
+    return { runner, clients };
+  }
+
+  it('injects the ANNOUNCED settlement address, not the persisted one', async () => {
+    seedStaleTarget();
+    const { runner, clients } = await replay(announce(LIVE));
+
+    const apex = runner
+      .getTargets()
+      .apexes.find((a) => a.btpUrl === RETIRED_BTP);
+    expect(apex?.ready).toBe(true);
+
+    // This is the right-hand side of #580's counterparty check. Before this
+    // fix it was the cache itself, so `recorded === injected` always matched.
+    const injected = clients
+      .map((c) => c.peerNegotiations.get('town'))
+      .find((n) => n !== undefined) as { settlementAddress: string };
+    expect(injected.settlementAddress).toBe(LIVE);
+    expect(injected.settlementAddress).not.toBe(RETIRED);
+  });
+
+  it('re-persists the drifted target so the correction happens ONCE', async () => {
+    seedStaleTarget();
+    await replay(announce(LIVE));
+
+    const stored = loadTargets(targetsPath).apexes.find(
+      (a) => a.btpUrl === RETIRED_BTP
+    );
+    expect(stored?.negotiation.settlementAddress).toBe(LIVE);
+    // The rest of the record survives the rewrite.
+    expect(stored?.feePerEvent).toBe('7');
+    expect(stored?.discoveredFrom).toBe('ws://relay.test');
+  });
+
+  it('leaves an AGREEING store untouched', async () => {
+    saveApexTarget(
+      {
+        btpUrl: RETIRED_BTP,
+        negotiation: {
+          destination: APEX_ADDRESS,
+          peerId: 'town',
+          chain: 'evm',
+          chainKey: 'evm:base:84532',
+          chainId: 84532,
+          settlementAddress: LIVE,
+        },
+        feePerEvent: '7',
+      },
+      targetsPath
+    );
+    const before = readFileSync(targetsPath, 'utf-8');
+
+    await replay(announce(LIVE));
+
+    expect(readFileSync(targetsPath, 'utf-8')).toBe(before);
+  });
+
+  it('falls back to the persisted negotiation when the apex no longer announces — and says so', async () => {
+    seedStaleTarget();
+    // An announce with no usable settlement chain fails discovery outright
+    // (the fast stand-in for "this apex is gone").
+    const { runner, clients } = await replay(announce(null));
+
+    const apex = runner
+      .getTargets()
+      .apexes.find((a) => a.btpUrl === RETIRED_BTP);
+    // Still usable — refusing to come up would be worse than a warned-about
+    // cache — but the doubt is SURFACED rather than swallowed.
+    expect(apex?.ready).toBe(true);
+    expect(apex?.lastError).toMatch(/could not be re-validated/i);
+    expect(apex?.lastError).toMatch(/F01/);
+
+    const injected = clients
+      .map((c) => c.peerNegotiations.get('town'))
+      .find((n) => n !== undefined) as { settlementAddress: string };
+    expect(injected.settlementAddress).toBe(RETIRED);
+    // The unverified record is NOT rewritten.
+    expect(
+      loadTargets(targetsPath).apexes[0]?.negotiation.settlementAddress
+    ).toBe(RETIRED);
+  });
+
+  it('does not re-discover a FRESHLY discovered apex (addApex already read the announce)', async () => {
+    const { createRelay, emit } = relayFactory();
+    const runner = new ClientRunner({
+      config: makeConfig({
+        relayUrl: 'ws://relay.test',
+        proxyUrl: 'http://proxy.test',
+        apexChannelStorePath: join(dir, 'apex-channels.json'),
+      }),
+      createClient: () => new FakeClient(),
+      createRelay,
+      targetsPath,
+    });
+    runner.start();
+    emit('ws://relay.test', `apex-discovery-${APEX_ADDRESS}`, announce(LIVE));
+
+    const added = await runner.addApex({
+      ilpAddress: APEX_ADDRESS,
+      relayUrl: 'ws://relay.test',
+    });
+
+    expect(added.ready).toBe(true);
+    expect(
+      runner.getTargets().apexes.find((a) => a.btpUrl === RETIRED_BTP)
+        ?.lastError
+    ).toBeUndefined();
   });
 });

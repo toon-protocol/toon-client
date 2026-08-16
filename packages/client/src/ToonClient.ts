@@ -56,6 +56,10 @@ import {
   type PeerNegotiation,
 } from './channel/ChannelManager.js';
 import { JsonFileChannelStore } from './channel/ChannelStore.js';
+import {
+  isUnknownChannelReject,
+  rejectNamesChannel,
+} from './channel/stale-channel.js';
 import type { OnChainChannelClient } from './channel/OnChainChannelClient.js';
 import {
   readEvmTokenBalance,
@@ -211,6 +215,18 @@ function btpFallbackSignal(
     };
   }
   return undefined;
+}
+
+/**
+ * The peer→channel binding a claim was drawn on, carried back out of claim
+ * resolution so a refused claim can name the record to retire
+ * (toon-client#581). Exactly the three values
+ * {@link ChannelManager.evictBinding} needs to identify a binding.
+ */
+interface ClaimBinding {
+  peerId: string;
+  negotiation: PeerNegotiation;
+  channelId: string;
 }
 
 /** One announce's claim on a destination, as {@link outranks} compares them. */
@@ -994,13 +1010,7 @@ export class ToonClient {
       );
 
       const transport = this.getClaimTransport(destination);
-      const claimMessage = await this.resolveClaimForDestination(
-        destination,
-        BigInt(amount),
-        options?.claim
-      );
-
-      const response = await this.sendClaimBearingPacket(
+      const response = await this.sendPaidPacket(
         destination,
         transport,
         {
@@ -1009,7 +1019,8 @@ export class ToonClient {
           data: toBase64(exchange.data),
           executionCondition: exchange.condition,
         },
-        claimMessage
+        BigInt(amount),
+        options?.claim
       );
 
       // (5) Open the answer with the secret this packet sealed.
@@ -1396,13 +1407,8 @@ export class ToonClient {
       );
     }
     const transport = this.getClaimTransport(params.destination);
-    const claimMessage = await this.resolveClaimForDestination(
-      params.destination,
-      params.amount,
-      params.claim
-    );
 
-    return this.sendClaimBearingPacket(
+    return this.sendPaidPacket(
       params.destination,
       transport,
       {
@@ -1415,7 +1421,8 @@ export class ToonClient {
           : {}),
         ...(params.expiresAt ? { expiresAt: params.expiresAt } : {}),
       },
-      claimMessage as unknown as Record<string, unknown>
+      params.amount,
+      params.claim
     );
   }
 
@@ -1597,11 +1604,22 @@ export class ToonClient {
 
   /**
    * Shared claim-resolution logic used by `publishEvent` and `sendSwapPacket`.
+   *
+   * `out` (optional) receives the BINDING the claim was drawn on — the peer,
+   * the negotiation and the channel — so a caller that gets the claim refused
+   * can name the record to retire (toon-client#581, see
+   * {@link sendPaidPacket}). It is an out-parameter rather than a widened
+   * return type on purpose: every existing caller (and every test that stubs
+   * this method) keeps working unchanged, and a stub that ignores it simply
+   * yields no binding, which disables the recovery rather than breaking it.
+   * Left empty on the explicit-claim path: the caller owns that proof, so
+   * there is no binding of ours behind it.
    */
   private async resolveClaimForDestination(
     destination: string,
     amount: bigint,
-    explicitClaim?: SignedBalanceProof
+    explicitClaim?: SignedBalanceProof,
+    out?: { binding?: ClaimBinding }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- claim message is opaque forwarded type
   ): Promise<any> {
     if (explicitClaim) {
@@ -1627,6 +1645,7 @@ export class ToonClient {
       } catch (error) {
         throw this.withSolanaLegHint(peerId, error);
       }
+      if (out) out.binding = { peerId, negotiation, channelId };
       const proof = await this.channelManager.signBalanceProof(
         channelId,
         amount
@@ -1637,6 +1656,101 @@ export class ToonClient {
     throw new ToonClientError(
       'No claim provided and no channel manager configured',
       'MISSING_CLAIM'
+    );
+  }
+
+  /**
+   * Resolve a claim, send the packet with it, and — when the connector refuses
+   * the claim as naming a channel it has no record of — retire that binding and
+   * retry the SAME packet ONCE against a re-resolved channel (toon-client#581).
+   *
+   * This is where an ILP reject code first reaches the binding layer. The
+   * counterparty check #580 added runs BEFORE a packet exists and can only
+   * catch a record that visibly disagrees with the destination's announce; a
+   * node that keeps its settlement address but loses its channel state answers
+   * every write `F01 - claim rejected: names a channel this connector has no
+   * record of` and, until now, poisoned every subsequent write until the JSON
+   * was edited by hand (observed live on both `rig` and the daemon).
+   *
+   * Bounded deliberately:
+   *   - ONE retry, never a loop. A second `F01` is returned to the caller as
+   *     the failure it is — a repeated eviction could open a channel per write.
+   *   - Only the unknown-channel flavour of `F01` (see
+   *     {@link isUnknownChannelReject}); a nonce-race `F01` names a HEALTHY
+   *     channel and evicting it would strand its collateral.
+   *   - Only when the reject can be attributed to the channel we just used
+   *     ({@link rejectNamesChannel}).
+   *   - Only on the auto-claim path: an explicit caller-supplied claim yields
+   *     no binding, so there is nothing of ours to retire.
+   *   - Only when re-resolution actually moves: a retry onto the SAME channel
+   *     id would just repeat the reject, so the first result is returned.
+   *
+   * Re-resolution goes through the ordinary {@link ChannelManager.ensureChannel}
+   * path — the same one the #580 mismatch recovery uses — which resumes an
+   * existing binding where one survives and otherwise lets the on-chain opener
+   * bind whatever channel this identity already holds with that counterparty.
+   * Nothing here forces a fresh on-chain open.
+   *
+   * The packet itself is re-sent verbatim: it was REJECTED, so nothing was
+   * fulfilled and no seal, condition or payload needs re-minting — only the
+   * claim rides on the new channel.
+   */
+  private async sendPaidPacket(
+    destination: string,
+    transport: ClaimSendingTransport,
+    params: IlpSendParams,
+    amount: bigint,
+    explicitClaim?: SignedBalanceProof
+  ): Promise<IlpSendResult> {
+    const first: { binding?: ClaimBinding } = {};
+    const claim = await this.resolveClaimForDestination(
+      destination,
+      amount,
+      explicitClaim,
+      first
+    );
+    const result = await this.sendClaimBearingPacket(
+      destination,
+      transport,
+      params,
+      claim
+    );
+
+    const stale = first.binding;
+    if (!stale || !this.channelManager) return result;
+    if (!isUnknownChannelReject(result)) return result;
+    if (!rejectNamesChannel(result.message, stale.channelId)) return result;
+    if (
+      !this.channelManager.evictBinding(
+        stale.peerId,
+        stale.negotiation,
+        stale.channelId
+      )
+    ) {
+      return result;
+    }
+
+    console.warn(
+      `[ToonClient] the connector terminating "${destination}" refused a claim ` +
+        `drawn on channel ${stale.channelId} (${result.code} - ${result.message}). ` +
+        'That channel is not one it holds a record of, so the binding for peer ' +
+        `"${stale.peerId}" is retired (superseded, so any on-chain deposit stays ` +
+        'reclaimable) and the write retried once against a re-resolved channel.'
+    );
+
+    const retryBinding: { binding?: ClaimBinding } = {};
+    const retryClaim = await this.resolveClaimForDestination(
+      destination,
+      amount,
+      explicitClaim,
+      retryBinding
+    );
+    if (retryBinding.binding?.channelId === stale.channelId) return result;
+    return this.sendClaimBearingPacket(
+      destination,
+      transport,
+      params,
+      retryClaim
     );
   }
 

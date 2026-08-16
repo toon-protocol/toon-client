@@ -390,6 +390,50 @@ export class ChannelManager {
   }
 
   /**
+   * Retire the binding that produced `channelId` for this peer, because the
+   * connector answered a claim drawn on it with `F01 - ... names a channel this
+   * connector has no record of` (toon-client#581).
+   *
+   * This is the GROUND-TRUTH counterpart to {@link resumeChannel}'s counterparty
+   * check. That check is a prediction and only catches a record whose recorded
+   * counterparty visibly disagrees with the announce; a node that keeps its
+   * settlement address but loses its channel state (a wiped connector, a
+   * restored-from-backup box, a redeployed contract) passes the prediction and
+   * fails on the wire. The reject IS the answer, so the binding it names is
+   * retired and the caller re-resolves.
+   *
+   * SUPERSEDED, NOT DELETED — identical to the mismatch path: the channel may
+   * still hold an on-chain deposit, and an archived record keeps it reclaimable.
+   * The channel also stays TRACKED (its watermark is untouched) so close/settle
+   * still work on it; only the peer→channel binding is dropped, so the next
+   * `ensureChannel` re-resolves instead of handing the dead channel back.
+   *
+   * Refuses to act when the binding names a DIFFERENT channel than the one that
+   * failed — a concurrent write may already have re-resolved it, and retiring
+   * the replacement would open a third channel.
+   *
+   * @returns true when a binding was retired; false when there was nothing to
+   *   retire, or the live binding names another channel.
+   */
+  evictBinding(
+    peerId: string,
+    negotiation: PeerNegotiation,
+    channelId: string
+  ): boolean {
+    const key = ChannelManager.bindingKey(peerId, negotiation);
+    const inMemory = this.peerChannels.get(key);
+    if (inMemory !== undefined && inMemory !== channelId) return false;
+    const persisted = this.store?.loadBinding?.(key);
+    if (persisted && persisted.channelId !== channelId) return false;
+    if (inMemory === undefined && !persisted) return false;
+
+    this.peerChannels.delete(key);
+    this.pendingOpens.delete(key);
+    this.store?.supersedeBinding?.(key);
+    return true;
+  }
+
+  /**
    * Persist a freshly opened channel as this peer's binding, and SEED its
    * watermark entry (`nonce 0`) so a later resume can tell "never claimed
    * against" apart from "watermark lost" (which is a hard
