@@ -46,6 +46,8 @@ async function signedAdvanceBytes(opts: {
   cumulativeAmount: string;
   targetAmount: string;
   signer?: typeof SIGNER;
+  /** The maker's quote tape for this fill (`R_i`). Defaults to the pair rate. */
+  rate?: string;
 }): Promise<Uint8Array> {
   const digest = evmClaimDigest(
     { chainId: EVM_CHAIN_ID, verifyingContract: EVM_CONTRACT },
@@ -69,7 +71,7 @@ async function signedAdvanceBytes(opts: {
       cumulativeAmount: opts.cumulativeAmount,
       recipient: RECIPIENT,
       swapSignerAddress: SIGNER.address.toLowerCase(),
-      rate: '0.5',
+      rate: opts.rate ?? '0.5',
       rateTimestamp: 1_700_000_000_000,
       sourceAmount: '2000000',
       targetAmount: opts.targetAmount,
@@ -198,5 +200,113 @@ describe('handleRollingAdvance (#573)', () => {
     await expect(
       handleRollingAdvance(encodeUtf8('not json'), ctx)
     ).rejects.toThrow(/malformed or non-rolling/);
+  });
+});
+
+/**
+ * Session rate floor (toon-client#585, spec §5). Armed once from the RFQ
+ * quote's `R₀` and enforced HERE — at the commit act — so a below-floor fill
+ * is withheld rather than merely reported: leg A never fulfills, so the
+ * packet costs the sender nothing. On the legacy path the same check can only
+ * halt the NEXT packet, because leg A has already resolved.
+ */
+describe('handleRollingAdvance — session rate floor (#585)', () => {
+  let store: InMemoryReceivedClaimStore;
+  let preimages: InMemoryPreimageRetentionStore;
+  let base: RollingAdvanceContext;
+
+  beforeEach(() => {
+    store = new InMemoryReceivedClaimStore();
+    preimages = new InMemoryPreimageRetentionStore();
+    base = {
+      pair: PAIR,
+      expectedChain: EVM_CHAIN,
+      chainRecipient: RECIPIENT,
+      swapVerifyingContracts: { [EVM_CHAIN]: EVM_CONTRACT },
+      store,
+      preimages,
+    };
+    const { preimage, condition } = mintExecutionCondition();
+    preimages.retain({ packetIndex: 0, preimage, condition, retainedAt: 1 });
+  });
+
+  it('a fill AT the floor is revealed', async () => {
+    const bytes = await signedAdvanceBytes({
+      seq: 1,
+      nonce: '1',
+      cumulativeAmount: '1000000',
+      targetAmount: '1000000',
+      rate: '0.5',
+    });
+    const outcome = await handleRollingAdvance(bytes, {
+      ...base,
+      minExchangeRate: '0.5',
+    });
+    expect(outcome.fulfillment).toHaveLength(32);
+    expect(store.load(EVM_CHAIN, CHANNEL)?.nonce).toBe(1n);
+  });
+
+  it('a fill whose QUOTED rate is below the floor is WITHHELD — no preimage, no watermark', async () => {
+    const bytes = await signedAdvanceBytes({
+      seq: 1,
+      nonce: '1',
+      cumulativeAmount: '980000',
+      targetAmount: '980000',
+      rate: '0.49',
+    });
+    await expect(
+      handleRollingAdvance(bytes, { ...base, minExchangeRate: '0.5' })
+    ).rejects.toThrow(RollingAdvanceRejectedError);
+    await expect(
+      handleRollingAdvance(bytes, { ...base, minExchangeRate: '0.5' })
+    ).rejects.toThrow(/quoted rate 0\.49 is below the session floor 0\.5/);
+    // Rolled back: nothing was banked, so leg A stays unfulfilled.
+    expect(store.load(EVM_CHAIN, CHANNEL)).toBeUndefined();
+  });
+
+  it('an HONEST rate that DELIVERS short is withheld too', async () => {
+    // rate 0.5 clears the floor, but ⌊2000000 × 0.5⌋ = 1000000 is owed and
+    // only 999999 arrived — the same loss, so the same decision.
+    const bytes = await signedAdvanceBytes({
+      seq: 1,
+      nonce: '1',
+      cumulativeAmount: '999999',
+      targetAmount: '999999',
+      rate: '0.5',
+    });
+    await expect(
+      handleRollingAdvance(bytes, { ...base, minExchangeRate: '0.5' })
+    ).rejects.toThrow(/delivered 999999 for 2000000 — below the 1000000/);
+    expect(store.load(EVM_CHAIN, CHANNEL)).toBeUndefined();
+  });
+
+  it('no floor armed reproduces the pre-#585 behaviour exactly', async () => {
+    const bytes = await signedAdvanceBytes({
+      seq: 1,
+      nonce: '1',
+      cumulativeAmount: '1',
+      targetAmount: '1',
+      rate: '0.0000001',
+    });
+    const outcome = await handleRollingAdvance(bytes, base);
+    expect(outcome.advance.rate).toBe('0.0000001');
+    expect(store.load(EVM_CHAIN, CHANNEL)?.nonce).toBe(1n);
+  });
+
+  it('compares decimal strings exactly — no float round-trip at the boundary', async () => {
+    // 0.1 + 0.2 !== 0.3 in binary floating point; 0.30000000000000004 vs
+    // 0.3 must compare as ABOVE the floor, not below it.
+    const bytes = await signedAdvanceBytes({
+      seq: 1,
+      nonce: '1',
+      cumulativeAmount: '600001',
+      targetAmount: '600001',
+      rate: '0.30000000000000004',
+    });
+    const outcome = await handleRollingAdvance(bytes, {
+      ...base,
+      minExchangeRate: '0.3',
+    });
+    expect(outcome.fulfillment).toHaveLength(32);
   });
 });

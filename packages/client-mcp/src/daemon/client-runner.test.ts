@@ -31,7 +31,13 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
+import type {
+  NostrEvent,
+  EventTemplate,
+  UnsignedEvent,
+} from 'nostr-tools/pure';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { unwrapSwapPacketFromToon, wrapSwapPacket } from '@toon-protocol/sdk';
 import { privateKeyToAccount } from 'viem/accounts';
 import {
   BalancesUnavailableError,
@@ -227,6 +233,11 @@ class FakeClient implements ToonClientLike {
   }
   getPublicKey(): string {
     return 'npub-hex';
+  }
+  /** The address this client's BTP session is bound under (#585). */
+  ownIlpAddress: string | undefined = 'g.toon.client';
+  getOwnIlpAddress(): string | undefined {
+    return this.ownIlpAddress;
   }
   getEvmAddress(): string | undefined {
     return '0xabc';
@@ -507,6 +518,107 @@ class FakeRollingMakerClient extends FakeClient {
         message: err instanceof Error ? err.message : String(err),
       };
     }
+  }
+}
+
+/**
+ * A maker with **RFQ intake** (swap#135) on top of the rolling fill loop —
+ * the wire counterpart the toon-client#585 sender must actually speak.
+ *
+ * `sendSwapPacket` reproduces the maker's own dispatch order: try to NIP-59
+ * unwrap the `data` (an RFQ and a legacy swap request are indistinguishable
+ * before decryption), and only the inner rumor kind decides. Anything that
+ * does not unwrap is a plain rolling FILL and goes to the base class.
+ *
+ * `rfqCapable = false` models a pre-#135 maker: it never answers a kind:20033,
+ * which is precisely the negative capability signal the sender must fall back
+ * on (spec §10.3 step 2).
+ */
+class FakeRfqMakerClient extends FakeRollingMakerClient {
+  readonly secretKey = generateSecretKey();
+  /** Turn RFQ intake off to model a legacy (pre-swap#135) maker. */
+  rfqCapable = true;
+  /** `R₀` the quote answers with. */
+  quoteRate = '1.0';
+  /** Optional per-packet cap advertised on the quote. */
+  quoteMaxAmount?: string;
+  /** Every RFQ request body this maker parsed off the wire. */
+  readonly rfqRequests: Record<string, unknown>[] = [];
+  /** Sessions registered FROM THE WIRE — nothing here registers out of band. */
+  readonly sessions = new Set<string>();
+
+  get pubkey(): string {
+    return getPublicKey(this.secretKey);
+  }
+
+  override async sendSwapPacket(params: {
+    destination: string;
+    amount: bigint;
+    toonData: Uint8Array;
+    executionCondition?: Uint8Array;
+    expiresAt?: Date;
+  }): Promise<{
+    accepted: boolean;
+    data?: string;
+    code?: string;
+    message?: string;
+  }> {
+    let rumor: UnsignedEvent;
+    let senderPubkey: string;
+    try {
+      const unwrapped = unwrapSwapPacketFromToon({
+        toonData: params.toonData,
+        recipientSecretKey: this.secretKey,
+      });
+      rumor = unwrapped.rumor;
+      senderPubkey = unwrapped.senderPubkey;
+    } catch {
+      // Not a gift wrap → a plain rolling fill packet.
+      return super.sendSwapPacket(params);
+    }
+    if (rumor.kind !== 20033) {
+      return { accepted: false, code: 'F06', message: 'not a swap request' };
+    }
+    if (!this.rfqCapable) {
+      // A pre-#135 maker hands kind:20033 to its LEGACY handler.
+      return {
+        accepted: false,
+        code: 'F06',
+        message: 'Unsupported rumor kind 20033',
+      };
+    }
+    const request = JSON.parse(rumor.content) as Record<string, unknown>;
+    this.rfqRequests.push(request);
+    const streamNonce = String(request['streamNonce']);
+    this.sessions.add(streamNonce);
+    const { giftWrap } = wrapSwapPacket({
+      rumor: {
+        kind: 20034,
+        content: JSON.stringify({
+          proto: 'rolling/1',
+          type: 'quote',
+          streamNonce,
+          rate: this.quoteRate,
+          rateTimestamp: 1_700_000_000_000,
+          expiresAt: 1_700_000_060_000,
+          maxRateAge: 15_000,
+          spreadBps: 40,
+          ...(this.quoteMaxAmount !== undefined
+            ? { maxAmount: this.quoteMaxAmount }
+            : {}),
+          swapSignerAddress: SWAP_SIGNER,
+        }),
+        tags: [],
+        created_at: 1_700_000_000,
+        pubkey: '',
+      } as unknown as UnsignedEvent,
+      senderSecretKey: this.secretKey,
+      recipientPubkey: senderPubkey,
+    });
+    return {
+      accepted: true,
+      data: Buffer.from(JSON.stringify(giftWrap), 'utf8').toString('base64'),
+    };
   }
 }
 
@@ -1611,25 +1723,48 @@ describe('ClientRunner', () => {
     await logged.stop();
   });
 
-  it('swap with senderConditions but no streamNonce throws — a compliant maker F99s that combination (#573)', async () => {
+  it('[#585] senderConditions with no streamNonce no longer throws — the RFQ probe decides the path, and a maker that cannot answer keeps the legacy one', async () => {
     await runner.bootstrap();
     vi.mocked(streamSwap).mockClear();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
     const pair = {
       from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
       to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
       rate: '1.0',
     };
+    // `swapPubkey` here is a placeholder, not a real secp256k1 point, so the
+    // gift wrap cannot even be built — the harshest way the probe can fail.
+    // It STILL falls through to a working legacy swap rather than throwing.
+    const res = await runner.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair,
+      chainRecipient: 'SoLrecipient',
+      senderConditions: true,
+    });
+    expect(streamSwap).toHaveBeenCalledTimes(1);
+    expect(res.rolling).toMatchObject({
+      probed: false,
+      used: false,
+      fallbackReason: 'send-failed',
+    });
+  });
+
+  it('[#585] `rolling: "off"` with streamNonce is a validation error — the two ask for opposite paths', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockClear();
     await expect(
       runner.swap({
         destination: 'g.proxy.swap',
         amount: '1000',
         swapPubkey: 'cd'.repeat(32),
-        pair,
-        chainRecipient: 'SoLrecipient',
-        senderConditions: true,
+        pair: EVM_PAIR,
+        chainRecipient: EVM_RECIPIENT,
+        rolling: 'off',
+        streamNonce: STREAM_NONCE,
       })
     ).rejects.toThrow(InvalidPayloadError);
-    // streamSwap (the legacy path) must never even be tried.
     expect(streamSwap).not.toHaveBeenCalled();
   });
 
@@ -1757,6 +1892,316 @@ describe('ClientRunner', () => {
     // The pinned watermark records the LEG-B contract, never leg A.
     expect(legAOnly.listSwapClaims().claims[0]!.cumulativeAmount).toBe('1000');
     await legAOnly.stop();
+  });
+
+  // ── toon-client#585: the RFQ makes the rolling path REACHABLE ─────────────
+  //
+  // Every test below goes through the real `swap()` entry point with NO
+  // `streamNonce` and NO out-of-band registration anywhere — which is the
+  // whole acceptance criterion. The maker fake unwraps a real NIP-59 gift
+  // wrap and seals a real kind:20034 back, so these exercise the wire, not
+  // session bookkeeping.
+
+  /** Boot a runner whose single apex client is an RFQ-capable maker fake. */
+  async function rfqRunner(
+    configure: (maker: FakeRfqMakerClient) => void = () => undefined
+  ): Promise<{ runner: ClientRunner; maker: FakeRfqMakerClient }> {
+    const maker = new FakeRfqMakerClient();
+    configure(maker);
+    const runner585 = new ClientRunner({
+      config: makeConfig({}),
+      createClient: (cfg) => {
+        maker.jobHandler = cfg.jobHandler as typeof maker.jobHandler;
+        return maker;
+      },
+      createRelay: fakeRelay,
+    });
+    maker.announcedSwapVerifyingContracts.set(
+      maker.pubkey,
+      EVM_VERIFYING_CONTRACTS
+    );
+    await runner585.bootstrap();
+    maker.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: String(seq),
+        cumulativeAmount: String(1000 * seq),
+        sourceAmount: '1000',
+        targetAmount: '1000',
+        streamNonce: [...maker.sessions][0] ?? STREAM_NONCE,
+      });
+    return { runner: runner585, maker };
+  }
+
+  it('[#585] REACHABILITY: a stock swap() with no streamNonce establishes the session ON THE WIRE and fills against it', async () => {
+    vi.mocked(streamSwap).mockClear();
+    const { runner: r, maker } = await rfqRunner();
+
+    const res = await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+    });
+
+    // The maker learned the session from a kind:20033 packet, not a method call.
+    expect(maker.rfqRequests).toHaveLength(1);
+    const [rfq] = maker.rfqRequests;
+    if (!rfq) throw new Error('the maker parsed no RFQ off the wire');
+    expect(rfq['proto']).toBe('rolling/1');
+    expect(rfq['type']).toBe('rfq');
+    expect(rfq['senderIlpAddress']).toBe('g.toon.client');
+    expect(rfq['chainRecipient']).toBe(EVM_RECIPIENT);
+    expect(rfq['sizeHint']).toBe('1000');
+    expect(rfq['pair']).toEqual({
+      from: EVM_PAIR.from,
+      to: EVM_PAIR.to,
+    });
+    expect(maker.sessions.size).toBe(1);
+
+    // …and the swap actually ran on the rolling path against it.
+    expect(res.accepted).toBe(true);
+    expect(res.claims).toHaveLength(1);
+    expect(res.claims[0]?.verified).toBe(true);
+    expect(res.rolling).toMatchObject({
+      probed: true,
+      used: true,
+      streamNonce: [...maker.sessions][0],
+      rate: '1.0',
+      maxRateAge: 15_000,
+      spreadBps: 40,
+    });
+    // The LEGACY path was never entered.
+    expect(streamSwap).not.toHaveBeenCalled();
+    await r.stop();
+  });
+
+  it('[#585] CONTROL — the SAME call against a maker with no RFQ intake completes SILENTLY on the legacy path', async () => {
+    vi.mocked(streamSwap).mockClear();
+    const claim = await signedEvmClaim({
+      nonce: '1',
+      cumulativeAmount: '1000',
+      targetAmount: 1000n,
+    });
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
+    const { runner: r, maker } = await rfqRunner((m) => {
+      m.rfqCapable = false;
+    });
+    const sendSpy = vi.spyOn(maker, 'sendSwapPacket');
+
+    const res = await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+    });
+
+    // Succeeded — no throw, no degraded result.
+    expect(res.accepted).toBe(true);
+    expect(streamSwap).toHaveBeenCalledTimes(1);
+    // Exactly ONE packet left this client: the probe. No rolling fill was
+    // sent to a maker that never registered a session.
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(maker.sessions.size).toBe(0);
+    // Silent, but not invisible.
+    expect(res.rolling).toMatchObject({
+      probed: true,
+      used: false,
+      fallbackReason: 'rejected',
+    });
+    expect(res.rolling?.fallbackMessage).toContain('F06');
+    await r.stop();
+  });
+
+  it('[#585] a probe that THROWS locally still falls back to legacy', async () => {
+    vi.mocked(streamSwap).mockClear();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
+    const { runner: r, maker } = await rfqRunner();
+    vi.spyOn(maker, 'sendSwapPacket').mockRejectedValue(
+      new Error('PEER_NOT_NEGOTIATED (g.proxy.swap)')
+    );
+    const res = await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+    });
+    expect(streamSwap).toHaveBeenCalledTimes(1);
+    expect(res.rolling).toMatchObject({
+      probed: true,
+      used: false,
+      fallbackReason: 'send-failed',
+    });
+    await r.stop();
+  });
+
+  it('[#585] `rolling: "require"` refuses instead of falling back, and says why', async () => {
+    vi.mocked(streamSwap).mockClear();
+    const { runner: r, maker } = await rfqRunner((m) => {
+      m.rfqCapable = false;
+    });
+    await expect(
+      r.swap({
+        destination: 'g.proxy.swap',
+        amount: '1000',
+        swapPubkey: maker.pubkey,
+        pair: EVM_PAIR,
+        chainRecipient: EVM_RECIPIENT,
+        rolling: 'require',
+      })
+    ).rejects.toThrow(/rolling path is unavailable \(rejected\)/);
+    expect(streamSwap).not.toHaveBeenCalled();
+    await r.stop();
+  });
+
+  it('[#585] `rolling: "off"` pays for no probe at all', async () => {
+    vi.mocked(streamSwap).mockClear();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
+    const { runner: r, maker } = await rfqRunner();
+    const sendSpy = vi.spyOn(maker, 'sendSwapPacket');
+    const res = await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      rolling: 'off',
+    });
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(maker.rfqRequests).toHaveLength(0);
+    expect(streamSwap).toHaveBeenCalledTimes(1);
+    expect(res.rolling).toBeUndefined();
+    await r.stop();
+  });
+
+  it('[#585] `swapDefaults.rolling: "off"` turns the probe off daemon-wide', async () => {
+    vi.mocked(streamSwap).mockClear();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
+    const maker = new FakeRfqMakerClient();
+    const r = new ClientRunner({
+      config: makeConfig({ swapDefaults: { rolling: 'off' } }),
+      createClient: () => maker,
+      createRelay: fakeRelay,
+    });
+    await r.bootstrap();
+    await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+    });
+    expect(maker.rfqRequests).toHaveLength(0);
+    expect(streamSwap).toHaveBeenCalledTimes(1);
+    await r.stop();
+  });
+
+  it("[#585] an explicit senderIlpAddress wins over the client's own — it is the leg-B destination and has no fallback", async () => {
+    const { runner: r, maker } = await rfqRunner();
+    await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      senderIlpAddress: 'g.proxy.agents.one',
+    });
+    expect(maker.rfqRequests[0]?.['senderIlpAddress']).toBe(
+      'g.proxy.agents.one'
+    );
+    await r.stop();
+  });
+
+  it('[#585] a client that cannot state its own receive address never opens a session whose leg B cannot arrive', async () => {
+    vi.mocked(streamSwap).mockClear();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
+    const { runner: r, maker } = await rfqRunner((m) => {
+      m.ownIlpAddress = undefined;
+    });
+    const res = await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+    });
+    expect(maker.rfqRequests).toHaveLength(0);
+    expect(res.rolling).toMatchObject({
+      probed: false,
+      used: false,
+      fallbackReason: 'no-sender-address',
+    });
+    expect(streamSwap).toHaveBeenCalledTimes(1);
+    await r.stop();
+  });
+
+  it("[#585] the floor is armed from the QUOTE's R₀, not the advertised pair rate", async () => {
+    const { runner: r, maker } = await rfqRunner((m) => {
+      m.quoteRate = '2.0';
+    });
+    const res = await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      // The advertised rate is 1.0; the quote says 2.0. 50 bps off the QUOTE
+      // is 1.99 — off the advertised rate it would have been 0.995.
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      floorBps: 50,
+    });
+    expect(res.minExchangeRate).toBe('1.99');
+    await r.stop();
+  });
+
+  it('[#585] the probe pays the route price, not the swap notional', async () => {
+    const { runner: r, maker } = await rfqRunner();
+    maker.routePrice = 42n;
+    const sendSpy = vi.spyOn(maker, 'sendSwapPacket');
+    await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+    });
+    expect(sendSpy.mock.calls[0]?.[0]?.amount).toBe(42n);
+    // …and rfqAmount pins it outright.
+    sendSpy.mockClear();
+    maker.rfqRequests.length = 0;
+    maker.sessions.clear();
+    await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      rfqAmount: '7',
+    });
+    expect(sendSpy.mock.calls[0]?.[0]?.amount).toBe(7n);
+    await r.stop();
+  });
+
+  it('[#585] a quote maxAmount splits the stream instead of sending one over-cap packet', async () => {
+    const { runner: r, maker } = await rfqRunner((m) => {
+      m.quoteMaxAmount = '400';
+    });
+    const sendSpy = vi.spyOn(maker, 'sendSwapPacket');
+    await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: maker.pubkey,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+    });
+    // 1 RFQ probe + ⌈1000/400⌉ = 3 fills.
+    expect(sendSpy).toHaveBeenCalledTimes(4);
+    for (const call of sendSpy.mock.calls.slice(1)) {
+      expect(call[0]?.amount).toBeLessThanOrEqual(400n);
+    }
+    await r.stop();
   });
 
   it('[#583] a rolling claim with NO leg-B contract from either source fails MISSING_SWAP_VERIFYING_CONTRACT, not SIGNER_MISMATCH', async () => {
@@ -2301,7 +2746,7 @@ describe('ClientRunner', () => {
     expect(res.cumulativeTarget).toBe('1990');
   });
 
-  it('swap rejects composing senderConditions+streamNonce with the #351 defenses — not yet ported to the rolling path (#573)', async () => {
+  it('[#585] a pinned rolling session + the legacy-only adaptive controller is refused, not silently resolved either way', async () => {
     await runner.bootstrap();
     vi.mocked(streamSwap).mockReset();
     const sendSpy = vi.spyOn(client, 'sendSwapPacket');
@@ -2311,6 +2756,8 @@ describe('ClientRunner', () => {
         ...DEFENSE_SWAP,
         senderConditions: true,
         streamNonce: STREAM_NONCE,
+        // `minExchangeRate` is NO LONGER part of the incompatibility (#585
+        // armed the floor on the rolling path); `controller` still is.
         minExchangeRate: '3.98',
         controller: { advertisedSpread: 0.004 },
       })
@@ -2319,6 +2766,26 @@ describe('ClientRunner', () => {
     // Neither path was ever driven — the guard fires before either fires.
     expect(streamSwap).not.toHaveBeenCalled();
     expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('[#585] a request that asks for the adaptive controller takes the LEGACY path without paying for a probe', async () => {
+    await runner.bootstrap();
+    vi.mocked(streamSwap).mockReset();
+    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
+    const sendSpy = vi.spyOn(client, 'sendSwapPacket');
+
+    const res = await runner.swap({
+      ...DEFENSE_SWAP,
+      controller: { advertisedSpread: 0.004 },
+    });
+
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(streamSwap).toHaveBeenCalledTimes(1);
+    expect(res.rolling).toMatchObject({
+      probed: false,
+      used: false,
+      fallbackReason: 'controller',
+    });
   });
 
   // ── Receive-side claim ingestion/verification/settlement (#352) ────────────

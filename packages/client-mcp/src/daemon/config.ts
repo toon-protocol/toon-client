@@ -233,6 +233,14 @@ export interface SwapDefaultsConfig {
    * `advertisedSpread` is required (the sdk deliberately has no default).
    */
   controller?: SwapControllerParams;
+  /**
+   * Default rolling-swap path selection when a request states none
+   * (toon-client#585). `'auto'` — the built-in default — probes every maker
+   * with a kind:20033 RFQ and falls back to the legacy path silently when it
+   * does not answer. Set `'off'` to stop paying for the probe against a fleet
+   * known to be legacy; `'require'` to make a failed probe an error.
+   */
+  rolling?: 'auto' | 'off' | 'require';
 }
 
 export interface ResolvedDaemonConfig {

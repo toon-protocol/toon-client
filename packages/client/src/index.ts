@@ -227,6 +227,23 @@ export {
   type RollingAdvancePayload,
   type RollingAdvanceContext,
   type RollingAdvanceOutcome,
+  // Rolling-swap RFQ session negotiation (toon-client#585, spec §2.2/§10.3)
+  ROLLING_RFQ_REQUEST_KIND,
+  ROLLING_RFQ_RESPONSE_KIND,
+  sendRollingRfq,
+  buildRollingRfqRequest,
+  encodeRollingRfqPacket,
+  parseRollingRfqResponse,
+  decodeRollingRfqQuote,
+  type RollingRfqAsset,
+  type RollingRfqRequest,
+  type RollingRfqResponse,
+  type RollingRfqOutcome,
+  type RollingRfqSession,
+  type RollingRfqFailure,
+  type RollingRfqFailureReason,
+  type RollingRfqSender,
+  type SendRollingRfqParams,
 } from './swap/index.js';
 
 // Utilities

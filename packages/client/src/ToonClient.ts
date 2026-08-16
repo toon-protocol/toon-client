@@ -518,6 +518,29 @@ export class ToonClient {
   }
 
   /**
+   * The ILP address this client RECEIVES on — the id its BTP session is bound
+   * under at the connector, and therefore the only address a remote party can
+   * address a PREPARE to and have it delivered here.
+   *
+   * Derived exactly as `modes/http.ts` derives the BTP greeting `peerId`
+   * (`config.btpPeerId ?? config.ilpInfo.ilpAddress`), because that string is
+   * what the connector binds the session under **verbatim** and resolves by
+   * **exact match** — `connector/crates/connector-client-edge/src/btp.rs`
+   * (`auth_peer_id` → `session_registry.bind`) and
+   * `session_registry.rs`'s `resolve` (a `HashMap::get`, not a prefix walk).
+   * There is no IL-DCP assignment and no frame that tells a client its
+   * address: the client is authoritative for its own.
+   *
+   * Read by the rolling-swap RFQ sender (toon-client#585) as the default
+   * `senderIlpAddress` — the destination the maker addresses every leg-B
+   * PREPARE of a session to, which it uses verbatim and has no fallback for.
+   * Works before `start()` is called.
+   */
+  getOwnIlpAddress(): string {
+    return this.config.btpPeerId ?? this.config.ilpInfo.ilpAddress;
+  }
+
+  /**
    * This client's own ADR 0018 sealing public key — the 65-byte uncompressed
    * secp256k1 identity a buyer seals a job PREPARE's `data` to when this
    * client IS the destination (toon-client#537, toon-meta#266 §3.1/§7), in

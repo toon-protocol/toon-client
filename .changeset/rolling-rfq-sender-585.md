@@ -1,0 +1,14 @@
+---
+'@toon-protocol/client': patch
+'@toon-protocol/client-mcp': patch
+---
+
+Send the rolling-swap RFQ, so the rolling protocol is finally reachable end to end.
+
+The maker learned to hear a session onto the wire in swap#135 (kind:20033 RFQ → kind:20034 quote). The client could not put one there: `rolling-protocol.ts`'s own docblock said the `streamNonce` it mints "must be registered with the maker OUT OF BAND", `/swap` took the rolling path only when the CALLER passed `senderConditions` + a pre-registered `streamNonce`, and `toon_swap` exposed neither field. There was no rolling-capability predicate anywhere in this repo, from either direction.
+
+`sendRollingRfq` (`@toon-protocol/client`) is the missing half: it gift-wraps a kind:20033 rumor (`proto: "rolling/1"`, `streamNonce`, the six matched pair fields, `chainRecipient`, `senderIlpAddress`, `sizeHint`), TOON-encodes it exactly as the sdk encodes a legacy swap packet, and sends it as a paid write with **no** `executionCondition` — the same zero-condition local-delivery seam a legacy swap request rides, distinguishable only by inner rumor kind after decryption. The maker's kind:20034 answer comes back sealed to the request's reply key on the leg-A FULFILL `data`, and unwrapping it establishes the session. `senderIlpAddress` defaults to the new `ToonClient.getOwnIlpAddress()` — the id the client's BTP session is bound under, which the connector resolves by exact match, and the address the maker uses verbatim for every leg-B PREPARE.
+
+Capability discovery is the probe, per spec §10.3 step 2 — there is no announce flag and swap#135 deliberately added none. `toon_swap` now probes every maker and **falls back to the legacy path silently and successfully** on any non-quote outcome: a reject (the ordinary legacy-maker signal), an unreadable answer, a nonce mismatch, a local throw. A failed rolling attempt can never turn a working legacy swap into a broken one. `rolling: 'off'` skips the probe; `rolling: 'require'` fails with the reason instead of falling back; `swapDefaults.rolling` sets the daemon-wide default. Either way the outcome is echoed on `SwapResponse.rolling`, so the silent fallback is still observable.
+
+The rolling path also stops refusing the #351 defenses. The session floor is armed from the quote's `R₀` (`minExchangeRate = R₀ × (1 − floorBps/10000)`, spec §5) and enforced at the verify-before-reveal seam, so a below-floor or short-delivering advance is WITHHELD rather than merely reported — leg A never fulfills and the packet costs nothing, which the legacy path cannot do because leg A has already resolved by the time the claim is read. The maker's `swapSignerAddress` from the quote arms R5 before the first advance, and the quote's per-packet `maxAmount` splits the stream instead of sending one guaranteed-rejected over-cap packet. The adaptive δ/W controller is still legacy-only: a request asking for one takes the legacy path without paying for a probe.
