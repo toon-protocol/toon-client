@@ -321,7 +321,17 @@ function isAccountNotFoundError(err: unknown): boolean {
   );
 }
 
-async function solanaRpc(
+/**
+ * Raw Solana JSON-RPC call.
+ *
+ * Exported (with {@link getLatestBlockhash} and {@link waitForConfirmation}) for
+ * `../swap/solana-settlement.js`, which submits a settlement Message the SDK has
+ * ALREADY compiled and so cannot go through {@link buildAndSendTransaction} —
+ * that builds its own message from instructions. Sharing the transport keeps one
+ * definition of "the node answered and said no" (see {@link SolanaRpcError})
+ * across the channel and settlement paths.
+ */
+export async function solanaRpc(
   rpcUrl: string,
   method: string,
   params: unknown[] = []
@@ -347,7 +357,8 @@ async function solanaRpc(
   return json.result;
 }
 
-async function getLatestBlockhash(rpcUrl: string): Promise<string> {
+/** Latest blockhash, base58 — what `patchSolanaRecentBlockhash` accepts as-is. */
+export async function getLatestBlockhash(rpcUrl: string): Promise<string> {
   const result = (await solanaRpc(rpcUrl, 'getLatestBlockhash', [
     { commitment: 'confirmed' },
   ])) as { value: { blockhash: string } };
@@ -501,7 +512,11 @@ async function assertOpenFunding(opts: {
   }
 }
 
-async function waitForConfirmation(
+/**
+ * Poll until the transaction is `confirmed`/`finalized`, THROWING if it landed
+ * with an execution error. A settled-but-failed transaction is not a success.
+ */
+export async function waitForConfirmation(
   rpcUrl: string,
   signature: string,
   timeoutMs = 30000

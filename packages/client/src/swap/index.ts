@@ -49,6 +49,19 @@ export {
   type SubmitEvmSettlementResult,
 } from './settle-received-claims.js';
 export {
+  buildSolanaSettlementTransaction,
+  decodeSolanaSettlementClaimAmounts,
+  defaultSolanaSettlementRpc,
+  submitSolanaSettlement,
+  SolanaSettlementError,
+  type BuildSolanaSettlementTransactionParams,
+  type SolanaSettlementErrorCode,
+  type SolanaSettlementRpc,
+  type SolanaSettlementTransaction,
+  type SubmitSolanaSettlementParams,
+  type SubmitSolanaSettlementResult,
+} from './solana-settlement.js';
+export {
   ROLLING_PROTOCOL,
   isValidStreamNonce,
   generateStreamNonce,

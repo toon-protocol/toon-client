@@ -108,6 +108,7 @@ import {
   submitMinaSettlement,
   type MinaSignaturePair,
 } from './swap/mina-settlement.js';
+import { submitSolanaSettlement } from './swap/solana-settlement.js';
 import type {
   ToonClientConfig,
   ToonStartResult,
@@ -2279,6 +2280,38 @@ export class ToonClient {
           ? { graphqlUrl: this.config.minaChannel.graphqlUrl }
           : {}),
         ...(makerSignature ? { makerSignature } : {}),
+      });
+      return { txHash };
+    }
+    if (bundle.chainKind === 'solana') {
+      // Solana receive-side redemption (toon-client#604). The compiled Message
+      // the sdk hands back needs exactly ONE signature — the recipient's, which
+      // is also the fee payer — so this client can redeem unilaterally, with no
+      // maker co-sign and no proving step (unlike Mina above).
+      //
+      // The RPC is `solanaChannel.rpcUrl` FIRST: the channel PDA being claimed
+      // lives on the node the channel was opened against, and that is the config
+      // the Solana channel path already uses. `chainRpcUrls` is the fallback so a
+      // caller that only configured the generic map still works.
+      const rpcUrl =
+        this.config.solanaChannel?.rpcUrl ??
+        this.config.chainRpcUrls?.[bundle.chain];
+      if (!rpcUrl) {
+        throw new Error(
+          `No Solana RPC URL configured for chain "${bundle.chain}" — set ` +
+            `solanaChannel.rpcUrl (or chainRpcUrls["${bundle.chain}"]) to enable ` +
+            `swap settlement submission.`
+        );
+      }
+      if (!this.solanaSeed) {
+        throw new Error(
+          'Solana signer not configured (no mnemonic-derived Solana key) — the ' +
+            'claim recipient cannot sign its own redemption.'
+        );
+      }
+      const { txHash } = await submitSolanaSettlement(bundle, {
+        rpcUrl,
+        recipientSeed: this.solanaSeed,
       });
       return { txHash };
     }

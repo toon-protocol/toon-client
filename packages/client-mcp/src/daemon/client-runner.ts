@@ -502,6 +502,24 @@ const BALANCES_READ_TIMEOUT_MS = 5_000;
 const BALANCES_READ_ATTEMPTS = 2;
 
 /**
+ * The stable failure code a settlement error carries, else `SUBMISSION_FAILED`.
+ *
+ * `MinaSettlementError` and `SolanaSettlementError` both name the precondition
+ * that was missing (`NO_GRAPHQL_CONFIGURED`, `RECIPIENT_MISMATCH`, …). Flattening
+ * every one of them to `SUBMISSION_FAILED` would tell an operator that settlement
+ * failed while withholding the only part that says what to fix. Matched
+ * structurally rather than by class so this module needs no import of either
+ * chain's error type.
+ */
+function settlementErrorCode(err: unknown): string {
+  if (err !== null && typeof err === 'object' && 'code' in err) {
+    const code = (err as { code: unknown }).code;
+    if (typeof code === 'string' && code.length > 0) return code;
+  }
+  return 'SUBMISSION_FAILED';
+}
+
+/**
  * In-memory record of one background faucet drip. Structurally identical to the
  * wire {@link FundWalletResponse} snapshot the daemon returns, so a job can be
  * handed back verbatim.
@@ -3200,9 +3218,19 @@ export class ClientRunner {
       : undefined;
     const builds = buildSwapSettlements({
       entries: pending,
-      // Solana `programId` only — EVM settles on the leg-B contract below.
-      ...(this.config.toonClientConfig.tokenNetworks
-        ? { tokenNetworks: this.config.toonClientConfig.tokenNetworks }
+      // The Solana payment-channel program that OWNS the claim's channel PDA —
+      // the same program this client opened the channel on. Before #604 this
+      // path passed `tokenNetworks` here and the builder read the Solana
+      // `programId` out of it, which could never work: `tokenNetworks` is the
+      // leg-A `TokenNetwork` map (EVM-only by its own documentation), no maker
+      // publishes a `solana:*` key in it, and a `TokenNetwork` address would be
+      // the wrong contract if one did. `tokenNetworks` is no longer passed at
+      // all — nothing in the settlement builder reads it.
+      ...(this.config.toonClientConfig.solanaChannel?.programId
+        ? {
+            solanaProgramId:
+              this.config.toonClientConfig.solanaChannel.programId,
+          }
         : {}),
       // EVM fallback for watermarks persisted before #572 pinned a contract.
       // Entries written since carry their own `verifyingContract` and settle
@@ -3252,23 +3280,26 @@ export class ClientRunner {
         results.push(base);
         continue;
       }
-      if (bundle.chainKind === 'solana') {
-        results.push({
-          ...base,
-          error: {
-            code: 'SUBMISSION_UNSUPPORTED',
-            message:
-              'Solana settlement submission is not wired yet (bundle carries a serialized Message; follow-up under toon-meta#145).',
-          },
-        });
-        continue;
-      }
-      if (bundle.chainKind === 'mina') {
-        // Mina receive-side redemption (#357): the client produces the
-        // recipient's co-signature and drives the dual-party `claimFromChannel`
-        // (o1js proving) via `settleSwapBundle`. Fails closed with a stable
-        // MinaSettlementError code (e.g. NO_GRAPHQL_CONFIGURED,
-        // MINA_MAKER_COSIGN_REQUIRED) surfaced as SUBMISSION_FAILED.
+      if (bundle.chainKind === 'mina' || bundle.chainKind === 'solana') {
+        // Non-EVM receive-side redemption. Both chains delegate to the client's
+        // `settleSwapBundle`, which owns the chain-specific key material and RPC
+        // config, and neither is gated on the daemon's `chainRpcUrls` (the EVM
+        // tail below): Mina reads `minaChannel.graphqlUrl` and Solana reads
+        // `solanaChannel.rpcUrl` — the node its channel PDA actually lives on.
+        //
+        // - Mina (#357): the client produces the recipient's co-signature and
+        //   drives the dual-party `claimFromChannel` (o1js proving). Fails closed
+        //   with a stable MinaSettlementError code (e.g. NO_GRAPHQL_CONFIGURED,
+        //   MINA_MAKER_COSIGN_REQUIRED).
+        // - Solana (#604): the sdk's compiled Message needs exactly ONE
+        //   signature — the recipient's, which is also the fee payer — so the
+        //   client redeems unilaterally. Fails closed with a
+        //   SolanaSettlementError code (e.g. NO_RPC_CONFIGURED, NO_SIGNER,
+        //   RECIPIENT_MISMATCH).
+        //
+        // Either error's `code` is surfaced verbatim when it carries one, so an
+        // operator sees WHICH precondition is missing rather than a uniform
+        // SUBMISSION_FAILED.
         if (!this.identityClient.settleSwapBundle) {
           results.push({
             ...base,
@@ -3303,7 +3334,7 @@ export class ClientRunner {
           results.push({
             ...base,
             error: {
-              code: 'SUBMISSION_FAILED',
+              code: settlementErrorCode(err),
               message: err instanceof Error ? err.message : String(err),
             },
           });
