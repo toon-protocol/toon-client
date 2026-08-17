@@ -14,4 +14,4 @@ Stage 4 of [toon-meta#411](https://github.com/toon-protocol/toon-meta/issues/411
 
 `toon_swap`'s MCP tool schema drops the `rolling` input property to match. `toon_swap_claims` / `toon_swap_settle` are untouched.
 
-Not addressed here (tracked separately): `swap-wire-compat.test.ts` and the legacy-path runner test suites were removed as part of this change; a live devnet swap settling on chain from the built client is still needed as evidence on toon-client#598 before that issue can close.
+`swap-wire-compat.test.ts` and the legacy-path runner suites are removed with the code they covered; the receive-side claim-ingestion, floor and observability cases they reached through the legacy sender are ported onto the rolling wire rather than dropped. Still outstanding, and NOT part of this change: a live devnet swap settling on chain from the built client, needed as evidence on toon-client#598 before that issue can close.
