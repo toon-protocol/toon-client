@@ -2526,10 +2526,11 @@ export class ClientRunner {
    *   end state; porting a knob that can never move off its floor value
    *   would be dead configuration surface, not a capability.
    *
-   * `createSwapController` and `req.controller`/`packetCount` remain
-   * reachable on the legacy path (see {@link negotiateRollingSession}) until
-   * Stage 4 removes that path entirely — this ticket only decides and
-   * records the rationale Stage 4's PR cites; it deletes nothing.
+   * `createSwapController` and `req.controller` remain reachable on the
+   * legacy path (see {@link negotiateRollingSession}) until Stage 4 removes
+   * that path entirely — this ticket only decides and records the rationale
+   * Stage 4's PR cites; it deletes nothing. `req.packetCount` is unaffected
+   * by the decision: it is the static split, honoured on BOTH paths (above).
    *
    * Observability parity with the legacy path (toon-client#596): `packets[]`
    * carries one entry per accepted fill (`effectiveRate`/`rateDeviation`
@@ -2675,7 +2676,9 @@ export class ClientRunner {
     };
 
     // Even split, remainder folded into the last packet — mirrors the legacy
-    // static-split default (no adaptive controller on this path yet).
+    // static-split default. This is the END-STATE sizing on this path: the
+    // adaptive δ/W controller is dropped, not pending (toon-client#597 — see
+    // this method's doc comment).
     const evenSplitAmount = totalAmount / BigInt(packetCount);
     const lastPacketAmount =
       totalAmount - evenSplitAmount * BigInt(packetCount - 1);
