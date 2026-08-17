@@ -13,10 +13,14 @@
  *      account the connector reads via `provider.getChannelState`.
  *   2. The 48-byte balance-proof message the connector verifies the Ed25519
  *      signature over: `channel_pda(32) || nonce(8 LE) || transferredAmount(8 LE)`.
- *      NOTE: this is NOT the swap-claim `balanceProofHashSolana` shape used by the
- *      swap peer ↔ sender wire / SDK `verifyEd25519Signature`; the connector's on-chain
- *      payment-channel verifier (`solana-payment-channel-provider.verifyBalanceProof`)
- *      verifies this raw 48-byte message, un-hashed.
+ *      This is now the ONLY Solana balance-proof message on any TOON path —
+ *      identical to `balanceProofMessageSolana` in
+ *      `@toon-protocol/settlement-digest` (re-exported via core/sdk), which the
+ *      swap-claim wire and the SDK's `verifyEd25519Signature` also use as of
+ *      toon#214. It used to differ: the swap-claim wire signed
+ *      `balanceProofHashSolana`, a digest NO deployed program verifies, so no
+ *      swap claim on Solana could ever be redeemed. Do not reintroduce that
+ *      split — the deployed program byte-compares these raw 48 bytes, un-hashed.
  *   3. The `initialize_channel` (+ `deposit`) instructions, built and submitted
  *      over raw Solana JSON-RPC (no `@solana/web3.js` / `@solana/kit` runtime
  *      dependency — only `@noble/curves` + `@noble/hashes`, already client deps).

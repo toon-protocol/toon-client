@@ -618,10 +618,15 @@ export interface SignedBalanceProof extends BalanceProofParams {
   /**
    * Counterparty settlement address the balance proof is bound to.
    *
-   * Required for Solana/Mina, where the canonical balance-proof message folds
-   * the recipient in (`balanceProofHashSolana` / `balanceProofFieldsMina`).
-   * Unused for the client's EVM path (EIP-712 `BalanceProof` has no recipient
-   * term). Carried here so it flows from signing through to `buildClaimMessage`.
+   * Required for Mina, whose canonical balance-proof message folds the recipient
+   * in (`balanceProofFieldsMina`). Unused for the client's EVM path (EIP-712
+   * `BalanceProof` has no recipient term) and, since toon#214, unused for Solana
+   * too: the message the deployed program verifies is
+   * `channel_pda || nonce || transferred_amount` and binds neither the recipient
+   * nor the mint — which side gets paid is fixed by the channel's participants,
+   * not by the proof. (It was `balanceProofHashSolana`, which did fold the
+   * recipient in, and which nothing on chain has ever verified.) Carried here so
+   * it flows from signing through to `buildClaimMessage`.
    */
   recipient?: string;
 
