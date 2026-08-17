@@ -19,9 +19,8 @@
  */
 
 import { readFile, stat } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
+import { resolve, sep } from 'node:path';
 import type { NostrEvent, EventTemplate } from 'nostr-tools/pure';
-import { generateSecretKey } from 'nostr-tools/pure';
 import {
   decodeEventFromToon,
   GenesisPeerLoader,
@@ -40,7 +39,6 @@ import {
   extractArweaveTxId,
   fundWallet as faucetFund,
   mintExecutionCondition,
-  ingestAndReveal,
   buildSwapSettlements,
   counterpartyMatch,
   InMemoryReceivedClaimStore,
@@ -53,7 +51,6 @@ import {
   type FaucetChain,
   type ReceivedClaimEntry,
   type ReceivedClaimStore,
-  type RevealFn,
 } from '@toon-protocol/client';
 import {
   loadMinaSignerClient,
@@ -78,12 +75,6 @@ import {
   type UploadReceipt,
   type GitObjectUpload,
 } from '@toon-protocol/rig';
-import { streamSwap } from '@toon-protocol/sdk/swap';
-import {
-  AdaptiveDeltaController,
-  JsonFileSwapControllerStateStore,
-  type PacketProgress,
-} from '@toon-protocol/sdk';
 import { RelaySubscription } from '../relay-subscription.js';
 import type {
   AddApexRequest,
@@ -125,13 +116,11 @@ import type {
   StatusResponse,
   SubscribeRequest,
   SubscribeResponse,
-  SwapControllerParams,
   SwapPacketOutcome,
   SwapResponse,
   SwapClaim,
   SwapError,
   SwapRejection,
-  SwapRollingInfo,
   ListSwapClaimsResponse,
   ReceivedClaimInfo,
   SettleSwapClaimsRequest,
@@ -423,30 +412,17 @@ interface ApexConnection {
  * An ESTABLISHED rolling-swap session, ready to fill against (#585). Produced
  * only by {@link ClientRunner.negotiateRollingSession} — either from a
  * kind:20034 quote or from a caller-pinned, out-of-band-registered nonce.
+ * Rolling is the only swap protocol (ADR 0003, toon-client#598): negotiation
+ * either returns one of these or throws {@link RollingUnavailableError} —
+ * there is no other outcome to represent.
  */
 interface RollingSessionArm {
-  kind: 'rolling';
   streamNonce: string;
   /** The maker's kind:20034 quote; absent when the nonce was caller-pinned. */
   quote?: RollingRfqResponse;
   /** Whether an RFQ probe was actually sent for this session. */
   probed: boolean;
 }
-
-/** The outcome of rolling capability discovery: a session, or "use legacy". */
-type RollingNegotiation =
-  | RollingSessionArm
-  | {
-      kind: 'legacy';
-      /**
-       * Why the swap is on the legacy path — echoed onto the response, and
-       * since #595 also raised as a `warning`, so an opted-into downgrade is
-       * never merely inferable. Set on EVERY legacy outcome including
-       * `rolling: 'off'` (`fallbackReason: 'off'`); absent only on the
-       * caller-pinned-nonce arm, which is not a legacy outcome at all.
-       */
-      note?: SwapRollingInfo;
-    };
 
 /**
  * Packets for a rolling stream when the caller pinned no `packetCount`: one,
@@ -2113,51 +2089,26 @@ export class ClientRunner {
   /**
    * Swap source→target asset against a swap peer via the selected apex.
    *
-   * sdk ≥2.0.0 (the `mill`→`swap` vocabulary rename, toon commit `af4cd24`):
-   * `streamSwap` takes `swapPubkey`/`swapIlpAddress` and accumulated claims
-   * carry `swapSignerAddress`. The rename has NO wire back-compat — a
-   * pre-rename (sdk ≤1.x) swap peer still emits `millSignerAddress` in its
-   * FULFILL settlement metadata, which `decodeFulfillMetadata` silently drops
-   * as an unknown field. That skew would otherwise surface only much later as
-   * `MISSING_SETTLEMENT_METADATA` in `buildSettlementTx`, so we detect it
-   * here (accepted claims with no `swapSignerAddress`) and surface a loud
-   * `warning` on the response at swap time (#349).
+   * TOON supports the rolling swap protocol only (ADR 0003, toon-client#598
+   * — the legacy zero-condition sender was removed here; see toon-client#595
+   * for the loud-failure decision that preceded it and toon-client#597 for
+   * why the adaptive δ/W controller was dropped rather than ported).
    *
-   * **Path selection (toon-client#585, #595)** is a PROBE, not a config read:
-   * {@link negotiateRollingSession} sends a kind:20033 RFQ, and the ENTIRE
-   * call goes to {@link swapRolling} only if the maker answered kind:20034
-   * and thereby registered the session (spec §10.3 step 2, swap#135). Every
-   * other outcome — a maker with no RFQ intake, a reject, an unreadable
-   * answer, a local throw — now **throws** {@link RollingUnavailableError}
-   * naming the maker, its ILP address and the reason (ADR 0003: the rolling
-   * swap is the only swap). The body below is the unchanged LEGACY path — a
-   * zero-condition gift-wrap packet — and it is reached only when the caller
-   * asked for it: `req.rolling` / `swapDefaults.rolling` set to `'auto'`
-   * (probe, then downgrade) or `'off'` (never probe). Both annotate
-   * `SwapResponse.rolling` AND raise a `warning`; neither is silent, and both
-   * go with the legacy sender in Stage 4 (toon-client#598).
+   * {@link negotiateRollingSession} sends a kind:20033 RFQ and the call runs
+   * on {@link swapRolling} only if the maker answered kind:20034 and thereby
+   * registered the session (spec §10.3 step 2, swap#135). Every other
+   * outcome — a maker with no RFQ intake, a reject, an unreadable answer, a
+   * local throw — **throws** {@link RollingUnavailableError} naming the
+   * maker, its ILP address and the reason.
    *
-   * Sender-side rolling-swap defenses (#351, sdk ≥2.1.0, spec §5/§6):
-   *
-   * - **Hard floor** — `req.minExchangeRate`, or derived
-   *   `pair.rate × (1 − floorBps/10000)` from `req.floorBps` /
-   *   `swapDefaults.floorBps`. A below-floor packet records `BELOW_FLOOR` and
-   *   halts the stream (`abortReason: 'below-floor'`); the armed floor is
-   *   echoed on the response so hosts can show the guaranteed worst case.
-   * - **Adaptive controller** — `req.controller` (or
-   *   `swapDefaults.controller` when the request pins no `packetCount`)
-   *   replaces the static even split with `AdaptiveDeltaController` δ/W
-   *   sizing; per-(source chain, maker, pair) state persists in
-   *   `swap-controller-state.json` beside the daemon's channel stores. The
-   *   controller is efficiency-only — it can never relax the floor.
-   * - **Telemetry** — `onPacket` is always wired: per-packet outcomes,
-   *   rejections, and a realized-rate summary land on the response, and each
-   *   accepted packet is logged. Everything else is strictly opt-in: with no
-   *   new params and no `swapDefaults`, the `streamSwap` call is the legacy
-   *   request (no floor, no controller, no expiry stamping, no signal).
-   * - **Abort** — `req.timeoutMs` arms an `AbortSignal`; on expiry in-flight
-   *   packets drain and the partial fill is reported exactly (partial
-   *   `claims`, cumulatives, `state`/`abortReason`).
+   * The #349 pre-rename skew warning went with the legacy sender and is NOT
+   * ported: it existed because a sdk ≤1.x peer's `millSignerAddress` was
+   * silently dropped by `decodeFulfillMetadata`, leaving an ACCEPTED claim
+   * that could only fail later, at `buildSettlementTx`, with
+   * `MISSING_SETTLEMENT_METADATA`. The rolling wire decodes the advance
+   * itself, so a claim with no verifiable settlement metadata is never
+   * revealed at all — it is a rejection here (`handleRollingAdvance`), not an
+   * accepted claim needing a warning.
    *
    * Apex selection ({@link selectSwapApex}): `req.btpUrl` picks WHICH apex
    * client the swap streams on, keyed on BTP URL exactly as `publish` is —
@@ -2167,14 +2118,7 @@ export class ClientRunner {
    * to the registered apex that OWNS `req.destination` rather than to the
    * config-seeded default: only that apex's client holds the negotiation for
    * the maker, so any other one resolves no peer for the destination and
-   * every packet dies locally on the error path below.
-   *
-   * Failure visibility: `streamSwap` reports two DIFFERENT failure kinds —
-   * `rejections[]` (the maker/connector answered REJECT) and `errors[]` (the
-   * packet threw before it was ever sent). Both are mapped onto the response
-   * and the daemon's own logger is handed to the sdk, so a swap that failed
-   * entirely on this side says why instead of returning a bare
-   * `abortReason: 'complete'`.
+   * every packet dies locally on the error path.
    */
   async swap(req: SwapRequest): Promise<SwapResponse> {
     const apex = this.selectSwapApex(req.destination, req.btpUrl);
@@ -2183,320 +2127,20 @@ export class ClientRunner {
       `[runner] swap to ${req.destination} on apex ` +
         `${apex.btpUrl || apex.destination} (peer "${apex.negotiation?.peerId ?? '?'}")`
     );
-    // toon-client#585: probe for rolling capability, then take the rolling
-    // path only if the maker actually established a session. Everything else
-    // — including every way the probe can fail — falls through to the LEGACY
-    // body below, unchanged.
-    const negotiated = await this.negotiateRollingSession(req, apex);
-    if (negotiated.kind === 'rolling') {
-      return this.swapRolling(req, apex, negotiated);
-    }
-    const rollingNote = negotiated.note;
-
-    if (req.controller && req.packetCount !== undefined) {
-      throw new InvalidPayloadError(
-        '`controller` and `packetCount` are mutually exclusive: the adaptive ' +
-          'controller replaces the static even split with dynamic δ/W sizing.'
-      );
-    }
-    const defaults = this.config.swapDefaults;
-    // Floor precedence: explicit rate → per-request bps → daemon-default bps.
-    const minExchangeRate =
-      req.minExchangeRate ??
-      deriveFloorRate(req.pair.rate, req.floorBps ?? defaults?.floorBps);
-    const packetExpiryMs = req.packetExpiryMs ?? defaults?.packetExpiryMs;
-    // Controller precedence: per-request params → daemon default — but an
-    // explicit packetCount on the request always pins the legacy even split.
-    const controllerParams =
-      req.controller ??
-      (req.packetCount === undefined ? defaults?.controller : undefined);
-    const controller = controllerParams
-      ? await this.createSwapController(req, controllerParams)
-      : undefined;
-
-    // Per-packet telemetry: collected for the response and logged. The
-    // callback must never throw — streamSwap treats a throwing onPacket as a
-    // stop signal, and telemetry must not be able to halt the stream.
-    const packets: SwapPacketOutcome[] = [];
-    let packetsTruncated = false;
-    const onPacket = (p: PacketProgress): void => {
-      try {
-        this.log(
-          `[runner] swap packet ${p.index}: ${p.sourceAmount} → ` +
-            `${p.targetAmount} (rate ${p.effectiveRate.toFixed(6)}, ` +
-            `deviation ${p.rateDeviation.toFixed(6)}` +
-            (p.rate ? `, tape ${p.rate}` : '') +
-            ')'
-        );
-        if (packets.length >= SWAP_PACKETS_RESPONSE_LIMIT) {
-          packetsTruncated = true;
-          return;
-        }
-        packets.push({
-          index: p.index,
-          sourceAmount: p.sourceAmount.toString(),
-          targetAmount: p.targetAmount.toString(),
-          effectiveRate: p.effectiveRate,
-          rateDeviation: p.rateDeviation,
-          ...(p.rate !== undefined ? { rate: p.rate } : {}),
-          ...(p.rateTimestamp !== undefined
-            ? { rateTimestamp: p.rateTimestamp }
-            : {}),
-        });
-      } catch {
-        // Swallow: telemetry failures must not stop the stream.
-      }
-    };
-
-    const senderSecretKey = generateSecretKey();
-    const result = await streamSwap({
-      client: apex.client as unknown as Parameters<
-        typeof streamSwap
-      >[0]['client'],
-      swapPubkey: req.swapPubkey,
-      swapIlpAddress: req.destination,
-      pair: req.pair,
-      senderSecretKey,
-      chainRecipient: req.chainRecipient,
-      totalAmount: BigInt(req.amount),
-      // EXACTLY ONE of controller / packetCount (sdk contract).
-      ...(controller ? { controller } : { packetCount: req.packetCount ?? 1 }),
-      onPacket,
-      ...(minExchangeRate !== undefined ? { minExchangeRate } : {}),
-      ...(packetExpiryMs !== undefined ? { packetExpiryMs } : {}),
-      ...(req.timeoutMs !== undefined
-        ? { signal: AbortSignal.timeout(req.timeoutMs) }
-        : {}),
-      // Without this the sdk falls back to a NO-OP logger and every
-      // `stream_swap.*` diagnostic — including `wrap_failed` / `send_failed`,
-      // the only account of a packet that never reached the maker — is
-      // written nowhere. Route them into the daemon log.
-      logger: this.structuredLogger('swap'),
-    });
-    const firstReject = result.rejections[0];
-
-    // #352: receipt-time verification + durable ingestion. Every FULFILLed
-    // claim with settlement metadata is verified (signature against the
-    // maker's advertised/pinned signer, recipient, chain, nonce/cumulative
-    // monotonicity vs the persisted watermark) and, only if it passes,
-    // persisted as the channel's highest-nonce watermark. Claims MISSING
-    // settlement metadata take the legacy #349 path (warning, not
-    // persisted) unchanged.
-    //
-    // This is the LEGACY (zero-condition) path — leg A already resolved
-    // inline at `sendSwapPacket` time (the transport verified nothing, since
-    // no condition was sent), so `reveal` always commits: there is nothing
-    // left here to withhold. The REAL verify-before-reveal seam
-    // (`ingestAndReveal`'s withhold/rollback branch) is exercised on the
-    // rolling path (toon-client#573, {@link swapRolling}), where leg A is
-    // still pending when this decision is made.
-    const expectedChain = req.pair.to.chain;
-    const minaSignerClient = expectedChain.startsWith('mina')
-      ? await loadMinaSignerClient()
-      : undefined;
-    // The leg-B verifying-contract map the EVM claims' v2 EIP-712 domain is
-    // rebuilt from: this maker's own announce, config as override (#572/#583).
-    const verifyingContracts = this.swapVerifyingContractsFor(
-      apex.client,
-      req.swapPubkey
-    );
-    const reveal: RevealFn = () => ({ decision: 'revealed' });
-    const ingest = await ingestAndReveal({
-      claims: result.claims,
-      expectedChain,
-      chainRecipient: req.chainRecipient,
-      ...(req.swapSignerAddress
-        ? { expectedSignerAddress: req.swapSignerAddress }
-        : {}),
-      ...(verifyingContracts
-        ? { swapVerifyingContracts: verifyingContracts }
-        : {}),
-      store: this.receivedClaimStore,
-      ...(minaSignerClient ? { minaSignerClient } : {}),
-      reveal,
-    });
-    const verifiedSet = new Set(ingest.revealed.map((v) => v.claim));
-    const rejectionByClaim = new Map(
-      ingest.rejected.map((r) => [r.claim, r] as const)
-    );
-    for (const r of ingest.rejected) {
-      this.log(
-        `[runner] swap: REJECTED received claim (packet ${r.claim.packetIndex}, ` +
-          `channel ${r.claim.channelId ?? '?'}): ${r.code} — ${r.message}`
-      );
-    }
-
-    const claims = result.claims.map((c): SwapClaim => {
-      const rejection = rejectionByClaim.get(c);
-      return {
-        sourceAmount: c.sourceAmount.toString(),
-        targetAmount: c.targetAmount.toString(),
-        claim: Buffer.from(c.claimBytes).toString('base64'),
-        ...(c.channelId ? { channelId: c.channelId } : {}),
-        ...(c.recipient ? { recipient: c.recipient } : {}),
-        ...(c.swapSignerAddress
-          ? { swapSignerAddress: c.swapSignerAddress }
-          : {}),
-        ...(c.claimId ? { claimId: c.claimId } : {}),
-        ...(c.nonce ? { nonce: c.nonce } : {}),
-        ...(c.cumulativeAmount ? { cumulativeAmount: c.cumulativeAmount } : {}),
-        ...(verifiedSet.has(c) ? { verified: true } : {}),
-        ...(rejection
-          ? {
-              verified: false,
-              verificationError: {
-                code: rejection.code,
-                message: rejection.message,
-              },
-            }
-          : {}),
-      };
-    });
-
-    // Wire-rename skew guard (#349): claims were FULFILLed but none carries
-    // the swapSignerAddress settlement metadata — the signature of a
-    // pre-rename swap peer (emits `millSignerAddress`, silently dropped by
-    // sdk ≥2's decodeFulfillMetadata). Settlement of these claims WILL fail
-    // with MISSING_SETTLEMENT_METADATA; say so now instead of then.
-    const missingSettlementSigner =
-      claims.length > 0 && claims.every((c) => !c.swapSignerAddress);
-    if (missingSettlementSigner) {
-      this.log(
-        '[runner] swap: accepted claims are missing swapSignerAddress ' +
-          'settlement metadata — swap peer is likely pre-rename (sdk <2.0.0)'
-      );
-    }
-    const realizedRate = computeRealizedRate(
-      result.cumulativeSource,
-      result.cumulativeTarget,
-      req.pair
-    );
-    const warnings: string[] = [];
-    // #595: reaching this body at all means the swap ran LEGACY, which only
-    // happens now because the caller explicitly asked for it. Say so on the
-    // response itself — `rolling.fallbackReason` alone is a field a host has
-    // to know to look at, and the point of this stage is that a downgrade to
-    // verify-after-commit is never something a caller finds out by accident.
-    if (rollingNote) {
-      warnings.push(
-        `This swap ran on the LEGACY zero-condition path (` +
-          `${rollingNote.fallbackReason ?? 'unknown'}` +
-          `), not the rolling one: the target-chain claim was verified only ` +
-          `AFTER leg A committed and the two legs were not coupled. ` +
-          `${rollingNote.fallbackMessage ?? ''} Legacy is being removed ` +
-          `(ADR 0003) — the default \`rolling: "require"\` turns this into an ` +
-          `error naming the maker.`
-      );
-    }
-    if (missingSettlementSigner) {
-      warnings.push(
-        'Accepted claims are missing `swapSignerAddress` settlement ' +
-          'metadata, so settling them will fail with ' +
-          'MISSING_SETTLEMENT_METADATA. The swap peer is likely running ' +
-          'a pre-rename SDK (<2.0.0, emits `millSignerAddress`, which ' +
-          'sdk ≥2 silently drops). Upgrade the swap peer before settling.'
-      );
-    }
-    const firstRejected = ingest.rejected[0];
-    if (firstRejected) {
-      warnings.push(
-        `${ingest.rejected.length} received claim(s) FAILED verification and ` +
-          `were NOT counted as value received (first: ${firstRejected.code} — ` +
-          `${firstRejected.message}). See per-claim verificationError.`
-      );
-    }
-
-    // Packets that THREW before the maker ever answered (the sdk's
-    // `errors[]`: gift-wrap build failure, transport/peer-resolution throw).
-    // These were previously dropped on the floor entirely — a swap that
-    // failed 100% locally returned `abortReason: 'complete'` and nothing
-    // else, because the sdk only rewrites that to 'all-rejected' when there
-    // are rejections and NO errors.
-    const errors: SwapError[] = result.errors.map((e) => ({
-      packetIndex: e.packetIndex,
-      message: errMsg(e.cause),
-      ...(e.cause instanceof Error && e.cause.name
-        ? { name: e.cause.name }
-        : {}),
-    }));
-    const firstError = errors[0];
-    if (firstError) {
-      warnings.push(
-        `${errors.length} packet(s) FAILED LOCALLY and never reached the ` +
-          `maker (first: ${firstError.name ?? 'Error'} — ` +
-          `${firstError.message}). See errors[]. A destination that is not ` +
-          'routable from the selected apex fails here — name the apex that ' +
-          'can reach it via `btpUrl` (toon_targets / toon_add_apex).'
-      );
-      for (const e of errors) {
-        this.log(
-          `[runner] swap: packet ${e.packetIndex} FAILED LOCALLY — ` +
-            `${e.name ?? 'Error'}: ${e.message}`
-        );
-      }
-    }
-
-    const hadIngestibleClaims =
-      ingest.revealed.length + ingest.rejected.length > 0;
-    return {
-      // A swap only counts as accepted when it yielded a VERIFIED+REVEALED
-      // claim (or a legacy no-metadata claim, whose path is unchanged).
-      // FULFILLed packets whose claims all failed verification are a failed
-      // swap, loudly.
-      accepted: ingest.revealed.length + ingest.legacy.length > 0,
-      packetsAccepted: result.claims.length,
-      claims,
-      cumulativeSource: result.cumulativeSource.toString(),
-      cumulativeTarget: result.cumulativeTarget.toString(),
-      state: result.state,
-      abortReason: result.abortReason,
-      ...(packets.length > 0 ? { packets } : {}),
-      ...(packetsTruncated ? { packetsTruncated } : {}),
-      ...(result.rejections.length > 0
-        ? {
-            rejections: result.rejections.map((r) => ({
-              packetIndex: r.packetIndex,
-              sourceAmount: r.sourceAmount.toString(),
-              code: r.code,
-              message: r.message,
-            })),
-          }
-        : {}),
-      ...(errors.length > 0 ? { errors } : {}),
-      ...(realizedRate !== undefined ? { realizedRate } : {}),
-      ...(minExchangeRate !== undefined ? { minExchangeRate } : {}),
-      // A maker REJECT is the more specific diagnosis, so it wins `code` /
-      // `message`; with no reject at all, a local throw is what there is to
-      // report — without this fallback the failure had no message anywhere.
-      ...(firstReject
-        ? { code: firstReject.code, message: firstReject.message }
-        : firstError
-          ? { code: 'LOCAL_SEND_FAILED', message: firstError.message }
-          : {}),
-      ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
-      ...(hadIngestibleClaims
-        ? {
-            claimsVerified: ingest.revealed.length,
-            claimsRejected: ingest.rejected.length,
-            valueReceived: ingest.valueRevealed.toString(),
-          }
-        : {}),
-      ...(rollingNote ? { rolling: rollingNote } : {}),
-    };
+    const session = await this.negotiateRollingSession(req, apex);
+    return this.swapRolling(req, apex, session);
   }
 
   /**
-   * Drive a swap against a ROLLING-capable maker (toon-client#573, spec §3):
+   * Drive a swap against a ROLLING-capable maker (toon-client#573, spec §3),
+   * the ONLY swap protocol this client speaks (ADR 0003, toon-client#598):
    * each fill packet's leg A (sender→maker) and leg B (maker→sender) share
    * ONE sender-minted execution condition `C_i = sha256(P_i)`, so the legs
-   * commit or fail together. Unlike the legacy path (a single round trip
-   * whose FULFILL already carries the settlement metadata), this bypasses
-   * the sdk's `streamSwap` entirely: leg A is sent directly via
-   * `sendSwapPacket` with a rolling-shaped `data` payload
-   * (`encodeRollingFillPayload`), and leg B arrives as a SEPARATE inbound
-   * PREPARE the daemon's `jobHandler` (`RollingSwapSessionRegistry`,
-   * installed once in the constructor) routes to THIS call's registered
-   * session by `streamNonce`.
+   * commit or fail together. Leg A is sent directly via `sendSwapPacket`
+   * with a rolling-shaped `data` payload (`encodeRollingFillPayload`), and
+   * leg B arrives as a SEPARATE inbound PREPARE the daemon's `jobHandler`
+   * (`RollingSwapSessionRegistry`, installed once in the constructor) routes
+   * to THIS call's registered session by `streamNonce`.
    *
    * The atomicity property (spec R5/R8 — a withheld/failed leg-B
    * verification leaves leg A unfulfilled too) is not extra logic here: the
@@ -2524,10 +2168,11 @@ export class ClientRunner {
    * Packetization is a static even split, additionally capped by the quote's
    * per-packet `maxAmount` when the caller pinned no `packetCount`.
    *
-   * **The adaptive δ/W controller is DROPPED here, not ported** (toon-client
-   * #597, decided on the record — see the issue for the full writeup). Both
-   * knobs solved a problem specific to the legacy honeypot protocol that
-   * rolling does not have:
+   * **The adaptive δ/W controller was DROPPED here, not ported** (decided on
+   * the record in toon-client#597; the controller and its config surface were
+   * removed entirely in toon-client#598 — see that issue for the full
+   * writeup). Both knobs solved a problem specific to the legacy honeypot
+   * protocol that rolling does not have:
    * - **δ** (packet size) bounded *value at risk to one stale quote* — real
    *   when a maker's FULFILL commits before verification. Every rolling
    *   packet is priced at a FRESH `R_i` and verified BEFORE leg A reveals
@@ -2544,18 +2189,13 @@ export class ClientRunner {
    *   end state; porting a knob that can never move off its floor value
    *   would be dead configuration surface, not a capability.
    *
-   * `createSwapController` and `req.controller` remain reachable on the
-   * legacy path (see {@link negotiateRollingSession}) until Stage 4 removes
-   * that path entirely — this ticket only decides and records the rationale
-   * Stage 4's PR cites; it deletes nothing. `req.packetCount` is unaffected
-   * by the decision: it is the static split, honoured on BOTH paths (above).
+   * `req.packetCount` is the static split, honoured here (above).
    *
-   * Observability parity with the legacy path (toon-client#596): `packets[]`
-   * carries one entry per accepted fill (`effectiveRate`/`rateDeviation`
-   * computed the same way, `rate`/`rateTimestamp` echoing the maker's
-   * quote-tape from that fill's own advance, not just the session quote);
-   * `errors[]` carries packets that threw before the maker ever answered —
-   * distinct from `rejections[]`, a maker/leg-B answer that said no — and
+   * Observability (toon-client#596): `packets[]` carries one entry per
+   * accepted fill (`rate`/`rateTimestamp` echoing the maker's quote-tape from
+   * that fill's own advance, not just the session quote); `errors[]` carries
+   * packets that threw before the maker ever answered — distinct from
+   * `rejections[]`, a maker/leg-B answer that said no — and
    * `code: 'LOCAL_SEND_FAILED'` is reported when every failure was local;
    * `req.timeoutMs` bounds the loop (checked before each send, and handed to
    * `sendSwapPacket` as the remaining per-call budget) and is echoed as
@@ -2582,8 +2222,8 @@ export class ClientRunner {
       );
     }
     // Floor basis: the quote's R₀ when the session negotiated one (spec §5's
-    // `minExchangeRate = R₀ × (1 − tolerance)`), else the advertised rate —
-    // the same source the legacy path uses.
+    // `minExchangeRate = R₀ × (1 − tolerance)`), else the advertised
+    // `pair.rate` — all a caller-pinned session has to go on.
     const minExchangeRate =
       req.minExchangeRate ??
       deriveFloorRate(
@@ -2597,7 +2237,7 @@ export class ClientRunner {
       ? await loadMinaSignerClient()
       : undefined;
     const preimages = new InMemoryPreimageRetentionStore();
-    // The SAME leg-B source as the legacy path (#583): this maker's own
+    // The leg-B verifying-contract source (#583): this maker's own
     // announced `swapVerifyingContracts`, with local config as an operator
     // override. Before #583 this path read the daemon's `tokenNetworks` — leg
     // A, the contract the client PAYS the maker through — so a rolling claim
@@ -2838,20 +2478,22 @@ export class ClientRunner {
       );
     }
     if (rejections.length > 0 && claims.length === 0) {
-      // NOT a silent retry. `rolling: "auto"` falls back when the RFQ FAILS,
-      // and this branch is the other shape: the RFQ succeeded, a session was
-      // established, and then every fill failed. Re-running the same swap on
-      // the legacy path from here is what would risk paying or delivering
-      // twice, so the caller decides — but a caller that is told only
-      // `leg B failed; fill not executed` has no way to know the legacy path
-      // is right there and working. Say so.
+      // The shape swap#148 produces: the RFQ succeeded, a session was
+      // established, and then every fill failed. Nothing is retried here —
+      // re-running a fill after a rolling attempt is what would risk paying
+      // or delivering twice, so the caller decides. Since toon-client#598
+      // there is no weaker path to fall back to either (ADR 0003), so the
+      // result has to be self-diagnosing: a caller told only
+      // `leg B failed; fill not executed` cannot tell whose fault it is.
       warnings.push(
         'EVERY packet failed on the rolling path, so this swap delivered ' +
           'nothing. It also cost nothing: no leg A was revealed and no claim ' +
-          'is collectable (spec R5/R8). This is NOT retried as legacy ' +
-          'automatically — re-running a fill after a rolling attempt is what ' +
-          'risks double-paying. To settle this swap on the legacy path, ' +
-          'repeat it with `rolling: "off"`.'
+          'is collectable (spec R5/R8). Nothing is retried automatically — ' +
+          're-running a fill after a rolling attempt is what risks ' +
+          'double-paying, so the retry is the caller\'s call. TOON speaks ' +
+          'the rolling protocol ONLY (ADR 0003): there is no weaker path to ' +
+          'retry on, so read `rejections` for why leg B failed and fix the ' +
+          'maker before repeating this swap.'
       );
     }
     const firstError = errors[0];
@@ -2947,35 +2589,19 @@ export class ClientRunner {
 
   /**
    * Capability discovery for the rolling protocol — a PROBE, not an announce
-   * read (spec §10.3 step 2: *"A maker without it is legacy; `toon_swap`
-   * keeps the legacy path until the RFQ succeeds"*). swap#135 deliberately
-   * ships no `rollingCapable` flag, precisely so there is one source of truth
-   * and it is the round trip itself.
+   * read (spec §10.3 step 2). swap#135 deliberately ships no `rollingCapable`
+   * flag, precisely so there is one source of truth and it is the round trip
+   * itself.
    *
    * One paid, zero-condition kind:20033 write goes out; a kind:20034 quote
    * means the maker registered the session and the rolling path is live.
    *
-   * **Any other outcome is now an ERROR, not a downgrade (toon-client#595).**
-   * ADR 0003 decides that the rolling swap is the only swap, so a maker that
-   * stops answering RFQs is a fault to be reported — not a reason to serve
-   * every caller the strictly less safe protocol (verify-after-commit against
-   * an unbounded held price, uncoupled legs) without telling them. The
-   * fallback existed to cope with makers that predate rolling; the deployed
-   * maker is rolling-capable, and a silent downgrade is exactly how a maker
-   * regression would go unnoticed fleet-wide.
-   *
-   * `req.rolling` (or `swapDefaults.rolling`) selects:
-   * - `'require'` — **the default**. Probe, and throw
-   *   {@link RollingUnavailableError} naming the maker pubkey, its ILP
-   *   address, the reason discriminator and the underlying diagnosis.
-   * - `'auto'` — probe, fall back to legacy on any failure, annotating
-   *   `SwapResponse.rolling` and adding a downgrade `warning`. A transitional
-   *   escape hatch: it survives exactly one release and is removed with the
-   *   legacy sender (Stage 4, toon-client#598).
-   * - `'off'` — never probe; no RFQ packet is paid for at all. Also annotated
-   *   and warned (`fallbackReason: 'off'`): under #592 this is the documented
-   *   move when a rolling fill cannot be DELIVERED (swap#148), so it must
-   *   remain reachable — but it is never silent.
+   * **Any other outcome throws** {@link RollingUnavailableError} naming the
+   * maker pubkey, its ILP address, the reason discriminator and the
+   * underlying diagnosis (toon-client#595, hardened into the only behaviour
+   * in toon-client#598: ADR 0003 — TOON supports the rolling swap protocol
+   * only, so a maker that stops answering RFQs is a fault to report, not a
+   * reason to silently serve a weaker protocol).
    *
    * `req.streamNonce` skips the probe and uses that session id directly — the
    * pre-#585 out-of-band registration path (toon-client#573), kept because a
@@ -2984,71 +2610,7 @@ export class ClientRunner {
   private async negotiateRollingSession(
     req: SwapRequest,
     apex: ApexConnection
-  ): Promise<RollingNegotiation> {
-    const mode = req.rolling ?? this.config.swapDefaults?.rolling ?? 'require';
-    const required = mode === 'require';
-
-    /** Fall back to legacy — or, by default (`require`), refuse loudly. */
-    const legacy = (
-      probed: boolean,
-      reason: string,
-      message: string
-    ): RollingNegotiation => {
-      if (required) {
-        throw new RollingUnavailableError({
-          reason,
-          detail: message,
-          swapPubkey: req.swapPubkey,
-          destination: req.destination,
-          probed,
-        });
-      }
-      this.log(
-        `[runner] swap: rolling unavailable (${reason}) — legacy path: ${message}`
-      );
-      return {
-        kind: 'legacy',
-        note: {
-          probed,
-          used: false,
-          fallbackReason: reason,
-          fallbackMessage: message,
-        },
-      };
-    };
-
-    if (mode === 'off') {
-      if (req.streamNonce !== undefined || req.senderConditions) {
-        throw new InvalidPayloadError(
-          '`rolling: "off"` cannot be combined with `streamNonce` / ' +
-            '`senderConditions` — those select the rolling path, which "off" ' +
-            'disables. Drop one of them.'
-        );
-      }
-      // #595: 'off' still works — it is the escape hatch #592's own warning
-      // points at — but it stops being INVISIBLE. Before this, a swap that ran
-      // legacy because the daemon default said so carried no `rolling` block
-      // at all, so nothing downstream could tell it apart from a rolling one.
-      this.log(
-        '[runner] swap: rolling DISABLED by `rolling: "off"` — no RFQ probe ' +
-          'sent; this swap runs the legacy zero-condition path'
-      );
-      return {
-        kind: 'legacy',
-        note: {
-          probed: false,
-          used: false,
-          fallbackReason: 'off',
-          fallbackMessage:
-            '`rolling: "off"` was set (on the request or as ' +
-            '`swapDefaults.rolling`), so no kind:20033 RFQ was sent and this ' +
-            'swap ran the LEGACY zero-condition path: the target-chain claim ' +
-            'is verified only AFTER leg A has committed, and the legs are not ' +
-            'coupled. The legacy path is being removed (ADR 0003).',
-        },
-      };
-    }
-
+  ): Promise<RollingSessionArm> {
     // Caller-pinned session: registered out of band (toon-client#573). No
     // probe — the nonce IS the establishment, and re-RFQing it would mint a
     // second session the maker never asked for.
@@ -3058,34 +2620,7 @@ export class ClientRunner {
           '`streamNonce` must be exactly 16 bytes, lowercase hex (32 chars).'
         );
       }
-      if (req.controller) {
-        // Contradictory: a pinned session names the ROLLING path, and the
-        // adaptive controller exists only on the legacy one. Silently
-        // dropping either would be worse than refusing.
-        throw new InvalidPayloadError(
-          '`streamNonce` (the rolling path) and `controller` (a legacy-path ' +
-            'feature, not implemented on the rolling fill loop) are mutually ' +
-            'exclusive. Drop `controller`, or drop `streamNonce` to let the ' +
-            'RFQ probe choose the path.'
-        );
-      }
-      return { kind: 'rolling', streamNonce: req.streamNonce, probed: false };
-    }
-
-    // The adaptive δ/W controller is DROPPED on rolling, not merely
-    // unported (toon-client#597, decided on the record: rolling's
-    // per-packet re-quote + verify-before-reveal already bounds pick-off
-    // risk, and the sequential fill loop pins W at 1 — see swapRolling's
-    // doc comment for the full reasoning). Asking for one is an explicit
-    // request for the legacy path, where it still lives until Stage 4;
-    // probing anyway would pay for a rolling session we then would not use.
-    if (req.controller) {
-      return legacy(
-        false,
-        'controller',
-        'the adaptive δ/W controller (`controller`) is a legacy-path feature, ' +
-          'DROPPED (not ported) on the rolling fill loop — toon-client#597'
-      );
+      return { streamNonce: req.streamNonce, probed: false };
     }
 
     // The leg-B destination. Load-bearing with NO maker-side fallback: the
@@ -3096,12 +2631,15 @@ export class ClientRunner {
     const senderIlpAddress =
       req.senderIlpAddress ?? safe(() => apex.client.getOwnIlpAddress?.());
     if (senderIlpAddress === undefined || senderIlpAddress.length === 0) {
-      return legacy(
-        false,
-        'no-sender-address',
-        'this client cannot state the ILP address it receives leg-B PREPAREs ' +
-          'on — pass `senderIlpAddress` explicitly'
-      );
+      throw new RollingUnavailableError({
+        reason: 'no-sender-address',
+        detail:
+          'this client cannot state the ILP address it receives leg-B ' +
+          'PREPAREs on — pass `senderIlpAddress` explicitly',
+        swapPubkey: req.swapPubkey,
+        destination: req.destination,
+        probed: false,
+      });
     }
 
     const outcome = await sendRollingRfq({
@@ -3118,7 +2656,13 @@ export class ClientRunner {
       ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
     });
     if (!outcome.ok) {
-      return legacy(outcome.sent, outcome.reason, outcome.message);
+      throw new RollingUnavailableError({
+        reason: outcome.reason,
+        detail: outcome.message,
+        swapPubkey: req.swapPubkey,
+        destination: req.destination,
+        probed: outcome.sent,
+      });
     }
 
     this.log(
@@ -3126,7 +2670,6 @@ export class ClientRunner {
         `R₀ ${outcome.quote.rate} (leg B to ${senderIlpAddress})`
     );
     return {
-      kind: 'rolling',
       streamNonce: outcome.streamNonce,
       quote: outcome.quote,
       probed: true,
@@ -3394,67 +2937,6 @@ export class ClientRunner {
       }
     }
     return { results };
-  }
-
-  /**
-   * Build the adaptive δ/W controller for one swap session (#351, spec §6).
-   * State is keyed per-(source chain, maker, pair) and persisted in the
-   * daemon's data dir via the sdk's atomic JSON-file store, so ramp/trust
-   * survives across swaps and daemon restarts.
-   */
-  private async createSwapController(
-    req: SwapRequest,
-    params: SwapControllerParams
-  ): Promise<AdaptiveDeltaController> {
-    if (
-      typeof params.advertisedSpread !== 'number' ||
-      !(params.advertisedSpread > 0)
-    ) {
-      throw new InvalidPayloadError(
-        'controller.advertisedSpread must be a positive fraction (e.g. ' +
-          '0.004 = 40 bps): ε is denominated off the half-spread and the sdk ' +
-          'deliberately has no default.'
-      );
-    }
-    const store = new JsonFileSwapControllerStateStore(
-      this.swapControllerStatePath()
-    );
-    return AdaptiveDeltaController.create({
-      makerPubkey: req.swapPubkey,
-      pair: req.pair,
-      advertisedSpread: params.advertisedSpread,
-      ...(params.maxPacketAmount !== undefined
-        ? { maxPacketAmount: BigInt(params.maxPacketAmount) }
-        : {}),
-      ...(params.minPacketAmount !== undefined
-        ? { minPacketAmount: BigInt(params.minPacketAmount) }
-        : {}),
-      ...(params.maxWindow !== undefined
-        ? { maxWindow: params.maxWindow }
-        : {}),
-      ...(params.cleanStreakLength !== undefined
-        ? { cleanStreakLength: params.cleanStreakLength }
-        : {}),
-      ...(params.coldStartDivisor !== undefined
-        ? { coldStartDivisor: params.coldStartDivisor }
-        : {}),
-      ...(params.ewmaAlpha !== undefined
-        ? { ewmaAlpha: params.ewmaAlpha }
-        : {}),
-      store,
-    });
-  }
-
-  /**
-   * Controller-state file path: resolved config value, or the same
-   * `<configDir>` the other daemon stores live in (`channels.json`,
-   * `apex-channels.json`) for manually-built configs.
-   */
-  private swapControllerStatePath(): string {
-    return (
-      this.config.swapControllerStatePath ??
-      join(configDir(), 'swap-controller-state.json')
-    );
   }
 
   /**
@@ -3817,39 +3299,6 @@ export class ClientRunner {
 
   // ── internals ────────────────────────────────────────────────────────────
 
-  /**
-   * Adapt the daemon's line-oriented `log` to the pino-shaped logger the sdk
-   * expects (`{ debug, info, warn, error }`, each called with ONE structured
-   * event object). The daemon has no pino, so each event is flattened to a
-   * single readable line — the alternative (the sdk's default) is a no-op
-   * logger that drops `stream_swap.wrap_failed` / `send_failed` on the floor.
-   */
-  private structuredLogger(scope: string): {
-    debug: (...a: unknown[]) => void;
-    info: (...a: unknown[]) => void;
-    warn: (...a: unknown[]) => void;
-    error: (...a: unknown[]) => void;
-  } {
-    const emit =
-      (level: string) =>
-      (...args: unknown[]): void => {
-        try {
-          const parts = args.map((a) =>
-            typeof a === 'string' ? a : formatStructuredEvent(a)
-          );
-          this.log(`[runner] ${scope} ${level}: ${parts.join(' ')}`);
-        } catch {
-          // Logging must never be able to break the operation it describes.
-        }
-      };
-    return {
-      debug: emit('debug'),
-      info: emit('info'),
-      warn: emit('warn'),
-      error: emit('error'),
-    };
-  }
-
   private selectApex(btpUrl?: string): ApexConnection {
     if (btpUrl) {
       const apex = this.apexes.get(btpUrl);
@@ -3974,18 +3423,19 @@ export class InvalidPayloadError extends Error {
 }
 
 /**
- * Thrown when a swap could not run on the ROLLING path and the caller did not
- * ask for the legacy downgrade (toon-client#595, ADR 0003 — "the rolling swap
- * is the only swap"). This is a COUNTERPARTY fault, not a bad request: the
- * request is well-formed and the maker did not establish a session, so it maps
- * to 502 alongside `PublishRejectedError` rather than to 400.
+ * Thrown when a swap could not run on the ROLLING path (toon-client#595, ADR
+ * 0003 — "the rolling swap is the only swap"; the legacy sender this used to
+ * fall back to was removed in toon-client#598). This is a COUNTERPARTY
+ * fault, not a bad request: the request is well-formed and the maker did not
+ * establish a session, so it maps to 502 alongside `PublishRejectedError`
+ * rather than to 400.
  *
  * The message is the diagnosis a stranded caller needs — which maker, at which
  * ILP address, which reason discriminator, and what to do — and the same facts
  * are carried as fields so a host can branch on them without parsing prose.
  */
 export class RollingUnavailableError extends Error {
-  /** The discriminator: `rejected`, `no-response`, `not-a-quote`, `nonce-mismatch`, `send-failed`, `controller`, `no-sender-address`. */
+  /** The discriminator: `rejected`, `no-response`, `not-a-quote`, `nonce-mismatch`, `send-failed`, `no-sender-address`. */
   readonly reason: string;
   /** The underlying diagnosis (maker reject code, decode failure, …). */
   readonly detail: string;
@@ -4006,13 +3456,9 @@ export class RollingUnavailableError extends Error {
       `Rolling swap unavailable: maker ${params.swapPubkey} at ` +
         `${params.destination} did not establish a rolling session ` +
         `(reason: ${params.reason}) — ${params.detail}. TOON supports the ` +
-        'rolling swap protocol only (ADR 0003): the legacy zero-condition ' +
-        'path verifies the target-chain claim only AFTER leg A has ' +
-        'committed, so it is not taken silently. Fix the maker — it needs ' +
-        'kind:20033 RFQ intake and a `swapVerifyingContracts` announce — or, ' +
-        'to settle this one swap on the legacy path anyway, repeat it with ' +
-        '`rolling: "auto"` (probe, then downgrade) or `rolling: "off"` (no ' +
-        'probe at all). Both are removed when the legacy sender goes.'
+        'rolling swap protocol only (ADR 0003) — there is no other swap ' +
+        'protocol to fall back to. Fix the maker: it needs kind:20033 RFQ ' +
+        'intake and a `swapVerifyingContracts` announce.'
     );
     this.name = 'RollingUnavailableError';
     this.reason = params.reason;
@@ -4265,28 +3711,6 @@ function negotiationsAgree(
     (persisted.tokenAddress ?? '') === (fresh.tokenAddress ?? '') &&
     persisted.destination === fresh.destination
   );
-}
-
-/**
- * Flatten one structured log event (the sdk calls its logger with a single
- * object, pino-style) into a `k=v` line the daemon's line logger can carry.
- * Falls back to `String(value)` for anything unserializable — a logger that
- * throws would take the operation down with it.
- */
-function formatStructuredEvent(value: unknown): string {
-  if (value === null || typeof value !== 'object') return String(value);
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length === 0) return '{}';
-  return entries
-    .map(([k, v]) => {
-      if (v === null || v === undefined) return `${k}=${String(v)}`;
-      if (typeof v === 'object') {
-        const json = safe(() => JSON.stringify(v));
-        return `${k}=${json ?? String(v)}`;
-      }
-      return `${k}=${String(v)}`;
-    })
-    .join(' ');
 }
 
 /** Filesystem-safe slug for a per-apex channel-store filename. */

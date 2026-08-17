@@ -1,30 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// swap() streams via the SDK; mock the boundary so route wiring tests don't need
-// a real swap peer. The mock returns a single accepted claim.
-vi.mock('@toon-protocol/sdk/swap', () => ({
-  streamSwap: vi.fn().mockResolvedValue({
-    state: 'completed',
-    claims: [
-      {
-        packetIndex: 0,
-        sourceAmount: 10n,
-        targetAmount: 10n,
-        claimBytes: new Uint8Array([1]),
-        swapEphemeralPubkey: 'ab'.repeat(32),
-        pair: {},
-        receivedAt: 0,
-      },
-    ],
-    rejections: [],
-    errors: [],
-    abortReason: 'complete',
-    cumulativeSource: 10n,
-    cumulativeTarget: 10n,
-    packetsSent: 1,
-    packetsScheduled: 1,
-  }),
-}));
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,12 +9,38 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { wrapEvent } from 'nostr-tools/nip59';
 import {
   unwrapGiftWrapWithKey,
+  evmClaimDigest,
   type UnwrappedGiftWrap,
 } from '@toon-protocol/client';
+import { hexToBytes } from '@toon-protocol/core';
+import { privateKeyToAccount } from 'viem/accounts';
 import { registerRoutes } from './routes.js';
 import { ClientRunner, type ToonClientLike } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
 import { RelaySubscription } from '../relay-subscription.js';
+
+// toon-client#598: swap() only speaks the ROLLING protocol now (no more
+// `@toon-protocol/sdk/swap` boundary to mock). A route wiring test that wants
+// an accepted swap needs a real, fully-verifiable EVM balance-proof claim —
+// the rolling receive path throws on a metadata-less claim rather than
+// surfacing it unverified (unlike the deleted legacy sender). Mirrors the
+// fixtures in `client-runner.test.ts`'s rolling-swap tests.
+const SWAP_SIGNER_ACCOUNT = privateKeyToAccount(
+  '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
+);
+const SWAP_SIGNER = SWAP_SIGNER_ACCOUNT.address.toLowerCase();
+const SWAP_RECIPIENT = '0x' + 'aa'.repeat(20);
+const SWAP_CHANNEL = '0x' + '11'.repeat(32);
+const SWAP_VERIFYING_CONTRACT = '0x' + '22'.repeat(20);
+const SWAP_PAIR = {
+  from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
+  to: { assetCode: 'USDC', assetScale: 6, chain: 'evm:anvil:31337' },
+  rate: '1.0',
+};
+const SWAP_CHAIN_ID = 31337;
+const SWAP_VERIFYING_CONTRACTS = { [SWAP_PAIR.to.chain]: SWAP_VERIFYING_CONTRACT };
+/** 16-byte lowercase-hex streamNonce, pinned to skip the RFQ probe (#573/#585). */
+const STREAM_NONCE = '6e'.repeat(16);
 
 /** Minimal happy-path fake client for route wiring tests. */
 class FakeClient implements ToonClientLike {
@@ -177,8 +178,84 @@ class FakeClient implements ToonClientLike {
   getSettleableAt(): bigint | undefined {
     return this.settleableAtValue;
   }
-  async sendSwapPacket(): Promise<{ accepted: boolean }> {
-    return { accepted: true };
+  /**
+   * Captured from `ToonClientConfig.jobHandler` at `createClient(cfg)` time
+   * (toon-client#573) — routes an inbound rolling leg-B advance to the
+   * daemon's session registry, same as `FakeRollingMakerClient` in
+   * `client-runner.test.ts`.
+   */
+  jobHandler?: (job: {
+    amount: bigint;
+    destination: string;
+    executionCondition: Uint8Array;
+    expiresAt: Date;
+    data: Uint8Array;
+  }) => Promise<{ fulfillment: Uint8Array; data?: Uint8Array }>;
+
+  /**
+   * Plays the maker's leg-B role for a rolling fill: reads the leg-A fill
+   * payload, hands a genuinely-signed EVM advance to the captured
+   * `jobHandler`, and reports FULFILLed iff the daemon's own verify-before-
+   * reveal accepted it.
+   */
+  async sendSwapPacket(params: {
+    destination: string;
+    amount: bigint;
+    toonData: Uint8Array;
+    executionCondition?: Uint8Array;
+    expiresAt?: Date;
+  }): Promise<{ accepted: boolean; code?: string; message?: string }> {
+    if (!this.jobHandler) return { accepted: true };
+    const fill = JSON.parse(new TextDecoder().decode(params.toonData)) as {
+      streamNonce: string;
+      seq: number;
+    };
+    const nonce = String(fill.seq);
+    const cumulativeAmount = String(Number(params.amount) * fill.seq);
+    const digest = evmClaimDigest(
+      { chainId: SWAP_CHAIN_ID, verifyingContract: SWAP_VERIFYING_CONTRACT },
+      {
+        channelId: SWAP_CHANNEL,
+        cumulativeAmount: BigInt(cumulativeAmount),
+        nonce: BigInt(nonce),
+        recipient: SWAP_RECIPIENT,
+      }
+    );
+    const sigHex = await SWAP_SIGNER_ACCOUNT.sign({ hash: digest });
+    const data = new TextEncoder().encode(
+      JSON.stringify({
+        proto: 'rolling/1',
+        type: 'advance',
+        streamNonce: fill.streamNonce,
+        seq: fill.seq,
+        claim: Buffer.from(hexToBytes(sigHex)).toString('base64'),
+        channelId: SWAP_CHANNEL,
+        nonce,
+        cumulativeAmount,
+        recipient: SWAP_RECIPIENT,
+        swapSignerAddress: SWAP_SIGNER,
+        rate: '1.0',
+        rateTimestamp: 1_700_000_000_000,
+        sourceAmount: String(params.amount),
+        targetAmount: String(params.amount),
+      })
+    );
+    try {
+      await this.jobHandler({
+        amount: params.amount,
+        destination: params.destination,
+        executionCondition: params.executionCondition ?? new Uint8Array(32),
+        expiresAt: params.expiresAt ?? new Date(Date.now() + 30_000),
+        data,
+      });
+      return { accepted: true };
+    } catch (err) {
+      return {
+        accepted: false,
+        code: 'F99',
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
   /** Default: a 200 text/plain 'hello'. Overridden per-test where needed. */
   h402Fetch = vi.fn(
@@ -204,8 +281,11 @@ function config(): ResolvedDaemonConfig {
       tmpdir(),
       `toon-routes-apex-${process.pid}.json`
     ),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    toonClientConfig: { btpUrl: 'ws://apex/btp' } as any,
+    toonClientConfig: {
+      btpUrl: 'ws://apex/btp',
+      swapVerifyingContracts: SWAP_VERIFYING_CONTRACTS,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any,
   };
 }
 
@@ -235,7 +315,10 @@ describe('control API routes', () => {
     client = new FakeClient();
     runner = new ClientRunner({
       config: config(),
-      createClient: () => client,
+      createClient: (cfg) => {
+        client.jobHandler = cfg.jobHandler as typeof client.jobHandler;
+        return client;
+      },
       createRelay: fakeRelay,
     });
     if (ready) await runner.bootstrap();
@@ -606,14 +689,12 @@ describe('control API routes', () => {
           destination: 'g.toon.swap',
           amount: '10',
           swapPubkey: 'cd'.repeat(32),
-          pair: {
-            from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
-            to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
-            rate: '1.0',
-          },
-          chainRecipient: 'SoLrecipient',
-          // #595: the legacy body this fake maker exercises is opt-in now.
-          rolling: 'auto',
+          pair: SWAP_PAIR,
+          chainRecipient: SWAP_RECIPIENT,
+          // Pin the session (toon-client#573/#585) so this fake — a plain
+          // rolling fill responder, not an RFQ-capable one — can be driven
+          // straight to a fill without wiring kind:20033/20034 wire mechanics.
+          streamNonce: STREAM_NONCE,
         },
       });
       expect(res.statusCode).toBe(200);
@@ -644,9 +725,10 @@ describe('control API routes', () => {
         swapPubkey: 'cd'.repeat(32),
         destination: 'g.toon.swap',
       });
-      // The detail is the diagnosis, naming the maker and the way out.
+      // The detail is the diagnosis, naming the maker and the way out — no
+      // legacy fallback to mention any more (ADR 0003, toon-client#598).
       expect(res.json().detail).toContain('g.toon.swap');
-      expect(res.json().detail).toContain('rolling: "auto"');
+      expect(res.json().detail).toContain('kind:20033 RFQ intake');
     });
 
     it('POST /swap rejects a missing destination with 400', async () => {

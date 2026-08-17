@@ -315,7 +315,7 @@ describe('dispatchTool', () => {
     expect(swapTool?.inputSchema['required']).not.toContain('btpUrl');
   });
 
-  it('[#595] toon_swap surfaces rolling_unavailable with the reason, the maker, and a "this is a paid downgrade" hint', async () => {
+  it('[#595/#598] toon_swap surfaces rolling_unavailable with the reason, the maker, and a fix-the-maker hint', async () => {
     const swap = vi
       .fn()
       .mockRejectedValue(
@@ -348,29 +348,26 @@ describe('dispatchTool', () => {
     expect(parsed.reason).toBe('rejected');
     expect(parsed.swapPubkey).toBe('cd'.repeat(32));
     expect(parsed.destination).toBe('g.toon.swap.maker');
-    // The legacy downgrade must not read as a free retry to a model.
-    expect(parsed.hint).toMatch(/PAID/);
-    expect(parsed.hint).toMatch(/ask before/i);
+    // The swap did not run and nothing was spent beyond the RFQ probe — and
+    // there is no legacy downgrade to warn about any more (ADR 0003,
+    // toon-client#598).
+    expect(parsed.hint).toMatch(/did NOT run/);
+    expect(parsed.hint).toMatch(/kind:20033 RFQ intake/);
   });
 
-  it('[#585/#595] toon_swap declares the rolling controls, all optional (`require` is the default)', () => {
+  it('[#585] toon_swap declares senderIlpAddress / rfqAmount, both optional', () => {
     const swapTool = TOOL_DEFINITIONS.find((t) => t.name === 'toon_swap');
     const props = swapTool?.inputSchema['properties'] as
       | Record<string, unknown>
       | undefined;
-    expect(props?.['rolling']).toMatchObject({
-      type: 'string',
-      enum: ['auto', 'off', 'require'],
-    });
     expect(props?.['senderIlpAddress']).toMatchObject({ type: 'string' });
     expect(props?.['rfqAmount']).toMatchObject({ type: 'string' });
     const required = swapTool?.inputSchema['required'];
-    expect(required).not.toContain('rolling');
     expect(required).not.toContain('senderIlpAddress');
     expect(required).not.toContain('rfqAmount');
   });
 
-  it('[#585] toon_swap forwards rolling / senderIlpAddress / rfqAmount, and drops a bogus rolling value', async () => {
+  it('[#585] toon_swap forwards senderIlpAddress / rfqAmount', async () => {
     const swap = vi.fn().mockResolvedValue({ accepted: true, claims: [] });
     const client = stubClient({ swap });
     const pair = {
@@ -387,21 +384,15 @@ describe('dispatchTool', () => {
     };
     await dispatchTool(client, 'toon_swap', {
       ...base,
-      rolling: 'require',
       senderIlpAddress: 'g.toon.client',
       rfqAmount: '7',
     });
     expect(swap).toHaveBeenCalledWith(
       expect.objectContaining({
-        rolling: 'require',
         senderIlpAddress: 'g.toon.client',
         rfqAmount: '7',
       })
     );
-    // An out-of-enum value is dropped, not forwarded as an invalid mode.
-    swap.mockClear();
-    await dispatchTool(client, 'toon_swap', { ...base, rolling: 'yes-please' });
-    expect(swap.mock.calls[0]?.[0]).not.toHaveProperty('rolling');
   });
 
   it('toon_balances returns the wallet balances as structuredContent (iframe seam)', async () => {

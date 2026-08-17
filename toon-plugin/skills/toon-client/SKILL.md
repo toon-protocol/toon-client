@@ -302,11 +302,11 @@ report. TOON supports rolling **only**: a maker that does not answer now fails
 the call with `rolling_unavailable`, naming the maker pubkey, its ILP address
 and the reason (`rejected`, `no-response`, `nonce-mismatch`, …). Nothing was
 swapped and nothing beyond the probe was spent — report the reason, do not
-retry blindly. `rolling: 'auto'` (probe, then downgrade) and `rolling: 'off'`
-(no probe) still reach the **legacy** kind:20032 stream, which verifies the
-claim only AFTER the payment commits — a paid, weaker retry, so ask the user
-first. Both are transitional. The response's `rolling` block always says which
-path ran and why, and a legacy run also carries a `warning`.
+retry blindly. There is no weaker path to fall back to: the legacy kind:20032
+stream is gone (ADR 0003), so a maker that does not answer has to be fixed
+(kind:20033 RFQ intake + a `swapVerifyingContracts` announce) before the swap
+can succeed. The response's `rolling` block carries the session and quote
+details of the run that did happen.
 
 ## Paid HTTP (x402)
 

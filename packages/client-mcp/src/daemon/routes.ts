@@ -504,9 +504,9 @@ function mapError(reply: FastifyReply, err: unknown): FastifyReply {
     return sendError(reply, 400, 'invalid_payload', { detail: err.message });
   }
   if (err instanceof RollingUnavailableError) {
-    // #595: the maker did not establish a rolling session and the caller did
-    // not ask for the legacy downgrade. A counterparty fault, not a malformed
-    // request — 502, next to `rejected`, never 400. The reason discriminator
+    // #595/#598: the maker did not establish a rolling session, and there is
+    // no other swap protocol to fall back to. A counterparty fault, not a
+    // malformed request — 502, next to `rejected`, never 400. The reason
     // rides alongside `detail` so a host can branch without parsing prose.
     return sendError(reply, 502, 'rolling_unavailable', {
       detail: err.message,
