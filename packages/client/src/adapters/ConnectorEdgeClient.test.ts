@@ -10,6 +10,7 @@ import {
   parseClaimStateResponse,
 } from './ConnectorEdgeClient.js';
 import { NetworkError } from '../errors.js';
+import { signRouteIdentity } from '../wire/route-identity.js';
 
 /**
  * A 65-byte SEC1-uncompressed secp256k1 key: `0x04` + 64 body bytes. The exact
@@ -281,6 +282,140 @@ describe('ConnectorEdgeClient.getIdentity', () => {
     await expect(client.getIdentity('https://apex.example')).rejects.toThrow(
       NetworkError
     );
+  });
+});
+
+describe('ConnectorEdgeClient.getIdentity — routeIdentity (connector #1026)', () => {
+  const FAR_END_SECRET = new Uint8Array(32).fill(11);
+  const HOP_SECRET = new Uint8Array(32).fill(12);
+  const PREFIX = 'g.example.beta.app';
+  const toHex = (b: Uint8Array) => `0x${Buffer.from(b).toString('hex')}`;
+  const farEnd = signRouteIdentity(FAR_END_SECRET, PREFIX);
+  const hopKeyHex = toHex(signRouteIdentity(HOP_SECRET, PREFIX).publicKey);
+  const honestStatement = {
+    prefix: PREFIX,
+    publicKey: toHex(farEnd.publicKey),
+    signature: toHex(farEnd.signature),
+  };
+  const clientOver = (body: unknown) => {
+    const fetchImpl = vi
+      .fn<[string, RequestInit?], Promise<Response>>()
+      .mockImplementation(async () => jsonResponse(body));
+    return {
+      fetchImpl,
+      client: new ConnectorEdgeClient({
+        fetch: fetchImpl as unknown as typeof fetch,
+      }),
+    };
+  };
+
+  it("asks for the destination and seals to the relayed far-end key, not the hop's", async () => {
+    const { fetchImpl, client } = clientOver({
+      keyId: 'hop',
+      publicKey: hopKeyHex,
+      routeIdentity: honestStatement,
+    });
+    const identity = await client.getIdentity('https://hop.example/ilp', {
+      destination: `${PREFIX}.deeper`,
+    });
+    expect(requestedUrl(fetchImpl)).toBe(
+      `https://hop.example/ilp/identity?destination=${encodeURIComponent(`${PREFIX}.deeper`)}`
+    );
+    expect(identity.publicKeyHex).toBe(honestStatement.publicKey);
+    expect(identity.publicKeyHex).not.toBe(hopKeyHex);
+    expect(identity.routeIdentity).toEqual({
+      prefix: PREFIX,
+      publicKeyHex: honestStatement.publicKey,
+    });
+    expect(identity.keyId).toBe('hop');
+  });
+
+  it('without a destination, answers as before and ignores any routeIdentity', async () => {
+    const { fetchImpl, client } = clientOver({
+      keyId: 'hop',
+      publicKey: hopKeyHex,
+      routeIdentity: honestStatement,
+    });
+    const identity = await client.getIdentity('https://hop.example/ilp');
+    expect(requestedUrl(fetchImpl)).toBe('https://hop.example/ilp/identity');
+    expect(identity.publicKeyHex).toBe(hopKeyHex);
+    expect(identity.routeIdentity).toBeUndefined();
+  });
+
+  it('falls back to the answering key when the connector cannot vouch for one', async () => {
+    // The pre-#1026 answer, or a connector whose next hop did not say. The
+    // caller gets what it always got — and on a forwarded route that is the
+    // wrong key, which the far end will refuse F01 exactly as before.
+    const { client } = clientOver({ keyId: 'hop', publicKey: hopKeyHex });
+    const identity = await client.getIdentity('https://hop.example', {
+      destination: PREFIX,
+    });
+    expect(identity.publicKeyHex).toBe(hopKeyHex);
+    expect(identity.routeIdentity).toBeUndefined();
+  });
+
+  it('refuses a statement whose signature does not verify against the key it names', async () => {
+    // A dishonest hop naming its OWN key under the far end's signature.
+    const { client } = clientOver({
+      keyId: 'hop',
+      publicKey: hopKeyHex,
+      routeIdentity: { ...honestStatement, publicKey: hopKeyHex },
+    });
+    await expect(
+      client.getIdentity('https://hop.example', { destination: PREFIX })
+    ).rejects.toMatchObject({ code: 'ROUTE_IDENTITY_INVALID' });
+  });
+
+  it('refuses a genuine statement that does not cover the destination', async () => {
+    const { client } = clientOver({
+      keyId: 'hop',
+      publicKey: hopKeyHex,
+      routeIdentity: honestStatement,
+    });
+    await expect(
+      client.getIdentity('https://hop.example', {
+        destination: 'g.example.beta.other',
+      })
+    ).rejects.toMatchObject({ code: 'ROUTE_IDENTITY_INVALID' });
+  });
+
+  it('refuses a malformed statement rather than ignoring it', async () => {
+    for (const routeIdentity of [
+      'not-an-object',
+      { prefix: PREFIX },
+      { prefix: PREFIX, publicKey: 'zz', signature: '0x00' },
+      {
+        prefix: PREFIX,
+        publicKey: honestStatement.publicKey,
+        signature: '0x1234',
+      },
+    ]) {
+      const { client } = clientOver({
+        keyId: 'hop',
+        publicKey: hopKeyHex,
+        routeIdentity,
+      });
+      await expect(
+        client.getIdentity('https://hop.example', { destination: PREFIX })
+      ).rejects.toMatchObject({ code: 'ROUTE_IDENTITY_INVALID' });
+    }
+  });
+
+  it('caches per (endpoint, destination), and invalidation clears both shapes', async () => {
+    const { fetchImpl, client } = clientOver({
+      keyId: 'hop',
+      publicKey: hopKeyHex,
+      routeIdentity: honestStatement,
+    });
+    await client.getIdentity('https://hop.example', { destination: PREFIX });
+    await client.getIdentity('https://hop.example', { destination: PREFIX });
+    await client.getIdentity('https://hop.example');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(client.hasCachedIdentity('https://hop.example', PREFIX)).toBe(true);
+    expect(client.hasCachedIdentity('https://hop.example')).toBe(true);
+    client.invalidateIdentity('https://hop.example');
+    expect(client.hasCachedIdentity('https://hop.example', PREFIX)).toBe(false);
+    expect(client.hasCachedIdentity('https://hop.example')).toBe(false);
   });
 });
 

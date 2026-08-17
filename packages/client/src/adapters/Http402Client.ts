@@ -318,8 +318,12 @@ export class Http402Client {
     const claim = await resolveClaim(destination, accept.amount);
 
     // The key first — no packet exists without it. The 402 named the endpoint
-    // to pay, so that is the connector whose identity must seal this.
-    const identity = await this.connectorEdge.getIdentity(accept.httpEndpoint);
+    // to pay; asked FOR this destination (connector #1026), that endpoint
+    // answers with the key of whichever connector terminates it — its own,
+    // or a far end's it forwards to, relayed and verified.
+    const identity = await this.connectorEdge.getIdentity(accept.httpEndpoint, {
+      destination,
+    });
 
     // One call mints the seal and the condition that matches it, so the two
     // cannot drift apart.

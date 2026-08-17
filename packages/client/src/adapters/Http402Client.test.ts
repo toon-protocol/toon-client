@@ -68,7 +68,11 @@ function fetchWith(
 ) {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.endsWith('/ilp/identity')) return connector.fetch(input);
+    // Path match, not suffix: since connector #1026 the identity request
+    // carries `?destination=`, and the fake answers per destination.
+    if (new URL(url, 'http://x.invalid').pathname.endsWith('/ilp/identity')) {
+      return connector.fetch(input);
+    }
     return challenge();
   }) as unknown as typeof fetch;
 }
@@ -169,6 +173,73 @@ describe('Http402Client.fetch — 402 → pay → 200', () => {
     // Handler-relative (ADR 0025): no leading '/'.
     expect(request.target).toBe('resource?q=1');
     expect(request.body).toHaveLength(0);
+  });
+
+  it('seals to the FAR END when the paying edge forwards the destination (connector #1026)', async () => {
+    // Two connectors: the edge the 402 names (a forwarding hop) and the one
+    // that actually terminates TOON_DESTINATION behind it. Distinct keys.
+    // The edge relays the far end's self-signed routeIdentity; the client
+    // verifies it and seals to it, so the hop never opens the payload.
+    const farEnd = new FakeTerminatingConnector({
+      identitySecret: new Uint8Array(32).fill(11),
+      endpoint: 'http://far-end.test',
+    });
+    farEnd.terminatedPrefix = TOON_DESTINATION;
+    const hop = new FakeTerminatingConnector({
+      identitySecret: new Uint8Array(32).fill(12),
+    });
+    hop.relayedRouteIdentity = farEnd.routeIdentityFor(TOON_DESTINATION);
+    answers(
+      farEnd,
+      200,
+      [['content-type', 'text/plain']],
+      'opened at the far end'
+    );
+
+    // Identity is asked of the HOP (the 402 named it); the packet is
+    // terminated by the FAR END, as it would be after crossing the peering.
+    const { client: ilp } = fakeIlpClient(farEnd);
+    const h = new Http402Client({
+      fetch: fetchWith(hop),
+      resolveClaim: vi.fn(async () => ({ blockchain: 'evm', sig: 'x' })),
+      createIlpClient: () => ilp,
+    });
+
+    const res = await h.fetch('https://origin.example/resource');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('opened at the far end');
+    expect(farEnd.opened).toHaveLength(1);
+    expect(hop.opened).toHaveLength(0);
+  });
+
+  it('refuses to pay when the edge relays a routeIdentity that does not verify (connector #1026)', async () => {
+    const farEnd = new FakeTerminatingConnector({
+      identitySecret: new Uint8Array(32).fill(11),
+    });
+    farEnd.terminatedPrefix = TOON_DESTINATION;
+    const hop = new FakeTerminatingConnector({
+      identitySecret: new Uint8Array(32).fill(12),
+    });
+    // A dishonest hop: the far end's statement with the hop's own key
+    // swapped in, so the payload would open here.
+    const genuine = farEnd.routeIdentityFor(TOON_DESTINATION);
+    if (genuine === null) throw new Error('fixture: far end states nothing');
+    hop.relayedRouteIdentity = { ...genuine, publicKey: hop.publicKeyHex };
+
+    const { client: ilp, sendIlpPacketWithClaim } = fakeIlpClient(hop);
+    const h = new Http402Client({
+      fetch: fetchWith(hop),
+      resolveClaim: vi.fn(async () => ({ blockchain: 'evm', sig: 'x' })),
+      createIlpClient: () => ilp,
+    });
+
+    await expect(
+      h.fetch('https://origin.example/resource')
+    ).rejects.toMatchObject({
+      code: 'ROUTE_IDENTITY_INVALID',
+    });
+    expect(sendIlpPacketWithClaim).not.toHaveBeenCalled();
+    expect(hop.opened).toHaveLength(0);
   });
 
   it('carries a real, derived execution condition that the fulfilment satisfies', async () => {
@@ -333,7 +404,11 @@ describe('Http402Client.fetch — 402 → pay → 200', () => {
     const urls = (
       fetchImpl as unknown as { mock: { calls: unknown[][] } }
     ).mock.calls.map((c) => String(c[0]));
-    expect(urls).toContain('https://apex.example/ilp/identity');
+    // Asked FOR the destination (connector #1026), so the endpoint can name
+    // the terminating connector's key if it forwards there.
+    expect(urls).toContain(
+      `https://apex.example/ilp/identity?destination=${encodeURIComponent(TOON_DESTINATION)}`
+    );
     expect(connector.opened).toHaveLength(1);
   });
 });

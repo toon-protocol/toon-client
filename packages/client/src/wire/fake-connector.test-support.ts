@@ -29,6 +29,11 @@ import {
   sealResponse,
 } from './giftwrap.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
+import {
+  signRouteIdentity,
+  routeIdentityCovers,
+  type RouteIdentityWire,
+} from './route-identity.js';
 import { toBase64, fromBase64 } from '../utils/binary.js';
 import type {
   ConnectorSettlementTerms,
@@ -103,6 +108,25 @@ export class FakeTerminatingConnector {
    */
   extraFields: Record<string, unknown> | null = null;
 
+  /**
+   * The ILP prefix this fake TERMINATES, for connector #1026's `GET
+   * /ilp/identity?destination=`: asked about a destination under it, the
+   * fake answers its own self-signed `routeIdentity`, exactly as a real
+   * terminating connector does. `null` — the default — answers no
+   * `routeIdentity` at all, the pre-#1026 shape.
+   */
+  terminatedPrefix: string | null = null;
+
+  /**
+   * A `routeIdentity` this fake RELAYS for any destination it is asked
+   * about that `terminatedPrefix` does not cover — what a forwarding edge
+   * answers on behalf of the connector at the far end of a peering. Set it
+   * to a far end's genuine statement (`signRouteIdentity` under that far
+   * end's secret) for the honest case, or to something a dishonest hop
+   * would send, to see it refused.
+   */
+  relayedRouteIdentity: RouteIdentityWire | null = null;
+
   constructor(options: FakeTerminatingConnectorOptions = {}) {
     this.identitySecret = options.identitySecret ?? new Uint8Array(32).fill(9);
     this.identityPublic = secp256k1.getPublicKey(this.identitySecret, false);
@@ -117,6 +141,33 @@ export class FakeTerminatingConnector {
   }
 
   /**
+   * What `GET /ilp/identity?destination=` answers as `routeIdentity` here:
+   * this fake's own statement for a destination under `terminatedPrefix`,
+   * `relayedRouteIdentity` for anything else it has been given one for, and
+   * nothing otherwise — never this fake's own key for a destination it does
+   * not terminate, which is the rule the real connector holds to.
+   */
+  routeIdentityFor(destination: string): RouteIdentityWire | null {
+    if (
+      this.terminatedPrefix !== null &&
+      routeIdentityCovers(this.terminatedPrefix, destination)
+    ) {
+      const { signature } = signRouteIdentity(
+        this.identitySecret,
+        this.terminatedPrefix
+      );
+      return {
+        prefix: this.terminatedPrefix,
+        publicKey: this.publicKeyHex,
+        signature: `0x${Array.from(signature, (b) =>
+          b.toString(16).padStart(2, '0')
+        ).join('')}`,
+      };
+    }
+    return this.relayedRouteIdentity;
+  }
+
+  /**
    * A `fetch` serving this connector's client edge — `/ilp/identity` and
    * `/ilp/routes/price`, the two endpoints a sender must consult before it
    * can form a packet. Anything else 404s, so a test that reaches an
@@ -124,9 +175,17 @@ export class FakeTerminatingConnector {
    */
   fetch: typeof fetch = async (input) => {
     const url = String(input);
-    if (url.endsWith('/ilp/identity')) {
+    const parsed = new URL(url, 'http://x.invalid');
+    if (parsed.pathname.endsWith('/ilp/identity')) {
+      const destination = parsed.searchParams.get('destination');
+      const routeIdentity =
+        destination === null ? null : this.routeIdentityFor(destination);
       return new Response(
-        JSON.stringify({ keyId: 'fake', publicKey: this.publicKeyHex }),
+        JSON.stringify({
+          keyId: 'fake',
+          publicKey: this.publicKeyHex,
+          ...(routeIdentity ? { routeIdentity } : {}),
+        }),
         { status: 200, headers: { 'content-type': 'application/json' } }
       );
     }

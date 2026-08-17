@@ -1029,8 +1029,13 @@ export class ToonClient {
       // a forwarded prefix those are different machines, and sealing to the
       // forwarder's key is a confidentiality failure the wire only reports
       // as an undeliverable packet (issue #526).
+      // Asked FOR this destination (connector #1026): a forwarding edge
+      // answers with the terminating connector's own signed statement,
+      // verified before it is sealed to; without one the posting edge's key
+      // is what it always was.
       const identity = await this.connectorEdge.getIdentity(
-        this.resolveTerminatorEndpoint(destination)
+        this.resolveTerminatorEndpoint(destination),
+        { destination }
       );
 
       // (2) The price is ASKED for, not computed. ADR 0020 makes a price flat

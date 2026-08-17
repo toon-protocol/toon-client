@@ -38,19 +38,52 @@
 import { NetworkError, ToonClientError } from '../errors.js';
 import { ILPPacketType, serializeIlpPrepare } from '../btp/protocol.js';
 import type { X402ChannelExtra } from './Http402Client.js';
+import {
+  routeIdentityCovers,
+  verifyRouteIdentity,
+  type RouteIdentityWire,
+} from '../wire/route-identity.js';
 
 // ─── Identity ───────────────────────────────────────────────────────────────
 
-/** The terminating connector's own identity, as reported by `GET /ilp/identity`. */
+/**
+ * The identity a payload is to be sealed to, as answered by `GET
+ * /ilp/identity`.
+ *
+ * `publicKey`/`publicKeyHex` are **the key to seal to**. Without a
+ * `destination` asked about, that is the answering connector's own key,
+ * exactly as before connector #1026. With one, and when the answer carried a
+ * verified `routeIdentity` (see {@link ConnectorIdentity.routeIdentity}), it
+ * is the key of the connector that TERMINATES that destination — which on a
+ * forwarded route is a different machine from the one answering, and the
+ * only key that can open the wrap.
+ */
 export interface ConnectorIdentity {
-  /** The key id identifying the key (opaque to this client). */
+  /** The key id identifying the answering connector's own key (opaque to this client). */
   keyId: string;
-  /** The uncompressed secp256k1 public key — exactly 65 raw bytes, leading `0x04`. */
+  /** The key to seal to — exactly 65 raw bytes, leading `0x04`. */
   publicKey: Uint8Array;
-  /** The key exactly as reported, `0x`-prefixed lowercase hex (65 bytes → 132 chars). */
+  /** {@link publicKey} as `0x`-prefixed lowercase hex (65 bytes → 132 chars). */
   publicKeyHex: string;
   /** The normalized client-edge base URL this identity was read from. */
   endpoint: string;
+  /**
+   * Present exactly when the answer carried a `routeIdentity` for the
+   * destination asked about and it VERIFIED (connector #1026): the
+   * terminating connector's own self-signed statement that payloads under
+   * `prefix` are sealed to `publicKey`. When present, {@link publicKey}
+   * above IS this key. Absent when no destination was asked about, or the
+   * connector could not vouch for one — in which case {@link publicKey} is
+   * the answering connector's own, and on a forwarded destination that is
+   * the wrong key (a statement that was present but did NOT verify is not
+   * "absent": it throws `ROUTE_IDENTITY_INVALID`, since a relay that lies
+   * is precisely the case this exists to catch).
+   */
+  routeIdentity?: {
+    prefix: string;
+    /** The terminating connector's identity, `0x`-prefixed lowercase hex. */
+    publicKeyHex: string;
+  };
 }
 
 /**
@@ -210,6 +243,13 @@ export type ConnectorEdgeErrorCode =
   | 'IDENTITY_KEY_LENGTH'
   /** `publicKey` is 65 bytes but does not start with the SEC1 uncompressed tag `0x04`. */
   | 'IDENTITY_KEY_NOT_UNCOMPRESSED'
+  /** `GET /ilp/identity?destination=` answered a `routeIdentity` that is malformed,
+   *  does not verify against the key it names, or does not cover the destination
+   *  asked about (connector #1026). Never retried and never fallen back from:
+   *  a relayed statement that fails to verify is a hop naming a key it does
+   *  not hold, and sealing to it is exactly the confidentiality failure ADR 0018
+   *  exists to prevent. */
+  | 'ROUTE_IDENTITY_INVALID'
   /** Non-2xx, non-404 from `GET /ilp/routes/price` (404 is not an error — see below). */
   | 'ROUTE_PRICE_HTTP_STATUS'
   /** `GET /ilp/routes/price` answered 2xx with a body that is not the documented object. */
@@ -316,7 +356,8 @@ export function decodeConnectorPublicKey(publicKeyHex: string): Uint8Array {
  */
 export function parseConnectorIdentity(
   body: unknown,
-  endpoint: string
+  endpoint: string,
+  destination?: string
 ): ConnectorIdentity {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     throw new ConnectorEdgeError(
@@ -339,12 +380,116 @@ export function parseConnectorIdentity(
       'IDENTITY_MALFORMED'
     );
   }
-  return {
+  const own: ConnectorIdentity = {
     keyId,
     publicKey: decodeConnectorPublicKey(publicKeyHex),
     publicKeyHex: publicKeyHex.trim().toLowerCase(),
     endpoint,
   };
+  // Connector #1026: when a destination was asked about, the answer may name
+  // a DIFFERENT key to seal to — the terminating connector's, relayed by the
+  // answering one. Read only when asked (a `routeIdentity` on an answer to a
+  // question this client did not ask is ignored, not trusted), verified
+  // before it replaces anything, and refused loudly when it does not verify.
+  if (destination === undefined) return own;
+  const stated = record['routeIdentity'];
+  if (stated === undefined || stated === null) return own;
+  const routeIdentity = parseRouteIdentity(stated, destination);
+  return {
+    ...own,
+    publicKey: routeIdentity.publicKey,
+    publicKeyHex: routeIdentity.publicKeyHex,
+    routeIdentity: {
+      prefix: routeIdentity.prefix,
+      publicKeyHex: routeIdentity.publicKeyHex,
+    },
+  };
+}
+
+/**
+ * Check a `routeIdentity` object (from `GET /ilp/identity?destination=` or an
+ * x402 greeting's `extra.routeIdentity`) for `destination`: well-formed,
+ * covering the destination, and signed by the key it names. Throws
+ * `ROUTE_IDENTITY_INVALID` otherwise — there is no "unverified but usable"
+ * outcome, since an unverified statement is precisely what a dishonest hop
+ * would send.
+ */
+export function parseRouteIdentity(
+  stated: unknown,
+  destination: string
+): { prefix: string; publicKey: Uint8Array; publicKeyHex: string } {
+  if (typeof stated !== 'object' || stated === null || Array.isArray(stated)) {
+    throw new ConnectorEdgeError(
+      'routeIdentity is not a JSON object',
+      'ROUTE_IDENTITY_INVALID'
+    );
+  }
+  const record = stated as Partial<Record<keyof RouteIdentityWire, unknown>>;
+  const { prefix, publicKey, signature } = record;
+  if (
+    typeof prefix !== 'string' ||
+    prefix.length === 0 ||
+    typeof publicKey !== 'string' ||
+    typeof signature !== 'string'
+  ) {
+    throw new ConnectorEdgeError(
+      'routeIdentity must carry string prefix, publicKey and signature',
+      'ROUTE_IDENTITY_INVALID'
+    );
+  }
+  if (!routeIdentityCovers(prefix, destination)) {
+    throw new ConnectorEdgeError(
+      `routeIdentity covers "${prefix}", which is not "${destination}" or a prefix of it`,
+      'ROUTE_IDENTITY_INVALID'
+    );
+  }
+  let key: Uint8Array;
+  try {
+    key = decodeConnectorPublicKey(publicKey);
+  } catch (error) {
+    throw new ConnectorEdgeError(
+      `routeIdentity.publicKey is not an uncompressed secp256k1 key: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      'ROUTE_IDENTITY_INVALID',
+      error instanceof Error ? error : undefined
+    );
+  }
+  const signatureBytes = decodeHex0x(signature);
+  if (
+    signatureBytes === null ||
+    !verifyRouteIdentity(prefix, key, signatureBytes)
+  ) {
+    throw new ConnectorEdgeError(
+      `routeIdentity for "${prefix}" does not verify against the key it names; ` +
+        'refusing to seal to it (connector #1026)',
+      'ROUTE_IDENTITY_INVALID'
+    );
+  }
+  return {
+    prefix,
+    publicKey: key,
+    publicKeyHex: publicKey.trim().toLowerCase(),
+  };
+}
+
+/** The identity cache's key: the base URL alone, or base + NUL + destination. */
+function identityCacheKey(base: string, destination?: string): string {
+  return destination === undefined ? base : `${base}\u0000${destination}`;
+}
+
+/** `0x`-prefixed even-length hex → bytes, or `null` when it is not that. */
+function decodeHex0x(text: string): Uint8Array | null {
+  const trimmed = text.trim().toLowerCase();
+  if (!trimmed.startsWith('0x')) return null;
+  const digits = trimmed.slice(2);
+  if (digits.length === 0 || digits.length % 2 !== 0) return null;
+  if (!/^[0-9a-f]+$/.test(digits)) return null;
+  const out = new Uint8Array(digits.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(digits.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
 }
 
 /** Parse an already-decoded `GET /ilp/routes/price` 200 body. */
@@ -587,21 +732,27 @@ export class ConnectorEdgeClient {
    */
   async getIdentity(
     endpoint: string,
-    options: { forceRefresh?: boolean } = {}
+    options: { forceRefresh?: boolean; destination?: string } = {}
   ): Promise<ConnectorIdentity> {
     const base = connectorEdgeBaseUrl(endpoint);
-    if (options.forceRefresh) this.identities.delete(base);
+    // Connector #1026: with a destination, the answer is per (endpoint,
+    // destination) — the same edge names different keys for a route it
+    // terminates and one it forwards.
+    const cacheKey = identityCacheKey(base, options.destination);
+    if (options.forceRefresh) this.identities.delete(cacheKey);
 
-    const cached = this.identities.get(base);
+    const cached = this.identities.get(cacheKey);
     if (cached) return cached;
 
     // Cache the in-flight promise so concurrent senders share one round trip;
     // drop it again on failure so a transient error is not cached forever.
-    const inFlight = this.fetchIdentity(base).catch((error: unknown) => {
-      this.identities.delete(base);
-      throw error;
-    });
-    this.identities.set(base, inFlight);
+    const inFlight = this.fetchIdentity(base, options.destination).catch(
+      (error: unknown) => {
+        this.identities.delete(cacheKey);
+        throw error;
+      }
+    );
+    this.identities.set(cacheKey, inFlight);
     return inFlight;
   }
 
@@ -614,12 +765,23 @@ export class ConnectorEdgeClient {
       this.identities.clear();
       return;
     }
-    this.identities.delete(connectorEdgeBaseUrl(endpoint));
+    const base = connectorEdgeBaseUrl(endpoint);
+    for (const key of [...this.identities.keys()]) {
+      if (key === base || key.startsWith(`${base}\u0000`)) {
+        this.identities.delete(key);
+      }
+    }
   }
 
-  /** Whether an identity for `endpoint` is already held (no request is made). */
-  hasCachedIdentity(endpoint: string): boolean {
-    return this.identities.has(connectorEdgeBaseUrl(endpoint));
+  /**
+   * Whether an identity for `endpoint` is already held (no request is made)
+   * — for the given `destination`, or the plain no-destination answer when
+   * none is given.
+   */
+  hasCachedIdentity(endpoint: string, destination?: string): boolean {
+    return this.identities.has(
+      identityCacheKey(connectorEdgeBaseUrl(endpoint), destination)
+    );
   }
 
   /**
@@ -845,8 +1007,15 @@ export class ConnectorEdgeClient {
     );
   }
 
-  private async fetchIdentity(base: string): Promise<ConnectorIdentity> {
-    const response = await this.get(`${base}/ilp/identity`);
+  private async fetchIdentity(
+    base: string,
+    destination?: string
+  ): Promise<ConnectorIdentity> {
+    const url =
+      destination === undefined
+        ? `${base}/ilp/identity`
+        : `${base}/ilp/identity?destination=${encodeURIComponent(destination)}`;
+    const response = await this.get(url);
     if (!response.ok) {
       throw new ConnectorEdgeError(
         `GET /ilp/identity answered ${response.status}`,
@@ -855,7 +1024,8 @@ export class ConnectorEdgeClient {
     }
     return parseConnectorIdentity(
       await this.readJson(response, 'IDENTITY_MALFORMED'),
-      base
+      base,
+      destination
     );
   }
 
