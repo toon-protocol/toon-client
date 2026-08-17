@@ -143,6 +143,248 @@ jobs:
       - name: Smoke build
         run: devbox run -- bash -c "pnpm install --no-frozen-lockfile && pnpm build"
 
+  # ---------------------------------------------------------------------------
+  # The receive-side Solana settlement proof (#605), actually executing.
+  #
+  # #605 built the submitter and proved it works — it drives the real client
+  # pipeline (ingestReceivedClaims -> buildSwapSettlements ->
+  # submitSolanaSettlement) against a real `solana-test-validator` running the
+  # real vendored payment-channel program at a real channel PDA, and reads the
+  # account back to watch `nonce_a`/`transferred_amount_a` move. But it proved
+  # it on a developer's machine: CI never ran it, because the suite skips when
+  # `solana-test-validator` is absent and no CI job ever installed one. This job
+  # is what makes it run.
+  #
+  # WHY UNCONDITIONAL, where toon#217 made the equivalent proof conditional.
+  # That decision was driven by toon's frozen summed-runner-second ceiling,
+  # which measures every job of the run; folding a ~90s job in would have blown
+  # it. This repo's ceiling is not shaped like that: `.sandcastle/gate-baseline.json`
+  # scopes both `speed` and `performance` to the `build` job's OWN wall clock,
+  # measured inside that job between "Record gate start time" and the guard step
+  # ("not the separate devbox-validate job, which is an unrelated
+  # environment-consistency check"). A new sibling job is therefore invisible to
+  # the guard, and needs no re-baselining. With the cost argument gone, three
+  # things favour running it every time:
+  #
+  #  * A conditional design would cost about what it saves. The decision has to
+  #    be code, not a `paths:` filter (a filter cannot gate a JOB and cannot fail
+  #    safe), and it cannot be a step in `build`: recent `build` runs measure
+  #    171-206s against a frozen 185s baseline at 20% tolerance, i.e. a 222s
+  #    ceiling with ~8% headroom, so adding steps to the timed window is the one
+  #    change with real risk here. That pushes the decision into its own job,
+  #    which then pays checkout + install on EVERY PR to skip a ~90s job on most
+  #    of them — while adding a skipped-reads-as-pass hazard that only exists
+  #    because the job became conditional.
+  #  * Running every time keeps the Solana CLI cache warm. A conditional job
+  #    touches its cache rarely, and GitHub evicts entries unused for 7 days, so
+  #    conditionality would make a cold `release.anza.xyz` download MORE likely
+  #    on exactly the PRs that need the proof — putting a third-party host in
+  #    the critical path of the settlement changes it is there to guard.
+  #  * It catches more. Redemption can break from a dependency bump, a
+  #    ReceivedClaimStore refactor, or an `@toon-protocol/core` digest change —
+  #    a change set that no honest surface list would have flagged.
+  #
+  # WALL CLOCK. No `needs:`, so this starts at t=0 alongside `build` and
+  # `devbox-validate` rather than queueing behind them. The critical path today
+  # is `build` (171-206s over the last six runs) plus `ci-ok` (~3s); this job
+  # installs a cached CLI, installs deps and runs a 16s suite, so it finishes
+  # inside that shadow and adds NOTHING to pipeline wall time. It is concurrent,
+  # not free: if `build` ever gets faster than this job, this becomes the
+  # critical path. `timeout-minutes` is the cost gate the gate guard cannot
+  # provide here — a hung validator fails the job, and therefore `CI OK`, in
+  # minutes rather than burning the 360-minute default.
+  #
+  # The whole point is `CLIENT_REQUIRE_SOLANA=1`: it turns "no validator" from a
+  # skip into a hard failure, so this job cannot report success having run
+  # nothing. That is the exact defect swap#106 found (four suites collecting zero
+  # tests, all reporting a pass) and swap#160 had to rescue.
+  #
+  # WHAT THIS DOES NOT COVER: the DAEMON end of the seam (#608). This proves the
+  # client library redeems; `ClientRunner.settleSwapClaims` — which sources
+  # `solanaProgramId` from config, delegates through `settleSwapBundle`, and
+  # writes the `settledNonce` watermark that stops a replay before the chain has
+  # to — has still never met a validator. When #608 lands, its suite belongs in
+  # THIS job (the validator is already on PATH and the flag is already set) with
+  # its collected count added to the guard step below.
+  solana-settlement-proof:
+    name: Solana settlement redemption proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      # Restored BEFORE the installer so a warm cache skips the download
+      # entirely. Keyed on the exact version — a version bump must miss.
+      - name: Cache Solana CLI
+        id: solana-cli-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/solana
+          key: solana-cli-${{ runner.os }}-v2.1.21
+
+      # v2.1.21, NOT the v3.x line, and load-bearing rather than conservatism:
+      # v3's `solana-test-validator` hard-requires io_uring, which is unavailable
+      # under some sandboxed runners (connector's, swap's and toon's gates pin
+      # the same version for the same reason, and connector documents the
+      # `assertion failed: io_uring_supported()` panic). It also matches the
+      # `=2.1.0` solana-program pin the vendored `payment_channel.so` in
+      # packages/client/src/__integration__/fixtures/solana/ was built against,
+      # so the CLI driving the program comes from the release line the program
+      # was compiled for.
+      - name: Install Solana CLI
+        if: steps.solana-cli-cache.outputs.cache-hit != 'true'
+        run: sh -c "$(curl -sSfL https://release.anza.xyz/v2.1.21/install)"
+
+      - name: Put Solana CLI on PATH
+        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      # Fail here, with a clear message, rather than inside a test 30s later.
+      # The version greps are not decoration: a cache restored from a different
+      # key, or an installer that redirected to the v3 line, would otherwise
+      # surface as a validator that panics on boot.
+      - name: Assert Solana toolchain
+        run: |
+          set -euo pipefail
+          solana --version
+          solana-test-validator --version
+          solana --version | grep -qE '^solana-cli 2\.1\.'
+          solana-test-validator --version | grep -qE '^solana-test-validator 2\.1\.'
+          echo "✅ Agave v2.1.x CLI and test validator on PATH"
+
+      # --frozen-lockfile, matching `build`: this job must not be the one place
+      # dependency drift hides. `devbox-validate` owns re-resolution.
+      - run: pnpm install --frozen-lockfile
+
+      # No `pnpm -r build` needed, deliberately: the suite imports the client's
+      # own modules by relative source path and everything else
+      # (@toon-protocol/core, @toon-protocol/sdk) from node_modules as published
+      # deps. Nothing resolves through a workspace `dist/`, so there is no build
+      # to pay for.
+      #
+      # The integration tests are excluded from every package's unit config
+      # (`**/__integration__/**`), so this is also the first CI job in this repo
+      # to run an integration test at all.
+      # `packages/client/tsconfig.json` excludes `**/*.test.ts`, so `pnpm
+      # typecheck` reads no test file in this package — the 800-line proof this
+      # job runs included, which until now was validated only by executing.
+      # tsconfig.integration.json covers the integration directory; this asserts
+      # its hand-written `files` list still matches the directory, so a new suite
+      # cannot join it unchecked, and a documented opt-out cannot silently become
+      # a dangling entry.
+      - name: Typecheck the integration suites
+        run: |
+          set -euo pipefail
+          cd packages/client
+          listed=$(node -e "
+            const { readFileSync } = require('node:fs');
+            const raw = readFileSync('tsconfig.integration.json', 'utf8');
+            const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
+            for (const f of JSON.parse(stripped).files) console.log(f);
+          " | sort)
+          # #607: the one suite deliberately left out, and the only name allowed
+          # to be missing. Remove it here and from tsconfig.integration.json's
+          # files list together.
+          onDisk=$(ls src/__integration__/*.integration.test.ts \
+            | grep -v 'swap-settlement-submit.integration.test.ts' | sort)
+          if [ "$listed" != "$onDisk" ]; then
+            echo "::error::tsconfig.integration.json's files list has drifted from src/__integration__/. Listed vs on disk:"
+            diff <(echo "$listed") <(echo "$onDisk") || true
+            exit 1
+          fi
+          npx tsc -p tsconfig.integration.json
+          echo "✅ every integration suite is typechecked (bar the #607 opt-out)"
+
+      # CLIENT_REQUIRE_SOLANA=1 is the difference between a gate and a
+      # decoration: without it, a runner whose validator failed to install would
+      # skip the suite and report success. The single file is named explicitly
+      # rather than running `test:integration` whole, because
+      # rust-edge-devnet.integration.test.ts in the same directory defaults to a
+      # LIVE devnet endpoint (it self-skips without credentials, but CI has no
+      # business loading that gun) and swap-settlement-submit.integration.test.ts
+      # is red on main for an unrelated reason (#607).
+      - name: Redeem a claim against the real program on a local validator
+        env:
+          CLIENT_REQUIRE_SOLANA: '1'
+          # Vitest colorizes when it thinks a terminal is watching, and on a
+          # runner it does. That wraps its summary markers in ANSI escapes —
+          # `✓<ESC>[39m src/…` and `(<ESC>[2m7 tests<ESC>[22m)` — which defeats
+          # the count grep below; swap#162 shipped a guard that reported "did not
+          # appear at all" for suites that had visibly just passed. Turning
+          # colour off at the source keeps the log greppable AND readable; the
+          # next step strips ANSI anyway, belt and braces, in case a future
+          # vitest ignores these.
+          NO_COLOR: '1'
+          FORCE_COLOR: '0'
+        run: |
+          set -euo pipefail
+          pnpm --filter @toon-protocol/client test:integration \
+            src/__integration__/solana-settlement-redeem.integration.test.ts 2>&1 \
+            | tee /tmp/solana-proof.log
+
+      # A green tick is not evidence that anything ran. Three independent
+      # assertions, because each catches a different way this job could pass
+      # while proving nothing:
+      #
+      #  1. the file line's collected count — a suite that quietly loses or
+      #     skips a test. Matched on the PATH, not the ✓ glyph, so a failing
+      #     suite is still FOUND and reports its real count rather than "did not
+      #     appear at all". `(7 tests)` with no ` | N skipped` suffix is the
+      #     assertion that none were skipped.
+      #  2. `Tests 7 passed (7)` — collected is not the same as passed.
+      #  3. the `[solana-settle] tx …` line the redemption prints — the only
+      #     line that can only exist if a transaction actually landed and moved
+      #     a channel account on chain.
+      #
+      # Bumping EXPECTED_TESTS is meant to be a visible diff: adding a test to
+      # the proof turns this red until the number moves with it.
+      - name: Assert the proof collected, ran, and redeemed on chain
+        env:
+          EXPECTED_TESTS: '7'
+          SUITE: src/__integration__/solana-settlement-redeem.integration.test.ts
+        run: |
+          set -euo pipefail
+          sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/solana-proof.log > /tmp/solana-proof.plain
+          fail=0
+
+          line=$(grep -E "${SUITE} +\(" /tmp/solana-proof.plain | tail -1 || true)
+          if [ -z "$line" ]; then
+            echo "::error::${SUITE} did not appear in the vitest output at all"
+            fail=1
+          else
+            echo "  ${line}"
+            if ! echo "$line" | grep -qE "\(${EXPECTED_TESTS} tests\)"; then
+              echo "::error::${SUITE} did not report exactly ${EXPECTED_TESTS} collected tests with none skipped — see the line above"
+              fail=1
+            fi
+          fi
+
+          if ! grep -qE "Tests +${EXPECTED_TESTS} passed \(${EXPECTED_TESTS}\)" /tmp/solana-proof.plain; then
+            echo "::error::vitest did not report ${EXPECTED_TESTS} passed of ${EXPECTED_TESTS} — a collected test that did not pass is the failure this job exists to catch"
+            grep -E "^ *Tests " /tmp/solana-proof.plain || true
+            fail=1
+          fi
+
+          if ! grep -q '\[solana-settle\] tx ' /tmp/solana-proof.plain; then
+            echo "::error::no on-chain redemption was logged — the suite passed without moving a channel account"
+            fail=1
+          fi
+
+          [ "$fail" -eq 0 ] || exit 1
+          grep '\[solana-settle\]' /tmp/solana-proof.plain
+          echo "✅ the Solana redemption proof collected ${EXPECTED_TESTS}, passed ${EXPECTED_TESTS}, and redeemed on chain"
+
   # Fleet-wide aggregate required check per toon-meta#279. This job is the
   # single check that branch protection requires. `if: always()` makes it run
   # even when upstream jobs fail, are skipped, or are cancelled — a skipped or
@@ -151,7 +393,7 @@ jobs:
   ci-ok:
     name: CI OK
     runs-on: ubuntu-latest
-    needs: [changeset, build, devbox-validate]
+    needs: [changeset, build, devbox-validate, solana-settlement-proof]
     if: always()
     steps:
       - name: Verify all gating jobs succeeded
@@ -159,12 +401,14 @@ jobs:
           CHANGESET_RESULT: ${{ needs.changeset.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           DEVBOX_RESULT: ${{ needs.devbox-validate.result }}
+          SOLANA_PROOF_RESULT: ${{ needs.solana-settlement-proof.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           echo "event:           $EVENT_NAME"
           echo "changeset:       $CHANGESET_RESULT"
           echo "build:           $BUILD_RESULT"
           echo "devbox-validate: $DEVBOX_RESULT"
+          echo "solana-proof:    $SOLANA_PROOF_RESULT"
 
           ok=true
 
@@ -175,6 +419,17 @@ jobs:
 
           if [ "$DEVBOX_RESULT" != "success" ]; then
             echo "::error::devbox-validate result is '$DEVBOX_RESULT' (expected 'success')"
+            ok=false
+          fi
+
+          # The Solana redemption proof is UNCONDITIONAL (see the job for why),
+          # which is what makes a bare `needs:` a complete gate here: it has no
+          # `if:` of its own, so 'skipped' cannot mean "correctly not required" —
+          # it can only mean cancelled-upstream or a workflow edit that stopped
+          # it running, and both must fail. That is the toon#216 hazard closed by
+          # construction instead of by pairing a result with a decision.
+          if [ "$SOLANA_PROOF_RESULT" != "success" ]; then
+            echo "::error::solana-settlement-proof result is '$SOLANA_PROOF_RESULT' (expected 'success'; skipped/cancelled counts as failure — this job has no 'if:', so a skip means it stopped running, not that it was unnecessary)"
             ok=false
           fi
 

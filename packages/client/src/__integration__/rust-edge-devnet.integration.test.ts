@@ -35,20 +35,20 @@ import { EvmSigner } from '../signing/evm-signer.js';
  *  `ConnectorEdgeClient` normalizes the trailing `/ilp` away for the
  *  identity and price lookups. */
 const EDGE =
-  process.env.RUST_EDGE_E2E_EDGE ??
+  process.env['RUST_EDGE_E2E_EDGE'] ??
   'https://proxy.devnet.toonprotocol.dev/rust/ilp';
-const DESTINATION = process.env.RUST_EDGE_E2E_DESTINATION ?? 'g.toon.relay';
-const CHAIN_ID = Number(process.env.RUST_EDGE_E2E_CHAIN_ID ?? 84532);
+const DESTINATION = process.env['RUST_EDGE_E2E_DESTINATION'] ?? 'g.toon.relay';
+const CHAIN_ID = Number(process.env['RUST_EDGE_E2E_CHAIN_ID'] ?? 84532);
 const TOKEN_NETWORK =
-  process.env.RUST_EDGE_E2E_TOKEN_NETWORK ??
+  process.env['RUST_EDGE_E2E_TOKEN_NETWORK'] ??
   '0x1E95493fEF46707E034b4a1945f25a8C76A1823D';
 const TOKEN =
-  process.env.RUST_EDGE_E2E_TOKEN ??
+  process.env['RUST_EDGE_E2E_TOKEN'] ??
   '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce';
 const ZERO_LOCKS_ROOT = `0x${'0'.repeat(64)}`;
 
-const BUYER_KEY = process.env.RUST_EDGE_E2E_BUYER_KEY;
-const CHANNEL_ID = process.env.RUST_EDGE_E2E_CHANNEL_ID;
+const BUYER_KEY = process.env['RUST_EDGE_E2E_BUYER_KEY'];
+const CHANNEL_ID = process.env['RUST_EDGE_E2E_CHANNEL_ID'];
 
 const maybe = BUYER_KEY && CHANNEL_ID ? describe : describe.skip;
 
@@ -66,9 +66,9 @@ maybe('a paid write through the deployed Rust edge (devnet)', () => {
     const price = BigInt(priced!.price);
 
     // The claim must advance the durable watermark past every prior run.
-    const nonce = Number(process.env.RUST_EDGE_E2E_NONCE ?? 1);
+    const nonce = Number(process.env['RUST_EDGE_E2E_NONCE'] ?? 1);
     const cumulative = BigInt(
-      process.env.RUST_EDGE_E2E_CUMULATIVE ?? String(price)
+      process.env['RUST_EDGE_E2E_CUMULATIVE'] ?? String(price)
     );
 
     // (3) A real signed Nostr event for the relay.
