@@ -211,6 +211,12 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 0.3.186
         version: 0.3.186(@modelcontextprotocol/sdk@1.29.0)(zod@4.4.3)
+      '@noble/curves':
+        specifier: ^2.0.0
+        version: 2.2.0
+      '@noble/hashes':
+        specifier: ^1.4.0
+        version: 1.8.0
       '@toon-protocol/arweave':
         specifier: workspace:*
         version: link:../arweave

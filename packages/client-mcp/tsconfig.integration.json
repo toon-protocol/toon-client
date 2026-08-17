@@ -1,0 +1,33 @@
+// Typechecks the integration suites, which `tsconfig.json` does not.
+//
+// `tsconfig.json`'s `exclude: ["**/*.test.ts", "**/__integration__/**", ...]`
+// means `pnpm typecheck` reads no file under `src/__integration__/` at all —
+// this package's own Solana daemon-settlement proof (toon-client#608)
+// included. `packages/client`'s `tsconfig.integration.json` closed the same
+// hole there (toon-client#607); this is the client-mcp counterpart.
+//
+// Not run by any CI job yet — `.github/workflows/ci.yml`'s
+// `solana-settlement-proof` job runs `daemon-solana-settle.integration
+// .test.ts` itself, but nothing yet asserts this `files` list against the
+// directory the way `packages/client`'s `integration` job step does for its
+// own `tsconfig.integration.json`. Left as a follow-up: this file exists so a
+// local `npx tsc -p tsconfig.integration.json` can typecheck the suite today.
+{
+  "extends": "./tsconfig.json",
+
+  // Same source graph as the package build, so the suites are checked against
+  // the modules they actually import.
+  "include": ["src/**/*.ts"],
+  "exclude": ["**/__tests__/**", "src/**/*.test.ts"],
+
+  // `files` is not subject to `exclude`, which is how the integration suites
+  // get added back on top of the blanket `*.test.ts` exclusion above.
+  // Listing them by name is deliberate — see packages/client/tsconfig
+  // .integration.json for why a drift check (asserting this list matches the
+  // directory) belongs beside whatever CI job eventually runs this config.
+  "files": [
+    "src/__integration__/agent-sdk-smoke.integration.test.ts",
+    "src/__integration__/daemon-solana-settle.integration.test.ts",
+    "src/__integration__/journey.integration.test.ts"
+  ]
+}

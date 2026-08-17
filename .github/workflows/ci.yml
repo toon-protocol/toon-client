@@ -288,25 +288,34 @@ jobs:
   # WALL CLOCK. No `needs:`, so this starts at t=0 alongside `build` and
   # `devbox-validate` rather than queueing behind them. The critical path today
   # is `build` (171-206s over the last six runs) plus `ci-ok` (~3s); this job
-  # installs a cached CLI, installs deps and runs a 16s suite, so it finishes
-  # inside that shadow and adds NOTHING to pipeline wall time. It is concurrent,
-  # not free: if `build` ever gets faster than this job, this becomes the
-  # critical path. `timeout-minutes` is the cost gate the gate guard cannot
-  # provide here — a hung validator fails the job, and therefore `CI OK`, in
-  # minutes rather than burning the 360-minute default.
+  # installs a cached CLI, installs deps, builds `@toon-protocol/client` (#608
+  # — the daemon suite below imports it as a package) and runs two suites
+  # (~16s + ~15s locally), so it finishes inside that shadow and adds NOTHING
+  # to pipeline wall time. It is concurrent, not free: if `build` ever gets
+  # faster than this job, this becomes the critical path. `timeout-minutes` is
+  # the cost gate the gate guard cannot provide here — a hung validator fails
+  # the job, and therefore `CI OK`, in minutes rather than burning the
+  # 360-minute default.
   #
   # The whole point is `CLIENT_REQUIRE_SOLANA=1`: it turns "no validator" from a
   # skip into a hard failure, so this job cannot report success having run
   # nothing. That is the exact defect swap#106 found (four suites collecting zero
   # tests, all reporting a pass) and swap#160 had to rescue.
   #
-  # WHAT THIS DOES NOT COVER: the DAEMON end of the seam (#608). This proves the
-  # client library redeems; `ClientRunner.settleSwapClaims` — which sources
-  # `solanaProgramId` from config, delegates through `settleSwapBundle`, and
-  # writes the `settledNonce` watermark that stops a replay before the chain has
-  # to — has still never met a validator. When #608 lands, its suite belongs in
-  # THIS job (the validator is already on PATH and the flag is already set) with
-  # its collected count added to the guard step below.
+  # THE DAEMON END OF THE SEAM (#608). The proof above shows the client
+  # LIBRARY redeems; `ClientRunner.settleSwapClaims`
+  # (packages/client-mcp/src/daemon/client-runner.ts) is what actually runs in
+  # production and does four things the library proof cannot reach: reads
+  # `solanaProgramId` from `config.toonClientConfig.solanaChannel.programId`,
+  # delegates through `identityClient.settleSwapBundle` rather than calling
+  # `submitSolanaSettlement` directly, writes the `settledNonce`/`settleTxHash`
+  # watermark back to the `ReceivedClaimStore` so a replay reports
+  # `ALREADY_SETTLED` before the chain has to, and surfaces a
+  # `SolanaSettlementError` code (e.g. `RECIPIENT_MISMATCH`) verbatim instead
+  # of collapsing every failure to `SUBMISSION_FAILED`.
+  # `packages/client-mcp/src/__integration__/daemon-solana-settle
+  # .integration.test.ts` proves all four against a real validator of its own,
+  # booted from the SAME CLI this job already installs — see the step below.
   solana-settlement-proof:
     name: Solana settlement redemption proof
     runs-on: ubuntu-latest
@@ -368,15 +377,22 @@ jobs:
       # dependency drift hides. `devbox-validate` owns re-resolution.
       - run: pnpm install --frozen-lockfile
 
-      # No `pnpm -r build` needed, deliberately: the suite imports the client's
-      # own modules by relative source path and everything else
-      # (@toon-protocol/core, @toon-protocol/sdk) from node_modules as published
-      # deps. Nothing resolves through a workspace `dist/`, so there is no build
-      # to pay for.
+      # `packages/client`'s OWN suite (next step) needs no `pnpm -r build`: it
+      # imports the client's modules by relative source path and everything
+      # else (@toon-protocol/core, @toon-protocol/sdk) from node_modules as
+      # published deps. `packages/client-mcp`'s daemon suite (#608, further
+      # below) is different: it imports `@toon-protocol/client` as a PACKAGE
+      # (`from '@toon-protocol/client'`), which resolves through that
+      # package's `exports` map to `./dist/index.js` — so it does not run
+      # without a build. Scoped to just `@toon-protocol/client` (no workspace
+      # deps of its own), not `pnpm -r build`, to keep this job's added cost
+      # to what the daemon suite actually needs.
       #
       # The `Typecheck the integration suites` step used to live here. It moved to
       # the `integration` job (#607), which owns the integration directory as a
       # whole; this job stays narrowly the on-chain redemption proof.
+      - name: Build @toon-protocol/client (the daemon suite below imports it as a package)
+        run: pnpm --filter @toon-protocol/client run build
 
       # CLIENT_REQUIRE_SOLANA=1 is the difference between a gate and a
       # decoration: without it, a runner whose validator failed to install would
@@ -405,57 +421,102 @@ jobs:
             src/__integration__/solana-settlement-redeem.integration.test.ts 2>&1 \
             | tee /tmp/solana-proof.log
 
+      # The DAEMON end of the same seam (#608) — see the job-level comment
+      # above. What this step reuses from the one before it is the INSTALLED
+      # CLI and the `CLIENT_REQUIRE_SOLANA=1` gate, not a running process: the
+      # suite boots its own `solana-test-validator` in `beforeAll` and kills
+      # it in `afterAll`, exactly as the client-level suite does. Its port
+      # pair (18699/18698) is deliberately distinct from that suite's
+      # (18799/18798) so neither can ever attach to the other's validator and
+      # assert against its state — here they run one after the other, but a
+      # developer running both at once must be safe too. Named explicitly
+      # rather than `test:integration` whole, same reasoning as the step
+      # above: `journey`/`agent-sdk-smoke` in the same directory need a live
+      # testnet/credential and self-skip, but CI has no business loading that
+      # gun.
+      - name: Redeem a claim through the daemon (ClientRunner.settleSwapClaims) against a real validator
+        env:
+          CLIENT_REQUIRE_SOLANA: '1'
+          NO_COLOR: '1'
+          FORCE_COLOR: '0'
+        run: |
+          set -euo pipefail
+          pnpm --filter @toon-protocol/client-mcp test:integration \
+            src/__integration__/daemon-solana-settle.integration.test.ts 2>&1 \
+            | tee /tmp/daemon-solana-proof.log
+
       # A green tick is not evidence that anything ran. Three independent
-      # assertions, because each catches a different way this job could pass
-      # while proving nothing:
+      # assertions per suite, because each catches a different way this job
+      # could pass while proving nothing:
       #
       #  1. the file line's collected count — a suite that quietly loses or
       #     skips a test. Matched on the PATH, not the ✓ glyph, so a failing
       #     suite is still FOUND and reports its real count rather than "did not
-      #     appear at all". `(7 tests)` with no ` | N skipped` suffix is the
+      #     appear at all". `(N tests)` with no ` | N skipped` suffix is the
       #     assertion that none were skipped.
-      #  2. `Tests 7 passed (7)` — collected is not the same as passed.
-      #  3. the `[solana-settle] tx …` line the redemption prints — the only
-      #     line that can only exist if a transaction actually landed and moved
-      #     a channel account on chain.
+      #  2. `Tests N passed (N)` — collected is not the same as passed.
+      #  3. the on-chain marker line each suite prints — the only line that
+      #     can only exist if a transaction actually landed and moved a
+      #     channel account on chain (`[solana-settle]` for the client-library
+      #     proof, `[daemon-solana-settle]` for the daemon proof — distinct
+      #     markers so neither can pass by borrowing the other's log line).
       #
-      # Bumping EXPECTED_TESTS is meant to be a visible diff: adding a test to
-      # the proof turns this red until the number moves with it.
-      - name: Assert the proof collected, ran, and redeemed on chain
+      # Bumping an EXPECTED_TESTS is meant to be a visible diff: adding a test
+      # to a proof turns this red until the number moves with it.
+      - name: Assert both proofs collected, ran, and redeemed on chain
         env:
-          EXPECTED_TESTS: '7'
-          SUITE: src/__integration__/solana-settlement-redeem.integration.test.ts
+          EXPECTED_TESTS_CLIENT: '7'
+          SUITE_CLIENT: src/__integration__/solana-settlement-redeem.integration.test.ts
+          EXPECTED_TESTS_DAEMON: '4'
+          SUITE_DAEMON: src/__integration__/daemon-solana-settle.integration.test.ts
         run: |
           set -euo pipefail
           sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/solana-proof.log > /tmp/solana-proof.plain
+          sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/daemon-solana-proof.log > /tmp/daemon-solana-proof.plain
           fail=0
 
-          line=$(grep -E "${SUITE} +\(" /tmp/solana-proof.plain | tail -1 || true)
-          if [ -z "$line" ]; then
-            echo "::error::${SUITE} did not appear in the vitest output at all"
-            fail=1
-          else
+          assert_collected() {
+            log="$1"; suite="$2"; expected="$3"
+            line=$(grep -E "${suite} +\(" "$log" | tail -1 || true)
+            if [ -z "$line" ]; then
+              echo "::error::${suite} did not appear in the vitest output at all"
+              fail=1
+              return
+            fi
             echo "  ${line}"
-            if ! echo "$line" | grep -qE "\(${EXPECTED_TESTS} tests\)"; then
-              echo "::error::${SUITE} did not report exactly ${EXPECTED_TESTS} collected tests with none skipped — see the line above"
+            if ! echo "$line" | grep -qE "\(${expected} tests\)"; then
+              echo "::error::${suite} did not report exactly ${expected} collected tests with none skipped — see the line above"
               fail=1
             fi
-          fi
+          }
 
-          if ! grep -qE "Tests +${EXPECTED_TESTS} passed \(${EXPECTED_TESTS}\)" /tmp/solana-proof.plain; then
-            echo "::error::vitest did not report ${EXPECTED_TESTS} passed of ${EXPECTED_TESTS} — a collected test that did not pass is the failure this job exists to catch"
-            grep -E "^ *Tests " /tmp/solana-proof.plain || true
+          assert_passed() {
+            log="$1"; suite="$2"; expected="$3"
+            if ! grep -qE "Tests +${expected} passed \(${expected}\)" "$log"; then
+              echo "::error::${suite} did not report ${expected} passed of ${expected} — a collected test that did not pass is the failure this job exists to catch"
+              grep -E "^ *Tests " "$log" || true
+              fail=1
+            fi
+          }
+
+          assert_collected /tmp/solana-proof.plain "${SUITE_CLIENT}" "${EXPECTED_TESTS_CLIENT}"
+          assert_passed /tmp/solana-proof.plain "${SUITE_CLIENT}" "${EXPECTED_TESTS_CLIENT}"
+          if ! grep -q '\[solana-settle\] tx ' /tmp/solana-proof.plain; then
+            echo "::error::no on-chain redemption was logged by ${SUITE_CLIENT} — the suite passed without moving a channel account"
             fail=1
           fi
 
-          if ! grep -q '\[solana-settle\] tx ' /tmp/solana-proof.plain; then
-            echo "::error::no on-chain redemption was logged — the suite passed without moving a channel account"
+          assert_collected /tmp/daemon-solana-proof.plain "${SUITE_DAEMON}" "${EXPECTED_TESTS_DAEMON}"
+          assert_passed /tmp/daemon-solana-proof.plain "${SUITE_DAEMON}" "${EXPECTED_TESTS_DAEMON}"
+          if ! grep -q '\[daemon-solana-settle\] tx ' /tmp/daemon-solana-proof.plain; then
+            echo "::error::no on-chain redemption was logged by ${SUITE_DAEMON} — the suite passed without moving a channel account"
             fail=1
           fi
 
           [ "$fail" -eq 0 ] || exit 1
           grep '\[solana-settle\]' /tmp/solana-proof.plain
-          echo "✅ the Solana redemption proof collected ${EXPECTED_TESTS}, passed ${EXPECTED_TESTS}, and redeemed on chain"
+          grep '\[daemon-solana-settle\]' /tmp/daemon-solana-proof.plain
+          echo "✅ both the client-library and daemon Solana redemption proofs collected, passed, and redeemed on chain"
 
   # ---------------------------------------------------------------------------
   # The integration suites that need NOTHING — toon-client#607.
