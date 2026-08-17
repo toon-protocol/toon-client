@@ -2450,6 +2450,168 @@ describe('ClientRunner', () => {
     await rollingRunner.stop();
   });
 
+  // ── toon-client#596: rolling-path observability parity with legacy ────────
+
+  it('[#596] a locally-failed rolling send populates errors[] / abortReason "complete" / code LOCAL_SEND_FAILED — distinct from a maker rejection', async () => {
+    // A packet that THROWS before the maker ever answers (a transport/
+    // peer-resolution failure) is a different diagnosis than a maker/leg-B
+    // REJECT, and pre-#596 both landed in `rejections[]` under a synthetic
+    // `T00` — indistinguishable from a real maker "no".
+    class ThrowingSendMaker extends FakeRollingMakerClient {
+      override async sendSwapPacket(): Promise<{
+        accepted: boolean;
+        code?: string;
+        message?: string;
+      }> {
+        throw new Error('ECONNRESET');
+      }
+    }
+    const maker = new ThrowingSendMaker();
+    const rollingRunner = new ClientRunner({
+      config: makeConfig(),
+      createClient: (cfg) => {
+        maker.jobHandler = cfg.jobHandler as typeof maker.jobHandler;
+        return maker;
+      },
+      createRelay: fakeRelay,
+    });
+    await rollingRunner.bootstrap();
+
+    const res = await rollingRunner.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      packetCount: 1,
+      senderConditions: true,
+      streamNonce: STREAM_NONCE,
+    });
+
+    expect(res.accepted).toBe(false);
+    expect(res.packetsAccepted).toBe(0);
+    expect(res.rejections ?? []).toHaveLength(0);
+    expect(res.errors).toHaveLength(1);
+    expect(res.errors?.[0]).toMatchObject({
+      packetIndex: 0,
+      message: 'ECONNRESET',
+      name: 'Error',
+    });
+    expect(res.code).toBe('LOCAL_SEND_FAILED');
+    expect(res.message).toBe('ECONNRESET');
+    // Mirrors the legacy path's documented quirk: a fully-local failure keeps
+    // `abortReason: 'complete'` (the rewrite to `all-rejected` only fires
+    // when there were rejections and NO errors) — `state: 'failed'` +
+    // `packetsAccepted: 0` is the signature to read `errors[]` against.
+    expect(res.abortReason).toBe('complete');
+    expect(res.state).toBe('failed');
+    expect(res.warning).toContain('FAILED LOCALLY');
+    await rollingRunner.stop();
+  });
+
+  it('[#596] `timeoutMs` bounds the rolling fill loop: a slow maker gets a partial fill, `abortReason: "aborted"`, `state: "stopped"`', async () => {
+    class SlowMaker extends FakeRollingMakerClient {
+      override async sendSwapPacket(params: {
+        destination: string;
+        amount: bigint;
+        toonData: Uint8Array;
+        executionCondition?: Uint8Array;
+        expiresAt?: Date;
+      }): Promise<{ accepted: boolean; code?: string; message?: string }> {
+        await new Promise((r) => setTimeout(r, 50));
+        return super.sendSwapPacket(params);
+      }
+    }
+    const maker = new SlowMaker();
+    const rollingRunner = new ClientRunner({
+      config: makeConfig(),
+      createClient: (cfg) => {
+        maker.jobHandler = cfg.jobHandler as typeof maker.jobHandler;
+        return maker;
+      },
+      createRelay: fakeRelay,
+    });
+    await rollingRunner.bootstrap();
+    maker.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: String(seq),
+        cumulativeAmount: String(500 * seq),
+        sourceAmount: '500',
+        targetAmount: '500',
+      });
+
+    const res = await rollingRunner.swap({
+      destination: 'g.proxy.swap',
+      amount: '900',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      packetCount: 3,
+      senderConditions: true,
+      streamNonce: STREAM_NONCE,
+      // Each fill takes ~50ms; a 10ms budget elapses after the first, so the
+      // 2nd and 3rd are never attempted.
+      timeoutMs: 10,
+    });
+
+    expect(res.claims.length).toBeGreaterThanOrEqual(1);
+    expect(res.claims.length).toBeLessThan(3);
+    expect(res.abortReason).toBe('aborted');
+    expect(res.state).toBe('stopped');
+    expect(res.warning).toContain('timeoutMs');
+    // The partial fill is reported exactly, not discarded.
+    expect(BigInt(res.cumulativeSource)).toBeGreaterThan(0n);
+    await rollingRunner.stop();
+  });
+
+  it('[#596] a rolling `SwapResponse` carries `packets[]` — one entry per fill, with per-packet rate/rateTimestamp from that fill\'s own advance', async () => {
+    const maker = new FakeRollingMakerClient();
+    const rollingRunner = new ClientRunner({
+      config: makeConfig(),
+      createClient: (cfg) => {
+        maker.jobHandler = cfg.jobHandler as typeof maker.jobHandler;
+        return maker;
+      },
+      createRelay: fakeRelay,
+    });
+    await rollingRunner.bootstrap();
+    maker.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: String(seq),
+        cumulativeAmount: String(500 * seq),
+        sourceAmount: '500',
+        targetAmount: '500',
+      });
+
+    const res = await rollingRunner.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      packetCount: 2,
+      senderConditions: true,
+      streamNonce: STREAM_NONCE,
+    });
+
+    expect(res.state).toBe('completed');
+    expect(res.abortReason).toBe('complete');
+    expect(res.packets).toHaveLength(2);
+    expect(res.packets?.[0]).toMatchObject({
+      index: 0,
+      sourceAmount: '500',
+      targetAmount: '500',
+      effectiveRate: 1,
+      rateDeviation: 0,
+      rate: '1.0',
+      rateTimestamp: 1_700_000_000_000,
+    });
+    expect(res.errors ?? []).toHaveLength(0);
+    await rollingRunner.stop();
+  });
+
   it('swap without senderConditions keeps the legacy path: no condition injected', async () => {
     await runner.bootstrap();
     const pair = {

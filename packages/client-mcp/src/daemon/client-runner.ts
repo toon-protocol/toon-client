@@ -2507,6 +2507,18 @@ export class ClientRunner {
    * per-packet `maxAmount` when the caller pinned no `packetCount`. The
    * adaptive δ/W controller is NOT ported to this path; a request that asks
    * for one stays on the legacy path (see {@link negotiateRollingSession}).
+   *
+   * Observability parity with the legacy path (toon-client#596): `packets[]`
+   * carries one entry per accepted fill (`effectiveRate`/`rateDeviation`
+   * computed the same way, `rate`/`rateTimestamp` echoing the maker's
+   * quote-tape from that fill's own advance, not just the session quote);
+   * `errors[]` carries packets that threw before the maker ever answered —
+   * distinct from `rejections[]`, a maker/leg-B answer that said no — and
+   * `code: 'LOCAL_SEND_FAILED'` is reported when every failure was local;
+   * `req.timeoutMs` bounds the loop (checked before each send, and handed to
+   * `sendSwapPacket` as the remaining per-call budget) and is echoed as
+   * `abortReason: 'aborted'` / `state: 'stopped'` with the partial fill
+   * intact.
    */
   private async swapRolling(
     req: SwapRequest,
@@ -2571,9 +2583,11 @@ export class ClientRunner {
 
     const claims: SwapClaim[] = [];
     const rejections: SwapRejection[] = [];
+    const errors: SwapError[] = [];
     let cumulativeSource = 0n;
     let cumulativeTarget = 0n;
     let firstReject: { code: string; message: string } | undefined;
+    let firstError: { message: string; name?: string } | undefined;
     const recordRejection = (
       packetIndex: number,
       sourceAmount: bigint,
@@ -2588,6 +2602,51 @@ export class ClientRunner {
       });
       firstReject ??= { code, message };
     };
+    // Packets that THREW before the maker ever answered — a send that never
+    // reached the wire (transport/peer-resolution throw). Distinct from
+    // `rejections` (the maker/leg-B DID answer, and said no): folding both
+    // into `rejections` under a synthetic `T00` — the pre-#596 behaviour —
+    // reported "the maker rejected this" for a failure that never left the
+    // client, and gave a caller nothing to distinguish `errors[]` for.
+    const recordError = (packetIndex: number, err: unknown): void => {
+      const message = errMsg(err);
+      const name = err instanceof Error ? err.name : undefined;
+      errors.push({ packetIndex, message, ...(name ? { name } : {}) });
+      firstError ??= { message, ...(name ? { name } : {}) };
+    };
+
+    // Per-packet telemetry (#596 parity with the legacy path's `onPacket`):
+    // one entry per accepted fill, capped like the legacy response.
+    const packets: SwapPacketOutcome[] = [];
+    let packetsTruncated = false;
+    const advertisedRate = Number(req.pair.rate);
+    const recordPacket = (
+      packetIndex: number,
+      sourceAmount: bigint,
+      targetAmount: bigint,
+      rate?: string,
+      rateTimestamp?: number
+    ): void => {
+      if (packets.length >= SWAP_PACKETS_RESPONSE_LIMIT) {
+        packetsTruncated = true;
+        return;
+      }
+      const effectiveRate =
+        computeRealizedRate(sourceAmount, targetAmount, req.pair) ?? 0;
+      const rateDeviation =
+        Number.isFinite(advertisedRate) && advertisedRate > 0
+          ? Math.abs(effectiveRate - advertisedRate) / advertisedRate
+          : 0;
+      packets.push({
+        index: packetIndex,
+        sourceAmount: sourceAmount.toString(),
+        targetAmount: targetAmount.toString(),
+        effectiveRate,
+        rateDeviation,
+        ...(rate !== undefined ? { rate } : {}),
+        ...(rateTimestamp !== undefined ? { rateTimestamp } : {}),
+      });
+    };
 
     // Even split, remainder folded into the last packet — mirrors the legacy
     // static-split default (no adaptive controller on this path yet).
@@ -2595,8 +2654,23 @@ export class ClientRunner {
     const lastPacketAmount =
       totalAmount - evenSplitAmount * BigInt(packetCount - 1);
 
+    // `req.timeoutMs` bounds the WHOLE fill loop (#596 parity with the
+    // legacy path's `AbortSignal.timeout`), not just one packet: checked
+    // before every send, so a deadline that has already passed stops the
+    // next packet from going out at all, and passed as the remaining budget
+    // to `sendSwapPacket`'s own per-call `timeout` so a packet already
+    // in flight is bounded too. Sequential sends mean at most one packet is
+    // ever "in flight" — there is nothing else here to drain.
+    const deadline =
+      req.timeoutMs !== undefined ? Date.now() + req.timeoutMs : undefined;
+    let timedOut = false;
+
     try {
       for (let seq = 1; seq <= packetCount; seq++) {
+        if (deadline !== undefined && Date.now() >= deadline) {
+          timedOut = true;
+          break;
+        }
         const packetIndex = seq - 1;
         const sourceAmount =
           seq === packetCount ? lastPacketAmount : evenSplitAmount;
@@ -2620,13 +2694,17 @@ export class ClientRunner {
             ...(req.packetExpiryMs !== undefined
               ? { expiresAt: new Date(Date.now() + req.packetExpiryMs) }
               : {}),
+            ...(deadline !== undefined
+              ? { timeout: Math.max(1, deadline - Date.now()) }
+              : {}),
           });
         } catch (err) {
-          result = {
-            accepted: false,
-            code: 'T00',
-            message: err instanceof Error ? err.message : String(err),
-          };
+          recordError(packetIndex, err);
+          this.log(
+            `[runner] swap: rolling packet seq ${seq} FAILED LOCALLY — ` +
+              `${firstError?.name ?? 'Error'}: ${errMsg(err)}`
+          );
+          continue;
         }
 
         if (!result.accepted) {
@@ -2681,6 +2759,13 @@ export class ClientRunner {
             : {}),
           verified: true,
         });
+        recordPacket(
+          packetIndex,
+          sourceAmount,
+          outcome.claim.targetAmount,
+          outcome.claim.rate,
+          outcome.claim.rateTimestamp
+        );
         this.log(
           `[runner] swap: rolling packet seq ${seq}: ${sourceAmount} → ` +
             `${outcome.claim.targetAmount} (verified)`
@@ -2722,7 +2807,39 @@ export class ClientRunner {
           'repeat it with `rolling: "off"`.'
       );
     }
+    if (firstError) {
+      warnings.push(
+        `${errors.length} packet(s) FAILED LOCALLY and never reached the ` +
+          `maker (first: ${firstError.name ?? 'Error'} — ` +
+          `${firstError.message}). See errors[].`
+      );
+    }
+    if (timedOut) {
+      warnings.push(
+        `\`timeoutMs\` (${String(req.timeoutMs)}) elapsed with ` +
+          `${String(packetCount - claims.length - rejections.length - errors.length)} ` +
+          'packet(s) never attempted. Partial fill reported exactly — see ' +
+          '`claims` / `cumulativeSource` / `cumulativeTarget`.'
+      );
+    }
     const hadIngestibleClaims = claims.length + rejections.length > 0;
+    // Mirrors the sdk's own `finalizeResult` rewrite rule (see
+    // `SwapError`'s doc comment): `abortReason` stays `'complete'` unless
+    // there were rejections and NO local errors (`'all-rejected'`), or the
+    // loop was cut short by `timeoutMs` (`'aborted'`, which wins outright).
+    // A local-only failure therefore keeps the same diagnostic signature as
+    // the legacy path: `state: 'failed'` + `abortReason: 'complete'` +
+    // `packetsAccepted: 0` — read `errors[]` for why.
+    const abortReason = timedOut
+      ? 'aborted'
+      : rejections.length > 0 && errors.length === 0
+        ? 'all-rejected'
+        : 'complete';
+    const state: 'completed' | 'failed' | 'stopped' = timedOut
+      ? 'stopped'
+      : rejections.length > 0 || errors.length > 0
+        ? 'failed'
+        : 'completed';
 
     return {
       accepted: claims.length > 0,
@@ -2730,13 +2847,22 @@ export class ClientRunner {
       claims,
       cumulativeSource: cumulativeSource.toString(),
       cumulativeTarget: cumulativeTarget.toString(),
-      state: rejections.length > 0 ? 'failed' : 'completed',
+      state,
+      abortReason,
+      ...(packets.length > 0 ? { packets } : {}),
+      ...(packetsTruncated ? { packetsTruncated } : {}),
       ...(rejections.length > 0 ? { rejections } : {}),
+      ...(errors.length > 0 ? { errors } : {}),
       ...(realizedRate !== undefined ? { realizedRate } : {}),
       ...(minExchangeRate !== undefined ? { minExchangeRate } : {}),
+      // A maker REJECT is the more specific diagnosis, so it wins `code` /
+      // `message`; with no reject at all, a local throw is what there is to
+      // report (mirrors the legacy path's `LOCAL_SEND_FAILED`).
       ...(firstReject
         ? { code: firstReject.code, message: firstReject.message }
-        : {}),
+        : firstError
+          ? { code: 'LOCAL_SEND_FAILED', message: firstError.message }
+          : {}),
       ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
       ...(hadIngestibleClaims
         ? {
