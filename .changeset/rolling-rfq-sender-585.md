@@ -1,6 +1,5 @@
 ---
 '@toon-protocol/client': patch
-'@toon-protocol/client-mcp': patch
 ---
 
 Send the rolling-swap RFQ, so the rolling protocol is finally reachable end to end.
