@@ -2083,14 +2083,14 @@ export class ClientRunner {
    * local throw — **throws** {@link RollingUnavailableError} naming the
    * maker, its ILP address and the reason.
    *
-   * sdk ≥2.0.0 (the `mill`→`swap` vocabulary rename, toon commit `af4cd24`):
-   * accumulated claims carry `swapSignerAddress`. The rename has NO wire
-   * back-compat — a pre-rename (sdk ≤1.x) swap peer still emits
-   * `millSignerAddress` in its FULFILL settlement metadata, which
-   * `decodeFulfillMetadata` silently drops as an unknown field. That skew
-   * would otherwise surface only much later as `MISSING_SETTLEMENT_METADATA`
-   * in `buildSettlementTx`; {@link swapRolling} detects it (accepted claims
-   * with no `swapSignerAddress`) and surfaces a loud `warning` (#349).
+   * The #349 pre-rename skew warning went with the legacy sender and is NOT
+   * ported: it existed because a sdk ≤1.x peer's `millSignerAddress` was
+   * silently dropped by `decodeFulfillMetadata`, leaving an ACCEPTED claim
+   * that could only fail later, at `buildSettlementTx`, with
+   * `MISSING_SETTLEMENT_METADATA`. The rolling wire decodes the advance
+   * itself, so a claim with no verifiable settlement metadata is never
+   * revealed at all — it is a rejection here (`handleRollingAdvance`), not an
+   * accepted claim needing a warning.
    *
    * Apex selection ({@link selectSwapApex}): `req.btpUrl` picks WHICH apex
    * client the swap streams on, keyed on BTP URL exactly as `publish` is —
@@ -2204,8 +2204,8 @@ export class ClientRunner {
       );
     }
     // Floor basis: the quote's R₀ when the session negotiated one (spec §5's
-    // `minExchangeRate = R₀ × (1 − tolerance)`), else the advertised rate —
-    // the same source the legacy path uses.
+    // `minExchangeRate = R₀ × (1 − tolerance)`), else the advertised
+    // `pair.rate` — all a caller-pinned session has to go on.
     const minExchangeRate =
       req.minExchangeRate ??
       deriveFloorRate(
@@ -2219,7 +2219,7 @@ export class ClientRunner {
       ? await loadMinaSignerClient()
       : undefined;
     const preimages = new InMemoryPreimageRetentionStore();
-    // The SAME leg-B source as the legacy path (#583): this maker's own
+    // The leg-B verifying-contract source (#583): this maker's own
     // announced `swapVerifyingContracts`, with local config as an operator
     // override. Before #583 this path read the daemon's `tokenNetworks` — leg
     // A, the contract the client PAYS the maker through — so a rolling claim
@@ -2460,20 +2460,22 @@ export class ClientRunner {
       );
     }
     if (rejections.length > 0 && claims.length === 0) {
-      // NOT a silent retry. `rolling: "auto"` falls back when the RFQ FAILS,
-      // and this branch is the other shape: the RFQ succeeded, a session was
-      // established, and then every fill failed. Re-running the same swap on
-      // the legacy path from here is what would risk paying or delivering
-      // twice, so the caller decides — but a caller that is told only
-      // `leg B failed; fill not executed` has no way to know the legacy path
-      // is right there and working. Say so.
+      // The shape swap#148 produces: the RFQ succeeded, a session was
+      // established, and then every fill failed. Nothing is retried here —
+      // re-running a fill after a rolling attempt is what would risk paying
+      // or delivering twice, so the caller decides. Since toon-client#598
+      // there is no weaker path to fall back to either (ADR 0003), so the
+      // result has to be self-diagnosing: a caller told only
+      // `leg B failed; fill not executed` cannot tell whose fault it is.
       warnings.push(
         'EVERY packet failed on the rolling path, so this swap delivered ' +
           'nothing. It also cost nothing: no leg A was revealed and no claim ' +
-          'is collectable (spec R5/R8). This is NOT retried as legacy ' +
-          'automatically — re-running a fill after a rolling attempt is what ' +
-          'risks double-paying. To settle this swap on the legacy path, ' +
-          'repeat it with `rolling: "off"`.'
+          'is collectable (spec R5/R8). Nothing is retried automatically — ' +
+          're-running a fill after a rolling attempt is what risks ' +
+          'double-paying, so the retry is the caller\'s call. TOON speaks ' +
+          'the rolling protocol ONLY (ADR 0003): there is no weaker path to ' +
+          'retry on, so read `rejections` for why leg B failed and fix the ' +
+          'maker before repeating this swap.'
       );
     }
     const firstError = errors[0];

@@ -715,8 +715,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             'Hard floor on the per-packet exchange rate (decimal string, ' +
             'target whole-units per source whole-unit). A packet quoted or ' +
-            'delivered below the floor is rejected (BELOW_FLOOR) and the ' +
-            'swap halts; the armed floor is echoed on the response.',
+            'delivered below the floor is WITHHELD before it commits, so it ' +
+            'costs nothing, and is reported as a rejection; the armed floor ' +
+            'is echoed on the response.',
         },
         floorBps: {
           type: 'number',

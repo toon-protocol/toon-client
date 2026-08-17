@@ -459,13 +459,13 @@ export interface SwapRequest {
   /**
    * Hard floor on the per-packet exchange rate (sdk ≥2.1.0, rolling-swap
    * toon-meta#145 spec §5). Decimal string in `SwapPair.rate` format (target
-   * whole-units per source whole-unit). When set, every fulfilled packet is
-   * checked BEFORE its claim is accumulated: a maker tape rate `R_i` below
-   * the floor — or a delivered amount below `applyRate(sourceAmount, floor)`
-   * — records a `BELOW_FLOOR` rejection and halts the stream
-   * (`abortReason: 'below-floor'`). The floor is a safety mechanism,
-   * deliberately never relaxed by the adaptive controller. Takes precedence
-   * over `floorBps`.
+   * whole-units per source whole-unit). When set, it is armed at the
+   * verify-before-reveal seam: a maker tape rate `R_i` below the floor — or a
+   * delivered amount below `applyRate(sourceAmount, floor)` — WITHHOLDS the
+   * fill rather than merely reporting it, so leg A never reveals and the
+   * packet costs nothing. The breach is reported as a
+   * `ROLLING_ADVANCE_REJECTED` rejection naming the entitled amount. Takes
+   * precedence over `floorBps`.
    */
   minExchangeRate?: string;
   /**
@@ -480,7 +480,7 @@ export interface SwapRequest {
    * Per-packet PREPARE expiry window in ms (sdk ≥2.1.0, rolling-swap R7): each
    * packet is stamped `expiresAt = now + packetExpiryMs` at send time so a
    * stalled packet expires deterministically and frees its in-flight slot.
-   * Unset keeps the legacy transport-derived expiry. Falls back to the
+   * Unset keeps the transport's own derived expiry. Falls back to the
    * daemon's `swapDefaults.packetExpiryMs`.
    */
   packetExpiryMs?: number;
@@ -503,9 +503,9 @@ export interface SwapRequest {
   swapSignerAddress?: string;
 }
 
-/** Per-packet telemetry for one accepted FULFILL (from the sdk's `onPacket`). */
+/** Per-packet telemetry for one accepted fill, recorded by the rolling loop. */
 export interface SwapPacketOutcome {
-  /** 0-indexed packet number. With an adaptive window > 1, completion order. */
+  /** 0-indexed packet number. The fill loop is sequential, so this is send order. */
   index: number;
   /** Source-asset amount sent for this packet (micro-units, decimal). */
   sourceAmount: string;
@@ -521,35 +521,38 @@ export interface SwapPacketOutcome {
   rateTimestamp?: number;
 }
 
-/** One rejected packet (e.g. `BELOW_FLOOR`, or a maker/connector reject). */
+/**
+ * One rejected packet: a withheld leg-B advance (`ROLLING_ADVANCE_REJECTED` —
+ * floor breach, failed verification, malformed advance) or a maker/connector
+ * reject of leg A. Either way the packet delivered nothing and cost nothing.
+ */
 export interface SwapRejection {
   /** 0-indexed packet number. */
   packetIndex: number;
   /** Source-asset amount the packet attempted (micro-units, decimal). */
   sourceAmount: string;
-  /** ILP-style rejection code (e.g. `BELOW_FLOOR`, `F99`, `T99`). */
+  /** ILP-style rejection code (e.g. `ROLLING_ADVANCE_REJECTED`, `F99`, `T99`). */
   code: string;
   message: string;
 }
 
 /**
  * One packet that never reached the maker: it THREW before (or while) being
- * sent, so there is no ILP rejection to report. The sdk records these on
- * `StreamSwapResult.errors` (`stream_swap.wrap_failed` /
- * `stream_swap.send_failed`) — distinct from {@link SwapRejection}, which is a
- * packet the maker/connector answered with a REJECT.
+ * sent, so there is no ILP rejection to report — distinct from
+ * {@link SwapRejection}, which is a packet the maker/connector answered.
  *
- * The distinction is load-bearing for diagnosis: the sdk's `finalizeResult`
- * rewrites `abortReason` to `'all-rejected'` only when there were rejections
- * and NO errors, so `state: 'failed'` with `abortReason: 'complete'` and zero
- * packets accepted means every packet died on THIS side — read `errors` for
- * why (e.g. `PEER_NOT_NEGOTIATED`: the destination is not routable from the
- * selected apex — see `SwapRequest.btpUrl`).
+ * The distinction is load-bearing for diagnosis: `abortReason` becomes
+ * `'all-rejected'` only when there were rejections and NO errors (the fill
+ * loop keeps the sdk's old rule), so `state: 'failed'` with
+ * `abortReason: 'complete'` and zero packets accepted means every packet died
+ * on THIS side — read `errors` for why (e.g. `PEER_NOT_NEGOTIATED`: the
+ * destination is not routable from the selected apex — see
+ * `SwapRequest.btpUrl`).
  */
 export interface SwapError {
   /** 0-indexed packet number. */
   packetIndex: number;
-  /** The thrown error's message (the sdk's `cause.message`). */
+  /** The thrown error's message. */
   message: string;
   /** The thrown error's constructor name, when it carries one (e.g. `TargetError`). */
   name?: string;
@@ -576,18 +579,22 @@ export interface SwapClaim {
   /** Cumulative transferred on the target channel (micro-units, decimal). */
   cumulativeAmount?: string;
   /**
-   * Receipt-time verification outcome (#352). `true`: the claim passed
+   * Receipt-time verification outcome (#352): the claim passed
    * signature/recipient/monotonicity checks and advanced the persisted
-   * watermark. Absent: the claim lacked settlement metadata (legacy pre-rename
-   * peer, see `SwapResponse.warning`) and was neither verified nor persisted.
+   * watermark. Always `true` on a swap that ran here — an advance that fails
+   * verification is never revealed, so it is reported as a
+   * {@link SwapRejection}, not as an unverified claim (toon-client#598).
+   * Optional only so a response persisted before that change still parses.
    */
   verified?: boolean;
   /**
-   * Why verification REJECTED this claim (#352). A rejected claim is never
-   * counted as value received and is not persisted. Codes follow the sdk 2.x
-   * vocabulary (`SWAP_SIGNER_MISMATCH`, `SIGNER_MISMATCH`, `SIGNATURE_INVALID`,
+   * Why verification REJECTED this claim (#352). Same story as
+   * {@link SwapClaim.verified}: since toon-client#598 a failed verification
+   * costs nothing and yields no claim at all, so the code
+   * (`SWAP_SIGNER_MISMATCH`, `SIGNER_MISMATCH`, `SIGNATURE_INVALID`,
    * `NON_MONOTONIC_NONCE`, `NON_MONOTONIC_CUMULATIVE`, `CUMULATIVE_SHORTFALL`,
-   * `RECIPIENT_MISMATCH`, `CHAIN_MISMATCH`, `MINA_VERIFICATION_UNSUPPORTED`, …).
+   * `RECIPIENT_MISMATCH`, `CHAIN_MISMATCH`, `MINA_VERIFICATION_UNSUPPORTED`, …)
+   * arrives in that rejection's `message` instead.
    */
   verificationError?: { code: string; message: string };
 }
@@ -610,26 +617,22 @@ export interface SwapResponse {
   /** First rejection message, if any. */
   message?: string;
   /**
-   * Early wire-skew alarm (#349): set when packets were FULFILLed but no
-   * accepted claim carries `swapSignerAddress` settlement metadata — the
-   * signature of a pre-rename (sdk <2.0.0) swap peer whose `millSignerAddress`
-   * field sdk ≥2 silently drops. Settling such claims fails later with
-   * `MISSING_SETTLEMENT_METADATA`; this surfaces the problem at swap time.
-   *
-   * Also set (#352) when one or more received claims FAILED receipt-time
-   * verification — those claims carry `verificationError` and are never
-   * counted as value received.
+   * Human-readable diagnosis for anything the caller should not have to infer
+   * from the structured fields: packets whose leg-B advance was withheld or
+   * rejected (spec R5/R8 — no collectable claim for them), a swap where EVERY
+   * packet failed (delivered nothing, cost nothing, and is not retried
+   * automatically), packets that failed LOCALLY without reaching the maker,
+   * and a `timeoutMs` deadline that left packets unattempted. Multiple
+   * warnings are newline-joined.
    */
   warning?: string;
   /**
-   * Why the stream ended (sdk `StreamSwapResult.abortReason`): `'complete'`,
-   * `'aborted'` (signal / `timeoutMs`), `'stopped'`, `'callback-stop'`,
-   * `'callback-throw'`, `'rate-deviation'`, `'below-floor'` (floor breach —
-   * pairs with a `BELOW_FLOOR` rejection), `'receipt-invalid'`, or
-   * `'all-rejected'`.
+   * Why the fill loop ended: `'complete'`, `'all-rejected'` (every packet the
+   * maker answered said no, with no local errors), or `'aborted'`
+   * (`timeoutMs` elapsed — pairs with `state: 'stopped'`).
    *
-   * Diagnostic note: the sdk only rewrites `'complete'` → `'all-rejected'`
-   * when there were rejections and NO errors, so `state: 'failed'` +
+   * Diagnostic note: `'complete'` is rewritten to `'all-rejected'` only when
+   * there were rejections and NO errors, so `state: 'failed'` +
    * `abortReason: 'complete'` + `packetsAccepted: 0` is the signature of the
    * LOCAL error path — read {@link SwapResponse.errors}.
    */
@@ -671,7 +674,8 @@ export interface SwapResponse {
   /**
    * #352: total verified watermark advance across this swap's claims — the
    * value actually received, target micro-units. Rejected claims contribute
-   * NOTHING here. Absent when no claim carried settlement metadata (legacy).
+   * NOTHING here. Absent when the swap produced nothing to ingest at all —
+   * every packet failed locally before the maker answered.
    */
   valueReceived?: string;
   /**
@@ -688,9 +692,16 @@ export interface SwapResponse {
  * step 2 capability discovery).
  */
 export interface SwapRollingInfo {
-  /** Whether a kind:20033 RFQ probe was actually sent (and paid for). Absent when `streamNonce` skipped it. */
+  /**
+   * Whether a kind:20033 RFQ probe was actually sent (and paid for). `false`
+   * when a caller-pinned {@link SwapRequest.streamNonce} skipped it.
+   */
   probed: boolean;
-  /** Whether the swap ran on the rolling path. Always `true` — see the type doc. */
+  /**
+   * Whether the swap ran on the rolling path. Always `true` on a response:
+   * rolling is the only path, and a maker that does not establish a session
+   * fails the call rather than reporting `used: false` here.
+   */
   used: boolean;
   /** The session id every fill referenced. */
   streamNonce?: string;

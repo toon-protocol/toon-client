@@ -569,6 +569,17 @@ describe('ClientRunner', () => {
   let runner: ClientRunner;
   let prevHome: string | undefined;
 
+  /**
+   * A `createClient` returning the shared `client`, with the runner's rolling
+   * `jobHandler` wired onto it (toon-client#573) so an inbound leg-B advance
+   * reaches the daemon's session registry. Reads `client` at call time, so it
+   * always hands over the instance `beforeEach` built for THIS test.
+   */
+  const withClient: CreateClient = (cfg) => {
+    client.jobHandler = cfg.jobHandler as typeof client.jobHandler;
+    return client;
+  };
+
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'toon-runner-'));
     // Isolate from the user's real ~/.toon-client (persisted targets.json,
@@ -589,10 +600,7 @@ describe('ClientRunner', () => {
           tokenNetwork: '0xtn',
         },
       }),
-      createClient: (cfg) => {
-        client.jobHandler = cfg.jobHandler as typeof client.jobHandler;
-        return client;
-      },
+      createClient: withClient,
       createRelay: fakeRelay,
     });
   });
@@ -1941,15 +1949,14 @@ describe('ClientRunner', () => {
     expect(res.state).toBe('failed');
   });
 
-  it('a rolling swap that delivers NOTHING says so, and names `rolling: "off"`', async () => {
+  it('a rolling swap that delivers NOTHING says so, and points at the maker', async () => {
     // The live shape after swap#148: the RFQ succeeds, a session is
     // established, and then every leg B is undeliverable — the maker unwinds
-    // and answers leg A with F99. `rolling: "auto"` cannot fall back here
-    // (its fallback covers RFQ *failure*), and re-running the fill as legacy
-    // is exactly what would risk double-paying. So the result has to be
-    // self-diagnosing instead: a caller reading only
-    // `leg B failed; fill not executed` has no way to know the legacy path is
-    // right there and working.
+    // and answers leg A with F99. Since toon-client#598 there is no legacy
+    // path left to point a stranded caller at, and re-running the fill is
+    // what would risk double-paying, so the result has to be self-diagnosing
+    // instead: a caller reading only `leg B failed; fill not executed` has no
+    // way to know whose fault it is or that nothing was spent.
     class UndeliverableLegBMaker extends FakeRollingMakerClient {
       override async sendSwapPacket(): Promise<{
         accepted: boolean;
@@ -1988,11 +1995,13 @@ describe('ClientRunner', () => {
 
     expect(res.accepted).toBe(false);
     expect(res.packetsAccepted).toBe(0);
-    // The diagnosis the old warning never gave.
-    expect(res.warning).toContain('rolling: "off"');
+    // The diagnosis the old warning never gave: nothing delivered, nothing
+    // spent, and the fault named as the maker's rather than left to guess.
     expect(res.warning).toContain('delivered');
+    expect(res.warning).toContain('cost nothing');
+    expect(res.warning).toContain('fix the maker');
     // …without ever claiming it retried anything on the caller's behalf.
-    expect(res.warning).toContain('NOT retried as legacy');
+    expect(res.warning).toContain('Nothing is retried automatically');
     await rollingRunner.stop();
   });
 
@@ -2461,12 +2470,6 @@ describe('ClientRunner', () => {
     expect(listed).toHaveLength(1);
     expect(listed[0]).toMatchObject({ nonce: '3', cumulativeAmount: '900' });
   });
-
-  /** Wire a fresh runner's rolling `jobHandler` onto the shared `client`. */
-  const withClient: CreateClient = (cfg) => {
-    client.jobHandler = cfg.jobHandler as typeof client.jobHandler;
-    return client;
-  };
 
   it('persisted received claims survive a daemon restart (#352)', async () => {
     const storePath = join(tmpDir, 'received-claims.json');
