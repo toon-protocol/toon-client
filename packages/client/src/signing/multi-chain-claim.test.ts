@@ -9,8 +9,11 @@
  *   `solana-payment-channel-provider.verifyBalanceProof` does (reconstruct the
  *   48-byte message + Ed25519-verify against the base58 signer pubkey). This is
  *   the message the apex's `verifySolanaClaim` path checks when the client pays
- *   a payment-channel claim — NOT the swap peer ↔ sender swap-claim shape
- *   (`balanceProofHashSolana`, SDK `verifyEd25519Signature`).
+ *   a payment-channel claim, and — since toon#214 — also the swap peer ↔ sender
+ *   swap-claim shape and what the SDK's `verifyEd25519Signature` checks. There is
+ *   one Solana balance-proof message now. (The swap-claim wire used to sign
+ *   `balanceProofHashSolana`, a digest no deployed program verifies, so no Solana
+ *   swap claim could be redeemed.)
  * - **Mina** now signs the connector's PAYMENT-CHANNEL proof (Poseidon
  *   commitment + Pallas Schnorr), a different message from the swap peer↔sender
  *   swap-claim shape; its full connector-contract conformance lives in

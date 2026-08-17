@@ -1,7 +1,9 @@
 /**
  * Receipt-time verification pipeline tests (#352). Fixtures are REAL signed
  * balance proofs — EVM secp256k1 (r||s||v over the **v2 EIP-712** claim digest,
- * connector#324 finding #1) and Solana Ed25519 (over `balanceProofHashSolana`).
+ * connector#324 finding #1) and Solana Ed25519 over the RAW 48-byte
+ * `balanceProofMessageSolana` the deployed program verifies (toon#214; it was
+ * `balanceProofHashSolana`, a digest no program has ever checked).
  * The EVM fixtures are byte-compatible with what a v2 `@toon-protocol/swap`
  * claim signer emits; the digest is asserted against the spec golden vectors in
  * `evm-claim-digest.test.ts`.
@@ -10,7 +12,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { privateKeyToAccount } from 'viem/accounts';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import {
-  balanceProofHashSolana,
+  balanceProofMessageSolana,
+  base58Decode,
   base58Encode,
   hexToBytes,
 } from '@toon-protocol/core';
@@ -103,17 +106,23 @@ function solanaClaim(opts: {
   cumulativeAmount: string;
   targetAmount: bigint;
 }): AccumulatedClaim {
-  const msgHash = balanceProofHashSolana(
-    SOL_CHANNEL,
-    BigInt(opts.cumulativeAmount),
+  // The RAW 48 bytes the deployed program's Ed25519 precompile check compares
+  // byte-for-byte — `channel_pda(32) || nonce(8 LE) || transferred_amount(8 LE)`
+  // — NOT the legacy `balanceProofHashSolana` digest this fixture signed until
+  // toon#214. That digest is verifiable by nothing on chain, so a claim signed
+  // over it can never be redeemed; the sdk stopped accepting it in 3.2.0, and a
+  // fixture that kept using it was asserting the client would accept an
+  // unredeemable claim.
+  const message = balanceProofMessageSolana(
+    base58Decode(SOL_CHANNEL),
     BigInt(opts.nonce),
-    SOL_RECIPIENT
+    BigInt(opts.cumulativeAmount)
   );
   return {
     packetIndex: 0,
     sourceAmount: opts.targetAmount,
     targetAmount: opts.targetAmount,
-    claimBytes: ed25519.sign(msgHash, SOL_PRIV),
+    claimBytes: ed25519.sign(message, SOL_PRIV),
     swapEphemeralPubkey: 'ab'.repeat(32),
     pair: SOL_PAIR,
     receivedAt: 42,
