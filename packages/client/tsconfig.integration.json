@@ -1,0 +1,50 @@
+// Typechecks the integration suites, which `tsconfig.json` does not.
+//
+// `tsconfig.json`'s `exclude: ["**/*.test.ts", ...]` is repo-wide, so `pnpm
+// typecheck` covers no test file in this package at all — the Solana redemption
+// proof included. That is a real hole: the proof is 800 lines of Ed25519
+// signing, PDA derivation and byte-layout decoding whose only validation was
+// "it ran green once on a laptop", and the same hole let
+// `swap-settlement-submit.integration.test.ts` drift out of sync with
+// `balanceProofHashEvm`'s signature (see below) without anything going red.
+//
+// This config closes the hole for the integration directory only. Fixing it for
+// the ~200 unit-test errors across `src/**/*.test.ts` (vitest `Mock<>` variance,
+// `noUncheckedIndexedAccess` on `mock.calls`, `noPropertyAccessFromIndexSignature`)
+// is a much larger and independent piece of work; the frozen
+// `.sandcastle/gate-baseline.json` records 0 typecheck errors for this package
+// and this config keeps that true by not widening what `pnpm typecheck` reads.
+//
+// Run by the `solana-settlement-proof` job in .github/workflows/ci.yml, which is
+// the job that runs these suites — the typecheck lives with the execution rather
+// than in `build`, whose wall clock is gate-guarded with ~8% headroom.
+{
+  "extends": "./tsconfig.json",
+
+  // Same source graph as the package build, so the suites are checked against
+  // the modules they actually import.
+  "include": ["src/**/*.ts"],
+  "exclude": ["**/__tests__/**", "src/**/*.test.ts"],
+
+  // `files` is not subject to `exclude`, which is how the integration suites get
+  // added back on top of the blanket `*.test.ts` exclusion above. Listing them
+  // by name is deliberate: a new integration suite must be added here to be
+  // covered, and the CI job asserts this list matches the directory so that
+  // omission cannot pass silently.
+  "files": [
+    "src/__integration__/btp-transport.integration.test.ts",
+    "src/__integration__/http-ilp-transport.integration.test.ts",
+    "src/__integration__/rust-edge-devnet.integration.test.ts",
+    "src/__integration__/solana-settlement-redeem.integration.test.ts"
+    // src/__integration__/swap-settlement-submit.integration.test.ts is
+    // DELIBERATELY absent, tracked in #607. It calls `balanceProofHashEvm` with
+    // 4 arguments where @toon-protocol/settlement-digest@1.1.0 takes 6 (the EVM
+    // digest gained an EIP-712 chainId + verifyingContract), so it is red at
+    // both typecheck and runtime — `TypeError: Cannot read properties of
+    // undefined (reading 'length')` inside `eip712DomainSeparatorEvm`. Supplying
+    // the missing arguments is a correctness decision about which chainId and
+    // verifying contract that #352 test means, not a typing fix, so it does not
+    // belong in a CI-wiring change. Adding the file here is part of closing
+    // #607.
+  ]
+}
