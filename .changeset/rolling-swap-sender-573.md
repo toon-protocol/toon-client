@@ -1,9 +1,0 @@
----
-"@toon-protocol/client": minor
----
-
-Drive the ROLLING swap protocol (rolling-swap spec §3) against rolling-capable makers instead of sending a sender-chosen condition on the legacy gift-wrap packet shape, which a compliant maker unconditionally rejects `F99 "sender-chosen execution conditions are not supported on the legacy swap path"` (issue #573; corrected diagnosis of the mis-filed toon-protocol/swap#115).
-
-`@toon-protocol/client` gains a `rolling-protocol` wire module (`encodeRollingFillPayload`/`parseRollingAdvancePayload`, mirroring the maker's `rolling-engine.ts` contract byte-for-byte) and `handleRollingAdvance`, which wires the existing verify-before-reveal seam (`ingestAndReveal`, #360) to a LIVE leg-B advance for the first time: a claim that fails verification, or has no retained preimage, is never revealed.
-
-`@toon-protocol/client-mcp`'s daemon installs a `RollingSwapSessionRegistry` as every apex's `jobHandler` (the #494 "agents earning" inbound-job mechanism, repurposed to receive maker→sender leg-B PREPAREs) and `POST /swap` gains a `streamNonce` field: setting `senderConditions: true` now REQUIRES it and drives every packet through the rolling wire shape end-to-end (mint `C_i` per packet, send the leg-A fill, verify+reveal the leg-B advance) instead of the legacy `streamSwap` path — closing the coupled-unwind gap (spec R5/R8): a withheld/failed leg-B verification never reveals leg A, by construction of the protocol rather than extra client-side logic. `senderConditions` without `streamNonce` is now a validation error instead of a guaranteed maker-side F99 (there is no RFQ session-negotiation transport yet, so `streamNonce` must already be registered with the maker out of band). The adaptive controller and rate floor (#351) are not yet ported to the rolling path — combining them with `senderConditions`+`streamNonce` is also a validation error rather than a silently-ignored safety param.

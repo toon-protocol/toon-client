@@ -1,5 +1,89 @@
 # @toon-protocol/client-mcp
 
+## 0.37.0
+
+### Minor Changes
+
+- 125ce19: Stage 4 of [toon-meta#411](https://github.com/toon-protocol/toon-meta/issues/411) (ADR 0003): **the client stops sending legacy swaps.** `ClientRunner.swap` now has one body — the rolling path. A maker that does not establish a rolling session fails the call with `RollingUnavailableError` / HTTP 502 `rolling_unavailable`; there is no downgrade left to fall back to.
+
+  **Breaking `SwapRequest` changes:**
+
+  - `rolling` (`'auto' | 'off' | 'require'`) is **removed**. Rolling was the only reachable behavior since toon-client#595 (`'require'` was already the default); `'auto'`/`'off'` had nothing left to select once the legacy sender was deleted, so the knob is gone rather than reduced to a single value. A caller that was passing `rolling: 'require'` needs no change (drop the field); a caller passing `'auto'`/`'off'` was already opting into legacy — that path no longer exists and the call now runs rolling unconditionally, or throws `RollingUnavailableError` naming the maker and the reason.
+  - `controller` (`SwapControllerParams`, the adaptive δ/W controller) is **removed**, per the drop decision recorded on toon-client#597: rolling's per-packet re-quote + verify-before-reveal already bounds the risk δ existed to bound, and the strictly sequential fill loop pins W at 1. `createSwapController`, `AdaptiveDeltaController`/`JsonFileSwapControllerStateStore` wiring, and `SwapDefaultsConfig.controller` / `ResolvedDaemonConfig.swapControllerStatePath` are all removed with it. `packetCount` (the static split) is unaffected — it is unchanged on the rolling path.
+  - `SwapResponse.rolling` (`SwapRollingInfo`) drops `fallbackReason`/`fallbackMessage` — they were only ever populated on the deleted fallback path. `used` is now always `true` on any successful response (a failed negotiation throws instead of reporting `used: false`).
+  - `SwapDefaultsConfig.rolling` is **removed** for the same reason as the per-request field.
+  - `streamSwap` (from `@toon-protocol/sdk/swap`) is no longer imported anywhere in this package.
+
+  `toon_swap`'s MCP tool schema drops the `rolling` input property to match. `toon_swap_claims` / `toon_swap_settle` are untouched.
+
+  `swap-wire-compat.test.ts` and the legacy-path runner suites are removed with the code they covered; the receive-side claim-ingestion, floor and observability cases they reached through the legacy sender are ported onto the rolling wire rather than dropped. Still outstanding, and NOT part of this change: a live devnet swap settling on chain from the built client, needed as evidence on toon-client#598 before that issue can close.
+
+### Patch Changes
+
+- 9dd28d2: Stage 2b of [toon-meta#411](https://github.com/toon-protocol/toon-meta/issues/411): decided, on the record, to **drop** the adaptive δ/W controller rather than port it to the rolling swap path.
+
+  No behavior changes — `controller` already routed a request to the legacy path (toon-client#585) and continues to until Stage 4 removes that path. This documents the decision at the code sites a future reader (and Stage 4's PR) will land on:
+
+  - **δ** (packet size) bounded exposure to a stale quote on the legacy protocol, where a FULFILL commits before verification. Rolling re-prices every packet at a fresh `R_i` and verifies it BEFORE leg A reveals (spec R5/R8) — a mispriced packet is withheld, never partially executed, so there is nothing left for δ to bound. Packet size in the end state is bounded by the maker's advertised `maxAmount` (kind:20034) and the hard floor.
+  - **W** (in-flight window) bounded timing/liveness risk across concurrently-outstanding packets. The rolling fill loop is, and stays, strictly sequential (toon-client#596) — W is fixed at 1 in the end state, so porting a knob that can never move is dead configuration surface.
+
+  `createSwapController` and `controller` are removed in Stage 4 (toon-client#598), not here — this issue is the rationale that PR cites. `packetCount` is untouched by the decision: it is the static split, honoured on both paths. `docs/rolling-swap.md` §6 needs a corresponding note in toon-meta ([toon-meta#416](https://github.com/toon-protocol/toon-meta/issues/416); this repo has no copy of that file to edit).
+
+  Closes toon-client#597.
+
+- 8687894: This changelog starts again, and the `.mcpb` download page now carries it.
+
+  Everything above this entry is new after a ten-day gap. `@toon-protocol/client-mcp` was in `.changeset/config.json`'s `ignore` list, which does two separable things: it stops the package publishing to npm, and it stops changesets **versioning** it. Only the first was wanted (#549 retired it from npm). The second froze `version` at `0.36.9` and meant `changeset version` never consumed a changeset naming only this package — six of them accumulated in `.changeset/` from 2026-08-07 onward, and every description in them reached no changelog anywhere. Since the `.mcpb` this package builds is the artifact users install, that left the only shipped artifact in the repo with no release notes at all, and every build after 08-07 carrying the same version number as every other one.
+
+  The package is now `private: true` but **not** `ignore`d — the same shape `packages/rig` already has here. `private` is what keeps it off npm (`changeset publish` filters on it), so the retirement decision is unchanged; dropping `ignore` only restores the version bump and the changelog. The six stranded changesets are consumed by this release, which is why the entries above are dated as far back as `toon_swap`'s `btpUrl` fix.
+
+  Two gates now hold it open. `release.yml` builds the `mcpb-latest` release body from the top section of this file instead of emitting version-and-sha only, so a Desktop user reading the download page sees what moved. And CI fails a PR that leaves any changeset unconsumed — the silent, no-error half of the family whose loud half (#611's mixed changeset) was fixed in #612.
+
+  Closes #614.
+
+- 6969894: A rolling swap that delivered nothing now says so — and names `rolling: "off"`.
+
+  `rolling: "auto"` falls back to the legacy path when the **RFQ** fails (no response, reject, nonce mismatch, undecodable). It has no answer for the other shape: an RFQ that _succeeds_, a session that _is_ established, and then a fill that cannot be delivered. That is exactly what a maker with no return path to the sender produced — every default swap against it returned `F99 "leg B failed; fill not executed"`, `packetsAccepted: 0`, while the same swap with an explicit `rolling: "off"` settled on-chain. The caller was told the fill failed; it was never told the working path was one flag away.
+
+  This is **not** fixed with a silent retry, and deliberately so. Re-running a fill on the legacy path after a rolling attempt is precisely the shape that risks double-paying or double-delivering, and the withhold property (spec R5/R8) is what makes a failed rolling attempt free in the first place. So the result is made self-diagnosing instead: when every packet failed and nothing was collected, the `warning` now states that the swap delivered nothing, that it also cost nothing (no leg A revealed, no collectable claim), that this is **not** retried as legacy automatically and why, and that repeating the swap with `rolling: "off"` will settle it.
+
+  The underlying delivery defect is maker-side and fixed in `toon-protocol/swap#148`; this is the diagnosis a caller deserves whenever a rolling session is established and then cannot be filled.
+
+- f42c6f4: The silent legacy fallback becomes a loud, named failure: `rolling` defaults to `"require"`.
+
+  Since toon-client#585 `toon_swap` probed every maker with a kind:20033 RFQ and, on **any** non-quote outcome, ran the swap on the legacy path instead — silently and totally, by design, because legacy was what worked against the deployed maker. [ADR 0003](https://github.com/toon-protocol/toon-meta/blob/main/docs/adr/0003-the-rolling-swap-is-the-only-swap.md) makes that the wrong end state: the deployed maker is rolling-capable, and a maker that quietly stops answering would degrade every caller to verify-**after**-commit against an unbounded held price with uncoupled legs, with nobody noticing. This is Stage 1 of [toon-meta#411](https://github.com/toon-protocol/toon-meta/issues/411), and it removes nothing — the legacy sender is untouched and the change is one default.
+
+  `swapDefaults.rolling` (and the per-request `rolling`) now defaults to `'require'`. A maker that does not establish a session fails the call with `RollingUnavailableError` → HTTP **502 `rolling_unavailable`** (a counterparty fault, not a 400), carrying the maker's pubkey, its ILP address, the reason discriminator (`rejected`, `no-response`, `not-a-quote`, `nonce-mismatch`, `send-failed`, `no-sender-address`, `controller`) and the underlying diagnosis — as structured fields _and_ in the message, so a stranded caller meets a diagnosis rather than a downgrade. `toon_swap` surfaces it as JSON with a hint that the legacy remedies are a **paid, weaker retry** to ask the user about, not a free one.
+
+  Both escape hatches survive this stage and neither is silent any more. `rolling: 'auto'` still probes and falls back, and `rolling: 'off'` still skips the probe entirely — the move toon-client#592's own diagnosis points at when a rolling fill cannot be _delivered_ (swap#148, maker-side, still open). `'off'` previously left **no** `rolling` block on the response at all, so a legacy swap was indistinguishable from a rolling one downstream; it now reports `fallbackReason: 'off'`, and every legacy run — from either hatch — also raises a `warning` naming the path it took and why. Both go away with the legacy sender in Stage 4 (toon-client#598).
+
+  The RFQ probe itself is unchanged, and a missing `swapVerifyingContracts` in the maker's announce remains its own hard reject (`MISSING_SWAP_VERIFYING_CONTRACT`), not a fallback trigger.
+
+- 88b42de: The rolling swap path now carries the same observable surface as the legacy path: `timeoutMs`, `packets[]`, `errors[]` / `abortReason` / `LOCAL_SEND_FAILED`.
+
+  This is Stage 2a of [toon-meta#411](https://github.com/toon-protocol/toon-meta/issues/411): under [ADR 0003](https://github.com/toon-protocol/toon-meta/blob/main/docs/adr/0003-the-rolling-swap-is-the-only-swap.md) the legacy path goes away, so anything on it that a rolling `SwapResponse` did not already report would be silently **lost** the day Stage 4 lands — and lost from the diagnostics surface.
+
+  - **`timeoutMs`** now bounds the rolling fill loop: checked before every send and passed to `sendSwapPacket` as the remaining per-call budget. A deadline that elapses stops further packets from going out; the partial fill is reported exactly (`claims`, `cumulativeSource`/`cumulativeTarget`), with `abortReason: 'aborted'` and `state: 'stopped'`.
+  - **`packets[]`** carries one entry per accepted fill (`effectiveRate`, `rateDeviation`, and `rate`/`rateTimestamp` echoing that fill's own advance — not just the session quote), capped and truncation-flagged the same way as the legacy response.
+  - **`errors[]`** carries packets that threw before the maker ever answered (a transport/peer-resolution failure) — previously folded into `rejections[]` under a synthetic `T00` code, indistinguishable from a real maker "no". `code: 'LOCAL_SEND_FAILED'` is now reported when every failure was local, mirroring the legacy path.
+  - **`abortReason`** is now always set on a rolling response, mirroring the sdk's own `finalizeResult` rewrite rule: `'complete'` unless there were rejections and no local errors (`'all-rejected'`), or the loop was cut short by `timeoutMs` (`'aborted'`, which wins outright). A fully-local failure therefore carries the same diagnostic signature as the legacy path: `state: 'failed'` + `abortReason: 'complete'` + `packetsAccepted: 0` — read `errors[]` for why.
+
+  `SwapRequest.timeoutMs`'s doc comment now describes both paths (it previously described only `streamSwap`'s `AbortSignal`).
+
+  `toon_swap_claims` and `toon_swap_settle` are untouched — both were already path-agnostic. Nothing is removed; this is additive to the rolling path.
+
+  Field-by-field parity with the legacy `SwapResponse`: `accepted`, `packetsAccepted`, `claims`, `cumulativeSource`, `cumulativeTarget`, `state`, `code`/`message`, `warning`, `abortReason`, `packets`/`packetsTruncated`, `rejections`, `errors`, `realizedRate`, `minExchangeRate`, `claimsVerified`/`claimsRejected`/`valueReceived`, and `rolling` are all now populated on the rolling path exactly as on the legacy one.
+
+  Closes toon-client#596.
+
+- 5d28945: Make swap failures both reachable and visible: `toon_swap` gains `btpUrl`, and the daemon stops swallowing the sdk's `errors[]`.
+
+  Two independent defects made a failing swap impossible to address and impossible to diagnose.
+
+  **`toon_swap` could not address any apex but the default.** The daemon's `swap()` has always selected its apex client via `selectApex(req.btpUrl)`, `SwapRequest.btpUrl` has always existed on the control API, and `POST /swap` has always forwarded the whole body — but the MCP tool schema never exposed `btpUrl`, so every swap issued from an agent surface went out on the config-seeded apex. A DIRECT-DIALLED maker — one deliberately kept out of a relay connector's routing table and reached at its own advertised `btpEndpoint` — was therefore unreachable from the MCP surface entirely, no matter that `toon_add_apex` could register it. `toon_swap` now takes `btpUrl` and forwards it, matching `toon_publish`. Selection stays keyed on BTP URL only (the daemon's apex map is keyed that way); no second ILP-destination selector was introduced.
+
+  **Swap errors were silently swallowed.** A packet that THROWS before it is sent lands on the sdk's `StreamSwapResult.errors[]`, not `rejections[]`. The daemon's response mapper read only `rejections`, and `SwapResponse` had no `errors` field at all — so a swap that failed 100% locally returned nothing but `{accepted:false, packetsAccepted:0, state:'failed', abortReason:'complete'}`. Separately, `streamSwap` was called with no `logger`, so the sdk fell back to its no-op default and its `stream_swap.wrap_failed` / `stream_swap.send_failed` diagnostics were written nowhere. `SwapResponse` now carries a typed `errors[]` (`packetIndex`, `message`, `name`), a matching `warning`, a `code: 'LOCAL_SEND_FAILED'` fallback when there is no maker reject to report, and the daemon logger is threaded into `streamSwap`. The `abortReason: 'complete'` + `state: 'failed'` pair is preserved rather than papered over: the sdk only rewrites `'complete'` to `'all-rejected'` when there are rejections and NO errors, so that exact shape is the signature of the local error path and is now documented as such.
+
 ## 0.36.9
 
 ### Patch Changes
