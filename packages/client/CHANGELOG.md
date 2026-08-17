@@ -1,5 +1,226 @@
 # @toon-protocol/client
 
+## 0.30.0
+
+### Minor Changes
+
+- 125ce19: **The legacy swap path is gone: TOON speaks the rolling swap protocol only** (Stage 4 of [toon-meta#411](https://github.com/toon-protocol/toon-meta/issues/411), ADR 0003, toon-client#598).
+
+  This package's own API is **unchanged** — the swap primitives here (`sendSwapPacket`, `sendRollingRfq`, `handleRollingAdvance`, `ingestAndReveal`, `buildSwapSettlements`) are shared by the RFQ probe and every rolling fill, and none of them was legacy-only. The minor bump marks the protocol boundary the surrounding client now enforces, so a consumer pinning this package can tell which side of it they are on.
+
+  **What changes for a caller.** The TOON client no longer _sends_ a legacy zero-condition swap under any circumstances:
+
+  - Every swap is preceded by a kind:20033 RFQ probe, and only a maker that answers kind:20034 (thereby registering the session) is swapped with. Coupled legs, verify-before-reveal, and a per-fill rate floor are no longer opt-in — they are the protocol.
+  - A maker that does not establish a session now **fails the call** with `RollingUnavailableError` (HTTP 502 `rolling_unavailable`), naming the maker pubkey, its ILP address and the reason discriminator. There is no downgrade left: the previous escape hatches (`rolling: 'auto'` / `rolling: 'off'`) are removed, not merely defaulted off, and so is the legacy-only adaptive δ/W controller (`controller`, per the drop decision recorded on toon-client#597). `packetCount` — the static split — is unaffected.
+  - A caller that drove the legacy stream directly through the sdk's `streamSwap` has no supported equivalent here. The migration is to the rolling path: probe with `sendRollingRfq`, fill against the returned session, and verify each leg-B advance with `handleRollingAdvance` before revealing leg A.
+  - A claim that fails verification no longer comes back as an accepted-but-unverified claim; it is withheld before leg A commits, so it costs nothing and is reported as a rejection.
+
+  Makers still accept legacy while this ships — the sender stops emitting it strictly before the maker stops accepting it (ADR 0003's ordering), so reverting is a no-coordination rollback.
+
+- f43db1d: Drive the ROLLING swap protocol (rolling-swap spec §3) against rolling-capable makers instead of sending a sender-chosen condition on the legacy gift-wrap packet shape, which a compliant maker unconditionally rejects `F99 "sender-chosen execution conditions are not supported on the legacy swap path"` (issue #573; corrected diagnosis of the mis-filed toon-protocol/swap#115).
+
+  `@toon-protocol/client` gains a `rolling-protocol` wire module (`encodeRollingFillPayload`/`parseRollingAdvancePayload`, mirroring the maker's `rolling-engine.ts` contract byte-for-byte) and `handleRollingAdvance`, which wires the existing verify-before-reveal seam (`ingestAndReveal`, #360) to a LIVE leg-B advance for the first time: a claim that fails verification, or has no retained preimage, is never revealed.
+
+  `@toon-protocol/client-mcp`'s daemon installs a `RollingSwapSessionRegistry` as every apex's `jobHandler` (the #494 "agents earning" inbound-job mechanism, repurposed to receive maker→sender leg-B PREPAREs) and `POST /swap` gains a `streamNonce` field: setting `senderConditions: true` now REQUIRES it and drives every packet through the rolling wire shape end-to-end (mint `C_i` per packet, send the leg-A fill, verify+reveal the leg-B advance) instead of the legacy `streamSwap` path — closing the coupled-unwind gap (spec R5/R8): a withheld/failed leg-B verification never reveals leg A, by construction of the protocol rather than extra client-side logic. `senderConditions` without `streamNonce` is now a validation error instead of a guaranteed maker-side F99 (there is no RFQ session-negotiation transport yet, so `streamNonce` must already be registered with the maker out of band). The adaptive controller and rate floor (#351) are not yet ported to the rolling path — combining them with `senderConditions`+`streamNonce` is also a validation error rather than a silently-ignored safety param.
+
+- f8eb94a: Receive-side Solana settlement actually settles (toon-client#604).
+
+  Two things blocked it, neither of them the encoding defect fixed upstream in
+  toon#214 (the SDK's Solana bundle could not execute at all). Both are now closed,
+  and the result is proven against a real validator rather than asserted.
+
+  **1. The `programId` came from an EVM-only config map.** `buildSwapSettlements`
+  resolved the Solana settlement `programId` from `tokenNetworks[chain]` — the
+  leg-A `TokenNetwork` map, documented as EVM-only, and the same wrong-source
+  mistake toon-client#583 fixed for the EVM branch. No maker publishes a
+  `tokenNetworks["solana:*"]`, so Solana settlement was **unconfigurable**, and a
+  `TokenNetwork` address would have been the wrong contract if anyone had
+  configured one. The source is now `solanaProgramId` — threaded by the daemon from
+  `ToonClientConfig.solanaChannel.programId`, the payment-channel program that owns
+  the claim's channel PDA and the one this client opened the channel on — with an
+  entry's own pinned `verifyingContract` still winning, exactly as for EVM.
+  `tokenNetworks` is no longer read by the settlement builder on any chain; it stays
+  on the params interface, deprecated, so the guard tests that assert passing it
+  changes nothing keep compiling.
+
+  **2. There was no submitter.** Both submission seams refused the bundle outright
+  (`SUBMISSION_UNSUPPORTED` in the daemon, "EVM only today" in `ToonClient`). New
+  `swap/solana-settlement.ts` provides:
+
+  - `buildSolanaSettlementTransaction` — **pure**: patches a live blockhash into
+    the SDK's compiled Message via the SDK's own `patchSolanaRecentBlockhash`,
+    signs the _patched_ bytes (signing the placeholder and swapping the blockhash in
+    afterwards would sign bytes that are not the ones broadcast), and serializes
+    `short_vec(1) || signature(64) || message`. The redemption needs exactly ONE
+    signature — the recipient's, which is also the fee payer — so this client
+    redeems unilaterally, with no maker co-sign and no proving step.
+  - `submitSolanaSettlement` — the two network calls plus a confirmation wait that
+    **fails on a transaction that confirmed with an execution error**. A reverted
+    redemption moved nothing, and reporting it as submitted would recreate the
+    silent gap this closes.
+  - `decodeSolanaSettlementClaimAmounts` — reads `(nonce, transferredAmount)` back
+    out of the program's own instruction data, so a test can state what a
+    transaction claims to do without trusting the bundle's summary fields.
+
+  It deliberately does **not** re-derive the message: the account list, instruction
+  data, precompile offsets and signed 48-byte balance proof are all the SDK's,
+  verified against the deployed program. Rebuilding any of it here would recreate
+  the signer/verifier drift toon#214 fixed. `ToonClient.settleSwapBundle` gains a
+  Solana branch reading `solanaChannel.rpcUrl` (the node the channel PDA lives on)
+  with `chainRpcUrls` as fallback, and the daemon's Solana branch now shares the
+  Mina one, surfacing each chain's stable error code (`NO_RPC_CONFIGURED`,
+  `NO_SIGNER`, `RECIPIENT_MISMATCH`, …) instead of flattening every failure to
+  `SUBMISSION_FAILED`.
+
+  A `RECIPIENT_MISMATCH` guard fails **locally** when the configured Solana key is
+  not the claim recipient: on chain that same mismatch is a bare signature-
+  verification failure that names nothing.
+
+  **Dependency bump.** `@toon-protocol/core ^3.4.0 → ^3.5.0` and
+  `@toon-protocol/sdk ^3.1.8 → ^3.3.0` (client, client-mcp; core also in rig), with
+  the lockfile moved — it pinned `sdk 3.1.8`, so the range bump was load-bearing.
+  Until this bump the receive-side verify checked the legacy
+  `balanceProofHashSolana` digest that **no program verifies**, so a correctly
+  signed, redeemable Solana claim would have been rejected at receipt while an
+  unredeemable one was accepted — exactly backwards. This also closes the split
+  where CI's `build` job (`--frozen-lockfile`) and its `Devbox Environment
+Validation` job (`--no-frozen-lockfile`) compiled against different SDKs with
+  different Solana digest semantics.
+
+  **Tests that asserted the old encoding are fixed, not deleted.** The Solana
+  fixture in `received-claims.test.ts` signed the legacy digest; it now signs
+  `balanceProofMessageSolana`. Left as it was, it asserted that the client accepts
+  an unredeemable claim. Two of its cases went red on the bump, which is what a
+  tripwire is for.
+
+  **Proof.** `packages/client/src/__integration__/solana-settlement-redeem.integration.test.ts`
+  boots a real `solana-test-validator` with the real native payment-channel program
+  (vendored from connector `e9bfadad`, 109,416 bytes, sha256-asserted at boot,
+  loaded at genesis at connector's own `LOCAL_TEST_PROGRAM_ID`) and a real 178-byte
+  `ChannelState` at its correctly-derived PDA, then runs the **client's** whole
+  pipeline — `ingestReceivedClaims` → `buildSwapSettlements` →
+  `submitSolanaSettlement` — and reads the channel account back off chain. Observed:
+  `nonce_a 0 → 1, transferred_amount_a 0 → 250000`, then a second claim to
+  `2 / 500000`. Plus the negatives that make the pass mean something: a replayed
+  nonce refused by the program with state untouched, a legacy-digest claim refused
+  by the receive-side verify and — forced past it with the signature spliced into
+  the precompile instruction — by the chain, and a non-recipient signer refused
+  before broadcast.
+
+  The suite SKIPS when `solana-test-validator` is not on PATH, and
+  `CLIENT_REQUIRE_SOLANA=1` turns absence into a hard failure so a CI job can never
+  report success having run nothing. **It is not wired into CI**, which has no
+  validator: the 11 unit tests in `swap/solana-settlement.test.ts` cover the submit
+  path's control flow and refusals there, and they are explicitly not a substitute —
+  bytes that look right are how toon#214 survived for months.
+
+### Patch Changes
+
+- ac635df: Stop resuming a payment channel after the node terminating its route has been replaced — every paid write failed `F01 - claim rejected: names a channel this connector has no record of`.
+
+  Both of the daemon's channel stores key a record by a ROUTE with no counterparty in it: `channels.peers.json` by `peer|chain|tokenNetwork`, `apex-channels.json` by `destination|chain`. An ILP name can change hands — the devnet apex `g.toon` was retired and other nodes took over the names under it — and every key field kept matching, so the client resumed a channel opened against the retired node and signed balance proofs against it. The node now answering holds no record of that channel and refuses every packet. Live on 2026-08-16 this broke a `toon_upload` to `g.toon.ario` even though a correct, working binding for that destination sat in the same file; deleting the dead record by hand was the only fix.
+
+  The records already carry the counterparty they were opened against (`recipient`), so it is now re-checked against the settlement address the destination announces TODAY before anything is resumed (`counterpartyMatch`/`sameSettlementAddress`, newly exported from `@toon-protocol/client` and mirroring rig's own copy). On a mismatch the record is superseded and the channel re-resolved: `openChannel` binds whatever channel this identity already holds with the new counterparty where one exists, rather than opening and funding a fresh one. A superseded record is MOVED to an archive key rather than deleted — it may still hold an on-chain deposit, and dropping it would strand those funds behind hand-editing the JSON — and is excluded from the resume path for good (`ChannelStore.supersedeBinding`, `supersedeApexChannel`). Records written by older versions carry no recorded counterparty: those read as unverified rather than stale, so the resume proceeds (no fresh on-chain open, nothing for the user to fix) and the record is back-filled from the announce so the next run is verifiable.
+
+- bec5675: `HttpRuntimeClient` refuses a sealed packet instead of silently stripping its execution condition (toon-client#588).
+
+  `sendIlpPacket` omitted `executionCondition` and `expiresAt` from its parameter type entirely. TypeScript's method-parameter **bivariance** let that satisfy `IlpClient` anyway, so a sealed, condition-bearing packet routed through this transport compiled cleanly and went on the wire with its condition dropped — a swap leg that believes it is hash-locked and is not, visible only at runtime.
+
+  Carrying the fields was considered and rejected. This transport does not serialize a PREPARE at all: it POSTs `{destination, amount, data}` as JSON to the connector's `/admin/ilp/send`, and the connector mints the PREPARE on the far side, so there is no field on that wire for either value. Even if the admin body grew them, the endpoint's response is `{accepted, data, code, message}` with no `fulfillment`, so the `sha256(fulfillment) == condition` check that MAKES a sender-chosen condition meaningful — the one `mapIlpResponse` runs on both real transports — could never run here. "Carried" would still mean "unverified": the same lie with more code.
+
+  The parameters are now named in the signature via the shared `IlpSendParams`, so bivariance is no longer load-bearing, and a packet that requires them is refused with a `ValidationError` **before any request is made** — so a refused packet costs nothing and spends no claim. Conditions arriving in either representation are normalized through `resolveExecutionCondition` (#586) rather than a third convention.
+
+  An absent or all-zero `executionCondition` is the legacy unverified class and is unaffected: ordinary publish/upload writes behave byte-for-byte as before.
+
+- ec6570f: Accept an execution condition in the base64 form `@toon-protocol/core`'s `IlpClient` port now declares, restoring the only CI job that can see dependency drift.
+
+  `IlpSendParams` (toon-client#350) extended core's `IlpClient` param shape with a sender-chosen `executionCondition`, typed as the raw `Uint8Array` the rest of the condition subsystem deals in. Core 3.4.0 — pulled in by `@toon-protocol/sdk@3.1.8`, which pins it exactly — then added a field of the same name to that port, typed as a base64 `string`. Neither type is assignable to the other, so the two transports stopped satisfying `IlpClient` and `ToonClient`'s `runtimeClient` assignment failed to compile.
+
+  Core's split is deliberate rather than a mistake to paper over: its in-process `SendPacketParams.executionCondition` is `Uint8Array`, annotated "not base64 string", while the JSON-shaped `IlpClient` wire port carries base64. `IlpSendParams.executionCondition` therefore now accepts `Uint8Array | string` and normalizes through a new exported `resolveExecutionCondition` at both transports — exactly the shape `expiresAt`/`resolveExpiresAt` already took when core 2.1.0's `IlpClient` started passing an ISO string for a field this package held as a `Date`. Bytes stay the native form: senders in this package keep passing what `mintExecutionCondition` mints, and length validation stays at the transports so a malformed condition fails identically whichever representation it arrived in.
+
+  Only `Devbox Environment Validation` installs with `--no-frozen-lockfile`, so it alone re-resolved to the new sdk and went red on 2026-08-15 while every lockfile-pinned job stayed green. The lockfile now moves forward to sdk 3.1.8 / core 3.4.0 and the declared ranges match, so the pinned jobs compile against what devbox resolves instead of hiding the break.
+
+- 3f88c3d: Fix receive-side swap-claim verification sourcing `tokenNetworks` from local daemon config instead of the maker's own kind:10032 announce (issue #572, found during the toon-meta#394 T6 devnet proof).
+
+  `ingestReceivedClaims`'s v2 EIP-712 verification needs a `(chainId, verifyingContract)` map to reconstruct the claim's domain, and it previously came ONLY from the local `tokenNetworks` config passed in by the caller. Live consequences: a daemon whose config names its own relay's TokenNetwork (the natural default) rejected every maker claim `SIGNER_MISMATCH`; one daemon could not verify claims from two makers with different `RollingSwapChannel` deployments; and the maker's own advertised `tokenNetworks` (advertised precisely so a client can reconstruct the domain, swap#102/toon-meta#394 T2) was never consumed.
+
+  - `ToonClient.getDiscoveredPeerInfo(pubkey)` (new, public) resolves a discovered kind:10032 announce by Nostr pubkey regardless of peering status — a swap maker is a payment destination, not necessarily a connector peer.
+  - `ingestReceivedClaims` now PINS the `verifyingContract` it verified an EVM claim against onto the persisted `ReceivedClaimEntry` (pin-on-first-use). `buildSwapSettlements` prefers that pinned value over the `tokenNetworks` config at settle time, so a daemon holding claims from two makers with different deployments settles each against the contract it actually verified with, even across a config drift / restart.
+  - `buildSwapSettlements` now lowercases the resolved `verifyingContract`/TokenNetwork address before handing it to the sdk's settlement-tx builder, which requires a strict `0x` + 40 lowercase-hex `contractAddress` — the receive-side verifier itself already accepted either case, so a checksummed config/announce address used to build successfully but fail to settle.
+
+  The `client-mcp` daemon (`ClientRunner.swap`) now resolves the verification `tokenNetworks` map as the swap maker's own announce (base) merged with the daemon's configured `tokenNetworks` layered on top as an explicit operator override, rather than config alone.
+
+- e3e3abe: Refuse a discovered announce whose endpoint can only point at the client's own machine.
+
+  A `kind:10032` announce is served forever — the relay treats the kind as
+  parameterized-replaceable and implements neither NIP-40 expiry nor NIP-09
+  deletion, so replacing one needs its original signing key. A throwaway swap
+  maker on an operator workstation therefore left `g.toon.swap.sol` advertising
+  `ws://127.0.0.1:3401` on devnet permanently, as the only Solana→EVM pair a
+  client can see. Selecting it dials port 3401 on the CALLER's machine:
+  connection-refused at best, a BTP session opened against an unrelated local
+  service at worst.
+
+  New `announce-reachability` module (exported: `classifyEndpointZone`,
+  `rejectedAnnounceEndpoint`, `isAnnounceEndpointUsable`,
+  `announceEndpointPolicyFor`, `DEFAULT_ANNOUNCE_ENDPOINT_POLICY`), applied at
+  the three points where a discovered announce is selected: `ToonClient`'s
+  terminator resolution, `client-mcp`'s `discoverApex` (the `toon_add_apex` /
+  direct-dialled-maker path), and `rig`'s `pickPaymentPeer`.
+
+  - **Loopback** (`127/8`, `::1`, `localhost`, `0.0.0.0`, `::`) and
+    **link-local** (`169.254/16`, `fe80::/10`) are refused by default: their
+    meaning is relative to the reader, so a remote announcer's copy can never be
+    correct for us.
+  - **Private ranges** (RFC1918, ULA, CGNAT/Tailscale) stay **allowed** — a LAN
+    maker or a Docker-bridge rig is a real deployment. Opt out with
+    `allowPrivate: false`.
+  - Local development is unaffected: a loopback endpoint discovered from a
+    loopback relay is accepted automatically (local relay ⇒ local stack).
+    `TOON_CLIENT_ALLOW_LOOPBACK_PEERS=1` is the explicit override for a local
+    node that announces itself to a remote relay.
+
+  Refusals are loud at the point of selection — `TERMINATOR_UNRESOLVED` and
+  `ApexDiscoveryError` now name the endpoint, the host, why it is unreachable
+  and the escape hatch, instead of letting a confusing connection error surface
+  from the user's own machine.
+
+- fc2da5e: Send the rolling-swap RFQ, so the rolling protocol is finally reachable end to end.
+
+  The maker learned to hear a session onto the wire in swap#135 (kind:20033 RFQ → kind:20034 quote). The client could not put one there: `rolling-protocol.ts`'s own docblock said the `streamNonce` it mints "must be registered with the maker OUT OF BAND", `/swap` took the rolling path only when the CALLER passed `senderConditions` + a pre-registered `streamNonce`, and `toon_swap` exposed neither field. There was no rolling-capability predicate anywhere in this repo, from either direction.
+
+  `sendRollingRfq` (`@toon-protocol/client`) is the missing half: it gift-wraps a kind:20033 rumor (`proto: "rolling/1"`, `streamNonce`, the six matched pair fields, `chainRecipient`, `senderIlpAddress`, `sizeHint`), TOON-encodes it exactly as the sdk encodes a legacy swap packet, and sends it as a paid write with **no** `executionCondition` — the same zero-condition local-delivery seam a legacy swap request rides, distinguishable only by inner rumor kind after decryption. The maker's kind:20034 answer comes back sealed to the request's reply key on the leg-A FULFILL `data`, and unwrapping it establishes the session. `senderIlpAddress` defaults to the new `ToonClient.getOwnIlpAddress()` — the id the client's BTP session is bound under, which the connector resolves by exact match, and the address the maker uses verbatim for every leg-B PREPARE.
+
+  Capability discovery is the probe, per spec §10.3 step 2 — there is no announce flag and swap#135 deliberately added none. `toon_swap` now probes every maker and **falls back to the legacy path silently and successfully** on any non-quote outcome: a reject (the ordinary legacy-maker signal), an unreadable answer, a nonce mismatch, a local throw. A failed rolling attempt can never turn a working legacy swap into a broken one. `rolling: 'off'` skips the probe; `rolling: 'require'` fails with the reason instead of falling back; `swapDefaults.rolling` sets the daemon-wide default. Either way the outcome is echoed on `SwapResponse.rolling`, so the silent fallback is still observable.
+
+  The rolling path also stops refusing the #351 defenses. The session floor is armed from the quote's `R₀` (`minExchangeRate = R₀ × (1 − floorBps/10000)`, spec §5) and enforced at the verify-before-reveal seam, so a below-floor or short-delivering advance is WITHHELD rather than merely reported — leg A never fulfills and the packet costs nothing, which the legacy path cannot do because leg A has already resolved by the time the claim is read. The maker's `swapSignerAddress` from the quote arms R5 before the first advance, and the quote's per-packet `maxAmount` splits the stream instead of sending one guaranteed-rejected over-cap packet. The adaptive δ/W controller is still legacy-only: a request asking for one takes the legacy path without paying for a probe.
+
+- 9b4cd45: Evict a stale peer→channel binding when the connector refuses the claim drawn on it (toon-client#581).
+
+  **A refused claim now retires the binding that produced it.** #578/#580 stop a cached channel being resumed when its recorded counterparty disagrees with what the destination announces today. That check is a PREDICTION: it cannot see a record whose recorded counterparty happens to look current. A node that keeps its settlement address but loses its channel state — a wiped connector, a restored-from-backup box, a redeployed contract — passes it and then refuses every paid write with `F01 - claim rejected: names a channel this connector has no record of`. Both `rig` and the MCP daemon hit exactly that, and the only recovery was hand-editing `~/.toon-client` JSON.
+
+  The reject is the connector's own answer, so it now drives the recovery: `ToonClient.sendPaidPacket` (behind `publishEvent` and `sendSwapPacket`) calls the new `ChannelManager.evictBinding`, which supersedes the binding — archived, so any on-chain deposit stays reclaimable, and the channel stays tracked so close/settle still work — then re-resolves and retries the write ONCE. Re-resolution goes through the ordinary `ensureChannel` path, so it reuses an existing channel where one survives and never forces a fresh on-chain open.
+
+  Deliberately narrow, because a false positive costs a channel while a false negative costs one failed write: only the unknown-channel flavour of `F01` triggers it (a nonce-race `F01` names a HEALTHY channel and any mention of a nonce vetoes the match), only when the reject can be attributed to the channel just used, only on the auto-claim path, and never twice for one write.
+
+- 555dfb5: Verify a received swap claim against the maker's **RollingSwapChannel**, not the TokenNetwork it is paid through — a swap that succeeded on the wire delivered zero verified value.
+
+  A live devnet swap against `g.toon.swap.maker` on 2026-08-16 completed: 1 packet accepted, `state: "completed"`, 1000 → 1000 at rate 1, and the maker returned a correctly-signed leg-B balance proof. The client rejected it with `SIGNER_MISMATCH: recovered 0x977485ff…, expected 0x5f68f3a1…` — `claimsVerified: 0`, `valueReceived: "0"`. Nothing was wrong with any key. The v2 EIP-712 claim digest binds `verifyingContract`, and the client was reconstructing that domain from `tokenNetworks[chain]`: the **leg-A** `TokenNetwork` the client opens its own payment channel against to PAY the maker. The maker signs its claims against its **leg-B** `RollingSwapChannel`, a different contract at a different address. Recovering the same signature under the leg-A address reproduces `0x977485ff59e2f55609f9c6e1275764731e045e05` exactly; under the leg-B address it recovers the expected `0x5f68f3a1ab1eb59417dbe11b8d8c9db339a04005`. The two contracts had been conflated since the map was the only one available, and `tokenNetworks` can never be right for this.
+
+  swap#134 already split them in the announce: a maker now publishes `tokenNetworks` (leg A) and `swapVerifyingContracts` (leg B) as separate kind:10032 keys. The client now sources leg-B verification from `swapVerifyingContracts[chain]` on **both** the rolling path and the legacy path, with the local daemon config layered on top as an operator override — preserving toon-client#574's reasoning that a counterparty must never be the sole authority on what verifies its own signature, while fixing the fallback it was overriding. `@toon-protocol/core`'s `parseIlpPeerInfo` (still, at 3.4.0) drops the field, so it is read off the announce's raw content through `DiscoverySubscription.swapVerifyingContractsFor` and the new `ToonClient.getSwapVerifyingContracts` — the same seam `requiredTransport` already uses.
+
+  There is deliberately **no** fallback from leg B to leg A, at receipt or at settlement. A chain with no known verifying contract now fails with a new `MISSING_SWAP_VERIFYING_CONTRACT` code whose message names the missing contract and warns off the `tokenNetworks` map by name, rather than a `SIGNER_MISMATCH` that reads as a key problem and is not one. `MISSING_CHAIN_CONFIG` is now reserved for the genuinely different failure of a chain key carrying no numeric chain id. `ReceivedClaimStore`'s pin-on-first-use is enforced before the signature check: once a channel's watermark records the contract its claims verified under, that contract is the channel's domain, and a claim offered under a different one is rejected instead of silently rotating it mid-stream.
+
+  New optional daemon config key `swapVerifyingContracts` (`~/.toon-client/config.json`), alongside `tokenNetworks`, lets an operator pin a leg-B contract explicitly. Normally unset: the maker's announce supplies it.
+
+- bceb812: Route a swap to the apex that OWNS its destination — every swap against a registered non-default apex failed locally with `No negotiation metadata for peer "g.toon.swap.maker"`.
+
+  The daemon runs one `ToonClient` per apex, and a `toon_add_apex` target's settlement facts are injected into THAT client alone, under the peer id `resolvePeerId` returns for its destination (`g.toon.swap.maker` → `maker`). `swap()` selected its client by `btpUrl` only, so a request that did not restate the maker's BTP URL streamed on the config-seeded apex instead — a client that has never negotiated with the maker. `resolvePeerId` then throws `PEER_NOT_FOUND`, `peerIdForClaim` falls back to the raw destination as the claim key, nothing is ever registered under a full ILP address, and every packet dies before it is sent. Reproduced live on devnet 2026-08-16 against `g.toon.swap.maker` at `wss://proxy.relay.devnet.toonprotocol.dev/swap/ilp/btp`.
+
+  An explicit `btpUrl` still wins and is still the only selector on the wire (#579). With none, the swap now goes to the registered apex whose own ILP address is `destination` or its longest prefix, so the destination and the peer id its negotiation is registered under agree and the lookup hits on identity instead of riding the raw-destination fallback. When no registered apex claims the destination the default apex is used exactly as before.
+
+  `PEER_NOT_NEGOTIATED` also stops being a dead end when that fallback IS in play: the error now says the peer id is really the destination, that no negotiation is ever registered under a full ILP address, and which peers this client did negotiate.
+
 ## 0.29.8
 
 ### Patch Changes

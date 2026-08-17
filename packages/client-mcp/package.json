@@ -1,6 +1,6 @@
 {
   "name": "@toon-protocol/client-mcp",
-  "version": "0.36.9",
+  "version": "0.37.0",
   "//": "NOT PUBLISHED TO npm (#549), and `private: true` is the ONLY thing enforcing that — @changesets/cli's publish step filters on `!packageJson.private`, so this package can never reach the registry while that flag is set. It is deliberately NOT in .changeset/config.json's `ignore` (toon-client#614): `ignore` additionally stops changesets VERSIONING it, which froze this version at 0.36.9 and left `client-mcp`-only changesets accumulating in .changeset/ forever with their descriptions reaching no changelog at all. The artifact users install is the .mcpb built from this version, so it needs a moving version and a CHANGELOG even though it needs no npm release. Same shape as packages/rig: private, not ignored.",
   "private": true,
   "description": "Always-on local daemon + MCP server letting a Claude agent (Desktop or Code) act as a TOON Protocol client: pay-to-write publishing, free reads, channel/balance management, and swaps.",
