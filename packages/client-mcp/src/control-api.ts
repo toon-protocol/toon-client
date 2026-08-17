@@ -511,9 +511,12 @@ export interface SwapRequest {
    */
   packetExpiryMs?: number;
   /**
-   * Overall swap deadline in ms, wired to `streamSwap`'s `AbortSignal`. On
-   * expiry the stream aborts mid-flight, in-flight packets are drained, and
-   * the response reports the partial fill accurately (`state: 'stopped'`,
+   * Overall swap deadline in ms. On the legacy path it is wired to
+   * `streamSwap`'s `AbortSignal`, so on expiry the stream aborts mid-flight
+   * and in-flight packets are drained; on the rolling path (toon-client#596)
+   * it bounds the fill loop — checked before each sequential send and handed
+   * to that send as its remaining per-call budget. Either way the response
+   * reports the partial fill accurately (`state: 'stopped'`,
    * `abortReason: 'aborted'`, partial `claims`/cumulatives).
    */
   timeoutMs?: number;
