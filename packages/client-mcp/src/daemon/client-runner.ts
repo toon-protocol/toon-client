@@ -2587,7 +2587,6 @@ export class ClientRunner {
     let cumulativeSource = 0n;
     let cumulativeTarget = 0n;
     let firstReject: { code: string; message: string } | undefined;
-    let firstError: { message: string; name?: string } | undefined;
     const recordRejection = (
       packetIndex: number,
       sourceAmount: bigint,
@@ -2608,11 +2607,15 @@ export class ClientRunner {
     // into `rejections` under a synthetic `T00` — the pre-#596 behaviour —
     // reported "the maker rejected this" for a failure that never left the
     // client, and gave a caller nothing to distinguish `errors[]` for.
-    const recordError = (packetIndex: number, err: unknown): void => {
-      const message = errMsg(err);
+    const recordError = (packetIndex: number, err: unknown): SwapError => {
       const name = err instanceof Error ? err.name : undefined;
-      errors.push({ packetIndex, message, ...(name ? { name } : {}) });
-      firstError ??= { message, ...(name ? { name } : {}) };
+      const entry: SwapError = {
+        packetIndex,
+        message: errMsg(err),
+        ...(name ? { name } : {}),
+      };
+      errors.push(entry);
+      return entry;
     };
 
     // Per-packet telemetry (#596 parity with the legacy path's `onPacket`):
@@ -2699,10 +2702,10 @@ export class ClientRunner {
               : {}),
           });
         } catch (err) {
-          recordError(packetIndex, err);
+          const failure = recordError(packetIndex, err);
           this.log(
             `[runner] swap: rolling packet seq ${seq} FAILED LOCALLY — ` +
-              `${firstError?.name ?? 'Error'}: ${errMsg(err)}`
+              `${failure.name ?? 'Error'}: ${failure.message}`
           );
           continue;
         }
@@ -2807,6 +2810,7 @@ export class ClientRunner {
           'repeat it with `rolling: "off"`.'
       );
     }
+    const firstError = errors[0];
     if (firstError) {
       warnings.push(
         `${errors.length} packet(s) FAILED LOCALLY and never reached the ` +
@@ -2815,11 +2819,15 @@ export class ClientRunner {
       );
     }
     if (timedOut) {
+      // Every attempted packet ends as exactly one of claim/rejection/error,
+      // so the rest are the ones the deadline stopped from going out.
+      const neverAttempted =
+        packetCount - claims.length - rejections.length - errors.length;
       warnings.push(
         `\`timeoutMs\` (${String(req.timeoutMs)}) elapsed with ` +
-          `${String(packetCount - claims.length - rejections.length - errors.length)} ` +
-          'packet(s) never attempted. Partial fill reported exactly — see ' +
-          '`claims` / `cumulativeSource` / `cumulativeTarget`.'
+          `${String(neverAttempted)} packet(s) never attempted. Partial fill ` +
+          'reported exactly — see `claims` / `cumulativeSource` / ' +
+          '`cumulativeTarget`.'
       );
     }
     const hadIngestibleClaims = claims.length + rejections.length > 0;
@@ -2830,16 +2838,17 @@ export class ClientRunner {
     // A local-only failure therefore keeps the same diagnostic signature as
     // the legacy path: `state: 'failed'` + `abortReason: 'complete'` +
     // `packetsAccepted: 0` — read `errors[]` for why.
-    const abortReason = timedOut
-      ? 'aborted'
-      : rejections.length > 0 && errors.length === 0
-        ? 'all-rejected'
-        : 'complete';
-    const state: 'completed' | 'failed' | 'stopped' = timedOut
-      ? 'stopped'
-      : rejections.length > 0 || errors.length > 0
-        ? 'failed'
-        : 'completed';
+    let abortReason = 'complete';
+    let state: 'completed' | 'failed' | 'stopped' = 'completed';
+    if (timedOut) {
+      abortReason = 'aborted';
+      state = 'stopped';
+    } else if (rejections.length > 0 || errors.length > 0) {
+      if (rejections.length > 0 && errors.length === 0) {
+        abortReason = 'all-rejected';
+      }
+      state = 'failed';
+    }
 
     return {
       accepted: claims.length > 0,

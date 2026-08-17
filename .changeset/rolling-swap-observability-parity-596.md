@@ -11,6 +11,8 @@ This is Stage 2a of [toon-meta#411](https://github.com/toon-protocol/toon-meta/i
 - **`errors[]`** carries packets that threw before the maker ever answered (a transport/peer-resolution failure) — previously folded into `rejections[]` under a synthetic `T00` code, indistinguishable from a real maker "no". `code: 'LOCAL_SEND_FAILED'` is now reported when every failure was local, mirroring the legacy path.
 - **`abortReason`** is now always set on a rolling response, mirroring the sdk's own `finalizeResult` rewrite rule: `'complete'` unless there were rejections and no local errors (`'all-rejected'`), or the loop was cut short by `timeoutMs` (`'aborted'`, which wins outright). A fully-local failure therefore carries the same diagnostic signature as the legacy path: `state: 'failed'` + `abortReason: 'complete'` + `packetsAccepted: 0` — read `errors[]` for why.
 
+`SwapRequest.timeoutMs`'s doc comment now describes both paths (it previously described only `streamSwap`'s `AbortSignal`).
+
 `toon_swap_claims` and `toon_swap_settle` are untouched — both were already path-agnostic. Nothing is removed; this is additive to the rolling path.
 
 Field-by-field parity with the legacy `SwapResponse`: `accepted`, `packetsAccepted`, `claims`, `cumulativeSource`, `cumulativeTarget`, `state`, `code`/`message`, `warning`, `abortReason`, `packets`/`packetsTruncated`, `rejections`, `errors`, `realizedRate`, `minExchangeRate`, `claimsVerified`/`claimsRejected`/`valueReceived`, and `rolling` are all now populated on the rolling path exactly as on the legacy one.
