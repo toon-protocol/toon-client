@@ -1,17 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Mock the SDK swap boundary so swap() can be unit-tested without a real swap peer
-// (a faithful fake would have to unwrap the gift wrap + encrypt a FULFILL to the
-// ephemeral key generated inside swap()).
-vi.mock('@toon-protocol/sdk/swap', () => ({ streamSwap: vi.fn() }));
-import { streamSwap } from '@toon-protocol/sdk/swap';
-// The controller surface (#351) is NOT mocked: the state-persistence tests
-// below exercise the real AdaptiveDeltaController + JsonFileSwapControllerStateStore.
-import { swapControllerStateKey } from '@toon-protocol/sdk';
-import type {
-  AdaptiveDeltaController,
-  PacketProgress,
-} from '@toon-protocol/sdk';
 // Mock only the faucet boundary so async fundWallet jobs run without a real
 // faucet; every other `@toon-protocol/client` export is preserved.
 vi.mock('@toon-protocol/client', async (importOriginal) => {
@@ -48,6 +36,7 @@ import {
   RollingUnavailableError,
   TargetError,
   deriveFloorRate,
+  type CreateClient,
   type ToonClientLike,
 } from './client-runner.js';
 import type { ResolvedDaemonConfig } from './config.js';
@@ -95,65 +84,6 @@ const EVM_VERIFYING_CONTRACTS = { [EVM_PAIR.to.chain]: EVM_VERIFYING_CONTRACT };
 /** The leg-A TokenNetwork the daemon pays the maker THROUGH — a different
  *  contract, and never a valid leg-B verification domain (#583). */
 const EVM_TOKEN_NETWORKS = { [EVM_PAIR.to.chain]: '0x' + '44'.repeat(20) };
-
-/** Build a genuinely-signed accumulated EVM claim (v2 EIP-712, sdk wire shape). */
-async function signedEvmClaim(opts: {
-  nonce: string;
-  cumulativeAmount: string;
-  targetAmount: bigint;
-  sourceAmount?: bigint;
-  packetIndex?: number;
-  channelId?: string;
-  recipient?: string;
-  /** Sign over DIFFERENT values than advertised (a tampered claim). */
-  signedCumulative?: string;
-}) {
-  const channelId = opts.channelId ?? EVM_CHANNEL;
-  const recipient = opts.recipient ?? EVM_RECIPIENT;
-  const digest = evmClaimDigest(
-    { chainId: EVM_CHAIN_ID, verifyingContract: EVM_VERIFYING_CONTRACT },
-    {
-      channelId,
-      cumulativeAmount: BigInt(opts.signedCumulative ?? opts.cumulativeAmount),
-      nonce: BigInt(opts.nonce),
-      recipient,
-    }
-  );
-  const sigHex = await SWAP_SIGNER_ACCOUNT.sign({ hash: digest });
-  return {
-    packetIndex: opts.packetIndex ?? 0,
-    sourceAmount: opts.sourceAmount ?? opts.targetAmount,
-    targetAmount: opts.targetAmount,
-    claimBytes: hexToBytes(sigHex),
-    swapEphemeralPubkey: 'ab'.repeat(32),
-    claimId: `claim-${opts.nonce}`,
-    channelId,
-    recipient,
-    swapSignerAddress: SWAP_SIGNER,
-    nonce: opts.nonce,
-    cumulativeAmount: opts.cumulativeAmount,
-    pair: EVM_PAIR,
-    receivedAt: 0,
-  };
-}
-
-/** Wrap accumulated claims into a completed streamSwap result. */
-function swapResult(
-  claims: unknown[],
-  totals?: { source?: bigint; target?: bigint }
-) {
-  return {
-    state: 'completed',
-    claims,
-    rejections: [],
-    errors: [],
-    abortReason: 'complete',
-    cumulativeSource: totals?.source ?? 1000n,
-    cumulativeTarget: totals?.target ?? 999n,
-    packetsSent: claims.length,
-    packetsScheduled: claims.length,
-  } as unknown as Awaited<ReturnType<typeof streamSwap>>;
-}
 
 let tmpDir: string;
 
@@ -436,12 +366,18 @@ async function rollingAdvanceBytes(opts: {
   targetAmount: string;
   streamNonce?: string;
   signer?: typeof SWAP_SIGNER_ACCOUNT;
+  /** Sign over a DIFFERENT cumulative than advertised (a tampered advance). */
+  signedCumulativeAmount?: string;
+  /** Maker's quote-tape rate for this fill; defaults to '1.0'. */
+  rate?: string;
 }): Promise<Uint8Array> {
   const digest = evmClaimDigest(
     { chainId: EVM_CHAIN_ID, verifyingContract: EVM_VERIFYING_CONTRACT },
     {
       channelId: EVM_CHANNEL,
-      cumulativeAmount: BigInt(opts.cumulativeAmount),
+      cumulativeAmount: BigInt(
+        opts.signedCumulativeAmount ?? opts.cumulativeAmount
+      ),
       nonce: BigInt(opts.nonce),
       recipient: EVM_RECIPIENT,
     }
@@ -461,7 +397,7 @@ async function rollingAdvanceBytes(opts: {
       cumulativeAmount: opts.cumulativeAmount,
       recipient: EVM_RECIPIENT,
       swapSignerAddress: SWAP_SIGNER,
-      rate: '1.0',
+      rate: opts.rate ?? '1.0',
       rateTimestamp: 1_700_000_000_000,
       sourceAmount: opts.sourceAmount,
       targetAmount: opts.targetAmount,
@@ -624,7 +560,12 @@ class FakeRfqMakerClient extends FakeRollingMakerClient {
 }
 
 describe('ClientRunner', () => {
-  let client: FakeClient;
+  // A ROLLING-capable fake (toon-client#598: the legacy sender is gone, so
+  // every swap test in this describe block — including the receive-side
+  // claim-ingestion suite below — now drives the rolling path). Plain
+  // `FakeClient` behaviour is preserved for every non-swap test since
+  // `FakeRollingMakerClient` only overrides `sendSwapPacket`.
+  let client: FakeRollingMakerClient;
   let runner: ClientRunner;
   let prevHome: string | undefined;
 
@@ -634,7 +575,7 @@ describe('ClientRunner', () => {
     // channel stores) so tests never read or write live state.
     prevHome = process.env['TOON_CLIENT_HOME'];
     process.env['TOON_CLIENT_HOME'] = tmpDir;
-    client = new FakeClient();
+    client = new FakeRollingMakerClient();
     runner = new ClientRunner({
       config: makeConfig({
         apex: {
@@ -648,7 +589,10 @@ describe('ClientRunner', () => {
           tokenNetwork: '0xtn',
         },
       }),
-      createClient: () => client,
+      createClient: (cfg) => {
+        client.jobHandler = cfg.jobHandler as typeof client.jobHandler;
+        return client;
+      },
       createRelay: fakeRelay,
     });
   });
@@ -1468,107 +1412,12 @@ describe('ClientRunner', () => {
     ]);
   });
 
-  it('swap streams via streamSwap, VERIFIES the claim, persists it, and maps it (#352)', async () => {
-    await runner.bootstrap();
-    const claim = await signedEvmClaim({
-      nonce: '1',
-      cumulativeAmount: '999',
-      targetAmount: 999n,
-      sourceAmount: 1000n,
-    });
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
-
-    const res = await runner.swap({
-      destination: 'g.proxy.swap',
-      amount: '1000',
-      swapPubkey: 'cd'.repeat(32),
-      pair: EVM_PAIR,
-      chainRecipient: EVM_RECIPIENT,
-      // #595: legacy is opt-in now — this suite exercises the legacy body.
-      rolling: 'auto' as const,
-      swapSignerAddress: SWAP_SIGNER,
-    });
-
-    // streamSwap got the request params (default single packet).
-    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
-    expect(arg.swapIlpAddress).toBe('g.proxy.swap');
-    expect(arg.swapPubkey).toBe('cd'.repeat(32));
-    expect(arg.totalAmount).toBe(1000n);
-    expect(arg.chainRecipient).toBe(EVM_RECIPIENT);
-    expect(arg.packetCount).toBe(1);
-
-    // The accumulated claim is mapped (claimBytes → base64) and VERIFIED.
-    expect(res.accepted).toBe(true);
-    expect(res.packetsAccepted).toBe(1);
-    expect(res.cumulativeTarget).toBe('999');
-    expect(res.state).toBe('completed');
-    expect(res.claims[0]).toMatchObject({
-      sourceAmount: '1000',
-      targetAmount: '999',
-      claim: Buffer.from(claim.claimBytes).toString('base64'),
-      channelId: EVM_CHANNEL,
-      recipient: EVM_RECIPIENT,
-      swapSignerAddress: SWAP_SIGNER,
-      claimId: 'claim-1',
-      verified: true,
-    });
-    expect(res.claimsVerified).toBe(1);
-    expect(res.claimsRejected).toBe(0);
-    expect(res.valueReceived).toBe('999');
-    // Settlement metadata survived the round trip — no wire-skew warning. The
-    // only warning here is #595's legacy-path notice, which this call opted
-    // into explicitly (`rolling: 'auto'`).
-    expect(res.warning).not.toMatch(/swapSignerAddress/);
-    expect(res.warning).toMatch(/LEGACY/);
-
-    // The verified claim is PERSISTED as the channel watermark, reflected in
-    // the received-claims surface (`GET /swap/claims`).
-    const listed = runner.listSwapClaims().claims;
-    expect(listed).toHaveLength(1);
-    expect(listed[0]).toMatchObject({
-      chain: EVM_PAIR.to.chain,
-      channelId: EVM_CHANNEL,
-      nonce: '1',
-      cumulativeAmount: '999',
-      recipient: EVM_RECIPIENT,
-      swapSignerAddress: SWAP_SIGNER,
-    });
-  });
-
-  it("swap sources the leg-B verifying contract from the MAKER's own kind:10032 announce, not just local config (#572/#583)", async () => {
-    // A daemon whose config carries NO swapVerifyingContracts at all (the
-    // live-devnet failure mode: the operator hadn't hand-configured the
-    // maker's deployment locally) can still verify — the maker's own announce
-    // supplies the verifyingContract.
-    const noConfig = new ClientRunner({
-      config: makeConfig({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        toonClientConfig: { btpUrl: 'ws://apex.test/btp' } as any,
-      }),
-      createClient: () => client,
-      createRelay: fakeRelay,
-    });
-    client.announcedSwapVerifyingContracts.set(
-      'cd'.repeat(32),
-      EVM_VERIFYING_CONTRACTS
-    );
-    await noConfig.bootstrap();
-    const claim = await signedEvmClaim({
-      nonce: '1',
-      cumulativeAmount: '999',
-      targetAmount: 999n,
-    });
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
-
-    const res = await noConfig.swap(
-      swapReq({ swapSignerAddress: SWAP_SIGNER })
-    );
-
-    expect(res.accepted).toBe(true);
-    expect(res.claimsVerified).toBe(1);
-    expect(res.claims[0]!.verified).toBe(true);
-    await noConfig.stop();
-  });
+  // toon-client#598: the legacy sender that used to back this suite is gone
+  // (ADR 0003 — rolling is the only swap protocol). The plain
+  // "streams via the legacy sender, VERIFIES the claim..." case is now redundant
+  // with the rolling-path REACHABILITY test below (it exercises the exact
+  // same receive-side verify/persist logic, just over the wire this fake
+  // drives directly); it is not re-added here.
 
   it("swap: local config swapVerifyingContracts OVERRIDES the maker's announce (#572/#583)", async () => {
     // The announce carries a DIFFERENT (wrong/stale) contract for the chain;
@@ -1579,12 +1428,14 @@ describe('ClientRunner', () => {
       [EVM_PAIR.to.chain]: '0x' + '99'.repeat(20),
     });
     await runner.bootstrap();
-    const claim = await signedEvmClaim({
-      nonce: '1',
-      cumulativeAmount: '999',
-      targetAmount: 999n,
-    });
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: '1',
+        cumulativeAmount: '999',
+        sourceAmount: '1000',
+        targetAmount: '999',
+      });
 
     const res = await runner.swap(swapReq({ swapSignerAddress: SWAP_SIGNER }));
 
@@ -1592,193 +1443,53 @@ describe('ClientRunner', () => {
     expect(res.claimsVerified).toBe(1);
   });
 
-  it('swap warns when accepted claims are missing swapSignerAddress (pre-rename swap peer)', async () => {
-    // A sdk <2.0.0 swap peer emits `millSignerAddress` in its FULFILL
-    // settlement metadata; sdk ≥2's decodeFulfillMetadata silently drops the
-    // unknown field, so the accumulated claim arrives WITHOUT
-    // swapSignerAddress. That claim is unsettleable (buildSettlementTx →
-    // MISSING_SETTLEMENT_METADATA) — the runner must say so at swap time.
-    await runner.bootstrap();
-    const pair = {
-      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
-      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
-      rate: '1.0',
-    };
-    vi.mocked(streamSwap).mockResolvedValue({
-      state: 'completed',
-      claims: [
-        {
-          packetIndex: 0,
-          sourceAmount: 1000n,
-          targetAmount: 999n,
-          claimBytes: new Uint8Array([1, 2, 3, 4]),
-          swapEphemeralPubkey: 'ab'.repeat(32),
-          claimId: 'claim-1',
-          channelId: '1111',
-          recipient: 'SoLrecipient',
-          // swapSignerAddress absent: dropped by decodeFulfillMetadata.
-          nonce: '1',
-          cumulativeAmount: '999',
-          pair,
-          receivedAt: 0,
-        },
-      ],
-      rejections: [],
-      errors: [],
-      abortReason: 'complete',
-      cumulativeSource: 1000n,
-      cumulativeTarget: 999n,
-      packetsSent: 1,
-      packetsScheduled: 1,
-    } as unknown as Awaited<ReturnType<typeof streamSwap>>);
+  // toon-client#598: the #349 wire-skew guard ("warns when accepted claims
+  // are missing swapSignerAddress") lived ONLY in the deleted legacy body —
+  // `swapRolling` never carried it (there is no pre-rename rolling peer to
+  // skew against: the rolling wire format always carries
+  // `swapSignerAddress`), so this coverage is genuinely gone, not ported.
 
-    const res = await runner.swap({
-      destination: 'g.proxy.swap',
-      amount: '1000',
-      swapPubkey: 'cd'.repeat(32),
-      pair,
-      chainRecipient: 'SoLrecipient',
-      // #595: legacy is opt-in now — this suite exercises the legacy body.
-      rolling: 'auto' as const,
-    });
+  // toon-client#598: the sdk `errors[]` mapping this proved lived in the
+  // deleted legacy body. Its rolling-path equivalent is
+  // '[#596] a locally-failed rolling send populates errors[] / abortReason
+  // "complete" / code LOCAL_SEND_FAILED' below.
 
-    // Claims still surface (the payment already happened) …
-    expect(res.accepted).toBe(true);
-    expect(res.claims[0]).not.toHaveProperty('swapSignerAddress');
-    // … but the response carries a loud, actionable skew warning.
-    expect(res.warning).toMatch(/swapSignerAddress/);
-    expect(res.warning).toMatch(/MISSING_SETTLEMENT_METADATA/);
-    expect(res.warning).toMatch(/millSignerAddress/);
-  });
-
-  // A packet that THROWS before it is sent lands on the sdk's `errors[]`, not
-  // `rejections[]`. The runner used to map only `rejections`, so this whole
-  // class of failure came back as a bare
-  // `{accepted:false, packetsAccepted:0, state:'failed', abortReason:'complete'}`
-  // with no cause anywhere — the sdk only rewrites 'complete' → 'all-rejected'
-  // when there are rejections and NO errors, so that exact shape IS the
-  // signature of the local error path.
-  it('swap surfaces sdk errors[] when a packet throws before it is sent — not a bare abortReason:"complete"', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockResolvedValue({
-      state: 'failed',
-      claims: [],
-      rejections: [],
-      errors: [
-        {
-          packetIndex: 0,
-          cause: Object.assign(
-            new Error(
-              'sendSwapPacket failed: PEER_NOT_NEGOTIATED (g.toon.swap.maker)'
-            ),
-            { name: 'TargetError' }
-          ),
-        },
-      ],
-      abortReason: 'complete',
-      cumulativeSource: 0n,
-      cumulativeTarget: 0n,
-      packetsSent: 0,
-      packetsScheduled: 1,
-    } as unknown as Awaited<ReturnType<typeof streamSwap>>);
-
-    const res = await runner.swap(swapReq());
-
-    expect(res.accepted).toBe(false);
-    expect(res.packetsAccepted).toBe(0);
-    // The diagnostic pair is preserved as-is …
-    expect(res.state).toBe('failed');
-    expect(res.abortReason).toBe('complete');
-    // … and the cause is now reachable without a debugger.
-    expect(res.errors).toHaveLength(1);
-    expect(res.errors?.[0]).toMatchObject({
-      packetIndex: 0,
-      name: 'TargetError',
-      message: expect.stringContaining('PEER_NOT_NEGOTIATED'),
-    });
-    // With no maker REJECT to report, the local throw supplies code/message.
-    expect(res.code).toBe('LOCAL_SEND_FAILED');
-    expect(res.message).toMatch(/PEER_NOT_NEGOTIATED/);
-    expect(res.warning).toMatch(/FAILED LOCALLY/);
-    expect(res.warning).toMatch(/btpUrl/);
-  });
-
-  it('swap passes the daemon logger into streamSwap so stream_swap.* events are written somewhere', async () => {
+  it('swap passes the daemon logger into the rolling fill loop so a withheld packet is logged', async () => {
     const lines: string[] = [];
+    const maker = new FakeRollingMakerClient();
     const logged = new ClientRunner({
       config: makeConfig(),
-      createClient: () => client,
+      createClient: (cfg) => {
+        maker.jobHandler = cfg.jobHandler as typeof maker.jobHandler;
+        return maker;
+      },
       createRelay: fakeRelay,
       logger: (m) => lines.push(m),
     });
     await logged.bootstrap();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
-
-    await logged.swap(swapReq());
-
-    const lastCall = vi.mocked(streamSwap).mock.calls.at(-1);
-    expect(lastCall).toBeDefined();
-    const logger = lastCall?.[0].logger;
-    expect(logger).toBeDefined();
-    // Exercise the adapter the way the sdk does: ONE structured event object.
-    logger?.error({
-      event: 'stream_swap.send_failed',
-      packetIndex: 0,
-      error: 'PEER_NOT_NEGOTIATED',
-    });
-    expect(lines.some((l) => l.includes('stream_swap.send_failed'))).toBe(true);
-    expect(lines.some((l) => l.includes('PEER_NOT_NEGOTIATED'))).toBe(true);
-    await logged.stop();
-  });
-
-  it('[#585] senderConditions with no streamNonce no longer throws — the RFQ probe decides the path, and under explicit `auto` a maker that cannot answer keeps the legacy one', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockClear();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
-    const pair = {
-      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
-      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
-      rate: '1.0',
-    };
-    // `swapPubkey` here is a placeholder, not a real secp256k1 point, so the
-    // gift wrap cannot even be built — the harshest way the probe can fail.
-    // With `rolling: 'auto'` asked for explicitly it STILL falls through to a
-    // working legacy swap rather than throwing (#595 changed only the
-    // DEFAULT: `senderConditions` is not, and never was, a path selector).
-    const res = await runner.swap({
+    // Default `buildAdvance` (no advance built) means the maker never sends a
+    // well-formed leg-B advance, so the fill is rejected — exercising the
+    // runner's own `this.log(...)` diagnostics on the rolling path (there is
+    // no sdk logger adapter to plug into any more).
+    await logged.swap({
       destination: 'g.proxy.swap',
       amount: '1000',
       swapPubkey: 'cd'.repeat(32),
-      pair,
-      chainRecipient: 'SoLrecipient',
-      // #595: legacy is opt-in now — this suite exercises the legacy body.
-      rolling: 'auto' as const,
-      senderConditions: true,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      streamNonce: STREAM_NONCE,
     });
-    expect(streamSwap).toHaveBeenCalledTimes(1);
-    expect(res.rolling).toMatchObject({
-      probed: false,
-      used: false,
-      fallbackReason: 'send-failed',
-    });
+
+    expect(lines.some((l) => l.includes('REJECTED'))).toBe(true);
+    await logged.stop();
   });
 
-  it('[#585] `rolling: "off"` with streamNonce is a validation error — the two ask for opposite paths', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockClear();
-    await expect(
-      runner.swap({
-        destination: 'g.proxy.swap',
-        amount: '1000',
-        swapPubkey: 'cd'.repeat(32),
-        pair: EVM_PAIR,
-        chainRecipient: EVM_RECIPIENT,
-        rolling: 'off',
-        streamNonce: STREAM_NONCE,
-      })
-    ).rejects.toThrow(InvalidPayloadError);
-    expect(streamSwap).not.toHaveBeenCalled();
-  });
+  // toon-client#598: both halves of this test proved the LEGACY fallback
+  // (`rolling: 'auto'` keeping a broken RFQ probe alive) — deleted outright,
+  // no rolling equivalent to port (there is no fallback any more).
+
+  // toon-client#598: `rolling: 'off'` no longer exists to conflict with a
+  // pinned `streamNonce` — deleted outright.
 
   it('swap with senderConditions + streamNonce drives the ROLLING path: a FRESH non-zero condition per packet, verified via the maker leg-B advance (#573)', async () => {
     const maker = new FakeRollingMakerClient();
@@ -1946,7 +1657,6 @@ describe('ClientRunner', () => {
   }
 
   it('[#585] REACHABILITY: a stock swap() with no streamNonce establishes the session ON THE WIRE and fills against it', async () => {
-    vi.mocked(streamSwap).mockClear();
     const { runner: r, maker } = await rfqRunner();
 
     const res = await r.swap({
@@ -1984,13 +1694,10 @@ describe('ClientRunner', () => {
       maxRateAge: 15_000,
       spreadBps: 40,
     });
-    // The LEGACY path was never entered.
-    expect(streamSwap).not.toHaveBeenCalled();
     await r.stop();
   });
 
   it('[#595] the SAME call against a maker with no RFQ intake THROWS, naming the maker, its ILP address and the reason', async () => {
-    vi.mocked(streamSwap).mockClear();
     const { runner: r, maker } = await rfqRunner((m) => {
       m.rfqCapable = false;
     });
@@ -2021,169 +1728,20 @@ describe('ClientRunner', () => {
     expect(unavailable.message).toContain('g.proxy.swap');
     expect(unavailable.message).toContain('rejected');
     expect(unavailable.message).toContain('F06');
-    // Exactly ONE packet left this client: the probe. No legacy swap ran.
+    // Exactly ONE packet left this client: the probe.
     expect(sendSpy).toHaveBeenCalledTimes(1);
     expect(maker.sessions.size).toBe(0);
-    expect(streamSwap).not.toHaveBeenCalled();
     await r.stop();
   });
 
-  it('[#595] an explicit `rolling: "auto"` still falls back to legacy — annotated AND warned, never silent', async () => {
-    vi.mocked(streamSwap).mockClear();
-    const claim = await signedEvmClaim({
-      nonce: '1',
-      cumulativeAmount: '1000',
-      targetAmount: 1000n,
-    });
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
-    const { runner: r, maker } = await rfqRunner((m) => {
-      m.rfqCapable = false;
-    });
-
-    const res = await r.swap({
-      destination: 'g.proxy.swap',
-      amount: '1000',
-      swapPubkey: maker.pubkey,
-      pair: EVM_PAIR,
-      chainRecipient: EVM_RECIPIENT,
-      rolling: 'auto',
-    });
-
-    // Succeeded — the escape hatch still WORKS, unchanged.
-    expect(res.accepted).toBe(true);
-    expect(streamSwap).toHaveBeenCalledTimes(1);
-    expect(res.rolling).toMatchObject({
-      probed: true,
-      used: false,
-      fallbackReason: 'rejected',
-    });
-    expect(res.rolling?.fallbackMessage).toContain('F06');
-    // …and it is no longer possible to take the weaker path without seeing it.
-    expect(res.warning).toMatch(/LEGACY/);
-    expect(res.warning).toMatch(/rejected/);
-    await r.stop();
-  });
-
-  it('[#595] a probe that THROWS locally throws by default, and falls back under explicit `auto`', async () => {
-    vi.mocked(streamSwap).mockClear();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
-    const { runner: r, maker } = await rfqRunner();
-    vi.spyOn(maker, 'sendSwapPacket').mockRejectedValue(
-      new Error('PEER_NOT_NEGOTIATED (g.proxy.swap)')
-    );
-    const req = {
-      destination: 'g.proxy.swap',
-      amount: '1000',
-      swapPubkey: maker.pubkey,
-      pair: EVM_PAIR,
-      chainRecipient: EVM_RECIPIENT,
-    };
-
-    await expect(r.swap(req)).rejects.toThrow(RollingUnavailableError);
-    await expect(r.swap(req)).rejects.toThrow(/PEER_NOT_NEGOTIATED/);
-    expect(streamSwap).not.toHaveBeenCalled();
-
-    const res = await r.swap({ ...req, rolling: 'auto' });
-    expect(streamSwap).toHaveBeenCalledTimes(1);
-    expect(res.rolling).toMatchObject({
-      probed: true,
-      used: false,
-      fallbackReason: 'send-failed',
-    });
-    await r.stop();
-  });
-
-  it('[#595] an explicit `rolling: "require"` is the default, and refuses the same way', async () => {
-    vi.mocked(streamSwap).mockClear();
-    const { runner: r, maker } = await rfqRunner((m) => {
-      m.rfqCapable = false;
-    });
-    await expect(
-      r.swap({
-        destination: 'g.proxy.swap',
-        amount: '1000',
-        swapPubkey: maker.pubkey,
-        pair: EVM_PAIR,
-        chainRecipient: EVM_RECIPIENT,
-        rolling: 'require',
-      })
-    ).rejects.toThrow(/did not establish a rolling session \(reason: rejected\)/);
-    expect(streamSwap).not.toHaveBeenCalled();
-    await r.stop();
-  });
-
-  it('[#595] `rolling: "off"` pays for no probe at all — and says so on the response', async () => {
-    vi.mocked(streamSwap).mockClear();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
-    const { runner: r, maker } = await rfqRunner();
-    const sendSpy = vi.spyOn(maker, 'sendSwapPacket');
-    const res = await r.swap({
-      destination: 'g.proxy.swap',
-      amount: '1000',
-      swapPubkey: maker.pubkey,
-      pair: EVM_PAIR,
-      chainRecipient: EVM_RECIPIENT,
-      rolling: 'off',
-    });
-    expect(sendSpy).not.toHaveBeenCalled();
-    expect(maker.rfqRequests).toHaveLength(0);
-    expect(streamSwap).toHaveBeenCalledTimes(1);
-    // #595: it used to leave NO `rolling` block at all, so a legacy swap was
-    // indistinguishable from a rolling one downstream.
-    expect(res.rolling).toMatchObject({
-      probed: false,
-      used: false,
-      fallbackReason: 'off',
-    });
-    expect(res.warning).toMatch(/LEGACY/);
-    await r.stop();
-  });
-
-  it('[#595] `swapDefaults.rolling: "off"` turns the probe off daemon-wide, still annotated', async () => {
-    vi.mocked(streamSwap).mockClear();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
-    const maker = new FakeRfqMakerClient();
-    const r = new ClientRunner({
-      config: makeConfig({ swapDefaults: { rolling: 'off' } }),
-      createClient: () => maker,
-      createRelay: fakeRelay,
-    });
-    await r.bootstrap();
-    const res = await r.swap({
-      destination: 'g.proxy.swap',
-      amount: '1000',
-      swapPubkey: maker.pubkey,
-      pair: EVM_PAIR,
-      chainRecipient: EVM_RECIPIENT,
-    });
-    expect(maker.rfqRequests).toHaveLength(0);
-    expect(streamSwap).toHaveBeenCalledTimes(1);
-    expect(res.rolling).toMatchObject({ fallbackReason: 'off' });
-    await r.stop();
-  });
-
-  it('[#595] `swapDefaults.rolling: "auto"` restores the fleet-wide fallback for one release', async () => {
-    vi.mocked(streamSwap).mockClear();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
-    const maker = new FakeRfqMakerClient();
-    maker.rfqCapable = false;
-    const r = new ClientRunner({
-      config: makeConfig({ swapDefaults: { rolling: 'auto' } }),
-      createClient: () => maker,
-      createRelay: fakeRelay,
-    });
-    await r.bootstrap();
-    const res = await r.swap({
-      destination: 'g.proxy.swap',
-      amount: '1000',
-      swapPubkey: maker.pubkey,
-      pair: EVM_PAIR,
-      chainRecipient: EVM_RECIPIENT,
-    });
-    expect(streamSwap).toHaveBeenCalledTimes(1);
-    expect(res.rolling).toMatchObject({ used: false, probed: true });
-    await r.stop();
-  });
+  // toon-client#598: `rolling: 'auto'`/`'off'`/`'require'` and the matching
+  // daemon-level default are gone (ADR 0003 — rolling is the only swap
+  // protocol, so the knob was removed rather than narrowed). The four tests
+  // that used to live here proved only fallback/annotation/off-switch
+  // behaviour for a path that no longer exists; nothing here has a rolling
+  // equivalent to port. `[#595] the SAME call against a maker with no RFQ
+  // intake THROWS` above already covers throw-by-default (there is no other
+  // default to distinguish it from any more).
 
   it("[#585] an explicit senderIlpAddress wins over the client's own — it is the leg-B destination and has no fallback", async () => {
     const { runner: r, maker } = await rfqRunner();
@@ -2201,9 +1759,7 @@ describe('ClientRunner', () => {
     await r.stop();
   });
 
-  it('[#585/#595] a client that cannot state its own receive address never opens a session whose leg B cannot arrive — and now says so out loud', async () => {
-    vi.mocked(streamSwap).mockClear();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
+  it('[#585] a client that cannot state its own receive address never opens a session whose leg B cannot arrive', async () => {
     const { runner: r, maker } = await rfqRunner((m) => {
       m.ownIlpAddress = undefined;
     });
@@ -2214,19 +1770,9 @@ describe('ClientRunner', () => {
       pair: EVM_PAIR,
       chainRecipient: EVM_RECIPIENT,
     };
-    // A LOCAL reason still names itself rather than downgrading quietly.
+    // A LOCAL reason still names itself rather than silently proceeding.
     await expect(r.swap(req)).rejects.toThrow(/no-sender-address/);
     expect(maker.rfqRequests).toHaveLength(0);
-    expect(streamSwap).not.toHaveBeenCalled();
-
-    const res = await r.swap({ ...req, rolling: 'auto' });
-    expect(maker.rfqRequests).toHaveLength(0);
-    expect(res.rolling).toMatchObject({
-      probed: false,
-      used: false,
-      fallbackReason: 'no-sender-address',
-    });
-    expect(streamSwap).toHaveBeenCalledTimes(1);
     await r.stop();
   });
 
@@ -2612,184 +2158,86 @@ describe('ClientRunner', () => {
     await rollingRunner.stop();
   });
 
-  it('swap without senderConditions keeps the legacy path: no condition injected', async () => {
-    await runner.bootstrap();
-    const pair = {
-      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
-      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
-      rate: '1.0',
-    };
-    const sendSpy = vi.spyOn(client, 'sendSwapPacket');
+  // toon-client#598: "keeps the legacy path" and "surfaces a swap peer
+  // rejection (no claims) as not-accepted" both tested LEGACY-only mechanics.
+  // The rejection-surfacing intent is already covered on the rolling path by
+  // 'a rolling swap that delivers NOTHING says so...' and 'the CRUX (#573
+  // AC)' above (a maker/leg-B "no" reported as not-accepted with zero
+  // claims) — not re-added here.
 
-    vi.mocked(streamSwap).mockImplementation(async (params) => {
-      await (
-        params.client as unknown as {
-          sendSwapPacket(p: unknown): Promise<unknown>;
-        }
-      ).sendSwapPacket({
-        destination: params.swapIlpAddress,
-        amount: 1000n,
-        toonData: new Uint8Array([0]),
+  // ── Rolling-swap sender defenses (#351): floor, daemon defaults ────────────
+  //
+  // The adaptive δ/W controller (its request/daemon-default knobs) was
+  // DROPPED, not ported (toon-client#597/#598 — see `swapRolling`'s doc
+  // comment on `client-runner.ts`): every controller-specific test that used
+  // to live here (engage/mutex/persistence/pinned-session-refusal/
+  // legacy-without-probe) tested a capability that no longer exists and is
+  // not re-added. The floor (`minExchangeRate`/`floorBps`) and
+  // `swapDefaults.floorBps` DO still exist on the rolling path — ported below.
+
+  it('swap withholds a below-floor rolling fill and echoes the armed floor (#351)', async () => {
+    await runner.bootstrap();
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: '1',
+        cumulativeAmount: '900',
+        sourceAmount: '1000',
+        targetAmount: '900',
       });
-      return {
-        state: 'completed',
-        claims: [],
-        rejections: [],
-        errors: [],
-        abortReason: 'complete',
-        cumulativeSource: 1000n,
-        cumulativeTarget: 999n,
-        packetsSent: 1,
-        packetsScheduled: 1,
-      } as unknown as Awaited<ReturnType<typeof streamSwap>>;
-    });
-
-    await runner.swap({
-      destination: 'g.proxy.swap',
-      amount: '1000',
-      swapPubkey: 'cd'.repeat(32),
-      pair,
-      chainRecipient: 'SoLrecipient',
-      // #595: legacy is opt-in now — this suite exercises the legacy body.
-      rolling: 'auto' as const,
-    });
-
-    expect(sendSpy).toHaveBeenCalledTimes(1);
-    expect(
-      (sendSpy.mock.calls[0]![0] as unknown as Record<string, unknown>)[
-        'executionCondition'
-      ]
-    ).toBeUndefined();
-  });
-
-  it('swap surfaces a swap peer rejection (no claims) as not-accepted', async () => {
-    await runner.bootstrap();
-    const pair = {
-      from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
-      to: { assetCode: 'USDC', assetScale: 6, chain: 'solana:devnet' },
-      rate: '1.0',
-    };
-    vi.mocked(streamSwap).mockResolvedValue({
-      state: 'failed',
-      claims: [],
-      rejections: [
-        {
-          packetIndex: 0,
-          sourceAmount: 1000n,
-          code: 'F99',
-          message: 'Payment rejected',
-        },
-      ],
-      errors: [],
-      abortReason: 'all-rejected',
-      cumulativeSource: 0n,
-      cumulativeTarget: 0n,
-      packetsSent: 1,
-      packetsScheduled: 1,
-    } as unknown as Awaited<ReturnType<typeof streamSwap>>);
 
     const res = await runner.swap({
       destination: 'g.proxy.swap',
       amount: '1000',
       swapPubkey: 'cd'.repeat(32),
-      pair,
-      chainRecipient: 'SoLrecipient',
-      // #595: legacy is opt-in now — this suite exercises the legacy body.
-      rolling: 'auto' as const,
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      streamNonce: STREAM_NONCE,
+      // Pair rate 1.0; 900/1000 delivered is below a 0.95 floor.
+      minExchangeRate: '0.95',
     });
+
+    // The breach withheld the fill: no claim, no leg-A reveal, no value paid.
     expect(res.accepted).toBe(false);
-    expect(res.packetsAccepted).toBe(0);
-    expect(res.code).toBe('F99');
-    expect(res.message).toBe('Payment rejected');
-  });
-
-  // ── Rolling-swap sender defenses (#351): floor, controller, telemetry ──────
-
-  /** The pair used across the #351 defense tests (advertised rate 4.0). */
-  const DEFENSE_PAIR = {
-    from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
-    to: { assetCode: 'MINA', assetScale: 6, chain: 'mina:devnet' },
-    rate: '4.0',
-  };
-  const DEFENSE_SWAP = {
-    destination: 'g.proxy.swap',
-    amount: '1000',
-    swapPubkey: 'cd'.repeat(32),
-    pair: DEFENSE_PAIR,
-    chainRecipient: 'SoLrecipient',
-    // #595: the #351 sender defenses under test here are `streamSwap`
-    // features, so this fixture asks for the legacy path EXPLICITLY. Under
-    // the default (`rolling: 'require'`) an unanswered probe now throws.
-    rolling: 'auto' as const,
-  };
-  /** Minimal completed StreamSwapResult, override what the test needs. */
-  function defenseSwapResult(
-    overrides: Record<string, unknown> = {}
-  ): Awaited<ReturnType<typeof streamSwap>> {
-    return {
-      state: 'completed',
-      claims: [],
-      rejections: [],
-      errors: [],
-      abortReason: 'complete',
-      cumulativeSource: 0n,
-      cumulativeTarget: 0n,
-      packetsSent: 0,
-      packetsScheduled: 0,
-      ...overrides,
-    } as unknown as Awaited<ReturnType<typeof streamSwap>>;
-  }
-
-  it('swap passes minExchangeRate through and surfaces a BELOW_FLOOR halt (#351)', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockResolvedValue(
-      defenseSwapResult({
-        state: 'failed',
-        rejections: [
-          {
-            packetIndex: 0,
-            sourceAmount: 1000n,
-            code: 'BELOW_FLOOR',
-            message: 'tape rate 3.9000 below floor 3.98',
-          },
-        ],
-        abortReason: 'below-floor',
-      })
-    );
-
-    const res = await runner.swap({ ...DEFENSE_SWAP, minExchangeRate: '3.98' });
-
-    // The hard floor reached the sdk verbatim.
-    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
-    expect(arg.minExchangeRate).toBe('3.98');
-    // The breach halted the stream and is surfaced on the response.
-    expect(res.accepted).toBe(false);
+    expect(res.claims).toHaveLength(0);
     expect(res.state).toBe('failed');
-    expect(res.code).toBe('BELOW_FLOOR');
-    expect(res.abortReason).toBe('below-floor');
-    expect(res.rejections).toEqual([
-      {
-        packetIndex: 0,
-        sourceAmount: '1000',
-        code: 'BELOW_FLOOR',
-        message: 'tape rate 3.9000 below floor 3.98',
-      },
-    ]);
+    // Rejections-only (no local errors) rewrites abortReason (mirrors the
+    // legacy path's documented 'below-floor'/'all-rejected' quirk).
+    expect(res.abortReason).toBe('all-rejected');
+    expect(res.rejections).toHaveLength(1);
+    expect(res.rejections?.[0]?.code).toBe('ROLLING_ADVANCE_REJECTED');
+    expect(res.rejections?.[0]?.message).toMatch(/withheld/);
+    expect(res.rejections?.[0]?.message).toContain('950');
     // Consent surface: the armed floor is echoed for the host to show.
-    expect(res.minExchangeRate).toBe('3.98');
+    expect(res.minExchangeRate).toBe('0.95');
   });
 
-  it('swap derives the floor from floorBps against the advertised rate (spec §5 R₀ × (1 − tolerance))', async () => {
+  it('swap derives the floor from floorBps against the advertised rate and arms it on the rolling path (spec §5 R₀ × (1 − tolerance))', async () => {
     await runner.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockResolvedValue(defenseSwapResult());
-    // 50 bps under the advertised 4.0 → 3.98, exact decimal-string math.
-    const res = await runner.swap({ ...DEFENSE_SWAP, floorBps: 50 });
-    expect(vi.mocked(streamSwap).mock.calls[0]![0].minExchangeRate).toBe(
-      '3.98'
-    );
-    expect(res.minExchangeRate).toBe('3.98');
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: '1',
+        cumulativeAmount: '850',
+        sourceAmount: '1000',
+        targetAmount: '850',
+      });
+
+    // 1000 bps under the advertised 1.0 → 0.9, exact decimal-string math;
+    // 850/1000 delivered is below that derived floor (entitled 900).
+    const res = await runner.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      streamNonce: STREAM_NONCE,
+      floorBps: 1000,
+    });
+
+    expect(res.minExchangeRate).toBe('0.9');
+    expect(res.accepted).toBe(false);
+    expect(res.rejections?.[0]?.message).toContain('900');
   });
 
   it('deriveFloorRate does exact decimal math and validates its inputs', () => {
@@ -2804,131 +2252,8 @@ describe('ClientRunner', () => {
     expect(() => deriveFloorRate('4e-2', 50)).toThrow(InvalidPayloadError);
   });
 
-  it('swap with defaults off sends the byte-identical legacy request (only local-only onPacket/logger added)', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockResolvedValue(defenseSwapResult());
-    await runner.swap(DEFENSE_SWAP);
-    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
-    // Exactly the legacy key set plus the two LOCAL-ONLY observability hooks
-    // (`onPacket` telemetry, `logger` diagnostics — neither touches the wire):
-    // no floor, no controller, no expiry stamping, no abort signal.
-    expect(Object.keys(arg).sort()).toEqual(
-      [
-        'chainRecipient',
-        'client',
-        'logger',
-        'onPacket',
-        'pair',
-        'packetCount',
-        'senderSecretKey',
-        'swapIlpAddress',
-        'swapPubkey',
-        'totalAmount',
-      ].sort()
-    );
-    expect(arg.packetCount).toBe(1);
-    expect(arg.minExchangeRate).toBeUndefined();
-    expect(arg.controller).toBeUndefined();
-    expect(arg.packetExpiryMs).toBeUndefined();
-    expect(arg.signal).toBeUndefined();
-  });
-
-  it('swap engages the adaptive controller when configured, replacing the even split (#351)', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockImplementation(async (params) => {
-      // The controller is live: it sizes packets and accepts observations.
-      const ctrl = params.controller!;
-      const delta = ctrl.nextDelta(1000n);
-      expect(delta).toBeGreaterThanOrEqual(1n);
-      expect(delta).toBeLessThanOrEqual(1000n);
-      expect(ctrl.window).toBeGreaterThanOrEqual(1);
-      await ctrl.observe({ resolution: 'fulfill', rttMs: 50 });
-      return defenseSwapResult();
-    });
-    await runner.swap({
-      ...DEFENSE_SWAP,
-      controller: { advertisedSpread: 0.004, maxPacketAmount: '100' },
-    });
-    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
-    expect(arg.controller).toBeDefined();
-    // EXACTLY ONE of controller/packetCount (sdk contract): no even split.
-    expect(arg.packetCount).toBeUndefined();
-  });
-
-  it('swap rejects controller + packetCount (mutually exclusive) and a missing advertisedSpread', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockResolvedValue(defenseSwapResult());
-    await expect(
-      runner.swap({
-        ...DEFENSE_SWAP,
-        packetCount: 2,
-        controller: { advertisedSpread: 0.004 },
-      })
-    ).rejects.toThrow(InvalidPayloadError);
-    await expect(
-      runner.swap({
-        ...DEFENSE_SWAP,
-        controller: { advertisedSpread: 0 },
-      })
-    ).rejects.toThrow(/advertisedSpread/);
-    expect(streamSwap).not.toHaveBeenCalled();
-  });
-
-  it('swap persists controller state per-(chain, maker, pair) and reloads it on the next swap (#351)', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    const controllerParams = { advertisedSpread: 0.004 };
-
-    // Swap 1: cold start. Seed δ via nextDelta, persist via observe.
-    vi.mocked(streamSwap).mockImplementation(async (params) => {
-      const ctrl = params.controller as AdaptiveDeltaController;
-      ctrl.nextDelta(BigInt(DEFENSE_SWAP.amount)); // seeds δ_0 = 1000/256 = 3
-      await ctrl.observe({ resolution: 'fulfill', rttMs: 100 });
-      return defenseSwapResult();
-    });
-    await runner.swap({ ...DEFENSE_SWAP, controller: controllerParams });
-
-    // State landed in the daemon data dir, keyed by the canonical tuple.
-    const stateFile = join(tmpDir, 'swap-controller-state.json');
-    const key = swapControllerStateKey({
-      makerPubkey: DEFENSE_SWAP.swapPubkey,
-      pair: DEFENSE_PAIR,
-    });
-    const persisted = JSON.parse(readFileSync(stateFile, 'utf8')) as Record<
-      string,
-      { v: number; delta: string }
-    >;
-    expect(Object.keys(persisted)).toEqual([key]);
-    expect(persisted[key]).toMatchObject({ v: 1, delta: '3' });
-
-    // Swap 2 (same tuple): the controller resumes from the persisted ramp
-    // instead of starting cold.
-    let resumedDelta: string | undefined;
-    vi.mocked(streamSwap).mockImplementation(async (params) => {
-      resumedDelta = (params.controller as AdaptiveDeltaController).state.delta;
-      return defenseSwapResult();
-    });
-    await runner.swap({ ...DEFENSE_SWAP, controller: controllerParams });
-    expect(resumedDelta).toBe('3');
-
-    // A different maker is a different tuple: cold state, same file.
-    vi.mocked(streamSwap).mockImplementation(async (params) => {
-      resumedDelta = (params.controller as AdaptiveDeltaController).state.delta;
-      return defenseSwapResult();
-    });
-    await runner.swap({
-      ...DEFENSE_SWAP,
-      swapPubkey: 'ef'.repeat(32),
-      controller: controllerParams,
-    });
-    expect(resumedDelta).toBe('0'); // '0' = δ not yet seeded (cold start)
-  });
-
-  it('swap applies daemon-level swapDefaults, and an explicit packetCount pins the legacy split', async () => {
-    const c = new FakeClient();
+  it('swap applies the daemon-level swapDefaults.floorBps on the rolling path, a per-request floor overrides it, and an explicit packetCount pins the split', async () => {
+    const c = new FakeRollingMakerClient();
     const r = new ClientRunner({
       config: makeConfig({
         apex: {
@@ -2941,172 +2266,93 @@ describe('ClientRunner', () => {
           tokenAddress: '0xusdc',
           tokenNetwork: '0xtn',
         },
-        swapDefaults: {
-          floorBps: 100,
-          packetExpiryMs: 5000,
-          controller: { advertisedSpread: 0.004 },
-        },
+        swapDefaults: { floorBps: 500 },
       }),
-      createClient: () => c,
+      createClient: (cfg) => {
+        c.jobHandler = cfg.jobHandler as typeof c.jobHandler;
+        return c;
+      },
       createRelay: fakeRelay,
     });
     await r.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockResolvedValue(defenseSwapResult());
+    let perPacketAmount = '1000';
+    // A running total across ALL swap() calls in this test (not just the
+    // packets within one call) — the channel watermark persists between
+    // calls on the same runner, so nonce/cumulativeAmount must keep
+    // advancing across calls too, not just within a call's own packets.
+    let totalSent = 0;
+    c.buildAdvance = (seq) => {
+      totalSent += Number(perPacketAmount);
+      return rollingAdvanceBytes({
+        seq,
+        nonce: String(totalSent),
+        cumulativeAmount: String(totalSent),
+        sourceAmount: perPacketAmount,
+        targetAmount: perPacketAmount,
+      });
+    };
 
-    // No per-request knobs → daemon defaults engage everything.
-    await r.swap(DEFENSE_SWAP);
-    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
-    expect(arg.minExchangeRate).toBe('3.96'); // 4.0 × (1 − 100/10000)
-    expect(arg.packetExpiryMs).toBe(5000);
-    expect(arg.controller).toBeDefined();
-    expect(arg.packetCount).toBeUndefined();
-
-    // An explicit packetCount pins the legacy even split (the default
-    // controller stays out); floor/expiry defaults still apply.
-    await r.swap({ ...DEFENSE_SWAP, packetCount: 2 });
-    const arg2 = vi.mocked(streamSwap).mock.calls[1]![0];
-    expect(arg2.controller).toBeUndefined();
-    expect(arg2.packetCount).toBe(2);
-    expect(arg2.minExchangeRate).toBe('3.96');
+    // No per-request knob → the daemon default (5% off the advertised 1.0)
+    // arms the floor even though this fill clears it easily.
+    const res = await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      streamNonce: STREAM_NONCE,
+    });
+    expect(res.accepted).toBe(true);
+    expect(res.minExchangeRate).toBe('0.95');
+    expect(res.realizedRate).toBeCloseTo(1, 10);
 
     // A per-request floor beats the daemon default.
-    await r.swap({ ...DEFENSE_SWAP, minExchangeRate: '3.99' });
-    expect(vi.mocked(streamSwap).mock.calls[2]![0].minExchangeRate).toBe(
-      '3.99'
-    );
-  });
-
-  it('swap surfaces per-packet outcomes + a realized-rate summary from onPacket (#351)', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    const progress = (index: number): PacketProgress =>
-      Object.freeze({
-        index,
-        total: 2,
-        sourceAmount: 500n,
-        targetAmount: 1990n,
-        advertisedRate: '4.0',
-        effectiveRate: 3.98,
-        rateDeviation: 0.005,
-        cumulativeSource: BigInt(500 * (index + 1)),
-        cumulativeTarget: BigInt(1990 * (index + 1)),
-        rate: '3.99',
-        rateTimestamp: 1234,
-        state: 'running',
-      }) as PacketProgress;
-    vi.mocked(streamSwap).mockImplementation(async (params) => {
-      await params.onPacket!(progress(0));
-      await params.onPacket!(progress(1));
-      return defenseSwapResult({
-        cumulativeSource: 1000n,
-        cumulativeTarget: 3980n,
-        packetsSent: 2,
-        packetsScheduled: 2,
-      });
+    const res2 = await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      streamNonce: STREAM_NONCE,
+      minExchangeRate: '0.5',
     });
+    expect(res2.minExchangeRate).toBe('0.5');
 
-    const res = await runner.swap(DEFENSE_SWAP);
-    expect(res.packets).toEqual([
-      {
-        index: 0,
-        sourceAmount: '500',
-        targetAmount: '1990',
-        effectiveRate: 3.98,
-        rateDeviation: 0.005,
-        rate: '3.99',
-        rateTimestamp: 1234,
-      },
-      expect.objectContaining({ index: 1 }),
-    ]);
-    expect(res.packetsTruncated).toBeUndefined();
-    // Realized rate in whole units (equal scales): 3980 / 1000 = 3.98.
-    expect(res.realizedRate).toBeCloseTo(3.98, 10);
-    expect(res.abortReason).toBe('complete');
-  });
-
-  it('swap arms an abort signal from timeoutMs and reports a partial fill accurately', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    const pair = DEFENSE_PAIR;
-    vi.mocked(streamSwap).mockResolvedValue(
-      defenseSwapResult({
-        state: 'stopped',
-        abortReason: 'aborted',
-        claims: [
-          {
-            packetIndex: 0,
-            sourceAmount: 500n,
-            targetAmount: 1990n,
-            claimBytes: new Uint8Array([9]),
-            swapEphemeralPubkey: 'ab'.repeat(32),
-            swapSignerAddress: '0xswapsigner',
-            pair,
-            receivedAt: 0,
-          },
-        ],
-        cumulativeSource: 500n,
-        cumulativeTarget: 1990n,
-        packetsSent: 2,
-        packetsScheduled: 2,
-      })
-    );
-
-    const res = await runner.swap({ ...DEFENSE_SWAP, timeoutMs: 60_000 });
-    const arg = vi.mocked(streamSwap).mock.calls[0]![0];
-    expect(arg.signal).toBeInstanceOf(AbortSignal);
-    // Partial fill: one of two packets landed before the abort.
-    expect(res.state).toBe('stopped');
-    expect(res.abortReason).toBe('aborted');
-    expect(res.packetsAccepted).toBe(1);
-    expect(res.cumulativeSource).toBe('500');
-    expect(res.cumulativeTarget).toBe('1990');
-  });
-
-  it('[#585] a pinned rolling session + the legacy-only adaptive controller is refused, not silently resolved either way', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    const sendSpy = vi.spyOn(client, 'sendSwapPacket');
-
-    await expect(
-      runner.swap({
-        ...DEFENSE_SWAP,
-        senderConditions: true,
-        streamNonce: STREAM_NONCE,
-        // `minExchangeRate` is NO LONGER part of the incompatibility (#585
-        // armed the floor on the rolling path); `controller` still is.
-        minExchangeRate: '3.98',
-        controller: { advertisedSpread: 0.004 },
-      })
-    ).rejects.toThrow(InvalidPayloadError);
-
-    // Neither path was ever driven — the guard fires before either fires.
-    expect(streamSwap).not.toHaveBeenCalled();
-    expect(sendSpy).not.toHaveBeenCalled();
-  });
-
-  it('[#585] a request that asks for the adaptive controller takes the LEGACY path without paying for a probe', async () => {
-    await runner.bootstrap();
-    vi.mocked(streamSwap).mockReset();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
-    const sendSpy = vi.spyOn(client, 'sendSwapPacket');
-
-    const res = await runner.swap({
-      ...DEFENSE_SWAP,
-      controller: { advertisedSpread: 0.004 },
+    // An explicit packetCount pins the split (2 packets instead of a single
+    // even fill) — floor/defaults still apply to each.
+    perPacketAmount = '500';
+    const sendSpy = vi.spyOn(c, 'sendSwapPacket');
+    const res3 = await r.swap({
+      destination: 'g.proxy.swap',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      streamNonce: STREAM_NONCE,
+      packetCount: 2,
     });
-
-    expect(sendSpy).not.toHaveBeenCalled();
-    expect(streamSwap).toHaveBeenCalledTimes(1);
-    expect(res.rolling).toMatchObject({
-      probed: false,
-      used: false,
-      fallbackReason: 'controller',
-    });
+    expect(sendSpy).toHaveBeenCalledTimes(2);
+    expect(res3.packetsAccepted).toBe(2);
+    expect(res3.minExchangeRate).toBe('0.95');
+    await r.stop();
   });
+
+  // toon-client#598: "swap surfaces per-packet outcomes... from onPacket" and
+  // "swap arms an abort signal from timeoutMs..." tested the LEGACY sdk's
+  // `onPacket` callback / `AbortSignal` plumbing. Their rolling-path
+  // equivalents ('[#596] a rolling `SwapResponse` carries `packets[]`...' and
+  // '[#596] `timeoutMs` bounds the rolling fill loop...' above) already cover
+  // per-packet telemetry and partial-fill-on-timeout; not re-added here.
 
   // ── Receive-side claim ingestion/verification/settlement (#352) ────────────
 
+  // toon-client#598: this suite used to reach receive-side claim
+  // verification/persistence via the legacy mock purely as an easy way to
+  // seed an accepted claim — `ingestAndReveal`, the received-claim store and
+  // settlement are NOT deleted and still need coverage. Pinning a
+  // `streamNonce` (skips the RFQ probe) reaches the exact same
+  // `ingestReceivedClaims` check ladder over the rolling wire, via
+  // `client.buildAdvance` instead of a mocked legacy sender.
   const swapReq = (
     over: Partial<Parameters<ClientRunner['swap']>[0]> = {}
   ) => ({
@@ -3115,10 +2361,7 @@ describe('ClientRunner', () => {
     swapPubkey: 'cd'.repeat(32),
     pair: EVM_PAIR,
     chainRecipient: EVM_RECIPIENT,
-    // #595: these suites are about receive-side claim ingestion on the LEGACY
-    // path, which is opt-in now — the default `rolling: 'require'` throws when
-    // the probe (unbuildable against this placeholder pubkey) fails.
-    rolling: 'auto' as const,
+    streamNonce: STREAM_NONCE,
     ...over,
   });
 
@@ -3126,37 +2369,40 @@ describe('ClientRunner', () => {
     await runner.bootstrap();
     // The signature covers cumulative=500 but the claim ADVERTISES 999 — a
     // maker inflating the advertised watermark beyond what it signed.
-    const tampered = await signedEvmClaim({
-      nonce: '1',
-      cumulativeAmount: '999',
-      signedCumulative: '500',
-      targetAmount: 999n,
-    });
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([tampered]));
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: '1',
+        cumulativeAmount: '999',
+        signedCumulativeAmount: '500',
+        sourceAmount: '1000',
+        targetAmount: '999',
+      });
 
     const res = await runner.swap(swapReq({ swapSignerAddress: SWAP_SIGNER }));
 
-    // The packet FULFILLed at transport level but the claim FAILED
-    // verification: never counted as value received, swap not accepted.
+    // The claim FAILED verification: never counted as value received, no
+    // leg-A reveal, swap not accepted. On the rolling path a failed-verify
+    // advance is a REJECTION (leg B is never revealed), not a `claims[]`
+    // entry with `verified:false` — the legacy path's shape.
     expect(res.accepted).toBe(false);
-    expect(res.claimsVerified).toBe(0);
-    expect(res.claimsRejected).toBe(1);
-    expect(res.valueReceived).toBe('0');
-    expect(res.claims[0]!.verified).toBe(false);
-    expect(res.claims[0]!.verificationError?.code).toBe('SIGNER_MISMATCH');
-    expect(res.warning).toMatch(/FAILED verification/);
+    expect(res.claims).toHaveLength(0);
+    expect(res.rejections).toHaveLength(1);
+    expect(res.rejections?.[0]?.message).toContain('SIGNER_MISMATCH');
     // Nothing was persisted.
     expect(runner.listSwapClaims().claims).toHaveLength(0);
   });
 
   it('swap REJECTS a claim signed by the wrong signer: SWAP_SIGNER_MISMATCH against the advertised address (#352)', async () => {
     await runner.bootstrap();
-    const claim = await signedEvmClaim({
-      nonce: '1',
-      cumulativeAmount: '999',
-      targetAmount: 999n,
-    });
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([claim]));
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: '1',
+        cumulativeAmount: '999',
+        sourceAmount: '1000',
+        targetAmount: '999',
+      });
 
     const res = await runner.swap(
       // Maker's ADVERTISED signer differs from the claim's self-reported one.
@@ -3164,33 +2410,30 @@ describe('ClientRunner', () => {
     );
 
     expect(res.accepted).toBe(false);
-    expect(res.claims[0]!.verificationError?.code).toBe('SWAP_SIGNER_MISMATCH');
-    expect(res.valueReceived).toBe('0');
+    expect(res.claims).toHaveLength(0);
+    expect(res.rejections?.[0]?.message).toContain('SWAP_SIGNER_MISMATCH');
     expect(runner.listSwapClaims().claims).toHaveLength(0);
   });
 
   it('swap REJECTS a non-monotonic nonce/cumulative against the persisted watermark (#352)', async () => {
     await runner.bootstrap();
-    const first = await signedEvmClaim({
-      nonce: '2',
-      cumulativeAmount: '2000',
-      targetAmount: 2000n,
-    });
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([first]));
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: '2',
+        cumulativeAmount: '2000',
+        sourceAmount: '1000',
+        targetAmount: '2000',
+      });
     await runner.swap(swapReq());
 
     // A replayed/stale claim: same nonce, same cumulative — validly signed.
-    const replay = await signedEvmClaim({
-      nonce: '2',
-      cumulativeAmount: '2000',
-      targetAmount: 2000n,
-    });
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([replay]));
+    // (`buildAdvance` above already builds exactly this shape again.)
     const res = await runner.swap(swapReq());
 
     expect(res.accepted).toBe(false);
-    expect(res.claims[0]!.verificationError?.code).toBe('NON_MONOTONIC_NONCE');
-    expect(res.valueReceived).toBe('0');
+    expect(res.claims).toHaveLength(0);
+    expect(res.rejections?.[0]?.message).toContain('NON_MONOTONIC_NONCE');
     // The watermark still holds the FIRST claim.
     expect(runner.listSwapClaims().claims[0]).toMatchObject({
       nonce: '2',
@@ -3200,31 +2443,16 @@ describe('ClientRunner', () => {
 
   it('swap folds N packets into ONE per-channel watermark with summed value (#352)', async () => {
     await runner.bootstrap();
-    const claims = [
-      await signedEvmClaim({
-        nonce: '1',
-        cumulativeAmount: '300',
-        targetAmount: 300n,
-        packetIndex: 0,
-      }),
-      await signedEvmClaim({
-        nonce: '2',
-        cumulativeAmount: '600',
-        targetAmount: 300n,
-        packetIndex: 1,
-      }),
-      await signedEvmClaim({
-        nonce: '3',
-        cumulativeAmount: '900',
-        targetAmount: 300n,
-        packetIndex: 2,
-      }),
-    ];
-    vi.mocked(streamSwap).mockResolvedValue(
-      swapResult(claims, { source: 900n, target: 900n })
-    );
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: String(seq),
+        cumulativeAmount: String(300 * seq),
+        sourceAmount: '300',
+        targetAmount: '300',
+      });
 
-    const res = await runner.swap(swapReq({ packetCount: 3 }));
+    const res = await runner.swap(swapReq({ amount: '900', packetCount: 3 }));
     expect(res.claimsVerified).toBe(3);
     expect(res.valueReceived).toBe('900');
 
@@ -3234,25 +2462,30 @@ describe('ClientRunner', () => {
     expect(listed[0]).toMatchObject({ nonce: '3', cumulativeAmount: '900' });
   });
 
+  /** Wire a fresh runner's rolling `jobHandler` onto the shared `client`. */
+  const withClient: CreateClient = (cfg) => {
+    client.jobHandler = cfg.jobHandler as typeof client.jobHandler;
+    return client;
+  };
+
   it('persisted received claims survive a daemon restart (#352)', async () => {
     const storePath = join(tmpDir, 'received-claims.json');
     const mkRunner = () =>
       new ClientRunner({
         config: makeConfig({ receivedClaimStorePath: storePath }),
-        createClient: () => client,
+        createClient: withClient,
         createRelay: fakeRelay,
       });
     const first = mkRunner();
     await first.bootstrap();
-    vi.mocked(streamSwap).mockResolvedValue(
-      swapResult([
-        await signedEvmClaim({
-          nonce: '1',
-          cumulativeAmount: '999',
-          targetAmount: 999n,
-        }),
-      ])
-    );
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: '1',
+        cumulativeAmount: '999',
+        sourceAmount: '1000',
+        targetAmount: '999',
+      });
     await first.swap(swapReq());
     expect(first.listSwapClaims().claims).toHaveLength(1);
     await first.stop();
@@ -3283,7 +2516,7 @@ describe('ClientRunner', () => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       }),
-      createClient: () => client,
+      createClient: withClient,
       createRelay: fakeRelay,
     });
     const settleSpy = vi.fn(async () => ({
@@ -3294,29 +2527,15 @@ describe('ClientRunner', () => {
     await settleRunner.bootstrap();
 
     // Three verified advances → one persisted watermark.
-    vi.mocked(streamSwap).mockResolvedValue(
-      swapResult([
-        await signedEvmClaim({
-          nonce: '1',
-          cumulativeAmount: '300',
-          targetAmount: 300n,
-          packetIndex: 0,
-        }),
-        await signedEvmClaim({
-          nonce: '2',
-          cumulativeAmount: '600',
-          targetAmount: 300n,
-          packetIndex: 1,
-        }),
-        await signedEvmClaim({
-          nonce: '3',
-          cumulativeAmount: '900',
-          targetAmount: 300n,
-          packetIndex: 2,
-        }),
-      ])
-    );
-    await settleRunner.swap(swapReq({ packetCount: 3 }));
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: String(seq),
+        cumulativeAmount: String(300 * seq),
+        sourceAmount: '300',
+        targetAmount: '300',
+      });
+    await settleRunner.swap(swapReq({ amount: '900', packetCount: 3 }));
 
     const settle = await settleRunner.settleSwapClaims({});
     expect(settle.results).toHaveLength(1);
@@ -3351,19 +2570,18 @@ describe('ClientRunner', () => {
     const storePath = join(tmpDir, 'received-claims.json');
     const seeded = new ClientRunner({
       config: makeConfig({ receivedClaimStorePath: storePath }),
-      createClient: () => client,
+      createClient: withClient,
       createRelay: fakeRelay,
     });
     await seeded.bootstrap();
-    vi.mocked(streamSwap).mockResolvedValue(
-      swapResult([
-        await signedEvmClaim({
-          nonce: '1',
-          cumulativeAmount: '999',
-          targetAmount: 999n,
-        }),
-      ])
-    );
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: '1',
+        cumulativeAmount: '999',
+        sourceAmount: '1000',
+        targetAmount: '999',
+      });
     await seeded.swap(swapReq());
     expect(seeded.listSwapClaims().claims).toHaveLength(1);
     await seeded.stop();
@@ -3377,7 +2595,7 @@ describe('ClientRunner', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         toonClientConfig: { btpUrl: 'ws://apex.test/btp' } as any,
       }),
-      createClient: () => client,
+      createClient: withClient,
       createRelay: fakeRelay,
     });
     const res = await noConfig.settleSwapClaims({ submit: false });
@@ -3390,19 +2608,18 @@ describe('ClientRunner', () => {
     const storePath = join(tmpDir, 'received-claims.json');
     const seeded = new ClientRunner({
       config: makeConfig({ receivedClaimStorePath: storePath }),
-      createClient: () => client,
+      createClient: withClient,
       createRelay: fakeRelay,
     });
     await seeded.bootstrap();
-    vi.mocked(streamSwap).mockResolvedValue(
-      swapResult([
-        await signedEvmClaim({
-          nonce: '1',
-          cumulativeAmount: '999',
-          targetAmount: 999n,
-        }),
-      ])
-    );
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: '1',
+        cumulativeAmount: '999',
+        sourceAmount: '1000',
+        targetAmount: '999',
+      });
     await seeded.swap(swapReq());
     expect(seeded.listSwapClaims().claims).toHaveLength(1);
     await seeded.stop();
@@ -3427,7 +2644,7 @@ describe('ClientRunner', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         toonClientConfig: { btpUrl: 'ws://apex.test/btp' } as any,
       }),
-      createClient: () => client,
+      createClient: withClient,
       createRelay: fakeRelay,
     });
     const res = await noConfig.settleSwapClaims({});
@@ -3450,19 +2667,18 @@ describe('ClientRunner', () => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       }),
-      createClient: () => client,
+      createClient: withClient,
       createRelay: fakeRelay,
     });
     await dryRunner.bootstrap();
-    vi.mocked(streamSwap).mockResolvedValue(
-      swapResult([
-        await signedEvmClaim({
-          nonce: '1',
-          cumulativeAmount: '999',
-          targetAmount: 999n,
-        }),
-      ])
-    );
+    client.buildAdvance = (seq) =>
+      rollingAdvanceBytes({
+        seq,
+        nonce: '1',
+        cumulativeAmount: '999',
+        sourceAmount: '1000',
+        targetAmount: '999',
+      });
     await dryRunner.swap(swapReq());
 
     // Dry run: built, not submitted, no error.
@@ -3728,14 +2944,23 @@ describe('ClientRunner multi-target', () => {
   // — otherwise every swap goes out on the default apex regardless.
   it('swap sends on the apex named by btpUrl, not the config-seeded default (selectApex)', async () => {
     const { createRelay, emit } = relayFactory();
-    const created: FakeClient[] = [];
+    const created: FakeRollingMakerClient[] = [];
     const runner = new ClientRunner({
       config: makeConfig({
         relayUrl: 'ws://relay.test',
         apexChannelStorePath: join(dir, 'apex-channels.json'),
       }),
-      createClient: () => {
-        const c = new FakeClient();
+      createClient: (cfg) => {
+        const c = new FakeRollingMakerClient();
+        c.jobHandler = cfg.jobHandler as typeof c.jobHandler;
+        c.buildAdvance = (seq) =>
+          rollingAdvanceBytes({
+            seq,
+            nonce: String(seq),
+            cumulativeAmount: String(1000 * seq),
+            sourceAmount: '1000',
+            targetAmount: '1000',
+          });
         created.push(c);
         return c;
       },
@@ -3755,27 +2980,27 @@ describe('ClientRunner multi-target', () => {
     expect(added.btpUrl).toBe('ws://apex2.example/btp');
     await runner.bootstrap();
 
-    vi.mocked(streamSwap).mockClear();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
-    await runner.swap({
-      destination: 'g.toon.swap.maker',
-      amount: '1000',
-      swapPubkey: 'cd'.repeat(32),
-      pair: EVM_PAIR,
-      chainRecipient: EVM_RECIPIENT,
-      // #595: legacy is opt-in now — this suite exercises the legacy body.
-      rolling: 'auto' as const,
-      btpUrl: 'ws://apex2.example/btp',
-    });
-
     // One client per apex: [0] is the default/identity client, [1] the
     // discovered maker apex. The swap must have streamed on the LATTER.
     const defaultClient = created[0];
     const makerClient = created[1];
     expect(makerClient).toBeDefined();
-    const usedClient = vi.mocked(streamSwap).mock.calls[0]?.[0].client;
-    expect(usedClient).toBe(makerClient);
-    expect(usedClient).not.toBe(defaultClient);
+    const defaultSpy = defaultClient && vi.spyOn(defaultClient, 'sendSwapPacket');
+    const makerSpy = makerClient && vi.spyOn(makerClient, 'sendSwapPacket');
+
+    const res = await runner.swap({
+      destination: 'g.toon.swap.maker',
+      amount: '1000',
+      swapPubkey: 'cd'.repeat(32),
+      pair: EVM_PAIR,
+      chainRecipient: EVM_RECIPIENT,
+      streamNonce: STREAM_NONCE,
+      btpUrl: 'ws://apex2.example/btp',
+    });
+
+    expect(res.accepted).toBe(true);
+    expect(makerSpy).toHaveBeenCalledTimes(1);
+    expect(defaultSpy).not.toHaveBeenCalled();
     await runner.stop();
   });
 
@@ -3790,14 +3015,23 @@ describe('ClientRunner multi-target', () => {
   // devnet). The destination must pick the apex that owns it.
   it('swap without btpUrl streams on the apex that OWNS the destination, whose client holds the negotiation', async () => {
     const { createRelay, emit } = relayFactory();
-    const created: FakeClient[] = [];
+    const created: FakeRollingMakerClient[] = [];
     const runner = new ClientRunner({
       config: makeConfig({
         relayUrl: 'ws://relay.test',
         apexChannelStorePath: join(dir, 'apex-channels.json'),
       }),
-      createClient: () => {
-        const c = new FakeClient();
+      createClient: (cfg) => {
+        const c = new FakeRollingMakerClient();
+        c.jobHandler = cfg.jobHandler as typeof c.jobHandler;
+        c.buildAdvance = (seq) =>
+          rollingAdvanceBytes({
+            seq,
+            nonce: String(seq),
+            cumulativeAmount: String(1000 * seq),
+            sourceAmount: '1000',
+            targetAmount: '1000',
+          });
         created.push(c);
         return c;
       },
@@ -3816,25 +3050,25 @@ describe('ClientRunner multi-target', () => {
     });
     await runner.bootstrap();
 
-    vi.mocked(streamSwap).mockClear();
-    vi.mocked(streamSwap).mockResolvedValue(swapResult([]));
-    await runner.swap({
+    const defaultClient = created[0];
+    const makerClient = created[1];
+    expect(makerClient).toBeDefined();
+    const defaultSpy = defaultClient && vi.spyOn(defaultClient, 'sendSwapPacket');
+    const makerSpy = makerClient && vi.spyOn(makerClient, 'sendSwapPacket');
+
+    const res = await runner.swap({
       destination: 'g.toon.swap.maker',
       amount: '1000',
       swapPubkey: 'cd'.repeat(32),
       pair: EVM_PAIR,
       chainRecipient: EVM_RECIPIENT,
-      // #595: legacy is opt-in now — this suite exercises the legacy body.
-      rolling: 'auto' as const,
+      streamNonce: STREAM_NONCE,
       // NO btpUrl — the destination alone must find its apex.
     });
 
-    const defaultClient = created[0];
-    const makerClient = created[1];
-    expect(makerClient).toBeDefined();
-    const usedClient = vi.mocked(streamSwap).mock.calls[0]?.[0].client;
-    expect(usedClient).toBe(makerClient);
-    expect(usedClient).not.toBe(defaultClient);
+    expect(res.accepted).toBe(true);
+    expect(makerSpy).toHaveBeenCalledTimes(1);
+    expect(defaultSpy).not.toHaveBeenCalled();
     // The seam the live send resolves through: the negotiation is registered
     // under the peer id, on the client the swap actually streams on — so
     // `resolvePeerId('g.toon.swap.maker')` hits `maker` on identity and never
@@ -3849,7 +3083,6 @@ describe('ClientRunner multi-target', () => {
     const { runner } = build();
     runner.start();
     await runner.bootstrap();
-    vi.mocked(streamSwap).mockClear();
     await expect(
       runner.swap({
         destination: 'g.toon.swap.maker',
@@ -3860,7 +3093,6 @@ describe('ClientRunner multi-target', () => {
         btpUrl: 'ws://nope/btp',
       })
     ).rejects.toBeInstanceOf(TargetError);
-    expect(streamSwap).not.toHaveBeenCalled();
     await runner.stop();
   });
 

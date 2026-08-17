@@ -75,15 +75,13 @@ describe('daemon config', () => {
     expect(cfg.apex).toBeUndefined();
   });
 
-  it('passes swapDefaults through and resolves swapControllerStatePath beside the channel stores (#351)', () => {
+  it('passes swapDefaults through (#351, controller/rolling dropped in toon-client#598)', () => {
     const swapDefaults = {
       floorBps: 50,
       packetExpiryMs: 5000,
-      controller: { advertisedSpread: 0.004, maxPacketAmount: '100000' },
     };
     const cfg = resolveConfig({ mnemonic: MNEMONIC, swapDefaults });
     expect(cfg.swapDefaults).toEqual(swapDefaults);
-    expect(cfg.swapControllerStatePath).toMatch(/swap-controller-state\.json$/);
     // Unconfigured daemons carry no swap defaults (defenses stay opt-in).
     expect(resolveConfig({ mnemonic: MNEMONIC }).swapDefaults).toBeUndefined();
   });

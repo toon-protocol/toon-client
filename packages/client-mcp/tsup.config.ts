@@ -49,9 +49,10 @@ export default defineConfig({
     '@toon-protocol/client',
     '@toon-protocol/core',
     '@toon-protocol/rig',
-    // The swap path (toon_swap → streamSwap) is inlined; the arweave/turbo-sdk
-    // modules of @toon-protocol/sdk are NOT in that import graph, so they
-    // tree-shake out (turbo-sdk stays external/undeclared, as before).
+    // The rolling swap path (toon_swap → ClientRunner.swapRolling) pulls in
+    // @toon-protocol/sdk for shared claim/settlement helpers; the arweave/
+    // turbo-sdk modules of @toon-protocol/sdk are NOT in that import graph,
+    // so they tree-shake out (turbo-sdk stays external/undeclared, as before).
     '@toon-protocol/sdk',
     '@noble/curves',
     '@noble/hashes',

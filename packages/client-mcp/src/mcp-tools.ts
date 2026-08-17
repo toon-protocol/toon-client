@@ -671,16 +671,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'toon_swap',
     description:
       'Pay a swap peer (asset A) to receive asset B plus a signed target-chain ' +
-      'claim. The maker is probed once with a rolling-swap RFQ: a maker that ' +
-      'answers runs the ROLLING protocol (coupled legs, verify-before-reveal, ' +
-      'a per-fill rate floor). TOON supports rolling ONLY — a maker that does ' +
-      'not answer fails the call with `rolling_unavailable`, naming the maker ' +
-      'and the reason; it is no longer downgraded to the legacy stream ' +
-      'behind your back. The source-asset claim is signed against the open ' +
-      'apex channel. Returns the accumulated target-chain claim(s), ' +
-      'settlement metadata, and a `rolling` block saying which path ran and ' +
-      'why. PAID + IRREVERSIBLE: on a text-only host, confirm the amount with ' +
-      'the user before calling.',
+      'claim. The maker is probed once with a rolling-swap RFQ (coupled legs, ' +
+      'verify-before-reveal, a per-fill rate floor) — the ONLY swap protocol ' +
+      'TOON speaks. A maker that does not answer fails the call with ' +
+      '`rolling_unavailable`, naming the maker and the reason. The ' +
+      'source-asset claim is signed against the open apex channel. Returns ' +
+      'the accumulated target-chain claim(s), settlement metadata, and a ' +
+      '`rolling` block with the session/quote details. PAID + IRREVERSIBLE: ' +
+      'on a text-only host, confirm the amount with the user before calling.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -744,19 +742,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             'only at its own btpEndpoint — is addressable ONLY this way; ' +
             'without it the swap goes to the seeded apex and fails peer ' +
             'resolution (PEER_NOT_NEGOTIATED).',
-        },
-        rolling: {
-          type: 'string',
-          enum: ['auto', 'off', 'require'],
-          description:
-            'Rolling-swap path selection. "require" (the DEFAULT) probes the ' +
-            'maker with a kind:20033 RFQ and FAILS with the named reason if ' +
-            'it does not answer. "auto" and "off" are transitional escape ' +
-            'hatches that take the legacy path instead ("auto" probes first, ' +
-            '"off" does not probe at all): legacy verifies the target-chain ' +
-            'claim only AFTER the payment commits, so ask the user before ' +
-            'choosing one. The outcome is always echoed on the response as ' +
-            '`rolling`, and a legacy run also raises a `warning`.',
         },
         senderIlpAddress: {
           type: 'string',
@@ -1389,11 +1374,6 @@ export async function dispatchTool(
             ...(typeof args['btpUrl'] === 'string'
               ? { btpUrl: args['btpUrl'] }
               : {}),
-            ...(args['rolling'] === 'auto' ||
-            args['rolling'] === 'off' ||
-            args['rolling'] === 'require'
-              ? { rolling: args['rolling'] }
-              : {}),
             ...(typeof args['senderIlpAddress'] === 'string'
               ? { senderIlpAddress: args['senderIlpAddress'] }
               : {}),
@@ -1571,11 +1551,10 @@ export async function dispatchTool(
         })
       );
     }
-    // #595: the maker did not establish a rolling session. The daemon's detail
-    // already names the maker, its ILP address and the reason; keep the
-    // discriminator machine-readable beside it, and be explicit that the
-    // remedies are PAID retries the user has to agree to — a model that reads
-    // "repeat with rolling: off" as a free retry would spend value silently.
+    // #595/#598: the maker did not establish a rolling session, and TOON has
+    // no other swap protocol to fall back to. The daemon's detail already
+    // names the maker, its ILP address and the reason; keep the
+    // discriminator machine-readable beside it.
     if (e instanceof ControlApiError && e.message === 'rolling_unavailable') {
       return err(
         JSON.stringify({
@@ -1586,10 +1565,9 @@ export async function dispatchTool(
           destination: e.data?.['destination'],
           hint:
             'The swap did NOT run and nothing was spent beyond the RFQ probe. ' +
-            'Do not retry blindly: report the reason to the user. The legacy ' +
-            'downgrade (`rolling: "auto"` / `rolling: "off"`) is a PAID, ' +
-            'less safe retry — it verifies the target-chain claim only after ' +
-            'the payment commits — so ask before using it.',
+            'Report the reason to the user — the maker needs kind:20033 RFQ ' +
+            'intake and a `swapVerifyingContracts` announce fixed before this ' +
+            'swap can be retried.',
         })
       );
     }

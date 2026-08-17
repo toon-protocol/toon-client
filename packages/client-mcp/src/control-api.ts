@@ -376,10 +376,13 @@ export interface SettleChannelResponse {
 
 /**
  * `POST /swap` — pay asset A to a swap peer, receive asset B + a signed
- * target-chain claim. The daemon builds the NIP-59 gift-wrapped kind:20032 swap
- * rumor and streams it via SDK `streamSwap`, signing the source-asset claim
- * against the open apex channel (the swap peer must be routed via
- * `apexChildPeers`).
+ * target-chain claim. The daemon probes the maker with a kind:20033 RFQ and
+ * runs the rolling protocol exclusively (ADR 0003, toon-client#598): coupled
+ * legs, verify-before-reveal, a per-fill rate floor. A maker that does not
+ * establish a session fails the call with `RollingUnavailableError` rather
+ * than falling back to a weaker path — TOON has no other swap protocol left
+ * to fall back to. The source-asset claim is signed against the open apex
+ * channel (the swap peer must be routed via `apexChildPeers`).
  */
 export interface SwapRequest {
   /** Swap peer ILP destination (e.g. `g.proxy.swap`). */
@@ -415,32 +418,6 @@ export interface SwapRequest {
    */
   btpUrl?: string;
   /**
-   * Which path the swap takes (toon-client#585, rolling-swap spec §10.3
-   * step 2). Capability is discovered by PROBE, never by an announce field —
-   * swap#135 deliberately ships no flag:
-   *
-   * - `'require'` — **the default** since toon-client#595 (overridable by
-   *   `swapDefaults.rolling`). Send a kind:20033 RFQ; a kind:20034 quote back
-   *   means the maker registered the session and the swap runs on the rolling
-   *   path. ANY other outcome FAILS with `rolling_unavailable` (HTTP 502)
-   *   naming the maker pubkey, its ILP address and the reason discriminator.
-   *   ADR 0003: the rolling swap is the only swap, so a maker that stops
-   *   answering is a fault to report, not a reason to silently serve every
-   *   caller the weaker protocol.
-   * - `'auto'` — probe, then fall back to the legacy path on any failure.
-   *   The transitional escape hatch, kept for exactly one release and removed
-   *   with the legacy sender (Stage 4, toon-client#598).
-   * - `'off'` — never probe. No RFQ packet is sent or paid for; the swap runs
-   *   legacy. Still reachable because #592's own diagnosis points at it when a
-   *   rolling fill cannot be DELIVERED (swap#148).
-   *
-   * The rolling outcome (probed / used / quote / fallback reason) is always
-   * echoed on {@link SwapResponse.rolling}, and a legacy run — from either
-   * escape hatch — also raises a {@link SwapResponse.warning}. Neither
-   * downgrade is silent.
-   */
-  rolling?: 'auto' | 'off' | 'require';
-  /**
    * The ILP address this client receives leg-B PREPAREs on, put on the RFQ as
    * `senderIlpAddress` (spec §2.2). The maker uses it VERBATIM as the
    * destination of every leg-B PREPARE in the session and has no fallback, and
@@ -462,13 +439,10 @@ export interface SwapRequest {
    * (`C_i = sha256(P_i)`, toon-client#350 / rolling-swap toon-meta#145 §3)
    * and verify each FULFILL's preimage client-side.
    *
-   * **No longer a path selector.** Since toon-client#585 the rolling path is
-   * chosen by the RFQ probe (`rolling`), and the rolling fill loop always
-   * mints per-packet conditions — that is what couples the legs. This field
-   * survives only so an existing caller does not break; it is meaningful
-   * solely as a companion to `streamNonce`, and combining it with
-   * `rolling: 'off'` is a validation error (that combination asks for a
-   * conditioned LEGACY packet, an unconditional maker-side F99).
+   * **No longer a path selector.** The rolling fill loop always mints
+   * per-packet conditions regardless of this field — that is what couples
+   * the legs. This field survives only so an existing caller does not break;
+   * it is meaningful solely as a companion to `streamNonce`.
    */
   senderConditions?: boolean;
   /**
@@ -477,8 +451,8 @@ export interface SwapRequest {
    * Setting it SKIPS the RFQ probe and fills against that session directly —
    * the pre-#585 path for a nonce registered with the maker out of band
    * (`SwapNodeInstance.registerRollingSession`). Leave it unset for the
-   * ordinary flow: {@link SwapRequest.rolling}'s probe mints and registers a
-   * nonce on the wire, which is the only route that works against a deployed
+   * ordinary flow, which probes with a kind:20033 RFQ and mints/registers a
+   * nonce on the wire — the only route that works against a deployed
    * (CLI-run) maker.
    */
   streamNonce?: string;
@@ -511,35 +485,13 @@ export interface SwapRequest {
    */
   packetExpiryMs?: number;
   /**
-   * Overall swap deadline in ms. On the legacy path it is wired to
-   * `streamSwap`'s `AbortSignal`, so on expiry the stream aborts mid-flight
-   * and in-flight packets are drained; on the rolling path (toon-client#596)
-   * it bounds the fill loop — checked before each sequential send and handed
-   * to that send as its remaining per-call budget. Either way the response
-   * reports the partial fill accurately (`state: 'stopped'`,
-   * `abortReason: 'aborted'`, partial `claims`/cumulatives).
+   * Overall swap deadline in ms (toon-client#596). Bounds the rolling fill
+   * loop — checked before each sequential send and handed to that send as
+   * its remaining per-call budget. On expiry the response reports the
+   * partial fill accurately (`state: 'stopped'`, `abortReason: 'aborted'`,
+   * partial `claims`/cumulatives).
    */
   timeoutMs?: number;
-  /**
-   * Engage the sdk's adaptive δ/W controller (`AdaptiveDeltaController`,
-   * rolling-swap spec §6) for DYNAMIC packet sizing instead of a static even
-   * split. Mutually exclusive with `packetCount`. Controller state is
-   * persisted per-(source chain, maker, pair) under the daemon's data dir so
-   * ramp/trust survives across swaps. When unset, the daemon's
-   * `swapDefaults.controller` applies (unless the request pins an explicit
-   * `packetCount`). The controller only tunes efficiency — it can never relax
-   * the `minExchangeRate` floor.
-   *
-   * LEGACY-PATH ONLY. Setting this routes the request away from the rolling
-   * probe entirely (`negotiateRollingSession`'s `'controller'` fallback), and
-   * combining it with a pinned `streamNonce` is rejected outright — the
-   * controller is deliberately DROPPED, not ported, on rolling
-   * (toon-client#597: rolling's per-packet re-quote and verify-before-reveal
-   * already bound the risk δ existed to bound, and the fill loop's strict
-   * sequencing pins W at 1). This field disappears with the rest of the
-   * legacy path in Stage 4.
-   */
-  controller?: SwapControllerParams;
   /**
    * The maker's ADVERTISED on-chain signer address for `pair.to.chain`
    * (kind:10032 discovery or operator-supplied), toon-client#352. When set,
@@ -549,32 +501,6 @@ export interface SwapRequest {
    * self-reported signer is verified and pinned per channel.
    */
   swapSignerAddress?: string;
-}
-
-/**
- * Adaptive-controller parameters (mirrors the sdk's
- * `AdaptiveDeltaControllerConfig`, minus the identity/persistence fields the
- * daemon supplies itself). BigInt-valued sdk fields travel as decimal strings.
- */
-export interface SwapControllerParams {
-  /**
-   * Maker's advertised two-sided spread as a fraction (e.g. `0.004` = 40 bps).
-   * REQUIRED — ε is denominated off the half-spread and the sdk deliberately
-   * has no default (an invented spread would silently mis-size ε).
-   */
-  advertisedSpread: number;
-  /** Absolute per-packet ceiling in source micro-units (decimal string). */
-  maxPacketAmount?: string;
-  /** Floor on δ in source micro-units (decimal string). Default `1`. */
-  minPacketAmount?: string;
-  /** Ceiling on the in-flight window W. Default 8. */
-  maxWindow?: number;
-  /** Clean-fulfill streak length K per widen step. Default 16. */
-  cleanStreakLength?: number;
-  /** Cold-start divisor: `δ_0 = notional / coldStartDivisor`. Default 256. */
-  coldStartDivisor?: number;
-  /** EWMA smoothing factor α for `v`/`τ`, in (0, 1]. Default 0.2. */
-  ewmaAlpha?: number;
 }
 
 /** Per-packet telemetry for one accepted FULFILL (from the sdk's `onPacket`). */
@@ -750,9 +676,9 @@ export interface SwapResponse {
   valueReceived?: string;
   /**
    * What rolling capability discovery decided (toon-client#585). Present on
-   * EVERY swap — including `rolling: 'off'`, which since toon-client#595
-   * reports itself as `fallbackReason: 'off'` rather than leaving the block
-   * absent. A legacy run is never inferred from a missing field.
+   * EVERY swap (toon-client#598: rolling is the only path — a maker that
+   * cannot establish a session fails the call outright rather than reaching
+   * this field as a fallback report).
    */
   rolling?: SwapRollingInfo;
 }
@@ -762,11 +688,11 @@ export interface SwapResponse {
  * step 2 capability discovery).
  */
 export interface SwapRollingInfo {
-  /** Whether a kind:20033 RFQ probe was actually sent (and paid for). */
+  /** Whether a kind:20033 RFQ probe was actually sent (and paid for). Absent when `streamNonce` skipped it. */
   probed: boolean;
-  /** Whether the swap ran on the rolling path. */
+  /** Whether the swap ran on the rolling path. Always `true` — see the type doc. */
   used: boolean;
-  /** The session id every fill referenced. Present iff `used`. */
+  /** The session id every fill referenced. */
   streamNonce?: string;
   /** `R₀` from the kind:20034 quote — target whole-units per source whole-unit. */
   rate?: string;
@@ -781,20 +707,6 @@ export interface SwapRollingInfo {
   maxRateAge?: number;
   /** Maker's advertised two-sided spread, basis points. */
   spreadBps?: number;
-  /**
-   * Why the swap fell back to legacy. One of the RFQ failure reasons
-   * (`send-failed`, `rejected` — the ordinary "legacy maker" signal —
-   * `no-response`, `not-a-quote`, `nonce-mismatch`), a local one
-   * (`controller`, `no-sender-address`), or `off` — the caller (or
-   * `swapDefaults`) disabled the probe outright. Present iff `!used`.
-   *
-   * Under the default `rolling: 'require'` none of these reach a caller as a
-   * fallback: they arrive as the `reason` field of a `rolling_unavailable`
-   * error instead. This block is what an explicit `'auto'` / `'off'` reports.
-   */
-  fallbackReason?: string;
-  /** Human-readable detail behind `fallbackReason`. */
-  fallbackMessage?: string;
 }
 
 // ── Received swap claims: persistence + settlement (#352) ────────────────────
