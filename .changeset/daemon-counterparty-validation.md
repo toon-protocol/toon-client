@@ -1,5 +1,6 @@
 ---
 '@toon-protocol/client': patch
+'@toon-protocol/client-mcp': patch
 ---
 
 Stop resuming a payment channel after the node terminating its route has been replaced — every paid write failed `F01 - claim rejected: names a channel this connector has no record of`.
