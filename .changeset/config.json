@@ -7,8 +7,5 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": [
-    "@toon-protocol/client-mcp",
-    "@toon-protocol/views"
-  ]
+  "ignore": ["@toon-protocol/views"]
 }
