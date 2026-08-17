@@ -1,6 +1,5 @@
 ---
 "@toon-protocol/client": minor
-"@toon-protocol/client-mcp": minor
 ---
 
 Drive the ROLLING swap protocol (rolling-swap spec §3) against rolling-capable makers instead of sending a sender-chosen condition on the legacy gift-wrap packet shape, which a compliant maker unconditionally rejects `F99 "sender-chosen execution conditions are not supported on the legacy swap path"` (issue #573; corrected diagnosis of the mis-filed toon-protocol/swap#115).

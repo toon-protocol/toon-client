@@ -1,6 +1,5 @@
 ---
 '@toon-protocol/client': patch
-'@toon-protocol/client-mcp': patch
 ---
 
 Verify a received swap claim against the maker's **RollingSwapChannel**, not the TokenNetwork it is paid through — a swap that succeeded on the wire delivered zero verified value.

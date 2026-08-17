@@ -44,6 +44,50 @@ jobs:
             fi
           fi
 
+      # The step above asserts only that a `.changeset/*.md` FILE EXISTS. It
+      # never parses one, so a changeset that is well-formed YAML but an invalid
+      # RELEASE PLAN sailed through it — and `release.yml`, which runs after
+      # merge where its failure gates nothing, was the first thing in the repo to
+      # read the file. That is toon-client#611: `.changeset/
+      # daemon-counterparty-validation.md` named both `@toon-protocol/client` and
+      # the `ignore`d `@toon-protocol/client-mcp`, changesets refuses a changeset
+      # that mixes ignored and non-ignored packages, and `release.yml` was red on
+      # EVERY push to main for a day — so no correctness fix in
+      # `@toon-protocol/client` could reach a consumer.
+      #
+      # WHY `changeset version` AND NOT `changeset status`. Fidelity: this is the
+      # byte-identical command `release.yml`'s `changesets/action` runs as its
+      # `version:` input, so "this check is green" means "the release will get
+      # past versioning", with no second implementation to drift. `status` is
+      # read-only and prettier, but it additionally resolves `baseBranch` through
+      # git and errors when it decides packages changed with no changeset —
+      # duplicating the step above with a different definition of "changed" and a
+      # new way to misfire on a PR that touches only an ignored package.
+      #
+      # Mutating the tree is free here: this job is a throwaway checkout that
+      # commits, pushes and publishes nothing, and it has no later steps. The
+      # bumps it writes are printed rather than discarded, because "which
+      # packages would this release move" is the useful half of the output.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Assert the changesets form a valid release plan
+        run: |
+          set -euo pipefail
+          pnpm changeset version
+          echo "--- the release plan this PR would produce ---"
+          git --no-pager diff --stat
+          git --no-pager diff -- '**/package.json' | grep -E '^[+-]  "version"' || true
+          echo "✅ changeset version succeeds — release.yml can get past versioning"
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -87,6 +131,20 @@ jobs:
         continue-on-error: true
 
       - run: pnpm -r test --if-present
+
+      # `pnpm -r` EXCLUDES the workspace root, and the root `vitest.config.ts` is
+      # the only config whose `include` covers `.sandcastle/**/*.test.ts` and
+      # `.github/rig-web-redirect/**/*.test.ts`. So the step above has never run
+      # them: the gate guard's OWN tests did not run on the gate they guard
+      # (toon-client#607). Scoped by path rather than a bare `vitest run`, which
+      # would re-run every package's unit suite through the root config.
+      #
+      # Deliberately BEFORE the guard step, so a broken `gate-guard.ts` fails
+      # here rather than being trusted to judge itself. 26 tests, ~0.2s of
+      # vitest plus node startup — inside the timed window, and small against the
+      # 185s baseline's 20% tolerance.
+      - name: Test the workspace root (the files `pnpm -r` cannot see)
+        run: npx vitest run .sandcastle/ .github/rig-web-redirect/
 
       - name: Gate no-regression guard
         run: |
@@ -273,38 +331,9 @@ jobs:
       # deps. Nothing resolves through a workspace `dist/`, so there is no build
       # to pay for.
       #
-      # The integration tests are excluded from every package's unit config
-      # (`**/__integration__/**`), so this is also the first CI job in this repo
-      # to run an integration test at all.
-      # `packages/client/tsconfig.json` excludes `**/*.test.ts`, so `pnpm
-      # typecheck` reads no test file in this package — the 800-line proof this
-      # job runs included, which until now was validated only by executing.
-      # tsconfig.integration.json covers the integration directory; this asserts
-      # its hand-written `files` list still matches the directory, so a new suite
-      # cannot join it unchecked, and a documented opt-out cannot silently become
-      # a dangling entry.
-      - name: Typecheck the integration suites
-        run: |
-          set -euo pipefail
-          cd packages/client
-          listed=$(node -e "
-            const { readFileSync } = require('node:fs');
-            const raw = readFileSync('tsconfig.integration.json', 'utf8');
-            const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
-            for (const f of JSON.parse(stripped).files) console.log(f);
-          " | sort)
-          # #607: the one suite deliberately left out, and the only name allowed
-          # to be missing. Remove it here and from tsconfig.integration.json's
-          # files list together.
-          onDisk=$(ls src/__integration__/*.integration.test.ts \
-            | grep -v 'swap-settlement-submit.integration.test.ts' | sort)
-          if [ "$listed" != "$onDisk" ]; then
-            echo "::error::tsconfig.integration.json's files list has drifted from src/__integration__/. Listed vs on disk:"
-            diff <(echo "$listed") <(echo "$onDisk") || true
-            exit 1
-          fi
-          npx tsc -p tsconfig.integration.json
-          echo "✅ every integration suite is typechecked (bar the #607 opt-out)"
+      # The `Typecheck the integration suites` step used to live here. It moved to
+      # the `integration` job (#607), which owns the integration directory as a
+      # whole; this job stays narrowly the on-chain redemption proof.
 
       # CLIENT_REQUIRE_SOLANA=1 is the difference between a gate and a
       # decoration: without it, a runner whose validator failed to install would
@@ -312,8 +341,8 @@ jobs:
       # rather than running `test:integration` whole, because
       # rust-edge-devnet.integration.test.ts in the same directory defaults to a
       # LIVE devnet endpoint (it self-skips without credentials, but CI has no
-      # business loading that gun) and swap-settlement-submit.integration.test.ts
-      # is red on main for an unrelated reason (#607).
+      # business loading that gun) and the loopback suites belong to the
+      # `integration` job, which needs no validator.
       - name: Redeem a claim against the real program on a local validator
         env:
           CLIENT_REQUIRE_SOLANA: '1'
@@ -385,6 +414,168 @@ jobs:
           grep '\[solana-settle\]' /tmp/solana-proof.plain
           echo "✅ the Solana redemption proof collected ${EXPECTED_TESTS}, passed ${EXPECTED_TESTS}, and redeemed on chain"
 
+  # ---------------------------------------------------------------------------
+  # The integration suites that need NOTHING — toon-client#607.
+  #
+  # `build` runs `pnpm -r test --if-present`, which resolves to each package's
+  # `test` script, i.e. its UNIT config, and every unit config excludes
+  # `**/__integration__/**`. So until #610 added the Solana proof, no CI job in
+  # this repo had ever run an integration test — and #607 is what that hid:
+  # `swap-settlement-submit.integration.test.ts` had been red on `main` for as
+  # long as the EVM claim digest has carried its EIP-712 domain, because nothing
+  # ran it and nothing typechecked it.
+  #
+  # WHAT RUNS HERE, AND WHY THESE THREE. The eight integration suites in the repo
+  # divide cleanly by what they need, and only the no-infra group belongs in an
+  # unconditional gate:
+  #
+  #   NEEDS NOTHING — run here, named explicitly:
+  #     client/btp-transport            binds an ephemeral loopback `ws` server
+  #     client/http-ilp-transport       binds an ephemeral loopback http.Server
+  #     client/swap-settlement-submit   binds an ephemeral loopback JSON-RPC server
+  #   NEEDS INFRA — runs in `solana-settlement-proof`, which installs the CLI:
+  #     client/solana-settlement-redeem  a real `solana-test-validator`
+  #   NEEDS A LIVE SERVICE OR A CREDENTIAL — deliberately NOT in CI:
+  #     client/rust-edge-devnet          a funded key + a live devnet connector
+  #     client-mcp/journey               a live testnet, real funds, a Claude token
+  #     client-mcp/agent-sdk-smoke       a Claude credential
+  #     rig/arns-live-read               live ar.io gateways (ARNS_LIVE_SMOKE)
+  #
+  # Nothing here needs anvil, a validator, or a network route off the runner: the
+  # three suites together are 9 tests in ~1.3s of vitest. The separation is the
+  # point — turning `test:integration` on WHOLESALE would have pulled the live
+  # devnet and credentialled suites into every PR (they self-skip, so they would
+  # have contributed a green tick and zero coverage, which is the failure mode
+  # this job exists to end).
+  #
+  # NAMED FILES, NOT `test:integration`. The same reason the Solana job names its
+  # file: `vitest.integration.config.ts` globs the whole directory, so a bare
+  # `test:integration` would load `rust-edge-devnet.integration.test.ts`, which
+  # defaults `RUST_EDGE_E2E_EDGE` to a real devnet URL. It self-skips without a
+  # funded key, but CI has no business loading that gun. The cost is that a NEW
+  # no-infra suite must be added to the list below to run — which is exactly what
+  # the typecheck step's drift assertion makes visible, since the new file must
+  # join `tsconfig.integration.json` in the same PR.
+  #
+  # WALL CLOCK. No `needs:`, so this starts at t=0 alongside `build`,
+  # `devbox-validate` and the Solana proof. `build` is the critical path at
+  # 171-206s; this job is checkout + install + a ~1.3s suite, so it finishes well
+  # inside that shadow and adds nothing to pipeline wall time. It is not free —
+  # it pays its own checkout and install in runner-minutes — but it stays out of
+  # `build`'s gate-guarded timed window, which has only ~8% headroom and is the
+  # one place in this pipeline where adding steps carries real risk.
+  integration:
+    name: Integration suites (no infra)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      # --frozen-lockfile, matching `build`: this job must not be the one place
+      # dependency drift hides. `devbox-validate` owns re-resolution.
+      - run: pnpm install --frozen-lockfile
+
+      # No `pnpm -r build`, same as the Solana job: the suites import the
+      # client's own modules by relative source path and everything else
+      # (@toon-protocol/core, @toon-protocol/sdk) from node_modules as published
+      # deps, so nothing resolves through a workspace `dist/`.
+      #
+      # `packages/client/tsconfig.json` excludes `**/*.test.ts` repo-wide, so
+      # `pnpm typecheck` reads no test file in this package. That is the OTHER
+      # half of what hid #607: the 4-vs-6 argument count is a plain TS2554 that
+      # `tsc` reports the instant the file is in a project.
+      # `tsconfig.integration.json` puts the whole integration directory in one,
+      # including the two suites this job does not execute. The `files` list is
+      # hand-written, so this asserts it still matches the directory — a new
+      # suite cannot join the directory unchecked, and an opt-out cannot be
+      # re-introduced as a silent comment (which is how #607 was parked).
+      - name: Typecheck the integration suites
+        run: |
+          set -euo pipefail
+          cd packages/client
+          listed=$(node -e "
+            const { readFileSync } = require('node:fs');
+            const raw = readFileSync('tsconfig.integration.json', 'utf8');
+            const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
+            for (const f of JSON.parse(stripped).files) console.log(f);
+          " | sort)
+          onDisk=$(ls src/__integration__/*.integration.test.ts | sort)
+          if [ "$listed" != "$onDisk" ]; then
+            echo "::error::tsconfig.integration.json's files list has drifted from src/__integration__/. Listed vs on disk:"
+            diff <(echo "$listed") <(echo "$onDisk") || true
+            exit 1
+          fi
+          npx tsc -p tsconfig.integration.json
+          echo "✅ every integration suite in packages/client is typechecked, with no opt-outs"
+
+      - name: Run the no-infra integration suites
+        env:
+          # See the Solana job: vitest colorizes on a runner, and the ANSI
+          # escapes defeat the count greps in the next step.
+          NO_COLOR: '1'
+          FORCE_COLOR: '0'
+        run: |
+          set -euo pipefail
+          pnpm --filter @toon-protocol/client test:integration \
+            src/__integration__/btp-transport.integration.test.ts \
+            src/__integration__/http-ilp-transport.integration.test.ts \
+            src/__integration__/swap-settlement-submit.integration.test.ts 2>&1 \
+            | tee /tmp/integration.log
+
+      # A green tick is not evidence that anything ran — the exact defect #607
+      # records (a suite that passes by not running). Per-suite collected counts
+      # AND a total passed count, so neither a vanished suite nor a silently
+      # skipped test inside one can hide. Bumping a number is meant to be a
+      # visible diff.
+      - name: Assert every suite collected and passed
+        env:
+          EXPECTED_TOTAL: '9'
+        run: |
+          set -euo pipefail
+          sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/integration.log > /tmp/integration.plain
+          fail=0
+
+          assert_suite() {
+            suite="$1"; expected="$2"
+            line=$(grep -E "${suite} +\(" /tmp/integration.plain | tail -1 || true)
+            if [ -z "$line" ]; then
+              echo "::error::${suite} did not appear in the vitest output at all"
+              fail=1
+              return
+            fi
+            echo "  ${line}"
+            # `(N tests)` with no ` | N skipped` suffix asserts none were skipped.
+            if ! echo "$line" | grep -qE "\(${expected} tests\)"; then
+              echo "::error::${suite} did not report exactly ${expected} collected tests with none skipped — see the line above"
+              fail=1
+            fi
+          }
+
+          assert_suite src/__integration__/btp-transport.integration.test.ts 3
+          assert_suite src/__integration__/http-ilp-transport.integration.test.ts 3
+          assert_suite src/__integration__/swap-settlement-submit.integration.test.ts 3
+
+          if ! grep -qE "Tests +${EXPECTED_TOTAL} passed \(${EXPECTED_TOTAL}\)" /tmp/integration.plain; then
+            echo "::error::vitest did not report ${EXPECTED_TOTAL} passed of ${EXPECTED_TOTAL} — collected is not the same as passed"
+            grep -E "^ *Tests " /tmp/integration.plain || true
+            fail=1
+          fi
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo "✅ all three no-infra integration suites collected and passed (${EXPECTED_TOTAL} tests)"
+
   # Fleet-wide aggregate required check per toon-meta#279. This job is the
   # single check that branch protection requires. `if: always()` makes it run
   # even when upstream jobs fail, are skipped, or are cancelled — a skipped or
@@ -393,7 +584,8 @@ jobs:
   ci-ok:
     name: CI OK
     runs-on: ubuntu-latest
-    needs: [changeset, build, devbox-validate, solana-settlement-proof]
+    needs:
+      [changeset, build, devbox-validate, solana-settlement-proof, integration]
     if: always()
     steps:
       - name: Verify all gating jobs succeeded
@@ -402,6 +594,7 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           DEVBOX_RESULT: ${{ needs.devbox-validate.result }}
           SOLANA_PROOF_RESULT: ${{ needs.solana-settlement-proof.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           echo "event:           $EVENT_NAME"
@@ -409,6 +602,7 @@ jobs:
           echo "build:           $BUILD_RESULT"
           echo "devbox-validate: $DEVBOX_RESULT"
           echo "solana-proof:    $SOLANA_PROOF_RESULT"
+          echo "integration:     $INTEGRATION_RESULT"
 
           ok=true
 
@@ -430,6 +624,16 @@ jobs:
           # construction instead of by pairing a result with a decision.
           if [ "$SOLANA_PROOF_RESULT" != "success" ]; then
             echo "::error::solana-settlement-proof result is '$SOLANA_PROOF_RESULT' (expected 'success'; skipped/cancelled counts as failure — this job has no 'if:', so a skip means it stopped running, not that it was unnecessary)"
+            ok=false
+          fi
+
+          # Same construction as the Solana proof: the `integration` job carries
+          # no `if:`, so 'skipped' cannot mean "legitimately not required" — only
+          # cancelled-upstream or a workflow edit that stopped it running. #607 is
+          # exactly the failure of a suite that passes by not running, so a
+          # not-run integration job must never read as a pass.
+          if [ "$INTEGRATION_RESULT" != "success" ]; then
+            echo "::error::integration result is '$INTEGRATION_RESULT' (expected 'success'; skipped/cancelled counts as failure — this job has no 'if:', so a skip means it stopped running)"
             ok=false
           fi
 

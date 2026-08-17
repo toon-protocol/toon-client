@@ -15,9 +15,11 @@
 // `.sandcastle/gate-baseline.json` records 0 typecheck errors for this package
 // and this config keeps that true by not widening what `pnpm typecheck` reads.
 //
-// Run by the `solana-settlement-proof` job in .github/workflows/ci.yml, which is
-// the job that runs these suites — the typecheck lives with the execution rather
-// than in `build`, whose wall clock is gate-guarded with ~8% headroom.
+// Run by the `integration` job in .github/workflows/ci.yml, which owns the
+// no-infra integration suites — the typecheck lives beside an execution rather
+// than in `build`, whose wall clock is gate-guarded with ~8% headroom. It covers
+// the whole directory, including the two suites other jobs own (the Solana proof
+// needs a validator; `rust-edge-devnet` is opt-in against a live devnet).
 {
   "extends": "./tsconfig.json",
 
@@ -35,16 +37,13 @@
     "src/__integration__/btp-transport.integration.test.ts",
     "src/__integration__/http-ilp-transport.integration.test.ts",
     "src/__integration__/rust-edge-devnet.integration.test.ts",
-    "src/__integration__/solana-settlement-redeem.integration.test.ts"
-    // src/__integration__/swap-settlement-submit.integration.test.ts is
-    // DELIBERATELY absent, tracked in #607. It calls `balanceProofHashEvm` with
-    // 4 arguments where @toon-protocol/settlement-digest@1.1.0 takes 6 (the EVM
-    // digest gained an EIP-712 chainId + verifyingContract), so it is red at
-    // both typecheck and runtime — `TypeError: Cannot read properties of
-    // undefined (reading 'length')` inside `eip712DomainSeparatorEvm`. Supplying
-    // the missing arguments is a correctness decision about which chainId and
-    // verifying contract that #352 test means, not a typing fix, so it does not
-    // belong in a CI-wiring change. Adding the file here is part of closing
-    // #607.
+    "src/__integration__/solana-settlement-redeem.integration.test.ts",
+    // No opt-outs. This entry was the one exception (#607): the suite called
+    // `balanceProofHashEvm` with 4 arguments where the published digest takes 6,
+    // and #607 supplied the two EIP-712 domain arguments the v2 digest needs.
+    // The CI step that runs this config asserts the list below matches
+    // src/__integration__/ exactly, so re-introducing an opt-out here is a red
+    // check, not a comment.
+    "src/__integration__/swap-settlement-submit.integration.test.ts"
   ]
 }

@@ -1,6 +1,5 @@
 ---
 '@toon-protocol/client': patch
-'@toon-protocol/client-mcp': patch
 ---
 
 Route a swap to the apex that OWNS its destination — every swap against a registered non-default apex failed locally with `No negotiation metadata for peer "g.toon.swap.maker"`.

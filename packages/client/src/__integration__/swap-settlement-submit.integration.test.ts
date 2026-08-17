@@ -10,6 +10,42 @@
  * no external services (binds an ephemeral loopback port). Real-chain
  * submission stays env-gated in the daemon on `chainRpcUrls[chain]` — this
  * exercises the exact code that runs when that gate is open.
+ *
+ * ## The v2 EIP-712 domain (#607)
+ *
+ * This file was written against the v1 raw-keccak balance proof, which bound
+ * no chain context: `balanceProofHashEvm(channelId, cumulativeAmount, nonce,
+ * recipient)`. `@toon-protocol/core@3.5.0` (`@toon-protocol/settlement-digest`
+ * 1.1.0) takes two more arguments — the EIP-712 `chainId` and
+ * `verifyingContract` (connector#324 finding #1) — and the 4-argument call
+ * threw inside `eip712DomainSeparatorEvm`. The two values are NOT free
+ * parameters; each is fixed by what the receive-side verifier and the
+ * settlement builder compute for this scenario, and both are asserted below so
+ * neither can drift back to "whatever makes it green":
+ *
+ *  * `chainId` = 31337, which is what `parseEvmChainId` — the same function
+ *    `received-claims.ts` and `settle-received-claims.ts` call — reads off the
+ *    scenario's own `evm:anvil:31337` chain key. The loopback RPC already
+ *    answers `eth_chainId` with `0x7a69` and the broadcast tx is already
+ *    asserted to carry `chainId: 31337`, so the digest, the node and the
+ *    signed transaction now all agree on one number.
+ *  * `verifyingContract` = the maker's **leg-B `RollingSwapChannel`**, this
+ *    file's `ROLLING_SWAP_CHANNEL` (the old `CONTRACT` constant, renamed to say
+ *    which of the two contracts it is). Post-#583 that is the only contract a
+ *    received claim can verify against, and post-#604 it is also the contract
+ *    the settlement transaction is addressed `to` — so the one constant plays
+ *    both roles here exactly as one address plays both roles in production.
+ *    It is emphatically NOT the leg-A `TokenNetwork` this client pays the maker
+ *    through; the last test below signs under a leg-A address and asserts the
+ *    claim is REJECTED, which is #583's live defect reproduced end to end.
+ *
+ * The pipeline also moved under this file while it was unrun: EVM ingestion now
+ * REQUIRES `swapVerifyingContracts[chain]` (`MISSING_SWAP_VERIFYING_CONTRACT`
+ * otherwise) and PINS the contract it verified under onto the persisted
+ * watermark, and `buildSwapSettlements`' `tokenNetworks` parameter is accepted
+ * and never read. So the settlement contract is threaded here the way
+ * production threads it — announce → ingest → pinned watermark → builder — and
+ * `tokenNetworks` is not passed at all.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from 'node:http';
@@ -34,8 +70,21 @@ const RECIPIENT_ACCOUNT = privateKeyToAccount(
 );
 const RECIPIENT = RECIPIENT_ACCOUNT.address.toLowerCase();
 const CHANNEL = '0x' + '11'.repeat(32);
-const CONTRACT = '0x' + '22'.repeat(20);
+/**
+ * The maker's leg-B `RollingSwapChannel` — the EIP-712 `verifyingContract` a
+ * received claim is signed under (#583) and the contract the settlement
+ * `updateBalance` is addressed to (#604).
+ */
+const ROLLING_SWAP_CHANNEL = '0x' + '22'.repeat(20);
+/**
+ * The leg-A `TokenNetwork` this client pays the maker THROUGH. Present only to
+ * be proved wrong: signing a claim under this domain must be rejected, never
+ * silently accepted or fallen back to (#583).
+ */
+const LEG_A_TOKEN_NETWORK = '0x' + '44'.repeat(20);
 const CHAIN = 'evm:anvil:31337';
+/** What `parseEvmChainId(CHAIN)` returns — the digest's EIP-712 `chainId`. */
+const CHAIN_ID = 31337n;
 const PAIR = {
   from: { assetCode: 'USDC', assetScale: 6, chain: 'evm:base:84532' },
   to: { assetCode: 'USDC', assetScale: 6, chain: CHAIN },
@@ -46,13 +95,25 @@ async function signedClaim(
   nonce: string,
   cumulativeAmount: string,
   targetAmount: bigint,
-  packetIndex: number
+  packetIndex: number,
+  /**
+   * The EIP-712 `verifyingContract` the maker signs under. Defaults to the
+   * leg-B `RollingSwapChannel`, which is the only value the receive-side
+   * verifier will accept; overridden only by the #583 negative case.
+   */
+  verifyingContract: string = ROLLING_SWAP_CHANNEL
 ): Promise<AccumulatedClaim> {
+  // v2, domain-separated: the signature is valid for exactly this
+  // (chainId, verifyingContract) pair. Signed with `@toon-protocol/core`'s
+  // digest and verified below by the client's OWN `evmClaimDigest`, so this
+  // also pins the two implementations byte-identical.
   const hash = balanceProofHashEvm(
     hexToBytes(CHANNEL),
     BigInt(cumulativeAmount),
     BigInt(nonce),
-    hexToBytes(RECIPIENT)
+    hexToBytes(RECIPIENT),
+    CHAIN_ID,
+    hexToBytes(verifyingContract)
   );
   const sig = await SWAP_SIGNER.sign({
     hash: `0x${Buffer.from(hash).toString('hex')}`,
@@ -123,7 +184,7 @@ describe('EVM swap settlement submission over a real JSON-RPC server (integratio
                 blockHash: '0x' + 'ab'.repeat(32),
                 blockNumber: '0x11',
                 from: RECIPIENT,
-                to: CONTRACT,
+                to: ROLLING_SWAP_CHANNEL,
                 cumulativeGasUsed: '0x186a0',
                 gasUsed: '0x186a0',
                 contractAddress: null,
@@ -159,17 +220,27 @@ describe('EVM swap settlement submission over a real JSON-RPC server (integratio
       expectedChain: CHAIN,
       chainRecipient: RECIPIENT,
       expectedSignerAddress: SWAP_SIGNER.address.toLowerCase(),
+      // Leg B, sourced in production from the maker's kind:10032
+      // `swapVerifyingContracts` announce (swap#134) with daemon config
+      // layered on top. REQUIRED for EVM under the v2 digest.
+      swapVerifyingContracts: { [CHAIN]: ROLLING_SWAP_CHANNEL },
       store,
     });
+    expect(ingest.rejected).toEqual([]);
     expect(ingest.verified).toHaveLength(3);
     expect(ingest.valueReceived).toBe(900n);
     expect(store.list()).toHaveLength(1);
+    // The contract the claims verified under is PINNED onto the watermark
+    // (#572), which is how the settlement below learns where to send.
+    expect(store.list()[0]!.verifyingContract?.toLowerCase()).toBe(
+      ROLLING_SWAP_CHANNEL
+    );
 
-    // 2) One settlement bundle with the FINAL watermark.
-    const [build] = buildSwapSettlements({
-      entries: store.list(),
-      tokenNetworks: { [CHAIN]: CONTRACT },
-    });
+    // 2) One settlement bundle with the FINAL watermark. No `tokenNetworks`
+    //    and no `swapVerifyingContracts`: the builder reads the entry's own
+    //    pinned contract, exactly as it does in the daemon.
+    const [build] = buildSwapSettlements({ entries: store.list() });
+    expect(build!.error).toBeUndefined();
     const bundle = build!.bundle!;
     expect(bundle.nonce).toBe('3');
     expect(bundle.cumulativeAmount).toBe('900');
@@ -184,11 +255,14 @@ describe('EVM swap settlement submission over a real JSON-RPC server (integratio
     expect(result.status).toBe('success');
     expect(rpcCalls).toContain('eth_sendRawTransaction');
 
-    // 4) The broadcast raw tx is EXACTLY the settlement: recipient-signed,
-    //    to the TokenNetwork, updateBalance calldata with the final watermark.
+    // 4) The broadcast raw tx is EXACTLY the settlement: recipient-signed, to
+    //    the leg-B RollingSwapChannel, updateBalance calldata with the final
+    //    watermark.
     const parsed = parseTransaction(sentRawTx!);
-    expect(parsed.to?.toLowerCase()).toBe(CONTRACT);
-    expect(parsed.chainId).toBe(31337);
+    // Addressed to the leg-B RollingSwapChannel — the same contract whose
+    // address the claim signature is domain-separated over.
+    expect(parsed.to?.toLowerCase()).toBe(ROLLING_SWAP_CHANNEL);
+    expect(parsed.chainId).toBe(Number(CHAIN_ID));
     expect(parsed.nonce).toBe(5); // from eth_getTransactionCount
     expect(parsed.gas).toBe(100_000n);
     expect(parsed.gasPrice).toBe(1_000_000_000n);
@@ -199,5 +273,46 @@ describe('EVM swap settlement submission over a real JSON-RPC server (integratio
     expect(parsed.data).toContain(CHANNEL.slice(2));
     // cumulativeAmount 900 = 0x384, ABI-encoded as a 32-byte word.
     expect(parsed.data).toContain('384');
+  });
+
+  // The domain arguments above are load-bearing, not decoration. This is
+  // toon-client#583's live devnet defect end to end: a maker's claim signed
+  // against its leg-B RollingSwapChannel, verified against the leg-A
+  // TokenNetwork, recovers an unrelated address. Nothing may fall back between
+  // the two, in either direction, and nothing reaches a broadcast.
+  it('refuses a claim whose domain is the leg-A TokenNetwork, and settles nothing (#583)', async () => {
+    const store = new InMemoryReceivedClaimStore();
+    const ingest = ingestReceivedClaims({
+      claims: [await signedClaim('1', '300', 300n, 0, LEG_A_TOKEN_NETWORK)],
+      expectedChain: CHAIN,
+      chainRecipient: RECIPIENT,
+      expectedSignerAddress: SWAP_SIGNER.address.toLowerCase(),
+      swapVerifyingContracts: { [CHAIN]: ROLLING_SWAP_CHANNEL },
+      store,
+    });
+    expect(ingest.verified).toEqual([]);
+    expect(ingest.valueReceived).toBe(0n);
+    expect(ingest.rejected).toHaveLength(1);
+    expect(ingest.rejected[0]!.code).toBe('SIGNER_MISMATCH');
+    // Nothing verified, so nothing is persisted and nothing can be settled —
+    // the failure is fail-closed at receipt, not at broadcast.
+    expect(store.list()).toEqual([]);
+    expect(buildSwapSettlements({ entries: store.list() })).toEqual([]);
+  });
+
+  // A chain with no known leg-B contract is rejected rather than settled
+  // against a guess — the whole reason the two arguments are REQUIRED.
+  it('refuses an EVM claim when no leg-B verifying contract is known', async () => {
+    const store = new InMemoryReceivedClaimStore();
+    const ingest = ingestReceivedClaims({
+      claims: [await signedClaim('1', '300', 300n, 0)],
+      expectedChain: CHAIN,
+      chainRecipient: RECIPIENT,
+      expectedSignerAddress: SWAP_SIGNER.address.toLowerCase(),
+      store,
+    });
+    expect(ingest.verified).toEqual([]);
+    expect(ingest.rejected[0]!.code).toBe('MISSING_SWAP_VERIFYING_CONTRACT');
+    expect(store.list()).toEqual([]);
   });
 });
