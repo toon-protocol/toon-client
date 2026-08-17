@@ -138,7 +138,9 @@ const REQUIRE_SOLANA = process.env['CLIENT_REQUIRE_SOLANA'] === '1';
 // ---------------------------------------------------------------------------
 
 function seedFor(label: string): Uint8Array {
-  return sha256(new TextEncoder().encode(`toon-client-mcp-daemon-solana/${label}`));
+  return sha256(
+    new TextEncoder().encode(`toon-client-mcp-daemon-solana/${label}`)
+  );
 }
 
 /** The swap peer's claim signer: the channel participant whose balance advances. */
@@ -236,6 +238,14 @@ function deriveChannelPda(
   );
   return { pda: base58Encode(pda), bump };
 }
+
+/** The one channel every test in this file reads, redeems against and re-reads. */
+const channel = deriveChannelPda(
+  MAKER_PUBKEY,
+  RECIPIENT_PUBKEY,
+  TOKEN_MINT,
+  PROGRAM_ID
+);
 
 /** Serialize an Opened `ChannelState` the program will accept and mutate. */
 function encodeChannelState(bump: number): Uint8Array {
@@ -374,13 +384,6 @@ function writeAccountFile(
   );
   return path;
 }
-
-const channel = deriveChannelPda(
-  MAKER_PUBKEY,
-  RECIPIENT_PUBKEY,
-  TOKEN_MINT,
-  PROGRAM_ID
-);
 
 let validator: ChildProcess | undefined;
 let ready = false;
@@ -571,7 +574,10 @@ function makeRunner(opts: {
     storeDestination: 'g.proxy',
     feePerEvent: 1n,
     chain: 'evm',
-    apexChannelStorePath: join(tmpDir, `apex-channels-${apexStoreCounter++}.json`),
+    apexChannelStorePath: join(
+      tmpDir,
+      `apex-channels-${apexStoreCounter++}.json`
+    ),
     receivedClaimStorePath: opts.storePath,
     toonClientConfig: {
       // Never dialed — the runner is never started/bootstrapped.
@@ -628,9 +634,10 @@ describe.runIf(validatorAvailable() || REQUIRE_SOLANA)(
       });
       const res = await runner.settleSwapClaims({});
       expect(res.results).toHaveLength(1);
-      expect(res.results[0]!.built).toBe(false);
-      expect(res.results[0]!.submitted).toBe(false);
-      expect(res.results[0]!.error?.code).toBe('MISSING_CHAIN_CONFIG');
+      const result = res.results[0]!;
+      expect(result.built).toBe(false);
+      expect(result.submitted).toBe(false);
+      expect(result.error?.code).toBe('MISSING_CHAIN_CONFIG');
     });
 
     it('[P0] error surfacing: a claim recipient mismatch reports RECIPIENT_MISMATCH, not SUBMISSION_FAILED', async () => {
@@ -648,10 +655,11 @@ describe.runIf(validatorAvailable() || REQUIRE_SOLANA)(
       });
       const res = await runner.settleSwapClaims({});
       expect(res.results).toHaveLength(1);
-      expect(res.results[0]!.built).toBe(true);
-      expect(res.results[0]!.submitted).toBe(false);
-      expect(res.results[0]!.error?.code).toBe('RECIPIENT_MISMATCH');
-      expect(res.results[0]!.error?.message).toContain(
+      const result = res.results[0]!;
+      expect(result.built).toBe(true);
+      expect(result.submitted).toBe(false);
+      expect(result.error?.code).toBe('RECIPIENT_MISMATCH');
+      expect(result.error?.message).toContain(
         'not the recipient of this claim'
       );
 
@@ -676,15 +684,15 @@ describe.runIf(validatorAvailable() || REQUIRE_SOLANA)(
       });
       const res = await runner.settleSwapClaims({});
       expect(res.results).toHaveLength(1);
-      const r = res.results[0]!;
-      expect(r.built).toBe(true);
-      expect(r.submitted).toBe(true);
-      expect(r.error).toBeUndefined();
-      expect(r.txHash).toBeTruthy();
+      const result = res.results[0]!;
+      expect(result.built).toBe(true);
+      expect(result.submitted).toBe(true);
+      expect(result.error).toBeUndefined();
+      expect(result.txHash).toBeTruthy();
 
       const after = await readChannel();
       console.log(
-        `[daemon-solana-settle] tx ${r.txHash} moved ${channel.pda}: ` +
+        `[daemon-solana-settle] tx ${result.txHash} moved ${channel.pda}: ` +
           `nonce_a ${before.nonceA} -> ${after.nonceA}, ` +
           `transferred_amount_a ${before.transferredA} -> ${after.transferredA}`
       );
@@ -698,7 +706,7 @@ describe.runIf(validatorAvailable() || REQUIRE_SOLANA)(
         channel.pda
       );
       expect(persisted?.settledNonce).toBe(nonce);
-      expect(persisted?.settleTxHash).toBe(r.txHash);
+      expect(persisted?.settleTxHash).toBe(result.txHash);
       expect(persisted?.settledAt).toBeDefined();
 
       // A second call on the SAME watermark reports ALREADY_SETTLED and sends
@@ -706,9 +714,10 @@ describe.runIf(validatorAvailable() || REQUIRE_SOLANA)(
       // shape: nonce_a must not move again.
       const again = await runner.settleSwapClaims({});
       expect(again.results).toHaveLength(1);
-      expect(again.results[0]!.built).toBe(false);
-      expect(again.results[0]!.submitted).toBe(false);
-      expect(again.results[0]!.error?.code).toBe('ALREADY_SETTLED');
+      const replay = again.results[0]!;
+      expect(replay.built).toBe(false);
+      expect(replay.submitted).toBe(false);
+      expect(replay.error?.code).toBe('ALREADY_SETTLED');
 
       const afterReplay = await readChannel();
       expect(afterReplay.nonceA).toBe(nonce);

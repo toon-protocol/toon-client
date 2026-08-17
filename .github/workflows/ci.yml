@@ -314,8 +314,8 @@ jobs:
   # `SolanaSettlementError` code (e.g. `RECIPIENT_MISMATCH`) verbatim instead
   # of collapsing every failure to `SUBMISSION_FAILED`.
   # `packages/client-mcp/src/__integration__/daemon-solana-settle
-  # .integration.test.ts` proves all four against the SAME validator this job
-  # already boots — see the step below.
+  # .integration.test.ts` proves all four against a real validator of its own,
+  # booted from the SAME CLI this job already installs — see the step below.
   solana-settlement-proof:
     name: Solana settlement redemption proof
     runs-on: ubuntu-latest
@@ -422,16 +422,19 @@ jobs:
             | tee /tmp/solana-proof.log
 
       # The DAEMON end of the same seam (#608) — see the job-level comment
-      # above. Same validator (still up from the step above; the suite dials
-      # the same `RPC_PORT`/`FAUCET_PORT` pair only in the sense of reusing
-      # this one running instance — its OWN port pair, 18699/18698, is
-      # deliberately distinct from the client suite's 18799/18798 so the two
-      # can never be confused, even though only one is ever actually running
-      # at a time here). Named explicitly rather than `test:integration`
-      # whole, same reasoning as the step above: `journey`/`agent-sdk-smoke`
-      # in the same directory need a live testnet/credential and self-skip,
-      # but CI has no business loading that gun.
-      - name: Redeem a claim through the daemon (ClientRunner.settleSwapClaims) against the same validator
+      # above. What this step reuses from the one before it is the INSTALLED
+      # CLI and the `CLIENT_REQUIRE_SOLANA=1` gate, not a running process: the
+      # suite boots its own `solana-test-validator` in `beforeAll` and kills
+      # it in `afterAll`, exactly as the client-level suite does. Its port
+      # pair (18699/18698) is deliberately distinct from that suite's
+      # (18799/18798) so neither can ever attach to the other's validator and
+      # assert against its state — here they run one after the other, but a
+      # developer running both at once must be safe too. Named explicitly
+      # rather than `test:integration` whole, same reasoning as the step
+      # above: `journey`/`agent-sdk-smoke` in the same directory need a live
+      # testnet/credential and self-skip, but CI has no business loading that
+      # gun.
+      - name: Redeem a claim through the daemon (ClientRunner.settleSwapClaims) against a real validator
         env:
           CLIENT_REQUIRE_SOLANA: '1'
           NO_COLOR: '1'
