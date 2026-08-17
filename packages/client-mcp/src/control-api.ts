@@ -529,6 +529,14 @@ export interface SwapRequest {
    * `swapDefaults.controller` applies (unless the request pins an explicit
    * `packetCount`). The controller only tunes efficiency — it can never relax
    * the `minExchangeRate` floor.
+   *
+   * LEGACY-PATH ONLY. Setting this on a request routes it away from the
+   * rolling probe entirely (`negotiateRollingSession`'s `'controller'`
+   * fallback) — the controller is deliberately DROPPED, not ported, on
+   * rolling (toon-client#597: rolling's per-packet re-quote and
+   * verify-before-reveal already bound the risk δ existed to bound, and the
+   * fill loop's strict sequencing pins W at 1). This field disappears with
+   * the rest of the legacy path in Stage 4.
    */
   controller?: SwapControllerParams;
   /**

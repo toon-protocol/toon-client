@@ -2504,9 +2504,32 @@ export class ClientRunner {
    * R5 before the first advance instead of trusting the first advance's echo.
    *
    * Packetization is a static even split, additionally capped by the quote's
-   * per-packet `maxAmount` when the caller pinned no `packetCount`. The
-   * adaptive δ/W controller is NOT ported to this path; a request that asks
-   * for one stays on the legacy path (see {@link negotiateRollingSession}).
+   * per-packet `maxAmount` when the caller pinned no `packetCount`.
+   *
+   * **The adaptive δ/W controller is DROPPED here, not ported** (toon-client
+   * #597, decided on the record — see the issue for the full writeup). Both
+   * knobs solved a problem specific to the legacy honeypot protocol that
+   * rolling does not have:
+   * - **δ** (packet size) bounded *value at risk to one stale quote* — real
+   *   when a maker's FULFILL commits before verification. Every rolling
+   *   packet is priced at a FRESH `R_i` and verified BEFORE leg A reveals
+   *   (spec R5/R8, above): a mispriced or stale-quoted packet is WITHHELD,
+   *   not partially executed, so there is no exposure left for δ to bound.
+   *   What bounds packet size in the end state is the maker's own advertised
+   *   `maxAmount` (`packetsForQuote`, kind:20034) plus the hard floor.
+   * - **W** (in-flight window) bounded *timing/liveness risk* across
+   *   concurrently-outstanding packets. This fill loop is, and stays,
+   *   strictly sequential (toon-client#596: "at most one packet is ever
+   *   'in flight'") — sending packet *i+1* before packet *i* resolves would
+   *   require a second concurrent registration per `streamNonce` this
+   *   session registry does not support. W is therefore fixed at 1 in the
+   *   end state; porting a knob that can never move off its floor value
+   *   would be dead configuration surface, not a capability.
+   *
+   * `createSwapController` and `req.controller`/`packetCount` remain
+   * reachable on the legacy path (see {@link negotiateRollingSession}) until
+   * Stage 4 removes that path entirely — this ticket only decides and
+   * records the rationale Stage 4's PR cites; it deletes nothing.
    *
    * Observability parity with the legacy path (toon-client#596): `packets[]`
    * carries one entry per accepted fill (`effectiveRate`/`rateDeviation`
@@ -3028,16 +3051,19 @@ export class ClientRunner {
       return { kind: 'rolling', streamNonce: req.streamNonce, probed: false };
     }
 
-    // The adaptive δ/W controller is a `streamSwap` feature and is not ported
-    // to the rolling fill loop. Asking for one is an explicit request for the
-    // legacy path; probing anyway would pay for a session we then would not
-    // use.
+    // The adaptive δ/W controller is DROPPED on rolling, not merely
+    // unported (toon-client#597, decided on the record: rolling's
+    // per-packet re-quote + verify-before-reveal already bounds pick-off
+    // risk, and the sequential fill loop pins W at 1 — see swapRolling's
+    // doc comment for the full reasoning). Asking for one is an explicit
+    // request for the legacy path, where it still lives until Stage 4;
+    // probing anyway would pay for a rolling session we then would not use.
     if (req.controller) {
       return legacy(
         false,
         'controller',
-        'the adaptive δ/W controller (`controller`) is a legacy-path feature ' +
-          'and is not implemented on the rolling fill loop'
+        'the adaptive δ/W controller (`controller`) is a legacy-path feature, ' +
+          'DROPPED (not ported) on the rolling fill loop — toon-client#597'
       );
     }
 
