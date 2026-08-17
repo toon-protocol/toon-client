@@ -16,20 +16,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Require changeset when publishable packages change
+      - name: Require changeset when a released package changes
         run: |
-          # packages/rig is deliberately absent: @toon-protocol/rig on npm is
-          # published from github.com/toon-protocol/rig, not from here.
+          # "Released" here means "changesets versions it and writes its
+          # CHANGELOG", which is NOT the same as "publishes to npm".
           #
-          # packages/client-mcp and packages/views are absent for a different
-          # reason: they are `private` and listed in .changeset/config.json's
-          # `ignore`, because they belong to a project that is no longer
-          # supported. They cannot publish, so demanding a changeset for a
-          # change to them would block PRs on a release that can never happen.
-          PUBLISHABLE="packages/client packages/arweave"
+          # packages/client-mcp is on this list even though it is `private` and
+          # never reaches npm: the artifact users actually install is the .mcpb
+          # built from it, and since toon-client#614 it is versioned and
+          # changelogged like any other package (private, NOT `ignore`d — see
+          # its package.json "//"). A client-mcp change with no changeset is a
+          # .mcpb shipped with nothing telling a Desktop user what moved, which
+          # is exactly the defect #614 recorded.
+          #
+          # packages/rig is deliberately absent: @toon-protocol/rig on npm is
+          # published from github.com/toon-protocol/rig, not from here, so a
+          # changeset here is optional bookkeeping rather than a release gate.
+          #
+          # packages/views is absent for a third reason: it is still in
+          # .changeset/config.json's `ignore`, so a views-only changeset would
+          # never be consumed and would fail the leftover assertion below.
+          # Demanding one would be demanding a file that cannot be valid.
+          NEEDS_CHANGESET="packages/client packages/arweave packages/client-mcp"
           changed=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
           needs_changeset=false
-          for pkg in $PUBLISHABLE; do
+          for pkg in $NEEDS_CHANGESET; do
             if echo "$changed" | grep -q "^${pkg}/"; then
               needs_changeset=true
               break
@@ -38,7 +49,7 @@ jobs:
           if [ "$needs_changeset" = "true" ]; then
             new_changesets=$(echo "$changed" | grep -c "^\.changeset/.*\.md$" || true)
             if [ "$new_changesets" -eq 0 ]; then
-              echo "::error::This PR modifies a publishable package but includes no changeset."
+              echo "::error::This PR modifies a released package but includes no changeset."
               echo "Run 'pnpm changeset' and commit the generated .changeset/*.md file."
               exit 1
             fi
@@ -87,6 +98,38 @@ jobs:
           git --no-pager diff --stat
           git --no-pager diff -- '**/package.json' | grep -E '^[+-]  "version"' || true
           echo "✅ changeset version succeeds — release.yml can get past versioning"
+
+      # A changeset that `changeset version` LEAVES BEHIND is the silent half of
+      # the same family as #611: it is not an error, so the step above stays
+      # green, and the file simply accumulates in `.changeset/` release after
+      # release while its description reaches no changelog at all. That is
+      # toon-client#614 — six `client-mcp`-only changesets sat unconsumed for ten
+      # days, and `packages/client-mcp/CHANGELOG.md` was frozen the whole time.
+      #
+      # `changeset version` consumes every changeset it can act on, so after the
+      # step above the only `.md` files left in `.changeset/` are ones changesets
+      # could not act on: a changeset naming ONLY packages in `ignore`, or naming
+      # a package that no longer exists under that name. Both are files whose
+      # author believed they had written a release note and had not.
+      #
+      # Note this deliberately does NOT flag an EMPTY changeset (`---\n---`).
+      # Those are consumed and deleted like any other, and this repo uses them on
+      # purpose as "CI-only, nothing to release" markers (#612's own changeset is
+      # one). The defect is a file that survives, not a file with no bumps.
+      #
+      # Runs in the same job so it reads the tree the step above just mutated.
+      - name: Assert no changeset is left unconsumed
+        run: |
+          set -euo pipefail
+          leftover=$(find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md' -printf '%f\n' | sort)
+          if [ -n "$leftover" ]; then
+            echo "::error::changeset version left these changesets unconsumed — they will never reach a CHANGELOG:"
+            echo "$leftover" | sed 's/^/  - /'
+            echo "Each names only packages in .changeset/config.json's \`ignore\`, or a package name that does not exist."
+            echo "Fix by naming a package changesets versions, or by removing the file if there is genuinely nothing to release."
+            exit 1
+          fi
+          echo "✅ every changeset was consumed — none can accumulate unread"
 
   build:
     runs-on: ubuntu-latest
