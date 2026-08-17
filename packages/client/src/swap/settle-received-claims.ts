@@ -13,8 +13,12 @@
  *   claim recipient) and broadcast. Real submission is therefore env-gated on
  *   `chainRpcUrls[chain]` — absent RPC config yields a built-not-submitted
  *   result, never a throw.
- * - **Solana** — the bundle carries a serialized Message; a submission path is
- *   not wired yet (follow-up under toon-meta#145).
+ * - **Solana** — implemented in `./solana-settlement.ts`
+ *   (`submitSolanaSettlement`, toon-client#604): the bundle is a compiled legacy
+ *   Message with an all-zero recent-blockhash placeholder, so submission patches
+ *   in a live blockhash, adds the ONE signature the transaction needs (the
+ *   recipient's — it is also the fee payer) and broadcasts. Env-gated on a Solana
+ *   RPC url; absent config yields built-not-submitted, never a throw.
  * - **Mina** — receive-side redemption needs a co-sign (`claimFromChannel`
  *   takes `signatureA` AND `signatureB`) plus o1js proof generation; the
  *   client has no receive-side co-sign path. Explicitly out of scope for #352
@@ -53,14 +57,38 @@ export interface BuildSwapSettlementsParams {
   /** Persisted watermarks to settle (typically `store.list()`, filtered). */
   entries: readonly ReceivedClaimEntry[];
   /**
-   * Per-chain Solana settlement `programId`, keyed by the FULL chain key.
-   * Matches the daemon config's `tokenNetworks` map.
+   * The daemon config's leg-A `TokenNetwork` map, keyed by the FULL chain key.
    *
-   * NOT consulted for EVM entries (toon-client#583): an EVM leg-B claim
-   * settles on the maker's `RollingSwapChannel`, and `tokenNetworks` holds
-   * the leg-A `TokenNetwork` — see {@link swapVerifyingContracts}.
+   * **Accepted and never read.** It is kept on this interface only so callers
+   * that pass it — and the guard tests that assert doing so changes nothing —
+   * keep compiling. `tokenNetworks` is the leg-A `TokenNetwork` this client pays
+   * the maker *through*; no settlement on any chain is addressed to it:
+   *
+   * - EVM settles on the maker's leg-B `RollingSwapChannel`
+   *   (toon-client#583) — see {@link swapVerifyingContracts}.
+   * - Solana settles on the payment-channel program that owns the channel PDA
+   *   (toon-client#604) — see {@link solanaProgramId}. Until #604 this branch
+   *   DID read `tokenNetworks`, which is why Solana settlement could not be
+   *   configured at all: no maker publishes a `tokenNetworks["solana:*"]`, and a
+   *   `TokenNetwork` address would have been the wrong value if one did.
+   *
+   * @deprecated Nothing reads this. Stop passing it.
    */
   tokenNetworks?: Record<string, string>;
+  /**
+   * The **Solana payment-channel program** that owns the claim's channel PDA —
+   * `ToonClientConfig.solanaChannel.programId`, the same program this client
+   * opened the channel on.
+   *
+   * This is what the sdk's `signer.programId` must be: the program whose
+   * `ClaimFromChannel` instruction the settlement transaction invokes and whose
+   * Ed25519 precompile check authorizes the claimer. An entry that carries its
+   * own pinned `verifyingContract` wins over this, exactly as for EVM.
+   *
+   * Absent, a Solana entry reports `MISSING_CHAIN_CONFIG` rather than settling
+   * against a guess (toon-client#604).
+   */
+  solanaProgramId?: string;
   /**
    * Per-chain **leg-B** `RollingSwapChannel` addresses (the EIP-712
    * `verifyingContract`), keyed by the FULL chain key (e.g. `evm:base:8453`).
@@ -173,18 +201,28 @@ export function buildSwapSettlements(
       signer.contractAddress = contract.toLowerCase();
       signer.chainId = chainId;
     } else if (entry.chain.startsWith('solana')) {
-      const contract =
-        entry.verifyingContract ?? params.tokenNetworks?.[entry.chain];
-      if (!contract) {
+      // The payment-channel program that OWNS this channel's PDA — the program
+      // whose `ClaimFromChannel` the settlement tx invokes. An entry-pinned
+      // value wins over config, as for EVM. Before #604 this read
+      // `tokenNetworks` (leg A, EVM-only by its own documentation), which no
+      // maker publishes for a `solana:*` key — so Solana settlement was
+      // unconfigurable, and would have been addressed to the wrong contract had
+      // anyone configured it.
+      const programId = entry.verifyingContract ?? params.solanaProgramId;
+      if (!programId) {
         return {
           ...base,
           error: {
             code: 'MISSING_CHAIN_CONFIG',
-            message: `Solana settlement for ${entry.chain} needs tokenNetworks["${entry.chain}"] (programId).`,
+            message:
+              `Solana settlement for ${entry.chain} needs the payment-channel programId that ` +
+              `owns the channel PDA — configure solanaChannel.programId. This is NOT ` +
+              `tokenNetworks["${entry.chain}"]: that map is the leg-A TokenNetwork this client ` +
+              `pays the maker through, and is EVM-only.`,
           },
         };
       }
-      signer.programId = contract;
+      signer.programId = programId;
     }
     try {
       const result = buildSettlementTx({

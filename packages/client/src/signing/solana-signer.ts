@@ -21,11 +21,13 @@ import { buildBalanceProofMessage } from '../channel/solana-payment-channel.js';
  * is what makes a client-issued Solana payment-channel claim (paying the apex
  * to write) acceptable on connector 3.9.0.
  *
- * NOTE: this is a DIFFERENT message from the swap peer ↔ sender swap-claim wire
- * contract (`balanceProofHashSolana`, SDK `verifyEd25519Signature`). The client
- * here is paying a payment-channel claim to the apex, not issuing a swap claim,
- * so it must sign the connector's on-chain payment-channel message. `channelId`
- * MUST be the base58 channel PDA (produced by `OnChainChannelClient.openChannel`).
+ * NOTE: this is the SAME message as the swap peer ↔ sender swap-claim wire
+ * contract as of toon#214 — both are the raw 48 bytes the deployed program
+ * verifies (`balanceProofMessageSolana`), and the SDK's `verifyEd25519Signature`
+ * checks them too. The two used to differ: the swap-claim wire signed
+ * `balanceProofHashSolana`, a digest no program verifies, which is why no Solana
+ * swap claim could be redeemed. `channelId` MUST be the base58 channel PDA
+ * (produced by `OnChainChannelClient.openChannel`).
  */
 /** {@link SolanaSigner.signClaimStateChallenge}'s tag (client-edge-spec.md §1.10). */
 const CLAIM_STATE_CHALLENGE_TAG = new TextEncoder().encode(
