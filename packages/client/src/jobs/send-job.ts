@@ -84,6 +84,12 @@ interface JobEnvelope {
   accept?: boolean;
   data?: string;
   result?: unknown;
+  /**
+   * The store's answer when its `data` is NOT JSON — kind:5094 returns a bare
+   * Arweave transaction id, and the backend surfaces it here rather than under
+   * `result`. A documented contract, not a quirk.
+   */
+  txId?: unknown;
   code?: string;
   message?: string;
 }
@@ -154,18 +160,32 @@ export async function sendJob<T>(
   return { accepted: true, receipt };
 }
 
-/** `data` (byte-faithful) if it decodes; otherwise the app's own `result`. */
+/**
+ * `data` (byte-faithful) if it decodes as JSON; otherwise whichever field the
+ * app said its answer in.
+ *
+ * The store decides between two of those by whether its base64 `data` parses
+ * as a JSON object: a receipt goes to `result`, and anything else goes to
+ * `txId`. kind:5094 takes the second branch — its whole answer is one Arweave
+ * transaction id — so a client that reads only `result` calls a successful
+ * upload "accepted but carried no receipt".
+ */
 function decodeReceipt<T>(envelope: JobEnvelope): T | undefined {
   if (typeof envelope.data === 'string') {
     try {
       return JSON.parse(decodeUtf8(fromBase64(envelope.data))) as T;
     } catch {
       // Fall through: an app that base64'd something that is not JSON has still
-      // said what it meant in `result`.
+      // said what it meant in `result` or `txId`.
     }
   }
   if (envelope.result !== null && typeof envelope.result === 'object') {
     return envelope.result as T;
+  }
+  // A bare id is still a receipt. Wrapped, so the caller reads `receipt.txId`
+  // the same way every other job's fields are read.
+  if (typeof envelope.txId === 'string' && envelope.txId.length > 0) {
+    return { txId: envelope.txId } as T;
   }
   return undefined;
 }

@@ -118,6 +118,54 @@ describe('sendJob', () => {
     expect(answer.refusal).toBeUndefined();
   });
 
+  // kind:5094's whole answer is one Arweave transaction id. The store puts it
+  // in `txId` rather than `result`, because `result` is where a JSON receipt
+  // goes and an id is not one. Reading only `result` called a successful
+  // upload "accepted but carried no receipt".
+  it('reads the store\'s bare txId answer as a receipt', async () => {
+    const txId = 'chTu1kMMsN_aMERDqIZLdFtSArMCk3Ix3L-aeuyjypc';
+    const client = sender(
+      answered(200, {
+        accept: true,
+        txId,
+        // The store always echoes `data` too — base64 of the id, not JSON.
+        data: Buffer.from(txId, 'utf8').toString('base64'),
+        payer: 'evm:0xb682…653a',
+        amount: '1010',
+        chain: 'evm',
+      })
+    );
+    const answer = await sendJob<{ txId: string }>(
+      { client, destination: 'g.toon.store' },
+      EVENT
+    );
+    expect(answer).toEqual({ accepted: true, receipt: { txId } });
+  });
+
+  it('prefers a JSON receipt over txId when the app sends both', async () => {
+    const client = sender(
+      answered(200, {
+        accept: true,
+        result: { job: 'arns-buy', op: 'prepare' },
+        data: Buffer.from(
+          JSON.stringify({ job: 'arns-buy', op: 'prepare' }),
+          'utf8'
+        ).toString('base64'),
+      })
+    );
+    const answer = await sendJob<{ job: string }>(
+      { client, destination: 'g.toon.store' },
+      EVENT
+    );
+    expect(answer).toMatchObject({ accepted: true, receipt: { job: 'arns-buy' } });
+  });
+
+  it('an empty txId is still no receipt', async () => {
+    const client = sender(answered(200, { accept: true, txId: '' }));
+    const answer = await sendJob({ client, destination: 'g.toon.store' }, EVENT);
+    expect(answer).toMatchObject({ accepted: false, code: 'F00' });
+  });
+
   it('reports an accepted answer that carried no receipt', async () => {
     const client = sender(answered(200, { accept: true }));
     const answer = await sendJob({ client, destination: 'g.toon.gas' }, EVENT);
