@@ -517,6 +517,8 @@ describe.skipIf(!HAVE_VALIDATOR && !REQUIRE_SOLANA)(
         PAYER_SEED
       );
 
+      const before = await getChannelAccountState(RPC_URL, channel.pda);
+
       const { claimTxSignature } = await claimFromSolanaChannel({
         rpcUrl: RPC_URL,
         programId: PROGRAM_ID,
@@ -531,6 +533,16 @@ describe.skipIf(!HAVE_VALIDATOR && !REQUIRE_SOLANA)(
       expect(claimTxSignature).toBeTruthy();
 
       const account = await getChannelAccountState(RPC_URL, channel.pda);
+      // Printed so a CI log carries the evidence that this suite did real work:
+      // a suite that skipped, or that passed without moving a channel account,
+      // prints nothing here and the `solana-settlement-proof` job fails on its
+      // absence. That gate outlived the swap-settlement suite that used to emit
+      // this line, so the proof it greps for is emitted here now.
+      console.log(
+        `[solana-settle] tx ${claimTxSignature} moved ${channel.pda}: ` +
+          `nonce ${ownNonce(before)} -> ${ownNonce(account)}, ` +
+          `transferred_amount ${ownTransferred(before)} -> ${ownTransferred(account)}`
+      );
       expect(ownNonce(account)).toBe(CLAIM_NONCE);
       expect(ownTransferred(account)).toBe(CLAIM_AMOUNT);
       // The peer's own side is untouched — a claim advances one participant.
