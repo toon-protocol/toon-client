@@ -51,7 +51,7 @@ The `toon-client` MCP server exposes **8 tools**:
 | `toon_read({subId?,cursor?,limit?})` | `GET /events` | drain buffered events by cursor (free) |
 | `toon_open_channel({destination?})` | `POST /channels` | `openChannel` (pre-open / fetch a channel) |
 | `toon_channels` | `GET /channels` | `getTrackedChannels` + nonce watermark + cumulative spend |
-| `toon_swap(destination,amount,{toonData?})` | `POST /swap` | `sendSwapPacket` (swap peer swap) |
+| `toon_swap(destination,amount,swapPubkey,pair,chainRecipient,{packetCount?})` | `POST /swap` | `sendRollingRfq` + coupled rolling fills against a swap peer |
 
 ## Install
 

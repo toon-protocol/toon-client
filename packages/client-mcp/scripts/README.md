@@ -18,6 +18,8 @@ Run from this package dir, e.g.:
 node scripts/dvm-upload.mjs
 ```
 
-To exercise a swap manually, drive the daemon's `/swap` endpoint the same
-way `toon_swap` does (kind:20033 RFQ, then a rolling fills session — TOON's
-only swap protocol; there is no separate swap-scripts package to reach for).
+There is no swap script here (and no swap-scripts package to reach for). To
+exercise a swap manually, POST the daemon's `/swap` endpoint the same way
+`toon_swap` does — the daemon itself runs the whole session: a kind:20033 RFQ
+to the maker, then the coupled rolling fills, which is TOON's only swap
+protocol.
