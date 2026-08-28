@@ -94,9 +94,9 @@ The status printed is the **app's own**. A `404` from the app is a real answer: 
 fulfilled and costs exactly what a `200` costs. Only a refusal short of the app exits `3`.
 
 ```bash
-npx toon send g.toon.ario --body 'hello'
-npx toon send g.toon.ario --json-body --body '{"key":"value"}'
-cat payload.bin | npx toon send g.toon.ario --body -
+npx toon send g.toon.store --body 'hello'
+npx toon send g.toon.store --json-body --body '{"key":"value"}'
+cat payload.bin | npx toon send g.toon.store --body -
 npx toon send g.toon.relay --transport btp --body 'hello'
 ```
 

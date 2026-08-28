@@ -141,6 +141,42 @@ describe('parseConnectorRoutePrice', () => {
   ])('refuses %s', (_name, body) => {
     expect(() => parseConnectorRoutePrice(body)).toThrow(ConnectorEdgeError);
   });
+
+  // The deployed store node answers this endpoint with a snake_case
+  // `price_per_kib` beside the camelCase `pricePerKib` it puts in `GET /ilp`.
+  // Dropping it quoted a metered route at its base price and every send was
+  // refused `F03`.
+  it('reads the snake_case per-KiB rate this endpoint uses', () => {
+    expect(
+      parseConnectorRoutePrice({
+        destination: 'g.toon.store',
+        price: 1000,
+        price_per_kib: 10,
+      })
+    ).toEqual({ destination: 'g.toon.store', price: 1000n, pricePerKib: 10n });
+  });
+
+  it('also accepts the camelCase spelling', () => {
+    expect(
+      parseConnectorRoutePrice({
+        destination: 'g.toon.store',
+        price: 1000,
+        pricePerKib: 10,
+      }).pricePerKib
+    ).toBe(10n);
+  });
+
+  it('omits the rate entirely on a flat-priced route', () => {
+    expect(
+      parseConnectorRoutePrice({ destination: 'g.a', price: 100 })
+    ).not.toHaveProperty('pricePerKib');
+  });
+
+  it('treats an unusable rate as absent rather than failing the whole quote', () => {
+    expect(
+      parseConnectorRoutePrice({ destination: 'g.a', price: 100, price_per_kib: 'lots' })
+    ).not.toHaveProperty('pricePerKib');
+  });
 });
 
 describe('ConnectorEdgeClient.getIdentity', () => {

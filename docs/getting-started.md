@@ -12,7 +12,8 @@ on chain, and then buy one HTTP request from an app behind a connector. The chan
 on-chain part and you do it once; requests after that are signatures, not transactions.
 
 The node used throughout is the devnet store, `https://proxy.ario.devnet.toonprotocol.dev`,
-which serves the route `g.toon.ario` at 1000 base units (0.001 USDC) per request. See
+which serves the route `g.toon.store` at 1000 base units (0.001 USDC) plus 10 per kibibyte of
+sealed payload. See
 [devnet.md](devnet.md) for the full table.
 
 ## Install
@@ -144,11 +145,11 @@ from.
 ## Step 4 — one paid request
 
 ```bash
-npx toon send g.toon.ario --body 'hello'
+npx toon send g.toon.store --body 'hello'
 ```
 
 ```ts
-const answer = await client.send('g.toon.ario', {
+const answer = await client.send('g.toon.store', {
   method: 'POST',
   headers: { 'content-type': 'text/plain' },
   body: 'hello',
@@ -186,7 +187,7 @@ A `404` from the app is a real, paid answer: it arrives on a FULFILL and costs e
 The CLI prints one JSON document with `--json`, and exits `3` on a refusal:
 
 ```bash
-npx toon send g.toon.ario --body 'hello' --json
+npx toon send g.toon.store --body 'hello' --json
 ```
 
 ```json

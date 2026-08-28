@@ -11,6 +11,7 @@
  * Not `*.test.ts`, so the runner does not collect it as a suite.
  */
 import type { ConnectorChainSettlementTerms } from '../connector/self-description.js';
+import type { ConnectorRoutePrice } from '../connector/ConnectorEdgeClient.js';
 import type { NodeSelfDescription } from '../connector/self-description.js';
 import type { ChainKind, ChannelTerms } from '../channel/types.js';
 import type { WalletChainBalances } from '../wallet/balances.js';
@@ -42,13 +43,13 @@ export const FAKE_SETTLEMENT: ConnectorChainSettlementTerms = {
 };
 
 export const FAKE_DESCRIPTION: NodeSelfDescription = {
-  ilpAddresses: ['g.toon.ario'],
+  ilpAddresses: ['g.toon.store'],
   httpEndpoint: 'https://node.example/ilp',
   btpEndpoint: 'wss://node.example/ilp/btp',
   peerCarriages: ['http', 'btp'],
   edgeIdentity: { keyId: 'edge-1', publicKey: '0x04abcd' },
   settlements: [FAKE_SETTLEMENT],
-  routes: [{ prefix: 'g.toon.ario', price: 1000n }],
+  routes: [{ prefix: 'g.toon.store', price: 1000n }],
   supportedVersions: [1],
   defaultVersion: 1,
   raw: {},
@@ -121,6 +122,8 @@ export interface FakeClientOptions {
   identity?: ToonIdentity;
   description?: NodeSelfDescription;
   price?: bigint | null;
+  /** The per-KiB rate `routePrice` reports; omitted means a flat-priced route. */
+  pricePerKib?: bigint;
   probe?: { accumulatedCost: bigint; code: string; message: string };
   send?: SendResult | ((destination: string) => SendResult);
   claimState?: ClaimStateResult[];
@@ -221,6 +224,22 @@ export class FakeToonClient implements ToonClientLike {
       'price',
       [destination],
       this.options.price === undefined ? 1_000n : this.options.price
+    );
+  }
+
+  async routePrice(destination: string): Promise<ConnectorRoutePrice | null> {
+    const price = this.options.price === undefined ? 1_000n : this.options.price;
+    const perKib = this.options.pricePerKib;
+    return this.record(
+      'routePrice',
+      [destination],
+      price === null
+        ? null
+        : {
+            destination,
+            price,
+            ...(perKib !== undefined ? { pricePerKib: perKib } : {}),
+          }
     );
   }
 

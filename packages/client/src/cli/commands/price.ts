@@ -20,25 +20,34 @@ export async function run(ctx: CommandContext): Promise<number> {
     keyless: true,
     ...(url !== undefined ? { connector: url } : {}),
   });
-  const price = await client.price(destination);
+  const terms = await client.routePrice(destination);
   // The decimals a price is denominated in are the settlement's, so the
   // self-description is read even here — it is cached and already fetched.
   const description = await client.describe();
   const asset = assetFromSettlement(description.settlements[0]);
+  const perKib = terms?.pricePerKib;
 
   ctx.out.render(
     {
       connector: client.connector,
       destination,
-      price,
+      price: terms?.price ?? null,
+      ...(perKib !== undefined ? { pricePerKib: perKib } : {}),
       decimals: asset.decimals,
       asset: asset.symbol,
     },
     () => {
-      if (price === null) {
+      if (terms === null) {
         ctx.out.line(`${destination}  no route — this node prices nothing that covers it`);
+      } else if (perKib === undefined) {
+        ctx.out.line(`${destination}  ${formatAmount(terms.price, asset)}`);
       } else {
-        ctx.out.line(`${destination}  ${formatAmount(price, asset)}`);
+        // A metered route's base price is never what a packet costs, so the
+        // rate is printed beside it rather than left for a refusal to reveal.
+        ctx.out.line(
+          `${destination}  ${formatAmount(terms.price, asset)}` +
+            ` + ${formatAmount(perKib, asset)}/KiB of sealed payload`
+        );
       }
     }
   );

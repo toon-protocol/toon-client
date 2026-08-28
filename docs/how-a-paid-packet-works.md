@@ -62,7 +62,7 @@ and an app that wants to charge differently exposes more handlers — so the rou
 price list, and only the connector can state it.
 
 ```ts
-const price = await client.price('g.toon.ario'); // 1000n base units (0.001 USDC), or null
+const price = await client.price('g.toon.store'); // 1000n base units (0.001 USDC), or null
 ```
 
 `null` means the connector serves no route matching that destination. That is an answer, not a
@@ -74,7 +74,7 @@ To learn what a path *beyond* this connector costs, send a probe: a packet sent 
 expectation that it will be refused, so the refusal can state the cost.
 
 ```ts
-const { accumulatedCost } = await client.probe('g.toon.ario');
+const { accumulatedCost } = await client.probe('g.toon.store');
 ```
 
 A probe traverses for free, so it is accepted only from a sender the connector recognizes by a

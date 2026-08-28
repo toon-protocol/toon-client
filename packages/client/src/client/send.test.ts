@@ -61,7 +61,13 @@ function harness(): Harness {
     describe: async () => parseSelfDescription(fake.selfDescription(), fake.endpoint),
     sealKey: async () => fake.identityPublic,
     sealKeyAt: async () => fake.identityPublic,
-    price: async () => fake.routePrice,
+    routePrice: async () =>
+      fake.routePrice === null
+        ? null
+        : {
+            price: fake.routePrice,
+            ...(fake.pricePerKib !== undefined ? { pricePerKib: fake.pricePerKib } : {}),
+          },
     ensureChannel: async () => {
       const id = state.channelIds[Math.min(state.ensureCalls, state.channelIds.length - 1)];
       state.ensureCalls += 1;
@@ -158,10 +164,52 @@ describe('send — the happy path', () => {
   });
 
   it('uses an explicit amount instead of asking for a price', async () => {
-    const price = vi.spyOn(h.context, 'price');
+    const price = vi.spyOn(h.context, 'routePrice');
     const result = await send(h.context, DESTINATION, {}, { amount: 4200n });
     expect(price).not.toHaveBeenCalled();
     expect(result.claim?.amount).toBe(4200n);
+  });
+
+  // ── A metered route (connector publishes `pricePerKib`) ──────────────────
+  //
+  // The deployed store node prices `g.toon.store` at 1000 + 10/KiB and refuses
+  // a claim for the base price alone with `F03 — advances value by 1000, less
+  // than this route's price of 1010`. These pin the arithmetic that stops that
+  // happening, including the two things it is easy to get wrong: the metered
+  // quantity is the SEALED payload rather than the caller's body, and the unit
+  // count starts at one rather than rounding up from zero.
+
+  it('pays the base price PLUS the per-KiB rate on a metered route', async () => {
+    h.fake.pricePerKib = 10n;
+    const result = await send(h.context, DESTINATION, { body: 'hello' });
+    // One kibibyte started, so one unit: 1000 + 10.
+    expect(result.claim?.amount).toBe(1010n);
+  });
+
+  it('charges by the SEALED size, not the body size — a body under 1 KiB can cost two units', async () => {
+    h.fake.pricePerKib = 10n;
+    // 1000 raw bytes seal to more than 1024, so this crosses into a second unit
+    // even though the body itself never does.
+    const result = await send(h.context, DESTINATION, { body: 'x'.repeat(1000) });
+    expect(result.claim?.amount).toBe(1020n);
+  });
+
+  it('counts kibibytes STARTED, so an empty payload still costs one unit', async () => {
+    h.fake.pricePerKib = 10n;
+    const result = await send(h.context, DESTINATION, { body: '' });
+    expect(result.claim?.amount).toBe(1010n);
+  });
+
+  it('leaves a flat-priced route exactly as it was', async () => {
+    h.fake.pricePerKib = undefined;
+    const result = await send(h.context, DESTINATION, { body: 'x'.repeat(5000) });
+    expect(result.claim?.amount).toBe(1000n);
+  });
+
+  it('takes an explicit amount literally on a metered route — the caller knows the far terms', async () => {
+    h.fake.pricePerKib = 10n;
+    const result = await send(h.context, DESTINATION, { body: 'hello' }, { amount: 1011n });
+    expect(result.claim?.amount).toBe(1011n);
   });
 
   it('refuses to form a packet for a route this node does not price', async () => {

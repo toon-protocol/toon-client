@@ -23,7 +23,7 @@ const client = await ToonClient.create({
 
 await client.channel.open({ deposit: 100_000n }); // 100000 base units (0.10 USDC)
 
-const answer = await client.send('g.toon.ario', { body: 'hello' });
+const answer = await client.send('g.toon.store', { body: 'hello' });
 if (answer.fulfilled) {
   console.log(answer.status, answer.text());       // the app's own HTTP response
   console.log(answer.claim.amount);                // 1000n base units (0.001 USDC)

@@ -12,13 +12,13 @@ import { RUNNERS } from './commands/index.js';
 
 describe('parseCommandLine', () => {
   it('reads the command and its positionals', () => {
-    const line = parseCommandLine(['price', 'g.toon.ario', 'https://node.example']);
+    const line = parseCommandLine(['price', 'g.toon.store', 'https://node.example']);
     expect(line.command).toBe('price');
-    expect(line.positionals).toEqual(['g.toon.ario', 'https://node.example']);
+    expect(line.positionals).toEqual(['g.toon.store', 'https://node.example']);
   });
 
   it('reads global options wherever they appear', () => {
-    const line = parseCommandLine(['--json', 'send', 'g.toon.ario', '--connector', 'https://n']);
+    const line = parseCommandLine(['--json', 'send', 'g.toon.store', '--connector', 'https://n']);
     expect(boolOption(line.values, 'json')).toBe(true);
     expect(stringOption(line.values, 'connector')).toBe('https://n');
   });
@@ -26,7 +26,7 @@ describe('parseCommandLine', () => {
   it('keeps every -H in the order it was given, duplicates included', () => {
     const line = parseCommandLine([
       'send',
-      'g.toon.ario',
+      'g.toon.store',
       '-H',
       'a: 1',
       '--header',

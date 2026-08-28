@@ -52,7 +52,9 @@ import {
 import type { X402ChannelExtra } from './x402.js';
 import {
   parseSelfDescription,
+  readBaseUnits,
   type NodeSelfDescription,
+  type RouteCharge,
 } from './self-description.js';
 import {
   mapIlpResponse,
@@ -152,11 +154,9 @@ export interface ConnectorRouteTerms {
 }
 
 /** What a locally-terminated route costs, as reported by `GET /ilp/routes/price`. */
-export interface ConnectorRoutePrice {
+export interface ConnectorRoutePrice extends RouteCharge {
   /** The ILP destination that was asked about (echoed by the connector). */
   destination: string;
-  /** The price in ILP base units of the route `destination` matched. */
-  price: bigint;
 }
 
 // ─── Claim state (client-edge-spec.md §1.10, connector #693) ──────────────
@@ -431,7 +431,17 @@ export function parseConnectorRoutePrice(body: unknown): ConnectorRoutePrice {
       'ROUTE_PRICE_MALFORMED'
     );
   }
-  return { destination, price: BigInt(price) };
+  // `price_per_kib` is snake_case here and camelCase in `GET /ilp`; both spellings
+  // are accepted so a metered route is never quoted at its base price alone.
+  // Unusable is treated as absent — this endpoint is the cheap pre-flight, and
+  // refusing the whole answer over a rate would be worse than the flat quote
+  // callers had before.
+  const pricePerKib = readBaseUnits(record['price_per_kib'] ?? record['pricePerKib']);
+  return {
+    destination,
+    price: BigInt(price),
+    ...(pricePerKib !== undefined ? { pricePerKib } : {}),
+  };
 }
 
 /** A required-string reader, refusing a missing/wrong-typed field by name. */

@@ -11,14 +11,19 @@
  *    destination needs {@link SendOptions.sealTo} naming that node; sealing to a
  *    forwarder is a confidentiality failure the wire can only report as an
  *    undeliverable packet.
- * 3. **Ask the price.** ADR 0020 makes a price flat per handler — the route table
- *    IS the price list — so there is no per-byte rate to compute and nothing
- *    local that could disagree with what the connector will actually charge.
- * 4. **Seal.** {@link sealExchange} mints the gift wrap, the execution condition
+ * 3. **Seal.** {@link sealExchange} mints the gift wrap, the execution condition
  *    and the shared secret together, so they cannot drift: the condition is
  *    `sha256` of the fulfilment derived from the secret inside the wrap, and the
  *    answer is sealed back with that same secret.
- * 5. **Ensure a channel**, then **sign a claim** on it for the price.
+ * 4. **Ask the price**, and charge it against the sealed payload. A route's base
+ *    price is flat per handler — the route table IS the price list — but a route
+ *    MAY also publish a `pricePerKib` and meter by the size of the sealed
+ *    payload, which is why this step follows the seal rather than preceding it.
+ *    The rate is the connector's; the arithmetic
+ *    ({@link ../connector/self-description.js!chargeFor}) is the only thing
+ *    computed locally, and a wrong answer is refused `F03` with the real figure
+ *    attached rather than silently overpaid.
+ * 5. **Ensure a channel**, then **sign a claim** on it for that amount.
  * 6. **Choose a carriage and send.**
  * 7. **Read the answer** with the secret from step 4.
  *
@@ -53,7 +58,11 @@ import {
   type SealedExchange,
 } from '../wire/sealed-exchange.js';
 import type { EnvelopeRequest } from '../wire/envelope.js';
-import type { NodeSelfDescription } from '../connector/self-description.js';
+import {
+  chargeFor,
+  type NodeSelfDescription,
+  type RouteCharge,
+} from '../connector/self-description.js';
 import { decodeConnectorPublicKey } from '../connector/ConnectorEdgeClient.js';
 import { parsePaymentTerms } from '../connector/x402.js';
 import type { IlpSendResult } from '../ilp/types.js';
@@ -116,8 +125,13 @@ export interface SendContext {
   sealKey(description: NodeSelfDescription): Promise<Uint8Array>;
   /** The sealing key of a DIFFERENT node, by its client-edge URL. */
   sealKeyAt(endpoint: string): Promise<Uint8Array>;
-  /** `GET /ilp/routes/price`; `null` when this node prices no matching route. */
-  price(destination: string): Promise<bigint | null>;
+  /**
+   * `GET /ilp/routes/price`; `null` when this node prices no matching route.
+   *
+   * The whole terms rather than one figure, because a route may meter by size
+   * and the base price alone would under-pay it.
+   */
+  routePrice(destination: string): Promise<RouteCharge | null>;
   /** Open or adopt a channel with this node, returning its id. */
   ensureChannel(description: NodeSelfDescription): Promise<string>;
   /**
@@ -159,8 +173,15 @@ export async function send(
 ): Promise<SendResult> {
   const description = await context.describe();
   const sealingKey = await resolveSealingKey(context, description, options.sealTo);
-  const amount = await resolveAmount(context, destination, options.amount);
+  // Seal BEFORE pricing: a metered route charges by the size of the sealed
+  // payload, which does not exist until `sealExchange` has run.
   const exchange = sealExchange(toEnvelopeRequest(request), sealingKey);
+  const amount = await resolveAmount(
+    context,
+    destination,
+    options.amount,
+    exchange.data.length
+  );
   const carriage = await context.transport(description);
 
   const first = await attempt(context, {
@@ -483,16 +504,23 @@ async function resolveSealingKey(
 /**
  * What to put on the packet.
  *
- * The price is ASKED for rather than computed: ADR 0020 makes it flat per
- * handler, so nothing local could derive it and anything local that tried could
- * disagree with what the connector will charge. An explicit amount overrides and
- * skips the lookup entirely, which is how a forwarded destination — priced at a
- * node this one only routes towards — is paid for.
+ * The terms are ASKED for rather than computed: nothing local could derive a
+ * price, and anything local that tried could disagree with what the connector
+ * will charge. What IS computed is the arithmetic the connector states — a route
+ * that publishes a `pricePerKib` charges its base plus that rate per kibibyte of
+ * `sealedBytes`, and {@link ../connector/self-description.js!chargeFor} is the
+ * one place that rule lives.
+ *
+ * An explicit amount overrides and skips the lookup entirely, which is how a
+ * forwarded destination — priced at a node this one only routes towards — is
+ * paid for. It is taken literally, per-KiB rate and all: the caller who supplies
+ * one is the caller who knows the far node's terms.
  */
 async function resolveAmount(
   context: SendContext,
   destination: string,
-  explicit: bigint | undefined
+  explicit: bigint | undefined,
+  sealedBytes: number
 ): Promise<bigint> {
   if (explicit !== undefined) {
     if (explicit < 0n) {
@@ -500,8 +528,8 @@ async function resolveAmount(
     }
     return explicit;
   }
-  const price = await context.price(destination);
-  if (price === null) {
+  const terms = await context.routePrice(destination);
+  if (terms === null) {
     throw new RouteNotPricedError(
       `This connector prices no route covering "${destination}", so there is no ` +
         'amount to put on the packet. If the destination terminates elsewhere and ' +
@@ -509,7 +537,7 @@ async function resolveAmount(
         'naming the node that terminates it).'
     );
   }
-  return price;
+  return chargeFor(terms, sealedBytes);
 }
 
 /**

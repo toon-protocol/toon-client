@@ -2,7 +2,7 @@
  * Pay for one HTTP request over ILP-over-HTTP, settling on Base Sepolia.
  *
  * The node here is the devnet store: it fronts an object store at the route
- * `g.toon.ario` and charges a flat 1000 base units (0.001 USDC) per request,
+ * `g.toon.store` and charges a flat 1000 base units (0.001 USDC) per request,
  * over either carriage.
  *
  * Run it:

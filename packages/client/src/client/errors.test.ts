@@ -103,7 +103,7 @@ describe('ValidationError', () => {
 // ─── 1.0's own classes ──────────────────────────────────────────────────────
 
 const TERMS: PaymentTerms = {
-  destination: 'g.toon.ario',
+  destination: 'g.toon.store',
   price: 1000n,
   httpEndpoint: 'https://node.example/ilp',
   settlements: [],
@@ -173,7 +173,7 @@ describe('PaymentRequiredError', () => {
     const error = new PaymentRequiredError('pay first', TERMS);
     expect(error.code).toBe('PAYMENT_REQUIRED');
     expect(error.terms.price).toBe(1000n);
-    expect(error.terms.destination).toBe('g.toon.ario');
+    expect(error.terms.destination).toBe('g.toon.store');
   });
 });
 

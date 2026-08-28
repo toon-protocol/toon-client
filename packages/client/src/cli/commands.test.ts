@@ -86,7 +86,7 @@ describe('describe', () => {
     const result = await run(['describe']);
     expect(result.code).toBe(EXIT.ok);
     expect(result.stdout.join('\n')).toContain('1000 (0.001 USDC)');
-    expect(result.stdout.join('\n')).toContain('g.toon.ario');
+    expect(result.stdout.join('\n')).toContain('g.toon.store');
   });
 
   it('runs with no keys at all', async () => {
@@ -129,9 +129,18 @@ describe('describe', () => {
 
 describe('price', () => {
   it('prints the price', async () => {
-    const result = await run(['price', 'g.toon.ario']);
-    expect(result.client.callsTo('price')[0]?.args).toEqual(['g.toon.ario']);
+    const result = await run(['price', 'g.toon.store']);
+    expect(result.client.callsTo('routePrice')[0]?.args).toEqual(['g.toon.store']);
     expect(result.stdout.join('\n')).toContain('1000 (0.001 USDC)');
+  });
+
+  it('prints the per-KiB rate beside the base price on a metered route', async () => {
+    // A metered route's base price is never what a packet costs, so `toon price`
+    // has to say so rather than leaving a caller to discover it via `F03`.
+    const result = await run(['price', 'g.toon.store'], { client: { pricePerKib: 10n } });
+    const out = result.stdout.join('\n');
+    expect(out).toContain('1000 (0.001 USDC)');
+    expect(out).toContain('/KiB');
   });
 
   it('treats "no route" as an answer, not a failure', async () => {
@@ -141,14 +150,14 @@ describe('price', () => {
   });
 
   it('takes a connector URL as its second argument', async () => {
-    const result = await run(['price', 'g.toon.ario', 'https://other.example']);
+    const result = await run(['price', 'g.toon.store', 'https://other.example']);
     expect(result.config?.connector).toBe('https://other.example');
   });
 });
 
 describe('probe', () => {
   it('reports the cost the connector charged for the path and exits 0', async () => {
-    const result = await run(['probe', 'g.toon.ario']);
+    const result = await run(['probe', 'g.toon.store']);
     expect(result.code).toBe(EXIT.ok);
     expect(result.stdout.join('\n')).toContain('1000 (0.001 USDC)');
     expect(result.stdout.join('\n')).toContain('F03');
@@ -157,7 +166,7 @@ describe('probe', () => {
 
 describe('send', () => {
   it('prints the app’s answer and exits 0', async () => {
-    const result = await run(['send', 'g.toon.ario', '--body', 'hi']);
+    const result = await run(['send', 'g.toon.store', '--body', 'hi']);
     expect(result.code).toBe(EXIT.ok);
     const text = result.stdout.join('\n');
     expect(text).toContain('FULFILL 200');
@@ -168,7 +177,7 @@ describe('send', () => {
   it('passes method, target and the body through', async () => {
     const result = await run([
       'send',
-      'g.toon.ario',
+      'g.toon.store',
       '--method',
       'GET',
       '--target',
@@ -186,7 +195,7 @@ describe('send', () => {
   it('keeps every -H in order, duplicates included', async () => {
     const result = await run([
       'send',
-      'g.toon.ario',
+      'g.toon.store',
       '-H',
       'x-a: 1',
       '-H',
@@ -203,12 +212,12 @@ describe('send', () => {
   });
 
   it('refuses a header that is not name:value', async () => {
-    const result = await run(['send', 'g.toon.ario', '-H', 'nonsense']);
+    const result = await run(['send', 'g.toon.store', '-H', 'nonsense']);
     expect(result.code).toBe(EXIT.usage);
   });
 
   it('reads the body from a file', async () => {
-    const result = await run(['send', 'g.toon.ario', '--body-file', '/payload.bin'], {
+    const result = await run(['send', 'g.toon.store', '--body-file', '/payload.bin'], {
       files: { '/payload.bin': 'from-file' },
     });
     const request = result.client.callsTo('send')[0]?.args[1] as { body: Uint8Array };
@@ -216,7 +225,7 @@ describe('send', () => {
   });
 
   it('reads the body from stdin when it is `-`', async () => {
-    const result = await run(['send', 'g.toon.ario', '--body', '-'], { stdin: 'from-stdin' });
+    const result = await run(['send', 'g.toon.store', '--body', '-'], { stdin: 'from-stdin' });
     const request = result.client.callsTo('send')[0]?.args[1] as { body: Uint8Array };
     expect(new TextDecoder().decode(request.body)).toBe('from-stdin');
   });
@@ -224,7 +233,7 @@ describe('send', () => {
   it('refuses two body sources at once', async () => {
     const result = await run([
       'send',
-      'g.toon.ario',
+      'g.toon.store',
       '--body',
       'a',
       '--body-file',
@@ -237,7 +246,7 @@ describe('send', () => {
   it('adds a content type for --json-body, and forwards the exact bytes', async () => {
     const result = await run([
       'send',
-      'g.toon.ario',
+      'g.toon.store',
       '--json-body',
       '--body',
       '{ "a" :  1 }',
@@ -253,7 +262,7 @@ describe('send', () => {
   it('does not overwrite a content type the user set themselves', async () => {
     const result = await run([
       'send',
-      'g.toon.ario',
+      'g.toon.store',
       '--json-body',
       '-H',
       'content-type: application/ld+json',
@@ -265,18 +274,18 @@ describe('send', () => {
   });
 
   it('refuses --json-body that is not JSON, before anything is paid', async () => {
-    const result = await run(['send', 'g.toon.ario', '--json-body', '--body', 'not json']);
+    const result = await run(['send', 'g.toon.store', '--json-body', '--body', 'not json']);
     expect(result.code).toBe(EXIT.usage);
     expect(result.client.callsTo('send')).toHaveLength(0);
   });
 
   it('passes --amount through as a bigint', async () => {
-    const result = await run(['send', 'g.toon.ario', '--amount', '2500']);
+    const result = await run(['send', 'g.toon.store', '--amount', '2500']);
     expect(result.client.callsTo('send')[0]?.args[2]).toEqual({ amount: 2500n });
   });
 
   it('prints a refusal in full and exits 3', async () => {
-    const result = await run(['send', 'g.toon.ario'], { client: { send: fakeRefused() } });
+    const result = await run(['send', 'g.toon.store'], { client: { send: fakeRefused() } });
     expect(result.code).toBe(EXIT.refused);
     const text = result.stdout.join('\n');
     expect(text).toContain('REFUSED F03');
@@ -303,7 +312,7 @@ describe('send', () => {
   });
 
   it('emits one JSON document, bytes base64 and amounts as strings', async () => {
-    const result = await run(['send', 'g.toon.ario', '--json']);
+    const result = await run(['send', 'g.toon.store', '--json']);
     const doc = result.json() as {
       body: string;
       text: string;
@@ -318,7 +327,7 @@ describe('send', () => {
 
   it('reports a binary body by size rather than mangling it', async () => {
     const binary = fakeFulfilled({ body: new Uint8Array([0xff, 0xfe, 0x00]) } as never);
-    const result = await run(['send', 'g.toon.ario'], { client: { send: binary } });
+    const result = await run(['send', 'g.toon.store'], { client: { send: binary } });
     expect(result.stdout.join('\n')).toMatch(/3 bytes of binary/);
   });
 });
@@ -521,7 +530,7 @@ describe('help and version', () => {
   });
 
   it('answers --help for a command without running it', async () => {
-    const result = await run(['send', 'g.toon.ario', '--help']);
+    const result = await run(['send', 'g.toon.store', '--help']);
     expect(result.code).toBe(EXIT.ok);
     expect(result.client.callsTo('send')).toHaveLength(0);
   });
@@ -557,7 +566,7 @@ describe('exit codes', () => {
 
   for (const [name, error, expected] of cases) {
     it(`maps ${name} to ${String(expected)}`, async () => {
-      const result = await run(['send', 'g.toon.ario'], { client: { throws: { method: 'send', error } } });
+      const result = await run(['send', 'g.toon.store'], { client: { throws: { method: 'send', error } } });
       expect(result.code).toBe(expected);
     });
   }
@@ -568,7 +577,7 @@ describe('exit codes', () => {
   });
 
   it('closes the client even when the command threw', async () => {
-    const result = await run(['send', 'g.toon.ario'], {
+    const result = await run(['send', 'g.toon.store'], {
       client: { throws: { method: 'send', error: new Error('boom') } },
     });
     expect(result.code).toBe(EXIT.unexpected);
@@ -576,7 +585,7 @@ describe('exit codes', () => {
   });
 
   it('closes the client after a successful command', async () => {
-    const result = await run(['send', 'g.toon.ario']);
+    const result = await run(['send', 'g.toon.store']);
     expect(result.client.closed).toBe(true);
   });
 });

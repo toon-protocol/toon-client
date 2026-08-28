@@ -16,13 +16,16 @@ export {
   type ClaimStateRequestEntry,
 } from './ConnectorEdgeClient.js';
 export {
+  chargeFor,
   parseSelfDescription,
   parseSettlementEntry,
   readBaseUnits,
+  routeFor,
   routePriceFor,
   type EdgeIdentity,
   type NodeSelfDescription,
   type RequiredTransport,
+  type RouteCharge,
   type RoutePrice,
 } from './self-description.js';
 export {

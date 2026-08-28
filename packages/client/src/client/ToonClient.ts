@@ -24,7 +24,11 @@
  * `send()` on a client left with the default `autoOpenChannel: true`.
  */
 import { ConnectorEdgeClient, decodeConnectorPublicKey } from '../connector/ConnectorEdgeClient.js';
-import type { ClaimStateRequestEntry, ClaimStateResult } from '../connector/ConnectorEdgeClient.js';
+import type {
+  ClaimStateRequestEntry,
+  ClaimStateResult,
+  ConnectorRoutePrice,
+} from '../connector/ConnectorEdgeClient.js';
 import type { NodeSelfDescription } from '../connector/self-description.js';
 import { selectTransport } from '../btp/transport-select.js';
 import { HttpIlpClient } from '../http/HttpIlpClient.js';
@@ -175,17 +179,36 @@ export class ToonClient implements ToonClientLike {
   }
 
   /**
-   * What `destination` costs at this node, or `null` when it prices no matching
-   * route.
+   * What `destination` costs at this node **before any per-size charge**, or
+   * `null` when it prices no matching route.
    *
    * `null` is an ANSWER — "I do not terminate that" — and not a failure; a
    * connector that could not be asked throws instead, so the two are never
-   * confused. A price is flat per handler (ADR 0020), so it does not vary with
-   * what is being sent.
+   * confused.
+   *
+   * A base price is flat per handler, but it is not always the whole bill: a
+   * route may also publish a `pricePerKib` and meter by the size of the sealed
+   * payload, in which case every packet costs strictly more than this figure.
+   * {@link ToonClient.routePrice} reports both, and {@link ToonClient.send}
+   * always pays the full charge without being asked.
    */
   async price(destination: string): Promise<bigint | null> {
     const result = await this.edge.getRoutePrice(this.connector, destination);
     return result === null ? null : result.price;
+  }
+
+  /**
+   * The full terms for `destination` — base price and, when the route meters by
+   * size, its per-kibibyte rate — or `null` when this node prices no matching
+   * route.
+   *
+   * The counterpart to {@link ToonClient.price} for a caller who needs to know
+   * what a packet will actually cost:
+   * {@link ../connector/self-description.js!chargeFor} turns these terms plus a
+   * sealed payload size into the figure that goes on the claim.
+   */
+  async routePrice(destination: string): Promise<ConnectorRoutePrice | null> {
+    return this.edge.getRoutePrice(this.connector, destination);
   }
 
   /**
@@ -301,7 +324,7 @@ export class ToonClient implements ToonClientLike {
       describe: () => this.describe(),
       sealKey: (description) => this.sealKey(description),
       sealKeyAt: (endpoint) => this.sealKeyAt(endpoint),
-      price: (destination) => this.price(destination),
+      routePrice: (destination) => this.routePrice(destination),
       ensureChannel: (description) => this.channelFacade.ensure(description),
       evictChannel: (channelId) => this.evictChannel(channelId),
       channels: this.channels,

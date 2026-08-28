@@ -47,20 +47,65 @@ export interface EdgeIdentity {
   publicKey: string;
 }
 
-/** One route the node serves, and what it costs. */
-export interface RoutePrice {
-  /** The ILP address prefix. Longest matching prefix wins. */
-  prefix: string;
+/**
+ * What a route charges, independent of which endpoint reported it.
+ *
+ * Both `GET /ilp` (per entry in `routes`) and `GET /ilp/routes/price` answer
+ * these two figures, so {@link chargeFor} takes this shape rather than either
+ * concrete type.
+ */
+export interface RouteCharge {
   /**
-   * The flat price per packet, in the settlement asset's base units.
+   * The base price per packet, in the settlement asset's base units.
    *
    * A `bigint` here, though the wire carries a decimal **string** — deliberately
    * so, because a price past 2^53 is a real amount and a JSON number would round
    * it. (`GET /ilp/routes/price` answers the same figure as a JSON *number*;
    * that inconsistency is the connector's, and both are normalized to `bigint`
    * by this client.)
+   *
+   * This is the *base*, not the total: a route that also publishes
+   * {@link RouteCharge.pricePerKib} charges more than this for every packet.
+   * {@link chargeFor} is the only thing that should decide what to put on a
+   * claim.
    */
   price: bigint;
+  /**
+   * Added per kibibyte of sealed payload, when the route meters by size.
+   *
+   * Absent on a flat-priced route, which is most of them. Published as
+   * `pricePerKib` on `GET /ilp` and as `price_per_kib` on
+   * `GET /ilp/routes/price` — the same inconsistency the price itself has.
+   */
+  pricePerKib?: bigint;
+}
+
+/** One route the node serves, and what it costs. */
+export interface RoutePrice extends RouteCharge {
+  /** The ILP address prefix. Longest matching prefix wins. */
+  prefix: string;
+}
+
+/**
+ * What one packet actually costs on `terms`, given the size of its **sealed**
+ * payload.
+ *
+ * The metered quantity is the gift-wrapped payload the PREPARE carries — the
+ * bytes of `SealedExchange.data`, not the caller's request body, which is
+ * smaller by the envelope and the wrap. So a charge can only be computed after
+ * sealing, which is why {@link ../client/send.js!send} seals before it prices.
+ *
+ * The unit count is `floor(bytes / 1024) + 1`, which is deliberately **not**
+ * `ceil`: the connector counts kibibytes *started* from one, so a 1-byte payload
+ * and a 1024-byte payload both cost one unit while a 1025-byte payload costs
+ * two. Verified against the deployed store node at 1000 + 10/KiB, which charges
+ * 1010 for a 169-byte sealed payload and 1060 for a 5161-byte one.
+ */
+export function chargeFor(terms: RouteCharge, sealedBytes: number): bigint {
+  const perKib = terms.pricePerKib;
+  if (perKib === undefined || perKib === 0n) return terms.price;
+  const units = BigInt(Math.floor(Math.max(0, sealedBytes) / 1024) + 1);
+  return terms.price + perKib * units;
 }
 
 /** Which carriage a route insists on, when its routes agree on one. */
@@ -216,7 +261,15 @@ export function parseSelfDescription(
           const r = raw as Record<string, unknown>;
           const prefix = readString(r, 'prefix');
           const price = readBaseUnits(r['price']);
-          return prefix !== undefined && price !== undefined ? { prefix, price } : undefined;
+          if (prefix === undefined || price === undefined) return undefined;
+          // `pricePerKib` here, `price_per_kib` on GET /ilp/routes/price. Both
+          // are read so neither endpoint silently under-quotes a metered route.
+          const pricePerKib = readBaseUnits(r['pricePerKib'] ?? r['price_per_kib']);
+          return {
+            prefix,
+            price,
+            ...(pricePerKib !== undefined ? { pricePerKib } : {}),
+          };
         })
         .filter((r): r is RoutePrice => r !== undefined)
     : [];
@@ -258,10 +311,24 @@ export function parseSelfDescription(
  * `g.example.app` governs `g.example.app.sub` but never `g.example.appendix`.
  */
 export function routePriceFor(desc: NodeSelfDescription, destination: string): bigint | undefined {
+  return routeFor(desc, destination)?.price;
+}
+
+/**
+ * The whole matching route rather than just its base price, so a caller can see
+ * a `pricePerKib` that {@link routePriceFor} necessarily hides.
+ *
+ * Same longest-prefix rule; {@link routePriceFor} is this with `.price` on the
+ * end, kept because a flat-priced route is still the common case.
+ */
+export function routeFor(
+  desc: NodeSelfDescription,
+  destination: string
+): RoutePrice | undefined {
   let best: RoutePrice | undefined;
   for (const route of desc.routes) {
     if (destination !== route.prefix && !destination.startsWith(`${route.prefix}.`)) continue;
     if (best === undefined || route.prefix.length > best.prefix.length) best = route;
   }
-  return best?.price;
+  return best;
 }

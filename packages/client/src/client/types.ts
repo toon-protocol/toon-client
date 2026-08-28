@@ -15,7 +15,10 @@ import type { KeyDerivationScheme } from '../keys/KeyDerivation.js';
 import type { ClaimAck } from '../ilp/types.js';
 import type { ChannelStore } from '../channel/ChannelStore.js';
 import type { NodeSelfDescription, RequiredTransport } from '../connector/self-description.js';
-import type { ClaimStateResult } from '../connector/ConnectorEdgeClient.js';
+import type {
+  ClaimStateResult,
+  ConnectorRoutePrice,
+} from '../connector/ConnectorEdgeClient.js';
 import type { WalletChainBalances } from '../wallet/balances.js';
 import type { SendTransferParams, SendTransferResult } from '../wallet/transfer.js';
 import type { FundWalletResult } from '../wallet/faucet.js';
@@ -360,7 +363,7 @@ export interface ToonIdentity {
   senderId: string;
 }
 
-export type { ClaimStateResult };
+export type { ClaimStateResult, ConnectorRoutePrice };
 
 /**
  * The public surface of {@link ToonClient}, as an interface.
@@ -376,8 +379,14 @@ export interface ToonClientLike {
   readonly wallet: WalletFacade;
   /** `GET /ilp`. Cached per instance; `fresh` re-reads. */
   describe(options?: { fresh?: boolean }): Promise<NodeSelfDescription>;
-  /** `GET /ilp/routes/price`. `null` means no route this node serves matches. */
+  /**
+   * `GET /ilp/routes/price`, base price only. `null` means no route this node
+   * serves matches. A metered route costs more — see
+   * {@link ToonClientLike.routePrice}.
+   */
   price(destination: string): Promise<bigint | null>;
+  /** The same route's full terms, including a `pricePerKib` when it meters by size. */
+  routePrice(destination: string): Promise<ConnectorRoutePrice | null>;
   /** `POST /ilp/probe`: learn a path's cost without buying the work. Needs an open channel. */
   probe(destination: string): Promise<{ accumulatedCost: bigint; code: string; message: string }>;
   /** Pay for one HTTP request. */

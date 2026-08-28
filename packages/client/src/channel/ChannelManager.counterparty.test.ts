@@ -17,7 +17,7 @@ import type { ChannelStore } from './ChannelStore.js';
  * in it — so all three fields kept matching and `resumeChannel` handed back a
  * channel opened against the retired node. Every claim signed on it came back
  * `F01 - claim rejected: names a channel this connector has no record of`, and
- * a `toon_upload` to `g.toon.ario` failed even though a CORRECT binding for
+ * a `toon_upload` to `g.toon.store` failed even though a CORRECT binding for
  * that destination sat in the same file. Deleting the dead record by hand was
  * the only fix.
  */

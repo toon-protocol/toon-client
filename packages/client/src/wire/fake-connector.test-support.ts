@@ -130,6 +130,13 @@ export class FakeTerminatingConnector {
   routePrice: bigint | null = 1000n;
 
   /**
+   * The per-kibibyte rate this connector meters by, on top of
+   * {@link FakeConnector.routePrice}. `undefined` — the default — is a
+   * flat-priced route, which is most of them; set it to exercise a metered one.
+   */
+  pricePerKib: bigint | undefined = undefined;
+
+  /**
    * The channel-opening facts the 402 greeting carries (connector #617).
    * `null` — the default — is a settlement-less node: the greeting has no
    * `settlement` key at all, exactly as the real edge omits it.
@@ -252,8 +259,16 @@ export class FakeTerminatingConnector {
       const destination =
         new URL(url, 'http://x.invalid').searchParams.get('destination') ?? '';
       return new Response(
-        // `price` is a JSON NUMBER on this endpoint, as the connector emits it.
-        JSON.stringify({ destination, price: Number(this.routePrice) }),
+        // `price` is a JSON NUMBER on this endpoint, as the connector emits it,
+        // and the per-KiB rate is `price_per_kib` — snake_case HERE and
+        // camelCase in `GET /ilp`, matching the real edge's own inconsistency.
+        JSON.stringify({
+          destination,
+          price: Number(this.routePrice),
+          ...(this.pricePerKib !== undefined
+            ? { price_per_kib: Number(this.pricePerKib) }
+            : {}),
+        }),
         { status: 200, headers: { 'content-type': 'application/json' } }
       );
     }

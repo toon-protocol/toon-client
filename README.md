@@ -56,7 +56,8 @@ it — even a `4xx` is a real answer, and on a priced route it costs the same as
 ### Then, a paid one
 
 Both halves below do the same thing: open a channel with the devnet store node and buy one request
-on `g.toon.ario`, which costs 1000 base units (0.001 USDC).
+on `g.toon.store`, which costs 1000 base units (0.001 USDC) plus 10 per kibibyte of sealed
+payload. `send()` works the total out from the node's own price list — you never compute it.
 
 ```bash
 export TOON_CONNECTOR=https://proxy.ario.devnet.toonprotocol.dev
@@ -64,7 +65,7 @@ export TOON_CONNECTOR=https://proxy.ario.devnet.toonprotocol.dev
 npx toon init                      # write an encrypted keystore at ~/.toon/keystore.json
 npx toon faucet                    # devnet mock USDC for the address it just made
 npx toon channel open --deposit 100000    # 100000 base units (0.10 USDC) of collateral
-npx toon send g.toon.ario --body 'hello'  # 1000 base units (0.001 USDC), one request
+npx toon send g.toon.store --body 'hello'  # ~1010 base units, one request
 ```
 
 ```ts
@@ -78,7 +79,7 @@ const client = await ToonClient.create({
 
 await client.channel.open({ deposit: 100_000n }); // 100000 base units (0.10 USDC)
 
-const answer = await client.send('g.toon.ario', { body: 'hello' });
+const answer = await client.send('g.toon.store', { body: 'hello' });
 if (answer.fulfilled) {
   console.log(answer.status, answer.text());       // the app's own HTTP response
   console.log(answer.claim.amount);                // 1000n base units (0.001 USDC)

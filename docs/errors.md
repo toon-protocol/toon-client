@@ -8,7 +8,7 @@ That split is the whole of the rule. A thrown error means you have a configurati
 fix; a returned refusal means the network answered, and the answer was no.
 
 ```ts
-const answer = await client.send('g.toon.ario', { body: 'hello' });
+const answer = await client.send('g.toon.store', { body: 'hello' });
 if (!answer.fulfilled) {
   answer.code;             // 'F03', 'F01', 'PAYMENT_REQUIRED', 'TRANSPORT_REQUIRED', …
   answer.message;          // diagnostic text. Never branch on it — branch on the code.
