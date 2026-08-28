@@ -303,6 +303,28 @@ export function parseSelfDescription(
 }
 
 /**
+ * Where a packet goes when the caller named a node but not a route.
+ *
+ * A client is configured with a **URL** — the thing a person actually has — and
+ * the node's own document says what to address it as. So there is no reason to
+ * make a caller repeat a route string they just read off `GET /ilp`, and every
+ * reason not to: a hand-copied destination is how you end up paying a node for a
+ * route it does not serve.
+ *
+ * The first of `ilpAddresses` this node also PRICES wins. A node lists its own
+ * addresses primary-first, but an address it serves without pricing cannot be
+ * paid for, so pricing is the tie-break rather than order alone — and when none
+ * of them is priced the first is still returned, because being refused with the
+ * route's terms is a better answer than refusing to form a packet at all.
+ *
+ * `undefined` only when the node claims no address, which is a broken node.
+ */
+export function defaultDestinationFor(desc: NodeSelfDescription): string | undefined {
+  const priced = desc.ilpAddresses.find((address) => routeFor(desc, address) !== undefined);
+  return priced ?? desc.ilpAddresses[0];
+}
+
+/**
  * The price of the longest configured prefix that governs `destination`, or
  * `undefined` when this document lists no route that does.
  *

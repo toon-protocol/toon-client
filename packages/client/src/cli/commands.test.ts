@@ -165,6 +165,14 @@ describe('probe', () => {
 });
 
 describe('send', () => {
+  it('sends to the node\u2019s own address when no destination is given', async () => {
+    // `TOON_CONNECTOR` alone should be enough to buy something: the route comes
+    // from the node's self-description, not from the command line.
+    const result = await run(['send', '--body', 'hi']);
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.client.callsTo('send')[0]?.args[0]).toBe('g.toon.store');
+  });
+
   it('prints the app’s answer and exits 0', async () => {
     const result = await run(['send', 'g.toon.store', '--body', 'hi']);
     expect(result.code).toBe(EXIT.ok);

@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   chargeFor,
+  defaultDestinationFor,
   parseSelfDescription,
   routeFor,
   routePriceFor,
@@ -110,5 +111,45 @@ describe('chargeFor', () => {
 
   it('never charges less than the base price for a nonsensical size', () => {
     expect(chargeFor(metered, -5)).toBe(1010n);
+  });
+});
+
+describe('defaultDestinationFor', () => {
+  // A client is configured with a URL. The route it should address is a fact the
+  // node already publishes, so nothing should have to be copied by hand.
+  it('takes the primary address a node publishes for itself', () => {
+    expect(defaultDestinationFor(parseSelfDescription(STORE_BODY))).toBe('g.toon.store');
+  });
+
+  it('skips an address the node serves but does not price', () => {
+    // `g.toon.unpriced` is first, but nothing could pay for it.
+    const desc = parseSelfDescription({
+      ...STORE_BODY,
+      ilpAddresses: ['g.toon.unpriced', 'g.toon.store'],
+    });
+    expect(defaultDestinationFor(desc)).toBe('g.toon.store');
+  });
+
+  it('falls back to the first address when the node prices none of them', () => {
+    // Better to be refused with the route's terms than to refuse to form a packet.
+    const desc = parseSelfDescription({ ...STORE_BODY, routes: [] });
+    expect(defaultDestinationFor(desc)).toBe('g.toon.store');
+  });
+
+  it('is undefined only for a node that claims no address at all', () => {
+    const desc = parseSelfDescription({ ...STORE_BODY, ilpAddresses: [] });
+    expect(defaultDestinationFor(desc)).toBeUndefined();
+  });
+
+  it('picks the relay, not its ephemeral lane, from the deployed relay document', () => {
+    const desc = parseSelfDescription({
+      ...STORE_BODY,
+      ilpAddresses: ['g.toon.relay', 'g.toon.relay.ephemeral'],
+      routes: [
+        { prefix: 'g.toon.relay', price: '1' },
+        { prefix: 'g.toon.relay.ephemeral', price: '0' },
+      ],
+    });
+    expect(defaultDestinationFor(desc)).toBe('g.toon.relay');
   });
 });

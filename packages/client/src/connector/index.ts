@@ -17,6 +17,7 @@ export {
 } from './ConnectorEdgeClient.js';
 export {
   chargeFor,
+  defaultDestinationFor,
   parseSelfDescription,
   parseSettlementEntry,
   readBaseUnits,

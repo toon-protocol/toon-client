@@ -165,6 +165,51 @@ describe('ToonClient.price', () => {
   });
 });
 
+describe('ToonClient.defaultDestination — a URL is the whole of the config', () => {
+  // The route a node answers to is a fact it publishes. Making a caller repeat it
+  // is how you end up paying a node for a route it does not serve.
+  it('is the address the node published for itself', async () => {
+    const client = await create(fixture());
+    expect(client.defaultDestination).toBe('g.fake');
+  });
+
+  it('sends there when no destination is named', async () => {
+    const fake = fixture();
+    // Free route: this is about which destination is addressed, not about paying.
+    fake.routePrice = 0n;
+    const client = await create(fake);
+    const result = await client.send({ body: 'hello' });
+    expect(result.fulfilled).toBe(true);
+    expect(fake.destinations).toEqual(['g.fake']);
+  });
+
+  it('still honours a destination the caller does name', async () => {
+    const fake = fixture();
+    fake.routePrice = 0n;
+    fake.ilpAddresses = ['g.fake', 'g.fake.other'];
+    const client = await create(fake);
+    await client.send('g.fake.other', { body: 'hello' });
+    expect(fake.destinations).toEqual(['g.fake.other']);
+  });
+
+  it('follows a re-read of the node', async () => {
+    const fake = fixture();
+    const client = await create(fake);
+    fake.ilpAddresses = ['g.fake.renamed'];
+    fake.routes = [{ prefix: 'g.fake.renamed', price: '1000' }];
+    await client.describe({ fresh: true });
+    expect(client.defaultDestination).toBe('g.fake.renamed');
+  });
+
+  it('refuses to guess when the node publishes no address', async () => {
+    const fake = fixture();
+    fake.ilpAddresses = [];
+    const client = await create(fake);
+    expect(client.defaultDestination).toBeUndefined();
+    await expect(client.send({ body: 'hello' })).rejects.toBeInstanceOf(ConfigError);
+  });
+});
+
 describe('ToonClient — opening is never a side effect', () => {
   it('refuses to send with autoOpenChannel off and no channel held', async () => {
     const client = await create(fixture(), { autoOpenChannel: false });

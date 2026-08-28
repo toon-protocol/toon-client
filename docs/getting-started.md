@@ -145,16 +145,20 @@ from.
 ## Step 4 — one paid request
 
 ```bash
-npx toon send g.toon.store --body 'hello'
+npx toon send --body 'hello'
 ```
 
 ```ts
-const answer = await client.send('g.toon.store', {
+const answer = await client.send({
   method: 'POST',
   headers: { 'content-type': 'text/plain' },
   body: 'hello',
 });
 ```
+
+No route appears in either, and that is deliberate: you configured a **URL**, and the node's own
+`GET /ilp` says what to address it as. Name a destination — `client.send('g.toon.relay.store', …)`
+— only when you want a route the node *forwards* rather than the one it terminates.
 
 Behind that one call: the client reads the route's price, seals your request to the connector's
 identity key, signs a claim advancing the channel by that price, and sends both as one packet.

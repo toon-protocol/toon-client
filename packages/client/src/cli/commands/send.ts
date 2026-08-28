@@ -1,5 +1,8 @@
 /**
- * `toon send <destination> …` — pay for one HTTP request and print the answer.
+ * `toon send [destination] …` — pay for one HTTP request and print the answer.
+ *
+ * The destination is optional: omitted, the request goes to the address the node
+ * published for itself, so `TOON_CONNECTOR` alone is enough to buy something.
  *
  * This is what the whole client is for, and its output is shaped around one
  * distinction that is easy to get wrong.
@@ -196,13 +199,20 @@ function payloadFor(result: SendResult): unknown {
 }
 
 export async function run(ctx: CommandContext): Promise<number> {
-  const destination = ctx.positionals[0];
-  if (destination === undefined) throw new UsageError('send needs a destination', 'send');
-
   const request = await buildRequest(ctx);
   const amountFlag = stringOption(ctx.values, 'amount');
 
   const client = await ctx.client();
+  // The destination is optional: with none, the packet goes to the address the
+  // node published for itself, so a connector URL is the whole of the config.
+  const destination = ctx.positionals[0] ?? client.defaultDestination;
+  if (destination === undefined) {
+    throw new UsageError(
+      'send needs a destination, and this node published no address to default to',
+      'send'
+    );
+  }
+
   const result = await client.send(
     destination,
     request,

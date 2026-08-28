@@ -253,14 +253,28 @@ export class FakeToonClient implements ToonClientLike {
     );
   }
 
+  get defaultDestination(): string | undefined {
+    return (this.options.description ?? FAKE_DESCRIPTION).ilpAddresses[0];
+  }
+
+  async send(request?: SendRequest, options?: SendOptions): Promise<SendResult>;
   async send(
     destination: string,
     request?: SendRequest,
     options?: SendOptions
+  ): Promise<SendResult>;
+  async send(
+    destinationOrRequest?: string | SendRequest,
+    requestOrOptions?: SendRequest | SendOptions,
+    maybeOptions?: SendOptions
   ): Promise<SendResult> {
+    const named = typeof destinationOrRequest === 'string';
+    const destination = named ? destinationOrRequest : this.defaultDestination;
+    const request = (named ? requestOrOptions : destinationOrRequest) as SendRequest | undefined;
+    const options = (named ? maybeOptions : requestOrOptions) as SendOptions | undefined;
     const canned = this.options.send;
     const result =
-      typeof canned === 'function' ? canned(destination) : (canned ?? fakeFulfilled());
+      typeof canned === 'function' ? canned(destination ?? '') : (canned ?? fakeFulfilled());
     return this.record('send', [destination, request, options], result);
   }
 

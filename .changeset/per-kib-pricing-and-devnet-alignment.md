@@ -36,9 +36,28 @@ New and changed API:
   unchanged and still answers the base price alone — it is now documented as the base rather than
   the total.
 - `toon price` prints the per-KiB rate beside the base price on a metered route.
+- `defaultDestinationFor(desc)` is exported, and `ToonClient.defaultDestination` exposes it.
+- `send()` gains an overload taking only a request; `toon send`'s destination becomes optional.
 - **Breaking, for implementers of the `SendContext` port only:** `price(destination)` is replaced by
   `routePrice(destination)`, returning the whole terms instead of one figure. Nothing that uses
   `ToonClient` is affected.
+
+**A connector URL is now the whole of the configuration.**
+
+`send()`'s destination is optional. Omitted, the packet goes to `defaultDestination` — the first
+address the node published for itself in `GET /ilp` that it also prices — so nothing has to repeat
+a route string it just read off the node:
+
+```ts
+const client = await ToonClient.create({ connector: 'https://…', mnemonic });
+await client.send({ body: 'hello' });           // the node's own address
+await client.send('g.toon.relay.store', { … }); // or name a forwarded route
+```
+
+`toon send` takes the destination as an optional positional for the same reason, so
+`TOON_CONNECTOR` alone is enough to buy something. Naming a destination is still how you address a
+route a node *forwards* rather than terminates, since that route is by definition not its own
+address. A node that publishes no `ilpAddresses` at all is a `ConfigError` rather than a guess.
 
 **The devnet presets and docs now match what is deployed.** Verified by paying every route on the
 live nodes.

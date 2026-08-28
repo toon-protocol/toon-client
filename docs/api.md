@@ -54,10 +54,18 @@ probe traverses for free, so it is gated on a channel the connector recognizes a
 per channel.
 
 ```ts
+send(request?: SendRequest, options?: SendOptions): Promise<SendResult>
 send(destination: string, request?: SendRequest, options?: SendOptions): Promise<SendResult>
+
+defaultDestination: string | undefined
 ```
 
 Pay for one HTTP request. The central operation. Never throws on a refusal.
+
+The destination is **optional**. Omitted, the packet goes to `defaultDestination` — the first
+address the node published for itself that it also prices — so configuring a client is just a
+URL and the route is a fact read off `GET /ilp` rather than a string copied by hand. Name a
+destination explicitly to address a route the node forwards rather than terminates.
 
 ```ts
 claimState(channelIds?: string[]): Promise<ClaimStateResult[]>

@@ -76,9 +76,13 @@ destination says so — an answer, not a failure.
 Learn a path's cost without buying the work. Needs an open channel: a probe carries a claim, it
 just does not spend it, and probing is rate-limited per channel.
 
-### `toon send <destination> [options]`
+### `toon send [destination] [options]`
 
 Pay for one HTTP request and print the answer.
+
+The destination is **optional**. Omit it and the request goes to the address the node published
+for itself in its `GET /ilp`, so a connector URL is the whole of the configuration — there is no
+route string to copy out of a document and get wrong.
 
 | Option | Meaning |
 | --- | --- |
@@ -94,7 +98,10 @@ The status printed is the **app's own**. A `404` from the app is a real answer: 
 fulfilled and costs exactly what a `200` costs. Only a refusal short of the app exits `3`.
 
 ```bash
-npx toon send g.toon.store --body 'hello'
+export TOON_CONNECTOR=https://proxy.ario.devnet.toonprotocol.dev
+
+npx toon send --body 'hello'               # to whatever this node calls itself
+npx toon send g.toon.store --body 'hello'  # or name the route yourself
 npx toon send g.toon.store --json-body --body '{"key":"value"}'
 cat payload.bin | npx toon send g.toon.store --body -
 npx toon send g.toon.relay --transport btp --body 'hello'

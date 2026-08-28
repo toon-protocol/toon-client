@@ -389,8 +389,14 @@ export interface ToonClientLike {
   routePrice(destination: string): Promise<ConnectorRoutePrice | null>;
   /** `POST /ilp/probe`: learn a path's cost without buying the work. Needs an open channel. */
   probe(destination: string): Promise<{ accumulatedCost: bigint; code: string; message: string }>;
-  /** Pay for one HTTP request. */
+  /**
+   * Pay for one HTTP request. The destination is optional — omitted, it goes to
+   * {@link ToonClientLike.defaultDestination}.
+   */
+  send(request?: SendRequest, options?: SendOptions): Promise<SendResult>;
   send(destination: string, request?: SendRequest, options?: SendOptions): Promise<SendResult>;
+  /** The address this node published for itself, and where an unrouted `send` goes. */
+  readonly defaultDestination: string | undefined;
   /** `POST /ilp/claim-state`: the connector's own watermark for channels you control. */
   claimState(channelIds?: string[]): Promise<ClaimStateResult[]>;
   /** Release the BTP session and flush the channel store. Does not touch the channel. */

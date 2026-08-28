@@ -168,6 +168,9 @@ export class FakeTerminatingConnector {
   ilpAddresses: string[] = ['g.fake'];
   /** The routes it prices, as the self-description lists them (price as a STRING). */
   routes: { prefix: string; price: string }[] = [{ prefix: 'g.fake', price: '1000' }];
+
+  /** Every destination a PREPARE was addressed to, in order. */
+  readonly destinations: string[] = [];
   /**
    * The settlement entries `GET /ilp` publishes — separate from
    * {@link settlements}, which is the greeting's list, because a test may want a
@@ -389,6 +392,7 @@ export class FakeTerminatingConnector {
     if (this.refusal === 'greeting') return this.greeting();
 
     const prepare = deserializeIlpPrepare(toBytes(body));
+    this.destinations.push(prepare.destination);
     const dataBase64 = toBase64(prepare.data);
 
     switch (this.refusal) {

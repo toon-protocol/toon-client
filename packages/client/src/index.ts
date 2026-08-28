@@ -13,7 +13,7 @@
  *   mnemonic: process.env.TOON_MNEMONIC,
  * });
  * await client.channel.open({ deposit: 100_000n });
- * const answer = await client.send('g.toon.store', { body: 'hello' });
+ * const answer = await client.send({ body: 'hello' });
  * ```
  *
  * The protocol is defined by the connector, not by this package: the Rust

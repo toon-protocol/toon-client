@@ -244,11 +244,13 @@ export const COMMANDS: Record<string, CommandSpec> = {
   },
   send: {
     summary: 'Pay for one HTTP request and print the answer.',
-    usage: 'send <destination> [--method VERB] [--target PATH] [-H NAME:VALUE]... [--body TEXT | --body-file PATH | --body -] [--json-body] [--amount BASE_UNITS]',
+    usage: 'send [destination] [--method VERB] [--target PATH] [-H NAME:VALUE]... [--body TEXT | --body-file PATH | --body -] [--json-body] [--amount BASE_UNITS]',
     options: ['method', 'target', 'header', 'body', 'body-file', 'json-body', 'amount'],
-    minPositionals: 1,
+    minPositionals: 0,
     maxPositionals: 1,
     details: [
+      'The destination is optional: with none, the request goes to the address the',
+      'node published for itself, so a connector URL is the whole of the config.',
       'The status printed is the app’s own: a 404 from the app is a real answer, it',
       'rides home fulfilled and costs exactly what a 200 costs. Only a refusal short',
       'of the app exits 3.',

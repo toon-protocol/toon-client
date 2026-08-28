@@ -29,7 +29,10 @@ import type {
   ClaimStateResult,
   ConnectorRoutePrice,
 } from '../connector/ConnectorEdgeClient.js';
-import type { NodeSelfDescription } from '../connector/self-description.js';
+import {
+  defaultDestinationFor,
+  type NodeSelfDescription,
+} from '../connector/self-description.js';
 import { selectTransport } from '../btp/transport-select.js';
 import { HttpIlpClient } from '../http/HttpIlpClient.js';
 import { BtpRuntimeClient, type BtpChannelDeclaration } from '../btp/BtpRuntimeClient.js';
@@ -258,15 +261,61 @@ export class ToonClient implements ToonClientLike {
    * Pay for one HTTP request through this connector, and return what the app
    * said.
    *
+   * The destination is **optional**: omit it and the packet goes to
+   * {@link ToonClient.defaultDestination}, the address this node published for
+   * itself. Configuring a client is then just a URL — the thing a person
+   * actually has — and the route comes from the node rather than from a string
+   * the caller copied out of a document.
+   *
+   * ```ts
+   * const client = await ToonClient.create({ connector: 'https://…', mnemonic });
+   * await client.send({ body: 'hello' });              // the node's own address
+   * await client.send('g.toon.relay.store', { … });    // or name one yourself
+   * ```
+   *
    * A REJECT comes back as `{ fulfilled: false }` and is never thrown — see
    * {@link ./types.js!SendRefused}.
+   *
+   * @throws {ConfigError} the destination was omitted and this node published no
+   *   address to fall back on.
    */
+  async send(request?: SendRequest, options?: SendOptions): Promise<SendResult>;
   async send(
     destination: string,
-    request: SendRequest = {},
-    options: SendOptions = {}
+    request?: SendRequest,
+    options?: SendOptions
+  ): Promise<SendResult>;
+  async send(
+    destinationOrRequest?: string | SendRequest,
+    requestOrOptions?: SendRequest | SendOptions,
+    maybeOptions?: SendOptions
   ): Promise<SendResult> {
-    return send(this.sendContext(), destination, request, options);
+    // A destination is always a string and a request is always an object, so the
+    // two forms are told apart without a sentinel.
+    const named = typeof destinationOrRequest === 'string';
+    const destination = named ? destinationOrRequest : this.defaultDestination;
+    if (destination === undefined) {
+      throw new ConfigError(
+        `The connector at ${this.connector} published no \`ilpAddresses\`, so ` +
+          'there is no route to send to. Name one explicitly: ' +
+          "`send('g.example.route', { … })`."
+      );
+    }
+    const request = (named ? requestOrOptions : destinationOrRequest) as SendRequest | undefined;
+    const options = (named ? maybeOptions : requestOrOptions) as SendOptions | undefined;
+    return send(this.sendContext(), destination, request ?? {}, options ?? {});
+  }
+
+  /**
+   * Where {@link ToonClient.send} goes when the caller names no route: the first
+   * address this node published for itself that it also prices.
+   *
+   * Read off the cached self-description, so it follows a
+   * `describe({ fresh: true })`. `undefined` only from a node that claims no
+   * address at all.
+   */
+  get defaultDestination(): string | undefined {
+    return defaultDestinationFor(this.description);
   }
 
   /**
