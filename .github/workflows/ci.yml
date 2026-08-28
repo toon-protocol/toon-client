@@ -284,13 +284,10 @@ jobs:
   # nothing. That is the exact defect swap#106 found (four suites collecting zero
   # tests, all reporting a pass) and swap#160 had to rescue.
   #
-  # WHAT THIS DOES NOT COVER: the DAEMON end of the seam (#608). This proves the
-  # client library redeems; `ClientRunner.settleSwapClaims` — which sources
-  # `solanaProgramId` from config, delegates through `settleSwapBundle`, and
-  # writes the `settledNonce` watermark that stops a replay before the chain has
-  # to — has still never met a validator. When #608 lands, its suite belongs in
-  # THIS job (the validator is already on PATH and the flag is already set) with
-  # its collected count added to the guard step below.
+  # SCOPE. The daemon end of this seam left the repository with
+  # `packages/client-mcp` in #619, which closed #608 and #616 as obsolete. What
+  # is left of the seam here is the client library's own redemption path, and
+  # this job covers all of it.
   solana-settlement-proof:
     name: Solana settlement redemption proof
     runs-on: ubuntu-latest
