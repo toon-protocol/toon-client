@@ -1,516 +1,58 @@
-// Main Client
-export { ToonClient } from './ToonClient.js';
+/**
+ * `@toon-protocol/client` — pay for an HTTP request, per request, in stablecoin.
+ *
+ * A **connector** is a paid reverse proxy: it fronts an ordinary HTTP app,
+ * charges a flat price per route, and hands that app a request which was
+ * already paid for. This package is the payer. It seals your request into an
+ * ILP packet addressed to a route, attaches a signed claim on a payment channel
+ * you opened yourself on chain, and gives you back the app's HTTP response.
+ *
+ * ```ts
+ * const client = await ToonClient.create({
+ *   connector: 'https://proxy.ario.devnet.toonprotocol.dev',
+ *   mnemonic: process.env.TOON_MNEMONIC,
+ * });
+ * await client.channel.open({ deposit: 100_000n });
+ * const answer = await client.send({ body: 'hello' });
+ * ```
+ *
+ * The protocol is defined by the connector, not by this package: the Rust
+ * implementation and its committed wire vectors are the authority, and this
+ * client replays those vectors as its own conformance suite.
+ */
 
-// Types
-export type {
-  ToonClientConfig,
-  SolanaChannelClientOptions,
-  ToonStartResult,
-  PublishEventResult,
-  BalanceProofParams,
-  SignedBalanceProof,
-} from './types.js';
+// The client itself.
+export * from './client/index.js';
 
-// Error classes
-export {
-  ToonClientError,
-  NetworkError,
-  ConnectorError,
-  ValidationError,
-  ChannelFundingError,
-  ChannelResumeError,
-  StaleRpcReadError,
-  isInsufficientGasError,
-  InsufficientBalanceError,
-  UnknownChainError,
-  InvalidAddressError,
-  TransferNotDeliveredError,
-  TransferUnsupportedError,
-} from './errors.js';
+// Talking to a connector: its self-description, identity, prices, claim state,
+// and the greeting it answers an unpaid request with.
+export * from './connector/index.js';
 
-// NIP-59 gift-wrap unwrap (receiver side) — backs the daemon's
-// `POST /nip59-unwrap` control-API endpoint (toon-meta#256).
-export {
-  GiftWrapAddressError,
-  GiftWrapDecryptError,
-  unwrapGiftWrapWithKey,
-  GIFT_WRAP_KIND,
-  SEAL_KIND,
-  type UnwrappedGiftWrap,
-} from './nip59.js';
+// The two carriages a packet can ride, and the port they share.
+export * from './ilp/index.js';
+export * from './http/index.js';
+export * from './btp/index.js';
 
-// Hashlock delivery helpers (toon-meta#262 decision 5, factory job
-// increments) — symmetric between the provider and buyer sides of one
-// hashlocked artifact delivery.
-export {
-  encryptArtifact,
-  fulfillIncrement,
-  decryptArtifact,
-  buildIncrementPrepare,
-  HashlockConditionMismatchError,
-  HashlockDecryptError,
-  type EncryptedArtifact,
-  type IncrementOfferTags,
-  type IncrementPrepare,
-} from './hashlock-delivery.js';
+// The sealed wire: the envelope, the gift wrap around it, and the fulfilment a
+// shared secret derives. Exported for callers forming packets by hand.
+export * from './wire/index.js';
 
-// Serve-side job handling (toon-client#494, toon-meta#262 "agents earning")
-// — a provider's handler for connector-originated jobs, wired via
-// `ToonClientConfig.jobHandler`.
-export {
-  createJobMessageHandler,
-  type JobHandler,
-  type JobRequest,
-  type JobAnswer,
-} from './serve-job.js';
+// Payment channels: the on-chain lifecycle, and the watermark that outlives a
+// process.
+export * from './channel/index.js';
 
-// HTTP Adapters
-export {
-  HttpRuntimeClient,
-  type HttpRuntimeClientConfig,
-  HttpConnectorAdmin,
-  type HttpConnectorAdminConfig,
-  BtpRuntimeClient,
-  type BtpRuntimeClientConfig,
-  type BtpChannelDeclaration,
-  BtpPaidWriteTransport,
-  type BtpPaidWriteTransportConfig,
-  type ClaimSendingTransport,
-  type OrderedBtpSession,
-  HttpIlpClient,
-  type HttpIlpClientConfig,
-  httpEndpointToBtpUrl,
-  ILP_CLAIM_HEADER,
-  ILP_PEER_ID_HEADER,
-  selectIlpTransport,
-  readDiscoveredIlpPeer,
-  type DiscoveredIlpPeer,
-  type IlpTransportChoice,
-  type SelectIlpTransportOptions,
-  ConnectorEdgeClient,
-  ConnectorEdgeError,
-  connectorEdgeBaseUrl,
-  decodeConnectorPublicKey,
-  parseConnectorIdentity,
-  parseConnectorRoutePrice,
-  parseConnectorRouteTerms,
-  parseClaimStateResponse,
-  type ConnectorEdgeClientConfig,
-  type ConnectorEdgeErrorCode,
-  type ConnectorIdentity,
-  type ConnectorRoutePrice,
-  type ConnectorRouteTerms,
-  type ConnectorSettlementTerms,
-  type ConnectorSolanaSettlementTerms,
-  type ConnectorChainSettlementTerms,
-  type ClaimStateRequestEntry,
-  type ClaimStateOk,
-  type ClaimStateFailed,
-  type ClaimStateResult,
-  Http402Client,
-  parseX402Challenge,
-  parseX402Body,
-  type H402FetchOptions,
-  type Http402ClientConfig,
-  type ClaimResolver,
-  type ChallengeHandler,
-  type HttpIlpClientFactory,
-  type ToonChannelAccept,
-  type ParsedX402Challenge,
-  type X402ChannelExtra,
-} from './adapters/index.js';
+// Signing a claim, on each chain.
+export * from './signing/index.js';
 
-// Signing
-export {
-  EvmSigner,
-  type EVMClaimMessage,
-  SolanaSigner,
-  MinaSigner,
-  type MinaSignerOptions,
-  type MinaDepositReader,
-  type ChainSigner,
-  type ChainMetadata,
-  type ClaimMessage,
-  type SolanaClaimMessage,
-  type MinaClaimMessage,
-} from './signing/index.js';
+// Keys: mnemonic derivation and the on-disk keystore.
+export * from './keys/index.js';
 
-// Channel
-export {
-  OnChainChannelClient,
-  type OnChainChannelClientConfig,
-  type EvmReadConsistencyConfig,
-  ChannelManager,
-  JsonFileChannelStore,
-  InMemoryChannelStore,
-  type ChannelStore,
-  type ChannelStoreEntry,
-  type ChannelBinding,
-  type ChannelBindingContext,
-  counterpartyMatch,
-  sameSettlementAddress,
-  type CounterpartyVerdict,
-  readMinaDepositTotal,
-  readMinaChannelState,
-  MINA_CHANNEL_STATE,
-  type MinaOnChainChannelState,
-  JsonFileReceivedClaimStore,
-  InMemoryReceivedClaimStore,
-  type ReceivedClaimStore,
-  type ReceivedClaimEntry,
-} from './channel/index.js';
+// Chain reads and transfers that have nothing to do with paying a connector.
+export * from './wallet/index.js';
 
-// Receive-side swap claim ingestion/verification + settlement (toon-client#352,
-// rolling-swap epic toon-meta#145 — spec §3.2/§9 dependency 1).
-export {
-  ingestReceivedClaims,
-  hasSettlementMetadata,
-  ingestAndReveal,
-  evmClaimDigest,
-  evmCooperativeCloseDigest,
-  recoverEvmClaimSigner,
-  verifyEvmClaimSignature,
-  ROLLING_SWAP_DOMAIN_NAME,
-  ROLLING_SWAP_DOMAIN_VERSION,
-  CLAIM_TYPEHASH,
-  COOP_CLOSE_TYPEHASH,
-  type EvmClaimDomainContext,
-  type EvmClaimMessage,
-  type EvmCooperativeCloseMessage,
-  type EvmClaimVerifyResult,
-  type ClaimSignature,
-  InMemoryPreimageRetentionStore,
-  buildSwapSettlements,
-  entryToAccumulatedClaim,
-  parseEvmChainId,
-  decodeEvmSettlementTx,
-  submitEvmSettlement,
-  buildMinaCoSignedClaim,
-  submitMinaSettlement,
-  createO1jsMinaClaimSubmitter,
-  MinaSettlementError,
-  type MinaSettlementErrorCode,
-  type MinaCoSignInputs,
-  type MinaCoSignedClaim,
-  type MinaSignaturePair,
-  type MinaSettlementContext,
-  type MinaSettlementResult,
-  type MinaClaimSubmitter,
-  type MinaClaimSubmitArgs,
-  type MinaChannelStateReader,
-  type IngestReceivedClaimsParams,
-  type IngestReceivedClaimsResult,
-  type ReceivedClaimRejection,
-  type ReceivedClaimRejectionCode,
-  type VerifiedReceivedClaim,
-  type IngestAndRevealParams,
-  type IngestAndRevealResult,
-  type RevealFn,
-  type RevealDecision,
-  type RevealResult,
-  type RevealedClaim,
-  type RolledBackClaim,
-  type PreimageRetentionStore,
-  type RetainedPreimage,
-  type BuildSwapSettlementsParams,
-  type SwapSettlementBuild,
-  type SubmitEvmSettlementParams,
-  type SubmitEvmSettlementResult,
-  ROLLING_PROTOCOL,
-  isValidStreamNonce,
-  generateStreamNonce,
-  encodeRollingFillPayload,
-  parseRollingAdvancePayload,
-  handleRollingAdvance,
-  RollingAdvanceRejectedError,
-  type RollingFillPayload,
-  type RollingAdvancePayload,
-  type RollingAdvanceContext,
-  type RollingAdvanceOutcome,
-  // Rolling-swap RFQ session negotiation (toon-client#585, spec §2.2/§10.3)
-  ROLLING_RFQ_REQUEST_KIND,
-  ROLLING_RFQ_RESPONSE_KIND,
-  sendRollingRfq,
-  buildRollingRfqRequest,
-  encodeRollingRfqPacket,
-  parseRollingRfqResponse,
-  decodeRollingRfqQuote,
-  type RollingRfqAsset,
-  type RollingRfqRequest,
-  type RollingRfqResponse,
-  type RollingRfqOutcome,
-  type RollingRfqSession,
-  type RollingRfqFailure,
-  type RollingRfqFailureReason,
-  type RollingRfqSender,
-  type SendRollingRfqParams,
-} from './swap/index.js';
+// Well-known devnet values. Defaults and examples only — a connector's real
+// settlement facts always come from its own `GET /ilp`.
+export * from './presets.js';
 
-// Utilities
-export { withRetry, type RetryOptions } from './utils/index.js';
-
-// Reachability of endpoints a DISCOVERED kind:10032 announce advertises
-// (toon-client#593). A loopback endpoint in an announce served by a remote
-// relay names the READER's machine, never the announcer's — see the module
-// doc for why loopback/link-local are refused by default while private
-// ranges are not.
-export {
-  ALLOW_LOOPBACK_PEERS_ENV,
-  DEFAULT_ANNOUNCE_ENDPOINT_POLICY,
-  announceEndpointPolicyFor,
-  classifyEndpointZone,
-  endpointHost,
-  isAnnounceEndpointUsable,
-  rejectedAnnounceEndpoint,
-  type AnnounceEndpointPolicy,
-  type AnnounceEndpointPolicyInput,
-  type EndpointZone,
-  type RejectableEndpointZone,
-  type UnreachableAnnounceEndpoint,
-} from './announce-reachability.js';
-
-// Sender-chosen ILP execution conditions (toon-client#350, rolling-swap
-// prerequisite; contract: connector docs/local-delivery-fulfillment-contract.md)
-export {
-  CONDITION_LENGTH,
-  mintExecutionCondition,
-  isZeroCondition,
-  assertValidCondition,
-  fulfillmentMatchesCondition,
-  type ExecutionConditionPair,
-} from './utils/condition.js';
-export {
-  FULFILLMENT_MISMATCH_CODE,
-  FULFILLMENT_MISMATCH_MESSAGE,
-  type IlpSendParams,
-  type IlpSendResultWithFulfillment,
-} from './adapters/ilp-send.js';
-
-// Config validation (for advanced use cases)
-export {
-  validateConfig,
-  applyDefaults,
-  buildSettlementInfo,
-  applyNetworkPresets,
-  getNetworkStatus,
-  proxyIlpEndpoint,
-} from './config.js';
-
-// Devnet faucet helper
-export {
-  fundWallet,
-  defaultFaucetTimeout,
-  type FaucetChain,
-  type FundWalletResult,
-  type FundWalletOptions,
-} from './faucet.js';
-
-// Arweave Blob Storage (kind:5094 DVM) helper
-export {
-  requestBlobStorage,
-  extractArweaveTxId,
-  type RequestBlobStorageParams,
-  type RequestBlobStorageResult,
-} from './blob-storage.js';
-
-// Plain token transfer — send the settlement token or native gas to an
-// arbitrary address, confirmed by observed destination balance delta (#491).
-// `ToonClient.sendTransfer` is the documented entry point; the standalone
-// `sendTransfer` here is for callers building a `TransferConfig` outside a
-// ToonClient.
-export {
-  sendTransfer,
-  type TransferChain,
-  type TransferAssetKind,
-  type SendTransferParams,
-  type SendTransferResult,
-  type TransferConfig,
-  type EvmTransferConfig,
-  type SolanaTransferConfig,
-  type MinaTransferConfig,
-} from './transfer.js';
-
-// Wallet balance readers — the full multi-chain wallet view (#299) plus the
-// per-chain primitives, for callers that read balances outside a ToonClient.
-export {
-  readWalletBalances,
-  readEvmNativeBalance,
-  readEvmTokenBalance,
-  readSolanaNativeBalance,
-  readSolanaTokenBalance,
-  readMinaBalance,
-  type WalletBalance,
-  type WalletTokenAmount,
-  type WalletChainBalances,
-  type WalletBalanceSources,
-} from './balance/WalletBalanceReader.js';
-
-// Key Management
-export {
-  KeyManager,
-  generateMnemonic,
-  validateMnemonic,
-  deriveNostrKeyFromMnemonic,
-  deriveFullIdentity,
-  deriveFromNsec,
-  generateRandomIdentity,
-  isPrfSupported,
-  buildBackupEvent,
-  buildBackupFilter,
-  parseBackupPayload,
-  encryptMnemonic,
-  decryptMnemonic,
-  generateKeystore,
-  importKeystore,
-  loadKeystore,
-  writeKeystoreFile,
-  type ToonIdentity,
-  type ToonSigners,
-  type PasskeyInfo,
-  type KeyManagerConfig,
-  type BackupPayload,
-  type VaultData,
-  type EncryptedKeystore,
-} from './keys/index.js';
-
-// NIP-on-TOON render dispatch (render trust gradient: native / A2UI / mcp-ui /
-// generative). Branch 1 (native registry) is wired; branch 3 (#90) adds the
-// consent invariant; branches 2/4 route to marked decisions for sibling tickets
-// (#89/#92). See toon-meta#58.
-export {
-  renderDispatch,
-  resolveRendererMime,
-  resolveUiCoordinate,
-  resolveUiRenderer,
-  guardedRenderDispatch,
-  KindRegistry,
-  UI_RENDERER_KIND,
-  UI_TAG,
-  MIME_A2UI,
-  MIME_MCP_APP,
-  parseUiCoordinate,
-  getUiCoordinate,
-  buildUiCoordinate,
-  selectLatestAddressable,
-  // Renderer-swap defense (toon-client#91).
-  verifyRendererTrust,
-  isTrustDowngrade,
-  RendererPinStore,
-  // Branch 3 consent invariant (#90).
-  extractUiResource,
-  classifyIntent,
-  buildConsentRequest,
-  type ResolvedCoordinate,
-  // Branch 4 — generative fallback + optional kind:31036 publish-back (#92).
-  GenerativeFallbackRenderer,
-  deterministicGenerator,
-  renderDeterministicHtml,
-  buildRendererEventTemplate,
-  publishBackCoordinate,
-  type DispatchInput,
-  type GuardedDispatchInput,
-  type DispatchGuardInfo,
-  type UiCoordinate,
-  type SwapDecision,
-  type SwapApproval,
-  type SwapRejection,
-  type SwapRejectionReason,
-  type RendererPin,
-  type VerifyRendererInput,
-  type RenderBranch,
-  type RenderTrust,
-  type RenderDecision,
-  type NativeDecision,
-  type A2uiDecision,
-  type McpUiDecision,
-  type GenerativeDecision,
-  type UiResource,
-  type WidgetIntent,
-  type IntentClassification,
-  type ConsentRequest,
-  type ConsentDecision,
-  type GeneratedRenderer,
-  type GenerateContext,
-  type RendererGenerator,
-  type RendererSigner,
-  type RendererPublisher,
-  type PublishBackOptions,
-  type GenerativeFallbackOptions,
-  type GenerativeFallbackResult,
-} from './render/index.js';
-
-// Per-pair Mina zkApp auto-deploy (zero-config Mina channels). The heavy
-// o1js + @toon-protocol/mina-zkapp runtime is lazily loaded INSIDE these
-// functions — importing them costs nothing.
-export {
-  deployMinaChannelZkApp,
-  ensureOwnedMinaZkApp,
-  type DeployMinaZkAppParams,
-  type EnsureOwnedMinaZkAppParams,
-  type EnsureOwnedMinaZkAppResult,
-  type MinaZkAppDeployRecord,
-} from './channel/mina-channel-deploy.js';
-
-// The structured wire (ADR 0018/0019/0020): the OER envelope codec the
-// terminating connector speaks, the gift wrap that seals it to that
-// connector's identity key, the fulfilment a sealed request's shared secret
-// derives (ADR 0019), and the exchange that binds all three into one packet —
-// all replayed byte-for-byte against the connector's committed cross-repo
-// vectors (`src/wire/vectors/`).
-//
-// This IS the live paid-write path as of toon-client#450: the latin1 HTTP
-// framing that preceded it (`utils/store-envelope.ts`, `utils/fulfill-http.ts`)
-// is gone, along with its exports.
-//
-// `fulfillmentMatchesCondition` is deliberately NOT re-exported from
-// `wire/giftwrap.ts`: the one exported above from `utils/condition.ts` is the
-// same sha256 check and stays the single spelling of it.
-export {
-  OerError,
-  OerErrorKind,
-  encodeVarUint,
-  decodeVarUint,
-  encodeVarOctetString,
-  decodeVarOctetString,
-  EnvelopeError,
-  EnvelopeErrorKind,
-  encodeEnvelope,
-  decodeEnvelope,
-  encodeEnvelopeRequest,
-  decodeEnvelopeRequest,
-  encodeEnvelopeResponse,
-  decodeEnvelopeResponse,
-  GiftWrapError,
-  GiftWrapErrorKind,
-  GIFTWRAP_NONCE_LENGTH,
-  GIFTWRAP_PUBLIC_KEY_LENGTH,
-  GIFTWRAP_SECRET_LENGTH,
-  GIFTWRAP_TYPE_REQUEST,
-  GIFTWRAP_TYPE_RESPONSE,
-  deriveCondition,
-  deriveFulfillment,
-  giftWrapPublicKey,
-  localGiftWrapEcdh,
-  looksLikeSealedResponse,
-  openRequest,
-  openResponse,
-  sealRequest,
-  sealRequestWithRandomness,
-  sealResponse,
-  sealResponseWithRandomness,
-  type Decoded,
-  type Envelope,
-  type EnvelopeHeader,
-  type EnvelopeRequest,
-  type EnvelopeResponse,
-  sealExchange,
-  readExchangeOutcome,
-  envelopeHeader,
-  SealedResponseError,
-  type GiftWrapEcdh,
-  type OpenedRequest,
-  type SealedRequest,
-  type SealedExchange,
-  type ExchangeOutcome,
-  type SealedResponseErrorKind,
-} from './wire/index.js';
+// Conditions, retries, encodings.
+export * from './utils/index.js';

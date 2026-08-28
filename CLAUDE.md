@@ -1,27 +1,71 @@
 # toon-client
 
-The TOON Protocol **consumer side**: `@toon-protocol/client` (pay-to-write Nostr client — one-mnemonic multi-chain identity, payment-channel lifecycle, balance-proof signing, free reads), `@toon-protocol/client-mcp` (the `toon-clientd` daemon + `toon-mcp` MCP server letting Claude agents act as a TOON client), and `rig` — a drop-in `git` wrapper CLI (`rig push|issue|pr|comment`, `@toon-protocol/rig`) that publishes repo state as NIP-34 Nostr events with objects on Arweave. Ships the `toon-plugin/` (the `toon-client` skill + `toon-mcp`). `rig-web` — the browser-only frontend that interprets those same TOON events into a **decentralized control plane** — now lives in the [`toon-protocol/rig`](https://github.com/toon-protocol/rig) repo; this repo only keeps a permanent redirect stub (`.github/rig-web-redirect/`) at rig-web's old Pages URL, since already-published Arweave rig pointers embed that URL forever.
+One package plus a CLI. `@toon-protocol/client` pays for an HTTP request, per request, in
+stablecoin: it seals the request into a packet addressed to a route, attaches a signed claim on a
+payment channel the user opened on chain, and returns the app's HTTP response. It ships as a
+library and as the `toon` command.
 
-Part of the **TOON Protocol** — pay-to-write Nostr over Interledger (ILP), split into per-team repos. The client signs a payment-channel claim and sends a TOON-encoded event over BTP to an apex; it reads free over Nostr WS.
+A **connector** is a paid reverse proxy — it fronts an ordinary HTTP app, charges a flat price per
+route, and hands that app a request that was already paid for. This repository is the payer, and
+only the payer.
+
+## Layout
+
+```text
+packages/client/src/
+  client/     ToonClient, config, send(), errors      connector/  the client edge
+  ilp/ http/ btp/   the two carriages and their port  wire/       envelope, gift wrap, vectors
+  channel/    lifecycle, store, per-chain clients     signing/    balance proofs
+  keys/       derivation + keystore                   wallet/     balances, transfers, faucet
+  cli/        the `toon` command
+```
 
 ## Build & test
-```
+
+```bash
 pnpm install
-pnpm -r build
-pnpm -r test
+pnpm build
+pnpm test
+pnpm lint
+pnpm typecheck
 ```
+
+Test tiers, and the vectors, are in [docs/development.md](docs/development.md).
+
+## The wire is the connector's
+
+The normative contract is the Rust connector's client-edge spec and its **committed wire
+vectors**, vendored here at `packages/client/src/wire/vectors/` and replayed as this package's own
+conformance suite. Prose in this repository — including its docs — is not normative. Where the two
+disagree, the vectors are right.
+
+- **Payment-claim validation lives ONLY in the connector — never re-implement it here.**
+- The packet is ILPv4 semantics in TOON's own encoding, and is not byte-compatible with RFC 0027.
+- A refusal is **returned**, never thrown. Anything this client throws happened before the packet
+  went out, or on chain.
+
+The ILP payment engine, the connector itself, and the protocol documents are the separate
+**[toon-protocol/connector](https://github.com/toon-protocol/connector)** repository.
+
+## Dependencies
+
+No `@toon-protocol/core` and no `@toon-protocol/sdk` — this package has no TOON-protocol runtime
+dependencies at all. Its dependencies are `viem`, the `@noble`/`@scure` primitives, and optional
+`ws` for the websocket carriage in Node.
+
+## Docs
+
+`README.md` is the front door and stays short. Everything else is in `docs/`:
+getting-started, api, cli, channels, how-a-paid-packet-works, devnet, errors, troubleshooting,
+development. `docs/devnet.md` is the only place the full address table lives.
 
 ## Shared skills, docs & project context → toon-protocol/toon-meta
 Cross-cutting agent skills, docs, and the canonical project context live in **[toon-protocol/toon-meta](https://github.com/toon-protocol/toon-meta)**. Load the shared skills:
-```
+```bash
 /plugin marketplace add toon-protocol/toon-meta
 /plugin install toon-skills@toon-meta
 ```
-The product-specific **`toon-client` skill ships in this repo's `toon-plugin/`** (not in toon-meta). Canonical rules: `toon-meta` → `_bmad-output/project-context.md`.
-
-## Cross-repo dependencies
-- Consumes `@toon-protocol/{core,sdk}` from **npm** (pinned semver); `client`/`client-mcp`/`rig` are co-located workspace packages.
-- The ILP payment engine is the separate **[toon-protocol/connector](https://github.com/toon-protocol/connector)** repo. **Payment-claim validation lives ONLY in the connector — never re-implement it here.**
+Canonical rules: `toon-meta` → `_bmad-output/project-context.md`.
 
 ## Publishing
 CI publishes via **changesets + `pnpm`** using the org `NPM_TOKEN` secret. **Never run `npm publish`** (it ships unresolved `workspace:*`).

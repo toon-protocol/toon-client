@@ -1,10 +1,47 @@
+/**
+ * The claim watermark: which channel this client holds with a connector, what
+ * nonce and cumulative amount it has signed on that channel, and how to sign the
+ * next one.
+ *
+ * ## What a watermark is, and why losing one is fatal
+ *
+ * A claim is cumulative and its nonce must strictly advance the figure the
+ * connector has already banked (`client-edge-spec.md` §1.3 steps 2 and 3). The
+ * connector keeps its own copy; this class keeps ours, and the two agree exactly
+ * as long as every claim we sign is either accepted or rolled back. So the
+ * watermark is not a cache — it is the only thing standing between a restart and
+ * a channel whose every future claim is refused, which is why an in-memory store
+ * is a footgun and {@link ../client/config.js!resolveConfig} warns about it.
+ *
+ * ## Signing advances it, and a refusal must put it back
+ *
+ * {@link ChannelManager.signBalanceProof} advances and PERSISTS the nonce and the
+ * cumulative amount before the packet goes out, because a claim that is signed
+ * and then sent must never be signable again at the same nonce. That ordering is
+ * correct and the alternative is worse — but it leaves a debt: when the connector
+ * then refuses the claim (an underpayment, an unknown channel, a rejected
+ * `claimAck`), nothing was banked on its side, and our cumulative is now inflated
+ * by value it never admitted. Every later claim would then overpay by that amount
+ * against a deposit that is being spent down for nothing.
+ * {@link ChannelManager.rollbackAmount} is the repayment, and
+ * {@link ../client/send.js} calls it on every refusal path — including a thrown
+ * transport error, where nothing is known to have arrived at all.
+ *
+ * ## The binding
+ *
+ * A binding says "this is the channel I hold with THAT connector, on THAT chain,
+ * at THAT settlement contract", keyed by all three: the same connector on a
+ * second chain, or at a redeployed token network, is a different channel. It is
+ * persisted so a restart resumes the channel it already funded instead of locking
+ * a second lot of collateral.
+ */
 import { EvmSigner } from '../signing/evm-signer.js';
 import type { ChainSigner, ChainMetadata } from '../signing/types.js';
-import type { SignedBalanceProof } from '../types.js';
-import { ChannelResumeError } from '../errors.js';
+import type { SignedBalanceProof } from '../client/types.js';
+import { ChannelResumeError } from '../client/errors.js';
 import type { ChannelStore } from './ChannelStore.js';
 import { counterpartyMatch } from './counterparty.js';
-import type { ConnectorChannelClient } from '@toon-protocol/core';
+import type { ChannelClient, ChannelTerms } from './types.js';
 
 interface ChannelTracking {
   nonce: number;
@@ -14,19 +51,17 @@ interface ChannelTracking {
   tokenNetworkAddress: string;
   tokenAddress?: string;
   /**
-   * Counterparty settlement address on this channel's chain. Required to sign
-   * Solana/Mina balance proofs (folded into the canonical message); unused for
-   * the EVM EIP-712 path.
+   * The counterparty's settlement address on this channel's chain. Carried
+   * through signing so it reaches the claim message; neither chain's signed
+   * bytes fold it in, because which side gets paid is fixed by the channel's own
+   * participants rather than by the proof.
    */
   recipient?: string;
   /**
-   * On-chain channel `depositTotal` (base units), captured at channel-open time
-   * (#220). Threaded into the Mina signer so it binds `balanceB = depositTotal −
-   * balanceA` (toon-protocol/connector#133); the Solana signer ignores it and
-   * the EVM path never reads it. When unset (e.g. a channel RESUMED via
-   * `trackChannel` rather than opened, or an idempotent re-open that didn't
-   * surface it), the Mina signer self-resolves it from chain via its GraphQL URL
-   * (#223).
+   * On-chain `depositTotal` (base units), as captured at open or deposit time.
+   * The spendable balance is `depositTotal - cumulativeAmount`, and the connector
+   * refuses a cumulative above the deposit outright (`client-edge-spec.md` §1.3
+   * step 5), so this is what a caller should show as runway.
    */
   depositTotal?: bigint;
   /** Withdraw flow (unix SECONDS): set when close is initiated / becomes settleable / settled. */
@@ -37,42 +72,55 @@ interface ChannelTracking {
 
 export interface ChannelManagerConfig {
   /**
-   * Collateral (base units) locked on-chain by {@link ChannelManager.ensureChannel}
-   * when it opens a channel, on every settlement chain. Default `'100000'`
-   * (0.1 USDC at 6 decimals); a peer's negotiated `initialDeposit` wins over it.
+   * Collateral (base units) {@link ChannelManager.ensureChannel} locks when it
+   * opens a channel. Default `'100000'` (0.1 USDC at 6 decimals); a per-call
+   * `initialDeposit` wins over it.
    */
   initialDeposit?: string;
   settlementTimeout?: number;
 }
 
-export interface PeerNegotiation {
-  chain: string;
-  chainType: string;
-  chainId: number | string;
-  settlementAddress: string;
-  tokenAddress?: string;
-  tokenNetwork?: string;
-  initialDeposit?: string;
+/** Per-open overrides, when a caller wants something other than the defaults. */
+export interface EnsureChannelOptions {
+  initialDeposit?: bigint;
   settlementTimeout?: number;
 }
 
 /**
- * Local nonce tracking, multi-chain signing, and lazy channel opening.
- *
- * Supports multiple ChainSigner implementations (EVM, Solana, Mina).
- * The ensureChannel() method provides idempotent lazy channel opening.
+ * The settlement contract a channel lives at: the `TokenNetwork` on EVM, the
+ * settlement program on Solana. One field in the binding key, because they play
+ * the same role — a channel at a redeployed one is a different channel.
  */
+function settlementNetwork(terms: ChannelTerms): string {
+  return (terms.kind === 'evm' ? terms.tokenNetwork : terms.programId) ?? '';
+}
+
+/** The persisted context a resumed channel is re-tracked from. */
+function trackingContext(terms: ChannelTerms): {
+  chainType: string;
+  chainId: number;
+  tokenNetworkAddress: string;
+  tokenAddress?: string;
+  recipient?: string;
+} {
+  return {
+    chainType: terms.kind,
+    chainId: terms.chainId ?? 0,
+    tokenNetworkAddress: settlementNetwork(terms),
+    ...(terms.token ? { tokenAddress: terms.token } : {}),
+    ...(terms.counterparty ? { recipient: terms.counterparty } : {}),
+  };
+}
+
 export class ChannelManager {
   private readonly channels = new Map<string, ChannelTracking>();
   private readonly chainSigners = new Map<string, ChainSigner>();
-  private readonly peerChannels = new Map<string, string>();
+  private readonly connectorChannels = new Map<string, string>();
   private readonly pendingOpens = new Map<string, Promise<string>>();
   private readonly store?: ChannelStore;
   private readonly defaultInitialDeposit: string;
   private readonly defaultSettlementTimeout: number;
-  private channelClient?: ConnectorChannelClient;
-
-  // Legacy: keep EvmSigner reference for backwards compatibility
+  private channelClient?: ChannelClient;
   private readonly evmSigner?: EvmSigner;
 
   constructor(
@@ -86,23 +134,20 @@ export class ChannelManager {
     this.defaultSettlementTimeout = config?.settlementTimeout ?? 86400;
   }
 
-  /**
-   * Register a chain-specific signer.
-   */
+  /** Register a chain-specific signer (`'solana'`; EVM is wrapped from `EvmSigner`). */
   registerChainSigner(chainType: string, signer: ChainSigner): void {
     this.chainSigners.set(chainType, signer);
   }
 
-  /**
-   * Set the on-chain channel client for lazy channel opening.
-   */
-  setChannelClient(client: ConnectorChannelClient): void {
+  /** Set the on-chain channel client used for lazy channel opening. */
+  setChannelClient(client: ChannelClient): void {
     this.channelClient = client;
   }
 
   /**
-   * Get the signer for a tracked channel's chain type.
-   * For EVM, returns an adapter wrapping the EvmSigner.
+   * The signer for a tracked channel's chain. EVM is adapted from
+   * {@link EvmSigner} rather than registered, because that class predates the
+   * {@link ChainSigner} port and is also the on-chain transaction signer.
    */
   getSignerForChannel(channelId: string): ChainSigner {
     const tracking = this.channels.get(channelId);
@@ -110,19 +155,18 @@ export class ChannelManager {
       throw new Error(`Channel "${channelId}" is not being tracked.`);
     }
 
-    // Check non-EVM signers first
     const signer = this.chainSigners.get(tracking.chainType);
     if (signer) return signer;
 
-    // EVM: wrap EvmSigner as ChainSigner adapter
     if (tracking.chainType === 'evm' && this.evmSigner) {
       const evmSigner = this.evmSigner;
       return {
         chainType: 'evm' as const,
         signerIdentifier: evmSigner.address,
         async signBalanceProof(params) {
-          if (params.metadata.chainType !== 'evm')
+          if (params.metadata.chainType !== 'evm') {
             throw new Error('Expected EVM metadata');
+          }
           return evmSigner.signBalanceProof({
             channelId: params.channelId,
             nonce: params.nonce,
@@ -140,102 +184,72 @@ export class ChannelManager {
       };
     }
 
-    throw new Error(
-      `No signer registered for chain type: ${tracking.chainType}`
-    );
+    throw new Error(`No signer registered for chain type: ${tracking.chainType}`);
   }
 
   /**
-   * The key a peer's channel binding is persisted under: the peer, the
-   * negotiated chain, and the token network the channel lives on. All three
-   * matter — the same peer on a second chain (or a redeployed token network) is
-   * a DIFFERENT channel.
+   * The key a connector's channel binding is persisted under: the connector, the
+   * chain, and the settlement contract the channel lives at. All three matter —
+   * the same connector on a second chain, or at a redeployed token network, is a
+   * DIFFERENT channel.
    */
-  private static bindingKey(
-    peerId: string,
-    negotiation: PeerNegotiation
-  ): string {
-    return `${peerId}|${negotiation.chain}|${negotiation.tokenNetwork ?? ''}`;
+  private static bindingKey(connector: string, terms: ChannelTerms): string {
+    return `${connector}|${terms.chain}|${settlementNetwork(terms)}`;
   }
 
   /**
-   * Lazily open a channel for a peer. Idempotent — returns existing channel
-   * if already open. Deduplicates concurrent opens for the same peer.
+   * The channel this client holds with `connector` on these terms, opening one on
+   * chain only if there is none.
    *
-   * RESUME (#489): before opening anything on-chain, the persisted peer→channel
-   * binding is consulted, so a restarted process re-attaches to the channel it
-   * already holds instead of locking a second lot of collateral. Solana got this
-   * for free (its channel id is a deterministic PDA, so a re-open re-derived the
-   * same channel); EVM mints a fresh `bytes32` per `openChannel` call, so every
-   * restart stranded a deposit until this binding existed.
+   * Resolution order, cheapest first: an in-memory binding, an open already in
+   * flight (so concurrent sends share one), the persisted binding, and only then
+   * the chain. Nothing here forces a fresh open — the on-chain opener adopts an
+   * already-open channel where one exists (ADR 0059), so even a client with no
+   * store at all normally lands on the channel it already funded.
    */
   async ensureChannel(
-    peerId: string,
-    negotiation: PeerNegotiation
+    connector: string,
+    terms: ChannelTerms,
+    options: EnsureChannelOptions = {}
   ): Promise<string> {
-    // Keyed by peer AND chain AND token network: one peer can be settled with
-    // on several chains, and each is a separate channel. (Keying the in-memory
-    // map by peer alone handed the EVM channel back for a Solana negotiation.)
-    const key = ChannelManager.bindingKey(peerId, negotiation);
+    const key = ChannelManager.bindingKey(connector, terms);
 
-    // Return existing channel
-    const existing = this.peerChannels.get(key);
-    if (existing) return existing;
-
-    // Deduplicate concurrent opens
     const pending = this.pendingOpens.get(key);
     if (pending) return pending;
 
-    // Resume a channel this identity already holds with the peer.
-    const resumed = this.resumeChannel(peerId, negotiation);
-    if (resumed) return resumed;
+    const existing = this.resolveChannel(connector, terms);
+    if (existing) return existing;
 
     if (!this.channelClient) {
-      throw new Error(
-        'No channel client configured — cannot open payment channel'
-      );
+      throw new Error('No channel client configured — cannot open a payment channel');
     }
+    const channelClient = this.channelClient;
 
     const openPromise = (async () => {
       try {
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- channelClient checked in constructor
-        const result = await this.channelClient!.openChannel({
-          peerId,
-          chain: negotiation.chain,
-          token: negotiation.tokenAddress,
-          tokenNetwork: negotiation.tokenNetwork,
-          peerAddress: negotiation.settlementAddress,
-          initialDeposit:
-            negotiation.initialDeposit ?? this.defaultInitialDeposit,
-          settlementTimeout:
-            negotiation.settlementTimeout ?? this.defaultSettlementTimeout,
+        const result = await channelClient.openChannel({
+          terms,
+          initialDeposit: options.initialDeposit ?? BigInt(this.defaultInitialDeposit),
+          settlementTimeout: options.settlementTimeout ?? this.defaultSettlementTimeout,
         });
 
-        const context = {
-          chainType: negotiation.chainType,
-          chainId:
-            typeof negotiation.chainId === 'number' ? negotiation.chainId : 0,
-          tokenNetworkAddress: negotiation.tokenNetwork ?? '',
-          tokenAddress: negotiation.tokenAddress,
-          recipient: negotiation.settlementAddress,
-        };
+        const context = trackingContext(terms);
         this.trackChannel(result.channelId, {
           ...context,
-          // On-chain depositTotal, reported by every opener since issue #565
-          // (it was Mina-only before, so an EVM channel's collateral read back
-          // as 0). The Mina signer needs it to bind balanceB = depositTotal −
-          // balanceA (connector#133); every chain needs it for the spendable
-          // balance `depositTotal - cumulativeAmount`.
-          depositTotal: result.depositTotal,
+          ...(result.depositTotal !== undefined
+            ? { depositTotal: result.depositTotal }
+            : {}),
         });
-        this.peerChannels.set(key, result.channelId);
-        // Remember WHICH channel this peer holds, and seed its watermark, so
-        // the next process resumes it instead of opening a second one (#489).
+        this.connectorChannels.set(key, result.channelId);
         this.bindChannel(key, result.channelId, context, {
           ...(result.depositTotal !== undefined
             ? { depositTotal: result.depositTotal }
             : {}),
         });
+        // A channel that was ADOPTED rather than opened has an on-chain history
+        // this process did not write, so hand the chain client its context back
+        // exactly as the resume path does.
+        this.adoptOnChainContext(result.channelId, terms);
         return result.channelId;
       } finally {
         this.pendingOpens.delete(key);
@@ -247,96 +261,91 @@ export class ChannelManager {
   }
 
   /**
-   * Adopt an ALREADY-OPEN channel as this peer's channel: track it (rehydrating
-   * its watermark from the store), bind it so later lazy opens RESUME it rather
-   * than opening a second one, and hand the on-chain client its context back.
+   * The channel already held with `connector` on these terms — from memory, or
+   * resumed from the store — WITHOUT opening anything.
    *
-   * For a host that persisted the channel id itself before the client could
-   * (the MCP daemon's apex-channel store, rig's channel map): those hosts used
-   * to `trackChannel` on restart, which left `ensureChannel` unaware — so the
-   * first paid write opened a SECOND on-chain channel anyway (#489).
+   * Exists because "open one if there is none" is a policy a caller may not
+   * want: a consumer running with `autoOpenChannel: false` needs to know that
+   * paying would lock collateral on chain, and needs to know it without a chain
+   * round trip and without the side effect it is trying to avoid. This is the
+   * whole of {@link ChannelManager.ensureChannel} up to the point where it would
+   * transact.
+   *
+   * @throws {ChannelResumeError} when a binding names a channel whose watermark
+   *   is missing — the same hard failure `ensureChannel` raises, because the
+   *   answer "there is no channel" would be a lie that opens a second one.
    */
-  adoptChannel(
-    peerId: string,
-    negotiation: PeerNegotiation,
-    channelId: string
-  ): void {
-    const key = ChannelManager.bindingKey(peerId, negotiation);
-    const context = {
-      chainType: negotiation.chainType,
-      chainId:
-        typeof negotiation.chainId === 'number' ? negotiation.chainId : 0,
-      tokenNetworkAddress: negotiation.tokenNetwork ?? '',
-      tokenAddress: negotiation.tokenAddress,
-      recipient: negotiation.settlementAddress,
-    };
-    // Carry the collateral the binding already recorded (issue #565). Adopting
-    // is a RESTART path: the deposit was locked in a previous process, so
-    // without this the adopted channel reports 0 spendable on a funded channel
-    // until something re-reads it from chain (which only the MCP daemon does).
+  resolveChannel(connector: string, terms: ChannelTerms): string | undefined {
+    const key = ChannelManager.bindingKey(connector, terms);
+    return this.connectorChannels.get(key) ?? this.resumeChannel(connector, terms);
+  }
+
+  /**
+   * Adopt an ALREADY-OPEN channel as this connector's channel: track it
+   * (rehydrating its watermark from the store), bind it so later opens resume it
+   * rather than opening a second one, and hand the on-chain client its context.
+   *
+   * For a host that persisted the channel id itself before this client could.
+   * Tracking alone is not enough: the lazy-open path keys off the binding, so a
+   * host that only re-tracked its saved channel still opened a second one on the
+   * first paid request.
+   */
+  adoptChannel(connector: string, terms: ChannelTerms, channelId: string): void {
+    const key = ChannelManager.bindingKey(connector, terms);
+    const context = trackingContext(terms);
+    // Carry the collateral the binding already recorded: adopting is a RESTART
+    // path, so the deposit was locked in a previous process and without this a
+    // funded channel reports zero spendable until something re-reads the chain.
     const bound = this.store?.loadBinding?.(key);
-    const deposited =
-      bound?.channelId === channelId ? bound.depositTotal : undefined;
+    const deposited = bound?.channelId === channelId ? bound.depositTotal : undefined;
     this.trackChannel(channelId, {
       ...context,
       ...(deposited !== undefined ? { depositTotal: deposited } : {}),
     });
-    this.peerChannels.set(key, channelId);
+    this.connectorChannels.set(key, channelId);
     this.bindChannel(key, channelId, context, {
       ...(deposited !== undefined ? { depositTotal: deposited } : {}),
     });
-    this.adoptOnChainContext(channelId, negotiation);
+    this.adoptOnChainContext(channelId, terms);
   }
 
   /**
-   * Re-attach to the channel this identity already holds with `peerId`, from the
-   * store's peer→channel binding. Returns the resumed channel id, or undefined
-   * when there is nothing to resume (no store, no binding, or a binding whose
-   * channel is closing/settled — a spent channel must not be reused).
+   * Re-attach to the channel this identity already holds with `connector`, from
+   * the store's binding. `undefined` when there is nothing to resume — no store,
+   * no binding, or a binding whose channel is closing/settled, since a spent
+   * channel must not be reused.
    *
-   * `trackChannel` rehydrates the nonce/cumulative watermark from the store, so
-   * the resumed channel keeps signing ABOVE the last claim the connector saw.
-   *
-   * COUNTERPARTY: the binding key is `peer|chain|tokenNetwork` — it names a
-   * ROUTE, not a node, and a route can change hands (the devnet apex `g.toon`
-   * was retired and other nodes took over the names under it). All three key
-   * fields kept matching, so this resumed a channel opened against the retired
-   * node and signed claims against it; the node now answering holds no record
-   * of that channel and refused every write with `F01 - claim rejected: names a
-   * channel this connector has no record of`. The recorded counterparty is
-   * therefore re-checked against the address the peer announces TODAY
-   * ({@link counterpartyMatch}) before anything is resumed.
+   * COUNTERPARTY: the binding key names a connector URL and a chain, and a URL
+   * can change hands. All three key fields keep matching while the node behind
+   * them is replaced, so a resume would sign claims on a channel the node now
+   * answering holds no record of and every write would be refused `F01`. The
+   * recorded counterparty is therefore re-checked against the address the node
+   * publishes TODAY ({@link counterpartyMatch}) before anything is resumed.
    *
    * @throws {ChannelResumeError} when the binding's watermark is missing —
-   *   resuming would silently reset the nonce and every later claim would be
-   *   rejected (F01), so the caller is told loudly instead.
+   *   resuming would restart the nonce and every later claim would be refused,
+   *   so the caller is told loudly instead.
    */
-  private resumeChannel(
-    peerId: string,
-    negotiation: PeerNegotiation
-  ): string | undefined {
+  private resumeChannel(connector: string, terms: ChannelTerms): string | undefined {
     const store = this.store;
     if (!store?.loadBinding) return undefined;
 
-    const key = ChannelManager.bindingKey(peerId, negotiation);
+    const key = ChannelManager.bindingKey(connector, terms);
     const binding = store.loadBinding(key);
     if (!binding) return undefined;
 
-    // The counterparty rotated: retire the binding and let the caller
-    // re-resolve. `openChannel` binds whatever channel this identity already
-    // holds with the CURRENT counterparty where there is one — which is the
-    // whole point of not hard-erroring here. The retired record is ARCHIVED,
-    // not dropped: it may still hold an on-chain deposit.
-    const announced = negotiation.settlementAddress;
+    // The counterparty rotated: retire the binding and let the caller re-resolve.
+    // ARCHIVED, not dropped — the old channel may still hold an on-chain deposit.
+    const announced = terms.counterparty;
     const counterparty = counterpartyMatch(binding.context, announced);
     if (counterparty === 'mismatch') {
       console.warn(
-        `[ChannelManager] channel ${binding.channelId} bound to peer "${peerId}" ` +
-          `on ${negotiation.chain} was opened against counterparty ` +
-          `${binding.context.recipient}, but that peer now announces ` +
-          `${announced} — the node terminating that route was replaced. ` +
-          'Re-resolving the channel; the old binding is kept (superseded) so ' +
-          'its on-chain deposit stays reclaimable.'
+        `[ChannelManager] channel ${binding.channelId} bound to "${connector}" on ` +
+          `${terms.chain} was opened against counterparty ` +
+          `${binding.context.recipient}, but that connector now publishes ` +
+          `${announced} — the node terminating that URL was replaced. Re-resolving ` +
+          'the channel; the old binding is kept (superseded) so its on-chain ' +
+          'deposit stays reclaimable.'
       );
       store.supersedeBinding?.(key);
       return undefined;
@@ -345,13 +354,12 @@ export class ChannelManager {
     const watermark = store.load(binding.channelId);
     if (!watermark) {
       throw new ChannelResumeError(
-        `Payment channel "${binding.channelId}" is bound to peer "${peerId}" on ` +
-          `${negotiation.chain}, but its claim watermark is missing from the ` +
-          'channel store. Resuming would restart the nonce at 0 and the ' +
-          'connector would reject every claim; opening a new channel would ' +
-          'strand the collateral already locked in this one. Restore the ' +
-          'channel store file, or settle the channel on-chain and remove its ' +
-          `binding (key "${key}") before retrying.`
+        `Payment channel "${binding.channelId}" is bound to "${connector}" on ` +
+          `${terms.chain}, but its claim watermark is missing from the channel ` +
+          'store. Resuming would restart the nonce at 0 and the connector would ' +
+          'refuse every claim; opening a new channel would strand the collateral ' +
+          'already locked in this one. Restore the channel store file, or settle ' +
+          `the channel on chain and remove its binding (key "${key}") before retrying.`
       );
     }
 
@@ -362,12 +370,11 @@ export class ChannelManager {
       return undefined;
     }
 
-    // MIGRATION: bindings written before the counterparty was validated (and
-    // peers that announced no settlement address at open time) carry no
+    // MIGRATION: bindings written before the counterparty was validated carry no
     // `context.recipient`. There is nothing to contradict, so the resume
-    // proceeds — but with the announced address filled in, both for this run's
-    // `trackChannel` (Solana/Mina proofs need a recipient) and written back, so
-    // the NEXT run is verifiable rather than unverifiable forever.
+    // proceeds — but with the published address filled in, both for this run
+    // (a Solana proof needs a recipient) and written back, so the NEXT run is
+    // verifiable rather than unverifiable forever.
     const context =
       counterparty === 'unrecorded' && announced
         ? { ...binding.context, recipient: announced }
@@ -375,69 +382,57 @@ export class ChannelManager {
 
     this.trackChannel(binding.channelId, {
       ...context,
-      ...(binding.depositTotal !== undefined
-        ? { depositTotal: binding.depositTotal }
-        : {}),
+      ...(binding.depositTotal !== undefined ? { depositTotal: binding.depositTotal } : {}),
     });
     if (context !== binding.context) {
       store.saveBinding?.(key, { ...binding, context });
     }
-    this.peerChannels.set(key, binding.channelId);
-    // Hand the on-chain client back the context it only kept in memory, so
-    // deposit/close/state reads work on a channel this process never opened.
-    this.adoptOnChainContext(binding.channelId, negotiation);
+    this.connectorChannels.set(key, binding.channelId);
+    this.adoptOnChainContext(binding.channelId, terms);
     return binding.channelId;
   }
 
   /**
-   * Retire the binding that produced `channelId` for this peer, because the
-   * connector answered a claim drawn on it with `F01 - ... names a channel this
-   * connector has no record of` (toon-client#581).
+   * Retire the binding that produced `channelId`, because the connector answered
+   * a claim drawn on it with `F01 — names a channel this connector has no record
+   * of`.
    *
    * This is the GROUND-TRUTH counterpart to {@link resumeChannel}'s counterparty
-   * check. That check is a prediction and only catches a record whose recorded
-   * counterparty visibly disagrees with the announce; a node that keeps its
-   * settlement address but loses its channel state (a wiped connector, a
-   * restored-from-backup box, a redeployed contract) passes the prediction and
-   * fails on the wire. The reject IS the answer, so the binding it names is
-   * retired and the caller re-resolves.
+   * check. That check is a prediction and only catches a record that visibly
+   * disagrees with what is published; a node that keeps its settlement address
+   * but loses its channel state (a wiped connector, a restored-from-backup box, a
+   * redeployed contract) passes the prediction and fails on the wire. The reject
+   * IS the answer, so the binding it names is retired and the caller re-resolves.
    *
-   * SUPERSEDED, NOT DELETED — identical to the mismatch path: the channel may
-   * still hold an on-chain deposit, and an archived record keeps it reclaimable.
-   * The channel also stays TRACKED (its watermark is untouched) so close/settle
-   * still work on it; only the peer→channel binding is dropped, so the next
-   * `ensureChannel` re-resolves instead of handing the dead channel back.
+   * SUPERSEDED, NOT DELETED — the channel may still hold an on-chain deposit, and
+   * an archived record keeps it reclaimable. The channel also stays TRACKED (its
+   * watermark is untouched) so close/settle still work on it; only the binding is
+   * dropped.
    *
    * Refuses to act when the binding names a DIFFERENT channel than the one that
-   * failed — a concurrent write may already have re-resolved it, and retiring
+   * failed — a concurrent request may already have re-resolved it, and retiring
    * the replacement would open a third channel.
    *
-   * @returns true when a binding was retired; false when there was nothing to
-   *   retire, or the live binding names another channel.
+   * @returns true when a binding was retired.
    */
-  evictBinding(
-    peerId: string,
-    negotiation: PeerNegotiation,
-    channelId: string
-  ): boolean {
-    const key = ChannelManager.bindingKey(peerId, negotiation);
-    const inMemory = this.peerChannels.get(key);
+  evictBinding(connector: string, terms: ChannelTerms, channelId: string): boolean {
+    const key = ChannelManager.bindingKey(connector, terms);
+    const inMemory = this.connectorChannels.get(key);
     if (inMemory !== undefined && inMemory !== channelId) return false;
     const persisted = this.store?.loadBinding?.(key);
     if (persisted && persisted.channelId !== channelId) return false;
     if (inMemory === undefined && !persisted) return false;
 
-    this.peerChannels.delete(key);
+    this.connectorChannels.delete(key);
     this.pendingOpens.delete(key);
     this.store?.supersedeBinding?.(key);
     return true;
   }
 
   /**
-   * Persist a freshly opened channel as this peer's binding, and SEED its
-   * watermark entry (`nonce 0`) so a later resume can tell "never claimed
-   * against" apart from "watermark lost" (which is a hard
-   * {@link ChannelResumeError}).
+   * Persist a freshly bound channel, and SEED its watermark entry (`nonce 0`) so
+   * a later resume can tell "never claimed against" apart from "watermark lost",
+   * which is a hard {@link ChannelResumeError}.
    */
   private bindChannel(
     key: string,
@@ -463,65 +458,51 @@ export class ChannelManager {
     store.saveBinding(key, {
       channelId,
       context,
-      ...(extra.depositTotal !== undefined
-        ? { depositTotal: extra.depositTotal }
-        : {}),
+      ...(extra.depositTotal !== undefined ? { depositTotal: extra.depositTotal } : {}),
     });
   }
 
   /**
-   * Re-seed the on-chain client's per-channel context for a RESUMED channel.
-   * `OnChainChannelClient` caches `chain`/`tokenNetwork`/`token` only for
-   * channels it opened in this process, so without this a resumed channel
-   * cannot be deposited into or closed. Optional capability — a channel client
-   * that doesn't implement `adoptChannel` is simply left alone.
+   * Re-seed the on-chain client's per-channel context for a channel it did not
+   * open in this process. `OnChainChannelClient` caches the chain, settlement
+   * contract and token per channel, so without this a resumed channel can be paid
+   * on but not deposited into, closed or read. Optional capability — a channel
+   * client that does not implement `adoptChannel` is simply left alone.
    */
-  private adoptOnChainContext(
-    channelId: string,
-    negotiation: PeerNegotiation
-  ): void {
+  private adoptOnChainContext(channelId: string, terms: ChannelTerms): void {
     const client = this.channelClient as
-      | (ConnectorChannelClient & {
+      | (ChannelClient & {
           adoptChannel?: (
             channelId: string,
-            ctx: {
-              chain: string;
-              tokenNetworkAddress: string;
-              tokenAddress?: string;
-            }
+            ctx: { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
           ) => void;
         })
       | undefined;
-    if (!client?.adoptChannel || !negotiation.tokenNetwork) return;
+    const network = settlementNetwork(terms);
+    if (!client?.adoptChannel || !network) return;
     client.adoptChannel(channelId, {
-      chain: negotiation.chain,
-      tokenNetworkAddress: negotiation.tokenNetwork,
-      ...(negotiation.tokenAddress
-        ? { tokenAddress: negotiation.tokenAddress }
-        : {}),
+      chain: terms.chain,
+      tokenNetworkAddress: network,
+      ...(terms.token ? { tokenAddress: terms.token } : {}),
     });
   }
 
   /**
-   * Get channel ID for a peer (if any). Channels are held per peer AND chain
-   * AND token network, so a peer settled with on two chains has two — this
-   * returns the first one tracked for the peer.
+   * The channel bound to `connector`, if any — the first one tracked for it, since
+   * a connector settled with on two chains has two.
    */
-  getChannelForPeer(peerId: string): string | undefined {
-    for (const [key, channelId] of this.peerChannels) {
-      if (key === peerId || key.startsWith(`${peerId}|`)) return channelId;
+  getChannelForConnector(connector: string): string | undefined {
+    for (const [key, channelId] of this.connectorChannels) {
+      if (key === connector || key.startsWith(`${connector}|`)) return channelId;
     }
     return undefined;
   }
 
   /**
-   * Start tracking a channel.
-   * Called after bootstrap returns a channelId.
-   *
-   * @param channelId - Payment channel identifier
-   * @param chainContext - Chain context for signing (chainType + chainId + tokenNetworkAddress)
-   * @param initialNonce - Starting nonce (default: 0)
-   * @param initialAmount - Starting cumulative amount (default: 0n)
+   * Start tracking a channel, resuming its watermark from the store when one is
+   * persisted. `initialNonce`/`initialAmount` seed a channel the store has never
+   * seen — never a channel it has, because a store entry is by definition ahead
+   * of any figure a caller could pass.
    */
   trackChannel(
     channelId: string,
@@ -536,12 +517,9 @@ export class ChannelManager {
     initialNonce = 0,
     initialAmount = 0n
   ): void {
-    const cId = chainContext?.chainId ?? 31337;
-    const tnAddr =
-      chainContext?.tokenNetworkAddress ??
-      '0x0000000000000000000000000000000000000000';
+    const cId = chainContext?.chainId ?? 0;
+    const tnAddr = chainContext?.tokenNetworkAddress ?? '';
 
-    // If store has persisted state for this channel, resume from it
     if (this.store) {
       const persisted = this.store.load(channelId);
       if (persisted) {
@@ -554,17 +532,13 @@ export class ChannelManager {
           tokenAddress: chainContext?.tokenAddress,
           recipient: chainContext?.recipient,
           depositTotal: chainContext?.depositTotal,
-          // Resume the withdraw-flow timers so a daemon restart mid-grace
-          // doesn't strand funds (the gate can't be evaluated without them).
-          ...(persisted.closedAt !== undefined
-            ? { closedAt: persisted.closedAt }
-            : {}),
+          // Resume the withdraw-flow timers so a restart mid-grace doesn't
+          // strand funds (the settle gate can't be evaluated without them).
+          ...(persisted.closedAt !== undefined ? { closedAt: persisted.closedAt } : {}),
           ...(persisted.settleableAt !== undefined
             ? { settleableAt: persisted.settleableAt }
             : {}),
-          ...(persisted.settledAt !== undefined
-            ? { settledAt: persisted.settledAt }
-            : {}),
+          ...(persisted.settledAt !== undefined ? { settledAt: persisted.settledAt } : {}),
         });
         return;
       }
@@ -583,14 +557,17 @@ export class ChannelManager {
   }
 
   /**
-   * Signs a balance proof for the given channel.
-   * Auto-increments nonce and adds to cumulative amount.
-   * Routes to the correct ChainSigner based on the channel's chain type.
+   * Sign the next claim on `channelId`, advancing the nonce by one and the
+   * cumulative amount by `additionalAmount`.
    *
-   * @param channelId - Payment channel identifier
-   * @param additionalAmount - Amount to add to cumulative transferred amount
-   * @returns Signed balance proof
-   * @throws Error if channel is not being tracked
+   * **The advance is persisted BEFORE the signature is returned**, and therefore
+   * before the packet goes out. That ordering is deliberate: a signed claim is a
+   * bearer instrument, and re-issuing one at a nonce already spent is how a client
+   * double-spends against itself. The cost is that a refusal leaves the local
+   * figure ahead of the connector's — see {@link ChannelManager.rollbackAmount},
+   * which every refusal path must call.
+   *
+   * @throws {Error} if the channel is not tracked.
    */
   async signBalanceProof(
     channelId: string,
@@ -605,38 +582,27 @@ export class ChannelManager {
 
     tracking.nonce += 1;
     tracking.cumulativeAmount += additionalAmount;
-
-    // Persist updated state (preserving any withdraw-flow timers).
     this.persist(channelId);
 
-    // Route to appropriate signer for non-EVM chains
     const signer = this.chainSigners.get(tracking.chainType);
     if (signer && tracking.chainType !== 'evm') {
       if (!tracking.recipient) {
         throw new Error(
-          `Channel "${channelId}" (${tracking.chainType}) has no recipient settlement address; ` +
-            'cannot sign a Solana/Mina balance proof. Ensure the peer negotiation supplied a settlementAddress.'
+          `Channel "${channelId}" (${tracking.chainType}) has no counterparty ` +
+            'settlement address recorded, so its balance proof cannot be built.'
         );
       }
-      const metadata = this.buildMetadata(tracking);
       return signer.signBalanceProof({
         channelId,
         nonce: tracking.nonce,
         transferredAmount: tracking.cumulativeAmount,
         lockedAmount: 0n,
-        locksRoot:
-          '0x0000000000000000000000000000000000000000000000000000000000000000',
+        locksRoot: '0x0000000000000000000000000000000000000000000000000000000000000000',
         recipient: tracking.recipient,
-        metadata,
-        // On-chain depositTotal captured at open time (#220) — the Mina signer
-        // binds balanceB = depositTotal − balanceA (connector#133); the Solana
-        // signer ignores it. When undefined (resume / idempotent re-open) the
-        // Mina signer self-resolves it from chain (#223).
-        depositTotal: tracking.depositTotal,
+        metadata: this.buildMetadata(tracking),
       });
     }
 
-    // EVM path (backwards compatible — uses EvmSigner directly)
     if (!this.evmSigner) {
       throw new Error('No EVM signer configured for EVM channel signing.');
     }
@@ -645,95 +611,88 @@ export class ChannelManager {
       nonce: tracking.nonce,
       transferredAmount: tracking.cumulativeAmount,
       lockedAmount: 0n,
-      locksRoot:
-        '0x0000000000000000000000000000000000000000000000000000000000000000',
+      locksRoot: '0x0000000000000000000000000000000000000000000000000000000000000000',
       chainId: tracking.chainId,
       tokenNetworkAddress: tracking.tokenNetworkAddress,
       tokenAddress: tracking.tokenAddress,
     });
   }
 
+  /**
+   * Give back cumulative amount the connector never admitted.
+   *
+   * Call this on EVERY path where a signed claim did not become value the
+   * connector banked: a refused claim (`F03` underpayment or over-deposit, `F01`
+   * unknown channel or non-advancing nonce), a `claimAck.result === 'rejected'`
+   * riding beside any verdict, and a transport error where nothing is known to
+   * have arrived. Without it the local cumulative runs permanently ahead of the
+   * connector's watermark and every subsequent claim overpays by the difference —
+   * spending the channel's deposit down for nothing, and eventually breaching the
+   * deposit ceiling of `client-edge-spec.md` §1.3 step 5.
+   *
+   * **The nonce is deliberately NOT rolled back.** Only the amount is. A nonce is
+   * a strictly-increasing sequence number, not a resource: the connector accepts
+   * any claim whose nonce is above its watermark, so a gap costs nothing, whereas
+   * reusing a nonce risks presenting two different claims under one number.
+   * Re-signing at the next nonce with the restored cumulative is exactly what the
+   * spec's own remedy for an over-deposit refusal describes.
+   *
+   * Clamped at zero, and a no-op for an untracked channel: this runs on error
+   * paths, and an error path that throws its own error hides the original.
+   */
+  rollbackAmount(channelId: string, amount: bigint): void {
+    const tracking = this.channels.get(channelId);
+    if (!tracking || amount <= 0n) return;
+    tracking.cumulativeAmount =
+      tracking.cumulativeAmount > amount ? tracking.cumulativeAmount - amount : 0n;
+    this.persist(channelId);
+  }
+
   private buildMetadata(tracking: ChannelTracking): ChainMetadata {
-    switch (tracking.chainType) {
-      case 'solana':
-        return { chainType: 'solana', programId: tracking.tokenNetworkAddress };
-      case 'mina':
-        return {
-          chainType: 'mina',
-          zkAppAddress: tracking.tokenNetworkAddress,
-        };
-      default:
-        return {
-          chainType: 'evm',
-          chainId: tracking.chainId,
-          tokenNetworkAddress: tracking.tokenNetworkAddress,
-          tokenAddress: tracking.tokenAddress,
-        };
+    if (tracking.chainType === 'solana') {
+      return { chainType: 'solana', programId: tracking.tokenNetworkAddress };
     }
+    return {
+      chainType: 'evm',
+      chainId: tracking.chainId,
+      tokenNetworkAddress: tracking.tokenNetworkAddress,
+      tokenAddress: tracking.tokenAddress,
+    };
   }
 
-  /**
-   * Gets the current nonce for a tracked channel.
-   */
+  /** The last nonce signed on a tracked channel. */
   getNonce(channelId: string): number {
-    const tracking = this.channels.get(channelId);
-    if (!tracking) {
-      throw new Error(`Channel "${channelId}" is not being tracked.`);
-    }
-    return tracking.nonce;
+    return this.require(channelId).nonce;
   }
 
-  /**
-   * Gets the cumulative transferred amount for a tracked channel.
-   */
+  /** The cumulative transferred amount signed on a tracked channel. */
   getCumulativeAmount(channelId: string): bigint {
-    const tracking = this.channels.get(channelId);
-    if (!tracking) {
-      throw new Error(`Channel "${channelId}" is not being tracked.`);
-    }
-    return tracking.cumulativeAmount;
+    return this.require(channelId).cumulativeAmount;
   }
 
   /**
-   * Gets the on-chain deposit total (collateral locked at open / via deposits)
-   * for a tracked channel, or `0n` when none was captured. The available
-   * (spendable) balance is `depositTotal - cumulativeAmount`.
+   * The on-chain deposit total, or `0n` when none was captured. The spendable
+   * balance is this minus {@link getCumulativeAmount}.
    */
   getDepositTotal(channelId: string): bigint {
-    const tracking = this.channels.get(channelId);
-    if (!tracking) {
-      throw new Error(`Channel "${channelId}" is not being tracked.`);
-    }
-    return tracking.depositTotal ?? 0n;
+    return this.require(channelId).depositTotal ?? 0n;
   }
 
   /**
-   * Update the tracked on-chain deposit total after a successful deposit, so the
-   * available balance (`depositTotal - cumulativeAmount`) reflects the new
-   * collateral on the next read.
-   *
-   * Also written through to the peer BINDING (issue #565) — the deposit is an
-   * on-chain fact, so a restart must resume with the collateral that is
-   * actually locked, not the amount recorded when the channel was first opened.
+   * Record new collateral after a deposit. Written through to the BINDING too:
+   * the deposit is an on-chain fact, so a restart must resume with the collateral
+   * that is actually locked rather than the amount recorded at open.
    */
   setDepositTotal(channelId: string, total: bigint): void {
-    const tracking = this.channels.get(channelId);
-    if (!tracking) {
-      throw new Error(`Channel "${channelId}" is not being tracked.`);
-    }
-    tracking.depositTotal = total;
+    this.require(channelId).depositTotal = total;
     this.persistDepositTotal(channelId, total);
   }
 
-  /**
-   * Write `total` into whichever peer binding names `channelId`. No-op without
-   * a store that persists bindings, or when no binding names this channel (an
-   * untracked/foreign channel has no collateral of ours to record).
-   */
+  /** Write `total` into whichever binding names `channelId`. */
   private persistDepositTotal(channelId: string, total: bigint): void {
     const store = this.store;
     if (!store?.saveBinding || !store.loadBinding) return;
-    for (const [key, bound] of this.peerChannels) {
+    for (const [key, bound] of this.connectorChannels) {
       if (bound !== channelId) continue;
       const binding = store.loadBinding(key);
       if (!binding) continue;
@@ -742,7 +701,7 @@ export class ChannelManager {
     }
   }
 
-  /** Persist a channel's full nonce/amount + withdraw-timer state to the store. */
+  /** Persist a channel's watermark and withdraw timers. */
   private persist(channelId: string): void {
     if (!this.store) return;
     const t = this.channels.get(channelId);
@@ -757,18 +716,11 @@ export class ChannelManager {
   }
 
   /**
-   * Record that a channel was closed (withdraw flow): stores `closedAt` +
-   * `settleableAt` (unix SECONDS) so the grace timer survives a daemon restart.
+   * Record that a channel was closed: `closedAt` + `settleableAt` (unix SECONDS),
+   * persisted so the challenge timer survives a restart.
    */
-  setChannelClosed(
-    channelId: string,
-    closedAt: bigint,
-    settleableAt: bigint
-  ): void {
-    const tracking = this.channels.get(channelId);
-    if (!tracking) {
-      throw new Error(`Channel "${channelId}" is not being tracked.`);
-    }
+  setChannelClosed(channelId: string, closedAt: bigint, settleableAt: bigint): void {
+    const tracking = this.require(channelId);
     tracking.closedAt = closedAt;
     tracking.settleableAt = settleableAt;
     this.persist(channelId);
@@ -776,11 +728,7 @@ export class ChannelManager {
 
   /** Record that a channel was settled (collateral released). */
   setChannelSettled(channelId: string, settledAt: bigint): void {
-    const tracking = this.channels.get(channelId);
-    if (!tracking) {
-      throw new Error(`Channel "${channelId}" is not being tracked.`);
-    }
-    tracking.settledAt = settledAt;
+    this.require(channelId).settledAt = settledAt;
     this.persist(channelId);
   }
 
@@ -791,8 +739,7 @@ export class ChannelManager {
 
   /**
    * Where a channel sits in the withdraw journey, from the tracked timers:
-   * `open` (never closed) → `closing` (closed, grace not elapsed) →
-   * `settleable` (grace elapsed) → `settled`. `nowSec` is injectable for tests.
+   * `open` → `closing` → `settleable` → `settled`. `nowSec` is injectable.
    */
   getChannelCloseState(
     channelId: string,
@@ -801,31 +748,24 @@ export class ChannelManager {
     const t = this.channels.get(channelId);
     if (!t || t.closedAt === undefined) return 'open';
     if (t.settledAt !== undefined) return 'settled';
-    if (t.settleableAt !== undefined && nowSec >= t.settleableAt)
-      return 'settleable';
+    if (t.settleableAt !== undefined && nowSec >= t.settleableAt) return 'settleable';
     return 'closing';
   }
 
-  /**
-   * Gets all tracked channel IDs.
-   */
+  /** Every channel id this manager is tracking. */
   getTrackedChannels(): string[] {
     return Array.from(this.channels.keys());
   }
 
-  /**
-   * Returns true if the channel is being tracked.
-   */
+  /** Whether `channelId` is tracked. */
   isTracking(channelId: string): boolean {
     return this.channels.has(channelId);
   }
 
   /**
-   * The chain context a tracked channel was opened/resumed with — the
-   * chainType/chainId/tokenNetworkAddress a caller needs to build a
-   * `POST /ilp/claim-state` request (toon-client#494) without re-deriving
-   * them from the peer negotiation. `undefined` when `channelId` is not
-   * tracked.
+   * The chain context a tracked channel was opened or resumed with — what a
+   * caller needs to build a `POST /ilp/claim-state` request without re-deriving
+   * it. `undefined` when the channel is not tracked.
    */
   getChannelContext(channelId: string):
     | {
@@ -842,12 +782,14 @@ export class ChannelManager {
       chainType: tracking.chainType,
       chainId: tracking.chainId,
       tokenNetworkAddress: tracking.tokenNetworkAddress,
-      ...(tracking.tokenAddress !== undefined
-        ? { tokenAddress: tracking.tokenAddress }
-        : {}),
-      ...(tracking.recipient !== undefined
-        ? { recipient: tracking.recipient }
-        : {}),
+      ...(tracking.tokenAddress !== undefined ? { tokenAddress: tracking.tokenAddress } : {}),
+      ...(tracking.recipient !== undefined ? { recipient: tracking.recipient } : {}),
     };
+  }
+
+  private require(channelId: string): ChannelTracking {
+    const tracking = this.channels.get(channelId);
+    if (!tracking) throw new Error(`Channel "${channelId}" is not being tracked.`);
+    return tracking;
   }
 }

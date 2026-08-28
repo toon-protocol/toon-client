@@ -10,11 +10,20 @@
  * loses cannot leave a silently-passing assertion behind.
  *
  * Structure: one top-level `describe` per section, each driven by `it.each`
- * over `loadWireVectors()`. `giftwrap` and `fulfilment` (toon-client#449) and
- * `channel_control_declaration` (toon-client#540) each arrived as exactly that
- * — a new block, no restructure. Every section the file carries is replayed
- * except `peer_carriage`, the connector-to-connector wire no client SDK
- * speaks, which is declared in `sectionsPresentNotYetReplayed` instead.
+ * over `loadWireVectors()`. `giftwrap` and `fulfilment` (toon-client#449),
+ * `channel_control_declaration` (toon-client#540) and now `peer_carriage` each
+ * arrived as exactly that — a new block, no restructure. Every section the
+ * file carries is replayed.
+ *
+ * `peer_carriage` is replayed only in PART, and deliberately so. Most of it is
+ * the wire between two connectors — claim-ack carriage, flush, retransmission
+ * semantics — which this client never speaks. But the OER ILP packet lives
+ * inside those fixtures and is not peer-only at all: it is the same packet the
+ * client edge sends and receives, and the connector's `vectors/README.md` says
+ * so ("there is no separate top-level `packet` section: replay these"). So is
+ * `claim_solana`'s signed message, which is the ADR 0053 balance proof this
+ * client's Solana signer produces. What is left genuinely peer-only is named
+ * in `PEER_ONLY_ITEMS` below, so no item of the section is merely unlooked-at.
  *
  * A section this harness has NOT been taught is a failure, not a no-op — see
  * "accounts for every section the file carries" below.
@@ -37,6 +46,8 @@ import {
   type EnvelopeValidVector,
   type FulfilmentVector,
   type GiftWrapVector,
+  type PeerCarriageVectors,
+  type PeerPrepareVector,
   type VectorEnvelope,
 } from './vectors/load.js';
 import {
@@ -58,6 +69,22 @@ import {
 } from './giftwrap.js';
 import { fulfillmentMatchesCondition } from '../utils/condition.js';
 import { EvmSigner } from '../signing/evm-signer.js';
+import { SolanaSigner } from '../signing/solana-signer.js';
+import type { SolanaClaimMessage } from '../signing/types.js';
+import { buildBalanceProofMessage } from '../channel/solana/payment-channel.js';
+import { base58Decode } from '../utils/base58.js';
+import {
+  BTPMessageType,
+  ILPPacketType,
+  deserializeIlpPacket,
+  deserializeIlpPrepare,
+  parseBtpMessage,
+  serializeIlpFulfill,
+  serializeIlpPrepare,
+  serializeIlpReject,
+  type BTPMessageData,
+  type ILPRejectPacket,
+} from '../btp/protocol.js';
 
 const vectors = loadWireVectors();
 const provenance = loadWireVectorsProvenance();
@@ -74,12 +101,22 @@ describe('the vendored vector file', () => {
 
   it('is the schema version this harness understands', () => {
     expect(vectors.schema_version).toBe(provenance.schemaVersion);
-    expect(vectors.schema_version).toBe(1);
+    // 4 (connector#1157, ADR 0060): the `{peerId, secret}` peer credential is
+    // deleted from both carriages. 2 put the real settlement program into
+    // `claim_solana.programId`; 3 retired minimum delivery.
+    expect(vectors.schema_version).toBe(4);
   });
 
   it('records which connector commit it came from', () => {
     expect(provenance.connectorCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(provenance.sourceRepo).toBe('toon-protocol/connector');
+    // A vendored copy must be attributable to a commit someone can check out.
+    // `refresh-wire-vectors.mjs` refuses to write from a dirty working tree,
+    // so a `true` here could only have been typed in by hand.
+    expect(provenance.dirty ?? false).toBe(false);
+    if (provenance.source !== undefined) {
+      expect(['github', 'local']).toContain(provenance.source);
+    }
   });
 
   it('carries the seal sections, now replayed below', () => {
@@ -112,11 +149,11 @@ describe('the vendored vector file', () => {
 
   it('replays the sections its provenance claims it replays', () => {
     // Every replayed section is reproduced by this repo's own code:
-    // `envelope` and `giftwrap`/`fulfilment` against `src/wire/`, and `claim`
-    // and `channel_control_declaration` against `src/signing/evm-signer.ts`.
-    // `peer_carriage` is the one deliberate exception — the
-    // connector-to-connector peer wire, which no client SDK speaks (see
-    // `PeerCarriageVectors`'s doc comment in `vectors/load.ts`).
+    // `envelope` and `giftwrap`/`fulfilment` against `src/wire/`, `claim` and
+    // `channel_control_declaration` against `src/signing/evm-signer.ts`, and
+    // `peer_carriage` against `src/btp/protocol.ts` (the OER packet and the
+    // BTP frame around it) and `src/channel/solana/payment-channel.ts` (the
+    // ADR 0053 balance proof).
     expect(new Set(provenance.sectionsReplayed)).toEqual(
       new Set([
         'envelope',
@@ -124,9 +161,10 @@ describe('the vendored vector file', () => {
         'fulfilment',
         'claim',
         'channel_control_declaration',
+        'peer_carriage',
       ])
     );
-    expect(provenance.sectionsPresentNotYetReplayed).toEqual(['peer_carriage']);
+    expect(provenance.sectionsPresentNotYetReplayed).toEqual([]);
   });
 });
 
@@ -837,4 +875,301 @@ describe('channel_control_declaration — the BTP auth channelId/expires/signatu
       expect(elsewhere.toLowerCase()).not.toBe(signatureAsViem(vector));
     }
   );
+});
+
+// ─── peer_carriage ──────────────────────────────────────────────────────────
+
+/**
+ * The items of `peer_carriage` that are genuinely the wire between two
+ * connectors, and have no counterpart in a client.
+ *
+ * This client answers a connector; it never acknowledges a claim, never
+ * flushes, and never adjudicates a retransmission — so there is nothing here
+ * for these to be conformance evidence against. Listing them by name is what
+ * keeps "every item accounted for" a real assertion rather than a comment: an
+ * item the connector ADDS is in neither list and fails the build until someone
+ * decides, in writing, which it is.
+ */
+const PEER_ONLY_ITEMS = [
+  'fulfill_ack_rejected',
+  'ack_rejected_reasons',
+  'ack_absent',
+  'ack_malformed',
+  'flush',
+  'flush_ack',
+  'claim_retransmit',
+  'claim_same_nonce_different_bytes',
+  'flush_requested',
+] as const;
+
+/** The items replayed below, against this client's own codec. */
+const PEER_REPLAYED_ITEMS = [
+  'claim_evm',
+  'claim_digest_hex',
+  'claim_solana',
+  'prepare',
+  'prepare_no_claim',
+  'fulfill_ack_accepted',
+  'reject_with_cost',
+  'forwarded_data_unchanged',
+] as const;
+
+describe('peer_carriage — the ILP packet bytes, which are the client edge too', () => {
+  const peer = vectors.peer_carriage as PeerCarriageVectors;
+
+  it('carries the section, and accounts for every item in it', () => {
+    expect(peer).toBeDefined();
+    expect(new Set(Object.keys(peer))).toEqual(
+      new Set([...PEER_REPLAYED_ITEMS, ...PEER_ONLY_ITEMS])
+    );
+    expect(
+      PEER_REPLAYED_ITEMS.filter((i) =>
+        (PEER_ONLY_ITEMS as readonly string[]).includes(i)
+      )
+    ).toEqual([]);
+  });
+
+  // ── the OER PREPARE ──────────────────────────────────────────────────────
+
+  /** Both directions: these bytes decode to those values, those values re-encode to these bytes. */
+  function replayPrepare(vector: PeerPrepareVector): void {
+    const bytes = hexToBytes(vector.http_body_hex);
+    const decoded = deserializeIlpPrepare(bytes);
+
+    expect(decoded.type).toBe(ILPPacketType.PREPARE);
+    expect(decoded.amount).toBe(BigInt(vector.prepare.amount));
+    expect(decoded.destination).toBe(vector.prepare.destination);
+    expect(bytesToHex(decoded.executionCondition)).toBe(
+      vector.prepare.execution_condition_hex
+    );
+    expect(bytesToHex(decoded.data)).toBe(vector.prepare.data_hex);
+    // The 19-byte GeneralizedTime, `YYYYMMDDHHMMSS.fffZ` — TOON's dialect, not
+    // RFC 0027's 17-byte Interledger Timestamp (connector ADR 0063).
+    expect(decoded.expiresAt.toISOString()).toBe(vector.prepare.expires_at);
+
+    // ...and re-encoding what we decoded reproduces the published bytes. A
+    // decoder that merely tolerated a non-canonical VarUInt would pass the
+    // first half and fail here.
+    expect(bytesToHex(serializeIlpPrepare(decoded))).toBe(vector.http_body_hex);
+  }
+
+  it('decodes and re-encodes the claim-bearing PREPARE byte-for-byte', () => {
+    replayPrepare(peer.prepare);
+  });
+
+  it('decodes and re-encodes the claimless PREPARE — the same packet', () => {
+    // "Claimless is legal", pinned rather than assumed: the packet bytes are
+    // identical, and only the carriage around them loses the claim.
+    replayPrepare(peer.prepare_no_claim);
+    expect(peer.prepare_no_claim.http_body_hex).toBe(peer.prepare.http_body_hex);
+    expect(peer.prepare_no_claim.claim_json).toBeNull();
+    expect(peer.prepare_no_claim.http_headers).toEqual([]);
+  });
+
+  it('carries the same OER packet inside the BTP MESSAGE frame', () => {
+    // `parseBtpMessage` must find the packet byte-identical to the HTTP body:
+    // the two carriages encode the same value, never two encodings of two
+    // values (peer-carriage-spec.md §10.1 I1).
+    const frame = parseBtpMessage(hexToBytes(peer.prepare.btp_message_hex));
+    expect(frame.type).toBe(BTPMessageType.MESSAGE);
+    const data = frame.data as BTPMessageData;
+    expect(bytesToHex(data.ilpPacket ?? new Uint8Array(0))).toBe(
+      peer.prepare.http_body_hex
+    );
+
+    // ...and the claim rides as one `payment-channel-claim` protocolData entry
+    // whose payload is the claim JSON's raw UTF-8 — not base64, not a second
+    // serialization of it. (Base64 is the HTTP header's encoding of the same
+    // bytes; both are asserted here against the one `claim_json`.)
+    expect(data.protocolData).toHaveLength(1);
+    const entry = data.protocolData[0];
+    expect(entry?.protocolName).toBe('payment-channel-claim');
+    expect(new TextDecoder().decode(entry?.data)).toBe(peer.prepare.claim_json);
+    expect(bytesToHex(entry?.data ?? new Uint8Array(0))).toBe(
+      peer.claim_evm.btp_raw_hex
+    );
+
+    const [headerName, headerValue] = peer.prepare.http_headers[0] ?? [];
+    expect(headerName).toBe('ilp-payment-channel-claim');
+    expect(Buffer.from(headerValue ?? '', 'base64').toString('utf8')).toBe(
+      peer.prepare.claim_json
+    );
+  });
+
+  // ── the OER FULFILL / REJECT ─────────────────────────────────────────────
+
+  it('decodes and re-encodes the FULFILL byte-for-byte', () => {
+    const vector = peer.fulfill_ack_accepted;
+    expect(vector.packet).toBe('fulfill');
+    const packet = deserializeIlpPacket(hexToBytes(vector.packet_hex));
+    if (packet.type !== ILPPacketType.FULFILL) throw new Error('not a FULFILL');
+
+    expect(packet.fulfillment.length).toBe(32);
+    expect(new TextDecoder().decode(packet.data)).toBe(
+      'vector-fixture-fulfill-data'
+    );
+    expect(bytesToHex(serializeIlpFulfill(packet))).toBe(vector.packet_hex);
+
+    // The packet is byte-identical to the HTTP body: the ack rides beside it.
+    expect(vector.http_body_hex).toBe(vector.packet_hex);
+    expect(vector.http_status).toBe(200);
+  });
+
+  it('decodes and re-encodes the REJECT byte-for-byte', () => {
+    const vector = peer.reject_with_cost;
+    expect(vector.packet).toBe('reject');
+    const packet = deserializeIlpPacket(hexToBytes(vector.packet_hex));
+    if (packet.type !== ILPPacketType.REJECT) throw new Error('not a REJECT');
+
+    expect(packet.code).toBe('T04');
+    expect(packet.triggeredBy).toBe('g.toon.store-box');
+    expect(packet.message).toBe('vector fixture reject');
+    expect(packet.data.length).toBe(0);
+    expect(bytesToHex(serializeIlpReject(packet))).toBe(vector.packet_hex);
+  });
+
+  it('keeps accumulated_cost OUT of the REJECT and beside it', () => {
+    // ADR 0011: the cost rides as a header / protocolData entry, never inside
+    // the packet. A decoder that expected it in the bytes would read a
+    // truncated `data` field and never notice.
+    const vector = peer.reject_with_cost;
+    expect(vector.accumulated_cost).toBe(4200);
+    expect(
+      vector.http_headers.find(([name]) => name === 'toon-accumulated-cost')
+    ).toEqual(['toon-accumulated-cost', '4200']);
+    const packet = deserializeIlpPacket(hexToBytes(vector.packet_hex));
+    expect(bytesToHex(serializeIlpReject(packet as ILPRejectPacket))).toBe(
+      vector.packet_hex
+    );
+    expect(vector.packet_hex).toBe(vector.http_body_hex);
+  });
+
+  // ── the sealed payload a hop must not touch ──────────────────────────────
+
+  it('carries the sealed gift wrap through the PREPARE unchanged', () => {
+    const vector = peer.forwarded_data_unchanged;
+    // Byte-for-byte inside the packet — a forwarding hop never re-encodes,
+    // re-wraps or truncates a payload it holds no key for (§8.1).
+    expect(vector.http_body_hex).toContain(vector.sealed_data_hex);
+    const decoded = deserializeIlpPrepare(hexToBytes(vector.http_body_hex));
+    expect(bytesToHex(decoded.data)).toBe(vector.sealed_data_hex);
+    // ...and it really is one of this file's own giftwrap request wraps, so
+    // `giftwrap`'s replay above is what proves these bytes are openable.
+    expect(vector.sealed_data_hex).toBe(
+      vectors.giftwrap?.cases[0]?.request_wrap_hex
+    );
+    // The BTP carriage of the same packet carries the same bytes.
+    expect(vector.btp_ilp_packet_prepare_hex).toContain(vector.sealed_data_hex);
+    const frame = parseBtpMessage(
+      hexToBytes(vector.btp_ilp_packet_prepare_hex)
+    );
+    expect(
+      bytesToHex((frame.data as BTPMessageData).ilpPacket ?? new Uint8Array(0))
+    ).toBe(vector.http_body_hex);
+  });
+
+  // ── the Solana balance proof (connector ADR 0053) ────────────────────────
+
+  it('reproduces the 96-byte Solana balance proof from the claim fields', () => {
+    const claim = JSON.parse(peer.claim_solana.json) as SolanaClaimMessage;
+    const rebuilt = buildBalanceProofMessage(
+      claim.programId,
+      claim.channelAccount,
+      BigInt(claim.nonce),
+      BigInt(claim.transferredAmount)
+    );
+    expect(bytesToHex(rebuilt)).toBe(peer.claim_solana.signed_message_hex);
+    expect(rebuilt.length).toBe(96);
+  });
+
+  it('binds the declared programId at offset 16 — the ADR 0053 binding', () => {
+    // The vector's own generator asserts this; asserting it here is what makes
+    // `programId` a field this client must SIGN under rather than merely
+    // report. A claim naming another program names a program no channel of the
+    // payer's lives under, and the bytes would not match.
+    const claim = JSON.parse(peer.claim_solana.json) as SolanaClaimMessage;
+    const message = hexToBytes(peer.claim_solana.signed_message_hex);
+    expect(new TextDecoder().decode(message.slice(0, 16))).toBe(
+      'TOON-BALPROOF-V2'
+    );
+    expect(bytesToHex(message.slice(16, 48))).toBe(
+      bytesToHex(base58Decode(claim.programId))
+    );
+    expect(bytesToHex(message.slice(48, 80))).toBe(
+      bytesToHex(base58Decode(claim.channelAccount))
+    );
+  });
+
+  // ── the claim JSON shapes this client emits ──────────────────────────────
+
+  it('agrees with this client on which fields a claim carries', () => {
+    // The connector reads a claim field-by-field, so what the contract fixes is
+    // WHICH fields are present. A signer that dropped one, or invented one,
+    // would still produce valid JSON and a valid signature — and a claim the
+    // connector refuses structurally, before it ever looks at the signature.
+    const solana = JSON.parse(peer.claim_solana.json) as Record<string, unknown>;
+    const evm = JSON.parse(peer.claim_evm.json) as Record<string, unknown>;
+
+    const solanaSigner = new SolanaSigner(new Uint8Array(32).fill(3));
+    const solanaClaim = solanaSigner.buildClaimMessage(
+      {
+        channelId: String(solana['channelAccount']),
+        nonce: Number(solana['nonce']),
+        transferredAmount: BigInt(String(solana['transferredAmount'])),
+        lockedAmount: 0n,
+        locksRoot: '0x00',
+        signature: '0x' + '11'.repeat(64),
+        signerAddress: String(solana['signerPublicKey']),
+        chainId: 0,
+        tokenNetworkAddress: String(solana['programId']),
+        recipient: '',
+      },
+      String(solana['senderId'])
+    );
+    expect(new Set(Object.keys(solanaClaim))).toEqual(new Set(Object.keys(solana)));
+
+    const evmClaim = EvmSigner.buildClaimMessage(
+      {
+        channelId: String(evm['channelId']),
+        nonce: Number(evm['nonce']),
+        transferredAmount: BigInt(String(evm['transferredAmount'])),
+        lockedAmount: BigInt(String(evm['lockedAmount'])),
+        locksRoot: String(evm['locksRoot']),
+        signature: String(evm['signature']),
+        signerAddress: String(evm['signerAddress']),
+        chainId: Number(evm['chainId']),
+        tokenNetworkAddress: String(evm['tokenNetworkAddress']),
+        recipient: '',
+      },
+      String(evm['senderId'])
+    );
+    expect(new Set(Object.keys(evmClaim))).toEqual(new Set(Object.keys(evm)));
+  });
+
+  it('repeats the EIP-712 digest carriage cannot touch', () => {
+    // `claim_digest_hex` is the same string as `claim.cases[0].digest_hex`,
+    // repeated rather than recomputed — the point being that wrapping a claim
+    // in either carriage changes nothing about what was signed.
+    expect(peer.claim_digest_hex).toBe(vectors.claim?.cases[0]?.digest_hex);
+    expect(peer.claim_evm.signed_message_hex).toBe('');
+  });
+
+  it('decodes each claim to the same wire values on both carriages', () => {
+    for (const claim of [peer.claim_evm, peer.claim_solana]) {
+      const fromBtp = new TextDecoder().decode(hexToBytes(claim.btp_raw_hex));
+      const fromHttp = Buffer.from(claim.http_base64, 'base64').toString('utf8');
+      expect(fromBtp).toBe(claim.json);
+      expect(fromHttp).toBe(claim.json);
+
+      const parsed = JSON.parse(claim.json) as Record<string, unknown>;
+      expect(parsed['blockchain']).toBe(claim.blockchain);
+      expect(parsed[claim.blockchain === 'evm' ? 'channelId' : 'channelAccount']).toBe(
+        claim.wire_channel_id
+      );
+      expect(parsed['nonce']).toBe(claim.wire_nonce);
+      expect(String(parsed['transferredAmount'])).toBe(
+        String(claim.wire_cumulative_amount)
+      );
+    }
+  });
 });

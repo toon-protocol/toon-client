@@ -13,7 +13,7 @@ const baseline = {
     eslint: { errors: 16, warnings: 718 },
     typecheck: {
       totalErrors: 75,
-      byPackage: { arweave: 0, client: 0, 'client-mcp': 0, rig: 1, 'rig-web': 74, views: 0 },
+      byPackage: { client: 0, alpha: 1, beta: 74 },
     },
   },
   speed: { gateWallClockSeconds: 185 },
@@ -35,30 +35,33 @@ describe('parseEslintJson', () => {
 });
 
 describe('parseTypecheckOutput', () => {
+  // Synthetic package names: this repo publishes one package (`client`), but
+  // the parser's job is to attribute errors to whatever packages it is told
+  // about, so the fixture exercises more than one.
   const log = [
-    'Scope: 6 of 7 workspace projects',
-    'packages/rig typecheck$ tsc -p tsconfig.json --noEmit',
-    "packages/rig typecheck: src/cli/output.ts(281,45): error TS2345: Argument of type '...' is not assignable.",
-    'packages/rig typecheck: Failed',
-    'packages/rig-web typecheck$ tsc -p tsconfig.json --noEmit',
-    "packages/rig-web typecheck: playwright.config.ts(5,24): error TS4111: Property 'CI' comes from an index signature.",
-    "packages/rig-web typecheck:   The last overload gave the following error.",
-    "packages/rig-web typecheck: src/web/blame.test.ts(170,20): error TS2339: Property 'lines' does not exist.",
-    'packages/rig-web typecheck: Failed',
+    'Scope: 3 of 3 workspace projects',
+    'packages/alpha typecheck$ tsc -p tsconfig.json --noEmit',
+    "packages/alpha typecheck: src/cli/output.ts(281,45): error TS2345: Argument of type '...' is not assignable.",
+    'packages/alpha typecheck: Failed',
+    'packages/beta typecheck$ tsc -p tsconfig.json --noEmit',
+    "packages/beta typecheck: vitest.config.ts(5,24): error TS4111: Property 'CI' comes from an index signature.",
+    "packages/beta typecheck:   The last overload gave the following error.",
+    "packages/beta typecheck: src/blame.test.ts(170,20): error TS2339: Property 'lines' does not exist.",
+    'packages/beta typecheck: Failed',
     'packages/client typecheck: Done',
   ].join('\n');
 
   it('counts error TS occurrences per package', () => {
-    const result = parseTypecheckOutput(log, ['arweave', 'client', 'client-mcp', 'rig', 'rig-web', 'views']);
-    expect(result.byPackage.rig).toBe(1);
-    expect(result.byPackage['rig-web']).toBe(2);
+    const result = parseTypecheckOutput(log, ['client', 'alpha', 'beta']);
+    expect(result.byPackage.alpha).toBe(1);
+    expect(result.byPackage.beta).toBe(2);
   });
 
   it('does not count indented continuation lines without "error TS"', () => {
-    const result = parseTypecheckOutput(log, ['rig-web']);
+    const result = parseTypecheckOutput(log, ['beta']);
     // Only the 2 lines that actually contain "error TS" count, not the
     // "The last overload gave the following error." detail line.
-    expect(result.byPackage['rig-web']).toBe(2);
+    expect(result.byPackage.beta).toBe(2);
   });
 
   it('reports zero for a listed package with no errors', () => {
@@ -67,7 +70,7 @@ describe('parseTypecheckOutput', () => {
   });
 
   it('sums totalErrors across all packages', () => {
-    const result = parseTypecheckOutput(log, ['arweave', 'client', 'client-mcp', 'rig', 'rig-web', 'views']);
+    const result = parseTypecheckOutput(log, ['client', 'alpha', 'beta']);
     expect(result.totalErrors).toBe(3);
   });
 });
@@ -75,7 +78,7 @@ describe('parseTypecheckOutput', () => {
 describe('evaluateCorrectness', () => {
   const live = {
     eslint: { errors: 16, warnings: 718 },
-    typecheck: { totalErrors: 75, byPackage: { arweave: 0, client: 0, 'client-mcp': 0, rig: 1, 'rig-web': 74, views: 0 } },
+    typecheck: { totalErrors: 75, byPackage: { client: 0, alpha: 1, beta: 74 } },
   };
 
   it('passes when live counts exactly match the frozen baseline', () => {
@@ -100,26 +103,26 @@ describe('evaluateCorrectness', () => {
 
   it('fails when repo-wide typecheck totalErrors increases', () => {
     const result = evaluateCorrectness(
-      { ...live, typecheck: { totalErrors: 76, byPackage: { ...live.typecheck.byPackage, rig: 2 } } },
+      { ...live, typecheck: { totalErrors: 76, byPackage: { ...live.typecheck.byPackage, alpha: 2 } } },
       baseline.correctness,
     );
     expect(result.ok).toBe(false);
   });
 
   it('fails when a single package regresses even though the repo-wide total is unchanged', () => {
-    // rig goes 1 -> 2, rig-web goes 74 -> 73: total stays 75, but debt moved
+    // alpha goes 1 -> 2, beta goes 74 -> 73: total stays 75, but debt moved
     // into a package that must not gain new errors.
     const result = evaluateCorrectness(
-      { ...live, typecheck: { totalErrors: 75, byPackage: { ...live.typecheck.byPackage, rig: 2, 'rig-web': 73 } } },
+      { ...live, typecheck: { totalErrors: 75, byPackage: { ...live.typecheck.byPackage, alpha: 2, beta: 73 } } },
       baseline.correctness,
     );
     expect(result.ok).toBe(false);
-    expect(result.violations.some((v) => v.includes('rig'))).toBe(true);
+    expect(result.violations.some((v) => v.includes('alpha'))).toBe(true);
   });
 
   it('fails when a package with no baseline entry reports new errors', () => {
     const result = evaluateCorrectness(
-      { ...live, typecheck: { totalErrors: 76, byPackage: { ...live.typecheck.byPackage, arweave: 1 } } },
+      { ...live, typecheck: { totalErrors: 76, byPackage: { ...live.typecheck.byPackage, gamma: 1 } } },
       baseline.correctness,
     );
     expect(result.ok).toBe(false);
@@ -127,7 +130,7 @@ describe('evaluateCorrectness', () => {
 
   it('passes when typecheck counts improve (decrease) vs baseline', () => {
     const result = evaluateCorrectness(
-      { ...live, typecheck: { totalErrors: 74, byPackage: { ...live.typecheck.byPackage, rig: 0 } } },
+      { ...live, typecheck: { totalErrors: 74, byPackage: { ...live.typecheck.byPackage, alpha: 0 } } },
       baseline.correctness,
     );
     expect(result.ok).toBe(true);

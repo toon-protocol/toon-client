@@ -1,16 +1,40 @@
 /**
- * Node-only encrypted mnemonic keystore for @toon-protocol/client.
+ * Node-only encrypted mnemonic keystore.
  *
- * Mirrors the relay node wallet crypto (`packages/relay/src/wallet/
- * crypto.ts`): a BIP-39 mnemonic is encrypted at rest with scrypt (KDF) +
- * AES-256-GCM (authenticated encryption), serialized as JSON, and written to
- * disk with mode 0o600. Decryption requires the operator password; a wrong
- * password fails the GCM auth-tag verification and throws.
+ * A BIP-39 mnemonic is encrypted at rest with scrypt (KDF) + AES-256-GCM
+ * (authenticated encryption), serialized as JSON, and written to disk with mode
+ * `0o600`. Decryption needs the password; a wrong one fails the GCM auth-tag
+ * check and throws. None of that crypto has changed, and none of it is going to
+ * change quietly — the file format carries a version so that it does not have
+ * to.
  *
- * This is the Node-side counterpart to the browser Passkey/IndexedDB
- * `KeyManager`/`KeyVault` flow — it does NOT touch those. It is guarded against
- * browser bundling: every entry point throws if `node:crypto`/`node:fs` are not
- * available (e.g. when accidentally imported in a browser bundle).
+ * ## Versions, and why a v1 file is read as `legacy`
+ *
+ * A keystore records **which derivation its mnemonic is meant to be read
+ * under**, because a phrase alone does not say. Before 1.0 this client derived
+ * its EVM key on coin type 1237 — one secp256k1 key served two roles — and a
+ * keystore from that era says nothing about it. From 1.0 the EVM key is derived
+ * at the BIP-44 standard `m/44'/60'/0'/0/i`, which is a different address from
+ * the same phrase.
+ *
+ * So the migration rule, which is the whole point of the version field:
+ *
+ * - **A keystore with no `version`, or `version: 1`, is read as `legacy`.**
+ *   Every keystore written before 1.0 is one of those two, and every one of them
+ *   may hold a payment channel with real collateral locked at the address that
+ *   derivation produces. Reading it as `standard` would silently hand the caller
+ *   a different address, an empty wallet and no channel, while the funded one
+ *   sat there unreachable. Upgrading this package moves nothing.
+ * - **A keystore written now is `version: 2` and records its derivation
+ *   explicitly** — `standard` unless the caller asked for `legacy` (importing a
+ *   phrase whose channels were opened under the old path).
+ *
+ * Nothing rewrites a v1 file in place. It keeps working as it is, and a caller
+ * that wants to move to the standard path does so deliberately: import the same
+ * phrase into a new keystore, and open a new channel at the new address.
+ *
+ * Node-only, and loudly so: `scryptSync` and POSIX file modes have no browser
+ * equivalent, so every entry point throws rather than being bundled broken.
  *
  * @module
  */
@@ -25,6 +49,7 @@ import { writeFileSync, readFileSync } from 'node:fs';
 import {
   generateMnemonic as genMnemonic,
   validateMnemonic as isValidMnemonic,
+  type KeyDerivationScheme,
 } from './KeyDerivation.js';
 
 /** scrypt parameters — N=2^17 (~0.5-1s on modern hardware), r=8, p=1. */
@@ -42,9 +67,14 @@ const IV_LEN = 12;
 /** AES-GCM authentication tag length in bytes (128-bit). */
 const AUTH_TAG_LEN = 16;
 
+/** The version this package writes. See this module's own docs. */
+export const KEYSTORE_VERSION = 2;
+
 /**
  * Encrypted keystore file format (JSON, all binary fields base64-encoded).
- * Wire-compatible with the relay node's `EncryptedWallet`.
+ *
+ * `version` and `derivation` are both optional on the *type* because a file on
+ * disk may predate them; anything this package writes sets both.
  */
 export interface EncryptedKeystore {
   /** scrypt salt (base64). */
@@ -55,8 +85,40 @@ export interface EncryptedKeystore {
   ciphertext: string;
   /** AES-GCM authentication tag (base64). */
   tag: string;
-  /** Envelope version for forward-compat (currently 1). */
+  /** File-format version. Absent or `1` means a pre-1.0 file: read as `legacy`. */
   version?: number;
+  /** Which derivation this mnemonic's keys are meant to be read under. */
+  derivation?: KeyDerivationScheme;
+}
+
+/** A decrypted keystore: the phrase, and how to read it. */
+export interface OpenedKeystore {
+  mnemonic: string;
+  /** `legacy` for any pre-1.0 file. See this module's own docs. */
+  derivation: KeyDerivationScheme;
+  /** The file's own version. `1` when the file recorded none. */
+  version: number;
+}
+
+/** Options for writing a keystore. */
+export interface WriteKeystoreOptions {
+  /** Which derivation to record. Default `'standard'`. */
+  derivation?: KeyDerivationScheme;
+}
+
+/**
+ * Which derivation a keystore's mnemonic is to be read under.
+ *
+ * A file with no `version`, or `version: 1`, predates 1.0 and is `legacy` — its
+ * addresses, and the channels funded at them, must not move. From `version: 2`
+ * the file says so itself, defaulting to `standard` if the field is missing.
+ */
+export function keystoreDerivation(
+  keystore: EncryptedKeystore
+): KeyDerivationScheme {
+  const version = keystore.version ?? 1;
+  if (version < KEYSTORE_VERSION) return 'legacy';
+  return keystore.derivation ?? 'standard';
 }
 
 /**
@@ -80,11 +142,13 @@ function assertNode(): void {
 
 /**
  * Encrypt a mnemonic with a password using scrypt + AES-256-GCM.
- * Returns the JSON-serializable encrypted envelope (does NOT write to disk).
+ * Returns the JSON-serializable encrypted envelope (does NOT write to disk),
+ * stamped `version: 2` and carrying the derivation its keys are read under.
  */
 export function encryptMnemonic(
   mnemonic: string,
-  password: string
+  password: string,
+  options: WriteKeystoreOptions = {}
 ): EncryptedKeystore {
   assertNode();
   if (typeof mnemonic !== 'string' || mnemonic.length === 0) {
@@ -118,7 +182,8 @@ export function encryptMnemonic(
       iv: iv.toString('base64'),
       ciphertext: ciphertext.toString('base64'),
       tag: tag.toString('base64'),
-      version: 1,
+      version: KEYSTORE_VERSION,
+      derivation: options.derivation ?? 'standard',
     };
   } finally {
     key.fill(0);
@@ -190,11 +255,12 @@ export function decryptMnemonic(
  */
 export function generateKeystore(
   path: string,
-  password: string
+  password: string,
+  options: WriteKeystoreOptions = {}
 ): { mnemonic: string; keystore: EncryptedKeystore } {
   assertNode();
   const mnemonic = genMnemonic();
-  const keystore = encryptMnemonic(mnemonic, password);
+  const keystore = encryptMnemonic(mnemonic, password, options);
   writeKeystoreFile(path, keystore);
   return { mnemonic, keystore };
 }
@@ -209,7 +275,8 @@ export function generateKeystore(
 export function importKeystore(
   path: string,
   mnemonic: string,
-  password: string
+  password: string,
+  options: WriteKeystoreOptions = {}
 ): EncryptedKeystore {
   assertNode();
   if (!isValidMnemonic(mnemonic)) {
@@ -217,16 +284,20 @@ export function importKeystore(
       'Invalid BIP-39 mnemonic: checksum or word-list validation failed'
     );
   }
-  const keystore = encryptMnemonic(mnemonic, password);
+  const keystore = encryptMnemonic(mnemonic, password, options);
   writeKeystoreFile(path, keystore);
   return keystore;
 }
 
 /**
- * Load and decrypt a keystore file at `path` with `password`, returning the
- * plaintext mnemonic. Throws on a wrong password or corruption.
+ * Read a keystore file at `path`, decrypt it with `password`, and report both
+ * the phrase and the derivation it is to be read under. Throws on a wrong
+ * password or corruption.
+ *
+ * Prefer this over {@link loadKeystore}: a mnemonic on its own does not say
+ * which addresses it means, and a pre-1.0 file means the `legacy` ones.
  */
-export function loadKeystore(path: string, password: string): string {
+export function openKeystore(path: string, password: string): OpenedKeystore {
   assertNode();
   const raw = readFileSync(path, 'utf8');
   let parsed: EncryptedKeystore;
@@ -235,7 +306,22 @@ export function loadKeystore(path: string, password: string): string {
   } catch {
     throw new Error(`Keystore file at ${path} is not valid JSON`);
   }
-  return decryptMnemonic(parsed, password);
+  return {
+    mnemonic: decryptMnemonic(parsed, password),
+    derivation: keystoreDerivation(parsed),
+    version: parsed.version ?? 1,
+  };
+}
+
+/**
+ * Load and decrypt a keystore file at `path` with `password`, returning the
+ * plaintext mnemonic alone. Throws on a wrong password or corruption.
+ *
+ * The phrase without its derivation is only half the answer — see
+ * {@link openKeystore}.
+ */
+export function loadKeystore(path: string, password: string): string {
+  return openKeystore(path, password).mnemonic;
 }
 
 /**

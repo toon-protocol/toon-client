@@ -5,10 +5,6 @@ node_modules/
 # Build output
 dist/
 
-# Generated Claude Desktop extension bundles (built in CI on publish)
-dist-mcpb/
-*.mcpb
-
 # Turbo
 .turbo/
 
@@ -105,12 +101,8 @@ __pycache__/
 # Generated deployment files
 docker-compose-peer*.yml
 genesis.env
-.playwright-cli/
 wallet-*.yaml
 
 # Local e2e public-testnet dev wallet (never commit the seed phrase)
 .env.e2e.local
 *.e2e-wallet
-
-# Plugin MCP declaration must be committed (no secrets — just an npx command)
-!toon-plugin/.mcp.json

@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generatePrivateKey } from 'viem/accounts';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { ChannelManager } from './ChannelManager.js';
+import type { ChannelTerms } from './types.js';
 import { InMemoryChannelStore } from './ChannelStore.js';
 import type { ChannelStore } from './ChannelStore.js';
 
@@ -25,13 +26,14 @@ const TOKEN_NETWORK = '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478';
 const LOST_CHANNEL = `0x${'11'.repeat(32)}`;
 const HELD_CHANNEL = `0x${'22'.repeat(32)}`;
 
-function negotiation() {
+function terms(): ChannelTerms {
   return {
+    kind: 'evm',
     chain: 'evm:84532',
-    chainType: 'evm',
     chainId: 84532,
-    settlementAddress: SETTLEMENT,
-    tokenAddress: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
+    counterparty: SETTLEMENT,
+    token: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
+    decimals: 6,
     tokenNetwork: TOKEN_NETWORK,
   };
 }
@@ -60,23 +62,23 @@ describe('ChannelManager.evictBinding (toon-client#581)', () => {
   it('retires the binding the refused claim was drawn on, so the next resolve re-resolves', async () => {
     const store = new InMemoryChannelStore();
     const first = managerWith(store, LOST_CHANNEL);
-    expect(await first.mgr.ensureChannel('toon', negotiation())).toBe(
+    expect(await first.mgr.ensureChannel('toon', terms())).toBe(
       LOST_CHANNEL
     );
     // Poisoned: without eviction this binding is handed back to every
     // subsequent write, forever.
-    expect(await first.mgr.ensureChannel('toon', negotiation())).toBe(
+    expect(await first.mgr.ensureChannel('toon', terms())).toBe(
       LOST_CHANNEL
     );
 
-    expect(first.mgr.evictBinding('toon', negotiation(), LOST_CHANNEL)).toBe(
+    expect(first.mgr.evictBinding('toon', terms(), LOST_CHANNEL)).toBe(
       true
     );
 
     // The counterparty is UNCHANGED — this is precisely the case the
     // counterparty check cannot see.
     const next = managerWith(store, HELD_CHANNEL);
-    expect(await next.mgr.ensureChannel('toon', negotiation())).toBe(
+    expect(await next.mgr.ensureChannel('toon', terms())).toBe(
       HELD_CHANNEL
     );
   });
@@ -84,33 +86,33 @@ describe('ChannelManager.evictBinding (toon-client#581)', () => {
   it('re-resolves through the ordinary open path — no forced/extra on-chain open', async () => {
     const store = new InMemoryChannelStore();
     const { mgr, openChannel } = managerWith(store, LOST_CHANNEL);
-    await mgr.ensureChannel('toon', negotiation());
+    await mgr.ensureChannel('toon', terms());
     expect(openChannel).toHaveBeenCalledTimes(1);
 
-    mgr.evictBinding('toon', negotiation(), LOST_CHANNEL);
+    mgr.evictBinding('toon', terms(), LOST_CHANNEL);
 
     // The opener is idempotent on-chain: it binds whatever channel this
     // identity ALREADY holds with this counterparty. Modelled here by handing
     // the same id back.
     const held = managerWith(store, HELD_CHANNEL);
-    await held.mgr.ensureChannel('toon', negotiation());
-    await held.mgr.ensureChannel('toon', negotiation());
+    await held.mgr.ensureChannel('toon', terms());
+    await held.mgr.ensureChannel('toon', terms());
 
     // Exactly ONE resolution attempt across two writes: the second is served
     // from the re-established binding, not from a second open.
     expect(held.openChannel).toHaveBeenCalledTimes(1);
     expect(held.openChannel.mock.calls[0]?.[0]).toMatchObject({
-      peerAddress: SETTLEMENT,
+      terms: { counterparty: SETTLEMENT },
     });
   });
 
   it('SUPERSEDES rather than deletes, so the dead channel’s deposit stays reclaimable', async () => {
     const store = new InMemoryChannelStore();
     const { mgr } = managerWith(store, LOST_CHANNEL);
-    await mgr.ensureChannel('toon', negotiation());
+    await mgr.ensureChannel('toon', terms());
     const key = `toon|evm:84532|${TOKEN_NETWORK}`;
 
-    mgr.evictBinding('toon', negotiation(), LOST_CHANNEL);
+    mgr.evictBinding('toon', terms(), LOST_CHANNEL);
 
     // Gone from the resume path…
     expect(store.loadBinding?.(key)).toBeUndefined();
@@ -129,15 +131,15 @@ describe('ChannelManager.evictBinding (toon-client#581)', () => {
     // replacement would open a third channel.
     const store = new InMemoryChannelStore();
     const { mgr } = managerWith(store, HELD_CHANNEL);
-    await mgr.ensureChannel('toon', negotiation());
+    await mgr.ensureChannel('toon', terms());
 
-    expect(mgr.evictBinding('toon', negotiation(), LOST_CHANNEL)).toBe(false);
-    expect(await mgr.ensureChannel('toon', negotiation())).toBe(HELD_CHANNEL);
+    expect(mgr.evictBinding('toon', terms(), LOST_CHANNEL)).toBe(false);
+    expect(await mgr.ensureChannel('toon', terms())).toBe(HELD_CHANNEL);
   });
 
   it('is a no-op when there is no binding to retire', () => {
     const store = new InMemoryChannelStore();
     const { mgr } = managerWith(store, HELD_CHANNEL);
-    expect(mgr.evictBinding('toon', negotiation(), LOST_CHANNEL)).toBe(false);
+    expect(mgr.evictBinding('toon', terms(), LOST_CHANNEL)).toBe(false);
   });
 });

@@ -35,11 +35,11 @@ If applicable, use RGR to complete the task.
 
 # FEEDBACK LOOPS
 
-toon-client is a large pnpm monorepo (packages: arweave, client, client-mcp, rig, rig-web, views). Before committing, run its real gate and make sure it passes. **Run them in this order** — `build` MUST precede `typecheck` because the per-package `tsc --noEmit` resolves cross-package imports through each dependency's built `dist/*.d.ts`:
+toon-client is a single-package pnpm workspace (`packages/client`, published as `@toon-protocol/client`). Before committing, run its real gate and make sure it passes. **Run them in this order** — `build` precedes `typecheck` so `tsc --noEmit` resolves against a built `dist/*.d.ts`:
 
 - lint: `eslint .`
 - build: `pnpm -r run build`
-- typecheck: `pnpm run typecheck` (runs `tsc --noEmit` recursively in every package, including `rig-web`)
+- typecheck: `pnpm run typecheck` (runs `tsc --noEmit` recursively in every package)
 - test: `vitest run`
 
 ## Lint and typecheck are gated MECHANICALLY against a frozen baseline
@@ -50,11 +50,11 @@ ci.yml's `build` job runs `npx eslint . -f json` and `pnpm -r --no-bail run type
 `continue-on-error`), then `.sandcastle/gate-guard.ts` compares the measured counts against the
 frozen baseline and **fails the job on any NEW violation**:
 
-- eslint: more errors or more warnings than the frozen counts fails (currently 16 errors /
-  718 warnings — read `gate-baseline.json` for the live numbers).
-- typecheck: more total errors than frozen fails (currently 75), and every package is capped
-  individually (`rig` 1, `rig-web` 74, all others 0) — a new error in one package is a FAIL
-  even if you fixed one somewhere else.
+- eslint: more errors or more warnings than the frozen counts fails (currently 3 errors /
+  60 warnings — read `gate-baseline.json` for the live numbers).
+- typecheck: more total errors than frozen fails (currently 0), and every package is capped
+  individually (`client` 0) — a new error in one package is a FAIL even if you fixed one
+  somewhere else.
 
 Do **not** try to clear the frozen backlog inside this issue, and do **not** edit
 `gate-baseline.json` to get green. Your change must add zero new eslint or typecheck
@@ -76,7 +76,7 @@ Keep it concise.
 
 ## Changesets
 
-toon-client publishes several packages and CI enforces a changeset when a publishable package changes (`packages/client`, `client-mcp`, `views`, `rig`, `arweave`). If you touched any of those, run `pnpm changeset` and commit the generated `.changeset/*.md` so the PR is mergeable. (Changes confined to `rig-web`, tooling, or docs need none.)
+toon-client publishes one package and CI enforces a changeset when it changes (`packages/client`). If you touched it, run `pnpm changeset` and commit the generated `.changeset/*.md` so the PR is mergeable. (Changes confined to tooling or docs need none.)
 
 # THE ISSUE
 

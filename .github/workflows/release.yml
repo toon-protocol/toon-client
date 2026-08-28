@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes @toon-protocol/core and @toon-protocol/sdk to npm via changesets.
+# Publishes @toon-protocol/client to npm via changesets.
 # Auth comes from the org-level NPM_TOKEN secret (no local `npm login`).
 # changesets rewrites `workspace:*` -> the real version at publish time.
 #
@@ -68,80 +68,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # The artifact users actually install is this Claude Desktop extension
-      # (.mcpb), not an npm package: @toon-protocol/client-mcp stopped
-      # publishing to npm (#549 — `private: true`), so `publishedPackages` never
-      # lists it and the old gate on
-      # `contains(publishedPackages, '@toon-protocol/client-mcp')` can never
-      # fire again — every future client-mcp fix would ship to nobody. That is
-      # issue #536's packaging gotcha.
-      #
-      # So gate on "this run published *something*" instead, which still keeps
-      # the step off a plain Release-PR-update push. Nothing here reads npm:
-      # build-mcpb.mjs packs the tarball from the `dist/` this job just built.
-      #
-      # `$VERSION` does move again as of toon-client#614. It was frozen at 0.36.9
-      # for as long as client-mcp sat in changesets' `ignore` list, so every
-      # .mcpb built after 2026-08-07 would have carried the same version as every
-      # other one, with no changelog to tell them apart.
-      - name: Build & attach Desktop extension (.mcpb)
-        if: steps.changesets.outputs.published == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          VERSION=$(node -p "require('./packages/client-mcp/package.json').version")
-          SHORT_SHA="${GITHUB_SHA:0:7}"
-          echo "Packaging .mcpb for client-mcp@$VERSION (sha $SHORT_SHA)"
-          OUT="toon-$VERSION.mcpb"
-          # dist/ is already built by the `pnpm -r build` step above.
-          node packages/client-mcp/scripts/build-mcpb.mjs --out "$OUT"
-
-          # Release notes a Desktop user can actually read. changesets has
-          # already written this release's section at the top of client-mcp's
-          # CHANGELOG in the commit this job is standing on, so the notes come
-          # from there rather than from a second, hand-written summary that
-          # drifts. `awk` takes everything from the first `## ` heading up to the
-          # next one, i.e. exactly the newest version's entry.
-          #
-          # Before #614 the body was version + sha and nothing else — the
-          # download page for the only artifact users install said nothing about
-          # what changed in it.
-          NOTES=mcpb-notes.md
-          {
-            echo "Always the newest client-mcp \`.mcpb\` — currently **$VERSION**, built from \`$SHORT_SHA\`."
-            echo
-            echo "Stable download: <https://github.com/${GITHUB_REPOSITORY}/releases/download/mcpb-latest/toon.mcpb> — install via Claude Desktop → Settings → Extensions → Advanced → Install Extension."
-            echo
-            echo "---"
-            echo
-            awk '/^## /{n++} n>=2{exit} n==1{print}' packages/client-mcp/CHANGELOG.md
-          } > "$NOTES"
-          # A top section that failed to extract would silently reproduce the old,
-          # contentless body, so say so loudly rather than shipping it quietly.
-          if ! grep -q '^## ' "$NOTES"; then
-            echo "::warning::could not extract a CHANGELOG section for $VERSION — .mcpb notes carry no change list"
-          fi
-
-          # No per-version GitHub Release to attach to (changesets creates none
-          # for a private package) — maintain only the stable, version-less
-          # download URL by re-pointing the `mcpb-latest` release at this build:
-          #   …/releases/download/mcpb-latest/toon.mcpb
-          # `--latest=false` so it never steals the repo's "Latest" badge from
-          # the real version releases.
-          cp "$OUT" toon.mcpb
-          gh release delete mcpb-latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create mcpb-latest toon.mcpb \
-            --target "$GITHUB_SHA" \
-            --latest=false \
-            --title "TOON Desktop extension — $VERSION" \
-            --notes-file "$NOTES"
-
-      - name: Upload .mcpb as workflow artifact
-        if: steps.changesets.outputs.published == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: toon-mcpb
-          path: toon-*.mcpb
-          if-no-files-found: warn

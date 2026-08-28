@@ -1,0 +1,752 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+/** ILP packet type constants — matches protocol.ts ILPPacketType enum */
+const ILP_PACKET_TYPE = {
+  PREPARE: 12,
+  FULFILL: 13,
+  REJECT: 14,
+} as const;
+
+// Mock instances for IsomorphicBtpClient
+const mockConnect = vi.fn();
+const mockDisconnect = vi.fn();
+const mockSendPacket = vi.fn();
+const mockReauthenticate = vi.fn();
+
+// Mock ../btp/IsomorphicBtpClient (the actual import used by BtpRuntimeClient)
+vi.mock('../btp/IsomorphicBtpClient.js', () => {
+  return {
+    IsomorphicBtpClient: vi.fn().mockImplementation(() => ({
+      connect: mockConnect,
+      disconnect: mockDisconnect,
+      sendPacket: mockSendPacket,
+      reauthenticate: mockReauthenticate,
+    })),
+    BtpConnectionError: class BtpConnectionError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = 'BtpConnectionError';
+      }
+    },
+  };
+});
+
+import { BtpRuntimeClient, readResponseMeta } from './BtpRuntimeClient.js';
+import { IsomorphicBtpClient } from '../btp/IsomorphicBtpClient.js';
+import { mintExecutionCondition } from '../utils/condition.js';
+import {
+  FULFILLMENT_MISMATCH_CODE,
+  type IlpSendResultWithFulfillment,
+} from '../ilp/ilp-send.js';
+import type { BTPProtocolData } from './protocol.js';
+import { encodeUtf8 } from '../utils/binary.js';
+
+/**
+ * A RESPONSE as `IsomorphicBtpClient.sendPacket` now resolves it: the answer
+ * packet plus whatever rode beside it in the same frame.
+ */
+function answer(
+  packet: unknown,
+  protocolData: BTPProtocolData[] = []
+): { packet: unknown; protocolData: BTPProtocolData[] } {
+  return { packet, protocolData };
+}
+
+/** One protocolData entry carrying UTF-8 text, the way the connector writes them. */
+function pd(protocolName: string, text: string): BTPProtocolData {
+  return { protocolName, contentType: 1, data: encodeUtf8(text) };
+}
+
+/** Test claim factory — includes all fields required by connector's validateClaimMessage */
+function makeTestClaim() {
+  return {
+    version: '1.0' as const,
+    blockchain: 'evm' as const,
+    messageId: 'test-msg-id',
+    timestamp: '2026-03-19T00:00:00.000Z',
+    senderId: 'test',
+    channelId: '0x' + '12'.repeat(32),
+    nonce: 1,
+    transferredAmount: '1000',
+    lockedAmount: '0',
+    locksRoot: '0x' + '00'.repeat(32),
+    signature: '0x' + 'ab'.repeat(65),
+    signerAddress: '0x' + '11'.repeat(20),
+    chainId: 421614,
+    tokenNetworkAddress: '0x' + '99'.repeat(20),
+  };
+}
+
+describe('BtpRuntimeClient', () => {
+  let client: BtpRuntimeClient;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    client = new BtpRuntimeClient({
+      btpUrl: 'ws://localhost:3000',
+      peerId: 'test-peer',
+      authToken: 'test-token',
+      maxRetries: 2,
+      retryDelay: 100,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe('connect/disconnect lifecycle', () => {
+    it('should connect successfully', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      await client.connect();
+      expect(client.isConnected).toBe(true);
+    });
+
+    it('should disconnect successfully', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockDisconnect.mockResolvedValue(undefined);
+      await client.connect();
+      await client.disconnect();
+      expect(client.isConnected).toBe(false);
+    });
+
+    it('should handle disconnect when not connected', async () => {
+      await client.disconnect(); // Should not throw
+      expect(client.isConnected).toBe(false);
+    });
+  });
+
+  describe('sendIlpPacket', () => {
+    beforeEach(async () => {
+      mockConnect.mockResolvedValue(undefined);
+      await client.connect();
+    });
+
+    it('should auto-reconnect when not connected', async () => {
+      // Simulate disconnection — first call rejects with connection error,
+      // second call succeeds after reconnect
+      mockSendPacket
+        .mockRejectedValueOnce(new Error('BTP client not connected'))
+        .mockResolvedValueOnce(
+          answer({
+            type: ILP_PACKET_TYPE.FULFILL,
+            data: new Uint8Array(0),
+          })
+        );
+      mockDisconnect.mockResolvedValue(undefined);
+
+      const resultPromise = client.sendIlpPacket({
+        destination: 'g.test',
+        amount: '1000',
+        data: Buffer.from('test').toString('base64'),
+      });
+
+      // Advance through retry delay
+      await vi.advanceTimersByTimeAsync(100);
+
+      const result = await resultPromise;
+      expect(result.accepted).toBe(true);
+      // connect called: initial + reconnect
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
+    it('should map fulfill response to IlpSendResult', async () => {
+      const responseData = new TextEncoder().encode('response-data');
+      mockSendPacket.mockResolvedValue(answer({
+        type: ILP_PACKET_TYPE.FULFILL,
+        data: responseData,
+      }));
+
+      const result = await client.sendIlpPacket({
+        destination: 'g.test.relay',
+        amount: '1000',
+        data: Buffer.from('test').toString('base64'),
+      });
+
+      expect(result.accepted).toBe(true);
+      // Data should be base64-encoded
+      expect(result.data).toBeDefined();
+    });
+
+    it('should map reject response to IlpSendResult', async () => {
+      mockSendPacket.mockResolvedValue(answer({
+        type: ILP_PACKET_TYPE.REJECT,
+        code: 'F02',
+        message: 'Insufficient funds',
+        data: new Uint8Array(0),
+      }));
+
+      const result = await client.sendIlpPacket({
+        destination: 'g.test.relay',
+        amount: '1000',
+        data: Buffer.from('test').toString('base64'),
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.code).toBe('F02');
+      expect(result.message).toBe('Insufficient funds');
+    });
+
+    it('should throw after exhausting retries on connection errors', async () => {
+      mockSendPacket.mockRejectedValue(new Error('Connection lost'));
+      mockDisconnect.mockResolvedValue(undefined);
+
+      const resultPromise = client.sendIlpPacket({
+        destination: 'g.test.relay',
+        amount: '1000',
+        data: Buffer.from('test').toString('base64'),
+      });
+
+      const errorPromise = resultPromise.catch((err) => err);
+
+      // Advance through all retry delays
+      await vi.advanceTimersByTimeAsync(100); // 1st retry
+      await vi.advanceTimersByTimeAsync(200); // 2nd retry (exponential)
+
+      const error = (await errorPromise) as Error;
+      expect(error.message).toBe('Connection lost');
+    });
+
+    it('should not retry on ILP application errors (non-connection)', async () => {
+      mockSendPacket.mockRejectedValue(new Error('Invalid packet format'));
+
+      await expect(
+        client.sendIlpPacket({
+          destination: 'g.test.relay',
+          amount: '1000',
+          data: Buffer.from('test').toString('base64'),
+        })
+      ).rejects.toThrow('Invalid packet format');
+
+      // Only one attempt, no retries
+      expect(mockSendPacket).toHaveBeenCalledTimes(1);
+    });
+
+    it('should create ILP packet with correct fields', async () => {
+      mockSendPacket.mockResolvedValue(answer({
+        type: ILP_PACKET_TYPE.FULFILL,
+        data: new Uint8Array(0),
+      }));
+
+      await client.sendIlpPacket({
+        destination: 'g.test.relay',
+        amount: '5000',
+        data: Buffer.from('hello').toString('base64'),
+      });
+
+      expect(mockSendPacket).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: ILP_PACKET_TYPE.PREPARE,
+          amount: 5000n,
+          destination: 'g.test.relay',
+        })
+      );
+    });
+  });
+
+  describe('sendIlpPacketWithClaim', () => {
+    beforeEach(async () => {
+      mockConnect.mockResolvedValue(undefined);
+      await client.connect();
+    });
+
+    it('should send claim embedded in the same BTP message as ILP packet', async () => {
+      mockSendPacket.mockResolvedValue(answer({
+        type: ILP_PACKET_TYPE.FULFILL,
+        data: new Uint8Array(0),
+      }));
+
+      const claim = makeTestClaim();
+
+      const result = await client.sendIlpPacketWithClaim(
+        { destination: 'g.test', amount: '1000', data: '' },
+        claim
+      );
+
+      expect(result.accepted).toBe(true);
+      // Verify sendPacket was called with protocolData containing the claim
+      expect(mockSendPacket).toHaveBeenCalledWith(
+        expect.objectContaining({ destination: 'g.test' }),
+        [
+          {
+            protocolName: 'payment-channel-claim',
+            contentType: 1,
+            data: expect.any(Uint8Array),
+          },
+        ]
+      );
+    });
+
+    it('should auto-reconnect on connection error during claim send', async () => {
+      mockSendPacket
+        .mockRejectedValueOnce(new Error('WebSocket closed'))
+        .mockResolvedValueOnce(
+          answer({
+            type: ILP_PACKET_TYPE.FULFILL,
+            data: new Uint8Array(0),
+          })
+        );
+      mockDisconnect.mockResolvedValue(undefined);
+
+      const claim = makeTestClaim();
+
+      const resultPromise = client.sendIlpPacketWithClaim(
+        { destination: 'g.test', amount: '1000', data: '' },
+        claim
+      );
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      const result = await resultPromise;
+      expect(result.accepted).toBe(true);
+      // connect called: initial + reconnect
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
+    it('should throw when not connected and reconnect fails', async () => {
+      const disconnectedClient = new BtpRuntimeClient({
+        btpUrl: 'ws://localhost:3000',
+        peerId: 'test-peer',
+        authToken: 'test-token',
+        maxRetries: 0,
+      });
+
+      mockConnect.mockRejectedValue(new Error('ECONNREFUSED'));
+
+      const claim = makeTestClaim();
+
+      await expect(
+        disconnectedClient.sendIlpPacketWithClaim(
+          { destination: 'g.test', amount: '1000', data: '' },
+          claim
+        )
+      ).rejects.toThrow('ECONNREFUSED');
+    });
+  });
+
+  describe('sender-chosen execution conditions (#350)', () => {
+    beforeEach(async () => {
+      mockConnect.mockResolvedValue(undefined);
+      await client.connect();
+    });
+
+    it('legacy default: PREPARE carries an all-zero condition and default expiry', async () => {
+      mockSendPacket.mockResolvedValue(answer({
+        type: ILP_PACKET_TYPE.FULFILL,
+        fulfillment: new Uint8Array(32),
+        data: new Uint8Array(0),
+      }));
+
+      const result = await client.sendIlpPacketWithClaim(
+        { destination: 'g.test', amount: '1000', data: '', timeout: 15000 },
+        makeTestClaim()
+      );
+
+      expect(result.accepted).toBe(true);
+      const packet = mockSendPacket.mock.calls[0]![0] as {
+        executionCondition: Uint8Array;
+        expiresAt: Date;
+      };
+      expect(packet.executionCondition).toEqual(new Uint8Array(32));
+      expect(packet.expiresAt.getTime()).toBe(Date.now() + 15000);
+    });
+
+    it('sets the condition and an explicit expiry on the outgoing PREPARE (spec R2/R7)', async () => {
+      const { preimage, condition } = mintExecutionCondition();
+      const expiresAt = new Date(Date.now() + 12345);
+      mockSendPacket.mockResolvedValue(answer({
+        type: ILP_PACKET_TYPE.FULFILL,
+        fulfillment: preimage,
+        data: new Uint8Array(0),
+      }));
+
+      const result = (await client.sendIlpPacketWithClaim(
+        {
+          destination: 'g.test',
+          amount: '1000',
+          data: '',
+          executionCondition: condition,
+          expiresAt,
+        },
+        makeTestClaim()
+      )) as IlpSendResultWithFulfillment;
+
+      expect(result.accepted).toBe(true);
+      expect(result.fulfillment).toBe(Buffer.from(preimage).toString('base64'));
+      const packet = mockSendPacket.mock.calls[0]![0] as {
+        executionCondition: Uint8Array;
+        expiresAt: Date;
+      };
+      expect(packet.executionCondition).toEqual(condition);
+      expect(packet.executionCondition.some((b: number) => b !== 0)).toBe(true);
+      expect(packet.expiresAt).toEqual(expiresAt);
+    });
+
+    it('rejects a FULFILL with the wrong preimage — failed packet, no retry', async () => {
+      const { condition } = mintExecutionCondition();
+      const wrongPreimage = mintExecutionCondition().preimage;
+      mockSendPacket.mockResolvedValue(answer({
+        type: ILP_PACKET_TYPE.FULFILL,
+        fulfillment: wrongPreimage,
+        data: new Uint8Array(0),
+      }));
+
+      const result = await client.sendIlpPacketWithClaim(
+        {
+          destination: 'g.test',
+          amount: '1000',
+          data: '',
+          executionCondition: condition,
+        },
+        makeTestClaim()
+      );
+
+      expect(result.accepted).toBe(false);
+      expect(result.code).toBe(FULFILLMENT_MISMATCH_CODE);
+      // Verification failure is not a connection error — never retried.
+      expect(mockSendPacket).toHaveBeenCalledTimes(1);
+    });
+
+    it('a FULFILL missing its fulfillment fails a conditioned packet closed', async () => {
+      const { condition } = mintExecutionCondition();
+      // Pre-#350 peer shape: no fulfillment surfaced at all.
+      mockSendPacket.mockResolvedValue(answer({
+        type: ILP_PACKET_TYPE.FULFILL,
+        data: new Uint8Array(0),
+      }));
+
+      const result = await client.sendIlpPacket({
+        destination: 'g.test',
+        amount: '1000',
+        data: '',
+        executionCondition: condition,
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.code).toBe(FULFILLMENT_MISMATCH_CODE);
+    });
+
+    it('sendIlpPacket (no claim) carries the condition too', async () => {
+      const { preimage, condition } = mintExecutionCondition();
+      mockSendPacket.mockResolvedValue(answer({
+        type: ILP_PACKET_TYPE.FULFILL,
+        fulfillment: preimage,
+        data: new Uint8Array(0),
+      }));
+
+      const result = await client.sendIlpPacket({
+        destination: 'g.test',
+        amount: '0',
+        data: '',
+        executionCondition: condition,
+      });
+
+      expect(result.accepted).toBe(true);
+      const packet = mockSendPacket.mock.calls[0]![0] as {
+        executionCondition: Uint8Array;
+      };
+      expect(packet.executionCondition).toEqual(condition);
+    });
+
+    it('throws on a malformed (non-32-byte) condition instead of zero-filling it', async () => {
+      await expect(
+        client.sendIlpPacket({
+          destination: 'g.test',
+          amount: '1000',
+          data: '',
+          executionCondition: new Uint8Array(31).fill(7),
+        })
+      ).rejects.toThrow(/32 bytes/);
+      expect(mockSendPacket).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reconnect', () => {
+    it('should create a new IsomorphicBtpClient and connect', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockDisconnect.mockResolvedValue(undefined);
+
+      await client.connect();
+      expect(client.isConnected).toBe(true);
+
+      await client.reconnect();
+      expect(client.isConnected).toBe(true);
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
+    it('should handle reconnect when not previously connected', async () => {
+      mockConnect.mockResolvedValue(undefined);
+
+      await client.reconnect();
+      expect(client.isConnected).toBe(true);
+    });
+  });
+
+  describe('inbound handler threading (toon-client#493)', () => {
+    it('re-registers onMessage/onTransfer/onInboundError on the fresh IsomorphicBtpClient created by reconnect', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockDisconnect.mockResolvedValue(undefined);
+
+      const onMessage = vi.fn();
+      const onTransfer = vi.fn();
+      const onInboundError = vi.fn();
+      const handlerClient = new BtpRuntimeClient({
+        btpUrl: 'ws://localhost:3000',
+        peerId: 'test-peer',
+        authToken: 'test-token',
+        onMessage,
+        onTransfer,
+        onInboundError,
+      });
+
+      await handlerClient.connect();
+      await handlerClient.reconnect();
+
+      const ctor = IsomorphicBtpClient as unknown as ReturnType<typeof vi.fn>;
+      expect(ctor).toHaveBeenCalledTimes(2);
+      for (const call of ctor.mock.calls) {
+        expect(call[0]).toMatchObject({ onMessage, onTransfer, onInboundError });
+      }
+    });
+  });
+
+  describe('channel declaration (toon-client#513)', () => {
+    it('threads getChannelDeclaration through to the underlying IsomorphicBtpClient', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      const getChannelDeclaration = vi.fn();
+      const declaringClient = new BtpRuntimeClient({
+        btpUrl: 'ws://localhost:3000',
+        peerId: 'test-peer',
+        authToken: 'test-token',
+        getChannelDeclaration,
+      });
+
+      await declaringClient.connect();
+
+      const ctor = IsomorphicBtpClient as unknown as ReturnType<typeof vi.fn>;
+      expect(ctor.mock.calls[0]![0]).toMatchObject({ getChannelDeclaration });
+    });
+
+    it('reauthenticate() re-sends the greeting on the live session', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockReauthenticate.mockResolvedValue(undefined);
+
+      await client.connect();
+      await client.reauthenticate();
+
+      expect(mockReauthenticate).toHaveBeenCalledTimes(1);
+    });
+
+    it('reauthenticate() is a no-op when not connected', async () => {
+      await client.reauthenticate();
+      expect(mockReauthenticate).not.toHaveBeenCalled();
+    });
+
+    it('reconnect() re-threads getChannelDeclaration onto the fresh IsomorphicBtpClient, so a reconnected session re-declares', async () => {
+      mockConnect.mockResolvedValue(undefined);
+      mockDisconnect.mockResolvedValue(undefined);
+      const getChannelDeclaration = vi.fn();
+      const declaringClient = new BtpRuntimeClient({
+        btpUrl: 'ws://localhost:3000',
+        peerId: 'test-peer',
+        authToken: 'test-token',
+        getChannelDeclaration,
+      });
+
+      await declaringClient.connect();
+      await declaringClient.reconnect();
+
+      const ctor = IsomorphicBtpClient as unknown as ReturnType<typeof vi.fn>;
+      expect(ctor).toHaveBeenCalledTimes(2);
+      for (const call of ctor.mock.calls) {
+        expect(call[0]).toMatchObject({ getChannelDeclaration });
+      }
+    });
+  });
+});
+
+describe('readResponseMeta — what rides beside a BTP RESPONSE', () => {
+  it('reads toon-accumulated-cost off a REJECT (client-edge-spec §1.6)', () => {
+    expect(readResponseMeta([pd('toon-accumulated-cost', '4200')])).toEqual({
+      accumulatedCost: 4200n,
+    });
+  });
+
+  it('reads a zero cost as 0n, not as absent — "nothing traversed, nothing terminated" is an answer', () => {
+    expect(readResponseMeta([pd('toon-accumulated-cost', '0')])).toEqual({
+      accumulatedCost: 0n,
+    });
+  });
+
+  it('reports no cost at all when the entry is absent (every FULFILL)', () => {
+    expect(readResponseMeta([])).toEqual({});
+  });
+
+  it('drops a non-decimal cost rather than coercing it to 0n', () => {
+    expect(readResponseMeta([pd('toon-accumulated-cost', 'lots')])).toEqual({});
+  });
+
+  it('carries a cost past 2^53 exactly', () => {
+    const huge = '18446744073709551615'; // u64::MAX
+    expect(
+      readResponseMeta([pd('toon-accumulated-cost', huge)]).accumulatedCost
+    ).toBe(18446744073709551615n);
+  });
+
+  it('reads an accepted claim-ack from the `claim-ack` entry (NOT `toon-claim-ack`, which is the HTTP name)', () => {
+    expect(
+      readResponseMeta([pd('claim-ack', '{"result":"accepted"}')])
+    ).toEqual({ claimAck: { result: 'accepted' } });
+  });
+
+  it('reads a rejected claim-ack with its reason', () => {
+    expect(
+      readResponseMeta([
+        pd('claim-ack', '{"result":"rejected","reason":"nonce_not_advancing"}'),
+      ])
+    ).toEqual({ claimAck: { result: 'rejected', reason: 'nonce_not_advancing' } });
+  });
+
+  it('treats a malformed ack as NOT ACKNOWLEDGED, never as a verdict (§6.3)', () => {
+    // The connector's own `ack_malformed` vector.
+    expect(readResponseMeta([pd('claim-ack', '{"result":"maybe"}')])).toEqual({});
+    expect(readResponseMeta([pd('claim-ack', 'not json')])).toEqual({});
+    expect(
+      readResponseMeta([pd('claim-ack', '{"result":"rejected"}')])
+    ).toEqual({});
+  });
+
+  it('reads the x402 terms off a payment-required entry as RAW UTF-8 JSON — no base64 layer', () => {
+    const terms = { x402Version: 2, accepts: [] };
+    expect(
+      readResponseMeta([pd('payment-required', JSON.stringify(terms))])
+    ).toEqual({ paymentRequired: terms });
+  });
+
+  it('reads all three at once, in any entry order', () => {
+    expect(
+      readResponseMeta([
+        pd('claim-ack', '{"result":"accepted"}'),
+        pd('payment-channel-claim', '{"ignored":true}'),
+        pd('toon-accumulated-cost', '7'),
+      ])
+    ).toEqual({ accumulatedCost: 7n, claimAck: { result: 'accepted' } });
+  });
+});
+
+describe('BtpRuntimeClient surfaces what rode beside the packet', () => {
+  let client: BtpRuntimeClient;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    client = new BtpRuntimeClient({
+      btpUrl: 'ws://localhost:3000',
+      peerId: 'test-peer',
+      authToken: 'test-token',
+      maxRetries: 0,
+    });
+    mockConnect.mockResolvedValue(undefined);
+    await client.connect();
+  });
+
+  it('a REJECT carries its accumulated cost onto the result', async () => {
+    mockSendPacket.mockResolvedValue(
+      answer(
+        {
+          type: ILP_PACKET_TYPE.REJECT,
+          code: 'F03',
+          message: 'insufficient claim',
+          data: new Uint8Array(0),
+        },
+        [pd('toon-accumulated-cost', '1000')]
+      )
+    );
+
+    const result = await client.sendIlpPacketWithClaim(
+      { destination: 'g.test', amount: '1', data: '' },
+      makeTestClaim()
+    );
+
+    expect(result.accepted).toBe(false);
+    expect(result.code).toBe('F03');
+    // An underpayment reports the ROUTE'S PRICE — the cheapest way to learn one.
+    expect(result.accumulatedCost).toBe(1000n);
+  });
+
+  it('a FULFILL carries no accumulated cost — it was paid for, not priced', async () => {
+    mockSendPacket.mockResolvedValue(
+      answer({ type: ILP_PACKET_TYPE.FULFILL, data: new Uint8Array(0) })
+    );
+
+    const result = await client.sendIlpPacketWithClaim(
+      { destination: 'g.test', amount: '1000', data: '' },
+      makeTestClaim()
+    );
+
+    expect(result.accepted).toBe(true);
+    expect(result.accumulatedCost).toBeUndefined();
+  });
+
+  it('a FULFILL can carry a REJECTED claim-ack — the two verdicts never couple', async () => {
+    // The connector's `peer_fulfill_ack_rejected` vector: the work was
+    // delivered AND the claim that came with it was refused. Inferring either
+    // verdict from the other loses money in one direction or the other.
+    mockSendPacket.mockResolvedValue(
+      answer({ type: ILP_PACKET_TYPE.FULFILL, data: new Uint8Array(0) }, [
+        pd('claim-ack', '{"result":"rejected","reason":"signature_invalid"}'),
+      ])
+    );
+
+    const result = await client.sendIlpPacketWithClaim(
+      { destination: 'g.test', amount: '1000', data: '' },
+      makeTestClaim()
+    );
+
+    expect(result.accepted).toBe(true);
+    expect(result.claimAck).toEqual({
+      result: 'rejected',
+      reason: 'signature_invalid',
+    });
+  });
+
+  it('an F06 greeting carries the x402 terms beside the REJECT (§1.9 step 4)', async () => {
+    const terms = {
+      x402Version: 2,
+      resource: { url: 'g.toon.relay' },
+      accepts: [
+        {
+          scheme: 'toon-channel',
+          amount: '1',
+          payTo: 'g.toon.relay',
+          httpEndpoint: '/ilp',
+          extra: { ilpAddress: 'g.toon.relay', endpoint: '/ilp', price: '1' },
+        },
+      ],
+    };
+    mockSendPacket.mockResolvedValue(
+      answer(
+        {
+          type: ILP_PACKET_TYPE.REJECT,
+          code: 'F06',
+          message: 'No payment channel claim attached',
+          data: new Uint8Array(0),
+        },
+        [
+          pd('toon-accumulated-cost', '0'),
+          pd('payment-required', JSON.stringify(terms)),
+        ]
+      )
+    );
+
+    const result = await client.sendIlpPacket({
+      destination: 'g.toon.relay',
+      amount: '0',
+      data: '',
+    });
+
+    expect(result.code).toBe('F06');
+    expect(result.accumulatedCost).toBe(0n);
+    expect(result.paymentRequired).toEqual(terms);
+  });
+});

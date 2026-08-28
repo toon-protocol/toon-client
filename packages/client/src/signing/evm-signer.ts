@@ -1,6 +1,6 @@
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { type Hex, toHex } from 'viem';
-import type { BalanceProofParams, SignedBalanceProof } from '../types.js';
+import type { BalanceProofParams, SignedBalanceProof } from '../client/types.js';
 // Types re-exported for convenience
 export type { ClaimMessage } from './types.js';
 

@@ -1,7 +1,7 @@
 {
   "name": "@toon-protocol/client",
-  "version": "0.29.8",
-  "description": "TOON client for ILP-gated Nostr publishing with multi-hop routing and payment channels",
+  "version": "1.0.0",
+  "description": "TOON client: pay for HTTP requests per request over ILP, with EVM and Solana payment channels",
   "license": "MIT",
   "author": "Jonathan Green",
   "repository": {
@@ -13,15 +13,15 @@
     "access": "public"
   },
   "keywords": [
-    "nostr",
+    "toon",
     "ilp",
     "interledger",
-    "toon",
-    "settlement",
     "payment-channels",
-    "btp",
     "micropayments",
-    "nip-02"
+    "btp",
+    "x402",
+    "evm",
+    "solana"
   ],
   "type": "module",
   "main": "./dist/index.js",
@@ -31,54 +31,49 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./render": {
-      "types": "./dist/render/index.d.ts",
-      "import": "./dist/render/index.js"
-    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsup",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.integration.json --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "test:e2e:client": "vitest run --config vitest.e2e.config.ts tests/e2e/docker-client-*.test.ts",
-    "test:e2e:client:evm": "vitest run --config vitest.e2e.config.ts tests/e2e/docker-client-evm-e2e.test.ts",
-    "test:e2e:client:solana": "vitest run --config vitest.e2e.config.ts tests/e2e/docker-client-solana-e2e.test.ts",
-    "test:e2e:client:mina": "vitest run --config vitest.e2e.config.ts tests/e2e/docker-client-mina-e2e.test.ts",
     "test:coverage": "vitest run --coverage",
+    "cli": "tsx src/cli/main.ts",
     "vectors:refresh": "node scripts/refresh-wire-vectors.mjs",
+    "vectors:refresh:local": "node scripts/refresh-wire-vectors.mjs --from-local ../../../connector",
     "vectors:check": "node scripts/refresh-wire-vectors.mjs --check"
   },
   "dependencies": {
     "@noble/ciphers": "^2.0.0",
     "@noble/curves": "^2.0.0",
-    "@noble/ed25519": "^2.0.0",
     "@noble/hashes": "^1.4.0",
+    "@scure/base": "^1.2.0",
     "@scure/bip32": "^1.4.0",
     "@scure/bip39": "^1.3.0",
-    "@toon-protocol/core": "^3.5.0",
-    "@toon-protocol/sdk": "^3.3.0",
-    "nostr-tools": "^2.20.0",
     "viem": "^2.0.0"
   },
   "optionalDependencies": {
-    "@solana/web3.js": "^1.90.0",
-    "@toon-protocol/mina-zkapp": "^0.1.0",
-    "mina-signer": "^3.0.0",
-    "o1js": "2.14.0",
     "ws": "^8.0.0"
   },
   "devDependencies": {
-    "@toon-protocol/relay": "^1.3.1",
-    "@types/node": "^20.0.0",
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.18.1",
     "tsup": "^8.0.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.3.0",
-    "vitest": "^1.0.0"
+    "vitest": "^1.0.0",
+    "ws": "^8.19.0"
+  },
+  "bin": {
+    "toon": "./dist/cli/main.js"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

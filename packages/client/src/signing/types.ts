@@ -1,24 +1,40 @@
-import type { SignedBalanceProof } from '../types.js';
+import type { SignedBalanceProof } from '../client/types.js';
 import type { EVMClaimMessage } from './evm-signer.js';
 
 /**
- * Chain-specific metadata (discriminated union).
+ * The domain a claim is signed under, per chain.
+ *
+ * This is the part a signature commits to *besides* the numbers, and it is what
+ * stops a claim being replayed somewhere else. On EVM the chain id and the
+ * `TokenNetwork` ride in the EIP-712 domain separator; on Solana the settlement
+ * program id is bound into the signed message itself (connector ADR 0053), so a
+ * claim signed for one deployment cannot be redeemed at another.
+ *
+ * The connector never takes these from the claim. It rebuilds them from its own
+ * record of the channel, so a claim has no say in what it is checked against —
+ * which is why signing under the wrong domain fails to verify rather than
+ * quietly succeeding.
  */
 export type ChainMetadata =
   | {
       chainType: 'evm';
       chainId: number;
+      /** The `TokenNetwork` — the EIP-712 `verifyingContract`. */
       tokenNetworkAddress: string;
       tokenAddress?: string;
     }
-  | { chainType: 'solana'; programId: string; tokenMint?: string }
-  | { chainType: 'mina'; zkAppAddress: string; tokenId?: string };
+  | {
+      chainType: 'solana';
+      /** The settlement program the channel account lives under. */
+      programId: string;
+      tokenMint?: string;
+      /** The cluster this claim declares. Cross-checked, never trusted. */
+      cluster?: string;
+    };
 
-/**
- * Chain-agnostic signing interface for balance proofs.
- */
+/** Signing a balance proof, without the caller knowing which chain it is. */
 export interface ChainSigner {
-  readonly chainType: 'evm' | 'solana' | 'mina';
+  readonly chainType: 'evm' | 'solana';
   readonly signerIdentifier: string;
   signBalanceProof(params: {
     channelId: string;
@@ -27,35 +43,27 @@ export interface ChainSigner {
     lockedAmount: bigint;
     locksRoot: string;
     /**
-     * Counterparty settlement address the proof is bound to. Required for
-     * Solana/Mina (folded into the canonical balance-proof message); the EVM
-     * adapter ignores it (EIP-712 has no recipient term).
+     * The counterparty this proof is bound to.
+     *
+     * Neither chain's signed message folds it in — which side gets paid is fixed
+     * by the channel's own participants — so it is carried only so it reaches
+     * {@link ChainSigner.buildClaimMessage}.
      */
     recipient: string;
     metadata: ChainMetadata;
-    /**
-     * On-chain channel `depositTotal` (base units). When supplied (>0), a Mina
-     * signer binds the conserved `balanceB = depositTotal − balanceA` commitment
-     * required to settle on a funded zkApp (connector#133); EVM/Solana signers
-     * ignore it. When omitted, a Mina signer self-resolves it from chain if it
-     * was configured with a GraphQL URL (#223), else falls back to the legacy
-     * `balanceB = 0` form.
-     */
-    depositTotal?: bigint;
   }): Promise<SignedBalanceProof>;
   buildClaimMessage(proof: SignedBalanceProof, senderId: string): ClaimMessage;
 }
 
-export type ClaimMessage =
-  | EVMClaimMessage
-  | SolanaClaimMessage
-  | MinaClaimMessage;
+export type ClaimMessage = EVMClaimMessage | SolanaClaimMessage;
 
 /**
- * Solana payment-channel claim — wire-compatible with the connector's
- * `SolanaClaimMessage` (`@toon-protocol/connector` `btp/btp-claim-types.ts`).
- * Field names match the connector's `validateSolanaClaim` exactly:
- * `channelAccount` (base58 PDA), `signerPublicKey` (base58), base64 `signature`.
+ * A Solana payment-channel claim, exactly as the connector's `parse_solana`
+ * reads it (`client-edge-spec.md` §1.3).
+ *
+ * `nonce` is a JSON **number** while `transferredAmount` is a decimal
+ * **string** — an inconsistency of the wire, not of this type: an amount past
+ * 2^53 is a real figure and a JSON number would round it.
  */
 export interface SolanaClaimMessage {
   version: '1.0';
@@ -63,59 +71,29 @@ export interface SolanaClaimMessage {
   messageId: string;
   timestamp: string;
   senderId: string;
-  /** On-chain PDA account address for the payment channel (base58). */
+  /** The channel's PDA (base58). */
   channelAccount: string;
   nonce: number;
-  /** Cumulative transferred amount (string for bigint precision). */
+  /** Cumulative, in the mint's base units. */
   transferredAmount: string;
-  /** Ed25519 signature over the 48-byte balance-proof message (base64). */
+  /** Base64 of the 64-byte Ed25519 signature over the balance-proof message. */
   signature: string;
-  /** Base58-encoded Ed25519 public key of the signer. */
+  /** Base58 Ed25519 public key of the signer. Rides the wire; carries no authority. */
   signerPublicKey: string;
-  /** Solana program id for the payment-channel program (base58). */
-  programId: string;
-}
-
-/**
- * Mina payment-channel claim — wire-compatible with the connector's
- * `MinaClaimMessage` (`@toon-protocol/connector` `btp/btp-claim-types.ts`).
- * Field names + types match `validateMinaClaim` exactly: `zkAppAddress`
- * (B62-prefixed 55-char base58, the channel id), `tokenId`, `balanceCommitment`
- * (`Poseidon([balA,balB,salt])` decimal string), integer `nonce`, base64 `proof`,
- * and `salt`. `transferredAmount`/`balanceB`/`signatureB`/`network` are OPTIONAL
- * at validation; the apex-as-recipient single-direction claim sends party-A only.
- */
-export interface MinaClaimMessage {
-  version: '1.0';
-  blockchain: 'mina';
-  messageId: string;
-  timestamp: string;
-  senderId: string;
-  /** Deployed payment-channel zkApp address (B62 base58) — the channel id. */
-  zkAppAddress: string;
-  /** Mina token id (default `'MINA'`). */
-  tokenId: string;
-  /** `Poseidon([balanceA, balanceB, salt]).toString()`. */
-  balanceCommitment: string;
-  nonce: number;
-  /** base64-encoded JSON `{ commitment, signature: { r, s }, nonce, signerPublicKey }`. */
-  proof: string;
-  /** Commitment salt (decimal string). */
-  salt: string;
-  /** Cumulative transferred amount (optional; string for bigint precision). */
-  transferredAmount?: string;
   /**
-   * Signer's Mina public key (B62 base58) — the claiming participant.
-   *
-   * Surfaced top-level (in addition to being embedded in `proof`) so the
-   * connector's `SettlementExecutor` can resolve participant keys for the
-   * on-chain `claimFromChannel` on an externally-opened (inbound) channel. The
-   * connector reads `latestClaim.signerPublicKey` directly (not the proof blob);
-   * without it the Mina SDK's `claimFromChannel` throws `ACCOUNT_NOT_FOUND`
-   * ("Participant keys not found in cache and none were supplied"). The
-   * connector accepts this as an optional `MinaClaimMessage` field.
+   * The settlement program the `channelAccount` lives under — the same 32 bytes
+   * the signature covers. Not a free-form label: a claim naming any other
+   * program names a program no channel of the payer's lives under.
    */
-  signerPublicKey?: string;
-  /** Mina network id — defaults to `devnet` connector-side when omitted. */
-  network?: 'mainnet' | 'devnet' | 'berkeley' | 'lightnet';
+  programId: string;
+  /**
+   * The cluster this claim is for.
+   *
+   * Optional, and the one field naming a chain that no signature can bind — a
+   * Solana program cannot learn which cluster it runs on, so it can never
+   * rebuild a message containing one. The connector compares it against the
+   * cluster it settles on and refuses a mismatch outright, because a claim
+   * naming a chain the connector is not on is wrong, not merely unverifiable.
+   */
+  cluster?: string;
 }
