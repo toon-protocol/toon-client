@@ -113,9 +113,8 @@ export const FULFILLMENT_MISMATCH_MESSAGE =
  * whose fulfillment is absent, not exactly 32 bytes, or does not sha256-hash
  * to the condition yields `accepted: false` (code F99). The result shape —
  * not a thrown error — is deliberate: transports only retry thrown
- * `NetworkError`s, so a forged/wrong FULFILL is never retried (re-sending
- * would re-spend the attached claim), and packet counters (`streamSwap`
- * rejections) count it failed.
+ * `NetworkError`s, so a forged/wrong FULFILL is never retried — re-sending
+ * would re-spend the attached claim.
  */
 export function mapIlpResponse(
   packet: ILPResponsePacket,
