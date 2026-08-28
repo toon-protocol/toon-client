@@ -12,7 +12,7 @@ Every write is an ILP packet carrying a signed payment-channel claim, and its pa
 | --------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `client.publishEvent(event)`      | **relay** | Publish a Nostr event (e.g. `kind:1`) to the relay.                                                                                                       |
 | `requestBlobStorage(client, …)`   | **store** | NIP-90 compute/storage. Builds and publishes a `kind:5094` event that uploads a blob to Arweave — the job request **is** the payment — and decodes the Arweave tx ID from the FULFILL response. |
-| `client.sendSwapPacket(…)`        | **swap**  | Multi-chain token swap (low-level). Most callers use the higher-level `streamSwap()` from `@toon-protocol/sdk`, which is built on `sendSwapPacket`.       |
+| `client.sendSwapPacket(…)`        | **swap**  | Multi-chain token swap (low-level). Most callers drive it via the rolling RFQ-then-fills session (`sendRollingRfq` + `handleRollingAdvance`, both exported from this package) — the daemon's `toon_swap` orchestrates that session end to end.       |
 
 ## What It Does
 
@@ -638,7 +638,7 @@ See [examples/](examples/) for standalone client examples:
 
 - **[@toon-protocol/core](https://www.npmjs.com/package/@toon-protocol/core)** — Core protocol (peer discovery, bootstrap, `buildBlobStorageRequest`)
 - **[@toon-protocol/relay](https://www.npmjs.com/package/@toon-protocol/relay)** — Operator product running the apex connector plus relay/swap/store nodes; also exports `encodeEventToToon` / `decodeEventFromToon` for event encoding
-- **[@toon-protocol/sdk](https://www.npmjs.com/package/@toon-protocol/sdk)** — Higher-level helpers including `streamSwap()` for multi-chain swaps via a **swap**
+- **[@toon-protocol/sdk](https://www.npmjs.com/package/@toon-protocol/sdk)** — Higher-level helpers for building service nodes (settlement, upload, node bootstrap); the rolling-swap session primitives a client swaps through live in this package (`sendRollingRfq`, `handleRollingAdvance`), not the sdk
 - **[@toon-protocol/bls](https://www.npmjs.com/package/@toon-protocol/bls)** — Business Logic Server (pricing, validation, storage)
 
 ---

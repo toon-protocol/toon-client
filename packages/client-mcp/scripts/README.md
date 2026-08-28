@@ -18,6 +18,6 @@ Run from this package dir, e.g.:
 node scripts/dvm-upload.mjs
 ```
 
-See also `packages/sdk/scripts/` for the swap exercise scripts
-(`swap.mjs` EVM→Solana, `swap-mina.mjs` EVM→Mina), which build the
-gift-wrapped kind:20032 rumor and drive the daemon `/swap` endpoint.
+To exercise a swap manually, drive the daemon's `/swap` endpoint the same
+way `toon_swap` does (kind:20033 RFQ, then a rolling fills session — TOON's
+only swap protocol; there is no separate swap-scripts package to reach for).
