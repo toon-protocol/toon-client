@@ -41,6 +41,7 @@ import {
   loadWireVectorsProvenance,
   wireVectorsSha256,
   type ChannelControlDeclarationVector,
+  type ChargeVector,
   type ClaimVector,
   type EnvelopeInvalidVector,
   type EnvelopeValidVector,
@@ -50,6 +51,7 @@ import {
   type PeerPrepareVector,
   type VectorEnvelope,
 } from './vectors/load.js';
+import { chargeFor } from '../connector/self-description.js';
 import {
   EnvelopeError,
   decodeEnvelope,
@@ -162,6 +164,7 @@ describe('the vendored vector file', () => {
         'claim',
         'channel_control_declaration',
         'peer_carriage',
+        'charge',
       ])
     );
     expect(provenance.sectionsPresentNotYetReplayed).toEqual([]);
@@ -1171,5 +1174,102 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
         String(claim.wire_cumulative_amount)
       );
     }
+  });
+});
+
+
+/**
+ * The one section that is arithmetic rather than bytes, and the one this client
+ * got wrong.
+ *
+ * `chargeFor` computed `floor(len / 1024) + 1` where the connector's
+ * `Price::charge` computes `base + per_kib * ceil(len / 1024)`. The two agree at
+ * every length that is not a multiple of 1024, so every size the client had
+ * actually been checked against agreed, and at a multiple it overpaid by a whole
+ * kibibyte — silently, because a claim advancing more than the price is simply
+ * accepted (toon-client#629). This block is what makes that unrepeatable: the
+ * boundary rows come from the connector's own generator, which re-derives each
+ * one in checked longhand arithmetic before committing it.
+ *
+ * Why a charge belongs in a *wire* vector set at all: `payload_len` is
+ * `Prepare.data.len()`, a property of carriage rather than content, so every hop
+ * can measure it without opening the gift wrap — which is exactly what lets this
+ * client compute its own charge before it sends. Four implementations evaluate
+ * the same schedule over the same number, and they have to agree.
+ */
+describe('charge — what a route charges for one packet (connector ADR 0065)', () => {
+  const cases: ChargeVector[] = vectors.charge?.cases ?? [];
+
+  /** The vector's own decimal strings, read as `bigint` — never as `Number`. */
+  const termsOf = (vector: ChargeVector) => ({
+    price: BigInt(vector.base),
+    pricePerKib: BigInt(vector.per_kib),
+  });
+
+  it('carries at least one case to replay', () => {
+    expect(cases.length).toBeGreaterThan(0);
+  });
+
+  it.each(cases.map((c) => [c.name, c] as const))(
+    'charges %s exactly what the connector charges',
+    (_name, vector) => {
+      expect(chargeFor(termsOf(vector), vector.payload_len)).toBe(BigInt(vector.charge));
+    }
+  );
+
+  it.each(cases.map((c) => [c.name, c] as const))(
+    'counts %s as the published number of started kibibytes',
+    (_name, vector) => {
+      // Asserted independently of the total, so an implementation that reaches
+      // the right charge by the wrong route still fails here. This is the
+      // assertion the old `floor(n / 1024) + 1` would break on at every
+      // boundary row, and on the empty payload.
+      expect(Math.ceil(vector.payload_len / 1024)).toBe(vector.kib);
+    }
+  );
+
+  it.each(
+    cases
+      .filter((c) => BigInt(c.per_kib) === 0n)
+      .map((c) => [c.name, c] as const)
+  )('treats %s as flat whether the rate is zero or absent', (_name, vector) => {
+    // A flat price is the same VALUE as a zero-slope schedule, not merely an
+    // equivalent one (ADR 0065), so the two spellings cannot be told apart —
+    // and a flat route charges its base at every length, including the lengths
+    // where the metered rows all differ.
+    expect(chargeFor({ price: BigInt(vector.base) }, vector.payload_len)).toBe(
+      BigInt(vector.charge)
+    );
+    expect(chargeFor(termsOf(vector), vector.payload_len)).toBe(BigInt(vector.base));
+  });
+
+  it('clamps a schedule that overflows a u64, rather than exceeding it', () => {
+    // A `bigint` does not overflow, so nothing forces this client to clamp on
+    // its own — and an amount past `u64::MAX` cannot be encoded into the packet
+    // it would be paying for. `saturated` is the vector telling us where the
+    // ceiling is.
+    const saturating = cases.filter((c) => c.saturated);
+    expect(saturating.length).toBeGreaterThan(0);
+    for (const vector of saturating) {
+      expect(BigInt(vector.charge)).toBe(2n ** 64n - 1n);
+      expect(chargeFor(termsOf(vector), vector.payload_len)).toBe(2n ** 64n - 1n);
+    }
+  });
+
+  it('covers both sides of a kibibyte boundary, which is the whole point', () => {
+    // A guard on the fixture itself: a future regeneration that dropped the
+    // boundary rows would leave every remaining row passing under either
+    // formula, which is exactly the state that hid #629.
+    const metered = new Map(
+      cases.filter((c) => BigInt(c.per_kib) > 0n).map((c) => [c.payload_len, c])
+    );
+    for (const len of [0, 1023, 1024, 1025, 2048, 2049]) {
+      expect(metered.has(len), `no metered vector at ${len} bytes`).toBe(true);
+    }
+    // The two readings differ at exactly these lengths: `ceil` says one
+    // kibibyte at 1024 and `floor + 1` says two.
+    expect(metered.get(1024)?.kib).toBe(1);
+    expect(metered.get(2048)?.kib).toBe(2);
+    expect(metered.get(0)?.kib).toBe(0);
   });
 });

@@ -298,6 +298,40 @@ export interface PeerCarriageVectors {
   [item: string]: unknown;
 }
 
+/**
+ * One row of a price schedule: what a route priced `base + per_kib/KiB` charges
+ * for a packet whose sealed payload is `payload_len` bytes.
+ *
+ * The only section of the vector set that pins arithmetic rather than bytes,
+ * and the one this client got wrong (toon-client#629). See the connector's
+ * `vectors/README.md` for why a charge is a cross-repo contract in the way an
+ * encoding is: `payload_len` is `Prepare.data.len()`, a property of carriage
+ * that every hop can measure without opening the wrap, so four implementations
+ * evaluate the same schedule over the same number and must agree.
+ */
+export interface ChargeVector {
+  name: string;
+  /**
+   * Decimal **strings**, not numbers: the saturating rows reach `u64::MAX`,
+   * which is past 2^53 and would be rounded by `JSON.parse`. Read them with
+   * `BigInt`, never `Number`.
+   */
+  base: string;
+  per_kib: string;
+  /** `Prepare.data.len()` — the sealed gift wrap, before base64 or OER framing. */
+  payload_len: number;
+  /** `ceil(payload_len / 1024)`: kibibytes started, and zero for an empty payload. */
+  kib: number;
+  charge: string;
+  /**
+   * Whether `u64` saturation clamped this row. A `bigint` does not clamp on its
+   * own, so {@link ../../connector/self-description.js!chargeFor} has to apply
+   * the ceiling explicitly — an amount past `u64::MAX` cannot be encoded into
+   * the packet it would be paying for.
+   */
+  saturated: boolean;
+}
+
 export interface WireVectors {
   schema_version: number;
   envelope: {
@@ -317,6 +351,8 @@ export interface WireVectors {
   peer_carriage?: PeerCarriageVectors;
   /** Replayed against `src/signing/evm-signer.ts`. */
   channel_control_declaration?: { cases: ChannelControlDeclarationVector[] };
+  /** Replayed against `src/connector/self-description.ts`'s `chargeFor`. */
+  charge?: { cases: ChargeVector[] };
 }
 
 /**
@@ -331,6 +367,7 @@ export const WIRE_VECTOR_SECTIONS = [
   'claim',
   'peer_carriage',
   'channel_control_declaration',
+  'charge',
 ] as const;
 
 // ─── Provenance ─────────────────────────────────────────────────────────────

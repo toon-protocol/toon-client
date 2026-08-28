@@ -1,20 +1,21 @@
 {
-  "$comment": "Where the vendored wire-vectors.json came from. Machine-read by wire-vectors.test.ts (integrity) and scripts/refresh-wire-vectors.mjs (drift). The provenance fields are written by that script — hand-edit none of them. The two 'sections' lists are the exception: they describe THIS repo's harness, not the source file, so they are maintained by hand alongside wire-vectors.test.ts, which asserts they partition every section the file carries.",
+  "$comment": "Where the vendored wire-vectors.json came from. Machine-read by wire-vectors.test.ts (integrity) and scripts/refresh-wire-vectors.mjs (drift). The provenance fields are written by that script \u2014 hand-edit none of them. The two 'sections' lists are the exception: they describe THIS repo's harness, not the source file, so they are maintained by hand alongside wire-vectors.test.ts, which asserts they partition every section the file carries.",
   "sourceRepo": "toon-protocol/connector",
   "sourcePath": "vectors/wire-vectors.json",
   "sourceRawUrl": "https://raw.githubusercontent.com/toon-protocol/connector/{ref}/vectors/wire-vectors.json",
-  "connectorCommit": "6ea60091da988d93f0a8c71e20fecd691d0a6983",
-  "connectorCommitDate": "2026-08-27T10:15:18-04:00",
-  "connectorCommitSubject": "The README is an operator guide with no TypeScript in it, and a docs-only PR skips the chain gate (#1201)",
+  "connectorCommit": "5465322ef7cb49d2a21fdc86e2ea4d82ff96d9da",
+  "connectorCommitDate": "2026-08-28T18:18:30-04:00",
+  "connectorCommitSubject": "The charge is a vector, not a paragraph (#629)",
   "schemaVersion": 4,
-  "sha256": "a3aab4da85dc57b0f74dbb4eb030961f73449388ecc67a6d6c8e896fb05efbc2",
+  "sha256": "8503274ec1f7785d1d6d1f6f11f7c2d2d1887d9354b041dff061e7a25837b9ec",
   "sectionsReplayed": [
     "envelope",
     "giftwrap",
     "fulfilment",
     "claim",
     "peer_carriage",
-    "channel_control_declaration"
+    "channel_control_declaration",
+    "charge"
   ],
   "sectionsPresentNotYetReplayed": [],
   "source": "local",

@@ -90,6 +90,25 @@ export interface RoutePrice extends RouteCharge {
 const BYTES_PER_KIB = 1024n;
 
 /**
+ * The ceiling every charge is clamped to: `u64::MAX`, the widest an ILP
+ * packet's `amount` field can carry.
+ *
+ * The connector's `Price::charge` is saturating throughout — an operator can
+ * write a slope that overflows a `u64` on a large payload, and the answer is
+ * then `u64::MAX`, a charge no claim can cover, which refuses the packet. A
+ * `bigint` does not overflow and so would not clamp on its own, which would put
+ * this client above the connector's own answer and produce an amount that
+ * cannot be encoded into the packet it is paying for. Pinned by the
+ * `charge` vectors' `saturating_*` rows.
+ */
+const MAX_CHARGE = (1n << 64n) - 1n;
+
+/** `amount`, clamped the way the connector's saturating arithmetic clamps it. */
+function saturate(amount: bigint): bigint {
+  return amount > MAX_CHARGE ? MAX_CHARGE : amount;
+}
+
+/**
  * What one packet actually costs on `terms`, given the size of its **sealed**
  * payload.
  *
@@ -114,6 +133,8 @@ const BYTES_PER_KIB = 1024n;
  * 0 bytes → 1000, 1 → 1010, 1023 → 1010, **1024 → 1010**, 1025 → 1020,
  * **2048 → 1020**, 2049 → 1030, 5161 → 1060.
  *
+ * Saturating, like the connector's: the answer is never more than `u64::MAX`.
+ *
  * This used to compute `floor(bytes / 1024) + 1` (toon-client#629), which agrees
  * with `ceil` everywhere except an exact multiple of 1024 and an empty payload,
  * where it charged one kibibyte too many. Every size that had actually been
@@ -122,10 +143,10 @@ const BYTES_PER_KIB = 1024n;
  */
 export function chargeFor(terms: RouteCharge, sealedBytes: number): bigint {
   const perKib = terms.pricePerKib;
-  if (perKib === undefined || perKib === 0n) return terms.price;
+  if (perKib === undefined || perKib === 0n) return saturate(terms.price);
   const bytes = BigInt(Math.max(0, Math.trunc(sealedBytes)));
   const units = (bytes + BYTES_PER_KIB - 1n) / BYTES_PER_KIB;
-  return terms.price + perKib * units;
+  return saturate(terms.price + perKib * units);
 }
 
 /** Which carriage a route insists on, when its routes agree on one. */
