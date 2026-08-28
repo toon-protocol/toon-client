@@ -17,7 +17,7 @@ packages/client/src/
   ilp/ http/ btp/   the two carriages and their port  wire/       envelope, gift wrap, vectors
   channel/    lifecycle, store, per-chain clients     signing/    balance proofs
   keys/       derivation + keystore                   wallet/     balances, transfers, faucet
-  cli/        the `toon` command
+  jobs/       NIP-90 job events + the ArNS ceremony   cli/        the `toon` command
 ```
 
 ## Build & test

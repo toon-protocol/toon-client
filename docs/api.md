@@ -295,6 +295,109 @@ opened.version;     // 2, or 1 for a pre-1.0 file
 `loadKeystore` returns the phrase alone and is kept for compatibility; prefer `openKeystore`,
 because a phrase without its derivation is only half the answer.
 
+## Jobs
+
+Some apps a connector fronts are not plain HTTP handlers: the store and the gas station both take
+their input as a **kind-tagged Nostr event** whose arguments are `['param', key, value]` tags, and
+answer in the FULFILL body. There is no relay and no round trip — the event *is* the request body
+of the paid POST.
+
+```ts
+import { buildJobEvent, sendJob } from '@toon-protocol/client';
+
+const answer = await sendJob<MyReceipt>(
+  { client, destination: 'g.toon.store' },
+  buildJobEvent({ kind: 5095, params: { op: 'buy', name: 'my-name' } })
+);
+```
+
+The signature on the event is **integrity, not identity** — it proves the tags were not altered in
+transit, and nothing else. Who paid is the connector's `X-TOON-Payer` header, proved against a
+claim. So `buildJobEvent` generates a key per event by default, and this client carries no Nostr
+identity: there is nothing to derive, back up or rotate.
+
+`sendJob` returns a `JobAnswer<T>` — `{ accepted: true, receipt }`, or `{ accepted: false, code,
+message, refusal? }`. `accepted: false` never means "the app said no to what you asked": that is a
+receipt. It means there is no receipt, because the packet was refused short of the app or the app
+rejected the event before running it.
+
+| Export | What it does |
+| --- | --- |
+| `buildJobEvent` | Builds and signs one NIP-01 event from a `{ kind, params }` |
+| `jobEventParam` | Reads a `['param', key, value]` tag back off an event |
+| `sendJob` | Pays for one job and decodes its receipt |
+| `JobEndpoint` | `{ client, destination, sealTo?, timeoutMs? }` — who pays, which route, and whose key the payload is sealed to |
+
+### Buying an ArNS name with no SOL
+
+`kind:5095 op=buy` needs a `processId`: the MPL Core asset pubkey of an ANT you already own.
+Spawning one costs ~0.012 SOL of rent, and this client holds stablecoin credit on a payment
+channel, not SOL. So the work splits across three parties, and no single one has to be able to do
+all of it — the **store** composes the transaction, the **client** signs it, the **gas station**
+pays for it and broadcasts it.
+
+```ts
+import { buyArnsNameWithNewAnt, solanaKeypair } from '@toon-protocol/client';
+
+const outcome = await buyArnsNameWithNewAnt({
+  store: { client, destination: 'g.toon.store' },
+  gas:   { client, destination: 'g.toon.gas' },
+  owner: solanaKeypair(mySolanaSecret),
+  name:  'my-name',
+  years: 1,
+});
+```
+
+`spawnAnt` drives the ceremony on its own; `buyArnsName` registers a name to an ANT you already
+hold; `buyArnsNameWithNewAnt` is the two in order.
+
+```text
+1. → gas    kind:5096 quote, no draft    → feePayer
+2. → store  kind:5095 op=prepare         → unsigned draft transaction
+3.          sign the mint and owner slots
+4. → gas    kind:5096 quote, with draft  → quoteId, recentBlockhash, maxLamports
+5.          patch the blockhash, sign again
+6. → gas    kind:5096 execute            → co-signed, broadcast, signature
+7. → store  kind:5095 op=buy             → the name is yours
+```
+
+Two quotes and two signings, because the gas station prices the job from a **signed** draft — that
+is what makes the free quote a full policy dry run — and then requires the executed transaction to
+carry the blockhash **it** chose. Everything from step 4 on runs inside one merged
+quote/blockhash deadline, 60 seconds by default, which is why step 5 patches those 32 bytes
+locally instead of paying for a second `op=prepare`. Pass `reprepare: true` to take that round
+trip anyway; both routes end in the same place.
+
+The mint keypair is **ephemeral and single-use**: generated per spawn, its public half becomes the
+ANT's permanent address and the `processId` for step 7, and nothing needs its private half once
+the spawn confirms.
+
+**Nothing here throws.** A gate that declined to spend, a packet the connector would not carry, an
+event the app rejected and a receipt this client will not sign are all outcomes — `{ spawned:
+false, step, reason, detail, idempotencyKey }`. By the time any of them is read a packet has
+already been paid for, so it is returned rather than thrown.
+
+`reason` is the gas station's own vocabulary wherever the verdict is one the gas station would
+give, including the checks made locally to reach that verdict before paying for it. The reasons
+worth branching on:
+
+| `reason` | What to do |
+| --- | --- |
+| `float_exhausted` | The node is out of gas money. Nothing to retry. |
+| `quote_expired`, `blockhash_expired`, `blockhash_mismatch` | Re-run the spawn; the ceremony overran its deadline. |
+| `confirmation_timeout` | Broadcast but not confirmed — it may still land. Re-send the execute with the **same** `idempotencyKey`; the refusal carries it, along with the `quoteId` and the `transaction` bytes. |
+| `missing_client_signature` | A slot is still zero. Sign *after* patching, never before. |
+| `malformed_receipt` | The store composed against keys other than the ones it was handed, or an ANT other than the mint. Nothing was signed. |
+
+The two halves are separately re-runnable on purpose. If the buy fails after the spawn confirmed,
+the ANT is still yours: call `buyArnsName` with the `processId` in `ant` rather than spawning a
+second one.
+
+The spawned ANT is **not ACL-bootstrapped** — that is ~61.4M lamports against the gas station's
+20M per-job ceiling. The ANT resolves fine; it just will not appear in "ANTs I own" registry
+lookups until you bootstrap it later with your own SOL, and that registry is an
+eventually-consistent secondary index, not truth.
+
 ## Low-level exports
 
 For forming packets by hand, or checking what this client formed. Each is covered by the
@@ -313,6 +416,10 @@ connector's own wire vectors — see
 | `parseSelfDescription` | `GET /ilp` body to `NodeSelfDescription` |
 | `ChannelManager`, `JsonFileChannelStore` | The watermark and the bindings, without a client |
 | `EvmSigner`, `SolanaSigner` | Balance-proof signing, per chain |
+| `parseSolanaWireTransaction` | Reads a compiled Solana transaction this client did not build — its signers, its blockhash, which slots are still zero |
+| `signSolanaWireTransaction` | Fills the signature slots that are yours, in place, without recompiling the message |
+| `patchSolanaRecentBlockhash` | Moves the 32 blockhash bytes to the one a fee payer chose, clearing the signatures made over the old message |
+| `generateSolanaKeypair`, `solanaKeypair` | A fresh single-use keypair, or one read back from a 32-byte seed or 64-byte secret |
 | `DEVNET`, `defaultRpcUrl` | Well-known devnet values. Defaults and examples only — settlement facts always come from `GET /ilp` |
 
 ## Examples

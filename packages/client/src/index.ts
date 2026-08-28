@@ -50,6 +50,10 @@ export * from './keys/index.js';
 // Chain reads and transfers that have nothing to do with paying a connector.
 export * from './wallet/index.js';
 
+// NIP-90 jobs: a signed, kind-tagged event as the body of a paid request — and
+// the ArNS ceremony that spends one across a store and a gas station.
+export * from './jobs/index.js';
+
 // Well-known devnet values. Defaults and examples only — a connector's real
 // settlement facts always come from its own `GET /ilp`.
 export * from './presets.js';
