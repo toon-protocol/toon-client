@@ -66,6 +66,7 @@ import type { IlpSendResult } from '../ilp/types.js';
 import { readResponseMeta } from '../http/HttpIlpClient.js';
 import { toBase64, encodeUtf8, fromBase64 } from '../utils/binary.js';
 import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
+import { trimTrailingSlashes } from '../utils/url.js';
 
 // ─── Identity ───────────────────────────────────────────────────────────────
 
@@ -320,12 +321,12 @@ export function connectorEdgeBaseUrl(endpoint: string): string {
     );
   }
   // Drop a trailing `/ilp` (the POST endpoint) and any trailing slashes.
-  let path = url.pathname.replace(/\/+$/, '');
+  let path = trimTrailingSlashes(url.pathname);
   if (path.endsWith('/ilp')) path = path.slice(0, -'/ilp'.length);
   url.pathname = path;
   url.search = '';
   url.hash = '';
-  return url.toString().replace(/\/+$/, '');
+  return trimTrailingSlashes(url.toString());
 }
 
 // ─── Parsing (pure, exported so the wire shape is testable without a server) ─

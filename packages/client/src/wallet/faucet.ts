@@ -19,6 +19,7 @@
  */
 
 import { NetworkError } from '../client/errors.js';
+import { trimTrailingSlashes } from '../utils/url.js';
 
 /** Supported faucet chains. */
 export type FaucetChain = 'evm' | 'solana';
@@ -91,7 +92,7 @@ export async function fundWallet(
     throw new Error('fundWallet: address is required');
   }
 
-  const base = faucetUrl.replace(/\/+$/, '');
+  const base = trimTrailingSlashes(faucetUrl);
   const url = `${base}${faucetPath(chain)}`;
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeout = options.timeout ?? defaultFaucetTimeout(chain);
