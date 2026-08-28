@@ -52,6 +52,10 @@ import type { Signer } from './payment-channel.js';
 const SIGNATURE_LENGTH = 64;
 /** Bytes in a pubkey, a blockhash, and an Ed25519 seed alike. */
 const PUBKEY_LENGTH = 32;
+/** An Ed25519 seed — the private half of a keypair, and all of it that is stored. */
+const SEED_LENGTH = 32;
+/** A stored `seed ‖ pubkey` secret key, the spelling most Solana tooling writes. */
+const SECRET_KEY_LENGTH = 64;
 /** High bit of a message's first byte: set ⇒ versioned, clear ⇒ legacy. */
 const VERSION_PREFIX_MASK = 0x80;
 
@@ -310,7 +314,33 @@ export function signSolanaWireTransaction(
  * key to keep and to lose.
  */
 export function generateSolanaKeypair(): Signer & { address: string } {
-  const privateKey = randomBytes(PUBKEY_LENGTH);
-  const publicKey = new Uint8Array(ed25519.getPublicKey(privateKey));
-  return { privateKey, publicKey, address: base58Encode(publicKey) };
+  return keypairFromSeed(randomBytes(SEED_LENGTH));
+}
+
+/**
+ * The keypair a stored or derived Solana secret represents — a 32-byte seed or
+ * a 64-byte `seed ‖ pubkey` secret key, as bytes or base58.
+ *
+ * The public half is DERIVED, never read out of the trailing 32 bytes: a
+ * 64-byte input whose tail disagrees with its own seed is a corrupt file, and
+ * honouring it would fill a signature slot addressed to a key that did not sign
+ * it. Mirrors the rule `ToonClient`'s own config applies to `solanaSecretKey`.
+ */
+export function solanaKeypair(
+  key: string | Uint8Array
+): Signer & { address: string } {
+  const bytes = typeof key === 'string' ? base58Decode(key.trim()) : key;
+  if (bytes.length !== SEED_LENGTH && bytes.length !== SECRET_KEY_LENGTH) {
+    throw new Error(
+      `a Solana secret must be a ${SEED_LENGTH}-byte seed or a ${SECRET_KEY_LENGTH}-byte ` +
+        `secret key; got ${bytes.length} bytes`
+    );
+  }
+  return keypairFromSeed(bytes.slice(0, SEED_LENGTH));
+}
+
+/** The one place a seed becomes a keypair, so both entry points agree. */
+function keypairFromSeed(seed: Uint8Array): Signer & { address: string } {
+  const publicKey = new Uint8Array(ed25519.getPublicKey(seed));
+  return { privateKey: seed, publicKey, address: base58Encode(publicKey) };
 }

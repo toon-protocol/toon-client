@@ -53,3 +53,15 @@ export {
   TOKEN_NETWORK_REGISTRY_ABI,
   ERC20_ABI,
 } from './evm/abi.js';
+
+// Solana wire transactions this client did NOT build: reading one, moving the
+// blockhash a fee payer chose, and filling the signature slots that are ours.
+export {
+  generateSolanaKeypair,
+  parseSolanaWireTransaction,
+  patchSolanaRecentBlockhash,
+  signSolanaWireTransaction,
+  solanaKeypair,
+  type SolanaWireTransaction,
+} from './solana/wire-transaction.js';
+export type { Signer as SolanaKeypair } from './solana/payment-channel.js';

@@ -20,6 +20,7 @@ packages/client/src/
   signing/    balance-proof signing, per chain
   keys/       mnemonic derivation and the encrypted keystore
   wallet/     chain balances, transfers, the devnet faucet
+  jobs/       NIP-90 job events, and the ArNS ceremony that spends one
   cli/        the `toon` command
 ```
 
