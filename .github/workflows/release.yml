@@ -55,6 +55,21 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
+      # Fail here, not 90 seconds later inside `changeset publish`. An expired
+      # NPM_TOKEN makes the registry answer a publish with a bare
+      # `E404 Not Found - PUT .../@toon-protocol%2fclient` — which reads as "no
+      # such package" and is really "no such credential". This check turns that
+      # into an obvious failure on an ordinary push to main, days before someone
+      # merges a Version Packages PR and finds the publish leg dead.
+      - name: Verify npm credentials
+        run: |
+          npm whoami || {
+            echo "::error::NPM_TOKEN cannot authenticate to registry.npmjs.org - it has probably expired. Mint a granular automation token with read/write on the @toon-protocol scope and run: gh secret set NPM_TOKEN --org toon-protocol"
+            exit 1
+          }
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm -r build
@@ -67,4 +82,9 @@ jobs:
           publish: pnpm changeset publish
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          # Both names, deliberately. setup-node's .npmrc reads NODE_AUTH_TOKEN;
+          # changesets/action looks for NPM_TOKEN and otherwise logs "No NPM_TOKEN
+          # or OIDC available - assuming npm is already authenticated", skipping
+          # its own auth setup.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
