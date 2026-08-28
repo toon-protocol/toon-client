@@ -1,24 +1,19 @@
 {
-  "capturedAt": "2026-07-23",
-  "capturedFromCommit": "8a8f5018b6351e4f8f995cbfe20cb5aeb92e1708",
-  "capturedFromBranch": "main",
+  "capturedAt": "2026-08-27",
+  "capturedFromCommit": "client-1.0 working tree, all workstreams landed",
+  "capturedFromBranch": "client-1.0",
   "tolerancePercent": 20,
   "correctness": {
-    "description": "Frozen violation counts. The guard fails on any NEW violation beyond these — it never re-fails on this known, pre-existing debt (tracked in #423 for typecheck).",
-    "captureMethod": "eslint . -f json (summed errorCount/warningCount across all files); pnpm -r --no-bail run typecheck (counted `error TS` occurrences per package from the recursive log prefix).",
+    "description": "Frozen violation counts for the single published package (`client`). The guard fails on any NEW violation beyond these \u2014 it never re-fails on this known, pre-existing debt.",
+    "captureMethod": "eslint . -f json (summed errorCount/warningCount across all files); tsc --noEmit over packages/client's two tsconfigs. Re-measured on the client-1.0 branch AFTER every workstream landed, so these are the real figures rather than a mid-carve reading: the repo is one package, the five others were deleted and the old 75-error typecheck debt went with them. Typecheck is a hard zero and eslint carries no errors; the warnings are no-non-null-assertion in test files.",
     "eslint": {
-      "errors": 16,
-      "warnings": 718
+      "errors": 0,
+      "warnings": 64
     },
     "typecheck": {
-      "totalErrors": 75,
+      "totalErrors": 0,
       "byPackage": {
-        "arweave": 0,
-        "client": 0,
-        "client-mcp": 0,
-        "rig": 1,
-        "rig-web": 74,
-        "views": 0
+        "client": 0
       }
     }
   },
@@ -33,6 +28,6 @@
     "runnerMinutesEstimate": 3.08,
     "imageSizeBytes": null,
     "cacheHitRatePercent": null,
-    "captureMethod": "runnerMinutesEstimate = gateWallClockSeconds / 60 (single ubuntu-latest runner, no parallel jobs within 'build'), carrying the same estimate caveat as speed above. imageSizeBytes and cacheHitRatePercent have no baseline yet: no Docker daemon was available in the capture environment (imageSizeBytes), and no reproducible source for pnpm/actions cache hit-rate was available outside a live CI run (cacheHitRatePercent). Both are null so the guard SKIPS those checks rather than comparing against a fabricated number (no false FAIL) — see .sandcastle/gate-guard.ts. agent-image.yml now reports image size on its own runs so imageSizeBytes can be backfilled from there."
+    "captureMethod": "runnerMinutesEstimate = gateWallClockSeconds / 60 (single ubuntu-latest runner, no parallel jobs within 'build'), carrying the same estimate caveat as speed above. imageSizeBytes and cacheHitRatePercent have no baseline yet: no Docker daemon was available in the capture environment (imageSizeBytes), and no reproducible source for pnpm/actions cache hit-rate was available outside a live CI run (cacheHitRatePercent). Both are null so the guard SKIPS those checks rather than comparing against a fabricated number (no false FAIL) \u2014 see .sandcastle/gate-guard.ts. agent-image.yml now reports image size on its own runs so imageSizeBytes can be backfilled from there."
   }
 }

@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "toon": {
-      "command": "npx",
-      "args": ["-y", "-p", "@toon-protocol/client-mcp", "toon-mcp"],
-      "env": {}
-    }
-  }
-}

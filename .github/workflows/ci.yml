@@ -19,25 +19,9 @@ jobs:
       - name: Require changeset when a released package changes
         run: |
           # "Released" here means "changesets versions it and writes its
-          # CHANGELOG", which is NOT the same as "publishes to npm".
-          #
-          # packages/client-mcp is on this list even though it is `private` and
-          # never reaches npm: the artifact users actually install is the .mcpb
-          # built from it, and since toon-client#614 it is versioned and
-          # changelogged like any other package (private, NOT `ignore`d — see
-          # its package.json "//"). A client-mcp change with no changeset is a
-          # .mcpb shipped with nothing telling a Desktop user what moved, which
-          # is exactly the defect #614 recorded.
-          #
-          # packages/rig is deliberately absent: @toon-protocol/rig on npm is
-          # published from github.com/toon-protocol/rig, not from here, so a
-          # changeset here is optional bookkeeping rather than a release gate.
-          #
-          # packages/views is absent for a third reason: it is still in
-          # .changeset/config.json's `ignore`, so a views-only changeset would
-          # never be consumed and would fail the leftover assertion below.
-          # Demanding one would be demanding a file that cannot be valid.
-          NEEDS_CHANGESET="packages/client packages/arweave packages/client-mcp"
+          # CHANGELOG", which is NOT the same as "publishes to npm". This repo
+          # ships exactly one package, so the list has exactly one entry.
+          NEEDS_CHANGESET="packages/client"
           changed=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
           needs_changeset=false
           for pkg in $NEEDS_CHANGESET; do
@@ -59,12 +43,11 @@ jobs:
       # never parses one, so a changeset that is well-formed YAML but an invalid
       # RELEASE PLAN sailed through it — and `release.yml`, which runs after
       # merge where its failure gates nothing, was the first thing in the repo to
-      # read the file. That is toon-client#611: `.changeset/
-      # daemon-counterparty-validation.md` named both `@toon-protocol/client` and
-      # the `ignore`d `@toon-protocol/client-mcp`, changesets refuses a changeset
-      # that mixes ignored and non-ignored packages, and `release.yml` was red on
-      # EVERY push to main for a day — so no correctness fix in
-      # `@toon-protocol/client` could reach a consumer.
+      # read the file. That is toon-client#611: a changeset named both
+      # `@toon-protocol/client` and a package that was listed in `ignore`,
+      # changesets refuses a changeset that mixes ignored and non-ignored
+      # packages, and `release.yml` was red on EVERY push to main for a day — so
+      # no correctness fix in `@toon-protocol/client` could reach a consumer.
       #
       # WHY `changeset version` AND NOT `changeset status`. Fidelity: this is the
       # byte-identical command `release.yml`'s `changesets/action` runs as its
@@ -103,8 +86,9 @@ jobs:
       # the same family as #611: it is not an error, so the step above stays
       # green, and the file simply accumulates in `.changeset/` release after
       # release while its description reaches no changelog at all. That is
-      # toon-client#614 — six `client-mcp`-only changesets sat unconsumed for ten
-      # days, and `packages/client-mcp/CHANGELOG.md` was frozen the whole time.
+      # toon-client#614 — six changesets naming only an `ignore`d package sat
+      # unconsumed for ten days, and that package's CHANGELOG was frozen the
+      # whole time.
       #
       # `changeset version` consumes every changeset it can act on, so after the
       # step above the only `.md` files left in `.changeset/` are ones changesets
@@ -402,7 +386,7 @@ jobs:
         run: |
           set -euo pipefail
           pnpm --filter @toon-protocol/client test:integration \
-            src/__integration__/solana-settlement-redeem.integration.test.ts 2>&1 \
+            src/__integration__/solana-channel-lifecycle.integration.test.ts 2>&1 \
             | tee /tmp/solana-proof.log
 
       # A green tick is not evidence that anything ran. Three independent
@@ -424,7 +408,7 @@ jobs:
       - name: Assert the proof collected, ran, and redeemed on chain
         env:
           EXPECTED_TESTS: '7'
-          SUITE: src/__integration__/solana-settlement-redeem.integration.test.ts
+          SUITE: src/__integration__/solana-channel-lifecycle.integration.test.ts
         run: |
           set -euo pipefail
           sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/solana-proof.log > /tmp/solana-proof.plain
@@ -464,9 +448,8 @@ jobs:
   # `test` script, i.e. its UNIT config, and every unit config excludes
   # `**/__integration__/**`. So until #610 added the Solana proof, no CI job in
   # this repo had ever run an integration test — and #607 is what that hid:
-  # `swap-settlement-submit.integration.test.ts` had been red on `main` for as
-  # long as the EVM claim digest has carried its EIP-712 domain, because nothing
-  # ran it and nothing typechecked it.
+  # a suite could sit red on `main` indefinitely, because nothing ran it and
+  # nothing typechecked it.
   #
   # WHAT RUNS HERE, AND WHY THESE THREE. The eight integration suites in the repo
   # divide cleanly by what they need, and only the no-infra group belongs in an
@@ -475,17 +458,12 @@ jobs:
   #   NEEDS NOTHING — run here, named explicitly:
   #     client/btp-transport            binds an ephemeral loopback `ws` server
   #     client/http-ilp-transport       binds an ephemeral loopback http.Server
-  #     client/swap-settlement-submit   binds an ephemeral loopback JSON-RPC server
   #   NEEDS INFRA — runs in `solana-settlement-proof`, which installs the CLI:
-  #     client/solana-settlement-redeem  a real `solana-test-validator`
+  #     client/solana-channel-lifecycle  a real `solana-test-validator`
   #   NEEDS A LIVE SERVICE OR A CREDENTIAL — deliberately NOT in CI:
   #     client/rust-edge-devnet          a funded key + a live devnet connector
-  #     client-mcp/journey               a live testnet, real funds, a Claude token
-  #     client-mcp/agent-sdk-smoke       a Claude credential
-  #     rig/arns-live-read               live ar.io gateways (ARNS_LIVE_SMOKE)
   #
-  # Nothing here needs anvil, a validator, or a network route off the runner: the
-  # three suites together are 9 tests in ~1.3s of vitest. The separation is the
+  # Nothing here needs anvil, a validator, or a network route off the runner. The separation is the
   # point — turning `test:integration` on WHOLESALE would have pulled the live
   # devnet and credentialled suites into every PR (they self-skip, so they would
   # have contributed a green tick and zero coverage, which is the failure mode
@@ -573,8 +551,7 @@ jobs:
           set -euo pipefail
           pnpm --filter @toon-protocol/client test:integration \
             src/__integration__/btp-transport.integration.test.ts \
-            src/__integration__/http-ilp-transport.integration.test.ts \
-            src/__integration__/swap-settlement-submit.integration.test.ts 2>&1 \
+            src/__integration__/http-ilp-transport.integration.test.ts 2>&1 \
             | tee /tmp/integration.log
 
       # A green tick is not evidence that anything ran — the exact defect #607
@@ -584,7 +561,11 @@ jobs:
       # visible diff.
       - name: Assert every suite collected and passed
         env:
-          EXPECTED_TOTAL: '9'
+          # Per-suite counts and a total, so neither a vanished suite nor a
+          # silently skipped test inside one can hide behind a green tick.
+          BTP_TESTS: '6'
+          HTTP_TESTS: '6'
+          EXPECTED_TOTAL: '12'
         run: |
           set -euo pipefail
           sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/integration.log > /tmp/integration.plain
@@ -606,9 +587,8 @@ jobs:
             fi
           }
 
-          assert_suite src/__integration__/btp-transport.integration.test.ts 3
-          assert_suite src/__integration__/http-ilp-transport.integration.test.ts 3
-          assert_suite src/__integration__/swap-settlement-submit.integration.test.ts 3
+          assert_suite src/__integration__/btp-transport.integration.test.ts "$BTP_TESTS"
+          assert_suite src/__integration__/http-ilp-transport.integration.test.ts "$HTTP_TESTS"
 
           if ! grep -qE "Tests +${EXPECTED_TOTAL} passed \(${EXPECTED_TOTAL}\)" /tmp/integration.plain; then
             echo "::error::vitest did not report ${EXPECTED_TOTAL} passed of ${EXPECTED_TOTAL} — collected is not the same as passed"
@@ -617,7 +597,7 @@ jobs:
           fi
 
           [ "$fail" -eq 0 ] || exit 1
-          echo "✅ all three no-infra integration suites collected and passed (${EXPECTED_TOTAL} tests)"
+          echo "✅ both no-infra integration suites collected and passed (${EXPECTED_TOTAL} tests)"
 
   # Fleet-wide aggregate required check per toon-meta#279. This job is the
   # single check that branch protection requires. `if: always()` makes it run

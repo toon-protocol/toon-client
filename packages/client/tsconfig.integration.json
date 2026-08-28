@@ -33,17 +33,13 @@
   // by name is deliberate: a new integration suite must be added here to be
   // covered, and the CI job asserts this list matches the directory so that
   // omission cannot pass silently.
+  // No opt-outs: the CI step that runs this config asserts the list below
+  // matches src/__integration__/ exactly, so an omission is a red check rather
+  // than a silent gap.
   "files": [
     "src/__integration__/btp-transport.integration.test.ts",
     "src/__integration__/http-ilp-transport.integration.test.ts",
     "src/__integration__/rust-edge-devnet.integration.test.ts",
-    "src/__integration__/solana-settlement-redeem.integration.test.ts",
-    // No opt-outs. This entry was the one exception (#607): the suite called
-    // `balanceProofHashEvm` with 4 arguments where the published digest takes 6,
-    // and #607 supplied the two EIP-712 domain arguments the v2 digest needs.
-    // The CI step that runs this config asserts the list below matches
-    // src/__integration__/ exactly, so re-introducing an opt-out here is a red
-    // check, not a comment.
-    "src/__integration__/swap-settlement-submit.integration.test.ts"
+    "src/__integration__/solana-channel-lifecycle.integration.test.ts"
   ]
 }

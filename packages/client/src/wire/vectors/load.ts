@@ -7,13 +7,16 @@
  * something the bundler inlines into the published package.
  *
  * The shape mirrors `vectors/README.md` on the connector: every section the
- * file carries is typed and returned. Five of six are replayed — `giftwrap`
- * and `fulfilment` arrived against `src/wire/giftwrap.ts` (toon-client#449),
- * `channel_control_declaration` against `src/signing/evm-signer.ts`
- * (toon-client#540) — each as a new `describe` block in the harness rather
- * than a restructure of it, exactly as this module was shaped for.
- * `peer_carriage` is the one deliberate exception: the connector-to-connector
- * peer wire, which no client SDK speaks (see its own doc comment below).
+ * file carries is typed and returned, and every section is now replayed —
+ * `giftwrap` and `fulfilment` arrived against `src/wire/giftwrap.ts`
+ * (toon-client#449), `channel_control_declaration` against
+ * `src/signing/evm-signer.ts` (toon-client#540), and `peer_carriage` against
+ * `src/btp/protocol.ts` and `src/channel/solana/payment-channel.ts` — each as
+ * a new `describe` block in the harness rather than a restructure of it,
+ * exactly as this module was shaped for. `peer_carriage` is replayed only in
+ * part: its claim-ack, flush and retransmission items really are the wire
+ * between two connectors, and those are named in the harness's
+ * `PEER_ONLY_ITEMS` so the "nothing unlooked-at" assertion stays closed.
  *
  * `WIRE_VECTOR_SECTIONS` is the closed list of sections this loader has been
  * taught. The harness asserts the file carries exactly these, so a section the
@@ -187,13 +190,113 @@ export interface ChannelControlDeclarationVector {
 }
 
 /**
- * The connector-to-connector peer wire (connector#758, `peer-carriage-spec.md`
- * §10) — a client SDK's counterpart never speaks this; it is the wire between
- * two connectors, not between a client and its terminating edge. Carried but
- * deliberately NOT replayed, same as any section in
- * `sectionsPresentNotYetReplayed` — see `wire-vectors.test.ts`.
+ * A peer claim, in both carriages, plus what it decodes to in-process.
+ *
+ * `json` is the plain string a real interaction carries; `btp_raw_hex` is that
+ * same string's raw UTF-8 (the BTP `protocolData` entry payload) and
+ * `http_base64` is base64 of the same bytes (the HTTP header value) — never a
+ * second encoding of a different value.
+ *
+ * `signed_message_hex` is the bytes the claim's `signature` actually covers:
+ * empty for EVM (whose signature covers an EIP-712 digest, pinned as
+ * `claim_digest_hex`), and for Solana the 96-byte ADR 0053 balance proof.
  */
-export type PeerCarriageVectors = Record<string, unknown>;
+export interface PeerClaimVector {
+  name: string;
+  blockchain: 'evm' | 'solana';
+  /** Solana: the 96-byte ADR 0053 message. EVM: empty (see `claim_digest_hex`). */
+  signed_message_hex: string;
+  json: string;
+  btp_raw_hex: string;
+  http_base64: string;
+  /** The channel id both carriage decoders must agree the claim names. */
+  wire_channel_id: string;
+  wire_nonce: number;
+  wire_cumulative_amount: number;
+  wire_signature_hex: string;
+}
+
+/** The decoded values a pinned OER `Prepare` must produce, and re-encode from. */
+export interface PeerPrepareFields {
+  amount: number;
+  /** ISO-8601 with milliseconds and a `Z` — the 19-byte GeneralizedTime. */
+  expires_at: string;
+  execution_condition_hex: string;
+  destination: string;
+  data_hex: string;
+}
+
+/**
+ * A claim-bearing PREPARE on both carriages. **This is also the file's pin of
+ * the ILP packet encoding itself** (connector ADR 0063): the OER bytes in
+ * `http_body_hex` appear byte-identically inside `btp_message_hex`, and the
+ * connector's own `vectors/README.md` walks them field by field.
+ */
+export interface PeerPrepareVector {
+  name: string;
+  prepare: PeerPrepareFields;
+  /** `null` on `prepare_no_claim` — "claimless is legal", pinned. */
+  claim_json: string | null;
+  /** A complete BTP MESSAGE frame: type, requestId, the claim entry, the packet. */
+  btp_message_hex: string;
+  http_headers: [string, string][];
+  http_body_hex: string;
+}
+
+/** A peer's answer: the ILP packet, plus the claim-ack riding beside it. */
+export interface PeerResponseVector {
+  name: string;
+  packet: 'fulfill' | 'reject' | 'none';
+  /** Empty when `packet` is `"none"` (the answer to a FLUSH). */
+  packet_hex: string;
+  ack: { result: 'accepted' | 'rejected'; reason: string | null } | null;
+  /** Rides BESIDE the packet, never inside it (ADR 0011). */
+  accumulated_cost: number | null;
+  btp_response_hex: string;
+  /** Always 200: the packet's verdict is independent of the claim's. */
+  http_status: number;
+  http_headers: [string, string][];
+  http_body_hex: string;
+}
+
+/** One real sealed gift wrap carried as a PREPARE's `data`, unchanged. */
+export interface PeerForwardedDataVector {
+  name: string;
+  sealed_data_hex: string;
+  btp_ilp_packet_prepare_hex: string;
+  http_body_hex: string;
+}
+
+/**
+ * The connector-to-connector peer wire (connector#758, `peer-carriage-spec.md`
+ * §10).
+ *
+ * Most of it is genuinely peer-only — claim-ack carriage, flush, retransmission
+ * semantics — and no client SDK speaks any of it. But the OER **packet** bytes
+ * live in here too, and those are the client edge's wire as much as the peer
+ * wire's, so `prepare`, the FULFILL/REJECT `packet_hex`es, `claim_solana`'s
+ * signed message and `forwarded_data_unchanged` are all replayed against this
+ * client's own codec. What remains peer-only is listed by name in
+ * `wire-vectors.test.ts`'s `PEER_ONLY_ITEMS`, so nothing in this section is
+ * merely unlooked-at.
+ */
+export interface PeerCarriageVectors {
+  claim_evm: PeerClaimVector;
+  /** The same string as `claim.cases[0].digest_hex` — carriage cannot touch it. */
+  claim_digest_hex: string;
+  claim_solana: PeerClaimVector;
+  prepare: PeerPrepareVector;
+  prepare_no_claim: PeerPrepareVector;
+  fulfill_ack_accepted: PeerResponseVector;
+  fulfill_ack_rejected: PeerResponseVector;
+  ack_rejected_reasons: PeerResponseVector[];
+  reject_with_cost: PeerResponseVector;
+  ack_absent: PeerResponseVector;
+  flush_ack: PeerResponseVector;
+  forwarded_data_unchanged: PeerForwardedDataVector;
+  /** The peer-only items, typed loosely — see `PEER_ONLY_ITEMS`. */
+  [item: string]: unknown;
+}
 
 export interface WireVectors {
   schema_version: number;
@@ -207,7 +310,10 @@ export interface WireVectors {
   fulfilment?: { cases: FulfilmentVector[] };
   /** Replayed against `src/signing/evm-signer.ts`. */
   claim?: { cases: ClaimVector[] };
-  /** NOT replayed — connector-to-connector peer wire, out of client scope. */
+  /**
+   * Partly replayed: the OER packet bytes and the Solana balance proof it
+   * pins are the client edge's wire too. See {@link PeerCarriageVectors}.
+   */
   peer_carriage?: PeerCarriageVectors;
   /** Replayed against `src/signing/evm-signer.ts`. */
   channel_control_declaration?: { cases: ChannelControlDeclarationVector[] };
@@ -236,6 +342,23 @@ export interface WireVectorsProvenance {
   connectorCommit: string;
   connectorCommitDate: string;
   connectorCommitSubject: string;
+  /**
+   * Where these exact bytes came from: `'github'` for a fetched ref,
+   * `'local'` for `--from-local <checkout>`. A wire change usually lands in a
+   * working connector checkout before it reaches `main`, and vendoring from
+   * GitHub at that moment copies the wrong bytes under a commit that does not
+   * contain them — so the refresh script offers both, and records which.
+   *
+   * Optional only for provenance written before this field existed.
+   */
+  source?: 'github' | 'local';
+  /**
+   * Whether the source checkout had uncommitted changes to the vector file.
+   * The refresh script refuses to write in that case, so this is always
+   * `false` — which is precisely why the harness asserts it: a `true` could
+   * only have been typed in by hand.
+   */
+  dirty?: boolean;
   schemaVersion: number;
   /** SHA-256 of the vendored `wire-vectors.json`, exactly as committed. */
   sha256: string;

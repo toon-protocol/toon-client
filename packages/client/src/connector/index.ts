@@ -1,0 +1,35 @@
+export {
+  ConnectorEdgeClient,
+  ConnectorEdgeError,
+  connectorEdgeBaseUrl,
+  type ConnectorEdgeClientConfig,
+  type ConnectorEdgeErrorCode,
+  type ConnectorIdentity,
+  type ConnectorRoutePrice,
+  type ConnectorRouteTerms,
+  type ConnectorSettlementTerms,
+  type ConnectorSolanaSettlementTerms,
+  type ConnectorChainSettlementTerms,
+  type ClaimStateOk,
+  type ClaimStateFailed,
+  type ClaimStateResult,
+  type ClaimStateRequestEntry,
+} from './ConnectorEdgeClient.js';
+export {
+  parseSelfDescription,
+  parseSettlementEntry,
+  readBaseUnits,
+  routePriceFor,
+  type EdgeIdentity,
+  type NodeSelfDescription,
+  type RequiredTransport,
+  type RoutePrice,
+} from './self-description.js';
+export {
+  parsePaymentTerms,
+  parseX402Body,
+  parseX402Challenge,
+  type ParsedX402Challenge,
+  type ToonChannelAccept,
+  type X402ChannelExtra,
+} from './x402.js';

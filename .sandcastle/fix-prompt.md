@@ -36,11 +36,10 @@ say so plainly in your final output instead of guessing.
 
 # FAILING CHECKS
 
-This is **toon-client** — a large pnpm monorepo (packages: arweave, client, client-mcp,
-rig, rig-web, views). The PR checks that can go red live in ci.yml's `build` job.
-Reproduce locally, **in this order** — `build` MUST precede `typecheck` because the
-per-package `tsc --noEmit` resolves cross-package imports through each dependency's
-built `dist/*.d.ts`:
+This is **toon-client** — a single-package pnpm workspace (`packages/client`, published
+as `@toon-protocol/client`). The PR checks that can go red live in ci.yml's `build` job.
+Reproduce locally, **in this order** — `build` precedes `typecheck` so `tsc --noEmit`
+resolves against a built `dist/*.d.ts`:
 
 - lint: `npx eslint .`
 - build: `pnpm -r run build`
@@ -53,10 +52,9 @@ fails the job on any NEW violation. The fix must add ZERO new eslint or typechec
 violations against the frozen counts — do NOT edit `gate-baseline.json` to get green.
 `test` and `build` must be fully green.
 
-CI also enforces a changeset when a publishable package changes (`packages/client`,
-`client-mcp`, `views`, `rig`, `arweave`): a missing-changeset failure is fixed with
-`pnpm changeset` and committing the generated `.changeset/*.md` — never by reverting
-the package change just to dodge the check.
+CI also enforces a changeset when the publishable package changes (`packages/client`):
+a missing-changeset failure is fixed with `pnpm changeset` and committing the generated
+`.changeset/*.md` — never by reverting the package change just to dodge the check.
 
 The `Agent image` check (a build-only check over `.sandcastle/Dockerfile`) runs only on
 PRs touching `.sandcastle/**` or that workflow itself.

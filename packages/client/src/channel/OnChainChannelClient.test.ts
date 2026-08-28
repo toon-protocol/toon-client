@@ -1,16 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { generatePrivateKey } from 'viem/accounts';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { base58Encode, base58Decode } from '@toon-protocol/core';
+import { base58Encode, base58Decode } from '../utils/base58.js';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { OnChainChannelClient } from './OnChainChannelClient.js';
-import { ChannelFundingError, StaleRpcReadError } from '../errors.js';
+import { ChannelFundingError } from '../client/errors.js';
 import {
   deriveChannelPDA,
   deriveVaultPDA,
   deriveAssociatedTokenAccount,
   MIN_LAMPORTS_FOR_CHANNEL_OPEN,
-} from './solana-payment-channel.js';
+} from './solana/payment-channel.js';
 
 // Mock viem module
 const mockReadContract = vi.fn();
@@ -42,28 +42,12 @@ vi.mock('viem', async (importOriginal) => {
   };
 });
 
-// Mock the on-chain Mina opener so the wiring tests don't pull o1js / hit a
-// Mina node. The real opener (mina-channel-open.ts) is exercised by the gated
-// Mina smoke loop against the live lightnet.
-const mockOpenMinaChannelOnChain = vi.fn(
-  async (p: { zkAppAddress: string }) => ({
-    zkAppAddress: p.zkAppAddress,
-    opened: true,
-    initTxHash: 'mina-init-tx-hash',
-    channelState: 1,
-  })
-);
-vi.mock('./mina-channel-open.js', () => ({
-  openMinaChannelOnChain: (...args: unknown[]) =>
-    mockOpenMinaChannelOnChain(...(args as [{ zkAppAddress: string }])),
-}));
 
 const TEST_CHAIN = 'evm:anvil:31337';
 const TEST_TOKEN_NETWORK = '0x5FbDB2315678afecb367f032d93F642f64180aa3'; // Mock USDC address (used as test TokenNetwork)
 const TEST_TOKEN = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512';
 const TEST_PEER_ADDRESS = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const TEST_CHANNEL_ID = '0x' + 'ab'.repeat(32);
-const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
 
 describe('OnChainChannelClient', () => {
   let signer: EvmSigner;
@@ -90,443 +74,6 @@ describe('OnChainChannelClient', () => {
     ]);
   });
 
-  describe('openChannel', () => {
-    it('should send approve + openChannel + setTotalDeposit transactions', async () => {
-      // Allowance returns 0 (needs approval)
-      mockReadContract.mockResolvedValueOnce(0n);
-      // Approve tx hash
-      mockWriteContract.mockResolvedValueOnce('0xapprovehash');
-      // Approve receipt
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-      // OpenChannel tx hash
-      mockWriteContract.mockResolvedValueOnce('0xopenhash');
-      // OpenChannel receipt with ChannelOpened event
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({
-        logs: [
-          {
-            topics: [
-              '0xeventhash',
-              TEST_CHANNEL_ID,
-              '0xparticipant1',
-              '0xparticipant2',
-            ],
-            data: '0x',
-          },
-        ],
-      });
-      // Deposit tx hash
-      mockWriteContract.mockResolvedValueOnce('0xdeposithash');
-      // Deposit receipt
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-
-      const result = await client.openChannel({
-        peerId: 'test-peer',
-        chain: TEST_CHAIN,
-        token: TEST_TOKEN,
-        tokenNetwork: TEST_TOKEN_NETWORK,
-        peerAddress: TEST_PEER_ADDRESS,
-        initialDeposit: '100000',
-        settlementTimeout: 86400,
-      });
-
-      expect(result.channelId).toBe(TEST_CHANNEL_ID);
-      expect(result.status).toBe('opening');
-      // The collateral this open LOCKED, reported so ChannelManager can track
-      // (and persist) it. Left undefined before issue #565, which is why every
-      // funded EVM channel read back as `depositTotal: "0"` / 0 spendable.
-      expect(result.depositTotal).toBe(100000n);
-      // 3 write calls: approve, openChannel, setTotalDeposit
-      expect(mockWriteContract).toHaveBeenCalledTimes(3);
-    });
-
-    it('should skip approve when allowance is sufficient', async () => {
-      // Allowance is already sufficient
-      mockReadContract.mockResolvedValueOnce(BigInt('999999999999'));
-      // OpenChannel tx hash
-      mockWriteContract.mockResolvedValueOnce('0xopenhash');
-      // OpenChannel receipt
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({
-        logs: [
-          {
-            topics: [
-              '0xeventhash',
-              TEST_CHANNEL_ID,
-              '0xparticipant1',
-              '0xparticipant2',
-            ],
-            data: '0x',
-          },
-        ],
-      });
-      // Deposit tx hash
-      mockWriteContract.mockResolvedValueOnce('0xdeposithash');
-      // Deposit receipt
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-
-      await client.openChannel({
-        peerId: 'test-peer',
-        chain: TEST_CHAIN,
-        token: TEST_TOKEN,
-        tokenNetwork: TEST_TOKEN_NETWORK,
-        peerAddress: TEST_PEER_ADDRESS,
-        initialDeposit: '100000',
-      });
-
-      // Only 2 write calls: openChannel, setTotalDeposit (no approve)
-      expect(mockWriteContract).toHaveBeenCalledTimes(2);
-    });
-
-    it('should skip deposit when initialDeposit is 0', async () => {
-      // OpenChannel tx hash
-      mockWriteContract.mockResolvedValueOnce('0xopenhash');
-      // OpenChannel receipt
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({
-        logs: [
-          {
-            topics: [
-              '0xeventhash',
-              TEST_CHANNEL_ID,
-              '0xparticipant1',
-              '0xparticipant2',
-            ],
-            data: '0x',
-          },
-        ],
-      });
-
-      const result = await client.openChannel({
-        peerId: 'test-peer',
-        chain: TEST_CHAIN,
-        tokenNetwork: TEST_TOKEN_NETWORK,
-        peerAddress: TEST_PEER_ADDRESS,
-        initialDeposit: '0',
-      });
-
-      expect(result.channelId).toBe(TEST_CHANNEL_ID);
-      // Zero collateral is REPORTED as zero, not left unknown — the caller can
-      // tell "opened uncollateralized" from "never captured".
-      expect(result.depositTotal).toBe(0n);
-      // Only 1 write call: openChannel (no approve, no deposit)
-      expect(mockWriteContract).toHaveBeenCalledTimes(1);
-    });
-
-    it('should throw when chain not found in chainRpcUrls', async () => {
-      await expect(
-        client.openChannel({
-          peerId: 'test-peer',
-          chain: 'evm:mainnet:1',
-          tokenNetwork: TEST_TOKEN_NETWORK,
-          peerAddress: TEST_PEER_ADDRESS,
-        })
-      ).rejects.toThrow('No RPC URL configured for chain "evm:mainnet:1"');
-    });
-
-    it('should throw when tokenNetwork is missing', async () => {
-      await expect(
-        client.openChannel({
-          peerId: 'test-peer',
-          chain: TEST_CHAIN,
-          peerAddress: TEST_PEER_ADDRESS,
-        })
-      ).rejects.toThrow('tokenNetwork address is required');
-    });
-
-    it('should throw when ChannelOpened event not found in logs', async () => {
-      // Import the mocked decodeEventLog to override for this test only
-      const viem = await import('viem');
-      const mockedDecode = vi.mocked(viem.decodeEventLog);
-      // Make decodeEventLog throw for all logs (simulating no matching events)
-      // Use mockImplementationOnce so it doesn't poison subsequent tests
-      mockedDecode.mockImplementationOnce(() => {
-        throw new Error('Unknown event');
-      });
-
-      // OpenChannel tx hash
-      mockWriteContract.mockResolvedValueOnce('0xopenhash');
-      // OpenChannel receipt with logs that won't decode
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({
-        logs: [{ topics: ['0xunknown'], data: '0x' }],
-      });
-
-      await expect(
-        client.openChannel({
-          peerId: 'test-peer',
-          chain: TEST_CHAIN,
-          tokenNetwork: TEST_TOKEN_NETWORK,
-          peerAddress: TEST_PEER_ADDRESS,
-        })
-      ).rejects.toThrow('Failed to extract channelId');
-    });
-
-    it('remaps an insufficient-gas revert into an actionable ChannelFundingError (#65)', async () => {
-      // The openChannel tx reverts because the wallet has no native gas — the
-      // exact raw viem string reported on devnet.
-      const viemErr = new Error(
-        'The total cost (gas * gas fee + value) of executing this transaction ' +
-          'exceeds the balance of the account.'
-      );
-      mockWriteContract.mockRejectedValueOnce(viemErr);
-
-      let thrown: unknown;
-      try {
-        await client.openChannel({
-          peerId: 'test-peer',
-          chain: TEST_CHAIN,
-          tokenNetwork: TEST_TOKEN_NETWORK,
-          peerAddress: TEST_PEER_ADDRESS,
-          initialDeposit: '0',
-        });
-      } catch (err) {
-        thrown = err;
-      }
-
-      expect(thrown).toBeInstanceOf(ChannelFundingError);
-      const funding = thrown as ChannelFundingError;
-      // Names the wallet, the chain FAMILY (evm, not the full slug), and remedy.
-      expect(funding.message).toContain(signer.address);
-      expect(funding.message).toContain('no gas on evm ');
-      expect(funding.message).toContain('toon_fund_wallet');
-      expect(funding.code).toBe('CHANNEL_FUNDING');
-      expect(funding.retryable).toBe(true);
-      // Original viem error preserved for debugging.
-      expect(funding.cause).toBe(viemErr);
-    });
-
-    it('remaps an insufficient-gas revert on the approve leg too (#65)', async () => {
-      // Allowance 0 → approve runs first and reverts for lack of gas.
-      mockReadContract.mockResolvedValueOnce(0n);
-      mockWriteContract.mockRejectedValueOnce(
-        new Error('insufficient funds for gas * price + value')
-      );
-
-      await expect(
-        client.openChannel({
-          peerId: 'test-peer',
-          chain: TEST_CHAIN,
-          token: TEST_TOKEN,
-          tokenNetwork: TEST_TOKEN_NETWORK,
-          peerAddress: TEST_PEER_ADDRESS,
-          initialDeposit: '100000',
-        })
-      ).rejects.toBeInstanceOf(ChannelFundingError);
-    });
-
-    it('does NOT remap unrelated channel-open errors (#65)', async () => {
-      mockWriteContract.mockRejectedValueOnce(
-        new Error('execution reverted: channel already exists')
-      );
-
-      const promise = client.openChannel({
-        peerId: 'test-peer',
-        chain: TEST_CHAIN,
-        tokenNetwork: TEST_TOKEN_NETWORK,
-        peerAddress: TEST_PEER_ADDRESS,
-        initialDeposit: '0',
-      });
-      await expect(promise).rejects.toThrow('channel already exists');
-      await expect(promise).rejects.not.toBeInstanceOf(ChannelFundingError);
-    });
-  });
-
-  /**
-   * Read-after-write on a load-balanced RPC (#489).
-   *
-   * `https://sepolia.base.org` fans out across replicas: the `setTotalDeposit`
-   * that follows a CONFIRMED `openChannel` can land on one that hasn't seen the
-   * open and reverts `InvalidChannelState()` (`0xf806e9d9`), leaving a channel
-   * open on-chain with zero collateral (and, before the resume fix, a caller
-   * that just opened another one).
-   */
-  describe('EVM open survives a stale-read RPC (#489)', () => {
-    /** `channels()` as a replica that hasn't seen the open reports it. */
-    const UNSEEN = [0n, 0, 0n, 0n, ZERO_ADDR, ZERO_ADDR];
-    const OPEN_RECEIPT = {
-      logs: [{ topics: ['0xev', TEST_CHANNEL_ID, '0xp1', '0xp2'], data: '0x' }],
-    };
-
-    function fastClient() {
-      return new OnChainChannelClient({
-        evmSigner: signer,
-        chainRpcUrls: { [TEST_CHAIN]: 'https://sepolia.base.org' },
-        readConsistency: { attempts: 4, delayMs: 0, depositRetries: 2 },
-      });
-    }
-
-    const OPEN_PARAMS = {
-      peerId: 'apex',
-      chain: TEST_CHAIN,
-      tokenNetwork: TEST_TOKEN_NETWORK,
-      peerAddress: TEST_PEER_ADDRESS,
-      initialDeposit: '100000',
-    };
-
-    it('waits for the RPC to report the channel before depositing into it', async () => {
-      mockWriteContract.mockResolvedValueOnce('0xopen');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce(OPEN_RECEIPT);
-      // Two replicas behind, then the open shows up.
-      mockReadContract.mockResolvedValueOnce(UNSEEN);
-      mockReadContract.mockResolvedValueOnce(UNSEEN);
-      mockWriteContract.mockResolvedValueOnce('0xdeposit');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-
-      const result = await fastClient().openChannel(OPEN_PARAMS);
-
-      expect(result.channelId).toBe(TEST_CHANNEL_ID);
-      expect(mockReadContract).toHaveBeenCalledTimes(3);
-      expect(mockWriteContract).toHaveBeenCalledTimes(2);
-      expect(
-        (mockWriteContract.mock.calls[1]![0] as { functionName: string })
-          .functionName
-      ).toBe('setTotalDeposit');
-    });
-
-    it('retries setTotalDeposit when a stale replica reverts InvalidChannelState()', async () => {
-      mockWriteContract.mockResolvedValueOnce('0xopen');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce(OPEN_RECEIPT);
-      // The read agreed (base mock), but the WRITE still hit a stale node.
-      mockWriteContract.mockRejectedValueOnce(
-        new Error(
-          'The contract function "setTotalDeposit" reverted. ' +
-            'Details: execution reverted, data: 0xf806e9d9'
-        )
-      );
-      mockWriteContract.mockResolvedValueOnce('0xdeposit');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-
-      const result = await fastClient().openChannel(OPEN_PARAMS);
-
-      expect(result.channelId).toBe(TEST_CHANNEL_ID);
-      // open + failed deposit + retried deposit
-      expect(mockWriteContract).toHaveBeenCalledTimes(3);
-    });
-
-    it('does NOT retry a deposit that reverted for any other reason', async () => {
-      mockWriteContract.mockResolvedValueOnce('0xopen');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce(OPEN_RECEIPT);
-      mockWriteContract.mockRejectedValueOnce(
-        new Error('execution reverted: ERC20: insufficient allowance')
-      );
-
-      await expect(fastClient().openChannel(OPEN_PARAMS)).rejects.toThrow(
-        /insufficient allowance/
-      );
-      expect(mockWriteContract).toHaveBeenCalledTimes(2);
-    });
-
-    it('fails with an actionable StaleRpcReadError when the RPC never converges', async () => {
-      mockWriteContract.mockResolvedValueOnce('0xopen');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce(OPEN_RECEIPT);
-      mockReadContract.mockResolvedValue(UNSEEN);
-
-      let thrown: unknown;
-      try {
-        await fastClient().openChannel(OPEN_PARAMS);
-      } catch (err) {
-        thrown = err;
-      }
-
-      expect(thrown).toBeInstanceOf(StaleRpcReadError);
-      const stale = thrown as StaleRpcReadError;
-      expect(stale.code).toBe('STALE_RPC_READ');
-      expect(stale.message).toContain('sepolia.base.org');
-      expect(stale.message).toContain('base-sepolia-rpc.publicnode.com');
-      // The deposit was never attempted against a channel the RPC denies.
-      expect(mockWriteContract).toHaveBeenCalledTimes(1);
-    });
-
-    it('skips the consistency wait entirely when the open locks no collateral', async () => {
-      mockWriteContract.mockResolvedValueOnce('0xopen');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce(OPEN_RECEIPT);
-
-      await fastClient().openChannel({ ...OPEN_PARAMS, initialDeposit: '0' });
-
-      expect(mockReadContract).not.toHaveBeenCalled();
-      expect(mockWriteContract).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('adoptChannel (resumed channels, #489)', () => {
-    it('gives a channel this process never opened its on-chain context back', async () => {
-      // A restarted client that only knows the channel from its channel store.
-      client.adoptChannel(TEST_CHANNEL_ID, {
-        chain: TEST_CHAIN,
-        tokenNetworkAddress: TEST_TOKEN_NETWORK,
-        tokenAddress: TEST_TOKEN,
-      });
-
-      mockReadContract.mockResolvedValueOnce([
-        86400n,
-        1,
-        0n,
-        1000n,
-        signer.address,
-        TEST_PEER_ADDRESS,
-      ]);
-      const state = await client.getChannelState(TEST_CHANNEL_ID);
-      expect(state.status).toBe('open');
-
-      // …and it can top the resumed channel up, which needs the token address
-      // for the approve leg.
-      mockReadContract.mockResolvedValueOnce(0n); // allowance
-      mockWriteContract.mockResolvedValueOnce('0xapprove');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-      mockWriteContract.mockResolvedValueOnce('0xdeposit');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-      const out = await client.depositToChannel(TEST_CHANNEL_ID, 5n, {
-        currentDeposit: 10n,
-      });
-      expect(out.depositTotal).toBe(15n);
-    });
-  });
-
-  describe('getChannelState', () => {
-    it('should throw for untracked channel', async () => {
-      await expect(
-        client.getChannelState('0x' + 'ff'.repeat(32))
-      ).rejects.toThrow('No context for channel');
-    });
-
-    it('should map contract state uint8 to status string', async () => {
-      // First open a channel to cache context
-      mockWriteContract.mockResolvedValueOnce('0xopenhash');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({
-        logs: [
-          {
-            topics: [
-              '0xeventhash',
-              TEST_CHANNEL_ID,
-              '0xparticipant1',
-              '0xparticipant2',
-            ],
-            data: '0x',
-          },
-        ],
-      });
-
-      await client.openChannel({
-        peerId: 'test-peer',
-        chain: TEST_CHAIN,
-        tokenNetwork: TEST_TOKEN_NETWORK,
-        peerAddress: TEST_PEER_ADDRESS,
-      });
-
-      // Now query state — state uint8 = 1 → 'open'
-      mockReadContract.mockResolvedValueOnce([
-        86400n, // settlementTimeout
-        1, // state (open)
-        0n, // closedAt
-        1000n, // openedAt
-        signer.address, // participant1
-        TEST_PEER_ADDRESS, // participant2
-      ]);
-
-      const state = await client.getChannelState(TEST_CHANNEL_ID);
-
-      expect(state.channelId).toBe(TEST_CHANNEL_ID);
-      expect(state.status).toBe('open');
-      expect(state.chain).toBe(TEST_CHAIN);
-    });
-  });
 
   describe('openSolanaChannel (on-chain)', () => {
     const SOLANA_CHAIN = 'solana:devnet';
@@ -694,10 +241,13 @@ describe('OnChainChannelClient', () => {
       mockRpc(false);
       const c = makeClient();
       const result = await c.openChannel({
-        peerId: 'apex',
-        chain: SOLANA_CHAIN,
-        token: TOKEN_MINT,
-        peerAddress: APEX_PUBKEY,
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
       });
 
       const expected = deriveChannelPDA(
@@ -723,10 +273,13 @@ describe('OnChainChannelClient', () => {
       mockRpc(true);
       const c = makeClient();
       const result = await c.openChannel({
-        peerId: 'apex',
-        chain: SOLANA_CHAIN,
-        token: TOKEN_MINT,
-        peerAddress: APEX_PUBKEY,
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
       });
 
       const expected = deriveChannelPDA(
@@ -750,10 +303,13 @@ describe('OnChainChannelClient', () => {
       mockRpc(true);
       const c = makeClient();
       const { channelId } = await c.openChannel({
-        peerId: 'apex',
-        chain: SOLANA_CHAIN,
-        token: TOKEN_MINT,
-        peerAddress: APEX_PUBKEY,
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
       });
       const state = await c.getChannelState(channelId);
       expect(state.chain).toBe(SOLANA_CHAIN);
@@ -765,11 +321,14 @@ describe('OnChainChannelClient', () => {
       const c = makeClient();
       await expect(
         c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
-          peerAddress: APEX_PUBKEY,
-        })
-      ).rejects.toThrow(/token mint/i);
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+      })
+      ).rejects.toThrow(/SPL mint/i);
     });
 
     // ── #473: the open runs on the NEGOTIATED program ─────────────────────────
@@ -786,12 +345,15 @@ describe('OnChainChannelClient', () => {
         mockRpc(false);
         const c = makeClient();
         const result = await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          tokenNetwork: GREETING_PROGRAM,
-          peerAddress: APEX_PUBKEY,
-        });
+          counterparty: APEX_PUBKEY,
+          programId: GREETING_PROGRAM,
+          decimals: 6,
+        },
+      });
 
         expect(result.channelId).toBe(
           deriveChannelPDA(
@@ -811,11 +373,14 @@ describe('OnChainChannelClient', () => {
         mockRpc(false);
         const c = makeClient();
         const result = await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
-        });
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+      });
 
         expect(result.channelId).toBe(
           deriveChannelPDA(clientPubkey, APEX_PUBKEY, TOKEN_MINT, PROGRAM_ID)
@@ -836,12 +401,15 @@ describe('OnChainChannelClient', () => {
           },
         });
         const { channelId } = await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          tokenNetwork: GREETING_PROGRAM,
-          peerAddress: APEX_PUBKEY,
-        });
+          counterparty: APEX_PUBKEY,
+          programId: GREETING_PROGRAM,
+          decimals: 6,
+        },
+      });
         fetchMock.mockClear();
 
         await c.depositToChannel(channelId, 100n, { currentDeposit: 0n });
@@ -914,13 +482,16 @@ describe('OnChainChannelClient', () => {
         mockRpc(false);
         const c = makeClient();
         const result = await c.openChannel({
-          peerId: 'apex',
-          chain: SOLANA_CHAIN,
-          token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
+          terms: {
+            kind: 'solana',
+            chain: SOLANA_CHAIN,
+            token: TOKEN_MINT,
+            counterparty: APEX_PUBKEY,
+            decimals: 6,
+          },
           // What ChannelManager.ensureChannel always passes — and what the
           // Solana branch used to drop on the floor.
-          initialDeposit: '100000',
+          initialDeposit: 100000n,
         });
 
         expect(depositedAmount(100000n)).toBe(true);
@@ -931,12 +502,15 @@ describe('OnChainChannelClient', () => {
         mockRpc(false);
         const c = makeClient();
         await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
-          initialDeposit: '100000',
-        });
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      });
 
         const ata = deriveAssociatedTokenAccount(clientPubkey, TOKEN_MINT);
         // The balance preflight reads exactly the account the deposit spends from.
@@ -973,12 +547,15 @@ describe('OnChainChannelClient', () => {
           },
         });
         await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
-          initialDeposit: '100000',
-        });
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      });
 
         expect(depositedAmount(7n)).toBe(true);
         expect(depositedAmount(100000n)).toBe(false);
@@ -998,12 +575,15 @@ describe('OnChainChannelClient', () => {
           },
         });
         const result = await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
-          initialDeposit: '100000',
-        });
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      });
 
         expect(sentTxBytes()).toHaveLength(1); // initialize_channel only
         expect(result.depositTotal).toBeUndefined();
@@ -1014,12 +594,15 @@ describe('OnChainChannelClient', () => {
         const c = makeClient();
         await expect(
           c.openChannel({
-            peerId: 'apex',
-            chain: SOLANA_CHAIN,
-            token: TOKEN_MINT,
-            peerAddress: APEX_PUBKEY,
-            initialDeposit: '100000',
-          })
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      })
         ).rejects.toThrow(ChannelFundingError);
         // Nothing was submitted — no half-open, rent-paying, 0-collateral channel.
         expect(sentTxBytes()).toHaveLength(0);
@@ -1030,12 +613,15 @@ describe('OnChainChannelClient', () => {
         const c = makeClient();
         await expect(
           c.openChannel({
-            peerId: 'apex',
-            chain: SOLANA_CHAIN,
-            token: TOKEN_MINT,
-            peerAddress: APEX_PUBKEY,
-            initialDeposit: '100000',
-          })
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      })
         ).rejects.toThrow(/does not exist/i);
         expect(sentTxBytes()).toHaveLength(0);
       });
@@ -1047,12 +633,15 @@ describe('OnChainChannelClient', () => {
         mockRpc(false, { rpcThrowsFor: ['getTokenAccountBalance'] });
         const c = makeClient();
         const open = c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
-          initialDeposit: '100000',
-        });
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      });
         await expect(open).rejects.toThrow(/fetch failed/);
         await expect(open).rejects.not.toBeInstanceOf(ChannelFundingError);
         expect(sentTxBytes()).toHaveLength(0);
@@ -1064,12 +653,15 @@ describe('OnChainChannelClient', () => {
         mockRpc(true, { depositA: 100000n, lamports: 5_000 });
         const c = makeClient();
         const result = await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
-          initialDeposit: '100000',
-        });
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      });
         expect(result.status).toBe('opening');
         expect(result.depositTotal).toBe(100000n);
         expect(sentTxBytes()).toHaveLength(0);
@@ -1092,12 +684,15 @@ describe('OnChainChannelClient', () => {
         const c = makeClient();
 
         const result = await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
-          initialDeposit: '100000',
-        });
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      });
 
         expect(result.channelId).toBe(channelPDA);
         expect(depositedAmount(100000n)).toBe(true);
@@ -1109,12 +704,15 @@ describe('OnChainChannelClient', () => {
         const c = makeClient();
 
         const result = await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
-          initialDeposit: '100000',
-        });
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      });
 
         expect(depositedAmount(60000n)).toBe(true); // 100000 − 40000
         expect(depositedAmount(100000n)).toBe(false);
@@ -1147,12 +745,15 @@ describe('OnChainChannelClient', () => {
         const c = makeClient();
 
         const result = await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
-          initialDeposit: '100000',
-        });
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      });
 
         expect(depositedAmount(100000n)).toBe(true);
         expect(result.depositTotal).toBe(100000n); // ours, not 5_100_000
@@ -1170,12 +771,15 @@ describe('OnChainChannelClient', () => {
         const c = makeClient();
 
         const result = await c.openChannel({
-          peerId: 'apex',
+        terms: {
+          kind: 'solana',
           chain: SOLANA_CHAIN,
           token: TOKEN_MINT,
-          peerAddress: APEX_PUBKEY,
-          initialDeposit: '100000',
-        });
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      });
 
         expect(depositedAmount(60000n)).toBe(true); // 100000 − our 40000
         expect(result.depositTotal).toBe(100000n);
@@ -1198,12 +802,15 @@ describe('OnChainChannelClient', () => {
           const c = makeClient();
 
           const result = await c.openChannel({
-            peerId: 'apex',
-            chain: SOLANA_CHAIN,
-            token: TOKEN_MINT,
-            peerAddress: APEX_PUBKEY,
-            initialDeposit: '100000',
-          });
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      });
 
           expect(result.status).toBe('opening');
           expect(result.depositTotal).toBeUndefined();
@@ -1221,12 +828,15 @@ describe('OnChainChannelClient', () => {
         const c = makeClient();
         await expect(
           c.openChannel({
-            peerId: 'apex',
-            chain: SOLANA_CHAIN,
-            token: TOKEN_MINT,
-            peerAddress: APEX_PUBKEY,
-            initialDeposit: '100000',
-          })
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      })
         ).rejects.toThrow(/lamports.*payment channel|SOL/i);
         expect(sentTxBytes()).toHaveLength(0);
       });
@@ -1236,11 +846,14 @@ describe('OnChainChannelClient', () => {
         const c = makeClient();
         await expect(
           c.openChannel({
-            peerId: 'apex',
-            chain: SOLANA_CHAIN,
-            token: TOKEN_MINT,
-            peerAddress: APEX_PUBKEY,
-          })
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+      })
         ).rejects.toThrow(ChannelFundingError);
         expect(sentTxBytes()).toHaveLength(0);
       });
@@ -1250,12 +863,15 @@ describe('OnChainChannelClient', () => {
         const c = makeClient();
         await expect(
           c.openChannel({
-            peerId: 'apex',
-            chain: SOLANA_CHAIN,
-            token: TOKEN_MINT,
-            peerAddress: APEX_PUBKEY,
-            initialDeposit: '100000',
-          })
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
+        initialDeposit: BigInt('100000'),
+      })
         ).resolves.toMatchObject({ status: 'opening' });
       });
     });
@@ -1279,10 +895,13 @@ describe('OnChainChannelClient', () => {
       mockRpc(false);
       const c = depositClient();
       const { channelId } = await c.openChannel({
-        peerId: 'apex',
-        chain: SOLANA_CHAIN,
-        token: TOKEN_MINT,
-        peerAddress: APEX_PUBKEY,
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
       });
       fetchMock.mockClear();
 
@@ -1318,10 +937,13 @@ describe('OnChainChannelClient', () => {
         },
       });
       const { channelId } = await c.openChannel({
-        peerId: 'apex',
-        chain: SOLANA_CHAIN,
-        token: TOKEN_MINT,
-        peerAddress: APEX_PUBKEY,
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: TOKEN_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
       });
       fetchMock.mockClear();
       const out = await c.depositToChannel(channelId, 100n, {
@@ -1357,10 +979,13 @@ describe('OnChainChannelClient', () => {
         },
       });
       const { channelId } = await c.openChannel({
-        peerId: 'apex',
-        chain: SOLANA_CHAIN,
-        token: NEGOTIATED_MINT,
-        peerAddress: APEX_PUBKEY,
+        terms: {
+          kind: 'solana',
+          chain: SOLANA_CHAIN,
+          token: NEGOTIATED_MINT,
+          counterparty: APEX_PUBKEY,
+          decimals: 6,
+        },
       });
       fetchMock.mockClear();
 
@@ -1389,308 +1014,49 @@ describe('OnChainChannelClient', () => {
     });
   });
 
-  // ── Mina channel (Phase-2 Stage 3 + on-chain open) ──────────────────────────
-  //
-  // openMinaChannel now performs a REAL on-chain channel open (initialize +
-  // optional deposit) on the deployed PaymentChannel zkApp — the Mina analog of
-  // openSolanaChannel (connector#105). The heavyweight o1js opener
-  // (mina-channel-open.ts) is mocked here (its live behaviour is exercised by
-  // the gated Mina smoke loop against the lightnet); these tests assert the
-  // wiring: setMinaConfig late-binds config and a mina:* open invokes the opener
-  // with the right params, with the zkApp address as the channel id.
-  describe('Mina channel (on-chain open via openMinaChannelOnChain)', () => {
-    const MINA_CHAIN = 'mina:devnet';
-    // A syntactically valid B62 base58 Mina address (55 chars).
-    const ZKAPP_ADDRESS =
-      'B62qiTKpEPjGTSHZrtM8uXiKgn8So916pLmNJKDhKeyJvpW2im7T5sa';
-    const APEX_MINA = 'B62qksocUTe3wxR3uHB9oV7yWZi6JdkWLwNDvVoUkbXkmTGwHo3rDNc';
-    const MINA_PK = '0x' + '11'.repeat(32);
-
-    it('throws when mina config is not provided (no setMinaConfig)', async () => {
-      const c = new OnChainChannelClient({
-        evmSigner: signer,
-        chainRpcUrls: {},
-      });
-      await expect(
-        c.openChannel({
-          peerId: 'apex',
-          chain: MINA_CHAIN,
-          peerAddress: APEX_MINA,
-        })
-      ).rejects.toThrow(/Mina channel config not provided/i);
-    });
-
-    it('setMinaConfig late-binds config; a mina:* open invokes openMinaChannelOnChain with the deployed zkApp + apex peer', async () => {
-      const c = new OnChainChannelClient({
-        evmSigner: signer,
-        chainRpcUrls: {},
-      });
-      c.setMinaConfig({
-        graphqlUrl: 'http://localhost:28085/graphql',
-        zkAppAddress: ZKAPP_ADDRESS,
-        privateKey: MINA_PK,
-      });
-
-      const result = await c.openChannel({
-        peerId: 'apex',
-        chain: MINA_CHAIN,
-        peerAddress: APEX_MINA,
-        settlementTimeout: 123,
-      });
-
-      // The opener was invoked with the deployed zkApp, the client's Mina key,
-      // and the apex's Mina B62 as participantB.
-      expect(mockOpenMinaChannelOnChain).toHaveBeenCalledTimes(1);
-      const callArg = mockOpenMinaChannelOnChain.mock.calls[0]![0] as Record<
-        string,
-        unknown
-      >;
-      expect(callArg.graphqlUrl).toBe('http://localhost:28085/graphql');
-      expect(callArg.zkAppAddress).toBe(ZKAPP_ADDRESS);
-      expect(callArg.payerPrivateKey).toBe(MINA_PK);
-      expect(callArg.peerPublicKey).toBe(APEX_MINA);
-      // settlementTimeout (123) flows through as the channel timeout (bigint).
-      expect(callArg.timeout).toBe(123n);
-
-      // The deployed zkApp address IS the channel id (claim `zkAppAddress`).
-      expect(result.channelId).toBe(ZKAPP_ADDRESS);
-      expect(result.status).toBe('opening');
-    });
-
-    it('passes challengeDuration/tokenId/deposit/networkId from minaConfig to the opener', async () => {
-      const c = new OnChainChannelClient({
-        evmSigner: signer,
-        chainRpcUrls: {},
-      });
-      c.setMinaConfig({
-        graphqlUrl: 'http://localhost:28085/graphql',
-        zkAppAddress: ZKAPP_ADDRESS,
-        privateKey: MINA_PK,
-        challengeDuration: 99999,
-        tokenId: '1',
-        deposit: { amount: '5000000' },
-        networkId: 'devnet',
-      });
-
-      await c.openChannel({
-        peerId: 'apex',
-        chain: MINA_CHAIN,
-        peerAddress: APEX_MINA,
-        settlementTimeout: 123, // overridden by challengeDuration below
-      });
-
-      const callArg = mockOpenMinaChannelOnChain.mock.calls[0]![0] as Record<
-        string,
-        unknown
-      >;
-      // challengeDuration takes precedence over settlementTimeout.
-      expect(callArg.timeout).toBe(99999n);
-      expect(callArg.tokenId).toBe('1');
-      expect(callArg.networkId).toBe('devnet');
-      expect(callArg.deposit).toEqual({ amount: 5000000n });
-    });
-
-    it('throws for a missing zkAppAddress', async () => {
-      const c = new OnChainChannelClient({
-        evmSigner: signer,
-        chainRpcUrls: {},
-      });
-      c.setMinaConfig({
-        graphqlUrl: 'http://localhost:28085/graphql',
-        zkAppAddress: '',
-        privateKey: MINA_PK,
-      });
-      await expect(
-        c.openChannel({
-          peerId: 'apex',
-          chain: MINA_CHAIN,
-          peerAddress: APEX_MINA,
-        })
-      ).rejects.toThrow(/deployed zkAppAddress/i);
-    });
-
-    it('throws when peerAddress (apex Mina B62) is missing — refuses single-party open', async () => {
-      // Root cause of the on-chain-settle failure: a single-party open records
-      // empty participants while the claim is signed in participant form. The
-      // dispatch layer must refuse it (parity with the Solana peerAddress guard).
-      const c = new OnChainChannelClient({
-        evmSigner: signer,
-        chainRpcUrls: {},
-      });
-      c.setMinaConfig({
-        graphqlUrl: 'http://localhost:28085/graphql',
-        zkAppAddress: ZKAPP_ADDRESS,
-        privateKey: MINA_PK,
-      });
-      await expect(
-        c.openChannel({
-          peerId: 'apex',
-          chain: MINA_CHAIN,
-          // peerAddress deliberately omitted
-        })
-      ).rejects.toThrow(/peerAddress/i);
-      expect(mockOpenMinaChannelOnChain).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('depositToChannel (EVM)', () => {
-    // Open an EVM channel first so channelContext (chain + tokenNetwork + token)
-    // is populated for the standalone deposit.
-    async function openEvmChannel(): Promise<string> {
-      mockReadContract.mockResolvedValueOnce(0n); // allowance → approve
-      mockWriteContract.mockResolvedValueOnce('0xapprove');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-      mockWriteContract.mockResolvedValueOnce('0xopen');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({
-        logs: [
-          { topics: ['0xev', TEST_CHANNEL_ID, '0xp1', '0xp2'], data: '0x' },
-        ],
-      });
-      mockWriteContract.mockResolvedValueOnce('0xdeposit');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-      const res = await client.openChannel({
-        peerId: 'p',
-        chain: TEST_CHAIN,
-        token: TEST_TOKEN,
-        tokenNetwork: TEST_TOKEN_NETWORK,
-        peerAddress: TEST_PEER_ADDRESS,
-        initialDeposit: '100000',
-        settlementTimeout: 86400,
-      });
-      vi.clearAllMocks();
-      return res.channelId!;
-    }
-
-    it('submits setTotalDeposit with current + delta (cumulative)', async () => {
-      const channelId = await openEvmChannel();
-      mockReadContract.mockResolvedValueOnce(10n ** 30n); // allowance ample → no approve
-      mockWriteContract.mockResolvedValueOnce('0xdep');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-
-      const out = await client.depositToChannel(channelId, 50_000n, {
-        currentDeposit: 100_000n,
-      });
-
-      expect(out.depositTotal).toBe(150_000n);
-      // Only the setTotalDeposit write (allowance was sufficient → no approve).
-      expect(mockWriteContract).toHaveBeenCalledTimes(1);
-      const call = mockWriteContract.mock.calls[0]![0] as {
-        functionName: string;
-        args: unknown[];
-      };
-      expect(call.functionName).toBe('setTotalDeposit');
-      expect(call.args[2]).toBe(150_000n); // current 100k + delta 50k
-    });
-
-    it('approves the token-network when allowance is short', async () => {
-      const channelId = await openEvmChannel();
-      mockReadContract.mockResolvedValueOnce(0n); // allowance short → approve
-      mockWriteContract.mockResolvedValueOnce('0xapprove');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-      mockWriteContract.mockResolvedValueOnce('0xdep');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-
-      await client.depositToChannel(channelId, 50_000n, { currentDeposit: 0n });
-
-      // approve + setTotalDeposit
-      expect(mockWriteContract).toHaveBeenCalledTimes(2);
-      expect(
-        (mockWriteContract.mock.calls[0]![0] as { functionName: string })
-          .functionName
-      ).toBe('approve');
-      expect(
-        (mockWriteContract.mock.calls[1]![0] as { functionName: string })
-          .functionName
-      ).toBe('setTotalDeposit');
-    });
-
-    it('rejects a non-positive amount', async () => {
-      const channelId = await openEvmChannel();
-      await expect(
-        client.depositToChannel(channelId, 0n, { currentDeposit: 0n })
-      ).rejects.toThrow(/positive/i);
-    });
-
-    it('rejects an unknown channel (no on-chain context)', async () => {
-      await expect(
-        client.depositToChannel('0xunknown', 1n, { currentDeposit: 0n })
-      ).rejects.toThrow(/context/i);
-    });
-  });
-
-  describe('closeChannel / settleChannel (EVM)', () => {
-    // Open an EVM channel so channelContext is populated, then clear the mocks.
-    async function openEvmChannel(): Promise<string> {
-      mockReadContract.mockResolvedValueOnce(0n);
-      mockWriteContract.mockResolvedValueOnce('0xapprove');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-      mockWriteContract.mockResolvedValueOnce('0xopen');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({
-        logs: [
-          { topics: ['0xev', TEST_CHANNEL_ID, '0xp1', '0xp2'], data: '0x' },
-        ],
-      });
-      mockWriteContract.mockResolvedValueOnce('0xdeposit');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-      const res = await client.openChannel({
-        peerId: 'p',
-        chain: TEST_CHAIN,
-        token: TEST_TOKEN,
-        tokenNetwork: TEST_TOKEN_NETWORK,
-        peerAddress: TEST_PEER_ADDRESS,
-        initialDeposit: '100000',
-        settlementTimeout: 86400,
-      });
-      vi.clearAllMocks();
-      return res.channelId!;
-    }
-
-    it('close writes closeChannel and computes settleableAt from the channels() view', async () => {
-      const channelId = await openEvmChannel();
-      mockWriteContract.mockResolvedValueOnce('0xclose');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-      // channels() view: [settlementTimeout=100, state=2 (closed), closedAt=1000, ...]
-      mockReadContract.mockResolvedValueOnce([
-        100n,
-        2,
-        1000n,
-        900n,
-        '0xa',
-        '0xb',
-      ]);
-
-      const out = await client.closeChannel(channelId);
-
-      expect(
-        (mockWriteContract.mock.calls[0]![0] as { functionName: string })
-          .functionName
-      ).toBe('closeChannel');
-      expect(out.closedAt).toBe(1000n);
-      expect(out.settlementTimeout).toBe(100n);
-      expect(out.settleableAt).toBe(1100n); // closedAt + settlementTimeout
-    });
-
-    it('settle writes settleChannel', async () => {
-      const channelId = await openEvmChannel();
-      mockWriteContract.mockResolvedValueOnce('0xsettle');
-      mockWaitForTransactionReceipt.mockResolvedValueOnce({});
-
-      const out = await client.settleChannel(channelId);
-
-      expect(out.txHash).toBe('0xsettle');
-      expect(
-        (mockWriteContract.mock.calls[0]![0] as { functionName: string })
-          .functionName
-      ).toBe('settleChannel');
-    });
-
-    it('close/settle throw for an unknown channel', async () => {
-      await expect(client.closeChannel('0xunknown')).rejects.toThrow(
-        /context/i
+  describe('dispatching, and the context a channel is dispatched on', () => {
+    it('refuses to deposit into, close, settle or read a channel it never saw', async () => {
+      const unknown = '0x' + 'ff'.repeat(32);
+      await expect(client.depositToChannel(unknown, 1n, { currentDeposit: 0n })).rejects.toThrow(
+        /no on-chain context/i
       );
-      await expect(client.settleChannel('0xunknown')).rejects.toThrow(
-        /context/i
-      );
+      await expect(client.closeChannel(unknown)).rejects.toThrow(/no on-chain context/i);
+      await expect(client.settleChannel(unknown)).rejects.toThrow(/no on-chain context/i);
+      await expect(client.getChannelState(unknown)).rejects.toThrow(/no on-chain context/i);
+    });
+
+    it('gives a channel this process never opened its context back (#489)', async () => {
+      client.adoptChannel(TEST_CHANNEL_ID, {
+        chain: TEST_CHAIN,
+        tokenNetworkAddress: TEST_TOKEN_NETWORK,
+        tokenAddress: TEST_TOKEN,
+      });
+      expect(client.getChannelContext(TEST_CHANNEL_ID)).toEqual({
+        chain: TEST_CHAIN,
+        tokenNetworkAddress: TEST_TOKEN_NETWORK,
+        tokenAddress: TEST_TOKEN,
+      });
+
+      // …and the resumed channel can now be read, which needs the chain and the
+      // token network the adopt supplied.
+      const state = await client.getChannelState(TEST_CHANNEL_ID);
+      expect(state.status).toBe('open');
+      expect(state.chain).toBe(TEST_CHAIN);
+    });
+
+    it('names the chain, and what IS configured, when no RPC is configured for it', () => {
+      expect(() => client.evmClientFor('evm:1')).toThrow(/no rpc url configured for chain "evm:1"/i);
+      expect(() => client.evmClientFor('evm:1')).toThrow(new RegExp(TEST_CHAIN));
+    });
+
+    it('reuses one TokenNetworkClient per chain rather than rebuilding it per call', () => {
+      expect(client.evmClientFor(TEST_CHAIN)).toBe(client.evmClientFor(TEST_CHAIN));
+    });
+
+    it('rejects a non-positive deposit before it needs any context at all', async () => {
+      await expect(
+        client.depositToChannel(TEST_CHANNEL_ID, 0n, { currentDeposit: 0n })
+      ).rejects.toThrow(RangeError);
     });
   });
 });

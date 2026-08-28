@@ -9,7 +9,6 @@
 
 import {
   BTPMessageType,
-  ILPPacketType,
   serializeBtpMessage,
   serializeIlpPrepare,
   parseBtpMessage,
@@ -110,8 +109,29 @@ export interface IsomorphicBtpClientConfig {
     | undefined;
 }
 
+/**
+ * A RESPONSE to a packet this client sent: the answer packet, and everything
+ * that rode BESIDE it in the same frame.
+ *
+ * The protocolData list is returned rather than discarded because the facts
+ * that matter most about a refusal do not travel inside the OER packet at all:
+ * `toon-accumulated-cost` (what the path cost — on an underpayment, the route's
+ * price) and `payment-required` (the x402 terms on an `F06`/`F02` greeting)
+ * ride as protocolData entries on the RESPONSE, exactly as their HTTP twins
+ * ride as response headers (`client-edge-spec.md` §1.6, §1.9 steps 2–4). A
+ * client that resolved only `ilpPacket` — as this one did before 1.0 — threw
+ * them away and then had to guess a price by underpaying, which is precisely
+ * what cost discovery exists to prevent.
+ */
+export interface BtpPacketResponse {
+  /** The FULFILL or REJECT the connector answered with. */
+  packet: ILPResponsePacket;
+  /** Every protocolData entry on the same RESPONSE frame, in arrival order. */
+  protocolData: BTPProtocolData[];
+}
+
 interface PendingRequest {
-  resolve: (packet: ILPResponsePacket) => void;
+  resolve: (response: BtpPacketResponse) => void;
   reject: (error: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
 }
@@ -261,13 +281,14 @@ export class IsomorphicBtpClient {
   }
 
   /**
-   * Send an ILP PREPARE packet, optionally with protocol data (e.g. payment channel claim).
-   * Returns the ILP response (FULFILL or REJECT).
+   * Send an ILP PREPARE packet, optionally with protocol data (e.g. the
+   * payment-channel claim). Resolves with the answer packet AND the
+   * protocolData that rode beside it — see {@link BtpPacketResponse}.
    */
   async sendPacket(
     packet: ILPPreparePacket,
     protocolData?: BTPProtocolData[]
-  ): Promise<ILPResponsePacket> {
+  ): Promise<BtpPacketResponse> {
     if (!this._isConnected || !this.ws) {
       throw new BtpConnectionError('Not connected');
     }
@@ -293,7 +314,7 @@ export class IsomorphicBtpClient {
       timeoutMs = Math.max(remaining - 500, 1000);
     }
 
-    return new Promise<ILPResponsePacket>((resolve, reject) => {
+    return new Promise<BtpPacketResponse>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.pendingRequests.delete(requestId);
         reject(new BtpConnectionError(`Packet send timeout (${timeoutMs}ms)`));
@@ -427,54 +448,19 @@ export class IsomorphicBtpClient {
     });
   }
 
+  /**
+   * Dispatch one inbound websocket frame.
+   *
+   * Binary BTP only. A JSON `{"type":"FULFILL"|"REJECT"}` fallback used to sit
+   * in front of this, resolving the OLDEST pending request from a text frame —
+   * a dialect the TypeScript connector spoke and the Rust one never has
+   * ("Frames: binary websocket messages, one BTP frame per message. Text
+   * frames are ignored", `client-edge-spec.md` §1.9). It was also unsound on
+   * its own terms: responses may arrive out of order (§1.9 "Ordering"), so
+   * correlating by "whichever request is first in the map" could hand one
+   * send's answer to another. Removed rather than left dormant.
+   */
   private handleMessage(raw: unknown): void {
-    // Try JSON first (server can send JSON FULFILL/REJECT responses)
-    try {
-      const data = this.toUint8Array(raw);
-      const jsonStr = new TextDecoder().decode(data);
-      if (jsonStr.startsWith('{')) {
-        const json = JSON.parse(jsonStr) as Record<string, unknown>;
-        if (json['type'] === 'FULFILL' || json['type'] === 'REJECT') {
-          const first = this.pendingRequests.entries().next();
-          if (!first.done) {
-            const [id, pending] = first.value;
-            clearTimeout(pending.timeoutId);
-            this.pendingRequests.delete(id);
-
-            if (json['type'] === 'FULFILL') {
-              const responseData = json['data']
-                ? this.base64ToUint8Array(json['data'] as string)
-                : new Uint8Array(0);
-              // JSON FULFILLs may carry the fulfillment preimage as base64;
-              // absent means all-zero (legacy). A sender-chosen condition
-              // (toon-client#350) then fails verification — fail-closed.
-              const fulfillment = json['fulfillment']
-                ? this.base64ToUint8Array(json['fulfillment'] as string)
-                : new Uint8Array(32);
-              pending.resolve({
-                type: ILPPacketType.FULFILL,
-                fulfillment,
-                data: responseData,
-              });
-            } else {
-              pending.resolve({
-                type: ILPPacketType.REJECT,
-                code: (json['code'] as string) || 'F00',
-                message: (json['message'] as string) || 'Unknown error',
-                data: json['data']
-                  ? this.base64ToUint8Array(json['data'] as string)
-                  : new Uint8Array(0),
-              });
-            }
-          }
-          return;
-        }
-      }
-    } catch {
-      /* not JSON, try BTP binary */
-    }
-
-    // BTP binary response
     try {
       const data = this.toUint8Array(raw);
       const message = parseBtpMessage(data);
@@ -501,10 +487,28 @@ export class IsomorphicBtpClient {
         }
 
         const msgData = message.data as BTPMessageData;
-        if (msgData.ilpPacket && msgData.ilpPacket.length > 0) {
-          const ilpResponse = deserializeIlpPacket(msgData.ilpPacket);
-          pending.resolve(ilpResponse);
+        if (!msgData.ilpPacket || msgData.ilpPacket.length === 0) {
+          // A RESPONSE correlating to an outbound PREPARE always carries a
+          // FULFILL or REJECT (§1.9 step 2); the empty RESPONSE is the auth
+          // ack, which `authenticate()` intercepts on its own, and a
+          // standalone claim MESSAGE is answered with nothing at all (step 5).
+          // So this is a malformed answer — failed loudly rather than left to
+          // time out, since the timeout was already cleared above and the
+          // caller would otherwise wait forever.
+          pending.reject(
+            new BtpConnectionError(
+              `BTP RESPONSE ${message.requestId} carried no ILP packet`
+            )
+          );
+          return;
         }
+        pending.resolve({
+          packet: deserializeIlpPacket(msgData.ilpPacket),
+          // Everything riding beside the packet — `toon-accumulated-cost` on a
+          // REJECT, `payment-required` on a greeting, `claim-ack` — handed to
+          // the caller instead of dropped.
+          protocolData: msgData.protocolData ?? [],
+        });
         return;
       }
 
@@ -644,15 +648,6 @@ export class IsomorphicBtpClient {
     if (data instanceof Uint8Array) return data;
     if (typeof data === 'string') return textEncoder.encode(data);
     throw new Error(`Unexpected WebSocket data type: ${typeof data}`);
-  }
-
-  private base64ToUint8Array(base64: string): Uint8Array {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
   }
 
   private nextRequestId(): number {

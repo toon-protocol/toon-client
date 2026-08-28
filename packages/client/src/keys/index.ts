@@ -1,45 +1,34 @@
-// KeyManager — main orchestrator
-export { KeyManager } from './KeyManager.js';
-
-// Key derivation
 export {
   generateMnemonic,
   validateMnemonic,
-  deriveNostrKeyFromMnemonic,
   deriveFullIdentity,
-  deriveFromNsec,
+  evmDerivationPath,
+  evmIdentityFromKey,
   generateRandomIdentity,
+  type DeriveIdentityOptions,
 } from './KeyDerivation.js';
 
-// Types
-export type {
-  ToonIdentity,
-  ToonSigners,
-  PasskeyInfo,
-  KeyManagerConfig,
-  BackupPayload,
-  WrappedKeyEntry,
-  VaultData,
-} from './types.js';
+// `KeyDerivationScheme` is also surfaced by `client/types.ts`, which re-exports
+// this very declaration rather than restating it — so both barrels resolve to
+// one type and the package barrel can carry it from here too.
+export type { KeyDerivationScheme } from './KeyDerivation.js';
 
-// Backup utilities (for advanced use cases)
-export {
-  buildBackupEvent,
-  buildBackupFilter,
-  parseBackupPayload,
-} from './BackupService.js';
+export type { DerivedIdentity } from './types.js';
 
-// Passkey utilities
-export { isPrfSupported, hashCredentialId } from './PasskeyAuth.js';
-
-// Node-only encrypted mnemonic keystore (scrypt + AES-256-GCM).
-// Mirrors the relay node wallet; guarded against browser use at runtime.
+// Node-only encrypted mnemonic keystore (scrypt + AES-256-GCM). The file
+// records which derivation its phrase is read under; a pre-1.0 file records
+// none and is read as `legacy`, so existing addresses do not move.
 export {
   encryptMnemonic,
   decryptMnemonic,
   generateKeystore,
   importKeystore,
+  openKeystore,
   loadKeystore,
   writeKeystoreFile,
+  keystoreDerivation,
+  KEYSTORE_VERSION,
   type EncryptedKeystore,
+  type OpenedKeystore,
+  type WriteKeystoreOptions,
 } from './keystore-node.js';

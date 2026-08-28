@@ -261,7 +261,7 @@ describe('IsomorphicBtpClient — id-space separation (toon-client#493)', () => 
       })
     );
     const result = await sendPromise;
-    expect(result.type).toBe(13);
+    expect(result.packet.type).toBe(13);
   });
 });
 
@@ -432,5 +432,116 @@ describe('IsomorphicBtpClient — channel declaration on the greeting (toon-clie
 
     await expect(client.reauthenticate()).resolves.toBeUndefined();
     expect(fakeWs.sent).toHaveLength(0);
+  });
+});
+
+describe('IsomorphicBtpClient — a RESPONSE resolves its protocolData too', () => {
+  /** Send one PREPARE and return its promise plus the requestId it went out under. */
+  async function sendOne(client: IsomorphicBtpClient, fakeWs: FakeWebSocket) {
+    const promise = client.sendPacket({
+      type: 12,
+      amount: 1000n,
+      destination: 'g.toon.alice',
+      executionCondition: new Uint8Array(32),
+      expiresAt: new Date(Date.now() + 30_000),
+      data: new Uint8Array(0),
+    });
+    const requestId = parseBtpMessage(fakeWs.sent[0]!).requestId;
+    fakeWs.sent.length = 0;
+    return { promise, requestId };
+  }
+
+  it('hands back the entries that rode beside a REJECT', async () => {
+    const { client, fakeWs } = await createConnectedClient();
+    const { promise, requestId } = await sendOne(client, fakeWs);
+
+    fakeWs.triggerMessage(
+      serializeBtpMessage({
+        type: BTPMessageType.RESPONSE,
+        requestId,
+        data: {
+          protocolData: [
+            {
+              protocolName: 'toon-accumulated-cost',
+              contentType: 1,
+              data: new TextEncoder().encode('4200'),
+            },
+            {
+              protocolName: 'claim-ack',
+              contentType: 1,
+              data: new TextEncoder().encode('{"result":"accepted"}'),
+            },
+          ],
+          // REJECT: type(1) code(3) triggeredBy("") message("") data("")
+          ilpPacket: new Uint8Array([
+            14, 0x46, 0x30, 0x33, 0, 0, 0,
+          ]),
+        },
+      })
+    );
+
+    const { packet, protocolData } = await promise;
+    expect(packet.type).toBe(14);
+    expect(protocolData.map((pd) => pd.protocolName)).toEqual([
+      'toon-accumulated-cost',
+      'claim-ack',
+    ]);
+  });
+
+  it('hands back an empty list when nothing rode beside a FULFILL', async () => {
+    const { client, fakeWs } = await createConnectedClient();
+    const { promise, requestId } = await sendOne(client, fakeWs);
+
+    fakeWs.triggerMessage(
+      serializeBtpMessage({
+        type: BTPMessageType.RESPONSE,
+        requestId,
+        data: {
+          protocolData: [],
+          ilpPacket: new Uint8Array([13, ...new Uint8Array(32), 0]),
+        },
+      })
+    );
+
+    const { packet, protocolData } = await promise;
+    expect(packet.type).toBe(13);
+    expect(protocolData).toEqual([]);
+  });
+
+  it('fails a RESPONSE that carries no ILP packet, instead of hanging forever', async () => {
+    // The timeout is cleared as soon as a RESPONSE is correlated, so a
+    // packetless one used to leave the caller waiting with nothing left to
+    // wake it. A client-originated PREPARE is always answered with a FULFILL
+    // or a REJECT (client-edge-spec §1.9 step 2), so this shape is malformed.
+    const { client, fakeWs } = await createConnectedClient();
+    const { promise, requestId } = await sendOne(client, fakeWs);
+
+    fakeWs.triggerMessage(
+      serializeBtpMessage({
+        type: BTPMessageType.RESPONSE,
+        requestId,
+        data: { protocolData: [], ilpPacket: new Uint8Array(0) },
+      })
+    );
+
+    await expect(promise).rejects.toThrow(/carried no ILP packet/);
+  });
+
+  it('ignores a text JSON FULFILL — the legacy dialect is gone (§1.9: text frames are ignored)', async () => {
+    const { client, fakeWs } = await createConnectedClient();
+    const { promise } = await sendOne(client, fakeWs);
+
+    fakeWs.triggerMessage(
+      new TextEncoder().encode('{"type":"FULFILL","data":"aGk="}')
+    );
+    await flush();
+
+    let settled = false;
+    void promise.then(
+      () => (settled = true),
+      () => (settled = true)
+    );
+    await flush();
+    expect(settled).toBe(false);
   });
 });

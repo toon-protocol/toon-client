@@ -1,6 +1,6 @@
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { base58Encode, base58Decode } from '@toon-protocol/core';
-import type { SignedBalanceProof } from '../types.js';
+import { base58Encode, base58Decode } from '../utils/base58.js';
+import type { SignedBalanceProof } from '../client/types.js';
 import type {
   ChainSigner,
   ChainMetadata,
@@ -8,26 +8,30 @@ import type {
   SolanaClaimMessage,
 } from './types.js';
 import { toHex as bytesToHex } from '../utils/binary.js';
-import { buildBalanceProofMessage } from '../channel/solana-payment-channel.js';
+import { buildBalanceProofMessage } from '../channel/solana/payment-channel.js';
 
 /**
  * Solana signer for the connector payment-channel claim path.
  *
- * Signs the connector's on-chain payment-channel balance-proof message — the
- * raw 48-byte `channel_pda(32) || nonce(8 LE) || transferredAmount(8 LE)` (see
- * `@toon-protocol/connector` `SolanaPaymentChannelSDK._buildBalanceProofMessage`
- * + `solana-payment-channel-provider.verifyBalanceProof`). The produced 64-byte
- * Ed25519 signature verifies on the connector's `verifySolanaClaim` path, which
- * is what makes a client-issued Solana payment-channel claim (paying the apex
- * to write) acceptable on connector 3.9.0.
+ * Signs the **96-byte** `TOON-BALPROOF-V2` balance-proof message of connector
+ * ADR 0053 — `tag(16) || programId(32) || channelAccount(32) || nonce(8 LE) ||
+ * transferredAmount(8 LE)` (see {@link buildBalanceProofMessage} for the layout
+ * and for why the program id is in it). The same 96 bytes are what the
+ * connector's `verify_solana_balance_proof` reconstructs off chain and what the
+ * deployed program's Ed25519-precompile check byte-compares on chain, so one
+ * signature satisfies both.
  *
- * NOTE: this is the SAME message as the swap peer ↔ sender swap-claim wire
- * contract as of toon#214 — both are the raw 48 bytes the deployed program
- * verifies (`balanceProofMessageSolana`), and the SDK's `verifyEd25519Signature`
- * checks them too. The two used to differ: the swap-claim wire signed
- * `balanceProofHashSolana`, a digest no program verifies, which is why no Solana
- * swap claim could be redeemed. `channelId` MUST be the base58 channel PDA
- * (produced by `OnChainChannelClient.openChannel`).
+ * The program id is taken from {@link ChainMetadata}, never from the caller's
+ * claim fields: the connector rebuilds the domain from its OWN record of the
+ * channel, so signing under anything but the program the channel actually lives
+ * under fails to verify rather than quietly succeeding.
+ *
+ * The predecessor of this message was 48 bytes and bound no deployment at all.
+ * It is gone, not deprecated: the deployed program refuses a 48-byte message on
+ * length, so nothing would be gained by keeping a path that can only produce
+ * unredeemable claims.
+ *
+ * `channelId` MUST be the base58 channel PDA.
  */
 /** {@link SolanaSigner.signClaimStateChallenge}'s tag (client-edge-spec.md §1.10). */
 const CLAIM_STATE_CHALLENGE_TAG = new TextEncoder().encode(
@@ -83,12 +87,15 @@ export class SolanaSigner implements ChainSigner {
 
     const base58 = this.ensurePublicKey();
 
-    // Connector on-chain payment-channel balance-proof message:
-    //   channel_pda(32) || nonce(8 LE) || transferredAmount(8 LE)
-    // `channelId` is the base58 channel PDA (from OnChainChannelClient.openChannel).
-    // cumulativeAmount == transferredAmount. No recipient term — the connector's
-    // verifyBalanceProof reconstructs exactly these three fields.
+    // The ADR 0053 balance-proof message:
+    //   "TOON-BALPROOF-V2" || programId(32) || channelAccount(32)
+    //     || nonce(8 LE) || transferredAmount(8 LE)
+    // `channelId` is the base58 channel PDA; `cumulativeAmount` IS
+    // `transferredAmount`. There is no recipient term — which side gets paid is
+    // fixed by the channel's own participants, so folding it in would bind
+    // nothing the chain does not already know.
     const message = buildBalanceProofMessage(
+      params.metadata.programId,
       params.channelId,
       BigInt(params.nonce),
       params.transferredAmount
@@ -114,9 +121,9 @@ export class SolanaSigner implements ChainSigner {
   /**
    * Signs a `POST /ilp/claim-state` claim-state challenge (client-edge-spec.md
    * §1.10): `"toon-claim-state-challenge-v1" || channelAccount(32) ||
-   * expires(u64 LE)` — a tagged message distinct in both content and length
-   * from a real 48-byte balance-proof message, so a captured challenge can
-   * never be replayed as a payment or vice versa. Returns base64 (the
+   * expires(u64 LE)` — 69 bytes, and a different tag, so it is distinct in both
+   * content and length from the 96-byte balance-proof message: a captured
+   * challenge can never be replayed as a payment or vice versa. Returns base64 (the
    * connector's documented wire encoding for this endpoint, unlike the
    * hex-encoded balance-proof signature elsewhere in this class).
    *
@@ -146,7 +153,22 @@ export class SolanaSigner implements ChainSigner {
     return Buffer.from(signature).toString('base64');
   }
 
-  buildClaimMessage(proof: SignedBalanceProof, senderId: string): ClaimMessage {
+  /**
+   * @param options.cluster - The cluster this claim declares (`solana:devnet`,
+   *   …). Optional, and the one field naming a chain that no signature can
+   *   bind — a Solana program cannot learn which cluster it runs on, so it can
+   *   never rebuild a message containing one. The connector compares it against
+   *   the cluster it settles on and refuses a mismatch, which closes the
+   *   honest-misconfiguration case; the forgery case is closed by the
+   *   `programId` inside the signed bytes. Omitted from the JSON entirely when
+   *   not supplied, rather than sent empty: an absent hint and a hint saying
+   *   `""` are not the same claim.
+   */
+  buildClaimMessage(
+    proof: SignedBalanceProof,
+    senderId: string,
+    options?: { cluster?: string }
+  ): ClaimMessage {
     // The connector verifies a base64 Ed25519 signature; the signed proof carries
     // a 0x-prefixed 64-byte hex signature, so convert hex -> bytes -> base64.
     const sigHex = proof.signature.startsWith('0x')
@@ -170,6 +192,7 @@ export class SolanaSigner implements ChainSigner {
       signature: signatureBase64,
       signerPublicKey: this.pubkeyBase58Cache ?? proof.signerAddress,
       programId: proof.tokenNetworkAddress,
+      ...(options?.cluster ? { cluster: options.cluster } : {}),
     };
     return claim;
   }

@@ -88,7 +88,7 @@ are the author's to fix; your channel for them is the verdict below.
 If you find Standards improvements to make:
 
 1. Make the changes directly on this branch
-2. Run toon-client's gate to ensure nothing is broken — in order: `eslint .`, then `pnpm -r run build`, then `pnpm run typecheck`, then `vitest run` (build must precede typecheck so cross-package `dist/*.d.ts` exist). Lint and typecheck are gated MECHANICALLY: CI runs `.sandcastle/gate-guard.ts` against the frozen `.sandcastle/gate-baseline.json` and fails on any NEW violation beyond the frozen counts (currently 16 eslint errors / 718 warnings; 75 typecheck errors with per-package caps — read the baseline for live numbers). The branch must add zero new violations, and never edit `gate-baseline.json` to get green; `build` and `test` must be fully green. If you touched a publishable package (`client`, `client-mcp`, `views`, `rig`, `arweave`), add a changeset (`pnpm changeset`).
+2. Run toon-client's gate to ensure nothing is broken — in order: `eslint .`, then `pnpm -r run build`, then `pnpm run typecheck`, then `vitest run` (build precedes typecheck so `dist/*.d.ts` exists). Lint and typecheck are gated MECHANICALLY: CI runs `.sandcastle/gate-guard.ts` against the frozen `.sandcastle/gate-baseline.json` and fails on any NEW violation beyond the frozen counts (currently 3 eslint errors / 60 warnings; 0 typecheck errors — read the baseline for live numbers). The branch must add zero new violations, and never edit `gate-baseline.json` to get green; `build` and `test` must be fully green. If you touched the publishable package (`client`), add a changeset (`pnpm changeset`).
 3. Commit describing the refinements
 
 If the code is already clean and well-structured, make no commits.

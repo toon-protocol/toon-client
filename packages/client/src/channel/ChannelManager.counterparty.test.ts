@@ -29,13 +29,14 @@ const RETIRED_SETTLEMENT = '0xf29fd62c4848b9573c9b90adbf61b664f386d9cf';
 
 const TOKEN_NETWORK = '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478';
 
-function negotiationFor(settlementAddress: string) {
+function termsFor(settlementAddress: string) {
   return {
+    kind: 'evm' as const,
     chain: 'evm:84532',
-    chainType: 'evm',
     chainId: 84532,
-    settlementAddress,
-    tokenAddress: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
+    counterparty: settlementAddress,
+    token: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
+    decimals: 6,
     tokenNetwork: TOKEN_NETWORK,
   };
 }
@@ -74,7 +75,7 @@ describe('ChannelManager counterparty validation on resume', () => {
     channelId: string
   ): Promise<void> {
     const { mgr } = managerWith(store, channelId);
-    await mgr.ensureChannel(peerId, negotiationFor(settlementAddress));
+    await mgr.ensureChannel(peerId, termsFor(settlementAddress));
   }
 
   it('does not reuse a binding whose counterparty no longer matches the announce', async () => {
@@ -86,7 +87,7 @@ describe('ChannelManager counterparty validation on resume', () => {
     const next = managerWith(store, REOPENED_CHANNEL);
     const resolved = await next.mgr.ensureChannel(
       'toon',
-      negotiationFor(STORE_SETTLEMENT)
+      termsFor(STORE_SETTLEMENT)
     );
 
     expect(resolved).not.toBe(DEAD_CHANNEL);
@@ -94,7 +95,9 @@ describe('ChannelManager counterparty validation on resume', () => {
     // Re-resolved against the address announced NOW, so the connector can
     // verify the claims signed on it.
     expect(next.openChannel).toHaveBeenCalledWith(
-      expect.objectContaining({ peerAddress: STORE_SETTLEMENT })
+      expect.objectContaining({
+        terms: expect.objectContaining({ counterparty: STORE_SETTLEMENT }),
+      })
     );
   });
 
@@ -113,7 +116,7 @@ describe('ChannelManager counterparty validation on resume', () => {
     const next = managerWith(store, REOPENED_CHANNEL);
     const resumed = await next.mgr.ensureChannel(
       'nostr-499cdd71c7c3eab8',
-      negotiationFor(STORE_SETTLEMENT)
+      termsFor(STORE_SETTLEMENT)
     );
 
     expect(resumed).toBe(LIVE_CHANNEL);
@@ -125,7 +128,7 @@ describe('ChannelManager counterparty validation on resume', () => {
     await record(store, 'toon', RETIRED_SETTLEMENT, DEAD_CHANNEL);
 
     const next = managerWith(store, REOPENED_CHANNEL);
-    await next.mgr.ensureChannel('toon', negotiationFor(STORE_SETTLEMENT));
+    await next.mgr.ensureChannel('toon', termsFor(STORE_SETTLEMENT));
 
     const live = `toon|evm:84532|${TOKEN_NETWORK}`;
     // Gone from the resume path…
@@ -158,7 +161,7 @@ describe('ChannelManager counterparty validation on resume', () => {
     const next = managerWith(store, REOPENED_CHANNEL);
     const resumed = await next.mgr.ensureChannel(
       'relay',
-      negotiationFor(RELAY_SETTLEMENT)
+      termsFor(RELAY_SETTLEMENT)
     );
 
     expect(resumed).toBe(LIVE_CHANNEL);
@@ -176,7 +179,7 @@ describe('ChannelManager counterparty validation on resume', () => {
     const next = managerWith(store, REOPENED_CHANNEL);
     const resumed = await next.mgr.ensureChannel(
       'ario',
-      negotiationFor('0x6B6C2DAcF7ac1f1273F72Bef2E6084f9EE6d3bFF')
+      termsFor('0x6B6C2DAcF7ac1f1273F72Bef2E6084f9EE6d3bFF')
     );
 
     expect(resumed).toBe(LIVE_CHANNEL);
@@ -202,7 +205,7 @@ describe('ChannelManager counterparty validation on resume', () => {
       );
       const resolved = await next.mgr.ensureChannel(
         'toon',
-        negotiationFor(STORE_SETTLEMENT)
+        termsFor(STORE_SETTLEMENT)
       );
       expect(resolved).toBe(REOPENED_CHANNEL);
 

@@ -1,343 +1,125 @@
-import {
-  createPublicClient,
-  createWalletClient,
-  http,
-  maxUint256,
-  decodeEventLog,
-  defineChain,
-  type Hex,
-  type TransactionReceipt,
-} from 'viem';
+/**
+ * One {@link ChannelClient} over both settlement chains: a dispatcher, and
+ * nothing else.
+ *
+ * The lifecycle itself lives per chain — {@link ./evm/TokenNetworkClient.js} for
+ * EVM, {@link ./solana/SolanaChannelClient.js} for Solana — because the two have almost
+ * nothing in common beyond the shape of this interface: one is a contract call
+ * against a deployment shared by every pair, the other is a program instruction
+ * against a PDA that only ever belongs to one pair. What they DO share is that
+ * every method here is the client's own transaction, signed with the client's own
+ * key and paid for with the client's own gas. A connector has no endpoint that
+ * opens a channel (`self-description-spec.md` ND-03); it reads the chain
+ * ([ADR 0052](https://github.com/toon-protocol/connector/blob/main/docs/adr/0052-permissionless-payment-is-guaranteed-and-a-claim-is-what-authorises.md)),
+ * which is what makes paying it permissionless.
+ *
+ * This class holds one piece of state, and it is worth naming: a per-channel
+ * record of WHICH chain, token network/program and token a channel was opened
+ * under. Deposit, close, settle and read all need it, and none of them can
+ * re-derive it from a channel id alone — so a channel resumed from the store
+ * (rather than opened in this process) must be handed that context back through
+ * {@link OnChainChannelClient.adoptChannel} before anything but paying works on
+ * it.
+ */
+import type { EvmSigner } from '../signing/evm-signer.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { base58Encode } from '../utils/base58.js';
+import { ChannelNotOpenError, ConfigError } from '../client/errors.js';
 import type {
-  ConnectorChannelClient,
+  ChannelClient,
+  ChannelStatus,
+  ChannelTerms,
+  OnChainChannelStatus,
   OpenChannelParams,
   OpenChannelResult,
-  ChannelState,
-} from '@toon-protocol/core';
-import { ed25519 } from '@noble/curves/ed25519.js';
-import { base58Encode } from '@toon-protocol/core';
-import type { EvmSigner } from '../signing/evm-signer.js';
+} from './types.js';
 import {
-  ChannelFundingError,
-  StaleRpcReadError,
-  isInsufficientGasError,
-} from '../errors.js';
-import {
-  openSolanaChannel as openSolanaChannelOnChain,
-  getChannelAccountState as getSolanaChannelAccountState,
-  depositSolanaChannel,
-  deriveAssociatedTokenAccount,
-} from './solana-payment-channel.js';
-import { openMinaChannelOnChain } from './mina-channel-open.js';
+  TokenNetworkClient,
+  type EvmReadConsistencyConfig,
+} from './evm/TokenNetworkClient.js';
+import { SolanaChannelClient } from './solana/SolanaChannelClient.js';
 
-// TokenNetwork ABI — only the functions we need
-const TOKEN_NETWORK_ABI = [
-  {
-    name: 'openChannel',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'participant2', type: 'address' },
-      { name: 'settlementTimeout', type: 'uint256' },
-    ],
-    outputs: [{ type: 'bytes32' }],
-  },
-  {
-    name: 'setTotalDeposit',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'channelId', type: 'bytes32' },
-      { name: 'participant', type: 'address' },
-      { name: 'totalDeposit', type: 'uint256' },
-    ],
-    outputs: [],
-  },
-  {
-    name: 'closeChannel',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'channelId', type: 'bytes32' }],
-    outputs: [],
-  },
-  {
-    name: 'settleChannel',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'channelId', type: 'bytes32' }],
-    outputs: [],
-  },
-  {
-    name: 'channels',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [{ type: 'bytes32' }],
-    outputs: [
-      { name: 'settlementTimeout', type: 'uint256' },
-      { name: 'state', type: 'uint8' },
-      { name: 'closedAt', type: 'uint256' },
-      { name: 'openedAt', type: 'uint256' },
-      { name: 'participant1', type: 'address' },
-      { name: 'participant2', type: 'address' },
-    ],
-  },
-  {
-    name: 'participants',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [{ type: 'bytes32' }, { type: 'address' }],
-    outputs: [
-      { name: 'deposit', type: 'uint256' },
-      { name: 'nonce', type: 'uint256' },
-      { name: 'transferredAmount', type: 'uint256' },
-    ],
-  },
-  {
-    name: 'ChannelOpened',
-    type: 'event',
-    inputs: [
-      { name: 'channelId', type: 'bytes32', indexed: true },
-      { name: 'participant1', type: 'address', indexed: true },
-      { name: 'participant2', type: 'address', indexed: true },
-      { name: 'settlementTimeout', type: 'uint256', indexed: false },
-    ],
-  },
-] as const;
-
-// ERC20 ABI — only approve and allowance
-const ERC20_ABI = [
-  {
-    name: 'approve',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'spender', type: 'address' },
-      { name: 'amount', type: 'uint256' },
-    ],
-    outputs: [{ type: 'bool' }],
-  },
-  {
-    name: 'allowance',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'owner', type: 'address' },
-      { name: 'spender', type: 'address' },
-    ],
-    outputs: [{ type: 'uint256' }],
-  },
-] as const;
-
-/** Maps on-chain state uint8 to ChannelState status */
-const STATE_MAP: Record<number, ChannelState['status']> = {
-  0: 'settled',
-  1: 'open',
-  2: 'closed',
-  3: 'settled',
-};
+export type { EvmReadConsistencyConfig };
 
 export interface SolanaChannelConfig {
   rpcUrl: string;
   /**
    * Ed25519 keypair material. Accepts either a 32-byte seed or a 64-byte
-   * `secretKey` (seed || pubkey, as produced by `deriveFullIdentity`). The first
+   * `secretKey` (seed ‖ pubkey, as produced by `deriveFullIdentity`). The first
    * 32 bytes are the signing seed; the public key is derived from it.
    */
   keypair: Uint8Array;
   /**
-   * DEFAULT payment-channel program id (base58). The per-channel negotiated
-   * program (`OpenChannelParams.tokenNetwork`, i.e. the greeting's `programId`)
-   * takes precedence when present — see {@link SolanaChannelConfig.tokenMint},
-   * which works the same way.
+   * DEFAULT settlement program id (base58). The channel's own negotiated program
+   * — the `programId` the connector published for this chain — takes precedence
+   * whenever there is one, because ADR 0053 binds that program into the signed
+   * balance proof: opening against one program and signing under another
+   * produces claims no channel of ours lives under.
    */
   programId: string;
-  /**
-   * SPL token mint (base58) for PDA derivation. Optional — the per-channel
-   * negotiated token (`OpenChannelParams.token`) takes precedence when present.
-   */
+  /** DEFAULT SPL mint for PDA derivation. The negotiated token wins when present. */
   tokenMint?: string;
-  /**
-   * Challenge-period duration in seconds for `initialize_channel`. Defaults to
-   * `OpenChannelParams.settlementTimeout` or 86400.
-   */
+  /** Challenge-period duration in seconds. Defaults to the caller's, else 86400. */
   challengeDuration?: number;
   /**
-   * OVERRIDE for the on-chain deposit made at open time: `amount` in base units
-   * and/or `payerTokenAccount`, the payer's funded SPL token account (ATA,
-   * base58; derived from owner+mint when left empty).
-   *
-   * Normally left unset — the open deposits `OpenChannelParams.initialDeposit`,
-   * the same negotiated amount the EVM opener locks. Set this only to pin a
-   * different amount or a non-ATA source account. A 0 amount opts out of the
-   * deposit entirely and leaves the channel UNCOLLATERALIZED: the connector
-   * accepts claims on channel `opened` status + participant membership, but
-   * those claims cannot be redeemed for value on-chain (connector#646).
+   * OVERRIDE for the deposit made at open time: `amount` in base units and/or
+   * `payerTokenAccount`, the payer's funded SPL token account (derived from
+   * owner + mint when left empty). Normally unset — the open deposits the
+   * negotiated collateral, the same amount the EVM opener locks.
    */
   deposit?: { amount: string; payerTokenAccount: string };
 }
 
-export interface MinaChannelConfig {
-  graphqlUrl: string;
-  privateKey: string;
-  /**
-   * Deployed payment-channel zkApp address (B62). Optional when `autoDeploy`
-   * is set — the open path then resolves (or deploys) a pair-owned zkApp
-   * itself; see `mina-channel-deploy.ts`.
-   */
-  zkAppAddress?: string;
-  /**
-   * Per-pair zkApp auto-deploy (the Mina `PaymentChannel` zkApp is
-   * single-pair: one deployment serves exactly one client↔connector pair).
-   * When set, `openMinaChannel` first resolves a zkApp that is provably OURS
-   * — the recorded `deployed` one, or `zkAppAddress` when its on-chain
-   * channelHash matches this pair — and deploys a fresh one otherwise
-   * (compile ≈1-3 min; inclusion ≈3-6 min; costs ~1.1 MINA + fees).
-   * Without it, behavior is exactly the pre-autoDeploy contract: the
-   * configured `zkAppAddress` is required and used verbatim.
-   */
-  autoDeploy?: {
-    /** A previously recorded own deployment for this identity, if any. */
-    deployed?: { zkAppAddress: string; zkAppPrivateKey: string };
-    /**
-     * Persist hook — called with the zkApp address + key BEFORE the deploy tx
-     * is sent (and before the circuit compiles), so a crash between send and
-     * on-chain confirmation reuses the SAME zkApp next run instead of
-     * deploying (and paying ~1.1 MINA for) a second one.
-     */
-    onDeploying?: (record: {
-      zkAppAddress: string;
-      zkAppPrivateKey: string;
-      feePayer: string;
-    }) => void | Promise<void>;
-    /** Persist hook — called BEFORE the open proceeds on a fresh deploy. */
-    onDeployed?: (record: {
-      zkAppAddress: string;
-      zkAppPrivateKey: string;
-      feePayer: string;
-      deployTxHash?: string;
-      vkHash?: string;
-    }) => void | Promise<void>;
-    /** Progress lines (compile/deploy/inclusion phases take minutes). */
-    onProgress?: (line: string) => void;
-  };
-  /**
-   * Channel settlement timeout in slots for `initializeChannel`. Defaults to
-   * `OpenChannelParams.settlementTimeout` or 86400.
-   */
-  challengeDuration?: number;
-  /**
-   * Mina token id field (decimal string) for `initializeChannel`. Default '1'
-   * (native MINA). The connector reads this only as on-chain channel metadata.
-   */
-  tokenId?: string;
-  /**
-   * Optional on-chain deposit (base units, string) submitted after the channel
-   * is initialized. When omitted, the channel is opened (OPEN state) without a
-   * deposit — the connector accepts the claim on `opened` status; deposit is
-   * only consumed at on-chain settle time.
-   */
-  deposit?: { amount: string };
-  /** Mina network id for the account/Schnorr prefix. Default 'devnet'. */
-  networkId?: 'devnet' | 'mainnet';
-}
-
 export interface OnChainChannelClientConfig {
   evmSigner: EvmSigner;
+  /** Chain key → RPC URL. A chain absent from this map cannot be transacted on. */
   chainRpcUrls: Record<string, string>;
   solanaConfig?: SolanaChannelConfig;
-  minaConfig?: MinaChannelConfig;
-  /**
-   * How hard the EVM opener works to survive a STALE-READ RPC (#489).
-   *
-   * Public Base Sepolia (`sepolia.base.org`) is a load balancer: the
-   * `setTotalDeposit` that follows a just-confirmed `openChannel` can land on a
-   * replica that has not seen the open yet and reverts `InvalidChannelState()`
-   * (`0xf806e9d9`). So the opener polls the channel back until the RPC agrees
-   * it exists, and retries the deposit on that specific revert.
-   */
+  /** How hard the EVM opener works to survive a stale-read RPC (#489). */
   readConsistency?: EvmReadConsistencyConfig;
 }
 
-/** Read-after-write polling knobs for the EVM open path (#489). */
-export interface EvmReadConsistencyConfig {
-  /** Reads of the freshly opened channel before giving up. Default 12. */
-  attempts?: number;
-  /** Delay between those reads, ms. Default 1000. */
-  delayMs?: number;
-  /** `setTotalDeposit` retries on `InvalidChannelState()`. Default 3. */
-  depositRetries?: number;
+/** What this class remembers about a channel it opened or adopted. */
+interface ChannelContext {
+  chain: string;
+  /** The `TokenNetwork` on EVM; the settlement program id on Solana. */
+  tokenNetworkAddress: string;
+  tokenAddress?: string;
 }
 
-const DEFAULT_READ_CONSISTENCY: Required<EvmReadConsistencyConfig> = {
-  attempts: 12,
-  delayMs: 1000,
-  depositRetries: 3,
-};
-
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-
-/**
- * `InvalidChannelState()` — the TokenNetwork revert a stale replica produces
- * when `setTotalDeposit` runs against a channel it hasn't observed yet. viem
- * surfaces the raw selector and/or the decoded name depending on whether the
- * ABI carried the error, so both markers are matched.
- */
-function isInvalidChannelStateRevert(err: unknown): boolean {
-  const parts: string[] = [];
-  let cur: unknown = err;
-  for (let i = 0; i < 10 && cur != null; i++) {
-    parts.push(cur instanceof Error ? cur.message : String(cur));
-    cur = cur instanceof Error ? (cur as { cause?: unknown }).cause : undefined;
-  }
-  const text = parts.join(' | ').toLowerCase();
-  return text.includes('0xf806e9d9') || text.includes('invalidchannelstate');
-}
-
-function sleep(ms: number): Promise<void> {
-  return ms > 0
-    ? new Promise((resolve) => setTimeout(resolve, ms))
-    : Promise.resolve();
-}
-
-/**
- * Implements ConnectorChannelClient using viem for direct on-chain
- * interaction with TokenNetwork smart contract.
- *
- * Fully non-custodial — the client deposits its own funds on-chain.
- */
-export class OnChainChannelClient implements ConnectorChannelClient {
+export class OnChainChannelClient implements ChannelClient {
   private readonly evmSigner: EvmSigner;
   private readonly chainRpcUrls: Record<string, string>;
   private solanaConfig?: SolanaChannelConfig;
-  private minaConfig?: MinaChannelConfig;
-  private readonly channelContext = new Map<
-    string,
-    { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
-  >();
-  private readonly readConsistency: Required<EvmReadConsistencyConfig>;
+  private readonly readConsistency: EvmReadConsistencyConfig | undefined;
+  private readonly channelContext = new Map<string, ChannelContext>();
+  private readonly evmClients = new Map<string, TokenNetworkClient>();
+  private readonly solanaClients = new Map<string, SolanaChannelClient>();
 
   constructor(config: OnChainChannelClientConfig) {
     this.evmSigner = config.evmSigner;
     this.chainRpcUrls = config.chainRpcUrls;
     this.solanaConfig = config.solanaConfig;
-    this.minaConfig = config.minaConfig;
-    this.readConsistency = {
-      ...DEFAULT_READ_CONSISTENCY,
-      ...config.readConsistency,
-    };
+    this.readConsistency = config.readConsistency;
   }
 
   /**
-   * Adopt a channel this process did NOT open — a RESUMED one (#489), whose
-   * chain/token-network/token context came back from the channel store rather
-   * than from an `openChannel` call. Without it a restarted client can track
-   * and pay on a resumed channel but cannot deposit into, close, or read it,
-   * because those all look up the in-memory `channelContext` this seeds.
+   * Late-bind the Solana config. The Ed25519 keypair is derived asynchronously
+   * from the mnemonic after this client is constructed, and it must be the SAME
+   * keypair the Solana signer holds — the channel-open key and the claim-signing
+   * key are one key or the channel is not ours.
    */
-  adoptChannel(
-    channelId: string,
-    ctx: { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
-  ): void {
+  setSolanaConfig(config: SolanaChannelConfig): void {
+    this.solanaConfig = config;
+  }
+
+  /**
+   * Give a channel this process did NOT open its on-chain context back — the
+   * restart path (#489), where the chain, token network and token came from the
+   * channel store rather than from an `openChannel` call. Without it a resumed
+   * channel can be paid on but not deposited into, closed or read.
+   */
+  adoptChannel(channelId: string, ctx: ChannelContext): void {
     this.channelContext.set(channelId, {
       chain: ctx.chain,
       tokenNetworkAddress: ctx.tokenNetworkAddress,
@@ -345,392 +127,206 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     });
   }
 
+  /** The chain/token-network/token a channel is tracked under, if any. */
+  getChannelContext(channelId: string): ChannelContext | undefined {
+    return this.channelContext.get(channelId);
+  }
+
   /**
-   * Late-binds the Solana channel config.
+   * The `TokenNetworkClient` for one chain key, built once and reused.
    *
-   * `ToonClient.start()` derives the Solana Ed25519 keypair from the client's
-   * mnemonic asynchronously (after this client is constructed), so the keypair
-   * is injected here rather than at construction. Same keypair as the
-   * registered Solana signer — guarantees the channel-open key and the
-   * claim-signing key match.
+   * @throws {ConfigError} when no RPC URL is configured for that chain — a
+   *   condition no retry fixes, and one that must be reported before a caller
+   *   believes it has an on-chain client that works.
    */
-  setSolanaConfig(config: SolanaChannelConfig): void {
-    this.solanaConfig = config;
-  }
-
-  /**
-   * Late-binds the Mina channel config.
-   *
-   * Parallel to `setSolanaConfig`: `ToonClient.start()` derives the Mina private
-   * key from the client's mnemonic asynchronously (after this client is
-   * constructed), so the key is injected here rather than at construction. Same
-   * key as the registered Mina signer.
-   */
-  setMinaConfig(config: MinaChannelConfig): void {
-    this.minaConfig = config;
-  }
-
-  /**
-   * Parse chain identifier to extract chainId.
-   * Format: "evm:{network}:{chainId}" e.g., "evm:anvil:31337"
-   */
-  private parseChainId(chain: string): number {
-    const parts = chain.split(':');
-    if (parts.length < 2) {
-      throw new Error(
-        `Invalid chain format: "${chain}". Expected "evm:{network}:{chainId}" or "evm:{chainId}".`
-      );
-    }
-    // Accept both the canonical 3-part `evm:{network}:{chainId}` and the 2-part
-    // `evm:{chainId}` form some connectors advertise (e.g. `evm:31337`).
-    const chainIdStr = parts.length >= 3 ? parts[2] : parts[1];
-    if (!chainIdStr) {
-      throw new Error(
-        `Invalid chain format: "${chain}". Expected "evm:{network}:{chainId}".`
-      );
-    }
-    const chainId = parseInt(chainIdStr, 10);
-    if (isNaN(chainId)) {
-      throw new Error(`Invalid chainId in chain "${chain}".`);
-    }
-    return chainId;
-  }
-
-  /**
-   * Create viem clients for a given chain.
-   */
-  private createClients(chain: string) {
+  evmClientFor(chain: string): TokenNetworkClient {
+    const existing = this.evmClients.get(chain);
+    if (existing) return existing;
     const rpcUrl = this.chainRpcUrls[chain];
     if (!rpcUrl) {
-      throw new Error(
-        `No RPC URL configured for chain "${chain}". Available: ${Object.keys(this.chainRpcUrls).join(', ')}`
+      throw new ConfigError(
+        `No RPC URL configured for chain "${chain}". Configured: ` +
+          `${Object.keys(this.chainRpcUrls).join(', ') || '(none)'}.`
       );
     }
-
-    const chainId = this.parseChainId(chain);
-
-    const viemChain = defineChain({
-      id: chainId,
-      name: chain,
-      nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-      rpcUrls: { default: { http: [rpcUrl] } },
+    const client = new TokenNetworkClient({
+      chain,
+      rpcUrl,
+      signer: this.evmSigner,
+      ...(this.readConsistency ? { readConsistency: this.readConsistency } : {}),
     });
-
-    const publicClient = createPublicClient({
-      transport: http(rpcUrl),
-      chain: viemChain,
-    });
-
-    const walletClient = createWalletClient({
-      account: this.evmSigner.account,
-      transport: http(rpcUrl),
-      chain: viemChain,
-    });
-
-    return { publicClient, walletClient };
+    this.evmClients.set(chain, client);
+    return client;
   }
 
+  // ─── ChannelClient ────────────────────────────────────────────────────────
+
   /**
-   * Opens a new payment channel on-chain.
+   * Open a channel with the connector, or adopt the one already open with it.
    *
-   * 1. Approve token spend if needed
-   * 2. Call TokenNetwork.openChannel()
-   * 3. Extract channelId from ChannelOpened event
-   * 4. Deposit initial funds if specified
+   * Adoption is the normal case on both chains and comes free from the id
+   * derivation each uses: EVM derives `keccak256(p1, p2, epoch)` over the sorted
+   * pair (ADR 0059), Solana derives the channel PDA from the same sorted pair
+   * plus the mint. Neither needs a local record of what was opened before.
    */
   async openChannel(params: OpenChannelParams): Promise<OpenChannelResult> {
-    const chainPrefix = params.chain.split(':')[0];
+    const { terms } = params;
+    if (terms.kind === 'solana') return this.openSolanaChannel(params);
 
-    // Dispatch to chain-specific opener
-    if (chainPrefix === 'solana') return this.openSolanaChannel(params);
-    if (chainPrefix === 'mina') return this.openMinaChannel(params);
-
-    // EVM path (default)
-    return this.openEvmChannel(params);
+    const client = this.evmClientFor(terms.chain);
+    const result = await client.openOrAdopt({
+      terms,
+      ...(params.initialDeposit !== undefined
+        ? { initialDeposit: params.initialDeposit }
+        : {}),
+      ...(params.settlementTimeout !== undefined
+        ? { settlementTimeout: params.settlementTimeout }
+        : {}),
+    });
+    this.rememberEvm(result.channelId, terms);
+    return result;
   }
 
   /**
-   * Deposit additional collateral into an already-open channel. `amount` is the
-   * DELTA to add (base units). Dispatches by the channel's cached chain context;
-   * `currentDeposit` is the channel's current locked total (tracked off-chain by
-   * the caller) — required for EVM, whose `setTotalDeposit` takes the new
-   * cumulative total, not a delta. Returns the new on-chain deposit total.
-   *
-   * Non-custodial: the client deposits its OWN funds and signs its OWN tx.
-   * EVM is live; Solana/Mina deposit extraction is a follow-up (PR B.1).
+   * Add collateral. `amount` is the DELTA; `currentDeposit` is what the channel
+   * already holds, which EVM needs because `setTotalDeposit` takes the new
+   * cumulative figure rather than a delta.
    */
   async depositToChannel(
     channelId: string,
     amount: bigint,
     opts: { currentDeposit: bigint }
   ): Promise<{ txHash?: string; depositTotal: bigint }> {
-    if (amount <= 0n) throw new Error('Deposit amount must be positive.');
-    const ctx = this.channelContext.get(channelId);
-    if (!ctx) {
-      throw new Error(
-        `No on-chain context for channel "${channelId}" — it must be opened by this client first.`
-      );
+    if (amount <= 0n) throw new RangeError('Deposit amount must be positive.');
+    const ctx = this.requireContext(channelId, 'deposit into');
+    if (isSolanaChain(ctx.chain)) {
+      // Incremental on chain (the program adds `amount`), so the new total is
+      // the caller-tracked current plus the delta.
+      const { txSignature } = await this.solanaClientForChannel(ctx).deposit(channelId, amount);
+      return { txHash: txSignature, depositTotal: opts.currentDeposit + amount };
     }
-    const chainPrefix = ctx.chain.split(':')[0];
-    if (chainPrefix === 'solana') {
-      // Both PDA seeds come from the channel's own context, never from config:
-      // `tokenNetworkAddress` is the program the channel was OPENED on (the
-      // greeting's, when it named one — the only program whose vault PDA holds
-      // this collateral), and `tokenAddress` is the mint the open derived the
-      // payer ATA from. Reading either from config would re-open the #473 split.
-      return this.depositSolana(channelId, amount, opts.currentDeposit, {
-        programId: ctx.tokenNetworkAddress,
-        ...(ctx.tokenAddress ? { tokenMint: ctx.tokenAddress } : {}),
-      });
-    }
-    if (chainPrefix === 'mina') {
-      throw new Error(
-        'Deposit on mina is not yet supported (EVM + Solana today; Mina follow-up).'
-      );
-    }
-    return this.depositEvm(channelId, amount, opts.currentDeposit, ctx);
-  }
-
-  /**
-   * Solana deposit: fire the standalone `deposit` instruction against the channel
-   * vault. Incremental on-chain (the program adds `amount`), so the new total is
-   * the caller-tracked current plus the delta. Requires the funded payer token
-   * account (the funded ATA) from the Solana channel config.
-   *
-   * `channel` carries the program and mint the channel was actually OPENED
-   * with (the greeting's, when it named them — see
-   * {@link OnChainChannelClient.openSolanaChannel}), NOT
-   * `solanaConfig.programId`/`tokenMint`. Both PDAs this deposit addresses are
-   * derived from those: the vault from the program, the payer ATA from the mint.
-   */
-  private async depositSolana(
-    channelId: string,
-    amount: bigint,
-    currentDeposit: bigint,
-    channel: { programId: string; tokenMint?: string }
-  ): Promise<{ txHash: string; depositTotal: bigint }> {
-    if (!this.solanaConfig) {
-      throw new Error('Solana channel config not set — cannot deposit.');
-    }
-    const cfg = this.solanaConfig;
-    const payerSeed = cfg.keypair.slice(0, 32);
-    const payerPubkey = base58Encode(
-      new Uint8Array(ed25519.getPublicKey(payerSeed))
-    );
-    // The funded token account is deterministically the payer's ATA for THIS
-    // CHANNEL's mint, so derive it when the caller didn't pass one explicitly
-    // (config need not carry payerTokenAccount — it's owner+mint, both known here).
-    const tokenMint = channel.tokenMint ?? cfg.tokenMint;
-    let payerTokenAccount = cfg.deposit?.payerTokenAccount;
-    if (!payerTokenAccount) {
-      if (!tokenMint) {
-        throw new Error(
-          'Solana deposit requires solanaConfig.deposit.payerTokenAccount or a known channel mint to derive the payer ATA.'
-        );
-      }
-      payerTokenAccount = deriveAssociatedTokenAccount(payerPubkey, tokenMint);
-    }
-    const { depositTxSignature } = await depositSolanaChannel({
-      rpcUrl: cfg.rpcUrl,
-      programId: channel.programId,
-      channelPDA: channelId,
-      payerSeed,
-      payerPubkey,
-      payerTokenAccount,
-      amount,
+    return this.evmClientFor(ctx.chain).deposit(ctx.tokenNetworkAddress, channelId, amount, {
+      currentDeposit: opts.currentDeposit,
+      ...(ctx.tokenAddress ? { token: ctx.tokenAddress } : {}),
     });
-    return {
-      txHash: depositTxSignature,
-      depositTotal: currentDeposit + amount,
-    };
   }
 
-  /**
-   * EVM deposit: approve the token-network for the delta if the allowance is
-   * short, then `setTotalDeposit(channelId, participant, current + delta)` —
-   * the contract takes the new cumulative total, so we add the delta to the
-   * caller-supplied current locked amount.
-   */
-  private async depositEvm(
-    channelId: string,
-    amount: bigint,
-    currentDeposit: bigint,
-    ctx: { chain: string; tokenNetworkAddress: string; tokenAddress?: string }
-  ): Promise<{ txHash: string; depositTotal: bigint }> {
-    const { publicClient, walletClient } = this.createClients(ctx.chain);
-    const tokenNetworkAddr = ctx.tokenNetworkAddress as Hex;
-    const myAddress = this.evmSigner.address as Hex;
-    const newTotal = currentDeposit + amount;
-
-    // Approve the additional collateral if the current allowance can't cover it.
-    if (ctx.tokenAddress) {
-      const tokenAddr = ctx.tokenAddress as Hex;
-      const allowance = await publicClient.readContract({
-        address: tokenAddr,
-        abi: ERC20_ABI,
-        functionName: 'allowance',
-        args: [myAddress, tokenNetworkAddr],
-      });
-      if ((allowance as bigint) < amount) {
-        const approveHash = await walletClient.writeContract({
-          address: tokenAddr,
-          abi: ERC20_ABI,
-          functionName: 'approve',
-          args: [tokenNetworkAddr, maxUint256],
-        });
-        await publicClient.waitForTransactionReceipt({ hash: approveHash });
-      }
-    }
-
-    const depositHash = await walletClient.writeContract({
-      address: tokenNetworkAddr,
-      abi: TOKEN_NETWORK_ABI,
-      functionName: 'setTotalDeposit',
-      args: [channelId as Hex, myAddress, newTotal],
-    });
-    await publicClient.waitForTransactionReceipt({ hash: depositHash });
-    return { txHash: depositHash, depositTotal: newTotal };
-  }
-
-  /**
-   * Close a channel to begin the settlement grace period. Dispatches by the
-   * channel's cached chain context. EVM `closeChannel` is unilateral (channelId
-   * only); after it confirms we read the `channels()` view for the AUTHORITATIVE
-   * `closedAt` + `settlementTimeout` (block-timestamp seconds) and compute
-   * `settleableAt = closedAt + settlementTimeout`. Solana/Mina are follow-ups.
-   */
+  /** Start the challenge period. */
   async closeChannel(channelId: string): Promise<{
     txHash?: string;
     closedAt: bigint;
     settlementTimeout: bigint;
     settleableAt: bigint;
   }> {
-    const ctx = this.channelContext.get(channelId);
-    if (!ctx) {
-      throw new Error(
-        `No on-chain context for channel "${channelId}" — it must be opened by this client first.`
-      );
+    const ctx = this.requireContext(channelId, 'close');
+    if (isSolanaChain(ctx.chain)) {
+      const client = this.solanaClientForChannel(ctx);
+      const { txSignature } = await client.close(channelId);
+      // The deadline comes from the account the program just stamped, never
+      // from this process's clock: `settle` is gated on the chain's own
+      // `close_timestamp + challenge_duration`.
+      const after = await client.read(channelId);
+      const closedAt = after.closeTimestamp ?? 0n;
+      const challenge = after.challengeDuration ?? 0n;
+      return {
+        txHash: txSignature,
+        closedAt,
+        settlementTimeout: challenge,
+        settleableAt: after.settleableAt ?? closedAt + challenge,
+      };
     }
-    const chainPrefix = ctx.chain.split(':')[0];
-    if (chainPrefix === 'solana' || chainPrefix === 'mina') {
-      throw new Error(
-        `Close on ${chainPrefix} is not yet supported (EVM today; Solana/Mina follow-up).`
-      );
-    }
-    const { publicClient, walletClient } = this.createClients(ctx.chain);
-    const tokenNetworkAddr = ctx.tokenNetworkAddress as Hex;
-    const closeHash = await walletClient.writeContract({
-      address: tokenNetworkAddr,
-      abi: TOKEN_NETWORK_ABI,
-      functionName: 'closeChannel',
-      args: [channelId as Hex],
-    });
-    await publicClient.waitForTransactionReceipt({ hash: closeHash });
-
-    const info = await this.readEvmChannel(
-      publicClient,
-      tokenNetworkAddr,
-      channelId
-    );
-    return {
-      txHash: closeHash,
-      closedAt: info.closedAt,
-      settlementTimeout: info.settlementTimeout,
-      settleableAt: info.closedAt + info.settlementTimeout,
-    };
+    return this.evmClientFor(ctx.chain).close(ctx.tokenNetworkAddress, channelId);
   }
 
-  /**
-   * Settle a closed channel after its grace period to release collateral. EVM
-   * `settleChannel` is unilateral (channelId only); the contract itself reverts
-   * before `closedAt + settlementTimeout`, so an early call surfaces as a tx
-   * revert here — but the caller (ToonClient/daemon) enforces the time guard
-   * BEFORE spending gas. Solana/Mina are follow-ups.
-   */
+  /** Pay out and finish. Only permitted once the challenge period has elapsed. */
   async settleChannel(channelId: string): Promise<{ txHash?: string }> {
-    const ctx = this.channelContext.get(channelId);
-    if (!ctx) {
-      throw new Error(
-        `No on-chain context for channel "${channelId}" — it must be opened by this client first.`
-      );
+    const ctx = this.requireContext(channelId, 'settle');
+    if (isSolanaChain(ctx.chain)) {
+      const { txSignature } = await this.solanaClientForChannel(ctx).settle(channelId);
+      return { txHash: txSignature };
     }
-    const chainPrefix = ctx.chain.split(':')[0];
-    if (chainPrefix === 'solana' || chainPrefix === 'mina') {
-      throw new Error(
-        `Settle on ${chainPrefix} is not yet supported (EVM today; Solana/Mina follow-up).`
-      );
+    return this.evmClientFor(ctx.chain).settle(ctx.tokenNetworkAddress, channelId);
+  }
+
+  /** The channel's lifecycle position, as the chain reports it. */
+  async getChannelState(channelId: string): Promise<OnChainChannelStatus> {
+    const ctx = this.requireContext(channelId, 'read');
+    if (isSolanaChain(ctx.chain)) {
+      const account = await this.solanaClientForChannel(ctx).read(channelId);
+      // A SETTLED channel's account is zeroed by the program, so `!exists` is
+      // reported as `missing`: "there is nothing there" is what was read, and
+      // claiming to know it settled would be inventing a fact.
+      const status: ChannelStatus = !account.exists
+        ? 'missing'
+        : account.state === 'opened'
+          ? 'open'
+          : account.state === 'closed'
+            ? 'closed'
+            : 'settled';
+      return {
+        channelId,
+        status,
+        chain: ctx.chain,
+        // Our OWN collateral, not the vault's balance: the program bounds a
+        // claim by the claimer's own deposit, so a peer-funded vault can look
+        // amply funded while this client's headroom is nil.
+        deposit: account.ownDeposit,
+        ...(account.closeTimestamp !== undefined && account.closeTimestamp > 0n
+          ? { closedAt: account.closeTimestamp }
+          : {}),
+        ...(account.settleableAt !== undefined ? { settleableAt: account.settleableAt } : {}),
+      };
     }
-    const { publicClient, walletClient } = this.createClients(ctx.chain);
-    const settleHash = await walletClient.writeContract({
-      address: ctx.tokenNetworkAddress as Hex,
-      abi: TOKEN_NETWORK_ABI,
-      functionName: 'settleChannel',
-      args: [channelId as Hex],
-    });
-    await publicClient.waitForTransactionReceipt({ hash: settleHash });
-    return { txHash: settleHash };
+    return this.evmClientFor(ctx.chain).getChannelState(ctx.tokenNetworkAddress, channelId);
   }
 
   /**
-   * Read the EVM channel's close-relevant fields so a restarted daemon can
-   * recompute the grace timer from chain (chain is authoritative). EVM-only.
+   * Read the EVM channel's close-relevant fields from chain, so a restarted
+   * process recomputes the grace timer from the authority rather than from a
+   * remembered number.
    */
   async getChannelCloseInfo(channelId: string): Promise<{
-    status: ChannelState['status'];
+    status: ChannelStatus;
     closedAt: bigint;
     settlementTimeout: bigint;
     settleableAt: bigint;
   }> {
-    const ctx = this.channelContext.get(channelId);
-    if (!ctx)
-      throw new Error(`No on-chain context for channel "${channelId}".`);
-    const chainPrefix = ctx.chain.split(':')[0];
-    if (chainPrefix === 'solana' || chainPrefix === 'mina') {
-      throw new Error(
-        `getChannelCloseInfo on ${chainPrefix} is not supported.`
-      );
+    const ctx = this.requireContext(channelId, 'read');
+    if (isSolanaChain(ctx.chain)) {
+      const account = await this.solanaClientForChannel(ctx).read(channelId);
+      if (!account.exists) {
+        throw new ChannelNotOpenError(
+          `Solana channel ${channelId} does not exist on chain — a settled ` +
+            "channel's account is zeroed by the program, so there is nothing left to read."
+        );
+      }
+      const closedAt = account.closeTimestamp ?? 0n;
+      const challenge = account.challengeDuration ?? 0n;
+      return {
+        status:
+          account.state === 'opened' ? 'open' : account.state === 'closed' ? 'closed' : 'settled',
+        closedAt,
+        settlementTimeout: challenge,
+        settleableAt: account.settleableAt ?? closedAt + challenge,
+      };
     }
-    const { publicClient } = this.createClients(ctx.chain);
-    const info = await this.readEvmChannel(
-      publicClient,
-      ctx.tokenNetworkAddress as Hex,
+    const record = await this.evmClientFor(ctx.chain).readChannel(
+      ctx.tokenNetworkAddress,
       channelId
     );
     return {
-      status: STATE_MAP[info.state] ?? 'open',
-      closedAt: info.closedAt,
-      settlementTimeout: info.settlementTimeout,
-      settleableAt: info.closedAt + info.settlementTimeout,
-    };
-  }
-
-  /** Read + destructure the EVM `channels(bytes32)` view. */
-  private async readEvmChannel(
-    publicClient: ReturnType<
-      OnChainChannelClient['createClients']
-    >['publicClient'],
-    tokenNetworkAddr: Hex,
-    channelId: string
-  ): Promise<{ settlementTimeout: bigint; state: number; closedAt: bigint }> {
-    const res = (await publicClient.readContract({
-      address: tokenNetworkAddr,
-      abi: TOKEN_NETWORK_ABI,
-      functionName: 'channels',
-      args: [channelId as Hex],
-    })) as readonly [bigint, number, bigint, bigint, string, string];
-    return {
-      settlementTimeout: res[0],
-      state: Number(res[1]),
-      closedAt: res[2],
+      status: record.status,
+      closedAt: record.closedAt,
+      settlementTimeout: record.settlementTimeout,
+      settleableAt: record.closedAt + record.settlementTimeout,
     };
   }
 
   /**
-   * Read a participant's on-chain channel state — `deposit` (locked collateral),
-   * `nonce`, and `transferredAmount` — straight from the `participants` mapping.
-   * Takes the chain + token-network explicitly so it works for a channel that
-   * was RESUMED from disk (no in-memory `channelContext` yet), which is exactly
-   * when the daemon needs to re-hydrate the deposit it doesn't persist.
+   * A participant's on-chain `deposit`/`nonce`/`transferredAmount`. Takes the
+   * chain and token network explicitly so it works for a channel that was resumed
+   * from disk and has no in-memory context yet — which is exactly when a caller
+   * needs to re-hydrate the collateral it did not persist.
    */
   async readEvmParticipantState(opts: {
     chain: string;
@@ -738,568 +334,141 @@ export class OnChainChannelClient implements ConnectorChannelClient {
     channelId: string;
     participant: string;
   }): Promise<{ deposit: bigint; nonce: bigint; transferredAmount: bigint }> {
-    const { publicClient } = this.createClients(opts.chain);
-    const res = (await publicClient.readContract({
-      address: opts.tokenNetworkAddress as Hex,
-      abi: TOKEN_NETWORK_ABI,
-      functionName: 'participants',
-      args: [opts.channelId as Hex, opts.participant as Hex],
-    })) as readonly [bigint, bigint, bigint];
-    return { deposit: res[0], nonce: res[1], transferredAmount: res[2] };
+    return this.evmClientFor(opts.chain).readParticipant(
+      opts.tokenNetworkAddress,
+      opts.channelId,
+      opts.participant
+    );
   }
 
-  /**
-   * Opens a REAL on-chain Solana payment channel.
-   *
-   * Derives the connector-parity channel PDA
-   * (`[b"channel", min_pubkey, max_pubkey, token_mint]`), submits the
-   * `initialize_channel` instruction plus the `deposit` that collateralizes the
-   * channel, and returns the base58 PDA as the channel id. That
-   * PDA is what the claim carries as `channelAccount`, and the on-chain channel
-   * is what the connector's `verifySolanaClaim` reads via
-   * `provider.getChannelState` before accepting the claim.
-   *
-   * Both PDA seeds are NEGOTIATED, not configured: the mint is
-   * `OpenChannelParams.token` and the program is `OpenChannelParams.tokenNetwork`
-   * — the greeting's `tokenAddress`/`programId` as threaded through by
-   * `ChannelManager.ensureChannel` — each falling back to the `solanaConfig`
-   * default only when the negotiation named none. That is what keeps the channel
-   * this opens and the channel the signed claim asserts the same object (#473).
-   *
-   * Mirrors `openEvmChannel`'s open(+deposit) structure. Idempotent: if the
-   * channel account already exists on-chain, returns its PDA without
-   * re-initializing.
-   */
-  private async openSolanaChannel(
-    params: OpenChannelParams
-  ): Promise<OpenChannelResult> {
-    if (!this.solanaConfig) {
-      throw new Error(
-        'Solana channel config not provided — cannot open Solana channel'
+  // ─── Private ──────────────────────────────────────────────────────────────
+
+  private requireContext(channelId: string, verb: string): ChannelContext {
+    const ctx = this.channelContext.get(channelId);
+    if (!ctx) {
+      throw new ConfigError(
+        `No on-chain context for channel "${channelId}" — this client cannot ` +
+          `${verb} a channel it neither opened nor adopted. Call adoptChannel() ` +
+          'with the chain and token network it lives on.'
       );
     }
-
-    const cfg = this.solanaConfig;
-    // First 32 bytes are the Ed25519 signing seed (config may pass a 64-byte
-    // secretKey of seed||pubkey, or a bare 32-byte seed).
-    const payerSeed = cfg.keypair.slice(0, 32);
-    const payerPubkey = base58Encode(
-      new Uint8Array(ed25519.getPublicKey(payerSeed))
-    );
-
-    // PDA mint: per-channel negotiated token takes precedence over config default.
-    const tokenMint = params.token ?? cfg.tokenMint;
-    if (!tokenMint) {
-      throw new Error(
-        'Solana channel requires a token mint (OpenChannelParams.token or solanaConfig.tokenMint)'
-      );
-    }
-    // PDA program: the negotiated program (the greeting's `programId`, which
-    // `ChannelManager` threads through as `tokenNetwork`) takes precedence over
-    // the config default — exactly as the negotiated mint already does (#473).
-    // The claim's metadata reports this negotiated program, so opening against
-    // anything else would open on one program and assert another; ADR 0022
-    // makes the greeting the authoritative source of settlement facts, and a
-    // stale client preset must not silently override it.
-    const programId = params.tokenNetwork ?? cfg.programId;
-    if (!params.peerAddress) {
-      throw new Error(
-        'Solana channel requires peerAddress (apex settlement pubkey, base58)'
-      );
-    }
-
-    const challengeDuration = BigInt(
-      cfg.challengeDuration ?? params.settlementTimeout ?? 86400
-    );
-
-    // Deposit amount — the SAME policy the EVM opener uses (connector#646):
-    // `OpenChannelParams.initialDeposit`, which `ChannelManager.ensureChannel`
-    // fills from `negotiation.initialDeposit ?? ChannelManagerConfig.initialDeposit`.
-    // Before this, the Solana branch consulted ONLY `solanaConfig.deposit` — an
-    // operator-only field nothing on the rig/daemon/preset path ever sets — so
-    // every negotiated open silently skipped the `deposit` instruction and left
-    // the vault at 0, making accepted claims uncollateralized. `solanaConfig.deposit`
-    // remains an explicit override of the amount and/or the funded token account.
-    const depositAmount = BigInt(
-      cfg.deposit?.amount ?? params.initialDeposit ?? '0'
-    );
-    const deposit =
-      depositAmount > 0n
-        ? {
-            amount: depositAmount,
-            // Derive the payer ATA (owner + channel mint) when not supplied — it is
-            // deterministic, so the caller need not thread payerTokenAccount through.
-            payerTokenAccount:
-              cfg.deposit?.payerTokenAccount ||
-              deriveAssociatedTokenAccount(payerPubkey, tokenMint),
-          }
-        : undefined;
-
-    const { channelPDA, depositTotal } = await openSolanaChannelOnChain({
-      rpcUrl: cfg.rpcUrl,
-      programId,
-      tokenMint,
-      payerSeed,
-      payerPubkey,
-      peerPubkey: params.peerAddress,
-      challengeDuration,
-      deposit,
-    });
-
-    // Cache context (PDA is the channel id / channelAccount). Record BOTH seeds
-    // the channel was actually opened with — program and mint — so a later
-    // deposit addresses this channel's vault and this channel's payer ATA,
-    // rather than re-deriving either from config (#473).
-    this.channelContext.set(channelPDA, {
-      chain: params.chain,
-      tokenNetworkAddress: programId,
-      tokenAddress: tokenMint,
-    });
-
-    return {
-      channelId: channelPDA,
-      status: 'opening',
-      // Report the collateral now in the vault, when this call established it
-      // (locked here on a fresh open, read from chain on a top-up). Reporting
-      // only — no spend decision reads it; it exists so callers can show and
-      // log real collateral instead of 0.
-      ...(depositTotal !== undefined ? { depositTotal } : {}),
-    };
+    return ctx;
   }
 
-  /**
-   * Opens a REAL on-chain Mina payment channel on the deployed `PaymentChannel`
-   * zkApp.
-   *
-   * The zkApp is deployed out-of-band (the operator/e2e harness deploys it
-   * deterministically and advertises its B62 address). This client then calls
-   * `initializeChannel` on that zkApp so its on-chain `channelState` becomes
-   * `OPEN` — which is what the connector's `MinaPaymentChannelSDK.getChannelState`
-   * reads to return status `'opened'` (claim verification otherwise fails with
-   * `mina_claim_verification_failed`). The deployed zkApp address IS the channel
-   * id: `MinaClaimMessage.zkAppAddress` is both the claim's channel identifier
-   * AND the channel-hash preimage the off-chain proof binds to (see
-   * `mina-payment-channel.ts`), so the channel-open id and the claim's channel id
-   * are guaranteed identical.
-   *
-   * This is the Mina analog of `openSolanaChannel` (connector#105): the client
-   * opens its own per-channel on-chain state (initialize + optional deposit). The
-   * heavyweight o1js + `@toon-protocol/mina-zkapp` proof work is lazily imported
-   * inside `openMinaChannelOnChain` so npm consumers who never open a Mina
-   * channel don't pay the o1js cost.
-   *
-   * Idempotent: if the on-chain channel is already `OPEN`, the opener returns
-   * without re-initializing.
-   *
-   * NOTE: full on-chain Mina SETTLE remains gated by the connector-side
-   * settlement-executor (the same blocker that stops the Solana SETTLE); reaching
-   * `opened` + a stored claim is parity with Solana.
-   */
-  private async openMinaChannel(
-    params: OpenChannelParams
-  ): Promise<OpenChannelResult> {
-    if (!this.minaConfig) {
-      throw new Error(
-        'Mina channel config not provided — cannot open Mina channel'
-      );
-    }
-    // The apex's Mina settlement B62 (participantB) is REQUIRED so the channel is
-    // opened TWO-party. The off-chain claim is signed in participant form
-    // (`Poseidon([client.x, apex.x, 0])`); without participantB the on-chain
-    // channel records empty/duplicate participants and the connector's
-    // participant-form verification fails on settle (`Invalid balance proof
-    // signature`, `participants:["",""]`). Mirrors the Solana peerAddress guard.
-    // (Checked before auto-deploy too — the pair hash needs participantB.)
-    if (!params.peerAddress) {
-      throw new Error(
-        'Mina channel requires peerAddress (apex Mina settlement B62) so the ' +
-          'on-chain channel is opened two-party — the participant-form claim ' +
-          'cannot settle against a single-party channel'
-      );
-    }
-    // The deployed zkApp address IS the channel id (claim `zkAppAddress`).
-    // With autoDeploy, resolve a zkApp that is provably OURS for this pair
-    // (reusing the recorded/configured one when its on-chain channelHash
-    // matches; deploying a dedicated one otherwise) — the Mina PaymentChannel
-    // zkApp is single-pair, so a shared/announced address can never serve a
-    // second identity. Lazily imported: only autoDeploy users pay the cost.
-    let zkAppAddress = this.minaConfig.zkAppAddress;
-    if (this.minaConfig.autoDeploy) {
-      const { ensureOwnedMinaZkApp } = await import('./mina-channel-deploy.js');
-      const ensured = await ensureOwnedMinaZkApp({
-        graphqlUrl: this.minaConfig.graphqlUrl,
-        payerPrivateKey: this.minaConfig.privateKey,
-        peerPublicKey: params.peerAddress,
-        ...(this.minaConfig.autoDeploy.deployed
-          ? { deployed: this.minaConfig.autoDeploy.deployed }
-          : {}),
-        ...(zkAppAddress ? { candidateZkAppAddress: zkAppAddress } : {}),
-        ...(this.minaConfig.autoDeploy.onDeploying
-          ? { onDeploying: this.minaConfig.autoDeploy.onDeploying }
-          : {}),
-        ...(this.minaConfig.autoDeploy.onDeployed
-          ? { onDeployed: this.minaConfig.autoDeploy.onDeployed }
-          : {}),
-        ...(this.minaConfig.autoDeploy.onProgress
-          ? { onProgress: this.minaConfig.autoDeploy.onProgress }
-          : {}),
-      });
-      zkAppAddress = ensured.zkAppAddress;
-    }
-    if (!zkAppAddress) {
-      throw new Error(
-        'Mina channel requires a deployed zkAppAddress (minaConfig.zkAppAddress)'
-      );
-    }
-
-    const timeout = BigInt(
-      this.minaConfig.challengeDuration ?? params.settlementTimeout ?? 86400
-    );
-    const deposit = this.minaConfig.deposit
-      ? { amount: BigInt(this.minaConfig.deposit.amount) }
-      : undefined;
-
-    const openResult = await openMinaChannelOnChain({
-      graphqlUrl: this.minaConfig.graphqlUrl,
-      zkAppAddress,
-      payerPrivateKey: this.minaConfig.privateKey,
-      // params.peerAddress is the apex Mina settlement B62 pubkey (participantB).
-      peerPublicKey: params.peerAddress,
-      timeout,
-      tokenId: this.minaConfig.tokenId,
-      deposit,
-      networkId: this.minaConfig.networkId,
-    });
-
-    // The deployed zkApp address IS the channel id (claim `zkAppAddress`).
-    this.channelContext.set(zkAppAddress, {
-      chain: params.chain,
-      tokenNetworkAddress: zkAppAddress,
-    });
-
-    // Surface the CURRENT on-chain depositTotal so the Mina signer can bind
-    // `balanceB = depositTotal − balanceA` (connector#133). Read at open time so
-    // a re-deposited channel signs against the live value, not a stale config.
-    return {
-      channelId: zkAppAddress,
-      status: 'opening',
-      depositTotal: openResult.depositTotal,
-    };
-  }
-
-  /**
-   * Opens an EVM payment channel on-chain, remapping the one-time
-   * insufficient-native-gas revert into an actionable {@link ChannelFundingError}
-   * so callers surface "fund the wallet" instead of the raw viem
-   * "...exceeds the balance of the account" string (toon-meta#65). Only the gas
-   * case is remapped; every other error propagates unchanged.
-   */
-  private async openEvmChannel(
-    params: OpenChannelParams
-  ): Promise<OpenChannelResult> {
-    try {
-      return await this.openEvmChannelUnchecked(params);
-    } catch (err) {
-      if (!isInsufficientGasError(err)) throw err;
-      // `chain` is a CAIP-ish id (e.g. "evm:anvil:31337"); surface just the
-      // family so the remedy reads "no gas on evm", not the full slug.
-      const chainFamily = params.chain.split(':')[0] || params.chain;
-      throw new ChannelFundingError(
-        `Settlement wallet ${this.evmSigner.address} has no gas on ` +
-          `${chainFamily} to open a payment channel. Run toon_fund_wallet ` +
-          `(or fund the wallet) and retry.`,
-        err instanceof Error ? err : undefined
-      );
-    }
-  }
-
-  /**
-   * Raw EVM channel-open (no gas-error remapping — see {@link openEvmChannel}).
-   *
-   * 1. Approve token spend if needed
-   * 2. Call TokenNetwork.openChannel()
-   * 3. Extract channelId from ChannelOpened event
-   * 4. Deposit initial funds if specified
-   */
-  private async openEvmChannelUnchecked(
-    params: OpenChannelParams
-  ): Promise<OpenChannelResult> {
-    const {
-      chain,
-      tokenNetwork,
-      peerAddress,
-      initialDeposit,
-      settlementTimeout,
-    } = params;
-
-    if (!tokenNetwork) {
-      throw new Error(
-        'tokenNetwork address is required for on-chain channel opening'
-      );
-    }
-
-    const { publicClient, walletClient } = this.createClients(chain);
-    const tokenNetworkAddr = tokenNetwork as Hex;
-    const deposit = initialDeposit ? BigInt(initialDeposit) : 0n;
-
-    // If deposit > 0, ensure token approval
-    if (deposit > 0n && params.token) {
-      const tokenAddr = params.token as Hex;
-      const myAddress = this.evmSigner.address as Hex;
-
-      const currentAllowance = await publicClient.readContract({
-        address: tokenAddr,
-        abi: ERC20_ABI,
-        functionName: 'allowance',
-        args: [myAddress, tokenNetworkAddr],
-      });
-
-      if ((currentAllowance as bigint) < deposit) {
-        const approveHash = await walletClient.writeContract({
-          address: tokenAddr,
-          abi: ERC20_ABI,
-          functionName: 'approve',
-          args: [tokenNetworkAddr, maxUint256],
-        });
-        await publicClient.waitForTransactionReceipt({ hash: approveHash });
-      }
-    }
-
-    // Open channel
-    const timeout = BigInt(settlementTimeout ?? 86400);
-    const openHash = await walletClient.writeContract({
-      address: tokenNetworkAddr,
-      abi: TOKEN_NETWORK_ABI,
-      functionName: 'openChannel',
-      args: [peerAddress as Hex, timeout],
-    });
-
-    const receipt: TransactionReceipt =
-      await publicClient.waitForTransactionReceipt({ hash: openHash });
-
-    // Extract channelId from ChannelOpened event
-    let channelId: string | undefined;
-    for (const log of receipt.logs) {
-      try {
-        const decoded = decodeEventLog({
-          abi: TOKEN_NETWORK_ABI,
-          data: log.data,
-          topics: log.topics,
-        });
-        if (decoded.eventName === 'ChannelOpened') {
-          channelId = (decoded.args as Record<string, unknown>)[
-            'channelId'
-          ] as string;
-          break;
-        }
-      } catch {
-        // Not our event, skip
-      }
-    }
-
-    if (!channelId) {
-      throw new Error('Failed to extract channelId from ChannelOpened event');
-    }
-
-    // Cache context for getChannelState + later deposits (the token address is
-    // needed to approve additional collateral on a standalone deposit).
+  private rememberEvm(channelId: string, terms: ChannelTerms): void {
     this.channelContext.set(channelId, {
-      chain,
-      tokenNetworkAddress: tokenNetwork,
-      ...(params.token ? { tokenAddress: params.token } : {}),
+      chain: terms.chain,
+      tokenNetworkAddress: terms.tokenNetwork ?? '',
+      ...(terms.token ? { tokenAddress: terms.token } : {}),
+    });
+  }
+
+  /**
+   * Open (or re-derive) the Solana channel PDA and collateralise it.
+   *
+   * Both PDA seeds are NEGOTIATED rather than configured: the mint is the
+   * connector's published `tokenAddress` and the program its published
+   * `programId`, each falling back to the config default only when the node named
+   * none. That is what keeps the channel this opens and the channel the signed
+   * claim asserts the same object — ADR 0053 binds the program into the signed
+   * message, so a stale preset silently overriding it would produce claims that
+   * verify against nothing.
+   *
+   * Idempotent by construction: the PDA is a pure function of the sorted pair and
+   * the mint, so re-opening re-derives the same account and the on-chain
+   * initialisation is skipped when it already exists.
+   */
+  private async openSolanaChannel(params: OpenChannelParams): Promise<OpenChannelResult> {
+    const { terms } = params;
+    const cfg = this.requireSolanaConfig();
+    const client = this.solanaClientFor(terms.programId, terms.token, params.settlementTimeout);
+    // The collateral an open locks is ONE policy for every settlement chain: the
+    // negotiated `initialDeposit`, the same figure the EVM opener locks.
+    // `solanaConfig.deposit` remains an explicit operator override of the amount
+    // and/or the funded token account it is pulled from.
+    const deposit = BigInt(cfg.deposit?.amount ?? params.initialDeposit ?? 0n);
+    const result = await client.open({
+      counterparty: terms.counterparty,
+      deposit,
+      ...(cfg.deposit?.payerTokenAccount
+        ? { payerTokenAccount: cfg.deposit.payerTokenAccount }
+        : {}),
     });
 
-    // Deposit initial funds if specified
-    if (deposit > 0n) {
-      // READ-AFTER-WRITE (#489): the open receipt is confirmed, but a
-      // load-balanced RPC (Base Sepolia's `sepolia.base.org`) can route this
-      // next call to a replica that hasn't seen the open, which reverts
-      // `InvalidChannelState()` and strands the just-opened channel with no
-      // collateral. Wait for the RPC to agree the channel exists first.
-      await this.waitForEvmChannelVisible(
-        publicClient,
-        tokenNetworkAddr,
-        channelId,
-        chain
-      );
-      await this.setTotalDepositWithRetry({
-        publicClient,
-        walletClient,
-        tokenNetworkAddr,
-        channelId,
-        total: deposit,
-        chain,
-      });
-    }
-
-    // Report the collateral this open actually LOCKED (issue #565). The Solana
-    // and Mina openers have always returned `depositTotal`; EVM did not, so
-    // `ChannelManager` tracked (and persisted in the peer binding) `undefined`
-    // for every EVM channel — and `getDepositTotal`'s `?? 0n` then reported a
-    // funded channel as `depositTotal: "0"`, `availableBalance: "0"` for the
-    // whole life of the process AND across restarts. `setTotalDeposit` takes
-    // the cumulative total and is awaited above, so on success `deposit` IS the
-    // on-chain total; a zero-deposit open reports 0 because that is the truth,
-    // not because nothing was captured.
-    return { channelId, status: 'opening', depositTotal: deposit };
-  }
-
-  /**
-   * Poll the TokenNetwork until it reports the just-opened channel (non-zero
-   * `participant1`). Tolerates a read that throws or returns nothing — a stale
-   * replica does both — and surfaces a {@link StaleRpcReadError} naming the RPC
-   * when the endpoint never converges.
-   */
-  private async waitForEvmChannelVisible(
-    publicClient: ReturnType<
-      OnChainChannelClient['createClients']
-    >['publicClient'],
-    tokenNetworkAddr: Hex,
-    channelId: string,
-    chain: string
-  ): Promise<void> {
-    const { attempts, delayMs } = this.readConsistency;
-    let lastError: Error | undefined;
-    for (let i = 0; i < attempts; i++) {
-      if (i > 0) await sleep(delayMs);
-      try {
-        const res = (await publicClient.readContract({
-          address: tokenNetworkAddr,
-          abi: TOKEN_NETWORK_ABI,
-          functionName: 'channels',
-          args: [channelId as Hex],
-        })) as readonly [bigint, number, bigint, bigint, string, string] | null;
-        const participant1 = res?.[4];
-        if (
-          typeof participant1 === 'string' &&
-          participant1.toLowerCase() !== ZERO_ADDRESS
-        ) {
-          return;
-        }
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-      }
-    }
-    throw new StaleRpcReadError(
-      `Channel ${channelId} was opened on ${chain} but ${this.chainRpcUrls[chain] ?? 'the configured RPC'} ` +
-        `still does not report it after ${attempts} reads. This is the ` +
-        'stale-read failure of a load-balanced endpoint (e.g. ' +
-        '`https://sepolia.base.org`) — point `chainRpcUrls` at a ' +
-        'read-after-write consistent RPC such as ' +
-        '`https://base-sepolia-rpc.publicnode.com` and retry. The channel IS ' +
-        'open on-chain; it just has no collateral yet.',
-      lastError
-    );
-  }
-
-  /**
-   * `setTotalDeposit`, retried on `InvalidChannelState()` — the revert a stale
-   * replica produces for a channel it hasn't observed. Every other revert
-   * propagates immediately (an under-funded wallet must not be retried).
-   */
-  private async setTotalDepositWithRetry(args: {
-    publicClient: ReturnType<
-      OnChainChannelClient['createClients']
-    >['publicClient'];
-    walletClient: ReturnType<
-      OnChainChannelClient['createClients']
-    >['walletClient'];
-    tokenNetworkAddr: Hex;
-    channelId: string;
-    total: bigint;
-    chain: string;
-  }): Promise<void> {
-    const { depositRetries, delayMs } = this.readConsistency;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const depositHash = await args.walletClient.writeContract({
-          address: args.tokenNetworkAddr,
-          abi: TOKEN_NETWORK_ABI,
-          functionName: 'setTotalDeposit',
-          args: [
-            args.channelId as Hex,
-            this.evmSigner.address as Hex,
-            args.total,
-          ],
-        });
-        await args.publicClient.waitForTransactionReceipt({
-          hash: depositHash,
-        });
-        return;
-      } catch (err) {
-        if (attempt >= depositRetries || !isInvalidChannelStateRevert(err)) {
-          throw err;
-        }
-        await sleep(delayMs);
-        await this.waitForEvmChannelVisible(
-          args.publicClient,
-          args.tokenNetworkAddr,
-          args.channelId,
-          args.chain
-        );
-      }
-    }
-  }
-
-  /**
-   * Gets the current state of a payment channel from on-chain data.
-   */
-  async getChannelState(channelId: string): Promise<ChannelState> {
-    const context = this.channelContext.get(channelId);
-    if (!context) {
-      throw new Error(
-        `No context for channel "${channelId}". Channel must be opened via this client first.`
-      );
-    }
-
-    // Mina channels are opened/deployed out-of-band; the connector performs the
-    // authoritative on-chain `getChannelState(zkAppAddress)` check at claim
-    // verification. Reading zkApp state client-side would require the o1js WASM
-    // runtime, which the lightweight client intentionally avoids. Report `open`
-    // for the configured deployed zkApp.
-    if (context.chain.split(':')[0] === 'mina') {
-      return { channelId, status: 'open', chain: context.chain };
-    }
-
-    // Solana channels read on-chain state from the PDA account, not an EVM contract.
-    if (context.chain.split(':')[0] === 'solana' && this.solanaConfig) {
-      const account = await getSolanaChannelAccountState(
-        this.solanaConfig.rpcUrl,
-        channelId
-      );
-      const status: ChannelState['status'] = !account.exists
-        ? 'settled'
-        : account.state === 'opened'
-          ? 'open'
-          : account.state === 'closed'
-            ? 'closed'
-            : 'settled';
-      return { channelId, status, chain: context.chain };
-    }
-
-    const { publicClient } = this.createClients(context.chain);
-
-    const result = await publicClient.readContract({
-      address: context.tokenNetworkAddress as Hex,
-      abi: TOKEN_NETWORK_ABI,
-      functionName: 'channels',
-      args: [channelId as Hex],
+    // Record BOTH seeds the channel was actually opened with, so a later deposit
+    // addresses THIS channel's vault and THIS channel's payer ATA rather than
+    // re-deriving either from config.
+    this.channelContext.set(result.channelId, {
+      chain: terms.chain,
+      tokenNetworkAddress: terms.programId ?? cfg.programId,
+      tokenAddress: terms.token || cfg.tokenMint || '',
     });
-
-    const [, state] = result as [
-      bigint,
-      number,
-      bigint,
-      bigint,
-      string,
-      string,
-    ];
-    const status = STATE_MAP[state] ?? 'settled';
 
     return {
-      channelId,
-      status,
-      chain: context.chain,
+      channelId: result.channelId,
+      // Deliberately conservative rather than asserted: this call submitted (or
+      // adopted) a channel account, and its lifecycle position is a fact only a
+      // read establishes. `getChannelState` is that read.
+      status: 'opening',
+      ...(result.depositTotal !== undefined ? { depositTotal: result.depositTotal } : {}),
     };
   }
+
+  /**
+   * The Solana lifecycle client for one (program, mint) pair, built once.
+   *
+   * Keyed by both because both are PDA seeds: the same connector on a second
+   * mint is a different channel account, and a redeployed program is a different
+   * channel entirely.
+   */
+  private solanaClientFor(
+    programId: string | undefined,
+    tokenMint: string | undefined,
+    settlementTimeout?: number
+  ): SolanaChannelClient {
+    const cfg = this.requireSolanaConfig();
+    const program = programId ?? cfg.programId;
+    const mint = tokenMint || cfg.tokenMint;
+    if (!mint) {
+      throw new ConfigError(
+        'A Solana channel PDA is seeded on the SPL mint, and neither the ' +
+          'connector nor this config named one.'
+      );
+    }
+    const key = `${program}|${mint}`;
+    const existing = this.solanaClients.get(key);
+    if (existing) return existing;
+
+    const payerSeed = cfg.keypair.slice(0, 32);
+    const client = new SolanaChannelClient({
+      rpcUrl: cfg.rpcUrl,
+      programId: program,
+      tokenMint: mint,
+      payerSeed,
+      payerPubkey: base58Encode(new Uint8Array(ed25519.getPublicKey(payerSeed))),
+      challengeDuration: BigInt(cfg.challengeDuration ?? settlementTimeout ?? 86400),
+    });
+    this.solanaClients.set(key, client);
+    return client;
+  }
+
+  /** The Solana client for a channel already tracked, from its recorded seeds. */
+  private solanaClientForChannel(ctx: ChannelContext): SolanaChannelClient {
+    return this.solanaClientFor(ctx.tokenNetworkAddress, ctx.tokenAddress);
+  }
+
+  private requireSolanaConfig(): SolanaChannelConfig {
+    if (!this.solanaConfig) {
+      throw new ConfigError(
+        'Solana channel config not provided — cannot act on a Solana channel. ' +
+          'Supply a mnemonic or a solanaSecretKey.'
+      );
+    }
+    return this.solanaConfig;
+  }
+}
+
+/** `solana`, `solana:devnet`, … — the family, not the network. */
+function isSolanaChain(chain: string): boolean {
+  return chain.split(':')[0] === 'solana';
 }

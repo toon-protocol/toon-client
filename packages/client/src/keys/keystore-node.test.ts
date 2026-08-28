@@ -7,7 +7,12 @@ import {
   decryptMnemonic,
   generateKeystore,
   importKeystore,
+  openKeystore,
   loadKeystore,
+  writeKeystoreFile,
+  keystoreDerivation,
+  KEYSTORE_VERSION,
+  type EncryptedKeystore,
 } from './keystore-node.js';
 import { validateMnemonic } from './KeyDerivation.js';
 
@@ -110,6 +115,89 @@ describe('keystore-node', () => {
       expect(() => loadKeystore(path, 'nope')).toThrow(
         /wrong password or corrupted/i
       );
+    });
+  });
+
+  describe('version 2 and the derivation it records', () => {
+    it('stamps a fresh envelope version 2 / standard', () => {
+      const enc = encryptMnemonic(VALID_MNEMONIC, PASSWORD);
+      expect(enc.version).toBe(KEYSTORE_VERSION);
+      expect(enc.version).toBe(2);
+      expect(enc.derivation).toBe('standard');
+      expect(keystoreDerivation(enc)).toBe('standard');
+    });
+
+    it('records legacy when the caller imports a pre-1.0 phrase', () => {
+      const enc = encryptMnemonic(VALID_MNEMONIC, PASSWORD, {
+        derivation: 'legacy',
+      });
+      expect(enc.version).toBe(2);
+      expect(keystoreDerivation(enc)).toBe('legacy');
+    });
+
+    it('round-trips a v2 file through openKeystore', () => {
+      const path = join(freshDir(), 'wallet.enc');
+      importKeystore(path, VALID_MNEMONIC, PASSWORD);
+
+      const opened = openKeystore(path, PASSWORD);
+      expect(opened.mnemonic).toBe(VALID_MNEMONIC);
+      expect(opened.version).toBe(2);
+      expect(opened.derivation).toBe('standard');
+      // The on-disk JSON says so too, not just the in-memory envelope.
+      const onDisk = JSON.parse(
+        readFileSync(path, 'utf8')
+      ) as EncryptedKeystore;
+      expect(onDisk.version).toBe(2);
+      expect(onDisk.derivation).toBe('standard');
+    });
+
+    it('round-trips a v2 legacy file through openKeystore', () => {
+      const path = join(freshDir(), 'wallet.enc');
+      importKeystore(path, VALID_MNEMONIC, PASSWORD, { derivation: 'legacy' });
+      expect(openKeystore(path, PASSWORD)).toEqual({
+        mnemonic: VALID_MNEMONIC,
+        version: 2,
+        derivation: 'legacy',
+      });
+    });
+
+    it('reads a pre-1.0 file (version 1) as legacy', () => {
+      // Exactly what this package wrote before 1.0: version 1, no derivation.
+      const v1: EncryptedKeystore = {
+        ...encryptMnemonic(VALID_MNEMONIC, PASSWORD),
+        version: 1,
+      };
+      delete v1.derivation;
+      const path = join(freshDir(), 'wallet.enc');
+      writeKeystoreFile(path, v1);
+
+      const opened = openKeystore(path, PASSWORD);
+      expect(opened.mnemonic).toBe(VALID_MNEMONIC);
+      expect(opened.version).toBe(1);
+      // The whole point: an existing deployment's addresses do not move.
+      expect(opened.derivation).toBe('legacy');
+      expect(loadKeystore(path, PASSWORD)).toBe(VALID_MNEMONIC);
+    });
+
+    it('reads a file with no version at all as legacy', () => {
+      const noVersion: EncryptedKeystore = encryptMnemonic(
+        VALID_MNEMONIC,
+        PASSWORD
+      );
+      delete noVersion.version;
+      delete noVersion.derivation;
+      const path = join(freshDir(), 'wallet.enc');
+      writeKeystoreFile(path, noVersion);
+
+      const opened = openKeystore(path, PASSWORD);
+      expect(opened.version).toBe(1);
+      expect(opened.derivation).toBe('legacy');
+    });
+
+    it('defaults a v2 file missing its derivation to standard', () => {
+      const enc = encryptMnemonic(VALID_MNEMONIC, PASSWORD);
+      delete enc.derivation;
+      expect(keystoreDerivation(enc)).toBe('standard');
     });
   });
 });
