@@ -24,7 +24,7 @@
  * an unrecognised one falls into 1, which is exactly what "unexpected" means.
  */
 import { homedir } from 'node:os';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   CliConfigError,
@@ -320,19 +320,43 @@ export async function runCli(argv: string[], options: RunOptions = {}): Promise<
 /**
  * Run only when this file *is* the program.
  *
- * The standard ESM entry check, and the reason `runCli` can be imported by a
- * test without the test becoming a CLI invocation.
+ * The ESM entry check, and the reason `runCli` can be imported by a test
+ * without the test becoming a CLI invocation.
+ *
+ * Both sides are resolved through their symlinks before they are compared, and
+ * that is the whole point rather than a nicety. `package.json` points `bin` at
+ * this file, so npm links `node_modules/.bin/toon` at it; Node then reports
+ * `import.meta.url` as the *realpath* while `process.argv[1]` is the path as
+ * invoked — the link. Comparing those two strings answers "no" for every
+ * documented way to run the command (`npx toon`, a global install, the project
+ * `.bin`), and the failure is silent: nothing runs and the process exits 0, so
+ * a script checking `$?` sees green (#640).
+ *
+ * A path that cannot be resolved is compared as it stands rather than
+ * disqualifying the invocation, so a filesystem that will not answer
+ * `realpath` can only leave this as good as the plain string compare, never
+ * worse.
  */
-function isEntryPoint(): boolean {
-  const entry = process.argv[1];
+export function isEntryPoint(moduleUrl: string, entry: string | undefined): boolean {
   if (entry === undefined) return false;
   try {
-    return fileURLToPath(import.meta.url) === fileURLToPath(pathToFileURL(entry).href);
+    const self = fileURLToPath(moduleUrl);
+    const invoked = fileURLToPath(pathToFileURL(entry).href);
+    return self === invoked || throughLinks(self) === throughLinks(invoked);
   } catch {
     return false;
   }
 }
 
-if (isEntryPoint()) {
+/** The real file behind a path, or the path itself if it has no answer. */
+function throughLinks(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+if (isEntryPoint(import.meta.url, process.argv[1])) {
   process.exitCode = await runCli(process.argv.slice(2));
 }
