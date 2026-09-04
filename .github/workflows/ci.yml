@@ -455,6 +455,7 @@ jobs:
   #   NEEDS NOTHING — run here, named explicitly:
   #     client/btp-transport            binds an ephemeral loopback `ws` server
   #     client/http-ilp-transport       binds an ephemeral loopback http.Server
+  #     client/cli-entry-point          spawns the CLI through a temp symlink
   #   NEEDS INFRA — runs in `solana-settlement-proof`, which installs the CLI:
   #     client/solana-channel-lifecycle  a real `solana-test-validator`
   #   NEEDS A LIVE SERVICE OR A CREDENTIAL — deliberately NOT in CI:
@@ -477,7 +478,7 @@ jobs:
   #
   # WALL CLOCK. No `needs:`, so this starts at t=0 alongside `build`,
   # `devbox-validate` and the Solana proof. `build` is the critical path at
-  # 171-206s; this job is checkout + install + a ~1.3s suite, so it finishes well
+  # 171-206s; this job is checkout + install + a ~1.6s suite, so it finishes well
   # inside that shadow and adds nothing to pipeline wall time. It is not free —
   # it pays its own checkout and install in runner-minutes — but it stays out of
   # `build`'s gate-guarded timed window, which has only ~8% headroom and is the
@@ -548,6 +549,7 @@ jobs:
           set -euo pipefail
           pnpm --filter @toon-protocol/client test:integration \
             src/__integration__/btp-transport.integration.test.ts \
+            src/__integration__/cli-entry-point.integration.test.ts \
             src/__integration__/http-ilp-transport.integration.test.ts 2>&1 \
             | tee /tmp/integration.log
 
@@ -561,8 +563,9 @@ jobs:
           # Per-suite counts and a total, so neither a vanished suite nor a
           # silently skipped test inside one can hide behind a green tick.
           BTP_TESTS: '6'
+          CLI_ENTRY_TESTS: '3'
           HTTP_TESTS: '6'
-          EXPECTED_TOTAL: '12'
+          EXPECTED_TOTAL: '15'
         run: |
           set -euo pipefail
           sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/integration.log > /tmp/integration.plain
@@ -585,6 +588,7 @@ jobs:
           }
 
           assert_suite src/__integration__/btp-transport.integration.test.ts "$BTP_TESTS"
+          assert_suite src/__integration__/cli-entry-point.integration.test.ts "$CLI_ENTRY_TESTS"
           assert_suite src/__integration__/http-ilp-transport.integration.test.ts "$HTTP_TESTS"
 
           if ! grep -qE "Tests +${EXPECTED_TOTAL} passed \(${EXPECTED_TOTAL}\)" /tmp/integration.plain; then
@@ -594,7 +598,7 @@ jobs:
           fi
 
           [ "$fail" -eq 0 ] || exit 1
-          echo "✅ both no-infra integration suites collected and passed (${EXPECTED_TOTAL} tests)"
+          echo "✅ every no-infra integration suite collected and passed (${EXPECTED_TOTAL} tests)"
 
   # Fleet no-op merge guard (toon-meta#405), wired INTO this repo's aggregate
   # required check so that it blocks a HUMAN merge and not just the fleet
