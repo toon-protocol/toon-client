@@ -32,7 +32,7 @@ const SOLANA_SETTLEMENT = {
   chain: 'solana',
   settlementAddress: 'So11111111111111111111111111111111111111112',
   programId: '2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip',
-  tokenAddress: 'xyc5J8MgKFiEN13PnfftdXxUzYH34FEvw1LCrFwN7in',
+  tokenAddress: '34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU',
   decimals: 6,
 };
 
