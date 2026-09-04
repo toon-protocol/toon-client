@@ -65,7 +65,7 @@ Cross-cutting agent skills, docs, and the canonical project context live in **[t
 /plugin marketplace add toon-protocol/toon-meta
 /plugin install toon-skills@toon-meta
 ```
-Canonical rules: `toon-meta` → `_bmad-output/project-context.md`.
+Canonical rules: `toon-meta` → `context/context.md`.
 
 ## Publishing
 CI publishes via **changesets + `pnpm`** using the org `NPM_TOKEN` secret. **Never run `npm publish`** (it ships unresolved `workspace:*`).
