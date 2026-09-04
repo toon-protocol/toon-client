@@ -1,6 +1,6 @@
 {
   "name": "@toon-protocol/client",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "TOON client: pay for HTTP requests per request over ILP, with EVM and Solana payment channels",
   "license": "MIT",
   "author": "Jonathan Green",
