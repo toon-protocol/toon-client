@@ -37,6 +37,7 @@ import { mintExecutionCondition } from '../utils/condition.js';
 import {
   FULFILLMENT_MISMATCH_CODE,
   type IlpSendResultWithFulfillment,
+  PACKET_EXPIRY_HEADROOM_MS,
 } from '../ilp/ilp-send.js';
 import type { BTPProtocolData } from './protocol.js';
 import { encodeUtf8 } from '../utils/binary.js';
@@ -349,7 +350,10 @@ describe('BtpRuntimeClient', () => {
         expiresAt: Date;
       };
       expect(packet.executionCondition).toEqual(new Uint8Array(32));
-      expect(packet.expiresAt.getTime()).toBe(Date.now() + 15000);
+      // The packet outlives the sender's own patience by the headroom, so the
+      // client is always the first of the two to give up and a late answer still
+      // meets a live packet rather than an expired one under a signed claim.
+      expect(packet.expiresAt.getTime()).toBe(Date.now() + 15000 + PACKET_EXPIRY_HEADROOM_MS);
     });
 
     it('sets the condition and an explicit expiry on the outgoing PREPARE (spec R2/R7)', async () => {
