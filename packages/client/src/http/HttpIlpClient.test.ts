@@ -11,7 +11,7 @@ import {
   TransportRequiredError,
 } from '../client/errors.js';
 import { fromBase64 } from '../utils/binary.js';
-import { mintExecutionCondition } from '../utils/condition.js';
+import { deriveFulfillment } from '../wire/giftwrap.js';
 import {
   FULFILLMENT_MISMATCH_CODE,
   type IlpSendResultWithFulfillment,
@@ -43,14 +43,15 @@ function serializeFulfill(
  */
 function parsePrepareWire(body: Uint8Array): {
   expiresAt: string;
-  condition: Uint8Array;
+  greeting: number;
 } {
   let offset = 1;
   const first = body[offset]!;
   offset += first <= 127 ? 1 : 1 + (first & 0x7f);
   const expiresAt = new TextDecoder().decode(body.slice(offset, offset + 19));
   offset += 19;
-  return { expiresAt, condition: body.slice(offset, offset + 32) };
+  // One byte, where a 32-byte execution condition sat until ADR 0069.
+  return { expiresAt, greeting: body[offset]! };
 }
 
 function serializeReject(
@@ -614,8 +615,12 @@ describe('HttpIlpClient', () => {
     });
   });
 
-  describe('sender-chosen execution conditions (#350)', () => {
-    it('legacy default: PREPARE carries an all-zero condition and the FULFILL is accepted unverified', async () => {
+  describe("the greeting flag and the sender's end-to-end check (ADR 0069)", () => {
+    /** The fulfilment a sealed request's shared secret derives (ADR 0019). */
+    const fulfilmentOf = (seed: number): Uint8Array =>
+      deriveFulfillment(new Uint8Array(32).fill(seed));
+
+    it('defaults to greeting 0x00 and accepts a FULFILL unverified when nothing was expected', async () => {
       const httpClient = fetchReturning(serializeFulfill(new Uint8Array(0)));
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
@@ -630,40 +635,33 @@ describe('HttpIlpClient', () => {
       expect(result.accepted).toBe(true);
       const [, init] = (httpClient as ReturnType<typeof vi.fn>).mock
         .calls[0] as [string, RequestInit];
-      const { condition } = parsePrepareWire(
+      const { greeting } = parsePrepareWire(
         new Uint8Array(init.body as ArrayBuffer)
       );
-      expect(condition).toEqual(new Uint8Array(32));
+      expect(greeting).toBe(0x00);
     });
 
-    it('sets the condition and an explicit expiry on the wire (spec R2/R7)', async () => {
-      const { preimage, condition } = mintExecutionCondition();
+    it('sets the greeting flag and an explicit expiry on the wire', async () => {
       const expiresAt = new Date('2026-07-12T12:34:56.789Z');
-      const httpClient = fetchReturning(
-        serializeFulfill(new Uint8Array(0), preimage)
-      );
+      const httpClient = fetchReturning(serializeFulfill(new Uint8Array(0)));
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
         httpClient,
       });
 
-      await client.sendIlpPacketWithClaim(
-        { ...SEND_PARAMS, executionCondition: condition, expiresAt },
-        makeTestClaim()
-      );
+      await client.sendIlpPacket({ ...SEND_PARAMS, greeting: true, expiresAt });
 
       const [, init] = (httpClient as ReturnType<typeof vi.fn>).mock
         .calls[0] as [string, RequestInit];
       const wire = parsePrepareWire(new Uint8Array(init.body as ArrayBuffer));
-      expect(wire.condition).toEqual(condition);
-      expect(wire.condition.some((b) => b !== 0)).toBe(true);
+      expect(wire.greeting).toBe(0x01);
       expect(wire.expiresAt).toBe('20260712123456.789Z');
     });
 
-    it('accepts a FULFILL whose preimage hashes to the condition and surfaces it', async () => {
-      const { preimage, condition } = mintExecutionCondition();
+    it('accepts the expected preimage and surfaces it', async () => {
+      const expected = fulfilmentOf(0x11);
       const httpClient = fetchReturning(
-        serializeFulfill(new TextEncoder().encode('ok'), preimage)
+        serializeFulfill(new TextEncoder().encode('ok'), expected)
       );
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
@@ -671,20 +669,18 @@ describe('HttpIlpClient', () => {
       });
 
       const result = (await client.sendIlpPacketWithClaim(
-        { ...SEND_PARAMS, executionCondition: condition },
+        { ...SEND_PARAMS, expectedFulfillment: expected },
         makeTestClaim()
       )) as IlpSendResultWithFulfillment;
 
       expect(result.accepted).toBe(true);
       expect(result.fulfillment).toBeDefined();
-      expect(fromBase64(result.fulfillment!)).toEqual(preimage);
+      expect(fromBase64(result.fulfillment!)).toEqual(expected);
     });
 
     it('rejects a FULFILL with the wrong preimage — failed packet, no retry, no silent accept', async () => {
-      const { condition } = mintExecutionCondition();
-      const wrongPreimage = mintExecutionCondition().preimage;
       const httpClient = fetchReturning(
-        serializeFulfill(new Uint8Array(0), wrongPreimage)
+        serializeFulfill(new Uint8Array(0), fulfilmentOf(0x22))
       );
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
@@ -694,19 +690,18 @@ describe('HttpIlpClient', () => {
       });
 
       const result = await client.sendIlpPacketWithClaim(
-        { ...SEND_PARAMS, executionCondition: condition },
+        { ...SEND_PARAMS, expectedFulfillment: fulfilmentOf(0x11) },
         makeTestClaim()
       );
 
       expect(result.accepted).toBe(false);
       expect(result.code).toBe(FULFILLMENT_MISMATCH_CODE);
-      expect(result.message).toMatch(/does not match execution condition/);
+      expect(result.message).toMatch(/sealed secret derives/);
       // A verification failure must NOT be retried (re-sending re-spends the claim).
       expect(httpClient).toHaveBeenCalledTimes(1);
     });
 
-    it('an all-zero fulfillment (legacy auto-fulfill) fails a conditioned packet closed', async () => {
-      const { condition } = mintExecutionCondition();
+    it('an all-zero fulfilment fails a checked packet closed', async () => {
       const httpClient = fetchReturning(serializeFulfill(new Uint8Array(0)));
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
@@ -715,14 +710,14 @@ describe('HttpIlpClient', () => {
 
       const result = await client.sendIlpPacket({
         ...SEND_PARAMS,
-        executionCondition: condition,
+        expectedFulfillment: fulfilmentOf(0x11),
       });
 
       expect(result.accepted).toBe(false);
       expect(result.code).toBe(FULFILLMENT_MISMATCH_CODE);
     });
 
-    it('throws on a malformed (non-32-byte) condition instead of zero-filling it', async () => {
+    it('throws on a malformed (non-32-byte) expected fulfilment rather than sending', async () => {
       const httpClient = fetchReturning(serializeFulfill(new Uint8Array(0)));
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
@@ -732,7 +727,7 @@ describe('HttpIlpClient', () => {
       await expect(
         client.sendIlpPacket({
           ...SEND_PARAMS,
-          executionCondition: new Uint8Array(31).fill(7),
+          expectedFulfillment: new Uint8Array(31).fill(7),
         })
       ).rejects.toThrow(/32 bytes/);
       expect(httpClient).not.toHaveBeenCalled();

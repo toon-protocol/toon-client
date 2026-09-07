@@ -21,7 +21,6 @@ import {
   GIFTWRAP_TYPE_RESPONSE,
   GiftWrapError,
   GiftWrapErrorKind,
-  deriveCondition,
   deriveFulfillment,
   giftWrapPublicKey,
   localGiftWrapEcdh,
@@ -38,7 +37,7 @@ import {
   decodeEnvelopeRequest,
   encodeEnvelopeRequest,
 } from './envelope.js';
-import { fulfillmentMatchesCondition } from '../utils/condition.js';
+import { fulfillmentMatches } from '../utils/fulfillment.js';
 
 function receiver(): { secret: Uint8Array; publicKey: Uint8Array } {
   const secret = secp256k1.utils.randomSecretKey();
@@ -320,19 +319,21 @@ describe('two failure modes, two types', () => {
 });
 
 describe('the fulfilment a shared secret derives', () => {
-  it('satisfies the condition the sender minted before it ever sealed', () => {
-    // The whole point of ADR 0019: the sender can mint its condition from a
-    // secret it chose, and the terminating connector produces the preimage by
-    // opening the wrap — no app participation, nothing carried in the clear.
+  it('is the same on both sides of the seal, and nothing had to carry it', () => {
+    // The whole point of ADR 0019, and since ADR 0069 the whole of the
+    // sender's check: the sender knows the secret before it seals, the
+    // terminating connector recovers that secret by opening the wrap, and
+    // both derive the same preimage with no app participation and nothing
+    // carried in the clear — no condition on the packet, and none needed.
     const { secret, publicKey } = receiver();
     const { wrapped, sharedSecret } = sealRequest(PLAINTEXT, publicKey);
-    const condition = deriveCondition(deriveFulfillment(sharedSecret));
+    const expected = deriveFulfillment(sharedSecret);
 
     const recovered = openRequest(wrapped, secret).sharedSecret;
 
-    expect(
-      fulfillmentMatchesCondition(deriveFulfillment(recovered), condition)
-    ).toBe(true);
+    expect(fulfillmentMatches(deriveFulfillment(recovered), expected)).toBe(
+      true
+    );
   });
 
   it('is 32 bytes and differs from the secret it came from', () => {
@@ -343,13 +344,11 @@ describe('the fulfilment a shared secret derives', () => {
     expect(fulfilment).not.toEqual(sharedSecret);
   });
 
-  it("does not satisfy another secret's condition", () => {
-    const condition = deriveCondition(
-      deriveFulfillment(randomBytes(GIFTWRAP_SECRET_LENGTH))
-    );
+  it("is not another secret's fulfilment", () => {
+    const expected = deriveFulfillment(randomBytes(GIFTWRAP_SECRET_LENGTH));
     const other = deriveFulfillment(randomBytes(GIFTWRAP_SECRET_LENGTH));
 
-    expect(fulfillmentMatchesCondition(other, condition)).toBe(false);
+    expect(fulfillmentMatches(other, expected)).toBe(false);
   });
 
   it('is domain-separated from both AEAD keys the same secret derives', () => {

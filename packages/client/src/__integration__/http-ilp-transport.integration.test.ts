@@ -4,7 +4,7 @@
  * loopback network — request construction, body transmission, and OER response
  * parsing — without mocking fetch.
  *
- * Also covers sender-chosen execution conditions (#350): the condition and
+ * Also covers connector ADR 0069: the `greeting` flag and the
  * explicit expiry land on the OER wire, and the FULFILL preimage is verified
  * client-side (contract: connector docs/local-delivery-fulfillment-contract.md).
  *
@@ -30,7 +30,7 @@ import {
   FULFILLMENT_MISMATCH_CODE,
   type IlpSendResultWithFulfillment,
 } from '../ilp/ilp-send.js';
-import { mintExecutionCondition } from '../utils/condition.js';
+import { deriveFulfillment } from '../wire/giftwrap.js';
 
 const ILP_FULFILL = 13;
 const ILP_REJECT = 14;
@@ -65,19 +65,22 @@ function serializeFulfill(
 }
 
 /**
- * Parse the executionCondition + expiresAt out of an OER PREPARE body.
- * Layout: type(1) | varUInt amount | GeneralizedTime(19) | condition(32) | ...
+ * Parse the greeting flag + expiresAt out of an OER PREPARE body.
+ * Layout: type(1) | varUInt amount | GeneralizedTime(19) | greeting(1) | ...
+ *
+ * One octet, where a 32-byte execution condition sat until connector ADR
+ * 0069 removed it (issue #1269).
  */
 function parsePrepareWire(body: Uint8Array): {
   expiresAt: string;
-  condition: Uint8Array;
+  greeting: number;
 } {
   let offset = 1;
   const first = body[offset]!;
   offset += first <= 127 ? 1 : 1 + (first & 0x7f);
   const expiresAt = new TextDecoder().decode(body.slice(offset, offset + 19));
   offset += 19;
-  return { expiresAt, condition: body.slice(offset, offset + 32) };
+  return { expiresAt, greeting: body[offset]! };
 }
 
 describe('HttpIlpClient over a real http.Server (integration)', () => {
@@ -85,7 +88,7 @@ describe('HttpIlpClient over a real http.Server (integration)', () => {
   let url: string;
   let lastClaimHeader: string | undefined;
   let lastPrepareFirstByte: number | undefined;
-  let lastPrepareWire: { expiresAt: string; condition: Uint8Array } | undefined;
+  let lastPrepareWire: { expiresAt: string; greeting: number } | undefined;
   /** When set, the server FULFILLs with this preimage instead of zeros. */
   let respondFulfillment: Uint8Array | undefined;
   /**
@@ -150,18 +153,18 @@ describe('HttpIlpClient over a real http.Server (integration)', () => {
     );
     // Server saw an OER PREPARE (type byte 12).
     expect(lastPrepareFirstByte).toBe(12);
-    // Legacy default: the condition on the wire is all-zero.
-    expect(lastPrepareWire!.condition).toEqual(new Uint8Array(32));
+    // Default: not a greeting probe — one 0x00 octet on the wire.
+    expect(lastPrepareWire!.greeting).toBe(0x00);
     // FULFILL data decodes back.
     expect(new TextDecoder().decode(Buffer.from(result.data!, 'base64'))).toMatch(
       /^ok:\d+$/
     );
   });
 
-  it('puts a sender-chosen condition + explicit expiry on the wire and verifies the FULFILL preimage (#350)', async () => {
+  it('puts the greeting flag + explicit expiry on the wire and verifies the FULFILL preimage (ADR 0069)', async () => {
     respondWith = undefined;
-    const { preimage, condition } = mintExecutionCondition();
-    respondFulfillment = preimage;
+    const expected = deriveFulfillment(new Uint8Array(32).fill(0x11));
+    respondFulfillment = expected;
     const expiresAt = new Date('2027-01-02T03:04:05.678Z');
     const client = new HttpIlpClient({ httpEndpoint: url });
 
@@ -170,28 +173,27 @@ describe('HttpIlpClient over a real http.Server (integration)', () => {
         destination: 'g.toon.alice',
         amount: '1000',
         data: 'aGVsbG8=',
-        executionCondition: condition,
+        greeting: true,
+        expectedFulfillment: expected,
         expiresAt,
       },
       { messageId: 'm2', nonce: 2, transferredAmount: '2000' }
     )) as IlpSendResultWithFulfillment;
 
-    // The server saw the real condition and the explicit expiry on the wire.
-    expect(lastPrepareWire!.condition).toEqual(condition);
-    expect(lastPrepareWire!.condition.some((b) => b !== 0)).toBe(true);
+    // The server saw the flag and the explicit expiry on the wire.
+    expect(lastPrepareWire!.greeting).toBe(0x01);
     expect(lastPrepareWire!.expiresAt).toBe('20270102030405.678Z');
 
     // The FULFILL preimage round-tripped and verified.
     expect(result.accepted).toBe(true);
     expect(Buffer.from(result.fulfillment!, 'base64')).toEqual(
-      Buffer.from(preimage)
+      Buffer.from(expected)
     );
   });
 
-  it('fails closed when the server FULFILLs with the wrong preimage (#350)', async () => {
+  it('fails closed when the server FULFILLs with the wrong preimage (ADR 0069)', async () => {
     respondWith = undefined;
-    const { condition } = mintExecutionCondition();
-    respondFulfillment = mintExecutionCondition().preimage; // wrong preimage
+    respondFulfillment = deriveFulfillment(new Uint8Array(32).fill(0x22));
     const client = new HttpIlpClient({ httpEndpoint: url });
 
     const result = await client.sendIlpPacketWithClaim(
@@ -199,7 +201,7 @@ describe('HttpIlpClient over a real http.Server (integration)', () => {
         destination: 'g.toon.alice',
         amount: '1000',
         data: 'aGVsbG8=',
-        executionCondition: condition,
+        expectedFulfillment: deriveFulfillment(new Uint8Array(32).fill(0x11)),
       },
       { messageId: 'm3', nonce: 3, transferredAmount: '3000' }
     );

@@ -46,12 +46,13 @@
  * - **Response framing.** `0x02 ‖ nonce(12) ‖ ciphertext`, the plaintext being
  *   just the encoded envelope. Sealed directly with the request's shared
  *   secret.
- * - **Fulfilment and condition.** `fulfilment = HKDF-SHA256(shared_secret,
- *   "toon-giftwrap-fulfillment")`; the condition a sender mints is
- *   `sha256(fulfilment)` — `condition.rs`'s `derive_condition`. A sender knows
- *   the secret before it seals, so it can mint the condition first; the
- *   terminating connector recovers the secret by opening the wrap and derives
- *   the preimage without asking the app anything.
+ * - **Fulfilment.** `fulfilment = HKDF-SHA256(shared_secret,
+ *   "toon-giftwrap-fulfillment")`. The terminating connector recovers the
+ *   secret by opening the wrap and derives the preimage without asking the
+ *   app anything; the sender, which drew that secret, derives the same bytes
+ *   and so can check a delivery end to end. Nothing is minted onto the
+ *   PREPARE from it — connector ADR 0069 took the execution condition off the
+ *   wire entirely.
  * - **Telling a sealed reject from a plaintext one.** The leading type byte,
  *   and only that (`looks_like_sealed_response`). A reject raised short of the
  *   termination shares no secret with the sender and carries empty `data`; an
@@ -345,11 +346,11 @@ export function sealRequestWithRandomness(
  * so no two sealed requests — even to the same receiver, even with the same
  * plaintext — share any of the three.
  *
- * Returns the wire bytes and the shared secret. Mint the packet's execution
- * condition as {@link deriveCondition}({@link deriveFulfillment}(secret))
- * before sending: the terminating connector recovers the same secret by
- * opening this wrap, so the preimage it is paid against is one it derived, not
- * one anybody handed it.
+ * Returns the wire bytes and the shared secret. Keep that secret: the
+ * terminating connector recovers the same one by opening this wrap, so
+ * {@link deriveFulfillment} of it is the preimage an honest FULFILL will
+ * carry — the sender's only way to check a delivery end to end now that no
+ * condition rides on the wire (connector ADR 0069).
  */
 export function sealRequest(
   plaintext: Uint8Array,
@@ -502,7 +503,7 @@ export function looksLikeSealedResponse(bytes: Uint8Array): boolean {
   return bytes.length > 0 && bytes[0] === GIFTWRAP_TYPE_RESPONSE;
 }
 
-// ─── Fulfilment and condition ───────────────────────────────────────────────
+// ─── Fulfilment ─────────────────────────────────────────────────────────────
 
 /**
  * The fulfilment a request's shared secret derives (ADR 0019):
@@ -515,23 +516,4 @@ export function deriveFulfillment(sharedSecret: Uint8Array): Uint8Array {
     throw new GiftWrapError(GiftWrapErrorKind.Truncated);
   }
   return hkdfKey(sharedSecret, FULFILLMENT_INFO);
-}
-
-/**
- * The condition a `fulfillment` satisfies: `sha256(fulfillment)` —
- * `connector_domain::condition::derive_condition`. Hashing only ever runs in
- * this direction; there is deliberately no function here that goes from a
- * condition back to a fulfilment.
- *
- * The hash is the same one `utils/condition.ts` already uses; what ADR 0019
- * changes is where the preimage comes from. `mintExecutionCondition` there
- * draws a random preimage the sender must then carry to the FULFILL itself;
- * here the preimage is DERIVED from the secret sealed inside the packet, so
- * the terminating connector can produce it without the sender or the app
- * handing it over. Checking a returned fulfilment against a condition is
- * unchanged either way — use `fulfillmentMatchesCondition` from
- * `utils/condition.ts` for that rather than a second copy of it here.
- */
-export function deriveCondition(fulfillment: Uint8Array): Uint8Array {
-  return sha256(fulfillment);
 }

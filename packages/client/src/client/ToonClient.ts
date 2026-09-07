@@ -264,7 +264,7 @@ export class ToonClient implements ToonClientLike {
         destination,
         amount: '0',
         data: toBase64(exchange.data),
-        executionCondition: exchange.condition,
+        expectedFulfillment: exchange.fulfillment,
         timeout: this.config.timeoutMs,
       },
       claim as unknown as Record<string, unknown>

@@ -1,60 +1,59 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   mapIlpResponse,
-  resolveExecutionCondition,
+  resolveExpectedFulfillment,
   resolveExpiresAt,
   FULFILLMENT_MISMATCH_CODE,
   FULFILLMENT_MISMATCH_MESSAGE,
   PACKET_EXPIRY_HEADROOM_MS,
 } from './ilp-send.js';
 import { ILPPacketType } from '../btp/protocol.js';
-import { mintExecutionCondition } from '../utils/condition.js';
+import { deriveFulfillment } from '../wire/giftwrap.js';
 import { toBase64 } from '../utils/binary.js';
 
 const EMPTY = new Uint8Array(0);
 
-describe('mapIlpResponse — shared transport response mapping (#350)', () => {
-  it('legacy (no condition): accepts a FULFILL without verification', () => {
+/** The fulfilment a sealed request's shared secret derives (ADR 0019). */
+function fulfilmentOf(seed: number): Uint8Array {
+  return deriveFulfillment(new Uint8Array(32).fill(seed));
+}
+
+describe('mapIlpResponse — the sender\u2019s end-to-end check (ADR 0069)', () => {
+  it('no expectation: accepts a FULFILL without verification', () => {
+    // A caller that sealed nothing holds no secret and can derive no
+    // fulfilment, so there is genuinely nothing to compare against.
     const result = mapIlpResponse({
       type: ILPPacketType.FULFILL,
       fulfillment: new Uint8Array(32),
       data: EMPTY,
     });
     expect(result).toEqual({ accepted: true });
-    // No fulfillment leaks onto legacy results (shape unchanged pre-#350).
     expect('fulfillment' in result).toBe(false);
   });
 
-  it('legacy (all-zero condition): identical to no condition', () => {
-    const result = mapIlpResponse(
-      {
-        type: ILPPacketType.FULFILL,
-        fulfillment: new Uint8Array(32),
-        data: EMPTY,
-      },
-      new Uint8Array(32)
-    );
-    expect(result).toEqual({ accepted: true });
-  });
-
-  it('sender-chosen: accepts when sha256(fulfillment) == condition and echoes the preimage', () => {
-    const { preimage, condition } = mintExecutionCondition();
+  it('accepts the fulfilment the packet\u2019s own secret derives, and echoes it', () => {
+    const expected = fulfilmentOf(0x11);
     const data = new Uint8Array([1, 2, 3]);
     const result = mapIlpResponse(
-      { type: ILPPacketType.FULFILL, fulfillment: preimage, data },
-      condition
+      { type: ILPPacketType.FULFILL, fulfillment: expected, data },
+      expected
     );
     expect(result.accepted).toBe(true);
-    expect(result.fulfillment).toBe(toBase64(preimage));
+    expect(result.fulfillment).toBe(toBase64(expected));
     expect(result.data).toBe(toBase64(data));
   });
 
-  it('sender-chosen: a wrong preimage is a FAILED packet, not a silent accept', () => {
-    const { condition } = mintExecutionCondition();
-    const wrong = mintExecutionCondition().preimage;
+  it('a different preimage is a FAILED packet, not a silent accept', () => {
+    // Since ADR 0069 no hop checks this: a forged FULFILL rides home through
+    // every one of them, and the sender is the only thing standing between it
+    // and a delivery counted as good.
     const result = mapIlpResponse(
-      { type: ILPPacketType.FULFILL, fulfillment: wrong, data: EMPTY },
-      condition
+      {
+        type: ILPPacketType.FULFILL,
+        fulfillment: fulfilmentOf(0x22),
+        data: EMPTY,
+      },
+      fulfilmentOf(0x11)
     );
     expect(result.accepted).toBe(false);
     expect(result.code).toBe(FULFILLMENT_MISMATCH_CODE);
@@ -62,36 +61,32 @@ describe('mapIlpResponse — shared transport response mapping (#350)', () => {
     expect(result.fulfillment).toBeUndefined();
   });
 
-  it('sender-chosen: an all-zero fulfillment (legacy auto-fulfill stub) fails closed', () => {
-    const { condition } = mintExecutionCondition();
+  it('an all-zero fulfilment fails closed', () => {
     const result = mapIlpResponse(
       {
         type: ILPPacketType.FULFILL,
         fulfillment: new Uint8Array(32),
         data: EMPTY,
       },
-      condition
+      fulfilmentOf(0x11)
     );
     expect(result.accepted).toBe(false);
     expect(result.code).toBe(FULFILLMENT_MISMATCH_CODE);
   });
 
-  it('sender-chosen: a missing fulfillment (malformed transport response) fails closed', () => {
-    const { condition } = mintExecutionCondition();
+  it('a missing fulfilment (malformed transport response) fails closed', () => {
     const result = mapIlpResponse(
-      // Simulates a pre-#350 peer/mock that never surfaced the fulfillment.
       {
         type: ILPPacketType.FULFILL,
         data: EMPTY,
       } as unknown as Parameters<typeof mapIlpResponse>[0],
-      condition
+      fulfilmentOf(0x11)
     );
     expect(result.accepted).toBe(false);
     expect(result.code).toBe(FULFILLMENT_MISMATCH_CODE);
   });
 
-  it('REJECT maps unchanged regardless of condition class', () => {
-    const { condition } = mintExecutionCondition();
+  it('REJECT maps unchanged whether or not a fulfilment was expected', () => {
     const reject = {
       type: ILPPacketType.REJECT,
       code: 'F06',
@@ -103,7 +98,7 @@ describe('mapIlpResponse — shared transport response mapping (#350)', () => {
       code: 'F06',
       message: 'nope',
     });
-    expect(mapIlpResponse(reject, condition)).toEqual({
+    expect(mapIlpResponse(reject, fulfilmentOf(0x11))).toEqual({
       accepted: false,
       code: 'F06',
       message: 'nope',
@@ -111,33 +106,26 @@ describe('mapIlpResponse — shared transport response mapping (#350)', () => {
   });
 });
 
-describe('resolveExecutionCondition — core ≥3.4.0 IlpClient base64 form', () => {
-  it('passes raw bytes through by identity (this package’s own senders)', () => {
-    const { condition } = mintExecutionCondition();
-    expect(resolveExecutionCondition(condition)).toBe(condition);
+describe('resolveExpectedFulfillment — bytes or their base64 spelling', () => {
+  it('passes raw bytes through by identity (this package\u2019s own senders)', () => {
+    const expected = fulfilmentOf(0x11);
+    expect(resolveExpectedFulfillment(expected)).toBe(expected);
   });
 
-  it('decodes the base64 form core’s IlpClient port declares', () => {
-    const { condition } = mintExecutionCondition();
-    const decoded = resolveExecutionCondition(toBase64(condition));
-    expect(decoded).toEqual(condition);
+  it('decodes the base64 form a JSON-shaped port declares', () => {
+    const expected = fulfilmentOf(0x11);
+    expect(resolveExpectedFulfillment(toBase64(expected))).toEqual(expected);
   });
 
-  it('both representations of one condition agree byte-for-byte', () => {
-    const { condition } = mintExecutionCondition();
-    expect(resolveExecutionCondition(toBase64(condition))).toEqual(
-      resolveExecutionCondition(condition)
+  it('both representations of one fulfilment agree byte-for-byte', () => {
+    const expected = fulfilmentOf(0x11);
+    expect(resolveExpectedFulfillment(toBase64(expected))).toEqual(
+      resolveExpectedFulfillment(expected)
     );
   });
 
-  it('keeps absent absent — the legacy unverified class', () => {
-    expect(resolveExecutionCondition(undefined)).toBeUndefined();
-  });
-
-  it('preserves an all-zero condition as zero in either form', () => {
-    const zero = new Uint8Array(32);
-    expect(resolveExecutionCondition(zero)).toEqual(zero);
-    expect(resolveExecutionCondition(toBase64(zero))).toEqual(zero);
+  it('keeps absent absent — the unverified class', () => {
+    expect(resolveExpectedFulfillment(undefined)).toBeUndefined();
   });
 });
 

@@ -13,7 +13,6 @@
 
 import { describe, it, expect } from 'vitest';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
-import { sha256 } from '@noble/hashes/sha2.js';
 import {
   readExchangeOutcome,
   sealExchange,
@@ -32,7 +31,6 @@ import {
   openRequest,
   sealResponse,
 } from './giftwrap.js';
-import { isZeroCondition } from '../utils/condition.js';
 
 const RECEIVER_SECRET = new Uint8Array(32).fill(5);
 const RECEIVER_PUBLIC = secp256k1.getPublicKey(RECEIVER_SECRET, false);
@@ -84,25 +82,22 @@ describe('sealExchange', () => {
     const { fulfillment } = receive(exchange.data);
 
     // The receiver derived this from the secret it recovered, with no app
-    // participation and nothing sent alongside the condition (ADR 0019).
+    // participation and nothing carried on the packet beside the wrap
+    // (ADR 0019; ADR 0069 removed the condition that used to ride there).
     expect(Array.from(fulfillment)).toEqual(Array.from(exchange.fulfillment));
-    expect(Array.from(sha256(fulfillment))).toEqual(
-      Array.from(exchange.condition)
-    );
   });
 
-  it('never mints the all-zero condition the connector refuses outright', () => {
-    for (let i = 0; i < 8; i++) {
-      expect(isZeroCondition(sealExchange(request, RECEIVER_PUBLIC).condition))
-        .toBe(false);
-    }
+  it('puts no condition on the exchange at all (ADR 0069)', () => {
+    // The field is gone from the wire, so it must be gone from the value a
+    // sender forms: an unread field is exactly the join key the ADR removed.
+    expect('condition' in sealExchange(request, RECEIVER_PUBLIC)).toBe(false);
   });
 
-  it('mints a fresh secret per call, so no two packets share a condition', () => {
+  it('mints a fresh secret per call, so no two packets share a fulfilment', () => {
     const a = sealExchange(request, RECEIVER_PUBLIC);
     const b = sealExchange(request, RECEIVER_PUBLIC);
     expect(Array.from(a.sharedSecret)).not.toEqual(Array.from(b.sharedSecret));
-    expect(Array.from(a.condition)).not.toEqual(Array.from(b.condition));
+    expect(Array.from(a.fulfillment)).not.toEqual(Array.from(b.fulfillment));
     // Identical plaintext, different bytes: the wrap leaks no equality either.
     expect(Array.from(a.data)).not.toEqual(Array.from(b.data));
   });

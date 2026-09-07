@@ -8,11 +8,11 @@
  *
  * - The `data` is a gift wrap addressed to the connector that TERMINATES the
  *   route, around an OER envelope — never HTTP text, never a bare payload.
- * - The execution condition is `sha256` of the fulfilment DERIVED from the
- *   very secret that wrap carries. A random condition would never be
- *   fulfilled; an all-zero one is refused outright by the connector
- *   (`connector-domain`'s `condition_is_present`), which is why the publish
- *   path could not work against it at all before this module existed.
+ * - The fulfilment an honest answer carries is DERIVED from the very secret
+ *   that wrap carries (ADR 0019). Since ADR 0069 took the execution condition
+ *   off the wire, comparing a returned preimage against that derivation is
+ *   the sender's only delivery check — and the only one made anywhere on the
+ *   path, since no hop verifies a FULFILL any more.
  * - The answer is sealed with that same secret, so opening it requires having
  *   kept it from the seal.
  *
@@ -47,7 +47,6 @@ import {
   type EnvelopeResponse,
 } from './envelope.js';
 import {
-  deriveCondition,
   deriveFulfillment,
   GiftWrapError,
   looksLikeSealedResponse,
@@ -56,23 +55,16 @@ import {
 } from './giftwrap.js';
 
 /**
- * A sealed request, ready to become a PREPARE: what goes in `data`, what goes
- * on `executionCondition`, and the secret needed to read the answer.
+ * A sealed request, ready to become a PREPARE: what goes in `data`, the secret
+ * needed to read the answer, and the fulfilment that answer must carry.
  *
- * The three are produced together and belong together. Sending `data` under a
- * condition minted any other way produces a packet no honest connector can
- * fulfil; opening the answer with any other secret fails.
+ * The three are produced together and belong together: opening the answer with
+ * any other secret fails, and checking a FULFILL against any other fulfilment
+ * rejects a delivery that was genuine.
  */
 export interface SealedExchange {
   /** The gift wrap to carry as the PREPARE's `data`. */
   readonly data: Uint8Array;
-  /**
-   * The PREPARE's `executionCondition`: `sha256(deriveFulfillment(secret))`.
-   * Derived, never random and never caller-supplied — the terminating
-   * connector recovers the same secret and derives the same fulfilment
-   * without the app participating (ADR 0019).
-   */
-  readonly condition: Uint8Array;
   /**
    * The 32-byte secret sealed inside the wrap. Keep it until the answer is
    * read; it is the only thing that opens the response. Never send it
@@ -80,9 +72,11 @@ export interface SealedExchange {
    */
   readonly sharedSecret: Uint8Array;
   /**
-   * The fulfilment the terminating connector will return. Held so a caller
-   * can check the FULFILL preimage it actually got, rather than only that it
-   * hashes to the condition.
+   * The fulfilment the terminating connector will return —
+   * `deriveFulfillment(sharedSecret)`. Pass it to a transport as
+   * `expectedFulfillment`: comparing a FULFILL's preimage against this is the
+   * sender's end-to-end check, and since ADR 0069 the only fulfilment check
+   * made anywhere on the path.
    */
   readonly fulfillment: Uint8Array;
 }
@@ -164,12 +158,10 @@ export function sealExchange(
     encodeEnvelopeRequest(request),
     connectorPublicKey
   );
-  const fulfillment = deriveFulfillment(sharedSecret);
   return {
     data: wrapped,
-    condition: deriveCondition(fulfillment),
     sharedSecret,
-    fulfillment,
+    fulfillment: deriveFulfillment(sharedSecret),
   };
 }
 
