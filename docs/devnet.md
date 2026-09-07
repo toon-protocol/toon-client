@@ -171,3 +171,15 @@ is 6-decimal USDC on both chains, so:
 
 Native gas is not this scale: ETH is 18 decimals (wei) and SOL is 9 (lamports). A deposit is
 always in the settlement token's base units, never in wei.
+
+## Hidden services
+
+The devnet publishes **no `.anyone` node** at the time of writing, so there is no hidden-service
+row in the tables above, and no address here to point anything at. That is a connector-side
+deployment, not a gap in this client.
+
+The client's support for one is complete and tested against a local SOCKS5 proxy. The live test in
+`packages/client/src/__integration__/hidden-service.integration.test.ts` is skipped for exactly
+that reason — inventing an address would be worse than skipping — and becomes real the day one
+exists: set `TOON_HS_CONNECTOR`, `TOON_SOCKS` and `TOON_MNEMONIC` to run it. See
+[hidden-service.md](hidden-service.md).

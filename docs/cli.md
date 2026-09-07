@@ -23,6 +23,7 @@ nobody named should not be silent.
 | RPC | `--rpc URL` | `TOON_RPC_URL` | The package's preset for the chosen chain |
 | Channel store | `--store PATH` | `TOON_CHANNEL_STORE` | `~/.toon/channels.json` |
 | Carriage | `--transport auto\|http\|btp` | — | `auto` |
+| SOCKS5h proxy | `--socks URL` | `TOON_SOCKS` | a managed `anon` daemon, for a `.anyone` connector |
 
 Keys resolve in that order for a reason: `TOON_MNEMONIC` first, then the keystore, then a message
 telling you to run `toon init`. **There is no `--mnemonic` flag and there will not be one** — a
@@ -150,6 +151,16 @@ confirmed by an observed balance change at the destination, not by the transacti
 
 Ask the devnet faucet for test funds. Devnet only. The Solana leg drips USDC and no SOL — see
 [devnet.md](devnet.md#faucet).
+
+## Hidden-service connectors
+
+Point `--connector` (or `TOON_CONNECTOR`) at a `.anyone` address and the CLI starts a pinned,
+checksum-verified `anon` daemon for you, announces every step on stderr, and stops it when the
+command ends. `--socks` / `TOON_SOCKS` uses a daemon you already run instead, and downloads
+nothing. A clearnet connector starts nothing and downloads nothing.
+
+The library never starts a daemon — only this command does. Which release is pinned, where it is
+cached, and what happens to your chain RPC are all in [hidden-service.md](hidden-service.md).
 
 ## `--json` output
 
