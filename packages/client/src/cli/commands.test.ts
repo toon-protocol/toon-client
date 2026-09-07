@@ -6,7 +6,8 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import type * as ChildProcess from 'node:child_process';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { EXIT, exitCodeFor, runCli } from './main.js';
 import {
   FakeToonClient,
@@ -17,6 +18,33 @@ import {
 } from './fake-client.test-support.js';
 import type { ToonClientConfig } from '../client/types.js';
 import { ChannelFundingError, NetworkError, ValidationError } from '../client/errors.js';
+
+/**
+ * Nothing the CLI does may run a process. The whole suite is held to it, so the
+ * guarantee cannot be quietly lost in a command that no proxy test covers: a
+ * command that reaches for `node:child_process` records the attempt here and
+ * fails on the spot.
+ */
+const spawned = vi.hoisted(() => [] as string[]);
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof ChildProcess>();
+  const refuse =
+    (name: string) =>
+    (...args: unknown[]): never => {
+      spawned.push(`${name} ${String(args[0])}`);
+      throw new Error(`the CLI must not run a process: ${name} ${String(args[0])}`);
+    };
+  return {
+    ...actual,
+    spawn: refuse('spawn'),
+    spawnSync: refuse('spawnSync'),
+    exec: refuse('exec'),
+    execSync: refuse('execSync'),
+    execFile: refuse('execFile'),
+    execFileSync: refuse('execFileSync'),
+    fork: refuse('fork'),
+  };
+});
 
 const PHRASE = 'test test test test test test test test test test test junk';
 
@@ -595,5 +623,90 @@ describe('exit codes', () => {
   it('closes the client after a successful command', async () => {
     const result = await run(['send', 'g.toon.store']);
     expect(result.client.closed).toBe(true);
+  });
+});
+
+/**
+ * A payer who already runs an `anon` daemon points `toon` at it. The proxy
+ * follows the order every other setting here follows — flag, then environment —
+ * and both paths leave the daemon entirely in the operator's hands.
+ */
+describe('hidden-service connectors', () => {
+  const HS = 'http://qrstuvwxyz234567abcdefghijklmnop.anyone';
+  const PROXY = 'socks5h://127.0.0.1:9050';
+
+  it('pays a .anyone connector through the daemon named by --socks', async () => {
+    const result = await run(['send', 'g.toon.store', '--body', 'hi', '--connector', HS, '--socks', PROXY]);
+
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.config?.connector).toBe(HS);
+    expect(result.config?.socksProxy).toBe(PROXY);
+    expect(result.client.callsTo('send')).toHaveLength(1);
+  });
+
+  it('takes the proxy from TOON_SOCKS when there is no flag', async () => {
+    const result = await run(['send', 'g.toon.store', '--body', 'hi'], {
+      env: { TOON_CONNECTOR: HS, TOON_SOCKS: 'socks5h://127.0.0.1:9051' },
+    });
+
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.config?.socksProxy).toBe('socks5h://127.0.0.1:9051');
+    expect(result.client.callsTo('send')).toHaveLength(1);
+  });
+
+  it('lets the flag beat the environment', async () => {
+    const result = await run(['balances', '--socks', 'socks5h://127.0.0.1:1234'], {
+      env: { TOON_CONNECTOR: HS, TOON_SOCKS: 'socks5h://127.0.0.1:9051' },
+    });
+
+    expect(result.config?.socksProxy).toBe('socks5h://127.0.0.1:1234');
+  });
+
+  it('ignores an empty flag or an empty TOON_SOCKS rather than proxying through nothing', async () => {
+    const flag = await run(['balances', '--socks', ''], {
+      env: { TOON_CONNECTOR: HS, TOON_SOCKS: 'socks5h://127.0.0.1:9051' },
+    });
+    expect(flag.config?.socksProxy).toBe('socks5h://127.0.0.1:9051');
+
+    const env = await run(['balances'], { env: { TOON_CONNECTOR: HS, TOON_SOCKS: '' } });
+    expect(env.config?.socksProxy).toBeUndefined();
+  });
+
+  it('names TOON_SOCKS in the help, alongside the other environment variables', async () => {
+    const result = await run(['help']);
+    const text = result.stdout.join('\n');
+
+    expect(text).toContain('TOON_SOCKS');
+    expect(text).toMatch(/--socks/);
+    expect(text).toContain('TOON_CHANNEL_STORE');
+  });
+
+  it('leaves a clearnet connector with no proxy at all', async () => {
+    const result = await run(['balances']);
+
+    expect(result.config?.connector).toBe('https://node.example');
+    expect(result.config?.socksProxy).toBeUndefined();
+  });
+
+  it('downloads nothing and spawns nothing on either path, nor on clearnet', async () => {
+    const fetched: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation((async (input: unknown) => {
+      fetched.push(String(input));
+      throw new Error('the CLI must not download anything');
+    }) as never);
+
+    try {
+      const flag = await run(['balances', '--connector', HS, '--socks', PROXY]);
+      const env = await run(['balances'], { env: { TOON_CONNECTOR: HS, TOON_SOCKS: PROXY } });
+      const clearnet = await run(['balances']);
+
+      expect(flag.config?.socksProxy).toBe(PROXY);
+      expect(env.config?.socksProxy).toBe(PROXY);
+      expect(clearnet.config?.socksProxy).toBeUndefined();
+      expect(spawned).toEqual([]);
+      expect(fetched).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

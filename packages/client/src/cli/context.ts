@@ -55,6 +55,7 @@ export const CONNECTOR_ENV = 'TOON_CONNECTOR';
 export const CHAIN_ENV = 'TOON_CHAIN';
 export const RPC_ENV = 'TOON_RPC_URL';
 export const CHANNEL_STORE_ENV = 'TOON_CHANNEL_STORE';
+export const SOCKS_ENV = 'TOON_SOCKS';
 
 /** Where a setting's value came from. Reported so a surprising run can be explained. */
 export type SettingSource = 'flag' | 'env' | 'default';
@@ -70,6 +71,11 @@ export interface CliSettings {
   /** Always a path: an in-memory watermark is never the right default for a CLI. */
   channelStore: string;
   transport: TransportPreference;
+  /**
+   * The SOCKS5h proxy for a hidden-service connector: the operator's own
+   * running `anon` daemon, named by `--socks` or by `TOON_SOCKS`.
+   */
+  socksProxy?: string;
   keystorePath: string;
   passwordFile?: string;
   json: boolean;
@@ -140,6 +146,15 @@ export function resolveSettings(
 
   const transport = parseTransport(stringOption(values, 'transport'), '--transport');
 
+  const socksFlag = stringOption(values, 'socks');
+  const socksEnv = env[SOCKS_ENV];
+  const socksProxy =
+    socksFlag !== undefined && socksFlag.length > 0
+      ? socksFlag
+      : socksEnv !== undefined && socksEnv.length > 0
+        ? socksEnv
+        : undefined;
+
   const settings: CliSettings = {
     connector,
     connectorSource,
@@ -147,6 +162,7 @@ export function resolveSettings(
     ...(rpcUrl !== undefined && rpcUrl.length > 0 ? { rpcUrl } : {}),
     channelStore,
     transport,
+    ...(socksProxy !== undefined ? { socksProxy } : {}),
     keystorePath: resolveKeystorePath({
       flag: stringOption(values, 'keystore'),
       env,
@@ -252,6 +268,7 @@ export function buildClientConfig(
     connector: settings.connector,
     channelStore: settings.channelStore,
     transport: settings.transport,
+    ...(settings.socksProxy !== undefined ? { socksProxy: settings.socksProxy } : {}),
     // See this module's docs: a command never opens a channel as a side effect.
     autoOpenChannel: false,
     ...(settings.chain !== undefined ? { chain: settings.chain } : {}),
