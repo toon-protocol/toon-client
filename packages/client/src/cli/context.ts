@@ -47,6 +47,8 @@ import {
   type Env,
 } from './keystore.js';
 import type { Output } from './output.js';
+import { isHiddenServiceUrl } from '../transport/hs-hostname.js';
+import type { ManagedAnon } from './anon-daemon.js';
 
 export type { Env };
 
@@ -72,8 +74,8 @@ export interface CliSettings {
   channelStore: string;
   transport: TransportPreference;
   /**
-   * The SOCKS5h proxy for a hidden-service connector: the operator's own
-   * running `anon` daemon, named by `--socks` or by `TOON_SOCKS`.
+   * The SOCKS5h proxy for a hidden-service connector. Unset means "start one":
+   * unlike the library, the CLI may run an `anon` daemon itself (ADR 0001).
    */
   socksProxy?: string;
   keystorePath: string;
@@ -207,6 +209,11 @@ export interface CliDependencies {
   readFileBytes?: (path: string) => Uint8Array;
   /** Build the client. Overridden in tests with a fake. */
   createClient?: (config: ToonClientConfig) => Promise<ToonClientLike>;
+  /**
+   * Start the managed `anon` daemon. Overridden in tests, which must never
+   * download a binary.
+   */
+  startAnon?: (log: (message: string) => void) => Promise<ManagedAnon>;
 }
 
 /**
@@ -358,20 +365,59 @@ export class Context implements CommandContext {
     this.deps = init.deps;
   }
 
+  private managedAnon: ManagedAnon | undefined;
+
   get openClient(): ToonClientLike | undefined {
     return this.instance;
   }
 
   async client(options: { keyless?: boolean; connector?: string } = {}): Promise<ToonClientLike> {
     if (this.instance !== undefined) return this.instance;
-    const settings =
+    const base =
       options.connector === undefined
         ? this.settings
         : { ...this.settings, connector: options.connector, connectorSource: 'flag' as const };
+    const settings = await this.withProxy(base);
     const keys = await resolveKeyMaterial(settings, this.deps, options);
     const config = buildClientConfig(settings, keys);
     const create = this.deps.createClient ?? defaultCreateClient;
     this.instance = await create(config);
     return this.instance;
   }
+
+  /**
+   * Ensure a hidden-service connector has a proxy to be reached through.
+   *
+   * The library refuses to start a daemon (ADR 0001); the CLI starts one, and
+   * says so. A silent twenty-second pause while a binary downloads and circuits
+   * build is indistinguishable from a hang, so every step is announced on
+   * stderr — where it cannot corrupt `--json` output.
+   */
+  private async withProxy(settings: CliSettings): Promise<CliSettings> {
+    if (settings.socksProxy !== undefined) return settings;
+    if (!isHiddenServiceUrl(settings.connector)) return settings;
+
+    const log = (message: string): void => this.out.warn(`toon: ${message}`);
+    log(`${settings.connector} is a hidden service; starting a local anon daemon`);
+    const start = this.deps.startAnon ?? defaultStartAnon;
+    this.managedAnon = await start(log);
+    log(`proxying through ${this.managedAnon.socksProxy}`);
+    return { ...settings, socksProxy: this.managedAnon.socksProxy };
+  }
+
+  /** Stop the daemon this context started, if it started one. */
+  stopManagedAnon(): void {
+    this.managedAnon?.stop();
+    this.managedAnon = undefined;
+  }
+}
+
+/**
+ * The real daemon starter, imported only when one is actually needed — the
+ * module reaches for `node:child_process` and `node:https`, and no command that
+ * talks to a clearnet node should pay to load it.
+ */
+async function defaultStartAnon(log: (message: string) => void): Promise<ManagedAnon> {
+  const { startManagedAnon } = await import('./anon-daemon.js');
+  return startManagedAnon({ log });
 }

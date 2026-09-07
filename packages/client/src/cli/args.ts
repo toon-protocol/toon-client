@@ -120,7 +120,7 @@ export const GLOBAL_OPTIONS: Record<string, OptionSpec> = {
     arg: 'URL',
     help:
       'SOCKS5h proxy for a .anyone connector, e.g. socks5h://127.0.0.1:9050. ' +
-      'The daemon is yours to run; nothing is downloaded or spawned. Env TOON_SOCKS.',
+      'Env TOON_SOCKS. Default: start a managed anon daemon.',
   },
   json: { type: 'boolean', help: 'Print one JSON document on stdout and nothing else.' },
   quiet: { type: 'boolean', help: 'Suppress progress and warnings on stderr.' },
