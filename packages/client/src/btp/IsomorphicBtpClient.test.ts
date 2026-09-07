@@ -223,7 +223,7 @@ describe('IsomorphicBtpClient — id-space separation (toon-client#493)', () => 
       type: 12,
       amount: 1000n,
       destination: 'g.toon.alice',
-      executionCondition: new Uint8Array(32),
+      greeting: false,
       expiresAt: new Date(Date.now() + 30_000),
       data: new Uint8Array(0),
     });
@@ -442,7 +442,7 @@ describe('IsomorphicBtpClient — a RESPONSE resolves its protocolData too', () 
       type: 12,
       amount: 1000n,
       destination: 'g.toon.alice',
-      executionCondition: new Uint8Array(32),
+      greeting: false,
       expiresAt: new Date(Date.now() + 30_000),
       data: new Uint8Array(0),
     });
