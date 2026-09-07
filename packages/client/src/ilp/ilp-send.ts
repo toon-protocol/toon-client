@@ -1,33 +1,31 @@
 /**
- * Shared sender-side plumbing for sender-chosen execution conditions
- * (toon-client#350; contract: connector `docs/local-delivery-fulfillment-contract.md`,
- * connector#309; spec: toon-meta `docs/rolling-swap.md` §3).
+ * Shared sender-side plumbing for both ILP carriages: how a PREPARE's
+ * non-routing fields are resolved, and how the answer is read.
  *
- * Both ILP transports (HTTP `POST /ilp` and BTP) take the SAME extended send
- * params and map FULFILL/REJECT responses through the SAME verifier so the
- * two paths cannot drift:
+ * Connector ADR 0069 (issue #1269) removed the execution condition from the
+ * wire. Two things changed here and nothing else did:
  *
- *   - absent/all-zero `executionCondition` → legacy class: today's behavior,
- *     byte-for-byte (zero condition on the wire, no FULFILL verification);
- *   - non-zero `executionCondition` → sender-chosen: the condition goes on
- *     the PREPARE verbatim and the FULFILL's 32-byte fulfillment MUST hash
- *     back to it — a missing/malformed/mismatching preimage is surfaced as a
- *     FAILED result (never a silent accept, never retried).
+ *   - the PREPARE carries a one-byte `greeting` flag where a 32-byte
+ *     condition used to sit — see {@link IlpSendParams.greeting};
+ *   - the sender's delivery check compares a FULFILL's preimage directly
+ *     against the fulfilment its own sealed secret derives
+ *     ({@link IlpSendParams.expectedFulfillment}), rather than hashing it back
+ *     to a condition that no longer exists.
+ *
+ * Both transports (HTTP `POST /ilp` and BTP) take the SAME params and map
+ * FULFILL/REJECT through the SAME verifier, so the two paths cannot drift.
+ * Omitting `expectedFulfillment` keeps a FULFILL unverified — the right shape
+ * for a caller that never sealed anything and so has nothing to compare
+ * against.
  */
 
 import type { IlpSendResult } from './types.js';
 import { ILPPacketType, type ILPResponsePacket } from '../btp/protocol.js';
 import { fromBase64, toBase64 } from '../utils/binary.js';
-import {
-  fulfillmentMatchesCondition,
-  isZeroCondition,
-} from '../utils/condition.js';
+import { fulfillmentMatches } from '../utils/fulfillment.js';
 
 /**
- * Send parameters accepted by both ILP transports. Extends the
- * `@toon-protocol/core` `IlpClient` param shape with the sender-chosen
- * condition and an explicit expiry — plain `IlpClient` callers keep working
- * unchanged (both extras are optional; omitting them is the legacy path).
+ * Send parameters accepted by both ILP transports.
  */
 export interface IlpSendParams {
   destination: string;
@@ -37,45 +35,53 @@ export interface IlpSendParams {
   /** Transport timeout in ms; also the default expiry window. */
   timeout?: number;
   /**
-   * Sender-chosen 32-byte execution condition `C = sha256(P)` (spec R2).
-   * Absent or all-zero = legacy unverified packet (default — ordinary
-   * publish/upload writes MUST keep this default).
+   * Declare this PREPARE a bootstrap/greeting probe (connector ADR 0069).
    *
-   * Accepts the raw 32 bytes or their base64 encoding. Bytes are the native
-   * form here — the whole condition/preimage subsystem in
-   * `../utils/condition.js` is bytes-native, as is `@toon-protocol/core`'s
-   * in-process `SendPacketParams.executionCondition`. The base64 form exists
-   * because `@toon-protocol/core` ≥3.4.0's `IlpClient` port — the JSON-shaped
-   * wire port — declares this field as a base64 `string`, exactly as it
-   * already does for {@link expiresAt}. Normalize with
-   * {@link resolveExecutionCondition} before touching the bytes.
+   * Defaults to `false`, which is what every real send wants: a greeting is
+   * never routed, never priced and never fulfilled — the connector answers
+   * the x402 terms instead. Set it only to ASK for those terms without a
+   * route match, the shape `ConnectorEdgeClient` uses for bootstrap. A claim
+   * riding with the packet suppresses the greeting either way, so this can
+   * never turn a paid packet into a free one.
    */
-  executionCondition?: Uint8Array | string;
+  greeting?: boolean;
   /**
-   * Explicit PREPARE `expiresAt` (spec R7). Defaults to `now + timeout`,
-   * preserving pre-#350 behavior. Accepts a `Date` or an ISO 8601 string —
-   * `@toon-protocol/core` ≥2.1.0's `IlpClient` passes the string form.
+   * The 32 bytes an honest FULFILL must carry: `deriveFulfillment(sharedSecret)`
+   * for the secret sealed inside this packet's gift wrap (ADR 0019), which
+   * `sealExchange` returns as `SealedExchange.fulfillment`.
+   *
+   * Present = verify; absent = accept a FULFILL unchecked, which is the only
+   * honest option for a caller that sealed nothing and therefore knows no
+   * secret. This is the sender's own end-to-end check and the ONLY fulfilment
+   * check left anywhere on the path (ADR 0069) — no hop performs one.
+   *
+   * Accepts the raw 32 bytes or their base64 encoding; normalize with
+   * {@link resolveExpectedFulfillment} before touching the bytes.
+   */
+  expectedFulfillment?: Uint8Array | string;
+  /**
+   * Explicit PREPARE `expiresAt`. Defaults to `now + timeout` plus
+   * {@link PACKET_EXPIRY_HEADROOM_MS}. Accepts a `Date` or an ISO 8601 string.
    */
   expiresAt?: Date | string;
 }
 
 /**
- * Normalize an `IlpSendParams.executionCondition` to raw bytes.
+ * Normalize an `IlpSendParams.expectedFulfillment` to raw bytes.
  *
  * The two representations are the two callers: this package's own senders
- * pass the bytes minted by `mintExecutionCondition`, while a caller typed
- * only against `@toon-protocol/core`'s `IlpClient` port passes the base64
- * string that port declares. Both mean the same 32 bytes.
+ * pass the bytes `sealExchange` derived, while a caller typed against the
+ * JSON-shaped port passes their base64 spelling. Both mean the same 32 bytes.
  *
- * Length is NOT validated here — that stays with `assertValidCondition` at
- * the transports, so a malformed condition fails with the same message on
- * both paths regardless of which representation it arrived in.
+ * Length is NOT validated here — that stays with `assertValidFulfillment` at
+ * the transports, so a malformed value fails with the same message on both
+ * paths regardless of which representation it arrived in.
  */
-export function resolveExecutionCondition(
-  condition: Uint8Array | string | undefined
+export function resolveExpectedFulfillment(
+  fulfillment: Uint8Array | string | undefined
 ): Uint8Array | undefined {
-  if (condition === undefined) return undefined;
-  return typeof condition === 'string' ? fromBase64(condition) : condition;
+  if (fulfillment === undefined) return undefined;
+  return typeof fulfillment === 'string' ? fromBase64(fulfillment) : fulfillment;
 }
 
 /**
@@ -114,12 +120,11 @@ export function resolveExpiresAt(
 }
 
 /**
- * `IlpSendResult` plus the FULFILL preimage when a sender-chosen condition
- * was verified. Only populated on the sender-chosen path so legacy result
- * objects stay byte-identical.
+ * `IlpSendResult` plus the FULFILL preimage, populated only when the sender
+ * knew what to expect and the bytes matched.
  */
 export interface IlpSendResultWithFulfillment extends IlpSendResult {
-  /** Base64 32-byte fulfillment preimage (verified: sha256 == condition). */
+  /** Base64 32-byte fulfillment preimage (verified against the expected one). */
   fulfillment?: string;
 }
 
@@ -128,36 +133,39 @@ export const FULFILLMENT_MISMATCH_CODE = 'F99';
 
 /** Message for a client-side fulfillment-verification failure. */
 export const FULFILLMENT_MISMATCH_MESSAGE =
-  'FULFILL fulfillment does not match execution condition ' +
-  '(sha256(fulfillment) != executionCondition) — packet counted failed';
+  'FULFILL fulfillment is not the one this packet\'s sealed secret derives ' +
+  '(ADR 0019) — packet counted failed';
 
 /**
  * Map a parsed ILP response packet to an `IlpSendResult`, enforcing the
- * sender-chosen condition when one was sent.
+ * sender's end-to-end delivery check when it knows what to expect.
  *
- * Verification is fail-closed: when `sentCondition` is non-zero, a FULFILL
- * whose fulfillment is absent, not exactly 32 bytes, or does not sha256-hash
- * to the condition yields `accepted: false` (code F99). The result shape —
- * not a thrown error — is deliberate: transports only retry thrown
- * `NetworkError`s, so a forged/wrong FULFILL is never retried — re-sending
- * would re-spend the attached claim.
+ * Verification is fail-closed: when `expectedFulfillment` is given, a FULFILL
+ * whose preimage is absent, not exactly 32 bytes, or simply different yields
+ * `accepted: false` (code F99). The result shape — not a thrown error — is
+ * deliberate: transports only retry thrown `NetworkError`s, so a forged or
+ * wrong FULFILL is never retried, because re-sending would re-spend the
+ * attached claim.
+ *
+ * Since ADR 0069 this is the only fulfilment check anywhere on the path. A
+ * candidate FULFILL rides home through every hop unexamined, which is exactly
+ * why the sender must still make it.
  */
 export function mapIlpResponse(
   packet: ILPResponsePacket,
-  sentCondition?: Uint8Array
+  expectedFulfillment?: Uint8Array
 ): IlpSendResultWithFulfillment {
   if (packet.type === ILPPacketType.FULFILL) {
     const dataField =
       packet.data.length > 0 ? { data: toBase64(packet.data) } : {};
 
-    // Legacy class: absent/all-zero condition → accept without verification
-    // (pre-#350 behavior, byte-for-byte).
-    if (sentCondition === undefined || isZeroCondition(sentCondition)) {
+    // Nothing to compare against: a caller that sealed no request holds no
+    // secret and can derive no fulfilment, so there is no check to make.
+    if (expectedFulfillment === undefined) {
       return { accepted: true, ...dataField };
     }
 
-    // Sender-chosen class: the FULFILL preimage MUST hash to the condition.
-    if (!fulfillmentMatchesCondition(packet.fulfillment, sentCondition)) {
+    if (!fulfillmentMatches(packet.fulfillment, expectedFulfillment)) {
       return {
         accepted: false,
         code: FULFILLMENT_MISMATCH_CODE,

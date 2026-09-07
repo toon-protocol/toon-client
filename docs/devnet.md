@@ -77,8 +77,8 @@ chargeFor(terms!, 1185); // 1020n — two kibibytes started
 `g.toon.relay.ephemeral` is priced at **zero**, which makes it the one route you can exercise the
 whole wire against while holding no funds and no channel — see
 [channels.md](channels.md#a-route-priced-at-zero-needs-no-channel). It is still a real paid-write
-path in every other respect: the request is sealed, the condition is derived from the secret
-inside the seal, and the app's answer comes back sealed.
+path in every other respect: the request is sealed, the fulfilment to expect is derived from the
+secret inside the seal, and the app's answer comes back sealed.
 
 A route may also be pinned to one carriage, in which case a request over the other one is answered
 with the route's terms instead of the work; see [errors.md](errors.md). `g.toon.relay` is pinned to

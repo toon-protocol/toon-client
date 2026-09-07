@@ -21,11 +21,11 @@ import { withRetry } from '../utils/retry.js';
 import { fromBase64, encodeUtf8, decodeUtf8 } from '../utils/binary.js';
 import {
   mapIlpResponse,
-  resolveExecutionCondition,
+  resolveExpectedFulfillment,
   resolveExpiresAt,
   type IlpSendParams,
 } from '../ilp/ilp-send.js';
-import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
+import { assertValidFulfillment } from '../utils/fulfillment.js';
 
 export type { BtpChannelDeclaration };
 
@@ -199,11 +199,10 @@ export class BtpRuntimeClient implements IlpClient {
    * Sends an ILP packet via BTP with auto-reconnect on connection errors.
    * Satisfies IlpClient interface.
    *
-   * `params` may carry a sender-chosen `executionCondition` and an explicit
-   * `expiresAt` (toon-client#350); omitting both is the legacy zero-condition
-   * path, unchanged. With a non-zero condition the FULFILL preimage is
-   * verified (`sha256(fulfillment) == condition`) and a mismatch is surfaced
-   * as a failed result — see `mapIlpResponse`.
+   * `params` may carry an `expectedFulfillment` (the sender's end-to-end
+   * check, ADR 0069), a `greeting` flag and an explicit `expiresAt`. With an
+   * expected fulfilment the FULFILL preimage is compared against it and a
+   * mismatch is surfaced as a failed result — see `mapIlpResponse`.
    */
   async sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult> {
     return withRetry(() => this._sendIlpPacketOnce(params), {
@@ -221,8 +220,8 @@ export class BtpRuntimeClient implements IlpClient {
    * Sends a balance proof claim via BTP protocol data, then sends an ILP packet.
    * Auto-reconnects on connection errors.
    *
-   * Sender-chosen `executionCondition` / explicit `expiresAt` semantics are
-   * identical to {@link sendIlpPacket}.
+   * `expectedFulfillment` / `greeting` / `expiresAt` semantics are identical
+   * to {@link sendIlpPacket}.
    */
   async sendIlpPacketWithClaim(
     params: IlpSendParams,
@@ -276,37 +275,39 @@ export class BtpRuntimeClient implements IlpClient {
   }
 
   /**
-   * Build the ILP PREPARE for a send, applying the sender-chosen condition /
-   * explicit expiry when provided (toon-client#350) and validating that a
-   * non-zero condition is exactly 32 bytes (the OER serializer would
-   * otherwise silently zero-fill it, downgrading the packet to the legacy
-   * unverified class).
+   * Build the ILP PREPARE for a send, applying the
+   * explicit expiry when provided, carrying the `greeting` flag ADR 0069 put
+   * where the execution condition used to be, and validating that an expected
+   * fulfilment is exactly 32 bytes (a wrong-length one could never match a
+   * real FULFILL, so every delivery would be counted failed).
    */
   private buildPrepare(params: IlpSendParams): {
     prepare: {
       type: 12;
       amount: bigint;
       destination: string;
-      executionCondition: Uint8Array;
+      greeting: boolean;
       expiresAt: Date;
       data: Uint8Array;
     };
-    condition: Uint8Array | undefined;
+    expectedFulfillment: Uint8Array | undefined;
   } {
-    const condition = resolveExecutionCondition(params.executionCondition);
-    if (condition !== undefined && !isZeroCondition(condition)) {
-      assertValidCondition(condition);
+    const expectedFulfillment = resolveExpectedFulfillment(
+      params.expectedFulfillment
+    );
+    if (expectedFulfillment !== undefined) {
+      assertValidFulfillment(expectedFulfillment);
     }
     return {
       prepare: {
         type: 12 as const,
         amount: BigInt(params.amount),
         destination: params.destination,
-        executionCondition: condition ?? new Uint8Array(32),
+        greeting: params.greeting ?? false,
         expiresAt: resolveExpiresAt(params.expiresAt, params.timeout ?? 30000),
         data: fromBase64(params.data),
       },
-      condition,
+      expectedFulfillment,
     };
   }
 
@@ -320,12 +321,12 @@ export class BtpRuntimeClient implements IlpClient {
       await this.reconnect();
     }
 
-    const { prepare, condition } = this.buildPrepare(params);
+    const { prepare, expectedFulfillment } = this.buildPrepare(params);
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guaranteed by reconnect() above
     const response = await this.btpClient!.sendPacket(prepare);
 
     return {
-      ...mapIlpResponse(response.packet, condition),
+      ...mapIlpResponse(response.packet, expectedFulfillment),
       ...readResponseMeta(response.protocolData),
     };
   }
@@ -353,11 +354,11 @@ export class BtpRuntimeClient implements IlpClient {
       },
     ];
 
-    const { prepare, condition } = this.buildPrepare(params);
+    const { prepare, expectedFulfillment } = this.buildPrepare(params);
     const response = await this.btpClient.sendPacket(prepare, protocolData);
 
     return {
-      ...mapIlpResponse(response.packet, condition),
+      ...mapIlpResponse(response.packet, expectedFulfillment),
       ...readResponseMeta(response.protocolData),
     };
   }

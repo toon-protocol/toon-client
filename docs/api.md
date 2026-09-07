@@ -410,10 +410,10 @@ connector's own wire vectors — see
 
 | Export | What it does |
 | --- | --- |
-| `sealExchange` | Seals an envelope to an identity key and mints the matching condition, secret and fulfilment in one call |
+| `sealExchange` | Seals an envelope to an identity key and produces the matching secret and expected fulfilment in one call |
 | `readExchangeOutcome` | Reads a FULFILL or a REJECT back into an outcome, using that secret |
 | `envelopeHeader` | Case-insensitive header lookup on an envelope |
-| `deriveFulfillment`, `deriveCondition` | The derivation itself, if you want to check it |
+| `deriveFulfillment` | The derivation itself, if you want to check it — the sender's whole end-to-end check since connector ADR 0069 |
 | `encodeEnvelope`, `decodeEnvelope` | The OER envelope codec |
 | `sealRequest`, `openResponse` | The gift wrap on its own |
 | `ConnectorEdgeClient` | The client-edge endpoints as plain calls |

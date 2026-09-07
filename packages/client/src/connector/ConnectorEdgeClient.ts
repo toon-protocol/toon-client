@@ -58,14 +58,14 @@ import {
 } from './self-description.js';
 import {
   mapIlpResponse,
-  resolveExecutionCondition,
+  resolveExpectedFulfillment,
   resolveExpiresAt,
   type IlpSendParams,
 } from '../ilp/ilp-send.js';
 import type { IlpSendResult } from '../ilp/types.js';
 import { readResponseMeta } from '../http/HttpIlpClient.js';
 import { toBase64, encodeUtf8, fromBase64 } from '../utils/binary.js';
-import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
+import { assertValidFulfillment } from '../utils/fulfillment.js';
 import { trimTrailingSlashes } from '../utils/url.js';
 
 // ─── Identity ───────────────────────────────────────────────────────────────
@@ -799,19 +799,21 @@ export class ConnectorEdgeClient {
     const base = connectorEdgeBaseUrl(endpoint);
     const url = `${base}/ilp/probe`;
 
-    // Same condition discipline as the paying transports: a non-zero
-    // condition must be exactly 32 bytes, or the OER serializer would
-    // silently zero-fill it and downgrade the packet to the unverified class.
-    const condition = resolveExecutionCondition(params.executionCondition);
-    if (condition !== undefined && !isZeroCondition(condition)) {
-      assertValidCondition(condition);
+    // Same discipline as the paying transports: an expected fulfilment must
+    // be exactly 32 bytes, or nothing a real FULFILL could carry would ever
+    // match it.
+    const expectedFulfillment = resolveExpectedFulfillment(
+      params.expectedFulfillment
+    );
+    if (expectedFulfillment !== undefined) {
+      assertValidFulfillment(expectedFulfillment);
     }
     const timeout = params.timeout ?? this.timeout;
     const prepare = serializeIlpPrepare({
       type: ILPPacketType.PREPARE,
       amount: BigInt(params.amount),
       destination: params.destination,
-      executionCondition: condition ?? new Uint8Array(32),
+      greeting: params.greeting ?? false,
       expiresAt: resolveExpiresAt(params.expiresAt, timeout),
       data: fromBase64(params.data),
     });
@@ -866,7 +868,7 @@ export class ConnectorEdgeClient {
     // `toon-accumulated-cost` rides beside the packet, never inside it
     // (§1.6) — reading it is the whole reason to probe.
     return {
-      ...mapIlpResponse(deserializeIlpPacket(body), condition),
+      ...mapIlpResponse(deserializeIlpPacket(body), expectedFulfillment),
       ...readResponseMeta(response.headers),
     };
   }
@@ -940,16 +942,21 @@ export class ConnectorEdgeClient {
       );
     }
     const base = connectorEdgeBaseUrl(endpoint);
-    // A syntactically complete PREPARE the greeting gate answers before the
-    // packet is ever routed: a non-zero condition (an all-zero one is F01),
-    // a near-term expiry, no data. Amount is irrelevant to the greeting.
-    const condition = new Uint8Array(32);
-    condition[0] = 1;
+    // A syntactically complete PREPARE with a near-term expiry and no data;
+    // the amount is irrelevant to the greeting.
+    //
+    // `greeting: false` is deliberate, and is what this method meant before
+    // ADR 0069 took the execution condition off the wire: it sent a PRESENT
+    // condition, so the edge's greeting gate fired only on `charge > 0` — a
+    // route this connector actually prices. Setting the flag would broaden
+    // that to every destination, and the terms this returns would stop
+    // meaning "this route costs that much". `null` for a destination the
+    // connector does not price is the answer, not a gap to paper over.
     const prepare = serializeIlpPrepare({
       type: ILPPacketType.PREPARE,
       amount: 0n,
       destination,
-      executionCondition: condition,
+      greeting: false,
       expiresAt: new Date(Date.now() + 30_000),
       data: new Uint8Array(0),
     });

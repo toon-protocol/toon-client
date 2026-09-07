@@ -139,20 +139,19 @@ export interface GiftWrapVectors {
 }
 
 /**
- * A derived fulfilment and the condition it is checked against (connector ADR
- * 0019). `matches` is `false` for the case whose fulfilment belongs to a
- * DIFFERENT secret than the one that minted `condition_hex`, so rejection is
- * exercised as well as acceptance.
+ * A fulfilment derived from a shared secret (connector ADR 0019).
+ *
+ * Narrowed by ADR 0069 to `derive_fulfillment`'s own determinism: with no
+ * execution condition left on the wire there is nothing to derive one from or
+ * match one against, so `condition_hex` and `matches` are gone from the file.
+ * The two cases now pin the same property from opposite sides — a fixed
+ * secret's fulfilment, and a different secret's different fulfilment.
  */
 export interface FulfilmentVector {
   name: string;
   shared_secret_hex: string;
   /** `HKDF-SHA256(shared_secret, "toon-giftwrap-fulfillment")`. */
   fulfilment_hex: string;
-  /** The condition a sender mints: `sha256(fulfilment)`. */
-  condition_hex: string;
-  /** Whether `fulfilment_hex` is the preimage of `condition_hex`. */
-  matches: boolean;
 }
 
 /**
@@ -221,7 +220,11 @@ export interface PeerPrepareFields {
   amount: number;
   /** ISO-8601 with milliseconds and a `Z` — the 19-byte GeneralizedTime. */
   expires_at: string;
-  execution_condition_hex: string;
+  /**
+   * The bootstrap-probe flag, one octet on the wire, where a 32-byte
+   * `execution_condition_hex` sat until schema 5 (connector ADR 0069).
+   */
+  greeting: boolean;
   destination: string;
   data_hex: string;
 }

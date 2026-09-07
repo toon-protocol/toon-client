@@ -266,7 +266,7 @@ async function attempt(context: SendContext, params: AttemptParams): Promise<Att
         destination: params.destination,
         amount: params.amount.toString(),
         data: toBase64(params.exchange.data),
-        executionCondition: params.exchange.condition,
+        expectedFulfillment: params.exchange.fulfillment,
         timeout: params.timeoutMs,
       },
       claim as unknown as Record<string, unknown>
@@ -293,7 +293,7 @@ async function attempt(context: SendContext, params: AttemptParams): Promise<Att
 /**
  * One attempt at a free route: the same sealed packet, with no claim attached.
  *
- * Everything else is identical — the envelope, the gift wrap, the condition
+ * Everything else is identical — the envelope, the gift wrap, the fulfilment
  * derived from the secret inside it, and the sealed answer read back with that
  * same secret. Only the payment is absent, because there is nothing to pay.
  */
@@ -305,7 +305,7 @@ async function attemptUnpaid(
     destination: params.destination,
     amount: params.amount.toString(),
     data: toBase64(params.exchange.data),
-    executionCondition: params.exchange.condition,
+    expectedFulfillment: params.exchange.fulfillment,
     timeout: params.timeoutMs,
   });
   return { result: toSendResult(result, params, undefined), channelId: undefined };

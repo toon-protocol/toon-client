@@ -6,7 +6,7 @@ export type {
   IlpSendResult,
 } from './types.js';
 export {
-  resolveExecutionCondition,
+  resolveExpectedFulfillment,
   PACKET_EXPIRY_HEADROOM_MS,
   resolveExpiresAt,
   mapIlpResponse,

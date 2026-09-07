@@ -4,27 +4,31 @@
 back, and because each piece is exported for anyone forming a packet by hand.
 
 A packet is an **OER envelope, gift-wrapped to the identity of the connector that terminates the
-destination**, under a condition **derived from the secret inside that wrap**, carrying a
-**signed claim** that pays for it. Nothing on the wire is HTTP text.
+destination**, carrying a **signed claim** that pays for it. The answer's fulfilment is **derived
+from the secret inside that wrap**, so the sender can check a delivery end to end without anything
+on the packet committing to it. Nothing on the wire is HTTP text.
 
 ## The packet is ILPv4's semantics in TOON's encoding
 
-The three type bytes, the field order and meanings, `condition = sha256(fulfilment)` and the
-`F`/`T`/`R` reject taxonomy are RFC 0027's. **The bytes are not**, deliberately, and never have
-been. It diverges in exactly three places:
+The three type bytes, the remaining field order and meanings, and the `F`/`T`/`R` reject taxonomy
+are RFC 0027's. **The bytes are not**, deliberately, and never have been. It diverges in exactly
+four places:
 
 1. **No outer type-length wrapper.** The type byte is followed by the fields inline, not by a
    `VarOctetString`.
 2. **`amount` is a `VarUInt`**, not a fixed 8-byte `UInt64`.
 3. **`expiresAt` is a 19-byte GeneralizedTime**, `YYYYMMDDHHMMSS.fffZ`, not RFC 0027's 17-byte
    Interledger Timestamp.
+4. **There is no `executionCondition`.** A one-byte `greeting` flag sits where RFC 0027's 32-byte
+   condition would be — connector ADR 0069, which removed the field rather than shrinking it. The
+   fourth is not an encoding quirk like the first three: it drops a field the RFC requires.
 
 So an off-the-shelf ILPv4 encoder does not produce a packet this edge accepts. The bytes are
 pinned by the connector's committed wire vectors, which this client replays as its own
 conformance suite — see [development.md](development.md#wire-vectors).
 
 ```text
-PREPARE  0x0c ‖ VarUInt(amount) ‖ expiresAt(19) ‖ condition(32)
+PREPARE  0x0c ‖ VarUInt(amount) ‖ expiresAt(19) ‖ greeting(1)
               ‖ VarOctetString(destination) ‖ VarOctetString(data)
 FULFILL  0x0d ‖ fulfilment(32) ‖ VarOctetString(data)
 REJECT   0x0e ‖ code(3) ‖ VarOctetString(triggeredBy)
@@ -81,11 +85,11 @@ A probe traverses for free, so it is accepted only from a sender the connector r
 payment channel, and only within a rate limit. It is never delivered to a route the connector
 terminates: free traversal does not also buy the work.
 
-## Step 3 — seal the envelope and mint the condition together
+## Step 3 — seal the envelope and keep what opens the answer
 
-`sealExchange` produces the wrap, the condition and the secret in one call, because getting any of
-them separately wrong is silent. A random condition would never be fulfilled; an all-zero one the
-connector refuses outright.
+`sealExchange` produces the wrap, the secret and the fulfilment to expect in one call, because
+getting any of them separately wrong is silent: opening the answer with the wrong secret fails, and
+checking a delivery against the wrong preimage throws away a packet that was genuine — and paid for.
 
 ```ts
 import { sealExchange } from '@toon-protocol/client';
@@ -101,7 +105,6 @@ const exchange = sealExchange(
 );
 
 exchange.data;          // Uint8Array — the gift wrap, to carry as the PREPARE's `data`
-exchange.condition;     // Uint8Array — sha256(deriveFulfillment(sharedSecret))
 exchange.sharedSecret;  // Uint8Array(32) — keep it; nothing else opens the answer
 exchange.fulfillment;   // Uint8Array — the preimage the connector will return
 ```
@@ -131,14 +134,24 @@ Keys are HKDF-SHA256 with no salt, over the ECDH X coordinate for the request
 (`toon-giftwrap-request`), and over the shared secret for the response
 (`toon-giftwrap-response`) and the fulfilment (`toon-giftwrap-fulfillment`).
 
-**The condition** is exactly `deriveCondition(deriveFulfillment(secret))`, and both are exported
-if you want to check the derivation yourself:
+**There is no execution condition.** The PREPARE used to carry a 32-byte `executionCondition`;
+connector ADR 0069 removed it from the wire, leaving a one-byte `greeting` flag in its place. The
+field was invariant across every hop and distinctive per packet — a perfect key for two hops to
+join their logs on — while buying no hop anything, since a hop is paid on arrival and a
+termination's own check was a tautology over the secret it had just opened.
+
+What replaces it is the check that was always the only one worth making, and is now the **only
+fulfilment check made anywhere on the path**: the sender compares what came back against the
+fulfilment its own secret derives.
 
 ```ts
-import { deriveCondition, deriveFulfillment } from '@toon-protocol/client';
+import { deriveFulfillment } from '@toon-protocol/client';
 
-deriveCondition(deriveFulfillment(exchange.sharedSecret)); // === exchange.condition
+deriveFulfillment(exchange.sharedSecret); // === exchange.fulfillment
 ```
+
+Pass it to a transport as `expectedFulfillment` and a FULFILL carrying anything else is returned as
+a failed packet, never retried. `ToonClient.send` does this for you.
 
 The terminating connector opens the wrap, recovers the same secret and derives the same preimage —
 **the app behind the route supplies nothing and holds no key**, which is what keeps "any HTTP
