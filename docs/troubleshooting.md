@@ -99,6 +99,13 @@ node does not settle on, or it has been closed and settled, or the persisted bin
 that no longer exists. This client evicts the binding and retries once; if it keeps happening,
 check `toon channel status --connector-view`.
 
+**A request timed out, and the next few were refused `F03` then `F01`.**
+The packet was delivered anyway and the connector banked the claim, so this end was one claim
+behind. The client settles that itself: the channel is marked doubtful and the next request
+re-reads `claim-state` before signing. If you see the refusals persist, the claim-state
+read is failing too — check that the client edge is reachable (over `--socks-proxy`, for a hidden
+service). See [channels.md](channels.md#the-client-asks-for-you-after-a-request-whose-fate-it-does-not-know).
+
 **`F01` for a nonce that does not advance.**
 Your watermark is behind the connector's — the classic symptom of a lost or restored-from-backup
 channel store. `toon claim-state` shows the connector's side. Never patch a nonce by hand;
