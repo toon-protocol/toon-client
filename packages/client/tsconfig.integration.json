@@ -39,6 +39,7 @@
   "files": [
     "src/__integration__/btp-transport.integration.test.ts",
     "src/__integration__/cli-entry-point.integration.test.ts",
+    "src/__integration__/hidden-service.integration.test.ts",
     "src/__integration__/http-ilp-transport.integration.test.ts",
     "src/__integration__/rust-edge-devnet.integration.test.ts",
     "src/__integration__/solana-channel-lifecycle.integration.test.ts"

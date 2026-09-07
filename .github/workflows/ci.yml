@@ -550,6 +550,7 @@ jobs:
           pnpm --filter @toon-protocol/client test:integration \
             src/__integration__/btp-transport.integration.test.ts \
             src/__integration__/cli-entry-point.integration.test.ts \
+            src/__integration__/hidden-service.integration.test.ts \
             src/__integration__/http-ilp-transport.integration.test.ts 2>&1 \
             | tee /tmp/integration.log
 
@@ -565,14 +566,22 @@ jobs:
           BTP_TESTS: '6'
           CLI_ENTRY_TESTS: '3'
           HTTP_TESTS: '6'
-          EXPECTED_TOTAL: '15'
+          # The hidden-service suite carries one block that is skipped on
+          # purpose: it targets a real deployed `.anyone` connector and no such
+          # node exists yet, so it is gated on TOON_HS_CONNECTOR. Pinning the
+          # skipped count rather than tolerating any skip keeps that one
+          # deliberate omission from becoming cover for an accidental one.
+          HS_TESTS: '5'
+          HS_SKIPPED: '1'
+          EXPECTED_TOTAL: '19'
+          EXPECTED_SKIPPED: '1'
         run: |
           set -euo pipefail
           sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/integration.log > /tmp/integration.plain
           fail=0
 
           assert_suite() {
-            suite="$1"; expected="$2"
+            suite="$1"; expected="$2"; skipped="${3:-}"
             line=$(grep -E "${suite} +\(" /tmp/integration.plain | tail -1 || true)
             if [ -z "$line" ]; then
               echo "::error::${suite} did not appear in the vitest output at all"
@@ -580,19 +589,33 @@ jobs:
               return
             fi
             echo "  ${line}"
-            # `(N tests)` with no ` | N skipped` suffix asserts none were skipped.
-            if ! echo "$line" | grep -qE "\(${expected} tests\)"; then
-              echo "::error::${suite} did not report exactly ${expected} collected tests with none skipped — see the line above"
+            # `(N tests)` with no ` | N skipped` suffix asserts none were
+            # skipped. A suite with a deliberate skip passes its exact count as
+            # the third argument, so the skip is pinned rather than tolerated.
+            if [ -n "$skipped" ]; then
+              want="\(${expected} tests \| ${skipped} skipped\)"
+            else
+              want="\(${expected} tests\)"
+            fi
+            if ! echo "$line" | grep -qE "${want}"; then
+              echo "::error::${suite} did not report exactly ${expected} collected tests with ${skipped:-no} skipped — see the line above"
               fail=1
             fi
           }
 
           assert_suite src/__integration__/btp-transport.integration.test.ts "$BTP_TESTS"
           assert_suite src/__integration__/cli-entry-point.integration.test.ts "$CLI_ENTRY_TESTS"
+          assert_suite src/__integration__/hidden-service.integration.test.ts "$HS_TESTS" "$HS_SKIPPED"
           assert_suite src/__integration__/http-ilp-transport.integration.test.ts "$HTTP_TESTS"
 
-          if ! grep -qE "Tests +${EXPECTED_TOTAL} passed \(${EXPECTED_TOTAL}\)" /tmp/integration.plain; then
-            echo "::error::vitest did not report ${EXPECTED_TOTAL} passed of ${EXPECTED_TOTAL} — collected is not the same as passed"
+          if [ "$EXPECTED_SKIPPED" -gt 0 ]; then
+            collected=$((EXPECTED_TOTAL + EXPECTED_SKIPPED))
+            total_want="Tests +${EXPECTED_TOTAL} passed \| ${EXPECTED_SKIPPED} skipped \(${collected}\)"
+          else
+            total_want="Tests +${EXPECTED_TOTAL} passed \(${EXPECTED_TOTAL}\)"
+          fi
+          if ! grep -qE "${total_want}" /tmp/integration.plain; then
+            echo "::error::vitest did not report ${EXPECTED_TOTAL} passed and ${EXPECTED_SKIPPED} skipped — collected is not the same as passed"
             grep -E "^ *Tests " /tmp/integration.plain || true
             fail=1
           fi
