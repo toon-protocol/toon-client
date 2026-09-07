@@ -34,6 +34,7 @@ import {
   type NodeSelfDescription,
 } from '../connector/self-description.js';
 import { selectTransport } from '../btp/transport-select.js';
+import { isHiddenServiceUrl } from '../transport/hs-hostname.js';
 import { HttpIlpClient } from '../http/HttpIlpClient.js';
 import { BtpRuntimeClient, type BtpChannelDeclaration } from '../btp/BtpRuntimeClient.js';
 import { BtpPaidWriteTransport } from '../btp/BtpPaidWriteTransport.js';
@@ -388,6 +389,28 @@ export class ToonClient implements ToonClientLike {
 
   // ─── Private ──────────────────────────────────────────────────────────────
 
+  /**
+   * Refuse an endpoint this client has no way to dial.
+   *
+   * A node's endpoints are its own strings, and a hidden-service node may publish
+   * absolute `.anyone` ones. The configured client edge always wins on *whether*
+   * we can reach the node — but a carriage resolved from the description can
+   * still point somewhere the configured transport cannot go. Without a proxy
+   * that address does not merely fail: the hostname goes out in a plaintext DNS
+   * query first, which is precisely what a hidden service exists to prevent. So
+   * this fails loudly, naming the proxy, before anything dials.
+   */
+  private assertEndpointReachable(endpoint: string): void {
+    if (this.config.socksProxy !== undefined) return;
+    if (!isHiddenServiceUrl(endpoint)) return;
+    throw new ConfigError(
+      `The connector published the endpoint ${JSON.stringify(endpoint)}, which is a ` +
+        'hidden service, but this client has no `socksProxy` to reach it through. ' +
+        'Set one to a running Anyone Protocol `anon` daemon (e.g. ' +
+        '"socks5h://127.0.0.1:9050"), or ask the operator for a clearnet endpoint.'
+    );
+  }
+
   /** The port {@link send} runs against. */
   private sendContext(): SendContext {
     return {
@@ -516,8 +539,12 @@ export class ToonClient implements ToonClientLike {
     if (this.carriage) return this.carriage;
 
     const choice = selectTransport(description, this.config.transport);
+    const httpEndpoint =
+      choice.kind === 'http' ? choice.url : httpEndpointOf(description, this.connector);
+    this.assertEndpointReachable(choice.url);
+    this.assertEndpointReachable(httpEndpoint);
     const http = new HttpIlpClient({
-      httpEndpoint: choice.kind === 'http' ? choice.url : httpEndpointOf(description, this.connector),
+      httpEndpoint,
       timeout: this.config.timeoutMs,
       httpClient: this.config.fetch,
       ...(this.config.createWebSocket
