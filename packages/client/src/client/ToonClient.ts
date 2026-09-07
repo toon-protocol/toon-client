@@ -79,6 +79,7 @@ export class ToonClient implements ToonClientLike {
   private onChain: OnChainChannelClient | undefined;
   private carriage: { kind: 'http' | 'btp'; transport: PaidWriteTransport } | undefined;
   private btpSession: BtpRuntimeClient | undefined;
+  private readonly hiddenService: { close(): Promise<void> } | undefined;
   private closed = false;
 
   private constructor(init: {
@@ -88,8 +89,11 @@ export class ToonClient implements ToonClientLike {
     description: NodeSelfDescription;
     chain: ChainKind;
     senderId: string;
+    /** The proxy-bound transport, when this client talks to a hidden service. */
+    hiddenService?: { close(): Promise<void> };
   }) {
     this.config = init.config;
+    this.hiddenService = init.hiddenService;
     this.edge = init.edge;
     this.channels = init.channels;
     this.description = init.description;
@@ -128,7 +132,13 @@ export class ToonClient implements ToonClientLike {
    * @throws {NetworkError} the connector could not be reached.
    */
   static async create(config: ToonClientConfig): Promise<ToonClient> {
-    const resolved = resolveConfig(config);
+    const base = resolveConfig(config);
+    // Before the first `GET`: a hidden-service connector is unreachable without
+    // its proxy, and the very first thing this method does is dial. Building the
+    // transport here also means `describe()` below already rides the overlay —
+    // asking a node what it is must not be the request that exposes the asking.
+    const hiddenService = await openHiddenService(base, config);
+    const resolved = hiddenService?.config ?? base;
     const edge = new ConnectorEdgeClient({
       fetch: resolved.fetch,
       timeout: resolved.timeoutMs,
@@ -163,7 +173,15 @@ export class ToonClient implements ToonClientLike {
       );
     }
 
-    return new ToonClient({ config: resolved, edge, channels, description, chain, senderId });
+    return new ToonClient({
+      config: resolved,
+      edge,
+      channels,
+      description,
+      chain,
+      senderId,
+      ...(hiddenService ? { hiddenService: hiddenService.transport } : {}),
+    });
   }
 
   /**
@@ -363,6 +381,9 @@ export class ToonClient implements ToonClientLike {
     this.btpSession = undefined;
     this.carriage = undefined;
     if (session) await session.disconnect();
+    // The dispatcher pools connections; without this a hidden-service client
+    // holds circuits open and the process does not exit.
+    if (this.hiddenService) await this.hiddenService.close();
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────
@@ -657,4 +678,43 @@ function httpEndpointOf(description: NodeSelfDescription, connector: string): st
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(published)
     ? published
     : new URL(published, connector).toString();
+}
+
+/**
+ * Builds the proxy-bound transport for a hidden-service connector, or returns
+ * `undefined` for a clearnet one.
+ *
+ * The import is dynamic on purpose: `../transport/socks.js` reaches for
+ * `node:module` on its first line, and this module is bundled for browsers too.
+ * A browser that somehow reached here would have failed at `resolveConfig`
+ * already — a `.anyone` connector demands a `socksProxy`, and a browser cannot
+ * supply a working one.
+ *
+ * An explicitly injected `fetch` or `createWebSocket` wins over the proxy's. A
+ * caller who supplied their own transport has said something specific about how
+ * bytes leave this process, and silently replacing it would be a worse surprise
+ * than an unproxied request they chose.
+ */
+async function openHiddenService(
+  resolved: ResolvedConfig,
+  config: ToonClientConfig
+): Promise<{ config: ResolvedConfig; transport: { close(): Promise<void> } } | undefined> {
+  const socksProxy = resolved.socksProxy;
+  if (socksProxy === undefined) return undefined;
+
+  const { createHiddenServiceTransport, probeSocks5Proxy } = await import('../transport/socks.js');
+  // Fail closed, and fail now. A missing daemon discovered at packet time costs
+  // a signed claim; discovered here it costs nothing.
+  await probeSocks5Proxy(socksProxy);
+  const transport = createHiddenServiceTransport(socksProxy);
+
+  return {
+    transport,
+    config: {
+      ...resolved,
+      fetch: config.fetch ?? transport.fetch,
+      createWebSocket: config.createWebSocket ?? transport.createWebSocket,
+      rpcDispatcher: resolved.proxyRpc ? transport.dispatcher : undefined,
+    },
+  };
 }
