@@ -25,6 +25,35 @@ standard Ethereum path. A keystore written before 1.0 is read as
 `toon identity --all-derivations` to see both. See
 [api.md](api.md#key-derivation).
 
+**"is a hidden service, which is reachable only through a SOCKS5h proxy".**
+The connector is a `.anyone` address and the library was given no `socksProxy`. The library never
+starts a daemon itself — set `socksProxy` to a running `anon` daemon, or use the `toon` CLI, which
+starts one for you. See [hidden-service.md](hidden-service.md).
+
+**"socksProxy is set, but connector … is a clearnet address".**
+Nothing would have ridden the proxy, so the client refused rather than let you believe otherwise.
+Point `connector` at the node's `.anyone` address, or drop `socksProxy`.
+
+**"use the .anyone TLD", or "is a Tor hidden service".**
+`.anon` is not a routable hidden service — `anon` treats it as a clearnet name and fails much later
+with `HostUnreachable` — and `.onion` belongs to Tor, which this client does not dial. Only
+`<address>.anyone` is routed. The `.anon` message carries the corrected address.
+
+**"No SOCKS5 proxy at 127.0.0.1:9050".**
+Nothing is listening there. Start the daemon, or let `toon` start one. This check runs before the
+first packet on purpose: discovering it later costs a signed claim.
+
+**A hidden-service request is slow, or times out the first time.**
+Building a circuit to a cold hidden service takes tens of seconds. The per-packet timeout already
+defaults to 120 s on this path; raise `timeoutMs` if your node is slower still. A second request
+over the same client reuses the circuit and is far quicker.
+
+**`toon` pauses on a `.anyone` connector, or fails to start a daemon.**
+The first run downloads and verifies a pinned `anon` release, then waits up to 90 s for it to
+bootstrap; the stderr lines say which step it is on. It needs `unzip` on PATH (PowerShell on
+Windows) and a platform with a pinned checksum — an unpinned one is refused rather than trusted.
+On an unsupported or offline machine, run your own daemon and pass `--socks`.
+
 **`ChainUnavailableError`, listing chains.**
 The chain you asked for is not among the node's settlements, or you hold no key for any it
 offers. The error lists what the node does offer; pick one of those, or construct from a mnemonic

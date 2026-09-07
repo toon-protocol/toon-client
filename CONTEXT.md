@@ -45,3 +45,26 @@ _Avoid_: Payment, receipt, voucher, proof
 A connector's rejection of a packet. It is *returned*, never thrown — anything this client throws
 happened before the packet went out, or on chain.
 _Avoid_: Error, rejection, failure
+
+### Reachability
+
+**Hidden service**:
+A connector reachable only inside an anonymity overlay, by an address the public DNS cannot
+resolve and no CA can certify. Abbreviated **HS**.
+_Avoid_: Onion service, dark node, private connector
+
+**HS address**:
+A `<label>.anyone` hostname routed by the `anon` daemon of the [Anyone
+Protocol](https://github.com/anyone-protocol). The `.anon` TLD is *not* one: `anon` treats it as a
+clearnet name and fails. `.onion` is not one either — that is Tor, which this client does not dial.
+_Avoid_: Onion address, .anon address, hidden address
+
+**Clearnet**:
+The ordinary, publicly-resolvable internet — everything that is not reached through the overlay.
+_Avoid_: Public internet, mainnet, the open web
+
+**SOCKS5h proxy**:
+The local port an `anon` daemon listens on, through which every HS byte travels. The trailing `h`
+is load-bearing: it means the *proxy* resolves the hostname, so an HS address never leaks into a
+local DNS query.
+_Avoid_: SOCKS proxy, socks5, the proxy

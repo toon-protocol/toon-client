@@ -34,9 +34,11 @@ them asserts the destination arrived at the proxy as a name. A client that
 resolved locally would record an address, and could not accidentally pass.
 
 The factory is Node-only, so it ships as its own entry point,
-`@toon-protocol/client/hidden-service`. The library barrel exports only its
-types: re-exporting the factory would drag `node:module` into every browser
-bundle of this package. `undici` and `socks` join `ws` as optional dependencies,
+`@toon-protocol/client/hidden-service`. Of the factory, the library barrel
+exports only the *types*: re-exporting the factory itself would drag
+`node:module` into every browser bundle of this package. The browser-safe pieces
+around it — the `.anyone` address helpers, `validateSocks5hUrl`, and the
+chain-RPC binding — are exported from the package root as usual. `undici` and `socks` join `ws` as optional dependencies,
 loaded through guarded dynamic `require`s and marked external, so a consumer who
 never touches a hidden service neither installs them nor bundles a second HTTP
 stack.

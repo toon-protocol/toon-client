@@ -104,6 +104,8 @@ interface ToonClientConfig {
   settlementTimeout?: number;
   autoOpenChannel?: boolean;
   timeoutMs?: number;
+  socksProxy?: string;
+  proxyRpc?: boolean;
 
   btp?: { maxReconnectAttempts?: number; reconnectDelay?: number; declareChannel?: boolean };
   faucetUrl?: string;
@@ -128,7 +130,9 @@ interface ToonClientConfig {
 | `deposit` | `100000n` (0.10 USDC) | Collateral for the first channel this client opens, in base units. |
 | `settlementTimeout` | `86400` | Challenge period in seconds. Floored at `3600` on EVM. |
 | `autoOpenChannel` | `true` | Open a channel on the first `send()` when none exists. |
-| `timeoutMs` | `30000` | Per-packet timeout. |
+| `timeoutMs` | `30000`, or `120000` for a hidden service | Per-packet timeout. A packet's on-wire expiry is set 15 s beyond it (`PACKET_EXPIRY_HEADROOM_MS`), so the client always gives up before the packet does. An explicit `expiresAt` is honoured exactly. |
+| `socksProxy` | — | `socks5h://host:port` for a `.anyone` connector. Required for one, refused for a clearnet one. Node only. See [hidden-service.md](hidden-service.md). |
+| `proxyRpc` | `true` | Send chain RPC through `socksProxy` too. Setting it to `false` opts **chain RPC only** out — the client edge and the BTP socket still ride the proxy. Turn it off only for an RPC endpoint that is already private. |
 | `faucetUrl` | the devnet faucet | Devnet only. |
 
 ## Sending
@@ -421,6 +425,21 @@ connector's own wire vectors — see
 | `patchSolanaRecentBlockhash` | Moves the 32 blockhash bytes to the one a fee payer chose, clearing the signatures made over the old message |
 | `generateSolanaKeypair`, `solanaKeypair` | A fresh single-use keypair, or one read back from a 32-byte seed or 64-byte secret |
 | `DEVNET`, `defaultRpcUrl` | Well-known devnet values. Defaults and examples only — settlement facts always come from `GET /ilp` |
+| `isRoutableHsHostname`, `isHiddenServiceUrl`, `assertRoutableHsHostname` | Hidden-service address validation. Pure and browser-safe — the `.anyone` pattern and the `.anon`/`.onion` refusals, in one place |
+| `validateSocks5hUrl` | Parses and enforces a `socks5h://` proxy URL, returning its host and port |
+| `rpcFetch`, `rpcTransport` | Bind a chain-RPC target to the proxy's `fetch`/dispatcher — see [hidden-service.md](hidden-service.md) |
+
+## The hidden-service entry point
+
+`createHiddenServiceTransport` and `probeSocks5Proxy` are **not** in the barrel. They are Node-only
+and ship from their own subpath, so a browser bundle never follows an import into them:
+
+```ts
+import { createHiddenServiceTransport } from '@toon-protocol/client/hidden-service';
+```
+
+Most callers need neither: passing `socksProxy` to `ToonClient.create` builds the transport
+internally. See [hidden-service.md](hidden-service.md).
 
 ## Examples
 

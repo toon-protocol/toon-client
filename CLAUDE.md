@@ -50,14 +50,15 @@ The ILP payment engine, the connector itself, and the protocol documents are the
 ## Dependencies
 
 No `@toon-protocol/core` and no `@toon-protocol/sdk` — this package has no TOON-protocol runtime
-dependencies at all. Its dependencies are `viem`, the `@noble`/`@scure` primitives, and optional
-`ws` for the websocket carriage in Node.
+dependencies at all. Its dependencies are `viem`, the `@noble`/`@scure` primitives, and three
+optional ones, each loaded through a guarded dynamic `require` and never bundled: `ws` for the
+websocket carriage, and `undici` + `socks` for the hidden-service transport.
 
 ## Docs
 
 `README.md` is the front door and stays short. Everything else is in `docs/`:
-getting-started, api, cli, channels, how-a-paid-packet-works, devnet, errors, troubleshooting,
-development. `docs/devnet.md` is the only place the full address table lives.
+getting-started, api, cli, channels, how-a-paid-packet-works, hidden-service, devnet, errors,
+troubleshooting, development. `docs/devnet.md` is the only place the full address table lives.
 
 ## Agent skills
 
