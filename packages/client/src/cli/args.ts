@@ -115,6 +115,13 @@ export const GLOBAL_OPTIONS: Record<string, OptionSpec> = {
     arg: 'auto|http|btp',
     help: 'Which carriage to pay over. Default auto.',
   },
+  socks: {
+    type: 'string',
+    arg: 'URL',
+    help:
+      'SOCKS5h proxy for a .anyone connector, e.g. socks5h://127.0.0.1:9050. ' +
+      'The daemon is yours to run; nothing is downloaded or spawned. Env TOON_SOCKS.',
+  },
   json: { type: 'boolean', help: 'Print one JSON document on stdout and nothing else.' },
   quiet: { type: 'boolean', help: 'Suppress progress and warnings on stderr.' },
   help: { type: 'boolean', short: 'h', help: 'Show this help.' },
@@ -452,7 +459,8 @@ export function usage(command?: string): string {
     columns(Object.entries(GLOBAL_OPTIONS).map(([n, s]) => optionLine(n, s))),
     '',
     'Environment: TOON_CONNECTOR, TOON_MNEMONIC, TOON_KEYSTORE,',
-    '             TOON_KEYSTORE_PASSWORD, TOON_CHAIN, TOON_RPC_URL, TOON_CHANNEL_STORE.',
+    '             TOON_KEYSTORE_PASSWORD, TOON_CHAIN, TOON_RPC_URL, TOON_CHANNEL_STORE,',
+    '             TOON_SOCKS.',
     '',
     "Run 'toon help <command>' for one command in detail.",
   ].join('\n');
