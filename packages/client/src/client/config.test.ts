@@ -8,6 +8,7 @@ import {
   DEFAULT_DEPOSIT,
   DEFAULT_SETTLEMENT_TIMEOUT,
   DEFAULT_TIMEOUT_MS,
+  DEFAULT_HS_TIMEOUT_MS,
 } from './config.js';
 import { ConfigError } from './errors.js';
 import { InMemoryChannelStore, JsonFileChannelStore } from '../channel/ChannelStore.js';
@@ -240,5 +241,74 @@ describe('addressFor', () => {
     expect(addressFor(identity, 'evm')).toBe(identity.evm?.address);
     expect(addressFor(identity, 'solana')).toBe(identity.solana?.publicKey);
     expect(addressFor({}, 'evm')).toBeUndefined();
+  });
+});
+
+describe('resolveConfig — hidden services', () => {
+  const HS = 'http://qrstuvwxyz234567abcdefghijklmnop.anyone';
+  const PROXY = 'socks5h://127.0.0.1:9050';
+
+  it('accepts a .anyone connector over plain http, given a proxy', () => {
+    quiet();
+    // No CA can issue for .anyone, and the overlay authenticates the endpoint
+    // itself, so demanding TLS here would make the address undeployable.
+    const resolved = resolveConfig(base({ connector: HS, socksProxy: PROXY }));
+    expect(resolved.connector).toBe(HS);
+    expect(resolved.connectorIsHiddenService).toBe(true);
+    expect(resolved.socksProxy).toBe(PROXY);
+  });
+
+  it('refuses a hidden service with no proxy, naming the daemon', () => {
+    quiet();
+    expect(() => resolveConfig(base({ connector: HS }))).toThrow(ConfigError);
+    expect(() => resolveConfig(base({ connector: HS }))).toThrow(/only through a SOCKS5h proxy/);
+    expect(() => resolveConfig(base({ connector: HS }))).toThrow(/anon` daemon/);
+  });
+
+  it('refuses a proxy with no hidden service, rather than implying anonymity', () => {
+    quiet();
+    // The dangerous direction: the caller believes they are inside the overlay.
+    expect(() => resolveConfig(base({ socksProxy: PROXY }))).toThrow(/clearnet address/);
+  });
+
+  it('refuses socks5:// — the missing h leaks the address it is hiding', () => {
+    quiet();
+    expect(() => resolveConfig(base({ connector: HS, socksProxy: 'socks5://127.0.0.1:9050' })))
+      .toThrow(/socks5h:\/\/ scheme/);
+  });
+
+  it('names the fix for the two near-miss TLDs', () => {
+    quiet();
+    expect(() => resolveConfig(base({ connector: 'http://abc.anon' }))).toThrow(
+      /use the \.anyone TLD/
+    );
+    expect(() => resolveConfig(base({ connector: 'http://abc.onion' }))).toThrow(
+      /Tor hidden service/
+    );
+  });
+
+  it('gives a hidden-service packet a timeout a circuit can actually fit in', () => {
+    quiet();
+    // 30s is a clearnet number. A cold circuit can eat most of it before the
+    // connector sees a byte, and the packet's expiry is stamped before that.
+    expect(resolveConfig(base()).timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
+    expect(resolveConfig(base({ connector: HS, socksProxy: PROXY })).timeoutMs).toBe(
+      DEFAULT_HS_TIMEOUT_MS
+    );
+  });
+
+  it('still lets the caller name their own timeout', () => {
+    quiet();
+    expect(
+      resolveConfig(base({ connector: HS, socksProxy: PROXY, timeoutMs: 5_000 })).timeoutMs
+    ).toBe(5_000);
+  });
+
+  it('proxies chain RPC by default, and lets a private node opt out', () => {
+    quiet();
+    expect(resolveConfig(base({ connector: HS, socksProxy: PROXY })).proxyRpc).toBe(true);
+    expect(
+      resolveConfig(base({ connector: HS, socksProxy: PROXY, proxyRpc: false })).proxyRpc
+    ).toBe(false);
   });
 });
