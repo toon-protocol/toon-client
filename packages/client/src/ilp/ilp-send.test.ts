@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   mapIlpResponse,
   resolveExecutionCondition,
+  resolveExpiresAt,
   FULFILLMENT_MISMATCH_CODE,
   FULFILLMENT_MISMATCH_MESSAGE,
+  PACKET_EXPIRY_HEADROOM_MS,
 } from './ilp-send.js';
 import { ILPPacketType } from '../btp/protocol.js';
 import { mintExecutionCondition } from '../utils/condition.js';
@@ -136,5 +138,51 @@ describe('resolveExecutionCondition — core ≥3.4.0 IlpClient base64 form', ()
     const zero = new Uint8Array(32);
     expect(resolveExecutionCondition(zero)).toEqual(zero);
     expect(resolveExecutionCondition(toBase64(zero))).toEqual(zero);
+  });
+});
+
+describe('resolveExpiresAt — the wire outlives the sender’s own patience (#646)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-12T12:34:56.789Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('is 15 s of headroom, exported so both carriages state the same invariant', () => {
+    expect(PACKET_EXPIRY_HEADROOM_MS).toBe(15_000);
+  });
+
+  it('defaults to now + timeout + headroom', () => {
+    expect(resolveExpiresAt(undefined, 30_000).getTime()).toBe(
+      Date.now() + 30_000 + PACKET_EXPIRY_HEADROOM_MS
+    );
+  });
+
+  it('leaves the packet live at the instant the sender aborts — never expired under a signed claim', () => {
+    const timeoutMs = 5_000;
+    expect(resolveExpiresAt(undefined, timeoutMs).getTime()).toBeGreaterThan(
+      Date.now() + timeoutMs
+    );
+  });
+
+  it('honours an explicit Date exactly: neither extended nor clamped', () => {
+    const named = new Date('2026-07-12T12:35:00.000Z');
+    const resolved = resolveExpiresAt(named, 30_000);
+    expect(resolved.getTime()).toBe(named.getTime());
+    expect(resolved).not.toBe(named);
+  });
+
+  it('honours an explicit ISO string exactly, headroom left out of it', () => {
+    expect(resolveExpiresAt('2026-07-12T12:35:00.000Z', 30_000).toISOString()).toBe(
+      '2026-07-12T12:35:00.000Z'
+    );
+  });
+
+  it('honours a named deadline shorter than the timeout — a caller who names one has one', () => {
+    const soon = new Date(Date.now() + 100);
+    expect(resolveExpiresAt(soon, 30_000).getTime()).toBe(soon.getTime());
   });
 });
