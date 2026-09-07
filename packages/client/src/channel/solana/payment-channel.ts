@@ -410,12 +410,31 @@ function isAccountNotFoundError(err: unknown): boolean {
  * definition of "the node answered and said no" (see {@link SolanaRpcError})
  * across the channel and settlement paths.
  */
+/**
+ * Where Solana JSON-RPC goes, and how it gets there.
+ *
+ * A bare URL is the ordinary case and dials the global `fetch`. The object form
+ * carries a `fetch` to use instead — on a hidden-service client that is the
+ * proxied one, so chain reads ride the overlay with the packets rather than
+ * announcing this wallet on clearnet (ADR 0002). Every function in this module
+ * that takes an RPC target passes it straight through to {@link solanaRpc}; only
+ * that function ever looks inside.
+ */
+export type SolanaRpcTarget = string | { url: string; fetchImpl?: typeof fetch };
+
+/** Split a target into the URL to dial and the `fetch` to dial it with. */
+function resolveRpcTarget(target: SolanaRpcTarget): { url: string; fetchImpl: typeof fetch } {
+  if (typeof target === 'string') return { url: target, fetchImpl: globalThis.fetch };
+  return { url: target.url, fetchImpl: target.fetchImpl ?? globalThis.fetch };
+}
+
 export async function solanaRpc(
-  rpcUrl: string,
+  rpcUrl: SolanaRpcTarget,
   method: string,
   params: unknown[] = []
 ): Promise<unknown> {
-  const res = await fetch(rpcUrl, {
+  const { url, fetchImpl } = resolveRpcTarget(rpcUrl);
+  const res = await fetchImpl(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -437,7 +456,7 @@ export async function solanaRpc(
 }
 
 /** Latest blockhash, base58 — what `patchSolanaRecentBlockhash` accepts as-is. */
-export async function getLatestBlockhash(rpcUrl: string): Promise<string> {
+export async function getLatestBlockhash(rpcUrl: SolanaRpcTarget): Promise<string> {
   const result = (await solanaRpc(rpcUrl, 'getLatestBlockhash', [
     { commitment: 'confirmed' },
   ])) as { value: { blockhash: string } };
@@ -451,7 +470,7 @@ interface AccountInfo {
 }
 
 async function getAccountInfo(
-  rpcUrl: string,
+  rpcUrl: SolanaRpcTarget,
   pubkey: string
 ): Promise<AccountInfo | null> {
   const result = (await solanaRpc(rpcUrl, 'getAccountInfo', [
@@ -472,7 +491,7 @@ async function getAccountInfo(
  * hard `ChannelFundingError` telling the user to fund an already-funded wallet.
  */
 export async function getTokenAccountBalance(
-  rpcUrl: string,
+  rpcUrl: SolanaRpcTarget,
   tokenAccount: string
 ): Promise<bigint | null> {
   try {
@@ -489,7 +508,7 @@ export async function getTokenAccountBalance(
 }
 
 /** Native SOL balance (lamports) of an account; 0 for an account that does not exist. */
-export async function getLamports(rpcUrl: string, pubkey: string): Promise<bigint> {
+export async function getLamports(rpcUrl: SolanaRpcTarget, pubkey: string): Promise<bigint> {
   const result = (await solanaRpc(rpcUrl, 'getBalance', [
     pubkey,
     { commitment: 'confirmed' },
@@ -551,7 +570,7 @@ export const MIN_LAMPORTS_FOR_DEPOSIT = LAMPORTS_PER_SIGNATURE;
  * actionable {@link ChannelFundingError}.
  */
 async function assertOpenFunding(opts: {
-  rpcUrl: string;
+  rpcUrl: SolanaRpcTarget;
   payerPubkey: string;
   tokenMint: string;
   /** Lamport floor for the transactions about to be sent. */
@@ -596,7 +615,7 @@ async function assertOpenFunding(opts: {
  * with an execution error. A settled-but-failed transaction is not a success.
  */
 export async function waitForConfirmation(
-  rpcUrl: string,
+  rpcUrl: SolanaRpcTarget,
   signature: string,
   timeoutMs = 30000
 ): Promise<void> {
@@ -668,7 +687,7 @@ interface AccountEntry {
  * second time.
  */
 export async function buildAndSendTransaction(
-  rpcUrl: string,
+  rpcUrl: SolanaRpcTarget,
   feePayer: Signer,
   instructions: RawInstruction[],
   additionalSigners: Signer[] = []
@@ -928,7 +947,7 @@ export function decodeChannelAccount(
  * settled.
  */
 export async function getChannelAccountState(
-  rpcUrl: string,
+  rpcUrl: SolanaRpcTarget,
   channelPDA: string
 ): Promise<SolanaChannelAccountState> {
   const info = await getAccountInfo(rpcUrl, channelPDA);
@@ -975,7 +994,7 @@ function ownDeposit(
 }
 
 export interface OpenSolanaChannelParams {
-  rpcUrl: string;
+  rpcUrl: SolanaRpcTarget;
   programId: string;
   tokenMint: string;
   /** Client's 32-byte Ed25519 seed (participant A + fee payer). */
@@ -1024,7 +1043,7 @@ export interface OpenSolanaChannelResult {
  * would go on signing claims that cannot be redeemed.
  */
 async function topUpExistingChannel(opts: {
-  rpcUrl: string;
+  rpcUrl: SolanaRpcTarget;
   programId: string;
   tokenMint: string;
   channelPDA: string;
@@ -1194,7 +1213,7 @@ export async function openSolanaChannel(
 }
 
 export interface DepositSolanaChannelParams {
-  rpcUrl: string;
+  rpcUrl: SolanaRpcTarget;
   programId: string;
   /** The channel PDA (base58) — the Solana channel id. */
   channelPDA: string;
@@ -1260,7 +1279,7 @@ export async function depositSolanaChannel(
 // ---------------------------------------------------------------------------
 
 export interface CloseSolanaChannelParams {
-  rpcUrl: string;
+  rpcUrl: SolanaRpcTarget;
   programId: string;
   /** The channel PDA (base58) — the Solana channel id. */
   channelPDA: string;
@@ -1315,7 +1334,7 @@ export async function closeSolanaChannel(
 }
 
 export interface SettleSolanaChannelParams {
-  rpcUrl: string;
+  rpcUrl: SolanaRpcTarget;
   programId: string;
   channelPDA: string;
   /** Ed25519 signing seed (32 bytes) of whoever pays for the settle tx. */
@@ -1591,7 +1610,7 @@ export function buildClaimFromChannelInstructions(
  */
 export async function claimFromSolanaChannel(
   params: ClaimFromSolanaChannelParams & {
-    rpcUrl: string;
+    rpcUrl: SolanaRpcTarget;
     /** Ed25519 seed of `feePayerPubkey`. */
     feePayerSeed: Uint8Array;
   }

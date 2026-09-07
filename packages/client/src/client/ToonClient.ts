@@ -482,10 +482,18 @@ export class ToonClient implements ToonClientLike {
     const client = new OnChainChannelClient({
       evmSigner: new EvmSigner(this.requireEvmKey()),
       chainRpcUrls,
+      ...(this.config.rpcDispatcher !== undefined
+        ? { rpcDispatcher: this.config.rpcDispatcher }
+        : {}),
       ...(this.config.identity.solana
         ? {
             solanaConfig: {
               rpcUrl: this.config.rpcUrls.solana,
+              // Same condition as the EVM dispatcher: proxied only when there is
+              // a proxy and the caller has not opted RPC out of it.
+              ...(this.config.rpcDispatcher !== undefined
+                ? { rpcFetch: this.config.fetch }
+                : {}),
               keypair: this.config.identity.solana.secretKey,
               // The DEFAULT only. Each channel opens under the program its own
               // terms name, because ADR 0053 binds that program into the signed
