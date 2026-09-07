@@ -31,6 +31,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./hidden-service": {
+      "types": "./dist/transport/hidden-service.d.ts",
+      "import": "./dist/transport/hidden-service.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -59,6 +63,8 @@
     "viem": "^2.0.0"
   },
   "optionalDependencies": {
+    "socks": "^2.8.10",
+    "undici": "^7.16.0",
     "ws": "^8.0.0"
   },
   "devDependencies": {

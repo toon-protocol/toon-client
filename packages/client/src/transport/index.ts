@@ -7,9 +7,14 @@
  * misconfigured hidden-service connector before a single byte or DNS query
  * leaves the process.
  *
- * The SOCKS transport that consumes these is Node-only and deliberately absent
- * from this barrel: re-exporting it would drag a Node built-in into every
- * browser bundle of this package. It ships as its own entry point instead.
+ * The SOCKS transport that consumes these is Node-only, so only its *types*
+ * appear here: exporting `createHiddenServiceTransport` itself would drag a Node
+ * built-in into every browser bundle of this package. It ships as its own entry
+ * point instead:
+ *
+ * ```ts
+ * import { createHiddenServiceTransport } from '@toon-protocol/client/hidden-service';
+ * ```
  */
 export {
   HS_HOSTNAME_REGEX,
@@ -19,3 +24,4 @@ export {
   assertRoutableHsHostname,
 } from './hs-hostname.js';
 export { validateSocks5hUrl } from './socks-url.js';
+export type { HiddenServiceTransport, HiddenServiceTransportOptions } from './socks.js';
