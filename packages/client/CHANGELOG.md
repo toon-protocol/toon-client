@@ -1,5 +1,184 @@
 # @toon-protocol/client
 
+## 2.2.0
+
+### Minor Changes
+
+- 30c3a60: Chain RPC rides the connector's proxy.
+
+  When a client is configured with a `socksProxy`, chain RPC now travels through it too — not just
+  the packets. Reaching a connector inside the overlay while reading chain state on clearnet would
+  announce the payer's settlement address, from the payer's own IP, timed either side of every paid
+  request; that leak defeats the only threat model in which a hidden service is worth its latency.
+  EVM reads and writes join the overlay through an undici dispatcher in viem's `fetchOptions`, and
+  Solana's JSON-RPC through an injected `fetch`, so channel opens, deposits, closes, settles, wallet
+  balance reads and wallet transfers are all proxied on both chains.
+
+  `proxyRpc: false` opts chain RPC back out, for a payer running their own node on loopback. A
+  clearnet client is unchanged in every respect. Recorded as ADR 0002.
+
+- 51be1f3: `toon` starts its own `anon` daemon for a `.anyone` connector
+
+  Point the CLI at a hidden-service connector with neither `--socks` nor `TOON_SOCKS` and it now
+  downloads a pinned, checksummed `anon` release, spawns it, proxies through it, and stops it when
+  the command ends. Every step is announced on stderr, so `--json` output stays exactly one
+  parseable document. The release is pinned to the stable `live` channel with a per-platform
+  sha256; an asset with no pinned hash refuses to download rather than downloading unverified, and
+  the binary is cached by version so only the first run pays for it.
+
+  The library still does none of this, deliberately: `@toon-protocol/client` accepts a `socksProxy`
+  and nothing more. See `docs/adr/0001-managed-anon-daemon-lives-in-the-cli.md`.
+
+- 1fe1063: `toon --socks` and `TOON_SOCKS` point the CLI at a SOCKS5h proxy, so a payer who already runs an
+  Anyone Protocol `anon` daemon can reach a `.anyone` connector through it. The flag beats the
+  environment, as every other setting in this CLI does, and both paths use the operator's own daemon:
+  nothing is downloaded and no process is spawned. Clearnet runs are untouched.
+- dff1667: Refuse a misconfigured hidden-service connector at construction, in a message
+  that names the fix.
+
+  A connector can be deployed as an Anyone Protocol hidden service, addressed as
+  `<label>.anyone`. Pointing this client at one used to fail — but only after
+  `fetch` had asked the operating system where that host lived, putting the
+  address into a plaintext DNS query. The naive attempt leaked the one thing the
+  address exists to withhold, and then failed anyway. So every check below now
+  runs in `resolveConfig`, before a single byte or lookup leaves the process, and
+  costs nothing rather than a signed claim.
+
+  `ToonClientConfig` gains `socksProxy` — a `socks5h://` URL naming a running
+  `anon` daemon's SOCKS port — and `proxyRpc` (default `true`), which records
+  whether chain RPC should ride that same proxy. Resolution stays synchronous and
+  browser-safe: it validates and records, and builds nothing.
+
+  - A `.anyone` connector with no `socksProxy` is refused, naming the proxy to set
+    and that the `toon` CLI can start a daemon for you.
+  - A `socksProxy` against a clearnet connector is refused too. Nothing would ride
+    it, and the payer would believe they were anonymous when they were not.
+  - `socks5://` is refused in favour of `socks5h://`. The `h` is what makes the
+    _proxy_ resolve the hostname; without it the client resolves locally first,
+    which is the leak this feature exists to close.
+  - `.anon` is refused with the corrected `.anyone` address in the message. The
+    daemon treats that TLD as clearnet and fails far from the typo.
+  - `.onion` is refused plainly: this client dials the Anyone Protocol, not Tor,
+    and there is no flag that changes it.
+  - Plain `http://` is accepted for a hidden-service host, because no CA can
+    certify one and the overlay authenticates the endpoint itself.
+  - The per-packet timeout defaults to 120 s for a hidden-service connector rather
+    than the clearnet 30 s, since a cold circuit can take tens of seconds before
+    the connector has seen a byte.
+
+  The `.anyone` pattern and `socks5h://` parsing are now one pure, browser-safe
+  module exported from the package root, so config validation, endpoint checking
+  and the CLI all agree on what an address is.
+
+- ce4c318: Pay a connector that is a hidden service. When `socksProxy` is set, `ToonClient.create` probes the
+  proxy port and builds the proxy-bound transport _before_ the first `GET` of the self-description, so
+  that first request already rides the overlay and a daemon the payer forgot to start costs no signed
+  claim. The transport fills the `fetch` and `createWebSocket` injection points the client already had
+  — there is no transport branch and no new mode, and an explicitly injected `fetch` or
+  `createWebSocket` still wins. `close()` now releases the proxy's pooled sockets, so a process that
+  opened a hidden-service client still exits.
+- ef16cb4: Refuse an endpoint a node advertises that this client has no way to dial.
+
+  A node's endpoints are its own strings, and a hidden-service node may publish
+  absolute `.anyone` ones. The connector URL the payer configured stays
+  authoritative for reachability — what a node advertises must never redirect a
+  payer somewhere they did not choose. But a carriage resolved from the
+  self-description can still point somewhere the configured transport cannot go,
+  and without a `socksProxy` such an address does not merely fail: the hostname
+  goes out in a plaintext DNS query first, which is exactly what a hidden service
+  exists to prevent.
+
+  Both the selected carriage's URL and the resolved HTTP endpoint beneath it are
+  now checked before anything dials, and a hidden-service endpoint on a client
+  with no `socksProxy` is refused with a `ConfigError` naming the missing proxy
+  and how to supply it — or to ask the operator for a clearnet endpoint. A client
+  that does have a proxy dials the published endpoint normally. The check refuses;
+  it never redirects.
+
+- 8e28f63: Dial a hidden service through a SOCKS5h proxy, and prove the address never gets
+  resolved locally.
+
+  Config validation could already refuse a misconfigured hidden-service connector;
+  nothing could yet reach one. `createHiddenServiceTransport(socksProxy)` turns a
+  single `socks5h://` URL into the three objects that this client's three
+  consumers each insist on, because no one object serves all three: the client
+  edge goes through `fetch`, which in Node is undici and takes a **dispatcher** —
+  it will not accept an `http.Agent`; chain RPC goes through viem, which calls the
+  _global_ `fetch` and offers no seam but `http(url, { fetchOptions })` carrying
+  that same dispatcher; and the BTP carriage goes through `ws`, which is
+  `node:http` underneath and takes an `http.Agent` and nothing else. So one SOCKS
+  connection primitive is wrapped three ways, and the SOCKS5 handshake itself
+  stays the `socks` package's job. `fetch` returns ordinary global `Response`
+  objects, not undici's look-alike, because callers do compare against the global
+  class.
+
+  The connect timeout defaults to 120 s rather than the `socks` library's 30 s. A
+  cold introduction-point circuit routinely takes longer than 30 s, and a
+  too-short connect timeout reports "slow" as "unreachable" — an error
+  indistinguishable from a wrong address.
+
+  The privacy claim is that a `.anyone` hostname is never resolved locally, and a
+  mocked transport cannot falsify that. So the tests run against a real minimal
+  SOCKS5 server that records every CONNECT and distinguishes a request for a
+  _name_ from a request for an _address_: a fetch round trip, a POST carrying its
+  body and headers, a websocket round trip, the viem-style dispatcher path, and a
+  refusal — not a hang — when the proxy cannot reach the destination. Every one of
+  them asserts the destination arrived at the proxy as a name. A client that
+  resolved locally would record an address, and could not accidentally pass.
+
+  The factory is Node-only, so it ships as its own entry point,
+  `@toon-protocol/client/hidden-service`. Of the factory, the library barrel
+  exports only the _types_: re-exporting the factory itself would drag
+  `node:module` into every browser bundle of this package. The browser-safe pieces
+  around it — the `.anyone` address helpers, `validateSocks5hUrl`, and the
+  chain-RPC binding — are exported from the package root as usual. `undici` and `socks` join `ws` as optional dependencies,
+  loaded through guarded dynamic `require`s and marked external, so a consumer who
+  never touches a hidden service neither installs them nor bundles a second HTTP
+  stack.
+
+  `undici` is pinned to `^7`, and the major is load-bearing rather than
+  incidental. Node's global `fetch` hands the dispatcher a handler that its _own_
+  bundled undici defines, and that handler changed shape: Node 22 passes the old
+  `onConnect`/`onHeaders` one, Node 26 the new `onRequestStart` one. undici 7
+  accepts both; undici 8 dropped the old shape, and under it every request through
+  the dispatcher fails on Node 22 with `invalid onRequestStart method`.
+
+### Patch Changes
+
+- 686d837: Fix `toon` being a silent no-op through its `bin` link.
+
+  `package.json` points `bin` at `dist/cli/main.js`, so npm links
+  `node_modules/.bin/toon` at it — and Node then reports `import.meta.url` as the
+  realpath while `process.argv[1]` is the link. The entry guard compared those two
+  strings, decided this file was not the program, and exited 0 having run nothing.
+  That silence is the dangerous half: a script checking `$?` saw green. It affected
+  every documented way to run the command — `npx toon`, a global install, and a
+  project's `node_modules/.bin/toon` — leaving the real built path as the only one
+  that worked.
+
+  Both sides are now resolved through their symlinks before they are compared.
+
+- cc41f69: Fix a packet expiring at the same instant the client stops waiting for it.
+
+  A packet's expiry was `now + timeoutMs` — the very moment the client's own request
+  aborts. The two numbers were the same, and on clearnet nothing showed, because both
+  are far longer than a round trip. They are not the same thing, though, and the
+  difference is money. A late answer arrived to a client that had stopped listening,
+  against a packet that had just expired, _after_ a claim had been signed for it: paid,
+  with no verdict. The expiry is also stamped when the packet is built, so any time
+  spent getting the bytes onto a slow carriage is spent out of the packet's own life
+  before the connector has seen a byte.
+
+  Packet expiry now sits `PACKET_EXPIRY_HEADROOM_MS` (15 s, exported) beyond the client
+  timeout, so the client is always the first of the two to give up: whatever it stops
+  waiting for is still, briefly, a live packet the connector can answer and this client
+  can reconcile. An explicitly supplied `expiresAt` is untouched — neither extended nor
+  clamped, because a caller who names a deadline has one.
+
+  This is a latent bug on every carriage, and it affects every payer — including everyone
+  who will never send a packet anywhere but clearnet. Nothing on the wire changes: no new
+  packet fields, and no change to sealing, claims or pricing.
+
 ## 2.1.1
 
 ### Patch Changes
