@@ -78,12 +78,38 @@ export function resolveExecutionCondition(
   return typeof condition === 'string' ? fromBase64(condition) : condition;
 }
 
-/** Normalize an `IlpSendParams.expiresAt` to a `Date` (default: now + timeout). */
+/**
+ * How much longer a packet lives on the wire than the sender is prepared to wait.
+ *
+ * The packet's expiry and the sender's own abort used to be the same number, and
+ * on clearnet nothing showed: both are far longer than a round trip. They are not
+ * the same thing, though, and over a slow carriage the difference is money. If a
+ * PREPARE expires at the instant the client gives up, then a late answer arrives
+ * to a client that has already stopped listening, having *already presented a
+ * signed claim* — the packet is paid for and the verdict is lost. Worse, the
+ * expiry is stamped when the packet is built, which over a hidden service is
+ * before the circuit even exists, so seconds of it are spent before the connector
+ * has seen a byte.
+ *
+ * Giving the wire the longer deadline means the client is always the first of the
+ * two to give up: whatever the client stops waiting for is still, briefly, a live
+ * packet the connector can answer and this client can reconcile — never one that
+ * expired underneath a claim.
+ */
+export const PACKET_EXPIRY_HEADROOM_MS = 15_000;
+
+/**
+ * Normalize an `IlpSendParams.expiresAt` to a `Date`.
+ *
+ * Default: now + timeout + {@link PACKET_EXPIRY_HEADROOM_MS}. An explicit
+ * `expiresAt` is honoured exactly as given — a caller who names a deadline has
+ * one, and it is not this function's business to extend it.
+ */
 export function resolveExpiresAt(
   expiresAt: Date | string | undefined,
   timeoutMs: number
 ): Date {
-  if (expiresAt === undefined) return new Date(Date.now() + timeoutMs);
+  if (expiresAt === undefined) return new Date(Date.now() + timeoutMs + PACKET_EXPIRY_HEADROOM_MS);
   return expiresAt instanceof Date ? new Date(expiresAt.getTime()) : new Date(expiresAt);
 }
 

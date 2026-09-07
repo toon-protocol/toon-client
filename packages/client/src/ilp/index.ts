@@ -7,6 +7,7 @@ export type {
 } from './types.js';
 export {
   resolveExecutionCondition,
+  PACKET_EXPIRY_HEADROOM_MS,
   resolveExpiresAt,
   mapIlpResponse,
   FULFILLMENT_MISMATCH_CODE,
