@@ -54,6 +54,14 @@ export * from './wallet/index.js';
 // the ArNS ceremony that spends one across a store and a gas station.
 export * from './jobs/index.js';
 
+/**
+ * Hidden-service addressing: `.anyone` validation and `socks5h://` parsing. Both
+ * are pure and browser-safe. The Node-only factory that builds a proxied
+ * transport is not here — it would drag `node:module` into every browser bundle
+ * — and ships as its own entry point instead.
+ */
+export * from './transport/index.js';
+
 // Well-known devnet values. Defaults and examples only — a connector's real
 // settlement facts always come from its own `GET /ilp`.
 export * from './presets.js';
