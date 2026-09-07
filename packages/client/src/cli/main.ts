@@ -314,6 +314,9 @@ export async function runCli(argv: string[], options: RunOptions = {}): Promise<
         out.warn(`toon: closing the client failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    // And the daemon this run started, if it started one: leaving an `anon`
+    // process behind would hold the terminal and outlive the command.
+    context?.stopManagedAnon();
   }
 }
 
