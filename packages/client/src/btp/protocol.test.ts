@@ -19,12 +19,26 @@ describe('serializeIlpPrepare — the greeting flag on the wire (ADR 0069)', () 
   // connector issue #1269 removed it; a decoder reading one byte where the
   // encoder wrote thirty-two is the bug that produced the `invalid packet
   // type byte` refusal this replaces.
+  /**
+   * Read one byte, failing loudly rather than asserting non-null. A short
+   * buffer here means the encoder changed shape, and that must not quietly
+   * read as `undefined` and compare unequal to both 0 and 1 — the whole point
+   * of this suite is that the byte is where we say it is.
+   */
+  function byteAt(buf: Uint8Array, index: number): number {
+    const byte = buf[index];
+    if (byte === undefined) {
+      throw new Error(`PREPARE is too short to hold a byte at offset ${index}`);
+    }
+    return byte;
+  }
+
   function greetingByteOf(prepare: Uint8Array): number {
     let offset = 1;
-    const first = prepare[offset]!;
+    const first = byteAt(prepare, offset);
     offset += first <= 127 ? 1 : 1 + (first & 0x7f);
     offset += 19; // 'YYYYMMDDHHMMSS.mmmZ'
-    return prepare[offset]!;
+    return byteAt(prepare, offset);
   }
 
   it('writes 0x00 for an ordinary payment attempt', () => {

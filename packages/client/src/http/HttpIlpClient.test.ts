@@ -38,20 +38,31 @@ function serializeFulfill(
 }
 
 /**
- * Parse the executionCondition + expiresAt out of an OER PREPARE body.
- * Layout: type(1) | varUInt amount | GeneralizedTime(19) | condition(32) | ...
+ * Parse the greeting flag + expiresAt out of an OER PREPARE body.
+ * Layout: type(1) | varUInt amount | GeneralizedTime(19) | greeting(1) | ...
+ *
+ * That last field held a 32-byte execution condition until connector ADR 0069
+ * replaced it with this one byte.
  */
 function parsePrepareWire(body: Uint8Array): {
   expiresAt: string;
   greeting: number;
 } {
+  /** As in `protocol.test.ts`: a short body is a changed encoder, not a zero. */
+  const byteAt = (index: number): number => {
+    const byte = body[index];
+    if (byte === undefined) {
+      throw new Error(`PREPARE is too short to hold a byte at offset ${index}`);
+    }
+    return byte;
+  };
+
   let offset = 1;
-  const first = body[offset]!;
+  const first = byteAt(offset);
   offset += first <= 127 ? 1 : 1 + (first & 0x7f);
   const expiresAt = new TextDecoder().decode(body.slice(offset, offset + 19));
   offset += 19;
-  // One byte, where a 32-byte execution condition sat until ADR 0069.
-  return { expiresAt, greeting: body[offset]! };
+  return { expiresAt, greeting: byteAt(offset) };
 }
 
 function serializeReject(
