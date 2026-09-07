@@ -22,8 +22,18 @@
  * internally but exposes it under no specifier (`require('undici')` is
  * `MODULE_NOT_FOUND`, `node:undici` is `ERR_UNKNOWN_BUILTIN_MODULE`), so a
  * dispatcher cannot be constructed without the package. A dispatcher built by the
- * userland copy *is* honoured by Node's global `fetch` — verified against Node
- * 26.7 / undici 8.10, where the custom `connect` hook fires.
+ * userland copy *is* honoured by Node's global `fetch`, which calls
+ * `dispatcher.dispatch(opts, handler)` with a handler its own bundled undici
+ * defines — and that is why the dependency is pinned to **undici 7, not 8**.
+ * Node's handler changed shape: Node 22 (undici 6.22) passes the old
+ * `onConnect`/`onHeaders`/`onData`/`onComplete` handler, Node 26 (undici 8.9)
+ * passes the new `onRequestStart`/`onResponseStart` one. undici 7 accepts both —
+ * its `UnwrapHandler.unwrap` passes an old-style handler through untouched.
+ * undici 8 dropped the old shape, and on Node 22 every request through such a
+ * dispatcher dies in `assertRequestHandler` with
+ * `InvalidArgumentError: invalid onRequestStart method`. Verified green on both
+ * Node 22.21 and Node 26.7 against the fake proxy in `socks.test.ts`; do not
+ * widen the range to `^8` without re-running those on the oldest supported Node.
  *
  * NODE ONLY. This module is imported dynamically, never statically, from the
  * paths that need it; every Node built-in is pulled in through an ESM-safe
@@ -154,10 +164,11 @@ export function createHiddenServiceTransport(
     },
   } as unknown as undiciModule.Agent.Options);
 
-  // Node's global `fetch` honours a dispatcher built by this userland undici
-  // (verified on Node 26.7 / undici 8.10: the `connect` hook above fires), and
-  // returns ordinary global `Response` objects — which `undici.fetch` would not,
-  // and callers do compare those against the global class.
+  // Node's global `fetch` honours a dispatcher built by this userland undici —
+  // the `connect` hook above fires — and returns ordinary global `Response`
+  // objects, which `undici.fetch` would not, and callers do compare those
+  // against the global class. See the note on the undici 7 pin at the top of
+  // this file: this line is what makes the major version load-bearing.
   // `dispatcher` is not in the standard `RequestInit`, and @types/node carries a
   // second copy of undici's types that does not structurally match the userland
   // one — hence the cast. The runtime behaviour is verified, the types are not

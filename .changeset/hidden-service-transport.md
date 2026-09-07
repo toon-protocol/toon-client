@@ -40,3 +40,10 @@ bundle of this package. `undici` and `socks` join `ws` as optional dependencies,
 loaded through guarded dynamic `require`s and marked external, so a consumer who
 never touches a hidden service neither installs them nor bundles a second HTTP
 stack.
+
+`undici` is pinned to `^7`, and the major is load-bearing rather than
+incidental. Node's global `fetch` hands the dispatcher a handler that its *own*
+bundled undici defines, and that handler changed shape: Node 22 passes the old
+`onConnect`/`onHeaders` one, Node 26 the new `onRequestStart` one. undici 7
+accepts both; undici 8 dropped the old shape, and under it every request through
+the dispatcher fails on Node 22 with `invalid onRequestStart method`.

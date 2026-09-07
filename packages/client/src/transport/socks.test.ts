@@ -119,6 +119,11 @@ describe('createHiddenServiceTransport', () => {
   it('exposes a dispatcher the global fetch honours — the viem path', async () => {
     // viem's HTTP transport calls the global `fetch` and accepts no injected
     // one, so ADR 0002 hangs entirely on this working.
+    //
+    // This is also the test that catches an undici major bump: Node's own
+    // bundled undici defines the handler it hands `dispatcher.dispatch`, and
+    // its shape changed between Node 22 and Node 26. Only undici 7 accepts
+    // both — see the note at the top of `socks.ts`.
     const response = await globalThis.fetch(`http://${HS_HOST}/rpc`, {
       dispatcher: transport.dispatcher,
     } as RequestInit);
