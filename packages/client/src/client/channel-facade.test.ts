@@ -424,4 +424,43 @@ describe('the chain client is wired before the chain is reached', () => {
     await resumed.deposit(1_000n);
     expect(adopted.map((a) => a.channelId)).toContain(CHANNEL);
   });
+
+  it('ensure() adopts a resumed channel too — deposit() after it must not find a stranger', async () => {
+    // The send path calls `ensure()` first, and `ensure()` sets `current`.
+    // `requireChannel` (which `deposit`/`close`/`settle` go through) adopts
+    // only when it has to RESOLVE the channel itself; with `current` already
+    // set it returns at once. So a process that resumed via `ensure()` and
+    // then deposited used to fail with "neither opened nor adopted" — the
+    // exact sequence a host runs when it tops up the channel it just paid on.
+    const { facade, channels, adopted } = unwired();
+    await facade.open({ deposit: 100_000n });
+
+    const later: { channelId: string; chain: string }[] = [];
+    const resumed = new ClientChannelFacade({
+      config: resolveConfig({
+        connector: CONNECTOR,
+        mnemonic: MNEMONIC,
+        channelStore: channels.store ?? new InMemoryChannelStore(),
+      }),
+      channels,
+      describe: () => Promise.resolve(description([EVM_SETTLEMENT])),
+      onChainClient: () => ({
+        adoptChannel: (channelId: string, ctx: { chain: string }) => {
+          later.push({ channelId, chain: ctx.chain });
+        },
+        depositToChannel: () =>
+          Promise.resolve({ txHash: '0xdep', depositTotal: 100_000n }),
+        getChannelState: () =>
+          Promise.resolve({ channelId: CHANNEL, status: 'open' as const }),
+      }) as unknown as OnChainChannelClient,
+    });
+
+    await expect(resumed.ensure()).resolves.toBe(CHANNEL);
+    // Adopted by ensure() itself, before any deposit asks for it.
+    expect(later.map((a) => a.channelId)).toContain(CHANNEL);
+    expect(adopted.map((a) => a.channelId)).toContain(CHANNEL);
+    await expect(resumed.deposit(1_000n)).resolves.toMatchObject({
+      channelId: CHANNEL,
+    });
+  });
 });
