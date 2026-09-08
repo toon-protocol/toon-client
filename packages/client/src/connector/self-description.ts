@@ -86,6 +86,9 @@ export interface RoutePrice extends RouteCharge {
   prefix: string;
 }
 
+/** How many bytes one step of `pricePerKib` buys — a kibibyte, as the name says. */
+const BYTES_PER_KIB = 1024n;
+
 /**
  * What one packet actually costs on `terms`, given the size of its **sealed**
  * payload.
@@ -94,17 +97,34 @@ export interface RoutePrice extends RouteCharge {
  * bytes of `SealedExchange.data`, not the caller's request body, which is
  * smaller by the envelope and the wrap. So a charge can only be computed after
  * sealing, which is why {@link ../client/send.js!send} seals before it prices.
+ * Those bytes are the PREPARE's `data` field verbatim on both carriages
+ * (`HttpIlpClient.postPrepare`, `BtpRuntimeClient`), so `sealedBytes` is exactly
+ * the `prepare.data.len()` the connector prices — no envelope, header or framing
+ * sits between the two counts.
  *
- * The unit count is `floor(bytes / 1024) + 1`, which is deliberately **not**
- * `ceil`: the connector counts kibibytes *started* from one, so a 1-byte payload
- * and a 1024-byte payload both cost one unit while a 1025-byte payload costs
- * two. Verified against the deployed store node at 1000 + 10/KiB, which charges
- * 1010 for a 169-byte sealed payload and 1060 for a 5161-byte one.
+ * The unit count is `ceil(bytes / 1024)`: whole kibibytes plus one for any
+ * remainder, and **zero** for an empty payload, which pays the base alone. That
+ * is the connector's own `Price::charge`
+ * (`connector-domain/src/price.rs`, `bytes.div_ceil(1024)`, connector ADR 0065),
+ * evaluated there against the same `prepare.data.len()` at every gate that
+ * charges — the client edge, the peer price gate, and the termination.
+ *
+ * Measured against the deployed store node at `1000 + 10/KiB`, whose x402
+ * greeting quotes the charge for the packet it was handed:
+ * 0 bytes → 1000, 1 → 1010, 1023 → 1010, **1024 → 1010**, 1025 → 1020,
+ * **2048 → 1020**, 2049 → 1030, 5161 → 1060.
+ *
+ * This used to compute `floor(bytes / 1024) + 1` (toon-client#629), which agrees
+ * with `ceil` everywhere except an exact multiple of 1024 and an empty payload,
+ * where it charged one kibibyte too many. Every size that had actually been
+ * measured was a non-multiple, so the fit held and the overpay — silent, since a
+ * claim that advances more than the price is simply accepted — went unnoticed.
  */
 export function chargeFor(terms: RouteCharge, sealedBytes: number): bigint {
   const perKib = terms.pricePerKib;
   if (perKib === undefined || perKib === 0n) return terms.price;
-  const units = BigInt(Math.floor(Math.max(0, sealedBytes) / 1024) + 1);
+  const bytes = BigInt(Math.max(0, Math.trunc(sealedBytes)));
+  const units = (bytes + BYTES_PER_KIB - 1n) / BYTES_PER_KIB;
   return terms.price + perKib * units;
 }
 
