@@ -290,6 +290,73 @@ describe('ToonClient.claimState', () => {
   });
 });
 
+/**
+ * toon-client#671 — the read `send` performs before signing a claim on a
+ * channel whose last one was signed and never confirmed. `send.test.ts` owns
+ * the pipeline's half of this; here the subject is the wiring: a real
+ * `POST /ilp/claim-state` round trip, and what the manager does with the answer.
+ */
+describe('ToonClient — reconciling a doubtful watermark', () => {
+  /** A client tracking `CHANNEL`, with a doubt recorded against it. */
+  async function withDoubt(fake: FakeTerminatingConnector): Promise<{
+    client: ToonClient;
+    channels: ChannelManager;
+  }> {
+    const client = await create(fake, { autoOpenChannel: false });
+    const description = await client.describe();
+    const terms = settlementToTerms(description.settlements[0]!);
+    const channels = (client as unknown as { channels: ChannelManager }).channels;
+    channels.adoptChannel(fake.endpoint, terms, CHANNEL);
+    // A claim signed, sent, and lost to a timeout: repaid locally, and doubted.
+    await channels.signBalanceProof(CHANNEL, 1000n);
+    channels.rollbackAmount(CHANNEL, 1000n);
+    channels.markWatermarkUncertain(CHANNEL);
+    return { client, channels };
+  }
+
+  /** `send` reaches this through the port; the test reaches it directly. */
+  function reconcile(client: ToonClient, channelId: string): Promise<void> {
+    return (
+      client as unknown as { reconcileWatermark(id: string): Promise<void> }
+    ).reconcileWatermark(channelId);
+  }
+
+  it('adopts the figure the connector actually banked, and settles the doubt', async () => {
+    const fake = fixture();
+    const { client, channels } = await withDoubt(fake);
+    // The packet WAS delivered: the connector banked the claim this client
+    // gave up on.
+    fake.banked.set(CHANNEL, { nonce: 1, cumulativeClaimed: 1000n, depositTotal: 100_000n });
+
+    await reconcile(client, CHANNEL);
+
+    expect(fake.claimStateAsks).toEqual([CHANNEL]);
+    expect(channels.getCumulativeAmount(CHANNEL)).toBe(1000n);
+    expect(channels.isWatermarkUncertain(CHANNEL)).toBe(false);
+  });
+
+  it('leaves the doubt in place for a channel the connector will not verify', async () => {
+    const fake = fixture();
+    const { client, channels } = await withDoubt(fake);
+    // No entry: answered `ok: false, error: 'unverified'`, which covers "no
+    // such channel" and "bad signature" identically — neither is a watermark.
+    await reconcile(client, CHANNEL);
+
+    expect(channels.getCumulativeAmount(CHANNEL)).toBe(0n);
+    expect(channels.isWatermarkUncertain(CHANNEL)).toBe(true);
+  });
+
+  it('never adopts more than this client has signed, however much is reported', async () => {
+    const fake = fixture();
+    const { client, channels } = await withDoubt(fake);
+    fake.banked.set(CHANNEL, { nonce: 1, cumulativeClaimed: 99_000_000n });
+
+    await reconcile(client, CHANNEL);
+
+    expect(channels.getCumulativeAmount(CHANNEL)).toBe(1000n);
+  });
+});
+
 describe('ToonClient.close', () => {
   it('releases the client without touching the channel', async () => {
     const client = await create(fixture());

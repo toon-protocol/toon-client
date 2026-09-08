@@ -41,6 +41,34 @@ describe('JsonFileChannelStore', () => {
       expect(loaded!.cumulativeAmount).toBe(largeAmount);
     });
 
+    it('round-trips the signed ceiling and the doubt (#671)', () => {
+      const channelId = '0x' + 'dd'.repeat(32);
+      store.save(channelId, {
+        nonce: 4,
+        cumulativeAmount: 3000n,
+        signedCeiling: 4000n,
+        watermarkUncertain: true,
+      });
+
+      // Both survive the file, because a timeout in one `toon` invocation is
+      // what desyncs the next one.
+      expect(store.load(channelId)).toEqual({
+        nonce: 4,
+        cumulativeAmount: 3000n,
+        signedCeiling: 4000n,
+        watermarkUncertain: true,
+      });
+    });
+
+    it('writes neither key for a channel with nothing to say about them', () => {
+      const channelId = '0x' + 'ee'.repeat(32);
+      store.save(channelId, { nonce: 1, cumulativeAmount: 100n });
+      // The watermark file's historical schema is parsed by outside readers
+      // (rig, the MCP daemon), so the additions stay absent until they mean
+      // something.
+      expect(store.load(channelId)).toEqual({ nonce: 1, cumulativeAmount: 100n });
+    });
+
     it('should overwrite existing state on save', () => {
       const channelId = '0x' + 'cc'.repeat(32);
       store.save(channelId, { nonce: 1, cumulativeAmount: 100n });

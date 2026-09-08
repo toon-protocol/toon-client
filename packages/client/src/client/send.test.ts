@@ -15,7 +15,12 @@ import { ChannelManager } from '../channel/ChannelManager.js';
 import { InMemoryChannelStore } from '../channel/ChannelStore.js';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { parseSelfDescription } from '../connector/self-description.js';
-import { send, toEnvelopeRequest, type SendContext } from './send.js';
+import {
+  send,
+  toEnvelopeRequest,
+  type PaidWriteTransport,
+  type SendContext,
+} from './send.js';
 import { RouteNotPricedError } from './errors.js';
 import { decodeUtf8 } from '../utils/binary.js';
 
@@ -34,6 +39,18 @@ interface Harness {
   /** `false` makes `evictChannel` report "nothing to retire", which vetoes the retry. */
   evictable: boolean;
   ensureCalls: number;
+  /** Channels `reconcileWatermark` was asked about, in order. */
+  reconciled: string[];
+  /**
+   * What `POST /ilp/claim-state` reports for the channel — the CONNECTOR's own
+   * watermark, which is what a reconciliation adopts. `undefined` answers with
+   * nothing, as a connector that cannot verify the channel does.
+   */
+  connectorWatermark: { nonce: number; cumulativeClaimed: bigint } | undefined;
+  /** `true` makes the claim-state read throw, as an unreachable connector does. */
+  reconcileFails: boolean;
+  /** The real carriage, kept so a test can put it back after a failing one. */
+  httpTransport: PaidWriteTransport;
 }
 
 function harness(): Harness {
@@ -48,6 +65,10 @@ function harness(): Harness {
     evicted: [],
     evictable: true,
     ensureCalls: 0,
+    reconciled: [],
+    connectorWatermark: undefined,
+    reconcileFails: false,
+    httpTransport: undefined as unknown as PaidWriteTransport,
     context: undefined as unknown as SendContext,
   };
 
@@ -56,6 +77,7 @@ function harness(): Harness {
     httpClient: fake.fetch,
     maxRetries: 0,
   });
+  state.httpTransport = transport;
 
   state.context = {
     describe: async () => parseSelfDescription(fake.selfDescription(), fake.endpoint),
@@ -86,6 +108,15 @@ function harness(): Harness {
       return state.evictable;
     },
     channels,
+    // The claim-state read, as `ToonClient` performs it: ask the connector for
+    // its own watermark, and adopt it.
+    reconcileWatermark: async (channelId) => {
+      state.reconciled.push(channelId);
+      if (state.reconcileFails) throw new Error('claim-state unreachable');
+      const connector = state.connectorWatermark;
+      if (connector === undefined) return;
+      channels.adoptConnectorWatermark(channelId, connector);
+    },
     transport: async () => ({ kind: 'http', transport }),
     senderId: signer.address,
     chain: 'evm',
@@ -425,6 +456,119 @@ describe('send — the bounded stale-channel retry', () => {
     const result = await send(h.context, DESTINATION);
     expect(result.fulfilled).toBe(false);
     expect(h.evicted).toEqual([]);
+  });
+});
+
+/**
+ * toon-client#671 — a pull that times out client-side but was DELIVERED.
+ *
+ * The connector banks the claim; this end sees a timeout, assumes nothing
+ * arrived and repays the amount. From then on the local figure is one claim
+ * behind for good: every later claim under-advances and is refused `F03`, then
+ * `F01`, forever. Rare on a clearnet loopback, ordinary over a hidden-service
+ * circuit with a 120s per-packet timeout and real RTT.
+ *
+ * The repayment stays — being short spends nothing, and running ahead spends
+ * the deposit on nothing — but it no longer stands unquestioned: the channel is
+ * marked doubtful, and the next claim asks the connector for its own figure
+ * before it signs.
+ */
+describe('send — a claim whose fate is unknown settles before the next one (#671)', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = harness();
+  });
+
+  /** A carriage that throws, as a timed-out circuit does. */
+  function timesOut(): void {
+    h.context.transport = async () => ({
+      kind: 'http',
+      transport: {
+        sendIlpPacketWithClaim: () => Promise.reject(new Error('Request timeout after 120000ms')),
+        sendIlpPacket: () => Promise.reject(new Error('Request timeout after 120000ms')),
+      },
+    });
+  }
+
+  it('a thrown transport error leaves the watermark in doubt', async () => {
+    timesOut();
+    await expect(send(h.context, DESTINATION)).rejects.toThrow('Request timeout');
+    // Repaid, as before — but no longer believed.
+    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(0n);
+    expect(h.channels.isWatermarkUncertain(CHANNEL)).toBe(true);
+  });
+
+  it('the next claim adopts the connector\'s figure BEFORE signing, instead of under-advancing', async () => {
+    timesOut();
+    await expect(send(h.context, DESTINATION)).rejects.toThrow('Request timeout');
+
+    // The packet did arrive: the connector banked 1000 at nonce 1.
+    h.connectorWatermark = { nonce: 1, cumulativeClaimed: 1000n };
+    h.context.transport = async () => ({ kind: 'http', transport: h.httpTransport });
+
+    const result = await send(h.context, DESTINATION);
+
+    expect(h.reconciled).toEqual([CHANNEL]);
+    // 2000, not the 1000 the local figure alone would have signed — which is
+    // the claim the connector refuses `F03 advances value by 0`.
+    expect(result.claim).toMatchObject({ nonce: 2, cumulative: 2000n });
+    expect(h.fake.claims.at(-1)?.['transferredAmount']).toBe('2000');
+  });
+
+  it('a refused claim leaves the same doubt — the gap may predate this request', async () => {
+    h.fake.refusal = 'underpay';
+    await send(h.context, DESTINATION);
+    expect(h.channels.isWatermarkUncertain(CHANNEL)).toBe(true);
+  });
+
+  it('a BANKED claim settles the doubt for free, so the read happens once', async () => {
+    timesOut();
+    await expect(send(h.context, DESTINATION)).rejects.toThrow('Request timeout');
+    h.connectorWatermark = { nonce: 1, cumulativeClaimed: 1000n };
+    h.context.transport = async () => ({ kind: 'http', transport: h.httpTransport });
+
+    await send(h.context, DESTINATION);
+    await send(h.context, DESTINATION);
+
+    // The second send's claim was accepted, which is proof the two watermarks
+    // agree: the third asks nobody.
+    expect(h.reconciled).toEqual([CHANNEL]);
+    expect(h.channels.isWatermarkUncertain(CHANNEL)).toBe(false);
+  });
+
+  it('never adopts more than this client has actually signed', async () => {
+    timesOut();
+    await expect(send(h.context, DESTINATION)).rejects.toThrow('Request timeout');
+
+    // A connector claiming to hold far more than it was ever given a signature
+    // for. It cannot: the figure is clamped to what was signed (1000).
+    h.connectorWatermark = { nonce: 1, cumulativeClaimed: 900_000n };
+    h.context.transport = async () => ({ kind: 'http', transport: h.httpTransport });
+
+    const result = await send(h.context, DESTINATION);
+    expect(result.claim).toMatchObject({ cumulative: 2000n });
+  });
+
+  it('a claim-state read that fails leaves the doubt standing, and the request still goes out', async () => {
+    timesOut();
+    await expect(send(h.context, DESTINATION)).rejects.toThrow('Request timeout');
+
+    h.reconcileFails = true;
+    h.context.transport = async () => ({ kind: 'http', transport: h.httpTransport });
+    h.fake.refusal = 'underpay';
+    const result = await send(h.context, DESTINATION);
+
+    // It behaved exactly as it did before #671 — the packet went out on the
+    // local figure — and the doubt survives for the next attempt to re-ask.
+    expect(result.fulfilled).toBe(false);
+    expect(h.reconciled).toEqual([CHANNEL]);
+    expect(h.channels.isWatermarkUncertain(CHANNEL)).toBe(true);
+  });
+
+  it('asks nobody while nothing is in doubt', async () => {
+    await send(h.context, DESTINATION);
+    await send(h.context, DESTINATION);
+    expect(h.reconciled).toEqual([]);
   });
 });
 

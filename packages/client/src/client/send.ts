@@ -40,10 +40,20 @@
  * left inflated by value it never admitted. Every path that ends in a refusal
  * calls {@link ChannelManager.rollbackAmount}, including a thrown transport
  * error. The error case is a deliberate asymmetry: a lost response *may* have
- * been banked, so rolling back can leave us one claim short — and being short is
- * self-correcting (the next claim is refused `F03` with the price attached and
- * the client re-signs), whereas running ahead silently spends the channel's
- * deposit on nothing and eventually breaches the deposit ceiling.
+ * been banked, so rolling back can leave us one claim short — being short spends
+ * nothing, whereas running ahead silently spends the channel's deposit on
+ * nothing and eventually breaches the deposit ceiling.
+ *
+ * **And a doubtful watermark is settled before the next claim, not after.**
+ * Being one claim short is not actually self-correcting: every later claim
+ * under-advances by the same gap and is refused `F03`, then `F01`, forever
+ * (toon-client#671). On a clearnet loopback the window barely exists; over a
+ * hidden-service circuit, timeout-but-delivered is ordinary. So a transport
+ * error, and a refused claim, both leave the channel marked
+ * {@link ChannelManager.markWatermarkUncertain}, and the next attempt on it asks
+ * the connector for its own figure (`POST /ilp/claim-state`) and adopts it
+ * BEFORE signing — the same read the client would otherwise reach for after two
+ * refusals, moved to before the first one.
  *
  * **`refusedBy` is honest about what is actually known.** A sealed reject is
  * proof: only the terminating connector could recover the secret needed to seal
@@ -142,6 +152,18 @@ export interface SendContext {
   evictChannel(channelId: string): boolean;
   /** The watermark and the signers. */
   channels: ChannelManager;
+  /**
+   * Re-read the connector's own watermark for `channelId`
+   * (`POST /ilp/claim-state`) and adopt it, settling a doubt
+   * {@link ChannelManager.markWatermarkUncertain} recorded.
+   *
+   * Optional: a context with no client edge to ask simply keeps the older
+   * behaviour of discovering the disagreement through a refusal. It may throw —
+   * it is a network call, and the connector may be exactly what is unreachable —
+   * and {@link send} treats that as "still in doubt" rather than as a failed
+   * request.
+   */
+  reconcileWatermark?(channelId: string): Promise<void>;
   /** The carriage, chosen and connected. */
   transport(description: NodeSelfDescription): Promise<{
     kind: 'http' | 'btp';
@@ -248,6 +270,7 @@ async function attempt(context: SendContext, params: AttemptParams): Promise<Att
   if (params.amount === 0n) return attemptUnpaid(context, params);
 
   const channelId = await context.ensureChannel(params.description);
+  await settleWatermarkDoubt(context, channelId);
   const proof = await context.channels.signBalanceProof(channelId, params.amount);
   const signer = context.channels.getSignerForChannel(channelId);
   const claim = signer.buildClaimMessage(proof, context.senderId);
@@ -276,12 +299,29 @@ async function attempt(context: SendContext, params: AttemptParams): Promise<Att
     // module's docs for why being one claim short is the safer failure.
     context.channels.rollbackAmount(channelId, params.amount);
     const greeting = asGreeting(error, params.carriage.kind, summary);
+    // A greeting is the connector ANSWERING — it refused before routing, so
+    // nothing travelled and nothing is in doubt.
     if (greeting) return { result: greeting, channelId };
+    // Everything else is a transport failure or a timeout, where "nothing
+    // arrived" is the safer guess rather than a fact. Say so, so the next claim
+    // asks instead of guessing again.
+    context.channels.markWatermarkUncertain(channelId);
     throw error;
   }
 
   if (claimWasRefused(result)) {
     context.channels.rollbackAmount(channelId, params.amount);
+    // A refused claim means the two watermarks already disagreed about
+    // something. The rollback is right when the disagreement was this packet's
+    // own price; it changes nothing when the gap predates this request — which
+    // is exactly the state a timeout leaves behind in a process that has since
+    // restarted. Reconciling before the next claim covers both.
+    context.channels.markWatermarkUncertain(channelId);
+  } else {
+    // The mirror image: the claim was BANKED, at the figure we signed it at, so
+    // the two watermarks provably agree and any earlier doubt is settled — for
+    // free, without the claim-state read it would otherwise have cost.
+    context.channels.markWatermarkCertain(channelId);
   }
 
   return {
@@ -309,6 +349,34 @@ async function attemptUnpaid(
     timeout: params.timeoutMs,
   });
   return { result: toSendResult(result, params, undefined), channelId: undefined };
+}
+
+/**
+ * Settle a doubtful watermark before a claim is signed against it.
+ *
+ * Best effort by design: the read can fail — a connector that just timed out is
+ * a connector that may still be unreachable — and a failure here must not turn
+ * a request into a throw of its own. The doubt is simply left standing — only
+ * an adoption, or a later claim the connector banks, clears it — so the next
+ * attempt asks again, and this one proceeds on the local figure exactly as it
+ * did before #671.
+ */
+async function settleWatermarkDoubt(
+  context: SendContext,
+  channelId: string
+): Promise<void> {
+  if (context.reconcileWatermark === undefined) return;
+  if (!context.channels.isWatermarkUncertain(channelId)) return;
+  try {
+    await context.reconcileWatermark(channelId);
+  } catch (error) {
+    (context.warn ?? console.warn)(
+      `[toon] could not re-read the connector's watermark for channel ${channelId} ` +
+        `(${error instanceof Error ? error.message : String(error)}). The last claim ` +
+        'on it was signed and never confirmed, so this one may under-advance and be ' +
+        'refused; the next attempt will ask again.'
+    );
+  }
 }
 
 /**
