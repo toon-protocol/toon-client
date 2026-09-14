@@ -117,6 +117,15 @@ export class ClientChannelFacade implements ChannelFacade {
     const existing = channels.resolveChannel(config.connector, terms);
     if (existing !== undefined) {
       this.current = { channelId: existing, terms };
+      // A channel resolved from the store was resumed, not opened, and the
+      // manager could not hand the chain client its context on the way — the
+      // chain client does not exist yet on this path (it is built lazily by
+      // `onChainClient()`, which nothing above has called). `requireChannel`
+      // adopts for exactly this reason, but it returns `current` untouched
+      // when it is already set, and `ensure()` is what sets it. Without this
+      // line a resumed channel could be paid on but never deposited into,
+      // closed or settled: "neither opened nor adopted".
+      this.adoptOnChain(existing, terms);
       return existing;
     }
 
