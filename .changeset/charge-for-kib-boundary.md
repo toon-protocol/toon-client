@@ -1,0 +1,5 @@
+---
+'@toon-protocol/client': patch
+---
+
+Fix `chargeFor` overpaying a metered route by one kibibyte's rate whenever the sealed payload is an exact multiple of 1024 bytes. It counted `floor(bytes / 1024) + 1`; the connector charges `base + rate * ceil(bytes / 1024)` (`connector-domain::Price::charge`, `bytes.div_ceil(1024)`, connector ADR 0065), so a 1024-byte payload is one kibibyte and not two, and an empty payload pays the base alone. The two formulas agree everywhere else, which is why the old one survived: every size that had actually been sent against the deployed store node was a non-multiple of 1024, and at a multiple the client simply overpaid — a claim that advances more than the price is accepted in silence, so nothing reported it. Measured against the deployed store node at `1000 + 10/KiB`, whose x402 greeting quotes `price.charge(prepare.data.len())` for the packet it was handed: 1024 bytes is quoted at 1010, and 2048 at 1020. `sealedBytes` is the PREPARE's `data` field verbatim on both carriages, so the two sides count the same bytes and no offset separates them.
