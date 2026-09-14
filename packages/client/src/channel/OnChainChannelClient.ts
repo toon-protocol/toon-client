@@ -43,6 +43,8 @@ export type { EvmReadConsistencyConfig };
 
 export interface SolanaChannelConfig {
   rpcUrl: string;
+  /** `fetch` for Solana JSON-RPC — the proxied one on a hidden-service client. */
+  rpcFetch?: typeof fetch;
   /**
    * Ed25519 keypair material. Accepts either a 32-byte seed or a 64-byte
    * `secretKey` (seed ‖ pubkey, as produced by `deriveFullIdentity`). The first
@@ -77,6 +79,13 @@ export interface OnChainChannelClientConfig {
   solanaConfig?: SolanaChannelConfig;
   /** How hard the EVM opener works to survive a stale-read RPC (#489). */
   readConsistency?: EvmReadConsistencyConfig;
+  /**
+   * An undici dispatcher to send chain RPC through, when this client is talking
+   * to a hidden service. Reaching the connector inside the overlay while reading
+   * chain state on clearnet would announce, from this IP and beside every paid
+   * request, the settlement address the overlay exists to keep unlinked (ADR 0002).
+   */
+  rpcDispatcher?: unknown;
 }
 
 /** What this class remembers about a channel it opened or adopted. */
@@ -92,6 +101,7 @@ export class OnChainChannelClient implements ChannelClient {
   private readonly chainRpcUrls: Record<string, string>;
   private solanaConfig?: SolanaChannelConfig;
   private readonly readConsistency: EvmReadConsistencyConfig | undefined;
+  private readonly rpcDispatcher: unknown;
   private readonly channelContext = new Map<string, ChannelContext>();
   private readonly evmClients = new Map<string, TokenNetworkClient>();
   private readonly solanaClients = new Map<string, SolanaChannelClient>();
@@ -101,6 +111,7 @@ export class OnChainChannelClient implements ChannelClient {
     this.chainRpcUrls = config.chainRpcUrls;
     this.solanaConfig = config.solanaConfig;
     this.readConsistency = config.readConsistency;
+    this.rpcDispatcher = config.rpcDispatcher;
   }
 
   /**
@@ -154,6 +165,7 @@ export class OnChainChannelClient implements ChannelClient {
       rpcUrl,
       signer: this.evmSigner,
       ...(this.readConsistency ? { readConsistency: this.readConsistency } : {}),
+      ...(this.rpcDispatcher !== undefined ? { rpcDispatcher: this.rpcDispatcher } : {}),
     });
     this.evmClients.set(chain, client);
     return client;
@@ -442,6 +454,7 @@ export class OnChainChannelClient implements ChannelClient {
     const payerSeed = cfg.keypair.slice(0, 32);
     const client = new SolanaChannelClient({
       rpcUrl: cfg.rpcUrl,
+      ...(cfg.rpcFetch ? { rpcFetch: cfg.rpcFetch } : {}),
       programId: program,
       tokenMint: mint,
       payerSeed,

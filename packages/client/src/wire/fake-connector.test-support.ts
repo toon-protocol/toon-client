@@ -202,6 +202,23 @@ export class FakeTerminatingConnector {
   /** Set to refuse every probe with `403`, as a node over its probe rate limit does. */
   probeForbidden = false;
 
+  /**
+   * This connector's OWN watermark per channel, as `POST /ilp/claim-state`
+   * reports it (client-edge-spec.md §1.10). A channel with no entry here is
+   * answered `ok: false, error: 'unverified'`, which is how a real edge covers
+   * "no such channel" and "bad signature" identically.
+   *
+   * Set it to model the state a timed-out-but-delivered packet leaves behind:
+   * the connector banked a claim the client believes it never sent
+   * (toon-client#671).
+   */
+  readonly banked = new Map<
+    string,
+    { nonce: number; cumulativeClaimed: bigint; depositTotal?: bigint }
+  >();
+  /** Every channel `POST /ilp/claim-state` was asked about, in order. */
+  readonly claimStateAsks: string[] = [];
+
   constructor(options: FakeTerminatingConnectorOptions = {}) {
     this.identitySecret = options.identitySecret ?? new Uint8Array(32).fill(9);
     this.identityPublic = secp256k1.getPublicKey(this.identitySecret, false);
@@ -301,6 +318,40 @@ export class FakeTerminatingConnector {
         }),
         { cost: this.routePrice ?? 0n }
       );
+    }
+
+    // `POST /ilp/claim-state` (client-edge-spec.md §1.10): the connector's own
+    // watermark for channels the asker proves it controls. The ownership
+    // signature is RECORDED rather than verified, for the same reason a claim
+    // is — this fake holds no chain to verify one against.
+    if (method === 'POST' && url.endsWith('/ilp/claim-state')) {
+      const asked = JSON.parse(String(init?.body ?? '{}')) as {
+        channels?: { channelId?: string; channelAccount?: string }[];
+      };
+      const channels = (asked.channels ?? []).map((entry) => {
+        const channelId = entry.channelId ?? entry.channelAccount ?? '';
+        this.claimStateAsks.push(channelId);
+        const state = this.banked.get(channelId);
+        if (state === undefined) {
+          return { blockchain: 'evm', channelId, ok: false, error: 'unverified' };
+        }
+        const deposit = state.depositTotal;
+        return {
+          blockchain: 'evm',
+          channelId,
+          ok: true,
+          depositTotal: deposit === undefined ? null : deposit.toString(),
+          cumulativeClaimed: state.cumulativeClaimed.toString(),
+          available:
+            deposit === undefined ? null : (deposit - state.cumulativeClaimed).toString(),
+          nonce: state.nonce,
+          lastClaimTime: null,
+        };
+      });
+      return new Response(JSON.stringify({ channels }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
     }
 
     // A claim-bearing POST /ilp: the paid path. The claim is RECORDED rather

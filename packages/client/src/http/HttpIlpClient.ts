@@ -74,11 +74,11 @@ import { withRetry } from '../utils/retry.js';
 import { toBase64, fromBase64, encodeUtf8 } from '../utils/binary.js';
 import {
   mapIlpResponse,
-  resolveExecutionCondition,
+  resolveExpectedFulfillment,
   resolveExpiresAt,
   type IlpSendParams,
 } from '../ilp/ilp-send.js';
-import { assertValidCondition, isZeroCondition } from '../utils/condition.js';
+import { assertValidFulfillment } from '../utils/fulfillment.js';
 
 /** Header carrying the base64(JSON) payment-channel claim. */
 export const ILP_CLAIM_HEADER = 'ILP-Payment-Channel-Claim';
@@ -231,11 +231,10 @@ export class HttpIlpClient implements IlpClient {
    * this only on free/zero-amount routes; paid writes must use
    * {@link sendIlpPacketWithClaim}. Satisfies the IlpClient interface.
    *
-   * `params` may carry a sender-chosen `executionCondition` and an explicit
-   * `expiresAt` (toon-client#350); omitting both is the legacy zero-condition
-   * path, unchanged. With a non-zero condition the FULFILL preimage is
-   * verified (`sha256(fulfillment) == condition`) and a mismatch is surfaced
-   * as a failed result — see {@link mapIlpResponse}.
+   * `params` may carry an `expectedFulfillment` (the sender's end-to-end
+   * check, ADR 0069), a `greeting` flag and an explicit `expiresAt`. With an
+   * expected fulfilment the FULFILL preimage is compared against it and a
+   * mismatch is surfaced as a failed result — see {@link mapIlpResponse}.
    */
   async sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult> {
     return withRetry(() => this.postPrepare(params), {
@@ -252,8 +251,8 @@ export class HttpIlpClient implements IlpClient {
    * the BTP path attaches as the `payment-channel-claim` protocolData entry —
    * we base64(JSON.stringify(claim)) it, byte-for-byte identical to BTP.
    *
-   * Sender-chosen `executionCondition` / explicit `expiresAt` semantics are
-   * identical to {@link sendIlpPacket}.
+   * `expectedFulfillment` / `greeting` / `expiresAt` semantics are identical
+   * to {@link sendIlpPacket}.
    */
   async sendIlpPacketWithClaim(
     params: IlpSendParams,
@@ -349,19 +348,21 @@ export class HttpIlpClient implements IlpClient {
   ): Promise<IlpSendResult> {
     const requestTimeout = params.timeout ?? this.timeout;
 
-    // Sender-chosen condition (toon-client#350): validate length up front so
-    // the OER serializer can never silently zero-fill a malformed condition
-    // and downgrade the packet to the legacy unverified class.
-    const condition = resolveExecutionCondition(params.executionCondition);
-    if (condition !== undefined && !isZeroCondition(condition)) {
-      assertValidCondition(condition);
+    // Validate the expected fulfilment's length up front: a wrong-length
+    // value can never match a real FULFILL, so every delivery would be
+    // counted failed — and paid for — before anyone noticed why.
+    const expectedFulfillment = resolveExpectedFulfillment(
+      params.expectedFulfillment
+    );
+    if (expectedFulfillment !== undefined) {
+      assertValidFulfillment(expectedFulfillment);
     }
 
     const prepare = serializeIlpPrepare({
       type: ILPPacketType.PREPARE,
       amount: BigInt(params.amount),
       destination: params.destination,
-      executionCondition: condition ?? new Uint8Array(32),
+      greeting: params.greeting ?? false,
       expiresAt: resolveExpiresAt(params.expiresAt, requestTimeout),
       data: fromBase64(params.data),
     });
@@ -386,7 +387,7 @@ export class HttpIlpClient implements IlpClient {
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      return await this.mapResponse(response, condition);
+      return await this.mapResponse(response, expectedFulfillment);
     } catch (error) {
       clearTimeout(timeoutId);
       throw this.mapTransportError(error, requestTimeout);
@@ -398,13 +399,13 @@ export class HttpIlpClient implements IlpClient {
    * to a transport error. Per the wire contract, ILP-level rejects arrive as a
    * 200 + REJECT body — only HTTP non-2xx means a transport-layer failure.
    *
-   * When `sentCondition` is non-zero the FULFILL preimage is verified against
-   * it; a mismatch yields `accepted: false` (shared `mapIlpResponse` logic,
-   * identical to the BTP path).
+   * When `expectedFulfillment` is given the FULFILL preimage is compared
+   * against it; a mismatch yields `accepted: false` (shared `mapIlpResponse`
+   * logic, identical to the BTP path).
    */
   private async mapResponse(
     response: Response,
-    sentCondition?: Uint8Array
+    expectedFulfillment?: Uint8Array
   ): Promise<IlpSendResult> {
     if (response.ok) {
       const buf = new Uint8Array(await response.arrayBuffer());
@@ -421,7 +422,7 @@ export class HttpIlpClient implements IlpClient {
       // (§1.6 — "present on every REJECT this edge answers with … absent
       // from a FULFILL"). Inferring either from the other loses money.
       return {
-        ...mapIlpResponse(deserializeIlpPacket(buf), sentCondition),
+        ...mapIlpResponse(deserializeIlpPacket(buf), expectedFulfillment),
         ...readResponseMeta(response.headers),
       };
     }

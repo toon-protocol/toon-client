@@ -13,39 +13,72 @@ import {
   type BTPTransferData,
 } from './protocol.js';
 
-describe('serializeIlpPrepare — executionCondition on the wire', () => {
-  // OER layout: type(1) | varUInt amount | GeneralizedTime(19) | condition(32) | ...
-  function conditionBytesOf(prepare: Uint8Array): Uint8Array {
-    let offset = 1;
-    const first = prepare[offset]!;
-    offset += first <= 127 ? 1 : 1 + (first & 0x7f);
-    offset += 19; // 'YYYYMMDDHHMMSS.mmmZ'
-    return prepare.slice(offset, offset + 32);
+describe('serializeIlpPrepare — the greeting flag on the wire (ADR 0069)', () => {
+  // OER layout: type(1) | varUInt amount | GeneralizedTime(19) | greeting(1) | ...
+  // The flag sits exactly where a 32-byte execution condition sat until
+  // connector issue #1269 removed it; a decoder reading one byte where the
+  // encoder wrote thirty-two is the bug that produced the `invalid packet
+  // type byte` refusal this replaces.
+  /**
+   * Read one byte, failing loudly rather than asserting non-null. A short
+   * buffer here means the encoder changed shape, and that must not quietly
+   * read as `undefined` and compare unequal to both 0 and 1 — the whole point
+   * of this suite is that the byte is where we say it is.
+   */
+  function byteAt(buf: Uint8Array, index: number): number {
+    const byte = buf[index];
+    if (byte === undefined) {
+      throw new Error(`PREPARE is too short to hold a byte at offset ${index}`);
+    }
+    return byte;
   }
 
-  it('places a caller-supplied 32-byte condition verbatim', () => {
-    const condition = new Uint8Array(32).map((_, i) => i + 1);
+  function greetingByteOf(prepare: Uint8Array): number {
+    let offset = 1;
+    const first = byteAt(prepare, offset);
+    offset += first <= 127 ? 1 : 1 + (first & 0x7f);
+    offset += 19; // 'YYYYMMDDHHMMSS.mmmZ'
+    return byteAt(prepare, offset);
+  }
+
+  it('writes 0x00 for an ordinary payment attempt', () => {
     const prepare = serializeIlpPrepare({
       type: ILPPacketType.PREPARE,
       amount: 1000n,
       destination: 'g.toon.alice',
-      executionCondition: condition,
+      greeting: false,
       expiresAt: new Date('2026-07-12T00:00:00.000Z'),
       data: new Uint8Array([9]),
     });
-    expect(conditionBytesOf(prepare)).toEqual(condition);
+    expect(greetingByteOf(prepare)).toBe(0x00);
   });
 
-  it('zero condition serializes as 32 zero bytes (legacy class)', () => {
+  it('writes 0x01 for a bootstrap probe', () => {
     const prepare = serializeIlpPrepare({
       type: ILPPacketType.PREPARE,
       amount: 1n,
       destination: 'g.toon.alice',
-      executionCondition: new Uint8Array(32),
+      greeting: true,
       expiresAt: new Date('2026-07-12T00:00:00.000Z'),
       data: new Uint8Array(0),
     });
-    expect(conditionBytesOf(prepare)).toEqual(new Uint8Array(32));
+    expect(greetingByteOf(prepare)).toBe(0x01);
+  });
+
+  it('spends one byte on the flag, not thirty-two', () => {
+    // -31 bytes per packet per hop is ADR 0069's own arithmetic, and the
+    // clearest single assertion that this codec is on the new wire.
+    const fields = {
+      type: ILPPacketType.PREPARE,
+      amount: 1000n,
+      destination: 'g.toon.alice',
+      expiresAt: new Date('2026-07-12T00:00:00.000Z'),
+      data: new Uint8Array([9]),
+    } as const;
+    const prepare = serializeIlpPrepare({ ...fields, greeting: false });
+    // type(1) + amount varUInt(3 for 1000) + time(19) + greeting(1)
+    // + destination(1+12) + data(1+1)
+    expect(prepare.length).toBe(1 + 3 + 19 + 1 + 1 + 12 + 1 + 1);
   });
 });
 
@@ -209,23 +242,44 @@ describe('parseBtpMessage — TRANSFER decode', () => {
 });
 
 describe('deserializeIlpPrepare — server-role decode (toon-client#494)', () => {
-  it('round-trips every field through serializeIlpPrepare', () => {
-    const condition = new Uint8Array(32).map((_, i) => i + 1);
-    const expiresAt = new Date('2026-07-12T00:00:00.000Z');
+  it.each([false, true])(
+    'round-trips every field through serializeIlpPrepare (greeting: %s)',
+    (greeting) => {
+      const expiresAt = new Date('2026-07-12T00:00:00.000Z');
+      const wire = serializeIlpPrepare({
+        type: ILPPacketType.PREPARE,
+        amount: 12345n,
+        destination: 'g.toon.provider',
+        greeting,
+        expiresAt,
+        data: new Uint8Array([1, 2, 3]),
+      });
+      const decoded = deserializeIlpPrepare(wire);
+      expect(decoded.amount).toBe(12345n);
+      expect(decoded.destination).toBe('g.toon.provider');
+      expect(decoded.greeting).toBe(greeting);
+      expect(decoded.expiresAt.toISOString()).toBe(expiresAt.toISOString());
+      expect(decoded.data).toEqual(new Uint8Array([1, 2, 3]));
+    }
+  );
+
+  it('refuses a greeting byte that is neither 0x00 nor 0x01', () => {
+    // `Prepare::decode` answers anything else with `PacketError::InvalidType`
+    // rather than coercing it to truthy, so this decoder must refuse the same
+    // bytes rather than quietly accepting a packet the connector would not.
     const wire = serializeIlpPrepare({
       type: ILPPacketType.PREPARE,
-      amount: 12345n,
+      amount: 100n,
       destination: 'g.toon.provider',
-      executionCondition: condition,
-      expiresAt,
-      data: new Uint8Array([1, 2, 3]),
+      greeting: false,
+      expiresAt: new Date('2026-07-12T00:00:00.000Z'),
+      data: new Uint8Array(0),
     });
-    const decoded = deserializeIlpPrepare(wire);
-    expect(decoded.amount).toBe(12345n);
-    expect(decoded.destination).toBe('g.toon.provider');
-    expect(decoded.executionCondition).toEqual(condition);
-    expect(decoded.expiresAt.toISOString()).toBe(expiresAt.toISOString());
-    expect(decoded.data).toEqual(new Uint8Array([1, 2, 3]));
+    // type(1) + amount varUInt(1 for 100) + GeneralizedTime(19) = offset 21.
+    expect(wire[21]).toBe(0x00);
+    const corrupted = wire.slice();
+    corrupted[21] = 0x02;
+    expect(() => deserializeIlpPrepare(corrupted)).toThrow(/greeting/i);
   });
 
   it('throws on a non-PREPARE type byte', () => {
@@ -241,7 +295,7 @@ describe('deserializeIlpPrepare — server-role decode (toon-client#494)', () =>
       type: ILPPacketType.PREPARE,
       amount: 1n,
       destination: 'g.toon.provider',
-      executionCondition: new Uint8Array(32),
+      greeting: false,
       expiresAt: new Date('2026-07-12T00:00:00.000Z'),
       data: new Uint8Array(0),
     });

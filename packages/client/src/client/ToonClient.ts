@@ -25,6 +25,7 @@
  */
 import { ConnectorEdgeClient, decodeConnectorPublicKey } from '../connector/ConnectorEdgeClient.js';
 import type {
+  ClaimStateOk,
   ClaimStateRequestEntry,
   ClaimStateResult,
   ConnectorRoutePrice,
@@ -34,6 +35,7 @@ import {
   type NodeSelfDescription,
 } from '../connector/self-description.js';
 import { selectTransport } from '../btp/transport-select.js';
+import { isHiddenServiceUrl } from '../transport/hs-hostname.js';
 import { HttpIlpClient } from '../http/HttpIlpClient.js';
 import { BtpRuntimeClient, type BtpChannelDeclaration } from '../btp/BtpRuntimeClient.js';
 import { BtpPaidWriteTransport } from '../btp/BtpPaidWriteTransport.js';
@@ -79,6 +81,7 @@ export class ToonClient implements ToonClientLike {
   private onChain: OnChainChannelClient | undefined;
   private carriage: { kind: 'http' | 'btp'; transport: PaidWriteTransport } | undefined;
   private btpSession: BtpRuntimeClient | undefined;
+  private readonly hiddenService: { close(): Promise<void> } | undefined;
   private closed = false;
 
   private constructor(init: {
@@ -88,8 +91,11 @@ export class ToonClient implements ToonClientLike {
     description: NodeSelfDescription;
     chain: ChainKind;
     senderId: string;
+    /** The proxy-bound transport, when this client talks to a hidden service. */
+    hiddenService?: { close(): Promise<void> };
   }) {
     this.config = init.config;
+    this.hiddenService = init.hiddenService;
     this.edge = init.edge;
     this.channels = init.channels;
     this.description = init.description;
@@ -128,7 +134,13 @@ export class ToonClient implements ToonClientLike {
    * @throws {NetworkError} the connector could not be reached.
    */
   static async create(config: ToonClientConfig): Promise<ToonClient> {
-    const resolved = resolveConfig(config);
+    const base = resolveConfig(config);
+    // Before the first `GET`: a hidden-service connector is unreachable without
+    // its proxy, and the very first thing this method does is dial. Building the
+    // transport here also means `describe()` below already rides the overlay —
+    // asking a node what it is must not be the request that exposes the asking.
+    const hiddenService = await openHiddenService(base, config);
+    const resolved = hiddenService?.config ?? base;
     const edge = new ConnectorEdgeClient({
       fetch: resolved.fetch,
       timeout: resolved.timeoutMs,
@@ -163,7 +175,15 @@ export class ToonClient implements ToonClientLike {
       );
     }
 
-    return new ToonClient({ config: resolved, edge, channels, description, chain, senderId });
+    return new ToonClient({
+      config: resolved,
+      edge,
+      channels,
+      description,
+      chain,
+      senderId,
+      ...(hiddenService ? { hiddenService: hiddenService.transport } : {}),
+    });
   }
 
   /**
@@ -245,7 +265,7 @@ export class ToonClient implements ToonClientLike {
         destination,
         amount: '0',
         data: toBase64(exchange.data),
-        executionCondition: exchange.condition,
+        expectedFulfillment: exchange.fulfillment,
         timeout: this.config.timeoutMs,
       },
       claim as unknown as Record<string, unknown>
@@ -363,9 +383,34 @@ export class ToonClient implements ToonClientLike {
     this.btpSession = undefined;
     this.carriage = undefined;
     if (session) await session.disconnect();
+    // The dispatcher pools connections; without this a hidden-service client
+    // holds circuits open and the process does not exit.
+    if (this.hiddenService) await this.hiddenService.close();
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────
+
+  /**
+   * Refuse an endpoint this client has no way to dial.
+   *
+   * A node's endpoints are its own strings, and a hidden-service node may publish
+   * absolute `.anyone` ones. The configured client edge always wins on *whether*
+   * we can reach the node — but a carriage resolved from the description can
+   * still point somewhere the configured transport cannot go. Without a proxy
+   * that address does not merely fail: the hostname goes out in a plaintext DNS
+   * query first, which is precisely what a hidden service exists to prevent. So
+   * this fails loudly, naming the proxy, before anything dials.
+   */
+  private assertEndpointReachable(endpoint: string): void {
+    if (this.config.socksProxy !== undefined) return;
+    if (!isHiddenServiceUrl(endpoint)) return;
+    throw new ConfigError(
+      `The connector published the endpoint ${JSON.stringify(endpoint)}, which is a ` +
+        'hidden service, but this client has no `socksProxy` to reach it through. ' +
+        'Set one to a running Anyone Protocol `anon` daemon (e.g. ' +
+        '"socks5h://127.0.0.1:9050"), or ask the operator for a clearnet endpoint.'
+    );
+  }
 
   /** The port {@link send} runs against. */
   private sendContext(): SendContext {
@@ -377,6 +422,7 @@ export class ToonClient implements ToonClientLike {
       ensureChannel: (description) => this.channelFacade.ensure(description),
       evictChannel: (channelId) => this.evictChannel(channelId),
       channels: this.channels,
+      reconcileWatermark: (channelId) => this.reconcileWatermark(channelId),
       transport: (description) => this.transportFor(description),
       senderId: this.identity.senderId,
       chain: this.chain,
@@ -403,6 +449,50 @@ export class ToonClient implements ToonClientLike {
   private async sealKeyAt(endpoint: string): Promise<Uint8Array> {
     const identity = await this.edge.getIdentity(endpoint);
     return identity.publicKey;
+  }
+
+  /**
+   * Re-read the connector's own watermark for one channel and adopt it
+   * (toon-client#671).
+   *
+   * Called by {@link send} before signing a claim on a channel whose last claim
+   * was signed and never confirmed — a transport error, a timeout, or a refusal.
+   * A packet that timed out on a long path may have been delivered and banked
+   * anyway, and the local figure would then be one claim behind for good: every
+   * later claim under-advances and is refused. The connector's figure is the one
+   * that decides, so it is asked, and {@link ChannelManager.adoptConnectorWatermark}
+   * takes it (clamped to what this client has actually signed).
+   *
+   * A channel the connector cannot verify (`ok: false`) leaves the doubt in
+   * place rather than resolving it wrongly — `"unverified"` covers "no such
+   * channel" and "bad signature" identically, and neither is a watermark.
+   */
+  private async reconcileWatermark(channelId: string): Promise<void> {
+    const entry = (await this.claimState([channelId])).find(
+      (e): e is ClaimStateOk =>
+        e.ok && (e.channelId ?? e.channelAccount ?? channelId) === channelId
+    );
+    if (entry === undefined) return;
+
+    const adoption = this.channels.adoptConnectorWatermark(channelId, {
+      nonce: entry.nonce,
+      cumulativeClaimed: BigInt(entry.cumulativeClaimed),
+    });
+    // Silent when the two already agreed, which is the common case: the read
+    // exists to be boring.
+    if (!adoption.adopted || adoption.moved === 0n) return;
+    console.warn(
+      `[toon] the connector's watermark for channel ${channelId} was ` +
+        `${adoption.moved > 0n ? 'ahead of' : 'behind'} this client's by ` +
+        `${(adoption.moved < 0n ? -adoption.moved : adoption.moved).toString()} ` +
+        `(a claim was signed and never confirmed). Adopted its figure — ` +
+        `cumulative ${adoption.cumulative.toString()}, nonce ${adoption.nonce} — ` +
+        'so this request pays the right amount rather than being refused.' +
+        (adoption.clampedTo !== undefined
+          ? ` It reported more than this client has ever signed, so the figure was ` +
+            `clamped to ${adoption.clampedTo.toString()}.`
+          : '')
+    );
   }
 
   /**
@@ -438,10 +528,18 @@ export class ToonClient implements ToonClientLike {
     const client = new OnChainChannelClient({
       evmSigner: new EvmSigner(this.requireEvmKey()),
       chainRpcUrls,
+      ...(this.config.rpcDispatcher !== undefined
+        ? { rpcDispatcher: this.config.rpcDispatcher }
+        : {}),
       ...(this.config.identity.solana
         ? {
             solanaConfig: {
               rpcUrl: this.config.rpcUrls.solana,
+              // Same condition as the EVM dispatcher: proxied only when there is
+              // a proxy and the caller has not opted RPC out of it.
+              ...(this.config.rpcDispatcher !== undefined
+                ? { rpcFetch: this.config.fetch }
+                : {}),
               keypair: this.config.identity.solana.secretKey,
               // The DEFAULT only. Each channel opens under the program its own
               // terms name, because ADR 0053 binds that program into the signed
@@ -495,8 +593,12 @@ export class ToonClient implements ToonClientLike {
     if (this.carriage) return this.carriage;
 
     const choice = selectTransport(description, this.config.transport);
+    const httpEndpoint =
+      choice.kind === 'http' ? choice.url : httpEndpointOf(description, this.connector);
+    this.assertEndpointReachable(choice.url);
+    this.assertEndpointReachable(httpEndpoint);
     const http = new HttpIlpClient({
-      httpEndpoint: choice.kind === 'http' ? choice.url : httpEndpointOf(description, this.connector),
+      httpEndpoint,
       timeout: this.config.timeoutMs,
       httpClient: this.config.fetch,
       ...(this.config.createWebSocket
@@ -657,4 +759,43 @@ function httpEndpointOf(description: NodeSelfDescription, connector: string): st
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(published)
     ? published
     : new URL(published, connector).toString();
+}
+
+/**
+ * Builds the proxy-bound transport for a hidden-service connector, or returns
+ * `undefined` for a clearnet one.
+ *
+ * The import is dynamic on purpose: `../transport/socks.js` reaches for
+ * `node:module` on its first line, and this module is bundled for browsers too.
+ * A browser that somehow reached here would have failed at `resolveConfig`
+ * already — a `.anyone` connector demands a `socksProxy`, and a browser cannot
+ * supply a working one.
+ *
+ * An explicitly injected `fetch` or `createWebSocket` wins over the proxy's. A
+ * caller who supplied their own transport has said something specific about how
+ * bytes leave this process, and silently replacing it would be a worse surprise
+ * than an unproxied request they chose.
+ */
+async function openHiddenService(
+  resolved: ResolvedConfig,
+  config: ToonClientConfig
+): Promise<{ config: ResolvedConfig; transport: { close(): Promise<void> } } | undefined> {
+  const socksProxy = resolved.socksProxy;
+  if (socksProxy === undefined) return undefined;
+
+  const { createHiddenServiceTransport, probeSocks5Proxy } = await import('../transport/socks.js');
+  // Fail closed, and fail now. A missing daemon discovered at packet time costs
+  // a signed claim; discovered here it costs nothing.
+  await probeSocks5Proxy(socksProxy);
+  const transport = createHiddenServiceTransport(socksProxy);
+
+  return {
+    transport,
+    config: {
+      ...resolved,
+      fetch: config.fetch ?? transport.fetch,
+      createWebSocket: config.createWebSocket ?? transport.createWebSocket,
+      rpcDispatcher: resolved.proxyRpc ? transport.dispatcher : undefined,
+    },
+  };
 }

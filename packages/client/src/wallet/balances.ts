@@ -11,7 +11,8 @@
  * without a live chain. The caller treats each chain best-effort: a chain whose
  * RPC is unreachable degrades to `unreadable` rather than failing the others.
  */
-import { createPublicClient, http, defineChain } from 'viem';
+import { createPublicClient, defineChain } from 'viem';
+import { rpcTransport } from '../transport/rpc.js';
 
 /** One on-chain wallet token balance. `amount` is base-unit integer, decimal. */
 export interface WalletBalance {
@@ -107,10 +108,15 @@ export async function readEvmTokenBalance(opts: {
   chainKey: string;
   tokenAddress: string;
   owner: string;
+  /** Send this read through the hidden-service proxy, when there is one (ADR 0002). */
+  rpcDispatcher?: unknown;
 }): Promise<WalletBalance> {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
-    transport: http(opts.rpcUrl, { timeout: rpcTimeoutMs() || undefined, retryCount: 1 }),
+    transport: rpcTransport(opts.rpcUrl, opts.rpcDispatcher, {
+      ...(rpcTimeoutMs() ? { timeout: rpcTimeoutMs() } : {}),
+      retryCount: 1,
+    }),
     chain: defineChain({
       id: chainId,
       name: opts.chainKey,
@@ -136,10 +142,15 @@ export async function readEvmNativeBalance(opts: {
   rpcUrl: string;
   chainKey: string;
   owner: string;
+  /** Send this read through the hidden-service proxy, when there is one (ADR 0002). */
+  rpcDispatcher?: unknown;
 }): Promise<WalletTokenAmount> {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
-    transport: http(opts.rpcUrl, { timeout: rpcTimeoutMs() || undefined, retryCount: 1 }),
+    transport: rpcTransport(opts.rpcUrl, opts.rpcDispatcher, {
+      ...(rpcTimeoutMs() ? { timeout: rpcTimeoutMs() } : {}),
+      retryCount: 1,
+    }),
     chain: defineChain({
       id: chainId,
       name: opts.chainKey,
@@ -223,7 +234,18 @@ export async function readSolanaTokenBalance(opts: {
  * key absent from the object is simply not read.
  */
 export interface WalletBalanceSources {
-  evm?: { chainKey: string; rpcUrl: string; owner: string; tokenAddress?: string };
+  evm?: {
+    chainKey: string;
+    rpcUrl: string;
+    owner: string;
+    tokenAddress?: string;
+    /**
+     * Send the EVM reads through the hidden-service proxy (ADR 0002). The Solana
+     * reads need no equivalent: they go through {@link WalletBalanceSources.fetchImpl},
+     * which is already the proxied `fetch` on a hidden-service client.
+     */
+    rpcDispatcher?: unknown;
+  };
   solana?: { chainKey?: string; rpcUrl: string; owner: string; tokenMint?: string };
   /** Injectable fetch (the Solana JSON-RPC calls) for tests. */
   fetchImpl?: typeof fetch;
@@ -283,15 +305,15 @@ export async function readWalletBalances(
   const tasks: Promise<WalletChainBalances>[] = [];
 
   if (sources.evm) {
-    const { chainKey, rpcUrl, owner, tokenAddress } = sources.evm;
+    const { chainKey, rpcUrl, owner, tokenAddress, rpcDispatcher } = sources.evm;
     tasks.push(
       (async () => {
         const out: WalletChainBalances = { chain: 'evm', chainKey, address: owner, tokens: [] };
         const errors: string[] = [];
         const [nativeR, tokenR] = await Promise.allSettled([
-          readEvmNativeBalance({ rpcUrl, chainKey, owner }),
+          readEvmNativeBalance({ rpcUrl, chainKey, owner, rpcDispatcher }),
           tokenAddress
-            ? readEvmTokenBalance({ rpcUrl, chainKey, tokenAddress, owner })
+            ? readEvmTokenBalance({ rpcUrl, chainKey, tokenAddress, owner, rpcDispatcher })
             : Promise.resolve<WalletBalance | undefined>(undefined),
         ]);
         foldNative(out, nativeR, errors);
