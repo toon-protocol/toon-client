@@ -10,6 +10,7 @@ import { deriveFullIdentity } from '../keys/KeyDerivation.js';
 import { ChainUnavailableError, ChannelNotOpenError, ConfigError } from './errors.js';
 import { settlementToTerms } from './channel-facade.js';
 import type { ChannelManager } from '../channel/ChannelManager.js';
+import { startFakeSocks5 } from '../transport/fake-socks5.js';
 
 const CHANNEL = `0x${'ab'.repeat(32)}`;
 
@@ -20,7 +21,7 @@ const SOLANA_SETTLEMENT = {
   chain: 'solana',
   settlementAddress: 'So11111111111111111111111111111111111111112',
   programId: '2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip',
-  tokenAddress: 'xyc5J8MgKFiEN13PnfftdXxUzYH34FEvw1LCrFwN7in',
+  tokenAddress: '34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU',
   decimals: 6,
 };
 
@@ -289,6 +290,73 @@ describe('ToonClient.claimState', () => {
   });
 });
 
+/**
+ * toon-client#671 — the read `send` performs before signing a claim on a
+ * channel whose last one was signed and never confirmed. `send.test.ts` owns
+ * the pipeline's half of this; here the subject is the wiring: a real
+ * `POST /ilp/claim-state` round trip, and what the manager does with the answer.
+ */
+describe('ToonClient — reconciling a doubtful watermark', () => {
+  /** A client tracking `CHANNEL`, with a doubt recorded against it. */
+  async function withDoubt(fake: FakeTerminatingConnector): Promise<{
+    client: ToonClient;
+    channels: ChannelManager;
+  }> {
+    const client = await create(fake, { autoOpenChannel: false });
+    const description = await client.describe();
+    const terms = settlementToTerms(description.settlements[0]!);
+    const channels = (client as unknown as { channels: ChannelManager }).channels;
+    channels.adoptChannel(fake.endpoint, terms, CHANNEL);
+    // A claim signed, sent, and lost to a timeout: repaid locally, and doubted.
+    await channels.signBalanceProof(CHANNEL, 1000n);
+    channels.rollbackAmount(CHANNEL, 1000n);
+    channels.markWatermarkUncertain(CHANNEL);
+    return { client, channels };
+  }
+
+  /** `send` reaches this through the port; the test reaches it directly. */
+  function reconcile(client: ToonClient, channelId: string): Promise<void> {
+    return (
+      client as unknown as { reconcileWatermark(id: string): Promise<void> }
+    ).reconcileWatermark(channelId);
+  }
+
+  it('adopts the figure the connector actually banked, and settles the doubt', async () => {
+    const fake = fixture();
+    const { client, channels } = await withDoubt(fake);
+    // The packet WAS delivered: the connector banked the claim this client
+    // gave up on.
+    fake.banked.set(CHANNEL, { nonce: 1, cumulativeClaimed: 1000n, depositTotal: 100_000n });
+
+    await reconcile(client, CHANNEL);
+
+    expect(fake.claimStateAsks).toEqual([CHANNEL]);
+    expect(channels.getCumulativeAmount(CHANNEL)).toBe(1000n);
+    expect(channels.isWatermarkUncertain(CHANNEL)).toBe(false);
+  });
+
+  it('leaves the doubt in place for a channel the connector will not verify', async () => {
+    const fake = fixture();
+    const { client, channels } = await withDoubt(fake);
+    // No entry: answered `ok: false, error: 'unverified'`, which covers "no
+    // such channel" and "bad signature" identically — neither is a watermark.
+    await reconcile(client, CHANNEL);
+
+    expect(channels.getCumulativeAmount(CHANNEL)).toBe(0n);
+    expect(channels.isWatermarkUncertain(CHANNEL)).toBe(true);
+  });
+
+  it('never adopts more than this client has signed, however much is reported', async () => {
+    const fake = fixture();
+    const { client, channels } = await withDoubt(fake);
+    fake.banked.set(CHANNEL, { nonce: 1, cumulativeClaimed: 99_000_000n });
+
+    await reconcile(client, CHANNEL);
+
+    expect(channels.getCumulativeAmount(CHANNEL)).toBe(1000n);
+  });
+});
+
 describe('ToonClient.close', () => {
   it('releases the client without touching the channel', async () => {
     const client = await create(fixture());
@@ -308,5 +376,144 @@ describe('ToonClient.close', () => {
     const client = await create(fixture());
     await client.close();
     await expect(client.send('g.fake.route')).rejects.toBeInstanceOf(ConfigError);
+  });
+});
+
+/**
+ * A node's endpoints are its own strings, and a hidden-service node may publish
+ * absolute `.anyone` ones. The configured client edge stays authoritative for
+ * reachability — so an advertised endpoint this client has no way to dial is
+ * REFUSED, never resolved and never redirected. Without a proxy such an address
+ * does not merely fail: the hostname goes out in a plaintext DNS query first,
+ * which is exactly what a hidden service exists to prevent.
+ */
+describe('ToonClient — an endpoint the node advertises and this client cannot dial', () => {
+  const HS_HOST = 'vk4kmzvhx7jgh2vkrqmb2xtoztgqkoqxhy3trkirpvfx7yr4h4ymxwyd.anyone';
+
+  /**
+   * Serves `fake`, but rewrites the endpoints its self-description publishes —
+   * which is how a node advertises somewhere the configured edge does not live.
+   */
+  function publishing(
+    fake: FakeTerminatingConnector,
+    endpoints: Record<string, string>
+  ): typeof fetch {
+    const inner = fake.fetch;
+    return async (input, init) => {
+      const response = await inner(input, init);
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method !== 'GET' || !(url.endsWith('/ilp') || url.endsWith('/ilp/'))) {
+        return response;
+      }
+      const body = (await response.json()) as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...body, ...endpoints }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+  }
+
+  it('refuses a published HTTP endpoint that is a hidden service, naming the missing proxy', async () => {
+    const fake = fixture();
+    const client = await create(fake, {
+      fetch: publishing(fake, { httpEndpoint: `http://${HS_HOST}/ilp` }),
+    });
+
+    await expect(client.send('g.fake.route')).rejects.toBeInstanceOf(ConfigError);
+    // Through the message: what is wrong, the knob that fixes it, and the way
+    // out that does not need one.
+    await expect(client.send('g.fake.route')).rejects.toThrow(
+      /published the endpoint .*\.anyone/
+    );
+    await expect(client.send('g.fake.route')).rejects.toThrow(/socksProxy/);
+    await expect(client.send('g.fake.route')).rejects.toThrow(/anon.*daemon/is);
+    await expect(client.send('g.fake.route')).rejects.toThrow(/socks5h:\/\/127\.0\.0\.1:9050/);
+    await expect(client.send('g.fake.route')).rejects.toThrow(/clearnet endpoint/);
+  });
+
+  it('refuses BEFORE anything dials — the address never reaches a DNS lookup', async () => {
+    const fake = fixture();
+    const seen: string[] = [];
+    const published = publishing(fake, { httpEndpoint: `http://${HS_HOST}/ilp` });
+    const spy: typeof fetch = async (input, init) => {
+      seen.push(`${(init?.method ?? 'GET').toUpperCase()} ${String(input)}`);
+      return published(input, init);
+    };
+    const client = await create(fake, { fetch: spy });
+
+    await expect(client.send('g.fake.route')).rejects.toBeInstanceOf(ConfigError);
+
+    // Nothing was ever addressed to the hidden service…
+    expect(seen.filter((r) => r.includes('.anyone'))).toEqual([]);
+    // …and the check REFUSED rather than redirecting: the packet was not
+    // quietly re-addressed to the configured edge either. Only the reads that
+    // precede carriage selection happened.
+    expect(seen.filter((r) => r.startsWith('POST'))).toEqual([]);
+    expect(client.connector).toBe(fake.endpoint);
+  });
+
+  it("checks the selected carriage's own URL, not only the HTTP endpoint", async () => {
+    const fake = fixture();
+    // Clearnet HTTP, hidden-service BTP, and the node pins BTP: the only
+    // hidden-service string in play is `choice.url`.
+    fake.requiredTransport = 'btp';
+    const client = await create(fake, {
+      fetch: publishing(fake, { btpEndpoint: `ws://${HS_HOST}/ilp/btp` }),
+    });
+
+    await expect(client.send('g.fake.route')).rejects.toThrow(
+      new RegExp(`published the endpoint "ws://${HS_HOST}/ilp/btp"`)
+    );
+  });
+
+  it('checks the resolved HTTP endpoint beneath a BTP carriage', async () => {
+    const fake = fixture();
+    // The mirror image: the carriage URL is clearnet, and the hidden service is
+    // only the HTTP endpoint resolved for the fallback beneath it.
+    fake.requiredTransport = 'btp';
+    const client = await create(fake, {
+      fetch: publishing(fake, { httpEndpoint: `http://${HS_HOST}/ilp` }),
+    });
+
+    await expect(client.send('g.fake.route')).rejects.toThrow(
+      new RegExp(`published the endpoint "http://${HS_HOST}/ilp"`)
+    );
+  });
+
+  it('dials a published hidden-service endpoint normally when a proxy IS configured', async () => {
+    const proxy = await startFakeSocks5(new Map());
+    const fake = new FakeTerminatingConnector({ endpoint: `http://${HS_HOST}` });
+    // The node publishes its own absolute `.anyone` endpoint, exactly as a
+    // hidden-service node does.
+    const client = await ToonClient.create({
+      connector: fake.endpoint,
+      mnemonic: MNEMONIC,
+      channelStore: new InMemoryChannelStore(),
+      socksProxy: proxy.url,
+      // An injected `fetch` wins over the proxy's, so this exercises the check
+      // rather than the overlay — `transport/socks.test.ts` owns the overlay.
+      fetch: fake.fetch,
+      autoOpenChannel: false,
+    });
+
+    try {
+      const description = await client.describe();
+      expect(description.httpEndpoint).toBe(`http://${HS_HOST}/ilp`);
+      const [settlement] = description.settlements;
+      if (settlement === undefined) throw new Error('the fixture publishes a settlement');
+      const terms = settlementToTerms(settlement);
+      const channels = (client as unknown as { channels: ChannelManager }).channels;
+      channels.adoptChannel(fake.endpoint, terms, CHANNEL);
+
+      // Not refused: the carriage is built against the published `.anyone`
+      // endpoint and the request is paid for over it.
+      const result = await client.send('g.fake.route');
+      expect(result.fulfilled).toBe(true);
+      expect(fake.paidRequests).toBe(1);
+    } finally {
+      await client.close();
+      await proxy.close();
+    }
   });
 });

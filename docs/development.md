@@ -65,10 +65,15 @@ There are three, and they are separated by what they need to be able to reach.
 transport, signer and chain client is injectable for exactly this reason. This is the tier that
 must stay fast and must never be skipped.
 
-**Integration** — `pnpm --filter @toon-protocol/client test:integration`. Binds loopback servers
-only: a fake connector over HTTP and over a websocket, asserting the full send path including the
-claim header, the accumulated-cost header and the sealed answer. Generous timeouts for slow CI
+**Integration** — `pnpm --filter @toon-protocol/client test:integration`. Nothing off the machine:
+a fake connector over HTTP and over a websocket, asserting the full send path including the claim
+header, the accumulated-cost header and the sealed answer. Generous timeouts for slow CI
 networking, but no external service.
+
+This is also where anything that needs a *process* lives, which the unit tier forbids:
+`cli-entry-point` spawns the `toon` entry through a symlink, because the shape of #640 — the
+command exiting 0 having printed nothing when npm linked its `bin` — is invisible to any test that
+does not actually invoke it.
 
 **Opt-in, against something real** — off by default because they spend testnet money or need a
 local validator:

@@ -73,7 +73,18 @@ export interface ILPPreparePacket {
   type: typeof ILPPacketType.PREPARE;
   amount: bigint;
   destination: string;
-  executionCondition: Uint8Array;
+  /**
+   * Whether this PREPARE declares itself a bootstrap/greeting probe rather
+   * than a real payment attempt (connector ADR 0069, issue #1269). One byte
+   * on the wire, where a 32-byte `executionCondition` used to sit.
+   *
+   * The connector's client edge consults it only when no claim rides with
+   * the packet: an unclaimed `greeting` PREPARE is never routed, never
+   * priced and never fulfilled — it is answered with the x402 terms instead
+   * (`client-edge-spec.md` §1.4). A claim header suppresses the greeting
+   * unconditionally, so setting this on a paid packet cannot make it free.
+   */
+  greeting: boolean;
   expiresAt: Date;
   data: Uint8Array;
 }
@@ -81,9 +92,12 @@ export interface ILPPreparePacket {
 export interface ILPFulfillPacket {
   type: typeof ILPPacketType.FULFILL;
   /**
-   * The 32-byte fulfillment preimage from the wire. All-zero on legacy
-   * (zero-condition) packets; on sender-chosen conditions (toon-client#350)
-   * the transport verifies `sha256(fulfillment) == executionCondition`.
+   * The 32-byte fulfillment preimage from the wire — the one thing ADR 0069
+   * left in the return direction untouched. A termination derives it from
+   * the shared secret sealed inside the request (ADR 0019), so a sender that
+   * kept that secret checks a delivery end to end by comparing these bytes
+   * against its own `deriveFulfillment(sharedSecret)`. There is no condition
+   * on the wire to check it against any more.
    */
   fulfillment: Uint8Array;
   data: Uint8Array;
@@ -273,16 +287,18 @@ function decodeGeneralizedTime(
 
 // ─── ILP packet serialization ───────────────────────────────────────────────
 
+/**
+ * Encode a PREPARE. The `greeting` flag is a single `0x00`/`0x01` octet
+ * between `expiresAt` and `destination` — `connector-domain::Prepare::encode`
+ * writes `u8::from(self.greeting)` there, and writes nothing else in its
+ * place (connector ADR 0069).
+ */
 export function serializeIlpPrepare(packet: ILPPreparePacket): Uint8Array {
-  const condition =
-    packet.executionCondition.length === 32
-      ? packet.executionCondition
-      : new Uint8Array(32);
   return concat(
     writeUint8(ILPPacketType.PREPARE),
     encodeVarUInt(packet.amount),
     encodeGeneralizedTime(packet.expiresAt),
-    condition,
+    writeUint8(packet.greeting ? 1 : 0),
     encodeVarOctetString(textEncoder.encode(packet.destination)),
     encodeVarOctetString(packet.data)
   );
@@ -311,11 +327,22 @@ export function deserializeIlpPrepare(buf: Uint8Array): ILPPreparePacket {
   );
   offset += timeBytes;
 
-  if (offset + 32 > buf.length) {
-    throw new Error('Buffer underflow reading PREPARE executionCondition');
+  // One octet, and only 0 or 1 — `Prepare::decode` answers anything else
+  // with `PacketError::InvalidType` rather than coercing it to a truthy
+  // value, so a decoder here must refuse the same bytes it would.
+  if (offset >= buf.length) {
+    throw new Error('Buffer underflow reading PREPARE greeting flag');
   }
-  const executionCondition = buf.slice(offset, offset + 32);
-  offset += 32;
+  const greetingByte = buf[offset]!;
+  if (greetingByte !== 0 && greetingByte !== 1) {
+    throw new Error(
+      `Malformed PREPARE greeting flag: expected 0x00 or 0x01, got 0x${greetingByte
+        .toString(16)
+        .padStart(2, '0')}`
+    );
+  }
+  const greeting = greetingByte === 1;
+  offset += 1;
 
   const { value: destinationBytes, bytesRead: destBytes } =
     decodeVarOctetString(buf, offset);
@@ -328,7 +355,7 @@ export function deserializeIlpPrepare(buf: Uint8Array): ILPPreparePacket {
     type: ILPPacketType.PREPARE,
     amount,
     destination,
-    executionCondition,
+    greeting,
     expiresAt,
     data,
   };

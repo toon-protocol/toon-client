@@ -130,6 +130,27 @@ export interface ToonClientConfig {
   /** Faucet base URL for {@link WalletFacade.faucet}. Devnet only. */
   faucetUrl?: string;
 
+  /**
+   * The `socks5h://` proxy through which a hidden-service connector is reached —
+   * a running Anyone Protocol `anon` daemon's SOCKS port, e.g.
+   * `socks5h://127.0.0.1:9050`.
+   *
+   * Required when `connector` is a `.anyone` address, and rejected as pointless
+   * misdirection when it is not. This library never starts a daemon itself; the
+   * `toon` CLI will start one for you (ADR 0001).
+   *
+   * Node only: a browser cannot dial a hidden service by any route.
+   */
+  socksProxy?: string;
+  /**
+   * Send chain RPC through `socksProxy` as well as the packets. Default `true`.
+   *
+   * Set `false` only when the RPC endpoint is already private — your own node on
+   * loopback — where the extra hop buys nothing and costs latency. Leaving it on
+   * for a public provider is the point: see ADR 0002.
+   */
+  proxyRpc?: boolean;
+
   /** Injected `fetch`, for tests and non-standard runtimes. */
   fetch?: typeof fetch;
   /** Injected websocket factory, for tests and runtimes without a global `WebSocket`. */

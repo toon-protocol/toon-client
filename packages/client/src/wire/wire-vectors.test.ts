@@ -32,7 +32,6 @@
 import { describe, it, expect } from 'vitest';
 import { hashTypedData, recoverAddress, type Hex } from 'viem';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
-import { sha256 } from '@noble/hashes/sha2.js';
 import {
   WIRE_VECTOR_SECTIONS,
   bytesToHex,
@@ -59,7 +58,6 @@ import {
 import {
   GiftWrapError,
   GiftWrapErrorKind,
-  deriveCondition,
   deriveFulfillment,
   looksLikeSealedResponse,
   openRequest,
@@ -67,7 +65,7 @@ import {
   sealRequestWithRandomness,
   sealResponseWithRandomness,
 } from './giftwrap.js';
-import { fulfillmentMatchesCondition } from '../utils/condition.js';
+import { fulfillmentMatches } from '../utils/fulfillment.js';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { SolanaSigner } from '../signing/solana-signer.js';
 import type { SolanaClaimMessage } from '../signing/types.js';
@@ -101,10 +99,13 @@ describe('the vendored vector file', () => {
 
   it('is the schema version this harness understands', () => {
     expect(vectors.schema_version).toBe(provenance.schemaVersion);
-    // 4 (connector#1157, ADR 0060): the `{peerId, secret}` peer credential is
-    // deleted from both carriages. 2 put the real settlement program into
-    // `claim_solana.programId`; 3 retired minimum delivery.
-    expect(vectors.schema_version).toBe(4);
+    // 5 (connector#1269, ADR 0069): `executionCondition` is deleted from
+    // PREPARE and a one-byte `greeting` flag takes its place, and the
+    // `fulfilment` section narrows to `derive_fulfillment`'s determinism.
+    // 4 deleted the `{peerId, secret}` peer credential from both carriages;
+    // 2 put the real settlement program into `claim_solana.programId`; 3
+    // retired minimum delivery.
+    expect(vectors.schema_version).toBe(5);
   });
 
   it('records which connector commit it came from', () => {
@@ -502,11 +503,14 @@ describe('giftwrap — the seal around the envelope (connector ADR 0018)', () =>
 describe('fulfilment — the preimage a shared secret derives (connector ADR 0019)', () => {
   const cases: FulfilmentVector[] = vectors.fulfilment?.cases ?? [];
 
-  it('carries both a matching and a non-matching case', () => {
-    expect(cases.length).toBeGreaterThan(0);
-    expect(new Set(cases.map((c) => c.matches))).toEqual(
-      new Set([true, false])
-    );
+  it('carries two cases built from two different secrets', () => {
+    // ADR 0069 narrowed this section to `derive_fulfillment`'s own
+    // determinism: with no execution condition left on the wire there is
+    // nothing to derive one from or match one against, so the pair now pins
+    // the same property from both sides — a fixed secret's fulfilment, and a
+    // different secret's different one.
+    expect(cases).toHaveLength(2);
+    expect(new Set(cases.map((c) => c.shared_secret_hex)).size).toBe(2);
   });
 
   it.each(cases.map((c) => [c.name, c] as const))(
@@ -518,63 +522,48 @@ describe('fulfilment — the preimage a shared secret derives (connector ADR 001
     }
   );
 
-  it.each(cases.map((c) => [c.name, c] as const))(
-    "holds %s's `matches` flag against its published condition",
-    (_name, vector) => {
-      const fulfilment = deriveFulfillment(
-        hexToBytes(vector.shared_secret_hex)
-      );
-      expect(
-        fulfillmentMatchesCondition(
-          fulfilment,
-          hexToBytes(vector.condition_hex)
-        )
-      ).toBe(vector.matches);
+  it('carries no condition to check a fulfilment against (ADR 0069)', () => {
+    // The removal is asserted, not merely un-asserted: a connector that put
+    // the field back would be a wire change this harness must notice.
+    for (const vector of cases) {
+      expect(Object.keys(vector)).toEqual([
+        'name',
+        'shared_secret_hex',
+        'fulfilment_hex',
+      ]);
     }
-  );
-
-  it('mints the condition as sha256 of the derived fulfilment', () => {
-    // The one case whose condition WAS minted from its own secret. `sha256`
-    // is asserted directly here, not merely implied by `matches`, because
-    // `derive_condition` is a connector-side choice this client must copy
-    // (`crates/connector-domain/src/condition.rs:27`) rather than assume.
-    const matching = cases.find((c) => c.matches);
-    expect(matching).toBeDefined();
-    const fulfilment = deriveFulfillment(
-      hexToBytes(matching?.shared_secret_hex ?? '')
-    );
-    expect(bytesToHex(deriveCondition(fulfilment))).toBe(
-      matching?.condition_hex
-    );
-    expect(bytesToHex(sha256(fulfilment))).toBe(matching?.condition_hex);
   });
 
-  it("does not accept a different secret's fulfilment for that condition", () => {
-    const matching = cases.find((c) => c.matches);
-    const other = cases.find((c) => !c.matches);
-    expect(other?.condition_hex).toBe(matching?.condition_hex);
+  it('tells one secret\u2019s fulfilment from another\u2019s — the whole sender check', () => {
+    // Since ADR 0069 this comparison IS the delivery check, and the only one
+    // made anywhere on the path: no hop verifies a FULFILL any more.
+    const [first, second] = cases;
+    const expected = deriveFulfillment(
+      hexToBytes(first?.shared_secret_hex ?? '')
+    );
+    expect(fulfillmentMatches(expected, expected)).toBe(true);
     expect(
-      fulfillmentMatchesCondition(
-        deriveFulfillment(hexToBytes(other?.shared_secret_hex ?? '')),
-        hexToBytes(matching?.condition_hex ?? '')
+      fulfillmentMatches(
+        deriveFulfillment(hexToBytes(second?.shared_secret_hex ?? '')),
+        expected
       )
     ).toBe(false);
   });
 
   it('agrees with the giftwrap section on the secret they share', () => {
-    // The `giftwrap` case and the matching `fulfilment` case are built from
-    // the same shared secret, so the packet a sender seals and the condition
-    // it mints are demonstrably the same transaction — not two fixtures that
-    // happen to sit in one file.
+    // The `giftwrap` case and the first `fulfilment` case are built from the
+    // same shared secret, so the packet a sender seals and the preimage it
+    // will check against are demonstrably the same transaction — not two
+    // fixtures that happen to sit in one file.
     const wrapSecret = vectors.giftwrap?.cases[0]?.shared_secret_hex;
-    expect(cases.find((c) => c.matches)?.shared_secret_hex).toBe(wrapSecret);
+    expect(cases[0]?.shared_secret_hex).toBe(wrapSecret);
 
     const { sharedSecret } = openRequest(
       hexToBytes(vectors.giftwrap?.cases[0]?.request_wrap_hex ?? ''),
       hexToBytes(vectors.giftwrap?.receiver_identity_secret_hex ?? '')
     );
-    expect(bytesToHex(deriveCondition(deriveFulfillment(sharedSecret)))).toBe(
-      cases.find((c) => c.matches)?.condition_hex
+    expect(bytesToHex(deriveFulfillment(sharedSecret))).toBe(
+      cases[0]?.fulfilment_hex
     );
   });
 });
@@ -939,9 +928,8 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
     expect(decoded.type).toBe(ILPPacketType.PREPARE);
     expect(decoded.amount).toBe(BigInt(vector.prepare.amount));
     expect(decoded.destination).toBe(vector.prepare.destination);
-    expect(bytesToHex(decoded.executionCondition)).toBe(
-      vector.prepare.execution_condition_hex
-    );
+    // One octet, 0x00/0x01, where a 32-byte condition sat until ADR 0069.
+    expect(decoded.greeting).toBe(vector.prepare.greeting);
     expect(bytesToHex(decoded.data)).toBe(vector.prepare.data_hex);
     // The 19-byte GeneralizedTime, `YYYYMMDDHHMMSS.fffZ` — TOON's dialect, not
     // RFC 0027's 17-byte Interledger Timestamp (connector ADR 0063).

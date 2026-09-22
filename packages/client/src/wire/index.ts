@@ -45,7 +45,6 @@ export {
   GIFTWRAP_SECRET_LENGTH,
   GIFTWRAP_TYPE_REQUEST,
   GIFTWRAP_TYPE_RESPONSE,
-  deriveCondition,
   deriveFulfillment,
   giftWrapPublicKey,
   localGiftWrapEcdh,

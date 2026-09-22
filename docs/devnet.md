@@ -77,8 +77,8 @@ chargeFor(terms!, 1185); // 1020n — two kibibytes started
 `g.toon.relay.ephemeral` is priced at **zero**, which makes it the one route you can exercise the
 whole wire against while holding no funds and no channel — see
 [channels.md](channels.md#a-route-priced-at-zero-needs-no-channel). It is still a real paid-write
-path in every other respect: the request is sealed, the condition is derived from the secret
-inside the seal, and the app's answer comes back sealed.
+path in every other respect: the request is sealed, the fulfilment to expect is derived from the
+secret inside the seal, and the app's answer comes back sealed.
 
 A route may also be pinned to one carriage, in which case a request over the other one is answered
 with the route's terms instead of the work; see [errors.md](errors.md). `g.toon.relay` is pinned to
@@ -171,3 +171,15 @@ is 6-decimal USDC on both chains, so:
 
 Native gas is not this scale: ETH is 18 decimals (wei) and SOL is 9 (lamports). A deposit is
 always in the settlement token's base units, never in wei.
+
+## Hidden services
+
+The devnet publishes **no `.anyone` node** at the time of writing, so there is no hidden-service
+row in the tables above, and no address here to point anything at. That is a connector-side
+deployment, not a gap in this client.
+
+The client's support for one is complete and tested against a local SOCKS5 proxy. The live test in
+`packages/client/src/__integration__/hidden-service.integration.test.ts` is skipped for exactly
+that reason — inventing an address would be worse than skipping — and becomes real the day one
+exists: set `TOON_HS_CONNECTOR`, `TOON_SOCKS` and `TOON_MNEMONIC` to run it. See
+[hidden-service.md](hidden-service.md).

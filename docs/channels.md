@@ -177,6 +177,28 @@ request can still report its own runway.
 Use it when your side and the connector's might disagree — after a crash mid-send, or when claims
 are being refused for a reason you cannot see locally.
 
+### The client asks for you, after a request whose fate it does not know
+
+One disagreement it settles on its own. A request that **times out** may still have been
+delivered: the connector banked the claim, and this end saw nothing. The client repays the amount
+locally — being one claim short spends nothing, where running ahead spends the deposit on nothing —
+but that guess would otherwise stand forever, and every later claim under-advances by the same gap
+and is refused (`F03`, then `F01`).
+
+So a transport error, a timeout, or a refused claim marks the channel's watermark **doubtful**, and
+the next request on it runs `claim-state` for that one channel *before* signing, adopting the
+connector's figure. The doubt is durable — it is written into `channels.json`, so a timeout in one
+`toon` invocation is settled by the next one — and it is cleared for free by the first claim the
+connector banks, so a healthy channel never pays for the read.
+
+Two things it will not do. It never adopts a cumulative **higher than this client has ever
+signed**: a connector can only bank a claim it holds a signature for, so a larger figure is not a
+fact about your channel. And it never lowers a nonce, because re-issuing a claim at a spent nonce
+is how a payer double-spends against itself.
+
+If the read itself fails — the connector that just timed out may still be unreachable — the request
+goes out on the local figure as before, and the next one asks again.
+
 ## Closing and settling
 
 Closing starts a challenge period; settling pays out once that period has elapsed. Both are your

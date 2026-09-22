@@ -4,6 +4,23 @@ import { dirname } from 'node:path';
 export interface ChannelStoreEntry {
   nonce: number;
   cumulativeAmount: bigint;
+  /**
+   * The highest cumulative this client has ever SIGNED on the channel, which a
+   * rollback deliberately does not lower. It is the ceiling on what the
+   * connector can possibly have banked — nothing it never received a signature
+   * for is claimable — and so the clamp on adopting the connector's own figure
+   * (see {@link ChannelManager.adoptConnectorWatermark}).
+   */
+  signedCeiling?: bigint;
+  /**
+   * Set when a signed claim's fate is unknown (a transport error or a timeout,
+   * where the packet may have been delivered and banked anyway) or when the
+   * connector refused one. It means "our watermark and the connector's may
+   * disagree", and the next claim on this channel reconciles against
+   * `POST /ilp/claim-state` before it is signed. Persisted because a timeout in
+   * one `toon` invocation desyncs the next one.
+   */
+  watermarkUncertain?: boolean;
   /** Unix SECONDS when close was initiated (withdraw flow). */
   closedAt?: bigint;
   /** Unix SECONDS the channel becomes settleable (= closedAt + settlementTimeout). */
@@ -91,6 +108,9 @@ interface JsonEntry {
   nonce: number;
   /** Stored as string to preserve bigint precision */
   cumulativeAmount: string;
+  /** Stored as string to preserve bigint precision. */
+  signedCeiling?: string;
+  watermarkUncertain?: boolean;
   /** Withdraw-flow timers, string-encoded SECONDS (bigint precision). */
   closedAt?: string;
   settleableAt?: string;
@@ -145,6 +165,10 @@ export class JsonFileChannelStore implements ChannelStore {
     data[channelId] = {
       nonce: tracking.nonce,
       cumulativeAmount: tracking.cumulativeAmount.toString(),
+      ...(tracking.signedCeiling !== undefined
+        ? { signedCeiling: tracking.signedCeiling.toString() }
+        : {}),
+      ...(tracking.watermarkUncertain ? { watermarkUncertain: true } : {}),
       ...(tracking.closedAt !== undefined
         ? { closedAt: tracking.closedAt.toString() }
         : {}),
@@ -165,6 +189,10 @@ export class JsonFileChannelStore implements ChannelStore {
     return {
       nonce: entry.nonce,
       cumulativeAmount: BigInt(entry.cumulativeAmount),
+      ...(entry.signedCeiling !== undefined
+        ? { signedCeiling: BigInt(entry.signedCeiling) }
+        : {}),
+      ...(entry.watermarkUncertain ? { watermarkUncertain: true } : {}),
       ...(entry.closedAt !== undefined
         ? { closedAt: BigInt(entry.closedAt) }
         : {}),

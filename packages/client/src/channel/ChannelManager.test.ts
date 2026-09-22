@@ -3,6 +3,7 @@ import { generatePrivateKey } from 'viem/accounts';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { ChannelManager } from './ChannelManager.js';
 import type { ChannelTerms } from './types.js';
+import { InMemoryChannelStore } from './ChannelStore.js';
 import type { ChannelStore, ChannelStoreEntry } from './ChannelStore.js';
 
 
@@ -284,6 +285,9 @@ describe('ChannelManager', () => {
       expect(store.save).toHaveBeenCalledWith(CHANNEL_ID, {
         nonce: 1,
         cumulativeAmount: 100n,
+        // Signing raises the ceiling too: what was signed is what the connector
+        // could have banked, and a restart needs that bound to reconcile with.
+        signedCeiling: 100n,
       });
     });
 
@@ -426,7 +430,14 @@ describe('ChannelManager', () => {
       const mgr = tracked(store);
       await mgr.signBalanceProof(CHANNEL, 1000n);
       mgr.rollbackAmount(CHANNEL, 1000n);
-      expect(saved.at(-1)).toEqual({ nonce: 1, cumulativeAmount: 0n });
+      // The ceiling deliberately survives the rollback — see
+      // `adoptConnectorWatermark`, which will not believe a connector reporting
+      // more than this client has ever signed.
+      expect(saved.at(-1)).toEqual({
+        nonce: 1,
+        cumulativeAmount: 0n,
+        signedCeiling: 1000n,
+      });
     });
 
     it('clamps at zero rather than going negative on a double rollback', async () => {
@@ -448,6 +459,123 @@ describe('ChannelManager', () => {
       mgr.rollbackAmount(CHANNEL, 0n);
       mgr.rollbackAmount(CHANNEL, -50n);
       expect(mgr.getCumulativeAmount(CHANNEL)).toBe(100n);
+    });
+  });
+  /**
+   * toon-client#671 — the watermark a timeout leaves in doubt.
+   *
+   * A packet that times out MAY have been delivered and banked, so the
+   * repayment `rollbackAmount` performs is a guess rather than a fact. These
+   * cover the machinery that stops the guess standing forever: the doubt, its
+   * persistence across a restart, and the two ways it is settled — by adopting
+   * the connector's own figure, or for free when a later claim is banked.
+   */
+  describe('the doubtful watermark (#671)', () => {
+    const CHANNEL = '0x' + 'dd'.repeat(32);
+
+    function tracked(store?: ChannelStore) {
+      const mgr = new ChannelManager(signer, store);
+      mgr.trackChannel(CHANNEL, {
+        chainType: 'evm',
+        chainId: 84532,
+        tokenNetworkAddress: '0x' + '11'.repeat(20),
+      });
+      return mgr;
+    }
+
+    it('starts certain, and a timeout makes it doubtful', async () => {
+      const mgr = tracked();
+      await mgr.signBalanceProof(CHANNEL, 1000n);
+      expect(mgr.isWatermarkUncertain(CHANNEL)).toBe(false);
+
+      mgr.rollbackAmount(CHANNEL, 1000n);
+      mgr.markWatermarkUncertain(CHANNEL);
+      expect(mgr.isWatermarkUncertain(CHANNEL)).toBe(true);
+    });
+
+    it('survives a restart — a timeout in one process desyncs the next', async () => {
+      const store = new InMemoryChannelStore();
+      const first = tracked(store);
+      await first.signBalanceProof(CHANNEL, 1000n);
+      first.rollbackAmount(CHANNEL, 1000n);
+      first.markWatermarkUncertain(CHANNEL);
+
+      const resumed = tracked(store);
+      expect(resumed.isWatermarkUncertain(CHANNEL)).toBe(true);
+      expect(resumed.getCumulativeAmount(CHANNEL)).toBe(0n);
+    });
+
+    it('adopts the connector figure: the packet HAD been delivered', async () => {
+      const mgr = tracked();
+      await mgr.signBalanceProof(CHANNEL, 1000n);
+      mgr.rollbackAmount(CHANNEL, 1000n);
+      mgr.markWatermarkUncertain(CHANNEL);
+
+      const adoption = mgr.adoptConnectorWatermark(CHANNEL, {
+        nonce: 1,
+        cumulativeClaimed: 1000n,
+      });
+
+      expect(adoption).toMatchObject({ adopted: true, moved: 1000n, cumulative: 1000n });
+      expect(mgr.getCumulativeAmount(CHANNEL)).toBe(1000n);
+      expect(mgr.isWatermarkUncertain(CHANNEL)).toBe(false);
+    });
+
+    it('clamps to what was actually SIGNED — a connector cannot bank what it has no signature for', async () => {
+      const mgr = tracked();
+      await mgr.signBalanceProof(CHANNEL, 1000n);
+      mgr.rollbackAmount(CHANNEL, 1000n);
+      mgr.markWatermarkUncertain(CHANNEL);
+
+      const adoption = mgr.adoptConnectorWatermark(CHANNEL, {
+        nonce: 1,
+        cumulativeClaimed: 900_000n,
+      });
+
+      expect(adoption).toMatchObject({ cumulative: 1000n, clampedTo: 1000n });
+      expect(mgr.getCumulativeAmount(CHANNEL)).toBe(1000n);
+    });
+
+    it('takes a LOWER figure too — a claim we signed never reached it', async () => {
+      const mgr = tracked();
+      await mgr.signBalanceProof(CHANNEL, 1000n);
+      await mgr.signBalanceProof(CHANNEL, 1000n);
+      mgr.markWatermarkUncertain(CHANNEL);
+
+      const adoption = mgr.adoptConnectorWatermark(CHANNEL, {
+        nonce: 1,
+        cumulativeClaimed: 1000n,
+      });
+
+      expect(adoption).toMatchObject({ moved: -1000n, cumulative: 1000n });
+      // The nonce does NOT follow it down: two claims went out under 1 and 2,
+      // and re-issuing at a spent nonce is how a client double-spends itself.
+      expect(mgr.getNonce(CHANNEL)).toBe(2);
+    });
+
+    it('takes the connector nonce when it is AHEAD', async () => {
+      const mgr = tracked();
+      await mgr.signBalanceProof(CHANNEL, 1000n);
+      mgr.markWatermarkUncertain(CHANNEL);
+      mgr.adoptConnectorWatermark(CHANNEL, { nonce: 9, cumulativeClaimed: 1000n });
+      expect(mgr.getNonce(CHANNEL)).toBe(9);
+    });
+
+    it('a banked claim settles the doubt without a round trip', async () => {
+      const mgr = tracked();
+      await mgr.signBalanceProof(CHANNEL, 1000n);
+      mgr.markWatermarkUncertain(CHANNEL);
+      mgr.markWatermarkCertain(CHANNEL);
+      expect(mgr.isWatermarkUncertain(CHANNEL)).toBe(false);
+    });
+
+    it('is a no-op for an untracked channel — these run on error paths', () => {
+      const mgr = tracked();
+      expect(() => mgr.markWatermarkUncertain('0xnot-tracked')).not.toThrow();
+      expect(mgr.isWatermarkUncertain('0xnot-tracked')).toBe(false);
+      expect(
+        mgr.adoptConnectorWatermark('0xnot-tracked', { nonce: 1, cumulativeClaimed: 1n })
+      ).toEqual({ adopted: false, moved: 0n });
     });
   });
 });
