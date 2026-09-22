@@ -1,5 +1,44 @@
 # @toon-protocol/client
 
+## 3.1.0
+
+### Minor Changes
+
+- 0ac8c12: A claim whose fate is unknown no longer desyncs the watermark (#671).
+
+  A paid request that **times out** may have been delivered anyway — the connector
+  banks the claim while this end sees nothing. The client repays the amount
+  locally, which is the safer guess, but the guess used to stand forever: from
+  then on every claim under-advanced by the same gap and was refused, `F03`
+  ("advances value by 0, less than this route's price") and then `F01`
+  ("cumulative goes backwards"). Nearly unreachable on a clearnet loopback;
+  ordinary over a hidden-service circuit, where a 120s per-packet timeout and real
+  RTT make timeout-but-delivered a routine event.
+
+  The repayment stays. What changes is that it is no longer believed unquestioned:
+
+  - A transport error, a timeout, or a refused claim marks that channel's
+    watermark **doubtful**, and the next request on it re-reads
+    `POST /ilp/claim-state` for that one channel and adopts the connector's own
+    figure **before** signing — the same read that previously happened only after
+    two refused attempts.
+  - The doubt is persisted beside the watermark (`channels.json` gains an optional
+    `watermarkUncertain` and `signedCeiling`), so a timeout in one `toon`
+    invocation is settled by the next one.
+  - It is cleared for free by the first claim the connector banks, so a healthy
+    channel never pays for the read.
+  - An adopted cumulative is clamped to the highest figure this client has ever
+    signed — a connector can only bank a claim it holds a signature for — and a
+    nonce is never lowered.
+
+  New on `ChannelManager`: `markWatermarkUncertain`, `markWatermarkCertain`,
+  `isWatermarkUncertain` and `adoptConnectorWatermark`. `SendContext` gains an
+  optional `reconcileWatermark` port.
+
+### Patch Changes
+
+- d172952: Fix `chargeFor` overpaying a metered route by one kibibyte's rate whenever the sealed payload is an exact multiple of 1024 bytes. It counted `floor(bytes / 1024) + 1`; the connector charges `base + rate * ceil(bytes / 1024)` (`connector-domain::Price::charge`, `bytes.div_ceil(1024)`, connector ADR 0065), so a 1024-byte payload is one kibibyte and not two, and an empty payload pays the base alone. The two formulas agree everywhere else, which is why the old one survived: every size that had actually been sent against the deployed store node was a non-multiple of 1024, and at a multiple the client simply overpaid — a claim that advances more than the price is accepted in silence, so nothing reported it. Measured against the deployed store node at `1000 + 10/KiB`, whose x402 greeting quotes `price.charge(prepare.data.len())` for the packet it was handed: 1024 bytes is quoted at 1010, and 2048 at 1020. `sealedBytes` is the PREPARE's `data` field verbatim on both carriages, so the two sides count the same bytes and no offset separates them.
+
 ## 3.0.0
 
 ### Major Changes
