@@ -1,5 +1,18 @@
 # @toon-protocol/client
 
+## 3.1.1
+
+### Patch Changes
+
+- e54b645: Fix `client.channel.ensure()` leaving a RESUMED channel unadopted, so the first `deposit()` / `close()` / `settle()` after it failed with `No on-chain context for channel … this client cannot deposit into a channel it neither opened nor adopted`. A channel resolved from the store is resumed rather than opened, and on that path the chain client does not exist yet (it is built lazily by `onChainClient()`), so the manager's own adoption during resume had nothing to hand the context to. `requireChannel` adopts for exactly this reason — but returns `current` untouched when it is already set, and `ensure()` is what sets it. `ensure()` now adopts the resumed channel itself, the way `requireChannel` does when it resolves one. Found by `rig channel open --deposit` on the shared devnet: the channel it had just paid on could not be topped up.
+- 074338a: Re-pin the devnet Solana mock-USDC mint in the client test fixtures.
+
+  `xyc5J8MgKFiEN13PnfftdXxUzYH34FEvw1LCrFwN7in` is retired — it is still on chain
+  with its supply, but its mint authority is lost, so nobody can mint it. The live
+  devnet settlement token is `34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU`
+  (connector#1212), which `packages/client/src/presets.ts` already carries; only the
+  fixtures still described the dead world. Fixtures only — no shipped behaviour changes.
+
 ## 3.1.0
 
 ### Minor Changes
