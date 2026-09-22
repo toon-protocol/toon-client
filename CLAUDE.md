@@ -50,14 +50,32 @@ The ILP payment engine, the connector itself, and the protocol documents are the
 ## Dependencies
 
 No `@toon-protocol/core` and no `@toon-protocol/sdk` — this package has no TOON-protocol runtime
-dependencies at all. Its dependencies are `viem`, the `@noble`/`@scure` primitives, and optional
-`ws` for the websocket carriage in Node.
+dependencies at all. Its dependencies are `viem`, the `@noble`/`@scure` primitives, and three
+optional ones, each loaded through a guarded dynamic `require` and never bundled: `ws` for the
+websocket carriage, and `undici` + `socks` for the hidden-service transport.
 
 ## Docs
 
 `README.md` is the front door and stays short. Everything else is in `docs/`:
-getting-started, api, cli, channels, how-a-paid-packet-works, devnet, errors, troubleshooting,
-development. `docs/devnet.md` is the only place the full address table lives.
+getting-started, api, cli, channels, how-a-paid-packet-works, hidden-service, devnet, errors,
+troubleshooting, development. `docs/devnet.md` is the only place the full address table lives.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as GitHub issues on `toon-protocol/toon-client`, driven with the `gh` CLI.
+See [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name.
+See [docs/agents/triage-labels.md](docs/agents/triage-labels.md).
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root.
+See [docs/agents/domain.md](docs/agents/domain.md).
 
 ## Shared skills, docs & project context → toon-protocol/toon-meta
 Cross-cutting agent skills, docs, and the canonical project context live in **[toon-protocol/toon-meta](https://github.com/toon-protocol/toon-meta)**. Load the shared skills:
@@ -65,7 +83,7 @@ Cross-cutting agent skills, docs, and the canonical project context live in **[t
 /plugin marketplace add toon-protocol/toon-meta
 /plugin install toon-skills@toon-meta
 ```
-Canonical rules: `toon-meta` → `_bmad-output/project-context.md`.
+Canonical rules: `toon-meta` → `context/context.md`.
 
 ## Publishing
 CI publishes via **changesets + `pnpm`** using the org `NPM_TOKEN` secret. **Never run `npm publish`** (it ships unresolved `workspace:*`).

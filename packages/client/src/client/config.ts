@@ -27,6 +27,8 @@ import {
 } from '../channel/ChannelStore.js';
 import { DEVNET, defaultRpcUrl } from '../presets.js';
 import { ConfigError } from './errors.js';
+import { assertRoutableHsHostname, isHiddenServiceUrl } from '../transport/hs-hostname.js';
+import { validateSocks5hUrl } from '../transport/socks-url.js';
 import type {
   ChainKind,
   KeyDerivationScheme,
@@ -36,6 +38,13 @@ import type {
 
 /** Per-packet timeout when the caller sets none. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
+/**
+ * Per-packet timeout when the caller sets none and the connector is a hidden
+ * service. Building a circuit to a cold hidden service routinely takes tens of
+ * seconds before the connector has seen a single byte, so the clearnet default
+ * would expire packets that were merely in transit.
+ */
+export const DEFAULT_HS_TIMEOUT_MS = 120_000;
 /** Collateral for the first channel, base units — 0.1 USDC at 6 decimals. */
 export const DEFAULT_DEPOSIT = 100_000n;
 /** Challenge period in seconds when the caller sets none. */
@@ -55,6 +64,20 @@ export interface ResolvedIdentity {
 export interface ResolvedConfig {
   /** The client-edge base URL, with any trailing `/ilp` normalised away. */
   connector: string;
+  /** True when {@link connector} is a `.anyone` hidden service. */
+  connectorIsHiddenService: boolean;
+  /** The `socks5h://` proxy to reach it through, when there is one. */
+  socksProxy: string | undefined;
+  /** Whether chain RPC rides that proxy too (ADR 0002). */
+  proxyRpc: boolean;
+  /**
+   * The undici dispatcher built from {@link socksProxy}, for chain RPC.
+   * Deliberately not filled in here: building it means loading a Node-only
+   * module, and resolving a config must stay synchronous and browser-safe. It is
+   * the client's job to construct one, so {@link resolveConfig} only reserves
+   * the slot and leaves it `undefined`.
+   */
+  rpcDispatcher: unknown;
   identity: ResolvedIdentity;
   /** The caller's chain preference, or `undefined` to take the node's first. */
   chain: ChainKind | undefined;
@@ -92,6 +115,8 @@ export interface ResolvedConfig {
  */
 export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
   const connector = resolveConnector(config.connector);
+  const connectorIsHiddenService = isHiddenServiceUrl(connector);
+  const socksProxy = resolveSocksProxy(config.socksProxy, connector, connectorIsHiddenService);
   const accountIndex = resolveAccountIndex(config.accountIndex);
   const keyDerivation = config.keyDerivation ?? 'standard';
   const identity = resolveIdentity(config, keyDerivation, accountIndex);
@@ -116,7 +141,8 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
   }
 
   const deposit = resolveDeposit(config.deposit);
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs =
+    config.timeoutMs ?? (connectorIsHiddenService ? DEFAULT_HS_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new ConfigError(`timeoutMs must be a positive number; got ${String(timeoutMs)}.`);
   }
@@ -145,6 +171,10 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
     transport,
     senderId: config.senderId,
     deposit,
+    connectorIsHiddenService,
+    socksProxy,
+    proxyRpc: config.proxyRpc ?? true,
+    rpcDispatcher: undefined,
     settlementTimeout,
     autoOpenChannel: config.autoOpenChannel ?? true,
     timeoutMs,
@@ -199,7 +229,64 @@ function resolveConnector(connector: string | undefined): string {
       `connector ${JSON.stringify(connector)} must be an http(s) URL; got ${JSON.stringify(base)}.`
     );
   }
+  // A `.anon` or `.onion` connector is not a typo to pass through: `anon` would
+  // treat the first as a clearnet name and fail late with `HostUnreachable`, and
+  // the second belongs to a network this client does not dial at all. Both are
+  // caught here, where the message can still name the fix.
+  const host = new URL(base).hostname;
+  if (/\.(anon|onion)$/.test(host)) {
+    try {
+      assertRoutableHsHostname(host);
+    } catch (error) {
+      throw new ConfigError(
+        `connector ${JSON.stringify(connector)} is not reachable: ` +
+          (error instanceof Error ? error.message : String(error)),
+        error instanceof Error ? error : undefined
+      );
+    }
+  }
   return base;
+}
+
+/**
+ * A hidden service needs a proxy, and a proxy without one is a misunderstanding.
+ *
+ * Both directions fail here rather than later. Without a proxy, a `.anyone`
+ * address resolves nowhere — but only after the hostname has gone out in a
+ * plaintext DNS query, which is the one thing the address exists to avoid. With
+ * a proxy but a clearnet connector, the caller believes they are anonymous and
+ * are not.
+ */
+function resolveSocksProxy(
+  socksProxy: string | undefined,
+  connector: string,
+  connectorIsHiddenService: boolean
+): string | undefined {
+  if (socksProxy === undefined) {
+    if (!connectorIsHiddenService) return undefined;
+    throw new ConfigError(
+      `connector ${JSON.stringify(connector)} is a hidden service, which is reachable ` +
+        'only through a SOCKS5h proxy. Set `socksProxy` to a running Anyone Protocol ' +
+        '`anon` daemon (e.g. "socks5h://127.0.0.1:9050"), or use the `toon` CLI, which ' +
+        'can start one for you.'
+    );
+  }
+  if (!connectorIsHiddenService) {
+    throw new ConfigError(
+      `socksProxy is set, but connector ${JSON.stringify(connector)} is a clearnet ` +
+        'address, so nothing would ride the proxy. Point `connector` at the node\'s ' +
+        '.anyone address, or drop `socksProxy`.'
+    );
+  }
+  try {
+    validateSocks5hUrl(socksProxy);
+  } catch (error) {
+    throw new ConfigError(
+      error instanceof Error ? error.message : String(error),
+      error instanceof Error ? error : undefined
+    );
+  }
+  return socksProxy;
 }
 
 function resolveAccountIndex(accountIndex: number | undefined): number {

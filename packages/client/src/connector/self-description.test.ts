@@ -90,18 +90,42 @@ describe('chargeFor', () => {
   });
 
   /**
-   * The figures on the right are what the deployed store node actually charged
-   * for a sealed payload of that size, recovered by deliberately underpaying
-   * and reading the price back off its `F03`. The boundary rows are the point:
-   * the count is kibibytes STARTED, `floor(n / 1024) + 1`, so 1024 bytes is
-   * already two units. `ceil` would make it one and under-pay by the rate.
+   * The law, and the figures the deployed store node answers with.
+   *
+   * The rule is `base + rate * ceil(bytes / 1024)` — the connector's own
+   * `Price::charge` (`connector-domain/src/price.rs`, `bytes.div_ceil(1024)`,
+   * connector ADR 0065), which counts whole kibibytes plus one for a remainder
+   * and none at all for an empty payload. The boundary rows are the point: 1024
+   * bytes is ONE kibibyte, 2048 is two, and the next byte after each starts the
+   * next one.
+   *
+   * The right-hand column is measured, not derived. The store node at
+   * `1000 + 10/KiB` answers an unpaid PREPARE with an x402 greeting quoting
+   * `price.charge(prepare.data.len())` for the packet it was handed — the same
+   * figure its claim gate then collects (`connector-client-edge/src/lib.rs`
+   * computes one `charge` and greets, bounds and gates on it). Posting a PREPARE
+   * whose `data` is exactly n bytes reads the rule straight off the deployment:
+   *
+   *     bytes  0     1     1023  1024  1025  2047  2048  2049  5161
+   *     quoted 1000  1010  1010  1010  1020  1020  1020  1030  1060
+   *
+   * This suite previously asserted `floor(n / 1024) + 1` and called it measured.
+   * It was a fit: every size anyone had actually sent was a non-multiple of 1024,
+   * where the two formulas agree, and at a multiple the client overpaid by one
+   * rate — which a connector accepts in silence, so nothing ever reported it
+   * (toon-client#629).
    */
   it.each([
-    [0, 1010n],
+    [0, 1000n],
+    [1, 1010n],
     [169, 1010n],
     [1023, 1010n],
-    [1024, 1020n],
+    [1024, 1010n],
+    [1025, 1020n],
     [1185, 1020n],
+    [2047, 1020n],
+    [2048, 1020n],
+    [2049, 1030n],
     [2209, 1030n],
     [3161, 1040n],
     [5161, 1060n],
@@ -109,8 +133,16 @@ describe('chargeFor', () => {
     expect(chargeFor(metered, bytes)).toBe(expected);
   });
 
-  it('never charges less than the base price for a nonsensical size', () => {
-    expect(chargeFor(metered, -5)).toBe(1010n);
+  it('charges the base alone for a nonsensical size, as it does for an empty payload', () => {
+    expect(chargeFor(metered, -5)).toBe(1000n);
+  });
+
+  it('agrees with the connector formula across the first few boundaries', () => {
+    // The rule, stated once and checked against itself: no table can be a fit
+    // for a formula it is generated from.
+    for (let bytes = 0; bytes <= 4096; bytes++) {
+      expect(chargeFor(metered, bytes)).toBe(1000n + 10n * BigInt(Math.ceil(bytes / 1024)));
+    }
   });
 });
 

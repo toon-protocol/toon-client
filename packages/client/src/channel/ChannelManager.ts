@@ -27,6 +27,18 @@
  * {@link ../client/send.js} calls it on every refusal path — including a thrown
  * transport error, where nothing is known to have arrived at all.
  *
+ * ## And a refusal that never arrives
+ *
+ * Rolling back on a thrown transport error assumes nothing arrived, which is
+ * the safer guess but is sometimes simply wrong: a request that times out on a
+ * long path can have been delivered and banked anyway, and then our figure is
+ * one claim BEHIND the connector's rather than level with it. Every later claim
+ * under-advances and is refused (toon-client#671). So the assumption is no
+ * longer left standing: {@link ChannelManager.markWatermarkUncertain} records
+ * the doubt, and the next claim on that channel resolves it against the
+ * connector's own watermark through
+ * {@link ChannelManager.adoptConnectorWatermark} before it is signed.
+ *
  * ## The binding
  *
  * A binding says "this is the channel I hold with THAT connector, on THAT chain,
@@ -64,11 +76,48 @@ interface ChannelTracking {
    * step 5), so this is what a caller should show as runway.
    */
   depositTotal?: bigint;
+  /**
+   * The highest cumulative ever SIGNED on this channel — advanced by
+   * {@link ChannelManager.signBalanceProof} and deliberately NOT lowered by
+   * {@link ChannelManager.rollbackAmount}. The connector can only have banked a
+   * claim it holds a signature for, so this is the ceiling on any figure it
+   * reports, and the clamp {@link ChannelManager.adoptConnectorWatermark}
+   * applies to one.
+   */
+  signedCeiling?: bigint;
+  /**
+   * "Our watermark and the connector's may disagree." Set whenever a signed
+   * claim's fate is unknown or bad — see
+   * {@link ChannelManager.markWatermarkUncertain} — and cleared either by
+   * adopting the connector's figure
+   * ({@link ChannelManager.adoptConnectorWatermark}) or by a later claim it
+   * banks ({@link ChannelManager.markWatermarkCertain}).
+   */
+  watermarkUncertain?: boolean;
   /** Withdraw flow (unix SECONDS): set when close is initiated / becomes settleable / settled. */
   closedAt?: bigint;
   settleableAt?: bigint;
   settledAt?: bigint;
 }
+
+/**
+ * What {@link ChannelManager.adoptConnectorWatermark} did.
+ *
+ * `moved` is signed: positive when the connector had banked MORE than we had
+ * recorded (the timed-out packet was delivered after all), negative when it had
+ * banked less (a claim we signed never reached it). `clampedTo` is present only
+ * when the connector reported a figure above anything we ever signed — which it
+ * cannot have a claim for, and which was therefore not adopted.
+ */
+export type WatermarkAdoption =
+  | { adopted: false; moved: bigint }
+  | {
+      adopted: true;
+      moved: bigint;
+      cumulative: bigint;
+      nonce: number;
+      clampedTo?: bigint;
+    };
 
 export interface ChannelManagerConfig {
   /**
@@ -532,6 +581,13 @@ export class ChannelManager {
           tokenAddress: chainContext?.tokenAddress,
           recipient: chainContext?.recipient,
           depositTotal: chainContext?.depositTotal,
+          // A timeout in one process desyncs the next one, so the doubt — and
+          // the ceiling that bounds how it may be settled — is resumed with the
+          // watermark it is about.
+          ...(persisted.signedCeiling !== undefined
+            ? { signedCeiling: persisted.signedCeiling }
+            : {}),
+          ...(persisted.watermarkUncertain ? { watermarkUncertain: true } : {}),
           // Resume the withdraw-flow timers so a restart mid-grace doesn't
           // strand funds (the settle gate can't be evaluated without them).
           ...(persisted.closedAt !== undefined ? { closedAt: persisted.closedAt } : {}),
@@ -582,6 +638,12 @@ export class ChannelManager {
 
     tracking.nonce += 1;
     tracking.cumulativeAmount += additionalAmount;
+    if (
+      tracking.signedCeiling === undefined ||
+      tracking.cumulativeAmount > tracking.signedCeiling
+    ) {
+      tracking.signedCeiling = tracking.cumulativeAmount;
+    }
     this.persist(channelId);
 
     const signer = this.chainSigners.get(tracking.chainType);
@@ -637,6 +699,11 @@ export class ChannelManager {
    * Re-signing at the next nonce with the restored cumulative is exactly what the
    * spec's own remedy for an over-deposit refusal describes.
    *
+   * **The signed ceiling is not rolled back either.** What was signed was
+   * signed, and the ceiling exists to remember exactly that — it bounds what
+   * {@link ChannelManager.adoptConnectorWatermark} will believe the connector
+   * when it reports having banked.
+   *
    * Clamped at zero, and a no-op for an untracked channel: this runs on error
    * paths, and an error path that throws its own error hides the original.
    */
@@ -646,6 +713,103 @@ export class ChannelManager {
     tracking.cumulativeAmount =
       tracking.cumulativeAmount > amount ? tracking.cumulativeAmount - amount : 0n;
     this.persist(channelId);
+  }
+
+  /**
+   * Record that this channel's watermark is in DOUBT: the last claim signed on
+   * it was either sent into a transport error or a timeout — where the packet
+   * may have been delivered and banked regardless of what this end saw — or was
+   * refused by the connector. Either way our figure and the connector's may no
+   * longer agree, and guessing which way costs a refused claim per request
+   * (toon-client#671).
+   *
+   * The doubt is recorded rather than resolved, because resolving it here would
+   * mean a second network round trip bolted onto a request that has already
+   * failed, to a connector that may be exactly what is unreachable. It is
+   * resolved instead at the one moment the answer is actually needed — before
+   * the NEXT claim is signed — by {@link ChannelManager.adoptConnectorWatermark}
+   * with what `POST /ilp/claim-state` reports.
+   *
+   * Persisted, and a no-op for an untracked channel: this runs on error paths.
+   */
+  markWatermarkUncertain(channelId: string): void {
+    const tracking = this.channels.get(channelId);
+    if (!tracking || tracking.watermarkUncertain === true) return;
+    tracking.watermarkUncertain = true;
+    this.persist(channelId);
+  }
+
+  /**
+   * Record that this channel's watermark is known good again: the connector
+   * banked the claim we signed, at the figure we signed it at, so the two agree
+   * by construction.
+   *
+   * The cheap half of the reconciliation — a banked claim is proof, and proof
+   * costs nothing, where {@link ChannelManager.adoptConnectorWatermark} costs a
+   * round trip. Without it a channel that once timed out would re-read the
+   * connector's watermark before every later claim.
+   */
+  markWatermarkCertain(channelId: string): void {
+    const tracking = this.channels.get(channelId);
+    if (!tracking || tracking.watermarkUncertain !== true) return;
+    tracking.watermarkUncertain = false;
+    this.persist(channelId);
+  }
+
+  /** Whether the next claim on `channelId` must reconcile before it is signed. */
+  isWatermarkUncertain(channelId: string): boolean {
+    return this.channels.get(channelId)?.watermarkUncertain === true;
+  }
+
+  /**
+   * Adopt the connector's OWN watermark for a channel, and clear the doubt
+   * {@link ChannelManager.markWatermarkUncertain} recorded.
+   *
+   * The connector's figure is the one that decides — a claim is validated
+   * against what IT has banked (`client-edge-spec.md` §1.3) — so on a
+   * disagreement it is adopted rather than argued with. Two guards make that
+   * safe to do with a number that arrived over the network:
+   *
+   * - **The cumulative is clamped to {@link ChannelTracking.signedCeiling}**,
+   *   the highest figure this client has ever signed. A connector can only bank
+   *   a claim it holds our signature for, so a report above that ceiling is not
+   *   a fact about this channel and must not become one: adopting it would sign
+   *   away value that was never spent. The clamp is the whole reason the ceiling
+   *   is tracked.
+   * - **The nonce only ever rises.** A claim is a bearer instrument and a nonce
+   *   is the only thing that stops one being re-issued, so the local nonce moves
+   *   to whichever of the two figures is higher — never down to the connector's,
+   *   even when the connector's is lower because a claim we signed never reached
+   *   it.
+   *
+   * @returns what was adopted, and how far the cumulative moved (negative when
+   *   the connector had banked LESS than we had recorded), so a caller can say
+   *   so out loud.
+   */
+  adoptConnectorWatermark(
+    channelId: string,
+    connector: { nonce: number; cumulativeClaimed: bigint }
+  ): WatermarkAdoption {
+    const tracking = this.channels.get(channelId);
+    if (!tracking) return { adopted: false, moved: 0n };
+
+    const ceiling = tracking.signedCeiling ?? tracking.cumulativeAmount;
+    const cumulative =
+      connector.cumulativeClaimed > ceiling ? ceiling : connector.cumulativeClaimed;
+    const moved = cumulative - tracking.cumulativeAmount;
+
+    tracking.cumulativeAmount = cumulative;
+    tracking.nonce = Math.max(tracking.nonce, connector.nonce);
+    tracking.watermarkUncertain = false;
+    this.persist(channelId);
+
+    return {
+      adopted: true,
+      moved,
+      cumulative,
+      nonce: tracking.nonce,
+      ...(connector.cumulativeClaimed > ceiling ? { clampedTo: ceiling } : {}),
+    };
   }
 
   private buildMetadata(tracking: ChannelTracking): ChainMetadata {
@@ -709,6 +873,8 @@ export class ChannelManager {
     this.store.save(channelId, {
       nonce: t.nonce,
       cumulativeAmount: t.cumulativeAmount,
+      ...(t.signedCeiling !== undefined ? { signedCeiling: t.signedCeiling } : {}),
+      ...(t.watermarkUncertain ? { watermarkUncertain: true } : {}),
       ...(t.closedAt !== undefined ? { closedAt: t.closedAt } : {}),
       ...(t.settleableAt !== undefined ? { settleableAt: t.settleableAt } : {}),
       ...(t.settledAt !== undefined ? { settledAt: t.settledAt } : {}),

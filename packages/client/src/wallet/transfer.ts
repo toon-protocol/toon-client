@@ -21,10 +21,10 @@
 import {
   createPublicClient,
   createWalletClient,
-  http,
   defineChain,
   type Hex,
 } from 'viem';
+import { rpcTransport } from '../transport/rpc.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Decode, base58Encode } from '../utils/base58.js';
 import type { EvmSigner } from '../signing/evm-signer.js';
@@ -44,6 +44,7 @@ import {
   getLamports,
   getTokenAccountBalance,
   deriveAssociatedTokenAccount,
+  type SolanaRpcTarget,
 } from '../channel/solana/payment-channel.js';
 
 // ---------------------------------------------------------------------------
@@ -95,10 +96,14 @@ export interface EvmTransferConfig {
   signer: EvmSigner;
   /** ERC-20 settlement-token address. Required only for `asset: 'token'`. */
   tokenAddress?: string;
+  /** Send this transfer's RPC through the hidden-service proxy (ADR 0002). */
+  rpcDispatcher?: unknown;
 }
 
 export interface SolanaTransferConfig {
   rpcUrl: string;
+  /** `fetch` for Solana JSON-RPC — the proxied one on a hidden-service client (ADR 0002). */
+  rpcFetch?: typeof fetch;
   /** Ed25519 signing seed (32 bytes) or a 64-byte seed||pubkey keypair. */
   keypair: Uint8Array;
   /** SPL settlement-token mint. Required only for `asset: 'token'`. */
@@ -244,6 +249,11 @@ const ERC20_TRANSFER_ABI = [
   },
 ] as const;
 
+/** The RPC target for a Solana transfer: the URL, plus a proxied `fetch` if configured. */
+function solanaRpcTarget(cfg: SolanaTransferConfig): SolanaRpcTarget {
+  return cfg.rpcFetch === undefined ? cfg.rpcUrl : { url: cfg.rpcUrl, fetchImpl: cfg.rpcFetch };
+}
+
 function evmClients(cfg: EvmTransferConfig) {
   const chainId = parseEvmChainId(cfg.chainKey);
   const viemChain = defineChain({
@@ -253,12 +263,12 @@ function evmClients(cfg: EvmTransferConfig) {
     rpcUrls: { default: { http: [cfg.rpcUrl] } },
   });
   const publicClient = createPublicClient({
-    transport: http(cfg.rpcUrl),
+    transport: rpcTransport(cfg.rpcUrl, cfg.rpcDispatcher),
     chain: viemChain,
   });
   const walletClient = createWalletClient({
     account: cfg.signer.account,
-    transport: http(cfg.rpcUrl),
+    transport: rpcTransport(cfg.rpcUrl, cfg.rpcDispatcher),
     chain: viemChain,
   });
   return { publicClient, walletClient };
@@ -393,9 +403,14 @@ async function sendSolanaTransfer(
   const payer = { publicKey: base58Decode(payerPubkey), privateKey: payerSeed };
   const timeoutMs =
     params.confirmTimeoutMs ?? DEFAULT_SOLANA_CONFIRM_TIMEOUT_MS;
+  // Bound ONCE, and used for every call below — the sends and the balance reads
+  // alike. A read left on the bare URL would be the one chain-touching operation
+  // that still announced this wallet on clearnet, beside a transfer that did not
+  // (ADR 0002), which is exactly the correlation the overlay exists to prevent.
+  const rpc = solanaRpcTarget(cfg);
 
   if (params.asset === 'native') {
-    const lamports = await getLamports(cfg.rpcUrl, payerPubkey);
+    const lamports = await getLamports(rpc, payerPubkey);
     const need = amount + SOLANA_LAMPORTS_PER_SIGNATURE;
     if (lamports < need) {
       throw new InsufficientBalanceError(
@@ -403,7 +418,7 @@ async function sendSolanaTransfer(
           `transfer plus the ${SOLANA_LAMPORTS_PER_SIGNATURE}-lamport signature fee.`
       );
     }
-    const readDest = () => getLamports(cfg.rpcUrl, params.to);
+    const readDest = () => getLamports(rpc, params.to);
     const before = await readDest();
 
     // SystemProgram::Transfer — Borsh enum: u32 LE variant(2) + u64 LE lamports.
@@ -411,7 +426,7 @@ async function sendSolanaTransfer(
     new DataView(data.buffer).setUint32(0, 2, true);
     writeU64LE(data, 4, amount);
 
-    const txHash = await buildAndSendTransaction(cfg.rpcUrl, payer, [
+    const txHash = await buildAndSendTransaction(rpc, payer, [
       {
         programId: SOLANA_SYSTEM_PROGRAM_ID,
         keys: [
@@ -452,14 +467,14 @@ async function sendSolanaTransfer(
     );
   }
   const senderAta = deriveAssociatedTokenAccount(payerPubkey, cfg.tokenMint);
-  const senderBalance = await getTokenAccountBalance(cfg.rpcUrl, senderAta);
+  const senderBalance = await getTokenAccountBalance(rpc, senderAta);
   if (senderBalance === null || senderBalance < amount) {
     throw new InsufficientBalanceError(
       `Solana token account ${senderAta} holds ${senderBalance ?? 0n} base units of ${cfg.tokenMint}, ` +
         `short of the ${amount} transfer.`
     );
   }
-  const lamports = await getLamports(cfg.rpcUrl, payerPubkey);
+  const lamports = await getLamports(rpc, payerPubkey);
   if (lamports < SOLANA_LAMPORTS_PER_SIGNATURE) {
     throw new InsufficientBalanceError(
       `Solana wallet ${payerPubkey} holds ${lamports} lamports, below the ` +
@@ -469,7 +484,7 @@ async function sendSolanaTransfer(
 
   const destAta = deriveAssociatedTokenAccount(params.to, cfg.tokenMint);
   const readDest = async () =>
-    (await getTokenAccountBalance(cfg.rpcUrl, destAta)) ?? 0n;
+    (await getTokenAccountBalance(rpc, destAta)) ?? 0n;
   const before = await readDest();
 
   // Associated-Token-Account "CreateIdempotent" (variant 1, no-op if it
@@ -503,7 +518,7 @@ async function sendSolanaTransfer(
     data: transferData,
   };
 
-  const txHash = await buildAndSendTransaction(cfg.rpcUrl, payer, [
+  const txHash = await buildAndSendTransaction(rpc, payer, [
     createAtaIx,
     transferIx,
   ]);

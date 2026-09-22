@@ -4,10 +4,11 @@
  * frame, MESSAGE framing, OER PREPARE serialization on the wire, and OER
  * FULFILL parsing — without mocking the socket.
  *
- * Covers sender-chosen execution conditions (#350): the condition and
- * explicit expiry land on the OER wire inside the BTP MESSAGE, and the
- * FULFILL preimage is verified client-side (contract: connector
- * docs/local-delivery-fulfillment-contract.md).
+ * Covers connector ADR 0069: the `greeting` flag and the explicit expiry land
+ * on the OER wire inside the BTP MESSAGE, and the FULFILL preimage is checked
+ * client-side against the fulfilment the request's own sealed secret derives
+ * — the sender's end-to-end check, and since that ADR the only fulfilment
+ * check made anywhere on the path.
  *
  * And what rides BESIDE the packet (`client-edge-spec.md` §1.6, §1.9 step 2):
  * `toon-accumulated-cost`, `claim-ack` and `payment-required` protocolData
@@ -26,7 +27,7 @@ import {
   FULFILLMENT_MISMATCH_CODE,
   type IlpSendResultWithFulfillment,
 } from '../ilp/ilp-send.js';
-import { mintExecutionCondition } from '../utils/condition.js';
+import { deriveFulfillment } from '../wire/giftwrap.js';
 import {
   BTPMessageType,
   parseBtpMessage,
@@ -71,27 +72,28 @@ function pd(protocolName: string, text: string): BTPProtocolData {
 }
 
 /**
- * Parse the executionCondition + expiresAt out of an OER PREPARE.
- * Layout: type(1) | varUInt amount | GeneralizedTime(19) | condition(32) | ...
+ * Parse the greeting flag + expiresAt out of an OER PREPARE.
+ * Layout: type(1) | varUInt amount | GeneralizedTime(19) | greeting(1) | ...
+ *
+ * One octet, where a 32-byte execution condition sat until connector ADR
+ * 0069 removed it (issue #1269).
  */
 function parsePrepareWire(body: Uint8Array): {
   expiresAt: string;
-  condition: Uint8Array;
+  greeting: number;
 } {
   let offset = 1;
   const first = body[offset]!;
   offset += first <= 127 ? 1 : 1 + (first & 0x7f);
   const expiresAt = new TextDecoder().decode(body.slice(offset, offset + 19));
   offset += 19;
-  return { expiresAt, condition: body.slice(offset, offset + 32) };
+  return { expiresAt, greeting: body[offset]! };
 }
 
 describe('BtpRuntimeClient over a real ws server (integration)', () => {
   let wss: WebSocketServer;
   let btpUrl: string;
-  let lastPrepareWire:
-    | { expiresAt: string; condition: Uint8Array }
-    | undefined;
+  let lastPrepareWire: { expiresAt: string; greeting: number } | undefined;
   /** When set, the server FULFILLs with this preimage instead of zeros. */
   let respondFulfillment: Uint8Array | undefined;
   /**
@@ -160,7 +162,7 @@ describe('BtpRuntimeClient over a real ws server (integration)', () => {
     });
   }
 
-  it('legacy default: all-zero condition on the wire, FULFILL accepted unverified', async () => {
+  it('default: greeting 0x00 on the wire, FULFILL accepted unverified', async () => {
     respondWith = undefined;
     respondFulfillment = undefined;
     const client = makeClient();
@@ -171,16 +173,16 @@ describe('BtpRuntimeClient over a real ws server (integration)', () => {
         { messageId: 'm1', nonce: 1, transferredAmount: '1000' }
       );
       expect(result.accepted).toBe(true);
-      expect(lastPrepareWire!.condition).toEqual(new Uint8Array(32));
+      expect(lastPrepareWire!.greeting).toBe(0x00);
     } finally {
       await client.disconnect();
     }
   });
 
-  it('puts a sender-chosen condition + explicit expiry on the wire and verifies the FULFILL preimage (#350)', async () => {
+  it('puts the greeting flag + explicit expiry on the wire and verifies the FULFILL preimage (ADR 0069)', async () => {
     respondWith = undefined;
-    const { preimage, condition } = mintExecutionCondition();
-    respondFulfillment = preimage;
+    const expected = deriveFulfillment(new Uint8Array(32).fill(0x11));
+    respondFulfillment = expected;
     // Near-future expiry (a far-future one overflows setTimeout's 32-bit ms).
     const expiresAt = new Date(Date.now() + 60_000);
     // GeneralizedTime 'YYYYMMDDHHMMSS.mmmZ' == ISO string minus separators.
@@ -193,28 +195,27 @@ describe('BtpRuntimeClient over a real ws server (integration)', () => {
           destination: 'g.toon.alice',
           amount: '1000',
           data: 'aGVsbG8=',
-          executionCondition: condition,
+          greeting: true,
+          expectedFulfillment: expected,
           expiresAt,
         },
         { messageId: 'm2', nonce: 2, transferredAmount: '2000' }
       )) as IlpSendResultWithFulfillment;
 
-      expect(lastPrepareWire!.condition).toEqual(condition);
-      expect(lastPrepareWire!.condition.some((b) => b !== 0)).toBe(true);
+      expect(lastPrepareWire!.greeting).toBe(0x01);
       expect(lastPrepareWire!.expiresAt).toBe(expectedWireExpiry);
       expect(result.accepted).toBe(true);
       expect(Buffer.from(result.fulfillment!, 'base64')).toEqual(
-        Buffer.from(preimage)
+        Buffer.from(expected)
       );
     } finally {
       await client.disconnect();
     }
   });
 
-  it('fails closed when the server FULFILLs with the wrong preimage (#350)', async () => {
+  it('fails closed when the server FULFILLs with the wrong preimage (ADR 0069)', async () => {
     respondWith = undefined;
-    const { condition } = mintExecutionCondition();
-    respondFulfillment = mintExecutionCondition().preimage; // wrong preimage
+    respondFulfillment = deriveFulfillment(new Uint8Array(32).fill(0x22));
     const client = makeClient();
     await client.connect();
     try {
@@ -223,7 +224,7 @@ describe('BtpRuntimeClient over a real ws server (integration)', () => {
           destination: 'g.toon.alice',
           amount: '1000',
           data: 'aGVsbG8=',
-          executionCondition: condition,
+          expectedFulfillment: deriveFulfillment(new Uint8Array(32).fill(0x11)),
         },
         { messageId: 'm3', nonce: 3, transferredAmount: '3000' }
       );

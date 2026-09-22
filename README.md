@@ -129,6 +129,7 @@ Runnable versions of both, on each chain:
 | [CLI reference](docs/cli.md) | Every command, resolution order, `--json`, exit codes |
 | [Payment channels](docs/channels.md) | Collateral, the lifecycle on both chains, and the watermark |
 | [How a paid packet works](docs/how-a-paid-packet-works.md) | The wire, top to bottom |
+| [Hidden services](docs/hidden-service.md) | Paying a `.anyone` connector through the Anyone Protocol |
 | [Devnet reference](docs/devnet.md) | Endpoints, routes, prices, contract addresses, faucet |
 | [Errors and reject codes](docs/errors.md) | What each code means and what to do about it |
 | [Troubleshooting](docs/troubleshooting.md) | Symptom, cause, fix |

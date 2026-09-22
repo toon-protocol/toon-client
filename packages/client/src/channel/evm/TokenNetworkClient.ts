@@ -41,10 +41,10 @@
  * is signed under, so signing against the wrong one produces claims that verify
  * against nothing, whose only symptom is a refused claim.
  */
+import { rpcTransport } from '../../transport/rpc.js';
 import {
   createPublicClient,
   createWalletClient,
-  http,
   maxUint256,
   decodeEventLog,
   defineChain,
@@ -108,6 +108,12 @@ export interface TokenNetworkClientConfig {
   rpcUrl: string;
   signer: EvmSigner;
   readConsistency?: EvmReadConsistencyConfig;
+  /**
+   * An undici dispatcher to send RPC through — present when the client is
+   * talking to a hidden service, so chain traffic rides the same overlay as the
+   * packets rather than announcing this address on clearnet (ADR 0002).
+   */
+  rpcDispatcher?: unknown;
 }
 
 /** What one channel's `channels(id)` view says. */
@@ -149,10 +155,13 @@ export class TokenNetworkClient {
       nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
       rpcUrls: { default: { http: [config.rpcUrl] } },
     });
-    this.publicClient = createPublicClient({ transport: http(config.rpcUrl), chain: viemChain });
+    this.publicClient = createPublicClient({
+      transport: rpcTransport(config.rpcUrl, config.rpcDispatcher),
+      chain: viemChain,
+    });
     this.walletClient = createWalletClient({
       account: config.signer.account,
-      transport: http(config.rpcUrl),
+      transport: rpcTransport(config.rpcUrl, config.rpcDispatcher),
       chain: viemChain,
     });
   }

@@ -26,11 +26,17 @@ import {
   settleSolanaChannel,
   settleableAt,
   type SolanaChannelAccountState,
+  type SolanaRpcTarget,
 } from './payment-channel.js';
 import type { ChainMetadata } from '../../signing/types.js';
 
 export interface SolanaChannelClientConfig {
   rpcUrl: string;
+  /**
+   * `fetch` for this chain's JSON-RPC. On a hidden-service client this is the
+   * proxied one, so chain reads and sends ride the overlay (ADR 0002).
+   */
+  rpcFetch?: typeof fetch;
   /** The settlement program. Bound into every balance proof (ADR 0053). */
   programId: string;
   /** The SPL mint this client settles in — part of the channel PDA's seeds. */
@@ -67,7 +73,19 @@ export interface SolanaChannelState extends SolanaChannelAccountState {
 const DEFAULT_CHALLENGE_DURATION = 3600n;
 
 export class SolanaChannelClient {
-  constructor(private readonly config: SolanaChannelClientConfig) {}
+  /**
+   * Where this client's JSON-RPC goes, and through which `fetch`. Built once:
+   * every call below passes it straight to `payment-channel.js`, which is the
+   * only place that looks inside it.
+   */
+  private readonly rpc: SolanaRpcTarget;
+
+  constructor(private readonly config: SolanaChannelClientConfig) {
+    this.rpc =
+      config.rpcFetch === undefined
+        ? config.rpcUrl
+        : { url: config.rpcUrl, fetchImpl: config.rpcFetch };
+  }
 
   /**
    * The channel PDA for a counterparty — the claim's `channelAccount`, and the
@@ -132,7 +150,7 @@ export class SolanaChannelClient {
         : undefined;
 
     const result = await openSolanaChannel({
-      rpcUrl: this.config.rpcUrl,
+      rpcUrl: this.rpc,
       programId: this.config.programId,
       tokenMint: this.config.tokenMint,
       payerSeed: this.config.payerSeed,
@@ -159,7 +177,7 @@ export class SolanaChannelClient {
     payerTokenAccount?: string
   ): Promise<{ txSignature: string }> {
     const { depositTxSignature } = await depositSolanaChannel({
-      rpcUrl: this.config.rpcUrl,
+      rpcUrl: this.rpc,
       programId: this.config.programId,
       channelPDA: channelId,
       payerSeed: this.config.payerSeed,
@@ -178,7 +196,7 @@ export class SolanaChannelClient {
     channelId: string
   ): Promise<{ txSignature: string; settleableAt?: bigint }> {
     const { closeTxSignature } = await closeSolanaChannel({
-      rpcUrl: this.config.rpcUrl,
+      rpcUrl: this.rpc,
       programId: this.config.programId,
       channelPDA: channelId,
       closerSeed: this.config.payerSeed,
@@ -219,7 +237,7 @@ export class SolanaChannelClient {
     }
     const mint = account.tokenMint ?? this.config.tokenMint;
     const { settleTxSignature } = await settleSolanaChannel({
-      rpcUrl: this.config.rpcUrl,
+      rpcUrl: this.rpc,
       programId: this.config.programId,
       channelPDA: channelId,
       callerSeed: this.config.payerSeed,
@@ -247,7 +265,7 @@ export class SolanaChannelClient {
     signature: Uint8Array;
   }): Promise<{ txSignature: string }> {
     const { claimTxSignature } = await claimFromSolanaChannel({
-      rpcUrl: this.config.rpcUrl,
+      rpcUrl: this.rpc,
       programId: this.config.programId,
       channelPDA: params.channelId,
       claimerPubkey: params.claimer,
@@ -270,7 +288,7 @@ export class SolanaChannelClient {
    * reads an amply-funded vault as our own headroom.
    */
   async read(channelId: string): Promise<SolanaChannelState> {
-    const account = await getChannelAccountState(this.config.rpcUrl, channelId);
+    const account = await getChannelAccountState(this.rpc, channelId);
     const weAreA = account.participantA === this.config.payerPubkey;
     const deadline = settleableAt(account);
     return {
