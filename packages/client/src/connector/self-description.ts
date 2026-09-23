@@ -84,6 +84,22 @@ export interface RouteCharge {
 export interface RoutePrice extends RouteCharge {
   /** The ILP address prefix. Longest matching prefix wins. */
   prefix: string;
+  /**
+   * The carriage a request to **this** prefix must arrive on, when the route
+   * pins one (connector ND-05a / ADR 0072, TOON_Network#111).
+   *
+   * Absent — never `'both'` — on a route that accepts either, which is every
+   * route no operator pinned.
+   *
+   * This is what makes `auto` work against a node whose routes disagree, and
+   * the devnet relay is one: `g.toon.relay` is pinned to BTP,
+   * `g.toon.relay.ephemeral` is not, so
+   * {@link NodeSelfDescription.requiredTransport} has no honest answer and says
+   * nothing while the pin is enforced on every packet.
+   * {@link requiredTransportFor} reads this first and that field only as a
+   * fallback.
+   */
+  requiredTransport?: RequiredTransport;
 }
 
 /** How many bytes one step of `pricePerKib` buys — a kibibyte, as the name says. */
@@ -178,6 +194,18 @@ export interface NodeSelfDescription {
 function readString(obj: Record<string, unknown>, key: string): string | undefined {
   const v = obj[key];
   return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+}
+
+/**
+ * A `requiredTransport` value, on a route entry or on the document itself.
+ *
+ * One reader for both, so the two can never be understood by different rules.
+ * Anything that is not one of the two spellings — including `'both'`, which the
+ * connector omits rather than emits — reads as "no requirement": a carriage this
+ * client cannot dial is not a carriage it should try to guess at.
+ */
+function readRequiredTransport(value: unknown): RequiredTransport | undefined {
+  return value === 'http' || value === 'btp' ? value : undefined;
 }
 
 /** Parse a decimal-string | number amount to bigint; `undefined` when unusable. */
@@ -285,18 +313,22 @@ export function parseSelfDescription(
           // `pricePerKib` here, `price_per_kib` on GET /ilp/routes/price. Both
           // are read so neither endpoint silently under-quotes a metered route.
           const pricePerKib = readBaseUnits(r['pricePerKib'] ?? r['price_per_kib']);
+          // The carriage this prefix pins (ND-05a). A value that is neither
+          // spelling is dropped rather than carried: an unrecognised carriage
+          // is one this client cannot dial, and guessing would send the packet
+          // somewhere the route refuses.
+          const routeTransport = readRequiredTransport(r['requiredTransport']);
           return {
             prefix,
             price,
             ...(pricePerKib !== undefined ? { pricePerKib } : {}),
+            ...(routeTransport !== undefined ? { requiredTransport: routeTransport } : {}),
           };
         })
         .filter((r): r is RoutePrice => r !== undefined)
     : [];
 
-  const required = readString(b, 'requiredTransport');
-  const requiredTransport: RequiredTransport | undefined =
-    required === 'http' || required === 'btp' ? required : undefined;
+  const requiredTransport = readRequiredTransport(b['requiredTransport']);
 
   const supportedVersions = Array.isArray(b['supportedVersions'])
     ? (b['supportedVersions'] as unknown[]).filter((v): v is number => typeof v === 'number')
@@ -373,4 +405,37 @@ export function routeFor(
     if (best === undefined || route.prefix.length > best.prefix.length) best = route;
   }
   return best;
+}
+
+/**
+ * Which carriage a packet to `destination` has to ride, as this node states it.
+ *
+ * The route that governs `destination` is asked first; the node-wide field
+ * answers only where that route names no carriage of its own. That order is the
+ * connector's (ND-05b) and it is not a preference: the refusal is decided by
+ * the longest-prefix route lookup, once per packet, so the route's own answer
+ * is the one that will actually be enforced. The node-wide field is a summary
+ * of the routes covering the node's own addresses, and says nothing at all when
+ * those disagree — the state the devnet relay has been in while pinning
+ * `g.toon.relay` to BTP (TOON_Network#111).
+ *
+ * The fallback also keeps a node that predates the per-route field working
+ * unchanged: every route entry there names nothing, so the node-wide field is
+ * read exactly as it was. It cannot mislead in the other direction either — a
+ * route that accepts either carriage is reachable over the one the summary
+ * names.
+ *
+ * With no `destination`, only the node-wide field can be answered, which is
+ * what a caller asking about the node rather than a packet wants.
+ *
+ * `undefined` means **no requirement stated**, not "HTTP": a node that pins
+ * nothing is left exactly as it was, free to be dialled on whichever carriage
+ * it publishes.
+ */
+export function requiredTransportFor(
+  desc: NodeSelfDescription,
+  destination?: string
+): RequiredTransport | undefined {
+  const route = destination !== undefined ? routeFor(desc, destination) : undefined;
+  return route?.requiredTransport ?? desc.requiredTransport;
 }

@@ -164,8 +164,18 @@ export interface SendContext {
    * request.
    */
   reconcileWatermark?(channelId: string): Promise<void>;
-  /** The carriage, chosen and connected. */
-  transport(description: NodeSelfDescription): Promise<{
+  /**
+   * The carriage for one destination, chosen and connected.
+   *
+   * `destination` is passed because a node pins a carriage **per route**
+   * (connector ADR 0072): the pin covering the prefix this packet is addressed
+   * to is the one that will be enforced, and a node-wide summary is silent on
+   * any node that pins one of its own addresses and not another.
+   */
+  transport(
+    description: NodeSelfDescription,
+    destination: string
+  ): Promise<{
     kind: 'http' | 'btp';
     transport: PaidWriteTransport;
   }>;
@@ -204,7 +214,7 @@ export async function send(
     options.amount,
     exchange.data.length
   );
-  const carriage = await context.transport(description);
+  const carriage = await context.transport(description, destination);
 
   const first = await attempt(context, {
     destination,

@@ -32,6 +32,7 @@ import type {
 } from '../connector/ConnectorEdgeClient.js';
 import {
   defaultDestinationFor,
+  requiredTransportFor,
   type NodeSelfDescription,
 } from '../connector/self-description.js';
 import { selectTransport } from '../btp/transport-select.js';
@@ -79,7 +80,18 @@ export class ToonClient implements ToonClientLike {
   private readonly channelFacade: ClientChannelFacade;
   private description: NodeSelfDescription;
   private onChain: OnChainChannelClient | undefined;
-  private carriage: { kind: 'http' | 'btp'; transport: PaidWriteTransport } | undefined;
+  /**
+   * One live carriage per kind, not one per client.
+   *
+   * A node pins carriages **per route** (connector ADR 0072), so one client can
+   * legitimately owe one destination a BTP session and another an HTTP one-shot.
+   * Keying by kind keeps each carriage chosen once and reused — which is the
+   * point of caching at all — without letting the first destination decide for
+   * every later one.
+   */
+  private carriages: Partial<
+    Record<'http' | 'btp', { kind: 'http' | 'btp'; transport: PaidWriteTransport }>
+  > = {};
   private btpSession: BtpRuntimeClient | undefined;
   private readonly hiddenService: { close(): Promise<void> } | undefined;
   private closed = false;
@@ -381,7 +393,7 @@ export class ToonClient implements ToonClientLike {
     this.closed = true;
     const session = this.btpSession;
     this.btpSession = undefined;
-    this.carriage = undefined;
+    this.carriages = {};
     if (session) await session.disconnect();
     // The dispatcher pools connections; without this a hidden-service client
     // holds circuits open and the process does not exit.
@@ -423,7 +435,7 @@ export class ToonClient implements ToonClientLike {
       evictChannel: (channelId) => this.evictChannel(channelId),
       channels: this.channels,
       reconcileWatermark: (channelId) => this.reconcileWatermark(channelId),
-      transport: (description) => this.transportFor(description),
+      transport: (description, destination) => this.transportFor(description, destination),
       senderId: this.identity.senderId,
       chain: this.chain,
       timeoutMs: this.config.timeoutMs,
@@ -576,23 +588,33 @@ export class ToonClient implements ToonClientLike {
   }
 
   /**
-   * The carriage, chosen once and then reused.
+   * The carriage for `destination`, chosen once per kind and then reused.
    *
    * Reuse matters for BTP specifically: the whole reason to prefer it is that one
    * ordered socket cannot race its own claim nonces into `F01 NonceNotAdvancing`
    * (`client-edge-spec.md` §1.9), and a session rebuilt per request would give
    * that up while paying for the handshake.
+   *
+   * `destination` is what lets the node's **per-route** pin decide, rather than
+   * only its node-wide summary — which is silent on any node that pins one of
+   * its own addresses and not another (TOON_Network#111). The choice is made
+   * before the first packet, so a pinned route is dialled correctly on the first
+   * attempt and never learns its carriage from a refusal.
    */
-  private async transportFor(description: NodeSelfDescription): Promise<{
+  private async transportFor(
+    description: NodeSelfDescription,
+    destination?: string
+  ): Promise<{
     kind: 'http' | 'btp';
     transport: PaidWriteTransport;
   }> {
     if (this.closed) {
       throw new ConfigError('This client has been closed; construct a new one to send again.');
     }
-    if (this.carriage) return this.carriage;
 
-    const choice = selectTransport(description, this.config.transport);
+    const choice = selectTransport(description, this.config.transport, undefined, destination);
+    const cached = this.carriages[choice.kind];
+    if (cached) return cached;
     const httpEndpoint =
       choice.kind === 'http' ? choice.url : httpEndpointOf(description, this.connector);
     this.assertEndpointReachable(choice.url);
@@ -608,7 +630,7 @@ export class ToonClient implements ToonClientLike {
 
     if (choice.kind === 'http') {
       const carriage = { kind: 'http' as const, transport: http };
-      this.carriage = carriage;
+      this.carriages.http = carriage;
       return carriage;
     }
 
@@ -638,10 +660,13 @@ export class ToonClient implements ToonClientLike {
       kind: 'btp' as const,
       transport: new BtpPaidWriteTransport({
         session,
-        // HTTP fallback only where the node did not REQUIRE btp: falling back
-        // onto a carriage the route refuses would turn a recoverable socket
-        // outage into a `402` per request.
-        ...(description.requiredTransport === 'btp' ? {} : { fallback: http }),
+        // HTTP fallback only where the node did not REQUIRE btp *for this
+        // destination*: falling back onto a carriage the route refuses would
+        // turn a recoverable socket outage into a `402` per request. Read
+        // through the same per-route resolution the choice above was made with,
+        // so the fallback cannot be enabled against a route the node-wide field
+        // happens not to describe (TOON_Network#111).
+        ...(requiredTransportFor(description, destination) === 'btp' ? {} : { fallback: http }),
         ...(this.config.btp.maxReconnectAttempts !== undefined
           ? { maxReconnectAttempts: this.config.btp.maxReconnectAttempts }
           : {}),
@@ -650,7 +675,7 @@ export class ToonClient implements ToonClientLike {
           : {}),
       }),
     };
-    this.carriage = carriage;
+    this.carriages.btp = carriage;
     return carriage;
   }
 

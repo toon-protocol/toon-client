@@ -1,0 +1,9 @@
+---
+'@toon-protocol/client': minor
+---
+
+`transport: 'auto'` now reads a route's carriage pin off **that route's own entry** in `GET /ilp`, and dials it on the first attempt. A connector pins a carriage per route and enforces it by a longest-prefix route lookup, once per packet — but until connector ADR 0072 it published only a node-wide `requiredTransport`, derived from the routes covering its own addresses and stated only where they agree. They disagree whenever a node pins one of its own addresses and not another, which is the devnet relay: `g.toon.relay` is pinned to BTP and `g.toon.relay.ephemeral` is not, so the document named no carriage while every HTTP-carried write to the first prefix was refused before payment was even considered. On 2026-09-22 that left a provider's directory writes failing with `TRANSPORT_REQUIRED` and a healthy provider invisible for hours.
+
+`RoutePrice` gains an optional `requiredTransport`, parsed from each route entry. The new `requiredTransportFor(description, destination?)` resolves it the way the connector decides it — the longest route entry whose prefix covers the destination, then the node-wide field where that route names none — and `selectTransport` takes a fourth argument, the destination, so the answer is about the packet rather than about the node. `ToonClient` threads the destination through `send`, caches one carriage per kind rather than one per client (a node can legitimately owe one destination BTP and another HTTP), and decides the BTP transport's HTTP fallback from the same per-route resolution.
+
+Nothing changes for a node that pins nothing, or for one that predates the per-route field: its route entries name no carriage, so the node-wide field is read exactly as before. The `TRANSPORT_REQUIRED` refusal stays as the backstop for a client that ignores the advertisement. `toon describe` prints a route's carriage beside its price.

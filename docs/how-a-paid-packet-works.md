@@ -49,8 +49,8 @@ straight off the client edge you are already sending to.
 const description = await client.describe();
 description.edgeIdentity?.publicKey;   // '0x04…', uncompressed secp256k1, 65 bytes
 description.settlements;               // per chain, what opening a channel takes
-description.routes;                    // prefix and flat price, per route
-description.requiredTransport;         // set only when every route insists on one carriage
+description.routes;                    // prefix, price and — where the route pins one — its carriage
+description.requiredTransport;         // the node-wide summary, set only when its own addresses agree
 ```
 
 One free `GET /ilp` carries all of it, and `describe()` caches it per client; pass

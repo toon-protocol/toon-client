@@ -453,6 +453,61 @@ describe('ToonClient — an endpoint the node advertises and this client cannot 
     expect(client.connector).toBe(fake.endpoint);
   });
 
+  /**
+   * TOON_Network#111: a route's own pin decides the carriage, on the first
+   * attempt, with no refusal round trip.
+   *
+   * This node is the devnet relay's shape — one pinned address, one not — so
+   * there is no node-wide `requiredTransport` to read and the pin can only come
+   * from the route entry. Proved through the reachability check: it names
+   * `choice.url`, and the only hidden-service string in play is the BTP one. A
+   * client that had chosen HTTP would have sent a POST and been refused instead.
+   */
+  it("dials the carriage the destination's own route pins, with no node-wide field", async () => {
+    const fake = fixture();
+    fake.ilpAddresses = ['g.fake', 'g.fake.free'];
+    fake.routes = [
+      { prefix: 'g.fake', price: '1000', requiredTransport: 'btp' },
+      { prefix: 'g.fake.free', price: '0' },
+    ];
+    const posts: string[] = [];
+    const published = publishing(fake, { btpEndpoint: `ws://${HS_HOST}/ilp/btp` });
+    const spy: typeof fetch = async (input, init) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'POST') posts.push(String(input));
+      return published(input, init);
+    };
+    const client = await create(fake, { fetch: spy });
+
+    const description = await client.describe();
+    expect(description.requiredTransport).toBeUndefined();
+
+    await expect(client.send('g.fake.route')).rejects.toThrow(
+      new RegExp(`published the endpoint "ws://${HS_HOST}/ilp/btp"`)
+    );
+    expect(posts).toEqual([]);
+  });
+
+  /**
+   * The other half of the same rule: an unpinned route on that same node is
+   * left exactly as it was, over HTTP.
+   */
+  it('leaves an unpinned route on a pinning node on HTTP', async () => {
+    const fake = fixture();
+    fake.ilpAddresses = ['g.fake', 'g.fake.free'];
+    fake.routes = [
+      { prefix: 'g.fake', price: '1000', requiredTransport: 'btp' },
+      { prefix: 'g.fake.free', price: '0' },
+    ];
+    const client = await create(fake, {
+      fetch: publishing(fake, { btpEndpoint: `ws://${HS_HOST}/ilp/btp` }),
+    });
+
+    // The BTP endpoint is unreachable for want of a proxy, so reaching it at
+    // all would refuse. This route is answered over HTTP instead.
+    const result = await client.send('g.fake.free');
+    expect(result.fulfilled).toBe(true);
+  });
+
   it("checks the selected carriage's own URL, not only the HTTP endpoint", async () => {
     const fake = fixture();
     // Clearnet HTTP, hidden-service BTP, and the node pins BTP: the only

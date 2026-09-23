@@ -83,7 +83,16 @@ export async function run(ctx: CommandContext): Promise<number> {
     } else {
       ctx.out.line('Routes:');
       ctx.out.rows(
-        description.routes.map((r): [string, string] => [r.prefix, formatAmount(r.price, asset)])
+        description.routes.map((r): [string, string] => [
+          r.prefix,
+          // A route's own carriage pin, where it has one (TOON_Network#111).
+          // Beside the price, because a route priced and not qualified reads as
+          // one you can simply pay for — which is how the devnet relay read for
+          // as long as it pinned BTP and said nothing.
+          r.requiredTransport === undefined
+            ? formatAmount(r.price, asset)
+            : `${formatAmount(r.price, asset)}  (${r.requiredTransport} carriage)`,
+        ])
       );
     }
   });

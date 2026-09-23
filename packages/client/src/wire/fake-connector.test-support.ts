@@ -167,7 +167,9 @@ export class FakeTerminatingConnector {
   /** The addresses this node answers to. */
   ilpAddresses: string[] = ['g.fake'];
   /** The routes it prices, as the self-description lists them (price as a STRING). */
-  routes: { prefix: string; price: string }[] = [{ prefix: 'g.fake', price: '1000' }];
+  routes: { prefix: string; price: string; requiredTransport?: 'http' | 'btp' }[] = [
+    { prefix: 'g.fake', price: '1000' },
+  ];
 
   /** Every destination a PREPARE was addressed to, in order. */
   readonly destinations: string[] = [];
@@ -186,7 +188,12 @@ export class FakeTerminatingConnector {
       decimals: 6,
     },
   ];
-  /** Set to pin every route to one carriage, as the devnet relay pins BTP. */
+  /**
+   * The node-wide pin (connector `agreed_required_transport`). A node states it
+   * only where every route covering its own addresses agrees, so a node that
+   * pins one of them and not another leaves this `null` and names the pin on
+   * {@link routes} instead (ADR 0072, TOON_Network#111).
+   */
   requiredTransport: 'http' | 'btp' | null = null;
   /** Set to omit the sealing key from the self-description, forcing the `/ilp/identity` fallback. */
   publishEdgeIdentity = true;

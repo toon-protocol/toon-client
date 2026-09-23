@@ -10,9 +10,10 @@
  * with `extra.requiredTransport` naming the carriage the route does require.
  *
  * So a 1.0 client asks first. The node's self-description (`GET /ilp`) carries
- * `httpEndpoint`, `btpEndpoint` and — when every route covering the node's own
- * addresses agrees on one — `requiredTransport`, and this module reads a
- * carriage off that document. That is the whole of the change from 0.x, which
+ * `httpEndpoint`, `btpEndpoint`, a `requiredTransport` on **each route that
+ * pins one** (connector ND-05a / ADR 0072) and a node-wide one summarising the
+ * routes that cover its own addresses, and this module reads a carriage off
+ * that document. That is the whole of the change from 0.x, which
  * had no such document: it keyed this decision on a peer discovered from a
  * kind:10032 relay announce, then POSTed over HTTP and treated the resulting
  * `402`/`401` as the signal to retry over BTP. Both halves of that are gone —
@@ -23,6 +24,7 @@
  */
 
 import type { NodeSelfDescription } from '../connector/self-description.js';
+import { requiredTransportFor } from '../connector/self-description.js';
 import type { TransportPreference } from '../client/types.js';
 import { TransportRequiredError } from '../client/errors.js';
 
@@ -53,29 +55,40 @@ export interface TransportChoice {
  *   {@link TransportRequiredError} otherwise, naming the node's own
  *   `requiredTransport` when it stated one so the caller learns what to ask
  *   for instead.
- * - `'auto'`: `description.requiredTransport` when the node set it, else HTTP
- *   when it publishes an `httpEndpoint`, else BTP. HTTP is the default because
- *   it is stateless — one request, no session to keep alive — and a client
- *   that needs ordered claim nonces across many writes is a client that will
- *   ask for BTP explicitly (§1.9: one socket, one order, no racing into
- *   `F01 NonceNotAdvancing`).
+ * - `'auto'`: the carriage the node requires for `destination` when it states
+ *   one, else HTTP when it publishes an `httpEndpoint`, else BTP. HTTP is the
+ *   default because it is stateless — one request, no session to keep alive —
+ *   and a client that needs ordered claim nonces across many writes is a client
+ *   that will ask for BTP explicitly (§1.9: one socket, one order, no racing
+ *   into `F01 NonceNotAdvancing`).
+ *
+ * **The requirement is read per destination**, through
+ * {@link requiredTransportFor}: the route governing `destination` first, the
+ * node-wide `requiredTransport` only where that route names none. A pin is
+ * enforced by a longest-prefix route lookup, once per packet, so a per-node
+ * answer describes it only on a node whose routes happen to agree — and a node
+ * with a pinned apex and a free sub-lane does not. Naming no `destination` asks
+ * about the node alone, which is all a caller with no packet in hand can mean.
  *
  * @param description the node's `GET /ilp` answer.
  * @param preference what the caller asked for. Default `'auto'`.
  * @param baseUrl the client-edge URL the description was read from, for
  *   resolving a relative endpoint. Defaults to `description.readFrom`, which
  *   `ConnectorEdgeClient.describe` records; an absolute endpoint needs neither.
+ * @param destination the ILP address this carriage will carry packets to, so
+ *   the route that governs it answers rather than the node-wide summary.
  * @throws {TransportRequiredError} the requested carriage is unavailable, or
  *   the node publishes no usable endpoint at all.
  */
 export function selectTransport(
   description: NodeSelfDescription,
   preference: TransportPreference = 'auto',
-  baseUrl: string | undefined = description.readFrom
+  baseUrl: string | undefined = description.readFrom,
+  destination?: string
 ): TransportChoice {
   const http = resolveEndpoint(description.httpEndpoint, baseUrl);
   const btp = resolveEndpoint(description.btpEndpoint, baseUrl);
-  const required = description.requiredTransport;
+  const required = requiredTransportFor(description, destination);
 
   if (preference === 'http' || preference === 'btp') {
     const url = preference === 'http' ? http : btp;
@@ -91,9 +104,10 @@ export function selectTransport(
     return { kind: preference, url };
   }
 
-  // 'auto'. A node that states `requiredTransport` has already made this
-  // decision — every route covering its own addresses agrees on one carriage —
-  // so honouring it is not a preference but the only way a packet gets routed.
+  // 'auto'. A node that states a requirement for this destination has already
+  // made the decision — that is the carriage its route lookup will insist on,
+  // packet by packet — so honouring it is not a preference but the only way a
+  // packet gets routed at all.
   if (required !== undefined) {
     const url = required === 'http' ? http : btp;
     if (url === undefined) {

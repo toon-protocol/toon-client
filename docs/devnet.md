@@ -82,10 +82,16 @@ secret inside the seal, and the app's answer comes back sealed.
 
 A route may also be pinned to one carriage, in which case a request over the other one is answered
 with the route's terms instead of the work; see [errors.md](errors.md). `g.toon.relay` is pinned to
-BTP today — an HTTP send to it is refused `TRANSPORT_REQUIRED`. Note that the deployed node does
-**not** currently publish a `requiredTransport` for it, so the pin cannot be discovered from
-`GET /ilp` and is only learned by being refused. Read the live document rather than this table if
-it matters to you.
+BTP today — an HTTP send to it is refused `TRANSPORT_REQUIRED`.
+
+A pinned route names its carriage on **its own entry** in `GET /ilp`, as `requiredTransport`
+(connector ADR 0072), and `transport: 'auto'` reads it there and dials it on the first attempt. A
+node-wide `requiredTransport` sits beside the routes as a summary, and it is stated only where every
+route covering the node's own addresses agrees — which the relay's do not, since
+`g.toon.relay.ephemeral` is not pinned. **The deployed relay has not yet picked up a connector that
+publishes the per-route field**, so until it does its document names no pin at all and `auto` there
+still falls back to HTTP and is refused; name `btp` explicitly against it. Read the live document
+rather than this table if it matters to you.
 
 Client-edge paths on all three, relative to the base URL above:
 
