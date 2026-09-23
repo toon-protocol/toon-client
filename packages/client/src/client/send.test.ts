@@ -21,7 +21,8 @@ import {
   type PaidWriteTransport,
   type SendContext,
 } from './send.js';
-import { RouteNotPricedError } from './errors.js';
+import type { SendRequest } from './types.js';
+import { BeforePayRefusedError, RouteNotPricedError } from './errors.js';
 import { decodeUtf8 } from '../utils/binary.js';
 
 const CHANNEL = `0x${'ab'.repeat(32)}`;
@@ -667,5 +668,195 @@ describe('send — a route priced at zero', () => {
     const opened = h.fake.opened.at(-1);
     expect(opened?.request.method).toBe('PUT');
     expect(opened?.request.target).toBe('thing');
+  });
+});
+
+describe('send — beforePay, the caller\'s last look before money moves', () => {
+  // A paid route bills for an ANSWER, and a refusal is an answer: the connector
+  // collects the price before the app has seen the body, so a request the app
+  // was always going to reject still costs the full price and nothing is
+  // refunded (TOON_Network#115). This hook is the only place a caller can stop
+  // that, because it is the only point at which the price is resolved and no
+  // balance proof has been signed yet — and a signed claim is a bearer
+  // instrument whose rollback deliberately does not restore the nonce.
+  let h: Harness;
+  beforeEach(() => {
+    h = harness();
+  });
+
+  it('refuses the send before a claim exists: nothing signed, no channel reached', async () => {
+    // Tracked here rather than through `ensureChannel`, so the watermark can be
+    // read before and after while `ensureCalls` stays at zero — which is itself
+    // one of the assertions.
+    h.channels.trackChannel(CHANNEL, {
+      chainType: 'evm',
+      chainId: 84532,
+      tokenNetworkAddress: TOKEN_NETWORK,
+      depositTotal: 1_000_000n,
+    });
+    const nonceBefore = h.channels.getNonce(CHANNEL);
+    const cumulativeBefore = h.channels.getCumulativeAmount(CHANNEL);
+
+    await expect(
+      send(
+        h.context,
+        DESTINATION,
+        { body: { wrong: 'envelope' } },
+        { beforePay: () => 'the app takes a bare object, not a wrapped one' }
+      )
+    ).rejects.toBeInstanceOf(BeforePayRefusedError);
+
+    // No money left the channel by any measure: no claim on the wire, no
+    // channel ensured, and the watermark exactly where it was. The last one is
+    // the load-bearing check — `signBalanceProof` advances and persists the
+    // nonce before the packet leaves, and nothing puts a nonce back.
+    expect(h.fake.claims).toHaveLength(0);
+    expect(h.ensureCalls).toBe(0);
+    expect(h.channels.getNonce(CHANNEL)).toBe(nonceBefore);
+    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(cumulativeBefore);
+    // And no packet went out at all, paid or otherwise.
+    expect(h.fake.paidRequests).toBe(0);
+    expect(h.fake.opened).toHaveLength(0);
+  });
+
+  it('carries the reason verbatim, with the route and the price it refused', async () => {
+    const error = await send(h.context, DESTINATION, {}, { beforePay: () => 'malformed body' })
+      .then(() => undefined)
+      .catch((e: unknown) => e as BeforePayRefusedError);
+
+    expect(error).toBeInstanceOf(BeforePayRefusedError);
+    expect(error?.reason).toBe('malformed body');
+    expect(error?.code).toBe('BEFORE_PAY_REFUSED');
+    expect(error?.destination).toBe(DESTINATION);
+    expect(error?.amount).toBe(1000n);
+  });
+
+  it('lets a paid send through unchanged when it returns nothing', async () => {
+    const result = await send(
+      h.context,
+      DESTINATION,
+      { body: 'fine' },
+      { beforePay: () => undefined }
+    );
+
+    expect(result.fulfilled).toBe(true);
+    expect(result.claim).toEqual({
+      channelId: CHANNEL,
+      chain: 'evm',
+      nonce: 1,
+      cumulative: 1000n,
+      amount: 1000n,
+    });
+    expect(h.fake.claims).toHaveLength(1);
+  });
+
+  it('is handed the RESOLVED price, including a metered route\'s per-KiB charge', async () => {
+    // The figure a caller could not have known in advance: a metered route
+    // charges by the size of the SEALED payload, which does not exist until
+    // this client has sealed it.
+    h.fake.pricePerKib = 10n;
+    const seen: bigint[] = [];
+    await send(
+      h.context,
+      DESTINATION,
+      { body: 'x'.repeat(1000) },
+      {
+        beforePay: ({ amount }) => {
+          seen.push(amount);
+        },
+      }
+    );
+    expect(seen).toEqual([1020n]);
+  });
+
+  it('is shown the destination and the request it is about to pay for', async () => {
+    const request = { method: 'PUT', target: 'objects/1', body: { a: 1 } };
+    const about: { destination: string; request: SendRequest }[] = [];
+    await send(h.context, DESTINATION, request, {
+      beforePay: ({ destination, request: seen }) => {
+        about.push({ destination, request: seen });
+      },
+    });
+    expect(about).toHaveLength(1);
+    expect(about[0]?.destination).toBe(DESTINATION);
+    // The caller's own object, so a caller can re-read the body it built.
+    expect(about[0]?.request).toBe(request);
+  });
+
+  it('runs exactly once per send, not once per attempt — including the F01 retry', async () => {
+    // The stale-channel recovery runs `attempt` twice on the SAME packet. The
+    // hook is a decision about the request, so a second look would be asking a
+    // caller to approve a payment it already approved.
+    h.channelIds = [CHANNEL, OTHER_CHANNEL];
+    let sent = 0;
+    const inner = h.context.transport;
+    h.context.transport = async (d) => {
+      const carriage = await inner(d);
+      return {
+        kind: carriage.kind,
+        transport: {
+          sendIlpPacketWithClaim: (params, claim) => {
+            sent += 1;
+            h.fake.refusal = sent === 1 ? 'unknownChannel' : null;
+            return carriage.transport.sendIlpPacketWithClaim(params, claim);
+          },
+        },
+      };
+    };
+
+    const calls: bigint[] = [];
+    const result = await send(h.context, DESTINATION, {}, {
+      beforePay: ({ amount }) => {
+        calls.push(amount);
+      },
+    });
+
+    expect(sent).toBe(2);
+    expect(result.fulfilled).toBe(true);
+    expect(calls).toEqual([1000n]);
+  });
+
+  it('runs on a free route too — a wrong body wastes the answer as well as the money', async () => {
+    h.fake.routePrice = 0n;
+    const seen: bigint[] = [];
+
+    await expect(
+      send(
+        h.context,
+        DESTINATION,
+        { body: 'wrong' },
+        {
+          beforePay: ({ amount }) => {
+            seen.push(amount);
+            return 'still wrong, and still not worth sending';
+          },
+        }
+      )
+    ).rejects.toBeInstanceOf(BeforePayRefusedError);
+
+    expect(seen).toEqual([0n]);
+    // Free means no claim was ever at stake; what the refusal saved is the
+    // round trip and whatever the app would have done before saying no.
+    expect(h.fake.opened).toHaveLength(0);
+  });
+
+  it('lets the callback\'s own throw propagate unchanged', async () => {
+    // A caller's validator failing is the caller's error to read, stack and
+    // all; re-dressing it as a client error would hide where the rule lives.
+    const boom = new TypeError('schema compiled wrong');
+    await expect(
+      send(
+        h.context,
+        DESTINATION,
+        {},
+        {
+          beforePay: () => {
+            throw boom;
+          },
+        }
+      )
+    ).rejects.toBe(boom);
+    expect(h.fake.claims).toHaveLength(0);
+    expect(h.ensureCalls).toBe(0);
   });
 });

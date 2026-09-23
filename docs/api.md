@@ -149,6 +149,11 @@ interface SendOptions {
   amount?: bigint;                 // default: the route's price
   sealTo?: Uint8Array | string;    // another connector's identity, for a forwarded route
   timeoutMs?: number;
+  beforePay?: (about: {            // the last look before money moves
+    destination: string;
+    amount: bigint;                // the RESOLVED price
+    request: SendRequest;
+  }) => string | void;             // a string refuses; nothing proceeds
 }
 ```
 
@@ -163,6 +168,39 @@ A `string` or a plain object body is encoded UTF-8; an object also sets
 raising it does not buy priority. `sealTo` is needed only when paying a route the addressed node
 **forwards**, because a payload must be sealed to the connector that terminates it and no hop may
 name that key on its behalf.
+
+### `beforePay` — refusing a request you already know is wrong
+
+`beforePay` is a synchronous callback run **after the route's price is resolved and before anything
+is signed**. Return a string and the send is refused with a `BeforePayRefusedError` carrying that
+string as its `reason`; return nothing and the send proceeds untouched. A throw from the callback
+refuses the send too, and propagates unchanged.
+
+It is there because **a paid route bills for an answer, and a refusal is an answer.** The connector
+collects the route's price before the app behind it has seen the request at all, so a body the app
+was always going to reject still costs the full price, and nothing is refunded
+([TOON_Network#115](https://github.com/toon-protocol/TOON_Network/issues/115)). A body the caller
+already knows is wrong should never become a signed claim.
+
+Checking before calling `send()` is not the same thing. The price is only resolved inside `send()` —
+a metered route charges by the size of the *sealed* payload, which does not exist until the request
+has been sealed — and only here is the refusal guaranteed to land before `signBalanceProof` has
+advanced the channel's watermark. A signed claim is a bearer instrument: the rollback on a refusal
+restores the cumulative amount and deliberately *not* the nonce, so there is no unsigning it.
+
+```ts
+const answer = await client.send(
+  { body: { workload_id: id } },
+  {
+    beforePay: ({ amount, request }) =>
+      isWellFormed(request.body) ? undefined : `not sending ${amount} for a body this app rejects`,
+  }
+);
+```
+
+It runs exactly once per `send()`, including on the bounded stale-channel retry — it is a decision
+about the request, not about an attempt at it. It runs on a free (zero-priced) route as well: money
+is not the only thing a wrong request spends.
 
 ### `SendResult`
 
