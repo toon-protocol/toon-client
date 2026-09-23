@@ -192,6 +192,63 @@ export interface SendOptions {
    */
   sealTo?: Uint8Array | string;
   timeoutMs?: number;
+  /**
+   * The caller's last look before money moves. Return a string to refuse this
+   * send — the string is the reason, and it arrives as a
+   * {@link ../client/errors.js!BeforePayRefusedError}; return nothing to let it
+   * proceed.
+   *
+   * It exists because **a paid route bills for an answer, and a refusal is an
+   * answer.** A connector collects a route's price before the app behind it has
+   * seen the request at all, so an app that rejects a body as malformed still
+   * charges for having rejected it, and nothing is refunded (TOON_Network#115).
+   * A caller that already knows a body is wrong wants to stop short of the
+   * claim, not read about it on the bill.
+   *
+   * This client knows nothing about any particular app's bodies and should not:
+   * what it can offer is the one check a caller cannot write for itself, at the
+   * one moment that is too late to reach from outside `send`. Checking before
+   * calling `send` is not the same thing, in two ways:
+   *
+   * - **The price is resolved here and nowhere earlier.** What a route costs is
+   *   the connector's to state, and a metered route's price depends on the size
+   *   of the *sealed* payload, which does not exist until this client has
+   *   sealed it. A caller vetting the cost beforehand is guessing at the figure
+   *   it is about to authorise; the hook is handed the real one.
+   * - **The refusal provably precedes the signature.** A signed balance proof
+   *   is a bearer instrument, so
+   *   {@link ../channel/ChannelManager.js!ChannelManager.signBalanceProof}
+   *   advances and persists the channel's watermark *before* the packet leaves,
+   *   and its rollback deliberately restores the cumulative amount and **not**
+   *   the nonce — a re-signable nonce would put two different claims at one
+   *   watermark. So there is no "I changed my mind" once a claim is signed.
+   *   When this runs, nothing has been signed, no channel has been ensured and
+   *   no packet has left.
+   *
+   * Called exactly once per `send`, even on the bounded stale-channel retry: it
+   * is a decision about a request, not about an attempt. Throwing from it also
+   * refuses the send, and the throw propagates unchanged — a caller's own check
+   * failing is the caller's error to read, not one for this client to re-dress.
+   *
+   * Runs on a free route too. Free is not the only cost a wrong body carries:
+   * it still spends the round trip, the app's work, and the answer.
+   */
+  beforePay?: (about: {
+    /** The route the packet is addressed to. */
+    destination: string;
+    /** What it will cost: the route's resolved price, or an explicit {@link amount}. */
+    amount: bigint;
+    /**
+     * The request as it was handed to `send`. Already sealed by the time this
+     * runs, so mutating it changes nothing that travels — read it, don't edit it.
+     */
+    request: SendRequest;
+    // `string | void` rather than `string | undefined` deliberately: only `void`
+    // lets a callback whose body ends without a `return` be written as-is, which
+    // is what "say nothing to let it through" has to mean if the safe answer is
+    // to be the easy one to write.
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- see above
+  }) => string | void;
 }
 
 /** What one claim spent. */

@@ -156,6 +156,45 @@ export class RouteNotPricedError extends ToonClientError {
   }
 }
 
+/**
+ * The caller's own {@link ../client/types.js!SendOptions.beforePay} refused this
+ * send, and nothing was paid.
+ *
+ * Thrown rather than returned, and that is consistent with this file's rule
+ * rather than an exception to it: a {@link ../client/types.js!SendRefused} is
+ * the *connector's* verdict on a packet that travelled, and here no packet
+ * exists. The price was resolved, the hook said no, and the pipeline stopped
+ * before a channel was ensured or a balance proof was signed — which is the
+ * whole point of the hook, since a signed claim is a bearer instrument that
+ * cannot be recalled (see
+ * {@link ../channel/ChannelManager.js!ChannelManager.signBalanceProof}).
+ *
+ * A distinct class rather than a {@link ValidationError} because the two are
+ * acted on differently: a `ValidationError` says this client could not use an
+ * argument, while this says the caller's own rule rejected a request this client
+ * was perfectly able to send. {@link reason} is the hook's string, unedited, so
+ * the caller reads back exactly what its own check said.
+ */
+export class BeforePayRefusedError extends ToonClientError {
+  /** The reason the hook returned, verbatim. */
+  readonly reason: string;
+  /** The route the refused packet was addressed to. */
+  readonly destination: string;
+  /** The resolved price the hook was shown, in base units. */
+  readonly amount: bigint;
+
+  constructor(reason: string, destination: string, amount: bigint) {
+    super(
+      `beforePay refused this send to "${destination}" for ${amount.toString()}: ${reason}`,
+      'BEFORE_PAY_REFUSED'
+    );
+    this.name = 'BeforePayRefusedError';
+    this.reason = reason;
+    this.destination = destination;
+    this.amount = amount;
+  }
+}
+
 // ─── Greetings: refusals raised before the packet was routed ────────────────
 
 /**

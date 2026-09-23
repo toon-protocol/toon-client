@@ -83,6 +83,7 @@ on `code`, never on the message.
 | `ConnectorError` | `CONNECTOR_ERROR` | The connector answered with a transport-level failure — the non-2xx statuses above. |
 | `ChainUnavailableError` | `CHAIN_UNAVAILABLE` | The chain you asked to settle on is not among the node's settlements, or you hold no key for any it offers. The error lists what it does offer. |
 | `RouteNotPricedError` | `ROUTE_NOT_PRICED` | The connector serves no route matching the destination, so there is no price to pay. |
+| `BeforePayRefusedError` | `BEFORE_PAY_REFUSED` | Your own `beforePay` returned a reason, having been shown the resolved price. Nothing was signed and nothing went out — see [api.md](api.md#beforepay--refusing-a-request-you-already-know-is-wrong). |
 | `ChannelNotOpenError` | `CHANNEL_NOT_OPEN` | A request needed a channel and none exists, with `autoOpenChannel` off. |
 | `ChannelFundingError` | `CHANNEL_FUNDING` | The on-chain open reverted for want of **native gas**. Retryable once the wallet is funded. |
 | `ChannelResumeError` | `CHANNEL_RESUME` | A persisted binding names a channel whose watermark is missing from the store. Deliberately fatal — see [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable). |

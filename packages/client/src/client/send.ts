@@ -81,6 +81,7 @@ import type { ChannelManager } from '../channel/ChannelManager.js';
 import { isUnknownChannelReject, rejectNamesChannel } from '../channel/stale-channel.js';
 import { toBase64, fromBase64, encodeUtf8, decodeUtf8 } from '../utils/binary.js';
 import {
+  BeforePayRefusedError,
   PaymentRequiredError,
   RouteNotPricedError,
   TransportRequiredError,
@@ -194,6 +195,9 @@ export interface SendContext {
  *
  * @throws {RouteNotPricedError} the node prices no route covering `destination`
  *   and no explicit {@link SendOptions.amount} was given.
+ * @throws {BeforePayRefusedError} the caller's own
+ *   {@link SendOptions.beforePay} returned a reason, having seen the resolved
+ *   price. Nothing was signed and no packet went out.
  * @throws Anything the chain or the network throws while opening a channel.
  *   A REJECT is never thrown — see {@link SendResult}.
  */
@@ -214,6 +218,14 @@ export async function send(
     options.amount,
     exchange.data.length
   );
+  // The caller's last look, between step 4 and step 5: the price is known and
+  // nothing has been signed. Here and only here can a refusal be guaranteed to
+  // cost nothing — one line later `attempt` ensures a channel and signs a
+  // balance proof, and a signed claim cannot be unsigned (its rollback restores
+  // the cumulative amount but deliberately not the nonce). Placed outside
+  // `attempt` on purpose: the stale-channel path runs `attempt` twice, and the
+  // hook is a decision about the REQUEST, not about an attempt at it.
+  refuseIfCallerSaysSo(options.beforePay, destination, amount, request);
   const carriage = await context.transport(description, destination);
 
   const first = await attempt(context, {
@@ -244,6 +256,36 @@ export async function send(
     timeoutMs: options.timeoutMs ?? context.timeoutMs,
   });
   return retry ?? first.result;
+}
+
+/**
+ * Give {@link SendOptions.beforePay} the resolved price, and stop here if it
+ * says no.
+ *
+ * Synchronous on purpose. The hook's guarantee is "this runs while nothing has
+ * been signed yet", and an `await` here would hold that window open across the
+ * event loop for a check whose whole job is to be a last, local look at facts
+ * this client already has in hand. A caller needing a network round trip to
+ * decide has a different question, and should ask it before calling `send`.
+ *
+ * A returned string becomes a {@link BeforePayRefusedError}; a throw from the
+ * callback is left exactly as it is, because re-wrapping a caller's own error
+ * hides the stack that says where the rule actually lives.
+ *
+ * Runs for a free route as well as a paid one. `amount === 0n` means no claim is
+ * signed, but the answer is not the only thing a wrong request spends: it still
+ * costs the round trip and whatever the app does with it before saying no.
+ */
+function refuseIfCallerSaysSo(
+  beforePay: SendOptions['beforePay'],
+  destination: string,
+  amount: bigint,
+  request: SendRequest
+): void {
+  if (beforePay === undefined) return;
+  const reason = beforePay({ destination, amount, request });
+  if (typeof reason !== 'string') return;
+  throw new BeforePayRefusedError(reason, destination, amount);
 }
 
 // ─── One attempt ────────────────────────────────────────────────────────────
