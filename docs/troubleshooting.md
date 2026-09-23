@@ -119,6 +119,12 @@ one the route settles in. Check `describe()`'s `settlements` against `client.cha
 The route accepts one carriage and you used the other. `answer.terms.requiredTransport` names the
 one it wants. The devnet relay route is BTP-only: `--transport btp`, or `transport: 'btp'`.
 
+On `transport: 'auto'` this should never happen — `auto` reads the pin off the route's own entry in
+`GET /ilp` and dials it. If it does, that node is not publishing the pin it enforces: run
+`toon describe` and look for a carriage beside the route's price. A node with none, on a route that
+refuses you, is the defect connector ADR 0072 closes, and naming the carriage by hand is the only
+thing you can do until that node is upgraded.
+
 **Parallel requests fail with nonce errors that a serial run does not produce.**
 Parallel HTTP requests can race their own claim nonces. Use the BTP carriage: one ordered socket
 cannot race itself. Or serialize the sends.

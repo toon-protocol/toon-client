@@ -99,6 +99,98 @@ describe("selectTransport — 'auto'", () => {
   });
 });
 
+/**
+ * The live devnet relay on 2026-09-22, verbatim: two of its own addresses, one
+ * pinned to BTP and one not, and a forwarded prefix beside them.
+ *
+ * The node-wide `requiredTransport` is **absent**, because a scalar over two
+ * disagreeing policies has no honest value — which is exactly why the
+ * publisher's `auto` had nothing to read and fell back to HTTP. The route
+ * entries are what the connector publishes since ADR 0072.
+ */
+const PINNED_RELAY = {
+  ilpAddresses: ['g.toon.relay', 'g.toon.relay.ephemeral'],
+  httpEndpoint: 'https://proxy.relay.example/ilp',
+  btpEndpoint: 'wss://proxy.relay.example/ilp/btp',
+  peerCarriages: [],
+  routes: [
+    { prefix: 'g.toon.relay', price: '1', requiredTransport: 'btp' },
+    { prefix: 'g.toon.relay.ephemeral', price: '0' },
+    { prefix: 'g.toon.relay.gas', price: '1001' },
+  ],
+};
+
+describe('selectTransport — a per-route pin (TOON_Network#111)', () => {
+  it("dials the carriage the destination's own route requires, first time", () => {
+    // The acceptance criterion: no refusal round trip. This node says nothing
+    // node-wide, so the answer can only come from the route entry.
+    expect(selectTransport(describeNode(PINNED_RELAY), 'auto', undefined, 'g.toon.relay')).toEqual({
+      kind: 'btp',
+      url: 'wss://proxy.relay.example/ilp/btp',
+    });
+  });
+
+  it('covers a destination under the pinned prefix, at a label boundary', () => {
+    expect(
+      selectTransport(describeNode(PINNED_RELAY), 'auto', undefined, 'g.toon.relay.write')
+    ).toEqual({ kind: 'btp', url: 'wss://proxy.relay.example/ilp/btp' });
+  });
+
+  it('leaves an unpinned route on the same node exactly as it was', () => {
+    for (const destination of ['g.toon.relay.ephemeral', 'g.toon.relay.gas']) {
+      expect(selectTransport(describeNode(PINNED_RELAY), 'auto', undefined, destination)).toEqual({
+        kind: 'http',
+        url: 'https://proxy.relay.example/ilp',
+      });
+    }
+  });
+
+  it('is unchanged from today when no destination is named', () => {
+    // A caller asking about the node rather than about a packet gets the
+    // node-wide answer — here, none — and HTTP as before.
+    expect(selectTransport(describeNode(PINNED_RELAY), 'auto')).toEqual({
+      kind: 'http',
+      url: 'https://proxy.relay.example/ilp',
+    });
+  });
+
+  it('lets the route override a node-wide answer that does not describe it', () => {
+    const description = describeNode({
+      ...PINNED_RELAY,
+      requiredTransport: 'http',
+      routes: [{ prefix: 'g.toon.relay', price: '1', requiredTransport: 'btp' }],
+    });
+    expect(selectTransport(description, 'auto', undefined, 'g.toon.relay')).toEqual({
+      kind: 'btp',
+      url: 'wss://proxy.relay.example/ilp/btp',
+    });
+  });
+
+  it('falls back to the node-wide answer where the route names none', () => {
+    // Which is every destination on a node that predates the per-route field:
+    // its route entries name nothing, so nothing changes for it.
+    const description = describeNode({ ...PINNED_RELAY, requiredTransport: 'btp' });
+    for (const destination of ['g.elsewhere', 'g.toon.relay.ephemeral']) {
+      expect(selectTransport(description, 'auto', undefined, destination)).toEqual({
+        kind: 'btp',
+        url: 'wss://proxy.relay.example/ilp/btp',
+      });
+    }
+  });
+
+  it("refuses when the destination's route pins a carriage the node cannot serve", () => {
+    const description = describeNode({
+      ilpAddresses: ['g.toon.relay'],
+      httpEndpoint: 'https://proxy.relay.example/ilp',
+      peerCarriages: [],
+      routes: [{ prefix: 'g.toon.relay', price: '1', requiredTransport: 'btp' }],
+    });
+    const error = catchError(() => selectTransport(description, 'auto', undefined, 'g.toon.relay'));
+    expect(error).toBeInstanceOf(TransportRequiredError);
+    expect((error as TransportRequiredError).required).toBe('btp');
+  });
+});
+
 describe('selectTransport — an explicit preference', () => {
   it("honours 'http' when the node publishes an httpEndpoint", () => {
     expect(selectTransport(describeNode(BOTH), 'http')).toEqual({

@@ -13,6 +13,7 @@ import {
   chargeFor,
   defaultDestinationFor,
   parseSelfDescription,
+  requiredTransportFor,
   routeFor,
   routePriceFor,
 } from './self-description.js';
@@ -183,5 +184,105 @@ describe('defaultDestinationFor', () => {
       ],
     });
     expect(defaultDestinationFor(desc)).toBe('g.toon.relay');
+  });
+});
+
+/**
+ * The carriage half of the same document (connector ND-05a / ADR 0072,
+ * TOON_Network#111).
+ *
+ * A pin is enforced by a longest-prefix route lookup, once per packet, so it is
+ * published on the route — and `requiredTransportFor` reads it the same way the
+ * connector decides it.
+ */
+describe('requiredTransportFor', () => {
+  /**
+   * The live devnet relay's `GET /ilp`, copied verbatim on 2026-09-22 (the
+   * settlement entries trimmed, which this suite does not read).
+   *
+   * It carries no pin anywhere: `peerCarriages` is empty, the routes are prefix
+   * and price, and there is no `requiredTransport` at any level — while the
+   * connector refused every HTTP-carried write to `g.toon.relay` with
+   * `requiredTransport: "btp"` in the 402. This is the document a client still
+   * meets until the fleet picks up a connector that publishes the pin, so it is
+   * pinned here as a fixture: the answer must be "nothing stated", never a
+   * throw and never a guess.
+   */
+  const LIVE_RELAY_2026_09_22 = {
+    ilpAddresses: ['g.toon.relay', 'g.toon.relay.ephemeral'],
+    httpEndpoint: 'https://proxy.relay.devnet.toonprotocol.dev/ilp',
+    btpEndpoint: 'wss://proxy.relay.devnet.toonprotocol.dev/ilp/btp',
+    peerCarriages: [],
+    edgeIdentity: { keyId: 'connector-signer', publicKey: '0x04915d29' },
+    settlements: [],
+    routes: [
+      { prefix: 'g.toon.relay', price: '1' },
+      { prefix: 'g.toon.relay.ephemeral', price: '0' },
+      { prefix: 'g.toon.relay.gas', price: '1001' },
+      { prefix: 'g.toon.relay.store', price: '1001', pricePerKib: '10' },
+    ],
+    supportedVersions: [1],
+    defaultVersion: 1,
+  };
+
+  /** The same node once its connector publishes what it enforces. */
+  const PINNED_RELAY = {
+    ...LIVE_RELAY_2026_09_22,
+    routes: [
+      { prefix: 'g.toon.relay', price: '1', requiredTransport: 'btp' },
+      { prefix: 'g.toon.relay.ephemeral', price: '0' },
+      { prefix: 'g.toon.relay.gas', price: '1001' },
+      { prefix: 'g.toon.relay.store', price: '1001', pricePerKib: '10' },
+    ],
+  };
+
+  it("reads today's devnet document without inventing a requirement", () => {
+    const desc = parseSelfDescription(LIVE_RELAY_2026_09_22);
+    expect(desc.routes).toHaveLength(4);
+    for (const route of desc.routes) expect(route.requiredTransport).toBeUndefined();
+    expect(desc.requiredTransport).toBeUndefined();
+    for (const destination of ['g.toon.relay', 'g.toon.relay.ephemeral', 'g.elsewhere']) {
+      expect(requiredTransportFor(desc, destination)).toBeUndefined();
+    }
+    // And its prices are still read exactly as before.
+    expect(routePriceFor(desc, 'g.toon.relay')).toBe(1n);
+    expect(routeFor(desc, 'g.toon.relay.store')?.pricePerKib).toBe(10n);
+  });
+
+  it('reads a pin off the route that governs the destination', () => {
+    const desc = parseSelfDescription(PINNED_RELAY);
+    expect(requiredTransportFor(desc, 'g.toon.relay')).toBe('btp');
+    expect(requiredTransportFor(desc, 'g.toon.relay.write')).toBe('btp');
+    expect(requiredTransportFor(desc, 'g.toon.relay.ephemeral')).toBeUndefined();
+    expect(requiredTransportFor(desc, 'g.toon.relay.store')).toBeUndefined();
+  });
+
+  it('answers the node-wide field alone when asked about no destination', () => {
+    expect(requiredTransportFor(parseSelfDescription(PINNED_RELAY))).toBeUndefined();
+    expect(
+      requiredTransportFor(parseSelfDescription({ ...PINNED_RELAY, requiredTransport: 'http' }))
+    ).toBe('http');
+  });
+
+  it('falls back to the node-wide field where the route names none', () => {
+    const desc = parseSelfDescription({ ...LIVE_RELAY_2026_09_22, requiredTransport: 'btp' });
+    expect(requiredTransportFor(desc, 'g.toon.relay')).toBe('btp');
+  });
+
+  it("drops a carriage it cannot dial rather than carrying it", () => {
+    // `'both'` is the connector's config spelling for "no requirement", and it
+    // omits the key rather than emitting it — but a node that sent it, or sent
+    // anything else, must not make this client dial a carriage it has no name
+    // for.
+    const desc = parseSelfDescription({
+      ...LIVE_RELAY_2026_09_22,
+      requiredTransport: 'both',
+      routes: [
+        { prefix: 'g.toon.relay', price: '1', requiredTransport: 'both' },
+        { prefix: 'g.toon.relay.ephemeral', price: '0', requiredTransport: 42 },
+      ],
+    });
+    expect(requiredTransportFor(desc, 'g.toon.relay')).toBeUndefined();
+    expect(requiredTransportFor(desc, 'g.toon.relay.ephemeral')).toBeUndefined();
   });
 });

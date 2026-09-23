@@ -124,7 +124,7 @@ interface ToonClientConfig {
 | `keyDerivation` | `'standard'` | See [Key derivation](#key-derivation). |
 | `chain` | first settlement you hold a key for | Set it explicitly when a node settles on several and you care which one your money moves on. |
 | `rpcUrl` | the devnet preset for the chain | On Base Sepolia, prefer a read-after-write consistent endpoint — see [channels.md](channels.md#choosing-an-evm-rpc). |
-| `transport` | `'auto'` | `'auto'` honours the node's `requiredTransport`, otherwise prefers HTTP. Choose `'btp'` when streaming many requests: one ordered socket cannot race its own claim nonces. |
+| `transport` | `'auto'` | `'auto'` honours the carriage the destination's own route requires — its `requiredTransport` in `GET /ilp`, or the node-wide one where the route names none — and otherwise prefers HTTP. Choose `'btp'` when streaming many requests: one ordered socket cannot race its own claim nonces. |
 | `channelStore` | in memory, with a warning | A path becomes a JSON file store. **Set it.** See [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable). |
 | `senderId` | your address on the selected chain | A label the connector echoes, never an authority — a claim is authorised by its signature and nothing else. |
 | `deposit` | `100000n` (0.10 USDC) | Collateral for the first channel this client opens, in base units. |

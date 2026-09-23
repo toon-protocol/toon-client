@@ -55,7 +55,7 @@ connector answered with a greeting rather than a packet:
 | Code | Means | You do |
 | --- | --- | --- |
 | `PAYMENT_REQUIRED` | The connector answered the route's terms instead of the work — HTTP `402`, or `F06` over BTP. `answer.terms` carries the price and the settlements it accepts. | Open or fund a channel on one of the offered chains. |
-| `TRANSPORT_REQUIRED` | The route does not accept the carriage you used. `answer.terms.requiredTransport` names the one it does. | Resend over that carriage: `transport: 'btp'`, or `--transport btp`. |
+| `TRANSPORT_REQUIRED` | The route does not accept the carriage you used. `answer.terms.requiredTransport` names the one it does. | Resend over that carriage: `transport: 'btp'`, or `--transport btp`. Better: leave `transport: 'auto'` against a node that publishes the pin on the route (`toon describe` prints it beside the price) and this never fires. |
 
 ## HTTP statuses
 
