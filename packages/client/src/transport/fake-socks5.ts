@@ -19,6 +19,12 @@ export interface Socks5Request {
   port: number;
   /** `domain` when the client sent a name, `ipv4` when it sent an address. */
   kind: 'domain' | 'ipv4';
+  /**
+   * The RFC 1929 username the connection authenticated with, or `undefined` for
+   * one that asked for no authentication. `anon` picks a circuit by it
+   * (`IsolateSOCKSAuth`), so it is what says which circuit a stream rode.
+   */
+  username?: string;
 }
 
 export interface FakeSocks5Server {
@@ -27,6 +33,11 @@ export interface FakeSocks5Server {
   port: number;
   /** Every CONNECT this proxy was asked for, in order. */
   requests: Socks5Request[];
+  /**
+   * Stop listening AND drop every connection already open, pooled ones
+   * included — a daemon that died, rather than one that merely stopped
+   * accepting.
+   */
   close(): Promise<void>;
 }
 
@@ -39,17 +50,37 @@ export interface FakeSocks5Server {
  */
 export async function startFakeSocks5(routes: Map<string, number>): Promise<FakeSocks5Server> {
   const requests: Socks5Request[] = [];
+  const open = new Set<net.Socket>();
 
   const server = net.createServer((client) => {
-    let stage: 'greeting' | 'request' | 'piping' = 'greeting';
+    let stage: 'greeting' | 'auth' | 'request' | 'piping' = 'greeting';
+    let username: string | undefined;
 
+    open.add(client);
+    client.on('close', () => open.delete(client));
     client.on('error', () => client.destroy());
     client.on('data', (chunk) => {
       if (stage === 'greeting') {
-        // VER NMETHODS METHODS… → we only ever speak "no authentication".
+        // VER NMETHODS METHODS… → username/password when offered (as `anon`
+        // picks it, so it can isolate by it), else "no authentication".
         if (chunk[0] !== 0x05) return client.destroy();
+        const methods = Array.from(chunk.subarray(2, 2 + (chunk[1] ?? 0)));
+        if (methods.includes(0x02)) {
+          stage = 'auth';
+          client.write(Buffer.from([0x05, 0x02]));
+          return;
+        }
         stage = 'request';
         client.write(Buffer.from([0x05, 0x00]));
+        return;
+      }
+
+      if (stage === 'auth') {
+        // RFC 1929: VER ULEN UNAME PLEN PASSWD. Any credentials are accepted.
+        const ulen = chunk.readUInt8(1);
+        username = chunk.subarray(2, 2 + ulen).toString('utf8');
+        stage = 'request';
+        client.write(Buffer.from([0x01, 0x00]));
         return;
       }
 
@@ -74,7 +105,7 @@ export async function startFakeSocks5(routes: Map<string, number>): Promise<Fake
         return refuse(client, 0x08);
       }
 
-      requests.push({ host, port, kind });
+      requests.push({ host, port, kind, ...(username !== undefined ? { username } : {}) });
       stage = 'piping';
 
       const target = routes.get(host);
@@ -85,6 +116,8 @@ export async function startFakeSocks5(routes: Map<string, number>): Promise<Fake
         client.pipe(upstream);
         upstream.pipe(client);
       });
+      open.add(upstream);
+      upstream.on('close', () => open.delete(upstream));
       upstream.on('error', () => client.destroy());
     });
   });
@@ -98,6 +131,7 @@ export async function startFakeSocks5(routes: Map<string, number>): Promise<Fake
     requests,
     close: () =>
       new Promise<void>((resolve) => {
+        for (const socket of open) socket.destroy();
         server.close(() => resolve());
       }),
   };

@@ -50,6 +50,17 @@ export const DEFAULT_DEPOSIT = 100_000n;
 /** Challenge period in seconds when the caller sets none. */
 export const DEFAULT_SETTLEMENT_TIMEOUT = 86_400;
 
+/**
+ * How one chain's RPC leaves this process when it rides the proxy: two shapes of
+ * one pinned circuit, because the two chains' clients take different objects.
+ */
+export interface ProxiedChainRpc {
+  /** The undici dispatcher, for viem, which calls the global `fetch` itself (EVM). */
+  dispatcher: unknown;
+  /** `fetch` bound to that dispatcher, for Solana's JSON-RPC. */
+  fetch: typeof fetch;
+}
+
 /** The keys this client holds, per chain. Absent means "no key for that chain". */
 export interface ResolvedIdentity {
   evm?: { privateKey: Uint8Array; address: string };
@@ -71,13 +82,15 @@ export interface ResolvedConfig {
   /** Whether chain RPC rides that proxy too (ADR 0002). */
   proxyRpc: boolean;
   /**
-   * The undici dispatcher built from {@link socksProxy}, for chain RPC.
+   * Per chain, the proxy-bound route its RPC takes, each on its own pinned
+   * circuit; `undefined` when chain RPC dials directly.
+   *
    * Deliberately not filled in here: building it means loading a Node-only
    * module, and resolving a config must stay synchronous and browser-safe. It is
-   * the client's job to construct one, so {@link resolveConfig} only reserves
-   * the slot and leaves it `undefined`.
+   * the client's job to construct the routes, so {@link resolveConfig} only
+   * reserves the slot and leaves it `undefined`.
    */
-  rpcDispatcher: unknown;
+  chainRpc: Record<ChainKind, ProxiedChainRpc> | undefined;
   identity: ResolvedIdentity;
   /** The caller's chain preference, or `undefined` to take the node's first. */
   chain: ChainKind | undefined;
@@ -174,7 +187,7 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
     connectorIsHiddenService,
     socksProxy,
     proxyRpc: config.proxyRpc ?? true,
-    rpcDispatcher: undefined,
+    chainRpc: undefined,
     settlementTimeout,
     autoOpenChannel: config.autoOpenChannel ?? true,
     timeoutMs,
@@ -249,13 +262,18 @@ function resolveConnector(connector: string | undefined): string {
 }
 
 /**
- * A hidden service needs a proxy, and a proxy without one is a misunderstanding.
+ * A hidden service needs a proxy. A proxy beside a clearnet connector means the
+ * payer is the one hiding.
  *
- * Both directions fail here rather than later. Without a proxy, a `.anyone`
- * address resolves nowhere — but only after the hostname has gone out in a
- * plaintext DNS query, which is the one thing the address exists to avoid. With
- * a proxy but a clearnet connector, the caller believes they are anonymous and
- * are not.
+ * Without a proxy, a `.anyone` address resolves nowhere, but only after the
+ * hostname has gone out in a plaintext DNS query, which is the one thing the
+ * address exists to avoid. So that fails here, before anything dials.
+ *
+ * A proxy beside a clearnet connector was refused too, once, as "nothing would
+ * ride the proxy". That was never true, and TOON_Network#167 reversed it: every
+ * byte the client sends rides it, chain RPC included (the "hidden payer"). Only
+ * `socks5h://` is accepted either way. Under `socks5://` this process would
+ * resolve every name it dials itself.
  */
 function resolveSocksProxy(
   socksProxy: string | undefined,
@@ -269,13 +287,6 @@ function resolveSocksProxy(
         'only through a SOCKS5h proxy. Set `socksProxy` to a running Anyone Protocol ' +
         '`anon` daemon (e.g. "socks5h://127.0.0.1:9050"), or use the `toon` CLI, which ' +
         'can start one for you.'
-    );
-  }
-  if (!connectorIsHiddenService) {
-    throw new ConfigError(
-      `socksProxy is set, but connector ${JSON.stringify(connector)} is a clearnet ` +
-        'address, so nothing would ride the proxy. Point `connector` at the node\'s ' +
-        '.anyone address, or drop `socksProxy`.'
     );
   }
   try {

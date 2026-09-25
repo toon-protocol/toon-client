@@ -18,6 +18,12 @@
  * So this module builds one SOCKS connection primitive and wraps it three ways.
  * The SOCKS5 handshake itself is `socks`'s job; all we supply is the socket.
  *
+ * Chain RPC gets a transport of its own per chain ({@link createChainRpcTransport}),
+ * authenticating with a fixed SOCKS username so each chain rides one pinned
+ * circuit (connector ADR 0073). The same is true whether the connector is a
+ * hidden service or a clearnet host that a hidden payer reaches through the
+ * proxy (TOON_Network#167).
+ *
  * `undici` is an optional dependency for exactly this reason: Node bundles undici
  * internally but exposes it under no specifier (`require('undici')` is
  * `MODULE_NOT_FOUND`, `node:undici` is `ERR_UNKNOWN_BUILTIN_MODULE`), so a
@@ -70,10 +76,71 @@ const nodeRequire = createRequire(import.meta.url);
  */
 export const DEFAULT_HS_CONNECT_TIMEOUT_MS = 120_000;
 
+/**
+ * How long a chain-RPC dial may take through the proxy: the SOCKS handshake, an
+ * exit circuit and the TCP connect behind it (connector ADR 0073, decision 4).
+ *
+ * Far shorter than {@link DEFAULT_HS_CONNECT_TIMEOUT_MS}, because a public RPC
+ * is reached over an ordinary exit circuit, not the introduction-point dance a
+ * hidden service needs. ADR 0073 measured 3,200 calls through `anon`: the worst
+ * one that had to build a fresh circuit took 13s. Twice that, rounded, and a
+ * stalled circuit is reported rather than waited on.
+ */
+export const DEFAULT_RPC_CONNECT_TIMEOUT_MS = 20_000;
+
+/**
+ * The longest a pooled chain-RPC connection is kept idle (ADR 0073, decision 4).
+ *
+ * A circuit can die quietly under a kept-alive socket, and the next request on
+ * it then hangs until its own timeout. A short idle cap means such a socket is
+ * dropped before it is reused. undici keeps a socket for 4s by default but lets a
+ * server's `Keep-Alive` header stretch that to ten minutes; this caps the stretch.
+ */
+export const RPC_POOL_IDLE_TIMEOUT_MS = 30_000;
+
+/**
+ * The fixed SOCKS5 usernames chain RPC authenticates with, one per chain.
+ *
+ * `anon` (like Tor) isolates streams by SOCKS credentials (`IsolateSOCKSAuth`,
+ * on by default): streams that present the same username share a circuit, and
+ * streams with different ones never do. So a fixed username per chain gives each
+ * chain one circuit that stays pinned until the daemon's own
+ * `MaxCircuitDirtiness` rotates it (connector ADR 0073, decision 3). No exit then
+ * sees both chains' RPC, neither shares a circuit with the client edge, and no
+ * call pays for a new circuit of its own. They differ from the connector's
+ * `toon-settlement-*` names, so a payer and a node on one daemon do not share
+ * circuits either.
+ */
+export const RPC_SOCKS_USERNAMES = {
+  evm: 'toon-client-rpc-evm',
+  solana: 'toon-client-rpc-solana',
+} as const;
+
+/**
+ * The password sent beside a {@link HiddenServiceTransportOptions.socksUsername}.
+ * `anon` checks nothing; the username alone picks the circuit. RFC 1929 still
+ * wants one, so it is a constant.
+ */
+const SOCKS_ISOLATION_PASSWORD = 'toon';
+
+/** undici's own idle keep-alive, which {@link HiddenServiceTransportOptions.idleTimeoutMs} only ever lowers. */
+const UNDICI_DEFAULT_KEEP_ALIVE_MS = 4_000;
+
 /** Options for {@link createHiddenServiceTransport}. */
 export interface HiddenServiceTransportOptions {
   /** Circuit-build timeout, ms. Default {@link DEFAULT_HS_CONNECT_TIMEOUT_MS}. */
   connectTimeoutMs?: number;
+  /**
+   * A fixed SOCKS5 username to authenticate with, which pins every stream this
+   * transport opens to one circuit (`IsolateSOCKSAuth`). Unset means no
+   * authentication, and the daemon's default circuit.
+   */
+  socksUsername?: string;
+  /**
+   * Upper bound on how long an idle pooled connection is kept, ms. Unset keeps
+   * undici's own behaviour.
+   */
+  idleTimeoutMs?: number;
 }
 
 /**
@@ -102,13 +169,20 @@ export { validateSocks5hUrl } from './socks-url.js';
 
 /** The one primitive: a TCP socket to `destination`, dialled through the proxy. */
 async function socksConnect(
-  proxy: { host: string; port: number },
+  proxy: { host: string; port: number; username?: string },
   destination: { host: string; port: number },
   timeoutMs: number
 ): Promise<netModule.Socket> {
   const { SocksClient } = nodeRequire('socks') as typeof socksModule;
   const { socket } = await SocksClient.createConnection({
-    proxy: { host: proxy.host, port: proxy.port, type: 5 },
+    proxy: {
+      host: proxy.host,
+      port: proxy.port,
+      type: 5,
+      ...(proxy.username !== undefined
+        ? { userId: proxy.username, password: SOCKS_ISOLATION_PASSWORD }
+        : {}),
+    },
     command: 'connect',
     destination,
     timeout: timeoutMs,
@@ -133,7 +207,10 @@ export function createHiddenServiceTransport(
   socksProxy: string,
   options: HiddenServiceTransportOptions = {}
 ): HiddenServiceTransport {
-  const proxy = validateSocks5hUrl(socksProxy);
+  const proxy = {
+    ...validateSocks5hUrl(socksProxy),
+    ...(options.socksUsername !== undefined ? { username: options.socksUsername } : {}),
+  };
   const timeoutMs = options.connectTimeoutMs ?? DEFAULT_HS_CONNECT_TIMEOUT_MS;
 
   const undici = requireOptional<typeof undiciModule>('undici', socksProxy);
@@ -145,6 +222,14 @@ export function createHiddenServiceTransport(
   // in TLS ourselves when the scheme calls for it (undici's default connector
   // would have done that, and we have replaced it).
   const dispatcher = new undici.Agent({
+    // A cap, not a new default: undici's own 4s idle stays when it is shorter,
+    // and a server's `Keep-Alive` hint can no longer stretch it past the cap.
+    ...(options.idleTimeoutMs !== undefined
+      ? {
+          keepAliveTimeout: Math.min(UNDICI_DEFAULT_KEEP_ALIVE_MS, options.idleTimeoutMs),
+          keepAliveMaxTimeout: options.idleTimeoutMs,
+        }
+      : {}),
     connect(
       connectOptions: { hostname: string; port?: string | number; protocol?: string; servername?: string },
       callback: (err: Error | null, socket: unknown) => void
@@ -196,12 +281,31 @@ export function createHiddenServiceTransport(
 }
 
 /**
+ * The proxy-bound transport one chain's RPC rides: its own pinned circuit, a
+ * connect timeout sized for an exit circuit, and a capped idle pool (connector
+ * ADR 0073, decisions 3 and 4).
+ *
+ * It has no fallback. A proxy that is down fails the call; nothing here, or in
+ * the viem and Solana paths that use it, ever dials the RPC directly instead.
+ */
+export function createChainRpcTransport(
+  socksProxy: string,
+  chain: keyof typeof RPC_SOCKS_USERNAMES
+): HiddenServiceTransport {
+  return createHiddenServiceTransport(socksProxy, {
+    connectTimeoutMs: DEFAULT_RPC_CONNECT_TIMEOUT_MS,
+    socksUsername: RPC_SOCKS_USERNAMES[chain],
+    idleTimeoutMs: RPC_POOL_IDLE_TIMEOUT_MS,
+  });
+}
+
+/**
  * `ws` speaks `node:http`, so it wants an `http.Agent` — one per scheme, since
  * an `https.Agent` is what puts TLS on the socket and an `http.Agent` is what
  * must not.
  */
 function createWebSocketAgents(
-  proxy: { host: string; port: number },
+  proxy: { host: string; port: number; username?: string },
   timeoutMs: number
 ): { http: httpModule.Agent; https: httpsModule.Agent } {
   const http = nodeRequire('node:http') as typeof httpModule;

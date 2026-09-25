@@ -68,3 +68,9 @@ The local port an `anon` daemon listens on, through which every HS byte travels.
 is load-bearing: it means the *proxy* resolves the hostname, so an HS address never leaks into a
 local DNS query.
 _Avoid_: SOCKS proxy, socks5, the proxy
+
+**Hidden payer**:
+A client that sends every byte (client edge, BTP socket and each chain's RPC) through a SOCKS5h
+proxy to hide its *own* address, whatever the connector is. Configured by a `socksProxy` beside a
+clearnet connector (TOON_Network#167).
+_Avoid_: Anonymous client, private payer

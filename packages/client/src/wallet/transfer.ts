@@ -25,6 +25,7 @@ import {
   type Hex,
 } from 'viem';
 import { rpcTransport } from '../transport/rpc.js';
+import { waitForReceipt } from '../channel/evm/receipt.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Decode, base58Encode } from '../utils/base58.js';
 import type { EvmSigner } from '../signing/evm-signer.js';
@@ -294,9 +295,7 @@ async function sendEvmTransfer(
     const readDest = () => publicClient.getBalance({ address: to });
     const before = await readDest();
     const txHash = await walletClient.sendTransaction({ to, value: amount });
-    const receipt = await publicClient.waitForTransactionReceipt({
-      hash: txHash,
-    });
+    const receipt = await waitForReceipt(publicClient, txHash);
     if (receipt.status === 'reverted') {
       throw new TransferNotDeliveredError(
         `EVM native transfer ${txHash} reverted on-chain — no funds reached ${to}.`
@@ -350,9 +349,7 @@ async function sendEvmTransfer(
     functionName: 'transfer',
     args: [to, amount],
   });
-  const receipt = await publicClient.waitForTransactionReceipt({
-    hash: txHash,
-  });
+  const receipt = await waitForReceipt(publicClient, txHash);
   if (receipt.status === 'reverted') {
     throw new TransferNotDeliveredError(
       `EVM token transfer ${txHash} reverted on-chain — no funds reached ${to}.`

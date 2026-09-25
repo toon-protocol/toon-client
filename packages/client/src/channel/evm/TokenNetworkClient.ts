@@ -42,6 +42,7 @@
  * against nothing, whose only symptom is a refused claim.
  */
 import { rpcTransport } from '../../transport/rpc.js';
+import { waitForReceipt } from './receipt.js';
 import {
   createPublicClient,
   createWalletClient,
@@ -432,9 +433,7 @@ export class TokenNetworkClient {
       chain: this.walletClient.chain,
       account: this.signer.account,
     });
-    const receipt: TransactionReceipt = await this.publicClient.waitForTransactionReceipt({
-      hash: openHash,
-    });
+    const receipt: TransactionReceipt = await waitForReceipt(this.publicClient, openHash);
 
     const channelId = readOpenedChannelId(receipt);
     if (channelId === undefined) {
@@ -489,7 +488,7 @@ export class TokenNetworkClient {
       chain: this.walletClient.chain,
       account: this.signer.account,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await waitForReceipt(this.publicClient, hash);
     return { txHash: hash, depositTotal: newTotal };
   }
 
@@ -516,7 +515,7 @@ export class TokenNetworkClient {
       chain: this.walletClient.chain,
       account: this.signer.account,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await waitForReceipt(this.publicClient, hash);
     const record = await this.readChannel(tokenNetwork, channelId);
     return {
       txHash: hash,
@@ -540,7 +539,7 @@ export class TokenNetworkClient {
       chain: this.walletClient.chain,
       account: this.signer.account,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await waitForReceipt(this.publicClient, hash);
     return { txHash: hash };
   }
 
@@ -567,7 +566,7 @@ export class TokenNetworkClient {
       chain: this.walletClient.chain,
       account: this.signer.account,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    await waitForReceipt(this.publicClient, hash);
   }
 
   /**
@@ -621,7 +620,7 @@ export class TokenNetworkClient {
           chain: this.walletClient.chain,
           account: this.signer.account,
         });
-        await this.publicClient.waitForTransactionReceipt({ hash });
+        await waitForReceipt(this.publicClient, hash);
         return;
       } catch (err) {
         if (attempt >= depositRetries || !isInvalidChannelStateRevert(err)) throw err;

@@ -88,6 +88,7 @@ on `code`, never on the message.
 | `ChannelFundingError` | `CHANNEL_FUNDING` | The on-chain open reverted for want of **native gas**. Retryable once the wallet is funded. |
 | `ChannelResumeError` | `CHANNEL_RESUME` | A persisted binding names a channel whose watermark is missing from the store. Deliberately fatal — see [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable). |
 | `InsufficientBalanceError` | `INSUFFICIENT_BALANCE` | A transfer or an open cannot be covered. A preflight check, so it never costs gas. |
+| `TransactionOutcomeError` | `TRANSACTION_OUTCOME` | A chain write was sent and did not end confirmed and clean. `txHash` names it, `chain` says where, and `outcome` is `'failed'` (landed, execution failed), `'expired'` (Solana: past its blockhash's last valid height, cannot land) or `'unknown'` (may still land: look it up before repeating anything). |
 | `StaleRpcReadError` | `STALE_RPC_READ` | An EVM RPC never converged on a just-confirmed open. Retryable; the cure is a consistent RPC. |
 | `InvalidAddressError` | `INVALID_ADDRESS` | A destination address is malformed for its chain. Checked before any transaction is built. |
 | `UnknownChainError` | `UNKNOWN_CHAIN` | A chain identifier is unrecognized, or this client has no configuration for it. |

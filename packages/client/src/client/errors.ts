@@ -435,3 +435,31 @@ export function chainUnavailableMessage(
     'raw key for one of those chains.'
   );
 }
+
+/**
+ * A chain write that was sent and did not end confirmed and clean. It names the
+ * transaction, so whoever handles it can look the transaction up before doing
+ * anything that would repeat it (connector ADR 0073, decision 5).
+ *
+ * - `failed`: it landed and its execution failed. Nothing to reconcile.
+ * - `expired`: Solana only. Its blockhash is past `lastValidBlockHeight` and it
+ *   never appeared, so it cannot land. Safe to send again.
+ * - `unknown`: no answer settled it before the deadline, usually because the RPC
+ *   stopped answering. It may still land. Repeating it blindly can do the thing
+ *   twice. A Solana deposit is incremental, so a repeated one deposits twice.
+ *
+ * Distinct from a {@link NetworkError}: that one means the request may never
+ * have reached the chain. This one means it did, or may have.
+ */
+export class TransactionOutcomeError extends ToonClientError {
+  constructor(
+    message: string,
+    readonly chain: ChainKind,
+    readonly txHash: string,
+    readonly outcome: 'failed' | 'expired' | 'unknown',
+    cause?: Error
+  ) {
+    super(message, 'TRANSACTION_OUTCOME', cause);
+    this.name = 'TransactionOutcomeError';
+  }
+}
