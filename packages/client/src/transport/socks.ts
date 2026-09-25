@@ -51,6 +51,7 @@
 
 import { createRequire } from 'node:module';
 import { validateSocks5hUrl } from './socks-url.js';
+import type { ChainKind } from '../channel/types.js';
 import type * as netModule from 'node:net';
 import type * as streamModule from 'node:stream';
 import type * as tlsModule from 'node:tls';
@@ -111,10 +112,10 @@ export const RPC_POOL_IDLE_TIMEOUT_MS = 30_000;
  * `toon-settlement-*` names, so a payer and a node on one daemon do not share
  * circuits either.
  */
-export const RPC_SOCKS_USERNAMES = {
+export const RPC_SOCKS_USERNAMES: Readonly<Record<ChainKind, string>> = {
   evm: 'toon-client-rpc-evm',
   solana: 'toon-client-rpc-solana',
-} as const;
+};
 
 /**
  * The password sent beside a {@link HiddenServiceTransportOptions.socksUsername}.
@@ -290,7 +291,7 @@ export function createHiddenServiceTransport(
  */
 export function createChainRpcTransport(
   socksProxy: string,
-  chain: keyof typeof RPC_SOCKS_USERNAMES
+  chain: ChainKind
 ): HiddenServiceTransport {
   return createHiddenServiceTransport(socksProxy, {
     connectTimeoutMs: DEFAULT_RPC_CONNECT_TIMEOUT_MS,

@@ -34,6 +34,7 @@ import {
   NetworkError,
   TransactionOutcomeError,
 } from '../../client/errors.js';
+import { RECEIPT_TIMEOUT_MS } from '../evm/receipt.js';
 
 // ---------------------------------------------------------------------------
 // Constants (must match the Rust program + connector SDK exactly)
@@ -774,7 +775,7 @@ export interface ConfirmationOptions {
  * A blockhash lives ~150 slots (60–90s), so the chain decides first unless the
  * RPC stops answering. 180s is the deadline ADR 0073 gives EVM confirmation.
  */
-export const CONFIRM_TIMEOUT_MS = 180_000;
+export const CONFIRM_TIMEOUT_MS = RECEIPT_TIMEOUT_MS;
 
 /**
  * Poll until the transaction is `confirmed`/`finalized`, and report any other
@@ -794,6 +795,7 @@ export async function waitForConfirmation(
     options.timeoutMs ?? (lastValidBlockHeight !== undefined ? CONFIRM_TIMEOUT_MS : 30_000);
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
+  let failedPolls = 0;
 
   for (;;) {
     try {
@@ -818,6 +820,7 @@ export async function waitForConfirmation(
     } catch (err) {
       if (err instanceof TransactionOutcomeError) throw err;
       lastError = err;
+      failedPolls += 1;
     }
     if (Date.now() >= deadline) {
       throw new TransactionOutcomeError(
@@ -831,7 +834,10 @@ export async function waitForConfirmation(
         lastError instanceof Error ? lastError : undefined
       );
     }
-    await sleep(pollIntervalMs);
+    // Back off while polls keep failing (to 8x, 4s at the default), so a
+    // rate-limited RPC is not hammered; a poll that answers resets nothing
+    // because the loop only continues while the answer is "not yet".
+    await sleep(pollIntervalMs * 2 ** Math.min(failedPolls, 3));
   }
 }
 
@@ -860,7 +866,7 @@ async function isConfirmed(rpcUrl: SolanaRpcTarget, signature: string): Promise<
 }
 
 /**
- * Whether a `sendTransaction` refusal means the transaction is already on
+ * Whether a `sendTransaction` RPC error means the transaction is already on
  * chain: a resend of bytes the node took the first time. That happens exactly
  * when a first send's answer was lost and {@link solanaRpc} sent it again.
  */
@@ -1051,7 +1057,7 @@ export async function buildAndSendTransaction(
       },
     ])) as string;
   } catch (err) {
-    // A refusal is a refusal, and a send that never left was never sent. But a
+    // An RPC error is the node's answer, and a send that never left was never sent. But a
     // send whose answer was lost, or a resend the node says it already has, may
     // be on chain: it is looked up by the signature it carries rather than
     // reported as a failure (ADR 0073, decision 5). The first signature on the

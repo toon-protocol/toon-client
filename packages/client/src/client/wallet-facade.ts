@@ -72,6 +72,7 @@ export class ClientWalletFacade implements WalletFacade {
     const wanted: ChainKind[] = chain !== undefined ? [chain] : ['evm', 'solana'];
     const sources: Parameters<typeof readWalletBalances>[0] = {
       fetchImpl: solanaRpcFetch(config),
+      ...(config.chainRpc !== undefined ? { solanaProxied: true } : {}),
     };
 
     for (const kind of wanted) {
@@ -135,7 +136,7 @@ export class ClientWalletFacade implements WalletFacade {
           ? {
               solana: {
                 rpcUrl: config.rpcUrls.solana,
-                ...(config.chainRpc !== undefined ? { rpcFetch: solanaRpcFetch(config) } : {}),
+                ...(config.chainRpc !== undefined ? { rpcFetch: config.chainRpc.solana.fetch } : {}),
                 keypair: config.identity.solana.secretKey,
                 ...(entry?.tokenAddress ? { tokenMint: entry.tokenAddress } : {}),
               },

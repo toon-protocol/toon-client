@@ -114,7 +114,7 @@ never silently overridden.
 ## Hiding the payer from a clearnet connector
 
 The other way round: the connector is an ordinary public host, and **you** are the one hiding.
-A Hidden Provider's directory publisher is this. It pays the public devnet relay, and what must
+A Hidden Provider's directory publisher is this. It pays a public devnet connector, and what must
 not leak is the address of the box it runs on. Give it `socksProxy` beside a clearnet connector:
 
 ```ts
@@ -164,7 +164,7 @@ which resolves the name and dials from your real address.
 
 **What it does not hide.** The RPC provider still sees every query and transaction, all naming
 your keys. It can profile you, but it cannot locate you. An API-keyed RPC links all of it to the
-account that holds the key, so a hiding payer should use a keyless endpoint. The connector sees
+account that holds the key, so a hiding payer should use a keyless RPC. The connector sees
 your settlement address on every claim, as it must to be paid.
 
 This used to be refused. Until TOON_Network#167, `socksProxy` beside a clearnet connector threw
