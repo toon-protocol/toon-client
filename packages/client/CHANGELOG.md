@@ -1,5 +1,24 @@
 # @toon-protocol/client
 
+## 3.3.0
+
+### Minor Changes
+
+- 1564b1b: A `socksProxy` beside a **clearnet** connector is now accepted, and it makes the client a **hidden payer**: every byte it sends goes through the proxy, with no direct fallback. That covers the self-description and every paid packet, the BTP websocket, and the chain RPC for every chain it settles on (channel open, deposit, close, settle, the reads behind them, wallet balances and transfers). Until now this was refused as "nothing would ride the proxy". That was never accurate, and TOON_Network#167 reverses it. A Hidden Provider's directory publisher is the case in point. It pays the public devnet store connector, and had to wire `createHiddenServiceTransport`'s `fetch` and `createWebSocket` by hand. That wiring never carried the payment channel's chain RPC, so a hidden publisher had to run its own chain node. It can now point at a public RPC and pass `socksProxy`. `socks5://` is still refused, beside either kind of connector.
+
+  Chain RPC under a proxy now follows connector ADR 0073:
+
+  - **One pinned circuit per chain.** Each chain's RPC authenticates to the SOCKS port with a fixed username (`RPC_SOCKS_USERNAMES`: `toon-client-rpc-evm`, `toon-client-rpc-solana`). `anon`'s `IsolateSOCKSAuth` then keeps each chain on its own circuit, away from the client edge's. `createHiddenServiceTransport` takes `socksUsername` and `idleTimeoutMs`, and the new `createChainRpcTransport(socksProxy, chain)` builds a chain's transport. Both are on `@toon-protocol/client/hidden-service`.
+  - **Budgets sized for a circuit.** A 20s SOCKS connect (`DEFAULT_RPC_CONNECT_TIMEOUT_MS`) and an idle pool capped at 30s. Proxied viem requests get 30s, not viem's 10s, and retry 3 times from 500ms (`PROXIED_RPC_DEFAULTS`). Explicit options still win.
+  - **Solana calls are retried in transit**, with or without a proxy: 3 retries on 403, 408, 413, 429, 5xx and dropped connections, honouring a short `Retry-After`. A JSON-RPC error is an answer and is never retried. A call that gets no answer now throws `SolanaRpcTransportError`, a `NetworkError`, where it used to throw whatever `fetch` threw.
+  - **A chain write's outcome is reported by its transaction, never as a bare error.** Solana confirmation keeps polling through a failed poll until the chain answers: confirmed, failed, or expired past the blockhash's `lastValidBlockHeight`. A send whose answer was lost, or that the node reports as already processed, is looked up by its own signature. An EVM receipt wait keeps polling through a failed poll until a receipt arrives or 180s pass. The other endings throw the new `TransactionOutcomeError` (`code: 'TRANSACTION_OUTCOME'`, with `chain`, `txHash` and `outcome: 'failed' | 'expired' | 'unknown'`). On `unknown`, look `txHash` up before repeating anything: a Solana deposit is incremental. These rules hold without a proxy too.
+
+  `ResolvedConfig.rpcDispatcher`, which `resolveConfig` always left `undefined`, is replaced by `chainRpc`: one proxied route (`dispatcher` + `fetch`) per chain family. Under a proxy, Solana RPC now rides that route and no longer an injected `fetch`. An injected `fetch`/`createWebSocket` still wins for the client edge.
+
+### Patch Changes
+
+- ce4f802: The `DEVNET` preset settles in the devnet USDC on Base Sepolia, now Circle's FiatToken v2.2 (`0x0C996d7c934c79a6255254875607Fe69df25C0E1`, ERC-3009), through its `TokenNetwork` `0x1B4606218ceE5Bf02B546e416905F4D3FC8a0249` (toon-protocol/connector#1337). A wallet with a channel on the retired mock USDC opens a new one.
+
 ## 3.2.0
 
 ### Minor Changes
