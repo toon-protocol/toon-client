@@ -10,7 +10,8 @@
  *   Solana  `POST {faucetUrl}/api/solana/usdc-request`  body `{ address }`
  *
  * The request shape is identical on both; only the path differs. The EVM leg
- * mints the ungated mock USDC on Base Sepolia and best-effort tops up gas; the
+ * mints devnet USDC (Circle FiatToken v2.2; the faucet key is its minter) on
+ * Base Sepolia and best-effort tops up gas; the
  * **Solana leg drips USDC and no SOL**, so a Solana wallet needs devnet SOL
  * from somewhere else (`solana airdrop`) before it can pay for a transaction.
  *
