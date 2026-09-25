@@ -30,7 +30,7 @@ const EVM_TERMS = {
   chain: 'evm:84532',
   chainId: 84532,
   counterparty: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
-  token: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
+  token: '0x0C996d7c934c79a6255254875607Fe69df25C0E1',
   decimals: 6,
   tokenNetwork: '0x1E95493fEF46707E034b4a1945f25a8C76A1823D',
 };
