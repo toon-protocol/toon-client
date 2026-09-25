@@ -27,27 +27,31 @@ caveat.
 Three nodes, six routes. Each node is its own settlement counterparty, so a
 channel opened with one buys nothing at the others.
 
-| Node | Client-edge URL | Route | Price | Carriage |
-| --- | --- | --- | --- | --- |
-| Store | `https://proxy.ario.devnet.toonprotocol.dev` | `g.toon.store` | 1000 **+ 10 per KiB** | HTTP or BTP |
-| Gas station | `https://proxy.gas.devnet.toonprotocol.dev` | `g.toon.gas` | 1000 base units (0.001 USDC) | HTTP or BTP |
-| Relay | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay` | 1 base unit (0.000001 USDC) | **BTP only** |
-| Relay | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay.ephemeral` | free | HTTP or BTP |
-| Relay | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay.store` | 1001 **+ 10 per KiB** | HTTP or BTP |
-| Relay | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay.gas` | 1001 base units | HTTP or BTP |
+| Node        | Client-edge URL                               | Route                    | Price                        | Carriage     |
+| ----------- | --------------------------------------------- | ------------------------ | ---------------------------- | ------------ |
+| Store       | `https://proxy.ario.devnet.toonprotocol.dev`  | `g.toon.store`           | 1000 **+ 10 per KiB**        | HTTP or BTP  |
+| Gas station | `https://proxy.gas.devnet.toonprotocol.dev`   | `g.toon.gas`             | 1000 base units (0.001 USDC) | HTTP or BTP  |
+| Relay       | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay`           | 1 base unit (0.000001 USDC)  | **BTP only** |
+| Relay       | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay.ephemeral` | free                         | HTTP or BTP  |
+| Relay       | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay.store`     | 1001 **+ 10 per KiB**        | HTTP or BTP  |
+| Relay       | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay.gas`       | 1001 base units              | HTTP or BTP  |
 
 The last two are **forwarded**: the relay carries the packet to the store or the
 gas station and charges its own hop on top. Forwarding runs one way — the leaves
 do not carry back to the relay.
 
 A forwarded route needs one thing a direct one does not. The payload is sealed to
-the connector that *terminates* the route, and no hop may name that key on the
+the connector that _terminates_ the route, and no hop may name that key on the
 terminator's behalf, so you name the far node yourself with `sealTo`:
 
 ```ts
-const answer = await client.send('g.toon.relay.gas', { body: 'hello' }, {
-  sealTo: 'https://proxy.gas.devnet.toonprotocol.dev',
-});
+const answer = await client.send(
+  'g.toon.relay.gas',
+  { body: 'hello' },
+  {
+    sealTo: 'https://proxy.gas.devnet.toonprotocol.dev',
+  }
+);
 ```
 
 Seal to the relay instead and the packet is undeliverable: the gas station cannot
@@ -95,25 +99,25 @@ rather than this table if it matters to you.
 
 Client-edge paths on all three, relative to the base URL above:
 
-| Path | Method | What it is |
-| --- | --- | --- |
-| `/ilp` | `GET` | The node's self-description. Free. |
-| `/ilp` | `POST` | A PREPARE, `application/octet-stream`. The paid path. |
-| `/ilp/btp` | `GET` | Websocket upgrade for the BTP carriage. |
-| `/ilp/probe` | `POST` | A packet sent to be refused, to learn what a path costs. |
-| `/ilp/identity` | `GET` | The key a payload is sealed to. Free. |
-| `/ilp/routes/price?destination=` | `GET` | One route's price. Free. `404` when no route matches. |
-| `/ilp/claim-state` | `POST` | The connector's own watermark for channels you control. |
+| Path                             | Method | What it is                                               |
+| -------------------------------- | ------ | -------------------------------------------------------- |
+| `/ilp`                           | `GET`  | The node's self-description. Free.                       |
+| `/ilp`                           | `POST` | A PREPARE, `application/octet-stream`. The paid path.    |
+| `/ilp/btp`                       | `GET`  | Websocket upgrade for the BTP carriage.                  |
+| `/ilp/probe`                     | `POST` | A packet sent to be refused, to learn what a path costs. |
+| `/ilp/identity`                  | `GET`  | The key a payload is sealed to. Free.                    |
+| `/ilp/routes/price?destination=` | `GET`  | One route's price. Free. `404` when no route matches.    |
+| `/ilp/claim-state`               | `POST` | The connector's own watermark for channels you control.  |
 
 ## Base Sepolia (EVM)
 
-| Fact | Value |
-| --- | --- |
-| Chain id | 84532 |
-| RPC | `https://sepolia.base.org` |
-| Token network registry | `0x0c41D9D424d6B075A3cEa1068a694f7847a8CCa5` on Base Sepolia |
-| Token network | `0xe9E05dfecfe165266C88d73e61D483612651952a` on Base Sepolia |
-| Settlement token | `0x49beE1Bca5d15Fb0963117923403F9498119a9Ce` on Base Sepolia — mock USDC, 6 decimals, ungated `mint()` |
+| Fact                   | Value                                                                                                                                                                                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chain id               | 84532                                                                                                                                                                                                    |
+| RPC                    | `https://sepolia.base.org`                                                                                                                                                                               |
+| Token network registry | `0x0c41D9D424d6B075A3cEa1068a694f7847a8CCa5` on Base Sepolia                                                                                                                                             |
+| Token network          | `0x1B4606218ceE5Bf02B546e416905F4D3FC8a0249` on Base Sepolia                                                                                                                                             |
+| Settlement token       | `0x0C996d7c934c79a6255254875607Fe69df25C0E1` on Base Sepolia — devnet USDC (Circle FiatToken v2.2: ERC-3009, EIP-2612), 6 decimals; minting is minter-gated, so fund through the faucet (connector#1337) |
 
 A claim on this chain is an EIP-712 signature under the domain `TokenNetwork` / version `1` /
 chain id 84532 / `verifyingContract` = the token network above. The channel id is derived from
@@ -125,12 +129,12 @@ real failure mode when opening a channel — see
 
 ## Solana devnet (Solana)
 
-| Fact | Value |
-| --- | --- |
-| Cluster | devnet, the public cluster — not a local validator |
-| RPC | `https://api.devnet.solana.com` |
-| Payment-channel program | `2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip` on Solana devnet |
-| Settlement token | `34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU` on Solana devnet — mock USDC SPL mint, 6 decimals |
+| Fact                    | Value                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------ |
+| Cluster                 | devnet, the public cluster — not a local validator                                               |
+| RPC                     | `https://api.devnet.solana.com`                                                                  |
+| Payment-channel program | `2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip` on Solana devnet                                  |
+| Settlement token        | `34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU` on Solana devnet — mock USDC SPL mint, 6 decimals |
 
 A claim on this chain is an Ed25519 signature over a 96-byte message that binds the program id
 above, so a claim cannot be replayed against another deployment of the same program.
@@ -139,11 +143,11 @@ above, so a claim cannot be replayed against another deployment of the same prog
 
 `https://faucet.devnet.toonprotocol.dev`
 
-| Path | Method | Body | What it drips |
-| --- | --- | --- | --- |
-| `/api/base-sepolia/request` | `POST` | `{ "address": "0x…" }` | Mock USDC on Base Sepolia. **No ETH** — the gas drip is disabled |
-| `/api/solana/usdc-request` | `POST` | `{ "address": "<base58>" }` | Mock USDC on Solana devnet. **No SOL.** |
-| `/api/info` | `GET` | — | What the faucet is configured to drip |
+| Path                        | Method | Body                        | What it drips                                                    |
+| --------------------------- | ------ | --------------------------- | ---------------------------------------------------------------- |
+| `/api/base-sepolia/request` | `POST` | `{ "address": "0x…" }`      | Mock USDC on Base Sepolia. **No ETH** — the gas drip is disabled |
+| `/api/solana/usdc-request`  | `POST` | `{ "address": "<base58>" }` | Mock USDC on Solana devnet. **No SOL.**                          |
+| `/api/info`                 | `GET`  | —                           | What the faucet is configured to drip                            |
 
 **Neither leg funds gas.** Both drip the settlement token and nothing else, so a wallet needs
 Base Sepolia ETH, or devnet SOL, from elsewhere before it can pay for the transactions that open
@@ -168,12 +172,12 @@ await client.wallet.faucet('evm');
 Every amount on the wire is an integer in the settlement asset's base units. The settlement token
 is 6-decimal USDC on both chains, so:
 
-| Base units | USDC |
-| --- | --- |
-| 1 | 0.000001 |
-| 1000 | 0.001 |
-| 100000 | 0.10 |
-| 1000000 | 1.00 |
+| Base units | USDC     |
+| ---------- | -------- |
+| 1          | 0.000001 |
+| 1000       | 0.001    |
+| 100000     | 0.10     |
+| 1000000    | 1.00     |
 
 Native gas is not this scale: ETH is 18 decimals (wei) and SOL is 9 (lamports). A deposit is
 always in the settlement token's base units, never in wei.
