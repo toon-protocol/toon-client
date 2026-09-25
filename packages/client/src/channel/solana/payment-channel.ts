@@ -85,7 +85,7 @@ function writeU64LE(buf: Uint8Array, offset: number, value: bigint): void {
 }
 
 /** Left-pad / trim a byte array to exactly 32 bytes. */
-function padTo32(bytes: Uint8Array): Uint8Array {
+export function padTo32(bytes: Uint8Array): Uint8Array {
   if (bytes.length === 32) return bytes;
   if (bytes.length > 32) return bytes.slice(bytes.length - 32);
   const padded = new Uint8Array(32);
@@ -145,7 +145,7 @@ function isOnCurve(bytes: Uint8Array): boolean {
   return modPow(x2, (P - 1n) / 2n, P) === 1n;
 }
 
-function findProgramAddress(
+export function findProgramAddress(
   seeds: Uint8Array[],
   programId: Uint8Array
 ): { pda: Uint8Array; bump: number } {
@@ -906,28 +906,33 @@ interface AccountEntry {
 }
 
 /**
- * Build, sign, and send a Solana legacy transaction over raw JSON-RPC, then wait
- * for confirmation. Mirrors the SDK reference E2E's `buildAndSendTransaction`.
+ * A compiled legacy message, and the signature slots it requires.
  *
- * Exported (along with {@link getLamports} and {@link getTokenAccountBalance})
- * so `../transfer.js` can build plain System/SPL-Token instructions on the
- * SAME wire-format code this module already gets connector-parity-tested
- * against, rather than re-deriving Solana's compact transaction encoding a
- * second time.
+ * `signers` is in slot order: slot `i` of a transaction over `message` carries
+ * the signature of `signers[i]`, and `signers[0]` is always the fee payer.
  */
-export async function buildAndSendTransaction(
-  rpcUrl: SolanaRpcTarget,
-  feePayer: Signer,
-  instructions: RawInstruction[],
-  additionalSigners: Signer[] = [],
-  confirmation: Omit<ConfirmationOptions, 'lastValidBlockHeight'> = {}
-): Promise<string> {
-  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashWithExpiry(rpcUrl);
-  const feePayerPubkey = base58Encode(feePayer.publicKey);
+export interface CompiledLegacyMessage {
+  message: Uint8Array;
+  signers: string[];
+}
 
+/**
+ * Compile a Solana legacy message: the fee payer first, then accounts ordered by
+ * role (writable signers, read-only signers, writable, read-only), each account
+ * once with the union of the privileges its instructions ask of it.
+ *
+ * Exported so a transaction whose fee payer is someone else — a sponsor who
+ * co-signs later — is compiled by the same code {@link buildAndSendTransaction}
+ * is connector-parity-tested on, rather than by a second copy of it.
+ */
+export function compileLegacyMessage(
+  feePayer: string,
+  instructions: RawInstruction[],
+  recentBlockhash: string
+): CompiledLegacyMessage {
   const accountMap = new Map<string, AccountEntry>();
-  accountMap.set(feePayerPubkey, {
-    pubkey: feePayerPubkey,
+  accountMap.set(feePayer, {
+    pubkey: feePayer,
     isSigner: true,
     isWritable: true,
   });
@@ -951,8 +956,8 @@ export async function buildAndSendTransaction(
   }
 
   const accounts = [...accountMap.values()].sort((a, b) => {
-    if (a.pubkey === feePayerPubkey) return -1;
-    if (b.pubkey === feePayerPubkey) return 1;
+    if (a.pubkey === feePayer) return -1;
+    if (b.pubkey === feePayer) return 1;
     const aScore = (a.isSigner ? 2 : 0) + (a.isWritable ? 1 : 0);
     const bScore = (b.isSigner ? 2 : 0) + (b.isWritable ? 1 : 0);
     return bScore - aScore;
@@ -977,7 +982,7 @@ export async function buildAndSendTransaction(
     data: ix.data,
   }));
 
-  const blockhashBytes = base58Decode(blockhash);
+  const blockhashBytes = base58Decode(recentBlockhash);
 
   let instructionSize = compactU16Size(compiled.length);
   for (const ix of compiled) {
@@ -1019,31 +1024,67 @@ export async function buildAndSendTransaction(
     offset += ix.data.length;
   }
 
-  const finalMessage = message.slice(0, offset);
+  return {
+    message: message.slice(0, offset),
+    signers: accounts.filter((a) => a.isSigner).map((a) => a.pubkey),
+  };
+}
+
+/**
+ * A wire transaction: the signature slots, then the message. A slot with no
+ * signature yet is 64 zero bytes — how "not signed" is spelled on the wire.
+ */
+export function serializeLegacyTransaction(
+  compiled: CompiledLegacyMessage,
+  signatures: (Uint8Array | undefined)[]
+): Uint8Array {
+  const { message, signers } = compiled;
+  const txSize =
+    compactU16Size(signers.length) + signers.length * 64 + message.length;
+  const tx = new Uint8Array(txSize);
+  let txOffset = writeCompactU16(tx, 0, signers.length);
+  for (let i = 0; i < signers.length; i++) {
+    const sig = signatures[i];
+    if (sig) tx.set(sig, txOffset);
+    txOffset += 64;
+  }
+  tx.set(message, txOffset);
+  return tx;
+}
+
+/**
+ * Build, sign, and send a Solana legacy transaction over raw JSON-RPC, then wait
+ * for confirmation. Mirrors the SDK reference E2E's `buildAndSendTransaction`.
+ *
+ * Exported (along with {@link getLamports} and {@link getTokenAccountBalance})
+ * so `../transfer.js` can build plain System/SPL-Token instructions on the
+ * SAME wire-format code this module already gets connector-parity-tested
+ * against, rather than re-deriving Solana's compact transaction encoding a
+ * second time.
+ */
+export async function buildAndSendTransaction(
+  rpcUrl: SolanaRpcTarget,
+  feePayer: Signer,
+  instructions: RawInstruction[],
+  additionalSigners: Signer[] = [],
+  confirmation: Omit<ConfirmationOptions, 'lastValidBlockHeight'> = {}
+): Promise<string> {
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashWithExpiry(rpcUrl);
+  const compiled = compileLegacyMessage(
+    base58Encode(feePayer.publicKey),
+    instructions,
+    blockhash
+  );
 
   const allSigners = [feePayer, ...additionalSigners];
-  const signerPubkeys = accounts.filter((a) => a.isSigner).map((a) => a.pubkey);
-  const signatures: Uint8Array[] = [];
-  for (const signerPubkey of signerPubkeys) {
+  const signatures = compiled.signers.map((signerPubkey) => {
     const signer = allSigners.find(
       (s) => base58Encode(s.publicKey) === signerPubkey
     );
     if (!signer) throw new Error(`Missing signer for ${signerPubkey}`);
-    signatures.push(ed25519.sign(finalMessage, signer.privateKey));
-  }
-
-  const txSize =
-    compactU16Size(signatures.length) +
-    signatures.length * 64 +
-    finalMessage.length;
-  const tx = new Uint8Array(txSize);
-  let txOffset = 0;
-  txOffset = writeCompactU16(tx, txOffset, signatures.length);
-  for (const sig of signatures) {
-    tx.set(sig, txOffset);
-    txOffset += 64;
-  }
-  tx.set(finalMessage, txOffset);
+    return ed25519.sign(compiled.message, signer.privateKey);
+  });
+  const tx = serializeLegacyTransaction(compiled, signatures);
 
   const txBase64 = Buffer.from(tx).toString('base64');
   let txSig: string;

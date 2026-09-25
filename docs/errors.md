@@ -98,6 +98,7 @@ on `code`, never on the message.
 | `SealedResponseError` | — | A FULFILL came back that is not a readable sealed response. `kind` is `'not-sealed'`, `'unopenable'` or `'malformed-envelope'`. Value moved, so this is a broken counterparty, not an outcome. |
 | `PaymentRequiredError` | `PAYMENT_REQUIRED` | Raised by the low-level HTTP transport on a `402`. `send()` catches it and returns a refusal instead; you see it only when driving the transport directly. |
 | `TransportRequiredError` | `TRANSPORT_REQUIRED` | You asked for a carriage the node does not expose, or the route requires the other one. `send()` returns a refusal for the route case. |
+| `FacilitatorError` | `FACILITATOR` | An x402 facilitator answered and did not settle an x402 `batch-settlement` deposit. `reason` is its own `errorReason` (`invalid_batch_settlement_evm_…`), or `unreadable_response` when its answer was not a settle result. No channel was funded. |
 
 ## Reading a fulfilled answer that is not a success
 

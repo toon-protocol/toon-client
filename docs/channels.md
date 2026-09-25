@@ -262,3 +262,23 @@ It is retryable once the wallet is funded.
 
 The devnet faucet's EVM leg best-effort tops up ETH; its Solana leg drips USDC and no SOL, so a
 Solana wallet needs `solana airdrop` first. See [devnet.md](devnet.md#faucet).
+
+### Onboarding without gas: x402 `batch-settlement` (not wired yet)
+
+Connector ADR 0074 lets a client pay from an x402 `batch-settlement` channel instead. That channel
+is payer-only, sits on x402's own contract (Base) or solana-foundation's payment-channels program
+(Solana), and is opened with no native gas:
+
+- On Base, a stock x402 facilitator submits the deposit.
+- On Solana, the receiving connector sponsors the `open`.
+
+The chain half of this is exported now:
+
+- the channel config and its id;
+- voucher signing on both chains;
+- the ERC-3009 and Permit2 deposits, and `settleDeposit` to a facilitator's `/settle`;
+- `buildSponsoredOpen`, the sponsored `open`, which refuses any sponsor other than the receiving
+  connector's.
+
+`ToonClient` does not use any of it yet. How a voucher rides the wire is fixed by the connector's
+vectors at `schema_version` 6, which have not landed (toon-client#679).

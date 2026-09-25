@@ -70,3 +70,7 @@ export type { Signer as SolanaKeypair } from './solana/payment-channel.js';
 // chain write that did not end confirmed is `TransactionOutcomeError`, exported
 // with the other client errors.
 export { SolanaRpcTransportError } from './solana/payment-channel.js';
+
+// x402 batch-settlement (connector ADR 0074): a payer-only channel on x402's own
+// contract and program, opened with no native gas.
+export * from './batch-settlement/index.js';

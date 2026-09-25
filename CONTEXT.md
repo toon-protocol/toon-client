@@ -38,8 +38,15 @@ insist on one.
 _Avoid_: Transport, protocol, channel
 
 **Claim**:
-A signed balance proof on a payment channel, attached to a packet as its payment.
-_Avoid_: Payment, receipt, voucher, proof
+A signed balance proof on a payment channel, attached to a packet as its payment. A claim has a
+**scheme**: `toon-channel`, or — at the client edge only — x402's `batch-settlement`, whose claims
+are **vouchers** (connector ADR 0074).
+_Avoid_: Payment, receipt, proof; "voucher" for a `toon-channel` claim
+
+**Voucher**:
+A claim under x402's `batch-settlement` scheme: cumulative, with no nonce, so a connector orders
+vouchers by amount alone.
+_Avoid_: Balance proof, claim (when the scheme matters)
 
 **Refusal**:
 A connector's rejection of a packet. It is *returned*, never thrown — anything this client throws

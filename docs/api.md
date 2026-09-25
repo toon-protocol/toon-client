@@ -462,6 +462,7 @@ connector's own wire vectors — see
 | `signSolanaWireTransaction` | Fills the signature slots that are yours, in place, without recompiling the message |
 | `patchSolanaRecentBlockhash` | Moves the 32 blockhash bytes to the one a fee payer chose, clearing the signatures made over the old message |
 | `generateSolanaKeypair`, `solanaKeypair` | A fresh single-use keypair, or one read back from a 32-byte seed or 64-byte secret |
+| `buildBatchChannelConfig`, `signBatchVoucher`, `buildEip3009Deposit`, `settleDeposit`, `buildSponsoredOpen`, `signSvmVoucher`, … | x402 `batch-settlement` on Base and Solana (connector ADR 0074): channel config and id, vouchers, the gasless deposit or sponsored open. Not used by `ToonClient` yet — see [channels.md](channels.md#onboarding-without-gas-x402-batch-settlement-not-wired-yet) |
 | `DEVNET`, `defaultRpcUrl` | Well-known devnet values. Defaults and examples only — settlement facts always come from `GET /ilp` |
 | `isRoutableHsHostname`, `isHiddenServiceUrl`, `assertRoutableHsHostname` | Hidden-service address validation. Pure and browser-safe — the `.anyone` pattern and the `.anon`/`.onion` refusals, in one place |
 | `validateSocks5hUrl` | Parses and enforces a `socks5h://` proxy URL, returning its host and port |

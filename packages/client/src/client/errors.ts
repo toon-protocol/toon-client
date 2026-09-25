@@ -374,6 +374,26 @@ export class TransferUnsupportedError extends ToonClientError {
   }
 }
 
+/**
+ * An x402 facilitator answered, and refused to settle an x402 `batch-settlement`
+ * deposit (connector ADR 0074). {@link reason} is its own `errorReason` verbatim
+ * — `invalid_batch_settlement_evm_…` — because each one names a different remedy:
+ * a zero voucher on a fresh channel, a missing Permit2 approval, an expired
+ * authorization. Nothing reached a connector, and no channel was funded.
+ *
+ * A facilitator that did not answer is a {@link NetworkError}, not this.
+ */
+export class FacilitatorError extends ToonClientError {
+  constructor(
+    message: string,
+    public readonly reason: string,
+    cause?: Error
+  ) {
+    super(message, 'FACILITATOR', cause);
+    this.name = 'FacilitatorError';
+  }
+}
+
 // ─── Error classification helpers ───────────────────────────────────────────
 
 /**
