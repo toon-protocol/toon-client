@@ -498,14 +498,31 @@ describe('ToonClient — an endpoint the node advertises and this client cannot 
       { prefix: 'g.fake', price: '1000', requiredTransport: 'btp' },
       { prefix: 'g.fake.free', price: '0' },
     ];
-    const client = await create(fake, {
-      fetch: publishing(fake, { btpEndpoint: `ws://${HS_HOST}/ilp/btp` }),
-    });
+    // `routes` only shapes the SELF-DESCRIPTION this fake publishes (what
+    // `requiredTransportFor` reads); the fake's own request handling — the
+    // `GET /ilp/routes/price` answer and the claim gate on `POST /ilp` — is
+    // keyed on the flat `routePrice` scalar instead (it has no per-prefix
+    // pricing of its own). Leaving it at the default 1000n would make
+    // "g.fake.free" priced in fact, so `send` would open a real channel to
+    // pay for it — reaching out to a live chain RPC that a unit test must
+    // never touch. Zeroing it here is what actually makes the route free.
+    fake.routePrice = 0n;
+    const seen: string[] = [];
+    const spy: typeof fetch = (input, init) => {
+      seen.push(String(input));
+      return publishing(fake, { btpEndpoint: `ws://${HS_HOST}/ilp/btp` })(input, init);
+    };
+    const client = await create(fake, { fetch: spy });
 
     // The BTP endpoint is unreachable for want of a proxy, so reaching it at
     // all would refuse. This route is answered over HTTP instead.
     const result = await client.send('g.fake.free');
     expect(result.fulfilled).toBe(true);
+    // Hermetic: every request this test made landed on the fake connector's
+    // own origin. In particular, no chain RPC (e.g. a live testnet endpoint)
+    // and no dial of the unreachable `.anyone` BTP host ever happened.
+    expect(seen.every((url) => url.startsWith(fake.endpoint))).toBe(true);
+    expect(seen.some((url) => url.includes('.anyone'))).toBe(false);
   });
 
   it("checks the selected carriage's own URL, not only the HTTP endpoint", async () => {
