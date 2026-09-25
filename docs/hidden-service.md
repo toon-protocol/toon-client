@@ -107,6 +107,41 @@ An explicitly injected `fetch` or `createWebSocket` still wins over the proxy's.
 supplied their own has said something specific about how bytes leave their process, and that is
 never silently overridden.
 
+### Hiding the payer, not the connector
+
+The other way round: the connector is an ordinary public host, and what must not show is where
+**you** are. A Hidden Provider's directory publisher is this case. It pays the public devnet relay,
+and every byte it sends has to leave through `anon`.
+
+`socksProxy:` refuses a clearnet connector (see below), so wire the transport by hand, and hand
+over **both** halves:
+
+```ts
+import { ToonClient } from '@toon-protocol/client';
+import { createHiddenServiceTransport } from '@toon-protocol/client/hidden-service';
+
+const hs = createHiddenServiceTransport('socks5h://127.0.0.1:9050');
+const client = await ToonClient.create({
+  connector: 'https://proxy.relay.devnet.toonprotocol.dev',
+  mnemonic: process.env.TOON_MNEMONIC,
+  rpcUrl: 'http://10.0.0.5:8899', // your own node, on a private address: see below
+  fetch: hs.fetch, // the client edge
+  createWebSocket: hs.createWebSocket, // the BTP socket
+});
+// …and hs.close() after client.close().
+```
+
+`fetch` alone is not enough. The BTP carriage opens its own websocket, and without
+`createWebSocket` it opens it with the platform's `WebSocket`, which resolves the name and dials
+from your real address. A node that pins a route to BTP, as the devnet relay does for
+`g.toon.relay`, would then get your packets from your own IP.
+`hidden-payer-btp.integration.test.ts` pins both sides of that against a local SOCKS5 server.
+
+**This wiring does not carry chain RPC.** With no `socksProxy`, the channel's chain calls (open,
+deposit, the reads behind them) dial `rpcUrl` directly. Use it with an RPC on loopback or a private
+address, where nothing crosses a network anyone outside can watch, and where `anon` could build no
+circuit anyway. A public RPC would see your address.
+
 ## What else changes
 
 **Your chain RPC moves too.** By default, `socksProxy` carries the EVM and Solana JSON-RPC as well

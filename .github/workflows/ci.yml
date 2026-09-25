@@ -550,6 +550,7 @@ jobs:
           pnpm --filter @toon-protocol/client test:integration \
             src/__integration__/btp-transport.integration.test.ts \
             src/__integration__/cli-entry-point.integration.test.ts \
+            src/__integration__/hidden-payer-btp.integration.test.ts \
             src/__integration__/hidden-service.integration.test.ts \
             src/__integration__/http-ilp-transport.integration.test.ts 2>&1 \
             | tee /tmp/integration.log
@@ -566,6 +567,7 @@ jobs:
           BTP_TESTS: '6'
           CLI_ENTRY_TESTS: '3'
           HTTP_TESTS: '6'
+          HIDDEN_PAYER_TESTS: '2'
           # The hidden-service suite carries one block that is skipped on
           # purpose: it targets a real deployed `.anyone` connector and no such
           # node exists yet, so it is gated on TOON_HS_CONNECTOR. Pinning the
@@ -573,7 +575,7 @@ jobs:
           # deliberate omission from becoming cover for an accidental one.
           HS_TESTS: '5'
           HS_SKIPPED: '1'
-          EXPECTED_TOTAL: '19'
+          EXPECTED_TOTAL: '21'
           EXPECTED_SKIPPED: '1'
         run: |
           set -euo pipefail
@@ -605,6 +607,7 @@ jobs:
 
           assert_suite src/__integration__/btp-transport.integration.test.ts "$BTP_TESTS"
           assert_suite src/__integration__/cli-entry-point.integration.test.ts "$CLI_ENTRY_TESTS"
+          assert_suite src/__integration__/hidden-payer-btp.integration.test.ts "$HIDDEN_PAYER_TESTS"
           assert_suite src/__integration__/hidden-service.integration.test.ts "$HS_TESTS" "$HS_SKIPPED"
           assert_suite src/__integration__/http-ilp-transport.integration.test.ts "$HTTP_TESTS"
 
