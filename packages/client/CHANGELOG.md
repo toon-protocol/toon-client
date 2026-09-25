@@ -1,5 +1,23 @@
 # @toon-protocol/client
 
+## 3.2.0
+
+### Minor Changes
+
+- e6b6fba: `SendOptions` gains `beforePay`, a synchronous last look that runs **after the route's price is resolved and before anything is signed**: returning a string refuses the send with a new `BeforePayRefusedError` carrying that reason, returning nothing lets it proceed, and a throw from the callback propagates unchanged.
+
+  A paid route bills for an _answer_, and a refusal is an answer. The connector collects the route's price before the app behind it has seen the request at all, so a body the app was always going to reject is still charged in full and nothing is refunded — on 2026-09-23 a tenant sent one wrongly-enveloped request to a paid route and paid a whole lease interval to be told it was malformed (TOON_Network#115). This client stays the payer and only the payer: it learns nothing about any app's body shapes, and gains instead the one check a caller cannot write for itself.
+
+  Checking before calling `send()` is not the same check. The price is resolved inside `send()` — a metered route charges by the size of the _sealed_ payload, which does not exist until the request has been sealed — and only there is the refusal guaranteed to precede `signBalanceProof`, which advances and persists the channel's watermark before the packet leaves and whose rollback deliberately does not restore the nonce. A signed claim is a bearer instrument; there is no unsigning one.
+
+  The hook is called exactly once per `send()`, including on the bounded stale-channel retry, because it is a decision about the request rather than about an attempt at it. It runs on a free (zero-priced) route too: money is not the only thing a wrong request spends. Nothing changes for a caller that does not pass it.
+
+- 4f948d0: `transport: 'auto'` now reads a route's carriage pin off **that route's own entry** in `GET /ilp`, and dials it on the first attempt. A connector pins a carriage per route and enforces it by a longest-prefix route lookup, once per packet — but until connector ADR 0072 it published only a node-wide `requiredTransport`, derived from the routes covering its own addresses and stated only where they agree. They disagree whenever a node pins one of its own addresses and not another, which is the devnet relay: `g.toon.relay` is pinned to BTP and `g.toon.relay.ephemeral` is not, so the document named no carriage while every HTTP-carried write to the first prefix was refused before payment was even considered. On 2026-09-22 that left a provider's directory writes failing with `TRANSPORT_REQUIRED` and a healthy provider invisible for hours.
+
+  `RoutePrice` gains an optional `requiredTransport`, parsed from each route entry. The new `requiredTransportFor(description, destination?)` resolves it the way the connector decides it — the longest route entry whose prefix covers the destination, then the node-wide field where that route names none — and `selectTransport` takes a fourth argument, the destination, so the answer is about the packet rather than about the node. `ToonClient` threads the destination through `send`, caches one carriage per kind rather than one per client (a node can legitimately owe one destination BTP and another HTTP), and decides the BTP transport's HTTP fallback from the same per-route resolution.
+
+  Nothing changes for a node that pins nothing, or for one that predates the per-route field: its route entries name no carriage, so the node-wide field is read exactly as before. The `TRANSPORT_REQUIRED` refusal stays as the backstop for a client that ignores the advertisement. `toon describe` prints a route's carriage beside its price.
+
 ## 3.1.1
 
 ### Patch Changes
