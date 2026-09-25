@@ -35,7 +35,7 @@ function termsFor(settlementAddress: string) {
     chain: 'evm:84532',
     chainId: 84532,
     counterparty: settlementAddress,
-    token: '0x0C996d7c934c79a6255254875607Fe69df25C0E1',
+    token: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
     decimals: 6,
     tokenNetwork: TOKEN_NETWORK,
   };

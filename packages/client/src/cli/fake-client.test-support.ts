@@ -38,7 +38,7 @@ export const FAKE_SETTLEMENT: ConnectorChainSettlementTerms = {
   settlementAddress: '0x1111111111111111111111111111111111111111',
   tokenNetworkRegistry: '0x8263BdD4eB4862395Cb4ef5dA5d637F4b047Eea1',
   tokenNetwork: '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478',
-  tokenAddress: '0x0C996d7c934c79a6255254875607Fe69df25C0E1',
+  tokenAddress: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
   decimals: 6,
 };
 
