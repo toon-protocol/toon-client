@@ -32,17 +32,21 @@ export interface WalletFacadeDeps {
 /**
  * The `fetch` this client's SOLANA JSON-RPC should dial through.
  *
- * On a clearnet client that is `config.fetch` — the caller's own if they
- * injected one, and otherwise the global. On a hidden-service client
- * `config.fetch` is the proxy-bound one, and `rpcDispatcher` is the single
- * signal for "chain RPC rides the proxy" (ADR 0002): `proxyRpc: false` clears
- * it, and the Solana reads have to leave the proxy with the EVM ones. A payer
- * who opted out because their node is on loopback would otherwise still be
- * dialling it through a circuit that cannot reach loopback at all.
+ * With no proxy that is `config.fetch`: the caller's own if they injected one,
+ * and otherwise the global. With one, `chainRpc` is the single signal for "chain
+ * RPC rides the proxy" (ADR 0002), on Solana's own circuit. `proxyRpc: false`
+ * clears it, and the Solana reads then leave the proxy with the EVM ones. A
+ * payer who opted out because their node is on loopback would otherwise still
+ * be dialling it through a circuit that cannot reach loopback at all.
  */
 function solanaRpcFetch(config: ResolvedConfig): typeof fetch {
   if (config.socksProxy === undefined) return config.fetch;
-  return config.rpcDispatcher !== undefined ? config.fetch : globalThis.fetch;
+  return config.chainRpc?.solana.fetch ?? globalThis.fetch;
+}
+
+/** The EVM dispatcher chain RPC rides, when it rides the proxy at all. */
+function evmRpcDispatcher(config: ResolvedConfig): { rpcDispatcher: unknown } | Record<string, never> {
+  return config.chainRpc !== undefined ? { rpcDispatcher: config.chainRpc.evm.dispatcher } : {};
 }
 
 export class ClientWalletFacade implements WalletFacade {
@@ -68,6 +72,7 @@ export class ClientWalletFacade implements WalletFacade {
     const wanted: ChainKind[] = chain !== undefined ? [chain] : ['evm', 'solana'];
     const sources: Parameters<typeof readWalletBalances>[0] = {
       fetchImpl: solanaRpcFetch(config),
+      ...(config.chainRpc !== undefined ? { solanaProxied: true } : {}),
     };
 
     for (const kind of wanted) {
@@ -77,7 +82,7 @@ export class ClientWalletFacade implements WalletFacade {
           chainKey: entry?.chain ?? 'evm',
           rpcUrl: config.rpcUrls.evm,
           owner: config.identity.evm.address,
-          ...(config.rpcDispatcher !== undefined ? { rpcDispatcher: config.rpcDispatcher } : {}),
+          ...evmRpcDispatcher(config),
           ...(entry?.tokenAddress ? { tokenAddress: entry.tokenAddress } : {}),
         };
       }
@@ -122,9 +127,7 @@ export class ClientWalletFacade implements WalletFacade {
                 chainKey: entry?.kind === 'evm' ? entry.chain : 'evm',
                 rpcUrl: config.rpcUrls.evm,
                 signer: this.signer(),
-                ...(config.rpcDispatcher !== undefined
-                  ? { rpcDispatcher: config.rpcDispatcher }
-                  : {}),
+                ...evmRpcDispatcher(config),
                 ...(entry?.tokenAddress ? { tokenAddress: entry.tokenAddress } : {}),
               },
             }
@@ -133,9 +136,7 @@ export class ClientWalletFacade implements WalletFacade {
           ? {
               solana: {
                 rpcUrl: config.rpcUrls.solana,
-                ...(config.rpcDispatcher !== undefined
-                  ? { rpcFetch: solanaRpcFetch(config) }
-                  : {}),
+                ...(config.chainRpc !== undefined ? { rpcFetch: config.chainRpc.solana.fetch } : {}),
                 keypair: config.identity.solana.secretKey,
                 ...(entry?.tokenAddress ? { tokenMint: entry.tokenAddress } : {}),
               },

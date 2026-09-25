@@ -65,3 +65,8 @@ export {
   type SolanaWireTransaction,
 } from './solana/wire-transaction.js';
 export type { Signer as SolanaKeypair } from './solana/payment-channel.js';
+
+// A Solana JSON-RPC call that got no answer after its retries. The outcome of a
+// chain write that did not end confirmed is `TransactionOutcomeError`, exported
+// with the other client errors.
+export { SolanaRpcTransportError } from './solana/payment-channel.js';

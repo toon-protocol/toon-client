@@ -29,7 +29,12 @@
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { base58Encode, base58Decode } from '../../utils/base58.js';
-import { ChannelFundingError } from '../../client/errors.js';
+import {
+  ChannelFundingError,
+  NetworkError,
+  TransactionOutcomeError,
+} from '../../client/errors.js';
+import { RECEIPT_TIMEOUT_MS } from '../evm/receipt.js';
 
 // ---------------------------------------------------------------------------
 // Constants (must match the Rust program + connector SDK exactly)
@@ -428,12 +433,105 @@ function resolveRpcTarget(target: SolanaRpcTarget): { url: string; fetchImpl: ty
   return { url: target.url, fetchImpl: target.fetchImpl ?? globalThis.fetch };
 }
 
+/**
+ * Delays before each retry of a Solana JSON-RPC call that failed in transit.
+ *
+ * Three retries, as viem does for EVM. The ADR 0073 hardening asks for this on
+ * both chains: exit IPs are shared, so a public RPC reached through `anon` will
+ * eventually answer 429 or 403, and a circuit can drop a request. Resending is
+ * safe for every call this module makes. Reads are reads, and a resent
+ * `sendTransaction` carries the same signed bytes, which the cluster
+ * deduplicates by signature.
+ */
+const SOLANA_RPC_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
+/** HTTP statuses worth another try: viem's list, the same on both chains. */
+const RETRYABLE_HTTP_STATUS = new Set([403, 408, 413, 429, 500, 502, 503, 504]);
+/** A `Retry-After` longer than this is not waited on; the call fails instead. */
+const MAX_RETRY_AFTER_MS = 10_000;
+/** Per-request timeout, as the connector's Solana client has it (ADR 0073, decision 4). */
+const SOLANA_RPC_TIMEOUT_MS = 30_000;
+
+/**
+ * A Solana JSON-RPC call that got no answer from the node: every try was lost in
+ * transit, timed out, or was turned away at the HTTP layer.
+ *
+ * `mayHaveArrived` is `false` only when every try failed before a byte of the
+ * request could have been written, because the connection or the proxy refused
+ * it. That is the one case in which a failed `sendTransaction` is known not to
+ * have been sent.
+ */
+export class SolanaRpcTransportError extends NetworkError {
+  constructor(
+    readonly method: string,
+    readonly attempts: number,
+    readonly mayHaveArrived: boolean,
+    cause: unknown
+  ) {
+    super(
+      `Solana RPC [${method}] got no answer after ${attempts} tries: ` +
+        (cause instanceof Error ? cause.message : String(cause)),
+      cause instanceof Error ? cause : undefined
+    );
+    this.name = 'SolanaRpcTransportError';
+  }
+}
+
+/** An HTTP answer that is not a JSON-RPC one: a 429 page, a 5xx, a gateway's 403. */
+class SolanaRpcHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly retryAfterMs: number | undefined
+  ) {
+    super(`HTTP ${status}`);
+    this.name = 'SolanaRpcHttpError';
+  }
+}
+
+/**
+ * One JSON-RPC call, retried when it fails in transit.
+ *
+ * @throws {SolanaRpcError} the node answered and said no. Never retried.
+ * @throws {SolanaRpcTransportError} no answer came back, after every retry.
+ */
 export async function solanaRpc(
   rpcUrl: SolanaRpcTarget,
   method: string,
   params: unknown[] = []
 ): Promise<unknown> {
   const { url, fetchImpl } = resolveRpcTarget(rpcUrl);
+  let mayHaveArrived = false;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await solanaRpcOnce(url, fetchImpl, method, params);
+    } catch (err) {
+      if (err instanceof SolanaRpcError) throw err;
+      mayHaveArrived ||= !failedBeforeSending(err);
+      const retryable =
+        !(err instanceof SolanaRpcHttpError) || RETRYABLE_HTTP_STATUS.has(err.status);
+      const delay =
+        err instanceof SolanaRpcHttpError && err.retryAfterMs !== undefined
+          ? err.retryAfterMs
+          : SOLANA_RPC_RETRY_DELAYS_MS[attempt];
+      if (
+        !retryable ||
+        attempt >= SOLANA_RPC_RETRY_DELAYS_MS.length ||
+        delay === undefined ||
+        delay > MAX_RETRY_AFTER_MS
+      ) {
+        throw new SolanaRpcTransportError(method, attempt + 1, mayHaveArrived, err);
+      }
+      await sleep(delay);
+    }
+  }
+}
+
+/** One try: the node's answer, a {@link SolanaRpcError}, or whatever the transport threw. */
+async function solanaRpcOnce(
+  url: string,
+  fetchImpl: typeof fetch,
+  method: string,
+  params: unknown[]
+): Promise<unknown> {
   const res = await fetchImpl(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -443,8 +541,11 @@ export async function solanaRpc(
       params,
       id: rpcIdCounter++,
     }),
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(SOLANA_RPC_TIMEOUT_MS),
   });
+  if (res.ok === false) {
+    throw new SolanaRpcHttpError(res.status, retryAfterMs(res.headers?.get('retry-after')));
+  }
   const json = (await res.json()) as {
     result?: unknown;
     error?: { message: string; code: number };
@@ -455,12 +556,53 @@ export async function solanaRpc(
   return json.result;
 }
 
+/** `Retry-After` in whole seconds, as ms. The date form is not worth parsing here. */
+function retryAfterMs(header: string | null | undefined): number | undefined {
+  if (header === null || header === undefined || !/^\d+$/.test(header.trim())) return undefined;
+  return Number.parseInt(header.trim(), 10) * 1000;
+}
+
+/**
+ * Connection-phase failures: nothing was written, so nothing can have arrived.
+ * A SOCKS error always is one, because the proxy answers before any request
+ * byte is sent. Anything else (a timeout, a reset, a lost answer) may have come
+ * after the request went out.
+ */
+function failedBeforeSending(err: unknown): boolean {
+  let e: unknown = err;
+  for (let depth = 0; e instanceof Error && depth < 5; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (e.name === 'SocksClientError') return true;
+    if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') return true;
+    if (code === 'UND_ERR_CONNECT_TIMEOUT') return true;
+    e = e.cause;
+  }
+  return false;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Latest blockhash, base58 — what `patchSolanaRecentBlockhash` accepts as-is. */
 export async function getLatestBlockhash(rpcUrl: SolanaRpcTarget): Promise<string> {
+  return (await getLatestBlockhashWithExpiry(rpcUrl)).blockhash;
+}
+
+/**
+ * The latest blockhash, and the last block height at which a transaction built
+ * on it can still land. After that height, it never will.
+ */
+async function getLatestBlockhashWithExpiry(
+  rpcUrl: SolanaRpcTarget
+): Promise<{ blockhash: string; lastValidBlockHeight: number | undefined }> {
   const result = (await solanaRpc(rpcUrl, 'getLatestBlockhash', [
     { commitment: 'confirmed' },
-  ])) as { value: { blockhash: string } };
-  return result.value.blockhash;
+  ])) as { value: { blockhash: string; lastValidBlockHeight?: number } };
+  return {
+    blockhash: result.value.blockhash,
+    lastValidBlockHeight: result.value.lastValidBlockHeight,
+  };
 }
 
 interface AccountInfo {
@@ -610,39 +752,126 @@ async function assertOpenFunding(opts: {
   }
 }
 
+/** How {@link waitForConfirmation} waits. */
+export interface ConfirmationOptions {
+  /**
+   * The blockhash's `lastValidBlockHeight`. With it, the wait ends when the
+   * chain says the transaction can no longer land. Without it, only the clock
+   * ends the wait.
+   */
+  lastValidBlockHeight?: number;
+  /**
+   * The wall-clock bound, ms, after which the outcome is `unknown`. Default
+   * {@link CONFIRM_TIMEOUT_MS} with a `lastValidBlockHeight`, which the chain
+   * normally ends well before; 30s without one.
+   */
+  timeoutMs?: number;
+  /** Between polls, ms. Default 500. */
+  pollIntervalMs?: number;
+}
+
 /**
- * Poll until the transaction is `confirmed`/`finalized`, THROWING if it landed
- * with an execution error. A settled-but-failed transaction is not a success.
+ * The wall-clock bound on a confirmation that knows its blockhash's expiry.
+ * A blockhash lives ~150 slots (60–90s), so the chain decides first unless the
+ * RPC stops answering. 180s is the deadline ADR 0073 gives EVM confirmation.
+ */
+export const CONFIRM_TIMEOUT_MS = RECEIPT_TIMEOUT_MS;
+
+/**
+ * Poll until the transaction is `confirmed`/`finalized`, and report any other
+ * ending as a {@link TransactionOutcomeError} naming the signature.
+ *
+ * A poll that fails in transit is not an outcome. It says nothing about the
+ * transaction, so the loop keeps polling. Only the chain (confirmed, failed,
+ * or past `lastValidBlockHeight`) or the wall clock ends it.
  */
 export async function waitForConfirmation(
   rpcUrl: SolanaRpcTarget,
   signature: string,
-  timeoutMs = 30000
+  options: ConfirmationOptions = {}
 ): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const result = (await solanaRpc(rpcUrl, 'getSignatureStatuses', [
-      [signature],
-    ])) as {
-      value: ({ confirmationStatus: string; err?: unknown } | null)[];
-    };
-    const status = result.value[0];
-    if (
-      status?.confirmationStatus === 'confirmed' ||
-      status?.confirmationStatus === 'finalized'
-    ) {
-      if (status.err) {
-        throw new Error(
-          `Transaction ${signature} failed: ${JSON.stringify(status.err)}`
+  const { lastValidBlockHeight, pollIntervalMs = 500 } = options;
+  const timeoutMs =
+    options.timeoutMs ?? (lastValidBlockHeight !== undefined ? CONFIRM_TIMEOUT_MS : 30_000);
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  let failedPolls = 0;
+
+  for (;;) {
+    try {
+      if (await isConfirmed(rpcUrl, signature)) return;
+      if (lastValidBlockHeight !== undefined) {
+        const height = Number(
+          await solanaRpc(rpcUrl, 'getBlockHeight', [{ commitment: 'confirmed' }])
         );
+        // One last look once expiry is seen: it may have landed in the very
+        // block that ended its blockhash's life.
+        if (height > lastValidBlockHeight && !(await isConfirmed(rpcUrl, signature))) {
+          throw new TransactionOutcomeError(
+            `Transaction ${signature} expired: block height ${height} is past its ` +
+              `blockhash's last valid height ${lastValidBlockHeight}, and it never ` +
+              'appeared, so it cannot land. It is safe to build and send it again.',
+            'solana',
+            signature,
+            'expired'
+          );
+        }
       }
-      return;
+    } catch (err) {
+      if (err instanceof TransactionOutcomeError) throw err;
+      lastError = err;
+      failedPolls += 1;
     }
-    await new Promise((r) => setTimeout(r, 500));
+    if (Date.now() >= deadline) {
+      throw new TransactionOutcomeError(
+        `Transaction ${signature} was not seen confirmed within ${timeoutMs}ms, and ` +
+          'the RPC could not say whether it can still land. Look the signature up ' +
+          'before sending anything that would repeat it.' +
+          (lastError instanceof Error ? ` Last RPC error: ${lastError.message}` : ''),
+        'solana',
+        signature,
+        'unknown',
+        lastError instanceof Error ? lastError : undefined
+      );
+    }
+    // Back off while polls keep failing (to 8x, 4s at the default), so a
+    // rate-limited RPC is not hammered; a poll that answers resets nothing
+    // because the loop only continues while the answer is "not yet".
+    await sleep(pollIntervalMs * 2 ** Math.min(failedPolls, 3));
   }
-  throw new Error(
-    `Transaction ${signature} not confirmed within ${timeoutMs}ms`
-  );
+}
+
+/**
+ * Whether `signature` is `confirmed`/`finalized`. Throws a `failed`
+ * {@link TransactionOutcomeError} when it landed with an execution error: a
+ * settled-but-failed transaction is not a success.
+ */
+async function isConfirmed(rpcUrl: SolanaRpcTarget, signature: string): Promise<boolean> {
+  const result = (await solanaRpc(rpcUrl, 'getSignatureStatuses', [[signature]])) as {
+    value: ({ confirmationStatus: string; err?: unknown } | null)[];
+  };
+  const status = result.value[0];
+  if (status?.confirmationStatus !== 'confirmed' && status?.confirmationStatus !== 'finalized') {
+    return false;
+  }
+  if (status.err) {
+    throw new TransactionOutcomeError(
+      `Transaction ${signature} failed: ${JSON.stringify(status.err)}`,
+      'solana',
+      signature,
+      'failed'
+    );
+  }
+  return true;
+}
+
+/**
+ * Whether a `sendTransaction` RPC error means the transaction is already on
+ * chain: a resend of bytes the node took the first time. That happens exactly
+ * when a first send's answer was lost and {@link solanaRpc} sent it again.
+ */
+function isAlreadyProcessed(err: SolanaRpcError): boolean {
+  return /already been processed|AlreadyProcessed/i.test(err.rpcMessage);
 }
 
 function compactU16Size(value: number): number {
@@ -690,9 +919,10 @@ export async function buildAndSendTransaction(
   rpcUrl: SolanaRpcTarget,
   feePayer: Signer,
   instructions: RawInstruction[],
-  additionalSigners: Signer[] = []
+  additionalSigners: Signer[] = [],
+  confirmation: Omit<ConfirmationOptions, 'lastValidBlockHeight'> = {}
 ): Promise<string> {
-  const blockhash = await getLatestBlockhash(rpcUrl);
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashWithExpiry(rpcUrl);
   const feePayerPubkey = base58Encode(feePayer.publicKey);
 
   const accountMap = new Map<string, AccountEntry>();
@@ -816,15 +1046,32 @@ export async function buildAndSendTransaction(
   tx.set(finalMessage, txOffset);
 
   const txBase64 = Buffer.from(tx).toString('base64');
-  const txSig = (await solanaRpc(rpcUrl, 'sendTransaction', [
-    txBase64,
-    {
-      encoding: 'base64',
-      skipPreflight: false,
-      preflightCommitment: 'confirmed',
-    },
-  ])) as string;
-  await waitForConfirmation(rpcUrl, txSig);
+  let txSig: string;
+  try {
+    txSig = (await solanaRpc(rpcUrl, 'sendTransaction', [
+      txBase64,
+      {
+        encoding: 'base64',
+        skipPreflight: false,
+        preflightCommitment: 'confirmed',
+      },
+    ])) as string;
+  } catch (err) {
+    // An RPC error is the node's answer, and a send that never left was never sent. But a
+    // send whose answer was lost, or a resend the node says it already has, may
+    // be on chain: it is looked up by the signature it carries rather than
+    // reported as a failure (ADR 0073, decision 5). The first signature on the
+    // wire, the fee payer's, IS the transaction id.
+    const alreadyOnChain = err instanceof SolanaRpcError && isAlreadyProcessed(err);
+    const answerLost = err instanceof SolanaRpcTransportError && err.mayHaveArrived;
+    if (!alreadyOnChain && !answerLost) throw err;
+    const firstSignature = compactU16Size(signatures.length);
+    txSig = base58Encode(tx.subarray(firstSignature, firstSignature + 64));
+  }
+  await waitForConfirmation(rpcUrl, txSig, {
+    ...confirmation,
+    ...(lastValidBlockHeight !== undefined ? { lastValidBlockHeight } : {}),
+  });
   return txSig;
 }
 

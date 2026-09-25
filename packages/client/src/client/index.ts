@@ -7,6 +7,7 @@ export {
   DEFAULT_DEPOSIT,
   DEFAULT_SETTLEMENT_TIMEOUT,
   DEFAULT_TIMEOUT_MS,
+  type ProxiedChainRpc,
   type ResolvedConfig,
   type ResolvedIdentity,
 } from './config.js';

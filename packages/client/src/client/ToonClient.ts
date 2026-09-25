@@ -540,17 +540,18 @@ export class ToonClient implements ToonClientLike {
     const client = new OnChainChannelClient({
       evmSigner: new EvmSigner(this.requireEvmKey()),
       chainRpcUrls,
-      ...(this.config.rpcDispatcher !== undefined
-        ? { rpcDispatcher: this.config.rpcDispatcher }
+      ...(this.config.chainRpc !== undefined
+        ? { rpcDispatcher: this.config.chainRpc.evm.dispatcher }
         : {}),
       ...(this.config.identity.solana
         ? {
             solanaConfig: {
               rpcUrl: this.config.rpcUrls.solana,
-              // Same condition as the EVM dispatcher: proxied only when there is
-              // a proxy and the caller has not opted RPC out of it.
-              ...(this.config.rpcDispatcher !== undefined
-                ? { rpcFetch: this.config.fetch }
+              // Same condition as the EVM dispatcher, and its own circuit:
+              // proxied only when there is a proxy and the caller has not opted
+              // RPC out of it. Never `config.fetch`, which may be the caller's.
+              ...(this.config.chainRpc !== undefined
+                ? { rpcFetch: this.config.chainRpc.solana.fetch }
                 : {}),
               keypair: this.config.identity.solana.secretKey,
               // The DEFAULT only. Each channel opens under the program its own
@@ -787,19 +788,24 @@ function httpEndpointOf(description: NodeSelfDescription, connector: string): st
 }
 
 /**
- * Builds the proxy-bound transport for a hidden-service connector, or returns
- * `undefined` for a clearnet one.
+ * Builds everything that rides the proxy, or returns `undefined` when there is
+ * no proxy.
+ *
+ * That is the client edge (`fetch`), the BTP socket (`createWebSocket`) and,
+ * unless `proxyRpc` is `false`, each chain's RPC on a circuit of its own. It is
+ * the same whether the connector is a `.anyone` hidden service or a clearnet
+ * host. In the second case the payer is the one hiding, and a single byte sent
+ * around the proxy would name it (TOON_Network#167).
  *
  * The import is dynamic on purpose: `../transport/socks.js` reaches for
  * `node:module` on its first line, and this module is bundled for browsers too.
- * A browser that somehow reached here would have failed at `resolveConfig`
- * already — a `.anyone` connector demands a `socksProxy`, and a browser cannot
- * supply a working one.
  *
- * An explicitly injected `fetch` or `createWebSocket` wins over the proxy's. A
- * caller who supplied their own transport has said something specific about how
- * bytes leave this process, and silently replacing it would be a worse surprise
- * than an unproxied request they chose.
+ * An explicitly injected `fetch` or `createWebSocket` wins over the proxy's for
+ * the client edge. A caller who supplied their own transport has said something
+ * specific about how bytes leave this process, and silently replacing it would
+ * be a worse surprise than an unproxied request they chose. Chain RPC never
+ * uses an injected `fetch` under a proxy: it rides its own circuit, or dials
+ * directly only because `proxyRpc: false` said so.
  */
 async function openHiddenService(
   resolved: ResolvedConfig,
@@ -808,19 +814,36 @@ async function openHiddenService(
   const socksProxy = resolved.socksProxy;
   if (socksProxy === undefined) return undefined;
 
-  const { createHiddenServiceTransport, probeSocks5Proxy } = await import('../transport/socks.js');
+  const { createChainRpcTransport, createHiddenServiceTransport, probeSocks5Proxy } =
+    await import('../transport/socks.js');
   // Fail closed, and fail now. A missing daemon discovered at packet time costs
   // a signed claim; discovered here it costs nothing.
   await probeSocks5Proxy(socksProxy);
-  const transport = createHiddenServiceTransport(socksProxy);
+  const edge = createHiddenServiceTransport(socksProxy);
+  const rpc = resolved.proxyRpc
+    ? {
+        evm: createChainRpcTransport(socksProxy, 'evm'),
+        solana: createChainRpcTransport(socksProxy, 'solana'),
+      }
+    : undefined;
 
   return {
-    transport,
+    transport: {
+      async close(): Promise<void> {
+        await Promise.all([edge.close(), rpc?.evm.close(), rpc?.solana.close()]);
+      },
+    },
     config: {
       ...resolved,
-      fetch: config.fetch ?? transport.fetch,
-      createWebSocket: config.createWebSocket ?? transport.createWebSocket,
-      rpcDispatcher: resolved.proxyRpc ? transport.dispatcher : undefined,
+      fetch: config.fetch ?? edge.fetch,
+      createWebSocket: config.createWebSocket ?? edge.createWebSocket,
+      chainRpc:
+        rpc === undefined
+          ? undefined
+          : {
+              evm: { dispatcher: rpc.evm.dispatcher, fetch: rpc.evm.fetch },
+              solana: { dispatcher: rpc.solana.dispatcher, fetch: rpc.solana.fetch },
+            },
     },
   };
 }

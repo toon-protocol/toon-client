@@ -131,7 +131,7 @@ interface ToonClientConfig {
 | `settlementTimeout` | `86400` | Challenge period in seconds. Floored at `3600` on EVM. |
 | `autoOpenChannel` | `true` | Open a channel on the first `send()` when none exists. |
 | `timeoutMs` | `30000`, or `120000` for a hidden service | Per-packet timeout. A packet's on-wire expiry is set 15 s beyond it (`PACKET_EXPIRY_HEADROOM_MS`), so the client always gives up before the packet does. An explicit `expiresAt` is honoured exactly. |
-| `socksProxy` | — | `socks5h://host:port` for a `.anyone` connector. Required for one, refused for a clearnet one. Node only. See [hidden-service.md](hidden-service.md). |
+| `socksProxy` | — | `socks5h://host:port` of an `anon` daemon. Required for a `.anyone` connector. Beside a clearnet one it hides the payer: the client edge, the BTP socket and each chain's RPC (on its own pinned circuit) all ride it, and nothing dials around it. Node only. See [hidden-service.md](hidden-service.md). |
 | `proxyRpc` | `true` | Send chain RPC through `socksProxy` too. Setting it to `false` opts **chain RPC only** out — the client edge and the BTP socket still ride the proxy. Turn it off only for an RPC endpoint that is already private. |
 | `faucetUrl` | the devnet faucet | Devnet only. |
 

@@ -17,7 +17,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { encodeAbiParameters, http as viemHttp, toFunctionSelector } from 'viem';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { rpcFetch, rpcTransport } from './rpc.js';
+import { PROXIED_RPC_DEFAULTS, rpcFetch, rpcTransport } from './rpc.js';
 import { startFakeSocks5, type FakeSocks5Server } from './fake-socks5.js';
 import { createHiddenServiceTransport, type HiddenServiceTransport } from './socks.js';
 import { TokenNetworkClient } from '../channel/evm/TokenNetworkClient.js';
@@ -439,6 +439,18 @@ describe('a clearnet client, unchanged', () => {
     expect(
       (proxied.value?.fetchOptions as { dispatcher?: unknown } | undefined)?.dispatcher
     ).toBe(transport.dispatcher);
+    // The caller's timeout beats the proxied default.
+    expect(proxied.config.timeout).toBe(1_234);
+  });
+
+  it('gives a proxied request the budget a circuit needs (connector ADR 0073)', () => {
+    // viem's 10s would fail the slowest call ADR 0073 measured through a new
+    // circuit (13s), and its 150ms retry delay mostly earns a second 429.
+    const proxied = rpcTransport(RPC_URL, transport.dispatcher)({});
+    expect(proxied.config.timeout).toBe(PROXIED_RPC_DEFAULTS.timeout);
+    expect(proxied.config.retryCount).toBe(PROXIED_RPC_DEFAULTS.retryCount);
+    expect(proxied.config.retryDelay).toBe(PROXIED_RPC_DEFAULTS.retryDelay);
+    expect(PROXIED_RPC_DEFAULTS.timeout).toBeGreaterThanOrEqual(26_000);
   });
 
   it('hands back the very same fetch when there is no dispatcher', () => {

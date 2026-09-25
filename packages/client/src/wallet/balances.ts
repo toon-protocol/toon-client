@@ -12,7 +12,7 @@
  * RPC is unreachable degrades to `unreadable` rather than failing the others.
  */
 import { createPublicClient, defineChain } from 'viem';
-import { rpcTransport } from '../transport/rpc.js';
+import { PROXIED_RPC_DEFAULTS, rpcTransport } from '../transport/rpc.js';
 
 /** One on-chain wallet token balance. `amount` is base-unit integer, decimal. */
 export interface WalletBalance {
@@ -88,17 +88,24 @@ export function parseEvmChainId(chainKey: string): number {
  */
 const RPC_TIMEOUT_ENV = 'TOON_WALLET_RPC_TIMEOUT_MS';
 const DEFAULT_RPC_TIMEOUT_MS = 8_000;
+/**
+ * The default through the SOCKS5h proxy: a read that needs a fresh circuit took
+ * up to 13s in connector ADR 0073's measurements, so 8s would report a healthy
+ * chain `unreadable` on a cold daemon.
+ */
+const DEFAULT_PROXIED_RPC_TIMEOUT_MS = PROXIED_RPC_DEFAULTS.timeout;
 
-function rpcTimeoutMs(): number {
+function rpcTimeoutMs(proxied = false): number {
   const raw =
     typeof process !== 'undefined' ? process.env?.[RPC_TIMEOUT_ENV] : undefined;
   const n = raw === undefined || raw === '' ? NaN : Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RPC_TIMEOUT_MS;
+  if (Number.isFinite(n) && n >= 0) return n;
+  return proxied ? DEFAULT_PROXIED_RPC_TIMEOUT_MS : DEFAULT_RPC_TIMEOUT_MS;
 }
 
 /** AbortSignal firing after {@link rpcTimeoutMs}; undefined when disabled (`0`). */
-function rpcAbortSignal(): AbortSignal | undefined {
-  const ms = rpcTimeoutMs();
+function rpcAbortSignal(proxied = false): AbortSignal | undefined {
+  const ms = rpcTimeoutMs(proxied);
   return ms > 0 ? AbortSignal.timeout(ms) : undefined;
 }
 
@@ -114,7 +121,9 @@ export async function readEvmTokenBalance(opts: {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
     transport: rpcTransport(opts.rpcUrl, opts.rpcDispatcher, {
-      ...(rpcTimeoutMs() ? { timeout: rpcTimeoutMs() } : {}),
+      ...(rpcTimeoutMs(opts.rpcDispatcher !== undefined)
+        ? { timeout: rpcTimeoutMs(opts.rpcDispatcher !== undefined) }
+        : {}),
       retryCount: 1,
     }),
     chain: defineChain({
@@ -148,7 +157,9 @@ export async function readEvmNativeBalance(opts: {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
     transport: rpcTransport(opts.rpcUrl, opts.rpcDispatcher, {
-      ...(rpcTimeoutMs() ? { timeout: rpcTimeoutMs() } : {}),
+      ...(rpcTimeoutMs(opts.rpcDispatcher !== undefined)
+        ? { timeout: rpcTimeoutMs(opts.rpcDispatcher !== undefined) }
+        : {}),
       retryCount: 1,
     }),
     chain: defineChain({
@@ -167,6 +178,8 @@ export async function readSolanaNativeBalance(opts: {
   rpcUrl: string;
   owner: string;
   fetchImpl?: typeof fetch;
+  /** The fetch rides the SOCKS5h proxy: allow a circuit's latency. */
+  proxied?: boolean;
 }): Promise<WalletTokenAmount> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const res = await fetchImpl(opts.rpcUrl, {
@@ -178,7 +191,7 @@ export async function readSolanaNativeBalance(opts: {
       method: 'getBalance',
       params: [opts.owner, { commitment: 'confirmed' }],
     }),
-    signal: rpcAbortSignal(),
+    signal: rpcAbortSignal(opts.proxied),
   });
   if (!res.ok) throw new Error(`Solana RPC request failed: HTTP ${res.status}`);
   const json = (await res.json()) as {
@@ -196,6 +209,8 @@ export async function readSolanaTokenBalance(opts: {
   mint: string;
   owner: string;
   fetchImpl?: typeof fetch;
+  /** The fetch rides the SOCKS5h proxy: allow a circuit's latency. */
+  proxied?: boolean;
 }): Promise<WalletBalance> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const res = await fetchImpl(opts.rpcUrl, {
@@ -207,7 +222,7 @@ export async function readSolanaTokenBalance(opts: {
       method: 'getTokenAccountsByOwner',
       params: [opts.owner, { mint: opts.mint }, { encoding: 'jsonParsed', commitment: 'confirmed' }],
     }),
-    signal: rpcAbortSignal(),
+    signal: rpcAbortSignal(opts.proxied),
   });
   if (!res.ok) throw new Error(`Solana RPC request failed: HTTP ${res.status}`);
   const json = (await res.json()) as {
@@ -249,6 +264,8 @@ export interface WalletBalanceSources {
   solana?: { chainKey?: string; rpcUrl: string; owner: string; tokenMint?: string };
   /** Injectable fetch (the Solana JSON-RPC calls) for tests. */
   fetchImpl?: typeof fetch;
+  /** `fetchImpl` rides the SOCKS5h proxy, so the Solana reads allow a circuit's latency. */
+  solanaProxied?: boolean;
 }
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -301,7 +318,7 @@ function finalizeChain(out: WalletChainBalances, errors: string[]): void {
 export async function readWalletBalances(
   sources: WalletBalanceSources
 ): Promise<WalletChainBalances[]> {
-  const { fetchImpl } = sources;
+  const { fetchImpl, solanaProxied: proxied } = sources;
   const tasks: Promise<WalletChainBalances>[] = [];
 
   if (sources.evm) {
@@ -331,9 +348,9 @@ export async function readWalletBalances(
         const out: WalletChainBalances = { chain: 'solana', chainKey, address: owner, tokens: [] };
         const errors: string[] = [];
         const [nativeR, tokenR] = await Promise.allSettled([
-          readSolanaNativeBalance({ rpcUrl, owner, fetchImpl }),
+          readSolanaNativeBalance({ rpcUrl, owner, fetchImpl, proxied }),
           tokenMint
-            ? readSolanaTokenBalance({ rpcUrl, mint: tokenMint, owner, fetchImpl })
+            ? readSolanaTokenBalance({ rpcUrl, mint: tokenMint, owner, fetchImpl, proxied })
             : Promise.resolve<WalletBalance | undefined>(undefined),
         ]);
         foldNative(out, nativeR, errors);

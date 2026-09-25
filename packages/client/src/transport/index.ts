@@ -24,6 +24,6 @@ export {
   assertRoutableHsHostname,
 } from './hs-hostname.js';
 export { validateSocks5hUrl } from './socks-url.js';
-export { rpcFetch, rpcTransport } from './rpc.js';
+export { PROXIED_RPC_DEFAULTS, rpcFetch, rpcTransport } from './rpc.js';
 export type { RpcTransportOptions } from './rpc.js';
 export type { HiddenServiceTransport, HiddenServiceTransportOptions } from './socks.js';

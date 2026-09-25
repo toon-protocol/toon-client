@@ -99,6 +99,10 @@ const hs = createHiddenServiceTransport('socks5h://127.0.0.1:9050');
 // hs.fetch, hs.createWebSocket, hs.dispatcher — then hs.close() when done.
 ```
 
+`createChainRpcTransport(socksProxy, 'evm' | 'solana')` builds the same thing for one chain's RPC:
+its own pinned circuit, and the RPC timeouts below. `ToonClient` builds these for you whenever it
+has a `socksProxy`.
+
 The browser-safe pieces — `isRoutableHsHostname`, `isHiddenServiceUrl`,
 `assertRoutableHsHostname`, `validateSocks5hUrl`, `rpcFetch`, `rpcTransport` — are exported from
 the package root, because config validation needs them and they touch no Node built-in.
@@ -107,46 +111,73 @@ An explicitly injected `fetch` or `createWebSocket` still wins over the proxy's.
 supplied their own has said something specific about how bytes leave their process, and that is
 never silently overridden.
 
-### Hiding the payer, not the connector
+## Hiding the payer from a clearnet connector
 
-The other way round: the connector is an ordinary public host, and what must not show is where
-**you** are. A Hidden Provider's directory publisher is this case. It pays the public devnet relay,
-and every byte it sends has to leave through `anon`.
-
-`socksProxy:` refuses a clearnet connector (see below), so wire the transport by hand, and hand
-over **both** halves:
+The other way round: the connector is an ordinary public host, and **you** are the one hiding.
+A Hidden Provider's directory publisher is this. It pays a public devnet connector, and what must
+not leak is the address of the box it runs on. Give it `socksProxy` beside a clearnet connector:
 
 ```ts
-import { ToonClient } from '@toon-protocol/client';
-import { createHiddenServiceTransport } from '@toon-protocol/client/hidden-service';
-
-const hs = createHiddenServiceTransport('socks5h://127.0.0.1:9050');
 const client = await ToonClient.create({
-  connector: 'https://proxy.relay.devnet.toonprotocol.dev',
+  connector: 'https://proxy.ario.devnet.toonprotocol.dev',
+  socksProxy: 'socks5h://127.0.0.1:9050',
+  rpcUrl: 'https://api.devnet.solana.com', // a public RPC is fine: it is reached through the proxy
   mnemonic: process.env.TOON_MNEMONIC,
-  rpcUrl: 'http://10.0.0.5:8899', // your own node, on a private address: see below
-  fetch: hs.fetch, // the client edge
-  createWebSocket: hs.createWebSocket, // the BTP socket
+  channelStore: '/var/lib/publisher/channels.json',
 });
-// …and hs.close() after client.close().
 ```
 
-`fetch` alone is not enough. The BTP carriage opens its own websocket, and without
-`createWebSocket` it opens it with the platform's `WebSocket`, which resolves the name and dials
-from your real address. A node that pins a route to BTP, as the devnet relay does for
-`g.toon.relay`, would then get your packets from your own IP.
-`hidden-payer-btp.integration.test.ts` pins both sides of that against a local SOCKS5 server.
+Then **every byte the client sends goes through the proxy**, and nothing falls back to a direct
+dial:
 
-**This wiring does not carry chain RPC.** With no `socksProxy`, the channel's chain calls (open,
-deposit, the reads behind them) dial `rpcUrl` directly. Use it with an RPC on loopback or a private
-address, where nothing crosses a network anyone outside can watch, and where `anon` could build no
-circuit anyway. A public RPC would see your address.
+- the self-description and every paid packet (`GET /ilp`, `POST /ilp`),
+- the BTP websocket,
+- the chain RPC for every chain it settles on: channel opens, deposits, closes, settles, the reads
+  behind them, wallet balances and transfers.
+
+Only `socks5h://` is accepted. Under `socks5://` this process would resolve every name it dials
+itself, in a DNS query from its own address.
+
+**Each chain gets its own circuit.** Chain RPC authenticates to the SOCKS port with a fixed username
+per chain (`toon-client-rpc-evm`, `toon-client-rpc-solana`; `RPC_SOCKS_USERNAMES` in
+`@toon-protocol/client/hidden-service`). `anon` isolates streams by SOCKS credentials
+(`IsolateSOCKSAuth`, on by default), so each chain rides one circuit, pinned until the daemon's own
+`MaxCircuitDirtiness` rotates it. No exit sees both chains' RPC, neither shares a circuit with the
+client edge, and no call pays for a circuit of its own. This is connector ADR 0073's decision 3,
+applied to the payer. A circuit per call would buy nothing: the RPC links your calls by the keys
+they name however many circuits carry them.
+
+**It fails closed.** A proxy that is not listening fails `create()`. One that dies later fails each
+call that needs it. Nothing is ever retried around it.
+
+**`proxyRpc: false`** still means what it did: chain RPC dials directly, and only chain RPC. Use it
+only when the RPC is your own node on a private address. An exit cannot reach one, and the traffic
+crosses no network anyone outside can watch.
+
+**An injected `fetch` or `createWebSocket` still wins** for the client edge, as it always has. A
+caller who hands one in is responsible for where it goes. Chain RPC never uses an injected `fetch`
+under a proxy: it rides its own circuit, or dials directly because `proxyRpc: false` said so.
+If you inject one, inject both halves from `createHiddenServiceTransport`: `fetch` alone is not
+enough, because the BTP carriage would then open its websocket with the platform's `WebSocket`,
+which resolves the name and dials from your real address.
+`hidden-payer-btp.integration.test.ts` pins both halves against a local SOCKS5 server.
+
+**What it does not hide.** The RPC provider still sees every query and transaction, all naming
+your keys. It can profile you, but it cannot locate you. An API-keyed RPC links all of it to the
+account that holds the key, so a hiding payer should use a keyless RPC. The connector sees
+your settlement address on every claim, as it must to be paid.
+
+This used to be refused. Until TOON_Network#167, `socksProxy` beside a clearnet connector threw
+*"nothing would ride the proxy"*, so such a payer had to wire `createHiddenServiceTransport`'s
+`fetch` and `createWebSocket` by hand. That wiring never carried chain RPC, which is why a Hidden
+Provider had to run its own chain node. TOON_Network#167 reversed the refusal. See
+[ADR 0002](adr/0002-chain-rpc-is-proxied-with-the-connector.md).
 
 ## What else changes
 
 **Your chain RPC moves too.** By default, `socksProxy` carries the EVM and Solana JSON-RPC as well
 as the packets — channel opens, deposits, closes, settles, wallet balance reads and wallet
-transfers, on both chains. This is deliberate and it is the point: reaching the connector inside
+transfers, on both chains, each on its own pinned circuit. This is deliberate and it is the point: reaching the connector inside
 the overlay while reading chain state on clearnet would broadcast your settlement address, from
 your own IP, timed either side of every paid request — see
 [ADR 0002](adr/0002-chain-rpc-is-proxied-with-the-connector.md). Opt out only when the RPC endpoint
@@ -160,11 +191,33 @@ await ToonClient.create({ connector, socksProxy, proxyRpc: false }); // e.g. you
 riding the proxy: a hidden-service connector is still a hidden-service connector, and there is no
 setting that makes it reachable without one.
 
-**Timeouts get longer.** The per-packet default rises from 30 s to **120 s**, because building a
-circuit to a cold hidden service can take tens of seconds before the connector sees a byte. Set
-`timeoutMs` yourself to override it. The SOCKS connect timeout is raised well above the `socks`
-library's own default for the same reason — a short one turns "slow" into "unreachable", an error
-indistinguishable from a wrong address.
+**Timeouts get longer.** The per-packet default rises from 30 s to **120 s** for a hidden-service
+connector, because building a circuit to a cold hidden service can take tens of seconds before the
+connector sees a byte. Set `timeoutMs` yourself to override it. The SOCKS connect timeout is raised
+well above the `socks` library's own default for the same reason — a short one turns "slow" into
+"unreachable", an error indistinguishable from a wrong address. A clearnet connector reached
+through the proxy keeps the 30 s default: an exit circuit costs about a second.
+
+**Chain RPC gets a circuit's budget.** Sized from connector ADR 0073's 3,200 calls through `anon`
+(the worst one that needed a fresh circuit took 13 s):
+
+| | |
+| --- | --- |
+| SOCKS connect (handshake, circuit, TCP) | 20 s |
+| One EVM request | 30 s, not viem's 10 s. 3 retries, 500 ms apart and doubling, on 403, 408, 429, 5xx and dropped connections (`PROXIED_RPC_DEFAULTS`) |
+| One Solana request | 30 s. 3 retries, 250 ms apart and doubling, on the same, honouring a short `Retry-After` |
+| Idle pooled connection | at most 30 s, so a socket whose circuit died quietly is not reused for long |
+
+**A write's outcome is reported by its transaction, never as a bare error.** A poll that fails in
+transit says nothing about the transaction, so it never ends the wait. A Solana confirmation polls
+by signature until the chain answers: confirmed, failed on chain, or **expired** (the block height
+passed the blockhash's `lastValidBlockHeight`, so it can no longer land). A Solana send whose
+answer was lost, or that the node says it has *already processed*, is looked up by the signature it
+carries rather than reported as failed. An EVM receipt wait keeps polling by hash until a receipt
+or the 180 s deadline. When the deadline ends it, the error is a `TransactionOutcomeError` with
+`outcome: 'unknown'` and the `txHash` to look up before repeating anything. That matters most on
+Solana, where a deposit is incremental: a blind retry of an ambiguous one deposits twice. These
+rules hold with or without a proxy. A direct RPC can lose an answer too.
 
 **Packets outlive your patience.** A packet's expiry is set 15 s beyond the client's own timeout,
 so the client always gives up first. Without that margin a slow answer arrives after the packet
@@ -190,13 +243,15 @@ the missing proxy named — rather than falling through to a DNS lookup.
 | `<addr>.onion` | **Refused.** That is Tor. This client dials the Anyone Protocol and cannot reach it. |
 | `socks5://…` | **Refused.** The missing `h` means *your* machine resolves the hostname — putting the hidden service you are about to talk to into a plaintext DNS query. |
 
-Two more refusals, both at construction time, before anything dials:
+One more refusal at construction time, before anything dials:
 
 - A `.anyone` connector with **no** `socksProxy` — unreachable, and the attempt would leak the
   address to a resolver first. The message names the proxy to set, and that the `toon` CLI can
   start a daemon for you.
-- A `socksProxy` with a **clearnet** connector — nothing would ride the proxy, and believing
-  otherwise is worse than knowing.
+
+A `socksProxy` beside a **clearnet** connector used to be refused as well, as "nothing would ride
+the proxy". It is accepted since TOON_Network#167, and everything rides it. See
+[Hiding the payer from a clearnet connector](#hiding-the-payer-from-a-clearnet-connector).
 
 And one check before the first packet rather than at construction: the client probes the proxy
 port and fails, naming the daemon, if nothing is listening. Discovering that later would cost a

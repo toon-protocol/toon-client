@@ -265,10 +265,24 @@ describe('resolveConfig — hidden services', () => {
     expect(() => resolveConfig(base({ connector: HS }))).toThrow(/anon` daemon/);
   });
 
-  it('refuses a proxy with no hidden service, rather than implying anonymity', () => {
+  it('accepts a proxy beside a clearnet connector: the payer is the one hiding (TOON_Network#167)', () => {
     quiet();
-    // The dangerous direction: the caller believes they are inside the overlay.
-    expect(() => resolveConfig(base({ socksProxy: PROXY }))).toThrow(/clearnet address/);
+    // This used to be refused as "nothing would ride the proxy". Everything does:
+    // the client edge, the BTP socket and the chain RPC. A Hidden Provider's
+    // directory publisher pays the public devnet relay this way.
+    const resolved = resolveConfig(base({ socksProxy: PROXY }));
+    expect(resolved.connectorIsHiddenService).toBe(false);
+    expect(resolved.socksProxy).toBe(PROXY);
+    expect(resolved.proxyRpc).toBe(true);
+  });
+
+  it('refuses socks5:// beside a clearnet connector too', () => {
+    quiet();
+    // Under plain socks5 this process resolves the RPC's and the relay's names
+    // itself, in a DNS query from its own address.
+    expect(() => resolveConfig(base({ socksProxy: 'socks5://127.0.0.1:9050' }))).toThrow(
+      /socks5h:\/\/ scheme/
+    );
   });
 
   it('refuses socks5:// — the missing h leaks the address it is hiding', () => {

@@ -30,9 +30,11 @@ The connector is a `.anyone` address and the library was given no `socksProxy`. 
 starts a daemon itself — set `socksProxy` to a running `anon` daemon, or use the `toon` CLI, which
 starts one for you. See [hidden-service.md](hidden-service.md).
 
-**"socksProxy is set, but connector … is a clearnet address".**
-Nothing would have ridden the proxy, so the client refused rather than let you believe otherwise.
-Point `connector` at the node's `.anyone` address, or drop `socksProxy`.
+**"Transaction … may still be mined" / "may still land" (`TransactionOutcomeError`, `outcome: 'unknown'`).**
+A chain write was sent and the RPC stopped answering before its outcome showed. It may still land.
+Look `txHash` up on an explorer before doing anything that would repeat it. On Solana a repeated
+deposit deposits twice. `outcome: 'expired'` (Solana) means the opposite: it can no longer land,
+and sending it again is safe.
 
 **"use the .anyone TLD", or "is a Tor hidden service".**
 `.anon` is not a routable hidden service — `anon` treats it as a clearnet name and fails much later

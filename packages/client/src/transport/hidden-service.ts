@@ -7,6 +7,10 @@
  */
 export {
   DEFAULT_HS_CONNECT_TIMEOUT_MS,
+  DEFAULT_RPC_CONNECT_TIMEOUT_MS,
+  RPC_POOL_IDLE_TIMEOUT_MS,
+  RPC_SOCKS_USERNAMES,
+  createChainRpcTransport,
   createHiddenServiceTransport,
   probeSocks5Proxy,
 } from './socks.js';

@@ -157,7 +157,8 @@ Ask the devnet faucet for test funds. Devnet only. The Solana leg drips USDC and
 Point `--connector` (or `TOON_CONNECTOR`) at a `.anyone` address and the CLI starts a pinned,
 checksum-verified `anon` daemon for you, announces every step on stderr, and stops it when the
 command ends. `--socks` / `TOON_SOCKS` uses a daemon you already run instead, and downloads
-nothing. A clearnet connector starts nothing and downloads nothing.
+nothing. A clearnet connector starts nothing and downloads nothing, but `--socks` beside one hides
+you from it: every byte, chain RPC included, rides the daemon you named.
 
 The library never starts a daemon — only this command does. Which release is pinned, where it is
 cached, and what happens to your chain RPC are all in [hidden-service.md](hidden-service.md).

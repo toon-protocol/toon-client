@@ -5,6 +5,9 @@ import { WebSocketServer } from 'ws';
 import { startFakeSocks5, type FakeSocks5Server } from './fake-socks5.js';
 import {
   DEFAULT_HS_CONNECT_TIMEOUT_MS,
+  DEFAULT_RPC_CONNECT_TIMEOUT_MS,
+  RPC_SOCKS_USERNAMES,
+  createChainRpcTransport,
   createHiddenServiceTransport,
   probeSocks5Proxy,
   type HiddenServiceTransport,
@@ -158,5 +161,82 @@ describe('createHiddenServiceTransport', () => {
     expect(proxy.requests.at(-1)).toEqual({ host: HS_HOST, port: 80, kind: 'domain' });
     ws.close();
     wss.close();
+  });
+});
+
+describe('a pinned circuit per chain (connector ADR 0073, decision 3)', () => {
+  let origin: http.Server;
+  let proxy: FakeSocks5Server;
+
+  beforeEach(async () => {
+    origin = http.createServer((_req, res) => res.end('ok'));
+    await new Promise<void>((resolve) => origin.listen(0, '127.0.0.1', resolve));
+    proxy = await startFakeSocks5(
+      new Map([[HS_HOST, (origin.address() as AddressInfo).port]])
+    );
+  });
+
+  afterEach(async () => {
+    await proxy.close();
+    await new Promise<void>((resolve) => origin.close(() => resolve()));
+  });
+
+  it('authenticates with a fixed username, which is what picks the circuit', async () => {
+    const transport = createHiddenServiceTransport(proxy.url, { socksUsername: 'circuit-a' });
+    try {
+      await (await transport.fetch(`http://${HS_HOST}/`)).text();
+      await (await transport.fetch(`http://${HS_HOST}/again`, { headers: { connection: 'close' } })).text();
+      await (await transport.fetch(`http://${HS_HOST}/third`)).text();
+      expect(proxy.requests.length).toBeGreaterThan(0);
+      // The same name on every stream: one circuit, every time.
+      for (const request of proxy.requests) {
+        expect(request).toEqual({ host: HS_HOST, port: 80, kind: 'domain', username: 'circuit-a' });
+      }
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it('asks for no authentication when no username is named', async () => {
+    const transport = createHiddenServiceTransport(proxy.url);
+    try {
+      await (await transport.fetch(`http://${HS_HOST}/`)).text();
+      expect(proxy.requests).toEqual([{ host: HS_HOST, port: 80, kind: 'domain' }]);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it('gives each chain its own username, neither the client edge’s', async () => {
+    const evm = createChainRpcTransport(proxy.url, 'evm');
+    const solana = createChainRpcTransport(proxy.url, 'solana');
+    try {
+      await (await evm.fetch(`http://${HS_HOST}/`)).text();
+      await (await solana.fetch(`http://${HS_HOST}/`)).text();
+      expect(proxy.requests.map((request) => request.username)).toEqual([
+        RPC_SOCKS_USERNAMES.evm,
+        RPC_SOCKS_USERNAMES.solana,
+      ]);
+    } finally {
+      await evm.close();
+      await solana.close();
+    }
+  });
+
+  it('fails a chain call closed when the proxy is gone, and dials nothing else', async () => {
+    const evm = createChainRpcTransport(proxy.url, 'evm');
+    try {
+      await proxy.close();
+      await expect(evm.fetch(`http://${HS_HOST}/`)).rejects.toThrow();
+    } finally {
+      await evm.close();
+    }
+  });
+
+  it('bounds a chain dial far below a hidden service’s', () => {
+    // An exit circuit to a public RPC is not an introduction-point circuit: the
+    // worst ADR 0073 measured was 13s, and the dial budget is twice that, rounded.
+    expect(DEFAULT_RPC_CONNECT_TIMEOUT_MS).toBe(20_000);
+    expect(DEFAULT_RPC_CONNECT_TIMEOUT_MS).toBeLessThan(DEFAULT_HS_CONNECT_TIMEOUT_MS);
   });
 });

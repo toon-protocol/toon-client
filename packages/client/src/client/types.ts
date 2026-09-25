@@ -131,13 +131,15 @@ export interface ToonClientConfig {
   faucetUrl?: string;
 
   /**
-   * The `socks5h://` proxy through which a hidden-service connector is reached —
-   * a running Anyone Protocol `anon` daemon's SOCKS port, e.g.
-   * `socks5h://127.0.0.1:9050`.
+   * The `socks5h://` proxy every byte this client sends goes through: a running
+   * Anyone Protocol `anon` daemon's SOCKS port, e.g. `socks5h://127.0.0.1:9050`.
    *
-   * Required when `connector` is a `.anyone` address, and rejected as pointless
-   * misdirection when it is not. This library never starts a daemon itself; the
-   * `toon` CLI will start one for you (ADR 0001).
+   * Required when `connector` is a `.anyone` address. Beside a clearnet
+   * connector it makes this client a hidden payer (TOON_Network#167): the
+   * client edge, the BTP socket and each chain's RPC, on a pinned circuit per
+   * chain, all ride it. Nothing falls back to a direct dial. `socks5://` is
+   * refused either way. This library never starts a daemon itself; the `toon`
+   * CLI will start one for you (ADR 0001).
    *
    * Node only: a browser cannot dial a hidden service by any route.
    */
@@ -146,8 +148,8 @@ export interface ToonClientConfig {
    * Send chain RPC through `socksProxy` as well as the packets. Default `true`.
    *
    * Set `false` only when the RPC endpoint is already private — your own node on
-   * loopback — where the extra hop buys nothing and costs latency. Leaving it on
-   * for a public provider is the point: see ADR 0002.
+   * loopback or a private address, which no exit could reach anyway. Leaving it
+   * on for a public provider is the point: see ADR 0002.
    */
   proxyRpc?: boolean;
 
