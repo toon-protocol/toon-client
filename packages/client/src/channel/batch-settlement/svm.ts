@@ -35,6 +35,8 @@ import { base58Decode, base58Encode } from '../../utils/base58.js';
 import { fromBase64, toBase64, encodeUtf8, toHex } from '../../utils/binary.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import {
+  solanaRpc,
+  type SolanaRpcTarget,
   compileLegacyMessage,
   deriveAssociatedTokenAccount,
   findProgramAddress,
@@ -556,6 +558,28 @@ export function decodeSvmBatchChannel(
     rentPayer: address(216),
     openSlot: view.getBigUint64(248, true),
   };
+}
+
+/**
+ * Read the channel account at `channelId` over JSON-RPC, or `null` when it does
+ * not exist (never opened, or closed and deallocated). An account that exists
+ * but is not a payment-channels `Channel` — the wrong owner included — throws.
+ */
+export async function getSvmBatchChannel(
+  rpc: SolanaRpcTarget,
+  channelId: string
+): Promise<SvmBatchChannelState | null> {
+  const result = (await solanaRpc(rpc, 'getAccountInfo', [
+    channelId,
+    { encoding: 'base64', commitment: 'confirmed' },
+  ])) as { value: { data: [string, string]; owner: string } | null };
+  if (result.value === null) return null;
+  if (result.value.owner !== PAYMENT_CHANNELS_PROGRAM_ID) {
+    throw new ValidationError(
+      `account ${channelId} is owned by ${result.value.owner}, not payment-channels`
+    );
+  }
+  return decodeSvmBatchChannel(result.value.data[0]);
 }
 
 /**

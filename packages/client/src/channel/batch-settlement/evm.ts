@@ -556,3 +556,72 @@ function randomBytes32(): Hex {
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
+
+// ---------------------------------------------------------------------------
+// Reading a channel back
+// ---------------------------------------------------------------------------
+
+/** `channels(id)` and `pendingWithdrawals(id)` (`x402BatchSettlement.sol`). */
+export const X402_BATCH_SETTLEMENT_READ_ABI = [
+  {
+    type: 'function',
+    name: 'channels',
+    stateMutability: 'view',
+    inputs: [{ name: 'channelId', type: 'bytes32' }],
+    outputs: [
+      { name: 'balance', type: 'uint128' },
+      { name: 'totalClaimed', type: 'uint128' },
+    ],
+  },
+  {
+    type: 'function',
+    name: 'pendingWithdrawals',
+    stateMutability: 'view',
+    inputs: [{ name: 'channelId', type: 'bytes32' }],
+    outputs: [
+      { name: 'amount', type: 'uint128' },
+      { name: 'initiatedAt', type: 'uint40' },
+    ],
+  },
+] as const;
+
+/** An EVM batch-settlement channel as the chain holds it. */
+export interface EvmBatchChannelState {
+  /** Everything ever deposited, less what has left through a withdrawal or refund. */
+  balance: bigint;
+  /** What the receiver has claimed — a floor under the connector's watermark. */
+  totalClaimed: bigint;
+  /** A timed withdrawal in flight, zero if none. */
+  pendingWithdrawal: bigint;
+  /** Unix seconds the pending withdrawal started, zero if none. */
+  withdrawalInitiatedAt: number;
+}
+
+/** Anything with viem's `readContract`, such as a `PublicClient`. */
+export interface ContractReader {
+  readContract: (params: never) => Promise<unknown>;
+}
+
+/** Read `channelId`'s escrow and claim totals, and any pending withdrawal. */
+export async function readEvmBatchChannel(
+  client: ContractReader,
+  channelId: Hex
+): Promise<EvmBatchChannelState> {
+  const read = (functionName: 'channels' | 'pendingWithdrawals') =>
+    client.readContract({
+      address: X402_BATCH_SETTLEMENT_ADDRESS,
+      abi: X402_BATCH_SETTLEMENT_READ_ABI,
+      functionName,
+      args: [channelId],
+    } as never) as Promise<readonly [bigint, bigint | number]>;
+  const [[balance, totalClaimed], [pending, initiatedAt]] = await Promise.all([
+    read('channels'),
+    read('pendingWithdrawals'),
+  ]);
+  return {
+    balance,
+    totalClaimed: BigInt(totalClaimed),
+    pendingWithdrawal: pending,
+    withdrawalInitiatedAt: Number(initiatedAt),
+  };
+}

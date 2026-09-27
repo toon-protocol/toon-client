@@ -59,3 +59,11 @@ export {
   nextVoucherAmount,
   type VoucherClaimEnvelope,
 } from './claim.js';
+export { BatchChannelManager, type BatchChannel } from './manager.js';
+export {
+  X402_BATCH_SETTLEMENT_READ_ABI,
+  readEvmBatchChannel,
+  type EvmBatchChannelState,
+  type ContractReader,
+} from './evm.js';
+export { getSvmBatchChannel } from './svm.js';

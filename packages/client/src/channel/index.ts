@@ -16,6 +16,7 @@ export {
   type ChannelStoreEntry,
   type ChannelBinding,
   type ChannelBindingContext,
+  type BatchSettlementBinding,
 } from './ChannelStore.js';
 export {
   counterpartyMatch,

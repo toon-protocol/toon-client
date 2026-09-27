@@ -43,6 +43,47 @@ export interface ChannelBindingContext {
 }
 
 /**
+ * The config of an x402 `batch-settlement` channel (connector ADR 0074), in a
+ * JSON-safe spelling: every field a string or a number, so both stores persist
+ * it verbatim. Its id travels in every voucher and is never derived, so the
+ * full config is what must survive a restart — on EVM the contract stores a
+ * channel by id and never gives the config back.
+ */
+export type BatchSettlementBinding =
+  | {
+      chain: 'evm';
+      /** CAIP-2, `eip155:<chainId>`. */
+      network: string;
+      config: {
+        payer: string;
+        payerAuthorizer: string;
+        receiver: string;
+        receiverAuthorizer: string;
+        token: string;
+        withdrawDelay: number;
+        salt: string;
+      };
+    }
+  | {
+      chain: 'solana';
+      /** CAIP-2, `solana:<genesis prefix>`. */
+      network: string;
+      /** The receiving connector's sponsor key: the channel's `payee` and `rent_payer`. */
+      sponsor: string;
+      config: {
+        payer: string;
+        payerAuthorizer: string;
+        receiver: string;
+        token: string;
+        withdrawDelay: number;
+        /** u64, decimal. */
+        salt: string;
+        /** u64, decimal. */
+        openSlot: string;
+      };
+    };
+
+/**
  * One persisted peer→channel binding: WHICH on-chain channel this identity
  * already holds with a peer, on a given chain + token network (#489).
  */
@@ -64,6 +105,13 @@ export interface ChannelBinding {
    * be found and reclaimed.
    */
   supersededAt?: string;
+  /**
+   * Set when the channel is an x402 `batch-settlement` channel rather than a
+   * `TokenNetwork` / TOON-program one: its full config. Such a binding is kept
+   * under its own key namespace (`batch|…`) and never resumed as a
+   * `toon-channel` channel.
+   */
+  batchSettlement?: BatchSettlementBinding;
 }
 
 /**
@@ -124,6 +172,7 @@ interface JsonBinding {
   depositTotal?: string;
   openedAt?: string;
   supersededAt?: string;
+  batchSettlement?: BatchSettlementBinding;
 }
 
 /**
@@ -227,6 +276,9 @@ export class JsonFileChannelStore implements ChannelStore {
       ...(binding.supersededAt !== undefined
         ? { supersededAt: binding.supersededAt }
         : {}),
+      ...(binding.batchSettlement !== undefined
+        ? { batchSettlement: binding.batchSettlement }
+        : {}),
     };
     this.writeBindings(data);
   }
@@ -306,6 +358,9 @@ function toBinding(entry: JsonBinding): ChannelBinding {
     ...(entry.openedAt !== undefined ? { openedAt: entry.openedAt } : {}),
     ...(entry.supersededAt !== undefined
       ? { supersededAt: entry.supersededAt }
+      : {}),
+    ...(entry.batchSettlement !== undefined
+      ? { batchSettlement: entry.batchSettlement }
       : {}),
   };
 }
