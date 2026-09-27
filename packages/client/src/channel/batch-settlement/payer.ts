@@ -9,13 +9,22 @@
  *   1. finds the node's `batch-settlement` terms on the chain this client pays
  *      from — none, and it steps aside and the packet pays over `toon-channel`
  *      exactly as it always has;
- *   2. resolves the channel it holds with this node there, or onboards one with
- *      no native gas: on EVM a deposit through an x402 facilitator;
- *   3. tops the channel up the same way when its deposit cannot cover the next
- *      voucher;
+ *   2. resolves the channel it holds with this node there — settling any
+ *      deposit whose answer was lost, and rebuilding a lost watermark from the
+ *      chain — or onboards one with no native gas: on EVM a deposit through an
+ *      x402 facilitator, on Solana an open the connector sponsors;
+ *   3. tops the channel up when its deposit cannot cover the next voucher: a
+ *      further deposit on EVM, a fresh sponsored channel on Solana;
  *   4. reserves the next cumulative amount — persisted before anything is
  *      signed — and signs the voucher;
  *   5. hands back the claim, and learns the packet's fate from the caller.
+ *
+ * **Nothing leaves before it is recorded.** A deposit or sponsored open is
+ * written down as pending first, because the facilitator or sponsor may land
+ * it and then fail to answer: on EVM the contract never gives a config back,
+ * and a Solana PDA cannot be recomputed without its salt and slot, so a
+ * channel not recorded first is a deposit lost. The next use reads the chain
+ * and settles the pending deposit either way.
  */
 
 import type { Hex } from 'viem';
@@ -25,6 +34,7 @@ import {
   ConfigError,
   FacilitatorError,
   InsufficientBalanceError,
+  SponsorRefusedError,
   ValidationError,
 } from '../../client/errors.js';
 import {
@@ -33,8 +43,10 @@ import {
   buildEip3009Deposit,
   buildPermit2Deposit,
   evmChainIdOf,
+  readEvmBatchChannel,
   signBatchVoucher,
   type BatchSettlementEvmOffer,
+  type ContractReader,
   type TypedDataSigner,
 } from './evm.js';
 import { settleDeposit } from './facilitator.js';
@@ -43,6 +55,7 @@ import { evmVoucherClaim, solanaVoucherClaim } from './claim.js';
 import {
   buildSponsoredOpen,
   buildSvmBatchChannelConfig,
+  getSvmBatchChannel,
   signSvmVoucher,
   type BatchSettlementSvmOffer,
 } from './svm.js';
@@ -63,7 +76,8 @@ export type VoucherOutcome =
   | { kind: 'banked' }
   /** A transport error or timeout: it may or may not have arrived. */
   | { kind: 'unknown' }
-  | { kind: 'refused'; notAdvancing: boolean };
+  /** The connector refused the voucher; `message` is its reject's own text. */
+  | { kind: 'refused'; message?: string };
 
 /** A voucher ready to ride one packet. */
 export interface PreparedVoucher {
@@ -96,6 +110,12 @@ export interface BatchSettlementPayerConfig {
      * approval first.
      */
     depositMethod?: 'eip3009' | 'permit2';
+    /**
+     * Reads the escrow back, to settle a deposit whose answer was lost and to
+     * rebuild a lost watermark. Without one, either of those is an error
+     * rather than a guess.
+     */
+    reader?: ContractReader;
   };
   solana?: {
     /** The funding wallet; also the channel's `authorized_signer`, which signs vouchers. */
@@ -107,33 +127,44 @@ export interface BatchSettlementPayerConfig {
   fetch?: typeof fetch;
   /**
    * Whether a paid packet may open, top up or replace a channel on its own.
-   * Default `true`. `false` makes every such step {@link BatchSettlementPayer.open}'s
-   * job, and a packet that needs one throws {@link ChannelNotOpenError} instead.
+   * Default `true`. `false` leaves every such step to {@link BatchSettlementPayer.open}
+   * and {@link BatchSettlementPayer.topUp}, and a packet that needs one throws
+   * {@link ChannelNotOpenError} instead.
    */
   autoOpen?: boolean;
 }
 
 /**
- * Whether a voucher's refusal says the connector already holds at least its
- * amount — `amount_not_advancing`, or an underpayment that advanced by
- * nothing (a byte-identical retransmission against a charge) — rather than
- * that nothing was banked. The connector's own sentences
- * (`connector-client-edge`'s `ClaimIngestRejection::message`).
+ * What a voucher's refusal says about the connector's watermark, read from its
+ * reject message (`connector-client-edge`'s `ClaimIngestRejection::message`):
+ *
+ *   - `advances value by A, less than this route's price` — an underpayment,
+ *     which names how far the voucher for `voucherAmount` advanced the
+ *     watermark, so the watermark is `voucherAmount − A`;
+ *   - `cumulative amount goes backwards` — the connector holds at least
+ *     `voucherAmount`, and says no more.
  */
-export function voucherRefusalIsNotAdvancing(
-  message: string | undefined
-): boolean {
-  if (message === undefined) return false;
-  return (
-    message.includes('cumulative amount goes backwards') ||
-    /advances value by 0,/.test(message)
-  );
+export function readVoucherRefusal(
+  message: string | undefined,
+  voucherAmount: bigint
+): { notAdvancing: boolean; connectorWatermark?: bigint } {
+  if (message === undefined) return { notAdvancing: false };
+  const advancedBy = /advances value by (\d+),/.exec(message)?.[1];
+  if (advancedBy !== undefined) {
+    const advanced = BigInt(advancedBy);
+    const watermark = voucherAmount > advanced ? voucherAmount - advanced : 0n;
+    return { notAdvancing: advanced === 0n, connectorWatermark: watermark };
+  }
+  return { notAdvancing: message.includes('cumulative amount goes backwards') };
 }
 
 type EvmPayerConfig = NonNullable<BatchSettlementPayerConfig['evm']>;
 type SolanaPayerConfig = NonNullable<BatchSettlementPayerConfig['solana']>;
 
 export class BatchSettlementPayer {
+  /** Onboardings in flight, so concurrent first sends open one channel, not two. */
+  private readonly onboarding = new Map<string, Promise<BatchChannel>>();
+
   constructor(private readonly config: BatchSettlementPayerConfig) {
     if (config.deposit <= 0n) {
       throw new ConfigError(
@@ -155,14 +186,21 @@ export class BatchSettlementPayer {
     const terms = chooseBatchSettlement(description, chain);
     if (terms === undefined) return undefined;
     const priced = offerFromTerms(terms, amount);
-    if (priced.chain === 'evm') return this.evmVoucher(priced.offer, amount);
-    return this.solanaVoucher(priced.offer, amount);
+    const channel =
+      priced.chain === 'evm'
+        ? await this.evmChannelFor(this.requireEvm(), priced.offer, amount)
+        : await this.solanaChannelFor(
+            this.requireSolana(),
+            priced.offer,
+            amount
+          );
+    return this.voucher(channel, amount);
   }
 
   /**
-   * Open a channel to this node on `chain` now, depositing the configured
-   * amount, rather than on the first paid packet. Returns `undefined` when the
-   * node offers no `batch-settlement` there.
+   * Open a channel to this node on `chain` now, rather than on the first paid
+   * packet — or return the one already open there. `undefined` when the node
+   * offers no `batch-settlement` on `chain`.
    *
    * On EVM the deposit must carry a voucher of at least one unit (ADR 0074
    * prerequisite 1). It is signed for one unit and handed only to the
@@ -176,70 +214,213 @@ export class BatchSettlementPayer {
     const terms = chooseBatchSettlement(description, chain);
     if (terms === undefined) return undefined;
     const priced = offerFromTerms(terms, 1n);
-    if (priced.chain === 'evm') {
-      return this.evmOnboard(this.requireEvm(), priced.offer, 1n);
-    }
-    return this.solanaOnboard(this.requireSolana(), priced.offer, 1n);
+    const live = await this.live(priced.offer.network, priced.offer.asset);
+    if (live !== undefined) return live;
+    return priced.chain === 'evm'
+      ? this.onboard(priced.offer, () =>
+          this.evmOnboard(this.requireEvm(), priced.offer, 1n)
+        )
+      : this.onboard(priced.offer, () =>
+          this.solanaOnboard(this.requireSolana(), priced.offer, 1n)
+        );
   }
 
-  private requireEvm(): EvmPayerConfig {
-    if (!this.config.evm) {
+  /**
+   * Deposit `amount` more into the Base channel this client pays the node
+   * from. A Solana channel has no top-up that costs no SOL, so it is replaced
+   * by a fresh sponsored one instead, and this refuses.
+   */
+  async topUp(
+    description: NodeSelfDescription,
+    chain: 'evm' | 'solana',
+    amount: bigint
+  ): Promise<BatchChannel> {
+    if (chain !== 'evm') {
       throw new ConfigError(
-        'this client holds no EVM key to pay a batch-settlement channel with'
+        'a Solana batch-settlement channel is not topped up: the next payment it cannot cover opens a fresh sponsored one'
       );
     }
-    return this.config.evm;
-  }
-
-  private requireSolana(): SolanaPayerConfig {
-    if (!this.config.solana) {
+    const terms = chooseBatchSettlement(description, 'evm');
+    if (terms === undefined) {
       throw new ConfigError(
-        'this client holds no Solana key to pay a batch-settlement channel with'
+        `${this.config.connector} offers no batch-settlement channel on evm`
       );
     }
-    return this.config.solana;
-  }
-
-  /** Refuse an open, top-up or replacement a packet needs, when that is not its to do. */
-  private assertMayOpen(what: string): void {
-    if (this.config.autoOpen === false) {
+    const priced = offerFromTerms(terms, 1n);
+    if (priced.chain !== 'evm') throw new Error('unreachable');
+    const channel = await this.live(priced.offer.network, priced.offer.asset);
+    if (channel === undefined || channel.chain !== 'evm') {
       throw new ChannelNotOpenError(
-        `paying ${this.config.connector} needs ${what} first, and this client does not ` +
-          'open channels on its own; open one explicitly (`toon channel open --batch-settlement`)'
-      );
-    }
-  }
-
-  private async solanaVoucher(
-    offer: BatchSettlementSvmOffer,
-    charge: bigint
-  ): Promise<PreparedVoucher> {
-    const solana = this.config.solana;
-    if (!solana) {
-      throw new ConfigError(
-        'this client holds no Solana key to pay a batch-settlement channel with'
+        `no batch-settlement channel to ${this.config.connector} is open to top up`
       );
     }
     const manager = this.config.manager;
-    let channel = manager.resolve(
-      this.config.connector,
-      offer.network,
-      offer.asset
+    await this.evmDeposit(
+      this.requireEvm(),
+      channel,
+      priced.offer,
+      amount,
+      manager.signedSoFar(channel.channelId) + 1n
     );
+    return channel;
+  }
+
+  // ─── The channel for a packet ────────────────────────────────────────────
+
+  private async evmChannelFor(
+    evm: EvmPayerConfig,
+    offer: BatchSettlementEvmOffer,
+    charge: bigint
+  ): Promise<BatchChannel> {
+    const manager = this.config.manager;
+    let channel = await this.live(offer.network, offer.asset);
+    if (channel === undefined) {
+      this.assertMayOpen('a batch-settlement channel', 'channel open');
+      channel = await this.onboard(offer, () =>
+        this.evmOnboard(evm, offer, charge)
+      );
+    } else {
+      const needed = manager.signedSoFar(channel.channelId) + charge;
+      if (needed > manager.depositTotal(channel.channelId)) {
+        this.assertMayOpen(
+          'a top-up of its batch-settlement channel',
+          'channel deposit'
+        );
+        const shortfall = needed - manager.depositTotal(channel.channelId);
+        const amount =
+          this.config.deposit > shortfall ? this.config.deposit : shortfall;
+        await this.evmDeposit(evm, channel, offer, amount, needed);
+      }
+    }
+    return channel;
+  }
+
+  private async solanaChannelFor(
+    solana: SolanaPayerConfig,
+    offer: BatchSettlementSvmOffer,
+    charge: bigint
+  ): Promise<BatchChannel> {
+    const manager = this.config.manager;
+    const channel = await this.live(offer.network, offer.asset);
     // The sponsor endpoint opens channels and nothing else, so a Solana top-up
     // would cost the payer SOL. A channel its deposit cannot cover is instead
-    // replaced by a fresh sponsored one, and its binding archived: what little
-    // is left in it returns to the payer when the connector closes it.
+    // replaced by a fresh sponsored one, and its binding archived: it stays
+    // listed, and `close` / `settle` take what is left in it back.
     if (
-      channel === undefined ||
-      manager.isClosing(channel.channelId) ||
-      manager.signedSoFar(channel.channelId) + charge >
+      channel !== undefined &&
+      manager.signedSoFar(channel.channelId) + charge <=
         manager.depositTotal(channel.channelId)
     ) {
-      this.assertMayOpen('a fresh sponsored batch-settlement channel');
-      channel = await this.solanaOnboard(solana, offer, charge);
+      return channel;
     }
+    this.assertMayOpen(
+      'a fresh sponsored batch-settlement channel',
+      'channel open'
+    );
+    return this.onboard(
+      offer,
+      () => this.solanaOnboard(solana, offer, charge),
+      channel?.channelId
+    );
+  }
 
+  /**
+   * The channel this client pays the node from on `network` in `asset`, once
+   * any deposit whose answer was lost is settled and any lost watermark is
+   * rebuilt — or `undefined` when there is none it can still pay from.
+   */
+  private async live(
+    network: string,
+    asset: string
+  ): Promise<BatchChannel | undefined> {
+    const manager = this.config.manager;
+    const channel = manager.resolve(this.config.connector, network, asset);
+    if (channel === undefined) return undefined;
+    if (manager.pendingDeposit(channel.channelId) !== undefined) {
+      await this.reconcile(channel);
+      if (manager.resolve(this.config.connector, network, asset) === undefined)
+        return undefined;
+    }
+    if (!manager.hasWatermark(channel.channelId)) {
+      manager.restoreWatermark(
+        channel.channelId,
+        (await this.readChain(channel)).landed
+      );
+    }
+    if (manager.isClosing(channel.channelId)) return undefined;
+    return channel;
+  }
+
+  /** Settle a pending deposit against the chain: kept if it landed, dropped if not. */
+  private async reconcile(channel: BatchChannel): Promise<void> {
+    const manager = this.config.manager;
+    const onChain = await this.readChain(channel);
+    if (onChain.escrow === undefined) {
+      // Never landed, and nothing else was ever deposited: forget the channel.
+      manager.abandon(channel.channelId);
+      if (manager.pendingDeposit(channel.channelId) !== undefined) {
+        manager.confirmDeposit(
+          channel.channelId,
+          manager.depositTotal(channel.channelId)
+        );
+      }
+      return;
+    }
+    manager.confirmDeposit(channel.channelId, onChain.escrow);
+  }
+
+  /**
+   * What the chain holds for `channel`: its escrow (`undefined` when there is
+   * no such channel yet), and what has landed — a floor under the connector's
+   * watermark.
+   */
+  private async readChain(
+    channel: BatchChannel
+  ): Promise<{ escrow: bigint | undefined; landed: bigint }> {
+    if (channel.chain === 'evm') {
+      const reader = this.config.evm?.reader;
+      if (!reader) {
+        throw new ConfigError(
+          `channel ${channel.channelId} needs reading back from the chain, and this payer has no EVM reader`
+        );
+      }
+      const state = await readEvmBatchChannel(reader, channel.channelId as Hex);
+      return {
+        escrow:
+          state.balance > 0n || state.totalClaimed > 0n
+            ? state.balance
+            : undefined,
+        landed: state.totalClaimed,
+      };
+    }
+    const state = await getSvmBatchChannel(
+      this.requireSolana().rpc,
+      channel.channelId
+    );
+    return { escrow: state?.deposit, landed: state?.settled ?? 0n };
+  }
+
+  /** Run one onboarding per network and asset at a time; concurrent callers share it. */
+  private async onboard(
+    offer: { network: string; asset: string },
+    run: () => Promise<BatchChannel>,
+    replacing?: string
+  ): Promise<BatchChannel> {
+    const key = `${offer.network}|${offer.asset}|${replacing ?? ''}`;
+    const inFlight = this.onboarding.get(key);
+    if (inFlight) return inFlight;
+    const started = run().finally(() => this.onboarding.delete(key));
+    this.onboarding.set(key, started);
+    return started;
+  }
+
+  // ─── Vouchers ────────────────────────────────────────────────────────────
+
+  private async voucher(
+    channel: BatchChannel,
+    charge: bigint
+  ): Promise<PreparedVoucher> {
+    const manager = this.config.manager;
     const cumulative = manager.reserve(channel.channelId, charge);
     if (cumulative === undefined) {
       throw new ValidationError(
@@ -247,21 +428,154 @@ export class BatchSettlementPayer {
       );
     }
     const channelId = channel.channelId;
-    const voucher = signSvmVoucher(solana.signer, channelId, cumulative);
+    let claim: Record<string, unknown>;
+    if (channel.chain === 'evm') {
+      const evm = this.requireEvm();
+      const voucher = await signBatchVoucher(
+        evm.voucherSigner ?? evm.account,
+        evmChainIdOf(channel.network),
+        channelId as Hex,
+        cumulative
+      );
+      claim = evmVoucherClaim(voucher, channel.config);
+    } else {
+      const solana = this.requireSolana();
+      claim = solanaVoucherClaim(
+        signSvmVoucher(solana.signer, channelId, cumulative),
+        base58Encode(solana.signer.publicKey)
+      );
+    }
     return {
-      chain: 'solana',
+      chain: channel.chain,
       channelId,
-      claim: solanaVoucherClaim(voucher, base58Encode(solana.signer.publicKey)),
+      claim,
       cumulative,
       settle: (outcome) => {
-        if (outcome.kind === 'refused') {
-          manager.refused(channelId, charge, {
-            notAdvancing: outcome.notAdvancing,
-          });
-        }
+        if (outcome.kind !== 'refused') return;
+        manager.refused(
+          channelId,
+          cumulative,
+          charge,
+          readVoucherRefusal(outcome.message, cumulative)
+        );
       },
     };
   }
+
+  // ─── EVM ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Open a channel by depositing into it through the facilitator. The deposit's
+   * own voucher is the first packet's charge, so the first packet can carry the
+   * very same voucher (ADR 0074 prerequisite 1).
+   */
+  private async evmOnboard(
+    evm: EvmPayerConfig,
+    offer: BatchSettlementEvmOffer,
+    charge: bigint
+  ): Promise<BatchChannel> {
+    const config = buildBatchChannelConfig({
+      payer: evm.account.address,
+      payerAuthorizer: (evm.voucherSigner ?? evm.account).address,
+      offer,
+    });
+    const channel: BatchChannel = {
+      chain: 'evm',
+      channelId: batchChannelId(config, evmChainIdOf(offer.network)),
+      network: offer.network,
+      config,
+    };
+    const deposit = this.config.deposit > charge ? this.config.deposit : charge;
+    const manager = this.config.manager;
+    manager.adoptPending(this.config.connector, channel, deposit);
+    try {
+      await this.evmSettle(evm, offer, channel, deposit, charge);
+    } catch (err) {
+      if (isDefinitiveRefusal(err)) manager.abandon(channel.channelId);
+      throw err;
+    }
+    manager.confirmDeposit(channel.channelId, deposit);
+    return channel;
+  }
+
+  /** Deposit `amount` more into `channel`, carrying the running cumulative `voucherAmount`. */
+  private async evmDeposit(
+    evm: EvmPayerConfig,
+    channel: BatchChannel,
+    offer: BatchSettlementEvmOffer,
+    amount: bigint,
+    voucherAmount: bigint
+  ): Promise<void> {
+    const manager = this.config.manager;
+    const before = manager.depositTotal(channel.channelId);
+    manager.setPendingDeposit(channel.channelId, amount);
+    try {
+      // The deposit carries the running cumulative: a voucher at or below
+      // what the chain has claimed would be refused by the facilitator.
+      await this.evmSettle(evm, offer, channel, amount, voucherAmount);
+    } catch (err) {
+      if (isDefinitiveRefusal(err))
+        manager.confirmDeposit(channel.channelId, before);
+      throw err;
+    }
+    manager.confirmDeposit(channel.channelId, before + amount);
+  }
+
+  private async evmSettle(
+    evm: EvmPayerConfig,
+    offer: BatchSettlementEvmOffer,
+    channel: BatchChannel,
+    amount: bigint,
+    voucherAmount: bigint
+  ): Promise<void> {
+    if (channel.chain !== 'evm') throw new Error('unreachable');
+    if (!evm.facilitatorUrl) {
+      throw new ConfigError(
+        'depositing into a Base batch-settlement channel needs `batchSettlement.facilitatorUrl`: ' +
+          'the x402 facilitator that relays the deposit and pays its gas'
+      );
+    }
+    const build =
+      evm.depositMethod === 'permit2'
+        ? buildPermit2Deposit
+        : buildEip3009Deposit;
+    const payload = await build({
+      payer: evm.account,
+      ...(evm.voucherSigner ? { voucherSigner: evm.voucherSigner } : {}),
+      offer: {
+        ...offer,
+        extra: { ...offer.extra, withdrawDelay: channel.config.withdrawDelay },
+      },
+      config: channel.config,
+      amount,
+      voucherAmount,
+    });
+    try {
+      await settleDeposit({
+        facilitatorUrl: evm.facilitatorUrl,
+        offer,
+        payload,
+        ...(this.config.fetch ? { fetchImpl: this.config.fetch } : {}),
+      });
+    } catch (err) {
+      if (
+        err instanceof FacilitatorError &&
+        err.reason.includes('permit2_allowance')
+      ) {
+        throw new FacilitatorError(
+          `${offer.asset} has no Permit2 allowance from ${evm.account.address}. A Permit2 ` +
+            'deposit needs a one-time `approve(Permit2, …)` from the payer, which costs ' +
+            'native gas unless the facilitator sponsors it; approve once, or use a token ' +
+            'with ERC-3009 and `depositMethod: "eip3009"`.',
+          err.reason,
+          err
+        );
+      }
+      throw err;
+    }
+  }
+
+  // ─── Solana ──────────────────────────────────────────────────────────────
 
   /**
    * Open a channel the receiving connector sponsors: the connector pays the fee
@@ -322,19 +636,6 @@ export class BatchSettlementPayer {
       deposit,
       recentBlockhash,
     });
-
-    const opened = await requestSponsoredOpen({
-      connector: this.config.connector,
-      sponsorEndpoint,
-      transaction,
-      ...(this.config.fetch ? { fetchImpl: this.config.fetch } : {}),
-    });
-    if (opened.channelId !== channelId) {
-      throw new ValidationError(
-        `the sponsor reports opening ${opened.channelId}, not the channel ${channelId} the payer signed for`
-      );
-    }
-
     const channel: BatchChannel = {
       chain: 'solana',
       channelId,
@@ -342,172 +643,73 @@ export class BatchSettlementPayer {
       sponsor: feePayer,
       config,
     };
-    this.config.manager.adopt(this.config.connector, channel, deposit);
+
+    const manager = this.config.manager;
+    manager.adoptPending(this.config.connector, channel, deposit);
+    let opened;
+    try {
+      opened = await requestSponsoredOpen({
+        connector: this.config.connector,
+        sponsorEndpoint,
+        transaction,
+        ...(this.config.fetch ? { fetchImpl: this.config.fetch } : {}),
+      });
+    } catch (err) {
+      if (isDefinitiveRefusal(err)) manager.abandon(channelId);
+      throw err;
+    }
+    if (opened.channelId !== channelId) {
+      // Left pending: the chain, not the sponsor's word, decides whether ours exists.
+      throw new ValidationError(
+        `the sponsor reports opening ${opened.channelId}, not the channel ${channelId} the payer signed for`
+      );
+    }
+    manager.confirmDeposit(channelId, deposit);
     return channel;
   }
 
-  private async evmVoucher(
-    offer: BatchSettlementEvmOffer,
-    charge: bigint
-  ): Promise<PreparedVoucher> {
-    const evm = this.config.evm;
-    if (!evm) {
+  // ─── Keys and rules ──────────────────────────────────────────────────────
+
+  private requireEvm(): EvmPayerConfig {
+    if (!this.config.evm) {
       throw new ConfigError(
         'this client holds no EVM key to pay a batch-settlement channel with'
       );
     }
-    const chainId = evmChainIdOf(offer.network);
-    const voucherSigner = evm.voucherSigner ?? evm.account;
-    const manager = this.config.manager;
-
-    let channel = manager.resolve(
-      this.config.connector,
-      offer.network,
-      offer.asset
-    );
-    if (channel === undefined || manager.isClosing(channel.channelId)) {
-      this.assertMayOpen('a batch-settlement channel');
-      channel = await this.evmOnboard(evm, offer, charge);
-    } else if (
-      manager.signedSoFar(channel.channelId) + charge >
-      manager.depositTotal(channel.channelId)
-    ) {
-      this.assertMayOpen('a top-up of its batch-settlement channel');
-      await this.evmDeposit(
-        evm,
-        channel,
-        offer,
-        manager.signedSoFar(channel.channelId) + charge
-      );
-    }
-    if (channel.chain !== 'evm')
-      throw new Error('unreachable: an EVM offer resolved a Solana channel');
-
-    const cumulative = manager.reserve(channel.channelId, charge);
-    if (cumulative === undefined) {
-      throw new ValidationError(
-        'a free route carries no voucher; send it unpaid'
-      );
-    }
-    const voucher = await signBatchVoucher(
-      voucherSigner,
-      chainId,
-      channel.channelId as Hex,
-      cumulative
-    );
-    const channelId = channel.channelId;
-    return {
-      chain: 'evm',
-      channelId,
-      claim: evmVoucherClaim(voucher, channel.config),
-      cumulative,
-      settle: (outcome) => {
-        if (outcome.kind === 'refused') {
-          manager.refused(channelId, charge, {
-            notAdvancing: outcome.notAdvancing,
-          });
-        }
-      },
-    };
+    return this.config.evm;
   }
 
-  /**
-   * Open a channel by depositing into it through the facilitator. The deposit's
-   * own voucher is the first packet's charge, so the first packet can carry the
-   * very same voucher (ADR 0074 prerequisite 1).
-   */
-  private async evmOnboard(
-    evm: EvmPayerConfig,
-    offer: BatchSettlementEvmOffer,
-    charge: bigint
-  ): Promise<BatchChannel> {
-    const config = buildBatchChannelConfig({
-      payer: evm.account.address,
-      payerAuthorizer: (evm.voucherSigner ?? evm.account).address,
-      offer,
-    });
-    const channel: BatchChannel = {
-      chain: 'evm',
-      channelId: batchChannelId(config, evmChainIdOf(offer.network)),
-      network: offer.network,
-      config,
-    };
-    const deposit = this.config.deposit > charge ? this.config.deposit : charge;
-    await this.evmSettle(evm, offer, channel, deposit, charge);
-    this.config.manager.adopt(this.config.connector, channel, deposit);
-    return channel;
-  }
-
-  /** Top an existing channel up by the configured deposit, or by enough to cover `needed`. */
-  private async evmDeposit(
-    evm: EvmPayerConfig,
-    channel: BatchChannel,
-    offer: BatchSettlementEvmOffer,
-    needed: bigint
-  ): Promise<void> {
-    const manager = this.config.manager;
-    const shortfall = needed - manager.depositTotal(channel.channelId);
-    const amount =
-      this.config.deposit > shortfall ? this.config.deposit : shortfall;
-    // The deposit carries the running cumulative: a voucher at or below what
-    // the chain has claimed would be refused by the facilitator.
-    await this.evmSettle(evm, offer, channel, amount, needed);
-    manager.addDeposit(channel.channelId, amount);
-  }
-
-  private async evmSettle(
-    evm: EvmPayerConfig,
-    offer: BatchSettlementEvmOffer,
-    channel: BatchChannel,
-    amount: bigint,
-    voucherAmount: bigint
-  ): Promise<void> {
-    if (channel.chain !== 'evm') throw new Error('unreachable');
-    if (!evm.facilitatorUrl) {
+  private requireSolana(): SolanaPayerConfig {
+    if (!this.config.solana) {
       throw new ConfigError(
-        'depositing into a Base batch-settlement channel needs `batchSettlement.facilitatorUrl`: ' +
-          'the x402 facilitator that relays the deposit and pays its gas'
+        'this client holds no Solana key to pay a batch-settlement channel with'
       );
     }
-    const build =
-      evm.depositMethod === 'permit2'
-        ? buildPermit2Deposit
-        : buildEip3009Deposit;
-    const payload = await build({
-      payer: evm.account,
-      ...(evm.voucherSigner ? { voucherSigner: evm.voucherSigner } : {}),
-      offer: {
-        ...offer,
-        extra: { ...offer.extra, withdrawDelay: channel.config.withdrawDelay },
-      },
-      config: channel.config,
-      amount,
-      voucherAmount,
-    });
-    try {
-      await settleDeposit({
-        facilitatorUrl: evm.facilitatorUrl,
-        offer,
-        payload,
-        ...(this.config.fetch ? { fetchImpl: this.config.fetch } : {}),
-      });
-    } catch (err) {
-      if (
-        err instanceof FacilitatorError &&
-        err.reason.includes('permit2_allowance')
-      ) {
-        throw new FacilitatorError(
-          `${offer.asset} has no Permit2 allowance from ${evm.account.address}. A Permit2 ` +
-            'deposit needs a one-time `approve(Permit2, …)` from the payer, which costs ' +
-            'native gas unless the facilitator sponsors it; approve once, or use a token ' +
-            'with ERC-3009 and `depositMethod: "eip3009"`.',
-          err.reason,
-          err
-        );
-      }
-      throw err;
+    return this.config.solana;
+  }
+
+  /** Refuse an open, top-up or replacement a packet needs, when that is not its to do. */
+  private assertMayOpen(what: string, command: string): void {
+    if (this.config.autoOpen === false) {
+      throw new ChannelNotOpenError(
+        `paying ${this.config.connector} needs ${what} first, and this client does not ` +
+          `open channels on its own; run \`toon ${command} --batch-settlement\``
+      );
     }
   }
+}
+
+/**
+ * Whether a failed deposit or sponsored open is KNOWN not to have landed: the
+ * facilitator or sponsor answered, readably, with a refusal. A transport
+ * failure, an unreadable answer, or a sponsor's `502` (sent and not confirmed)
+ * proves nothing, and leaves the deposit pending for the chain to decide.
+ */
+function isDefinitiveRefusal(err: unknown): boolean {
+  if (err instanceof FacilitatorError)
+    return err.reason !== 'unreadable_response';
+  if (err instanceof SponsorRefusedError) return err.status !== 502;
+  return false;
 }
 
 /** The program that owns `address`, or `null` when there is no such account. */

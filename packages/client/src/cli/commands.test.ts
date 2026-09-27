@@ -885,9 +885,13 @@ describe('channel, under --batch-settlement', () => {
         calls.push('open');
         return summary;
       },
+      deposit: async () => {
+        calls.push('deposit');
+        return summary;
+      },
       close: async () => {
         calls.push('close');
-        return { channelId: summary.channel.channelId, transaction: '0xclose', settleableAt: 99n };
+        return [{ channelId: summary.channel.channelId, transaction: '0xclose', settleableAt: 99n }];
       },
       settle: async () => {
         calls.push('settle');
@@ -908,13 +912,13 @@ describe('channel, under --batch-settlement', () => {
 
   it('acts on the batch-settlement channel for open, close, settle and status', async () => {
     const calls: string[] = [];
-    for (const sub of ['open', 'close', 'settle', 'status']) {
-      const result = await run(['channel', sub, '--batch-settlement'], {
+    for (const argv of [['open'], ['deposit', '5'], ['close'], ['settle'], ['status']]) {
+      const result = await run(['channel', ...argv, '--batch-settlement'], {
         client: { batchSettlement: batch(calls) },
       });
       expect(result.code).toBe(EXIT.ok);
     }
-    expect(calls).toEqual(['open', 'close', 'settle', 'channels']);
+    expect(calls).toEqual(['open', 'deposit', 'close', 'settle', 'channels']);
   });
 
   it('shows the channel in JSON, amounts as strings', async () => {
@@ -926,10 +930,25 @@ describe('channel, under --batch-settlement', () => {
     ]);
   });
 
-  it('has no separate deposit', async () => {
-    const result = await run(['channel', 'deposit', '5', '--batch-settlement'], {
+  it('refuses a deposit that is not a whole number', async () => {
+    const result = await run(['channel', 'deposit', 'lots', '--batch-settlement'], {
       client: { batchSettlement: batch([]) },
     });
     expect(result.code).toBe(EXIT.usage);
+  });
+
+  it('exits non-zero when a channel could not be left, while reporting the others', async () => {
+    const facade = {
+      ...batch([]),
+      settle: async () => [
+        { channelId: 'a', transaction: '0x1' },
+        { channelId: 'b', error: 'rpc down' },
+      ],
+    };
+    const result = await run(['channel', 'settle', '--batch-settlement'], {
+      client: { batchSettlement: facade },
+    });
+    expect(result.code).not.toBe(EXIT.ok);
+    expect(result.stdout.join('\n')).toContain('rpc down');
   });
 });

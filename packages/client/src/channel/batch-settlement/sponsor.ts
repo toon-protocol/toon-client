@@ -82,7 +82,8 @@ export async function requestSponsoredOpen(params: {
       typeof body['detail'] === 'string' ? `: ${body['detail']}` : '';
     throw new SponsorRefusedError(
       `the connector refused to sponsor the open (${reason})${detail}`,
-      reason
+      reason,
+      response.status
     );
   }
 

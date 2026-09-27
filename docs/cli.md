@@ -138,11 +138,11 @@ node from instead (connector ADR 0074; see [channels.md](channels.md#onboarding-
 
 | Subcommand | Under `--batch-settlement` |
 | --- | --- |
-| `open` | Onboard with no native gas: a deposit through `--facilitator` on Base, or a sponsored open on Solana. |
+| `open` | Onboard with no native gas: a deposit through `--facilitator` on Base, or a sponsored open on Solana. If a channel is already open, it is shown instead. |
 | `status` | Every batch-settlement channel you hold with the node, and what you have signed on each. |
-| `close` | Start leaving the live channel: `initiateWithdraw` on Base, or `request_close` on Solana. This costs native gas. |
-| `settle` | Take back the unspent deposit of every channel whose window has passed. This costs native gas. |
-| `deposit` | Not a separate step. A Base channel is topped up by the payment that needs it. A Solana channel is replaced by a fresh sponsored one. |
+| `deposit <base units>` | Top up the Base channel through `--facilitator`. Solana channels are not topped up: the next payment the channel cannot cover opens a fresh sponsored one. |
+| `close` | Start leaving every open channel with the node, including ones a newer channel replaced: `initiateWithdraw` on Base, or `request_close` on Solana. This costs native gas. |
+| `settle` | Take back the unspent deposit of every channel whose window has passed, including a Solana channel the node sealed first. This costs native gas. One channel failing does not stop the others. The command exits non-zero when any channel fails. |
 
 ```bash
 npx toon --batch-settlement --facilitator https://x402.org/facilitator channel open

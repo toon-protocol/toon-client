@@ -16,6 +16,7 @@ import { assetFromTerms, formatAmount, type AssetInfo } from '../output.js';
 import type { ChannelState, ClaimStateResult } from '../../client/types.js';
 import type {
   BatchChannelSummary,
+  BatchExitResult,
   BatchSettlementFacade,
 } from '../../client/batch-settlement-facade.js';
 
@@ -146,6 +147,18 @@ export async function run(ctx: CommandContext): Promise<number> {
   return 0;
 }
 
+/** One channel's exit step, for a person. */
+function exitRows(result: BatchExitResult): [string, string][] {
+  const rows: [string, string][] = [['channel', result.channelId]];
+  if (result.transaction !== undefined) rows.push(['tx', result.transaction]);
+  if (result.settleableAt !== undefined) rows.push(['settleable at', result.settleableAt.toString()]);
+  if (result.error !== undefined) rows.push(['error', result.error]);
+  if (result.transaction === undefined && result.error === undefined && result.settleableAt === undefined) {
+    rows.push(['status', 'nothing left to take back']);
+  }
+  return rows;
+}
+
 /** The rows that describe an x402 batch-settlement channel to a person. */
 function batchRows(summary: BatchChannelSummary): [string, string][] {
   const rows: [string, string][] = [
@@ -183,37 +196,39 @@ async function runBatchSettlement(
   }
 
   if (sub === 'deposit') {
-    throw new UsageError(
-      'a batch-settlement channel is topped up by the payment that needs it (on Base), or ' +
-        'replaced by a fresh sponsored one (on Solana); there is no separate deposit',
-      'channel'
-    );
-  }
-
-  if (sub === 'close') {
-    const result = await batch.close();
-    ctx.out.render(result, () => {
-      ctx.out.line('Withdrawal started. Settle once its window has elapsed.');
-      ctx.out.rows([
-        ['channel', result.channelId],
-        ['tx', result.transaction],
-        ['settleable at', result.settleableAt.toString()],
-      ]);
+    const amount = ctx.positionals[1] ?? stringOption(ctx.values, 'amount');
+    if (amount === undefined) {
+      throw new UsageError('channel deposit needs an amount in base units', 'channel');
+    }
+    let value: bigint;
+    try {
+      value = BigInt(amount);
+    } catch {
+      throw new UsageError(`'${amount}' is not a whole number of base units`, 'channel');
+    }
+    const summary = await batch.deposit(value);
+    ctx.out.render(summary, () => {
+      ctx.out.line('Deposit confirmed.');
+      ctx.out.rows(batchRows(summary));
     });
     return 0;
   }
 
-  if (sub === 'settle') {
-    const settled = await batch.settle();
-    ctx.out.render(settled, () => {
-      if (settled.length === 0) {
+  if (sub === 'close' || sub === 'settle') {
+    const results = sub === 'close' ? await batch.close() : await batch.settle();
+    ctx.out.render(results, () => {
+      if (results.length === 0) {
         ctx.out.line('No batch-settlement channel is ready to settle yet.');
         return;
       }
-      ctx.out.line('Unspent deposit returned.');
-      for (const s of settled) ctx.out.rows([['channel', s.channelId], ['tx', s.transaction]]);
+      ctx.out.line(
+        sub === 'close'
+          ? 'Leaving every open batch-settlement channel. Settle each once its window has elapsed.'
+          : 'Unspent deposits returned where each window had elapsed.'
+      );
+      for (const r of results) ctx.out.rows(exitRows(r));
     });
-    return 0;
+    return results.some((r) => r.error !== undefined) ? 1 : 0;
   }
 
   // status

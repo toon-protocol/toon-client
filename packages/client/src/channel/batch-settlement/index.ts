@@ -68,7 +68,7 @@ export {
 export { getSvmBatchChannel } from './svm.js';
 export {
   BatchSettlementPayer,
-  voucherRefusalIsNotAdvancing,
+  readVoucherRefusal,
   type BatchSettlementPayerConfig,
   type PreparedVoucher,
   type VoucherOutcome,

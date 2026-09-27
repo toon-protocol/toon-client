@@ -67,8 +67,47 @@ describe('BatchChannelManager', () => {
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 1_000n);
     m.reserve(EVM.channelId, 500n);
-    m.refused(EVM.channelId, 500n, { notAdvancing: false });
+    m.refused(EVM.channelId, 1_500n, 500n, { notAdvancing: false });
     expect(m.reserve(EVM.channelId, 500n)).toBe(1_500n);
+  });
+
+  it('does not give a charge back when a later voucher already superseded the refused one', () => {
+    // Two sends in flight: A reserves 1000, B reserves 2000. B is banked, then
+    // A is refused. Subtracting A's charge would drop below what the connector
+    // holds and refuse every voucher after.
+    const m = new BatchChannelManager();
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    m.reserve(EVM.channelId, 1_000n);
+    m.reserve(EVM.channelId, 1_000n);
+    m.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: false });
+    expect(m.reserve(EVM.channelId, 500n)).toBe(2_500n);
+  });
+
+  it('adopts the watermark an underpayment names, so the next voucher is not refused the same way', () => {
+    // The connector holds 15; this client counts 12. A charge of 7 signs 19,
+    // which advances by 4 < 7: "advances value by 4". Watermark = 19 - 4.
+    const m = new BatchChannelManager();
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    m.recoverFromChain(EVM.channelId, 20n); // ceiling 20: the client signed that much
+    m.refused(EVM.channelId, 20n, 8n, { notAdvancing: false }); // count falls back to 12
+    expect(m.signedSoFar(EVM.channelId)).toBe(12n);
+    expect(m.reserve(EVM.channelId, 7n)).toBe(19n);
+    m.refused(EVM.channelId, 19n, 7n, {
+      notAdvancing: false,
+      connectorWatermark: 15n,
+    });
+    expect(m.reserve(EVM.channelId, 7n)).toBe(22n);
+  });
+
+  it('never adopts a named watermark above what this client ever signed', () => {
+    const m = new BatchChannelManager();
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    m.reserve(EVM.channelId, 100n);
+    m.refused(EVM.channelId, 100n, 100n, {
+      notAdvancing: false,
+      connectorWatermark: 10_000n,
+    });
+    expect(m.signedSoFar(EVM.channelId)).toBe(100n);
   });
 
   it('keeps a voucher whose fate is unknown counted, so the next one clears it', () => {
@@ -80,17 +119,20 @@ describe('BatchChannelManager', () => {
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 1_000n);
     m.reserve(EVM.channelId, 500n);
-    m.refused(EVM.channelId, 500n, { notAdvancing: false });
+    m.refused(EVM.channelId, 1_500n, 500n, { notAdvancing: false });
     expect(m.reserve(EVM.channelId, 300n)).toBe(1_300n); // sent, never answered
     expect(m.reserve(EVM.channelId, 200n)).toBe(1_500n);
   });
 
-  it('reads amount_not_advancing as: the connector already holds this amount', () => {
+  it('reads amount_not_advancing as: the connector holds up to everything ever signed', () => {
     const m = new BatchChannelManager();
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 1_000n);
-    m.refused(EVM.channelId, 1_000n, { notAdvancing: true });
-    expect(m.reserve(EVM.channelId, 1_000n)).toBe(2_000n);
+    m.reserve(EVM.channelId, 1_000n);
+    m.refused(EVM.channelId, 2_000n, 1_000n, { notAdvancing: false }); // count 1000, ceiling 2000
+    m.reserve(EVM.channelId, 500n); // 1500, "goes backwards": the connector holds more
+    m.refused(EVM.channelId, 1_500n, 500n, { notAdvancing: true });
+    expect(m.reserve(EVM.channelId, 500n)).toBe(2_500n);
   });
 
   it('recovers a lost watermark from what the chain has landed, as a lower bound', () => {

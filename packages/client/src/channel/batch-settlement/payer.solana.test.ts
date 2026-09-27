@@ -47,6 +47,10 @@ const DESCRIPTION = parseSelfDescription({
 });
 
 interface World {
+  /** Channel accounts on chain: PDA → deposit. */
+  landed: Map<string, bigint>;
+  /** Channels the sponsor was asked to open, in order. */
+  channels: string[];
   mintOwner: string;
   ataBalance: bigint | null;
   sponsorAnswer?: (channelId: string) => { status: number; body: unknown };
@@ -81,6 +85,7 @@ function fakeFetch(world: World): typeof fetch {
           a !== PAYER.address &&
           tx.staticAccounts.includes(deriveAssociatedTokenAccount(a, MINT))
       )!;
+      world.channels.push(channelId);
       const answer = world.sponsorAnswer?.(channelId) ?? {
         status: 200,
         body: {
@@ -97,15 +102,31 @@ function fakeFetch(world: World): typeof fetch {
     expect(url).toBe('http://rpc');
     const result = (() => {
       switch (body.method) {
-        case 'getAccountInfo':
-          expect(body.params![0]).toBe(MINT);
+        case 'getAccountInfo': {
+          const address = body.params![0] as string;
+          if (address === MINT) {
+            return {
+              value: {
+                owner: world.mintOwner,
+                data: ['', 'base64'],
+                lamports: 1,
+              },
+            };
+          }
+          // A channel account: present only once the test says it landed.
+          const deposit = world.landed.get(address);
+          if (deposit === undefined) return { value: null };
+          const account = new Uint8Array(256);
+          account[0] = 1;
+          new DataView(account.buffer).setBigUint64(12, deposit, true);
           return {
             value: {
-              owner: world.mintOwner,
-              data: ['', 'base64'],
+              owner: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
+              data: [Buffer.from(account).toString('base64'), 'base64'],
               lamports: 1,
             },
           };
+        }
         case 'getTokenAccountBalance':
           expect(body.params![0]).toBe(
             deriveAssociatedTokenAccount(PAYER.address, MINT)
@@ -126,6 +147,8 @@ function fakeFetch(world: World): typeof fetch {
 
 function setup(overrides: Partial<World> = {}, deposit = 1_000_000n) {
   const world: World = {
+    landed: new Map(),
+    channels: [],
     mintOwner: TOKEN_PROGRAM,
     ataBalance: 10_000_000n,
     opens: [],
@@ -240,5 +263,58 @@ describe('BatchSettlementPayer on Solana', () => {
     await expect(
       setup({ ataBalance: 5n }).payer.claimFor(DESCRIPTION, 'solana', 1_000n)
     ).rejects.toThrow(InsufficientBalanceError);
+  });
+
+  it('keeps a channel whose sponsor answered 502, and adopts it once the chain shows it', async () => {
+    const { world, payer, manager } = setup({
+      sponsorAnswer: () => ({
+        status: 502,
+        body: { error: 'submission_failed', detail: 'timeout' },
+      }),
+    });
+    await expect(payer.claimFor(DESCRIPTION, 'solana', 1_000n)).rejects.toThrow(
+      SponsorRefusedError
+    );
+    const channelId = world.channels[0]!;
+    expect(manager.pendingDeposit(channelId)).toBe(1_000_000n);
+
+    world.landed.set(channelId, 1_000_000n);
+    world.sponsorAnswer = undefined;
+    const voucher = await payer.claimFor(DESCRIPTION, 'solana', 1_000n);
+    expect(voucher!.channelId).toBe(channelId);
+    expect(world.opens).toHaveLength(1);
+    expect(manager.depositTotal(channelId)).toBe(1_000_000n);
+  });
+
+  it('forgets a channel whose sponsor definitely refused, and opens afresh', async () => {
+    const { world, payer, manager } = setup({
+      sponsorAnswer: () => ({
+        status: 422,
+        body: { error: 'deposit_below_minimum', detail: '' },
+      }),
+    });
+    await expect(payer.claimFor(DESCRIPTION, 'solana', 1_000n)).rejects.toThrow(
+      SponsorRefusedError
+    );
+    expect(manager.channels('https://node.example')).toEqual([]);
+    world.sponsorAnswer = undefined;
+    await payer.claimFor(DESCRIPTION, 'solana', 1_000n);
+    expect(world.opens).toHaveLength(2);
+  });
+
+  it('opens afresh when a 502 open never landed', async () => {
+    const { world, payer } = setup({
+      sponsorAnswer: () => ({
+        status: 502,
+        body: { error: 'submission_failed', detail: '' },
+      }),
+    });
+    await expect(
+      payer.claimFor(DESCRIPTION, 'solana', 1_000n)
+    ).rejects.toThrow();
+    world.sponsorAnswer = undefined;
+    const voucher = await payer.claimFor(DESCRIPTION, 'solana', 1_000n);
+    expect(world.opens).toHaveLength(2);
+    expect(voucher!.channelId).toBe(world.channels[1]);
   });
 });

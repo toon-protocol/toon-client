@@ -1,10 +1,16 @@
 /**
- * `client.batchSettlement` — leaving the x402 `batch-settlement` channels this
- * client pays from (connector ADR 0074, toon-client#691), and seeing them.
+ * `client.batchSettlement` — the x402 `batch-settlement` channels this client
+ * pays from (connector ADR 0074, toon-client#691): listing them, opening and
+ * topping one up by hand, and leaving them.
  *
- * Paying needs nothing from here: `send()` onboards and vouchers on its own.
- * What a caller does by hand is exit, which is the payer's own transaction on
- * its own chain account and the one step of the scheme that costs native gas.
+ * Paying needs nothing from here: `send()` onboards and vouchers on its own
+ * unless `autoOpenChannel` is off. Exit is always by hand: it is the payer's
+ * own transaction on its own chain account, the one step of the scheme that
+ * costs native gas.
+ *
+ * Exit walks EVERY channel this client holds with the node, not only the one it
+ * pays from now: a channel archived by a newer one — replaced when exhausted,
+ * or left behind by a lost binding — still holds a deposit.
  */
 
 import {
@@ -20,8 +26,11 @@ import type {
   BatchChannelManager,
 } from '../channel/batch-settlement/manager.js';
 import type { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
-import { chooseBatchSettlement } from '../channel/batch-settlement/offers.js';
-import { evmChainIdOf } from '../channel/batch-settlement/evm.js';
+import {
+  evmChainIdOf,
+  readEvmBatchChannel,
+} from '../channel/batch-settlement/evm.js';
+import { getSvmBatchChannel } from '../channel/batch-settlement/svm.js';
 import {
   finalizeEvmBatchWithdraw,
   initiateEvmBatchWithdraw,
@@ -51,29 +60,41 @@ export interface BatchChannelSummary {
   settledAt?: bigint;
 }
 
+/** What one exit step did to one channel. */
+export interface BatchExitResult {
+  channelId: string;
+  /** The transaction sent, when one was. A channel already done needs none. */
+  transaction?: string;
+  /** For a close: unix seconds its deposit can be taken back. */
+  settleableAt?: bigint;
+  /** Why this channel was left as it was. Other channels are still attempted. */
+  error?: string;
+}
+
 export interface BatchSettlementFacade {
   /** Every batch-settlement channel this client holds with the connector. */
   channels(): BatchChannelSummary[];
   /**
-   * Open a channel now rather than on the first paid `send()`: a deposit
-   * through the facilitator on Base, a sponsored open on Solana.
+   * Open a channel now rather than on the first paid `send()` — a deposit
+   * through the facilitator on Base, a sponsored open on Solana — or return
+   * the one already open.
    */
   open(): Promise<BatchChannelSummary>;
+  /** Deposit `amount` more into the Base channel this client pays from. */
+  deposit(amount: bigint): Promise<BatchChannelSummary>;
   /**
-   * Start leaving the channel this client currently pays from: on EVM a timed
+   * Start leaving every channel still open with the node: on EVM a timed
    * withdrawal of everything unclaimed, on Solana `request_close`. The next
    * paid `send()` onboards a fresh channel.
    */
-  close(): Promise<{
-    channelId: string;
-    transaction: string;
-    settleableAt: bigint;
-  }>;
+  close(): Promise<BatchExitResult[]>;
   /**
    * Take back the unspent deposit of every channel whose exit window has
-   * passed. Channels still inside it are left for a later call.
+   * passed — including a Solana channel the connector sealed first. Channels
+   * still inside their window are left for a later call; one that fails does
+   * not stop the rest.
    */
-  settle(): Promise<{ channelId: string; transaction: string }[]>;
+  settle(): Promise<BatchExitResult[]>;
 }
 
 export interface BatchSettlementFacadeDeps {
@@ -104,45 +125,72 @@ export class ClientBatchSettlementFacade implements BatchSettlementFacade {
         `${this.deps.connector} offers no batch-settlement channel on ${this.deps.chain}`
       );
     }
-    const summary = this.channels().find(
-      (c) => c.channel.channelId === channel.channelId
-    );
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- `open` adopted it
-    return summary!;
+    return this.summary(channel.channelId);
   }
 
-  async close(): Promise<{
-    channelId: string;
-    transaction: string;
-    settleableAt: bigint;
-  }> {
-    const terms = chooseBatchSettlement(
+  async deposit(amount: bigint): Promise<BatchChannelSummary> {
+    const channel = await this.deps.payer.topUp(
       await this.deps.describe(),
-      this.deps.chain
+      this.deps.chain,
+      amount
     );
-    const channel =
-      terms &&
-      this.deps.manager.resolve(
-        this.deps.connector,
-        terms.network,
-        terms.asset
-      );
-    if (!channel || this.deps.manager.isClosing(channel.channelId)) {
+    return this.summary(channel.channelId);
+  }
+
+  async close(): Promise<BatchExitResult[]> {
+    const open = this.deps.manager.openChannels(this.deps.connector);
+    if (open.length === 0) {
       throw new ChannelNotOpenError(
-        `this client pays ${this.deps.connector} from no open batch-settlement channel on ${this.deps.chain}`
+        `this client holds no open batch-settlement channel with ${this.deps.connector}`
       );
     }
+    const results: BatchExitResult[] = [];
+    for (const channel of open) {
+      results.push(
+        await this.attempt(channel.channelId, () => this.closeOne(channel))
+      );
+    }
+    return results;
+  }
+
+  async settle(): Promise<BatchExitResult[]> {
     const now = this.now();
+    const results: BatchExitResult[] = [];
+    for (const summary of this.channels()) {
+      if (summary.settledAt !== undefined) continue;
+      const due =
+        summary.settleableAt !== undefined && summary.settleableAt <= now;
+      // A Solana channel the connector sealed first is settleable with no
+      // close of ours; an EVM one never is.
+      if (!due && summary.channel.chain !== 'solana') continue;
+      const result = await this.attempt(summary.channel.channelId, () =>
+        this.settleOne(summary, due, now)
+      );
+      if (result !== undefined) results.push(result);
+    }
+    return results;
+  }
+
+  private async closeOne(channel: BatchChannel): Promise<BatchExitResult> {
+    const now = this.now();
+    const manager = this.deps.manager;
     if (channel.chain === 'evm') {
-      const started = await initiateEvmBatchWithdraw(
-        this.evmClients(channel.network),
-        channel
+      const clients = this.evmClients(channel.network);
+      const state = await readEvmBatchChannel(
+        clients.publicClient,
+        channel.channelId as Hex
       );
-      this.deps.manager.markClosing(
-        channel.channelId,
-        now,
-        started.finalizeAfter
-      );
+      if (
+        state.balance <= state.totalClaimed &&
+        state.pendingWithdrawal === 0n
+      ) {
+        // Nothing left to take back: everything deposited was claimed.
+        manager.markClosing(channel.channelId, now, now);
+        manager.markSettled(channel.channelId, now);
+        return { channelId: channel.channelId };
+      }
+      const started = await initiateEvmBatchWithdraw(clients, channel);
+      manager.markClosing(channel.channelId, now, started.finalizeAfter);
       return {
         channelId: channel.channelId,
         transaction: started.transaction,
@@ -150,12 +198,31 @@ export class ClientBatchSettlementFacade implements BatchSettlementFacade {
       };
     }
     const solana = this.requireSolana();
+    const state = await getSvmBatchChannel(solana.rpc, channel.channelId);
+    if (
+      state === null ||
+      state.payerWithdrawnAt !== 0n ||
+      state.status === 'distributed'
+    ) {
+      manager.markClosing(channel.channelId, now, now);
+      manager.markSettled(channel.channelId, now);
+      return { channelId: channel.channelId };
+    }
+    if (state.status !== 'open') {
+      // Already closing or sealed — by the connector, or by an earlier run.
+      const settleableAt =
+        state.status === 'sealed'
+          ? now
+          : state.closureStartedAt + BigInt(state.gracePeriod);
+      manager.markClosing(channel.channelId, now, settleableAt);
+      return { channelId: channel.channelId, settleableAt };
+    }
     const started = await requestSvmBatchClose(
       solana.rpc,
       solana.signer,
       channel.channelId
     );
-    this.deps.manager.markClosing(channel.channelId, now, started.settleableAt);
+    manager.markClosing(channel.channelId, now, started.settleableAt);
     return {
       channelId: channel.channelId,
       transaction: started.transaction,
@@ -163,39 +230,86 @@ export class ClientBatchSettlementFacade implements BatchSettlementFacade {
     };
   }
 
-  async settle(): Promise<{ channelId: string; transaction: string }[]> {
-    const now = this.now();
-    const due = this.channels().filter(
-      (c) =>
-        c.closedAt !== undefined &&
-        c.settledAt === undefined &&
-        c.settleableAt !== undefined &&
-        c.settleableAt <= now
-    );
-    const settled: { channelId: string; transaction: string }[] = [];
-    for (const { channel } of due) {
-      const transaction =
-        channel.chain === 'evm'
-          ? (
-              await finalizeEvmBatchWithdraw(
-                this.evmClients(channel.network),
-                channel,
-                now
-              )
-            ).transaction
-          : (
-              await withdrawSvmBatchChannel(
-                this.requireSolana().rpc,
-                this.requireSolana().signer,
-                channel.channelId,
-                channel.config,
-                now
-              )
-            ).transaction;
-      this.deps.manager.markSettled(channel.channelId, now);
-      settled.push({ channelId: channel.channelId, transaction });
+  /** `undefined` when there is nothing to do yet for this channel. */
+  private async settleOne(
+    summary: BatchChannelSummary,
+    due: boolean,
+    now: bigint
+  ): Promise<BatchExitResult | undefined> {
+    const { channel } = summary;
+    const manager = this.deps.manager;
+    if (channel.chain === 'evm') {
+      const clients = this.evmClients(channel.network);
+      const state = await readEvmBatchChannel(
+        clients.publicClient,
+        channel.channelId as Hex
+      );
+      if (
+        state.pendingWithdrawal === 0n &&
+        state.balance <= state.totalClaimed
+      ) {
+        manager.markSettled(channel.channelId, now);
+        return { channelId: channel.channelId };
+      }
+      const { transaction } = await finalizeEvmBatchWithdraw(
+        clients,
+        channel,
+        now
+      );
+      manager.markSettled(channel.channelId, now);
+      return { channelId: channel.channelId, transaction };
     }
-    return settled;
+
+    const solana = this.requireSolana();
+    const state = await getSvmBatchChannel(solana.rpc, channel.channelId);
+    // Gone, or already refunded — `distribute` pays the payer too — is done.
+    if (
+      state === null ||
+      state.payerWithdrawnAt !== 0n ||
+      state.status === 'distributed'
+    ) {
+      if (summary.closedAt === undefined)
+        manager.markClosing(channel.channelId, now, now);
+      manager.markSettled(channel.channelId, now);
+      return { channelId: channel.channelId };
+    }
+    const sealedByConnector = state.status === 'sealed';
+    if (!due && !sealedByConnector) return undefined;
+    const { transaction } = await withdrawSvmBatchChannel(
+      solana.rpc,
+      solana.signer,
+      channel.channelId,
+      channel.config,
+      now
+    );
+    if (summary.closedAt === undefined)
+      manager.markClosing(channel.channelId, now, now);
+    manager.markSettled(channel.channelId, now);
+    return { channelId: channel.channelId, transaction };
+  }
+
+  /** Run one channel's step, turning a failure into that channel's result. */
+  private async attempt<T extends BatchExitResult | undefined>(
+    channelId: string,
+    step: () => Promise<T>
+  ): Promise<T | BatchExitResult> {
+    try {
+      return await step();
+    } catch (err) {
+      return {
+        channelId,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  private summary(channelId: string): BatchChannelSummary {
+    const found = this.channels().find(
+      (c) => c.channel.channelId === channelId
+    );
+    if (found === undefined)
+      throw new Error(`channel ${channelId} is not recorded`);
+    return found;
   }
 
   private evmClients(network: string): EvmExitClients {

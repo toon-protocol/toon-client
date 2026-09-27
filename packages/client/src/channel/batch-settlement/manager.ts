@@ -88,6 +88,29 @@ export class BatchChannelManager {
    * channel already known keeps its own.
    */
   adopt(connector: string, channel: BatchChannel, depositTotal: bigint): void {
+    this.bind(connector, channel, { depositTotal });
+  }
+
+  /**
+   * Record a channel BEFORE its first deposit or sponsored open leaves, with
+   * that deposit pending. A facilitator or sponsor that times out after the
+   * transaction landed must not lose the channel: on EVM the contract never
+   * gives a config back, and a Solana PDA cannot be recomputed without its
+   * salt and slot. {@link confirmDeposit} or {@link abandon} settles it.
+   */
+  adoptPending(
+    connector: string,
+    channel: BatchChannel,
+    pendingDeposit: bigint
+  ): void {
+    this.bind(connector, channel, { depositTotal: 0n, pendingDeposit });
+  }
+
+  private bind(
+    connector: string,
+    channel: BatchChannel,
+    deposit: { depositTotal: bigint; pendingDeposit?: bigint }
+  ): void {
     const key = BatchChannelManager.bindingKey(
       connector,
       channel.network,
@@ -109,7 +132,10 @@ export class BatchChannelManager {
         tokenAddress: channel.config.token,
         recipient: channel.config.receiver,
       },
-      depositTotal,
+      depositTotal: deposit.depositTotal,
+      ...(deposit.pendingDeposit !== undefined
+        ? { pendingDeposit: deposit.pendingDeposit }
+        : {}),
       batchSettlement: toBinding(channel),
     });
     if (!this.store.load(channel.channelId)) {
@@ -119,6 +145,42 @@ export class BatchChannelManager {
         signedCeiling: 0n,
       });
     }
+  }
+
+  /** A deposit on `channelId` whose fate is not yet known, if there is one. */
+  pendingDeposit(channelId: string): bigint | undefined {
+    return this.findBinding(channelId)?.binding.pendingDeposit;
+  }
+
+  /** Record a top-up about to leave, before it does. */
+  setPendingDeposit(channelId: string, amount: bigint): void {
+    const found = this.requireBinding(channelId);
+    this.store.saveBinding?.(found.key, {
+      ...found.binding,
+      pendingDeposit: amount,
+    });
+  }
+
+  /**
+   * Settle a pending deposit against what the chain holds: `onChain` is the
+   * channel's escrow as the chain reports it (EVM `channels(id).balance`,
+   * Solana `deposit`), which is the deposit from here on.
+   */
+  confirmDeposit(channelId: string, onChain: bigint): void {
+    const found = this.requireBinding(channelId);
+    const { pendingDeposit: _settled, ...rest } = found.binding;
+    this.store.saveBinding?.(found.key, { ...rest, depositTotal: onChain });
+  }
+
+  /**
+   * Forget a channel whose first deposit definitely did not land: nothing is
+   * on chain under it, so there is nothing to keep.
+   */
+  abandon(channelId: string): void {
+    const found = this.findBinding(channelId);
+    if (!found || (found.binding.depositTotal ?? 0n) > 0n) return;
+    this.store.deleteBinding?.(found.key);
+    this.store.delete(channelId);
   }
 
   /** The channel this client pays `connector` from on `network` in `asset`, if it holds one. */
@@ -141,11 +203,7 @@ export class BatchChannelManager {
 
   /** Record a top-up of `amount` on `channelId`. */
   addDeposit(channelId: string, amount: bigint): void {
-    const found = this.findBinding(channelId);
-    if (!found)
-      throw new ValidationError(
-        `no batch-settlement channel ${channelId} is held`
-      );
+    const found = this.requireBinding(channelId);
     this.store.saveBinding?.(found.key, {
       ...found.binding,
       depositTotal: (found.binding.depositTotal ?? 0n) + amount,
@@ -187,22 +245,60 @@ export class BatchChannelManager {
   }
 
   /**
-   * The connector refused the voucher reserved for `charge`. A refusal that
-   * says the amount did not advance means the connector already holds at least
-   * that much, so it stays counted; any other refusal means nothing was
-   * banked, and the charge is given back.
+   * The connector refused the voucher for `voucherAmount`, reserved for
+   * `charge`. What the refusal says about the connector's watermark decides:
+   *
+   *   - **it named the watermark** — an underpayment says how far the voucher
+   *     advanced it, so the watermark is `voucherAmount − advanced`. That is
+   *     adopted exactly (never above what this client ever signed), and the
+   *     next voucher is priced from it rather than refused the same way again;
+   *   - **it did not advance** — the connector holds at least this much, and
+   *     can hold no more than this client ever signed, so the count moves to
+   *     that ceiling and the next voucher clears whatever it holds;
+   *   - **anything else** banked nothing, and the charge is given back — but
+   *     only if no later voucher has already superseded this one, since a
+   *     concurrent send may have been banked above it.
    */
   refused(
     channelId: string,
+    voucherAmount: bigint,
     charge: bigint,
-    reason: { notAdvancing: boolean }
+    reason: { notAdvancing: boolean; connectorWatermark?: bigint }
   ): void {
-    if (reason.notAdvancing || charge <= 0n) return;
     const entry = this.entry(channelId);
+    const ceiling = entry.signedCeiling ?? entry.cumulativeAmount;
+    let cumulative = entry.cumulativeAmount;
+    if (reason.connectorWatermark !== undefined) {
+      cumulative =
+        reason.connectorWatermark > ceiling
+          ? ceiling
+          : reason.connectorWatermark;
+    } else if (reason.notAdvancing) {
+      cumulative = ceiling > cumulative ? ceiling : cumulative;
+    } else if (entry.cumulativeAmount === voucherAmount && charge > 0n) {
+      cumulative = voucherAmount > charge ? voucherAmount - charge : 0n;
+    }
+    if (cumulative === entry.cumulativeAmount) return;
+    this.store.save(channelId, { ...entry, cumulativeAmount: cumulative });
+  }
+
+  /** Whether this client still holds the watermark for `channelId`. */
+  hasWatermark(channelId: string): boolean {
+    return this.store.load(channelId) !== undefined;
+  }
+
+  /**
+   * Rebuild a lost watermark for a channel whose binding survived — the two
+   * live in separate files — from what the chain shows landed. The connector
+   * holds at least that much; until connector#1364 lets `claim-state` answer
+   * for a voucher channel, it is the best floor there is.
+   */
+  restoreWatermark(channelId: string, landed: bigint): void {
+    if (this.store.load(channelId)) return;
     this.store.save(channelId, {
-      ...entry,
-      cumulativeAmount:
-        entry.cumulativeAmount > charge ? entry.cumulativeAmount - charge : 0n,
+      nonce: 0,
+      cumulativeAmount: landed,
+      signedCeiling: landed,
     });
   }
 
@@ -284,6 +380,25 @@ export class BatchChannelManager {
             : {}),
         };
       });
+  }
+
+  /**
+   * The channels on `connector` this client can still pay from or leave: not
+   * yet closing, whether live or archived by a newer one.
+   */
+  openChannels(connector: string): BatchChannel[] {
+    return this.channels(connector)
+      .filter((c) => c.closedAt === undefined && c.settledAt === undefined)
+      .map((c) => c.channel);
+  }
+
+  private requireBinding(channelId: string) {
+    const found = this.findBinding(channelId);
+    if (!found)
+      throw new ValidationError(
+        `no batch-settlement channel ${channelId} is held`
+      );
+    return found;
   }
 
   private entry(channelId: string): ChannelStoreEntry {

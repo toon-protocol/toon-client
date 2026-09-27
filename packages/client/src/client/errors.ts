@@ -403,9 +403,15 @@ export class FacilitatorError extends ToonClientError {
  * until every check passes.
  */
 export class SponsorRefusedError extends ToonClientError {
+  /**
+   * @param status the endpoint's HTTP status. `502` is its "failed" class — a
+   *   co-signed open that was sent and did not confirm — so, unlike every other
+   *   refusal, it does not prove nothing landed.
+   */
   constructor(
     message: string,
     public readonly reason: string,
+    public readonly status?: number,
     cause?: Error
   ) {
     super(message, 'SPONSOR_REFUSED', cause);

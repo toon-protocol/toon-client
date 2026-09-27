@@ -78,10 +78,7 @@ import { parsePaymentTerms } from '../connector/x402.js';
 import type { IlpSendResult } from '../ilp/types.js';
 import type { IlpSendParams } from '../ilp/ilp-send.js';
 import type { ChannelManager } from '../channel/ChannelManager.js';
-import {
-  voucherRefusalIsNotAdvancing,
-  type PreparedVoucher,
-} from '../channel/batch-settlement/payer.js';
+import type { PreparedVoucher } from '../channel/batch-settlement/payer.js';
 import { isUnknownChannelReject, rejectNamesChannel } from '../channel/stale-channel.js';
 import { toBase64, fromBase64, encodeUtf8, decodeUtf8 } from '../utils/binary.js';
 import {
@@ -416,8 +413,8 @@ async function attempt(context: SendContext, params: AttemptParams): Promise<Att
  *     claim is rolled back. It may have been banked, and the next voucher then
  *     exceeds it either way — being one charge over is the only cost, where
  *     being under would be refused;
- *   - a refusal gives the charge back unless it says the connector already
- *     holds the amount (`amount_not_advancing`).
+ *   - a refusal hands the payer the reject's own text, which says where the
+ *     connector's watermark stands (see `readVoucherRefusal`).
  *
  * `channelId` is returned as `undefined` so the stale-channel retry never runs:
  * the connector admits a voucher channel from the config the voucher carries,
@@ -453,7 +450,7 @@ async function attemptWithVoucher(
     const greeting = asGreeting(error, params.carriage.kind, summary);
     if (greeting) {
       // The connector answered before routing: nothing was banked.
-      voucher.settle({ kind: 'refused', notAdvancing: false });
+      voucher.settle({ kind: 'refused' });
       return { result: greeting, channelId: undefined };
     }
     voucher.settle({ kind: 'unknown' });
@@ -461,9 +458,10 @@ async function attemptWithVoucher(
   }
 
   if (claimWasRefused(result)) {
+    // The reject's own text says where the connector's watermark stands.
     voucher.settle({
       kind: 'refused',
-      notAdvancing: voucherRefusalIsNotAdvancing(result.message),
+      ...(result.message !== undefined ? { message: result.message } : {}),
     });
   } else {
     voucher.settle({ kind: 'banked' });

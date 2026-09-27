@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { privateKeyToAccount } from 'viem/accounts';
 import { recoverTypedDataAddress, type Hex } from 'viem';
-import { BatchSettlementPayer, voucherRefusalIsNotAdvancing } from './payer.js';
+import { BatchSettlementPayer, readVoucherRefusal } from './payer.js';
 import { BatchChannelManager } from './manager.js';
+import { InMemoryChannelStore } from '../ChannelStore.js';
 import { parseSelfDescription } from '../../connector/self-description.js';
 import {
   ChannelNotOpenError,
@@ -233,26 +234,185 @@ describe('BatchSettlementPayer on Base', () => {
   });
 });
 
-describe('voucherRefusalIsNotAdvancing', () => {
+describe('readVoucherRefusal', () => {
   it('reads the connector’s own sentences', () => {
     expect(
-      voucherRefusalIsNotAdvancing(
-        "claim rejected: cumulative amount goes backwards relative to this channel's watermark"
+      readVoucherRefusal(
+        "claim rejected: cumulative amount goes backwards relative to this channel's watermark",
+        1_000n
       )
-    ).toBe(true);
+    ).toEqual({ notAdvancing: true });
     expect(
-      voucherRefusalIsNotAdvancing(
-        "claim rejected: advances value by 0, less than this route's price of 100"
+      readVoucherRefusal(
+        "claim rejected: advances value by 0, less than this route's price of 100",
+        1_000n
       )
-    ).toBe(true);
+    ).toEqual({ notAdvancing: true, connectorWatermark: 1_000n });
     expect(
-      voucherRefusalIsNotAdvancing(
-        "claim rejected: advances value by 50, less than this route's price of 100"
+      readVoucherRefusal(
+        "claim rejected: advances value by 4, less than this route's price of 7",
+        19n
       )
-    ).toBe(false);
+    ).toEqual({ notAdvancing: false, connectorWatermark: 15n });
     expect(
-      voucherRefusalIsNotAdvancing('claim rejected: signature does not verify')
-    ).toBe(false);
-    expect(voucherRefusalIsNotAdvancing(undefined)).toBe(false);
+      readVoucherRefusal('claim rejected: signature does not verify', 5n)
+    ).toEqual({
+      notAdvancing: false,
+    });
+    expect(readVoucherRefusal(undefined, 5n)).toEqual({ notAdvancing: false });
+  });
+});
+
+describe('BatchSettlementPayer on Base — nothing leaves before it is recorded', () => {
+  /** A facilitator whose answers are scripted, and a chain the test controls. */
+  function world() {
+    const chain = new Map<string, { balance: bigint; claimed: bigint }>();
+    const answers: (() => Response)[] = [];
+    const posted: Posted[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(init!.body as string) as Posted;
+      posted.push(body);
+      const next = answers.shift();
+      if (next) return next();
+      return new Response(
+        JSON.stringify({ success: true, transaction: '0xabc' })
+      );
+    }) as typeof fetch;
+    const reader = {
+      readContract: async (p: never) => {
+        const { functionName, args } = p as {
+          functionName: string;
+          args: string[];
+        };
+        const state = chain.get(args[0]!.toLowerCase()) ?? {
+          balance: 0n,
+          claimed: 0n,
+        };
+        return functionName === 'channels'
+          ? [state.balance, state.claimed]
+          : [0n, 0];
+      },
+    };
+    const manager = new BatchChannelManager();
+    const p = new BatchSettlementPayer({
+      connector: 'https://node.example',
+      manager,
+      deposit: 10_000n,
+      evm: {
+        account: PAYER,
+        facilitatorUrl: 'https://facilitator.test',
+        reader,
+      },
+      fetch: fetchImpl,
+    });
+    const landed = (i = posted.length - 1) => {
+      const v =
+        posted[i]!.paymentPayload.payload.voucher.channelId.toLowerCase();
+      chain.set(v, {
+        balance: BigInt(posted[i]!.paymentPayload.payload.deposit.amount),
+        claimed: 0n,
+      });
+      return v;
+    };
+    return { chain, answers, posted, manager, p, landed };
+  }
+
+  it('keeps a channel whose facilitator timed out after the deposit landed', async () => {
+    const w = world();
+    w.answers.push(() => {
+      throw new TypeError('socket hang up');
+    });
+    await expect(w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).rejects.toThrow();
+    const channelId = w.landed();
+    // Recorded as pending, so it is not lost.
+    expect(w.manager.pendingDeposit(channelId)).toBe(10_000n);
+
+    const voucher = await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(voucher!.channelId).toBe(channelId);
+    expect(w.posted).toHaveLength(1); // no second deposit
+    expect(w.manager.depositTotal(channelId)).toBe(10_000n);
+    expect(w.manager.pendingDeposit(channelId)).toBeUndefined();
+  });
+
+  it('opens afresh when the lost deposit never landed', async () => {
+    const w = world();
+    w.answers.push(() => {
+      throw new TypeError('socket hang up');
+    });
+    await expect(w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).rejects.toThrow();
+    const first = w.posted[0]!.paymentPayload.payload.voucher.channelId;
+    const voucher = await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(w.posted).toHaveLength(2);
+    expect(voucher!.channelId).not.toBe(first);
+  });
+
+  it('forgets a channel whose deposit the facilitator definitely refused', async () => {
+    const w = world();
+    w.answers.push(
+      () =>
+        new Response(
+          JSON.stringify({
+            success: false,
+            errorReason: 'invalid_batch_settlement_evm_scheme',
+          })
+        )
+    );
+    await expect(w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).rejects.toThrow(
+      FacilitatorError
+    );
+    expect(w.manager.channels('https://node.example')).toEqual([]);
+  });
+
+  it('opens one channel for two concurrent first sends', async () => {
+    const w = world();
+    const [a, b] = await Promise.all([
+      w.p.claimFor(DESCRIPTION, 'evm', 1_000n),
+      w.p.claimFor(DESCRIPTION, 'evm', 1_000n),
+    ]);
+    expect(w.posted).toHaveLength(1);
+    expect(a!.channelId).toBe(b!.channelId);
+    expect(new Set([a!.cumulative, b!.cumulative])).toEqual(
+      new Set([1_000n, 2_000n])
+    );
+  });
+
+  it('open() returns the channel already open, and topUp() deposits into it', async () => {
+    const w = world();
+    const opened = await w.p.open(DESCRIPTION, 'evm');
+    expect(await w.p.open(DESCRIPTION, 'evm')).toEqual(opened);
+    expect(w.posted).toHaveLength(1);
+    await w.p.topUp(DESCRIPTION, 'evm', 5_000n);
+    expect(w.posted).toHaveLength(2);
+    expect(w.posted[1]!.paymentPayload.payload.deposit.amount).toBe('5000');
+    expect(w.manager.depositTotal(opened!.channelId)).toBe(15_000n);
+  });
+
+  it('rebuilds a lost watermark from what the chain shows claimed', async () => {
+    const store = new InMemoryChannelStore();
+    const manager = new BatchChannelManager(store);
+    const p = new BatchSettlementPayer({
+      connector: 'https://node.example',
+      manager,
+      deposit: 10_000n,
+      evm: {
+        account: PAYER,
+        facilitatorUrl: 'https://facilitator.test',
+        reader: {
+          readContract: async (q: never) =>
+            (q as { functionName: string }).functionName === 'channels'
+              ? [10_000n, 4_000n]
+              : [0n, 0],
+        },
+      },
+      fetch: (async () =>
+        new Response(
+          JSON.stringify({ success: true, transaction: '0x1' })
+        )) as typeof fetch,
+    });
+    const first = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    store.delete(first!.channelId); // the watermark file is lost; the binding survives
+    const next = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(next!.channelId).toBe(first!.channelId);
+    expect(next!.cumulative).toBe(5_000n);
   });
 });

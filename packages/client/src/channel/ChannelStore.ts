@@ -112,6 +112,13 @@ export interface ChannelBinding {
    * `toon-channel` channel.
    */
   batchSettlement?: BatchSettlementBinding;
+  /**
+   * A deposit into this batch-settlement channel that was handed to a
+   * facilitator or a sponsor and whose fate is not yet known. Recorded BEFORE
+   * the deposit leaves, so a lost answer never loses the channel: the next use
+   * reads the chain and settles it.
+   */
+  pendingDeposit?: bigint;
 }
 
 /**
@@ -173,6 +180,7 @@ interface JsonBinding {
   openedAt?: string;
   supersededAt?: string;
   batchSettlement?: BatchSettlementBinding;
+  pendingDeposit?: string;
 }
 
 /**
@@ -279,6 +287,9 @@ export class JsonFileChannelStore implements ChannelStore {
       ...(binding.batchSettlement !== undefined
         ? { batchSettlement: binding.batchSettlement }
         : {}),
+      ...(binding.pendingDeposit !== undefined
+        ? { pendingDeposit: binding.pendingDeposit.toString() }
+        : {}),
     };
     this.writeBindings(data);
   }
@@ -361,6 +372,9 @@ function toBinding(entry: JsonBinding): ChannelBinding {
       : {}),
     ...(entry.batchSettlement !== undefined
       ? { batchSettlement: entry.batchSettlement }
+      : {}),
+    ...(entry.pendingDeposit !== undefined
+      ? { pendingDeposit: BigInt(entry.pendingDeposit) }
       : {}),
   };
 }

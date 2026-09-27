@@ -293,9 +293,16 @@ as without the option.
 - **A voucher whose fate is unknown stays counted.** A timeout may or may not have been banked. So
   the next voucher signs above it either way, overpaying by at most one charge if it never
   arrived. Only a refusal gives a charge back.
+- **A refusal says where the node stands.** An underpayment names how far the voucher advanced the
+  node's watermark, and the next voucher is priced from that figure. "Goes backwards" moves the
+  count up to everything ever signed. Any other refusal gives the charge back, unless a later
+  voucher has already superseded the refused one.
+- **Nothing leaves before it is recorded.** A deposit or sponsored open is written down as pending
+  first. If the facilitator or node lands it and then fails to answer, the next use reads the
+  chain and keeps the channel. If it never landed, the channel is forgotten.
 - **The store is the watermark.** The connector's `claim-state` does not answer for these channels
-  yet (toon-protocol/connector#1364). A lost store can only be recovered to what the chain shows
-  landed, so set `channelStore`.
+  yet (toon-protocol/connector#1364). A lost watermark is rebuilt only from what the chain shows
+  landed, which is a floor, so set `channelStore`.
 - **Top-ups** go through the facilitator the same way, when the deposit cannot cover the next
   voucher.
 - **Solana needs no `facilitatorUrl`.** The first paid `send()` builds the `open`, signs the
@@ -324,7 +331,14 @@ step of this scheme that costs native gas. Use `client.batchSettlement.close()` 
   2. After the grace period, `settle()` seals the channel if the connector has not already, and
      calls `withdraw_payer`, which returns `deposit − settled`.
 
+`close()` covers every open channel with the node, including ones a newer channel replaced.
+`settle()` also takes back a Solana channel the node sealed first. One channel failing does not
+stop the rest.
+
 Once a channel is closing, the next paid `send()` onboards a fresh one.
+
+Neither chain has a cooperative refund. On Base it would need the connector's
+`receiverAuthorizer` signature, and the connector never refunds (ADR 0074 decision 1).
 
 The building blocks are exported too: the channel config and id, voucher signing and claims on
 both chains, the deposits and `settleDeposit`, and the sponsored Solana `open`.

@@ -51,7 +51,9 @@ import { resolveConfig, addressFor, type ResolvedConfig } from './config.js';
 import { ClientChannelFacade } from './channel-facade.js';
 import { ClientWalletFacade } from './wallet-facade.js';
 import { privateKeyToAccount } from 'viem/accounts';
-import { toHex } from 'viem';
+import { createPublicClient, toHex } from 'viem';
+import { rpcTransport } from '../transport/rpc.js';
+import type { ContractReader } from '../channel/batch-settlement/evm.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { base58Decode } from '../utils/base58.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
@@ -910,6 +912,7 @@ function batchSettlement(
             account: privateKeyToAccount(toHex(evmKey)),
             ...(batch.facilitatorUrl !== undefined ? { facilitatorUrl: batch.facilitatorUrl } : {}),
             depositMethod: batch.depositMethod,
+            reader: lazyEvmReader(config),
           },
         }
       : {}),
@@ -935,4 +938,20 @@ function batchSettlement(
     ...(solana !== undefined ? { solana } : {}),
   });
   return { payer, facade };
+}
+
+/**
+ * A `readContract` over the client's EVM RPC, built on first use so a client
+ * that never needs to read a batch-settlement channel back opens no connection.
+ */
+function lazyEvmReader(config: ResolvedConfig): ContractReader {
+  let client: ReturnType<typeof createPublicClient> | undefined;
+  return {
+    readContract: (params: never) => {
+      client ??= createPublicClient({
+        transport: rpcTransport(config.rpcUrls.evm, config.rpcDispatcher),
+      });
+      return client.readContract(params);
+    },
+  };
 }

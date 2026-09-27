@@ -49,41 +49,57 @@ const DESCRIPTION = parseSelfDescription({
   ],
 });
 
-/** A Solana RPC holding one channel account in `status`; records methods called. */
-function rpc(status: number) {
-  const account = new Uint8Array(256);
-  account[0] = 1;
-  account[3] = status;
-  new DataView(account.buffer).setUint32(52, 86_400, true);
+/**
+ * A Solana RPC over channel accounts: `status` per PDA, or `null` for an
+ * account that is gone. Records the methods called.
+ */
+function rpc(statuses: Record<string, number | null>) {
   const methods: string[] = [];
   const fetchImpl = (async (_u: string, init?: RequestInit) => {
-    const { method } = JSON.parse(init!.body as string) as { method: string };
+    const { method, params } = JSON.parse(init!.body as string) as {
+      method: string;
+      params: unknown[];
+    };
     methods.push(method);
-    const result =
-      method === 'getAccountInfo'
-        ? {
-            value: {
-              owner: PAYMENT_CHANNELS_PROGRAM_ID,
-              data: [Buffer.from(account).toString('base64'), 'base64'],
-            },
-          }
-        : method === 'getLatestBlockhash'
-          ? {
-              value: {
-                blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
-              },
-            }
-          : method === 'sendTransaction'
-            ? 'sig'
-            : { value: [{ confirmationStatus: 'confirmed', err: null }] };
+    let result: unknown;
+    if (method === 'getAccountInfo') {
+      const status = statuses[params[0] as string];
+      if (status === null || status === undefined) {
+        result = { value: null };
+      } else {
+        const account = new Uint8Array(256);
+        account[0] = 1;
+        account[3] = status;
+        new DataView(account.buffer).setUint32(52, 86_400, true);
+        result = {
+          value: {
+            owner: PAYMENT_CHANNELS_PROGRAM_ID,
+            data: [Buffer.from(account).toString('base64'), 'base64'],
+          },
+        };
+      }
+    } else if (method === 'getLatestBlockhash') {
+      result = {
+        value: { blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' },
+      };
+    } else if (method === 'sendTransaction') {
+      result = 'sig';
+    } else {
+      result = { value: [{ confirmationStatus: 'confirmed', err: null }] };
+    }
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }));
   }) as typeof fetch;
   return { target: { url: 'http://rpc', fetchImpl }, methods };
 }
 
-function facade(status: number, now = 1_000n) {
+const OTHER: BatchChannel = {
+  ...CHANNEL,
+  channelId: 'EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1',
+};
+
+function facade(statuses: Record<string, number | null>, now = 1_000n) {
   const manager = new BatchChannelManager();
-  const chain = rpc(status);
+  const chain = rpc(statuses);
   const f = new ClientBatchSettlementFacade({
     connector: CONNECTOR,
     chain: 'solana',
@@ -103,7 +119,7 @@ function facade(status: number, now = 1_000n) {
 
 describe('client.batchSettlement', () => {
   it('opens on request, and lists what it holds', async () => {
-    const { f } = facade(0);
+    const { f } = facade({});
     expect(f.channels()).toEqual([]);
     const opened = await f.open();
     expect(opened).toMatchObject({
@@ -115,26 +131,35 @@ describe('client.batchSettlement', () => {
   });
 
   it('has nothing to close before a channel is open', async () => {
-    await expect(facade(0).f.close()).rejects.toThrow(ChannelNotOpenError);
+    await expect(facade({}).f.close()).rejects.toThrow(ChannelNotOpenError);
   });
 
-  it('closes the live channel, and will not close it twice', async () => {
-    const { f, manager } = facade(0);
-    await f.open();
+  it('closes every open channel, archived ones included, and none twice', async () => {
+    const { f, manager, chain } = facade({
+      [CHANNEL.channelId]: 0,
+      [OTHER.channelId]: 0,
+    });
+    manager.adopt(CONNECTOR, OTHER, 1_000n);
+    manager.adopt(CONNECTOR, CHANNEL, 5_000n); // archives OTHER
     const closed = await f.close();
-    expect(closed.channelId).toBe(CHANNEL.channelId);
-    expect(manager.isClosing(CHANNEL.channelId)).toBe(true);
+    expect(closed.map((r) => r.channelId).sort()).toEqual(
+      [CHANNEL.channelId, OTHER.channelId].sort()
+    );
+    expect(closed.every((r) => r.transaction === 'sig')).toBe(true);
+    expect(chain.methods.filter((m) => m === 'sendTransaction')).toHaveLength(
+      2
+    );
     await expect(f.close()).rejects.toThrow(ChannelNotOpenError);
   });
 
   it('settles only a channel whose window has passed', async () => {
-    const early = facade(1, 1_000n);
+    const early = facade({ [CHANNEL.channelId]: 2 }, 1_000n);
     await early.f.open();
     early.manager.markClosing(CHANNEL.channelId, 900n, 2_000n);
     expect(await early.f.settle()).toEqual([]);
     expect(early.chain.methods).not.toContain('sendTransaction');
 
-    const due = facade(1, 3_000n);
+    const due = facade({ [CHANNEL.channelId]: 1 }, 3_000n);
     await due.f.open();
     due.manager.markClosing(CHANNEL.channelId, 900n, 2_000n);
     expect(await due.f.settle()).toEqual([
@@ -142,5 +167,30 @@ describe('client.batchSettlement', () => {
     ]);
     expect(due.f.channels()[0]!.settledAt).toBe(3_000n);
     expect(await due.f.settle()).toEqual([]);
+  });
+
+  it('takes back a channel the connector sealed first, with no close of ours', async () => {
+    const { f } = facade({ [CHANNEL.channelId]: 1 });
+    await f.open();
+    expect(await f.settle()).toEqual([
+      { channelId: CHANNEL.channelId, transaction: 'sig' },
+    ]);
+  });
+
+  it('counts a cleaned-up channel as settled, and does not let one channel block the rest', async () => {
+    const { f, manager } = facade({
+      [OTHER.channelId]: null,
+      [CHANNEL.channelId]: 1,
+    });
+    manager.adopt(CONNECTOR, OTHER, 1_000n);
+    manager.adopt(CONNECTOR, CHANNEL, 5_000n);
+    manager.markClosing(OTHER.channelId, 1n, 2n);
+    const results = await f.settle();
+    expect(results).toEqual(
+      expect.arrayContaining([
+        { channelId: OTHER.channelId },
+        { channelId: CHANNEL.channelId, transaction: 'sig' },
+      ])
+    );
   });
 });

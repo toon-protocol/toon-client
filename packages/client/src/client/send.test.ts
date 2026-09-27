@@ -908,13 +908,16 @@ describe('a packet paid by a batch-settlement voucher', () => {
     expect(h.fake.claims.at(-1)).not.toHaveProperty('scheme');
   });
 
-  it('gives a refused voucher’s charge back', async () => {
+  it('reports a refused voucher with the reject’s own text', async () => {
     const h = harness();
     const settled = withVouchers(h);
     h.fake.refusal = 'underpay';
     const result = await send(h.context, DESTINATION, { body: 'hi' });
     expect(result.fulfilled).toBe(false);
-    expect(settled).toEqual([{ kind: 'refused', notAdvancing: false }]);
+    // The reject's own text travels with the refusal, for the payer to read.
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ kind: 'refused' });
+    expect((settled[0] as { message?: string }).message).toBeDefined();
   });
 
   it('keeps a voucher counted when the transport fails, and rethrows', async () => {
