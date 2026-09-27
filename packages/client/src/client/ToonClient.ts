@@ -50,6 +50,10 @@ import { toBase64 } from '../utils/binary.js';
 import { resolveConfig, addressFor, type ResolvedConfig } from './config.js';
 import { ClientChannelFacade } from './channel-facade.js';
 import { ClientWalletFacade } from './wallet-facade.js';
+import { privateKeyToAccount } from 'viem/accounts';
+import { toHex } from 'viem';
+import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
+import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
 import { send, type PaidWriteTransport, type SendContext } from './send.js';
 import { ChainUnavailableError, ConfigError, chainUnavailableMessage } from './errors.js';
 import type {
@@ -95,6 +99,8 @@ export class ToonClient implements ToonClientLike {
   private btpSession: BtpRuntimeClient | undefined;
   private readonly hiddenService: { close(): Promise<void> } | undefined;
   private closed = false;
+  /** Where vouchers come from, when the caller opted in to x402 `batch-settlement`. */
+  private readonly vouchers: BatchSettlementPayer | undefined;
 
   private constructor(init: {
     config: ResolvedConfig;
@@ -128,6 +134,7 @@ export class ToonClient implements ToonClientLike {
       onChainClient: () => this.onChainClient(),
     });
     this.channel = this.channelFacade;
+    this.vouchers = batchSettlementPayer(init.config);
     this.wallet = new ClientWalletFacade({
       config: init.config,
       describe: () => this.describe(),
@@ -436,6 +443,7 @@ export class ToonClient implements ToonClientLike {
       channels: this.channels,
       reconcileWatermark: (channelId) => this.reconcileWatermark(channelId),
       transport: (description, destination) => this.transportFor(description, destination),
+      ...(this.vouchers !== undefined ? { vouchers: this.vouchers } : {}),
       senderId: this.identity.senderId,
       chain: this.chain,
       timeoutMs: this.config.timeoutMs,
@@ -846,4 +854,30 @@ async function openHiddenService(
             },
     },
   };
+}
+
+/**
+ * The voucher source for a client that opted in to x402 `batch-settlement`, or
+ * `undefined` for one that did not. It persists into the client's own channel
+ * store, beside its `toon-channel` channels.
+ */
+function batchSettlementPayer(config: ResolvedConfig): BatchSettlementPayer | undefined {
+  const batch = config.batchSettlement;
+  if (batch === undefined) return undefined;
+  const evmKey = config.identity.evm?.privateKey;
+  return new BatchSettlementPayer({
+    connector: config.connector,
+    manager: new BatchChannelManager(config.channelStore),
+    deposit: batch.deposit,
+    ...(evmKey !== undefined
+      ? {
+          evm: {
+            account: privateKeyToAccount(toHex(evmKey)),
+            ...(batch.facilitatorUrl !== undefined ? { facilitatorUrl: batch.facilitatorUrl } : {}),
+            depositMethod: batch.depositMethod,
+          },
+        }
+      : {}),
+    fetch: config.fetch,
+  });
 }

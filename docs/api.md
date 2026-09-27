@@ -103,6 +103,11 @@ interface ToonClientConfig {
   deposit?: bigint | string;
   settlementTimeout?: number;
   autoOpenChannel?: boolean;
+  batchSettlement?: {
+    facilitatorUrl?: string;
+    deposit?: bigint | string;
+    depositMethod?: 'eip3009' | 'permit2';
+  };
   timeoutMs?: number;
   socksProxy?: string;
   proxyRpc?: boolean;
@@ -130,6 +135,7 @@ interface ToonClientConfig {
 | `deposit` | `100000n` (0.10 USDC) | Collateral for the first channel this client opens, in base units. |
 | `settlementTimeout` | `86400` | Challenge period in seconds. Floored at `3600` on EVM. |
 | `autoOpenChannel` | `true` | Open a channel on the first `send()` when none exists. |
+| `batchSettlement` | off | Pay from an x402 `batch-settlement` channel wherever the node offers one on your chain, onboarding with no native gas. Opt-in by presence; see [channels.md](channels.md#onboarding-without-gas-x402-batch-settlement). `facilitatorUrl` is required on Base. `deposit` defaults to `deposit`. |
 | `timeoutMs` | `30000`, or `120000` for a hidden service | Per-packet timeout. A packet's on-wire expiry is set 15 s beyond it (`PACKET_EXPIRY_HEADROOM_MS`), so the client always gives up before the packet does. An explicit `expiresAt` is honoured exactly. |
 | `socksProxy` | — | `socks5h://host:port` of an `anon` daemon. Required for a `.anyone` connector. Beside a clearnet one it hides the payer: the client edge, the BTP socket and each chain's RPC (on its own pinned circuit) all ride it, and nothing dials around it. Node only. See [hidden-service.md](hidden-service.md). |
 | `proxyRpc` | `true` | Send chain RPC through `socksProxy` too. Setting it to `false` opts **chain RPC only** out — the client edge and the BTP socket still ride the proxy. Turn it off only for an RPC endpoint that is already private. |

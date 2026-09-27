@@ -67,3 +67,10 @@ export {
   type ContractReader,
 } from './evm.js';
 export { getSvmBatchChannel } from './svm.js';
+export {
+  BatchSettlementPayer,
+  voucherRefusalIsNotAdvancing,
+  type BatchSettlementPayerConfig,
+  type PreparedVoucher,
+  type VoucherOutcome,
+} from './payer.js';

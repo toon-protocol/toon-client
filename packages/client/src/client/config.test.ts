@@ -326,3 +326,26 @@ describe('resolveConfig — hidden services', () => {
     ).toBe(false);
   });
 });
+
+describe('resolveConfig — x402 batch-settlement', () => {
+  it('is off unless asked for', () => {
+    expect(resolveConfig(base()).batchSettlement).toBeUndefined();
+  });
+
+  it('opts in by presence, with the channel deposit and ERC-3009 as defaults', () => {
+    expect(
+      resolveConfig(base({ deposit: 5_000n, batchSettlement: { facilitatorUrl: 'https://f' } }))
+        .batchSettlement
+    ).toEqual({ facilitatorUrl: 'https://f', deposit: 5_000n, depositMethod: 'eip3009' });
+    expect(
+      resolveConfig(base({ batchSettlement: { deposit: '7', depositMethod: 'permit2' } }))
+        .batchSettlement
+    ).toEqual({ facilitatorUrl: undefined, deposit: 7n, depositMethod: 'permit2' });
+  });
+
+  it('refuses a deposit that is not a whole number of base units', () => {
+    expect(() => resolveConfig(base({ batchSettlement: { deposit: 'lots' } }))).toThrow(
+      /whole number/
+    );
+  });
+});

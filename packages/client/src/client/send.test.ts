@@ -860,3 +860,83 @@ describe('send — beforePay, the caller\'s last look before money moves', () =>
     expect(h.ensureCalls).toBe(0);
   });
 });
+
+// ─── x402 batch-settlement vouchers (connector ADR 0074) ────────────────────
+
+describe('a packet paid by a batch-settlement voucher', () => {
+  type Settled = Parameters<import('../channel/batch-settlement/payer.js').PreparedVoucher['settle']>[0];
+
+  function withVouchers(h: Harness, offered = true) {
+    const settled: Settled[] = [];
+    let cumulative = 0n;
+    h.context = {
+      ...h.context,
+      vouchers: {
+        claimFor: async (_description, chain, amount) => {
+          if (!offered) return undefined;
+          cumulative += amount;
+          return {
+            chain: chain as 'evm',
+            channelId: `0x${'ee'.repeat(32)}`,
+            claim: { scheme: 'batch-settlement', maxClaimableAmount: cumulative.toString() },
+            cumulative,
+            settle: (outcome) => settled.push(outcome),
+          };
+        },
+      },
+    };
+    return settled;
+  }
+
+  it('carries the voucher, and never opens a toon-channel channel', async () => {
+    const h = harness();
+    const settled = withVouchers(h);
+    const result = await send(h.context, DESTINATION, { body: 'hi' });
+    expect(result.fulfilled).toBe(true);
+    expect(h.ensureCalls).toBe(0);
+    expect(h.fake.claims.at(-1)).toMatchObject({ scheme: 'batch-settlement' });
+    expect(settled).toEqual([{ kind: 'banked' }]);
+    expect(result.claim).toMatchObject({ scheme: 'batch-settlement', nonce: 0 });
+  });
+
+  it('pays over toon-channel when the node offers no voucher channel', async () => {
+    const h = harness();
+    withVouchers(h, false);
+    await send(h.context, DESTINATION, { body: 'hi' });
+    expect(h.ensureCalls).toBe(1);
+    expect(h.fake.claims.at(-1)).not.toHaveProperty('scheme');
+  });
+
+  it('gives a refused voucher’s charge back', async () => {
+    const h = harness();
+    const settled = withVouchers(h);
+    h.fake.refusal = 'underpay';
+    const result = await send(h.context, DESTINATION, { body: 'hi' });
+    expect(result.fulfilled).toBe(false);
+    expect(settled).toEqual([{ kind: 'refused', notAdvancing: false }]);
+  });
+
+  it('keeps a voucher counted when the transport fails, and rethrows', async () => {
+    const h = harness();
+    const settled = withVouchers(h);
+    const failing: PaidWriteTransport = {
+      sendIlpPacketWithClaim: async () => {
+        throw new Error('socket hang up');
+      },
+      sendIlpPacket: async () => {
+        throw new Error('socket hang up');
+      },
+    };
+    h.context = { ...h.context, transport: async () => ({ kind: 'http', transport: failing }) };
+    await expect(send(h.context, DESTINATION, { body: 'hi' })).rejects.toThrow('socket hang up');
+    expect(settled).toEqual([{ kind: 'unknown' }]);
+  });
+
+  it('asks for no voucher on a free route', async () => {
+    const h = harness();
+    const settled = withVouchers(h);
+    h.fake.routePrice = 0n;
+    await send(h.context, DESTINATION, { body: 'hi' });
+    expect(settled).toEqual([]);
+  });
+});

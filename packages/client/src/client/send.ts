@@ -78,6 +78,10 @@ import { parsePaymentTerms } from '../connector/x402.js';
 import type { IlpSendResult } from '../ilp/types.js';
 import type { IlpSendParams } from '../ilp/ilp-send.js';
 import type { ChannelManager } from '../channel/ChannelManager.js';
+import {
+  voucherRefusalIsNotAdvancing,
+  type PreparedVoucher,
+} from '../channel/batch-settlement/payer.js';
 import { isUnknownChannelReject, rejectNamesChannel } from '../channel/stale-channel.js';
 import { toBase64, fromBase64, encodeUtf8, decodeUtf8 } from '../utils/binary.js';
 import {
@@ -180,6 +184,19 @@ export interface SendContext {
     kind: 'http' | 'btp';
     transport: PaidWriteTransport;
   }>;
+  /**
+   * Where a voucher comes from, when the caller opted in to x402
+   * `batch-settlement` (connector ADR 0074). Asked first for every paid packet;
+   * `undefined` from it — the node offers no such channel on this chain — and
+   * the packet pays over `toon-channel` exactly as it would without it.
+   */
+  vouchers?: {
+    claimFor(
+      description: NodeSelfDescription,
+      chain: ChainKind,
+      amount: bigint
+    ): Promise<PreparedVoucher | undefined>;
+  };
   /** The label every claim carries. Never an authority (connector ADR 0052). */
   senderId: string;
   /** The chain claims are signed on, for {@link ClaimSummary}. */
@@ -321,6 +338,13 @@ async function attempt(context: SendContext, params: AttemptParams): Promise<Att
   // that holds no channel and no funds at all.
   if (params.amount === 0n) return attemptUnpaid(context, params);
 
+  const voucher = await context.vouchers?.claimFor(
+    params.description,
+    context.chain,
+    params.amount
+  );
+  if (voucher !== undefined) return attemptWithVoucher(context, params, voucher);
+
   const channelId = await context.ensureChannel(params.description);
   await settleWatermarkDoubt(context, channelId);
   const proof = await context.channels.signBalanceProof(channelId, params.amount);
@@ -380,6 +404,71 @@ async function attempt(context: SendContext, params: AttemptParams): Promise<Att
     result: toSendResult(result, params, summary),
     channelId,
   };
+}
+
+/**
+ * One attempt paid by an x402 `batch-settlement` voucher.
+ *
+ * The same packet on the same carriage; what differs is how its fate moves the
+ * watermark, because a voucher has no nonce (ADR 0074 decision 3):
+ *
+ *   - a transport error leaves the voucher COUNTED, where a `toon-channel`
+ *     claim is rolled back. It may have been banked, and the next voucher then
+ *     exceeds it either way — being one charge over is the only cost, where
+ *     being under would be refused;
+ *   - a refusal gives the charge back unless it says the connector already
+ *     holds the amount (`amount_not_advancing`).
+ *
+ * `channelId` is returned as `undefined` so the stale-channel retry never runs:
+ * the connector admits a voucher channel from the config the voucher carries,
+ * so "no record of this channel" is not a stale binding here.
+ */
+async function attemptWithVoucher(
+  context: SendContext,
+  params: AttemptParams,
+  voucher: PreparedVoucher
+): Promise<Attempt> {
+  const summary: ClaimSummary = {
+    channelId: voucher.channelId,
+    chain: context.chain,
+    nonce: 0,
+    cumulative: voucher.cumulative,
+    amount: params.amount,
+    scheme: 'batch-settlement',
+  };
+
+  let result: IlpSendResult;
+  try {
+    result = await params.carriage.transport.sendIlpPacketWithClaim(
+      {
+        destination: params.destination,
+        amount: params.amount.toString(),
+        data: toBase64(params.exchange.data),
+        expectedFulfillment: params.exchange.fulfillment,
+        timeout: params.timeoutMs,
+      },
+      voucher.claim
+    );
+  } catch (error) {
+    const greeting = asGreeting(error, params.carriage.kind, summary);
+    if (greeting) {
+      // The connector answered before routing: nothing was banked.
+      voucher.settle({ kind: 'refused', notAdvancing: false });
+      return { result: greeting, channelId: undefined };
+    }
+    voucher.settle({ kind: 'unknown' });
+    throw error;
+  }
+
+  if (claimWasRefused(result)) {
+    voucher.settle({
+      kind: 'refused',
+      notAdvancing: voucherRefusalIsNotAdvancing(result.message),
+    });
+  } else {
+    voucher.settle({ kind: 'banked' });
+  }
+  return { result: toSendResult(result, params, summary), channelId: undefined };
 }
 
 /**

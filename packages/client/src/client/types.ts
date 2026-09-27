@@ -113,6 +113,33 @@ export interface ToonClientConfig {
   /** Open a channel on the first {@link ToonClientLike.send} when none exists. Default `true`. */
   autoOpenChannel?: boolean;
 
+  /**
+   * Pay from an x402 `batch-settlement` channel wherever the node offers one on
+   * this client's chain (connector ADR 0074), onboarding with no native gas: on
+   * Base a facilitator relays the deposit, on Solana the node sponsors the open.
+   *
+   * Opt-in by presence. Such a channel is one-way, client to connector, so a
+   * client that expects payouts leaves this unset and stays on `toon-channel`.
+   * A node that offers no `batch-settlement` on the chain is paid over
+   * `toon-channel` exactly as if this were unset.
+   */
+  batchSettlement?: {
+    /**
+     * The x402 facilitator that submits Base deposits and pays their gas —
+     * `https://x402.org/facilitator` on Base Sepolia, CDP's on mainnet, or the
+     * devnet's own. Required to pay on EVM.
+     */
+    facilitatorUrl?: string;
+    /** Deposited on onboarding and again on each top-up, base units. Defaults to `deposit`. */
+    deposit?: bigint | string;
+    /**
+     * `eip3009` (the default) for a token with ERC-3009, gasless outright;
+     * `permit2` for one without, which needs the payer's one-time Permit2
+     * approval — a transaction of its own — first.
+     */
+    depositMethod?: 'eip3009' | 'permit2';
+  };
+
   /** Per-packet timeout in milliseconds. Default `30000`. */
   timeoutMs?: number;
 
@@ -257,12 +284,20 @@ export interface SendOptions {
 export interface ClaimSummary {
   channelId: string;
   chain: ChainKind;
-  /** The nonce this claim carried. Strictly increasing per channel. */
+  /**
+   * The nonce this claim carried. Strictly increasing per channel. Always `0`
+   * for a `batch-settlement` voucher, which has none.
+   */
   nonce: number;
   /** The channel's cumulative transferred amount after this claim. */
   cumulative: bigint;
   /** What this packet cost — the difference this claim advanced by. */
   amount: bigint;
+  /**
+   * Set when the claim was an x402 `batch-settlement` voucher (connector ADR
+   * 0074) rather than a `toon-channel` balance proof.
+   */
+  scheme?: 'batch-settlement';
 }
 
 /**

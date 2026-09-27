@@ -263,22 +263,43 @@ It is retryable once the wallet is funded.
 The devnet faucet's EVM leg best-effort tops up ETH; its Solana leg drips USDC and no SOL, so a
 Solana wallet needs `solana airdrop` first. See [devnet.md](devnet.md#faucet).
 
-### Onboarding without gas: x402 `batch-settlement` (not wired yet)
+### Onboarding without gas: x402 `batch-settlement`
 
 Connector ADR 0074 lets a client pay from an x402 `batch-settlement` channel instead. That channel
 is payer-only, sits on x402's own contract (Base) or solana-foundation's payment-channels program
 (Solana), and is opened with no native gas:
 
-- On Base, a stock x402 facilitator submits the deposit.
+- On Base, a stock x402 facilitator submits the deposit and pays its gas.
 - On Solana, the receiving connector sponsors the `open`.
 
-The chain half of this is exported now:
+Opt in with `batchSettlement`:
 
-- the channel config and its id;
-- voucher signing on both chains;
-- the ERC-3009 and Permit2 deposits, and `settleDeposit` to a facilitator's `/settle`;
-- `buildSponsoredOpen`, the sponsored `open`, which refuses any sponsor other than the receiving
-  connector's.
+```ts
+const client = await ToonClient.create({
+  connector: 'https://node.example',
+  mnemonic,
+  channelStore: '~/.toon/channels.json',
+  batchSettlement: { facilitatorUrl: 'https://x402.org/facilitator', deposit: 1_000_000n },
+});
+```
 
-`ToonClient` does not use any of it yet (toon-client#679). How a voucher rides the wire is fixed
-by the connector's vectors at `schema_version` 6.
+When the node's `GET /ilp` offers `batch-settlement` on your chain, the first paid `send()` deposits
+`deposit` through the facilitator. The deposit creates the channel, and the packet then carries a
+voucher instead of a claim. A node that offers no such channel is paid over `toon-channel` exactly
+as without the option.
+
+- **A voucher has no nonce.** Each one signs the running total, and the connector accepts it only
+  if it goes up by at least the route's charge. A free route carries no voucher.
+- **A voucher whose fate is unknown stays counted.** A timeout may or may not have been banked. So
+  the next voucher signs above it either way, overpaying by at most one charge if it never
+  arrived. Only a refusal gives a charge back.
+- **The store is the watermark.** The connector's `claim-state` does not answer for these channels
+  yet (toon-protocol/connector#1364). A lost store can only be recovered to what the chain shows
+  landed, so set `channelStore`.
+- **Top-ups** go through the facilitator the same way, when the deposit cannot cover the next
+  voucher.
+- **Permit2.** `depositMethod: 'permit2'` is for a token without ERC-3009. It needs a one-time
+  Permit2 `approve` from the payer, which costs native gas unless the facilitator sponsors it.
+
+The building blocks are exported too: the channel config and id, voucher signing and claims on
+both chains, the deposits and `settleDeposit`, and the sponsored Solana `open`.

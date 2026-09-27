@@ -100,6 +100,14 @@ export interface ResolvedConfig {
   /** An explicit `senderId`, or `undefined` to use the selected chain's address. */
   senderId: string | undefined;
   deposit: bigint;
+  /** Set when the caller opted in to x402 `batch-settlement`. */
+  batchSettlement:
+    | {
+        facilitatorUrl: string | undefined;
+        deposit: bigint;
+        depositMethod: 'eip3009' | 'permit2';
+      }
+    | undefined;
   settlementTimeout: number;
   autoOpenChannel: boolean;
   timeoutMs: number;
@@ -184,6 +192,17 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
     transport,
     senderId: config.senderId,
     deposit,
+    batchSettlement:
+      config.batchSettlement === undefined
+        ? undefined
+        : {
+            facilitatorUrl: config.batchSettlement.facilitatorUrl,
+            deposit:
+              config.batchSettlement.deposit === undefined
+                ? deposit
+                : resolveDeposit(config.batchSettlement.deposit),
+            depositMethod: config.batchSettlement.depositMethod ?? 'eip3009',
+          },
     connectorIsHiddenService,
     socksProxy,
     proxyRpc: config.proxyRpc ?? true,
