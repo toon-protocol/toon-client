@@ -82,6 +82,8 @@ local validator:
 | --- | --- |
 | `rust-edge-devnet` | `RUST_EDGE_DEVNET=1`, with a funded key. Spends real testnet USDC against the deployed devnet connector. |
 | `solana-channel-lifecycle` | Needs `solana-test-validator` on the path. Proves the on-chain lifecycle: initialize, deposit, claim, close, settle. |
+| `batch-settlement-exit` | Needs `anvil`, `cast`, `solana-test-validator` and a toon-protocol/infra checkout beside this one (or `INFRA_SANDBOX_DIR`); skips without them unless `CLIENT_REQUIRE_BATCH_SETTLEMENT=1`. Runs against x402's real contract (seeded by infra's `seed-x402.sh`) and solana-foundation's real `payment-channels` program. On each chain it opens an x402 `batch-settlement` channel, closes it, and gets the deposit back. |
+| `batch-settlement-devnet` | `BATCH_SETTLEMENT_DEVNET=1`. Makes a fresh wallet with 0 ETH, gives it devnet USDC, and deposits through the devnet facilitator (`onboard.devnet`) into a channel to the relay. The test leaves 1 USDC in that channel. It pays a route with a voucher once the relay publishes `batchSettlements`. |
 
 ## A connector on your machine
 
