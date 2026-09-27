@@ -80,8 +80,8 @@ signal, not a flake. Commit `wire-vectors.json` and
 
 ## Sections
 
-`schema_version` is `4`. The file carries six sections and this repo replays
-**all six**:
+`schema_version` is `6`. The file carries eight sections and this repo replays
+**all eight**:
 
 - `envelope` — **replayed** (toon-client#448): 5 valid round-trips + 8 rejection
   cases.
@@ -104,8 +104,17 @@ signal, not a flake. Commit `wire-vectors.json` and
 - `channel_control_declaration` — **replayed** (connector#795 added it, toon-
   client#540): the BTP auth greeting's `channelId`/`expires`/`signature`
   declaration, replayed against `src/signing/evm-signer.ts`. See below.
+- `charge` — **replayed** (connector#1347 added it): the metered price
+  `base + per_kib × ceil(bytes / 1024)`, saturating at `u64::MAX`, replayed
+  against `chargeFor` in `src/connector/self-description.ts`.
+- `claim_voucher` — **replayed** (connector#1347, ADR 0074): the x402
+  `batch-settlement` voucher. The EVM `channelId`, digest and signature are
+  reproduced by `src/channel/batch-settlement/evm.ts`, and the Solana 50-byte
+  message by `svm.ts`, with its signature verified. `amount_only_watermark` and
+  `invalid` are the connector's verdicts on a voucher it was handed, so the
+  client replays only the rules it must obey when building one.
 
-`loadWireVectors()` in `load.ts` exposes all six, so adding a section to the
+`loadWireVectors()` in `load.ts` exposes all eight, so adding a section to the
 harness is a new `describe` block, not a restructure — which is exactly how
 `giftwrap`, `fulfilment`, `channel_control_declaration` and `peer_carriage`
 arrived. The labels are enforced, not decorative: `WIRE_VECTOR_SECTIONS` in

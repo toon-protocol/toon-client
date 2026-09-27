@@ -30,7 +30,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { hashTypedData, recoverAddress, type Hex } from 'viem';
+import { getAddress, hashTypedData, recoverAddress, type Hex } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import {
   WIRE_VECTOR_SECTIONS,
@@ -41,6 +43,7 @@ import {
   wireVectorsSha256,
   type ChannelControlDeclarationVector,
   type ClaimVector,
+  type ChargeVector,
   type EnvelopeInvalidVector,
   type EnvelopeValidVector,
   type FulfilmentVector,
@@ -71,6 +74,15 @@ import { SolanaSigner } from '../signing/solana-signer.js';
 import type { SolanaClaimMessage } from '../signing/types.js';
 import { buildBalanceProofMessage } from '../channel/solana/payment-channel.js';
 import { base58Decode } from '../utils/base58.js';
+import { chargeFor } from '../connector/self-description.js';
+import {
+  X402_BATCH_SETTLEMENT_ADDRESS,
+  batchChannelId,
+  batchVoucherDigest,
+  signBatchVoucher,
+} from '../channel/batch-settlement/evm.js';
+import { buildSvmVoucherMessage } from '../channel/batch-settlement/svm.js';
+
 import {
   BTPMessageType,
   ILPPacketType,
@@ -87,6 +99,10 @@ import {
 const vectors = loadWireVectors();
 const provenance = loadWireVectorsProvenance();
 
+/** anvil's (and hardhat's) well-known account #1: 0x70997970…79C8. */
+const ANVIL_ACCOUNT_1_KEY =
+  '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+
 describe('the vendored vector file', () => {
   it('has not been edited since it was vendored', () => {
     // The one thing vendoring costs is that the copy can be "fixed" to make a
@@ -99,13 +115,15 @@ describe('the vendored vector file', () => {
 
   it('is the schema version this harness understands', () => {
     expect(vectors.schema_version).toBe(provenance.schemaVersion);
+    // 6 (connector#1347, ADR 0074): `claim_voucher` — the x402
+    // batch-settlement voucher on both chains — and `charge`, the metered price.
     // 5 (connector#1269, ADR 0069): `executionCondition` is deleted from
     // PREPARE and a one-byte `greeting` flag takes its place, and the
     // `fulfilment` section narrows to `derive_fulfillment`'s determinism.
     // 4 deleted the `{peerId, secret}` peer credential from both carriages;
     // 2 put the real settlement program into `claim_solana.programId`; 3
     // retired minimum delivery.
-    expect(vectors.schema_version).toBe(5);
+    expect(vectors.schema_version).toBe(6);
   });
 
   it('records which connector commit it came from', () => {
@@ -163,6 +181,8 @@ describe('the vendored vector file', () => {
         'claim',
         'channel_control_declaration',
         'peer_carriage',
+        'charge',
+        'claim_voucher',
       ])
     );
     expect(provenance.sectionsPresentNotYetReplayed).toEqual([]);
@@ -949,7 +969,9 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
     // "Claimless is legal", pinned rather than assumed: the packet bytes are
     // identical, and only the carriage around them loses the claim.
     replayPrepare(peer.prepare_no_claim);
-    expect(peer.prepare_no_claim.http_body_hex).toBe(peer.prepare.http_body_hex);
+    expect(peer.prepare_no_claim.http_body_hex).toBe(
+      peer.prepare.http_body_hex
+    );
     expect(peer.prepare_no_claim.claim_json).toBeNull();
     expect(peer.prepare_no_claim.http_headers).toEqual([]);
   });
@@ -1095,7 +1117,10 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
     // WHICH fields are present. A signer that dropped one, or invented one,
     // would still produce valid JSON and a valid signature — and a claim the
     // connector refuses structurally, before it ever looks at the signature.
-    const solana = JSON.parse(peer.claim_solana.json) as Record<string, unknown>;
+    const solana = JSON.parse(peer.claim_solana.json) as Record<
+      string,
+      unknown
+    >;
     const evm = JSON.parse(peer.claim_evm.json) as Record<string, unknown>;
 
     const solanaSigner = new SolanaSigner(new Uint8Array(32).fill(3));
@@ -1114,7 +1139,9 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
       },
       String(solana['senderId'])
     );
-    expect(new Set(Object.keys(solanaClaim))).toEqual(new Set(Object.keys(solana)));
+    expect(new Set(Object.keys(solanaClaim))).toEqual(
+      new Set(Object.keys(solana))
+    );
 
     const evmClaim = EvmSigner.buildClaimMessage(
       {
@@ -1145,19 +1172,163 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
   it('decodes each claim to the same wire values on both carriages', () => {
     for (const claim of [peer.claim_evm, peer.claim_solana]) {
       const fromBtp = new TextDecoder().decode(hexToBytes(claim.btp_raw_hex));
-      const fromHttp = Buffer.from(claim.http_base64, 'base64').toString('utf8');
+      const fromHttp = Buffer.from(claim.http_base64, 'base64').toString(
+        'utf8'
+      );
       expect(fromBtp).toBe(claim.json);
       expect(fromHttp).toBe(claim.json);
 
       const parsed = JSON.parse(claim.json) as Record<string, unknown>;
       expect(parsed['blockchain']).toBe(claim.blockchain);
-      expect(parsed[claim.blockchain === 'evm' ? 'channelId' : 'channelAccount']).toBe(
-        claim.wire_channel_id
-      );
+      expect(
+        parsed[claim.blockchain === 'evm' ? 'channelId' : 'channelAccount']
+      ).toBe(claim.wire_channel_id);
       expect(parsed['nonce']).toBe(claim.wire_nonce);
       expect(String(parsed['transferredAmount'])).toBe(
         String(claim.wire_cumulative_amount)
       );
     }
+  });
+});
+
+// ─── charge ─────────────────────────────────────────────────────────────────
+
+describe('charge — the metered price of one packet (connector ADR 0065)', () => {
+  const cases: ChargeVector[] = vectors.charge?.cases ?? [];
+
+  it('carries at least one case to replay', () => {
+    expect(cases.length).toBeGreaterThan(0);
+  });
+
+  it.each(cases.map((c) => [c.name, c] as const))(
+    'prices %s exactly as the connector does, saturating at u64::MAX',
+    (_name, vector) => {
+      const charge = chargeFor(
+        { price: BigInt(vector.base), pricePerKib: BigInt(vector.per_kib) },
+        vector.payload_len
+      );
+      expect(charge.toString()).toBe(vector.charge);
+    }
+  );
+});
+
+// ─── claim_voucher ──────────────────────────────────────────────────────────
+
+describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 0074)', () => {
+  const voucher = vectors.claim_voucher;
+
+  it('carries both chains and the connector-side cases', () => {
+    expect(voucher?.evm).toBeDefined();
+    expect(voucher?.solana).toBeDefined();
+    expect(voucher?.amount_only_watermark.length).toBeGreaterThan(0);
+    expect(voucher?.invalid.length).toBeGreaterThan(0);
+  });
+
+  describe('evm', () => {
+    const v = voucher!.evm;
+    const config = {
+      payer: getAddress(prefix0x(v.channel_config.payer_hex)),
+      payerAuthorizer: getAddress(
+        prefix0x(v.channel_config.payer_authorizer_hex)
+      ),
+      receiver: getAddress(prefix0x(v.channel_config.receiver_hex)),
+      receiverAuthorizer: getAddress(
+        prefix0x(v.channel_config.receiver_authorizer_hex)
+      ),
+      token: getAddress(prefix0x(v.channel_config.token_hex)),
+      withdrawDelay: v.channel_config.withdraw_delay,
+      salt: prefix0x(v.channel_config.salt_hex),
+    };
+
+    it('names the contract this client signs for', () => {
+      expect(prefix0x(v.verifying_contract_hex)).toBe(
+        X402_BATCH_SETTLEMENT_ADDRESS.toLowerCase()
+      );
+    });
+
+    it('hashes the ChannelConfig to the published channelId', () => {
+      expect(batchChannelId(config, v.chain_id)).toBe(
+        prefix0x(v.channel_id_hex)
+      );
+    });
+
+    it('computes the published voucher digest', () => {
+      expect(
+        batchVoucherDigest(
+          v.chain_id,
+          prefix0x(v.channel_id_hex),
+          BigInt(v.max_claimable_amount)
+        )
+      ).toBe(prefix0x(v.digest_hex));
+    });
+
+    it('reproduces the signature byte-for-byte through signBatchVoucher', async () => {
+      // The signer is anvil's account #1; the vector publishes its address,
+      // and this well-known key derives exactly that address.
+      const account = privateKeyToAccount(ANVIL_ACCOUNT_1_KEY);
+      expect(account.address.toLowerCase()).toBe(
+        prefix0x(v.signer_address_hex)
+      );
+      const signed = await signBatchVoucher(
+        account,
+        v.chain_id,
+        prefix0x(v.channel_id_hex),
+        BigInt(v.max_claimable_amount)
+      );
+      expect(signed.signature).toBe(prefix0x(v.signature_hex));
+    });
+  });
+
+  describe('solana', () => {
+    const v = voucher!.solana;
+
+    it('builds the published 50-byte message', () => {
+      expect(v.expires_at).toBe(0);
+      expect(
+        bytesToHex(
+          buildSvmVoucherMessage(
+            v.channel_account_base58,
+            BigInt(v.max_claimable_amount)
+          )
+        )
+      ).toBe(v.signed_message_hex);
+    });
+
+    it('verifies the published signature over it, under the published key', () => {
+      expect(bytesToHex(base58Decode(v.signer_public_key_base58))).toBe(
+        v.signer_public_key_hex
+      );
+      expect(bytesToHex(base58Decode(v.signature_base58))).toBe(
+        v.signature_hex
+      );
+      expect(
+        ed25519.verify(
+          hexToBytes(v.signature_hex),
+          hexToBytes(v.signed_message_hex),
+          hexToBytes(v.signer_public_key_hex)
+        )
+      ).toBe(true);
+    });
+  });
+
+  it('names the connector-side refusals this client must never provoke', () => {
+    // `amount_only_watermark` and `invalid` are the connector's verdicts on a
+    // voucher it was handed; payment-claim validation lives only there. What
+    // the client owes them is never to build a voucher they refuse: a Solana
+    // voucher's expires_at is always zero by construction (see above), and the
+    // amount rule is replayed where the client chooses its next amount.
+    expect(voucher!.invalid.map((c) => c.expected_error)).toContain(
+      'voucher_expires'
+    );
+    expect(
+      new Set(voucher!.amount_only_watermark.map((c) => c.outcome))
+    ).toEqual(
+      new Set([
+        'amount_not_advancing',
+        'advances',
+        'retransmission',
+        'underpayment',
+      ])
+    );
   });
 });

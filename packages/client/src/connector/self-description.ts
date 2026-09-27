@@ -135,13 +135,22 @@ const BYTES_PER_KIB = 1024n;
  * where it charged one kibibyte too many. Every size that had actually been
  * measured was a non-multiple, so the fit held and the overpay — silent, since a
  * claim that advances more than the price is simply accepted — went unnoticed.
+ *
+ * The charge saturates at `u64::MAX`, as the connector's does (the `charge`
+ * vectors' `saturating_*` cases): an amount past it is one no claim can carry.
  */
 export function chargeFor(terms: RouteCharge, sealedBytes: number): bigint {
   const perKib = terms.pricePerKib;
-  if (perKib === undefined || perKib === 0n) return terms.price;
+  if (perKib === undefined || perKib === 0n) return saturateU64(terms.price);
   const bytes = BigInt(Math.max(0, Math.trunc(sealedBytes)));
   const units = (bytes + BYTES_PER_KIB - 1n) / BYTES_PER_KIB;
-  return terms.price + perKib * units;
+  return saturateU64(terms.price + perKib * units);
+}
+
+const U64_MAX = 2n ** 64n - 1n;
+
+function saturateU64(amount: bigint): bigint {
+  return amount > U64_MAX ? U64_MAX : amount;
 }
 
 /** Which carriage a route insists on, when its routes agree on one. */

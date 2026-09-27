@@ -280,5 +280,5 @@ The chain half of this is exported now:
 - `buildSponsoredOpen`, the sponsored `open`, which refuses any sponsor other than the receiving
   connector's.
 
-`ToonClient` does not use any of it yet. How a voucher rides the wire is fixed by the connector's
-vectors at `schema_version` 6, which have not landed (toon-client#679).
+`ToonClient` does not use any of it yet (toon-client#679). How a voucher rides the wire is fixed
+by the connector's vectors at `schema_version` 6.

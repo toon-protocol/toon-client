@@ -301,6 +301,97 @@ export interface PeerCarriageVectors {
   [item: string]: unknown;
 }
 
+/**
+ * One metered-price case (connector ADR 0065): `base + per_kib ×
+ * ceil(payload_len / 1024)`, saturating at `u64::MAX`. Amounts are decimal
+ * strings because two cases sit at `u64::MAX`, past a JSON number's precision.
+ */
+export interface ChargeVector {
+  name: string;
+  base: string;
+  per_kib: string;
+  payload_len: number;
+  kib: number;
+  charge: string;
+  saturated: boolean;
+}
+
+/** An x402 `ChannelConfig`, in the file's hex spelling. */
+export interface VoucherChannelConfigVector {
+  payer_hex: string;
+  payer_authorizer_hex: string;
+  receiver_hex: string;
+  receiver_authorizer_hex: string;
+  token_hex: string;
+  withdraw_delay: number;
+  salt_hex: string;
+}
+
+/** An EVM `batch-settlement` voucher (connector ADR 0074 decision 4). */
+export interface EvmVoucherVector {
+  name: string;
+  chain_id: number;
+  verifying_contract_hex: string;
+  channel_config: VoucherChannelConfigVector;
+  /** `getChannelId(channel_config)`. */
+  channel_id_hex: string;
+  max_claimable_amount: number;
+  /** `getVoucherDigest(channelId, maxClaimableAmount)`. */
+  digest_hex: string;
+  signer_address_hex: string;
+  /** 65 bytes, `r || s || v` with `v` in {27, 28}. */
+  signature_hex: string;
+  /** The claim as it rides the wire. */
+  json: string;
+}
+
+/** A Solana `batch-settlement` voucher: Ed25519 over the 50-byte message. */
+export interface SolanaVoucherVector {
+  name: string;
+  channel_account_hex: string;
+  channel_account_base58: string;
+  signer_public_key_hex: string;
+  signer_public_key_base58: string;
+  max_claimable_amount: number;
+  expires_at: number;
+  signed_message_hex: string;
+  signature_hex: string;
+  signature_base58: string;
+  json: string;
+}
+
+/**
+ * The amount-only watermark (ADR 0074 decision 3). The connector's verdict,
+ * not the client's: payment-claim validation lives only in the connector.
+ */
+export interface VoucherWatermarkVector {
+  name: string;
+  watermark_amount: number;
+  watermark_signature_hex: string;
+  presented_amount: number;
+  presented_signature_hex: string;
+  charge: number;
+  outcome:
+    | 'amount_not_advancing'
+    | 'advances'
+    | 'retransmission'
+    | 'underpayment';
+  advanced: number | null;
+}
+
+export interface VoucherInvalidVector {
+  name: string;
+  claim_json: string;
+  expected_error: string;
+}
+
+export interface ClaimVoucherVectors {
+  evm: EvmVoucherVector;
+  solana: SolanaVoucherVector;
+  amount_only_watermark: VoucherWatermarkVector[];
+  invalid: VoucherInvalidVector[];
+}
+
 export interface WireVectors {
   schema_version: number;
   envelope: {
@@ -320,6 +411,10 @@ export interface WireVectors {
   peer_carriage?: PeerCarriageVectors;
   /** Replayed against `src/signing/evm-signer.ts`. */
   channel_control_declaration?: { cases: ChannelControlDeclarationVector[] };
+  /** Replayed against `src/connector/self-description.ts`'s `chargeFor`. */
+  charge?: { cases: ChargeVector[] };
+  /** Replayed against `src/channel/batch-settlement/` (connector ADR 0074). */
+  claim_voucher?: ClaimVoucherVectors;
 }
 
 /**
@@ -334,6 +429,8 @@ export const WIRE_VECTOR_SECTIONS = [
   'claim',
   'peer_carriage',
   'channel_control_declaration',
+  'charge',
+  'claim_voucher',
 ] as const;
 
 // ─── Provenance ─────────────────────────────────────────────────────────────
