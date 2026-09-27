@@ -34,7 +34,6 @@ export {
   paymentChannelsEventAuthority,
   buildSvmTopUpInstruction,
   buildSponsoredOpen,
-  acceptSponsorSignature,
   buildSvmVoucherMessage,
   signSvmVoucher,
   decodeSvmBatchChannel,
@@ -74,3 +73,4 @@ export {
   type PreparedVoucher,
   type VoucherOutcome,
 } from './payer.js';
+export { requestSponsoredOpen, type SponsoredOpen } from './sponsor.js';

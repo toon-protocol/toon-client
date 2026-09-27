@@ -13,7 +13,6 @@ This adds the chain half of paying a connector from an x402 `batch-settlement` c
   - the channel PDA;
   - `open` and `top_up` instructions;
   - `buildSponsoredOpen`, which compiles `[open, memo]` with the connector as fee payer and signs the payer's slot. It refuses any sponsor other than the receiving connector's, because a third-party sponsor sits in the `payee` seat and can seal the channel.
-  - `acceptSponsorSignature`, which takes the co-signed transaction back only if the message is unchanged;
   - the 50-byte voucher, with `expiresAt` always 0;
   - `decodeSvmBatchChannel`, which reads the channel account.
 

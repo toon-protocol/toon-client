@@ -23,6 +23,7 @@ import type { NodeSelfDescription } from '../../connector/self-description.js';
 import {
   ConfigError,
   FacilitatorError,
+  InsufficientBalanceError,
   ValidationError,
 } from '../../client/errors.js';
 import {
@@ -37,7 +38,23 @@ import {
 } from './evm.js';
 import { settleDeposit } from './facilitator.js';
 import { chooseBatchSettlement, offerFromTerms } from './offers.js';
-import { evmVoucherClaim } from './claim.js';
+import { evmVoucherClaim, solanaVoucherClaim } from './claim.js';
+import {
+  buildSponsoredOpen,
+  buildSvmBatchChannelConfig,
+  signSvmVoucher,
+  type BatchSettlementSvmOffer,
+} from './svm.js';
+import { requestSponsoredOpen } from './sponsor.js';
+import {
+  deriveAssociatedTokenAccount,
+  getLatestBlockhash,
+  getTokenAccountBalance,
+  solanaRpc,
+  type Signer,
+  type SolanaRpcTarget,
+} from '../solana/payment-channel.js';
+import { base58Encode } from '../../utils/base58.js';
 import type { BatchChannel, BatchChannelManager } from './manager.js';
 
 /** What became of a packet that carried a voucher. */
@@ -79,6 +96,13 @@ export interface BatchSettlementPayerConfig {
      */
     depositMethod?: 'eip3009' | 'permit2';
   };
+  solana?: {
+    /** The funding wallet; also the channel's `authorized_signer`, which signs vouchers. */
+    signer: Signer;
+    /** The Solana JSON-RPC to read the slot, the blockhash and the accounts from. */
+    rpc: SolanaRpcTarget;
+  };
+  /** How the connector's sponsor endpoint and the facilitator are reached. */
   fetch?: typeof fetch;
 }
 
@@ -98,6 +122,9 @@ export function voucherRefusalIsNotAdvancing(
     /advances value by 0,/.test(message)
   );
 }
+
+type EvmPayerConfig = NonNullable<BatchSettlementPayerConfig['evm']>;
+type SolanaPayerConfig = NonNullable<BatchSettlementPayerConfig['solana']>;
 
 export class BatchSettlementPayer {
   constructor(private readonly config: BatchSettlementPayerConfig) {
@@ -122,9 +149,141 @@ export class BatchSettlementPayer {
     if (terms === undefined) return undefined;
     const priced = offerFromTerms(terms, amount);
     if (priced.chain === 'evm') return this.evmVoucher(priced.offer, amount);
-    throw new ConfigError(
-      'paying from a Solana batch-settlement channel is not built yet (#690)'
+    return this.solanaVoucher(priced.offer, amount);
+  }
+
+  private async solanaVoucher(
+    offer: BatchSettlementSvmOffer,
+    charge: bigint
+  ): Promise<PreparedVoucher> {
+    const solana = this.config.solana;
+    if (!solana) {
+      throw new ConfigError(
+        'this client holds no Solana key to pay a batch-settlement channel with'
+      );
+    }
+    const manager = this.config.manager;
+    let channel = manager.resolve(
+      this.config.connector,
+      offer.network,
+      offer.asset
     );
+    // The sponsor endpoint opens channels and nothing else, so a Solana top-up
+    // would cost the payer SOL. A channel its deposit cannot cover is instead
+    // replaced by a fresh sponsored one, and its binding archived: what little
+    // is left in it returns to the payer when the connector closes it.
+    if (
+      channel === undefined ||
+      manager.signedSoFar(channel.channelId) + charge >
+        manager.depositTotal(channel.channelId)
+    ) {
+      channel = await this.solanaOnboard(solana, offer, charge);
+    }
+
+    const cumulative = manager.reserve(channel.channelId, charge);
+    if (cumulative === undefined) {
+      throw new ValidationError(
+        'a free route carries no voucher; send it unpaid'
+      );
+    }
+    const channelId = channel.channelId;
+    const voucher = signSvmVoucher(solana.signer, channelId, cumulative);
+    return {
+      chain: 'solana',
+      channelId,
+      claim: solanaVoucherClaim(voucher, base58Encode(solana.signer.publicKey)),
+      cumulative,
+      settle: (outcome) => {
+        if (outcome.kind === 'refused') {
+          manager.refused(channelId, charge, {
+            notAdvancing: outcome.notAdvancing,
+          });
+        }
+      },
+    };
+  }
+
+  /**
+   * Open a channel the receiving connector sponsors: the connector pays the fee
+   * and the rent, and the payer needs no SOL at all.
+   *
+   * The sponsor key is the one THIS connector published — the offer is read off
+   * its own `GET /ilp` — so the refusal of any other sponsor that
+   * {@link buildSponsoredOpen} enforces holds by construction here.
+   */
+  private async solanaOnboard(
+    solana: SolanaPayerConfig,
+    offer: BatchSettlementSvmOffer,
+    charge: bigint
+  ): Promise<BatchChannel> {
+    const { sponsorEndpoint, minDeposit, feePayer, tokenProgram } = offer.extra;
+    if (!sponsorEndpoint) {
+      throw new ConfigError(
+        `the connector's Solana batch-settlement offer names no sponsorEndpoint to open a channel through`
+      );
+    }
+    const payer = base58Encode(solana.signer.publicKey);
+    const floor = minDeposit !== undefined ? BigInt(minDeposit) : 0n;
+    const deposit = [this.config.deposit, charge, floor].reduce((a, b) =>
+      a > b ? a : b
+    );
+
+    // x402 SVM spec §4.1: the client confirms the token program against the
+    // mint's on-chain owner rather than trusting the offer.
+    const mintOwner = await accountOwner(solana.rpc, offer.asset);
+    if (mintOwner !== tokenProgram) {
+      throw new ConfigError(
+        `mint ${offer.asset} is owned by ${mintOwner ?? 'nothing'}, not the offer's tokenProgram ${tokenProgram}`
+      );
+    }
+    const ata = deriveAssociatedTokenAccount(payer, offer.asset);
+    const balance = await getTokenAccountBalance(solana.rpc, ata);
+    if (balance === null) {
+      throw new InsufficientBalanceError(
+        `${payer} has no token account for ${offer.asset} (${ata}); the channel's deposit is drawn from it, and it must exist before the connector will sponsor an open`
+      );
+    }
+    if (balance < deposit) {
+      throw new InsufficientBalanceError(
+        `${payer} holds ${balance} of ${offer.asset}; a sponsored open deposits ${deposit}`
+      );
+    }
+
+    const [openSlot, recentBlockhash] = await Promise.all([
+      currentSlot(solana.rpc),
+      getLatestBlockhash(solana.rpc),
+    ]);
+    const config = buildSvmBatchChannelConfig({ payer, offer, openSlot });
+    const { transaction, channelId } = buildSponsoredOpen({
+      payer: solana.signer,
+      config,
+      offer,
+      connectorSponsor: feePayer,
+      deposit,
+      recentBlockhash,
+    });
+
+    const opened = await requestSponsoredOpen({
+      connector: this.config.connector,
+      sponsorEndpoint,
+      transaction,
+      ...(this.config.fetch ? { fetchImpl: this.config.fetch } : {}),
+    });
+    if (opened.channelId !== channelId) {
+      throw new ValidationError(
+        `the sponsor reports opening ${opened.channelId}, not the channel ${channelId} the payer signed for`
+      );
+    }
+
+    const channel: BatchChannel = {
+      chain: 'solana',
+      channelId,
+      network: offer.network,
+      sponsor: feePayer,
+      config,
+    };
+    this.config.manager.adopt(this.config.connector, channel, deposit);
+    return channel;
   }
 
   private async evmVoucher(
@@ -147,12 +306,13 @@ export class BatchSettlementPayer {
       offer.asset
     );
     if (channel === undefined) {
-      channel = await this.evmOnboard(offer, charge);
+      channel = await this.evmOnboard(evm, offer, charge);
     } else if (
       manager.signedSoFar(channel.channelId) + charge >
       manager.depositTotal(channel.channelId)
     ) {
       await this.evmDeposit(
+        evm,
         channel,
         offer,
         manager.signedSoFar(channel.channelId) + charge
@@ -195,10 +355,10 @@ export class BatchSettlementPayer {
    * very same voucher (ADR 0074 prerequisite 1).
    */
   private async evmOnboard(
+    evm: EvmPayerConfig,
     offer: BatchSettlementEvmOffer,
     charge: bigint
   ): Promise<BatchChannel> {
-    const evm = this.config.evm!;
     const config = buildBatchChannelConfig({
       payer: evm.account.address,
       payerAuthorizer: (evm.voucherSigner ?? evm.account).address,
@@ -211,13 +371,14 @@ export class BatchSettlementPayer {
       config,
     };
     const deposit = this.config.deposit > charge ? this.config.deposit : charge;
-    await this.evmSettle(offer, channel, deposit, charge);
+    await this.evmSettle(evm, offer, channel, deposit, charge);
     this.config.manager.adopt(this.config.connector, channel, deposit);
     return channel;
   }
 
   /** Top an existing channel up by the configured deposit, or by enough to cover `needed`. */
   private async evmDeposit(
+    evm: EvmPayerConfig,
     channel: BatchChannel,
     offer: BatchSettlementEvmOffer,
     needed: bigint
@@ -228,17 +389,17 @@ export class BatchSettlementPayer {
       this.config.deposit > shortfall ? this.config.deposit : shortfall;
     // The deposit carries the running cumulative: a voucher at or below what
     // the chain has claimed would be refused by the facilitator.
-    await this.evmSettle(offer, channel, amount, needed);
+    await this.evmSettle(evm, offer, channel, amount, needed);
     manager.addDeposit(channel.channelId, amount);
   }
 
   private async evmSettle(
+    evm: EvmPayerConfig,
     offer: BatchSettlementEvmOffer,
     channel: BatchChannel,
     amount: bigint,
     voucherAmount: bigint
   ): Promise<void> {
-    const evm = this.config.evm!;
     if (channel.chain !== 'evm') throw new Error('unreachable');
     if (!evm.facilitatorUrl) {
       throw new ConfigError(
@@ -285,4 +446,27 @@ export class BatchSettlementPayer {
       throw err;
     }
   }
+}
+
+/** The program that owns `address`, or `null` when there is no such account. */
+async function accountOwner(
+  rpc: SolanaRpcTarget,
+  address: string
+): Promise<string | null> {
+  const result = (await solanaRpc(rpc, 'getAccountInfo', [
+    address,
+    { encoding: 'base64', commitment: 'confirmed' },
+  ])) as { value: { owner: string } | null };
+  return result.value?.owner ?? null;
+}
+
+/**
+ * The cluster's current confirmed slot: the channel's `open_slot`, which the
+ * program refuses once it is more than 1,500 slots old.
+ */
+async function currentSlot(rpc: SolanaRpcTarget): Promise<bigint> {
+  const slot = (await solanaRpc(rpc, 'getSlot', [
+    { commitment: 'confirmed' },
+  ])) as number;
+  return BigInt(slot);
 }

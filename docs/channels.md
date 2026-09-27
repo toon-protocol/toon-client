@@ -298,6 +298,15 @@ as without the option.
   landed, so set `channelStore`.
 - **Top-ups** go through the facilitator the same way, when the deposit cannot cover the next
   voucher.
+- **Solana needs no `facilitatorUrl`.** The first paid `send()` builds the `open`, signs the
+  payer's slot, and posts it to the `sponsorEndpoint` the node publishes. The node co-signs as fee
+  payer and `rent_payer`, submits it, and pays the fee and the rent. The payer's USDC token
+  account must already exist and hold the deposit. The deposit is at least the node's
+  `minDeposit`. A refusal is a `SponsorRefusedError` carrying the node's own reason.
+- **A Solana top-up would need SOL**, because the node sponsors opens and nothing else. So a
+  Solana channel whose deposit cannot cover the next voucher is replaced by a fresh sponsored
+  one, and the old binding is archived. What is left in the old channel returns to the payer when
+  the node closes it.
 - **Permit2.** `depositMethod: 'permit2'` is for a token without ERC-3009. It needs a one-time
   Permit2 `approve` from the payer, which costs native gas unless the facilitator sponsors it.
 

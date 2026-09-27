@@ -53,6 +53,7 @@ import { ClientWalletFacade } from './wallet-facade.js';
 import { privateKeyToAccount } from 'viem/accounts';
 import { toHex } from 'viem';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
+import { base58Decode } from '../utils/base58.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
 import { send, type PaidWriteTransport, type SendContext } from './send.js';
 import { ChainUnavailableError, ConfigError, chainUnavailableMessage } from './errors.js';
@@ -865,6 +866,7 @@ function batchSettlementPayer(config: ResolvedConfig): BatchSettlementPayer | un
   const batch = config.batchSettlement;
   if (batch === undefined) return undefined;
   const evmKey = config.identity.evm?.privateKey;
+  const solana = config.identity.solana;
   return new BatchSettlementPayer({
     connector: config.connector,
     manager: new BatchChannelManager(config.channelStore),
@@ -875,6 +877,22 @@ function batchSettlementPayer(config: ResolvedConfig): BatchSettlementPayer | un
             account: privateKeyToAccount(toHex(evmKey)),
             ...(batch.facilitatorUrl !== undefined ? { facilitatorUrl: batch.facilitatorUrl } : {}),
             depositMethod: batch.depositMethod,
+          },
+        }
+      : {}),
+    ...(solana !== undefined
+      ? {
+          solana: {
+            signer: {
+              privateKey: solana.secretKey.slice(0, 32),
+              publicKey: base58Decode(solana.publicKey),
+            },
+            // Chain RPC rides the proxy under the same condition the on-chain
+            // client's does: there is one, and the caller has not opted RPC out.
+            rpc: {
+              url: config.rpcUrls.solana,
+              ...(config.rpcDispatcher !== undefined ? { fetchImpl: config.fetch } : {}),
+            },
           },
         }
       : {}),

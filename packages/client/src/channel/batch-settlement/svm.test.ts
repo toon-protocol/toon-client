@@ -12,11 +12,8 @@ import { describe, it, expect } from 'vitest';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { base58Decode, base58Encode } from '../../utils/base58.js';
-import { fromBase64, toBase64 } from '../../utils/binary.js';
-import {
-  parseSolanaWireTransaction,
-  signSolanaWireTransaction,
-} from '../solana/wire-transaction.js';
+import { fromBase64 } from '../../utils/binary.js';
+import { parseSolanaWireTransaction } from '../solana/wire-transaction.js';
 import type { Signer } from '../solana/payment-channel.js';
 import {
   PAYMENT_CHANNELS_PROGRAM_ID,
@@ -30,7 +27,6 @@ import {
   signSvmVoucher,
   singleRecipientDistributionHash,
   svmBatchChannelAddress,
-  acceptSponsorSignature,
   type BatchSettlementSvmOffer,
 } from './svm.js';
 import { ConfigError, ValidationError } from '../../client/errors.js';
@@ -393,49 +389,5 @@ describe('buildSponsoredOpen', () => {
     const a = build().transaction;
     const b = build().transaction;
     expect(a).not.toBe(b);
-  });
-
-  it('accepts the sponsor’s co-signature only over the message the payer signed', () => {
-    const { transaction } = build();
-    const cosigned = signSolanaWireTransaction(transaction, [SPONSOR]);
-    expect(
-      acceptSponsorSignature({
-        sent: transaction,
-        returned: cosigned,
-        sponsor: SPONSOR.address,
-      })
-    ).toBe(cosigned);
-
-    // A sponsor that altered the message (here, its blockhash) is refused.
-    const parsed = parseSolanaWireTransaction(cosigned);
-    const altered = fromBase64(cosigned);
-    altered[parsed.recentBlockhashOffset] ^= 1;
-    expect(() =>
-      acceptSponsorSignature({
-        sent: transaction,
-        returned: toBase64(altered),
-        sponsor: SPONSOR.address,
-      })
-    ).toThrow(ValidationError);
-
-    // A payer signature the sponsor wiped is refused, even with its own in place.
-    const wiped = fromBase64(cosigned);
-    wiped.fill(0, parsed.signaturesOffset + 64, parsed.signaturesOffset + 128);
-    expect(() =>
-      acceptSponsorSignature({
-        sent: transaction,
-        returned: toBase64(wiped),
-        sponsor: SPONSOR.address,
-      })
-    ).toThrow(ValidationError);
-
-    // A missing or wrong sponsor signature is refused.
-    expect(() =>
-      acceptSponsorSignature({
-        sent: transaction,
-        returned: transaction,
-        sponsor: SPONSOR.address,
-      })
-    ).toThrow(ValidationError);
   });
 });

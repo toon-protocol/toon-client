@@ -45,10 +45,7 @@ import {
   type RawInstruction,
   type Signer,
 } from '../solana/payment-channel.js';
-import {
-  parseSolanaWireTransaction,
-  signSolanaWireTransaction,
-} from '../solana/wire-transaction.js';
+import { signSolanaWireTransaction } from '../solana/wire-transaction.js';
 import { ConfigError, ValidationError } from '../../client/errors.js';
 
 // ---------------------------------------------------------------------------
@@ -424,52 +421,6 @@ export function buildSponsoredOpen(params: {
     transaction: signSolanaWireTransaction(unsigned, [payer]),
     channelId: svmBatchChannelAddress(config, sponsor),
   };
-}
-
-/**
- * Take back a transaction the sponsor co-signed, and accept it only if the
- * message is byte-identical to the one the payer signed and EVERY signature
- * slot — the sponsor's and the payer's alike — verifies over it. The message is
- * everything the payer signed, so an unchanged message is what makes the
- * payer's signature still mean what it meant.
- */
-export function acceptSponsorSignature(params: {
-  sent: string;
-  returned: string;
-  sponsor: string;
-}): string {
-  const sent = parseSolanaWireTransaction(params.sent);
-  let returned;
-  try {
-    returned = parseSolanaWireTransaction(params.returned);
-  } catch (err) {
-    throw new ValidationError(
-      'the sponsor returned something that is not a transaction',
-      err instanceof Error ? err : undefined
-    );
-  }
-  const sentMessage = sent.bytes.subarray(sent.messageOffset);
-  const returnedMessage = returned.bytes.subarray(returned.messageOffset);
-  if (toHex(sentMessage) !== toHex(returnedMessage)) {
-    throw new ValidationError(
-      'the sponsor returned a different transaction from the one the payer signed'
-    );
-  }
-  if (!returned.signers.includes(params.sponsor)) {
-    throw new ValidationError(
-      `the transaction does not ask the sponsor ${params.sponsor} to sign`
-    );
-  }
-  returned.signers.forEach((signer, slot) => {
-    const offset = returned.signaturesOffset + slot * 64;
-    const signature = returned.bytes.subarray(offset, offset + 64);
-    if (!ed25519.verify(signature, returnedMessage, base58Decode(signer))) {
-      throw new ValidationError(
-        `the transaction carries no valid signature from ${signer}`
-      );
-    }
-  });
-  return params.returned;
 }
 
 // ---------------------------------------------------------------------------

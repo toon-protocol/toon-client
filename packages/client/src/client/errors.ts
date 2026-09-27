@@ -394,6 +394,25 @@ export class FacilitatorError extends ToonClientError {
   }
 }
 
+/**
+ * The receiving connector's Solana sponsor endpoint answered, and did not open
+ * the x402 `batch-settlement` channel (connector ADR 0074 decision 9).
+ * {@link reason} is its own refusal name — `token_program_unsupported`,
+ * `cluster_rent_threshold_unsupported`, `sponsor_busy`, … — because each names
+ * a different remedy. Nothing was spent: the endpoint signs and sends nothing
+ * until every check passes.
+ */
+export class SponsorRefusedError extends ToonClientError {
+  constructor(
+    message: string,
+    public readonly reason: string,
+    cause?: Error
+  ) {
+    super(message, 'SPONSOR_REFUSED', cause);
+    this.name = 'SponsorRefusedError';
+  }
+}
+
 // ─── Error classification helpers ───────────────────────────────────────────
 
 /**

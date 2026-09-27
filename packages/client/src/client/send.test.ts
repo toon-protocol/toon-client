@@ -22,6 +22,7 @@ import {
   type SendContext,
 } from './send.js';
 import type { SendRequest } from './types.js';
+import type { PreparedVoucher } from '../channel/batch-settlement/payer.js';
 import { BeforePayRefusedError, RouteNotPricedError } from './errors.js';
 import { decodeUtf8 } from '../utils/binary.js';
 
@@ -864,7 +865,7 @@ describe('send — beforePay, the caller\'s last look before money moves', () =>
 // ─── x402 batch-settlement vouchers (connector ADR 0074) ────────────────────
 
 describe('a packet paid by a batch-settlement voucher', () => {
-  type Settled = Parameters<import('../channel/batch-settlement/payer.js').PreparedVoucher['settle']>[0];
+  type Settled = Parameters<PreparedVoucher['settle']>[0];
 
   function withVouchers(h: Harness, offered = true) {
     const settled: Settled[] = [];
