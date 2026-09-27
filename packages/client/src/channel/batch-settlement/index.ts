@@ -44,3 +44,12 @@ export {
   type SvmBatchVoucher,
   type SvmBatchChannelState,
 } from './svm.js';
+export {
+  CONNECTOR_MAX_TIMEOUT_SECONDS,
+  parseBatchSettlementOffer,
+  parseBatchSettlementTerms,
+  offerFromTerms,
+  chooseBatchSettlement,
+  type BatchSettlementOffer,
+  type BatchSettlementTerms,
+} from './offers.js';

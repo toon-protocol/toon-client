@@ -15,6 +15,10 @@
  * which is the only part of it 1.0 keeps.
  */
 
+import {
+  parseBatchSettlementOffer,
+  type BatchSettlementOffer,
+} from '../channel/batch-settlement/offers.js';
 import type { PaymentTerms } from '../client/types.js';
 import type { ConnectorChainSettlementTerms } from './ConnectorEdgeClient.js';
 import { parseSettlementEntry } from './self-description.js';
@@ -84,6 +88,11 @@ export interface ParsedX402Challenge {
   x402Version?: number;
   /** The first usable `toon-channel` accepts entry, or `undefined`. */
   toonChannel?: ToonChannelAccept;
+  /**
+   * Every well-formed x402 `batch-settlement` entry, one per chain the node has
+   * opted in to (connector ADR 0074 decision 8). Absent when there are none.
+   */
+  batchSettlements?: BatchSettlementOffer[];
 }
 
 // ─── x402 challenge parsing (defensive) ─────────────────────────────────────
@@ -184,6 +193,11 @@ export function parseX402Body(
     ? (b['accepts'] as unknown[])
     : [];
 
+  const batchSettlements = accepts
+    .map(parseBatchSettlementOffer)
+    .filter((o): o is BatchSettlementOffer => o !== undefined);
+  const batch = batchSettlements.length > 0 ? { batchSettlements } : {};
+
   for (const raw of accepts) {
     if (typeof raw !== 'object' || raw === null) continue;
     const entry = raw as Record<string, unknown>;
@@ -239,6 +253,7 @@ export function parseX402Body(
 
     return {
       ...(version !== undefined ? { x402Version: version } : {}),
+      ...batch,
       toonChannel: {
         scheme: 'toon-channel',
         ...(network !== undefined ? { network } : {}),
@@ -252,7 +267,7 @@ export function parseX402Body(
     };
   }
 
-  return version !== undefined ? { x402Version: version } : {};
+  return { ...(version !== undefined ? { x402Version: version } : {}), ...batch };
 }
 
 /**

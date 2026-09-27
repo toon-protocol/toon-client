@@ -48,6 +48,7 @@ export const FAKE_DESCRIPTION: NodeSelfDescription = {
   btpEndpoint: 'wss://node.example/ilp/btp',
   peerCarriages: ['http', 'btp'],
   edgeIdentity: { keyId: 'edge-1', publicKey: '0x04abcd' },
+  batchSettlements: [],
   settlements: [FAKE_SETTLEMENT],
   routes: [{ prefix: 'g.toon.store', price: 1000n }],
   supportedVersions: [1],

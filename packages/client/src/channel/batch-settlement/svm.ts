@@ -108,6 +108,16 @@ export interface BatchSettlementSvmOffer {
     tokenProgram: string;
     /** When present, the `open` transaction's memo must be exactly this. */
     memo?: string;
+    /**
+     * The connector's own field, not x402's: the smallest deposit it will
+     * sponsor an open for, atomic units (connector #1346).
+     */
+    minDeposit?: string;
+    /**
+     * The connector's own field, not x402's: the path, on the connector's
+     * client edge, that co-signs and submits a sponsored `open` (connector #1357).
+     */
+    sponsorEndpoint?: string;
   };
 }
 

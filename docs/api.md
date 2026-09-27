@@ -455,7 +455,7 @@ connector's own wire vectors — see
 | `encodeEnvelope`, `decodeEnvelope` | The OER envelope codec |
 | `sealRequest`, `openResponse` | The gift wrap on its own |
 | `ConnectorEdgeClient` | The client-edge endpoints as plain calls |
-| `parseSelfDescription` | `GET /ilp` body to `NodeSelfDescription` |
+| `parseSelfDescription` | `GET /ilp` body to `NodeSelfDescription`, including `batchSettlements` — the x402 `batch-settlement` terms a node has opted in to |
 | `ChannelManager`, `JsonFileChannelStore` | The watermark and the bindings, without a client |
 | `EvmSigner`, `SolanaSigner` | Balance-proof signing, per chain |
 | `parseSolanaWireTransaction` | Reads a compiled Solana transaction this client did not build — its signers, its blockhash, which slots are still zero |

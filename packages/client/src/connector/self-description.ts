@@ -27,6 +27,10 @@
  * answer). The parser below preserves that distinction rather than substituting
  * defaults, because a substituted default is indistinguishable from a fact.
  */
+import {
+  parseBatchSettlementTerms,
+  type BatchSettlementTerms,
+} from '../channel/batch-settlement/offers.js';
 import type {
   ConnectorChainSettlementTerms,
   ConnectorSettlementTerms,
@@ -175,6 +179,12 @@ export interface NodeSelfDescription {
   edgeIdentity?: EdgeIdentity;
   /** One entry per chain the node settles on. Absent — not empty — when it settles on none. */
   settlements: ConnectorChainSettlementTerms[];
+  /**
+   * The x402 `batch-settlement` terms, one per chain the node has opted in to
+   * (connector ADR 0074 decision 8). Empty when it has opted in to none —
+   * which is every node that does not say otherwise.
+   */
+  batchSettlements: BatchSettlementTerms[];
   /** The node's routes and their prices. Absent — not empty — when it serves none. */
   routes: RoutePrice[];
   /** Set only when every route that covers this node's own addresses agrees on one carriage. */
@@ -311,6 +321,12 @@ export function parseSelfDescription(
         .filter((s): s is ConnectorChainSettlementTerms => s !== undefined)
     : [];
 
+  const batchSettlements = Array.isArray(b['batchSettlements'])
+    ? (b['batchSettlements'] as unknown[])
+        .map(parseBatchSettlementTerms)
+        .filter((t): t is BatchSettlementTerms => t !== undefined)
+    : [];
+
   const routes = Array.isArray(b['routes'])
     ? (b['routes'] as unknown[])
         .map((raw): RoutePrice | undefined => {
@@ -354,6 +370,7 @@ export function parseSelfDescription(
     peerCarriages,
     ...(edgeIdentity !== undefined ? { edgeIdentity } : {}),
     settlements,
+    batchSettlements,
     routes,
     ...(requiredTransport !== undefined ? { requiredTransport } : {}),
     supportedVersions,
