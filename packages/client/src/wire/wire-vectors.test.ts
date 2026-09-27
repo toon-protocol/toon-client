@@ -82,6 +82,11 @@ import {
   signBatchVoucher,
 } from '../channel/batch-settlement/evm.js';
 import { buildSvmVoucherMessage } from '../channel/batch-settlement/svm.js';
+import {
+  evmVoucherClaim,
+  nextVoucherAmount,
+  solanaVoucherClaim,
+} from '../channel/batch-settlement/claim.js';
 
 import {
   BTPMessageType,
@@ -1277,6 +1282,20 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
       );
       expect(signed.signature).toBe(prefix0x(v.signature_hex));
     });
+
+    it('writes the published claim JSON byte for byte', () => {
+      const published = JSON.parse(v.json) as Record<string, string>;
+      const claim = evmVoucherClaim(
+        {
+          channelId: prefix0x(v.channel_id_hex),
+          maxClaimableAmount: String(v.max_claimable_amount),
+          signature: prefix0x(v.signature_hex),
+        },
+        config,
+        { messageId: published['messageId'], timestamp: published['timestamp'] }
+      );
+      expect(JSON.stringify(claim)).toBe(v.json);
+    });
   });
 
   describe('solana', () => {
@@ -1309,6 +1328,46 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
         )
       ).toBe(true);
     });
+
+    it('writes the published claim JSON byte for byte', () => {
+      const published = JSON.parse(v.json) as Record<string, string>;
+      const claim = solanaVoucherClaim(
+        {
+          channelId: v.channel_account_base58,
+          maxClaimableAmount: String(v.max_claimable_amount),
+          expiresAt: 0,
+          signature: v.signature_base58,
+        },
+        v.signer_public_key_base58,
+        { messageId: published['messageId'], timestamp: published['timestamp'] }
+      );
+      expect(JSON.stringify(claim)).toBe(v.json);
+    });
+  });
+
+  describe('amount_only_watermark — the amount this client chooses', () => {
+    // The connector judges a voucher it was handed; the client's part is to
+    // choose an amount the connector accepts. `nextVoucherAmount` never
+    // re-presents the watermark (every refused or retransmitted case) and
+    // presents exactly watermark + charge (the accepted case).
+    it.each(voucher!.amount_only_watermark.map((c) => [c.name, c] as const))(
+      '%s',
+      (_name, c) => {
+        const next = nextVoucherAmount(
+          BigInt(c.watermark_amount),
+          BigInt(c.charge)
+        );
+        if (c.outcome === 'advances') {
+          expect(next).toBe(BigInt(c.presented_amount));
+          expect(next! - BigInt(c.watermark_amount)).toBe(BigInt(c.advanced!));
+        } else {
+          // Refused, retransmitted or underpaid: all present the watermark
+          // itself, which the client never signs as a new voucher.
+          expect(c.presented_amount).toBe(c.watermark_amount);
+          expect(next).not.toBe(BigInt(c.presented_amount));
+        }
+      }
+    );
   });
 
   it('names the connector-side refusals this client must never provoke', () => {
@@ -1316,7 +1375,7 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
     // voucher it was handed; payment-claim validation lives only there. What
     // the client owes them is never to build a voucher they refuse: a Solana
     // voucher's expires_at is always zero by construction (see above), and the
-    // amount rule is replayed where the client chooses its next amount.
+    // amount rule is replayed above, against `nextVoucherAmount`.
     expect(voucher!.invalid.map((c) => c.expected_error)).toContain(
       'voucher_expires'
     );

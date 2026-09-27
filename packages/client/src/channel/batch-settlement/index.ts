@@ -53,3 +53,9 @@ export {
   type BatchSettlementOffer,
   type BatchSettlementTerms,
 } from './offers.js';
+export {
+  evmVoucherClaim,
+  solanaVoucherClaim,
+  nextVoucherAmount,
+  type VoucherClaimEnvelope,
+} from './claim.js';
