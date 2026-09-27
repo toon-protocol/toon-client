@@ -18,3 +18,9 @@ export {
   type ChannelFacadeDeps,
 } from './channel-facade.js';
 export { ClientWalletFacade, type WalletFacadeDeps } from './wallet-facade.js';
+export {
+  ClientBatchSettlementFacade,
+  type BatchSettlementFacade,
+  type BatchSettlementFacadeDeps,
+  type BatchChannelSummary,
+} from './batch-settlement-facade.js';

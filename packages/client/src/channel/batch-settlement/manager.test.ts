@@ -229,3 +229,26 @@ describe('reading a channel back off the chain', () => {
     ).rejects.toThrow(/not payment-channels/);
   });
 });
+
+describe('BatchChannelManager — leaving a channel', () => {
+  it('records the exit, and lists every channel with its state', () => {
+    const m = new BatchChannelManager();
+    m.adopt(CONNECTOR, EVM, 1_000n);
+    m.reserve(EVM.channelId, 400n);
+    expect(m.isClosing(EVM.channelId)).toBe(false);
+    m.markClosing(EVM.channelId, 10n, 20n);
+    expect(m.isClosing(EVM.channelId)).toBe(true);
+    m.markSettled(EVM.channelId, 30n);
+    expect(m.channels(CONNECTOR)).toEqual([
+      {
+        channel: EVM,
+        depositTotal: 1_000n,
+        signed: 400n,
+        closedAt: 10n,
+        settleableAt: 20n,
+        settledAt: 30n,
+      },
+    ]);
+    expect(m.channels('https://other.example')).toEqual([]);
+  });
+});

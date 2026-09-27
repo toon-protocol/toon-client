@@ -74,3 +74,14 @@ export {
   type VoucherOutcome,
 } from './payer.js';
 export { requestSponsoredOpen, type SponsoredOpen } from './sponsor.js';
+export {
+  X402_BATCH_SETTLEMENT_EXIT_ABI,
+  initiateEvmBatchWithdraw,
+  finalizeEvmBatchWithdraw,
+  buildSvmRequestCloseInstruction,
+  buildSvmSealInstruction,
+  buildSvmWithdrawPayerInstruction,
+  requestSvmBatchClose,
+  withdrawSvmBatchChannel,
+  type EvmExitClients,
+} from './exit.js';

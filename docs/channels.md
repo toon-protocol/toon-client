@@ -310,5 +310,21 @@ as without the option.
 - **Permit2.** `depositMethod: 'permit2'` is for a token without ERC-3009. It needs a one-time
   Permit2 `approve` from the payer, which costs native gas unless the facilitator sponsors it.
 
+**Leaving a channel** is the payer's own transaction on its own chain account, and it is the one
+step of this scheme that costs native gas. Use `client.batchSettlement.close()` and `.settle()`, or
+`toon channel close|settle --batch-settlement`.
+
+- **Base:**
+  1. `close()` calls `initiateWithdraw` for everything the connector has not claimed. The connector
+     sees it and claims its latest voucher.
+  2. After `withdrawDelay`, `settle()` calls `finalizeWithdraw`.
+- **Solana:**
+  1. `close()` sends `request_close`. The connector lands its latest voucher with
+     `settle_and_seal` during the grace period.
+  2. After the grace period, `settle()` seals the channel if the connector has not already, and
+     calls `withdraw_payer`, which returns `deposit − settled`.
+
+Once a channel is closing, the next paid `send()` onboards a fresh one.
+
 The building blocks are exported too: the channel config and id, voucher signing and claims on
 both chains, the deposits and `settleDeposit`, and the sponsored Solana `open`.

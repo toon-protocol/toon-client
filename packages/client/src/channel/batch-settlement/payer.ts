@@ -21,6 +21,7 @@
 import type { Hex } from 'viem';
 import type { NodeSelfDescription } from '../../connector/self-description.js';
 import {
+  ChannelNotOpenError,
   ConfigError,
   FacilitatorError,
   InsufficientBalanceError,
@@ -104,6 +105,12 @@ export interface BatchSettlementPayerConfig {
   };
   /** How the connector's sponsor endpoint and the facilitator are reached. */
   fetch?: typeof fetch;
+  /**
+   * Whether a paid packet may open, top up or replace a channel on its own.
+   * Default `true`. `false` makes every such step {@link BatchSettlementPayer.open}'s
+   * job, and a packet that needs one throws {@link ChannelNotOpenError} instead.
+   */
+  autoOpen?: boolean;
 }
 
 /**
@@ -152,6 +159,57 @@ export class BatchSettlementPayer {
     return this.solanaVoucher(priced.offer, amount);
   }
 
+  /**
+   * Open a channel to this node on `chain` now, depositing the configured
+   * amount, rather than on the first paid packet. Returns `undefined` when the
+   * node offers no `batch-settlement` there.
+   *
+   * On EVM the deposit must carry a voucher of at least one unit (ADR 0074
+   * prerequisite 1). It is signed for one unit and handed only to the
+   * facilitator, which cannot claim it — `receiverAuthorizer` is the
+   * connector's — and the first real voucher supersedes it.
+   */
+  async open(
+    description: NodeSelfDescription,
+    chain: 'evm' | 'solana'
+  ): Promise<BatchChannel | undefined> {
+    const terms = chooseBatchSettlement(description, chain);
+    if (terms === undefined) return undefined;
+    const priced = offerFromTerms(terms, 1n);
+    if (priced.chain === 'evm') {
+      return this.evmOnboard(this.requireEvm(), priced.offer, 1n);
+    }
+    return this.solanaOnboard(this.requireSolana(), priced.offer, 1n);
+  }
+
+  private requireEvm(): EvmPayerConfig {
+    if (!this.config.evm) {
+      throw new ConfigError(
+        'this client holds no EVM key to pay a batch-settlement channel with'
+      );
+    }
+    return this.config.evm;
+  }
+
+  private requireSolana(): SolanaPayerConfig {
+    if (!this.config.solana) {
+      throw new ConfigError(
+        'this client holds no Solana key to pay a batch-settlement channel with'
+      );
+    }
+    return this.config.solana;
+  }
+
+  /** Refuse an open, top-up or replacement a packet needs, when that is not its to do. */
+  private assertMayOpen(what: string): void {
+    if (this.config.autoOpen === false) {
+      throw new ChannelNotOpenError(
+        `paying ${this.config.connector} needs ${what} first, and this client does not ` +
+          'open channels on its own; open one explicitly (`toon channel open --batch-settlement`)'
+      );
+    }
+  }
+
   private async solanaVoucher(
     offer: BatchSettlementSvmOffer,
     charge: bigint
@@ -174,9 +232,11 @@ export class BatchSettlementPayer {
     // is left in it returns to the payer when the connector closes it.
     if (
       channel === undefined ||
+      manager.isClosing(channel.channelId) ||
       manager.signedSoFar(channel.channelId) + charge >
         manager.depositTotal(channel.channelId)
     ) {
+      this.assertMayOpen('a fresh sponsored batch-settlement channel');
       channel = await this.solanaOnboard(solana, offer, charge);
     }
 
@@ -305,12 +365,14 @@ export class BatchSettlementPayer {
       offer.network,
       offer.asset
     );
-    if (channel === undefined) {
+    if (channel === undefined || manager.isClosing(channel.channelId)) {
+      this.assertMayOpen('a batch-settlement channel');
       channel = await this.evmOnboard(evm, offer, charge);
     } else if (
       manager.signedSoFar(channel.channelId) + charge >
       manager.depositTotal(channel.channelId)
     ) {
+      this.assertMayOpen('a top-up of its batch-settlement channel');
       await this.evmDeposit(
         evm,
         channel,

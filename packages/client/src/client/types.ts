@@ -10,6 +10,7 @@
  * paid for it with a signed payment-channel claim that travels *with* the packet
  * (connector ADR 0042).
  */
+import type { BatchSettlementFacade } from './batch-settlement-facade.js';
 import type { ChainKind, ChannelStatus, ChannelTerms } from '../channel/types.js';
 import type { KeyDerivationScheme } from '../keys/KeyDerivation.js';
 import type { ClaimAck } from '../ilp/types.js';
@@ -492,6 +493,11 @@ export interface ToonClientLike {
   readonly identity: ToonIdentity;
   readonly channel: ChannelFacade;
   readonly wallet: WalletFacade;
+  /**
+   * The x402 `batch-settlement` channels this client pays from. Present only on
+   * a client created with `batchSettlement` (connector ADR 0074).
+   */
+  readonly batchSettlement?: BatchSettlementFacade | undefined;
   /** `GET /ilp`. Cached per instance; `fresh` re-reads. */
   describe(options?: { fresh?: boolean }): Promise<NodeSelfDescription>;
   /**

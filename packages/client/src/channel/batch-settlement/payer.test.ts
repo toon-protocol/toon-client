@@ -4,7 +4,11 @@ import { recoverTypedDataAddress, type Hex } from 'viem';
 import { BatchSettlementPayer, voucherRefusalIsNotAdvancing } from './payer.js';
 import { BatchChannelManager } from './manager.js';
 import { parseSelfDescription } from '../../connector/self-description.js';
-import { ConfigError, FacilitatorError } from '../../client/errors.js';
+import {
+  ChannelNotOpenError,
+  ConfigError,
+  FacilitatorError,
+} from '../../client/errors.js';
 
 const PAYER = privateKeyToAccount(
   '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
@@ -154,6 +158,47 @@ describe('BatchSettlementPayer on Base', () => {
     expect(topUp.voucher.maxClaimableAmount).toBe('2500');
     expect(next!.cumulative).toBe(2_500n);
     expect(manager.depositTotal(next!.channelId)).toBe(4_000n);
+  });
+
+  it('onboards a fresh channel instead of voucher-ing on one this client is leaving', async () => {
+    const f = facilitator();
+    const { p, manager } = payer(10_000n, f.fetchImpl);
+    const first = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    manager.markClosing(first!.channelId, 1n, 2n);
+    const next = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(f.posted).toHaveLength(2);
+    expect(next!.channelId).not.toBe(first!.channelId);
+    expect(next!.cumulative).toBe(1_000n);
+  });
+
+  it('with autoOpen off, refuses to open or top up on a packet, and opens on request', async () => {
+    const f = facilitator();
+    const manager = new BatchChannelManager();
+    const p = new BatchSettlementPayer({
+      connector: 'https://node.example',
+      manager,
+      deposit: 2_000n,
+      evm: { account: PAYER, facilitatorUrl: 'https://facilitator.test' },
+      fetch: f.fetchImpl,
+      autoOpen: false,
+    });
+    await expect(p.claimFor(DESCRIPTION, 'evm', 1_000n)).rejects.toThrow(
+      ChannelNotOpenError
+    );
+    expect(f.posted).toHaveLength(0);
+
+    const opened = await p.open(DESCRIPTION, 'evm');
+    // The deposit's voucher is one unit, and it is not counted as spent.
+    expect(f.posted[0]!.paymentPayload.payload.voucher.maxClaimableAmount).toBe(
+      '1'
+    );
+    expect(manager.signedSoFar(opened!.channelId)).toBe(0n);
+    expect((await p.claimFor(DESCRIPTION, 'evm', 1_500n))!.cumulative).toBe(
+      1_500n
+    );
+    await expect(p.claimFor(DESCRIPTION, 'evm', 1_000n)).rejects.toThrow(
+      ChannelNotOpenError
+    );
   });
 
   it('needs a facilitator to onboard', async () => {

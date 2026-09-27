@@ -225,6 +225,67 @@ export class BatchChannelManager {
     });
   }
 
+  /**
+   * Record that this client started leaving `channelId` at `closedAt`, and can
+   * take its deposit back from `settleableAt` (unix seconds). A closing channel
+   * takes no more vouchers: the connector stops accepting them the moment the
+   * chain says the payer is leaving.
+   */
+  markClosing(channelId: string, closedAt: bigint, settleableAt: bigint): void {
+    this.store.save(channelId, {
+      ...this.entry(channelId),
+      closedAt,
+      settleableAt,
+    });
+  }
+
+  /** Record that `channelId`'s unspent deposit is back with the payer. */
+  markSettled(channelId: string, settledAt: bigint): void {
+    this.store.save(channelId, { ...this.entry(channelId), settledAt });
+  }
+
+  /** Whether this client has started leaving `channelId`. */
+  isClosing(channelId: string): boolean {
+    return this.store.load(channelId)?.closedAt !== undefined;
+  }
+
+  /**
+   * Every channel this client holds on `connector`, live or archived, with its
+   * exit state — what `toon channel settle` walks to take deposits back.
+   */
+  channels(connector: string): {
+    channel: BatchChannel;
+    depositTotal: bigint;
+    signed: bigint;
+    closedAt?: bigint;
+    settleableAt?: bigint;
+    settledAt?: bigint;
+  }[] {
+    const prefix = `${KEY_PREFIX}${connector}|`;
+    return (this.store.listBindings?.() ?? [])
+      .filter(
+        ({ key, binding }) => key.startsWith(prefix) && binding.batchSettlement
+      )
+      .map(({ binding }) => {
+        const entry = this.store.load(binding.channelId);
+        return {
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- filtered above
+          channel: fromBinding(binding.channelId, binding.batchSettlement!),
+          depositTotal: binding.depositTotal ?? 0n,
+          signed: entry?.cumulativeAmount ?? 0n,
+          ...(entry?.closedAt !== undefined
+            ? { closedAt: entry.closedAt }
+            : {}),
+          ...(entry?.settleableAt !== undefined
+            ? { settleableAt: entry.settleableAt }
+            : {}),
+          ...(entry?.settledAt !== undefined
+            ? { settledAt: entry.settledAt }
+            : {}),
+        };
+      });
+  }
+
   private entry(channelId: string): ChannelStoreEntry {
     const entry = this.store.load(channelId);
     if (!entry)

@@ -122,6 +122,17 @@ export const GLOBAL_OPTIONS: Record<string, OptionSpec> = {
       'SOCKS5h proxy for a .anyone connector, e.g. socks5h://127.0.0.1:9050. ' +
       'Env TOON_SOCKS. Default: start a managed anon daemon.',
   },
+  'batch-settlement': {
+    type: 'boolean',
+    help:
+      'Pay from an x402 batch-settlement channel where the node offers one, opening it with ' +
+      'no native gas; channel commands then act on that channel. Env TOON_BATCH_SETTLEMENT=1.',
+  },
+  facilitator: {
+    type: 'string',
+    arg: 'URL',
+    help: 'The x402 facilitator that relays Base batch-settlement deposits. Env TOON_FACILITATOR.',
+  },
   json: { type: 'boolean', help: 'Print one JSON document on stdout and nothing else.' },
   quiet: { type: 'boolean', help: 'Suppress progress and warnings on stderr.' },
   help: { type: 'boolean', short: 'h', help: 'Show this help.' },

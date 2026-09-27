@@ -24,6 +24,8 @@ nobody named should not be silent.
 | Channel store | `--store PATH` | `TOON_CHANNEL_STORE` | `~/.toon/channels.json` |
 | Carriage | `--transport auto\|http\|btp` | — | `auto` |
 | SOCKS5h proxy | `--socks URL` | `TOON_SOCKS` | a managed `anon` daemon, for a `.anyone` connector |
+| x402 batch-settlement | `--batch-settlement` | `TOON_BATCH_SETTLEMENT=1` | off |
+| x402 facilitator | `--facilitator URL` | `TOON_FACILITATOR` | none; needed to open or top up on Base |
 
 Keys resolve in that order for a reason: `TOON_MNEMONIC` first, then the keystore, then a message
 telling you to run `toon init`. **There is no `--mnemonic` flag and there will not be one** — a
@@ -129,6 +131,22 @@ Every one of these is your transaction, on your gas.
 ```bash
 npx toon channel open --deposit 100000     # 100000 base units (0.10 USDC)
 npx toon channel status --connector-view
+```
+
+With `--batch-settlement`, the same verbs act on the x402 `batch-settlement` channel you pay the
+node from instead (connector ADR 0074; see [channels.md](channels.md#onboarding-without-gas-x402-batch-settlement)).
+
+| Subcommand | Under `--batch-settlement` |
+| --- | --- |
+| `open` | Onboard with no native gas: a deposit through `--facilitator` on Base, or a sponsored open on Solana. |
+| `status` | Every batch-settlement channel you hold with the node, and what you have signed on each. |
+| `close` | Start leaving the live channel: `initiateWithdraw` on Base, or `request_close` on Solana. This costs native gas. |
+| `settle` | Take back the unspent deposit of every channel whose window has passed. This costs native gas. |
+| `deposit` | Not a separate step. A Base channel is topped up by the payment that needs it. A Solana channel is replaced by a fresh sponsored one. |
+
+```bash
+npx toon --batch-settlement --facilitator https://x402.org/facilitator channel open
+npx toon --batch-settlement send g.toon.store --body '{"hello":"world"}'
 ```
 
 ### `toon claim-state`

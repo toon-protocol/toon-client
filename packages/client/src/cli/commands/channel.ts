@@ -14,6 +14,10 @@ import type { CommandContext } from '../context.js';
 import { CHANNEL_SUBCOMMANDS } from '../args.js';
 import { assetFromTerms, formatAmount, type AssetInfo } from '../output.js';
 import type { ChannelState, ClaimStateResult } from '../../client/types.js';
+import type {
+  BatchChannelSummary,
+  BatchSettlementFacade,
+} from '../../client/batch-settlement-facade.js';
 
 /** The rows that describe a channel to a person. */
 function stateRows(state: ChannelState, asset: AssetInfo): [string, string][] {
@@ -65,6 +69,9 @@ export async function run(ctx: CommandContext): Promise<number> {
   }
 
   const client = await ctx.client();
+  if (client.batchSettlement !== undefined) {
+    return runBatchSettlement(ctx, sub, client.batchSettlement);
+  }
   const channel = client.channel;
 
   if (sub === 'open') {
@@ -135,6 +142,88 @@ export async function run(ctx: CommandContext): Promise<number> {
       ctx.out.line();
       ctx.out.rows(connectorRows(connectorView, asset));
     }
+  });
+  return 0;
+}
+
+/** The rows that describe an x402 batch-settlement channel to a person. */
+function batchRows(summary: BatchChannelSummary): [string, string][] {
+  const rows: [string, string][] = [
+    ['channel', summary.channel.channelId],
+    ['scheme', 'batch-settlement'],
+    ['network', summary.channel.network],
+    ['deposit', summary.depositTotal.toString()],
+    ['signed', summary.signed.toString()],
+  ];
+  if (summary.closedAt !== undefined) rows.push(['closed at', summary.closedAt.toString()]);
+  if (summary.settleableAt !== undefined) {
+    rows.push(['settleable at', summary.settleableAt.toString()]);
+  }
+  if (summary.settledAt !== undefined) rows.push(['settled at', summary.settledAt.toString()]);
+  return rows;
+}
+
+/**
+ * `toon channel …` under `--batch-settlement`: the same verbs, on the x402
+ * channels this client pays the node from (connector ADR 0074). Opening costs
+ * no native gas; closing and settling are the payer's own transactions and do.
+ */
+async function runBatchSettlement(
+  ctx: CommandContext,
+  sub: string,
+  batch: BatchSettlementFacade
+): Promise<number> {
+  if (sub === 'open') {
+    const summary = await batch.open();
+    ctx.out.render(summary, () => {
+      ctx.out.line('Batch-settlement channel open.');
+      ctx.out.rows(batchRows(summary));
+    });
+    return 0;
+  }
+
+  if (sub === 'deposit') {
+    throw new UsageError(
+      'a batch-settlement channel is topped up by the payment that needs it (on Base), or ' +
+        'replaced by a fresh sponsored one (on Solana); there is no separate deposit',
+      'channel'
+    );
+  }
+
+  if (sub === 'close') {
+    const result = await batch.close();
+    ctx.out.render(result, () => {
+      ctx.out.line('Withdrawal started. Settle once its window has elapsed.');
+      ctx.out.rows([
+        ['channel', result.channelId],
+        ['tx', result.transaction],
+        ['settleable at', result.settleableAt.toString()],
+      ]);
+    });
+    return 0;
+  }
+
+  if (sub === 'settle') {
+    const settled = await batch.settle();
+    ctx.out.render(settled, () => {
+      if (settled.length === 0) {
+        ctx.out.line('No batch-settlement channel is ready to settle yet.');
+        return;
+      }
+      ctx.out.line('Unspent deposit returned.');
+      for (const s of settled) ctx.out.rows([['channel', s.channelId], ['tx', s.transaction]]);
+    });
+    return 0;
+  }
+
+  // status
+  const channels = batch.channels();
+  ctx.out.render(channels, () => {
+    if (channels.length === 0) {
+      ctx.out.line('No batch-settlement channel with this node yet.');
+      return;
+    }
+    for (const summary of channels) ctx.out.rows(batchRows(summary));
   });
   return 0;
 }

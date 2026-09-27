@@ -58,6 +58,8 @@ export const CHAIN_ENV = 'TOON_CHAIN';
 export const RPC_ENV = 'TOON_RPC_URL';
 export const CHANNEL_STORE_ENV = 'TOON_CHANNEL_STORE';
 export const SOCKS_ENV = 'TOON_SOCKS';
+export const BATCH_SETTLEMENT_ENV = 'TOON_BATCH_SETTLEMENT';
+export const FACILITATOR_ENV = 'TOON_FACILITATOR';
 
 /** Where a setting's value came from. Reported so a surprising run can be explained. */
 export type SettingSource = 'flag' | 'env' | 'default';
@@ -78,6 +80,11 @@ export interface CliSettings {
    * unlike the library, the CLI may run an `anon` daemon itself (ADR 0001).
    */
   socksProxy?: string;
+  /**
+   * Set when paying from x402 `batch-settlement` channels (connector ADR 0074),
+   * with the facilitator that relays Base deposits.
+   */
+  batchSettlement?: { facilitatorUrl?: string };
   keystorePath: string;
   passwordFile?: string;
   json: boolean;
@@ -157,9 +164,23 @@ export function resolveSettings(
         ? socksEnv
         : undefined;
 
+  const batchEnv = env[BATCH_SETTLEMENT_ENV];
+  const batchSettlement =
+    boolOption(values, 'batch-settlement') ||
+    (batchEnv !== undefined && ['1', 'true', 'yes'].includes(batchEnv.toLowerCase()));
+  const facilitator = stringOption(values, 'facilitator') ?? env[FACILITATOR_ENV];
+
   const settings: CliSettings = {
     connector,
     connectorSource,
+    ...(batchSettlement
+      ? {
+          batchSettlement:
+            facilitator !== undefined && facilitator.length > 0
+              ? { facilitatorUrl: facilitator }
+              : {},
+        }
+      : {}),
     ...(chain !== undefined ? { chain } : {}),
     ...(rpcUrl !== undefined && rpcUrl.length > 0 ? { rpcUrl } : {}),
     channelStore,
@@ -280,6 +301,9 @@ export function buildClientConfig(
     autoOpenChannel: false,
     ...(settings.chain !== undefined ? { chain: settings.chain } : {}),
     ...(settings.rpcUrl !== undefined ? { rpcUrl: settings.rpcUrl } : {}),
+    ...(settings.batchSettlement !== undefined
+      ? { batchSettlement: settings.batchSettlement }
+      : {}),
   };
 
   if (keys.kind === 'mnemonic') {

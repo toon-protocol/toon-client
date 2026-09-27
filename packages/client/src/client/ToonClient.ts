@@ -55,6 +55,10 @@ import { toHex } from 'viem';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { base58Decode } from '../utils/base58.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
+import {
+  ClientBatchSettlementFacade,
+  type BatchSettlementFacade,
+} from './batch-settlement-facade.js';
 import { send, type PaidWriteTransport, type SendContext } from './send.js';
 import { ChainUnavailableError, ConfigError, chainUnavailableMessage } from './errors.js';
 import type {
@@ -78,6 +82,12 @@ export class ToonClient implements ToonClientLike {
   readonly identity: ToonIdentity;
   readonly channel: ChannelFacade;
   readonly wallet: WalletFacade;
+  /**
+   * The x402 `batch-settlement` channels this client pays from — listing them,
+   * and leaving them. `undefined` unless the client was created with
+   * `batchSettlement` (connector ADR 0074).
+   */
+  readonly batchSettlement: BatchSettlementFacade | undefined;
 
   private readonly config: ResolvedConfig;
   private readonly edge: ConnectorEdgeClient;
@@ -135,7 +145,9 @@ export class ToonClient implements ToonClientLike {
       onChainClient: () => this.onChainClient(),
     });
     this.channel = this.channelFacade;
-    this.vouchers = batchSettlementPayer(init.config);
+    const batch = batchSettlement(init.config, init.chain, () => this.describe());
+    this.vouchers = batch?.payer;
+    this.batchSettlement = batch?.facade;
     this.wallet = new ClientWalletFacade({
       config: init.config,
       describe: () => this.describe(),
@@ -858,18 +870,39 @@ async function openHiddenService(
 }
 
 /**
- * The voucher source for a client that opted in to x402 `batch-settlement`, or
- * `undefined` for one that did not. It persists into the client's own channel
- * store, beside its `toon-channel` channels.
+ * The voucher source, and the exit facade, for a client that opted in to x402
+ * `batch-settlement` — or `undefined` for one that did not. Both share one
+ * {@link BatchChannelManager} over the client's own channel store, beside its
+ * `toon-channel` channels.
  */
-function batchSettlementPayer(config: ResolvedConfig): BatchSettlementPayer | undefined {
+function batchSettlement(
+  config: ResolvedConfig,
+  chain: ChainKind,
+  describe: () => Promise<NodeSelfDescription>
+): { payer: BatchSettlementPayer; facade: ClientBatchSettlementFacade } | undefined {
   const batch = config.batchSettlement;
   if (batch === undefined) return undefined;
+  const manager = new BatchChannelManager(config.channelStore);
   const evmKey = config.identity.evm?.privateKey;
-  const solana = config.identity.solana;
-  return new BatchSettlementPayer({
+  const solanaKey = config.identity.solana;
+  const solana =
+    solanaKey === undefined
+      ? undefined
+      : {
+          signer: {
+            privateKey: solanaKey.secretKey.slice(0, 32),
+            publicKey: base58Decode(solanaKey.publicKey),
+          },
+          // Chain RPC rides the proxy under the same condition the on-chain
+          // client's does: there is one, and the caller has not opted RPC out.
+          rpc: {
+            url: config.rpcUrls.solana,
+            ...(config.rpcDispatcher !== undefined ? { fetchImpl: config.fetch } : {}),
+          },
+        };
+  const payer = new BatchSettlementPayer({
     connector: config.connector,
-    manager: new BatchChannelManager(config.channelStore),
+    manager,
     deposit: batch.deposit,
     ...(evmKey !== undefined
       ? {
@@ -880,22 +913,26 @@ function batchSettlementPayer(config: ResolvedConfig): BatchSettlementPayer | un
           },
         }
       : {}),
-    ...(solana !== undefined
+    ...(solana !== undefined ? { solana } : {}),
+    fetch: config.fetch,
+    autoOpen: config.autoOpenChannel,
+  });
+  const facade = new ClientBatchSettlementFacade({
+    connector: config.connector,
+    payer,
+    chain,
+    manager,
+    describe,
+    ...(evmKey !== undefined
       ? {
-          solana: {
-            signer: {
-              privateKey: solana.secretKey.slice(0, 32),
-              publicKey: base58Decode(solana.publicKey),
-            },
-            // Chain RPC rides the proxy under the same condition the on-chain
-            // client's does: there is one, and the caller has not opted RPC out.
-            rpc: {
-              url: config.rpcUrls.solana,
-              ...(config.rpcDispatcher !== undefined ? { fetchImpl: config.fetch } : {}),
-            },
+          evm: {
+            privateKey: evmKey,
+            rpcUrl: config.rpcUrls.evm,
+            rpcDispatcher: config.rpcDispatcher,
           },
         }
       : {}),
-    fetch: config.fetch,
+    ...(solana !== undefined ? { solana } : {}),
   });
+  return { payer, facade };
 }

@@ -855,3 +855,81 @@ describe('the managed anon daemon', () => {
     }
   });
 });
+
+describe('channel, under --batch-settlement', () => {
+  const summary = {
+    channel: {
+      chain: 'evm' as const,
+      channelId: `0x${'ee'.repeat(32)}`,
+      network: 'eip155:84532',
+      config: {
+        payer: '0x1',
+        payerAuthorizer: '0x1',
+        receiver: '0x2',
+        receiverAuthorizer: '0x2',
+        token: '0x3',
+        withdrawDelay: 86_400,
+        salt: `0x${'00'.repeat(32)}` as `0x${string}`,
+      },
+    },
+    depositTotal: 1_000_000n,
+    signed: 2_000n,
+  };
+  function batch(calls: string[]) {
+    return {
+      channels: () => {
+        calls.push('channels');
+        return [summary];
+      },
+      open: async () => {
+        calls.push('open');
+        return summary;
+      },
+      close: async () => {
+        calls.push('close');
+        return { channelId: summary.channel.channelId, transaction: '0xclose', settleableAt: 99n };
+      },
+      settle: async () => {
+        calls.push('settle');
+        return [{ channelId: summary.channel.channelId, transaction: '0xsettle' }];
+      },
+    };
+  }
+
+  it('passes the opt-in and the facilitator into the client’s config', async () => {
+    const result = await run(['channel', 'status', '--batch-settlement', '--facilitator', 'https://f']);
+    expect(result.config?.batchSettlement).toEqual({ facilitatorUrl: 'https://f' });
+    const fromEnv = await run(['channel', 'status'], {
+      env: { TOON_BATCH_SETTLEMENT: '1', TOON_FACILITATOR: 'https://g' },
+    });
+    expect(fromEnv.config?.batchSettlement).toEqual({ facilitatorUrl: 'https://g' });
+    expect((await run(['channel', 'status'])).config?.batchSettlement).toBeUndefined();
+  });
+
+  it('acts on the batch-settlement channel for open, close, settle and status', async () => {
+    const calls: string[] = [];
+    for (const sub of ['open', 'close', 'settle', 'status']) {
+      const result = await run(['channel', sub, '--batch-settlement'], {
+        client: { batchSettlement: batch(calls) },
+      });
+      expect(result.code).toBe(EXIT.ok);
+    }
+    expect(calls).toEqual(['open', 'close', 'settle', 'channels']);
+  });
+
+  it('shows the channel in JSON, amounts as strings', async () => {
+    const result = await run(['channel', 'status', '--batch-settlement', '--json'], {
+      client: { batchSettlement: batch([]) },
+    });
+    expect(result.json()).toMatchObject([
+      { channel: { channelId: summary.channel.channelId }, depositTotal: '1000000', signed: '2000' },
+    ]);
+  });
+
+  it('has no separate deposit', async () => {
+    const result = await run(['channel', 'deposit', '5', '--batch-settlement'], {
+      client: { batchSettlement: batch([]) },
+    });
+    expect(result.code).toBe(EXIT.usage);
+  });
+});

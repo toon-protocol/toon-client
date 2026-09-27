@@ -10,6 +10,7 @@
  *
  * Not `*.test.ts`, so the runner does not collect it as a suite.
  */
+import type { BatchSettlementFacade } from '../client/batch-settlement-facade.js';
 import type { ConnectorChainSettlementTerms } from '../connector/self-description.js';
 import type { ConnectorRoutePrice } from '../connector/ConnectorEdgeClient.js';
 import type { NodeSelfDescription } from '../connector/self-description.js';
@@ -134,6 +135,8 @@ export interface FakeClientOptions {
   faucet?: FundWalletResult;
   /** Make any method throw, to exercise the exit-code mapping. */
   throws?: { method: string; error: unknown };
+  /** Present only for a client created with `batchSettlement`. */
+  batchSettlement?: BatchSettlementFacade;
 }
 
 export class FakeToonClient implements ToonClientLike {
@@ -143,6 +146,7 @@ export class FakeToonClient implements ToonClientLike {
   readonly identity: ToonIdentity;
   readonly channel: ChannelFacade;
   readonly wallet: WalletFacade;
+  readonly batchSettlement: BatchSettlementFacade | undefined;
   closed = false;
 
   private readonly options: FakeClientOptions;
@@ -151,6 +155,7 @@ export class FakeToonClient implements ToonClientLike {
     this.options = options;
     this.connector = options.connector ?? 'https://node.example';
     this.chain = options.chain ?? 'evm';
+    this.batchSettlement = options.batchSettlement;
     this.identity = options.identity ?? {
       evmAddress: '0x2222222222222222222222222222222222222222',
       solanaPublicKey: 'So11111111111111111111111111111111111111112',
