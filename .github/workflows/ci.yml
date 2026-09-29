@@ -229,6 +229,196 @@ jobs:
         run: devbox run -- bash -c "pnpm install --no-frozen-lockfile && pnpm build"
 
   # ---------------------------------------------------------------------------
+  # The x402 batch-settlement exit proof (#691, toon-client#694), actually
+  # executing.
+  #
+  # #691 built batch-settlement's exit path — close() then settle() — and
+  # proved it end to end against a real `anvil` seeded with x402's own
+  # contracts and a real `solana-test-validator` running solana-foundation's
+  # `payment-channels` program at a real channel PDA. But it proved it on a
+  # developer's machine: nothing in CI installed anvil, cast or the Solana CLI,
+  # so the suite always skipped here and reported a pass having run nothing.
+  # This job is what makes it run, replacing the `solana-settlement-proof` job
+  # that #692 removed along with the toon-channel stack it proved.
+  #
+  # UNCONDITIONAL, for the same reasons `solana-settlement-proof` was
+  # (preserved from that job): `.sandcastle/gate-baseline.json` scopes the gate
+  # guard's timing to `build`'s own wall clock, so a sibling job with no
+  # `needs:` is invisible to it and needs no re-baselining. A conditional
+  # design would cost about what it saves (the decision would still need to be
+  # code, and it cannot be a step inside `build`'s timed window), it would let
+  # GitHub evict the Solana CLI cache on the PRs that most need it warm, and it
+  # would add a skipped-reads-as-pass hazard that only exists because the job
+  # became conditional.
+  #
+  # WALL CLOCK. No `needs:`, so this starts at t=0 alongside `build` and
+  # `devbox-validate`. Toolchain installs are cached; the suite itself runs in
+  # well under a minute locally. `build`'s 171-206s stays the critical path.
+  # `timeout-minutes` is the cost gate the gate guard cannot provide here — a
+  # hung validator or a stuck anvil fails the job, and therefore `CI OK`, in
+  # minutes rather than burning the 360-minute default.
+  #
+  # `CLIENT_REQUIRE_BATCH_SETTLEMENT=1` is the difference between a gate and a
+  # decoration: without it, a runner missing any of anvil/cast/the validator/an
+  # infra checkout would skip the suite and report success. That is the exact
+  # defect swap#106 found (four suites collecting zero tests, all reporting a
+  # pass) and swap#160 had to rescue.
+  batch-settlement-exit:
+    name: Batch-settlement exit proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      # anvil and cast, for the EVM half. Pinned to v1.7.1, the same version
+      # the connector repository's own settlement gate pins, so this proof runs
+      # against the exact anvil this client's EVM code has actually been
+      # verified against rather than whatever `nightly` ships that day.
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+        env:
+          # foundryup curls api.github.com unauthenticated and gets 403 when
+          # the runner IP is rate-limited. Exporting the workflow's
+          # auto-provisioned GITHUB_TOKEN bumps the limit from 60 -> 5000
+          # req/hr.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Restored BEFORE the installer so a warm cache skips the download
+      # entirely. Keyed on the exact version — a version bump must miss.
+      - name: Cache Solana CLI
+        id: solana-cli-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/solana
+          key: solana-cli-${{ runner.os }}-v2.1.21
+
+      # v2.1.21, NOT the v3.x line — the same pin `solana-settlement-proof`
+      # carried and the connector and swap repositories still carry: v3's
+      # `solana-test-validator` hard-requires io_uring, which is unavailable
+      # under some sandboxed runners, and v2.1.21 matches the `=2.1.0`
+      # solana-program pin the vendored `payment_channels.so` this suite loads
+      # was built against.
+      - name: Install Solana CLI
+        if: steps.solana-cli-cache.outputs.cache-hit != 'true'
+        run: sh -c "$(curl -sSfL https://release.anza.xyz/v2.1.21/install)"
+
+      - name: Put Solana CLI on PATH
+        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      # Fail here, with a clear message, rather than inside a test a minute
+      # later. The version greps are not decoration: a cache restored from a
+      # different key, or an installer that redirected to the v3 line, would
+      # otherwise surface as a validator that panics on boot.
+      - name: Assert chain toolchains
+        run: |
+          set -euo pipefail
+          anvil --version
+          cast --version
+          solana --version
+          solana-test-validator --version
+          solana --version | grep -qE '^solana-cli 2\.1\.'
+          solana-test-validator --version | grep -qE '^solana-test-validator 2\.1\.'
+          echo "✅ Foundry v1.7.1 and Agave v2.1.x CLI/test validator on PATH"
+
+      # toon-protocol/infra is PUBLIC, so no token or checkout-token override is
+      # needed. This is what the suite's own default (`../../../../../infra`,
+      # relative to this file) cannot find on a runner: it assumes a sibling
+      # checkout, which only exists on a developer's machine, so
+      # INFRA_SANDBOX_DIR is set explicitly below to wherever this checkout
+      # landed.
+      - name: Checkout toon-protocol/infra
+        uses: actions/checkout@v4
+        with:
+          repository: toon-protocol/infra
+          path: infra
+
+      # --frozen-lockfile, matching `build` and `integration`: this job must
+      # not be the one place dependency drift hides. `devbox-validate` owns
+      # re-resolution.
+      - run: pnpm install --frozen-lockfile
+
+      # No `pnpm -r build`: the suite imports the client's own modules by
+      # relative source path, so nothing resolves through a workspace `dist/`.
+      # Typechecking this suite is the `integration` job's responsibility,
+      # which owns `tsconfig.integration.json` for the whole directory; this
+      # job stays narrowly the on-chain exit proof.
+      - name: Prove close() and settle() against real chains
+        env:
+          CLIENT_REQUIRE_BATCH_SETTLEMENT: '1'
+          INFRA_SANDBOX_DIR: ${{ github.workspace }}/infra/sandbox
+          # Vitest colorizes when it thinks a terminal is watching, and on a
+          # runner it does. That wraps its summary markers in ANSI escapes,
+          # which defeats the count grep in the next step. Turning colour off
+          # at the source keeps the log greppable AND readable; the next step
+          # strips ANSI anyway, belt and braces, in case a future vitest
+          # ignores these.
+          NO_COLOR: '1'
+          FORCE_COLOR: '0'
+        run: |
+          set -euo pipefail
+          pnpm --filter @toon-protocol/client test:integration \
+            src/__integration__/batch-settlement-exit.integration.test.ts 2>&1 \
+            | tee /tmp/batch-settlement-exit.log
+
+      # A green tick is not evidence that anything ran. The same two
+      # assertions the `integration` job below makes for its own suites,
+      # because each catches a different way this job could pass while
+      # proving nothing:
+      #
+      #  1. the file line's collected count — a suite that quietly loses or
+      #     skips a test. Matched on the PATH, not the ✓ glyph, so a failing
+      #     suite is still FOUND and reports its real count rather than "did
+      #     not appear at all". `(4 tests)` with no ` | N skipped` suffix is
+      #     the assertion that none were skipped.
+      #  2. `Tests 4 passed (4)` — collected is not the same as passed.
+      #
+      # Bumping EXPECTED_TESTS is meant to be a visible diff: adding a test to
+      # the proof turns this red until the number moves with it.
+      - name: Assert the proof collected and passed
+        env:
+          EXPECTED_TESTS: '4'
+          SUITE: src/__integration__/batch-settlement-exit.integration.test.ts
+        run: |
+          set -euo pipefail
+          sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/batch-settlement-exit.log > /tmp/batch-settlement-exit.plain
+          fail=0
+
+          line=$(grep -E "${SUITE} +\(" /tmp/batch-settlement-exit.plain | tail -1 || true)
+          if [ -z "$line" ]; then
+            echo "::error::${SUITE} did not appear in the vitest output at all"
+            fail=1
+          else
+            echo "  ${line}"
+            if ! echo "$line" | grep -qE "\(${EXPECTED_TESTS} tests\)"; then
+              echo "::error::${SUITE} did not report exactly ${EXPECTED_TESTS} collected tests with none skipped — see the line above"
+              fail=1
+            fi
+          fi
+
+          if ! grep -qE "Tests +${EXPECTED_TESTS} passed \(${EXPECTED_TESTS}\)" /tmp/batch-settlement-exit.plain; then
+            echo "::error::vitest did not report ${EXPECTED_TESTS} passed of ${EXPECTED_TESTS} — a collected test that did not pass is the failure this job exists to catch"
+            grep -E "^ *Tests " /tmp/batch-settlement-exit.plain || true
+            fail=1
+          fi
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo "✅ the batch-settlement exit proof collected ${EXPECTED_TESTS}, passed ${EXPECTED_TESTS}, on both chains"
+
+  # ---------------------------------------------------------------------------
   # The integration suites that need NOTHING — toon-client#607.
   #
   # `build` runs `pnpm -r test --if-present`, which resolves to each package's
@@ -246,7 +436,8 @@ jobs:
   #     client/btp-transport            binds an ephemeral loopback `ws` server
   #     client/http-ilp-transport       binds an ephemeral loopback http.Server
   #     client/cli-entry-point          spawns the CLI through a temp symlink
-  #   NEEDS INFRA — not in CI yet:
+  #   NEEDS INFRA — runs in `batch-settlement-exit`, which installs Foundry and
+  #   the Solana CLI:
   #     client/batch-settlement-exit     `anvil` + `solana-test-validator`,
   #                                      seeded from a toon-protocol/infra checkout
   #   NEEDS A LIVE SERVICE OR A CREDENTIAL — deliberately NOT in CI:
@@ -447,6 +638,7 @@ jobs:
         changeset,
         build,
         devbox-validate,
+        batch-settlement-exit,
         integration,
         no-op-merge,
       ]
@@ -457,16 +649,18 @@ jobs:
           CHANGESET_RESULT: ${{ needs.changeset.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           DEVBOX_RESULT: ${{ needs.devbox-validate.result }}
+          BATCH_SETTLEMENT_EXIT_RESULT: ${{ needs.batch-settlement-exit.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           NO_OP_MERGE_RESULT: ${{ needs.no-op-merge.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          echo "event:           $EVENT_NAME"
-          echo "changeset:       $CHANGESET_RESULT"
-          echo "build:           $BUILD_RESULT"
-          echo "devbox-validate: $DEVBOX_RESULT"
-          echo "integration:     $INTEGRATION_RESULT"
-          echo "no-op-merge:     $NO_OP_MERGE_RESULT"
+          echo "event:                 $EVENT_NAME"
+          echo "changeset:             $CHANGESET_RESULT"
+          echo "build:                 $BUILD_RESULT"
+          echo "devbox-validate:       $DEVBOX_RESULT"
+          echo "batch-settlement-exit: $BATCH_SETTLEMENT_EXIT_RESULT"
+          echo "integration:           $INTEGRATION_RESULT"
+          echo "no-op-merge:           $NO_OP_MERGE_RESULT"
 
           ok=true
 
@@ -480,7 +674,20 @@ jobs:
             ok=false
           fi
 
-          # The `integration` job carries no `if:`, so 'skipped' cannot mean "legitimately not required" — only
+          # The batch-settlement exit proof is UNCONDITIONAL (see the job for
+          # why), which is what makes a bare `needs:` a complete gate here: it
+          # has no `if:` of its own, so 'skipped' cannot mean "correctly not
+          # required" — it can only mean cancelled-upstream or a workflow edit
+          # that stopped it running, and both must fail. That is the toon#216
+          # hazard closed by construction instead of by pairing a result with a
+          # decision.
+          if [ "$BATCH_SETTLEMENT_EXIT_RESULT" != "success" ]; then
+            echo "::error::batch-settlement-exit result is '$BATCH_SETTLEMENT_EXIT_RESULT' (expected 'success'; skipped/cancelled counts as failure — this job has no 'if:', so a skip means it stopped running, not that it was unnecessary)"
+            ok=false
+          fi
+
+          # Same construction as the batch-settlement exit proof: the
+          # `integration` job carries no `if:`, so 'skipped' cannot mean "legitimately not required" — only
           # cancelled-upstream or a workflow edit that stopped it running. #607 is
           # exactly the failure of a suite that passes by not running, so a
           # not-run integration job must never read as a pass.
