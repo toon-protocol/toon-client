@@ -122,6 +122,23 @@ describe('the deposit method and facilitator a connector names (toon-client#695)
     expect(priced.offer.extra).toMatchObject({ assetTransferMethod: 'permit2' });
   });
 
+  it('reads both from the greeting’s accepts[].extra, where the connector publishes them too', () => {
+    const accept = {
+      ...EVM_ACCEPT,
+      extra: {
+        ...EVM_ACCEPT.extra,
+        assetTransferMethod: 'permit2',
+        facilitator: 'https://facilitator.node.example',
+      },
+    };
+    const parsed = must(parseBatchSettlementOffer(accept));
+    expect(parsed.chain).toBe('evm');
+    expect(parsed.offer.extra).toMatchObject({
+      assetTransferMethod: 'permit2',
+      facilitator: 'https://facilitator.node.example',
+    });
+  });
+
   it('refuses an entry naming a deposit method this client cannot sign', () => {
     expect(
       parseBatchSettlementTerms({ ...terms_(EVM_ACCEPT), assetTransferMethod: 'erc7710' })
