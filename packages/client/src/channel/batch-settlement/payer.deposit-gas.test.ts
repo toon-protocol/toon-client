@@ -53,8 +53,10 @@ interface Options {
 interface Settled {
   paymentPayload: {
     payload: { deposit: { amount: string; authorization: Record<string, unknown> } };
+    accepted: { extra: { assetTransferMethod?: string } };
     extensions?: Record<string, { info: Record<string, unknown> }>;
   };
+  paymentRequirements: { extra: { assetTransferMethod?: string } };
 }
 
 function world(o: Options = {}) {
@@ -255,6 +257,17 @@ describe('a token without ERC-3009, deposited through Permit2', () => {
     expect(must(w.settled[0]).paymentPayload.payload.deposit.authorization).toHaveProperty(
       'permit2Authorization'
     );
+  });
+
+  it('tells the facilitator the method it actually signed, not the one the connector published', async () => {
+    // A stock facilitator checks the payload against the requirements' method:
+    // Permit2 signed under requirements saying eip3009 is refused with
+    // `invalid_batch_settlement_evm_erc3009_authorization_required`.
+    const w = world({ method: 'eip3009', depositMethod: 'permit2', allowance: 10n ** 30n });
+    await w.payer.open(w.description, 'evm');
+    const { paymentPayload, paymentRequirements } = must(w.settled[0]);
+    expect(paymentRequirements.extra.assetTransferMethod).toBe('permit2');
+    expect(paymentPayload.accepted.extra.assetTransferMethod).toBe('permit2');
   });
 });
 
