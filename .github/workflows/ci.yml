@@ -304,25 +304,25 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/solana
-          key: solana-cli-${{ runner.os }}-v2.1.21
+          key: solana-cli-${{ runner.os }}-v3.1.12
 
-      # v2.1.21, NOT the v3.x line — the same pin `solana-settlement-proof`
-      # carried and the connector and swap repositories still carry: v3's
-      # `solana-test-validator` hard-requires io_uring, which is unavailable
-      # under some sandboxed runners, and v2.1.21 matches the `=2.1.0`
-      # solana-program pin the vendored `payment_channels.so` this suite loads
-      # was built against.
+      # v3.1.12, NOT the v2.1.21 the removed `solana-settlement-proof` job (and
+      # the connector) pin. infra builds `payment_channels.so` with CLI v3.1.12
+      # and its sandbox runs it on Agave 4.x; on a v2.1 validator the sponsored
+      # `open` leaves the channel account short of rent
+      # (`InsufficientFundsForRent`, account 2). v3's io_uring requirement bites
+      # only under Docker's default seccomp, not on a hosted runner VM.
       - name: Install Solana CLI
         if: steps.solana-cli-cache.outputs.cache-hit != 'true'
-        run: sh -c "$(curl -sSfL https://release.anza.xyz/v2.1.21/install)"
+        run: sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.12/install)"
 
       - name: Put Solana CLI on PATH
         run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
       # Fail here, with a clear message, rather than inside a test a minute
       # later. The version greps are not decoration: a cache restored from a
-      # different key, or an installer that redirected to the v3 line, would
-      # otherwise surface as a validator that panics on boot.
+      # different key, or an installer that redirected to another line, would
+      # otherwise surface as a sponsored open that fails for rent.
       - name: Assert chain toolchains
         run: |
           set -euo pipefail
@@ -330,9 +330,9 @@ jobs:
           cast --version
           solana --version
           solana-test-validator --version
-          solana --version | grep -qE '^solana-cli 2\.1\.'
-          solana-test-validator --version | grep -qE '^solana-test-validator 2\.1\.'
-          echo "✅ Foundry v1.7.1 and Agave v2.1.x CLI/test validator on PATH"
+          solana --version | grep -qE '^solana-cli 3\.1\.12 '
+          solana-test-validator --version | grep -qE '^solana-test-validator 3\.1\.12 '
+          echo "✅ Foundry v1.7.1 and Agave v3.1.12 CLI/test validator on PATH"
 
       # toon-protocol/infra is PUBLIC, so no token or checkout-token override is
       # needed. This is what the suite's own default (`../../../../../infra`,
