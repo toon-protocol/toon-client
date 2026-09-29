@@ -40,6 +40,10 @@
  * own ETH — once with `depositGas: 'self'`, once a plain ERC-20 with no
  * facilitator at all (approval and deposit both its own), and once with the
  * facilitator down. Each leaves a 1-token channel behind.
+ *
+ * And, reading only, that all three nodes publish their EVM
+ * `assetTransferMethod` (and a `facilitator`, if they name one) in
+ * `batchSettlements` — connector#1419, once the fleet runs it.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -72,6 +76,84 @@ const RPC_URL = process.env['TOON_RPC_URL'] ?? 'https://sepolia.base.org';
 const FAUCET = process.env['TOON_FAUCET'] ?? DEVNET.faucet;
 const DEPOSIT = 1_000_000n; // 1 USDC
 const BASE_SEPOLIA = 'eip155:84532';
+const BASE_SEPOLIA_CHAIN = {
+  id: 84532,
+  name: 'Base Sepolia',
+  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: { default: { http: [RPC_URL] } },
+};
+
+/** The devnet's first mock USDC: a public mint, and neither ERC-3009 nor a permit. */
+const PLAIN_ERC20 = '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce';
+const FUNDER_KEY = process.env['DEVNET_FUNDER_KEY'] as Hex | undefined;
+
+type Chain = ReturnType<typeof createPublicClient>;
+
+/** Wait until `owner` holds `DEPOSIT` of `asset`: the faucet's drip may trail its answer. */
+async function waitForTokens(chain: Chain, asset: Hex, owner: Hex): Promise<bigint> {
+  let balance = 0n;
+  for (let i = 0; i < 40 && balance < DEPOSIT; i++) {
+    balance = await chain.readContract({
+      address: asset,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [owner],
+    });
+    if (balance < DEPOSIT) await new Promise((r) => setTimeout(r, 3_000));
+  }
+  return balance;
+}
+
+/** The channel as the chain has it, once its deposit has landed (or ~20s have passed). */
+async function waitForEscrow(chain: Chain, channelId: string) {
+  let state = await readEvmBatchChannel(chain, channelId as Hex);
+  for (let i = 0; i < 10 && state.balance === 0n; i++) {
+    await new Promise((r) => setTimeout(r, 2_000));
+    state = await readEvmBatchChannel(chain, channelId as Hex);
+  }
+  return state;
+}
+
+/** The funder's wallet: it pays to mint the plain token, and sends gas money. */
+function funder() {
+  return createWalletClient({
+    account: privateKeyToAccount(must(FUNDER_KEY)),
+    chain: BASE_SEPOLIA_CHAIN,
+    transport: http(RPC_URL),
+  });
+}
+
+/** Mint `DEPOSIT` of the plain token to `to`, from the funder. */
+async function mintPlainToken(chain: Chain, to: Hex): Promise<void> {
+  await chain.waitForTransactionReceipt({
+    hash: await funder().writeContract({
+      address: PLAIN_ERC20,
+      abi: parseAbi(['function mint(address,uint256)']),
+      functionName: 'mint',
+      args: [to, DEPOSIT],
+    }),
+  });
+}
+
+/**
+ * The relay's self-description with its EVM entry naming the plain token,
+ * deposited through Permit2. The relay is paid in devnet USDC; a channel in
+ * the plain token is the point, not a packet over it.
+ */
+function inPlainToken(relay: NodeSelfDescription): NodeSelfDescription {
+  const base = must(chooseBatchSettlement(relay, 'evm'));
+  if (base.chain !== 'evm') throw new Error('unreachable');
+  return {
+    ...relay,
+    batchSettlements: [
+      {
+        ...base,
+        asset: PLAIN_ERC20,
+        extra: { ...base.extra, name: 'USD Coin (mock)', version: '1', assetTransferMethod: 'permit2' as const },
+      },
+    ],
+  };
+}
 
 describe.skipIf(!ENABLED)(
   'x402 batch-settlement on the devnet, with no ETH',
@@ -88,20 +170,9 @@ describe.skipIf(!ENABLED)(
       desc = await new ConnectorEdgeClient({}).describe(CONNECTOR);
       const terms = chooseBatchSettlement(desc, 'evm');
       expect(terms?.network).toBe(BASE_SEPOLIA);
-      const asset = must(terms).asset as Hex;
 
       await fundWallet(FAUCET, payer.address, 'evm');
-      let balance = 0n;
-      for (let i = 0; i < 40 && balance < DEPOSIT; i++) {
-        balance = await chain.readContract({
-          address: asset,
-          abi: erc20Abi,
-          functionName: 'balanceOf',
-          args: [payer.address],
-        });
-        if (balance < DEPOSIT) await new Promise((r) => setTimeout(r, 3_000));
-      }
-      expect(balance).toBeGreaterThanOrEqual(DEPOSIT);
+      expect(await waitForTokens(chain, must(terms).asset as Hex, payer.address)).toBeGreaterThanOrEqual(DEPOSIT);
       expect(await chain.getBalance({ address: payer.address })).toBe(0n);
     }, 180_000);
 
@@ -125,11 +196,7 @@ describe.skipIf(!ENABLED)(
         `[batch-settlement devnet] channel ${must(channel).channelId} → ${CONNECTOR}`
       );
 
-      let state = await readEvmBatchChannel(chain, must(channel).channelId as Hex);
-      for (let i = 0; i < 10 && state.balance === 0n; i++) {
-        await new Promise((r) => setTimeout(r, 2_000));
-        state = await readEvmBatchChannel(chain, must(channel).channelId as Hex);
-      }
+      const state = await waitForEscrow(chain, channelId);
       expect(state.balance).toBe(DEPOSIT);
       expect(state.totalClaimed).toBe(0n);
       expect(manager.depositTotal(must(channel).channelId)).toBe(DEPOSIT);
@@ -161,46 +228,16 @@ describe.skipIf(!ENABLED)(
   }
 );
 
-/** The devnet's first mock USDC: a public mint, and neither ERC-3009 nor a permit. */
-const PLAIN_ERC20 = '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce';
-const FUNDER_KEY = process.env['DEVNET_FUNDER_KEY'] as Hex | undefined;
-
 describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
   'an ERC-20 with neither ERC-3009 nor a permit, on the devnet, from a wallet with no ETH',
   () => {
     it('deposits through Permit2, the Onboarder sponsoring the approval', async () => {
       const chain = createPublicClient({ transport: http(RPC_URL) });
       const payer = privateKeyToAccount(generatePrivateKey());
-      const funder = createWalletClient({
-        account: privateKeyToAccount(must(FUNDER_KEY)),
-        chain: { id: 84532, name: 'Base Sepolia', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [RPC_URL] } } },
-        transport: http(RPC_URL),
-      });
-      await chain.waitForTransactionReceipt({
-        hash: await funder.writeContract({
-          address: PLAIN_ERC20,
-          abi: parseAbi(['function mint(address,uint256)']),
-          functionName: 'mint',
-          args: [payer.address, DEPOSIT],
-        }),
-      });
+      await mintPlainToken(chain, payer.address);
       expect(await chain.getBalance({ address: payer.address })).toBe(0n);
 
       const relay = await new ConnectorEdgeClient({}).describe(CONNECTOR);
-      const base = must(chooseBatchSettlement(relay, 'evm'));
-      if (base.chain !== 'evm') throw new Error('unreachable');
-      // The relay is paid in devnet USDC; this deposit names the plain token
-      // instead. The channel it opens is the point, not a packet over it.
-      const description = {
-        ...relay,
-        batchSettlements: [
-          {
-            ...base,
-            asset: PLAIN_ERC20,
-            extra: { ...base.extra, name: 'USD Coin (mock)', version: '1', assetTransferMethod: 'permit2' as const },
-          },
-        ],
-      };
       const payerFor = new BatchSettlementPayer({
         connector: CONNECTOR,
         manager: new BatchChannelManager(),
@@ -212,15 +249,10 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
           wallet: evmWalletAccess({ rpcUrl: RPC_URL, account: payer }),
         },
       });
-      const channel = must(await payerFor.open(description, 'evm'));
+      const channel = must(await payerFor.open(inPlainToken(relay), 'evm'));
       console.log(`[batch-settlement devnet] Permit2 channel ${channel.channelId}`);
 
-      let state = await readEvmBatchChannel(chain, channel.channelId as Hex);
-      for (let i = 0; i < 10 && state.balance === 0n; i++) {
-        await new Promise((r) => setTimeout(r, 2_000));
-        state = await readEvmBatchChannel(chain, channel.channelId as Hex);
-      }
-      expect(state.balance).toBe(DEPOSIT);
+      expect((await waitForEscrow(chain, channel.channelId)).balance).toBe(DEPOSIT);
       const allowance = await chain.readContract({
         address: PLAIN_ERC20,
         abi: erc20Abi,
@@ -242,19 +274,9 @@ describe.skipIf(!ENABLED)(
       const payer = privateKeyToAccount(generatePrivateKey());
       const relay = await new ConnectorEdgeClient({}).describe(CONNECTOR);
       const base = must(chooseBatchSettlement(relay, 'evm'));
-      if (base.chain !== 'evm') throw new Error('unreachable');
 
       await fundWallet(FAUCET, payer.address, 'evm');
-      let balance = 0n;
-      for (let i = 0; i < 40 && balance < DEPOSIT; i++) {
-        balance = await chain.readContract({
-          address: base.asset as Hex,
-          abi: erc20Abi,
-          functionName: 'balanceOf',
-          args: [payer.address],
-        });
-        if (balance < DEPOSIT) await new Promise((r) => setTimeout(r, 3_000));
-      }
+      await waitForTokens(chain, base.asset as Hex, payer.address);
 
       const payerFor = new BatchSettlementPayer({
         connector: CONNECTOR,
@@ -270,12 +292,7 @@ describe.skipIf(!ENABLED)(
         },
       });
       const channel = must(await payerFor.open(relay, 'evm'));
-      let state = await readEvmBatchChannel(chain, channel.channelId as Hex);
-      for (let i = 0; i < 10 && state.balance === 0n; i++) {
-        await new Promise((r) => setTimeout(r, 2_000));
-        state = await readEvmBatchChannel(chain, channel.channelId as Hex);
-      }
-      expect(state.balance).toBe(DEPOSIT);
+      expect((await waitForEscrow(chain, channel.channelId)).balance).toBe(DEPOSIT);
       expect(await chain.getTransactionCount({ address: payer.address })).toBe(0);
       expect(await chain.getBalance({ address: payer.address })).toBe(0n);
     }, 240_000);
@@ -289,28 +306,18 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
   'a payer paying its own gas, on the devnet',
   () => {
     const chain = createPublicClient({ transport: http(RPC_URL) });
-    const funder = () =>
-      createWalletClient({
-        account: privateKeyToAccount(must(FUNDER_KEY)),
-        chain: { id: 84532, name: 'Base Sepolia', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [RPC_URL] } } },
-        transport: http(RPC_URL),
-      });
 
-    /** A fresh wallet holding `GAS_MONEY` of ETH and `DEPOSIT` of devnet USDC, or of the plain token. */
-    async function selfPayingWallet(plain: boolean) {
+    /**
+     * A fresh wallet holding `GAS_MONEY` of ETH and `DEPOSIT` of `token`:
+     * devnet USDC from the faucet, or the plain token from the funder.
+     */
+    async function selfPayingWallet(token: 'usdc' | 'plain') {
       const payer = privateKeyToAccount(generatePrivateKey());
       await chain.waitForTransactionReceipt({
         hash: await funder().sendTransaction({ to: payer.address, value: GAS_MONEY }),
       });
-      if (plain) {
-        await chain.waitForTransactionReceipt({
-          hash: await funder().writeContract({
-            address: PLAIN_ERC20,
-            abi: parseAbi(['function mint(address,uint256)']),
-            functionName: 'mint',
-            args: [payer.address, DEPOSIT],
-          }),
-        });
+      if (token === 'plain') {
+        await mintPlainToken(chain, payer.address);
       } else {
         await fundWallet(FAUCET, payer.address, 'evm');
       }
@@ -320,36 +327,12 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
     /** Open a channel to the relay from `payer`, and read its deposit back off the chain. */
     async function open(
       payer: ReturnType<typeof privateKeyToAccount>,
-      evm: { facilitatorUrl: string; depositGas?: 'auto' | 'self' },
-      plain = false
+      token: 'usdc' | 'plain',
+      evm: { facilitatorUrl: string; depositGas?: 'auto' | 'self' }
     ): Promise<void> {
       const relay = await new ConnectorEdgeClient({}).describe(CONNECTOR);
-      const base = must(chooseBatchSettlement(relay, 'evm'));
-      if (base.chain !== 'evm') throw new Error('unreachable');
-      const asset = (plain ? PLAIN_ERC20 : base.asset) as Hex;
-      // The faucet's drip may trail its answer.
-      for (let i = 0; i < 40; i++) {
-        const held = await chain.readContract({
-          address: asset,
-          abi: erc20Abi,
-          functionName: 'balanceOf',
-          args: [payer.address],
-        });
-        if (held >= DEPOSIT) break;
-        await new Promise((r) => setTimeout(r, 3_000));
-      }
-      const description = plain
-        ? {
-            ...relay,
-            batchSettlements: [
-              {
-                ...base,
-                asset: PLAIN_ERC20,
-                extra: { ...base.extra, name: 'USD Coin (mock)', version: '1', assetTransferMethod: 'permit2' as const },
-              },
-            ],
-          }
-        : relay;
+      const description = token === 'plain' ? inPlainToken(relay) : relay;
+      await waitForTokens(chain, must(chooseBatchSettlement(description, 'evm')).asset as Hex, payer.address);
       const payerFor = new BatchSettlementPayer({
         connector: CONNECTOR,
         manager: new BatchChannelManager(),
@@ -357,6 +340,9 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
         evm: {
           account: payer,
           facilitatorUrl: evm.facilitatorUrl,
+          // Devnet USDC by ERC-3009, whatever the relay comes to publish, so
+          // its deposit is the payer's one transaction.
+          ...(token === 'usdc' ? { depositMethod: 'eip3009' as const } : {}),
           ...(evm.depositGas ? { depositGas: evm.depositGas } : {}),
           reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
           wallet: evmWalletAccess({ rpcUrl: RPC_URL, account: payer }),
@@ -364,31 +350,42 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
       });
       const channel = must(await payerFor.open(description, 'evm'));
       console.log(`[batch-settlement devnet] self-paid channel ${channel.channelId}`);
-      let state = await readEvmBatchChannel(chain, channel.channelId as Hex);
-      for (let i = 0; i < 10 && state.balance === 0n; i++) {
-        await new Promise((r) => setTimeout(r, 2_000));
-        state = await readEvmBatchChannel(chain, channel.channelId as Hex);
-      }
-      expect(state.balance).toBe(DEPOSIT);
+      expect((await waitForEscrow(chain, channel.channelId)).balance).toBe(DEPOSIT);
     }
 
     it("depositGas 'self': the payer deposits devnet USDC from its own ETH", async () => {
-      const payer = await selfPayingWallet(false);
-      await open(payer, { facilitatorUrl: FACILITATOR, depositGas: 'self' });
+      const payer = await selfPayingWallet('usdc');
+      await open(payer, 'usdc', { facilitatorUrl: FACILITATOR, depositGas: 'self' });
       expect(await chain.getTransactionCount({ address: payer.address })).toBe(1);
     }, 240_000);
 
     it('a token with neither, and no facilitator: the payer approves Permit2 and deposits, from its own ETH', async () => {
-      const payer = await selfPayingWallet(true);
+      const payer = await selfPayingWallet('plain');
       // `''` is "no facilitator", whatever the connector names.
-      await open(payer, { facilitatorUrl: '' }, true);
+      await open(payer, 'plain', { facilitatorUrl: '' });
       expect(await chain.getTransactionCount({ address: payer.address })).toBe(2);
     }, 240_000);
 
     it('a facilitator that is down: a payer holding ETH deposits directly', async () => {
-      const payer = await selfPayingWallet(false);
-      await open(payer, { facilitatorUrl: 'http://127.0.0.1:1' });
+      const payer = await selfPayingWallet('usdc');
+      await open(payer, 'usdc', { facilitatorUrl: 'http://127.0.0.1:1' });
       expect(await chain.getTransactionCount({ address: payer.address })).toBe(1);
     }, 240_000);
   }
 );
+
+describe.skipIf(!ENABLED)('the devnet nodes publish how to deposit (toon-client#695)', () => {
+  it.each([
+    ['store', DEVNET.store.url],
+    ['gas station', DEVNET.gas.url],
+    ['relay', DEVNET.relay.url],
+  ])('the %s names its EVM deposit method, and its facilitator is a URL if it names one', async (_name, url) => {
+    const raw = (await (await fetch(`${url.replace(/\/+$/, '')}/ilp`)).json()) as {
+      batchSettlements?: Record<string, unknown>[];
+    };
+    const evm = must(raw.batchSettlements?.find((t) => String(t['network']).startsWith('eip155:')));
+    // Always published, even at its default (connector ADR 0074 decision 8).
+    expect(['eip3009', 'permit2']).toContain(evm['assetTransferMethod']);
+    if (evm['facilitator'] !== undefined) expect(String(evm['facilitator'])).toMatch(/^https?:\/\//);
+  }, 60_000);
+});
