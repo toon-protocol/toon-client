@@ -687,7 +687,9 @@ export class BatchSettlementPayer {
     try {
       await settleDeposit({
         facilitatorUrl,
-        offer,
+        // The facilitator checks the payload against the requirements' method,
+        // so they name the one signed, which the caller may have overridden.
+        offer: { ...offer, extra: { ...offer.extra, assetTransferMethod: method } },
         payload,
         ...(extensions ? { extensions } : {}),
         ...(this.config.fetch ? { fetchImpl: this.config.fetch } : {}),
