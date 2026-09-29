@@ -107,6 +107,7 @@ interface ToonClientConfig {
   autoOpenChannel?: boolean;
   facilitatorUrl?: string;
   depositMethod?: 'eip3009' | 'permit2';
+  depositGas?: 'auto' | 'facilitator' | 'self';
   timeoutMs?: number;
   socksProxy?: string;
   proxyRpc?: boolean;
@@ -133,8 +134,9 @@ interface ToonClientConfig {
 | `senderId` | your voucher signer's address | A label the connector echoes, never an authority — a voucher is authorised by its signature and nothing else. |
 | `deposit` | `100000n` (0.10 USDC) | What a channel opens with and is topped up by, in base units. A Solana channel opens with at least the node's `minDeposit`. |
 | `autoOpenChannel` | `true` | Open, top up or replace a channel on the `send()` that needs it. With `false`, that is `client.channel`'s job, and such a send throws `ChannelNotOpenError`. |
-| `facilitatorUrl` | the devnet's own on Base Sepolia | The x402 facilitator that submits a Base deposit and pays its gas. Required on any other EVM network. Solana needs none: the connector sponsors the open. See [channels.md](channels.md#opening-costs-no-gas). |
-| `depositMethod` | `'eip3009'` | How a Base deposit is authorized. `'permit2'` is for a token without ERC-3009, and needs a one-time Permit2 approval first. |
+| `facilitatorUrl` | the connector's, else the devnet's own on Base Sepolia | The x402 facilitator that submits a Base deposit and pays its gas. `''` means none. Solana needs none: the connector sponsors the open. See [channels.md](channels.md#who-pays-the-gas). |
+| `depositMethod` | what the connector names, else `'eip3009'` | How a Base deposit moves the token. `'permit2'` works for any ERC-20; its one-time approval is sponsored by the facilitator where it can be, else paid from this wallet's ETH. |
+| `depositGas` | `'auto'` | Who pays a Base deposit's gas: `'auto'` (the facilitator, else this wallet's ETH), `'facilitator'` (never this wallet), `'self'` (always this wallet, no facilitator). |
 | `timeoutMs` | `30000`, or `120000` for a hidden service | Per-packet timeout. A packet's on-wire expiry is set 15 s beyond it (`PACKET_EXPIRY_HEADROOM_MS`), so the client always gives up before the packet does. An explicit `expiresAt` is honoured exactly. |
 | `socksProxy` | — | `socks5h://host:port` of an `anon` daemon. Required for a `.anyone` connector. Beside a clearnet one it hides the payer: the client edge, the BTP socket and each chain's RPC (on its own pinned circuit) all ride it, and nothing dials around it. Node only. See [hidden-service.md](hidden-service.md). |
 | `proxyRpc` | `true` | Send chain RPC through `socksProxy` too. Setting it to `false` opts **chain RPC only** out — the client edge and the BTP socket still ride the proxy. Turn it off only for an RPC endpoint that is already private. |

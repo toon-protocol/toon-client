@@ -64,9 +64,11 @@ await client.channel.open();
 ```
 
 - **Base.** This client signs a deposit authorization. An x402 **facilitator** submits it and pays
-  the gas, so a wallet holding USDC and no ETH can open a channel. On Base Sepolia the facilitator
-  defaults to the devnet's own (`https://onboard.devnet.toonprotocol.dev`). On any other EVM network,
-  set `facilitatorUrl` (or `--facilitator`).
+  the gas, so a wallet holding USDC and no ETH can open a channel. The facilitator is, in order:
+  your `facilitatorUrl` (or `--facilitator`); the one the connector names in its terms, since the
+  seller pays the gas as a cost of the sale; the devnet's own
+  (`https://onboard.devnet.toonprotocol.dev`) on Base Sepolia. A wallet holding ETH can also pay
+  the gas itself; see [Who pays the gas](#who-pays-the-gas).
 - **Solana.** This client builds and signs the `open`, then posts it to the `sponsorEndpoint` the
   node publishes. The connector co-signs as fee payer, submits it, and pays the fee and the rent.
   Two conditions apply:
@@ -74,9 +76,15 @@ await client.channel.open();
   - The deposit is at least the node's `minDeposit`.
 
   A refusal throws `SponsorRefusedError`, carrying the node's own reason.
-- **Permit2.** `depositMethod: 'permit2'` is for a token without ERC-3009. It needs the payer's
-  one-time Permit2 `approve` first, which costs native gas unless the facilitator sponsors it. The
-  default, `eip3009`, costs no gas at all.
+- **Any ERC-20.** A connector names how its token moves (`assetTransferMethod`): `eip3009` for
+  USDC-style tokens, `permit2` for any other ERC-20. `depositMethod` overrides it. A Permit2
+  deposit first needs Permit2 approved for the token, and this client arranges it the cheapest way
+  there is:
+  - the token has an EIP-2612 permit and the facilitator offers `eip2612GasSponsoring`: the permit
+    rides inside the deposit, and the payer sends nothing;
+  - the token has neither, and the facilitator offers `erc20ApprovalGasSponsoring`: the payer signs
+    `approve(Permit2, …)` without sending it, and the facilitator funds its fee and broadcasts it;
+  - otherwise the payer sends the approval itself, once, from its own ETH.
 
 ## Deposits
 
@@ -240,14 +248,29 @@ claim them until the channel is settled.
 `client.close()` is a different thing entirely. It releases the websocket session and flushes the
 channel store, and it does not touch any channel.
 
-## Gas
+## Who pays the gas
+
+Nothing in x402 pays a facilitator: the contract has no fee field. Gas is paid by whoever wants
+the deposit to happen, and in TOON that is the seller, which names the facilitator it pays through.
+A payer holding its own ETH needs no one. `depositGas` (`--deposit-gas`) says which:
+
+| `depositGas` | Base deposit, and a Permit2 token's approval |
+| --- | --- |
+| `auto` (default) | the facilitator when there is one and it will; otherwise this wallet, if it holds ETH |
+| `facilitator` | only ever the facilitator; this wallet's ETH is never spent |
+| `self` | always this wallet, and no facilitator is contacted |
+
+Under `auto`, a facilitator that is down or refuses is not the end: a wallet holding ETH puts the
+same signed deposit on chain itself. That can never deposit twice. Both paths spend one
+authorization whose nonce is single-use on chain, so if the facilitator's did land, the direct
+one reverts.
 
 | Step | Native gas |
 | --- | --- |
 | Paying for a request | none (a signature) |
-| Opening, Base (`eip3009`) | none (the facilitator pays) |
+| Opening or topping up, Base, ERC-3009 token | none through a facilitator; one deposit otherwise |
+| Opening, Base, Permit2 token, first time | none through a sponsoring facilitator; one approval otherwise |
 | Opening, Solana | none (the connector sponsors) |
-| Top-up, Base | none (the facilitator pays) |
 | Leaving (`close`, `settle`) | yes, the payer's own transaction |
 
 The devnet faucet drips USDC on both chains. Leaving a Solana channel needs SOL, so run `solana

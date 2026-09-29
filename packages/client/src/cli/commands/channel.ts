@@ -112,10 +112,15 @@ export async function run(ctx: CommandContext): Promise<number> {
         ctx.out.line('No channel is ready to settle yet.');
         return;
       }
+      const noneWorked = results.every((r) => r.error !== undefined);
       ctx.out.line(
-        sub === 'close'
-          ? 'Leaving every open channel. Settle each once its window has elapsed.'
-          : 'Unspent deposits returned where each window had elapsed.'
+        noneWorked
+          ? sub === 'close'
+            ? 'No channel was left.'
+            : 'No deposit was returned.'
+          : sub === 'close'
+            ? 'Leaving every open channel. Settle each once its window has elapsed.'
+            : 'Unspent deposits returned where each window had elapsed.'
       );
       for (const r of results) ctx.out.rows(exitRows(r));
     });

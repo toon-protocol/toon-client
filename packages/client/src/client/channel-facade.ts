@@ -39,12 +39,18 @@ import {
   withdrawSvmBatchChannel,
   type EvmExitClients,
 } from '../channel/batch-settlement/exit.js';
-import type {
-  Signer,
-  SolanaRpcTarget,
+import {
+  getLamports,
+  type Signer,
+  type SolanaRpcTarget,
 } from '../channel/solana/payment-channel.js';
+import { base58Encode } from '../utils/base58.js';
 import { rpcTransport } from '../transport/rpc.js';
-import { ChannelNotOpenError, ConfigError } from './errors.js';
+import {
+  ChannelNotOpenError,
+  ConfigError,
+  InsufficientBalanceError,
+} from './errors.js';
 import type { ChainKind } from './types.js';
 
 /** One batch-settlement channel, as this client records it. */
@@ -200,6 +206,7 @@ export class ClientChannelFacade implements ChannelFacade {
         manager.markSettled(channel.channelId, now);
         return { channelId: channel.channelId };
       }
+      await requireGas('ETH', clients.address, clients.nativeBalance(), 'close');
       const started = await initiateEvmBatchWithdraw(clients, channel);
       manager.markClosing(channel.channelId, now, started.finalizeAfter);
       return {
@@ -228,6 +235,12 @@ export class ClientChannelFacade implements ChannelFacade {
       manager.markClosing(channel.channelId, now, settleableAt);
       return { channelId: channel.channelId, settleableAt };
     }
+    await requireGas(
+      'SOL',
+      base58Encode(solana.signer.publicKey),
+      getLamports(solana.rpc, base58Encode(solana.signer.publicKey)),
+      'close'
+    );
     const started = await requestSvmBatchClose(
       solana.rpc,
       solana.signer,
@@ -262,6 +275,7 @@ export class ClientChannelFacade implements ChannelFacade {
         manager.markSettled(channel.channelId, now);
         return { channelId: channel.channelId };
       }
+      await requireGas('ETH', clients.address, clients.nativeBalance(), 'settle');
       const { transaction } = await finalizeEvmBatchWithdraw(
         clients,
         channel,
@@ -286,6 +300,12 @@ export class ClientChannelFacade implements ChannelFacade {
     }
     const sealedByConnector = state.status === 'sealed';
     if (!due && !sealedByConnector) return undefined;
+    await requireGas(
+      'SOL',
+      base58Encode(solana.signer.publicKey),
+      getLamports(solana.rpc, base58Encode(solana.signer.publicKey)),
+      'settle'
+    );
     const { transaction } = await withdrawSvmBatchChannel(
       solana.rpc,
       solana.signer,
@@ -323,7 +343,10 @@ export class ClientChannelFacade implements ChannelFacade {
     return found;
   }
 
-  private evmClients(network: string): EvmExitClients {
+  private evmClients(network: string): EvmExitClients & {
+    address: string;
+    nativeBalance(): Promise<bigint>;
+  } {
     const evm = this.deps.evm;
     if (!evm) {
       throw new ConfigError(
@@ -343,6 +366,8 @@ export class ClientChannelFacade implements ChannelFacade {
     return {
       publicClient: publicClient as unknown as EvmExitClients['publicClient'],
       walletClient: walletClient as unknown as EvmExitClients['walletClient'],
+      address: account.address,
+      nativeBalance: () => publicClient.getBalance({ address: account.address }),
     };
   }
 
@@ -358,6 +383,26 @@ export class ClientChannelFacade implements ChannelFacade {
   private now(): bigint {
     return this.deps.now?.() ?? BigInt(Math.floor(Date.now() / 1000));
   }
+}
+
+/**
+ * Leaving is the one step of the scheme that costs native gas, and a payer that
+ * onboarded gaslessly may well hold none. Say so plainly, before a transaction
+ * is built, rather than let the node's "gas required exceeds allowance" stand
+ * in for the reason.
+ */
+async function requireGas(
+  gas: 'ETH' | 'SOL',
+  address: string,
+  balance: Promise<bigint>,
+  step: 'close' | 'settle'
+): Promise<void> {
+  if ((await balance) > 0n) return;
+  throw new InsufficientBalanceError(
+    `leaving a channel needs ${gas} for the fee, and ${address} holds none. Opening and ` +
+      `paying never did, so a wallet funded only with USDC has none yet: send it a little ` +
+      `${gas}, then run ${step} again.`
+  );
 }
 
 function toHexKey(key: Uint8Array): Hex {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { must } from '../../utils/must.test-support.js';
 import {
   chooseBatchSettlement,
   offerFromTerms,
@@ -53,6 +54,8 @@ const TOON_CHANNEL_ACCEPT = {
 const TOON_INFO = { ilpAddress: 'g.toon.node', amount: '1000', endpoint: '/ilp', price: '1000' };
 
 /** `batchSettlements` terms: the offer's facts without the per-route amount. */
+const terms_ = (accept: typeof EVM_ACCEPT) => terms(accept);
+
 function terms(accept: typeof EVM_ACCEPT | typeof SOLANA_ACCEPT) {
   const {
     scheme: _s,
@@ -100,6 +103,37 @@ describe('parseBatchSettlementOffer', () => {
       parseBatchSettlementOffer({ ...EVM_ACCEPT, amount: 'lots' })
     ).toBeUndefined();
     expect(parseBatchSettlementOffer(null)).toBeUndefined();
+  });
+});
+
+describe('the deposit method and facilitator a connector names (toon-client#695)', () => {
+  it('reads assetTransferMethod and the facilitator from an EVM entry, and carries them into the offer', () => {
+    const terms = parseBatchSettlementTerms({
+      ...terms_(EVM_ACCEPT),
+      assetTransferMethod: 'permit2',
+      facilitator: 'https://facilitator.node.example',
+    });
+    expect(terms?.chain).toBe('evm');
+    expect(terms?.extra).toMatchObject({
+      assetTransferMethod: 'permit2',
+      facilitator: 'https://facilitator.node.example',
+    });
+    const priced = offerFromTerms(must(terms), 1000n);
+    expect(priced.offer.extra).toMatchObject({ assetTransferMethod: 'permit2' });
+  });
+
+  it('refuses an entry naming a deposit method this client cannot sign', () => {
+    expect(
+      parseBatchSettlementTerms({ ...terms_(EVM_ACCEPT), assetTransferMethod: 'erc7710' })
+    ).toBeUndefined();
+  });
+
+  it('ignores a facilitator that is not an http(s) URL', () => {
+    const terms = parseBatchSettlementTerms({
+      ...terms_(EVM_ACCEPT),
+      facilitator: 'javascript:alert(1)',
+    });
+    expect(terms?.extra).not.toHaveProperty('facilitator');
   });
 });
 

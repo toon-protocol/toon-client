@@ -97,6 +97,11 @@ export function parseBatchSettlementTerms(
     if (!receiverAuthorizer) return undefined;
     const name = str(r['name']);
     const version = str(r['version']);
+    const method = r['assetTransferMethod'];
+    // A method this client cannot sign would only fail at deposit time.
+    if (method !== undefined && method !== 'eip3009' && method !== 'permit2')
+      return undefined;
+    const facilitator = httpUrl(r['facilitator']);
     return {
       chain: 'evm',
       network,
@@ -107,6 +112,8 @@ export function parseBatchSettlementTerms(
         withdrawDelay,
         ...(name !== undefined ? { name } : {}),
         ...(version !== undefined ? { version } : {}),
+        ...(method !== undefined ? { assetTransferMethod: method } : {}),
+        ...(facilitator !== undefined ? { facilitator } : {}),
       },
     };
   }
@@ -185,4 +192,15 @@ function str(value: unknown): string | undefined {
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
+/** `value` when it is an http(s) URL, else `undefined`. */
+function httpUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }

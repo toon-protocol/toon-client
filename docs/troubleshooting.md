@@ -65,13 +65,20 @@ construct from a mnemonic so both keys exist.
 
 **`FacilitatorError` on `channel open` or `deposit` (Base).**
 The x402 facilitator answered and did not settle the deposit. `reason` is its own. Usually the
-wallet holds less USDC than the deposit — run `toon faucet` — or, with `depositMethod: 'permit2'`,
-the token has no Permit2 allowance from the payer yet. No channel was funded.
+wallet holds less USDC than the deposit — run `toon faucet`. No channel was funded. Under the
+default `depositGas: 'auto'` you only see this when the wallet holds no ETH either; with ETH, the
+client deposits directly instead.
 
-**`ConfigError` asking for `facilitatorUrl`.**
-The node is paid on an EVM network other than Base Sepolia, where this client has no default
-facilitator and will not pick a third party to relay real money. Set `facilitatorUrl`, or
-`--facilitator`.
+**`InsufficientBalanceError` about a Permit2 approval.**
+The token has no ERC-3009, so its deposit goes through Permit2, which needs a one-time approval.
+The facilitator sponsors none that fits this token, and the wallet holds no ETH to send it
+itself. Send the wallet a little ETH, or use a facilitator that offers x402's
+`erc20ApprovalGasSponsoring` (or, for a permit token, `eip2612GasSponsoring`).
+
+**`ConfigError` asking for `facilitatorUrl` or ETH.**
+The node is paid on an EVM network where neither you nor the connector names a facilitator, and
+this client will not pick a third party to relay real money. Set `facilitatorUrl` (or
+`--facilitator`), or hold a little ETH and the client deposits directly.
 
 **`SponsorRefusedError` on a Solana open.**
 The node's sponsor endpoint declined to open the channel. `reason` names why

@@ -32,6 +32,7 @@ import {
   ConfigError,
   FacilitatorError,
   InsufficientBalanceError,
+  NetworkError,
   SponsorRefusedError,
   ValidationError,
 } from '../../client/errors.js';
@@ -48,6 +49,19 @@ import {
   type TypedDataSigner,
 } from './evm.js';
 import { settleDeposit } from './facilitator.js';
+import {
+  ERC20_APPROVAL_GAS_SPONSORING,
+  EIP2612_GAS_SPONSORING,
+  approvePermit2,
+  depositDirectly,
+  eip2612Nonce,
+  facilitatorExtensions,
+  permit2Allowance,
+  signEip2612GasSponsoring,
+  signErc20ApprovalGasSponsoring,
+  type DepositExtensions,
+  type EvmWalletAccess,
+} from './deposit-gas.js';
 import { chooseBatchSettlement, offerFromTerms } from './offers.js';
 import { evmVoucherClaim, solanaVoucherClaim } from './claim.js';
 import {
@@ -108,11 +122,28 @@ export interface BatchSettlementPayerConfig {
      */
     facilitatorUrl?: string;
     /**
-     * `eip3009` (the default) for a token with ERC-3009, gasless outright;
-     * `permit2` for one without, which needs the payer's one-time Permit2
-     * approval first.
+     * How a deposit moves the token: `eip3009` for a token with ERC-3009,
+     * `permit2` for any other ERC-20. Defaults to what the connector's offer
+     * names (`assetTransferMethod`), and to `eip3009` when it names nothing.
      */
     depositMethod?: 'eip3009' | 'permit2';
+    /**
+     * Who pays a deposit's gas, and a Permit2 token's one-time approval's:
+     *
+     *   - `auto` (the default): the facilitator, when there is one and it will;
+     *     otherwise the payer, when it holds ETH;
+     *   - `facilitator`: only ever the facilitator — the payer's ETH is never
+     *     spent;
+     *   - `self`: always the payer, and no facilitator is contacted at all.
+     */
+    depositGas?: 'auto' | 'facilitator' | 'self';
+    /**
+     * The payer's own chain access: what a self-paid deposit or approval, and
+     * an approval the facilitator sponsors, are signed and sent with. Without
+     * it the payer can only use a facilitator, and only for tokens it needs no
+     * approval for.
+     */
+    wallet?: EvmWalletAccess;
     /**
      * Reads the escrow back, to settle a deposit whose answer was lost and to
      * rebuild a lost watermark. Without one, either of those is an error
@@ -584,6 +615,11 @@ export class BatchSettlementPayer {
     manager.confirmDeposit(channel.channelId, before + amount);
   }
 
+  /**
+   * Put a deposit of `amount`, carrying the voucher for `voucherAmount`, on
+   * chain — through the facilitator, or from the payer's own ETH, as
+   * `depositGas` and what is available decide (toon-client#695).
+   */
   private async evmSettle(
     evm: EvmPayerConfig,
     offer: BatchSettlementEvmOffer,
@@ -592,17 +628,21 @@ export class BatchSettlementPayer {
     voucherAmount: bigint
   ): Promise<void> {
     if (channel.chain !== 'evm') throw new Error('unreachable');
-    const facilitatorUrl = evm.facilitatorUrl ?? defaultFacilitatorFor(offer.network);
-    if (!facilitatorUrl) {
+    const mode = evm.depositGas ?? 'auto';
+    const method = evm.depositMethod ?? offer.extra.assetTransferMethod ?? 'eip3009';
+    // An empty `facilitatorUrl` is the caller saying "none", not "the default".
+    const facilitatorUrl =
+      mode === 'self' || evm.facilitatorUrl === ''
+        ? undefined
+        : (evm.facilitatorUrl ?? offer.extra.facilitator ?? defaultFacilitatorFor(offer.network));
+    if (facilitatorUrl === undefined && mode === 'facilitator') {
       throw new ConfigError(
-        `depositing into a channel on ${offer.network} needs \`facilitatorUrl\`: ` +
-          'the x402 facilitator that relays the deposit and pays its gas'
+        `depositing into a channel on ${offer.network} needs \`facilitatorUrl\`: the x402 ` +
+          'facilitator that relays the deposit and pays its gas. This connector names none.'
       );
     }
-    const build =
-      evm.depositMethod === 'permit2'
-        ? buildPermit2Deposit
-        : buildEip3009Deposit;
+
+    const build = method === 'permit2' ? buildPermit2Deposit : buildEip3009Deposit;
     const payload = await build({
       payer: evm.account,
       ...(evm.voucherSigner ? { voucherSigner: evm.voucherSigner } : {}),
@@ -614,29 +654,146 @@ export class BatchSettlementPayer {
       amount,
       voucherAmount,
     });
+
+    // A Permit2 token needs Permit2 approved for the amount first.
+    let extensions: DepositExtensions | undefined;
+    // Without a reader the allowance is unknown, and the facilitator decides.
+    if (method === 'permit2' && evm.reader) {
+      const allowance = await permit2Allowance(evm.reader, offer.asset, evm.account.address);
+      if (allowance < amount) {
+        extensions = facilitatorUrl
+          ? await this.sponsoredApproval(evm, offer, facilitatorUrl, amount, payload)
+          : undefined;
+        if (extensions === undefined) {
+          if (mode === 'facilitator') {
+            throw new FacilitatorError(
+              `${offer.asset} has no ERC-3009, so its deposit goes through Permit2, which needs ` +
+                `a one-time approval from ${evm.account.address}; the facilitator sponsors none, ` +
+                "and depositGas 'facilitator' will not spend this wallet's ETH on it.",
+              'permit2_allowance_required'
+            );
+          }
+          await this.payOwnGas(evm, `a one-time Permit2 approval of ${offer.asset}`, facilitatorUrl);
+          await approvePermit2(this.requireWallet(evm), offer.asset);
+        }
+      }
+    }
+
+    if (facilitatorUrl === undefined) {
+      await this.payOwnGas(evm, 'the deposit', facilitatorUrl, offer.network);
+      await depositDirectly(this.requireWallet(evm), payload, method);
+      return;
+    }
     try {
       await settleDeposit({
         facilitatorUrl,
         offer,
         payload,
+        ...(extensions ? { extensions } : {}),
         ...(this.config.fetch ? { fetchImpl: this.config.fetch } : {}),
       });
     } catch (err) {
-      if (
-        err instanceof FacilitatorError &&
-        err.reason.includes('permit2_allowance')
-      ) {
-        throw new FacilitatorError(
-          `${offer.asset} has no Permit2 allowance from ${evm.account.address}. A Permit2 ` +
-            'deposit needs a one-time `approve(Permit2, …)` from the payer, which costs ' +
-            'native gas unless the facilitator sponsors it; approve once, or use a token ' +
-            'with ERC-3009 and `depositMethod: "eip3009"`.',
-          err.reason,
-          err
-        );
-      }
-      throw err;
+      // The same signed payload can go on chain from the payer's own wallet,
+      // and its nonce is single-use: if the facilitator's did land after all,
+      // this one reverts rather than depositing twice. An approval the
+      // facilitator was to fund is not ours to redo, so that case rethrows.
+      const retry =
+        mode === 'auto' &&
+        extensions === undefined &&
+        (err instanceof NetworkError || err instanceof FacilitatorError) &&
+        evm.wallet !== undefined &&
+        (await evm.wallet.getBalance()) > 0n;
+      if (!retry) throw explainPermit2(err, offer, evm);
+      await depositDirectly(this.requireWallet(evm), payload, method);
     }
+  }
+
+  /**
+   * One of x402's gas-sponsoring extensions for a Permit2 approval, when the
+   * facilitator offers one this token can use; `undefined` otherwise.
+   */
+  private async sponsoredApproval(
+    evm: EvmPayerConfig,
+    offer: BatchSettlementEvmOffer,
+    facilitatorUrl: string,
+    amount: bigint,
+    payload: { deposit: unknown }
+  ): Promise<DepositExtensions | undefined> {
+    let offered: string[];
+    try {
+      offered = await facilitatorExtensions(facilitatorUrl, this.config.fetch);
+    } catch {
+      return undefined;
+    }
+    const chainId = evmChainIdOf(offer.network);
+    if (offered.includes(EIP2612_GAS_SPONSORING) && offer.extra.name && offer.extra.version) {
+      const nonce = await eip2612Nonce(this.requireReader(evm), offer.asset, evm.account.address);
+      if (nonce !== undefined) {
+        const auth = (payload.deposit as {
+          authorization: { permit2Authorization: { deadline: string } };
+        }).authorization.permit2Authorization;
+        return signEip2612GasSponsoring({
+          payer: evm.account,
+          token: offer.asset,
+          name: offer.extra.name,
+          version: offer.extra.version,
+          chainId,
+          nonce,
+          amount,
+          deadline: auth.deadline,
+        });
+      }
+    }
+    if (offered.includes(ERC20_APPROVAL_GAS_SPONSORING) && evm.wallet) {
+      return signErc20ApprovalGasSponsoring({
+        payerAddress: evm.account.address,
+        wallet: evm.wallet,
+        token: offer.asset,
+        chainId,
+      });
+    }
+    return undefined;
+  }
+
+  /** Refuse, naming what would work, unless the payer holds ETH to pay `what` with. */
+  private async payOwnGas(
+    evm: EvmPayerConfig,
+    what: string,
+    facilitatorUrl: string | undefined,
+    network?: string
+  ): Promise<void> {
+    const wallet = evm.wallet;
+    const eth = wallet ? await wallet.getBalance() : 0n;
+    if (eth > 0n) return;
+    if (network !== undefined && facilitatorUrl === undefined && evm.depositGas !== 'self') {
+      throw new ConfigError(
+        `depositing into a channel on ${network} needs either \`facilitatorUrl\` — an x402 ` +
+          'facilitator that pays the gas, which this connector names none of — or ETH in ' +
+          `${evm.account.address} to deposit directly.`
+      );
+    }
+    throw new InsufficientBalanceError(
+      `${what} costs gas, ${
+        facilitatorUrl ? 'the facilitator does not sponsor it, ' : ''
+      }and ${evm.account.address} holds no ETH to pay for it. Send it a little ETH, or use a ` +
+        (what.includes('Permit2')
+          ? 'facilitator that sponsors Permit2 approvals.'
+          : 'facilitator.')
+    );
+  }
+
+  private requireReader(evm: EvmPayerConfig): ContractReader {
+    if (!evm.reader) {
+      throw new ConfigError('this payer has no EVM reader to read the token with');
+    }
+    return evm.reader;
+  }
+
+  private requireWallet(evm: EvmPayerConfig): EvmWalletAccess {
+    if (!evm.wallet) {
+      throw new ConfigError("paying a deposit's gas from this wallet needs its EVM chain access");
+    }
+    return evm.wallet;
   }
 
   // ─── Solana ──────────────────────────────────────────────────────────────
@@ -797,4 +954,23 @@ async function currentSlot(rpc: SolanaRpcTarget): Promise<bigint> {
     { commitment: 'confirmed' },
   ])) as number;
   return BigInt(slot);
+}
+
+/** A facilitator's Permit2-allowance refusal, explained; any other error as it was. */
+function explainPermit2(
+  err: unknown,
+  offer: BatchSettlementEvmOffer,
+  evm: { account: { address: string } }
+): unknown {
+  if (err instanceof FacilitatorError && err.reason.includes('permit2_allowance')) {
+    return new FacilitatorError(
+      `${offer.asset} has no Permit2 allowance from ${evm.account.address}. A Permit2 ` +
+        'deposit needs a one-time `approve(Permit2, …)` from the payer, which costs ' +
+        'native gas unless the facilitator sponsors it; hold a little ETH, use a ' +
+        'facilitator that sponsors approvals, or use a token with ERC-3009.',
+      err.reason,
+      err
+    );
+  }
+  return err;
 }

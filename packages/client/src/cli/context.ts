@@ -59,6 +59,8 @@ export const RPC_ENV = 'TOON_RPC_URL';
 export const CHANNEL_STORE_ENV = 'TOON_CHANNEL_STORE';
 export const SOCKS_ENV = 'TOON_SOCKS';
 export const FACILITATOR_ENV = 'TOON_FACILITATOR';
+export const DEPOSIT_GAS_ENV = 'TOON_DEPOSIT_GAS';
+export const DEPOSIT_METHOD_ENV = 'TOON_DEPOSIT_METHOD';
 
 /** Where a setting's value came from. Reported so a surprising run can be explained. */
 export type SettingSource = 'flag' | 'env' | 'default';
@@ -83,6 +85,10 @@ export interface CliSettings {
   facilitatorUrl?: string;
   /** What a channel is opened with, base units, from `--deposit`. */
   deposit?: string;
+  /** Who pays a Base deposit's gas, from `--deposit-gas`. */
+  depositGas?: 'auto' | 'facilitator' | 'self';
+  /** How a Base deposit moves the token, from `--deposit-method`. */
+  depositMethod?: 'eip3009' | 'permit2';
   keystorePath: string;
   passwordFile?: string;
   json: boolean;
@@ -98,6 +104,16 @@ function parseChain(value: string | undefined, from: string): ChainKind | undefi
   if (value === undefined || value.length === 0) return undefined;
   if (value === 'evm' || value === 'solana') return value;
   throw new UsageError(`${from} must be 'evm' or 'solana'; got '${value}'`);
+}
+
+function parseChoice<T extends string>(
+  value: string | undefined,
+  from: string,
+  choices: readonly T[]
+): T | undefined {
+  if (value === undefined || value.length === 0) return undefined;
+  if ((choices as readonly string[]).includes(value)) return value as T;
+  throw new UsageError(`${from} must be ${choices.map((c) => `'${c}'`).join(', ')}; got '${value}'`);
 }
 
 function parseTransport(value: string | undefined, from: string): TransportPreference {
@@ -164,12 +180,26 @@ export function resolveSettings(
 
   const facilitator = stringOption(values, 'facilitator') ?? env[FACILITATOR_ENV];
   const deposit = stringOption(values, 'deposit');
+  const depositGasFlag = stringOption(values, 'deposit-gas');
+  const depositGas = parseChoice(
+    depositGasFlag ?? env[DEPOSIT_GAS_ENV],
+    depositGasFlag !== undefined ? '--deposit-gas' : DEPOSIT_GAS_ENV,
+    ['auto', 'facilitator', 'self'] as const
+  );
+  const depositMethodFlag = stringOption(values, 'deposit-method');
+  const depositMethod = parseChoice(
+    depositMethodFlag ?? env[DEPOSIT_METHOD_ENV],
+    depositMethodFlag !== undefined ? '--deposit-method' : DEPOSIT_METHOD_ENV,
+    ['eip3009', 'permit2'] as const
+  );
 
   const settings: CliSettings = {
     connector,
     connectorSource,
     ...(facilitator !== undefined && facilitator.length > 0 ? { facilitatorUrl: facilitator } : {}),
     ...(deposit !== undefined ? { deposit } : {}),
+    ...(depositGas !== undefined ? { depositGas } : {}),
+    ...(depositMethod !== undefined ? { depositMethod } : {}),
     ...(chain !== undefined ? { chain } : {}),
     ...(rpcUrl !== undefined && rpcUrl.length > 0 ? { rpcUrl } : {}),
     channelStore,
@@ -292,6 +322,8 @@ export function buildClientConfig(
     ...(settings.rpcUrl !== undefined ? { rpcUrl: settings.rpcUrl } : {}),
     ...(settings.facilitatorUrl !== undefined ? { facilitatorUrl: settings.facilitatorUrl } : {}),
     ...(settings.deposit !== undefined ? { deposit: settings.deposit } : {}),
+    ...(settings.depositGas !== undefined ? { depositGas: settings.depositGas } : {}),
+    ...(settings.depositMethod !== undefined ? { depositMethod: settings.depositMethod } : {}),
   };
 
   if (keys.kind === 'mnemonic') {

@@ -327,10 +327,11 @@ describe('resolveConfig — hidden services', () => {
 });
 
 describe('resolveConfig — x402 batch-settlement', () => {
-  it('leaves the facilitator to the network default, and deposits by ERC-3009', () => {
+  it('leaves the facilitator and the deposit method to the connector, and gas to whoever can pay', () => {
     const resolved = resolveConfig(base());
     expect(resolved.facilitatorUrl).toBeUndefined();
-    expect(resolved.depositMethod).toBe('eip3009');
+    expect(resolved.depositMethod).toBeUndefined();
+    expect(resolved.depositGas).toBe('auto');
   });
 
   it('takes a facilitator and a deposit method when given', () => {

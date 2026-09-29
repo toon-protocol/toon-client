@@ -24,7 +24,9 @@ nobody named should not be silent.
 | Channel store | `--store PATH` | `TOON_CHANNEL_STORE` | `~/.toon/channels.json` |
 | Carriage | `--transport auto\|http\|btp` | — | `auto` |
 | SOCKS5h proxy | `--socks URL` | `TOON_SOCKS` | a managed `anon` daemon, for a `.anyone` connector |
-| x402 facilitator | `--facilitator URL` | `TOON_FACILITATOR` | The devnet's own on Base Sepolia; needed on any other EVM network |
+| x402 facilitator | `--facilitator URL` | `TOON_FACILITATOR` | The one the connector names, else the devnet's own on Base Sepolia |
+| Who pays deposit gas | `--deposit-gas auto\|facilitator\|self` | `TOON_DEPOSIT_GAS` | `auto`: the facilitator, else your own ETH |
+| How the token moves | `--deposit-method eip3009\|permit2` | `TOON_DEPOSIT_METHOD` | What the connector names, else `eip3009` |
 
 Keys resolve in that order for a reason: `TOON_MNEMONIC` first, then the keystore, then a message
 telling you to run `toon init`. **There is no `--mnemonic` flag and there will not be one** — a

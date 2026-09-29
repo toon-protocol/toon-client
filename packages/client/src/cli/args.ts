@@ -127,7 +127,21 @@ export const GLOBAL_OPTIONS: Record<string, OptionSpec> = {
     arg: 'URL',
     help:
       'The x402 facilitator that relays a Base channel deposit and pays its gas. ' +
-      'Env TOON_FACILITATOR. Default: the devnet Onboarder on Base Sepolia.',
+      'Env TOON_FACILITATOR. Default: the one the connector names, else the devnet Onboarder on Base Sepolia.',
+  },
+  'deposit-gas': {
+    type: 'string',
+    arg: 'auto|facilitator|self',
+    help:
+      "Who pays a Base deposit's gas. auto: the facilitator, else your own ETH; facilitator: " +
+      'never your ETH; self: always your ETH, no facilitator. Env TOON_DEPOSIT_GAS. Default auto.',
+  },
+  'deposit-method': {
+    type: 'string',
+    arg: 'eip3009|permit2',
+    help:
+      'How a Base deposit moves the token: eip3009 for USDC-style tokens, permit2 for any ERC-20. ' +
+      'Env TOON_DEPOSIT_METHOD. Default: what the connector names.',
   },
   json: { type: 'boolean', help: 'Print one JSON document on stdout and nothing else.' },
   quiet: { type: 'boolean', help: 'Suppress progress and warnings on stderr.' },
@@ -454,7 +468,7 @@ export function usage(command?: string): string {
   }
 
   return [
-    'toon — pay for an HTTP request, per request, over a payment channel.',
+    'toon — pay for an HTTP request, per request, from an x402 payment channel.',
     '',
     'Usage: toon <command> [options]',
     '',
@@ -468,7 +482,7 @@ export function usage(command?: string): string {
     '',
     'Environment: TOON_CONNECTOR, TOON_MNEMONIC, TOON_KEYSTORE,',
     '             TOON_KEYSTORE_PASSWORD, TOON_CHAIN, TOON_RPC_URL, TOON_CHANNEL_STORE,',
-    '             TOON_SOCKS.',
+    '             TOON_SOCKS, TOON_FACILITATOR, TOON_DEPOSIT_GAS, TOON_DEPOSIT_METHOD.',
     '',
     "Run 'toon help <command>' for one command in detail.",
   ].join('\n');

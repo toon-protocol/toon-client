@@ -372,6 +372,27 @@ describe('send', () => {
     expect(text).toMatch(/toon channel deposit/);
   });
 
+  it('blames a node past the connector, not the voucher, when the path refused', async () => {
+    const refusal = fakeRefused({
+      code: 'F01',
+      refusedBy: 'path',
+      message: 'gift wrap could not be opened: gift wrap failed to decrypt',
+      accumulatedCost: 1n,
+    });
+    const result = await run(['send', 'g.toon.relay.store'], { client: { send: refusal } });
+    const text = result.stdout.join('\n');
+    expect(text).toMatch(/past the connector/);
+    expect(text).not.toMatch(/nonce/);
+  });
+
+  it('points a voucher the connector refused at the two watermarks, with no nonce', async () => {
+    const refusal = fakeRefused({ code: 'F01', refusedBy: 'edge', accumulatedCost: undefined });
+    const result = await run(['send', 'g.toon.store'], { client: { send: refusal } });
+    const text = result.stdout.join('\n');
+    expect(text).toMatch(/connector-view/);
+    expect(text).not.toMatch(/nonce/);
+  });
+
   it('tells you which carriage to retry over when the route insists on one', async () => {
     const refusal = fakeRefused({
       code: 'PAYMENT_REQUIRED',
@@ -381,7 +402,7 @@ describe('send', () => {
         destination: 'g.toon.relay',
         price: 1n,
         requiredTransport: 'btp',
-        settlements: [],
+        batchSettlements: [],
         raw: {},
       },
     });
@@ -467,6 +488,20 @@ describe('channel', () => {
     expect(text).toContain('rpc down');
   });
 
+  it('does not claim to be leaving when no channel could be left', async () => {
+    const client = new FakeToonClient();
+    const result = await run(['channel', 'close'], {
+      channel: {
+        ...client.channel,
+        close: async () => [{ channelId: 'a', error: 'leaving a channel needs ETH for the fee' }],
+      },
+    });
+    expect(result.code).not.toBe(EXIT.ok);
+    const text = result.stdout.join('\n');
+    expect(text).toContain('No channel was left.');
+    expect(text).not.toContain('Leaving every open channel');
+  });
+
   it('says so when no channel is ready to settle', async () => {
     const client = new FakeToonClient();
     const result = await run(['channel', 'settle'], {
@@ -517,6 +552,27 @@ describe('channel', () => {
     const fromEnv = await run(['channel', 'status'], { env: { TOON_FACILITATOR: 'https://g' } });
     expect(fromEnv.config?.facilitatorUrl).toBe('https://g');
     expect((await run(['channel', 'status'])).config?.facilitatorUrl).toBeUndefined();
+  });
+
+  it('passes who pays the deposit gas, and how the token is moved, into the config', async () => {
+    const flags = await run([
+      'channel', 'status', '--deposit-gas', 'self', '--deposit-method', 'permit2',
+    ]);
+    expect(flags.config?.depositGas).toBe('self');
+    expect(flags.config?.depositMethod).toBe('permit2');
+    const fromEnv = await run(['channel', 'status'], {
+      env: { TOON_DEPOSIT_GAS: 'facilitator', TOON_DEPOSIT_METHOD: 'eip3009' },
+    });
+    expect(fromEnv.config?.depositGas).toBe('facilitator');
+    expect(fromEnv.config?.depositMethod).toBe('eip3009');
+    const unset = await run(['channel', 'status']);
+    expect(unset.config?.depositGas).toBeUndefined();
+    expect(unset.config?.depositMethod).toBeUndefined();
+  });
+
+  it('refuses a deposit-gas or deposit-method it does not know', async () => {
+    expect((await run(['channel', 'status', '--deposit-gas', 'someone'])).code).toBe(EXIT.usage);
+    expect((await run(['channel', 'status', '--deposit-method', 'erc7710'])).code).toBe(EXIT.usage);
   });
 });
 

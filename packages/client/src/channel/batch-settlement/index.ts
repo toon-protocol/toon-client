@@ -74,6 +74,24 @@ export {
 } from './payer.js';
 export { requestSponsoredOpen, type SponsoredOpen } from './sponsor.js';
 export {
+  EIP2612_GAS_SPONSORING,
+  ERC20_APPROVAL_GAS_SPONSORING,
+  X402_BATCH_SETTLEMENT_DEPOSIT_ABI,
+  approvePermit2,
+  depositDirectly,
+  eip2612Nonce,
+  eip2612PermitData,
+  erc3009CollectorData,
+  evmWalletAccess,
+  facilitatorExtensions,
+  permit2Allowance,
+  permit2CollectorData,
+  signEip2612GasSponsoring,
+  signErc20ApprovalGasSponsoring,
+  type DepositExtensions,
+  type EvmWalletAccess,
+} from './deposit-gas.js';
+export {
   CHANNEL_CHALLENGE_MAX_LIFETIME_SECONDS,
   evmChallengeDigest,
   signEvmChallenge,

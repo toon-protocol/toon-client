@@ -115,7 +115,9 @@ Client-edge paths on all three, relative to the base URL above:
 `https://onboard.devnet.toonprotocol.dev` — the Onboarder (toon-protocol/infra#23), a stock x402
 facilitator on Base Sepolia. It submits a payer-authorized channel deposit and pays its gas, so a
 wallet holding devnet USDC and **no ETH** can open a channel. It is this client's default on Base
-Sepolia (`DEVNET.facilitator`), and used nowhere else.
+Sepolia (`DEVNET.facilitator`), and used nowhere else. It offers x402's `eip2612GasSponsoring` and
+`erc20ApprovalGasSponsoring`, so a Permit2 deposit of a token without ERC-3009 is gasless too
+(toon-protocol/infra#40).
 
 ## Base Sepolia (EVM)
 

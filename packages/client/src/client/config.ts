@@ -100,7 +100,9 @@ export interface ResolvedConfig {
   deposit: bigint;
   /** The x402 facilitator for Base deposits, or `undefined` for the network's default. */
   facilitatorUrl: string | undefined;
-  depositMethod: 'eip3009' | 'permit2';
+  /** `undefined`: whatever the connector's offer names, else `eip3009`. */
+  depositMethod: 'eip3009' | 'permit2' | undefined;
+  depositGas: 'auto' | 'facilitator' | 'self';
   autoOpenChannel: boolean;
   timeoutMs: number;
   channelStore: ChannelStore;
@@ -176,7 +178,8 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
     senderId: config.senderId,
     deposit,
     facilitatorUrl: config.facilitatorUrl,
-    depositMethod: config.depositMethod ?? 'eip3009',
+    depositMethod: config.depositMethod,
+    depositGas: config.depositGas ?? 'auto',
     connectorIsHiddenService,
     socksProxy,
     proxyRpc: config.proxyRpc ?? true,

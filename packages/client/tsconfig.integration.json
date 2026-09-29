@@ -35,6 +35,7 @@
   // matches src/__integration__/ exactly, so an omission is a red check rather
   // than a silent gap.
   "files": [
+    "src/__integration__/batch-settlement-deposit-gas.integration.test.ts",
     "src/__integration__/batch-settlement-devnet.integration.test.ts",
     "src/__integration__/batch-settlement-exit.integration.test.ts",
     "src/__integration__/btp-transport.integration.test.ts",

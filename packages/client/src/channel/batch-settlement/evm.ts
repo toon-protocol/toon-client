@@ -148,6 +148,17 @@ export interface BatchSettlementEvmOffer {
     /** The token's own EIP-712 domain, which an ERC-3009 authorization signs under. */
     name?: string;
     version?: string;
+    /**
+     * How a deposit moves the token: `eip3009` (x402's default) for a token
+     * with ERC-3009, `permit2` for any other ERC-20. x402's own field.
+     */
+    assetTransferMethod?: 'eip3009' | 'permit2';
+    /**
+     * The x402 facilitator this connector relays deposits through and pays the
+     * gas of — TOON's addition, since here the payer, not the seller, calls it
+     * (toon-client#695).
+     */
+    facilitator?: string;
   };
 }
 

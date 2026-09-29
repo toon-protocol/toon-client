@@ -141,6 +141,13 @@ export interface ToonClientConfig {
    * payer's one-time Permit2 approval — a transaction of its own — first.
    */
   depositMethod?: 'eip3009' | 'permit2';
+  /**
+   * Who pays a Base deposit's gas, and a Permit2 token's one-time approval's.
+   * `auto` (the default): the facilitator when there is one and it will,
+   * otherwise this wallet when it holds ETH. `facilitator`: never this
+   * wallet's ETH. `self`: always this wallet's, and no facilitator at all.
+   */
+  depositGas?: 'auto' | 'facilitator' | 'self';
 
   /** Per-packet timeout in milliseconds. Default `30000`. */
   timeoutMs?: number;

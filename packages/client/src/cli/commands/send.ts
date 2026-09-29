@@ -140,8 +140,14 @@ export function refusalHint(result: SendRefused, asset: AssetInfo): string[] {
             "'toon channel deposit <base units>', then send again.",
           ];
     case 'F01':
+      if (result.refusedBy === 'path') {
+        return [
+          'A node past the connector could not use the packet, so the app never saw it. Your',
+          'voucher was accepted and the path cost is spent; the message above names what failed.',
+        ];
+      }
       return [
-        'The connector would not take the claim: it names a channel it cannot see, or a nonce',
+        'The connector would not take the voucher: it names a channel it cannot see, or an amount',
         "it has already banked. Compare the two watermarks with 'toon channel status --connector-view'.",
       ];
     case 'F02':

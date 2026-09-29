@@ -36,6 +36,11 @@ export async function settleDeposit(params: {
   facilitatorUrl: string;
   offer: BatchSettlementEvmOffer;
   payload: BatchDepositPayload<unknown>;
+  /**
+   * x402 extensions for the facilitator — a gas-sponsored Permit2 approval
+   * (`deposit-gas.ts`) — carried as `paymentPayload.extensions`.
+   */
+  extensions?: Record<string, { info: Record<string, unknown> }>;
   fetchImpl?: typeof fetch;
 }): Promise<SettledDeposit> {
   const { payload } = params;
@@ -57,7 +62,12 @@ export async function settleDeposit(params: {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         x402Version: 2,
-        paymentPayload: { x402Version: 2, accepted: offer, payload },
+        paymentPayload: {
+          x402Version: 2,
+          accepted: offer,
+          payload,
+          ...(params.extensions ? { extensions: params.extensions } : {}),
+        },
         paymentRequirements: offer,
       }),
     });

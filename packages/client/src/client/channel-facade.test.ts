@@ -53,7 +53,7 @@ const DESCRIPTION = parseSelfDescription({
  * A Solana RPC over channel accounts: `status` per PDA, or `null` for an
  * account that is gone. Records the methods called.
  */
-function rpc(statuses: Record<string, number | null>) {
+function rpc(statuses: Record<string, number | null>, lamports = 1_000_000_000) {
   const methods: string[] = [];
   const fetchImpl = (async (_u: string, init?: RequestInit) => {
     const { method, params } = JSON.parse(init!.body as string) as {
@@ -78,6 +78,8 @@ function rpc(statuses: Record<string, number | null>) {
           },
         };
       }
+    } else if (method === 'getBalance') {
+      result = { value: lamports };
     } else if (method === 'getLatestBlockhash') {
       result = {
         value: { blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' },
@@ -97,9 +99,9 @@ const OTHER: BatchChannel = {
   channelId: 'EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1',
 };
 
-function facade(statuses: Record<string, number | null>, now = 1_000n) {
+function facade(statuses: Record<string, number | null>, now = 1_000n, lamports?: number) {
   const manager = new BatchChannelManager();
-  const chain = rpc(statuses);
+  const chain = rpc(statuses, lamports);
   const f = new ClientChannelFacade({
     connector: CONNECTOR,
     chain: 'solana',
@@ -171,6 +173,16 @@ describe('client.channel', () => {
     const after = await g.deposit(2_000n);
     expect(topUps).toEqual([2_000n]);
     expect(after.depositTotal).toBe(7_000n);
+  });
+
+  it('says leaving needs SOL, and sends nothing, when the wallet holds none', async () => {
+    const { f, manager, chain } = facade({ [CHANNEL.channelId]: 0 }, 1_000n, 0);
+    manager.adopt(CONNECTOR, CHANNEL, 5_000n);
+    const [result] = await f.close();
+    expect(result?.error).toMatch(/needs SOL for the fee/);
+    expect(result?.error).toMatch(/holds none/);
+    expect(chain.methods).not.toContain('sendTransaction');
+    expect(manager.isClosing(CHANNEL.channelId)).toBe(false);
   });
 
   it('has nothing to close before a channel is open', async () => {

@@ -49,6 +49,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { createPublicClient, toHex } from 'viem';
 import { rpcTransport } from '../transport/rpc.js';
 import type { ContractReader } from '../channel/batch-settlement/evm.js';
+import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { base58Decode } from '../utils/base58.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
@@ -142,8 +143,16 @@ export class ToonClient implements ToonClientLike {
               ...(init.config.facilitatorUrl !== undefined
                 ? { facilitatorUrl: init.config.facilitatorUrl }
                 : {}),
-              depositMethod: init.config.depositMethod,
+              ...(init.config.depositMethod !== undefined
+                ? { depositMethod: init.config.depositMethod }
+                : {}),
+              depositGas: init.config.depositGas,
               reader: lazyEvmReader(init.config),
+              wallet: evmWalletAccess({
+                rpcUrl: init.config.rpcUrls.evm,
+                account: chains.evm.account,
+                dispatcher: init.config.chainRpc?.evm.dispatcher,
+              }),
             },
           }
         : {}),
