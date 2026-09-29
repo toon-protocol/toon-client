@@ -123,9 +123,16 @@ function funder() {
   });
 }
 
-/** Mint `DEPOSIT` of the plain token to `to`, from the funder. */
+/**
+ * Mint `DEPOSIT` of the plain token to `to`, from the funder, and wait until the
+ * facilitator can see it too. A public RPC is load-balanced, so a receipt here
+ * says nothing about the backend the facilitator reads from: straight after
+ * one, the Onboarder was seen refusing the deposit as
+ * `invalid_batch_settlement_evm_insufficient_balance`. Two blocks past the
+ * mint, every backend worth reading has it.
+ */
 async function mintPlainToken(chain: Chain, to: Hex): Promise<void> {
-  await chain.waitForTransactionReceipt({
+  const { blockNumber } = await chain.waitForTransactionReceipt({
     hash: await funder().writeContract({
       address: PLAIN_ERC20,
       abi: parseAbi(['function mint(address,uint256)']),
@@ -133,6 +140,10 @@ async function mintPlainToken(chain: Chain, to: Hex): Promise<void> {
       args: [to, DEPOSIT],
     }),
   });
+  await waitForTokens(chain, PLAIN_ERC20, to);
+  while ((await chain.getBlockNumber({ cacheTime: 0 })) < blockNumber + 2n) {
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
 }
 
 /**
