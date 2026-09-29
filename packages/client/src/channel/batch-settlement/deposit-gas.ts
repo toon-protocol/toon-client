@@ -363,10 +363,22 @@ export async function signErc20ApprovalGasSponsoring(params: {
 // Paying the gas yourself
 // ---------------------------------------------------------------------------
 
-/** Send `approve(Permit2, max)` from the payer's own wallet, and wait for it. */
+/** How long a landed approval may take to show on the RPC, and how often to look. */
+const VISIBLE_WITHIN_MS = 30_000;
+const POLL_INTERVAL_MS = 1_000;
+
+/**
+ * Approve Permit2 for `token`, for the maximum, from the payer's own ETH.
+ *
+ * With `seen`, it also waits until the RPC shows the allowance: a public RPC is
+ * load-balanced, and a receipt from one backend says nothing about the next.
+ * On Base Sepolia, a deposit estimated straight after the receipt reverted
+ * `TRANSFER_FROM_FAILED` (#695).
+ */
 export async function approvePermit2(
   wallet: EvmWalletAccess,
-  token: string
+  token: string,
+  seen?: { reader: ContractReader; owner: string; atLeast: bigint }
 ): Promise<Hex> {
   const hash = await wallet.writeContract({
     address: getAddress(token),
@@ -375,6 +387,17 @@ export async function approvePermit2(
     args: [PERMIT2_ADDRESS, maxUint256],
   } as never);
   await landed(wallet, hash, 'the Permit2 approval');
+  if (seen) {
+    const deadline = Date.now() + VISIBLE_WITHIN_MS;
+    while ((await permit2Allowance(seen.reader, token, seen.owner)) < seen.atLeast) {
+      if (Date.now() >= deadline) {
+        throw new NetworkError(
+          `the Permit2 approval ${hash} landed, but the RPC did not show it within ${VISIBLE_WITHIN_MS / 1000} s`
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+  }
   return hash;
 }
 
