@@ -82,7 +82,7 @@ const client = await ToonClient.create({
 const answer = await client.send({ body: 'hello' });
 if (answer.fulfilled) {
   console.log(answer.status, answer.text());       // the app's own HTTP response
-  console.log(answer.claim.amount);                // 1010n base units — 1000 + 10/KiB
+  console.log(answer.claim?.amount);               // 1010n base units — 1000 + 10/KiB
 } else {
   console.log(answer.code, answer.message);        // a refusal, not an exception
 }
@@ -99,12 +99,35 @@ Runnable versions of both, on each chain:
   and delivers that app requests it has already collected for.
 - **A packet carries its own voucher.** Nothing is owed between requests: the voucher that pays
   for a request travels with it, so there is never a balance for either side to walk away from.
-- **You fund an x402 channel, and pay no gas to do it.** On Base an x402 facilitator relays your
-  deposit; on Solana the connector sponsors the open. Only leaving the channel costs gas.
+- **You fund an x402 channel, and need no gas to do it.** On Base an x402 facilitator relays your
+  deposit; on Solana the connector sponsors the open. A wallet with its own ETH can pay instead.
+  Only leaving the channel always costs gas.
 - **A price is flat per route.** One route, one price, whatever the payload — so a route's price
   is a figure you can ask for before you spend anything.
 - **Reading a node's facts is free.** Its addresses, endpoints, sealing key, settlement terms and
   route prices come from one unauthenticated `GET`. Only the app's work costs money.
+
+## Paying over x402
+
+Every payment is an x402 [`batch-settlement`](https://github.com/x402-foundation/x402) voucher,
+on x402's own audited contract on Base and program on Solana — no TOON contract is involved.
+
+| | Base (EVM) | Solana |
+| --- | --- | --- |
+| Opening a channel | a deposit, relayed by an x402 facilitator | an `open` the connector co-signs and pays for |
+| Tokens | USDC and any ERC-3009 token; **any ERC-20** through Permit2 | tokens under the classic SPL Token program (not Token-2022) |
+| Gas to open | none through a facilitator, or your own ETH if you prefer | none |
+| Each request | a signed voucher: no transaction | a signed voucher: no transaction |
+| Leaving | your own transaction | your own transaction |
+
+**Who pays the gas.** x402's contract has no fee field, so whoever wants the deposit to happen
+pays for it — the connector, which names the facilitator it pays through in its terms, since the
+deposit is how it gets paid. You can override that: `depositGas: 'self'` (`--deposit-gas self`)
+pays from your own ETH and contacts no facilitator, and under the default `'auto'` a wallet
+holding ETH deposits directly whenever no facilitator can. A token without ERC-3009 needs a
+one-time Permit2 approval; a facilitator that offers x402's gas-sponsoring extensions covers it,
+otherwise it comes out of your ETH. [docs/channels.md](docs/channels.md#who-pays-the-gas) has
+the details.
 
 ## What this is not
 

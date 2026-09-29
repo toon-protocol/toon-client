@@ -82,6 +82,13 @@ channel costs no native gas — on Base an x402 facilitator relays the deposit a
 Solana the connector sponsors the open. Native gas (Base Sepolia ETH, devnet SOL) is needed only
 later, to *leave* a channel.
 
+The devnet nodes are paid in USDC, which has ERC-3009, so a deposit is a single signature. A
+connector paid in another ERC-20 names `permit2` as its deposit method, and the client handles it:
+the facilitator sponsors the one-time Permit2 approval where it can, and otherwise your own ETH
+pays for it. If your wallet does hold ETH, `--deposit-gas self` (`depositGas: 'self'`) pays every
+deposit from it and contacts no facilitator at all. See
+[channels.md](channels.md#who-pays-the-gas).
+
 ```bash
 npx toon faucet
 ```
@@ -254,6 +261,7 @@ exactly when you need it.
 
 - [api.md](api.md) — every method, option and returned type
 - [cli.md](cli.md) — every command, the resolution order, exit codes
-- [channels.md](channels.md) — opening without gas, deposits, leaving, the watermark
+- [channels.md](channels.md) — opening without gas, who pays the gas, any-ERC-20 deposits,
+  leaving, the watermark
 - [how-a-paid-packet-works.md](how-a-paid-packet-works.md) — the wire
 - [`packages/client/examples/`](../packages/client/examples/) — runnable versions of the above
