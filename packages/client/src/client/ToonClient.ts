@@ -899,7 +899,7 @@ function batchSettlement(
           // client's does: there is one, and the caller has not opted RPC out.
           rpc: {
             url: config.rpcUrls.solana,
-            ...(config.rpcDispatcher !== undefined ? { fetchImpl: config.fetch } : {}),
+            ...(config.chainRpc !== undefined ? { fetchImpl: config.chainRpc.solana.fetch } : {}),
           },
         };
   const payer = new BatchSettlementPayer({
@@ -931,7 +931,7 @@ function batchSettlement(
           evm: {
             privateKey: evmKey,
             rpcUrl: config.rpcUrls.evm,
-            rpcDispatcher: config.rpcDispatcher,
+            rpcDispatcher: config.chainRpc?.evm.dispatcher,
           },
         }
       : {}),
@@ -949,7 +949,7 @@ function lazyEvmReader(config: ResolvedConfig): ContractReader {
   return {
     readContract: (params: never) => {
       client ??= createPublicClient({
-        transport: rpcTransport(config.rpcUrls.evm, config.rpcDispatcher),
+        transport: rpcTransport(config.rpcUrls.evm, config.chainRpc?.evm.dispatcher),
       });
       return client.readContract(params);
     },
