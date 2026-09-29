@@ -30,7 +30,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getAddress, hashTypedData, recoverAddress, type Hex } from 'viem';
+import { getAddress, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
@@ -41,8 +41,6 @@ import {
   loadWireVectors,
   loadWireVectorsProvenance,
   wireVectorsSha256,
-  type ChannelControlDeclarationVector,
-  type ClaimVector,
   type ChargeVector,
   type EnvelopeInvalidVector,
   type EnvelopeValidVector,
@@ -69,10 +67,6 @@ import {
   sealResponseWithRandomness,
 } from './giftwrap.js';
 import { fulfillmentMatches } from '../utils/fulfillment.js';
-import { EvmSigner } from '../signing/evm-signer.js';
-import { SolanaSigner } from '../signing/solana-signer.js';
-import type { SolanaClaimMessage } from '../signing/types.js';
-import { buildBalanceProofMessage } from '../channel/solana/payment-channel.js';
 import { base58Decode } from '../utils/base58.js';
 import { chargeFor } from '../connector/self-description.js';
 import {
@@ -81,7 +75,17 @@ import {
   batchVoucherDigest,
   signBatchVoucher,
 } from '../channel/batch-settlement/evm.js';
-import { buildSvmVoucherMessage } from '../channel/batch-settlement/svm.js';
+import {
+  buildSvmVoucherMessage,
+  signSvmVoucher,
+} from '../channel/batch-settlement/svm.js';
+import {
+  CHANNEL_CHALLENGE_MAX_LIFETIME_SECONDS,
+  evmChallengeDigest,
+  signEvmChallenge,
+  signSolanaChallenge,
+  solanaChallengeMessage,
+} from '../channel/batch-settlement/challenge.js';
 import {
   evmVoucherClaim,
   nextVoucherAmount,
@@ -120,6 +124,10 @@ describe('the vendored vector file', () => {
 
   it('is the schema version this harness understands', () => {
     expect(vectors.schema_version).toBe(provenance.schemaVersion);
+    // 7 (connector#1384, ADR 0075): every claim is a voucher. `claim` and
+    // `channel_control_declaration` (the toon-channel balance proof and its BTP
+    // declaration) are gone; the voucher claim-state challenge, its BTP auth
+    // form and the refused toon-channel shapes arrive.
     // 6 (connector#1347, ADR 0074): `claim_voucher` — the x402
     // batch-settlement voucher on both chains — and `charge`, the metered price.
     // 5 (connector#1269, ADR 0069): `executionCondition` is deleted from
@@ -128,7 +136,7 @@ describe('the vendored vector file', () => {
     // 4 deleted the `{peerId, secret}` peer credential from both carriages;
     // 2 put the real settlement program into `claim_solana.programId`; 3
     // retired minimum delivery.
-    expect(vectors.schema_version).toBe(6);
+    expect(vectors.schema_version).toBe(7);
   });
 
   it('records which connector commit it came from', () => {
@@ -183,14 +191,20 @@ describe('the vendored vector file', () => {
         'envelope',
         'giftwrap',
         'fulfilment',
-        'claim',
-        'channel_control_declaration',
         'peer_carriage',
         'charge',
         'claim_voucher',
+        'voucher_claim_state_challenge',
+        'client_auth_channel_challenge',
+        'toon_channel_refused',
+        'claim_state_toon_channel_refused',
       ])
     );
-    expect(provenance.sectionsPresentNotYetReplayed).toEqual([]);
+    // A payout voucher is what a connector PAYS a client with; this client is
+    // payer-only and never receives one, so there is nothing to replay it on.
+    expect(provenance.sectionsPresentNotYetReplayed).toEqual([
+      'payout_voucher',
+    ]);
   });
 });
 
@@ -593,312 +607,16 @@ describe('fulfilment — the preimage a shared secret derives (connector ADR 001
   });
 });
 
-// ─── claim ──────────────────────────────────────────────────────────────────
-
-/**
- * Replayed against `signing/evm-signer.ts` — this client DOES produce these
- * bytes. `EvmSigner.signBalanceProof` signs an EIP-712 `BalanceProof` under a
- * per-channel `TokenNetwork` domain with zeroed `lockedAmount`/`locksRoot`,
- * which is exactly the scheme connector ADR 0024 moved the peer wire onto. So
- * these vectors are a real conformance check here, not borrowed evidence: a
- * drifted domain field, a reordered struct member or a widened integer would
- * all change the digest and fail below.
- *
- * The one representation difference, normalised and asserted rather than
- * papered over: the connector's `signature_hex` ends in a raw recovery id
- * (`00`/`01`); viem, like every wallet, emits the EIP-155-era `1b`/`1c`.
- */
-const CLAIM_DOMAIN_NAME = 'TokenNetwork';
-const CLAIM_DOMAIN_VERSION = '1';
-const CLAIM_TYPES = {
-  BalanceProof: [
-    { name: 'channelId', type: 'bytes32' },
-    { name: 'nonce', type: 'uint256' },
-    { name: 'transferredAmount', type: 'uint256' },
-    { name: 'lockedAmount', type: 'uint256' },
-    { name: 'locksRoot', type: 'bytes32' },
-  ],
-} as const;
+// ─── peer_carriage ──────────────────────────────────────────────────────────
 
 const prefix0x = (hex: string): Hex => `0x${hex}`;
-
-/** `r || s || recovery_id(0|1)` as the vectors carry it → viem's `r || s || v(27|28)`. */
-function claimSignatureToViem(signatureHex: string): Hex {
-  const recovery = Number.parseInt(signatureHex.slice(128), 16);
-  expect(
-    recovery,
-    'vector recovery id must be raw 0/1, not a wallet 27/28'
-  ).toBeLessThan(2);
-  return `0x${signatureHex.slice(0, 128)}${(recovery + 27).toString(16)}`;
-}
-
-describe('claim — the EIP-712 BalanceProof this client signs (connector ADR 0024)', () => {
-  const cases: ClaimVector[] = vectors.claim?.cases ?? [];
-
-  it('carries at least one case to replay', () => {
-    expect(cases.length).toBeGreaterThan(0);
-  });
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    "computes %s's published digest from the published fields",
-    (_name, vector) => {
-      const digest = hashTypedData({
-        domain: {
-          name: CLAIM_DOMAIN_NAME,
-          version: CLAIM_DOMAIN_VERSION,
-          chainId: vector.chain_id,
-          verifyingContract: prefix0x(vector.token_network_address_hex),
-        },
-        types: CLAIM_TYPES,
-        primaryType: 'BalanceProof',
-        message: {
-          channelId: prefix0x(vector.channel_id_hex),
-          nonce: BigInt(vector.nonce),
-          transferredAmount: BigInt(vector.transferred_amount),
-          lockedAmount: BigInt(vector.locked_amount),
-          locksRoot: prefix0x(vector.locks_root_hex),
-        },
-      });
-      expect(digest).toBe(prefix0x(vector.digest_hex));
-    }
-  );
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    "derives %s's published signer address from its fixture secret",
-    (_name, vector) => {
-      const signer = new EvmSigner(prefix0x(vector.signer_secret_hex));
-      expect(signer.address.toLowerCase()).toBe(
-        prefix0x(vector.signer_address_hex)
-      );
-    }
-  );
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    'reproduces %s byte-for-byte through EvmSigner.signBalanceProof',
-    async (_name, vector) => {
-      const signer = new EvmSigner(prefix0x(vector.signer_secret_hex));
-      const proof = await signer.signBalanceProof({
-        channelId: prefix0x(vector.channel_id_hex),
-        nonce: vector.nonce,
-        transferredAmount: BigInt(vector.transferred_amount),
-        lockedAmount: BigInt(vector.locked_amount),
-        locksRoot: prefix0x(vector.locks_root_hex),
-        chainId: vector.chain_id,
-        tokenNetworkAddress: prefix0x(vector.token_network_address_hex),
-      });
-      // The whole 65 bytes, recovery id included — not a prefix comparison.
-      expect(proof.signature.toLowerCase()).toBe(
-        claimSignatureToViem(vector.signature_hex)
-      );
-      expect(proof.signerAddress.toLowerCase()).toBe(
-        prefix0x(vector.signer_address_hex)
-      );
-    }
-  );
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    "recovers %s's published signature to its published signer",
-    async (_name, vector) => {
-      const recovered = await recoverAddress({
-        hash: prefix0x(vector.digest_hex),
-        signature: claimSignatureToViem(vector.signature_hex),
-      });
-      expect(recovered.toLowerCase()).toBe(prefix0x(vector.signer_address_hex));
-    }
-  );
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    'hashes lockedAmount and locksRoot into %s rather than omitting them',
-    (_name, vector) => {
-      // Both are zero on the wire today (ADR 0004). A signer that dropped them
-      // from the struct would still produce a self-consistent signature and
-      // would still round-trip its own output — it would only fail here.
-      expect(vector.locked_amount).toBe(0);
-      expect(vector.locks_root_hex).toBe('0'.repeat(64));
-
-      const withoutZeroFields = hashTypedData({
-        domain: {
-          name: CLAIM_DOMAIN_NAME,
-          version: CLAIM_DOMAIN_VERSION,
-          chainId: vector.chain_id,
-          verifyingContract: prefix0x(vector.token_network_address_hex),
-        },
-        types: {
-          BalanceProof: [
-            { name: 'channelId', type: 'bytes32' },
-            { name: 'nonce', type: 'uint256' },
-            { name: 'transferredAmount', type: 'uint256' },
-          ],
-        },
-        primaryType: 'BalanceProof',
-        message: {
-          channelId: prefix0x(vector.channel_id_hex),
-          nonce: BigInt(vector.nonce),
-          transferredAmount: BigInt(vector.transferred_amount),
-        },
-      });
-      expect(withoutZeroFields).not.toBe(prefix0x(vector.digest_hex));
-    }
-  );
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    'binds %s to its own channel domain, not a node-wide one',
-    async (_name, vector) => {
-      // The README is explicit that chain_id/token_network_address are set per
-      // channel. Prove the digest actually moves with them, so a signer that
-      // hardcoded one chain's domain cannot pass by accident.
-      const signer = new EvmSigner(prefix0x(vector.signer_secret_hex));
-      const elsewhere = await signer.signBalanceProof({
-        channelId: prefix0x(vector.channel_id_hex),
-        nonce: vector.nonce,
-        transferredAmount: BigInt(vector.transferred_amount),
-        lockedAmount: BigInt(vector.locked_amount),
-        locksRoot: prefix0x(vector.locks_root_hex),
-        chainId: vector.chain_id + 1,
-        tokenNetworkAddress: prefix0x(vector.token_network_address_hex),
-      });
-      expect(elsewhere.signature.toLowerCase()).not.toBe(
-        claimSignatureToViem(vector.signature_hex)
-      );
-    }
-  );
-});
-
-// ─── channel_control_declaration ───────────────────────────────────────────
-
-/**
- * Replayed against `signing/evm-signer.ts`'s `signClaimStateChallenge` — the
- * BTP auth greeting's `channelId`/`expires`/`signature` declaration
- * (connector#795, client-edge-spec.md §1.9 step 1), which this client already
- * sends on every `connect()`/`reauthenticate()` (`btp/IsomorphicBtpClient.ts`,
- * toon-client#513). Signed under the SAME `TokenNetwork`/`1` domain as
- * `claim` above but a distinct `ClaimStateChallenge(bytes32,uint256)`
- * typehash, so a captured declaration can never be replayed as a claim.
- *
- * Unlike `claim`, this section's `expires` is a wall-clock fact the verifier
- * (the connector, not this client) checks separately from the signature
- * (`channel_control_declaration_expired` has a genuinely verifying
- * signature) — nothing here replays that half, only the EIP-712 scheme this
- * client is the one producing.
- *
- * `auth_json`/`btp_message_hex` are deliberately NOT replayed: they pin one
- * example JSON serialization of the auth entry (the connector's own, key-
- * alphabetised by `serde_json`), and this client's greeting is a DIFFERENT
- * but equally valid encoding — `IsomorphicBtpClient.authenticate()` orders
- * keys by insertion and spreads a `blockchain` tag in beside them, since its
- * `BtpChannelDeclaration` covers the Solana shape too. Neither difference is
- * observable to the verifier: the connector reads the entry field-by-field
- * off a `serde_json::Value` (`connector-client-edge/src/btp.rs`'s
- * `auth_channel_proof`), so the contract is which fields are present and what
- * the EIP-712 digest and signature over them are — which is exactly what the
- * cases below do replay.
- */
-describe('channel_control_declaration — the BTP auth channelId/expires/signature declaration (connector#795)', () => {
-  const cases: ChannelControlDeclarationVector[] =
-    vectors.channel_control_declaration?.cases ?? [];
-
-  /**
-   * The same `00`/`01` → `1b`/`1c` normalisation `claim` needs, minus this
-   * section's `0x` prefix — unlike every other section, its `signature_hex`
-   * is the literal string the auth entry's JSON body carries.
-   */
-  const signatureAsViem = (vector: ChannelControlDeclarationVector): Hex =>
-    claimSignatureToViem(vector.signature_hex.slice(2));
-
-  it('carries at least one case to replay', () => {
-    expect(cases.length).toBeGreaterThan(0);
-  });
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    "computes %s's published digest from the published fields",
-    (_name, vector) => {
-      const digest = hashTypedData({
-        domain: {
-          name: CLAIM_DOMAIN_NAME,
-          version: CLAIM_DOMAIN_VERSION,
-          chainId: vector.chain_id,
-          verifyingContract: prefix0x(vector.token_network_address_hex),
-        },
-        types: {
-          ClaimStateChallenge: [
-            { name: 'channelId', type: 'bytes32' },
-            { name: 'expires', type: 'uint256' },
-          ],
-        },
-        primaryType: 'ClaimStateChallenge',
-        message: {
-          channelId: vector.channel_id_hex as Hex,
-          expires: BigInt(vector.expires),
-        },
-      });
-      expect(digest).toBe(prefix0x(vector.digest_hex));
-    }
-  );
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    "derives %s's published signer address from its fixture secret",
-    (_name, vector) => {
-      const signer = new EvmSigner(prefix0x(vector.signer_secret_hex));
-      expect(signer.address.toLowerCase()).toBe(
-        prefix0x(vector.signer_address_hex)
-      );
-    }
-  );
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    'reproduces %s byte-for-byte through EvmSigner.signClaimStateChallenge',
-    async (_name, vector) => {
-      const signer = new EvmSigner(prefix0x(vector.signer_secret_hex));
-      const signature = await signer.signClaimStateChallenge({
-        chainId: vector.chain_id,
-        tokenNetworkAddress: prefix0x(vector.token_network_address_hex),
-        channelId: vector.channel_id_hex,
-        expires: vector.expires,
-      });
-      expect(signature.toLowerCase()).toBe(signatureAsViem(vector));
-    }
-  );
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    "recovers %s's signature to signature_verifies against the counterparty",
-    async (_name, vector) => {
-      // `signature_verifies` is `false` exactly when the signer is NOT the
-      // channel's registered counterparty (channel_control_declaration_wrong_key)
-      // — never about `expires`, which this test deliberately ignores, same
-      // as this section's own doc comment above.
-      const recovered = await recoverAddress({
-        hash: prefix0x(vector.digest_hex),
-        signature: signatureAsViem(vector),
-      });
-      const signedByCounterparty =
-        recovered.toLowerCase() === prefix0x(vector.counterparty_address_hex);
-      expect(signedByCounterparty).toBe(vector.signature_verifies);
-    }
-  );
-
-  it.each(cases.map((c) => [c.name, c] as const))(
-    'binds %s to its own channel domain, not a node-wide one',
-    async (_name, vector) => {
-      const signer = new EvmSigner(prefix0x(vector.signer_secret_hex));
-      const elsewhere = await signer.signClaimStateChallenge({
-        chainId: vector.chain_id + 1,
-        tokenNetworkAddress: prefix0x(vector.token_network_address_hex),
-        channelId: vector.channel_id_hex,
-        expires: vector.expires,
-      });
-      expect(elsewhere.toLowerCase()).not.toBe(signatureAsViem(vector));
-    }
-  );
-});
-
-// ─── peer_carriage ──────────────────────────────────────────────────────────
 
 /**
  * The items of `peer_carriage` that are genuinely the wire between two
  * connectors, and have no counterpart in a client.
  *
- * This client answers a connector; it never acknowledges a claim, never
- * flushes, and never adjudicates a retransmission — so there is nothing here
+ * This client answers a connector; it never acknowledges a voucher and never
+ * proves the peer role with a zero-value challenge — so there is nothing here
  * for these to be conformance evidence against. Listing them by name is what
  * keeps "every item accounted for" a real assertion rather than a comment: an
  * item the connector ADDS is in neither list and fails the build until someone
@@ -909,18 +627,13 @@ const PEER_ONLY_ITEMS = [
   'ack_rejected_reasons',
   'ack_absent',
   'ack_malformed',
-  'flush',
-  'flush_ack',
-  'claim_retransmit',
-  'claim_same_nonce_different_bytes',
-  'flush_requested',
+  'zero_value_challenge',
 ] as const;
 
-/** The items replayed below, against this client's own codec. */
+/** The items replayed below, against this client's own codec and signers. */
 const PEER_REPLAYED_ITEMS = [
-  'claim_evm',
-  'claim_digest_hex',
-  'claim_solana',
+  'voucher_evm',
+  'voucher_solana',
   'prepare',
   'prepare_no_claim',
   'fulfill_ack_accepted',
@@ -936,11 +649,6 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
     expect(new Set(Object.keys(peer))).toEqual(
       new Set([...PEER_REPLAYED_ITEMS, ...PEER_ONLY_ITEMS])
     );
-    expect(
-      PEER_REPLAYED_ITEMS.filter((i) =>
-        (PEER_ONLY_ITEMS as readonly string[]).includes(i)
-      )
-    ).toEqual([]);
   });
 
   // ── the OER PREPARE ──────────────────────────────────────────────────────
@@ -959,20 +667,14 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
     // The 19-byte GeneralizedTime, `YYYYMMDDHHMMSS.fffZ` — TOON's dialect, not
     // RFC 0027's 17-byte Interledger Timestamp (connector ADR 0063).
     expect(decoded.expiresAt.toISOString()).toBe(vector.prepare.expires_at);
-
-    // ...and re-encoding what we decoded reproduces the published bytes. A
-    // decoder that merely tolerated a non-canonical VarUInt would pass the
-    // first half and fail here.
     expect(bytesToHex(serializeIlpPrepare(decoded))).toBe(vector.http_body_hex);
   }
 
-  it('decodes and re-encodes the claim-bearing PREPARE byte-for-byte', () => {
+  it('decodes and re-encodes the voucher-bearing PREPARE byte-for-byte', () => {
     replayPrepare(peer.prepare);
   });
 
-  it('decodes and re-encodes the claimless PREPARE — the same packet', () => {
-    // "Claimless is legal", pinned rather than assumed: the packet bytes are
-    // identical, and only the carriage around them loses the claim.
+  it('decodes and re-encodes the voucherless PREPARE — the same packet', () => {
     replayPrepare(peer.prepare_no_claim);
     expect(peer.prepare_no_claim.http_body_hex).toBe(
       peer.prepare.http_body_hex
@@ -981,10 +683,7 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
     expect(peer.prepare_no_claim.http_headers).toEqual([]);
   });
 
-  it('carries the same OER packet inside the BTP MESSAGE frame', () => {
-    // `parseBtpMessage` must find the packet byte-identical to the HTTP body:
-    // the two carriages encode the same value, never two encodings of two
-    // values (peer-carriage-spec.md §10.1 I1).
+  it('carries the same OER packet, and the voucher, inside the BTP MESSAGE frame', () => {
     const frame = parseBtpMessage(hexToBytes(peer.prepare.btp_message_hex));
     expect(frame.type).toBe(BTPMessageType.MESSAGE);
     const data = frame.data as BTPMessageData;
@@ -992,16 +691,15 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
       peer.prepare.http_body_hex
     );
 
-    // ...and the claim rides as one `payment-channel-claim` protocolData entry
-    // whose payload is the claim JSON's raw UTF-8 — not base64, not a second
-    // serialization of it. (Base64 is the HTTP header's encoding of the same
-    // bytes; both are asserted here against the one `claim_json`.)
+    // The voucher rides as one `payment-channel-claim` protocolData entry whose
+    // payload is the claim JSON's raw UTF-8; the HTTP header is base64 of the
+    // same bytes.
     expect(data.protocolData).toHaveLength(1);
     const entry = data.protocolData[0];
     expect(entry?.protocolName).toBe('payment-channel-claim');
     expect(new TextDecoder().decode(entry?.data)).toBe(peer.prepare.claim_json);
     expect(bytesToHex(entry?.data ?? new Uint8Array(0))).toBe(
-      peer.claim_evm.btp_raw_hex
+      peer.voucher_evm.btp_raw_hex
     );
 
     const [headerName, headerValue] = peer.prepare.http_headers[0] ?? [];
@@ -1018,14 +716,11 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
     expect(vector.packet).toBe('fulfill');
     const packet = deserializeIlpPacket(hexToBytes(vector.packet_hex));
     if (packet.type !== ILPPacketType.FULFILL) throw new Error('not a FULFILL');
-
     expect(packet.fulfillment.length).toBe(32);
     expect(new TextDecoder().decode(packet.data)).toBe(
       'vector-fixture-fulfill-data'
     );
     expect(bytesToHex(serializeIlpFulfill(packet))).toBe(vector.packet_hex);
-
-    // The packet is byte-identical to the HTTP body: the ack rides beside it.
     expect(vector.http_body_hex).toBe(vector.packet_hex);
     expect(vector.http_status).toBe(200);
   });
@@ -1035,7 +730,6 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
     expect(vector.packet).toBe('reject');
     const packet = deserializeIlpPacket(hexToBytes(vector.packet_hex));
     if (packet.type !== ILPPacketType.REJECT) throw new Error('not a REJECT');
-
     expect(packet.code).toBe('T04');
     expect(packet.triggeredBy).toBe('g.toon.store-box');
     expect(packet.message).toBe('vector fixture reject');
@@ -1045,8 +739,7 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
 
   it('keeps accumulated_cost OUT of the REJECT and beside it', () => {
     // ADR 0011: the cost rides as a header / protocolData entry, never inside
-    // the packet. A decoder that expected it in the bytes would read a
-    // truncated `data` field and never notice.
+    // the packet.
     const vector = peer.reject_with_cost;
     expect(vector.accumulated_cost).toBe(4200);
     expect(
@@ -1063,17 +756,12 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
 
   it('carries the sealed gift wrap through the PREPARE unchanged', () => {
     const vector = peer.forwarded_data_unchanged;
-    // Byte-for-byte inside the packet — a forwarding hop never re-encodes,
-    // re-wraps or truncates a payload it holds no key for (§8.1).
     expect(vector.http_body_hex).toContain(vector.sealed_data_hex);
     const decoded = deserializeIlpPrepare(hexToBytes(vector.http_body_hex));
     expect(bytesToHex(decoded.data)).toBe(vector.sealed_data_hex);
-    // ...and it really is one of this file's own giftwrap request wraps, so
-    // `giftwrap`'s replay above is what proves these bytes are openable.
     expect(vector.sealed_data_hex).toBe(
       vectors.giftwrap?.cases[0]?.request_wrap_hex
     );
-    // The BTP carriage of the same packet carries the same bytes.
     expect(vector.btp_ilp_packet_prepare_hex).toContain(vector.sealed_data_hex);
     const frame = parseBtpMessage(
       hexToBytes(vector.btp_ilp_packet_prepare_hex)
@@ -1083,116 +771,78 @@ describe('peer_carriage — the ILP packet bytes, which are the client edge too'
     ).toBe(vector.http_body_hex);
   });
 
-  // ── the Solana balance proof (connector ADR 0053) ────────────────────────
+  // ── the vouchers a carriage carries ──────────────────────────────────────
 
-  it('reproduces the 96-byte Solana balance proof from the claim fields', () => {
-    const claim = JSON.parse(peer.claim_solana.json) as SolanaClaimMessage;
-    const rebuilt = buildBalanceProofMessage(
-      claim.programId,
-      claim.channelAccount,
-      BigInt(claim.nonce),
-      BigInt(claim.transferredAmount)
-    );
-    expect(bytesToHex(rebuilt)).toBe(peer.claim_solana.signed_message_hex);
-    expect(rebuilt.length).toBe(96);
+  it('signs the EVM voucher’s published digest', () => {
+    const v = peer.voucher_evm;
+    expect(
+      batchVoucherDigest(
+        v.chain_id,
+        prefix0x(v.channel_id_hex),
+        BigInt(v.max_claimable_amount)
+      )
+    ).toBe(prefix0x(v.digest_hex));
   });
 
-  it('binds the declared programId at offset 16 — the ADR 0053 binding', () => {
-    // The vector's own generator asserts this; asserting it here is what makes
-    // `programId` a field this client must SIGN under rather than merely
-    // report. A claim naming another program names a program no channel of the
-    // payer's lives under, and the bytes would not match.
-    const claim = JSON.parse(peer.claim_solana.json) as SolanaClaimMessage;
-    const message = hexToBytes(peer.claim_solana.signed_message_hex);
-    expect(new TextDecoder().decode(message.slice(0, 16))).toBe(
-      'TOON-BALPROOF-V2'
-    );
-    expect(bytesToHex(message.slice(16, 48))).toBe(
-      bytesToHex(base58Decode(claim.programId))
-    );
-    expect(bytesToHex(message.slice(48, 80))).toBe(
-      bytesToHex(base58Decode(claim.channelAccount))
-    );
+  it('reproduces the Solana voucher’s message and signature from its secret', () => {
+    const v = peer.voucher_solana;
+    expect(
+      bytesToHex(
+        buildSvmVoucherMessage(
+          v.channel_account_base58,
+          BigInt(v.max_claimable_amount)
+        )
+      )
+    ).toBe(v.signed_message_hex);
+    const privateKey = hexToBytes(v.signer_secret_hex);
+    const signer = { privateKey, publicKey: ed25519.getPublicKey(privateKey) };
+    expect(
+      signSvmVoucher(
+        signer,
+        v.channel_account_base58,
+        BigInt(v.max_claimable_amount)
+      ).signature
+    ).toBe(v.signature_base58);
   });
 
-  // ── the claim JSON shapes this client emits ──────────────────────────────
-
-  it('agrees with this client on which fields a claim carries', () => {
-    // The connector reads a claim field-by-field, so what the contract fixes is
-    // WHICH fields are present. A signer that dropped one, or invented one,
-    // would still produce valid JSON and a valid signature — and a claim the
-    // connector refuses structurally, before it ever looks at the signature.
-    const solana = JSON.parse(peer.claim_solana.json) as Record<
+  it('decodes each voucher to the same JSON on both carriages, with the fields this client writes', () => {
+    for (const v of [peer.voucher_evm, peer.voucher_solana]) {
+      expect(new TextDecoder().decode(hexToBytes(v.btp_raw_hex))).toBe(v.json);
+      expect(Buffer.from(v.http_base64, 'base64').toString('utf8')).toBe(
+        v.json
+      );
+      const parsed = JSON.parse(v.json) as Record<string, unknown>;
+      expect(parsed['scheme']).toBe('batch-settlement');
+    }
+    const evm = JSON.parse(peer.voucher_evm.json) as Record<string, unknown>;
+    const ours = evmVoucherClaim(
+      {
+        channelId: prefix0x(peer.voucher_evm.channel_id_hex),
+        maxClaimableAmount: '1',
+        signature: '0x00',
+      },
+      {
+        payer: '0x1',
+        payerAuthorizer: '0x1',
+        receiver: '0x2',
+        receiverAuthorizer: '0x2',
+        token: '0x3',
+        withdrawDelay: 1,
+        salt: '0x00',
+      }
+    );
+    expect(new Set(Object.keys(ours))).toEqual(new Set(Object.keys(evm)));
+    const solana = JSON.parse(peer.voucher_solana.json) as Record<
       string,
       unknown
     >;
-    const evm = JSON.parse(peer.claim_evm.json) as Record<string, unknown>;
-
-    const solanaSigner = new SolanaSigner(new Uint8Array(32).fill(3));
-    const solanaClaim = solanaSigner.buildClaimMessage(
-      {
-        channelId: String(solana['channelAccount']),
-        nonce: Number(solana['nonce']),
-        transferredAmount: BigInt(String(solana['transferredAmount'])),
-        lockedAmount: 0n,
-        locksRoot: '0x00',
-        signature: '0x' + '11'.repeat(64),
-        signerAddress: String(solana['signerPublicKey']),
-        chainId: 0,
-        tokenNetworkAddress: String(solana['programId']),
-        recipient: '',
-      },
-      String(solana['senderId'])
+    const oursSolana = solanaVoucherClaim(
+      { channelId: 'x', maxClaimableAmount: '1', expiresAt: 0, signature: 's' },
+      'k'
     );
-    expect(new Set(Object.keys(solanaClaim))).toEqual(
+    expect(new Set(Object.keys(oursSolana))).toEqual(
       new Set(Object.keys(solana))
     );
-
-    const evmClaim = EvmSigner.buildClaimMessage(
-      {
-        channelId: String(evm['channelId']),
-        nonce: Number(evm['nonce']),
-        transferredAmount: BigInt(String(evm['transferredAmount'])),
-        lockedAmount: BigInt(String(evm['lockedAmount'])),
-        locksRoot: String(evm['locksRoot']),
-        signature: String(evm['signature']),
-        signerAddress: String(evm['signerAddress']),
-        chainId: Number(evm['chainId']),
-        tokenNetworkAddress: String(evm['tokenNetworkAddress']),
-        recipient: '',
-      },
-      String(evm['senderId'])
-    );
-    expect(new Set(Object.keys(evmClaim))).toEqual(new Set(Object.keys(evm)));
-  });
-
-  it('repeats the EIP-712 digest carriage cannot touch', () => {
-    // `claim_digest_hex` is the same string as `claim.cases[0].digest_hex`,
-    // repeated rather than recomputed — the point being that wrapping a claim
-    // in either carriage changes nothing about what was signed.
-    expect(peer.claim_digest_hex).toBe(vectors.claim?.cases[0]?.digest_hex);
-    expect(peer.claim_evm.signed_message_hex).toBe('');
-  });
-
-  it('decodes each claim to the same wire values on both carriages', () => {
-    for (const claim of [peer.claim_evm, peer.claim_solana]) {
-      const fromBtp = new TextDecoder().decode(hexToBytes(claim.btp_raw_hex));
-      const fromHttp = Buffer.from(claim.http_base64, 'base64').toString(
-        'utf8'
-      );
-      expect(fromBtp).toBe(claim.json);
-      expect(fromHttp).toBe(claim.json);
-
-      const parsed = JSON.parse(claim.json) as Record<string, unknown>;
-      expect(parsed['blockchain']).toBe(claim.blockchain);
-      expect(
-        parsed[claim.blockchain === 'evm' ? 'channelId' : 'channelAccount']
-      ).toBe(claim.wire_channel_id);
-      expect(parsed['nonce']).toBe(claim.wire_nonce);
-      expect(String(parsed['transferredAmount'])).toBe(
-        String(claim.wire_cumulative_amount)
-      );
-    }
   });
 });
 
@@ -1389,5 +1039,191 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
         'underpayment',
       ])
     );
+  });
+});
+
+// ─── voucher_claim_state_challenge ──────────────────────────────────────────
+
+describe('voucher_claim_state_challenge — proving control of a channel without moving value', () => {
+  const section = vectors.voucher_claim_state_challenge!;
+
+  it.each(section.evm.map((c) => [c.name, c] as const))(
+    '%s',
+    async (_name, c) => {
+      expect(
+        evmChallengeDigest(
+          c.chain_id,
+          prefix0x(c.channel_id_hex),
+          BigInt(c.expires)
+        )
+      ).toBe(prefix0x(c.digest_hex));
+      const signer = privateKeyToAccount(prefix0x(c.signer_secret_hex));
+      expect(signer.address.toLowerCase()).toBe(prefix0x(c.signer_address_hex));
+      const published = JSON.parse(c.entry_json) as {
+        channelConfig: Record<string, string | number>;
+      };
+      const cc = published.channelConfig;
+      const entry = await signEvmChallenge(
+        signer,
+        c.chain_id,
+        {
+          payer: String(cc['payer']),
+          payerAuthorizer: String(cc['payerAuthorizer']),
+          receiver: String(cc['receiver']),
+          receiverAuthorizer: String(cc['receiverAuthorizer']),
+          token: String(cc['token']),
+          withdrawDelay: Number(cc['withdrawDelay']),
+          salt: String(cc['salt']) as Hex,
+        },
+        prefix0x(c.channel_id_hex),
+        BigInt(c.expires)
+      );
+      expect(JSON.stringify(entry)).toBe(c.entry_json);
+      // Only the channel's own voucher signer's challenge verifies.
+      expect(c.signer_address_hex === c.voucher_signer_address_hex).toBe(
+        c.signature_verifies
+      );
+    }
+  );
+
+  it.each(section.solana.map((c) => [c.name, c] as const))('%s', (_name, c) => {
+    expect(
+      bytesToHex(
+        solanaChallengeMessage(c.channel_account_base58, BigInt(c.expires))
+      )
+    ).toBe(c.signed_message_hex);
+    const privateKey = hexToBytes(c.signer_secret_hex);
+    const signer = { privateKey, publicKey: ed25519.getPublicKey(privateKey) };
+    const entry = signSolanaChallenge(
+      signer,
+      c.channel_account_base58,
+      BigInt(c.expires)
+    );
+    expect(JSON.stringify(entry)).toBe(c.entry_json);
+    expect(c.signer_public_key_base58 === c.authorized_signer_base58).toBe(
+      c.signature_verifies
+    );
+  });
+});
+
+// ─── client_auth_channel_challenge ──────────────────────────────────────────
+
+describe('client_auth_channel_challenge — the BTP auth channel declaration', () => {
+  const section = vectors.client_auth_channel_challenge!;
+
+  it('bounds a challenge’s lifetime the way the connector does', () => {
+    expect(section.max_lifetime_secs).toBe(
+      CHANNEL_CHALLENGE_MAX_LIFETIME_SECONDS
+    );
+    for (const c of [...section.evm, ...section.solana]) {
+      const inWindow =
+        c.expires > c.now && c.expires - c.now <= section.max_lifetime_secs;
+      expect(inWindow, c.name).toBe(c.accepted);
+    }
+  });
+
+  it('wraps each challenge as the auth entry’s channelChallenge', () => {
+    for (const c of [...section.evm, ...section.solana]) {
+      const auth = JSON.parse(c.auth_entry_json) as Record<string, unknown>;
+      expect(auth['channelChallenge']).toEqual(JSON.parse(c.challenge_json));
+      expect(JSON.parse(c.challenge_json)).toMatchObject({
+        scheme: 'batch-settlement',
+      });
+    }
+  });
+
+  it('reproduces the accepted EVM challenge byte for byte', async () => {
+    const c = section.evm.find((x) => x.accepted)!;
+    const published = JSON.parse(c.challenge_json) as {
+      channelId: Hex;
+      channelConfig: Record<string, string | number>;
+    };
+    const cc = published.channelConfig;
+    const entry = await signEvmChallenge(
+      privateKeyToAccount(ANVIL_ACCOUNT_1_KEY),
+      84532,
+      {
+        payer: String(cc['payer']),
+        payerAuthorizer: String(cc['payerAuthorizer']),
+        receiver: String(cc['receiver']),
+        receiverAuthorizer: String(cc['receiverAuthorizer']),
+        token: String(cc['token']),
+        withdrawDelay: Number(cc['withdrawDelay']),
+        salt: String(cc['salt']) as Hex,
+      },
+      published.channelId,
+      BigInt(c.expires)
+    );
+    expect(JSON.stringify(entry)).toBe(c.challenge_json);
+  });
+});
+
+// ─── toon_channel_refused / claim_state_toon_channel_refused ───────────────
+
+describe('the retired toon-channel shapes — which this client never produces', () => {
+  it('names every refused claim and claim-state entry for having no batch-settlement scheme', () => {
+    for (const c of vectors.toon_channel_refused!.cases) {
+      const claim = JSON.parse(c.claim_json) as Record<string, unknown>;
+      expect(
+        claim['scheme'] === undefined || claim['scheme'] === 'toon-channel',
+        c.name
+      ).toBe(true);
+    }
+    for (const c of vectors.claim_state_toon_channel_refused!.cases) {
+      const entry = JSON.parse(c.request_entry_json) as Record<string, unknown>;
+      expect(
+        entry['scheme'] === undefined || entry['scheme'] === 'toon-channel',
+        c.name
+      ).toBe(true);
+      expect(JSON.parse(c.response_entry_json)).toMatchObject({
+        ok: false,
+        error: 'toon-channel-refused',
+      });
+    }
+  });
+
+  it('always writes scheme batch-settlement, on every claim and challenge it builds', async () => {
+    const config = {
+      payer: '0x1',
+      payerAuthorizer: '0x1',
+      receiver: '0x2',
+      receiverAuthorizer: '0x2',
+      token: '0x3',
+      withdrawDelay: 1,
+      salt: '0x00' as Hex,
+    };
+    const key = new Uint8Array(32).fill(1);
+    const solanaSigner = {
+      privateKey: key,
+      publicKey: ed25519.getPublicKey(key),
+    };
+    const built = [
+      evmVoucherClaim(
+        { channelId: '0x00', maxClaimableAmount: '1', signature: '0x00' },
+        config
+      ),
+      solanaVoucherClaim(
+        {
+          channelId: 'x',
+          maxClaimableAmount: '1',
+          expiresAt: 0,
+          signature: 's',
+        },
+        'k'
+      ),
+      await signEvmChallenge(
+        privateKeyToAccount(ANVIL_ACCOUNT_1_KEY),
+        1,
+        config,
+        `0x${'00'.repeat(32)}`,
+        1n
+      ),
+      signSolanaChallenge(
+        solanaSigner,
+        'EBBduiozK9vBCemy4FcAjhVkby2FLPstxZxxN7jpgxtr',
+        1n
+      ),
+    ];
+    for (const entry of built) expect(entry['scheme']).toBe('batch-settlement');
   });
 });

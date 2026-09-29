@@ -1,24 +1,28 @@
 {
-  "$comment": "Where the vendored wire-vectors.json came from. Machine-read by wire-vectors.test.ts (integrity) and scripts/refresh-wire-vectors.mjs (drift). The provenance fields are written by that script — hand-edit none of them. The two 'sections' lists are the exception: they describe THIS repo's harness, not the source file, so they are maintained by hand alongside wire-vectors.test.ts, which asserts they partition every section the file carries.",
+  "$comment": "Where the vendored wire-vectors.json came from. Machine-read by wire-vectors.test.ts (integrity) and scripts/refresh-wire-vectors.mjs (drift). The provenance fields are written by that script \u2014 hand-edit none of them. The two 'sections' lists are the exception: they describe THIS repo's harness, not the source file, so they are maintained by hand alongside wire-vectors.test.ts, which asserts they partition every section the file carries.",
   "sourceRepo": "toon-protocol/connector",
   "sourcePath": "vectors/wire-vectors.json",
   "sourceRawUrl": "https://raw.githubusercontent.com/toon-protocol/connector/{ref}/vectors/wire-vectors.json",
-  "connectorCommit": "f4f5490156c8050e9e38c644a074b9ce84cdd402",
-  "connectorCommitDate": "2026-09-25T18:27:29Z",
-  "connectorCommitSubject": "x402 batch-settlement at the client edge (ADR 0074, epic #1349) (#1355)",
-  "schemaVersion": 6,
-  "sha256": "18853a24e12661fe16e57f551567e0310ceb247f2fa40f805078fe8353426c8c",
+  "connectorCommit": "f821c2206fa4a72ba5e68d22866859462a3384b9",
+  "connectorCommitDate": "2026-09-28T17:33:56Z",
+  "connectorCommitSubject": "vectors: add the client BTP auth channelChallenge frame and claim-state toon-channel-refused (#1408) (#1409)",
+  "schemaVersion": 7,
+  "sha256": "fa73052fd66400672d837537bb362daf661da40aba5f78934570e186c7c1e298",
   "sectionsReplayed": [
     "envelope",
     "giftwrap",
     "fulfilment",
-    "claim",
     "peer_carriage",
-    "channel_control_declaration",
     "charge",
-    "claim_voucher"
+    "claim_voucher",
+    "voucher_claim_state_challenge",
+    "client_auth_channel_challenge",
+    "toon_channel_refused",
+    "claim_state_toon_channel_refused"
   ],
-  "sectionsPresentNotYetReplayed": [],
+  "sectionsPresentNotYetReplayed": [
+    "payout_voucher"
+  ],
   "source": "github",
   "dirty": false
 }

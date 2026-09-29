@@ -80,41 +80,33 @@ signal, not a flake. Commit `wire-vectors.json` and
 
 ## Sections
 
-`schema_version` is `6`. The file carries eight sections and this repo replays
-**all eight**:
+`schema_version` is `7`: connector ADR 0075, under which every claim is an x402
+`batch-settlement` voucher. The file carries eleven sections. This repo replays
+ten of them, and declares the eleventh:
 
-- `envelope` — **replayed** (toon-client#448): 5 valid round-trips + 8 rejection
-  cases.
-- `giftwrap` — **replayed** (toon-client#449), against `src/wire/giftwrap.ts`:
-  the pinned `request_wrap_hex` and `response_wrap_hex` are reproduced
-  byte-for-byte from each case's pinned ephemeral secret, shared secret and
-  nonces, and re-opened with the fixture identity secret. The HKDF `info`
-  strings and the wrap framing are recorded in `src/wire/giftwrap.ts`'s module
-  comment, cited to `crates/connector-signer/src/giftwrap.rs`, and are also
-  documented in the connector's own `vectors/README.md` (connector#588).
-- `fulfilment` — **replayed** (toon-client#449): both the matching and the
-  non-matching case, including that the condition a sender mints is `sha256` of
-  the derived fulfilment
-  (`crates/connector-domain/src/condition.rs`'s `derive_condition`).
-- `claim` — **replayed** (connector#588 added it): the EIP-712 `BalanceProof` of
-  [connector ADR
-  0024](https://github.com/toon-protocol/connector/blob/main/docs/adr/0024-peer-wire-claims-sign-the-eip-712-balance-proof.md),
-  replayed against `src/signing/evm-signer.ts`. See below.
-- `peer_carriage` — **replayed in part** (connector#758). See below.
-- `channel_control_declaration` — **replayed** (connector#795 added it, toon-
-  client#540): the BTP auth greeting's `channelId`/`expires`/`signature`
-  declaration, replayed against `src/signing/evm-signer.ts`. See below.
-- `charge` — **replayed** (connector#1347 added it): the metered price
-  `base + per_kib × ceil(bytes / 1024)`, saturating at `u64::MAX`, replayed
-  against `chargeFor` in `src/connector/self-description.ts`.
-- `claim_voucher` — **replayed** (connector#1347, ADR 0074): the x402
-  `batch-settlement` voucher. The EVM `channelId`, digest and signature are
-  reproduced by `src/channel/batch-settlement/evm.ts`, and the Solana 50-byte
-  message by `svm.ts`, with its signature verified. `amount_only_watermark` and
-  `invalid` are the connector's verdicts on a voucher it was handed, so the
-  client replays only the rules it must obey when building one.
+- `envelope`, `giftwrap`, `fulfilment` are **replayed**. They are the sealed
+  exchange, unchanged by ADR 0075. See below.
+- `peer_carriage` is **replayed in part**. The OER PREPARE, FULFILL and REJECT
+  bytes and the voucher's two carriage spellings are the client edge's wire as
+  much as the peer wire's. The EVM voucher's digest is checked, and the Solana
+  voucher is re-signed from its secret. The ack, peer-role challenge and
+  malformed-ack items are peer-only, and are listed by name in `PEER_ONLY_ITEMS`.
+- `charge` is **replayed** against `chargeFor`.
+- `claim_voucher` is **replayed** against `src/channel/batch-settlement/`.
+- `voucher_claim_state_challenge` is **replayed**. The EVM digest and the Solana
+  message are rebuilt, and each entry is re-signed from its secret and matched
+  byte for byte by `src/channel/batch-settlement/challenge.ts`.
+- `client_auth_channel_challenge` is **replayed**. The 300 s lifetime window is
+  checked, the auth entry wraps the challenge, and the accepted EVM challenge
+  is re-signed byte for byte.
+- `toon_channel_refused` and `claim_state_toon_channel_refused` are
+  **replayed** as what this client must never produce: every refused shape
+  lacks `scheme: "batch-settlement"`, and every claim and challenge this
+  client builds carries it.
+- `payout_voucher` is **present, not replayed**. It is what a connector pays a
+  client with, and this client is payer-only.
 
-`loadWireVectors()` in `load.ts` exposes all eight, so adding a section to the
+`loadWireVectors()` in `load.ts` exposes all of them, so adding a section to the
 harness is a new `describe` block, not a restructure — which is exactly how
 `giftwrap`, `fulfilment`, `channel_control_declaration` and `peer_carriage`
 arrived. The labels are enforced, not decorative: `WIRE_VECTOR_SECTIONS` in

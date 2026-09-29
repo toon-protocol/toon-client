@@ -71,36 +71,6 @@ export interface EnvelopeInvalidVector {
 }
 
 /**
- * A signed EIP-712 `BalanceProof` (connector ADR 0024) — the digest and
- * signature scheme both the peer wire and the client edge are checked against.
- *
- * Integer fields are JSON numbers in the file; `nonce`, `transferred_amount`
- * and `locked_amount` are `uint256` on the wire, so widen them to `bigint`
- * before hashing. Hex fields carry no `0x` prefix (see `hexToBytes`).
- */
-export interface ClaimVector {
-  name: string;
-  /** EIP-712 domain `chainId` — per channel, never a node-wide default. */
-  chain_id: number;
-  /** EIP-712 domain `verifyingContract`, 20 bytes. */
-  token_network_address_hex: string;
-  /** The channel's on-chain `bytes32` identifier. */
-  channel_id_hex: string;
-  nonce: number;
-  transferred_amount: number;
-  /** Always 0 on the wire today (ADR 0004), still part of the hashed struct. */
-  locked_amount: number;
-  /** Always zero today, still part of the hashed struct. */
-  locks_root_hex: string;
-  /** `keccak256(0x1901 || domainSeparator || structHash)`. */
-  digest_hex: string;
-  signer_secret_hex: string;
-  signer_address_hex: string;
-  /** 65 bytes, `r || s || recovery_id`; `recovery_id` is raw 0/1, not 27/28. */
-  signature_hex: string;
-}
-
-/**
  * A sealed request/response pair (connector ADR 0018). Every value a real seal
  * draws at random is pinned, so `request_wrap_hex` and `response_wrap_hex` are
  * reproducible byte-for-byte rather than merely round-trippable — a seal that
@@ -152,67 +122,6 @@ export interface FulfilmentVector {
   shared_secret_hex: string;
   /** `HKDF-SHA256(shared_secret, "toon-giftwrap-fulfillment")`. */
   fulfilment_hex: string;
-}
-
-/**
- * The BTP auth greeting's `channelId`/`expires`/`signature` declaration
- * (connector#795, client-edge-spec.md §1.9 step 1), replayed against
- * `EvmSigner.signClaimStateChallenge`. The signature scheme is the SAME
- * domain-separated `ClaimStateChallenge` EIP-712 type `POST /ilp/claim-state`
- * uses (see `signClaimStateChallenge`'s doc comment) — deliberately distinct
- * from `claim`'s `BalanceProof` typehash above, so the two can never collide.
- *
- * Unlike every other section, `channel_id_hex` and `signature_hex` carry a
- * `0x` prefix here — the literal strings the auth entry's JSON body carries,
- * not this file's usual internal byte encoding.
- */
-export interface ChannelControlDeclarationVector {
-  name: string;
-  peer_id: string;
-  chain_id: number;
-  token_network_address_hex: string;
-  /** `0x`-prefixed, unlike this file's other hex fields. */
-  channel_id_hex: string;
-  expires: number;
-  /** What `signature_hex` must recover to for `signature_verifies` to hold. */
-  counterparty_address_hex: string;
-  signer_secret_hex: string;
-  signer_address_hex: string;
-  digest_hex: string;
-  /** `0x`-prefixed, unlike this file's other hex fields. */
-  signature_hex: string;
-  /** The auth entry's full JSON body — one valid serialization of it, not
-   * byte-replayed here; see `wire-vectors.test.ts` for why. */
-  auth_json: string;
-  btp_message_hex: string;
-  signature_verifies: boolean;
-}
-
-/**
- * A peer claim, in both carriages, plus what it decodes to in-process.
- *
- * `json` is the plain string a real interaction carries; `btp_raw_hex` is that
- * same string's raw UTF-8 (the BTP `protocolData` entry payload) and
- * `http_base64` is base64 of the same bytes (the HTTP header value) — never a
- * second encoding of a different value.
- *
- * `signed_message_hex` is the bytes the claim's `signature` actually covers:
- * empty for EVM (whose signature covers an EIP-712 digest, pinned as
- * `claim_digest_hex`), and for Solana the 96-byte ADR 0053 balance proof.
- */
-export interface PeerClaimVector {
-  name: string;
-  blockchain: 'evm' | 'solana';
-  /** Solana: the 96-byte ADR 0053 message. EVM: empty (see `claim_digest_hex`). */
-  signed_message_hex: string;
-  json: string;
-  btp_raw_hex: string;
-  http_base64: string;
-  /** The channel id both carriage decoders must agree the claim names. */
-  wire_channel_id: string;
-  wire_nonce: number;
-  wire_cumulative_amount: number;
-  wire_signature_hex: string;
 }
 
 /** The decoded values a pinned OER `Prepare` must produce, and re-encode from. */
@@ -270,6 +179,77 @@ export interface PeerForwardedDataVector {
   http_body_hex: string;
 }
 
+/** A voucher as a carriage carries it: the JSON, and its BTP and HTTP spellings. */
+interface PeerVoucherCarriage {
+  name: string;
+  max_claimable_amount: number;
+  json: string;
+  /** The claim JSON's raw UTF-8, as the BTP protocolData entry carries it. */
+  btp_raw_hex: string;
+  /** The same bytes, base64, as the HTTP claim header carries them. */
+  http_base64: string;
+}
+
+export interface PeerVoucherEvmVector extends PeerVoucherCarriage {
+  chain_id: number;
+  verifying_contract_hex: string;
+  channel_config: VoucherChannelConfigVector;
+  channel_id_hex: string;
+  digest_hex: string;
+  signer_address_hex: string;
+  signature_hex: string;
+}
+
+export interface PeerVoucherSolanaVector extends PeerVoucherCarriage {
+  channel_account_base58: string;
+  authorized_signer_base58: string;
+  signer_secret_hex: string;
+  signed_message_hex: string;
+  signature_base58: string;
+}
+
+/** A voucher claim-state challenge on EVM (ADR 0075). */
+export interface EvmChallengeVector {
+  name: string;
+  chain_id: number;
+  verifying_contract_hex: string;
+  channel_id_hex: string;
+  expires: number;
+  voucher_signer_address_hex: string;
+  signer_secret_hex: string;
+  signer_address_hex: string;
+  digest_hex: string;
+  signature_hex: string;
+  signature_verifies: boolean;
+  entry_json: string;
+}
+
+/** A voucher claim-state challenge on Solana; the signature is base64. */
+export interface SolanaChallengeVector {
+  name: string;
+  channel_account_base58: string;
+  expires: number;
+  authorized_signer_base58: string;
+  signer_secret_hex: string;
+  signer_public_key_base58: string;
+  signed_message_hex: string;
+  signature_base64: string;
+  signature_verifies: boolean;
+  entry_json: string;
+}
+
+/** The BTP auth frame's `channelChallenge`, judged at `now`. */
+export interface AuthChallengeVector {
+  name: string;
+  blockchain: 'evm' | 'solana';
+  now: number;
+  expires: number;
+  accepted: boolean;
+  challenge_json: string;
+  auth_entry_json: string;
+  btp_message_hex: string;
+}
+
 /**
  * The connector-to-connector peer wire (connector#758, `peer-carriage-spec.md`
  * §10).
@@ -284,10 +264,8 @@ export interface PeerForwardedDataVector {
  * merely unlooked-at.
  */
 export interface PeerCarriageVectors {
-  claim_evm: PeerClaimVector;
-  /** The same string as `claim.cases[0].digest_hex` — carriage cannot touch it. */
-  claim_digest_hex: string;
-  claim_solana: PeerClaimVector;
+  voucher_evm: PeerVoucherEvmVector;
+  voucher_solana: PeerVoucherSolanaVector;
   prepare: PeerPrepareVector;
   prepare_no_claim: PeerPrepareVector;
   fulfill_ack_accepted: PeerResponseVector;
@@ -295,7 +273,6 @@ export interface PeerCarriageVectors {
   ack_rejected_reasons: PeerResponseVector[];
   reject_with_cost: PeerResponseVector;
   ack_absent: PeerResponseVector;
-  flush_ack: PeerResponseVector;
   forwarded_data_unchanged: PeerForwardedDataVector;
   /** The peer-only items, typed loosely — see `PEER_ONLY_ITEMS`. */
   [item: string]: unknown;
@@ -402,19 +379,39 @@ export interface WireVectors {
   giftwrap?: GiftWrapVectors;
   /** Replayed against `src/wire/giftwrap.ts` (toon-client#449). */
   fulfilment?: { cases: FulfilmentVector[] };
-  /** Replayed against `src/signing/evm-signer.ts`. */
-  claim?: { cases: ClaimVector[] };
   /**
    * Partly replayed: the OER packet bytes and the Solana balance proof it
    * pins are the client edge's wire too. See {@link PeerCarriageVectors}.
    */
   peer_carriage?: PeerCarriageVectors;
-  /** Replayed against `src/signing/evm-signer.ts`. */
-  channel_control_declaration?: { cases: ChannelControlDeclarationVector[] };
   /** Replayed against `src/connector/self-description.ts`'s `chargeFor`. */
   charge?: { cases: ChargeVector[] };
   /** Replayed against `src/channel/batch-settlement/` (connector ADR 0074). */
   claim_voucher?: ClaimVoucherVectors;
+  /** Replayed against `src/channel/batch-settlement/challenge.ts` (ADR 0075). */
+  voucher_claim_state_challenge?: {
+    evm: EvmChallengeVector[];
+    solana: SolanaChallengeVector[];
+  };
+  /** The BTP auth `channelChallenge`, replayed against the same module. */
+  client_auth_channel_challenge?: {
+    now: number;
+    max_lifetime_secs: number;
+    evm: AuthChallengeVector[];
+    solana: AuthChallengeVector[];
+  };
+  /** Claims the connector refuses by name; this client must never build one. */
+  toon_channel_refused?: { cases: { name: string; claim_json: string }[] };
+  /** Claim-state entries refused by name; likewise never built here. */
+  claim_state_toon_channel_refused?: {
+    cases: {
+      name: string;
+      request_entry_json: string;
+      response_entry_json: string;
+    }[];
+  };
+  /** What a connector pays a client with; not replayed — this client is payer-only. */
+  payout_voucher?: unknown;
 }
 
 /**
@@ -426,11 +423,14 @@ export const WIRE_VECTOR_SECTIONS = [
   'envelope',
   'giftwrap',
   'fulfilment',
-  'claim',
   'peer_carriage',
-  'channel_control_declaration',
   'charge',
   'claim_voucher',
+  'voucher_claim_state_challenge',
+  'toon_channel_refused',
+  'payout_voucher',
+  'client_auth_channel_challenge',
+  'claim_state_toon_channel_refused',
 ] as const;
 
 // ─── Provenance ─────────────────────────────────────────────────────────────
