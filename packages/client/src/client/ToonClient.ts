@@ -2,7 +2,7 @@
  * The client: one object that knows a connector, holds the keys, and pays.
  *
  * Deliberately thin. It wires — {@link ./send.js!send} performs a request,
- * {@link ./channel-facade.js!ClientChannelFacade} owns the channel and
+ * {@link ./channel-facade.js!ClientChannelFacade} owns the channels and
  * {@link ./wallet-facade.js!ClientWalletFacade} owns the wallet — and what it
  * contributes is the small set of decisions that must be made once and shared:
  * which chain, which carriage, which key labels a claim, and where the cached
@@ -14,19 +14,18 @@
  * makes exactly **one** free network call: `GET /ilp`, the node's
  * self-description. That call is the whole of bootstrapping — there is no
  * discovery, no relay and no peer list (connector ADR 0050) — and it is what
- * settles the chain to settle on, since the node's own `settlements[]` is the
+ * settles the chain to pay on, since the node's own `batchSettlements[]` is the
  * authority (`self-description-spec.md` ND-07) and a preset is not.
  *
  * It does **not** touch a chain. No RPC connection is opened, no channel is read
- * and certainly none is opened: locking collateral is a transaction the user
- * pays gas for, and a constructor is not where that belongs. The first chain
- * access happens when something explicitly asks for it — `channel.open()`, or a
- * `send()` on a client left with the default `autoOpenChannel: true`.
+ * and certainly none is opened: a deposit locks the user's money, and a
+ * constructor is not where that belongs. The first chain access happens when
+ * something explicitly asks for it — `channel.open()`, or a `send()` on a client
+ * left with the default `autoOpenChannel: true`.
  */
 import { ConnectorEdgeClient, decodeConnectorPublicKey } from '../connector/ConnectorEdgeClient.js';
 import type {
   ClaimStateOk,
-  ClaimStateRequestEntry,
   ClaimStateResult,
   ConnectorRoutePrice,
 } from '../connector/ConnectorEdgeClient.js';
@@ -41,10 +40,6 @@ import { HttpIlpClient } from '../http/HttpIlpClient.js';
 import { BtpRuntimeClient, type BtpChannelDeclaration } from '../btp/BtpRuntimeClient.js';
 import { BtpPaidWriteTransport } from '../btp/BtpPaidWriteTransport.js';
 
-import { ChannelManager } from '../channel/ChannelManager.js';
-import { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
-import { EvmSigner } from '../signing/evm-signer.js';
-import { SolanaSigner } from '../signing/solana-signer.js';
 import { sealExchange } from '../wire/sealed-exchange.js';
 import { toBase64 } from '../utils/binary.js';
 import { resolveConfig, addressFor, type ResolvedConfig } from './config.js';
@@ -57,12 +52,13 @@ import type { ContractReader } from '../channel/batch-settlement/evm.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { base58Decode } from '../utils/base58.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
-import {
-  ClientBatchSettlementFacade,
-  type BatchSettlementFacade,
-} from './batch-settlement-facade.js';
 import { send, type PaidWriteTransport, type SendContext } from './send.js';
-import { ChainUnavailableError, ConfigError, chainUnavailableMessage } from './errors.js';
+import {
+  ChainUnavailableError,
+  ChannelNotOpenError,
+  ConfigError,
+  chainUnavailableMessage,
+} from './errors.js';
 import type {
   ChainKind,
   ChannelFacade,
@@ -75,8 +71,11 @@ import type {
   WalletFacade,
 } from './types.js';
 
-/** How long a claim-state challenge signature stays valid, in seconds. */
-const CLAIM_STATE_CHALLENGE_TTL = 300;
+/**
+ * How long a voucher claim-state challenge stays valid, in seconds: well inside
+ * the 300 s a connector allows a BTP `channelChallenge`.
+ */
+const CHALLENGE_TTL_SECONDS = 120;
 
 export class ToonClient implements ToonClientLike {
   readonly connector: string;
@@ -84,19 +83,13 @@ export class ToonClient implements ToonClientLike {
   readonly identity: ToonIdentity;
   readonly channel: ChannelFacade;
   readonly wallet: WalletFacade;
-  /**
-   * The x402 `batch-settlement` channels this client pays from — listing them,
-   * and leaving them. `undefined` unless the client was created with
-   * `batchSettlement` (connector ADR 0074).
-   */
-  readonly batchSettlement: BatchSettlementFacade | undefined;
 
   private readonly config: ResolvedConfig;
   private readonly edge: ConnectorEdgeClient;
-  private readonly channels: ChannelManager;
-  private readonly channelFacade: ClientChannelFacade;
+  private readonly manager: BatchChannelManager;
+  /** Where every paid packet's voucher comes from. */
+  private readonly payer: BatchSettlementPayer;
   private description: NodeSelfDescription;
-  private onChain: OnChainChannelClient | undefined;
   /**
    * One live carriage per kind, not one per client.
    *
@@ -112,13 +105,10 @@ export class ToonClient implements ToonClientLike {
   private btpSession: BtpRuntimeClient | undefined;
   private readonly hiddenService: { close(): Promise<void> } | undefined;
   private closed = false;
-  /** Where vouchers come from, when the caller opted in to x402 `batch-settlement`. */
-  private readonly vouchers: BatchSettlementPayer | undefined;
 
   private constructor(init: {
     config: ResolvedConfig;
     edge: ConnectorEdgeClient;
-    channels: ChannelManager;
     description: NodeSelfDescription;
     chain: ChainKind;
     senderId: string;
@@ -128,7 +118,6 @@ export class ToonClient implements ToonClientLike {
     this.config = init.config;
     this.hiddenService = init.hiddenService;
     this.edge = init.edge;
-    this.channels = init.channels;
     this.description = init.description;
     this.chain = init.chain;
     this.connector = init.config.connector;
@@ -140,16 +129,46 @@ export class ToonClient implements ToonClientLike {
       senderId: init.senderId,
     };
 
-    this.channelFacade = new ClientChannelFacade({
-      config: init.config,
-      channels: init.channels,
-      describe: () => this.describe(),
-      onChainClient: () => this.onChainClient(),
+    this.manager = new BatchChannelManager(init.config.channelStore);
+    const chains = chainAccess(init.config);
+    this.payer = new BatchSettlementPayer({
+      connector: init.config.connector,
+      manager: this.manager,
+      deposit: init.config.deposit,
+      ...(chains.evm !== undefined
+        ? {
+            evm: {
+              account: chains.evm.account,
+              ...(init.config.facilitatorUrl !== undefined
+                ? { facilitatorUrl: init.config.facilitatorUrl }
+                : {}),
+              depositMethod: init.config.depositMethod,
+              reader: lazyEvmReader(init.config),
+            },
+          }
+        : {}),
+      ...(chains.solana !== undefined ? { solana: chains.solana } : {}),
+      fetch: init.config.fetch,
+      autoOpen: init.config.autoOpenChannel,
+      connectorWatermark: (entry) => this.connectorWatermark(entry),
     });
-    this.channel = this.channelFacade;
-    const batch = batchSettlement(init.config, init.chain, () => this.describe());
-    this.vouchers = batch?.payer;
-    this.batchSettlement = batch?.facade;
+    this.channel = new ClientChannelFacade({
+      connector: init.config.connector,
+      payer: this.payer,
+      chain: init.chain,
+      manager: this.manager,
+      describe: () => this.describe(),
+      ...(chains.evm !== undefined
+        ? {
+            evm: {
+              privateKey: chains.evm.privateKey,
+              rpcUrl: init.config.rpcUrls.evm,
+              rpcDispatcher: init.config.chainRpc?.evm.dispatcher,
+            },
+          }
+        : {}),
+      ...(chains.solana !== undefined ? { solana: chains.solana } : {}),
+    });
     this.wallet = new ClientWalletFacade({
       config: init.config,
       describe: () => this.describe(),
@@ -186,33 +205,14 @@ export class ToonClient implements ToonClientLike {
     if (senderId === undefined) {
       throw new ConfigError(
         `This client holds no ${chain} key, so it has no address to label its ` +
-          'claims with. Supply a `mnemonic`, the raw key for that chain, or an ' +
+          'vouchers with. Supply a `mnemonic`, the raw key for that chain, or an ' +
           'explicit `senderId`.'
-      );
-    }
-
-    const channels = new ChannelManager(
-      resolved.identity.evm ? new EvmSigner(resolved.identity.evm.privateKey) : undefined,
-      resolved.channelStore,
-      {
-        initialDeposit: resolved.deposit.toString(),
-        settlementTimeout: resolved.settlementTimeout,
-      }
-    );
-    if (resolved.identity.solana) {
-      channels.registerChainSigner(
-        'solana',
-        new SolanaSigner(
-          resolved.identity.solana.secretKey.slice(0, 32),
-          resolved.identity.solana.publicKey
-        )
       );
     }
 
     return new ToonClient({
       config: resolved,
       edge,
-      channels,
       description,
       chain,
       senderId,
@@ -272,23 +272,26 @@ export class ToonClient implements ToonClientLike {
    * Learn what a path costs without buying the work behind it
    * (`client-edge-spec.md` §1.6, connector ADR 0011).
    *
-   * A probe is free to traverse but not free to make: it must carry a claim on a
-   * channel this connector recognises, because free traversal offered to anyone
-   * is an amplifier. The claim **identifies rather than pays** — it is validated
-   * in full against a price of zero, so possession of the channel is proven and a
-   * replay is still refused, but no value need advance.
+   * A probe is free to traverse but not free to make: it must be identified by
+   * a voucher on a channel this connector recognises, because free traversal
+   * offered to anyone is an amplifier. It **identifies rather than pays**: the
+   * latest voucher on the channel, resent byte for byte, is a retransmission
+   * the connector accepts and records nothing for.
    *
-   * @throws {ChannelNotOpenError} there is no channel to identify with.
+   * @throws {ChannelNotOpenError} this client has not yet paid on a channel it
+   *   could identify with.
    */
   async probe(
     destination: string
   ): Promise<{ accumulatedCost: bigint; code: string; message: string }> {
-    const channelId = await this.channelFacade.ensure(this.description);
-    // Zero value, fresh nonce: the gate's freshness check still applies, so the
-    // nonce must advance even though the cumulative does not.
-    const proof = await this.channels.signBalanceProof(channelId, 0n);
-    const signer = this.channels.getSignerForChannel(channelId);
-    const claim = signer.buildClaimMessage(proof, this.identity.senderId);
+    const current = await this.channel.current();
+    const latest = current && this.manager.lastVoucher(current.channel.channelId);
+    if (latest === undefined) {
+      throw new ChannelNotOpenError(
+        `a probe identifies with the latest voucher on a channel, and this client has not yet ` +
+          `paid ${this.connector} on one — pay for one request first`
+      );
+    }
 
     const key = await this.sealKey(this.description);
     const exchange = sealExchange({ method: 'GET', target: '', headers: [], body: new Uint8Array(0) }, key);
@@ -302,7 +305,7 @@ export class ToonClient implements ToonClientLike {
         expectedFulfillment: exchange.fulfillment,
         timeout: this.config.timeoutMs,
       },
-      claim as unknown as Record<string, unknown>
+      JSON.parse(latest) as Record<string, unknown>
     );
     return {
       accumulatedCost: result.accumulatedCost ?? 0n,
@@ -376,40 +379,40 @@ export class ToonClient implements ToonClientLike {
    * The connector's OWN watermark for channels this client controls
    * (`POST /ilp/claim-state`, `client-edge-spec.md` §1.10).
    *
-   * The counterpart to `channel.state()`, which reports what this client has
-   * signed. The two agree unless a claim was signed and never accepted, and this
-   * is how a caller finds that out — the connector's figure is the one that
-   * decides, so it is asked rather than derived.
+   * The counterpart to `channel.channels()`, which reports what this client has
+   * signed. The two agree unless a voucher was signed and never accepted, and
+   * this is how a caller finds that out — the connector's figure is the one
+   * that decides, so it is asked rather than derived.
    *
-   * Ownership is proved with a signature over a challenge that is deliberately
-   * DISTINCT from a balance proof, so it moves no value and can never be replayed
-   * as a payment. A channel with no signer or no recorded context is skipped
-   * rather than failing the batch.
+   * Control is proved with a voucher claim-state challenge: a signature by the
+   * channel's voucher signer over a message DISTINCT from a voucher, so it
+   * moves no value and can never be replayed as a payment.
+   *
+   * @param channelIds which channels to ask about; every channel this client
+   *   holds with the connector when omitted.
    */
   async claimState(channelIds?: string[]): Promise<ClaimStateResult[]> {
-    const ids = channelIds ?? this.channels.getTrackedChannels();
-    if (ids.length === 0) return [];
-    const expires = Math.floor(Date.now() / 1000) + CLAIM_STATE_CHALLENGE_TTL;
-
-    const entries = await Promise.all(
-      ids.map((channelId) => this.signClaimStateChallenge(channelId, expires))
-    );
-    const requests = entries.filter((e): e is ClaimStateRequestEntry => e !== undefined);
-    if (requests.length === 0) return [];
-    return this.edge.getClaimState(this.connector, requests);
+    const held = this.manager
+      .channels(this.connector)
+      .map((c) => c.channel)
+      .filter((c) => channelIds === undefined || channelIds.includes(c.channelId));
+    if (held.length === 0) return [];
+    const expires = BigInt(Math.floor(Date.now() / 1000) + CHALLENGE_TTL_SECONDS);
+    const entries = await Promise.all(held.map((c) => this.payer.challenge(c, expires)));
+    return this.edge.getClaimState(this.connector, entries);
   }
 
   /**
    * Release the BTP session and stop using this client.
    *
-   * Does **not** touch the channel: closing a channel is an on-chain transaction
-   * that starts a challenge period measured in hours, and conflating it with
-   * releasing a socket would settle a user's collateral because their script
-   * ended. `channel.close()` is that operation, and it is deliberately spelled
-   * differently.
+   * Does **not** touch the channel: leaving a channel is an on-chain
+   * transaction that starts a withdrawal window measured in hours, and
+   * conflating it with releasing a socket would pull a user's deposit because
+   * their script ended. `channel.close()` is that operation, and it is
+   * deliberately spelled differently.
    *
-   * The channel store is written through on every claim, so there is no flush to
-   * perform here — the watermark is already durable when this is called.
+   * The channel store is written through on every voucher, so there is no flush
+   * to perform here — the watermark is already durable when this is called.
    */
   async close(): Promise<void> {
     this.closed = true;
@@ -453,13 +456,8 @@ export class ToonClient implements ToonClientLike {
       sealKey: (description) => this.sealKey(description),
       sealKeyAt: (endpoint) => this.sealKeyAt(endpoint),
       routePrice: (destination) => this.routePrice(destination),
-      ensureChannel: (description) => this.channelFacade.ensure(description),
-      evictChannel: (channelId) => this.evictChannel(channelId),
-      channels: this.channels,
-      reconcileWatermark: (channelId) => this.reconcileWatermark(channelId),
+      vouchers: this.payer,
       transport: (description, destination) => this.transportFor(description, destination),
-      ...(this.vouchers !== undefined ? { vouchers: this.vouchers } : {}),
-      senderId: this.identity.senderId,
       chain: this.chain,
       timeoutMs: this.config.timeoutMs,
     };
@@ -487,128 +485,14 @@ export class ToonClient implements ToonClientLike {
   }
 
   /**
-   * Re-read the connector's own watermark for one channel and adopt it
-   * (toon-client#671).
-   *
-   * Called by {@link send} before signing a claim on a channel whose last claim
-   * was signed and never confirmed — a transport error, a timeout, or a refusal.
-   * A packet that timed out on a long path may have been delivered and banked
-   * anyway, and the local figure would then be one claim behind for good: every
-   * later claim under-advances and is refused. The connector's figure is the one
-   * that decides, so it is asked, and {@link ChannelManager.adoptConnectorWatermark}
-   * takes it (clamped to what this client has actually signed).
-   *
-   * A channel the connector cannot verify (`ok: false`) leaves the doubt in
-   * place rather than resolving it wrongly — `"unverified"` covers "no such
-   * channel" and "bad signature" identically, and neither is a watermark.
+   * The connector's own watermark for one channel, asked with its voucher
+   * claim-state challenge — `undefined` when the connector cannot verify it
+   * (`"unverified"` covers "no such channel" and "bad signature" alike, and
+   * neither is a watermark).
    */
-  private async reconcileWatermark(channelId: string): Promise<void> {
-    const entry = (await this.claimState([channelId])).find(
-      (e): e is ClaimStateOk =>
-        e.ok && (e.channelId ?? e.channelAccount ?? channelId) === channelId
-    );
-    if (entry === undefined) return;
-
-    const adoption = this.channels.adoptConnectorWatermark(channelId, {
-      nonce: entry.nonce,
-      cumulativeClaimed: BigInt(entry.cumulativeClaimed),
-    });
-    // Silent when the two already agreed, which is the common case: the read
-    // exists to be boring.
-    if (!adoption.adopted || adoption.moved === 0n) return;
-    console.warn(
-      `[toon] the connector's watermark for channel ${channelId} was ` +
-        `${adoption.moved > 0n ? 'ahead of' : 'behind'} this client's by ` +
-        `${(adoption.moved < 0n ? -adoption.moved : adoption.moved).toString()} ` +
-        `(a claim was signed and never confirmed). Adopted its figure — ` +
-        `cumulative ${adoption.cumulative.toString()}, nonce ${adoption.nonce} — ` +
-        'so this request pays the right amount rather than being refused.' +
-        (adoption.clampedTo !== undefined
-          ? ` It reported more than this client has ever signed, so the figure was ` +
-            `clamped to ${adoption.clampedTo.toString()}.`
-          : '')
-    );
-  }
-
-  /**
-   * Retire the binding a refused claim was drawn on. `false` when there is
-   * nothing to retire, which is {@link send}'s signal not to retry.
-   */
-  private evictChannel(channelId: string): boolean {
-    const terms = this.channelFacade.terms;
-    if (terms === undefined) return false;
-    return this.channels.evictBinding(this.connector, terms, channelId);
-  }
-
-  /**
-   * The on-chain client, built on first use.
-   *
-   * Lazy so `create()` opens no RPC connection. The RPC URL is keyed by the chain
-   * the node actually publishes (`evm:84532`), not by a family name, because that
-   * key is what the settlement entry names and what a channel is recorded under.
-   */
-  private onChainClient(): OnChainChannelClient {
-    if (this.onChain) return this.onChain;
-    const chainKeys = this.description.settlements.map((s) => s.chain);
-    const chainRpcUrls: Record<string, string> = {};
-    for (const entry of this.description.settlements) {
-      chainRpcUrls[entry.chain] = this.config.rpcUrls[entry.kind];
-    }
-    if (chainKeys.length === 0) {
-      throw new ChainUnavailableError(
-        chainUnavailableMessage(this.config.chain, [], 'none'),
-        []
-      );
-    }
-    const client = new OnChainChannelClient({
-      evmSigner: new EvmSigner(this.requireEvmKey()),
-      chainRpcUrls,
-      ...(this.config.chainRpc !== undefined
-        ? { rpcDispatcher: this.config.chainRpc.evm.dispatcher }
-        : {}),
-      ...(this.config.identity.solana
-        ? {
-            solanaConfig: {
-              rpcUrl: this.config.rpcUrls.solana,
-              // Same condition as the EVM dispatcher, and its own circuit:
-              // proxied only when there is a proxy and the caller has not opted
-              // RPC out of it. Never `config.fetch`, which may be the caller's.
-              ...(this.config.chainRpc !== undefined
-                ? { rpcFetch: this.config.chainRpc.solana.fetch }
-                : {}),
-              keypair: this.config.identity.solana.secretKey,
-              // The DEFAULT only. Each channel opens under the program its own
-              // terms name, because ADR 0053 binds that program into the signed
-              // balance proof: opening under one and signing under another
-              // produces claims no channel of ours lives under.
-              programId: solanaProgramId(this.description) ?? '',
-            },
-          }
-        : {}),
-    });
-    this.channels.setChannelClient(client);
-    this.onChain = client;
-    return client;
-  }
-
-  /**
-   * The EVM key the on-chain client needs.
-   *
-   * `OnChainChannelClient` requires one even for a Solana-only deployment, since
-   * it is the EVM transaction signer as well as the EVM claim signer. A
-   * Solana-only client is a real configuration, so this reports the gap plainly
-   * rather than constructing a signer over empty bytes.
-   */
-  private requireEvmKey(): Uint8Array {
-    const key = this.config.identity.evm?.privateKey;
-    if (key === undefined) {
-      throw new ConfigError(
-        'On-chain channel operations need an EVM key even on a Solana-only node ' +
-          '(the same object drives both chains). Supply a `mnemonic`, which derives ' +
-          'both, rather than a bare `solanaSecretKey`.'
-      );
-    }
-    return key;
+  private async connectorWatermark(entry: Record<string, unknown>): Promise<bigint | undefined> {
+    const [answer] = await this.edge.getClaimState(this.connector, [entry]);
+    return answer?.ok === true ? BigInt((answer as ClaimStateOk).cumulativeClaimed) : undefined;
   }
 
   /**
@@ -704,71 +588,35 @@ export class ToonClient implements ToonClientLike {
   }
 
   /**
-   * Declare the channel on the BTP auth greeting, so a connector crediting
-   * earned increments learns the association without this client ever paying
-   * for the introduction. `undefined` — no channel yet, or a chain with no
-   * signer — leaves the greeting exactly as it would have been.
+   * Declare the channel this client pays from on the BTP auth frame, as a
+   * voucher claim-state challenge (`channelChallenge`, ADR 0075), binding the
+   * session to it before it has presented a voucher. `undefined` — no channel
+   * yet — leaves the auth frame without one.
    */
   private async channelDeclaration(): Promise<BtpChannelDeclaration | undefined> {
-    const channelId = this.channelFacade.id;
-    if (channelId === undefined) return undefined;
-    const expires = Math.floor(Date.now() / 1000) + CLAIM_STATE_CHALLENGE_TTL;
-    return this.signClaimStateChallenge(channelId, expires);
-  }
-
-  /**
-   * Sign the channel-ownership challenge for one channel. `undefined` for a
-   * channel this client has no signer or no recorded context for — skipping is
-   * right because the batch is a best-effort read, not a payment.
-   */
-  private async signClaimStateChallenge(
-    channelId: string,
-    expires: number
-  ): Promise<ClaimStateRequestEntry | undefined> {
-    const context = this.channels.getChannelContext(channelId);
-    if (!context) return undefined;
-
-    if (context.chainType === 'evm' && this.config.identity.evm) {
-      const signature = await new EvmSigner(
-        this.config.identity.evm.privateKey
-      ).signClaimStateChallenge({
-        chainId: context.chainId,
-        tokenNetworkAddress: context.tokenNetworkAddress,
-        channelId,
-        expires,
-      });
-      return { blockchain: 'evm', channelId, expires, signature };
-    }
-
-    if (context.chainType === 'solana' && this.config.identity.solana) {
-      const signature = await new SolanaSigner(
-        this.config.identity.solana.secretKey.slice(0, 32),
-        this.config.identity.solana.publicKey
-      ).signClaimStateChallenge({ channelAccount: channelId, expires });
-      return { blockchain: 'solana', channelAccount: channelId, expires, signature };
-    }
-
-    return undefined;
+    const current = await this.channel.current();
+    if (current === undefined) return undefined;
+    const expires = BigInt(Math.floor(Date.now() / 1000) + CHALLENGE_TTL_SECONDS);
+    return this.payer.challenge(current.channel, expires);
   }
 }
 
 /**
- * Which chain this client will settle on: the caller's choice when they made
- * one, else the first chain the node publishes that this client holds a key for.
+ * Which chain this client will pay on: the caller's choice when they made one,
+ * else the first chain the node offers an x402 channel on that this client
+ * holds a key for.
  *
  * The node's ORDER is the preference order — it published these, and the first
  * one it lists is the one it expects to be paid on.
  */
 function pickChain(config: ResolvedConfig, description: NodeSelfDescription): ChainKind {
-  const offered = description.settlements.map((s) => s.chain);
-  if (description.settlements.length === 0) {
-    throw new ChainUnavailableError(
-      chainUnavailableMessage(config.chain, offered, 'none'),
-      offered
-    );
+  const offers = description.batchSettlements;
+  const offered = offers.map((t) => t.network);
+  if (offers.length === 0) {
+    throw new ChainUnavailableError(chainUnavailableMessage(config.chain, offered, 'none'), offered);
   }
   if (config.chain !== undefined) {
-    if (!description.settlements.some((s) => s.kind === config.chain)) {
+    if (!offers.some((t) => t.chain === config.chain)) {
       throw new ChainUnavailableError(
         chainUnavailableMessage(config.chain, offered, 'not-offered'),
         offered
@@ -776,22 +624,11 @@ function pickChain(config: ResolvedConfig, description: NodeSelfDescription): Ch
     }
     return config.chain;
   }
-  const match = description.settlements.find((s) => config.identity[s.kind] !== undefined);
+  const match = offers.find((t) => config.identity[t.chain] !== undefined);
   if (!match) {
-    throw new ChainUnavailableError(
-      chainUnavailableMessage(undefined, offered, 'no-key'),
-      offered
-    );
+    throw new ChainUnavailableError(chainUnavailableMessage(undefined, offered, 'no-key'), offered);
   }
-  return match.kind;
-}
-
-/** The settlement program the node publishes for Solana, if it publishes one. */
-function solanaProgramId(description: NodeSelfDescription): string | undefined {
-  for (const entry of description.settlements) {
-    if (entry.kind === 'solana') return entry.programId;
-  }
-  return undefined;
+  return match.chain;
 }
 
 /**
@@ -872,72 +709,39 @@ async function openHiddenService(
 }
 
 /**
- * The voucher source, and the exit facade, for a client that opted in to x402
- * `batch-settlement` — or `undefined` for one that did not. Both share one
- * {@link BatchChannelManager} over the client's own channel store, beside its
- * `toon-channel` channels.
+ * This client's keys, in the shapes the x402 channel code signs with: a viem
+ * account on EVM, and on Solana a keypair plus the JSON-RPC it reads the chain
+ * through. Chain RPC rides the proxy under the same condition everywhere: there
+ * is one, and the caller has not opted RPC out of it.
  */
-function batchSettlement(
-  config: ResolvedConfig,
-  chain: ChainKind,
-  describe: () => Promise<NodeSelfDescription>
-): { payer: BatchSettlementPayer; facade: ClientBatchSettlementFacade } | undefined {
-  const batch = config.batchSettlement;
-  if (batch === undefined) return undefined;
-  const manager = new BatchChannelManager(config.channelStore);
+function chainAccess(config: ResolvedConfig): {
+  evm?: { account: ReturnType<typeof privateKeyToAccount>; privateKey: Uint8Array };
+  solana?: {
+    signer: { privateKey: Uint8Array; publicKey: Uint8Array };
+    rpc: { url: string; fetchImpl?: typeof fetch };
+  };
+} {
   const evmKey = config.identity.evm?.privateKey;
   const solanaKey = config.identity.solana;
-  const solana =
-    solanaKey === undefined
-      ? undefined
-      : {
-          signer: {
-            privateKey: solanaKey.secretKey.slice(0, 32),
-            publicKey: base58Decode(solanaKey.publicKey),
-          },
-          // Chain RPC rides the proxy under the same condition the on-chain
-          // client's does: there is one, and the caller has not opted RPC out.
-          rpc: {
-            url: config.rpcUrls.solana,
-            ...(config.chainRpc !== undefined ? { fetchImpl: config.chainRpc.solana.fetch } : {}),
-          },
-        };
-  const payer = new BatchSettlementPayer({
-    connector: config.connector,
-    manager,
-    deposit: batch.deposit,
+  return {
     ...(evmKey !== undefined
+      ? { evm: { account: privateKeyToAccount(toHex(evmKey)), privateKey: evmKey } }
+      : {}),
+    ...(solanaKey !== undefined
       ? {
-          evm: {
-            account: privateKeyToAccount(toHex(evmKey)),
-            ...(batch.facilitatorUrl !== undefined ? { facilitatorUrl: batch.facilitatorUrl } : {}),
-            depositMethod: batch.depositMethod,
-            reader: lazyEvmReader(config),
+          solana: {
+            signer: {
+              privateKey: solanaKey.secretKey.slice(0, 32),
+              publicKey: base58Decode(solanaKey.publicKey),
+            },
+            rpc: {
+              url: config.rpcUrls.solana,
+              ...(config.chainRpc !== undefined ? { fetchImpl: config.chainRpc.solana.fetch } : {}),
+            },
           },
         }
       : {}),
-    ...(solana !== undefined ? { solana } : {}),
-    fetch: config.fetch,
-    autoOpen: config.autoOpenChannel,
-  });
-  const facade = new ClientBatchSettlementFacade({
-    connector: config.connector,
-    payer,
-    chain,
-    manager,
-    describe,
-    ...(evmKey !== undefined
-      ? {
-          evm: {
-            privateKey: evmKey,
-            rpcUrl: config.rpcUrls.evm,
-            rpcDispatcher: config.chainRpc?.evm.dispatcher,
-          },
-        }
-      : {}),
-    ...(solana !== undefined ? { solana } : {}),
-  });
-  return { payer, facade };
+  };
 }
 
 /**

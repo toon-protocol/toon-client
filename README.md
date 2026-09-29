@@ -4,13 +4,13 @@ Pay for an HTTP request, per request, in stablecoin — from Node.js or from the
 
 A **connector** is a paid reverse proxy: it fronts an ordinary HTTP app, charges a flat price
 per route, and hands that app a request that was already paid for. This repository is the
-payer. It seals your request into a packet addressed to a route, attaches a signed claim on a
-payment channel you opened yourself on chain, and gives you back the app's HTTP response.
+payer. It seals your request into a packet addressed to a route, attaches a signed voucher on an
+x402 `batch-settlement` channel you funded on chain, and gives you back the app's HTTP response.
 
 ```text
   you                                connector                          app
    │                                     │                               │
-   │  PREPARE (sealed request) + claim   │                               │
+   │ PREPARE (sealed request) + voucher  │                               │
    ├────────────────────────────────────►│   plain HTTP, already paid    │
    │                                     ├──────────────────────────────►│
    │                                     │◄──────────────────────────────┤
@@ -35,14 +35,14 @@ Asking a node what it is costs nothing and needs nothing — no wallet, no chann
 npx toon describe https://proxy.relay.devnet.toonprotocol.dev
 ```
 
-That prints its addresses, the key packets are sealed to, the chains it settles on, and every
+That prints its addresses, the key packets are sealed to, the chains it is paid on, and every
 route with its price. The devnet relay serves one priced at **zero**, so once you have an identity
 you can exercise the whole wire without a channel or a single test token:
 
 ```bash
 export TOON_CONNECTOR=https://proxy.relay.devnet.toonprotocol.dev
 npx toon init                                        # an encrypted keystore at ~/.toon/keystore.json
-npx toon send g.toon.relay.ephemeral --body 'hello'  # free: no channel, no claim
+npx toon send g.toon.relay.ephemeral --body 'hello'  # free: no channel, no voucher
 ```
 
 ```text
@@ -63,8 +63,8 @@ payload. `send()` works the total out from the node's own price list — you nev
 export TOON_CONNECTOR=https://proxy.ario.devnet.toonprotocol.dev
 
 npx toon init                      # write an encrypted keystore at ~/.toon/keystore.json
-npx toon faucet                    # devnet mock USDC for the address it just made
-npx toon channel open --deposit 100000    # 100000 base units (0.10 USDC) of collateral
+npx toon faucet                    # devnet USDC for the address it just made — no ETH needed
+npx toon channel open --deposit 100000    # 100000 base units (0.10 USDC), no gas
 npx toon send --body 'hello'               # ~1010 base units, one request
 ```
 
@@ -77,7 +77,7 @@ const client = await ToonClient.create({
   channelStore: `${process.env.HOME}/.toon/channels.json`,
 });
 
-await client.channel.open({ deposit: 100_000n }); // 100000 base units (0.10 USDC)
+// No explicit open needed: the first paid send opens the channel, with no native gas.
 
 const answer = await client.send({ body: 'hello' });
 if (answer.fulfilled) {
@@ -97,10 +97,10 @@ Runnable versions of both, on each chain:
 
 - **A connector is a paid reverse proxy.** It fronts an app that knows nothing about payment,
   and delivers that app requests it has already collected for.
-- **A packet carries its own claim.** Nothing is owed between requests: the claim that pays for
-  a request travels with it, so there is never a balance for either side to walk away from.
-- **You open the channel yourself, on chain.** The connector has no endpoint that opens one for
-  you. It reads the chain, sees your channel, and accepts claims against it.
+- **A packet carries its own voucher.** Nothing is owed between requests: the voucher that pays
+  for a request travels with it, so there is never a balance for either side to walk away from.
+- **You fund an x402 channel, and pay no gas to do it.** On Base an x402 facilitator relays your
+  deposit; on Solana the connector sponsors the open. Only leaving the channel costs gas.
 - **A price is flat per route.** One route, one price, whatever the payload — so a route's price
   is a figure you can ask for before you spend anything.
 - **Reading a node's facts is free.** Its addresses, endpoints, sealing key, settlement terms and
@@ -111,9 +111,9 @@ Runnable versions of both, on each chain:
 - **Not a Nostr client, and there is no relay.** Versions before 1.0 published events to relays
   and bootstrapped from announcements. All of it is gone: a node is a URL you configure, and its
   self-description is the whole of bootstrapping.
-- **Not a way to open a payment channel through a connector.** Opening, funding, closing and
-  settling are your own transactions, on your own gas, against the settlement contract the
-  connector names. See [docs/channels.md](docs/channels.md).
+- **Not custodial.** The channel is yours, on x402's own contract (Base) or program (Solana); the
+  connector can claim only the vouchers you signed, and leaving is your own transaction. See
+  [docs/channels.md](docs/channels.md).
 - **Not RFC 0027 bytes on the wire.** The packet's semantics are ILPv4's; its encoding is TOON's
   own dialect and is not byte-compatible. An off-the-shelf ILPv4 encoder does not produce a
   packet this edge accepts. See [docs/how-a-paid-packet-works.md](docs/how-a-paid-packet-works.md).
@@ -127,10 +127,10 @@ Runnable versions of both, on each chain:
 | [Getting started](docs/getting-started.md) | Nothing to a paid request, step by step, CLI and library |
 | [Library API](docs/api.md) | `ToonClient`, its configuration, and every type it returns |
 | [CLI reference](docs/cli.md) | Every command, resolution order, `--json`, exit codes |
-| [Payment channels](docs/channels.md) | Collateral, the lifecycle on both chains, and the watermark |
+| [Payment channels](docs/channels.md) | x402 channels: gasless opening, deposits, leaving, and the watermark |
 | [How a paid packet works](docs/how-a-paid-packet-works.md) | The wire, top to bottom |
 | [Hidden services](docs/hidden-service.md) | Paying a `.anyone` connector through the Anyone Protocol |
-| [Devnet reference](docs/devnet.md) | Endpoints, routes, prices, contract addresses, faucet |
+| [Devnet reference](docs/devnet.md) | Endpoints, routes, prices, contract addresses, facilitator, faucet |
 | [Errors and reject codes](docs/errors.md) | What each code means and what to do about it |
 | [Troubleshooting](docs/troubleshooting.md) | Symptom, cause, fix |
 | [Development](docs/development.md) | Build, test tiers, wire vectors, release |

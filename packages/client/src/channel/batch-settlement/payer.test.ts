@@ -10,6 +10,7 @@ import {
   ConfigError,
   FacilitatorError,
 } from '../../client/errors.js';
+import { must } from '../../utils/must.test-support.js';
 
 const PAYER = privateKeyToAccount(
   '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
@@ -51,7 +52,7 @@ function facilitator(
   const posted: Posted[] = [];
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     expect(url).toBe('https://facilitator.test/settle');
-    posted.push(JSON.parse(init!.body as string) as Posted);
+    posted.push(JSON.parse(must(init).body as string) as Posted);
     return new Response(JSON.stringify(answer));
   }) as typeof fetch;
   return { posted, fetchImpl };
@@ -87,18 +88,18 @@ describe('BatchSettlementPayer on Base', () => {
     const voucher = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
 
     expect(f.posted).toHaveLength(1);
-    const deposited = f.posted[0]!.paymentPayload.payload;
+    const deposited = must(f.posted[0]).paymentPayload.payload;
     expect(deposited.deposit.amount).toBe('10000');
     expect(deposited.voucher.maxClaimableAmount).toBe('1000');
-    expect(voucher!.claim['signature']).toBe(
+    expect(must(voucher).claim['signature']).toBe(
       (
         deposited.voucher as unknown as { signature: string }
       ).signature.toLowerCase()
     );
-    expect(voucher!.channelId).toBe(deposited.voucher.channelId);
-    expect(voucher!.cumulative).toBe(1_000n);
-    expect(voucher!.claim['scheme']).toBe('batch-settlement');
-    expect(manager.depositTotal(voucher!.channelId)).toBe(10_000n);
+    expect(must(voucher).channelId).toBe(deposited.voucher.channelId);
+    expect(must(voucher).cumulative).toBe(1_000n);
+    expect(must(voucher).claim['scheme']).toBe('batch-settlement');
+    expect(manager.depositTotal(must(voucher).channelId)).toBe(10_000n);
 
     const recovered = await recoverTypedDataAddress({
       domain: {
@@ -115,10 +116,10 @@ describe('BatchSettlementPayer on Base', () => {
       },
       primaryType: 'Voucher',
       message: {
-        channelId: voucher!.channelId as Hex,
+        channelId: must(voucher).channelId as Hex,
         maxClaimableAmount: 1_000n,
       },
-      signature: voucher!.claim['signature'] as Hex,
+      signature: must(voucher).claim['signature'] as Hex,
     });
     expect(recovered).toBe(PAYER.address);
   });
@@ -128,22 +129,22 @@ describe('BatchSettlementPayer on Base', () => {
     const { p } = payer(10_000n, f.fetchImpl);
     await p.claimFor(DESCRIPTION, 'evm', 1_000n);
     const second = await p.claimFor(DESCRIPTION, 'evm', 500n);
-    expect(second!.cumulative).toBe(1_500n);
+    expect(must(second).cumulative).toBe(1_500n);
     expect(f.posted).toHaveLength(1);
   });
 
   it('gives a refused charge back, and keeps a not-advancing or unanswered one', async () => {
     const f = facilitator();
     const { p } = payer(10_000n, f.fetchImpl);
-    (await p.claimFor(DESCRIPTION, 'evm', 1_000n))!.settle({
+    must(await p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
       kind: 'refused',
       notAdvancing: false,
     });
-    expect((await p.claimFor(DESCRIPTION, 'evm', 1_000n))!.cumulative).toBe(
+    expect(must(await p.claimFor(DESCRIPTION, 'evm', 1_000n)).cumulative).toBe(
       1_000n
     );
-    (await p.claimFor(DESCRIPTION, 'evm', 1_000n))!.settle({ kind: 'unknown' });
-    expect((await p.claimFor(DESCRIPTION, 'evm', 1_000n))!.cumulative).toBe(
+    must(await p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'unknown' });
+    expect(must(await p.claimFor(DESCRIPTION, 'evm', 1_000n)).cumulative).toBe(
       3_000n
     );
   });
@@ -154,22 +155,22 @@ describe('BatchSettlementPayer on Base', () => {
     await p.claimFor(DESCRIPTION, 'evm', 1_500n);
     const next = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
     expect(f.posted).toHaveLength(2);
-    const topUp = f.posted[1]!.paymentPayload.payload;
+    const topUp = must(f.posted[1]).paymentPayload.payload;
     expect(topUp.deposit.amount).toBe('2000');
     expect(topUp.voucher.maxClaimableAmount).toBe('2500');
-    expect(next!.cumulative).toBe(2_500n);
-    expect(manager.depositTotal(next!.channelId)).toBe(4_000n);
+    expect(must(next).cumulative).toBe(2_500n);
+    expect(manager.depositTotal(must(next).channelId)).toBe(4_000n);
   });
 
   it('onboards a fresh channel instead of voucher-ing on one this client is leaving', async () => {
     const f = facilitator();
     const { p, manager } = payer(10_000n, f.fetchImpl);
     const first = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
-    manager.markClosing(first!.channelId, 1n, 2n);
+    manager.markClosing(must(first).channelId, 1n, 2n);
     const next = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
     expect(f.posted).toHaveLength(2);
-    expect(next!.channelId).not.toBe(first!.channelId);
-    expect(next!.cumulative).toBe(1_000n);
+    expect(must(next).channelId).not.toBe(must(first).channelId);
+    expect(must(next).cumulative).toBe(1_000n);
   });
 
   it('with autoOpen off, refuses to open or top up on a packet, and opens on request', async () => {
@@ -190,11 +191,11 @@ describe('BatchSettlementPayer on Base', () => {
 
     const opened = await p.open(DESCRIPTION, 'evm');
     // The deposit's voucher is one unit, and it is not counted as spent.
-    expect(f.posted[0]!.paymentPayload.payload.voucher.maxClaimableAmount).toBe(
+    expect(must(f.posted[0]).paymentPayload.payload.voucher.maxClaimableAmount).toBe(
       '1'
     );
-    expect(manager.signedSoFar(opened!.channelId)).toBe(0n);
-    expect((await p.claimFor(DESCRIPTION, 'evm', 1_500n))!.cumulative).toBe(
+    expect(manager.signedSoFar(must(opened).channelId)).toBe(0n);
+    expect(must(await p.claimFor(DESCRIPTION, 'evm', 1_500n)).cumulative).toBe(
       1_500n
     );
     await expect(p.claimFor(DESCRIPTION, 'evm', 1_000n)).rejects.toThrow(
@@ -270,7 +271,7 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
     const answers: (() => Response)[] = [];
     const posted: Posted[] = [];
     const fetchImpl = (async (_url: string, init?: RequestInit) => {
-      const body = JSON.parse(init!.body as string) as Posted;
+      const body = JSON.parse(must(init).body as string) as Posted;
       posted.push(body);
       const next = answers.shift();
       if (next) return next();
@@ -284,7 +285,7 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
           functionName: string;
           args: string[];
         };
-        const state = chain.get(args[0]!.toLowerCase()) ?? {
+        const state = chain.get(must(args[0]).toLowerCase()) ?? {
           balance: 0n,
           claimed: 0n,
         };
@@ -307,9 +308,9 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
     });
     const landed = (i = posted.length - 1) => {
       const v =
-        posted[i]!.paymentPayload.payload.voucher.channelId.toLowerCase();
+        must(posted[i]).paymentPayload.payload.voucher.channelId.toLowerCase();
       chain.set(v, {
-        balance: BigInt(posted[i]!.paymentPayload.payload.deposit.amount),
+        balance: BigInt(must(posted[i]).paymentPayload.payload.deposit.amount),
         claimed: 0n,
       });
       return v;
@@ -328,7 +329,7 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
     expect(w.manager.pendingDeposit(channelId)).toBe(10_000n);
 
     const voucher = await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
-    expect(voucher!.channelId).toBe(channelId);
+    expect(must(voucher).channelId).toBe(channelId);
     expect(w.posted).toHaveLength(1); // no second deposit
     expect(w.manager.depositTotal(channelId)).toBe(10_000n);
     expect(w.manager.pendingDeposit(channelId)).toBeUndefined();
@@ -340,10 +341,10 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
       throw new TypeError('socket hang up');
     });
     await expect(w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).rejects.toThrow();
-    const first = w.posted[0]!.paymentPayload.payload.voucher.channelId;
+    const first = must(w.posted[0]).paymentPayload.payload.voucher.channelId;
     const voucher = await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
     expect(w.posted).toHaveLength(2);
-    expect(voucher!.channelId).not.toBe(first);
+    expect(must(voucher).channelId).not.toBe(first);
   });
 
   it('forgets a channel whose deposit the facilitator definitely refused', async () => {
@@ -370,8 +371,8 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
       w.p.claimFor(DESCRIPTION, 'evm', 1_000n),
     ]);
     expect(w.posted).toHaveLength(1);
-    expect(a!.channelId).toBe(b!.channelId);
-    expect(new Set([a!.cumulative, b!.cumulative])).toEqual(
+    expect(must(a).channelId).toBe(must(b).channelId);
+    expect(new Set([must(a).cumulative, must(b).cumulative])).toEqual(
       new Set([1_000n, 2_000n])
     );
   });
@@ -383,8 +384,8 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
     expect(w.posted).toHaveLength(1);
     await w.p.topUp(DESCRIPTION, 'evm', 5_000n);
     expect(w.posted).toHaveLength(2);
-    expect(w.posted[1]!.paymentPayload.payload.deposit.amount).toBe('5000');
-    expect(w.manager.depositTotal(opened!.channelId)).toBe(15_000n);
+    expect(must(w.posted[1]).paymentPayload.payload.deposit.amount).toBe('5000');
+    expect(w.manager.depositTotal(must(opened).channelId)).toBe(15_000n);
   });
 
   it('rebuilds a lost watermark from what the chain shows claimed', async () => {
@@ -410,9 +411,91 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
         )) as typeof fetch,
     });
     const first = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
-    store.delete(first!.channelId); // the watermark file is lost; the binding survives
+    store.delete(must(first).channelId); // the watermark file is lost; the binding survives
     const next = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
-    expect(next!.channelId).toBe(first!.channelId);
-    expect(next!.cumulative).toBe(5_000n);
+    expect(must(next).channelId).toBe(must(first).channelId);
+    expect(must(next).cumulative).toBe(5_000n);
+  });
+});
+
+describe('BatchSettlementPayer — asking the connector where it stands (connector#1364)', () => {
+  const BACKWARDS =
+    "claim rejected: cumulative amount goes backwards relative to this channel's watermark";
+
+  function withConnector(answers: (bigint | undefined)[], store = new InMemoryChannelStore()) {
+    const asked: Record<string, unknown>[] = [];
+    const manager = new BatchChannelManager(store);
+    const p = new BatchSettlementPayer({
+      connector: 'https://node.example',
+      manager,
+      deposit: 10_000n,
+      evm: {
+        account: PAYER,
+        facilitatorUrl: 'https://facilitator.test',
+        reader: {
+          readContract: async (q: never) =>
+            (q as { functionName: string }).functionName === 'channels'
+              ? [10_000n, 0n]
+              : [0n, 0],
+        },
+      },
+      fetch: facilitator().fetchImpl,
+      connectorWatermark: async (entry) => {
+        asked.push(entry);
+        return answers.shift();
+      },
+    });
+    return { p, manager, asked, store };
+  }
+
+  it('after a refusal that names no figure, asks the connector — and never goes below the refused voucher', async () => {
+    // "Goes backwards" proves the connector holds more than 2000, so a
+    // claim-state answer of 1000 is a connector behind its own state.
+    const w = withConnector([1_000n]);
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'refused',
+      message: BACKWARDS,
+    });
+    const next = await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(w.asked).toHaveLength(1);
+    expect(w.asked[0]).toMatchObject({ channelId: must(next).channelId });
+    expect(must(next).cumulative).toBe(3_000n);
+  });
+
+  it('asks once, not on every packet, once the doubt is settled', async () => {
+    const w = withConnector([1_000n]);
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'refused',
+      message: BACKWARDS,
+    });
+    await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(w.asked).toHaveLength(1);
+  });
+
+  it('keeps asking while the connector cannot say, and signs above the ceiling meanwhile', async () => {
+    const w = withConnector([undefined, undefined]);
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'refused',
+      message: BACKWARDS,
+    });
+    const next = await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(must(next).cumulative).toBe(3_000n);
+    must(next).settle({ kind: 'refused', message: BACKWARDS });
+    await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(w.asked).toHaveLength(2);
+  });
+
+  it('rebuilds a lost watermark from the connector’s figure, not only the chain’s', async () => {
+    const store = new InMemoryChannelStore();
+    const w = withConnector([7_000n], store);
+    const first = await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    store.delete(must(first).channelId); // the watermark file is lost; the binding survives
+    const next = await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(w.asked).toHaveLength(1);
+    expect(must(next).cumulative).toBe(8_000n);
   });
 });

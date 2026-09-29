@@ -16,7 +16,7 @@ import {
   fakeRefused,
   type FakeClientOptions,
 } from './fake-client.test-support.js';
-import type { ToonClientConfig } from '../client/types.js';
+import type { ChannelFacade, ToonClientConfig } from '../client/types.js';
 import type { ManagedAnon } from './anon-daemon.js';
 import { ChannelFundingError, NetworkError, ValidationError } from '../client/errors.js';
 
@@ -88,6 +88,8 @@ interface RunOptions {
   env?: Record<string, string | undefined>;
   stdin?: string;
   files?: Record<string, string>;
+  /** Replace the fake's channel facade, for an answer it does not can. */
+  channel?: ChannelFacade;
   /** Stand in for the managed `anon` daemon: a test must never download one. */
   startAnon?: (log: (message: string) => void) => Promise<ManagedAnon>;
 }
@@ -106,6 +108,9 @@ async function run(argv: string[], options: RunOptions = {}): Promise<RunResult>
   const stdout: string[] = [];
   const stderr: string[] = [];
   const client = new FakeToonClient(options.client);
+  if (options.channel !== undefined) {
+    (client as { channel: ChannelFacade }).channel = options.channel;
+  }
   let config: ToonClientConfig | undefined;
 
   const code = await runCli(argv, {
@@ -407,33 +412,90 @@ describe('send', () => {
 });
 
 describe('channel', () => {
-  it('opens with a deposit', async () => {
+  it('opens a channel, passing --deposit into the client’s config', async () => {
     const result = await run(['channel', 'open', '--deposit', '100000']);
     expect(result.code).toBe(EXIT.ok);
-    expect(result.client.callsTo('channel.open')[0]?.args[0]).toEqual({ deposit: '100000' });
+    expect(result.config?.deposit).toBe('100000');
+    expect(result.client.callsTo('channel.open')).toHaveLength(1);
+    expect(result.stdout.join('\n')).toContain('Channel open.');
     expect(result.stdout.join('\n')).toContain('100000 (0.1 USDC)');
   });
 
-  it('deposits the amount given as a positional', async () => {
+  it('deposits the amount given as a positional, as a bigint', async () => {
     const result = await run(['channel', 'deposit', '50000']);
-    expect(result.client.callsTo('channel.deposit')[0]?.args[0]).toBe('50000');
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.client.callsTo('channel.deposit')[0]?.args[0]).toBe(50000n);
+    expect(result.stdout.join('\n')).toContain('Deposit confirmed.');
   });
 
-  it('closes and settles', async () => {
-    expect((await run(['channel', 'close'])).client.callsTo('channel.close')).toHaveLength(1);
-    expect((await run(['channel', 'settle'])).client.callsTo('channel.settle')).toHaveLength(1);
+  it('refuses a deposit with no amount, or one that is not a whole number', async () => {
+    expect((await run(['channel', 'deposit'])).code).toBe(EXIT.usage);
+    const bad = await run(['channel', 'deposit', 'lots']);
+    expect(bad.code).toBe(EXIT.usage);
+    expect(bad.client.callsTo('channel.deposit')).toHaveLength(0);
   });
 
-  it('reads the on-chain state for status', async () => {
+  it('closes every open channel and says when each can be settled', async () => {
+    const result = await run(['channel', 'close']);
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.client.callsTo('channel.close')).toHaveLength(1);
+    const text = result.stdout.join('\n');
+    expect(text).toContain('0xclose');
+    expect(text).toContain('1700003600');
+  });
+
+  it('settles, naming the transaction', async () => {
+    const result = await run(['channel', 'settle']);
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.client.callsTo('channel.settle')).toHaveLength(1);
+    expect(result.stdout.join('\n')).toContain('0xsettle');
+  });
+
+  it('exits non-zero when a channel could not be left, while reporting the others', async () => {
+    const client = new FakeToonClient();
+    const failing = {
+      ...client.channel,
+      settle: async () => [
+        { channelId: 'a', transaction: '0x1' },
+        { channelId: 'b', error: 'rpc down' },
+      ],
+    };
+    const result = await run(['channel', 'settle'], { channel: failing });
+    expect(result.code).not.toBe(EXIT.ok);
+    const text = result.stdout.join('\n');
+    expect(text).toContain('0x1');
+    expect(text).toContain('rpc down');
+  });
+
+  it('says so when no channel is ready to settle', async () => {
+    const client = new FakeToonClient();
+    const result = await run(['channel', 'settle'], {
+      channel: { ...client.channel, settle: async () => [] },
+    });
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.stdout.join('\n')).toContain('No channel is ready to settle yet.');
+  });
+
+  it('lists the recorded channels for status, without touching the chain', async () => {
     const result = await run(['channel', 'status']);
-    expect(result.client.callsTo('channel.state')[0]?.args[0]).toEqual({ onChain: true });
-    expect(result.stdout.join('\n')).toContain('97000 (0.097 USDC)');
+    expect(result.client.callsTo('channel.channels')).toHaveLength(1);
+    expect(result.client.callsTo('claimState')).toHaveLength(0);
+    const text = result.stdout.join('\n');
+    expect(text).toContain('0xchannel');
+    expect(text).toContain('97000 (0.097 USDC)');
   });
 
   it('shows the connector’s own watermark beside ours when asked', async () => {
     const result = await run(['channel', 'status', '--connector-view']);
     expect(result.client.callsTo('claimState')[0]?.args[0]).toEqual(['0xchannel']);
-    expect(result.stdout.join('\n')).toMatch(/connector nonce\s+4/);
+    expect(result.stdout.join('\n')).toMatch(/connector claimed\s+4000 \(0\.004 USDC\)/);
+  });
+
+  it('shows the channel in JSON, amounts as strings', async () => {
+    const result = await run(['channel', 'status', '--json']);
+    expect(result.json()).toMatchObject([
+      { channel: { channelId: '0xchannel' }, depositTotal: '100000', signed: '3000' },
+    ]);
   });
 
   it('refuses an unknown subcommand', async () => {
@@ -441,13 +503,20 @@ describe('channel', () => {
     expect(result.code).toBe(EXIT.usage);
   });
 
-  it('renders a channel that has been closed', async () => {
-    const state = fakeChannelState({
-      status: 'closed',
-      onChain: { closedAt: 1_700_000_000n, settleableAt: 1_700_003_600n },
-    });
+  it('renders a channel that is being left', async () => {
+    const state = fakeChannelState({ closedAt: 1_700_000_000n, settleableAt: 1_700_003_600n });
     const result = await run(['channel', 'status'], { client: { channelState: state } });
-    expect(result.stdout.join('\n')).toContain('settleable at');
+    const text = result.stdout.join('\n');
+    expect(text).toContain('closed at');
+    expect(text).toContain('settleable at');
+  });
+
+  it('passes --facilitator, or TOON_FACILITATOR, into the client’s config', async () => {
+    const flag = await run(['channel', 'status', '--facilitator', 'https://f']);
+    expect(flag.config?.facilitatorUrl).toBe('https://f');
+    const fromEnv = await run(['channel', 'status'], { env: { TOON_FACILITATOR: 'https://g' } });
+    expect(fromEnv.config?.facilitatorUrl).toBe('https://g');
+    expect((await run(['channel', 'status'])).config?.facilitatorUrl).toBeUndefined();
   });
 });
 
@@ -853,102 +922,5 @@ describe('the managed anon daemon', () => {
     } finally {
       vi.restoreAllMocks();
     }
-  });
-});
-
-describe('channel, under --batch-settlement', () => {
-  const summary = {
-    channel: {
-      chain: 'evm' as const,
-      channelId: `0x${'ee'.repeat(32)}`,
-      network: 'eip155:84532',
-      config: {
-        payer: '0x1',
-        payerAuthorizer: '0x1',
-        receiver: '0x2',
-        receiverAuthorizer: '0x2',
-        token: '0x3',
-        withdrawDelay: 86_400,
-        salt: `0x${'00'.repeat(32)}` as `0x${string}`,
-      },
-    },
-    depositTotal: 1_000_000n,
-    signed: 2_000n,
-  };
-  function batch(calls: string[]) {
-    return {
-      channels: () => {
-        calls.push('channels');
-        return [summary];
-      },
-      open: async () => {
-        calls.push('open');
-        return summary;
-      },
-      deposit: async () => {
-        calls.push('deposit');
-        return summary;
-      },
-      close: async () => {
-        calls.push('close');
-        return [{ channelId: summary.channel.channelId, transaction: '0xclose', settleableAt: 99n }];
-      },
-      settle: async () => {
-        calls.push('settle');
-        return [{ channelId: summary.channel.channelId, transaction: '0xsettle' }];
-      },
-    };
-  }
-
-  it('passes the opt-in and the facilitator into the client’s config', async () => {
-    const result = await run(['channel', 'status', '--batch-settlement', '--facilitator', 'https://f']);
-    expect(result.config?.batchSettlement).toEqual({ facilitatorUrl: 'https://f' });
-    const fromEnv = await run(['channel', 'status'], {
-      env: { TOON_BATCH_SETTLEMENT: '1', TOON_FACILITATOR: 'https://g' },
-    });
-    expect(fromEnv.config?.batchSettlement).toEqual({ facilitatorUrl: 'https://g' });
-    expect((await run(['channel', 'status'])).config?.batchSettlement).toBeUndefined();
-  });
-
-  it('acts on the batch-settlement channel for open, close, settle and status', async () => {
-    const calls: string[] = [];
-    for (const argv of [['open'], ['deposit', '5'], ['close'], ['settle'], ['status']]) {
-      const result = await run(['channel', ...argv, '--batch-settlement'], {
-        client: { batchSettlement: batch(calls) },
-      });
-      expect(result.code).toBe(EXIT.ok);
-    }
-    expect(calls).toEqual(['open', 'deposit', 'close', 'settle', 'channels']);
-  });
-
-  it('shows the channel in JSON, amounts as strings', async () => {
-    const result = await run(['channel', 'status', '--batch-settlement', '--json'], {
-      client: { batchSettlement: batch([]) },
-    });
-    expect(result.json()).toMatchObject([
-      { channel: { channelId: summary.channel.channelId }, depositTotal: '1000000', signed: '2000' },
-    ]);
-  });
-
-  it('refuses a deposit that is not a whole number', async () => {
-    const result = await run(['channel', 'deposit', 'lots', '--batch-settlement'], {
-      client: { batchSettlement: batch([]) },
-    });
-    expect(result.code).toBe(EXIT.usage);
-  });
-
-  it('exits non-zero when a channel could not be left, while reporting the others', async () => {
-    const facade = {
-      ...batch([]),
-      settle: async () => [
-        { channelId: 'a', transaction: '0x1' },
-        { channelId: 'b', error: 'rpc down' },
-      ],
-    };
-    const result = await run(['channel', 'settle', '--batch-settlement'], {
-      client: { batchSettlement: facade },
-    });
-    expect(result.code).not.toBe(EXIT.ok);
-    expect(result.stdout.join('\n')).toContain('rpc down');
   });
 });

@@ -4,16 +4,17 @@
  * A **connector** is a paid reverse proxy: it fronts an ordinary HTTP app,
  * charges a flat price per route, and hands that app a request which was
  * already paid for. This package is the payer. It seals your request into an
- * ILP packet addressed to a route, attaches a signed claim on a payment channel
- * you opened yourself on chain, and gives you back the app's HTTP response.
+ * ILP packet addressed to a route, attaches a signed voucher on an x402
+ * `batch-settlement` channel you funded on chain, and gives you back the app's
+ * HTTP response.
  *
  * ```ts
  * const client = await ToonClient.create({
  *   connector: 'https://proxy.ario.devnet.toonprotocol.dev',
  *   mnemonic: process.env.TOON_MNEMONIC,
  * });
- * await client.channel.open({ deposit: 100_000n });
- * const answer = await client.send({ body: 'hello' });
+ * // The first paid send opens the channel — with no native gas.
+ * const answer = await client.send('g.toon.store', { body: 'hello' });
  * ```
  *
  * The protocol is defined by the connector, not by this package: the Rust
@@ -37,11 +38,11 @@ export * from './btp/index.js';
 // shared secret derives. Exported for callers forming packets by hand.
 export * from './wire/index.js';
 
-// Payment channels: the on-chain lifecycle, and the watermark that outlives a
-// process.
+// Payment channels: x402 batch-settlement onboarding, vouchers and exit, and
+// the watermark that outlives a process.
 export * from './channel/index.js';
 
-// Signing a claim, on each chain.
+// The EVM identity a mnemonic derives.
 export * from './signing/index.js';
 
 // Keys: mnemonic derivation and the on-disk keystore.

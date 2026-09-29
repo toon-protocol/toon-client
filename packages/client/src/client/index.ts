@@ -5,7 +5,6 @@ export {
   resolveConfig,
   addressFor,
   DEFAULT_DEPOSIT,
-  DEFAULT_SETTLEMENT_TIMEOUT,
   DEFAULT_TIMEOUT_MS,
   type ProxiedChainRpc,
   type ResolvedConfig,
@@ -14,13 +13,7 @@ export {
 export { send, toEnvelopeRequest, type PaidWriteTransport, type SendContext } from './send.js';
 export {
   ClientChannelFacade,
-  settlementToTerms,
   type ChannelFacadeDeps,
+  type BatchChannelSummary,
 } from './channel-facade.js';
 export { ClientWalletFacade, type WalletFacadeDeps } from './wallet-facade.js';
-export {
-  ClientBatchSettlementFacade,
-  type BatchSettlementFacade,
-  type BatchSettlementFacadeDeps,
-  type BatchChannelSummary,
-} from './batch-settlement-facade.js';

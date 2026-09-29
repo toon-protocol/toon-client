@@ -10,7 +10,7 @@
  *     at their production addresses (bytecode copied from Base Sepolia) and
  *     Circle's FiatToken v2.2 as an ERC-3009 USDC. A deposit is authorized by
  *     this client's `buildEip3009Deposit` and submitted by a third party, as a
- *     facilitator would; then `client.batchSettlement`'s `close()` starts the
+ *     facilitator would; then `client.channel`'s `close()` starts the
  *     timed withdrawal, the chain's clock is moved past `withdrawDelay`, and
  *     `settle()` returns the deposit to the payer.
  *   - **Solana**: a `solana-test-validator` running solana-foundation's
@@ -76,7 +76,7 @@ import {
   type BatchSettlementSvmOffer,
   type SvmBatchChannelConfig,
 } from '../channel/batch-settlement/svm.js';
-import { ClientBatchSettlementFacade } from '../client/batch-settlement-facade.js';
+import { ClientChannelFacade } from '../client/channel-facade.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import {
   deriveAssociatedTokenAccount,
@@ -87,6 +87,7 @@ import {
 } from '../channel/solana/payment-channel.js';
 import { signSolanaWireTransaction } from '../channel/solana/wire-transaction.js';
 import { base58Decode, base58Encode } from '../utils/base58.js';
+import { must } from '../utils/must.test-support.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const INFRA =
@@ -290,7 +291,7 @@ describe.skipIf(MISSING.length > 0)('x402 batch-settlement exit on EVM', () => {
 
   it('closes with a timed withdrawal, and settles the deposit back once the delay has passed', async () => {
     let now = BigInt((await pub.getBlock()).timestamp);
-    const facade = new ClientBatchSettlementFacade({
+    const facade = new ClientChannelFacade({
       connector: CONNECTOR,
       payer: {} as BatchSettlementPayer,
       chain: 'evm',
@@ -306,8 +307,8 @@ describe.skipIf(MISSING.length > 0)('x402 batch-settlement exit on EVM', () => {
 
     const closed = await facade.close();
     expect(closed).toHaveLength(1);
-    expect(closed[0]!.error).toBeUndefined();
-    expect(closed[0]!.transaction).toMatch(/^0x/);
+    expect(must(closed[0]).error).toBeUndefined();
+    expect(must(closed[0]).transaction).toMatch(/^0x/);
     expect(
       (await readEvmBatchChannel(pub, channel.channelId as Hex))
         .pendingWithdrawal
@@ -325,7 +326,7 @@ describe.skipIf(MISSING.length > 0)('x402 batch-settlement exit on EVM', () => {
 
     const settled = await facade.settle();
     expect(settled).toHaveLength(1);
-    expect(settled[0]!.error).toBeUndefined();
+    expect(must(settled[0]).error).toBeUndefined();
     const balance = await pub.readContract({
       address: X402_USDC,
       abi: erc20Abi,
@@ -531,7 +532,7 @@ describe.skipIf(MISSING.length > 0)(
         mint: MINT,
         openSlot,
       });
-      expect(Buffer.from(state!.distributionHash).toString('hex')).toBe(
+      expect(Buffer.from(must(state).distributionHash).toString('hex')).toBe(
         Buffer.from(singleRecipientDistributionHash(RECEIVER.address)).toString(
           'hex'
         )
@@ -549,7 +550,7 @@ describe.skipIf(MISSING.length > 0)(
     });
 
     it('requests the close, then seals and withdraws the deposit back after the grace period', async () => {
-      const facade = new ClientBatchSettlementFacade({
+      const facade = new ClientChannelFacade({
         connector: CONNECTOR,
         payer: {} as BatchSettlementPayer,
         chain: 'solana',
@@ -559,9 +560,9 @@ describe.skipIf(MISSING.length > 0)(
       });
 
       const closed = await facade.close();
-      expect(closed[0]!.error).toBeUndefined();
+      expect(must(closed[0]).error).toBeUndefined();
       expect(
-        (await getSvmBatchChannel(SOLANA_RPC, channel.channelId))!.status
+        must(await getSvmBatchChannel(SOLANA_RPC, channel.channelId)).status
       ).toBe('closing');
 
       // The program reads the cluster's clock: wait until it is past the grace period.
@@ -579,7 +580,7 @@ describe.skipIf(MISSING.length > 0)(
         settled = await facade.settle();
       }
       expect(settled).toHaveLength(1);
-      expect(settled[0]!.error).toBeUndefined();
+      expect(must(settled[0]).error).toBeUndefined();
       expect(await getTokenAccountBalance(SOLANA_RPC, PAYER_ATA)).toBe(
         SOL_DEPOSIT
       );

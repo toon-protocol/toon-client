@@ -59,7 +59,8 @@ export const DEVNET = {
   /**
    * The relay node behind `g.toon.relay`, priced at 1 base unit. Its route is
    * pinned to **BTP**: an HTTP one-shot to it is refused with the same terms
-   * document an unpaid request gets, carrying `extra.requiredTransport`.
+   * document an unpaid request gets, carrying `requiredTransport` in
+   * `extensions.toon.info`.
    */
   relay: {
     url: 'https://proxy.relay.devnet.toonprotocol.dev',
@@ -82,12 +83,18 @@ export const DEVNET = {
   /** Test funds. `POST /api/base-sepolia/request` and `/api/solana/usdc-request`. */
   faucet: 'https://faucet.devnet.toonprotocol.dev',
 
-  /** Base Sepolia. The registry is the stable address; the token network is resolved from it. */
+  /**
+   * The Onboarder (toon-protocol/infra#23): a stock x402 facilitator on Base
+   * Sepolia that submits a channel deposit and pays its gas, so a wallet
+   * holding devnet USDC and no ETH can open a channel.
+   */
+  facilitator: 'https://onboard.devnet.toonprotocol.dev',
+
+  /** Base Sepolia. */
   evm: {
     chainId: 84532,
+    network: 'eip155:84532',
     rpcUrl: 'https://sepolia.base.org',
-    tokenNetworkRegistry: '0x0c41D9D424d6B075A3cEa1068a694f7847a8CCa5',
-    tokenNetwork: '0x1B4606218ceE5Bf02B546e416905F4D3FC8a0249',
     /** Devnet USDC: Circle FiatToken v2.2 (ERC-3009, EIP-2612), 6 decimals, minter-gated — fund via the faucet (connector#1337). */
     tokenAddress: '0x0C996d7c934c79a6255254875607Fe69df25C0E1',
     decimals: 6,
@@ -96,8 +103,7 @@ export const DEVNET = {
   /** Solana devnet — the public cluster, not a local validator. */
   solana: {
     rpcUrl: 'https://api.devnet.solana.com',
-    /** The deployed `payment-channel` program. Bound into every claim (ADR 0053). */
-    programId: '2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip',
+    network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
     /** Mock USDC SPL mint, 6 decimals. */
     tokenAddress: '34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU',
     decimals: 6,
@@ -107,4 +113,14 @@ export const DEVNET = {
 /** The default RPC URL for a chain when a caller configures none. */
 export function defaultRpcUrl(chain: 'evm' | 'solana'): string {
   return chain === 'evm' ? DEVNET.evm.rpcUrl : DEVNET.solana.rpcUrl;
+}
+
+/**
+ * The facilitator a Base deposit goes through when a caller names none: the
+ * devnet's own on Base Sepolia, and nothing elsewhere — a mainnet deposit
+ * through a devnet service would be refused anyway, and silently picking a
+ * third party to relay real money is not this package's decision to make.
+ */
+export function defaultFacilitatorFor(network: string): string | undefined {
+  return network === DEVNET.evm.network ? DEVNET.facilitator : undefined;
 }

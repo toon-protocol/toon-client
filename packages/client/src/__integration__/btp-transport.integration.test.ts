@@ -300,14 +300,10 @@ describe('BtpRuntimeClient over a real ws server (integration)', () => {
     const terms = {
       x402Version: 2,
       resource: { url: 'g.toon.relay' },
-      accepts: [
-        {
-          scheme: 'toon-channel',
-          amount: '1',
-          httpEndpoint: '/ilp',
-          extra: { ilpAddress: 'g.toon.relay', endpoint: '/ilp', price: '1' },
-        },
-      ],
+      accepts: [],
+      extensions: {
+        toon: { info: { ilpAddress: 'g.toon.relay', amount: '1', endpoint: '/ilp', price: '1' } },
+      },
     };
     respondWith = {
       protocolData: [

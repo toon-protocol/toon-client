@@ -18,6 +18,7 @@ import {
 } from '../solana/payment-channel.js';
 import { base58Encode } from '../../utils/base58.js';
 import { ValidationError } from '../../client/errors.js';
+import { must } from '../../utils/must.test-support.js';
 
 const CHANNEL = `0x${'ab'.repeat(32)}` as Hex;
 const CONFIG = {
@@ -85,8 +86,8 @@ describe('EVM exit', () => {
       amount: 7_000n,
       finalizeAfter: 1_790_000_000n + 86_400n,
     });
-    expect(writes[0]!.functionName).toBe('initiateWithdraw');
-    expect(writes[0]!.args[0]).toMatchObject({
+    expect(must(writes[0]).functionName).toBe('initiateWithdraw');
+    expect(must(writes[0]).args[0]).toMatchObject({
       payer: CONFIG.payer,
       salt: CONFIG.salt,
       withdrawDelay: 86_400,
@@ -193,7 +194,7 @@ function solanaChain(
   view.setUint32(52, gracePeriod, true);
   const sent: string[] = [];
   const fetchImpl = (async (_url: string, init?: RequestInit) => {
-    const { method, params } = JSON.parse(init!.body as string) as {
+    const { method, params } = JSON.parse(must(init).body as string) as {
       method: string;
       params: unknown[];
     };
@@ -229,18 +230,18 @@ function solanaChain(
 /** The instruction discriminators in a sent legacy transaction, in order. */
 function discriminators(wire: string): number[] {
   const bytes = Buffer.from(wire, 'base64');
-  let o = 1 + bytes[0]! * 64; // signature count (<128) and slots
+  let o = 1 + must(bytes[0]) * 64; // signature count (<128) and slots
   o += 3;
-  const keys = bytes[o]!;
+  const keys = must(bytes[o]);
   o += 1 + keys * 32 + 32;
-  const count = bytes[o++]!;
+  const count = must(bytes[o++]);
   const out: number[] = [];
   for (let i = 0; i < count; i++) {
     o += 1;
-    const accounts = bytes[o++]!;
+    const accounts = must(bytes[o++]);
     o += accounts;
-    const len = bytes[o++]!;
-    out.push(bytes[o]!);
+    const len = must(bytes[o++]);
+    out.push(must(bytes[o]));
     o += len;
   }
   return out;
@@ -251,7 +252,7 @@ describe('Solana exit', () => {
     const { rpc, sent } = solanaChain(0, 0n);
     const result = await requestSvmBatchClose(rpc, PAYER, SVM_CHANNEL);
     expect(result.transaction).toBe('sig1');
-    expect(discriminators(sent[0]!)).toEqual([5]);
+    expect(discriminators(must(sent[0]))).toEqual([5]);
   });
 
   it('refuses to close a channel that is not Open', async () => {
@@ -279,7 +280,7 @@ describe('Solana exit', () => {
       { payer: PAYER_ADDRESS, token: MINT },
       1_000n + 86_400n
     );
-    expect(discriminators(sent[0]!)).toEqual([6, 8]);
+    expect(discriminators(must(sent[0]))).toEqual([6, 8]);
   });
 
   it('only withdraws from a channel the connector already sealed', async () => {
@@ -288,6 +289,6 @@ describe('Solana exit', () => {
       payer: PAYER_ADDRESS,
       token: MINT,
     });
-    expect(discriminators(sent[0]!)).toEqual([8]);
+    expect(discriminators(must(sent[0]))).toEqual([8]);
   });
 });

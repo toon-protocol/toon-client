@@ -1,19 +1,17 @@
 /**
  * The send pipeline, end to end against a fake connector.
  *
- * Real crypto, real OER, real HTTP transport, real `ChannelManager` and a real
- * `EvmSigner` — only the chain and the socket are absent. That matters most for
- * the seal: the fake can only produce a response this client can open by
- * genuinely opening the request first, so the two directions check each other
- * rather than a fixture checking itself.
+ * Real crypto, real OER and a real HTTP transport — only the chain, the socket
+ * and the voucher's signature are absent. The voucher source is a stub that
+ * keeps a running total and records each packet's fate, because what this suite
+ * checks is how `send` drives it; the payer's own suite checks the vouchers.
+ * The seal matters most: the fake can only produce a response this client can
+ * open by genuinely opening the request first, so the two directions check each
+ * other rather than a fixture checking itself.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { generatePrivateKey } from 'viem/accounts';
 import { FakeTerminatingConnector } from '../wire/fake-connector.test-support.js';
 import { HttpIlpClient } from '../http/HttpIlpClient.js';
-import { ChannelManager } from '../channel/ChannelManager.js';
-import { InMemoryChannelStore } from '../channel/ChannelStore.js';
-import { EvmSigner } from '../signing/evm-signer.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import {
   send,
@@ -22,65 +20,45 @@ import {
   type SendContext,
 } from './send.js';
 import type { SendRequest } from './types.js';
-import type { PreparedVoucher } from '../channel/batch-settlement/payer.js';
-import { BeforePayRefusedError, RouteNotPricedError } from './errors.js';
+import type { VoucherOutcome } from '../channel/batch-settlement/payer.js';
+import {
+  BeforePayRefusedError,
+  ChainUnavailableError,
+  RouteNotPricedError,
+} from './errors.js';
 import { decodeUtf8 } from '../utils/binary.js';
 
 const CHANNEL = `0x${'ab'.repeat(32)}`;
-const OTHER_CHANNEL = `0x${'cd'.repeat(32)}`;
-const TOKEN_NETWORK = '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478';
 const DESTINATION = 'g.fake.route';
 
 interface Harness {
   fake: FakeTerminatingConnector;
   context: SendContext;
-  channels: ChannelManager;
-  /** Channel ids `ensureChannel` hands out, in order. Re-point to drive a re-resolve. */
-  channelIds: string[];
-  evicted: string[];
-  /** `false` makes `evictChannel` report "nothing to retire", which vetoes the retry. */
-  evictable: boolean;
-  ensureCalls: number;
-  /** Channels `reconcileWatermark` was asked about, in order. */
-  reconciled: string[];
-  /**
-   * What `POST /ilp/claim-state` reports for the channel — the CONNECTOR's own
-   * watermark, which is what a reconciliation adopts. `undefined` answers with
-   * nothing, as a connector that cannot verify the channel does.
-   */
-  connectorWatermark: { nonce: number; cumulativeClaimed: bigint } | undefined;
-  /** `true` makes the claim-state read throw, as an unreachable connector does. */
-  reconcileFails: boolean;
-  /** The real carriage, kept so a test can put it back after a failing one. */
-  httpTransport: PaidWriteTransport;
+  /** How many vouchers were asked for. */
+  claimForCalls: number;
+  /** Each voucher's reported fate, in order. */
+  settled: VoucherOutcome[];
+  /** The stub's running total: what it would sign next on. */
+  cumulative: bigint;
+  /** `false` models a node offering no x402 channel on the chain. */
+  offered: boolean;
 }
 
 function harness(): Harness {
   const fake = new FakeTerminatingConnector({ endpoint: 'http://connector.test' });
-  const signer = new EvmSigner(generatePrivateKey());
-  const channels = new ChannelManager(signer, new InMemoryChannelStore());
-
   const state: Harness = {
     fake,
-    channels,
-    channelIds: [CHANNEL],
-    evicted: [],
-    evictable: true,
-    ensureCalls: 0,
-    reconciled: [],
-    connectorWatermark: undefined,
-    reconcileFails: false,
-    httpTransport: undefined as unknown as PaidWriteTransport,
+    claimForCalls: 0,
+    settled: [],
+    cumulative: 0n,
+    offered: true,
     context: undefined as unknown as SendContext,
   };
-
   const transport = new HttpIlpClient({
     httpEndpoint: 'http://connector.test/ilp',
     httpClient: fake.fetch,
     maxRetries: 0,
   });
-  state.httpTransport = transport;
-
   state.context = {
     describe: async () => parseSelfDescription(fake.selfDescription(), fake.endpoint),
     sealKey: async () => fake.identityPublic,
@@ -92,35 +70,30 @@ function harness(): Harness {
             price: fake.routePrice,
             ...(fake.pricePerKib !== undefined ? { pricePerKib: fake.pricePerKib } : {}),
           },
-    ensureChannel: async () => {
-      const id = state.channelIds[Math.min(state.ensureCalls, state.channelIds.length - 1)];
-      state.ensureCalls += 1;
-      // Tracked here rather than on chain: this suite is about the pipeline, and
-      // the on-chain open is `channel-facade`'s subject.
-      channels.trackChannel(id!, {
-        chainType: 'evm',
-        chainId: 84532,
-        tokenNetworkAddress: TOKEN_NETWORK,
-        depositTotal: 1_000_000n,
-      });
-      return id!;
-    },
-    evictChannel: (channelId) => {
-      state.evicted.push(channelId);
-      return state.evictable;
-    },
-    channels,
-    // The claim-state read, as `ToonClient` performs it: ask the connector for
-    // its own watermark, and adopt it.
-    reconcileWatermark: async (channelId) => {
-      state.reconciled.push(channelId);
-      if (state.reconcileFails) throw new Error('claim-state unreachable');
-      const connector = state.connectorWatermark;
-      if (connector === undefined) return;
-      channels.adoptConnectorWatermark(channelId, connector);
+    vouchers: {
+      claimFor: async (_description, chain, amount) => {
+        state.claimForCalls += 1;
+        if (!state.offered) return undefined;
+        state.cumulative += amount;
+        const cumulative = state.cumulative;
+        return {
+          chain: chain as 'evm',
+          channelId: CHANNEL,
+          claim: {
+            blockchain: 'evm',
+            channelId: CHANNEL,
+            maxClaimableAmount: cumulative.toString(),
+            scheme: 'batch-settlement',
+          },
+          cumulative,
+          settle: (outcome) => {
+            state.settled.push(outcome);
+            if (outcome.kind === 'refused') state.cumulative -= amount;
+          },
+        };
+      },
     },
     transport: async () => ({ kind: 'http', transport }),
-    senderId: signer.address,
     chain: 'evm',
     timeoutMs: 5_000,
     warn: () => undefined,
@@ -151,24 +124,33 @@ describe('send — the happy path', () => {
     expect(result.text()).toBe('{"id":"abc"}');
     expect(result.headers).toEqual([['content-type', 'application/json']]);
     expect(result.fulfillment).toHaveLength(32);
+    expect(h.settled).toEqual([{ kind: 'banked' }]);
   });
 
-  it('reports the claim it spent: nonce 1, cumulative = the route price', async () => {
+  it('reports the voucher it spent: cumulative = the route price', async () => {
     const result = await send(h.context, DESTINATION);
     expect(result.claim).toEqual({
       channelId: CHANNEL,
       chain: 'evm',
-      nonce: 1,
       cumulative: 1000n,
       amount: 1000n,
     });
   });
 
-  it('advances the watermark across requests, cumulatively', async () => {
+  it('advances the running total across requests', async () => {
     await send(h.context, DESTINATION);
     const second = await send(h.context, DESTINATION);
-    expect(second.claim).toMatchObject({ nonce: 2, cumulative: 2000n });
-    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(2000n);
+    expect(second.claim).toMatchObject({ cumulative: 2000n, amount: 1000n });
+  });
+
+  it('carries the voucher on the wire, exactly as the payer built it', async () => {
+    await send(h.context, DESTINATION);
+    expect(h.fake.claims[0]).toEqual({
+      blockchain: 'evm',
+      channelId: CHANNEL,
+      maxClaimableAmount: '1000',
+      scheme: 'batch-settlement',
+    });
   });
 
   it('sends what the caller asked for, sealed — the fake had to open it to answer', async () => {
@@ -186,16 +168,6 @@ describe('send — the happy path', () => {
     expect(decodeUtf8(opened!.request.body)).toBe('raw text');
   });
 
-  it('labels the claim with the senderId and names the channel it drew on', async () => {
-    await send(h.context, DESTINATION);
-    const claim = h.fake.claims[0]!;
-    expect(claim['blockchain']).toBe('evm');
-    expect(claim['channelId']).toBe(CHANNEL);
-    expect(claim['nonce']).toBe(1);
-    expect(claim['transferredAmount']).toBe('1000');
-    expect(claim['senderId']).toBe(h.context.senderId);
-  });
-
   it('uses an explicit amount instead of asking for a price', async () => {
     const price = vi.spyOn(h.context, 'routePrice');
     const result = await send(h.context, DESTINATION, {}, { amount: 4200n });
@@ -206,23 +178,18 @@ describe('send — the happy path', () => {
   // ── A metered route (connector publishes `pricePerKib`) ──────────────────
   //
   // The deployed store node prices `g.toon.store` at 1000 + 10/KiB and refuses
-  // a claim for the base price alone with `F03 — advances value by 1000, less
-  // than this route's price of 1010`. These pin the arithmetic that stops that
-  // happening, including the two things it is easy to get wrong: the metered
-  // quantity is the SEALED payload rather than the caller's body, and the unit
-  // count starts at one rather than rounding up from zero.
+  // a voucher for the base price alone. These pin the arithmetic that stops
+  // that happening: the metered quantity is the SEALED payload rather than the
+  // caller's body, and the unit count rounds up.
 
   it('pays the base price PLUS the per-KiB rate on a metered route', async () => {
     h.fake.pricePerKib = 10n;
     const result = await send(h.context, DESTINATION, { body: 'hello' });
-    // One kibibyte started, so one unit: 1000 + 10.
     expect(result.claim?.amount).toBe(1010n);
   });
 
   it('charges by the SEALED size, not the body size — a body under 1 KiB can cost two units', async () => {
     h.fake.pricePerKib = 10n;
-    // 1000 raw bytes seal to more than 1024, so this crosses into a second unit
-    // even though the body itself never does.
     const result = await send(h.context, DESTINATION, { body: 'x'.repeat(1000) });
     expect(result.claim?.amount).toBe(1020n);
   });
@@ -247,84 +214,79 @@ describe('send — the happy path', () => {
 
   it('refuses to form a packet for a route this node does not price', async () => {
     h.fake.routePrice = null;
-    await expect(send(h.context, 'g.somewhere.else')).rejects.toBeInstanceOf(
-      RouteNotPricedError
-    );
-    // Nothing was signed, so nothing needs repaying.
+    await expect(send(h.context, 'g.somewhere.else')).rejects.toBeInstanceOf(RouteNotPricedError);
+    expect(h.claimForCalls).toBe(0);
+    expect(h.fake.paidRequests).toBe(0);
+  });
+
+  it('refuses a paid packet to a node that offers no x402 channel on the chain', async () => {
+    h.offered = false;
+    await expect(send(h.context, DESTINATION)).rejects.toBeInstanceOf(ChainUnavailableError);
     expect(h.fake.paidRequests).toBe(0);
   });
 });
 
-describe('send — a refused claim repays the watermark', () => {
+describe('send — a voucher’s fate goes back to the payer', () => {
   let h: Harness;
   beforeEach(() => {
     h = harness();
   });
 
-  it('F03 underpayment: reports the route price as accumulatedCost AND rolls back', async () => {
+  it('F03 underpayment: reports the route price as accumulatedCost, and the reject’s own text', async () => {
     h.fake.refusal = 'underpay';
     const result = await send(h.context, DESTINATION);
 
     expect(result.fulfilled).toBe(false);
     if (result.fulfilled) return;
     expect(result.code).toBe('F03');
-    // The refusal's whole subject is the figure that was not covered, which is
-    // the cheapest way to learn a price.
     expect(result.accumulatedCost).toBe(1000n);
     expect(result.claimAck).toEqual({ result: 'rejected', reason: 'amount_not_advancing' });
-
-    // The connector banked nothing, so neither did we.
-    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(0n);
-    // The nonce is NOT rolled back: a gap costs nothing, reusing one risks
-    // presenting two different claims under a single number.
-    expect(h.channels.getNonce(CHANNEL)).toBe(1);
+    // The payer reads where the connector's watermark stands from the text.
+    expect(h.settled).toEqual([
+      { kind: 'refused', message: "claim rejected: advances value by 1, less than this route's price of 1000" },
+    ]);
   });
 
-  it('F03 over-deposit: cost 0, and the same claim can be re-signed at the next nonce', async () => {
+  it('F03 over-deposit: cost 0, and the voucher is given back', async () => {
     h.fake.refusal = 'overDeposit';
     const first = await send(h.context, DESTINATION);
     expect(first.fulfilled).toBe(false);
     if (first.fulfilled) return;
     expect(first.code).toBe('F03');
     expect(first.accumulatedCost).toBe(0n);
-    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(0n);
+    expect(h.settled[0]).toMatchObject({ kind: 'refused' });
 
-    // The documented remedy: deposit more, then resend the same cumulative.
     h.fake.refusal = null;
     const second = await send(h.context, DESTINATION);
-    expect(second.claim).toMatchObject({ nonce: 2, cumulative: 1000n });
+    expect(second.claim).toMatchObject({ cumulative: 1000n });
   });
 
-  it('a FULFILL carrying a REJECTED claim ack still repays — the two verdicts are independent', async () => {
+  it('a FULFILL carrying a REJECTED claim ack is still a refused voucher — the two verdicts are independent', async () => {
     h.fake.refusal = 'routedButUnbanked';
     const result = await send(h.context, DESTINATION);
     expect(result.fulfilled).toBe(true);
     if (!result.fulfilled) return;
-    // The app answered — and the claim that was supposed to pay for it did not
-    // land. Surfaced rather than hidden, because a caller that only checked
-    // `fulfilled` would never learn it.
-    expect(result.claimAck).toEqual({ result: 'rejected', reason: 'nonce_not_advancing' });
-    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(0n);
+    expect(result.claimAck).toEqual({ result: 'rejected', reason: 'amount_not_advancing' });
+    expect(h.settled[0]).toMatchObject({ kind: 'refused' });
   });
 
-  it('does NOT repay a reject raised past the claim gate — that claim WAS banked', async () => {
-    // `F02 no route` is raised after a valid claim advanced the connector's
-    // watermark. Repaying it would leave the next claim short.
+  it('a reject raised past the claim gate is a BANKED voucher — it was accepted', async () => {
+    // `F02 no route` is raised after a valid voucher advanced the connector's
+    // watermark. Giving it back would leave the next one short.
     h.fake.refusal = 'pathReject';
     const result = await send(h.context, DESTINATION);
     expect(result.fulfilled).toBe(false);
-    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(1000n);
+    expect(h.settled).toEqual([{ kind: 'banked' }]);
   });
 
-  it('repays a thrown transport error, where nothing is known to have arrived', async () => {
-    h.context.transport = async () => ({
-      kind: 'http',
-      transport: {
-        sendIlpPacketWithClaim: () => Promise.reject(new Error('socket hang up')),
-      },
-    });
+  it('a thrown transport error leaves the voucher counted, and rethrows', async () => {
+    const failing: PaidWriteTransport = {
+      sendIlpPacketWithClaim: () => Promise.reject(new Error('socket hang up')),
+      sendIlpPacket: () => Promise.reject(new Error('socket hang up')),
+    };
+    h.context.transport = async () => ({ kind: 'http', transport: failing });
     await expect(send(h.context, DESTINATION)).rejects.toThrow('socket hang up');
-    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(0n);
+    expect(h.settled).toEqual([{ kind: 'unknown' }]);
   });
 });
 
@@ -361,8 +323,8 @@ describe('send — refusedBy is only as strong as the evidence', () => {
     expect(result.code).toBe('PAYMENT_REQUIRED');
     expect(result.terms?.price).toBe(1000n);
     expect(result.terms?.destination).toBe(DESTINATION);
-    // A greeting means the packet never travelled, so the claim is repaid.
-    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(0n);
+    // A greeting means the packet never travelled, so the voucher is given back.
+    expect(h.settled).toEqual([{ kind: 'refused' }]);
   });
 
   it('a greeting naming a carriage is TRANSPORT_REQUIRED, not a payment problem', async () => {
@@ -373,204 +335,6 @@ describe('send — refusedBy is only as strong as the evidence', () => {
     if (result.fulfilled) return;
     expect(result.code).toBe('TRANSPORT_REQUIRED');
     expect(result.refusedBy).toBe('edge');
-  });
-});
-
-describe('send — the bounded stale-channel retry', () => {
-  let h: Harness;
-  beforeEach(() => {
-    h = harness();
-  });
-
-  it('F01 unknown channel: evicts the binding and retries ONCE on a re-resolved channel', async () => {
-    h.channelIds = [CHANNEL, OTHER_CHANNEL];
-    // The first attempt is refused; the re-resolved channel is accepted.
-    let sent = 0;
-    const inner = h.context.transport;
-    h.context.transport = async (d) => {
-      const carriage = await inner(d);
-      return {
-        kind: carriage.kind,
-        transport: {
-          sendIlpPacketWithClaim: (params, claim) => {
-            sent += 1;
-            h.fake.refusal = sent === 1 ? 'unknownChannel' : null;
-            return carriage.transport.sendIlpPacketWithClaim(params, claim);
-          },
-        },
-      };
-    };
-
-    const result = await send(h.context, DESTINATION);
-
-    expect(h.evicted).toEqual([CHANNEL]);
-    expect(sent).toBe(2);
-    expect(result.fulfilled).toBe(true);
-    expect(result.claim?.channelId).toBe(OTHER_CHANNEL);
-    // The dead channel's watermark was repaid; the new one carries the spend.
-    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(0n);
-    expect(h.channels.getCumulativeAmount(OTHER_CHANNEL)).toBe(1000n);
-  });
-
-  it('does not retry when re-resolution lands on the SAME channel', async () => {
-    h.fake.refusal = 'unknownChannel';
-    h.channelIds = [CHANNEL]; // every ensure returns the same id
-
-    const result = await send(h.context, DESTINATION);
-    expect(result.fulfilled).toBe(false);
-    if (result.fulfilled) return;
-    expect(result.code).toBe('F01');
-    // The retry was attempted and abandoned once it produced the same channel,
-    // so the ORIGINAL refusal is reported rather than a second one.
-    expect(h.evicted).toEqual([CHANNEL]);
-  });
-
-  it('does not retry when there was no binding to retire', async () => {
-    h.fake.refusal = 'unknownChannel';
-    h.evictable = false;
-    await send(h.context, DESTINATION);
-    expect(h.fake.paidRequests).toBe(1);
-  });
-
-  it('never retries a second time — one eviction per request, never a loop', async () => {
-    h.fake.refusal = 'unknownChannel';
-    h.channelIds = [CHANNEL, OTHER_CHANNEL, `0x${'ef'.repeat(32)}`];
-    const result = await send(h.context, DESTINATION);
-    expect(result.fulfilled).toBe(false);
-    expect(h.fake.paidRequests).toBe(2);
-    expect(h.evicted).toEqual([CHANNEL]);
-  });
-
-  it('leaves a NONCE-race F01 alone — that channel is healthy and evicting it would strand it', async () => {
-    // The connector's own `F01` for a non-advancing nonce names no missing
-    // channel, so the guard must not fire.
-    h.context.transport = async () => ({
-      kind: 'http',
-      transport: {
-        sendIlpPacketWithClaim: () =>
-          Promise.resolve({
-            accepted: false,
-            code: 'F01',
-            message: 'claim rejected: nonce not advancing',
-          }),
-      },
-    });
-    const result = await send(h.context, DESTINATION);
-    expect(result.fulfilled).toBe(false);
-    expect(h.evicted).toEqual([]);
-  });
-});
-
-/**
- * toon-client#671 — a pull that times out client-side but was DELIVERED.
- *
- * The connector banks the claim; this end sees a timeout, assumes nothing
- * arrived and repays the amount. From then on the local figure is one claim
- * behind for good: every later claim under-advances and is refused `F03`, then
- * `F01`, forever. Rare on a clearnet loopback, ordinary over a hidden-service
- * circuit with a 120s per-packet timeout and real RTT.
- *
- * The repayment stays — being short spends nothing, and running ahead spends
- * the deposit on nothing — but it no longer stands unquestioned: the channel is
- * marked doubtful, and the next claim asks the connector for its own figure
- * before it signs.
- */
-describe('send — a claim whose fate is unknown settles before the next one (#671)', () => {
-  let h: Harness;
-  beforeEach(() => {
-    h = harness();
-  });
-
-  /** A carriage that throws, as a timed-out circuit does. */
-  function timesOut(): void {
-    h.context.transport = async () => ({
-      kind: 'http',
-      transport: {
-        sendIlpPacketWithClaim: () => Promise.reject(new Error('Request timeout after 120000ms')),
-        sendIlpPacket: () => Promise.reject(new Error('Request timeout after 120000ms')),
-      },
-    });
-  }
-
-  it('a thrown transport error leaves the watermark in doubt', async () => {
-    timesOut();
-    await expect(send(h.context, DESTINATION)).rejects.toThrow('Request timeout');
-    // Repaid, as before — but no longer believed.
-    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(0n);
-    expect(h.channels.isWatermarkUncertain(CHANNEL)).toBe(true);
-  });
-
-  it('the next claim adopts the connector\'s figure BEFORE signing, instead of under-advancing', async () => {
-    timesOut();
-    await expect(send(h.context, DESTINATION)).rejects.toThrow('Request timeout');
-
-    // The packet did arrive: the connector banked 1000 at nonce 1.
-    h.connectorWatermark = { nonce: 1, cumulativeClaimed: 1000n };
-    h.context.transport = async () => ({ kind: 'http', transport: h.httpTransport });
-
-    const result = await send(h.context, DESTINATION);
-
-    expect(h.reconciled).toEqual([CHANNEL]);
-    // 2000, not the 1000 the local figure alone would have signed — which is
-    // the claim the connector refuses `F03 advances value by 0`.
-    expect(result.claim).toMatchObject({ nonce: 2, cumulative: 2000n });
-    expect(h.fake.claims.at(-1)?.['transferredAmount']).toBe('2000');
-  });
-
-  it('a refused claim leaves the same doubt — the gap may predate this request', async () => {
-    h.fake.refusal = 'underpay';
-    await send(h.context, DESTINATION);
-    expect(h.channels.isWatermarkUncertain(CHANNEL)).toBe(true);
-  });
-
-  it('a BANKED claim settles the doubt for free, so the read happens once', async () => {
-    timesOut();
-    await expect(send(h.context, DESTINATION)).rejects.toThrow('Request timeout');
-    h.connectorWatermark = { nonce: 1, cumulativeClaimed: 1000n };
-    h.context.transport = async () => ({ kind: 'http', transport: h.httpTransport });
-
-    await send(h.context, DESTINATION);
-    await send(h.context, DESTINATION);
-
-    // The second send's claim was accepted, which is proof the two watermarks
-    // agree: the third asks nobody.
-    expect(h.reconciled).toEqual([CHANNEL]);
-    expect(h.channels.isWatermarkUncertain(CHANNEL)).toBe(false);
-  });
-
-  it('never adopts more than this client has actually signed', async () => {
-    timesOut();
-    await expect(send(h.context, DESTINATION)).rejects.toThrow('Request timeout');
-
-    // A connector claiming to hold far more than it was ever given a signature
-    // for. It cannot: the figure is clamped to what was signed (1000).
-    h.connectorWatermark = { nonce: 1, cumulativeClaimed: 900_000n };
-    h.context.transport = async () => ({ kind: 'http', transport: h.httpTransport });
-
-    const result = await send(h.context, DESTINATION);
-    expect(result.claim).toMatchObject({ cumulative: 2000n });
-  });
-
-  it('a claim-state read that fails leaves the doubt standing, and the request still goes out', async () => {
-    timesOut();
-    await expect(send(h.context, DESTINATION)).rejects.toThrow('Request timeout');
-
-    h.reconcileFails = true;
-    h.context.transport = async () => ({ kind: 'http', transport: h.httpTransport });
-    h.fake.refusal = 'underpay';
-    const result = await send(h.context, DESTINATION);
-
-    // It behaved exactly as it did before #671 — the packet went out on the
-    // local figure — and the doubt survives for the next attempt to re-ask.
-    expect(result.fulfilled).toBe(false);
-    expect(h.reconciled).toEqual([CHANNEL]);
-    expect(h.channels.isWatermarkUncertain(CHANNEL)).toBe(true);
-  });
-
-  it('asks nobody while nothing is in doubt', async () => {
-    await send(h.context, DESTINATION);
-    await send(h.context, DESTINATION);
-    expect(h.reconciled).toEqual([]);
   });
 });
 
@@ -620,13 +384,9 @@ describe('toEnvelopeRequest', () => {
 describe('send — a route priced at zero', () => {
   // A connector states a free route rather than implying one: every terminated
   // route must carry a price, and `price = 0` is how an operator writes down
-  // that they meant it, "because it is never silently free". Such a route runs
-  // no claim gate, so a client that opened a channel to use one would have paid
-  // gas and locked collateral for nothing.
-  //
-  // Found against the live devnet relay, which serves exactly this shape:
-  // `g.toon.relay` at 1, and `g.toon.relay.ephemeral` at 0.
-  it('sends with no claim, and opens no channel at all', async () => {
+  // that they meant it. Such a route runs no claim gate, so a client that
+  // opened a channel to use one would have locked a deposit for nothing.
+  it('sends with no voucher, and asks the payer for none', async () => {
     const h = harness();
     h.fake.routePrice = 0n;
     h.fake.answer = {
@@ -641,24 +401,14 @@ describe('send — a route priced at zero', () => {
     if (!result.fulfilled) return;
     expect(result.status).toBe(200);
     expect(result.text()).toBe('free');
-    // No claim, because nothing was paid — reporting a zero-valued one would be
-    // a fiction, and a caller checking `claim` would read it as a payment.
     expect(result.claim).toBeUndefined();
-    // And no channel was reached for: this is what makes a free route usable by
-    // a client holding no funds.
-    expect(h.ensureCalls).toBe(0);
+    expect(h.claimForCalls).toBe(0);
     expect(h.fake.claims).toHaveLength(0);
   });
 
   it('still seals the request and reads the sealed answer back', async () => {
-    // The only thing a free route drops is the payment. The envelope, the gift
-    // wrap, the condition derived from the secret inside it and the sealed
-    // answer are all unchanged — which is why the fake can still open it.
     const h = harness();
     h.fake.routePrice = 0n;
-    // The target is relative: it is resolved BENEATH the route's handler path
-    // and can never replace it (connector ADR 0025), so an absolute one is
-    // refused `F00` before the app is touched.
     const result = await send(h.context, DESTINATION, {
       method: 'PUT',
       target: 'thing',
@@ -674,30 +424,15 @@ describe('send — a route priced at zero', () => {
 
 describe('send — beforePay, the caller\'s last look before money moves', () => {
   // A paid route bills for an ANSWER, and a refusal is an answer: the connector
-  // collects the price before the app has seen the body, so a request the app
-  // was always going to reject still costs the full price and nothing is
-  // refunded (TOON_Network#115). This hook is the only place a caller can stop
-  // that, because it is the only point at which the price is resolved and no
-  // balance proof has been signed yet — and a signed claim is a bearer
-  // instrument whose rollback deliberately does not restore the nonce.
+  // collects the price before the app has seen the body (TOON_Network#115).
+  // This hook is the one point at which the price is resolved and no voucher
+  // has been signed — and a signed voucher is a bearer instrument.
   let h: Harness;
   beforeEach(() => {
     h = harness();
   });
 
-  it('refuses the send before a claim exists: nothing signed, no channel reached', async () => {
-    // Tracked here rather than through `ensureChannel`, so the watermark can be
-    // read before and after while `ensureCalls` stays at zero — which is itself
-    // one of the assertions.
-    h.channels.trackChannel(CHANNEL, {
-      chainType: 'evm',
-      chainId: 84532,
-      tokenNetworkAddress: TOKEN_NETWORK,
-      depositTotal: 1_000_000n,
-    });
-    const nonceBefore = h.channels.getNonce(CHANNEL);
-    const cumulativeBefore = h.channels.getCumulativeAmount(CHANNEL);
-
+  it('refuses the send before a voucher exists: nothing signed, nothing sent', async () => {
     await expect(
       send(
         h.context,
@@ -707,15 +442,8 @@ describe('send — beforePay, the caller\'s last look before money moves', () =>
       )
     ).rejects.toBeInstanceOf(BeforePayRefusedError);
 
-    // No money left the channel by any measure: no claim on the wire, no
-    // channel ensured, and the watermark exactly where it was. The last one is
-    // the load-bearing check — `signBalanceProof` advances and persists the
-    // nonce before the packet leaves, and nothing puts a nonce back.
+    expect(h.claimForCalls).toBe(0);
     expect(h.fake.claims).toHaveLength(0);
-    expect(h.ensureCalls).toBe(0);
-    expect(h.channels.getNonce(CHANNEL)).toBe(nonceBefore);
-    expect(h.channels.getCumulativeAmount(CHANNEL)).toBe(cumulativeBefore);
-    // And no packet went out at all, paid or otherwise.
     expect(h.fake.paidRequests).toBe(0);
     expect(h.fake.opened).toHaveLength(0);
   });
@@ -733,28 +461,13 @@ describe('send — beforePay, the caller\'s last look before money moves', () =>
   });
 
   it('lets a paid send through unchanged when it returns nothing', async () => {
-    const result = await send(
-      h.context,
-      DESTINATION,
-      { body: 'fine' },
-      { beforePay: () => undefined }
-    );
-
+    const result = await send(h.context, DESTINATION, { body: 'fine' }, { beforePay: () => undefined });
     expect(result.fulfilled).toBe(true);
-    expect(result.claim).toEqual({
-      channelId: CHANNEL,
-      chain: 'evm',
-      nonce: 1,
-      cumulative: 1000n,
-      amount: 1000n,
-    });
+    expect(result.claim).toEqual({ channelId: CHANNEL, chain: 'evm', cumulative: 1000n, amount: 1000n });
     expect(h.fake.claims).toHaveLength(1);
   });
 
   it('is handed the RESOLVED price, including a metered route\'s per-KiB charge', async () => {
-    // The figure a caller could not have known in advance: a metered route
-    // charges by the size of the SEALED payload, which does not exist until
-    // this client has sealed it.
     h.fake.pricePerKib = 10n;
     const seen: bigint[] = [];
     await send(
@@ -780,47 +493,12 @@ describe('send — beforePay, the caller\'s last look before money moves', () =>
     });
     expect(about).toHaveLength(1);
     expect(about[0]?.destination).toBe(DESTINATION);
-    // The caller's own object, so a caller can re-read the body it built.
     expect(about[0]?.request).toBe(request);
-  });
-
-  it('runs exactly once per send, not once per attempt — including the F01 retry', async () => {
-    // The stale-channel recovery runs `attempt` twice on the SAME packet. The
-    // hook is a decision about the request, so a second look would be asking a
-    // caller to approve a payment it already approved.
-    h.channelIds = [CHANNEL, OTHER_CHANNEL];
-    let sent = 0;
-    const inner = h.context.transport;
-    h.context.transport = async (d) => {
-      const carriage = await inner(d);
-      return {
-        kind: carriage.kind,
-        transport: {
-          sendIlpPacketWithClaim: (params, claim) => {
-            sent += 1;
-            h.fake.refusal = sent === 1 ? 'unknownChannel' : null;
-            return carriage.transport.sendIlpPacketWithClaim(params, claim);
-          },
-        },
-      };
-    };
-
-    const calls: bigint[] = [];
-    const result = await send(h.context, DESTINATION, {}, {
-      beforePay: ({ amount }) => {
-        calls.push(amount);
-      },
-    });
-
-    expect(sent).toBe(2);
-    expect(result.fulfilled).toBe(true);
-    expect(calls).toEqual([1000n]);
   });
 
   it('runs on a free route too — a wrong body wastes the answer as well as the money', async () => {
     h.fake.routePrice = 0n;
     const seen: bigint[] = [];
-
     await expect(
       send(
         h.context,
@@ -834,16 +512,11 @@ describe('send — beforePay, the caller\'s last look before money moves', () =>
         }
       )
     ).rejects.toBeInstanceOf(BeforePayRefusedError);
-
     expect(seen).toEqual([0n]);
-    // Free means no claim was ever at stake; what the refusal saved is the
-    // round trip and whatever the app would have done before saying no.
     expect(h.fake.opened).toHaveLength(0);
   });
 
   it('lets the callback\'s own throw propagate unchanged', async () => {
-    // A caller's validator failing is the caller's error to read, stack and
-    // all; re-dressing it as a client error would hide where the rule lives.
     const boom = new TypeError('schema compiled wrong');
     await expect(
       send(
@@ -858,89 +531,6 @@ describe('send — beforePay, the caller\'s last look before money moves', () =>
       )
     ).rejects.toBe(boom);
     expect(h.fake.claims).toHaveLength(0);
-    expect(h.ensureCalls).toBe(0);
-  });
-});
-
-// ─── x402 batch-settlement vouchers (connector ADR 0074) ────────────────────
-
-describe('a packet paid by a batch-settlement voucher', () => {
-  type Settled = Parameters<PreparedVoucher['settle']>[0];
-
-  function withVouchers(h: Harness, offered = true) {
-    const settled: Settled[] = [];
-    let cumulative = 0n;
-    h.context = {
-      ...h.context,
-      vouchers: {
-        claimFor: async (_description, chain, amount) => {
-          if (!offered) return undefined;
-          cumulative += amount;
-          return {
-            chain: chain as 'evm',
-            channelId: `0x${'ee'.repeat(32)}`,
-            claim: { scheme: 'batch-settlement', maxClaimableAmount: cumulative.toString() },
-            cumulative,
-            settle: (outcome) => settled.push(outcome),
-          };
-        },
-      },
-    };
-    return settled;
-  }
-
-  it('carries the voucher, and never opens a toon-channel channel', async () => {
-    const h = harness();
-    const settled = withVouchers(h);
-    const result = await send(h.context, DESTINATION, { body: 'hi' });
-    expect(result.fulfilled).toBe(true);
-    expect(h.ensureCalls).toBe(0);
-    expect(h.fake.claims.at(-1)).toMatchObject({ scheme: 'batch-settlement' });
-    expect(settled).toEqual([{ kind: 'banked' }]);
-    expect(result.claim).toMatchObject({ scheme: 'batch-settlement', nonce: 0 });
-  });
-
-  it('pays over toon-channel when the node offers no voucher channel', async () => {
-    const h = harness();
-    withVouchers(h, false);
-    await send(h.context, DESTINATION, { body: 'hi' });
-    expect(h.ensureCalls).toBe(1);
-    expect(h.fake.claims.at(-1)).not.toHaveProperty('scheme');
-  });
-
-  it('reports a refused voucher with the reject’s own text', async () => {
-    const h = harness();
-    const settled = withVouchers(h);
-    h.fake.refusal = 'underpay';
-    const result = await send(h.context, DESTINATION, { body: 'hi' });
-    expect(result.fulfilled).toBe(false);
-    // The reject's own text travels with the refusal, for the payer to read.
-    expect(settled).toHaveLength(1);
-    expect(settled[0]).toMatchObject({ kind: 'refused' });
-    expect((settled[0] as { message?: string }).message).toBeDefined();
-  });
-
-  it('keeps a voucher counted when the transport fails, and rethrows', async () => {
-    const h = harness();
-    const settled = withVouchers(h);
-    const failing: PaidWriteTransport = {
-      sendIlpPacketWithClaim: async () => {
-        throw new Error('socket hang up');
-      },
-      sendIlpPacket: async () => {
-        throw new Error('socket hang up');
-      },
-    };
-    h.context = { ...h.context, transport: async () => ({ kind: 'http', transport: failing }) };
-    await expect(send(h.context, DESTINATION, { body: 'hi' })).rejects.toThrow('socket hang up');
-    expect(settled).toEqual([{ kind: 'unknown' }]);
-  });
-
-  it('asks for no voucher on a free route', async () => {
-    const h = harness();
-    const settled = withVouchers(h);
-    h.fake.routePrice = 0n;
-    await send(h.context, DESTINATION, { body: 'hi' });
-    expect(settled).toEqual([]);
+    expect(h.claimForCalls).toBe(0);
   });
 });

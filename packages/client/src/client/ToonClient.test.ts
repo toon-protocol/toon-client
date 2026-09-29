@@ -8,8 +8,11 @@ import { FakeTerminatingConnector } from '../wire/fake-connector.test-support.js
 import { InMemoryChannelStore } from '../channel/ChannelStore.js';
 import { deriveFullIdentity } from '../keys/KeyDerivation.js';
 import { ChainUnavailableError, ChannelNotOpenError, ConfigError } from './errors.js';
-import { settlementToTerms } from './channel-facade.js';
-import type { ChannelManager } from '../channel/ChannelManager.js';
+import type {
+  BatchChannel,
+  BatchChannelManager,
+} from '../channel/batch-settlement/manager.js';
+import type { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { startFakeSocks5 } from '../transport/fake-socks5.js';
 
 const CHANNEL = `0x${'ab'.repeat(32)}`;
@@ -17,13 +20,54 @@ const CHANNEL = `0x${'ab'.repeat(32)}`;
 const MNEMONIC = 'test test test test test test test test test test test junk';
 const IDENTITY = deriveFullIdentity(MNEMONIC);
 
+const SOLANA_NETWORK = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 const SOLANA_SETTLEMENT = {
-  chain: 'solana',
-  settlementAddress: 'So11111111111111111111111111111111111111112',
-  programId: '2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip',
-  tokenAddress: '34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU',
-  decimals: 6,
+  network: SOLANA_NETWORK,
+  asset: '34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU',
+  payTo: 'So11111111111111111111111111111111111111112',
+  feePayer: 'So11111111111111111111111111111111111111112',
+  tokenProgram: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  sponsorEndpoint: '/ilp/batch-settlement/solana/open',
+  minDeposit: '1000',
+  withdrawDelay: 86_400,
 };
+
+/** The client's private wiring, which these tests reach into rather than a chain. */
+interface Internals {
+  manager: BatchChannelManager;
+  payer: BatchSettlementPayer;
+  connectorWatermark(entry: Record<string, unknown>): Promise<bigint | undefined>;
+}
+
+function internals(client: ToonClient): Internals {
+  return client as unknown as Internals;
+}
+
+/**
+ * The EVM channel the fake's `batchSettlements[0]` would have opened, recorded
+ * straight into the manager with a deposit — which is the restart path anyway,
+ * and keeps these tests off a chain. `channel-facade.test.ts` and the payer's
+ * own suite own the opening path.
+ */
+function adoptChannel(client: ToonClient, fake: FakeTerminatingConnector): BatchChannel {
+  const terms = fake.batchSettlements[0]!;
+  const channel: BatchChannel = {
+    chain: 'evm',
+    channelId: CHANNEL,
+    network: String(terms['network']),
+    config: {
+      payer: IDENTITY.evm.address,
+      payerAuthorizer: IDENTITY.evm.address,
+      receiver: String(terms['payTo']),
+      receiverAuthorizer: String(terms['receiverAuthorizer']),
+      token: String(terms['asset']),
+      withdrawDelay: Number(terms['withdrawDelay']),
+      salt: `0x${'00'.repeat(32)}`,
+    },
+  };
+  internals(client).manager.adopt(fake.endpoint, channel, 100_000n);
+  return channel;
+}
 
 function fixture(): FakeTerminatingConnector {
   return new FakeTerminatingConnector({ endpoint: 'http://connector.test' });
@@ -61,7 +105,7 @@ describe('ToonClient.create', () => {
 
   it('takes the FIRST published settlement it holds a key for — the node\'s order is the preference', async () => {
     const fake = fixture();
-    fake.describeSettlements = [SOLANA_SETTLEMENT, ...fake.describeSettlements];
+    fake.batchSettlements = [SOLANA_SETTLEMENT, ...fake.batchSettlements];
     const client = await create(fake);
     expect(client.chain).toBe('solana');
     expect(client.identity.senderId).toBe(IDENTITY.solana.publicKey);
@@ -69,7 +113,7 @@ describe('ToonClient.create', () => {
 
   it('honours an explicit chain over the node\'s order', async () => {
     const fake = fixture();
-    fake.describeSettlements = [SOLANA_SETTLEMENT, ...fake.describeSettlements];
+    fake.batchSettlements = [SOLANA_SETTLEMENT, ...fake.batchSettlements];
     const client = await create(fake, { chain: 'evm' });
     expect(client.chain).toBe('evm');
   });
@@ -78,18 +122,18 @@ describe('ToonClient.create', () => {
     const fake = fixture();
     const error = await create(fake, { chain: 'solana' }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ChainUnavailableError);
-    expect((error as ChainUnavailableError).offered).toEqual(['evm:84532']);
+    expect((error as ChainUnavailableError).offered).toEqual(['eip155:84532']);
   });
 
   it('refuses a node that settles on nothing — nothing can be paid for', async () => {
     const fake = fixture();
-    fake.describeSettlements = [];
+    fake.batchSettlements = [];
     await expect(create(fake)).rejects.toBeInstanceOf(ChainUnavailableError);
   });
 
   it('refuses when the client holds no key for any chain the node offers', async () => {
     const fake = fixture();
-    fake.describeSettlements = [SOLANA_SETTLEMENT];
+    fake.batchSettlements = [SOLANA_SETTLEMENT];
     const error = await ToonClient.create({
       connector: fake.endpoint,
       evmPrivateKey: `0x${'11'.repeat(32)}`,
@@ -147,7 +191,10 @@ describe('ToonClient.describe', () => {
     const client = await create(fixture());
     const description = await client.describe();
     expect(description.routes).toEqual([{ prefix: 'g.fake', price: 1000n }]);
-    expect(description.settlements[0]).toMatchObject({ kind: 'evm', chain: 'evm:84532' });
+    expect(description.batchSettlements[0]).toMatchObject({
+      chain: 'evm',
+      network: 'eip155:84532',
+    });
     expect(description.edgeIdentity?.publicKey).toBeTruthy();
   });
 });
@@ -224,61 +271,64 @@ describe('ToonClient — opening is never a side effect', () => {
     await expect(client.probe('g.fake.route')).rejects.toBeInstanceOf(ChannelNotOpenError);
   });
 
-  it('refuses to read, deposit into, close or settle a channel that does not exist', async () => {
+  it('refuses to deposit into or close a channel that does not exist, and settles nothing', async () => {
     const client = await create(fixture(), { autoOpenChannel: false });
-    await expect(client.channel.state()).rejects.toBeInstanceOf(ChannelNotOpenError);
+    await expect(client.channel.current()).resolves.toBeUndefined();
+    expect(client.channel.channels()).toEqual([]);
     await expect(client.channel.deposit(1n)).rejects.toBeInstanceOf(ChannelNotOpenError);
     await expect(client.channel.close()).rejects.toBeInstanceOf(ChannelNotOpenError);
-    await expect(client.channel.settle()).rejects.toBeInstanceOf(ChannelNotOpenError);
-    expect(client.channel.id).toBeUndefined();
+    await expect(client.channel.settle()).resolves.toEqual([]);
   });
 });
 
 describe('ToonClient.probe', () => {
-  /**
-   * A client with a channel already open, without touching a chain: the channel
-   * is adopted straight into the manager, which is the restart path anyway.
-   */
-  async function withChannel(fake: FakeTerminatingConnector): Promise<ToonClient> {
+  /** A client holding a channel it has already paid on once. */
+  async function withVoucher(fake: FakeTerminatingConnector): Promise<ToonClient> {
     const client = await create(fake, { autoOpenChannel: false });
-    const description = await client.describe();
-    const terms = settlementToTerms(description.settlements[0]!);
-    // Reaching for the manager keeps this test about `probe` rather than about
-    // opening; `channel-facade.test.ts` owns the opening path.
-    const channels = (client as unknown as { channels: ChannelManager }).channels;
-    channels.adoptChannel(fake.endpoint, terms, CHANNEL);
+    adoptChannel(client, fake);
+    const paid = await client.send('g.fake.route');
+    expect(paid.fulfilled).toBe(true);
     return client;
   }
 
   it('learns a path cost without buying the work behind it', async () => {
     const fake = fixture();
-    const client = await withChannel(fake);
+    const client = await withVoucher(fake);
+    const delivered = fake.opened.length;
 
     const result = await client.probe('g.fake.route');
     // A destination this node terminates is answered F03 with the route's price
     // as the whole path cost — no hop was traversed to reach it.
     expect(result.code).toBe('F03');
     expect(result.accumulatedCost).toBe(1000n);
-    // Nothing was delivered: the app was never called.
-    expect(fake.opened).toHaveLength(0);
+    // Nothing more was delivered: the app was not called for the probe.
+    expect(fake.opened).toHaveLength(delivered);
   });
 
-  it('identifies with a claim that advances the nonce but moves no value', async () => {
+  it('identifies with the latest voucher, resent byte for byte — it pays nothing more', async () => {
     const fake = fixture();
-    const client = await withChannel(fake);
+    const client = await withVoucher(fake);
+    const paid = fake.claims.at(-1)!;
     await client.probe('g.fake.route');
 
-    const claim = fake.claims.at(-1)!;
-    expect(claim['nonce']).toBe(1);
-    // A replay is still refused, so the nonce advances — but the cumulative
-    // does not, because a probe identifies rather than pays.
-    expect(claim['transferredAmount']).toBe('0');
+    expect(fake.claims.at(-1)).toEqual(paid);
+    expect(paid['maxClaimableAmount']).toBe('1000');
+    // And the running total did not move: the next paid voucher is 2000.
+    await client.send('g.fake.route');
+    expect(fake.claims.at(-1)!['maxClaimableAmount']).toBe('2000');
+  });
+
+  it('refuses on a channel held but never paid on — there is no voucher to identify with', async () => {
+    const fake = fixture();
+    const client = await create(fake, { autoOpenChannel: false });
+    adoptChannel(client, fake);
+    await expect(client.probe('g.fake.route')).rejects.toBeInstanceOf(ChannelNotOpenError);
   });
 
   it('surfaces a 403 as a refusal to AUTHORIZE, distinct from failing to authenticate', async () => {
     const fake = fixture();
+    const client = await withVoucher(fake);
     fake.probeForbidden = true;
-    const client = await withChannel(fake);
     await expect(client.probe('g.fake.route')).rejects.toThrow(/probe/i);
   });
 });
@@ -288,72 +338,129 @@ describe('ToonClient.claimState', () => {
     const client = await create(fixture());
     await expect(client.claimState()).resolves.toEqual([]);
   });
+
+  it('proves control with the voucher claim-state challenge, and reports the connector\'s watermark', async () => {
+    const fake = fixture();
+    const asked: Record<string, unknown>[] = [];
+    const spy: typeof fetch = (input, init) => {
+      if (String(input).endsWith('/ilp/claim-state')) {
+        asked.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      }
+      return fake.fetch(input, init);
+    };
+    const client = await create(fake, { fetch: spy });
+    adoptChannel(client, fake);
+    fake.banked.set(CHANNEL, { cumulativeClaimed: 3000n, maxCumulative: 100_000n });
+
+    const [entry] = await client.claimState();
+
+    expect(entry).toMatchObject({
+      channelId: CHANNEL,
+      ok: true,
+      scheme: 'batch-settlement',
+      cumulativeClaimed: '3000',
+      maxCumulative: '100000',
+      available: '97000',
+    });
+    const [challenge] = (asked[0]?.['channels'] ?? []) as Record<string, unknown>[];
+    expect(challenge).toMatchObject({ channelId: CHANNEL });
+    expect(challenge?.['channelConfig']).toBeDefined();
+    expect(String(challenge?.['signature'])).toMatch(/^0x[0-9a-f]{130}$/);
+    const expires = Number(challenge?.['expires']);
+    expect(expires).toBeGreaterThan(Date.now() / 1000);
+    expect(expires).toBeLessThanOrEqual(Date.now() / 1000 + 300);
+  });
+
+  it('asks only about the channels named', async () => {
+    const fake = fixture();
+    const client = await create(fake);
+    adoptChannel(client, fake);
+    await expect(client.claimState([`0x${'cd'.repeat(32)}`])).resolves.toEqual([]);
+    expect(fake.claimStateAsks).toEqual([]);
+  });
 });
 
 /**
- * toon-client#671 — the read `send` performs before signing a claim on a
- * channel whose last one was signed and never confirmed. `send.test.ts` owns
- * the pipeline's half of this; here the subject is the wiring: a real
- * `POST /ilp/claim-state` round trip, and what the manager does with the answer.
+ * Where the connector's watermark comes from when this client's own is in
+ * doubt: a real `POST /ilp/claim-state` round trip behind the payer's
+ * `connectorWatermark` port, and what the manager does with the answer. The
+ * payer's suite owns WHEN it asks; the subject here is the wiring.
  */
-describe('ToonClient — reconciling a doubtful watermark', () => {
-  /** A client tracking `CHANNEL`, with a doubt recorded against it. */
-  async function withDoubt(fake: FakeTerminatingConnector): Promise<{
+describe('ToonClient — reading the connector\'s watermark', () => {
+  async function withChannel(fake: FakeTerminatingConnector): Promise<{
     client: ToonClient;
-    channels: ChannelManager;
+    channel: BatchChannel;
   }> {
     const client = await create(fake, { autoOpenChannel: false });
-    const description = await client.describe();
-    const terms = settlementToTerms(description.settlements[0]!);
-    const channels = (client as unknown as { channels: ChannelManager }).channels;
-    channels.adoptChannel(fake.endpoint, terms, CHANNEL);
-    // A claim signed, sent, and lost to a timeout: repaid locally, and doubted.
-    await channels.signBalanceProof(CHANNEL, 1000n);
-    channels.rollbackAmount(CHANNEL, 1000n);
-    channels.markWatermarkUncertain(CHANNEL);
-    return { client, channels };
+    const channel = adoptChannel(client, fake);
+    return { client, channel };
   }
 
-  /** `send` reaches this through the port; the test reaches it directly. */
-  function reconcile(client: ToonClient, channelId: string): Promise<void> {
+  async function ask(client: ToonClient, channel: BatchChannel): Promise<bigint | undefined> {
+    const { payer, connectorWatermark } = internals(client);
+    const entry = await payer.challenge(channel, BigInt(Math.floor(Date.now() / 1000) + 60));
+    return connectorWatermark.call(client, entry);
+  }
+
+  /** The payer's resync, reached directly. */
+  function resync(client: ToonClient, channel: BatchChannel): Promise<void> {
     return (
-      client as unknown as { reconcileWatermark(id: string): Promise<void> }
-    ).reconcileWatermark(channelId);
+      internals(client).payer as unknown as { resync(c: BatchChannel): Promise<void> }
+    ).resync(channel);
   }
 
-  it('adopts the figure the connector actually banked, and settles the doubt', async () => {
+  it('answers the figure the connector actually banked', async () => {
     const fake = fixture();
-    const { client, channels } = await withDoubt(fake);
-    // The packet WAS delivered: the connector banked the claim this client
-    // gave up on.
-    fake.banked.set(CHANNEL, { nonce: 1, cumulativeClaimed: 1000n, depositTotal: 100_000n });
+    const { client, channel } = await withChannel(fake);
+    fake.banked.set(CHANNEL, { cumulativeClaimed: 1000n });
 
-    await reconcile(client, CHANNEL);
-
+    await expect(ask(client, channel)).resolves.toBe(1000n);
     expect(fake.claimStateAsks).toEqual([CHANNEL]);
-    expect(channels.getCumulativeAmount(CHANNEL)).toBe(1000n);
-    expect(channels.isWatermarkUncertain(CHANNEL)).toBe(false);
   });
 
-  it('leaves the doubt in place for a channel the connector will not verify', async () => {
+  it('answers nothing for a channel the connector will not verify', async () => {
     const fake = fixture();
-    const { client, channels } = await withDoubt(fake);
+    const { client, channel } = await withChannel(fake);
     // No entry: answered `ok: false, error: 'unverified'`, which covers "no
     // such channel" and "bad signature" identically — neither is a watermark.
-    await reconcile(client, CHANNEL);
+    await expect(ask(client, channel)).resolves.toBeUndefined();
+  });
 
-    expect(channels.getCumulativeAmount(CHANNEL)).toBe(0n);
-    expect(channels.isWatermarkUncertain(CHANNEL)).toBe(true);
+  it('adopts the banked figure as the running total the next voucher builds on', async () => {
+    const fake = fixture();
+    const { client, channel } = await withChannel(fake);
+    // Two vouchers signed, the second lost in transit before the connector
+    // ever saw it — and then a figure read back from the connector.
+    await client.send('g.fake.route');
+    internals(client).manager.reserve(CHANNEL, 1000n);
+    fake.banked.set(CHANNEL, { cumulativeClaimed: 1000n });
+
+    await resync(client, channel);
+
+    expect(internals(client).manager.signedSoFar(CHANNEL)).toBe(1000n);
+    await client.send('g.fake.route');
+    expect(fake.claims.at(-1)!['maxClaimableAmount']).toBe('2000');
   });
 
   it('never adopts more than this client has signed, however much is reported', async () => {
     const fake = fixture();
-    const { client, channels } = await withDoubt(fake);
-    fake.banked.set(CHANNEL, { nonce: 1, cumulativeClaimed: 99_000_000n });
+    const { client, channel } = await withChannel(fake);
+    await client.send('g.fake.route');
+    fake.banked.set(CHANNEL, { cumulativeClaimed: 99_000_000n });
 
-    await reconcile(client, CHANNEL);
+    await resync(client, channel);
 
-    expect(channels.getCumulativeAmount(CHANNEL)).toBe(1000n);
+    expect(internals(client).manager.signedSoFar(CHANNEL)).toBe(1000n);
+  });
+
+  it('leaves the local figure alone when the connector will not say', async () => {
+    const fake = fixture();
+    const { client, channel } = await withChannel(fake);
+    await client.send('g.fake.route');
+
+    await resync(client, channel);
+
+    expect(internals(client).manager.signedSoFar(CHANNEL)).toBe(1000n);
   });
 });
 
@@ -361,9 +468,9 @@ describe('ToonClient.close', () => {
   it('releases the client without touching the channel', async () => {
     const client = await create(fixture());
     await expect(client.close()).resolves.toBeUndefined();
-    // The channel is untouched: closing one starts a challenge period measured
-    // in hours, and a script ending must not settle a user's collateral.
-    expect(client.channel.id).toBeUndefined();
+    // No channel was touched: leaving one starts a withdrawal window measured
+    // in hours, and a script ending must not pull a user's deposit.
+    expect(client.channel.channels()).toEqual([]);
   });
 
   it('is idempotent', async () => {
@@ -572,11 +679,7 @@ describe('ToonClient — an endpoint the node advertises and this client cannot 
     try {
       const description = await client.describe();
       expect(description.httpEndpoint).toBe(`http://${HS_HOST}/ilp`);
-      const [settlement] = description.settlements;
-      if (settlement === undefined) throw new Error('the fixture publishes a settlement');
-      const terms = settlementToTerms(settlement);
-      const channels = (client as unknown as { channels: ChannelManager }).channels;
-      channels.adoptChannel(fake.endpoint, terms, CHANNEL);
+      adoptChannel(client, fake);
 
       // Not refused: the carriage is built against the published `.anyone`
       // endpoint and the request is paid for over it.

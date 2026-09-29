@@ -7,9 +7,6 @@ export {
   type ConnectorIdentity,
   type ConnectorRoutePrice,
   type ConnectorRouteTerms,
-  type ConnectorSettlementTerms,
-  type ConnectorSolanaSettlementTerms,
-  type ConnectorChainSettlementTerms,
   type ClaimStateOk,
   type ClaimStateFailed,
   type ClaimStateResult,
@@ -19,7 +16,6 @@ export {
   chargeFor,
   defaultDestinationFor,
   parseSelfDescription,
-  parseSettlementEntry,
   readBaseUnits,
   routeFor,
   routePriceFor,
@@ -28,12 +24,13 @@ export {
   type RequiredTransport,
   type RouteCharge,
   type RoutePrice,
+  type VoucherSigner,
 } from './self-description.js';
 export {
   parsePaymentTerms,
   parseX402Body,
   parseX402Challenge,
   type ParsedX402Challenge,
-  type ToonChannelAccept,
-  type X402ChannelExtra,
+  type ToonGreeting,
+  type ToonTermsInfo,
 } from './x402.js';

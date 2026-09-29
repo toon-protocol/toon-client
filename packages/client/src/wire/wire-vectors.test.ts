@@ -1,7 +1,7 @@
 /**
  * The vector-replay harness — the acceptance test for `envelope.ts`,
- * `giftwrap.ts`, and the EIP-712 `BalanceProof` that `signing/evm-signer.ts`
- * produces.
+ * `giftwrap.ts`, and the x402 `batch-settlement` vouchers and claim-state
+ * challenges that `channel/batch-settlement/` produces.
  *
  * The committed vector file is the contract (connector ADR 0021), not the prose
  * describing it and not this file's own opinions. Everything below is
@@ -11,8 +11,8 @@
  *
  * Structure: one top-level `describe` per section, each driven by `it.each`
  * over `loadWireVectors()`. `giftwrap` and `fulfilment` (toon-client#449),
- * `channel_control_declaration` (toon-client#540) and now `peer_carriage` each
- * arrived as exactly that — a new block, no restructure. Every section the
+ * `peer_carriage`, and the voucher sections (toon-client#692) each arrived as
+ * exactly that — a new block, no restructure. Every section the
  * file carries is replayed.
  *
  * `peer_carriage` is replayed only in PART, and deliberately so. Most of it is
@@ -20,9 +20,8 @@
  * semantics — which this client never speaks. But the OER ILP packet lives
  * inside those fixtures and is not peer-only at all: it is the same packet the
  * client edge sends and receives, and the connector's `vectors/README.md` says
- * so ("there is no separate top-level `packet` section: replay these"). So is
- * `claim_solana`'s signed message, which is the ADR 0053 balance proof this
- * client's Solana signer produces. What is left genuinely peer-only is named
+ * so ("there is no separate top-level `packet` section: replay these"). So are
+ * its two vouchers, which this client's voucher signers produce. What is left genuinely peer-only is named
  * in `PEER_ONLY_ITEMS` below, so no item of the section is merely unlooked-at.
  *
  * A section this harness has NOT been taught is a failure, not a no-op — see
@@ -79,6 +78,7 @@ import {
   buildSvmVoucherMessage,
   signSvmVoucher,
 } from '../channel/batch-settlement/svm.js';
+import { btpAuthEntry } from '../btp/IsomorphicBtpClient.js';
 import {
   CHANNEL_CHALLENGE_MAX_LIFETIME_SECONDS,
   evmChallengeDigest,
@@ -98,12 +98,14 @@ import {
   deserializeIlpPacket,
   deserializeIlpPrepare,
   parseBtpMessage,
+  serializeBtpMessage,
   serializeIlpFulfill,
   serializeIlpPrepare,
   serializeIlpReject,
   type BTPMessageData,
   type ILPRejectPacket,
 } from '../btp/protocol.js';
+import { must } from '../utils/must.test-support.js';
 
 const vectors = loadWireVectors();
 const provenance = loadWireVectorsProvenance();
@@ -181,11 +183,10 @@ describe('the vendored vector file', () => {
 
   it('replays the sections its provenance claims it replays', () => {
     // Every replayed section is reproduced by this repo's own code:
-    // `envelope` and `giftwrap`/`fulfilment` against `src/wire/`, `claim` and
-    // `channel_control_declaration` against `src/signing/evm-signer.ts`, and
-    // `peer_carriage` against `src/btp/protocol.ts` (the OER packet and the
-    // BTP frame around it) and `src/channel/solana/payment-channel.ts` (the
-    // ADR 0053 balance proof).
+    // `envelope` and `giftwrap`/`fulfilment` against `src/wire/`, the voucher,
+    // challenge and refused sections against `src/channel/batch-settlement/`
+    // and `src/connector/`, and `peer_carriage` against `src/btp/protocol.ts`
+    // (the OER packet and the BTP frame around it) and the voucher signers.
     expect(new Set(provenance.sectionsReplayed)).toEqual(
       new Set([
         'envelope',
@@ -880,7 +881,7 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
   });
 
   describe('evm', () => {
-    const v = voucher!.evm;
+    const v = must(voucher).evm;
     const config = {
       payer: getAddress(prefix0x(v.channel_config.payer_hex)),
       payerAuthorizer: getAddress(
@@ -949,7 +950,7 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
   });
 
   describe('solana', () => {
-    const v = voucher!.solana;
+    const v = must(voucher).solana;
 
     it('builds the published 50-byte message', () => {
       expect(v.expires_at).toBe(0);
@@ -1000,7 +1001,7 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
     // choose an amount the connector accepts. `nextVoucherAmount` never
     // re-presents the watermark (every refused or retransmitted case) and
     // presents exactly watermark + charge (the accepted case).
-    it.each(voucher!.amount_only_watermark.map((c) => [c.name, c] as const))(
+    it.each(must(voucher).amount_only_watermark.map((c) => [c.name, c] as const))(
       '%s',
       (_name, c) => {
         const next = nextVoucherAmount(
@@ -1009,7 +1010,7 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
         );
         if (c.outcome === 'advances') {
           expect(next).toBe(BigInt(c.presented_amount));
-          expect(next! - BigInt(c.watermark_amount)).toBe(BigInt(c.advanced!));
+          expect(must(next) - BigInt(c.watermark_amount)).toBe(BigInt(must(c.advanced)));
         } else {
           // Refused, retransmitted or underpaid: all present the watermark
           // itself, which the client never signs as a new voucher.
@@ -1026,11 +1027,11 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
     // the client owes them is never to build a voucher they refuse: a Solana
     // voucher's expires_at is always zero by construction (see above), and the
     // amount rule is replayed above, against `nextVoucherAmount`.
-    expect(voucher!.invalid.map((c) => c.expected_error)).toContain(
+    expect(must(voucher).invalid.map((c) => c.expected_error)).toContain(
       'voucher_expires'
     );
     expect(
-      new Set(voucher!.amount_only_watermark.map((c) => c.outcome))
+      new Set(must(voucher).amount_only_watermark.map((c) => c.outcome))
     ).toEqual(
       new Set([
         'amount_not_advancing',
@@ -1045,7 +1046,7 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
 // ─── voucher_claim_state_challenge ──────────────────────────────────────────
 
 describe('voucher_claim_state_challenge — proving control of a channel without moving value', () => {
-  const section = vectors.voucher_claim_state_challenge!;
+  const section = must(vectors.voucher_claim_state_challenge);
 
   it.each(section.evm.map((c) => [c.name, c] as const))(
     '%s',
@@ -1109,7 +1110,7 @@ describe('voucher_claim_state_challenge — proving control of a channel without
 // ─── client_auth_channel_challenge ──────────────────────────────────────────
 
 describe('client_auth_channel_challenge — the BTP auth channel declaration', () => {
-  const section = vectors.client_auth_channel_challenge!;
+  const section = must(vectors.client_auth_channel_challenge);
 
   it('bounds a challenge’s lifetime the way the connector does', () => {
     expect(section.max_lifetime_secs).toBe(
@@ -1129,6 +1130,24 @@ describe('client_auth_channel_challenge — the BTP auth channel declaration', (
       expect(JSON.parse(c.challenge_json)).toMatchObject({
         scheme: 'batch-settlement',
       });
+    }
+  });
+
+  it('frames the auth entry exactly as the vector’s BTP MESSAGE carries it', () => {
+    for (const c of [...section.evm, ...section.solana]) {
+      const frame = parseBtpMessage(hexToBytes(c.btp_message_hex));
+      const data = frame.data as BTPMessageData;
+      const auth = data.protocolData.find((p) => p.protocolName === 'auth');
+      const published = JSON.parse(c.auth_entry_json) as { peerId: string; secret: string };
+      const ours = btpAuthEntry(published.peerId, published.secret, JSON.parse(c.challenge_json));
+      expect(ours, c.name).toBe(c.auth_entry_json);
+      expect(new TextDecoder().decode(auth?.data)).toBe(ours);
+      const rebuilt = serializeBtpMessage({
+        type: BTPMessageType.MESSAGE,
+        requestId: frame.requestId,
+        data: { protocolData: [{ protocolName: 'auth', contentType: 1, data: new TextEncoder().encode(ours) }] },
+      });
+      expect(bytesToHex(rebuilt), c.name).toBe(c.btp_message_hex);
     }
   });
 
@@ -1162,14 +1181,14 @@ describe('client_auth_channel_challenge — the BTP auth channel declaration', (
 
 describe('the retired toon-channel shapes — which this client never produces', () => {
   it('names every refused claim and claim-state entry for having no batch-settlement scheme', () => {
-    for (const c of vectors.toon_channel_refused!.cases) {
+    for (const c of must(vectors.toon_channel_refused).cases) {
       const claim = JSON.parse(c.claim_json) as Record<string, unknown>;
       expect(
         claim['scheme'] === undefined || claim['scheme'] === 'toon-channel',
         c.name
       ).toBe(true);
     }
-    for (const c of vectors.claim_state_toon_channel_refused!.cases) {
+    for (const c of must(vectors.claim_state_toon_channel_refused).cases) {
       const entry = JSON.parse(c.request_entry_json) as Record<string, unknown>;
       expect(
         entry['scheme'] === undefined || entry['scheme'] === 'toon-channel',

@@ -24,7 +24,7 @@ export async function run(ctx: CommandContext): Promise<number> {
   // The decimals a price is denominated in are the settlement's, so the
   // self-description is read even here — it is cached and already fetched.
   const description = await client.describe();
-  const asset = assetFromSettlement(description.settlements[0]);
+  const asset = assetFromSettlement(description.batchSettlements[0]);
   const perKib = terms?.pricePerKib;
 
   ctx.out.render(

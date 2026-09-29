@@ -190,7 +190,7 @@ function payloadFor(result: SendResult): unknown {
             httpEndpoint: terms.httpEndpoint,
             btpEndpoint: terms.btpEndpoint,
             requiredTransport: terms.requiredTransport,
-            settlements: terms.settlements,
+            batchSettlements: terms.batchSettlements,
             sessionLeaseTtlMs: terms.sessionLeaseTtlMs,
           },
         }
@@ -220,7 +220,7 @@ export async function run(ctx: CommandContext): Promise<number> {
   );
 
   const description = await client.describe();
-  const asset = assetFromSettlement(description.settlements[0]);
+  const asset = assetFromSettlement(description.batchSettlements[0]);
 
   ctx.out.render(payloadFor(result), () => {
     if (result.fulfilled) {
@@ -228,13 +228,13 @@ export async function run(ctx: CommandContext): Promise<number> {
       const claim = result.claim;
       ctx.out.rows(
         claim === undefined
-          ? // A route priced at zero takes no claim, so there is no channel,
-            // nonce or amount to show. Saying so beats printing zeroes.
+          ? // A route priced at zero takes no voucher, so there is no channel
+            // or amount to show. Saying so beats printing zeroes.
             [['paid', 'nothing — this route is free']]
           : [
               [
                 'paid',
-                `${formatAmount(claim.amount, asset)}  channel ${claim.channelId} nonce ${String(claim.nonce)}`,
+                `${formatAmount(claim.amount, asset)}  channel ${claim.channelId}`,
               ],
               ['cumulative', formatAmount(claim.cumulative, asset)],
             ]

@@ -15,8 +15,8 @@
  *
  * ## Running it
  *
- * **This spends real testnet USDC and real testnet gas**, so it is opt-in and
- * runs nowhere by default:
+ * **This spends real testnet USDC**, so it is opt-in and runs nowhere by
+ * default:
  *
  * ```bash
  * RUST_EDGE_DEVNET=1 \
@@ -24,14 +24,12 @@
  * npx vitest run src/__integration__/rust-edge-devnet.integration.test.ts
  * ```
  *
- * The wallet needs Base Sepolia ETH for gas and mock USDC for collateral;
- * `toon faucet` drips both. The channel is opened on the first run and
- * **adopted** on every later one — a channel's id is derived from its
- * participants (ADR 0059), so nothing needs to be remembered between runs for
- * the right channel to be found, though a `TOON_CHANNEL_STORE` path is still
- * required so the claim watermark survives: a claim must strictly advance the
- * nonce the connector has already banked (`client-edge-spec.md` §1.3 step 2),
- * and a forgotten watermark refuses every later claim.
+ * The wallet needs devnet USDC for the deposit and no gas: on Base the deposit
+ * is relayed by the devnet's x402 facilitator, on Solana the connector
+ * sponsors the open (connector ADRs 0074, 0075). `toon faucet` drips the USDC.
+ * The channel is opened on the first run and resumed on later ones from
+ * `TOON_CHANNEL_STORE`: an x402 channel's config is not recoverable from the
+ * chain, so a run without the store opens a fresh one.
  *
  * Overrides: `TOON_CONNECTOR`, `TOON_DESTINATION`, `TOON_CHAIN`,
  * `TOON_RPC_URL`, `TOON_TRANSPORT`, `TOON_CHANNEL_STORE`.
@@ -56,8 +54,8 @@ const RPC_URL = process.env['TOON_RPC_URL'];
  * Where the claim watermark goes.
  *
  * A temp store is enough for ONE run: persisting matters because a later
- * process must resume the watermark, and a run that opens its own channel has
- * nothing to resume. A repeated run against a live channel needs a real path,
+ * process must resume the channel and its watermark, and a run that opens its
+ * own channel has nothing to resume. A repeated run against a live channel needs a real path,
  * which is what `TOON_CHANNEL_STORE` is for. Resolved lazily so a skipped run
  * creates no directory.
  */
@@ -95,21 +93,22 @@ maybe('a paid request through the deployed Rust connector (devnet)', () => {
     // Without a sealing key a packet cannot be formed at all
     // (`self-description-spec.md` ND-06).
     expect(description.edgeIdentity?.publicKey).toMatch(/^0x04[0-9a-fA-F]{128}$/);
-    expect(description.settlements.length).toBeGreaterThan(0);
+    expect(description.batchSettlements.length).toBeGreaterThan(0);
 
     // (2) The price is ASKED for.
     const price = await client.price(DESTINATION);
     expect(price).not.toBeNull();
     expect(price!).toBeGreaterThan(0n);
 
-    // (3) Open, or adopt what is already open. Costs gas the first time and
-    // nothing thereafter.
-    const opened = await client.channel.open({ deposit: 100_000n });
-    expect(opened.status).toBe('open');
-    expect(opened.domain.chain).toBe(description.settlements[0]?.chain);
+    // (3) Open, or resume what is already open. Costs a deposit the first time
+    // and nothing thereafter, and no gas either way.
+    const opened = await client.channel.open();
+    expect(description.batchSettlements.map((t) => t.network)).toContain(
+      opened.channel.network
+    );
     expect(opened.depositTotal).toBeGreaterThanOrEqual(price!);
 
-    // (4) The paid request itself: sealed payload, signed claim, one packet.
+    // (4) The paid request itself: sealed payload, signed voucher, one packet.
     const answer = await client.send(DESTINATION, {
       headers: { 'content-type': 'text/plain' },
       body: `toon-client 1.0 devnet proof ${new Date().toISOString()}`,
@@ -133,28 +132,27 @@ maybe('a paid request through the deployed Rust connector (devnet)', () => {
     expect(claim).toBeDefined();
     if (claim === undefined) throw new Error('a paid send reported no claim');
     expect(claim.amount).toBe(price);
-    expect(claim.nonce).toBeGreaterThan(0);
+    expect(claim.channelId).toBe(opened.channel.channelId);
 
     // (5) The local watermark advanced by exactly what was paid.
-    const after = await client.channel.state();
-    expect(after.spent).toBe(claim.cumulative);
-    expect(after.nonce).toBe(claim.nonce);
-    expect(after.available).toBe(after.depositTotal - after.spent);
+    const after = await client.channel.current();
+    expect(after?.signed).toBe(claim.cumulative);
 
     // (6) …and the CONNECTOR's own watermark agrees with ours. This is the
     // assertion the whole suite exists for: two independent records of one
     // channel, reconciled over the wire rather than assumed.
     const [state] = await client.claimState([claim.channelId]);
     expect(state).toBeDefined();
+    expect(state?.ok).toBe(true);
     if (state?.ok === true) {
       expect(BigInt(state.cumulativeClaimed)).toBe(claim.cumulative);
-      expect(state.nonce).toBe(claim.nonce);
     }
   }, 300_000);
 
-  it('charges the same for a second request, and the nonce strictly advances', async () => {
+  it('charges the same for a second request, and the voucher strictly advances', async () => {
     expect(client).toBeDefined();
-    const before = await client!.channel.state();
+    const before = await client!.channel.current();
+    if (before === undefined) throw new Error('no channel after a paid send');
     const answer = await client!.send(DESTINATION, { body: 'second' });
 
     if (!answer.fulfilled) {
@@ -162,8 +160,7 @@ maybe('a paid request through the deployed Rust connector (devnet)', () => {
     }
     const claim = answer.claim;
     if (claim === undefined) throw new Error('a paid send reported no claim');
-    expect(claim.nonce).toBe(before.nonce + 1);
-    expect(claim.cumulative).toBe(before.spent + claim.amount);
+    expect(claim.cumulative).toBe(before.signed + claim.amount);
   }, 300_000);
 
   it('answers null for a destination this node does not terminate', async () => {

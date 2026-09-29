@@ -279,21 +279,19 @@ describe('HttpIlpClient over a real http.Server (integration)', () => {
     const terms = {
       x402Version: 2,
       resource: { url: 'g.toon.relay' },
-      accepts: [
-        {
-          scheme: 'toon-channel',
-          amount: '1',
-          payTo: 'g.toon.relay',
-          httpEndpoint: '/ilp',
-          extra: {
+      accepts: [],
+      extensions: {
+        toon: {
+          info: {
             ilpAddress: 'g.toon.relay',
+            amount: '1',
             endpoint: '/ilp',
             price: '1',
             requiredTransport: 'btp',
             btpEndpoint: 'wss://relay.example/ilp/btp',
           },
         },
-      ],
+      },
     };
     const body = Buffer.from(JSON.stringify(terms), 'utf8');
     respondWith = {

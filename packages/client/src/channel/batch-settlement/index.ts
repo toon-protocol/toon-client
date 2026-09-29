@@ -1,7 +1,6 @@
-// x402 `batch-settlement` (connector ADR 0074): the chain half of paying a
-// connector from an x402 channel — channel config and id, vouchers, and the
-// gasless deposit or sponsored open. How a voucher rides TOON's wire is fixed by
-// the connector's vectors, and is not here yet (toon-client#679).
+// x402 `batch-settlement` (connector ADRs 0074, 0075): the only way this client
+// pays a connector — channel config and id, the gasless deposit or sponsored
+// open, vouchers and the claim-state challenge, and leaving a channel.
 export {
   X402_BATCH_SETTLEMENT_ADDRESS,
   ERC3009_DEPOSIT_COLLECTOR_ADDRESS,
@@ -74,6 +73,13 @@ export {
   type VoucherOutcome,
 } from './payer.js';
 export { requestSponsoredOpen, type SponsoredOpen } from './sponsor.js';
+export {
+  CHANNEL_CHALLENGE_MAX_LIFETIME_SECONDS,
+  evmChallengeDigest,
+  signEvmChallenge,
+  solanaChallengeMessage,
+  signSolanaChallenge,
+} from './challenge.js';
 export {
   X402_BATCH_SETTLEMENT_EXIT_ABI,
   initiateEvmBatchWithdraw,

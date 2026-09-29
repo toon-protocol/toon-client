@@ -1,8 +1,9 @@
 # TOON Client
 
 The payer. This package seals an HTTP request into a packet addressed to a route, attaches a
-signed claim on a payment channel the user opened on chain, and returns the app's HTTP response.
-It never validates a claim — that is the connector's job, and only the connector's.
+signed voucher on an x402 `batch-settlement` channel the user opened on chain, and returns the
+app's HTTP response. It never validates a claim — that is the connector's job, and only the
+connector's.
 
 ## Language
 
@@ -19,7 +20,7 @@ _Avoid_: Endpoint, path
 
 **Self-description**:
 The single document a connector answers a free, unauthenticated `GET` on its client edge with —
-addresses, sealing key, settlement terms, routes, endpoints. It replaces peer discovery entirely.
+addresses, sealing key, x402 channel terms (`batchSettlements`), routes, endpoints. It replaces peer discovery entirely.
 _Avoid_: Manifest, greeting, announcement, discovery
 
 **Client edge**:
@@ -37,16 +38,31 @@ The transport a packet rides: `http` (`POST /ilp`) or `btp` (a WebSocket session
 insist on one.
 _Avoid_: Transport, protocol, channel
 
+**Payment channel**:
+An x402 `batch-settlement` channel: a deposit the payer locks on chain, payable one way to one
+connector — x402's contract on Base, solana-foundation's `payment-channels` program on Solana. The
+only kind of channel there is (connector ADR 0075).
+_Avoid_: toon-channel, TokenNetwork channel
+
 **Claim**:
-A signed balance proof on a payment channel, attached to a packet as its payment. A claim has a
-**scheme**: `toon-channel`, or — at the client edge only — x402's `batch-settlement`, whose claims
-are **vouchers** (connector ADR 0074).
-_Avoid_: Payment, receipt, proof; "voucher" for a `toon-channel` claim
+What a packet carries as its payment, in the `ILP-Payment-Channel-Claim` header or BTP's
+`payment-channel-claim` entry. Every claim is a **voucher**; the connector refuses anything else.
+_Avoid_: Payment, receipt, proof
 
 **Voucher**:
-A claim under x402's `batch-settlement` scheme: cumulative, with no nonce, so a connector orders
-vouchers by amount alone.
-_Avoid_: Balance proof, claim (when the scheme matters)
+A signed statement of a channel's cumulative total. It has no nonce, so a connector orders
+vouchers by amount alone, and each one supersedes the last.
+_Avoid_: Balance proof
+
+**Facilitator**:
+An x402 service that submits a payer-authorized Base deposit and pays its gas, so opening a
+channel costs the payer no native gas. On Solana the connector itself sponsors the open instead.
+_Avoid_: Relayer, onboarder (except as the devnet deployment's name)
+
+**Watermark**:
+The cumulative amount a channel's latest voucher reached. The payer keeps one; the connector keeps
+its own, which decides, and reports it through `claim-state`.
+_Avoid_: Nonce, balance
 
 **Refusal**:
 A connector's rejection of a packet. It is *returned*, never thrown — anything this client throws

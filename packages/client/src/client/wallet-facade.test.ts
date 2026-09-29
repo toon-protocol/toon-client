@@ -20,20 +20,25 @@ const MNEMONIC = 'test test test test test test test test test test test junk';
 const IDENTITY = deriveFullIdentity(MNEMONIC);
 const CONNECTOR = 'http://connector.test';
 
+// `batchSettlements` terms as GET /ilp publishes them (connector ADR 0074).
 const EVM_SETTLEMENT = {
-  chain: 'evm:84532',
-  settlementAddress: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
-  tokenNetworkRegistry: '0x8263BdD4eB4862395Cb4ef5dA5d637F4b047Eea1',
-  tokenNetwork: '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478',
-  tokenAddress: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
-  decimals: 6,
+  network: 'eip155:84532',
+  asset: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
+  payTo: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+  receiverAuthorizer: '0x90F79bf6EB2c4f870365E785982E1f101E93b906',
+  withdrawDelay: 86_400,
+  name: 'USDC',
+  version: '2',
 };
 const SOLANA_SETTLEMENT = {
-  chain: 'solana',
-  settlementAddress: 'So11111111111111111111111111111111111111112',
-  programId: '2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip',
-  tokenAddress: '34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU',
-  decimals: 6,
+  network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+  asset: '34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU',
+  payTo: 'EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1',
+  feePayer: '9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu',
+  withdrawDelay: 86_400,
+  tokenProgram: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  minDeposit: '1000000',
+  sponsorEndpoint: '/ilp/batch-settlement/solana/open',
 };
 
 interface Call {
@@ -70,7 +75,7 @@ function facade(
     {
       ilpAddresses: ['g.fake'],
       peerCarriages: [],
-      settlements,
+      batchSettlements: settlements,
       routes: [],
       supportedVersions: [1],
       defaultVersion: 1,
@@ -146,6 +151,6 @@ describe('balances', () => {
       .map((c) => JSON.stringify(c.body))
       .join(' ');
     expect(params).toContain(IDENTITY.solana.publicKey);
-    expect(params).toContain(SOLANA_SETTLEMENT.tokenAddress);
+    expect(params).toContain(SOLANA_SETTLEMENT.asset);
   });
 });

@@ -1,10 +1,9 @@
 /**
  * The watermark and the config of this client's x402 `batch-settlement`
- * channels (connector ADR 0074, toon-client#688), persisted in the same
- * {@link ChannelStore} as its `toon-channel` ones.
+ * channels (connector ADRs 0074, 0075; toon-client#688), persisted in a
+ * {@link ChannelStore}.
  *
- * It is not {@link ../ChannelManager.js!ChannelManager}, because a voucher is
- * not a balance proof:
+ * A voucher is not a balance proof, so the bookkeeping is its own:
  *
  *   - **There is no nonce.** The connector orders vouchers by amount alone and
  *     accepts one only if it strictly exceeds the channel's watermark by at
@@ -19,10 +18,10 @@
  *
  * ## Resynchronization
  *
- * `POST /ilp/claim-state` does not answer for a voucher channel (the connector
- * resolves it only against `TokenNetwork` and TOON-program channels), and a
- * voucher refusal does not carry the connector's watermark. So there is no
- * connector figure to adopt, and the rules are built so that none is needed:
+ * `POST /ilp/claim-state` answers for a voucher channel (connector#1364,
+ * ADR 0075), but only when asked with a signed challenge, and a refusal names
+ * the connector's watermark only sometimes. So the rules are built to need it
+ * rarely:
  *
  *   - the amount is persisted BEFORE a voucher is signed, so a crash never
  *     re-signs below something already handed out;
@@ -31,8 +30,10 @@
  *     not;
  *   - only a definite refusal gives a charge back, and `amount_not_advancing`
  *     is not one: it says the connector already holds at least that amount;
- *   - a lost store is recovered, as a LOWER bound, from what the chain has
- *     landed ({@link BatchChannelManager.recoverFromChain}).
+ *     where its message names the figure, that figure is adopted, and where it
+ *     does not, the payer asks `claim-state` before the next voucher;
+ *   - a lost store is recovered from what the chain has landed, a LOWER bound,
+ *     and then from `claim-state`, the connector's own figure.
  */
 
 import type { Hex } from 'viem';
@@ -268,18 +269,85 @@ export class BatchChannelManager {
     const entry = this.entry(channelId);
     const ceiling = entry.signedCeiling ?? entry.cumulativeAmount;
     let cumulative = entry.cumulativeAmount;
+    let floor = entry.provenFloor;
     if (reason.connectorWatermark !== undefined) {
       cumulative =
         reason.connectorWatermark > ceiling
           ? ceiling
           : reason.connectorWatermark;
+      floor = max(floor, cumulative);
     } else if (reason.notAdvancing) {
       cumulative = ceiling > cumulative ? ceiling : cumulative;
+      // The connector already holds at least this voucher's amount.
+      floor = max(floor, voucherAmount);
     } else if (entry.cumulativeAmount === voucherAmount && charge > 0n) {
       cumulative = voucherAmount > charge ? voucherAmount - charge : 0n;
     }
-    if (cumulative === entry.cumulativeAmount) return;
-    this.store.save(channelId, { ...entry, cumulativeAmount: cumulative });
+    if (floor !== undefined && cumulative < floor) cumulative = floor;
+    if (cumulative === entry.cumulativeAmount && floor === entry.provenFloor) return;
+    this.store.save(channelId, {
+      ...entry,
+      cumulativeAmount: cumulative,
+      ...(floor !== undefined ? { provenFloor: floor } : {}),
+    });
+  }
+
+  /** The connector banked the voucher for `voucherAmount`: it holds at least that. */
+  banked(channelId: string, voucherAmount: bigint): void {
+    const entry = this.entry(channelId);
+    if (entry.provenFloor !== undefined && entry.provenFloor >= voucherAmount) return;
+    this.store.save(channelId, { ...entry, provenFloor: voucherAmount });
+  }
+
+  /**
+   * Record a voucher that went out on `channelId`, for a probe to resend — only
+   * if it is the highest yet. Answers come back in any order, and a probe must
+   * retransmit the connector's latest, never an older voucher it superseded.
+   */
+  recordVoucher(channelId: string, claimJson: string, amount: bigint): void {
+    const found = this.findBinding(channelId);
+    if (!found) return;
+    const recorded = found.binding.lastVoucherAmount;
+    if (recorded !== undefined && recorded > amount) return;
+    this.store.saveBinding?.(found.key, {
+      ...found.binding,
+      lastVoucher: claimJson,
+      lastVoucherAmount: amount,
+    });
+  }
+
+  /** The last voucher this client sent on `channelId`, exactly as it travelled. */
+  lastVoucher(channelId: string): string | undefined {
+    return this.findBinding(channelId)?.binding.lastVoucher;
+  }
+
+  /**
+   * Adopt the connector's own watermark for `channelId`, as `POST
+   * /ilp/claim-state` reported it: the figure the next voucher must exceed.
+   * Never above what this client ever signed — a connector can only hold a
+   * voucher it was given — unless `recovering` says this client's own record
+   * was lost, when the connector's figure is the only one there is. And never
+   * below what the connector is proven to hold: a figure under that is a
+   * connector that lost or has not caught up on its own state, and adopting it
+   * would sign vouchers it refuses as going backwards.
+   */
+  adoptConnectorWatermark(
+    channelId: string,
+    cumulativeClaimed: bigint,
+    options: { recovering?: boolean } = {}
+  ): void {
+    const entry = this.entry(channelId);
+    const ceiling = entry.signedCeiling ?? entry.cumulativeAmount;
+    let adopted =
+      options.recovering !== true && cumulativeClaimed > ceiling ? ceiling : cumulativeClaimed;
+    if (entry.provenFloor !== undefined && adopted < entry.provenFloor) {
+      adopted = entry.provenFloor;
+    }
+    this.store.save(channelId, {
+      ...entry,
+      cumulativeAmount: adopted,
+      signedCeiling: adopted > ceiling ? adopted : ceiling,
+    });
   }
 
   /** Whether this client still holds the watermark for `channelId`. */
@@ -290,8 +358,8 @@ export class BatchChannelManager {
   /**
    * Rebuild a lost watermark for a channel whose binding survived — the two
    * live in separate files — from what the chain shows landed. The connector
-   * holds at least that much; until connector#1364 lets `claim-state` answer
-   * for a voucher channel, it is the best floor there is.
+   * holds at least that much; the payer then asks `claim-state` for the
+   * connector's own figure (connector#1364), which replaces this floor.
    */
   restoreWatermark(channelId: string, landed: bigint): void {
     if (this.store.load(channelId)) return;
@@ -299,6 +367,7 @@ export class BatchChannelManager {
       nonce: 0,
       cumulativeAmount: landed,
       signedCeiling: landed,
+      provenFloor: landed,
     });
   }
 
@@ -314,6 +383,7 @@ export class BatchChannelManager {
     this.store.save(channelId, {
       ...entry,
       cumulativeAmount: landed,
+      provenFloor: max(entry.provenFloor, landed),
       signedCeiling:
         entry.signedCeiling === undefined || landed > entry.signedCeiling
           ? landed
@@ -470,4 +540,8 @@ function fromBinding(
       openSlot: BigInt(b.config.openSlot),
     },
   };
+}
+
+function max(a: bigint | undefined, b: bigint): bigint {
+  return a === undefined || b > a ? b : a;
 }

@@ -49,6 +49,9 @@ const TOON_CHANNEL_ACCEPT = {
   extra: { ilpAddress: 'g.toon.node', endpoint: '/ilp', price: '1000' },
 };
 
+/** The greeting's `extensions.toon.info` (wire v7). */
+const TOON_INFO = { ilpAddress: 'g.toon.node', amount: '1000', endpoint: '/ilp', price: '1000' };
+
 /** `batchSettlements` terms: the offer's facts without the per-route amount. */
 function terms(accept: typeof EVM_ACCEPT | typeof SOLANA_ACCEPT) {
   const {
@@ -118,28 +121,30 @@ describe('parseBatchSettlementTerms and offerFromTerms', () => {
 });
 
 describe('the greeting and the self-description', () => {
-  it('keep the toon-channel entry, and add every batch-settlement entry', () => {
+  it('read every batch-settlement entry, and the TOON facts from extensions.toon.info', () => {
     const parsed = parseX402Body(
       {
         x402Version: 2,
-        accepts: [EVM_ACCEPT, TOON_CHANNEL_ACCEPT, SOLANA_ACCEPT],
+        accepts: [EVM_ACCEPT, SOLANA_ACCEPT],
+        extensions: { toon: { info: TOON_INFO } },
       },
       'https://node.example'
     );
-    expect(parsed.toonChannel?.destination).toBe('g.toon.node');
+    expect(parsed.toon?.destination).toBe('g.toon.node');
+    expect(parsed.toon?.httpEndpoint).toBe('https://node.example/ilp');
     expect(parsed.batchSettlements).toEqual([
       { chain: 'evm', offer: EVM_ACCEPT },
       { chain: 'solana', offer: SOLANA_ACCEPT },
     ]);
   });
 
-  it('a greeting offering only toon-channel parses exactly as before', () => {
+  it('skip an entry of any other scheme — a toon-channel entry is no offer now', () => {
     const parsed = parseX402Body(
       { x402Version: 2, accepts: [TOON_CHANNEL_ACCEPT] },
       'https://n'
     );
-    expect(parsed.batchSettlements).toBeUndefined();
-    expect(Object.keys(parsed).sort()).toEqual(['toonChannel', 'x402Version']);
+    expect(parsed.batchSettlements).toEqual([]);
+    expect(parsed.toon).toBeUndefined();
   });
 
   it('GET /ilp publishes the same facts under batchSettlements', () => {

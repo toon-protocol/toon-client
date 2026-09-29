@@ -12,13 +12,14 @@
  * deals in **base units** — the integers the chain and the connector actually
  * agree on — and a CLI that printed only `0.001 USDC` would be hiding the number
  * every error message, every claim and every deposit is denominated in. So both
- * are printed, base units first: `1000 (0.001 USDC)`. The decimals come from the
- * connector's own settlement entry, never from a guess.
+ * are printed, base units first: `1000 (0.001 USDC)`. The human figure is only
+ * given for an asset this client recognises: the connector's x402 terms name
+ * an asset but not its decimals, and a decimal point in the wrong place is
+ * worse than none.
  */
 import { formatUnits } from 'viem';
 import { DEVNET } from '../presets.js';
-import type { ChannelTerms } from '../channel/types.js';
-import type { ConnectorChainSettlementTerms } from '../connector/self-description.js';
+import type { BatchSettlementTerms } from '../channel/batch-settlement/offers.js';
 
 /** Somewhere to write a line of text. Injected so tests never touch a real stream. */
 export type Writer = (text: string) => void;
@@ -43,35 +44,40 @@ export interface AssetInfo {
   symbol?: string;
 }
 
+/** USDC by address: the devnet's, and Circle's on Base and Solana mainnet. All 6 decimals. */
+const KNOWN_USDC = new Set(
+  [
+    DEVNET.evm.tokenAddress,
+    DEVNET.solana.tokenAddress,
+    '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  ].map((a) => (a.startsWith('0x') ? a.toLowerCase() : a))
+);
+
+function known(asset: string | undefined): boolean {
+  if (asset === undefined) return false;
+  return KNOWN_USDC.has(asset.startsWith('0x') ? asset.toLowerCase() : asset);
+}
+
 /**
  * A display label for a token address.
  *
- * This is the one place a preset is consulted, and it is consulted for a
- * **caption**: the connector publishes an asset's decimals but never its
- * symbol, so the alternative is an amount with no name on it. Nothing is ever
- * paid, signed or opened against what this returns — a wrong answer here
- * misspells a word, it does not move money.
+ * This is one of the two places a preset is consulted, and it is consulted for
+ * a **caption**: nothing is ever paid, signed or opened against what this
+ * returns — a wrong answer here misspells a word, it does not move money.
  */
 export function assetSymbol(tokenAddress: string | undefined): string | undefined {
-  if (tokenAddress === undefined) return undefined;
-  const t = tokenAddress.toLowerCase();
-  if (t === DEVNET.evm.tokenAddress.toLowerCase()) return 'USDC';
-  if (t === DEVNET.solana.tokenAddress.toLowerCase()) return 'USDC';
-  return undefined;
+  return known(tokenAddress) ? 'USDC' : undefined;
 }
 
-/** The asset facts in a connector's settlement entry, ready to format with. */
-export function assetFromSettlement(
-  settlement: Pick<ConnectorChainSettlementTerms, 'decimals' | 'tokenAddress'> | undefined
-): AssetInfo {
-  if (settlement === undefined) return {};
-  return { decimals: settlement.decimals, symbol: assetSymbol(settlement.tokenAddress) };
+/** The asset facts for a token address this client recognises, ready to format with. */
+export function assetInfo(asset: string | undefined): AssetInfo {
+  return known(asset) ? { decimals: 6, symbol: 'USDC' } : {};
 }
 
-/** The asset facts in a channel's signing domain. */
-export function assetFromTerms(terms: ChannelTerms | undefined): AssetInfo {
-  if (terms === undefined) return {};
-  return { decimals: terms.decimals, symbol: assetSymbol(terms.token) };
+/** The asset a connector's x402 terms name, ready to format with. */
+export function assetFromSettlement(terms: Pick<BatchSettlementTerms, 'asset'> | undefined): AssetInfo {
+  return assetInfo(terms?.asset);
 }
 
 /**

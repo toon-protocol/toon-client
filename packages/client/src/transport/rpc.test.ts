@@ -20,7 +20,8 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { PROXIED_RPC_DEFAULTS, rpcFetch, rpcTransport } from './rpc.js';
 import { startFakeSocks5, type FakeSocks5Server } from './fake-socks5.js';
 import { createHiddenServiceTransport, type HiddenServiceTransport } from './socks.js';
-import { TokenNetworkClient } from '../channel/evm/TokenNetworkClient.js';
+import { createPublicClient } from 'viem';
+import { readEvmBatchChannel } from '../channel/batch-settlement/evm.js';
 import { EvmSigner } from '../signing/evm-signer.js';
 import {
   readEvmNativeBalance,
@@ -44,8 +45,7 @@ const CHAIN_KEY = 'evm:hidden:84532';
 const SIGNER_KEY = `0x${'11'.repeat(32)}` as const;
 const DEST = '0x2222222222222222222222222222222222222222';
 const TOKEN = '0x3333333333333333333333333333333333333333';
-const REGISTRY = '0x4444444444444444444444444444444444444444';
-const TOKEN_NETWORK = '0x5555555555555555555555555555555555555555';
+const CHANNEL_ID = `0x${'44'.repeat(32)}` as const;
 const TX_HASH = `0x${'ab'.repeat(32)}`;
 const BLOCK_HASH = `0x${'cd'.repeat(32)}`;
 const WEI = 1_000_000_000_000_000n;
@@ -61,8 +61,9 @@ const SOL_SIGNATURE = base58Encode(new Uint8Array(64).fill(5));
 const SEL_BALANCE_OF = toFunctionSelector('function balanceOf(address) view returns (uint256)');
 const SEL_DECIMALS = toFunctionSelector('function decimals() view returns (uint8)');
 const SEL_SYMBOL = toFunctionSelector('function symbol() view returns (string)');
-const SEL_GET_TOKEN_NETWORK = toFunctionSelector(
-  'function getTokenNetwork(address) view returns (address)'
+const SEL_CHANNELS = toFunctionSelector('function channels(bytes32) view returns (uint128,uint128)');
+const SEL_PENDING_WITHDRAWALS = toFunctionSelector(
+  'function pendingWithdrawals(bytes32) view returns (uint128,uint40)'
 );
 
 /** Every JSON-RPC method this node was asked for, in order. */
@@ -144,7 +145,8 @@ function evmResult(method: string, params: unknown[]): unknown {
     case 'eth_call': {
       const data = String((params[0] as { data?: string })?.data ?? '');
       const selector = data.slice(0, 10);
-      if (selector === SEL_GET_TOKEN_NETWORK) return `0x${word(TOKEN_NETWORK)}`;
+      if (selector === SEL_CHANNELS) return `0x${word(5_000n)}${word(1_200n)}`;
+      if (selector === SEL_PENDING_WITHDRAWALS) return `0x${word(0n)}${word(0n)}`;
       if (selector === SEL_DECIMALS) return `0x${word(6n)}`;
       if (selector === SEL_SYMBOL) return encodeAbiParameters([{ type: 'string' }], ['TST']);
       if (selector === SEL_BALANCE_OF) return `0x${word(42n)}`;
@@ -229,15 +231,15 @@ const SELF_DESCRIPTION = {
   ilpAddresses: ['g.toon.hs'],
   httpEndpoint: `http://${HS_HOST}/ilp`,
   edgeIdentity: { keyId: 'k1', publicKey: `0x04${'11'.repeat(64)}` },
-  settlements: [
+  batchSettlements: [
     {
-      kind: 'evm',
-      chain: CHAIN_KEY,
-      settlementAddress: '0x1111111111111111111111111111111111111111',
-      tokenNetworkRegistry: REGISTRY,
-      tokenNetwork: TOKEN_NETWORK,
-      tokenAddress: TOKEN,
-      decimals: 6,
+      network: 'eip155:84532',
+      asset: TOKEN,
+      payTo: '0x1111111111111111111111111111111111111111',
+      receiverAuthorizer: '0x1111111111111111111111111111111111111111',
+      withdrawDelay: 86_400,
+      name: 'USDC',
+      version: '2',
     },
   ],
   routes: [{ prefix: 'g.toon.hs', price: '0' }],
@@ -288,14 +290,11 @@ describe('EVM chain RPC through the connector’s proxy', () => {
   const signer = new EvmSigner(SIGNER_KEY);
 
   it('carries a contract read to a node that public DNS cannot find', async () => {
-    const client = new TokenNetworkClient({
-      chain: CHAIN_KEY,
-      rpcUrl: RPC_URL,
-      signer,
-      rpcDispatcher: transport.dispatcher,
+    const client = createPublicClient({ transport: rpcTransport(RPC_URL, transport.dispatcher) });
+    await expect(readEvmBatchChannel(client, CHANNEL_ID)).resolves.toMatchObject({
+      balance: 5_000n,
+      totalClaimed: 1_200n,
     });
-
-    await expect(client.resolveTokenNetwork(REGISTRY, TOKEN)).resolves.toBe(TOKEN_NETWORK);
     expect(rpcCalls).toContain('eth_call');
     expectOnlyNamesReachedTheProxy();
   });
@@ -305,10 +304,10 @@ describe('EVM chain RPC through the connector’s proxy', () => {
     // back to the global `fetch`, which asks the operating system where a
     // `.anyone` host lives and is told nowhere. The proxy sees nothing, and in
     // the real world the address has by then gone out in a plaintext DNS query.
-    const client = new TokenNetworkClient({ chain: CHAIN_KEY, rpcUrl: RPC_URL, signer });
+    const client = createPublicClient({ transport: rpcTransport(RPC_URL, undefined) });
     const seen = proxy.requests.length;
 
-    await expect(client.resolveTokenNetwork(REGISTRY, TOKEN)).rejects.toThrow();
+    await expect(readEvmBatchChannel(client, CHANNEL_ID)).rejects.toThrow();
     expect(proxy.requests.length).toBe(seen);
     expect(rpcCalls).toEqual([]);
   });

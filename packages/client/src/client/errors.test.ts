@@ -138,9 +138,11 @@ describe('ChainUnavailableError', () => {
 
 describe('chainUnavailableMessage', () => {
   it('names the chain that was asked for when the node does not settle on it', () => {
-    const message = chainUnavailableMessage('solana', ['evm:84532'], 'not-offered');
+    const message = chainUnavailableMessage('solana', ['eip155:84532'], 'not-offered');
     expect(message).toContain('solana');
-    expect(message).toContain('evm:84532');
+    expect(message).toContain('eip155:84532');
+    // `chain` takes a family, never a CAIP-2 network: the remedy names families.
+    expect(message).toContain("`chain` to 'evm'");
   });
 
   it('tells a keyless client to supply a mnemonic', () => {

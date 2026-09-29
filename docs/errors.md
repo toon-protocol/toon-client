@@ -1,7 +1,7 @@
 # Errors and reject codes
 
 **A refusal is returned, never thrown.** `send()` resolves with `fulfilled: false` for anything
-the network refused — a bad claim, a route that does not exist, a carriage the route will not
+the network refused — a bad voucher, a route that does not exist, a carriage the route will not
 accept. Everything this client *throws* happened before the packet went out, or on chain.
 
 That split is the whole of the rule. A thrown error means you have a configuration or a wallet to
@@ -33,10 +33,10 @@ an accusation against any particular node.
 | Code | Means | The client does | You do |
 | --- | --- | --- | --- |
 | `F00` | Bad request: the envelope's `target` escaped the route's handler path — an absolute path, a `..` segment, a scheme or an authority. | Nothing. It is a request the app was never asked. | Fix `target`. It is resolved *beneath* the handler; `''` and `'/'` both mean the handler itself. |
-| `F01` | Malformed claim, a nonce that does not advance, or a channel the connector has no record of. | Rolls the local cumulative back so the amount is not lost, and re-reads the connector's watermark before the next claim. On "unknown channel", evicts the stale binding and retries once with a fresh channel. | If it persists: run `claim-state` and compare nonces. A nonce behind the connector's watermark usually means a lost channel store — see [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable). |
+| `F01` | A malformed voucher, one that does not verify, or a claim of a retired kind. | Gives the charge back, unless a later voucher has already superseded the refused one. | If it persists: run `claim-state` and compare the connector's figure with `toon channel status`. A figure ahead of yours usually means a lost channel store — see [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable). |
 | `F02` | No route to that destination — including "no route over *this* carriage", which is how the BTP side answers a route restricted to HTTP. | Surfaces the terms when the reject carried them. | Check the destination against `describe()`. If it carries `requiredTransport`, send over that carriage. |
-| `F03` | Either the claim **underpaid** the route, or its cumulative amount exceeded the channel's deposit, or the declared `amount` exceeded the price on a forwarded route. | Rolls the local cumulative back, and re-reads the connector's watermark before the next claim. | Underpayment: `accumulatedCost` **is the route's price** — pay that. Over deposit: `accumulatedCost` is `0`; deposit more and resend the same nonce. Forwarded route: send exactly the price, not more. |
-| `F06` | No claim was attached, on the BTP carriage. This is the greeting: the route's terms instead of the work. | Surfaces `terms` on the result, with the price and the settlements offered. | Open or fund a channel, then send with a claim. |
+| `F03` | Either the voucher **did not advance** the connector's watermark by the route's price, or its cumulative amount exceeded the channel's deposit, or the declared `amount` exceeded the price on a forwarded route. | Reads the connector's watermark from the refusal where the message names it, and prices the next voucher from it. Where it does not ("goes backwards"), asks `claim-state` before the next voucher. Otherwise gives the charge back. | Underpayment: `accumulatedCost` **is the route's price** — pay that. Over deposit: `accumulatedCost` is `0`; top up and send again. Forwarded route: send exactly the price, not more. |
+| `F06` | No voucher was attached, on the BTP carriage. This is the greeting: the route's terms instead of the work. | Surfaces `terms` on the result, with the price and the x402 channels offered. | Open or fund a channel, then send with a voucher. |
 | `T00` | The connector hit an internal error. Temporary. | Nothing automatic. | Retry with backoff. |
 | `T01` | A peer on the path is unreachable, or the client session addressed is gone. Temporary. | Nothing automatic. | Retry with backoff. The packet is fine; the path currently is not. |
 | `T04` | The packet exceeds the cap a connector will forward to one peer in a single packet. Never carried, never split. | Nothing. | The reject's message states the cap. Send a smaller packet — this is the only way the cap is published. |
@@ -54,7 +54,7 @@ connector answered with a greeting rather than a packet:
 
 | Code | Means | You do |
 | --- | --- | --- |
-| `PAYMENT_REQUIRED` | The connector answered the route's terms instead of the work — HTTP `402`, or `F06` over BTP. `answer.terms` carries the price and the settlements it accepts. | Open or fund a channel on one of the offered chains. |
+| `PAYMENT_REQUIRED` | The connector answered the route's terms instead of the work — HTTP `402`, or `F06` over BTP. `answer.terms` carries the price and the x402 channels it accepts (`batchSettlements`). | Open or fund a channel on one of the offered chains. |
 | `TRANSPORT_REQUIRED` | The route does not accept the carriage you used. `answer.terms.requiredTransport` names the one it does. | Resend over that carriage: `transport: 'btp'`, or `--transport btp`. Better: leave `transport: 'auto'` against a node that publishes the pin on the route (`toon describe` prints it beside the price) and this never fires. |
 
 ## HTTP statuses
@@ -65,7 +65,7 @@ is a transport-level failure and never carries a packet body.
 | Status | Means | The client does | You do |
 | --- | --- | --- | --- |
 | `400` | The body was not a decodable PREPARE, or was oversized. | Raises `ConnectorError`. | This is a bug in whatever formed the packet — or an encoder that is not TOON's dialect. See [how-a-paid-packet-works.md](how-a-paid-packet-works.md#the-packet-is-ilpv4s-semantics-in-toons-encoding). |
-| `401` | An `ILP-Peer-Id` was presented and did not authenticate. | Raises `ConnectorError`. | Drop the peer id, or fix the credential. Anonymous payers need neither: the claim identifies you. |
+| `401` | An `ILP-Peer-Id` was presented and did not authenticate. | Raises `ConnectorError`. | Drop the peer id, or fix the credential. Anonymous payers need neither: the voucher identifies you. |
 | `402` | Unpaid request to a priced route, or a request over a carriage the route refuses. The body is the terms document. | Returns `fulfilled: false`, `code: 'PAYMENT_REQUIRED'` (or `'TRANSPORT_REQUIRED'`), with `terms` parsed. | Pay, or switch carriage. |
 | `403` | A probe from a sender with no channel the connector recognizes, or over the probe rate limit. | Raises `ConnectorError`. | Open and use a channel first. Probing is free traversal, gated on having paid before. |
 | `413` | The body exceeded the 2 MiB limit. | Raises `ConnectorError`. | Send less. There is no configuration knob for this on the connector. |
@@ -77,20 +77,17 @@ on `code`, never on the message.
 
 | Class | `code` | Thrown when |
 | --- | --- | --- |
-| `ConfigError` | `CONFIG` | The configuration cannot be used as given — a token network that does not match the registry, a missing required field. |
+| `ConfigError` | `CONFIG` | The configuration cannot be used as given — a missing required field, no `facilitatorUrl` for a Base network with no default, no x402 channel offered on the chain asked for. |
 | `ValidationError` | `VALIDATION_ERROR` | An argument is invalid. Thrown before anything is sent. |
 | `NetworkError` | `NETWORK_ERROR` | A connection failed or timed out. Distinct from a refusal: nobody answered. |
 | `ConnectorError` | `CONNECTOR_ERROR` | The connector answered with a transport-level failure — the non-2xx statuses above. |
-| `ChainUnavailableError` | `CHAIN_UNAVAILABLE` | The chain you asked to settle on is not among the node's settlements, or you hold no key for any it offers. The error lists what it does offer. |
+| `ChainUnavailableError` | `CHAIN_UNAVAILABLE` | The chain you asked to pay on is not among the node's `batchSettlements`, or you hold no key for any it offers. `offered` lists the networks it does offer, in CAIP-2 (`eip155:84532`, `solana:EtWT…`). |
 | `RouteNotPricedError` | `ROUTE_NOT_PRICED` | The connector serves no route matching the destination, so there is no price to pay. |
 | `BeforePayRefusedError` | `BEFORE_PAY_REFUSED` | Your own `beforePay` returned a reason, having been shown the resolved price. Nothing was signed and nothing went out — see [api.md](api.md#beforepay--refusing-a-request-you-already-know-is-wrong). |
-| `ChannelNotOpenError` | `CHANNEL_NOT_OPEN` | A request needed a channel and none exists, with `autoOpenChannel` off. |
-| `ChannelFundingError` | `CHANNEL_FUNDING` | The on-chain open reverted for want of **native gas**. Retryable once the wallet is funded. |
-| `ChannelResumeError` | `CHANNEL_RESUME` | A persisted binding names a channel whose watermark is missing from the store. Deliberately fatal — see [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable). |
-| `InsufficientBalanceError` | `INSUFFICIENT_BALANCE` | A transfer or an open cannot be covered. A preflight check, so it never costs gas. |
+| `ChannelNotOpenError` | `CHANNEL_NOT_OPEN` | A request needed a channel opened, topped up or replaced, with `autoOpenChannel` off; or `probe`, `deposit` or `close` found no channel to act on. |
+| `InsufficientBalanceError` | `INSUFFICIENT_BALANCE` | A transfer or an open cannot be covered — for a Solana open, the payer's token account is missing or holds less than the deposit. A preflight check, so it never costs anything. |
 | `TransactionOutcomeError` | `TRANSACTION_OUTCOME` | A chain write was sent and did not end confirmed and clean. `txHash` names it, `chain` says where, and `outcome` is `'failed'` (landed, execution failed), `'expired'` (Solana: past its blockhash's last valid height, cannot land) or `'unknown'` (may still land: look it up before repeating anything). |
 | `SolanaRpcTransportError` | `NETWORK_ERROR` | A Solana JSON-RPC call got no answer after its retries (lost in transit, timed out, or a 403/429/5xx). A `NetworkError`. `mayHaveArrived` is `false` only when the connection itself was refused, so nothing was sent. |
-| `StaleRpcReadError` | `STALE_RPC_READ` | An EVM RPC never converged on a just-confirmed open. Retryable; the cure is a consistent RPC. |
 | `InvalidAddressError` | `INVALID_ADDRESS` | A destination address is malformed for its chain. Checked before any transaction is built. |
 | `UnknownChainError` | `UNKNOWN_CHAIN` | A chain identifier is unrecognized, or this client has no configuration for it. |
 | `TransferNotDeliveredError` | `TRANSFER_NOT_DELIVERED` | A transfer's transaction landed and did not revert, but the destination's observed balance never moved. Real: the devnet faucet's Solana leg has returned a genuine signature having delivered nothing. |
@@ -99,7 +96,10 @@ on `code`, never on the message.
 | `PaymentRequiredError` | `PAYMENT_REQUIRED` | Raised by the low-level HTTP transport on a `402`. `send()` catches it and returns a refusal instead; you see it only when driving the transport directly. |
 | `TransportRequiredError` | `TRANSPORT_REQUIRED` | You asked for a carriage the node does not expose, or the route requires the other one. `send()` returns a refusal for the route case. |
 | `FacilitatorError` | `FACILITATOR` | An x402 facilitator answered and did not settle an x402 `batch-settlement` deposit. `reason` is its own `errorReason` (`invalid_batch_settlement_evm_…`), or `unreadable_response` when its answer was not a settle result. No channel was funded. |
-| `SponsorRefusedError` | `SPONSOR_REFUSED` | The connector's Solana sponsor endpoint did not open an x402 `batch-settlement` channel. `reason` is its own refusal name (`token_program_unsupported`, `cluster_rent_threshold_unsupported`, `sponsor_busy`, …). Nothing was signed or spent. |
+| `SponsorRefusedError` | `SPONSOR_REFUSED` | The connector's Solana sponsor endpoint did not open an x402 `batch-settlement` channel. `reason` is its own refusal name (`token_program_unsupported`, `cluster_rent_threshold_unsupported`, `sponsor_busy`, …). Nothing was spent — except on `status` `502`, the endpoint's "sent and did not confirm", which does not prove nothing landed; the next use reads the chain. |
+
+`ChannelFundingError`, `ChannelResumeError` and `StaleRpcReadError` are still exported, but nothing
+throws them any more: they belonged to the retired on-chain open that paid its own gas.
 
 ## Reading a fulfilled answer that is not a success
 
@@ -114,4 +114,4 @@ if (answer.fulfilled && answer.status >= 400) {
 ```
 
 The `claim` on the result tells you exactly what was spent: `amount` for this request,
-`cumulative` for the channel, and the `nonce` it advanced to.
+`cumulative` for the channel after this voucher, and the `channelId` it was drawn on.

@@ -1,82 +1,13 @@
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { type Hex, toHex } from 'viem';
-import type { BalanceProofParams, SignedBalanceProof } from '../client/types.js';
-// Types re-exported for convenience
-export type { ClaimMessage } from './types.js';
 
 /**
- * EVM claim message for BTP protocol data.
- * Matches @toon-protocol/connector's EVMClaimMessage interface.
+ * An EVM key, held as a viem account: what signs this client's vouchers,
+ * challenges, deposit authorizations and on-chain transactions.
  *
- * The connector's validateClaimMessage() requires envelope fields
- * (version, messageId, timestamp) plus EVM claim fields, and optionally
- * chainId + tokenNetworkAddress for self-describing signature verification.
- */
-export interface EVMClaimMessage {
-  version: '1.0';
-  blockchain: 'evm';
-  messageId: string;
-  timestamp: string;
-  senderId: string;
-  channelId: string;
-  nonce: number;
-  transferredAmount: string;
-  lockedAmount: string;
-  locksRoot: string;
-  signature: string;
-  signerAddress: string;
-  /** Chain ID for self-describing EIP-712 verification */
-  chainId: number;
-  /** TokenNetwork address for self-describing EIP-712 verification */
-  tokenNetworkAddress: string;
-  /** ERC-20 token address for self-describing claim verification */
-  tokenAddress?: string;
-}
-
-/**
- * EIP-712 domain for TokenNetwork balance proofs.
- * Must match connector's eip712-helper.js getDomainSeparator().
- */
-function getBalanceProofDomain(chainId: number, tokenNetworkAddress: string) {
-  return {
-    name: 'TokenNetwork' as const,
-    version: '1' as const,
-    chainId,
-    verifyingContract: tokenNetworkAddress as Hex,
-  };
-}
-
-/**
- * EIP-712 types for balance proofs.
- * Must match connector's eip712-helper.js getBalanceProofTypes().
- */
-const BALANCE_PROOF_TYPES = {
-  BalanceProof: [
-    { name: 'channelId', type: 'bytes32' },
-    { name: 'nonce', type: 'uint256' },
-    { name: 'transferredAmount', type: 'uint256' },
-    { name: 'lockedAmount', type: 'uint256' },
-    { name: 'locksRoot', type: 'bytes32' },
-  ],
-} as const;
-
-/**
- * EIP-712 types for a claim-state challenge (client-edge-spec.md §1.10,
- * connector issue #693) — a message DISTINCT from {@link BALANCE_PROOF_TYPES}
- * so a captured challenge can never be replayed as a payment or vice versa.
- * Signed under the SAME domain as a real claim (`getBalanceProofDomain`).
- */
-const CLAIM_STATE_CHALLENGE_TYPES = {
-  ClaimStateChallenge: [
-    { name: 'channelId', type: 'bytes32' },
-    { name: 'expires', type: 'uint256' },
-  ],
-} as const;
-
-/**
- * EVM signer for EIP-712 balance proofs and on-chain transactions.
- *
- * Encapsulates the private key — no getPrivateKey() method is exposed.
+ * Encapsulates the private key — no getPrivateKey() method is exposed. What it
+ * signs is decided elsewhere (`../channel/batch-settlement/`); since connector
+ * ADR 0075 there is no balance proof left for it to sign.
  */
 export class EvmSigner {
   readonly chainType = 'evm' as const;
@@ -90,9 +21,7 @@ export class EvmSigner {
     if (privateKey instanceof Uint8Array) {
       hexKey = toHex(privateKey);
     } else {
-      hexKey = (
-        privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`
-      ) as Hex;
+      hexKey = (privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`) as Hex;
     }
     this._account = privateKeyToAccount(hexKey);
   }
@@ -102,121 +31,8 @@ export class EvmSigner {
     return this._account.address;
   }
 
-  /** ChainSigner identifier — EVM address */
-  get signerIdentifier(): string {
-    return this._account.address;
-  }
-
-  /** Viem PrivateKeyAccount — usable with walletClient for on-chain transactions */
+  /** Viem PrivateKeyAccount — usable with walletClient for on-chain transactions, and to sign typed data */
   get account(): PrivateKeyAccount {
     return this._account;
-  }
-
-  /**
-   * Signs a balance proof using EIP-712 typed data.
-   *
-   * @param params - Balance proof parameters plus chain context
-   * @returns Signed balance proof with signature
-   */
-  async signBalanceProof(
-    params: BalanceProofParams & {
-      chainId: number;
-      tokenNetworkAddress: string;
-      tokenAddress?: string;
-    }
-  ): Promise<SignedBalanceProof> {
-    const domain = getBalanceProofDomain(
-      params.chainId,
-      params.tokenNetworkAddress
-    );
-
-    const signature = await this._account.signTypedData({
-      domain,
-      types: BALANCE_PROOF_TYPES,
-      primaryType: 'BalanceProof',
-      message: {
-        channelId: params.channelId as Hex,
-        nonce: BigInt(params.nonce),
-        transferredAmount: params.transferredAmount,
-        lockedAmount: params.lockedAmount,
-        locksRoot: params.locksRoot as Hex,
-      },
-    });
-
-    return {
-      channelId: params.channelId,
-      nonce: params.nonce,
-      transferredAmount: params.transferredAmount,
-      lockedAmount: params.lockedAmount,
-      locksRoot: params.locksRoot,
-      signature,
-      signerAddress: this._account.address,
-      chainId: params.chainId,
-      tokenNetworkAddress: params.tokenNetworkAddress,
-      ...(params.tokenAddress && { tokenAddress: params.tokenAddress }),
-    };
-  }
-
-  /**
-   * Signs a `POST /ilp/claim-state` claim-state challenge (client-edge-spec.md
-   * §1.10): proves ownership of `channelId` without moving any value or
-   * advancing the channel's nonce — this is a READ, not a claim. Read the
-   * connector's answer for the actual credited/available balance (toon-meta#262
-   * decision 9); this signature only unlocks the read.
-   *
-   * @param params.expires - Unix seconds the signature stops verifying.
-   *   Reissue with a fresh value whenever an outstanding one should stop
-   *   being trusted — the endpoint has no other replay bound.
-   */
-  async signClaimStateChallenge(params: {
-    chainId: number;
-    tokenNetworkAddress: string;
-    channelId: string;
-    expires: number;
-  }): Promise<string> {
-    const domain = getBalanceProofDomain(
-      params.chainId,
-      params.tokenNetworkAddress
-    );
-    return this._account.signTypedData({
-      domain,
-      types: CLAIM_STATE_CHALLENGE_TYPES,
-      primaryType: 'ClaimStateChallenge',
-      message: {
-        channelId: params.channelId as Hex,
-        expires: BigInt(params.expires),
-      },
-    });
-  }
-
-  /**
-   * Builds an EVMClaimMessage from a signed balance proof.
-   * Static so it can be called without an EvmSigner instance.
-   *
-   * @param proof - Signed balance proof (includes chainId and tokenNetworkAddress)
-   * @param senderId - Nostr pubkey or identifier of the sender
-   * @returns EVMClaimMessage compatible with BTP_CLAIM_PROTOCOL
-   */
-  static buildClaimMessage(
-    proof: SignedBalanceProof,
-    senderId: string
-  ): EVMClaimMessage {
-    return {
-      version: '1.0',
-      blockchain: 'evm',
-      messageId: crypto.randomUUID(),
-      timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, '.000Z'),
-      senderId,
-      channelId: proof.channelId,
-      nonce: proof.nonce,
-      transferredAmount: proof.transferredAmount.toString(),
-      lockedAmount: proof.lockedAmount.toString(),
-      locksRoot: proof.locksRoot,
-      signature: proof.signature,
-      signerAddress: proof.signerAddress,
-      chainId: proof.chainId,
-      tokenNetworkAddress: proof.tokenNetworkAddress,
-      ...(proof.tokenAddress && { tokenAddress: proof.tokenAddress }),
-    };
   }
 }

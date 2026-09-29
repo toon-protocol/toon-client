@@ -122,16 +122,12 @@ export const GLOBAL_OPTIONS: Record<string, OptionSpec> = {
       'SOCKS5h proxy for a .anyone connector, e.g. socks5h://127.0.0.1:9050. ' +
       'Env TOON_SOCKS. Default: start a managed anon daemon.',
   },
-  'batch-settlement': {
-    type: 'boolean',
-    help:
-      'Pay from an x402 batch-settlement channel where the node offers one, opening it with ' +
-      'no native gas; channel commands then act on that channel. Env TOON_BATCH_SETTLEMENT=1.',
-  },
   facilitator: {
     type: 'string',
     arg: 'URL',
-    help: 'The x402 facilitator that relays Base batch-settlement deposits. Env TOON_FACILITATOR.',
+    help:
+      'The x402 facilitator that relays a Base channel deposit and pays its gas. ' +
+      'Env TOON_FACILITATOR. Default: the devnet Onboarder on Base Sepolia.',
   },
   json: { type: 'boolean', help: 'Print one JSON document on stdout and nothing else.' },
   quiet: { type: 'boolean', help: 'Suppress progress and warnings on stderr.' },
@@ -150,11 +146,10 @@ export const COMMAND_OPTIONS: Record<string, OptionSpec> = {
     type: 'boolean',
     help: 'Show the addresses of every derivation scheme, not just the one in use.',
   },
-  deposit: { type: 'string', arg: 'BASE_UNITS', help: 'Collateral to lock, in base units.' },
-  'settlement-timeout': {
+  deposit: {
     type: 'string',
-    arg: 'SECONDS',
-    help: 'Challenge period. Default 86400; EVM floors it at 3600.',
+    arg: 'BASE_UNITS',
+    help: 'What a channel is opened with, in base units. Default 100000 (0.10 USDC).',
   },
   'connector-view': {
     type: 'boolean',
@@ -258,7 +253,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
     options: [],
     minPositionals: 1,
     maxPositionals: 1,
-    details: ['Needs an open channel: a probe carries a claim, it just does not spend it.'],
+    details: ['Needs a channel already paid on: a probe resends the last voucher, which spends nothing.'],
   },
   send: {
     summary: 'Pay for one HTTP request and print the answer.',
@@ -277,12 +272,14 @@ export const COMMANDS: Record<string, CommandSpec> = {
   channel: {
     summary: 'Open, fund, inspect, close and settle the payment channel.',
     usage: 'channel open|deposit <amount>|close|settle|status [--deposit BASE_UNITS] [--connector-view]',
-    options: ['deposit', 'settlement-timeout', 'connector-view'],
+    options: ['deposit', 'connector-view'],
     minPositionals: 1,
     maxPositionals: 2,
     details: [
-      'Every one of these is your transaction, on your gas. `close` starts the',
-      'challenge period; `settle` pays out once it has elapsed.',
+      'Opening and depositing cost no gas: a facilitator relays the deposit on Base,',
+      'the connector sponsors the open on Solana. `close` and `settle` are your own',
+      'transactions, on your gas: `close` starts the exit window, and `settle` takes',
+      'the unspent deposit back once it has elapsed.',
     ],
   },
   'claim-state': {

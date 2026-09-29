@@ -69,6 +69,8 @@ const FUNDING_CODES = new Set([
   'CHANNEL_NOT_OPEN',
   'INSUFFICIENT_BALANCE',
   'TRANSFER_NOT_DELIVERED',
+  'FACILITATOR',
+  'SPONSOR_REFUSED',
 ]);
 
 /** …"the far end could not be reached, or would not answer sensibly". */

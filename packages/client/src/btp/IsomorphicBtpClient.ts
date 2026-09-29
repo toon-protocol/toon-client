@@ -38,22 +38,33 @@ export interface InboundBtpTransfer {
 }
 
 /**
- * The client's payment channel, declared on the BTP auth greeting so a
- * connector that credits earned increments knows which channel to pay
- * (toon-client#513, connector#790). `signature` is a
- * `signClaimStateChallenge` signature over `(channelId, expires)` —
- * deliberately the SAME domain-separated scheme `POST /ilp/claim-state`
- * already uses to prove channel ownership, never a real balance proof, so it
- * can never be replayed as a payment.
+ * The client's x402 channel, declared on the BTP auth frame as its
+ * `channelChallenge` (connector ADR 0075, issue #1384; the vectors'
+ * `client_auth_channel_challenge`), which binds the session to the channel
+ * before it has presented a voucher.
+ *
+ * It is the voucher claim-state challenge (`channel/batch-settlement/
+ * challenge.ts`) — the same object `POST /ilp/claim-state` takes — and never a
+ * voucher, so it can never be replayed as a payment. It replaces the retired
+ * `auth_channel_proof`, which a connector now refuses by name.
  */
-export type BtpChannelDeclaration =
-  | { blockchain: 'evm'; channelId: string; expires: number; signature: string }
-  | {
-      blockchain: 'solana';
-      channelAccount: string;
-      expires: number;
-      signature: string;
-    };
+export type BtpChannelDeclaration = Record<string, unknown>;
+
+/**
+ * The BTP `auth` entry's JSON, in the vectors' key order: `channelChallenge`
+ * when the client declares a channel, then `peerId` and `secret`.
+ */
+export function btpAuthEntry(
+  peerId: string,
+  secret: string,
+  channelChallenge: BtpChannelDeclaration | undefined
+): string {
+  return JSON.stringify({
+    ...(channelChallenge !== undefined ? { channelChallenge } : {}),
+    peerId,
+    secret,
+  });
+}
 
 /** What an inbound handler answers with — becomes the RESPONSE frame's body. */
 export interface BtpHandlerResponse {
@@ -375,11 +386,7 @@ export class IsomorphicBtpClient {
     if (!this.ws) throw new BtpAuthError('WebSocket not connected');
 
     const declaration = await this.config.getChannelDeclaration?.();
-    const authData = JSON.stringify({
-      peerId: this.config.peerId,
-      secret: this.config.authToken,
-      ...(declaration ?? {}),
-    });
+    const authData = btpAuthEntry(this.config.peerId, this.config.authToken, declaration);
 
     const requestId = this.nextRequestId();
     const authMessage = serializeBtpMessage({
@@ -389,7 +396,8 @@ export class IsomorphicBtpClient {
         protocolData: [
           {
             protocolName: 'auth',
-            contentType: 0,
+            // UTF-8 text, as the vectors' `client_auth_channel_challenge` frames pin it.
+            contentType: 1,
             data: textEncoder.encode(authData),
           },
         ],

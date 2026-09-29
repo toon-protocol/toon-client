@@ -1,17 +1,15 @@
 /**
  * Paying a connector from an x402 `batch-settlement` channel: the one object
- * {@link ../../client/send.js!send} asks for a voucher instead of a
- * `toon-channel` claim, when the caller opted in (connector ADR 0074,
- * toon-client#689, #690).
+ * {@link ../../client/send.js!send} asks for a voucher — the only way this
+ * client pays (connector ADRs 0074, 0075; toon-client#689, #690, #692).
  *
  * For each paid packet it:
  *
  *   1. finds the node's `batch-settlement` terms on the chain this client pays
- *      from — none, and it steps aside and the packet pays over `toon-channel`
- *      exactly as it always has;
+ *      from — none, and it steps aside: the node cannot be paid there;
  *   2. resolves the channel it holds with this node there — settling any
- *      deposit whose answer was lost, and rebuilding a lost watermark from the
- *      chain — or onboards one with no native gas: on EVM a deposit through an
+ *      deposit whose answer was lost, and rebuilding a lost or doubtful
+ *      watermark from the chain and the connector's `claim-state` — or onboards one with no native gas: on EVM a deposit through an
  *      x402 facilitator, on Solana an open the connector sponsors;
  *   3. tops the channel up when its deposit cannot cover the next voucher: a
  *      further deposit on EVM, a fresh sponsored channel on Solana;
@@ -60,6 +58,8 @@ import {
   type BatchSettlementSvmOffer,
 } from './svm.js';
 import { requestSponsoredOpen } from './sponsor.js';
+import { signEvmChallenge, signSolanaChallenge } from './challenge.js';
+import { defaultFacilitatorFor } from '../../presets.js';
 import {
   deriveAssociatedTokenAccount,
   getLatestBlockhash,
@@ -102,7 +102,10 @@ export interface BatchSettlementPayerConfig {
     account: TypedDataSigner;
     /** Signs vouchers as the channel's `payerAuthorizer`. */
     voucherSigner?: TypedDataSigner;
-    /** The x402 facilitator that relays deposits and pays their gas. */
+    /**
+     * The x402 facilitator that relays deposits and pays their gas. Defaults
+     * to the devnet's own on Base Sepolia (`defaultFacilitatorFor`).
+     */
     facilitatorUrl?: string;
     /**
      * `eip3009` (the default) for a token with ERC-3009, gasless outright;
@@ -125,6 +128,13 @@ export interface BatchSettlementPayerConfig {
   };
   /** How the connector's sponsor endpoint and the facilitator are reached. */
   fetch?: typeof fetch;
+  /**
+   * The connector's own watermark for a channel (`POST /ilp/claim-state`),
+   * asked with the voucher challenge this payer signs. It recovers a lost
+   * watermark, and settles one a refusal left in doubt. Without it, the chain's
+   * landed figure — a floor — is all there is.
+   */
+  connectorWatermark?: (entry: Record<string, unknown>) => Promise<bigint | undefined>;
   /**
    * Whether a paid packet may open, top up or replace a channel on its own.
    * Default `true`. `false` leaves every such step to {@link BatchSettlementPayer.open}
@@ -164,6 +174,8 @@ type SolanaPayerConfig = NonNullable<BatchSettlementPayerConfig['solana']>;
 export class BatchSettlementPayer {
   /** Onboardings in flight, so concurrent first sends open one channel, not two. */
   private readonly onboarding = new Map<string, Promise<BatchChannel>>();
+  /** Channels whose last refusal said the connector holds more, without saying how much. */
+  private readonly inDoubt = new Set<string>();
 
   constructor(private readonly config: BatchSettlementPayerConfig) {
     if (config.deposit <= 0n) {
@@ -175,8 +187,8 @@ export class BatchSettlementPayer {
 
   /**
    * A voucher for one packet charging `amount` on `chain`, or `undefined` when
-   * this node offers no `batch-settlement` there — the packet then pays over
-   * `toon-channel`.
+   * this node offers no `batch-settlement` there — and so cannot be paid on
+   * `chain` at all.
    */
   async claimFor(
     description: NodeSelfDescription,
@@ -315,7 +327,9 @@ export class BatchSettlementPayer {
     }
     this.assertMayOpen(
       'a fresh sponsored batch-settlement channel',
-      'channel open'
+      // `open` returns the live channel however little is left in it; leaving
+      // it first is what makes the next open a fresh one, and takes back the rest.
+      channel === undefined ? 'channel open' : 'channel close`, then `toon channel open'
     );
     return this.onboard(
       offer,
@@ -342,13 +356,58 @@ export class BatchSettlementPayer {
         return undefined;
     }
     if (!manager.hasWatermark(channel.channelId)) {
+      // The chain's figure is a floor; the connector's, when it will say, is
+      // the one that decides — and with the local record gone, it may exceed
+      // anything this client can still show it signed.
       manager.restoreWatermark(
         channel.channelId,
         (await this.readChain(channel)).landed
       );
+      await this.resync(channel, { recovering: true });
+    } else if (this.inDoubt.has(channel.channelId)) {
+      await this.resync(channel);
     }
     if (manager.isClosing(channel.channelId)) return undefined;
     return channel;
+  }
+
+  /**
+   * Ask the connector where it stands on `channel` and adopt its figure — the
+   * one that decides. Best effort: a connector that cannot answer leaves the
+   * local figure as it was, and the doubt standing.
+   */
+  private async resync(channel: BatchChannel, options: { recovering?: boolean } = {}): Promise<void> {
+    const ask = this.config.connectorWatermark;
+    if (!ask) return;
+    let watermark: bigint | undefined;
+    try {
+      const expires = BigInt(Math.floor(Date.now() / 1000) + 60);
+      watermark = await ask(await this.challenge(channel, expires));
+    } catch {
+      return;
+    }
+    if (watermark === undefined) return;
+    this.config.manager.adoptConnectorWatermark(channel.channelId, watermark, options);
+    this.inDoubt.delete(channel.channelId);
+  }
+
+  /**
+   * The voucher claim-state challenge for `channel`, signed by its voucher
+   * signer: what `POST /ilp/claim-state` and BTP auth's `channelChallenge`
+   * take to prove this client controls the channel (ADR 0075).
+   */
+  async challenge(channel: BatchChannel, expires: bigint): Promise<Record<string, unknown>> {
+    if (channel.chain === 'evm') {
+      const evm = this.requireEvm();
+      return signEvmChallenge(
+        evm.voucherSigner ?? evm.account,
+        evmChainIdOf(channel.network),
+        channel.config,
+        channel.channelId as Hex,
+        expires
+      );
+    }
+    return signSolanaChallenge(this.requireSolana().signer, channel.channelId, expires);
   }
 
   /** Settle a pending deposit against the chain: kept if it landed, dropped if not. */
@@ -451,13 +510,17 @@ export class BatchSettlementPayer {
       claim,
       cumulative,
       settle: (outcome) => {
-        if (outcome.kind !== 'refused') return;
-        manager.refused(
-          channelId,
-          cumulative,
-          charge,
-          readVoucherRefusal(outcome.message, cumulative)
-        );
+        if (outcome.kind !== 'refused') {
+          // Possibly — or certainly — the connector's latest: what a probe resends.
+          manager.recordVoucher(channelId, JSON.stringify(claim), cumulative);
+          if (outcome.kind === 'banked') manager.banked(channelId, cumulative);
+          return;
+        }
+        const reading = readVoucherRefusal(outcome.message, cumulative);
+        manager.refused(channelId, cumulative, charge, reading);
+        if (reading.notAdvancing && reading.connectorWatermark === undefined) {
+          this.inDoubt.add(channelId);
+        }
       },
     };
   }
@@ -529,9 +592,10 @@ export class BatchSettlementPayer {
     voucherAmount: bigint
   ): Promise<void> {
     if (channel.chain !== 'evm') throw new Error('unreachable');
-    if (!evm.facilitatorUrl) {
+    const facilitatorUrl = evm.facilitatorUrl ?? defaultFacilitatorFor(offer.network);
+    if (!facilitatorUrl) {
       throw new ConfigError(
-        'depositing into a Base batch-settlement channel needs `batchSettlement.facilitatorUrl`: ' +
+        `depositing into a channel on ${offer.network} needs \`facilitatorUrl\`: ` +
           'the x402 facilitator that relays the deposit and pays its gas'
       );
     }
@@ -552,7 +616,7 @@ export class BatchSettlementPayer {
     });
     try {
       await settleDeposit({
-        facilitatorUrl: evm.facilitatorUrl,
+        facilitatorUrl,
         offer,
         payload,
         ...(this.config.fetch ? { fetchImpl: this.config.fetch } : {}),
@@ -693,7 +757,7 @@ export class BatchSettlementPayer {
     if (this.config.autoOpen === false) {
       throw new ChannelNotOpenError(
         `paying ${this.config.connector} needs ${what} first, and this client does not ` +
-          `open channels on its own; run \`toon ${command} --batch-settlement\``
+          `open channels on its own; run \`toon ${command}\``
       );
     }
   }

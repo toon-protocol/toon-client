@@ -16,7 +16,7 @@ The keystore password has nowhere to come from and stdin is not a terminal. Set
 No `--connector` and no `TOON_CONNECTOR`. That is deliberate and deliberately loud: a request
 going somewhere you did not name should not be silent. Set one.
 
-**Upgrading to 1.0 and the EVM address changed — the channel and its collateral are gone.**
+**Upgrading to 1.0 and the EVM address changed — the channel and its deposit are gone.**
 They are not gone, they are at the old address. Before 1.0 the EVM key was derived at a
 different BIP-44 coin type, because one secp256k1 key served two roles; 1.0 derives it at the
 standard Ethereum path. A keystore written before 1.0 is read as
@@ -43,7 +43,7 @@ with `HostUnreachable` — and `.onion` belongs to Tor, which this client does n
 
 **"No SOCKS5 proxy at 127.0.0.1:9050".**
 Nothing is listening there. Start the daemon, or let `toon` start one. This check runs before the
-first packet on purpose: discovering it later costs a signed claim.
+first packet on purpose: discovering it later costs a signed voucher.
 
 **A hidden-service request is slow, or times out the first time.**
 Building a circuit to a cold hidden service takes tens of seconds. The per-packet timeout already
@@ -56,23 +56,31 @@ bootstrap; the stderr lines say which step it is on. It needs `unzip` on PATH (P
 Windows) and a platform with a pinned checksum — an unpinned one is refused rather than trusted.
 On an unsupported or offline machine, run your own daemon and pass `--socks`.
 
-**`ChainUnavailableError`, listing chains.**
-The chain you asked for is not among the node's settlements, or you hold no key for any it
-offers. The error lists what the node does offer; pick one of those, or construct from a mnemonic
-so both keys exist.
+**`ChainUnavailableError`, listing networks.**
+The chain you asked for is not among the node's `batchSettlements`, or you hold no key for any it
+offers. `offered` lists the networks the node does offer, in CAIP-2; pick one of those, or
+construct from a mnemonic so both keys exist.
 
 ## Opening and funding a channel
 
-**`ChannelFundingError` on `channel open`.**
-The wallet holds the settlement token but no native gas. Opening is a transaction; paying for
-requests is not. Get Base Sepolia ETH, or devnet SOL. On Solana the faucet drips USDC and **no
-SOL** — use `solana airdrop 1 <address> --url https://api.devnet.solana.com` first.
+**`FacilitatorError` on `channel open` or `deposit` (Base).**
+The x402 facilitator answered and did not settle the deposit. `reason` is its own. Usually the
+wallet holds less USDC than the deposit — run `toon faucet` — or, with `depositMethod: 'permit2'`,
+the token has no Permit2 allowance from the payer yet. No channel was funded.
 
-**The open reverts with `InvalidChannelState()` (`0xf806e9d9`).**
-The RPC is not read-after-write consistent: `setTotalDeposit` landed on a replica that had not
-seen `openChannel`. This client retries that specific revert and then gives up with
-`StaleRpcReadError` naming the endpoint. The cure is a consistent RPC — see
-[channels.md](channels.md#choosing-an-evm-rpc).
+**`ConfigError` asking for `facilitatorUrl`.**
+The node is paid on an EVM network other than Base Sepolia, where this client has no default
+facilitator and will not pick a third party to relay real money. Set `facilitatorUrl`, or
+`--facilitator`.
+
+**`SponsorRefusedError` on a Solana open.**
+The node's sponsor endpoint declined to open the channel. `reason` names why
+(`token_program_unsupported`, `sponsor_busy`, …). A `502` is the one case where the open may still
+have landed; the next use reads the chain and keeps it if so.
+
+**`InsufficientBalanceError` on a Solana open.**
+The payer's USDC token account does not exist yet, or holds less than the deposit (which is at
+least the node's `minDeposit`). Draw USDC from the faucet first; the open needs no SOL.
 
 **The faucet returned success and the balance did not move.**
 On the Solana leg this is a known shape: a real transaction signature, zero delivered. `transfer`
@@ -80,42 +88,52 @@ raises `TransferNotDeliveredError` for exactly this, because it confirms by an o
 change rather than by the call returning. Re-check with `toon balances` and ask again.
 
 **A restart opened a second channel and locked another deposit.**
-No channel store, so nothing remembered which channel this identity held. Set `channelStore` (the
-CLI already defaults to `~/.toon/channels.json`). The abandoned channel's collateral is still
-there: close and settle it to get it back. See
+No channel store, so nothing remembered which channel this identity held — and an x402 channel's
+config cannot be recovered from the chain. Set `channelStore` (the CLI already defaults to
+`~/.toon/channels.json`). A channel whose config was lost cannot be left by this client. See
 [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable).
+
+**`channel close` or `settle` fails for want of gas.**
+Leaving a channel is the payer's own transaction, the one step that costs native gas: Base Sepolia
+ETH, or devnet SOL (`solana airdrop 1 <address> --url https://api.devnet.solana.com`). The other
+channels in the same run are still attempted.
 
 ## Sending
 
 **`F03` on every request, `accumulatedCost` equal to the route's price.**
-The claim underpaid. Usually an explicit `amount` lower than the price, or a stale cached price.
+The voucher underpaid. Usually an explicit `amount` lower than the price, or a stale cached price.
 Send the route's price — `accumulatedCost` on that refusal *is* the price.
 
 **`F03` with `accumulatedCost` of `0`.**
-The cumulative amount would exceed the channel's on-chain deposit. Deposit more, then **resend the
-same nonce**: nothing was consumed.
+The cumulative amount would exceed what the channel holds. A library client tops up on its own;
+with `autoOpenChannel: false` (the CLI), run `toon channel deposit` (Base) or `toon channel open`
+after the Solana channel is replaced. Nothing was consumed.
 
-**`F01` "unknown channel", repeatedly.**
-The connector has no record of the channel your claim names. Either the channel is on a chain this
-node does not settle on, or it has been closed and settled, or the persisted binding names one
-that no longer exists. This client evicts the binding and retries once; if it keeps happening,
-check `toon channel status --connector-view`.
+**`F01`, repeatedly.**
+The connector would not accept the voucher: it does not verify, the channel is one the node has no
+record of, or the claim is of a retired kind. Check `toon channel status --connector-view` against
+`toon describe`.
 
-**A request timed out, and the next few were refused `F03` then `F01`.**
-The packet was delivered anyway and the connector banked the claim, so this end was one claim
-behind. The client settles that itself: the channel is marked doubtful and the next request
-re-reads `claim-state` before signing. If you see the refusals persist, the claim-state
-read is failing too — check that the client edge is reachable (over `--socks-proxy`, for a hidden
-service). See [channels.md](channels.md#the-client-asks-for-you-after-a-request-whose-fate-it-does-not-know).
+**A request timed out, and the next one was refused.**
+The packet may have been delivered anyway, and the connector banked the voucher. The client
+already assumes so: a voucher whose fate is unknown stays counted, so the next one signs above it.
+Where a refusal still says the voucher "goes backwards", the client asks `claim-state` before the
+next voucher and adopts the connector's figure — never below what the connector is proven to
+hold (what the chain landed, a voucher it banked, or the refused one), nor above what this client
+signed. If refusals persist, that read is failing too —
+check that the client edge is reachable (over `--socks`, for a hidden service). See
+[channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable).
 
-**`F01` for a nonce that does not advance.**
-Your watermark is behind the connector's — the classic symptom of a lost or restored-from-backup
-channel store. `toon claim-state` shows the connector's side. Never patch a nonce by hand;
-resuming with a wrong one refuses every claim after it.
+**The connector's figure is ahead of this client's, after restoring a backup.**
+A channel store restored from an older copy is behind what was signed since, and the client never
+adopts a connector figure above what its own store says it signed — a connector can only hold a
+voucher it was given. `toon claim-state` shows the connector's side. Restore the newest copy; never
+edit the store by hand. A store whose watermark file is missing outright *is* rebuilt, from the
+chain and then from `claim-state`.
 
 **Every request refused with `PAYMENT_REQUIRED` even though a channel is open.**
-The claim header is not reaching the connector, or the channel is on a different chain from the
-one the route settles in. Check `describe()`'s `settlements` against `client.chain`.
+The voucher header is not reaching the connector, or the channel is on a different chain from the
+ones the node is paid on. Check `describe()`'s `batchSettlements` against `client.chain`.
 
 **`TRANSPORT_REQUIRED`, or `F02` over BTP with terms attached.**
 The route accepts one carriage and you used the other. `answer.terms.requiredTransport` names the
@@ -126,10 +144,6 @@ On `transport: 'auto'` this should never happen — `auto` reads the pin off the
 `toon describe` and look for a carriage beside the route's price. A node with none, on a route that
 refuses you, is the defect connector ADR 0072 closes, and naming the carriage by hand is the only
 thing you can do until that node is upgraded.
-
-**Parallel requests fail with nonce errors that a serial run does not produce.**
-Parallel HTTP requests can race their own claim nonces. Use the BTP carriage: one ordered socket
-cannot race itself. Or serialize the sends.
 
 **`T04` and a message naming a cap.**
 The packet exceeds the largest amount that connector will forward to one peer in a single packet.
@@ -160,9 +174,9 @@ The connector serves no route matching that destination. It is an answer, not a 
 the prefix against `describe()`'s `routes`. Routing is longest-prefix.
 
 **`probe()` fails with `403`.**
-Probing is free traversal, gated on having paid before: it needs a channel the connector
-recognizes, and it is rate-limited per channel. Open a channel and send at least one paid request
-first.
+Probing is free traversal, gated on having paid before: it resends your latest voucher, and it is
+rate-limited per channel. Send at least one paid request first — before that, `probe()` throws
+`ChannelNotOpenError` without asking.
 
 **A reject says `refusedBy: 'path'` and I want to know who refused.**
 Nobody can tell you. A plaintext reject is unauthenticated by construction: it may be a hop, or a

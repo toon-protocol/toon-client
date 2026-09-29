@@ -45,10 +45,8 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
  * would expire packets that were merely in transit.
  */
 export const DEFAULT_HS_TIMEOUT_MS = 120_000;
-/** Collateral for the first channel, base units — 0.1 USDC at 6 decimals. */
+/** What a channel is opened with, and topped up by, base units — 0.1 USDC at 6 decimals. */
 export const DEFAULT_DEPOSIT = 100_000n;
-/** Challenge period in seconds when the caller sets none. */
-export const DEFAULT_SETTLEMENT_TIMEOUT = 86_400;
 
 /**
  * How one chain's RPC leaves this process when it rides the proxy: two shapes of
@@ -100,15 +98,9 @@ export interface ResolvedConfig {
   /** An explicit `senderId`, or `undefined` to use the selected chain's address. */
   senderId: string | undefined;
   deposit: bigint;
-  /** Set when the caller opted in to x402 `batch-settlement`. */
-  batchSettlement:
-    | {
-        facilitatorUrl: string | undefined;
-        deposit: bigint;
-        depositMethod: 'eip3009' | 'permit2';
-      }
-    | undefined;
-  settlementTimeout: number;
+  /** The x402 facilitator for Base deposits, or `undefined` for the network's default. */
+  facilitatorUrl: string | undefined;
+  depositMethod: 'eip3009' | 'permit2';
   autoOpenChannel: boolean;
   timeoutMs: number;
   channelStore: ChannelStore;
@@ -168,15 +160,6 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
     throw new ConfigError(`timeoutMs must be a positive number; got ${String(timeoutMs)}.`);
   }
 
-  const settlementTimeout = config.settlementTimeout ?? DEFAULT_SETTLEMENT_TIMEOUT;
-  if (!Number.isInteger(settlementTimeout) || settlementTimeout <= 0) {
-    throw new ConfigError(
-      `settlementTimeout must be a positive whole number of seconds; got ${String(
-        settlementTimeout
-      )}.`
-    );
-  }
-
   const { channelStore, channelStoreIsEphemeral } = resolveChannelStore(config.channelStore);
 
   const rpcUrls: Record<ChainKind, string> = {
@@ -192,22 +175,12 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
     transport,
     senderId: config.senderId,
     deposit,
-    batchSettlement:
-      config.batchSettlement === undefined
-        ? undefined
-        : {
-            facilitatorUrl: config.batchSettlement.facilitatorUrl,
-            deposit:
-              config.batchSettlement.deposit === undefined
-                ? deposit
-                : resolveDeposit(config.batchSettlement.deposit),
-            depositMethod: config.batchSettlement.depositMethod ?? 'eip3009',
-          },
+    facilitatorUrl: config.facilitatorUrl,
+    depositMethod: config.depositMethod ?? 'eip3009',
     connectorIsHiddenService,
     socksProxy,
     proxyRpc: config.proxyRpc ?? true,
     chainRpc: undefined,
-    settlementTimeout,
     autoOpenChannel: config.autoOpenChannel ?? true,
     timeoutMs,
     channelStore,

@@ -18,7 +18,6 @@ import { sendTransfer, type SendTransferParams, type SendTransferResult } from '
 import { fundWallet, type FundWalletResult } from '../wallet/faucet.js';
 import type { ChainKind, WalletFacade } from './types.js';
 import type { NodeSelfDescription } from '../connector/self-description.js';
-import type { ConnectorChainSettlementTerms } from '../connector/ConnectorEdgeClient.js';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { ChainUnavailableError, ConfigError, chainUnavailableMessage } from './errors.js';
 import type { ResolvedConfig } from './config.js';
@@ -47,6 +46,13 @@ function solanaRpcFetch(config: ResolvedConfig): typeof fetch {
 /** The EVM dispatcher chain RPC rides, when it rides the proxy at all. */
 function evmRpcDispatcher(config: ResolvedConfig): { rpcDispatcher: unknown } | Record<string, never> {
   return config.chainRpc !== undefined ? { rpcDispatcher: config.chainRpc.evm.dispatcher } : {};
+}
+
+/** One chain's settlement token, as the node's x402 terms name it. */
+interface SettlementToken {
+  kind: ChainKind;
+  chain: string;
+  tokenAddress: string;
 }
 
 export class ClientWalletFacade implements WalletFacade {
@@ -170,12 +176,22 @@ export class ClientWalletFacade implements WalletFacade {
 
   // ─── Private ──────────────────────────────────────────────────────────────
 
-  /** The node's settlements, keyed by chain family. */
-  private async settlements(): Promise<Map<ChainKind, ConnectorChainSettlementTerms>> {
+  /**
+   * The node's settlement token per chain family, from its x402 terms: the
+   * chain key (`evm:<chainId>` / `solana`, the spelling the balance and
+   * transfer code key an RPC by) and the token address or mint.
+   */
+  private async settlements(): Promise<Map<ChainKind, SettlementToken>> {
     const description = await this.deps.describe();
-    const byKind = new Map<ChainKind, ConnectorChainSettlementTerms>();
-    for (const entry of description.settlements) {
-      if (!byKind.has(entry.kind)) byKind.set(entry.kind, entry);
+    const byKind = new Map<ChainKind, SettlementToken>();
+    for (const terms of description.batchSettlements) {
+      if (byKind.has(terms.chain)) continue;
+      byKind.set(terms.chain, {
+        kind: terms.chain,
+        chain:
+          terms.chain === 'evm' ? `evm:${terms.network.slice('eip155:'.length)}` : 'solana',
+        tokenAddress: terms.asset,
+      });
     }
     return byKind;
   }

@@ -20,7 +20,7 @@ export async function run(ctx: CommandContext): Promise<number> {
     ...(url !== undefined ? { connector: url } : {}),
   });
   const description = await client.describe();
-  const asset = assetFromSettlement(description.settlements[0]);
+  const asset = assetFromSettlement(description.batchSettlements[0]);
 
   const payload = {
     connector: client.connector,
@@ -29,7 +29,8 @@ export async function run(ctx: CommandContext): Promise<number> {
     btpEndpoint: description.btpEndpoint,
     peerCarriages: description.peerCarriages,
     edgeIdentity: description.edgeIdentity,
-    settlements: description.settlements,
+    batchSettlements: description.batchSettlements,
+    voucherSigners: description.voucherSigners,
     routes: description.routes,
     requiredTransport: description.requiredTransport,
     supportedVersions: description.supportedVersions,
@@ -61,18 +62,21 @@ export async function run(ctx: CommandContext): Promise<number> {
     ctx.out.rows(head);
 
     ctx.out.line();
-    if (description.settlements.length === 0) {
-      ctx.out.line('Settlements: none — this node cannot be paid.');
+    if (description.batchSettlements.length === 0) {
+      ctx.out.line('Channels: none offered — this node cannot be paid.');
     } else {
-      ctx.out.line('Settlements:');
+      ctx.out.line('Channels (x402 batch-settlement):');
       ctx.out.rows(
-        description.settlements.map((s): [string, string] => [
-          s.chain,
+        description.batchSettlements.map((t): [string, string] => [
+          t.network,
           [
-            `counterparty ${s.settlementAddress}`,
-            `token ${s.tokenAddress} (${String(s.decimals)}dp)`,
-            s.kind === 'evm' ? `tokenNetwork ${s.tokenNetwork}` : `program ${s.programId}`,
-          ].join('  '),
+            `payTo ${t.payTo}`,
+            `token ${t.asset}`,
+            `min delay ${String(t.extra.withdrawDelay)}s`,
+            t.chain === 'solana' ? `sponsor ${t.extra.feePayer}` : '',
+          ]
+            .filter((x) => x !== '')
+            .join('  '),
         ])
       );
     }

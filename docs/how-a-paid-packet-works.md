@@ -4,7 +4,7 @@
 back, and because each piece is exported for anyone forming a packet by hand.
 
 A packet is an **OER envelope, gift-wrapped to the identity of the connector that terminates the
-destination**, carrying a **signed claim** that pays for it. The answer's fulfilment is **derived
+destination**, carrying a **signed voucher** that pays for it. The answer's fulfilment is **derived
 from the secret inside that wrap**, so the sender can check a delivery end to end without anything
 on the packet committing to it. Nothing on the wire is HTTP text.
 
@@ -48,7 +48,7 @@ straight off the client edge you are already sending to.
 ```ts
 const description = await client.describe();
 description.edgeIdentity?.publicKey;   // '0x04…', uncompressed secp256k1, 65 bytes
-description.settlements;               // per chain, what opening a channel takes
+description.batchSettlements;          // per chain, the x402 channel terms a payment is made under
 description.routes;                    // prefix, price and — where the route pins one — its carriage
 description.requiredTransport;         // the node-wide summary, set only when its own addresses agree
 ```
@@ -157,66 +157,63 @@ The terminating connector opens the wrap, recovers the same secret and derives t
 **the app behind the route supplies nothing and holds no key**, which is what keeps "any HTTP
 service can be an app" true. Never reuse a secret for a second packet.
 
-## Step 4 — attach the claim that pays for it
+## Step 4 — attach the voucher that pays for it
 
-The packet carries the claim that pays for it, rather than the claim trailing behind. Nothing is
-ever owed between packets, so there is no window for either side to walk away inside.
+The packet carries the voucher that pays for it, rather than the payment trailing behind. Nothing
+is ever owed between packets, so there is no window for either side to walk away inside.
 
-A claim is a JSON object stating the channel's cumulative state, signed by you:
+Every claim is an x402 `batch-settlement` **voucher** (connector ADRs 0074, 0075): a JSON object
+naming the channel and its new cumulative total, signed by the channel's voucher signer. The EVM
+vector's shape, signature shortened:
 
 ```json
 {
-  "version": "1.0",
   "blockchain": "evm",
-  "messageId": "…",
-  "timestamp": "2026-01-01T00:00:00Z",
-  "senderId": "0x…",
+  "channelConfig": { "payer": "0x…", "payerAuthorizer": "0x…", "receiver": "0x…",
+                     "receiverAuthorizer": "0x…", "salt": "0x…", "token": "0x…",
+                     "withdrawDelay": 86400 },
   "channelId": "0x…",
-  "nonce": 7,
-  "transferredAmount": "7000",
-  "lockedAmount": "0",
-  "locksRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "maxClaimableAmount": "5000",
+  "messageId": "…",
+  "scheme": "batch-settlement",
+  "senderId": "0x…",
   "signature": "0x…",
-  "signerAddress": "0x…"
+  "timestamp": "2030-01-01T00:00:00.000Z",
+  "version": "1.0"
 }
 ```
 
-`transferredAmount` is **cumulative**, not per-packet: each claim supersedes the last, so a lost
-claim costs nothing and a replayed one gains nothing. `lockedAmount` and `locksRoot` are always
-zero and always present — value moves on the claim itself, so nothing is ever locked, but both are
-still hashed into the EIP-712 struct and omitting them computes a digest no connector accepts.
+`maxClaimableAmount` is **cumulative**, not per-packet: each voucher supersedes the last, so a lost
+voucher costs nothing and a replayed one gains nothing. There is no nonce — the connector orders
+vouchers by amount alone. On Base the signature is EIP-712 under x402's own domain; on Solana it is
+Ed25519 over a fixed-layout message naming the channel account and the amount, and the claim names
+the channel account as `channelId`. A route priced at zero carries no voucher at all.
 
-A Solana claim carries `programId`, `channelAccount`, `signerPublicKey` (all base58) and a base64
-Ed25519 `signature` over a 96-byte message that binds the settlement program id, so it cannot be
-replayed against another deployment of the same program.
+The exact bytes of both are pinned by the vectors' `claim_voucher` section, not by this page.
 
 Where it rides:
 
-| Carriage | How the claim travels |
+| Carriage | How the voucher travels |
 | --- | --- |
 | HTTP | header `ILP-Payment-Channel-Claim: base64(JSON)` |
 | BTP | a protocolData entry named `payment-channel-claim`, raw UTF-8 JSON, no base64 layer |
 
-`signerAddress` and `signerPublicKey` ride the wire but carry **no authority**: the connector
-checks the signature against the counterparty its own channel record names, and reads the signing
-domain from that record too. A claim has no say in what it is checked against.
+`senderId` rides the wire but carries **no authority**: the connector checks the signature against
+the voucher signer the channel itself records on chain. A voucher has no say in what it is checked
+against.
 
 ## Step 5 — the connector's gate
 
-A claim runs five steps, in this order, deliberately freshness-and-value before cryptography so
-that a replay or an underpayment never pays for a signature verification and never reaches the
-app:
+The connector — and only the connector — validates the voucher. This client never re-implements
+that check. What a payer needs to know of it:
 
-1. **Structural.** Required fields per chain, hex lengths, base58 alphabet.
-2. **Freshness.** The nonce must strictly advance the connector's watermark for this channel.
-   A non-advancing nonce is refused without a verification being spent on it.
-3. **Value.** The cumulative amount must advance by at least the route's flat price, so a minimal
-   fresh claim cannot buy an expensive route.
-4. **Signature.** It must recover to the counterparty recorded for the channel the claim names —
-   not to the address the claim declares for itself. Signing correctly with a key of your own and
-   declaring yourself the payer is refused here.
-5. **Collateral.** The cumulative amount must not exceed the channel's on-chain deposit. Over it,
-   the packet is refused with cost `0` and the same nonce can be resent after depositing.
+- **It must advance.** The cumulative amount must exceed the connector's watermark for the channel
+  by at least the route's price. One that does not is refused, and the refusal's message says how
+  far it advanced — which is how this client re-prices its next voucher.
+- **It must verify** against the channel's recorded voucher signer.
+- **It must be covered.** The cumulative amount must not exceed what the channel holds. Over it,
+  the packet is refused with cost `0`; top the channel up and send again.
+- **A `toon-channel` claim is refused outright.** That scheme was retired by connector ADR 0075.
 
 Each failure has its own code. [errors.md](errors.md) maps every one to what you do about it.
 
@@ -277,7 +274,7 @@ terminated. The one refusal that reports a non-zero figure without doing any wor
 since the refusal's whole subject is the figure you did not cover.
 
 The connector also states, to the app and to nobody else, what it verified: `X-TOON-Payer`,
-`X-TOON-Amount` and `X-TOON-Chain`, taken from your claim. Your own spelling of those three
+`X-TOON-Amount` and `X-TOON-Chain`, taken from your voucher. Your own spelling of those three
 header names inside the sealed envelope is removed on every delivery.
 
 ## The two carriages
@@ -296,11 +293,13 @@ indistinguishable downstream from one that arrived over HTTP.
   pd     = nameLen(u8) name contentType(u16) dataLen(u32) data
   ```
 
-  The session opens with an `auth` entry (`{ peerId, secret: '' }`) answered by an empty RESPONSE.
-  Responses may arrive out of order; correlate by `requestId`.
+  The session opens with an `auth` entry (`{ peerId, secret }`) answered by an empty RESPONSE.
+  When this client already holds a channel with the node, the entry also carries a
+  `channelChallenge` — the signed voucher claim-state challenge — binding the session to that
+  channel (the vectors' `client_auth_channel_challenge`). Responses may arrive out of order;
+  correlate by `requestId`.
 
-Choose BTP when streaming many paid requests: one ordered socket cannot race its own claim
-nonces, which parallel HTTP requests can. A route may also insist on one carriage, in which case
+Choose BTP when streaming many paid requests over one session. A route may also insist on one carriage, in which case
 the other answers with the route's terms and `requiredTransport` naming the one it wants.
 
 ## Conformance

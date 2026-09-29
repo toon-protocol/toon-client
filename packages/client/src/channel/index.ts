@@ -1,14 +1,4 @@
-export {
-  OnChainChannelClient,
-  type OnChainChannelClientConfig,
-  type SolanaChannelConfig,
-  type EvmReadConsistencyConfig,
-} from './OnChainChannelClient.js';
-export {
-  ChannelManager,
-  type ChannelManagerConfig,
-  type EnsureChannelOptions,
-} from './ChannelManager.js';
+// The store every channel's watermark and config persist in.
 export {
   JsonFileChannelStore,
   InMemoryChannelStore,
@@ -18,42 +8,7 @@ export {
   type ChannelBindingContext,
   type BatchSettlementBinding,
 } from './ChannelStore.js';
-export {
-  counterpartyMatch,
-  sameSettlementAddress,
-  type CounterpartyVerdict,
-} from './counterparty.js';
-export {
-  isUnknownChannelReject,
-  rejectNamesChannel,
-  CLAIM_REJECT_CODE,
-} from './stale-channel.js';
-export type {
-  ChainKind,
-  ChannelClient,
-  ChannelStatus,
-  ChannelTerms,
-  OnChainChannelStatus,
-  OpenChannelParams,
-  OpenChannelResult,
-} from './types.js';
-
-// EVM settlement: the contracts, the id derivation that makes a channel
-// adoptable without a record, and the client that drives the lifecycle.
-export {
-  TokenNetworkClient,
-  parseEvmChainId,
-  MIN_SETTLEMENT_TIMEOUT_SECONDS,
-  type TokenNetworkClientConfig,
-  type EvmChannelRecord,
-  type OpenOrAdoptParams,
-} from './evm/TokenNetworkClient.js';
-export { deriveEvmChannelId, sortParticipants } from './evm/channel-id.js';
-export {
-  TOKEN_NETWORK_ABI,
-  TOKEN_NETWORK_REGISTRY_ABI,
-  ERC20_ABI,
-} from './evm/abi.js';
+export type { ChainKind } from './types.js';
 
 // Solana wire transactions this client did NOT build: reading one, moving the
 // blockhash a fee payer chose, and filling the signature slots that are ours.
@@ -72,6 +27,6 @@ export type { Signer as SolanaKeypair } from './solana/payment-channel.js';
 // with the other client errors.
 export { SolanaRpcTransportError } from './solana/payment-channel.js';
 
-// x402 batch-settlement (connector ADR 0074): a payer-only channel on x402's own
-// contract and program, opened with no native gas.
+// Every channel is an x402 batch-settlement channel (connector ADRs 0074,
+// 0075): opened with no native gas, and paid with vouchers.
 export * from './batch-settlement/index.js';

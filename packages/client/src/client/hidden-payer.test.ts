@@ -55,11 +55,9 @@ const MNEMONIC = 'test test test test test test test test test test test junk';
 /** The one name every URL uses. Direct, it reaches the trap; proxied, the node. */
 const HOST = 'localhost';
 
-const EVM_CHAIN = 'evm:84532';
-const SOLANA_CHAIN = 'solana:devnet';
-const TOKEN_NETWORK = '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478';
 const EVM_TOKEN = '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce';
-const SOL_PROGRAM = base58Encode(new Uint8Array(32).fill(11));
+const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const SPONSOR_PATH = '/ilp/batch-settlement/solana/open';
 const SOL_MINT = base58Encode(new Uint8Array(32).fill(12));
 const SOL_COUNTERPARTY = base58Encode(
   new Uint8Array(ed25519.getPublicKey(new Uint8Array(32).fill(13)))
@@ -70,6 +68,8 @@ const BLOCK_HASH = `0x${'cd'.repeat(32)}`;
 
 /** Every JSON-RPC method the node was asked for, in order. */
 let rpcCalls: string[] = [];
+/** Signed opens posted to the node's sponsor endpoint. */
+let sponsorRequests: { transaction?: string }[] = [];
 /** WebSocket connections the node accepted on its BTP path. */
 let btpConnections = 0;
 /** Connections that reached the trap: every one of them is a leak. */
@@ -109,7 +109,18 @@ function solanaResult(method: string): unknown {
     case 'getTokenAccountsByOwner':
       return { context, value: [] };
     case 'getAccountInfo':
-      return { context, value: null };
+      // The mint, owned by the token program the offer names.
+      return {
+        context,
+        value: {
+          owner: TOKEN_PROGRAM,
+          lamports: 1,
+          data: ['', 'base64'],
+          executable: false,
+        },
+      };
+    case 'getSlot':
+      return 42;
     case 'getLatestBlockhash':
       return {
         context,
@@ -188,21 +199,25 @@ beforeAll(async () => {
     { prefix: 'g.fake.btp', price: '0', requiredTransport: 'btp' },
   ];
   fake.ilpAddresses = ['g.fake'];
-  fake.describeSettlements = [
+  fake.batchSettlements = [
     {
-      chain: EVM_CHAIN,
-      settlementAddress: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
-      tokenNetworkRegistry: '0x8263BdD4eB4862395Cb4ef5dA5d637F4b047Eea1',
-      tokenNetwork: TOKEN_NETWORK,
-      tokenAddress: EVM_TOKEN,
-      decimals: 6,
+      network: 'eip155:84532',
+      asset: EVM_TOKEN,
+      payTo: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+      receiverAuthorizer: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+      withdrawDelay: 86_400,
+      name: 'USDC',
+      version: '2',
     },
     {
-      chain: SOLANA_CHAIN,
-      settlementAddress: SOL_COUNTERPARTY,
-      programId: SOL_PROGRAM,
-      tokenAddress: SOL_MINT,
-      decimals: 6,
+      network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+      asset: SOL_MINT,
+      payTo: SOL_COUNTERPARTY,
+      feePayer: SOL_COUNTERPARTY,
+      withdrawDelay: 86_400,
+      tokenProgram: TOKEN_PROGRAM,
+      minDeposit: '1000',
+      sponsorEndpoint: SPONSOR_PATH,
     },
   ];
 
@@ -214,6 +229,14 @@ beforeAll(async () => {
       if ((req.url ?? '').startsWith('/rpc')) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(answerRpc(body));
+        return;
+      }
+      if (req.url === SPONSOR_PATH) {
+        // The node declines to sponsor: what is under test is which circuit
+        // the signed open and the reads before it rode, not the open itself.
+        sponsorRequests.push(JSON.parse(body.toString('utf8')) as { transaction?: string });
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'sponsor_declined', detail: 'test node' }));
         return;
       }
       void fake
@@ -274,6 +297,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   rpcCalls = [];
+  sponsorRequests = [];
   btpConnections = 0;
   directDials = 0;
   proxy = await startFakeSocks5(new Map([[HOST, nodePort]]));
@@ -365,28 +389,28 @@ describe('a hidden payer paying a clearnet connector', () => {
     }
   });
 
-  it('opens a payment channel through the proxy: the reads, the send and the confirmation', async () => {
+  it('opens a sponsored channel through the proxy: the chain reads on Solana’s circuit, the open on the edge’s', async () => {
     const client = await hiddenPayer({ chain: 'solana' });
     try {
-      const state = await client.channel.open();
-      expect(state.channelId).toBeTruthy();
+      await expect(client.channel.open()).rejects.toMatchObject({
+        reason: 'sponsor_declined',
+      });
 
-      for (const method of [
-        'getAccountInfo',
-        'getLatestBlockhash',
-        'sendTransaction',
-        'getSignatureStatuses',
-      ]) {
+      for (const method of ['getAccountInfo', 'getTokenAccountBalance', 'getSlot', 'getLatestBlockhash']) {
         expect(rpcCalls).toContain(method);
       }
+      // The payer-signed open reached the node's sponsor endpoint.
+      expect(sponsorRequests).toHaveLength(1);
+      expect(sponsorRequests[0]?.transaction).toBeTruthy();
+
       expectEverythingRodeTheProxy();
-      // Every chain call rode Solana's circuit; nothing else rode it.
-      const chainConnects = proxy.requests.filter(
-        (r) => r.username !== undefined
-      );
+      // Every chain call rode Solana's circuit; the sponsor POST is the client
+      // edge's, on the default one.
+      const chainConnects = proxy.requests.filter((r) => r.username !== undefined);
       expect(chainConnects.length).toBeGreaterThan(0);
       for (const request of chainConnects)
         expect(request.username).toBe(RPC_SOCKS_USERNAMES.solana);
+      expect(circuits()).toContain(undefined);
     } finally {
       await client.close();
     }

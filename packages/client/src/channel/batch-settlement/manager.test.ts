@@ -88,7 +88,7 @@ describe('BatchChannelManager', () => {
     // which advances by 4 < 7: "advances value by 4". Watermark = 19 - 4.
     const m = new BatchChannelManager();
     m.adopt(CONNECTOR, EVM, 1_000_000n);
-    m.recoverFromChain(EVM.channelId, 20n); // ceiling 20: the client signed that much
+    m.reserve(EVM.channelId, 20n); // ceiling 20: the client signed that much
     m.refused(EVM.channelId, 20n, 8n, { notAdvancing: false }); // count falls back to 12
     expect(m.signedSoFar(EVM.channelId)).toBe(12n);
     expect(m.reserve(EVM.channelId, 7n)).toBe(19n);
@@ -143,6 +143,51 @@ describe('BatchChannelManager', () => {
     // A chain figure below what was signed moves nothing.
     m.recoverFromChain(SOLANA.channelId, 10n);
     expect(m.reserve(SOLANA.channelId, 1_000n)).toBe(9_000n);
+  });
+
+  it('keeps the highest voucher for a probe to resend, whatever order the answers came in', () => {
+    const m = new BatchChannelManager();
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    m.recordVoucher(EVM.channelId, '{"v":20}', 20n);
+    m.recordVoucher(EVM.channelId, '{"v":10}', 10n);
+    expect(m.lastVoucher(EVM.channelId)).toBe('{"v":20}');
+    m.recordVoucher(EVM.channelId, '{"v":30}', 30n);
+    expect(m.lastVoucher(EVM.channelId)).toBe('{"v":30}');
+  });
+
+  it('never adopts a connector figure below what the chain has landed', () => {
+    const store = new InMemoryChannelStore();
+    const m = new BatchChannelManager(store);
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    store.delete(EVM.channelId); // the watermark file is lost; the binding survives
+    m.restoreWatermark(EVM.channelId, 4_000n);
+    // A store that was lost is the recovering case, and still has a floor.
+    m.adoptConnectorWatermark(EVM.channelId, 1_000n, { recovering: true });
+    expect(m.reserve(EVM.channelId, 1_000n)).toBe(5_000n);
+  });
+
+  it('never adopts a connector figure below a voucher it banked or refused as not advancing', () => {
+    const m = new BatchChannelManager();
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    m.reserve(EVM.channelId, 1_000n);
+    m.banked(EVM.channelId, 1_000n);
+    m.adoptConnectorWatermark(EVM.channelId, 0n);
+    expect(m.reserve(EVM.channelId, 1_000n)).toBe(2_000n);
+    m.refused(EVM.channelId, 2_000n, 1_000n, { notAdvancing: true });
+    m.adoptConnectorWatermark(EVM.channelId, 500n);
+    expect(m.reserve(EVM.channelId, 1_000n)).toBe(3_000n);
+  });
+
+  it('keeps the floor across a restart', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'batch-floor-'));
+    const path = join(dir, 'channels.json');
+    const first = new BatchChannelManager(new JsonFileChannelStore(path));
+    first.adopt(CONNECTOR, EVM, 1_000_000n);
+    first.reserve(EVM.channelId, 3_000n);
+    first.banked(EVM.channelId, 3_000n);
+    const second = new BatchChannelManager(new JsonFileChannelStore(path));
+    second.adoptConnectorWatermark(EVM.channelId, 0n);
+    expect(second.reserve(EVM.channelId, 1n)).toBe(3_001n);
   });
 
   it('refuses a voucher its deposit cannot cover', () => {

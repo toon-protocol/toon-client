@@ -474,7 +474,7 @@ export class HttpIlpClient implements IlpClient {
       // x402 challenge, or a malformed body. Surfaced as the transport error
       // it is rather than as terms nobody can act on.
       throw new ConnectorError(
-        `Connector answered 402 with no usable toon-channel terms${detail}`
+        `Connector answered 402 with no usable TOON terms${detail}`
       );
     }
 

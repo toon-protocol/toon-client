@@ -14,8 +14,8 @@ Ask the node, not this page:
 curl -s https://proxy.ario.devnet.toonprotocol.dev/ilp | jq
 ```
 
-`GET /ilp` is free and unauthenticated, and every settlement fact in it was proved against a live
-chain when the node booted. The table below is a convenience — a URL to put in an example, a
+`GET /ilp` is free and unauthenticated. Its `batchSettlements` are the x402 channel terms the node
+is paid under, one per chain, and `voucherSigners` the keys it expects vouchers from. The table below is a convenience — a URL to put in an example, a
 default RPC, an address to check a balance against. When the two disagree, the node is right, and
 this client never consults a preset in preference to the document a node answers with.
 
@@ -24,7 +24,7 @@ caveat.
 
 ## Nodes
 
-Three nodes, six routes. Each node is its own settlement counterparty, so a
+Three nodes, six routes. Each node is the receiver of its own channels, so a
 channel opened with one buys nothing at the others.
 
 | Node        | Client-edge URL                               | Route                    | Price                        | Carriage     |
@@ -107,37 +107,43 @@ Client-edge paths on all three, relative to the base URL above:
 | `/ilp/probe`                     | `POST` | A packet sent to be refused, to learn what a path costs. |
 | `/ilp/identity`                  | `GET`  | The key a payload is sealed to. Free.                    |
 | `/ilp/routes/price?destination=` | `GET`  | One route's price. Free. `404` when no route matches.    |
-| `/ilp/claim-state`               | `POST` | The connector's own watermark for channels you control.  |
+| `/ilp/claim-state`               | `POST` | The connector's own watermark for channels you hold.     |
+| `/ilp/batch-settlement/solana/open` | `POST` | The Solana sponsor endpoint: a payer-signed `open`, co-signed and paid for by the node. The path a node publishes as `sponsorEndpoint` is the one to use. |
+
+## x402 facilitator
+
+`https://onboard.devnet.toonprotocol.dev` — the Onboarder (toon-protocol/infra#23), a stock x402
+facilitator on Base Sepolia. It submits a payer-authorized channel deposit and pays its gas, so a
+wallet holding devnet USDC and **no ETH** can open a channel. It is this client's default on Base
+Sepolia (`DEVNET.facilitator`), and used nowhere else.
 
 ## Base Sepolia (EVM)
 
-| Fact                   | Value                                                                                                                                                                                                    |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chain id               | 84532                                                                                                                                                                                                    |
-| RPC                    | `https://sepolia.base.org`                                                                                                                                                                               |
-| Token network registry | `0x0c41D9D424d6B075A3cEa1068a694f7847a8CCa5` on Base Sepolia                                                                                                                                             |
-| Token network          | `0x1B4606218ceE5Bf02B546e416905F4D3FC8a0249` on Base Sepolia                                                                                                                                             |
-| Settlement token       | `0x0C996d7c934c79a6255254875607Fe69df25C0E1` on Base Sepolia — devnet USDC (Circle FiatToken v2.2: ERC-3009, EIP-2612), 6 decimals; minting is minter-gated, so fund through the faucet (connector#1337) |
+| Fact                       | Value                                                                                                                                                                                                    |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Network                    | `eip155:84532`                                                                                                                                                                                           |
+| RPC                        | `https://sepolia.base.org`                                                                                                                                                                               |
+| `x402BatchSettlement`      | `0x4020074e9dF2ce1deE5A9C1b5c3f541D02a10003` — the channel contract                                                                               |
+| ERC-3009 deposit collector | `0x4020806089470a89826cB9fB1f4059150b550004`                                                                                                                                                             |
+| Permit2 deposit collector  | `0x4020425FAf3B746C082C2f942b4E5159887B0005`                                                                                                                                                             |
+| Token                      | `0x0C996d7c934c79a6255254875607Fe69df25C0E1` on Base Sepolia — devnet USDC (Circle FiatToken v2.2: ERC-3009, EIP-2612), 6 decimals; minting is minter-gated, so fund through the faucet (connector#1337) |
 
-A claim on this chain is an EIP-712 signature under the domain `TokenNetwork` / version `1` /
-chain id 84532 / `verifyingContract` = the token network above. The channel id is derived from
-the two participants and the channel epoch; see [channels.md](channels.md).
-
-`https://sepolia.base.org` is a load balancer and is not read-after-write consistent. That has a
-real failure mode when opening a channel — see
-[channels.md](channels.md#choosing-an-evm-rpc).
+A voucher on this chain is an EIP-712 signature under x402's own domain for the contract above. The
+channel id is the EIP-712 hash of the channel's config; see [channels.md](channels.md). The bytes are
+pinned by the wire vectors (`claim_voucher`), not by this page.
 
 ## Solana devnet (Solana)
 
-| Fact                    | Value                                                                                            |
-| ----------------------- | ------------------------------------------------------------------------------------------------ |
-| Cluster                 | devnet, the public cluster — not a local validator                                               |
-| RPC                     | `https://api.devnet.solana.com`                                                                  |
-| Payment-channel program | `2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip` on Solana devnet                                  |
-| Settlement token        | `34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU` on Solana devnet — mock USDC SPL mint, 6 decimals |
+| Fact                       | Value                                                                                            |
+| -------------------------- | ------------------------------------------------------------------------------------------------ |
+| Network                    | `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` — devnet, the public cluster, not a local validator     |
+| RPC                        | `https://api.devnet.solana.com`                                                                  |
+| `payment-channels` program | `CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX` — solana-foundation's |
+| Token                      | `34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU` on Solana devnet — mock USDC SPL mint, 6 decimals |
 
-A claim on this chain is an Ed25519 signature over a 96-byte message that binds the program id
-above, so a claim cannot be replayed against another deployment of the same program.
+A voucher on this chain is an Ed25519 signature over a fixed-layout message naming the channel
+account and the cumulative amount; the vectors (`claim_voucher`) pin it. The node's sponsor key,
+minimum deposit and sponsor endpoint are in its `batchSettlements` entry.
 
 ## Faucet
 
@@ -145,13 +151,13 @@ above, so a claim cannot be replayed against another deployment of the same prog
 
 | Path                        | Method | Body                        | What it drips                                                    |
 | --------------------------- | ------ | --------------------------- | ---------------------------------------------------------------- |
-| `/api/base-sepolia/request` | `POST` | `{ "address": "0x…" }`      | Mock USDC on Base Sepolia. **No ETH** — the gas drip is disabled |
+| `/api/base-sepolia/request` | `POST` | `{ "address": "0x…" }`      | Devnet USDC on Base Sepolia. **No ETH** — the gas drip is disabled |
 | `/api/solana/usdc-request`  | `POST` | `{ "address": "<base58>" }` | Mock USDC on Solana devnet. **No SOL.**                          |
 | `/api/info`                 | `GET`  | —                           | What the faucet is configured to drip                            |
 
-**Neither leg funds gas.** Both drip the settlement token and nothing else, so a wallet needs
-Base Sepolia ETH, or devnet SOL, from elsewhere before it can pay for the transactions that open
-and fund a channel:
+**Neither leg funds gas, and opening a channel needs none**: the facilitator pays for a Base
+deposit and the node sponsors a Solana open. Gas is needed only to *leave* a channel, which is the
+payer's own transaction — Base Sepolia ETH from elsewhere, or devnet SOL:
 
 ```bash
 solana airdrop 1 <your base58 address> --url https://api.devnet.solana.com
@@ -169,8 +175,8 @@ await client.wallet.faucet('evm');
 
 ## Amounts
 
-Every amount on the wire is an integer in the settlement asset's base units. The settlement token
-is 6-decimal USDC on both chains, so:
+Every amount on the wire is an integer in the token's base units. The token is 6-decimal USDC on
+both chains, so:
 
 | Base units | USDC     |
 | ---------- | -------- |
@@ -180,7 +186,7 @@ is 6-decimal USDC on both chains, so:
 | 1000000    | 1.00     |
 
 Native gas is not this scale: ETH is 18 decimals (wei) and SOL is 9 (lamports). A deposit is
-always in the settlement token's base units, never in wei.
+always in the token's base units, never in wei.
 
 ## Hidden services
 

@@ -35,7 +35,9 @@ describe('formatAmount', () => {
 
 describe('asset labelling', () => {
   it('names the devnet mock USDC on either chain', () => {
-    expect(assetSymbol(FAKE_SETTLEMENT.tokenAddress)).toBe('USDC');
+    expect(assetSymbol(FAKE_SETTLEMENT.asset)).toBe('USDC');
+    expect(assetSymbol(FAKE_SETTLEMENT.asset.toLowerCase())).toBe('USDC');
+    expect(assetSymbol('34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU')).toBe('USDC');
     expect(assetSymbol('0xdeadbeef')).toBeUndefined();
   });
 

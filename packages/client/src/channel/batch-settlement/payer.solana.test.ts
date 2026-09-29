@@ -17,6 +17,7 @@ import {
   SponsorRefusedError,
   ValidationError,
 } from '../../client/errors.js';
+import { must } from '../../utils/must.test-support.js';
 
 function keypair(n: number): Signer & { address: string } {
   const privateKey = new Uint8Array(32).fill(n);
@@ -60,18 +61,18 @@ interface World {
 /** One `fetch` for both the Solana RPC and the connector's sponsor endpoint. */
 function fakeFetch(world: World): typeof fetch {
   return (async (url: string, init?: RequestInit) => {
-    const body = JSON.parse(init!.body as string) as {
+    const body = JSON.parse(must(init).body as string) as {
       method?: string;
       params?: unknown[];
       transaction?: string;
     };
     if (url === 'https://node.example/ilp/batch-settlement/solana/open') {
-      world.opens.push(body.transaction!);
-      const tx = parseSolanaWireTransaction(body.transaction!);
+      world.opens.push(must(body.transaction));
+      const tx = parseSolanaWireTransaction(must(body.transaction));
       // Only the payer has signed, and its signature is good.
       expect(tx.signers).toEqual([SPONSOR.address, PAYER.address]);
       expect(tx.unsigned).toEqual([SPONSOR.address]);
-      const bytes = fromBase64(body.transaction!);
+      const bytes = fromBase64(must(body.transaction));
       expect(
         ed25519.verify(
           bytes.subarray(tx.signaturesOffset + 64, tx.signaturesOffset + 128),
@@ -103,7 +104,7 @@ function fakeFetch(world: World): typeof fetch {
     const result = (() => {
       switch (body.method) {
         case 'getAccountInfo': {
-          const address = body.params![0] as string;
+          const address = must(body.params)[0] as string;
           if (address === MINT) {
             return {
               value: {
@@ -128,7 +129,7 @@ function fakeFetch(world: World): typeof fetch {
           };
         }
         case 'getTokenAccountBalance':
-          expect(body.params![0]).toBe(
+          expect(must(body.params)[0]).toBe(
             deriveAssociatedTokenAccount(PAYER.address, MINT)
           );
           if (world.ataBalance === null) return { value: null };
@@ -171,21 +172,21 @@ describe('BatchSettlementPayer on Solana', () => {
     const { world, payer, manager } = setup();
     const voucher = await payer.claimFor(DESCRIPTION, 'solana', 1_000n);
     expect(world.opens).toHaveLength(1);
-    expect(voucher!.chain).toBe('solana');
-    expect(voucher!.cumulative).toBe(1_000n);
-    expect(manager.depositTotal(voucher!.channelId)).toBe(1_000_000n);
-    expect(voucher!.claim).toMatchObject({
+    expect(must(voucher).chain).toBe('solana');
+    expect(must(voucher).cumulative).toBe(1_000n);
+    expect(manager.depositTotal(must(voucher).channelId)).toBe(1_000_000n);
+    expect(must(voucher).claim).toMatchObject({
       blockchain: 'solana',
       scheme: 'batch-settlement',
-      channelId: voucher!.channelId,
+      channelId: must(voucher).channelId,
       expiresAt: 0,
       maxClaimableAmount: '1000',
       senderId: PAYER.address,
     });
     expect(
       ed25519.verify(
-        base58Decode(voucher!.claim['signature'] as string),
-        buildSvmVoucherMessage(voucher!.channelId, 1_000n),
+        base58Decode(must(voucher).claim['signature'] as string),
+        buildSvmVoucherMessage(must(voucher).channelId, 1_000n),
         PAYER.publicKey
       )
     ).toBe(true);
@@ -196,8 +197,8 @@ describe('BatchSettlementPayer on Solana', () => {
     const first = await payer.claimFor(DESCRIPTION, 'solana', 1_000n);
     const second = await payer.claimFor(DESCRIPTION, 'solana', 500n);
     expect(world.opens).toHaveLength(1);
-    expect(second!.channelId).toBe(first!.channelId);
-    expect(second!.cumulative).toBe(1_500n);
+    expect(must(second).channelId).toBe(must(first).channelId);
+    expect(must(second).cumulative).toBe(1_500n);
   });
 
   it('replaces an exhausted channel with a fresh sponsored one, rather than spend SOL on a top-up', async () => {
@@ -205,14 +206,30 @@ describe('BatchSettlementPayer on Solana', () => {
     const first = await payer.claimFor(DESCRIPTION, 'solana', 999_000n);
     const second = await payer.claimFor(DESCRIPTION, 'solana', 5_000n);
     expect(world.opens).toHaveLength(2);
-    expect(second!.channelId).not.toBe(first!.channelId);
-    expect(second!.cumulative).toBe(5_000n);
+    expect(must(second).channelId).not.toBe(must(first).channelId);
+    expect(must(second).cumulative).toBe(5_000n);
+  });
+
+  it('with autoOpen off, names the way out of an exhausted channel: close it, then open', async () => {
+    const { payer, manager, world } = setup();
+    await payer.claimFor(DESCRIPTION, 'solana', 999_000n);
+    const strict = new BatchSettlementPayer({
+      connector: 'https://node.example',
+      manager,
+      deposit: 1_000_000n,
+      solana: { signer: PAYER, rpc: { url: 'http://rpc', fetchImpl: fakeFetch(world) } },
+      fetch: fakeFetch(world),
+      autoOpen: false,
+    });
+    await expect(strict.claimFor(DESCRIPTION, 'solana', 5_000n)).rejects.toThrow(
+      /toon channel close`, then `toon channel open/
+    );
   });
 
   it('deposits at least the connector’s published minimum', async () => {
     const { payer, manager } = setup({}, 10n);
     const voucher = await payer.claimFor(DESCRIPTION, 'solana', 1_000n);
-    expect(manager.depositTotal(voucher!.channelId)).toBe(1_000_000n);
+    expect(manager.depositTotal(must(voucher).channelId)).toBe(1_000_000n);
   });
 
   it('surfaces the sponsor’s refusal by name', async () => {
@@ -275,13 +292,13 @@ describe('BatchSettlementPayer on Solana', () => {
     await expect(payer.claimFor(DESCRIPTION, 'solana', 1_000n)).rejects.toThrow(
       SponsorRefusedError
     );
-    const channelId = world.channels[0]!;
+    const channelId = must(world.channels[0]);
     expect(manager.pendingDeposit(channelId)).toBe(1_000_000n);
 
     world.landed.set(channelId, 1_000_000n);
     world.sponsorAnswer = undefined;
     const voucher = await payer.claimFor(DESCRIPTION, 'solana', 1_000n);
-    expect(voucher!.channelId).toBe(channelId);
+    expect(must(voucher).channelId).toBe(channelId);
     expect(world.opens).toHaveLength(1);
     expect(manager.depositTotal(channelId)).toBe(1_000_000n);
   });
@@ -315,6 +332,6 @@ describe('BatchSettlementPayer on Solana', () => {
     world.sponsorAnswer = undefined;
     const voucher = await payer.claimFor(DESCRIPTION, 'solana', 1_000n);
     expect(world.opens).toHaveLength(2);
-    expect(voucher!.channelId).toBe(world.channels[1]);
+    expect(must(voucher).channelId).toBe(world.channels[1]);
   });
 });

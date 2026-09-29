@@ -16,8 +16,8 @@ packages/client/src/
   http/       ILP-over-HTTP
   btp/        the websocket carriage, its frame codec, transport selection
   wire/       the OER envelope, the gift wrap, the fulfilment, the vectors
-  channel/    the channel lifecycle, the store, and the per-chain clients
-  signing/    balance-proof signing, per chain
+  channel/    the store, and x402 batch-settlement: onboarding, vouchers, exit
+  signing/    the EVM identity a mnemonic derives
   keys/       mnemonic derivation and the encrypted keystore
   wallet/     chain balances, transfers, the devnet faucet
   jobs/       NIP-90 job events, and the ArNS ceremony that spends one
@@ -66,7 +66,7 @@ transport, signer and chain client is injectable for exactly this reason. This i
 must stay fast and must never be skipped.
 
 **Integration** — `pnpm --filter @toon-protocol/client test:integration`. Nothing off the machine:
-a fake connector over HTTP and over a websocket, asserting the full send path including the claim
+a fake connector over HTTP and over a websocket, asserting the full send path including the voucher
 header, the accumulated-cost header and the sealed answer. Generous timeouts for slow CI
 networking, but no external service.
 
@@ -75,15 +75,17 @@ This is also where anything that needs a *process* lives, which the unit tier fo
 command exiting 0 having printed nothing when npm linked its `bin` — is invisible to any test that
 does not actually invoke it.
 
-**Opt-in, against something real** — off by default because they spend testnet money or need a
-local validator:
+**Opt-in, against something real** — off by default because they spend testnet money or need local
+chains:
 
 | Suite | How to run it |
 | --- | --- |
-| `rust-edge-devnet` | `RUST_EDGE_DEVNET=1`, with a funded key. Spends real testnet USDC against the deployed devnet connector. |
-| `solana-channel-lifecycle` | Needs `solana-test-validator` on the path. Proves the on-chain lifecycle: initialize, deposit, claim, close, settle. |
+| `rust-edge-devnet` | `RUST_EDGE_DEVNET=1`, with `TOON_MNEMONIC` holding devnet USDC. Opens (or resumes, with `TOON_CHANNEL_STORE`) an x402 channel with no gas and pays the deployed devnet store node. |
 | `batch-settlement-exit` | Needs `anvil`, `cast`, `solana-test-validator` and a toon-protocol/infra checkout beside this one (or `INFRA_SANDBOX_DIR`); skips without them unless `CLIENT_REQUIRE_BATCH_SETTLEMENT=1`. Runs against x402's real contract (seeded by infra's `seed-x402.sh`) and solana-foundation's real `payment-channels` program. On each chain it opens an x402 `batch-settlement` channel, closes it, and gets the deposit back. |
-| `batch-settlement-devnet` | `BATCH_SETTLEMENT_DEVNET=1`. Makes a fresh wallet with 0 ETH, gives it devnet USDC, and deposits through the devnet facilitator (`onboard.devnet`) into a channel to the relay. The test leaves 1 USDC in that channel. It pays a route with a voucher once the relay publishes `batchSettlements`. |
+| `batch-settlement-devnet` | `BATCH_SETTLEMENT_DEVNET=1`. Makes a fresh wallet with 0 ETH, gives it devnet USDC, and deposits through the devnet facilitator (`onboard.devnet`) into a channel to the relay, then pays the relay's route with a voucher on that channel. The test leaves 1 USDC in that channel. |
+
+None of the opt-in suites runs in CI. `batch-settlement-exit` is the one that could — it needs no
+credential, only local chains and an infra checkout — and it is not wired into a job yet.
 
 ## A connector on your machine
 
@@ -99,41 +101,14 @@ make anvil-up          # anvil, with the settlement contracts deployed into it
 docker pull ghcr.io/toon-protocol/connector:rust-main
 ```
 
-Then run a connector with a priced route and an EVM settlement backend pointed at that anvil. A
-minimal `connector.toml`:
+Then run a connector with a priced route and an x402 `batch-settlement` offer pointed at that
+anvil. The connector is x402-only (its ADR 0075), so its settlement configuration — and what the
+chain needs seeded (`x402BatchSettlement` and its deposit collectors; infra's `seed-x402.sh` does
+it) — is documented in the connector repository, not here. Whatever you configure, `GET /ilp` on
+your node must publish a `batchSettlements` entry, or nothing can be paid.
 
-```toml
-client_edge_addr = "0.0.0.0:3000"
-state_dir        = "/app/state"
+Things that will otherwise cost you an afternoon:
 
-[signer]
-key_file = "/app/data/signer.key"          # 32 raw bytes, or 64 hex characters
-
-[node]
-addresses     = ["g.lab.solo"]
-http_endpoint = "http://127.0.0.1:3100/ilp"
-btp_endpoint  = "ws://127.0.0.1:3100/ilp/btp"
-
-[[routes]]
-prefix      = "g.lab.solo"
-handler_url = "http://stub-app:3100/"
-price       = 1000
-
-[settlement.evm]
-rpc_url          = "http://anvil:8545"
-contract_address = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"   # the registry, not a token network
-token_address    = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
-decimals         = 6
-
-[settlement.evm.key]
-key_file = "/app/data/settlement.key"
-```
-
-Four things that will otherwise cost you an afternoon:
-
-- **`contract_address` is the `TokenNetworkRegistry`, not a `TokenNetwork`.** The connector
-  resolves `getTokenNetwork(token_address)` through it and refuses to start if that comes back
-  zero. Naming a token network here fails at boot, because it has no `getTokenNetwork`.
 - **`[node]` is all-or-nothing.** Setting `http_endpoint` without `btp_endpoint` is a startup
   refusal: a node behind TLS termination cannot learn its own public name, so there is
   deliberately no default rather than a published dead URL.
@@ -141,14 +116,16 @@ Four things that will otherwise cost you an afternoon:
   `/app/state` has to be a named volume rather than a host bind mount.
 - **`stub-app` is the image's second binary** and needs `0.0.0.0:3100` as its argument; it
   defaults to loopback, which no other container can reach.
+- **A local EVM chain has no default facilitator.** This client defaults one only on Base Sepolia,
+  so point `facilitatorUrl` (or `--facilitator`) at an x402 facilitator that can reach your anvil.
 
-Anvil's default mnemonic funds account 0 with mock USDC, so the client can open and fund a
-channel against it:
+Anvil's default mnemonic, given USDC by the seed script, can then open and fund a channel:
 
 ```bash
 export TOON_CONNECTOR=http://127.0.0.1:3100
 export TOON_MNEMONIC='test test test test test test test test test test test junk'
 export TOON_RPC_URL=http://127.0.0.1:8545
+export TOON_FACILITATOR=http://127.0.0.1:<your facilitator's port>
 
 npx toon channel open --deposit 100000
 npx toon send g.lab.solo --body 'hello'
@@ -186,9 +163,9 @@ the connector shows up as a failing check rather than as a mystery in production
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs install, build, typecheck, lint, the unit tier and the integration
-tier, plus a Solana job that installs a validator and runs the on-chain lifecycle suite. A change
-to `packages/client` without a changeset fails its own gate.
+`.github/workflows/ci.yml` runs install, build, typecheck, lint, the unit tier, and the integration
+suites that need nothing off the machine; it typechecks every integration suite, including the
+opt-in ones it does not run. A change to `packages/client` without a changeset fails its own gate.
 
 ## Release
 

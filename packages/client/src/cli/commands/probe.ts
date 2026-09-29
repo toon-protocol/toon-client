@@ -17,7 +17,7 @@ export async function run(ctx: CommandContext): Promise<number> {
   const client = await ctx.client();
   const result = await client.probe(destination);
   const description = await client.describe();
-  const asset = assetFromSettlement(description.settlements[0]);
+  const asset = assetFromSettlement(description.batchSettlements[0]);
 
   ctx.out.render({ destination, ...result }, () => {
     ctx.out.rows([

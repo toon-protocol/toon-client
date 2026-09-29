@@ -9,9 +9,9 @@
  * The shape mirrors `vectors/README.md` on the connector: every section the
  * file carries is typed and returned, and every section is now replayed —
  * `giftwrap` and `fulfilment` arrived against `src/wire/giftwrap.ts`
- * (toon-client#449), `channel_control_declaration` against
- * `src/signing/evm-signer.ts` (toon-client#540), and `peer_carriage` against
- * `src/btp/protocol.ts` and `src/channel/solana/payment-channel.ts` — each as
+ * (toon-client#449), the voucher sections against
+ * `src/channel/batch-settlement/` (toon-client#692), and `peer_carriage`
+ * against `src/btp/protocol.ts` and the voucher signers — each as
  * a new `describe` block in the harness rather than a restructure of it,
  * exactly as this module was shaped for. `peer_carriage` is replayed only in
  * part: its claim-ack, flush and retransmission items really are the wire
@@ -257,8 +257,8 @@ export interface AuthChallengeVector {
  * Most of it is genuinely peer-only — claim-ack carriage, flush, retransmission
  * semantics — and no client SDK speaks any of it. But the OER **packet** bytes
  * live in here too, and those are the client edge's wire as much as the peer
- * wire's, so `prepare`, the FULFILL/REJECT `packet_hex`es, `claim_solana`'s
- * signed message and `forwarded_data_unchanged` are all replayed against this
+ * wire's, so `prepare`, the FULFILL/REJECT `packet_hex`es, the two vouchers
+ * and `forwarded_data_unchanged` are all replayed against this
  * client's own codec. What remains peer-only is listed by name in
  * `wire-vectors.test.ts`'s `PEER_ONLY_ITEMS`, so nothing in this section is
  * merely unlooked-at.
@@ -380,8 +380,8 @@ export interface WireVectors {
   /** Replayed against `src/wire/giftwrap.ts` (toon-client#449). */
   fulfilment?: { cases: FulfilmentVector[] };
   /**
-   * Partly replayed: the OER packet bytes and the Solana balance proof it
-   * pins are the client edge's wire too. See {@link PeerCarriageVectors}.
+   * Partly replayed: the OER packet bytes and the vouchers it pins are the
+   * client edge's wire too. See {@link PeerCarriageVectors}.
    */
   peer_carriage?: PeerCarriageVectors;
   /** Replayed against `src/connector/self-description.ts`'s `chargeFor`. */

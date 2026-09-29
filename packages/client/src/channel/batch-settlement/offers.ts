@@ -2,11 +2,11 @@
  * Reading a connector's x402 `batch-settlement` offers, and choosing one
  * (connector ADR 0074 decision 8; connector #1345, #1357).
  *
- * A node that has opted in to a chain publishes the same facts twice, as two
- * projections of one list (ND-11):
+ * A node publishes the same facts twice, as two projections of one list
+ * (ND-11):
  *
- *   - the greeting's `accepts[]` gains one x402-valid entry per chain, beside
- *     `toon-channel` — a full x402 `PaymentRequirements`, route price included;
+ *   - the greeting's `accepts[]` carries one x402-valid entry per chain — a
+ *     full x402 `PaymentRequirements`, route price included;
  *   - `GET /ilp` carries them under `batchSettlements`, flat and unpriced,
  *     because a price belongs to a route and not to a chain.
  *
@@ -14,9 +14,8 @@
  * self-description through {@link offerFromTerms} once the route's charge is
  * known.
  *
- * An x402 channel is one-way, client to connector. A client that expects a
- * payout (ADR 0026 netting) has to stay on `toon-channel`, so choosing this
- * scheme is always the caller's opt-in, never a default.
+ * An x402 channel is one-way, client to connector, and it is the only way a
+ * connector is paid (ADR 0075).
  *
  * These offers are also where the Solana sponsor key comes from: the key
  * `buildSponsoredOpen` insists on must be read off the RECEIVING connector's own
@@ -58,8 +57,7 @@ export const CONNECTOR_MAX_TIMEOUT_SECONDS = 60;
 
 /**
  * One greeting `accepts[]` entry, when it is a well-formed `batch-settlement`
- * offer on a chain this client pays from; `undefined` for anything else,
- * `toon-channel` included.
+ * offer on a chain this client pays from; `undefined` for anything else.
  */
 export function parseBatchSettlementOffer(
   raw: unknown
@@ -161,7 +159,7 @@ export function offerFromTerms(
 /**
  * The node's `batch-settlement` terms on the chain this client pays from — on
  * `network` when the caller names one — or `undefined` when there are none, in
- * which case the client pays over `toon-channel` exactly as it always has.
+ * which case the node cannot be paid on that chain.
  */
 export function chooseBatchSettlement(
   desc: { batchSettlements: BatchSettlementTerms[] },

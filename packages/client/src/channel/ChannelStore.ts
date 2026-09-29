@@ -9,9 +9,16 @@ export interface ChannelStoreEntry {
    * rollback deliberately does not lower. It is the ceiling on what the
    * connector can possibly have banked — nothing it never received a signature
    * for is claimable — and so the clamp on adopting the connector's own figure
-   * (see {@link ChannelManager.adoptConnectorWatermark}).
+   * (see `BatchChannelManager.adoptConnectorWatermark`).
    */
   signedCeiling?: bigint;
+  /**
+   * The highest cumulative the connector is PROVEN to hold: what the chain
+   * shows landed, a voucher it banked, or one it refused as not advancing. The
+   * floor under adopting the connector's own figure, as `signedCeiling` is the
+   * ceiling over it.
+   */
+  provenFloor?: bigint;
   /**
    * Set when a signed claim's fate is unknown (a transport error or a timeout,
    * where the packet may have been delivered and banked anyway) or when the
@@ -29,10 +36,7 @@ export interface ChannelStoreEntry {
   settledAt?: bigint;
 }
 
-/**
- * Chain context needed to re-track a RESUMED channel — the same shape
- * {@link ChannelManager.trackChannel} takes.
- */
+/** Where a channel lives: its chain, the x402 contract or program, and its token. */
 export interface ChannelBindingContext {
   chainType: string;
   chainId: number;
@@ -119,6 +123,14 @@ export interface ChannelBinding {
    * reads the chain and settles it.
    */
   pendingDeposit?: bigint;
+  /**
+   * The last voucher this client sent on the channel, as the JSON that
+   * travelled. A probe identifies by resending it byte for byte — a
+   * retransmission the connector records nothing for (client-edge-spec §1.6).
+   */
+  lastVoucher?: string;
+  /** The cumulative amount {@link lastVoucher} names. */
+  lastVoucherAmount?: bigint;
 }
 
 /**
@@ -165,6 +177,7 @@ interface JsonEntry {
   cumulativeAmount: string;
   /** Stored as string to preserve bigint precision. */
   signedCeiling?: string;
+  provenFloor?: string;
   watermarkUncertain?: boolean;
   /** Withdraw-flow timers, string-encoded SECONDS (bigint precision). */
   closedAt?: string;
@@ -181,6 +194,8 @@ interface JsonBinding {
   supersededAt?: string;
   batchSettlement?: BatchSettlementBinding;
   pendingDeposit?: string;
+  lastVoucher?: string;
+  lastVoucherAmount?: string;
 }
 
 /**
@@ -199,7 +214,7 @@ function defaultBindingsPath(filePath: string): string {
 
 /**
  * JSON file-backed ChannelStore.
- * Uses synchronous I/O to match ChannelManager's sync API surface.
+ * Uses synchronous I/O to match BatchChannelManager's sync API surface.
  *
  * Two files, on purpose: the nonce/cumulative watermark keeps its historical
  * `{ [channelId]: entry }` schema in `filePath` (rig and the MCP daemon parse
@@ -225,6 +240,9 @@ export class JsonFileChannelStore implements ChannelStore {
       ...(tracking.signedCeiling !== undefined
         ? { signedCeiling: tracking.signedCeiling.toString() }
         : {}),
+      ...(tracking.provenFloor !== undefined
+        ? { provenFloor: tracking.provenFloor.toString() }
+        : {}),
       ...(tracking.watermarkUncertain ? { watermarkUncertain: true } : {}),
       ...(tracking.closedAt !== undefined
         ? { closedAt: tracking.closedAt.toString() }
@@ -248,6 +266,9 @@ export class JsonFileChannelStore implements ChannelStore {
       cumulativeAmount: BigInt(entry.cumulativeAmount),
       ...(entry.signedCeiling !== undefined
         ? { signedCeiling: BigInt(entry.signedCeiling) }
+        : {}),
+      ...(entry.provenFloor !== undefined
+        ? { provenFloor: BigInt(entry.provenFloor) }
         : {}),
       ...(entry.watermarkUncertain ? { watermarkUncertain: true } : {}),
       ...(entry.closedAt !== undefined
@@ -289,6 +310,12 @@ export class JsonFileChannelStore implements ChannelStore {
         : {}),
       ...(binding.pendingDeposit !== undefined
         ? { pendingDeposit: binding.pendingDeposit.toString() }
+        : {}),
+      ...(binding.lastVoucher !== undefined
+        ? { lastVoucher: binding.lastVoucher }
+        : {}),
+      ...(binding.lastVoucherAmount !== undefined
+        ? { lastVoucherAmount: binding.lastVoucherAmount.toString() }
         : {}),
     };
     this.writeBindings(data);
@@ -375,6 +402,10 @@ function toBinding(entry: JsonBinding): ChannelBinding {
       : {}),
     ...(entry.pendingDeposit !== undefined
       ? { pendingDeposit: BigInt(entry.pendingDeposit) }
+      : {}),
+    ...(entry.lastVoucher !== undefined ? { lastVoucher: entry.lastVoucher } : {}),
+    ...(entry.lastVoucherAmount !== undefined
+      ? { lastVoucherAmount: BigInt(entry.lastVoucherAmount) }
       : {}),
   };
 }

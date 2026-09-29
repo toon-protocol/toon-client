@@ -49,7 +49,8 @@ import {
   deserializeIlpPacket,
   serializeIlpPrepare,
 } from '../btp/protocol.js';
-import type { X402ChannelExtra } from './x402.js';
+import { parseX402Body, type ToonTermsInfo } from './x402.js';
+import type { BatchSettlementOffer } from '../channel/batch-settlement/offers.js';
 import {
   parseSelfDescription,
   readBaseUnits,
@@ -83,75 +84,17 @@ export interface ConnectorIdentity {
 }
 
 /**
- * The channel-opening facts a settling connector carries in its x402
- * greeting (connector #617): everything a buyer needs to OPEN a channel
- * with the node, learned by ASKING (ADR 0022) rather than from a
- * kind:10032 announce the Rust fleet never makes.
- */
-export interface ConnectorSettlementTerms {
-  /** `evm:<chainId>` — the chain the node's settlement backend runs on. */
-  chain: string;
-  /** The on-chain counterparty a buyer opens a channel WITH. */
-  settlementAddress: string;
-  /** The stable TokenNetworkRegistry factory address. */
-  tokenNetworkRegistry: string;
-  /** The resolved TokenNetwork — the EIP-712 verifyingContract. */
-  tokenNetwork: string;
-  tokenAddress: string;
-  /** Informational; claims are already in base units. */
-  decimals: number;
-}
-
-/**
- * The Solana twin of {@link ConnectorSettlementTerms} (connector #632): what
- * an unaffiliated buyer needs to open a channel against a Solana settlement
- * backend's deployed `payment-channel` program instance.
- */
-export interface ConnectorSolanaSettlementTerms {
-  /** Always `'solana'` — unlike EVM there is no chain id to append. */
-  chain: string;
-  /** The on-chain counterparty a buyer opens a channel WITH, base58. */
-  settlementAddress: string;
-  /** The deployed `payment-channel` program instance, base58. */
-  programId: string;
-  /** The SPL mint every channel this backend opens settles in, base58. */
-  tokenAddress: string;
-  /** Informational; claims are already in base units. */
-  decimals: number;
-}
-
-/**
- * One chain's entry in the x402 greeting's per-chain `settlements` list
- * (connector #632). `kind` is added by this parser, not present on the wire
- * — the wire is untagged, disambiguated structurally (`tokenNetworkRegistry`
- * names EVM, `programId` names Solana).
- */
-export type ConnectorChainSettlementTerms =
-  | ({ kind: 'evm' } & ConnectorSettlementTerms)
-  | ({ kind: 'solana' } & ConnectorSolanaSettlementTerms);
-
-/**
- * A route's terms as the x402 greeting states them: the price, plus (from a
- * settling node) the channel-opening facts. `settlement` is absent exactly
- * when the node has no settlement backend — the wire's own shape. `settlements`
- * is the additive per-chain list (connector #632): one entry per chain the
- * node settles on, including the same EVM entry `settlement` already carries.
- * Absent — not an empty array — on a node with no settlement backend, or one
- * still answering the pre-#632 greeting shape.
+ * A route's terms as the x402 greeting states them (ADR 0075): what it costs,
+ * and — per chain the node settles on — the x402 `batch-settlement` offer a
+ * channel is opened on.
  */
 export interface ConnectorRouteTerms {
   destination: string;
   price: string;
-  settlement?: ConnectorSettlementTerms;
-  settlements?: ConnectorChainSettlementTerms[];
-  /**
-   * The `toon-channel` accepts entry's raw `extra` bag, preserved as-is
-   * (issue #509 — the same posture #506/#507 established for
-   * `Http402Client`'s parser, e.g. `extra.session_lease_ttl_ms`,
-   * connector#722). `undefined` when the entry carried no `extra` at all —
-   * distinct from an `extra` that merely omits a given key.
-   */
-  extra?: X402ChannelExtra;
+  /** One offer per chain, priced for this route. */
+  batchSettlements: BatchSettlementOffer[];
+  /** `extensions.toon.info`, preserved verbatim (issue #509). */
+  info: ToonTermsInfo;
 }
 
 /** What a locally-terminated route costs, as reported by `GET /ilp/routes/price`. */
@@ -163,40 +106,29 @@ export interface ConnectorRoutePrice extends RouteCharge {
 // ─── Claim state (client-edge-spec.md §1.10, connector #693) ──────────────
 
 /**
- * One `POST /ilp/claim-state` request entry: proof of ownership of a channel
- * this client controls, via a signature over a challenge distinct from a
- * real claim's balance-proof (never reusable as one). `signature` is
- * `EvmSigner.signClaimStateChallenge`'s `0x`-prefixed 65-byte hex for `evm`,
- * `SolanaSigner.signClaimStateChallenge`'s base64 64-byte Ed25519 for
- * `solana`.
+ * One `POST /ilp/claim-state` request entry: a voucher claim-state challenge
+ * (`channel/batch-settlement/challenge.ts`), proving control of the channel's
+ * voucher signer without moving value. Built by `signEvmChallenge` /
+ * `signSolanaChallenge`, and sent as they built it.
  */
-export type ClaimStateRequestEntry =
-  | { blockchain: 'evm'; channelId: string; expires: number; signature: string }
-  | {
-      blockchain: 'solana';
-      channelAccount: string;
-      expires: number;
-      signature: string;
-    };
+export type ClaimStateRequestEntry = Record<string, unknown>;
 
 /**
- * The credited/spendable position of one channel this client asked about —
- * the runway source of truth (toon-meta#261/#262 decision 9). Money fields
- * are decimal strings (never a bare JS number, which cannot represent a
- * value past 2^53 exactly).
+ * Where the connector stands on one x402 channel this client controls (ADR
+ * 0075). A voucher has no nonce, so neither does this: the next voucher must
+ * strictly exceed `cumulativeClaimed`. Money fields are decimal strings.
  */
 export interface ClaimStateOk {
   blockchain: 'evm' | 'solana';
-  channelId?: string;
-  channelAccount?: string;
+  channelId: string;
   ok: true;
-  /** On-chain deposit, or `null` for a channel this connector only DECLARED. */
-  depositTotal: string | null;
-  /** The channel's watermark; `"0"` if this connector has never accepted a claim. */
+  scheme: 'batch-settlement';
+  /** The highest cumulative amount the connector has accepted a voucher for; `"0"` for none. */
   cumulativeClaimed: string;
-  /** `depositTotal - cumulativeClaimed`; `null` exactly when `depositTotal` is. */
-  available: string | null;
-  nonce: number;
+  /** The highest cumulative a voucher may name and still be accepted, as the gate reads it now. */
+  maxCumulative: string;
+  /** `maxCumulative − cumulativeClaimed`, at least zero: what the next voucher may add. */
+  available: string;
   /**
    * Best-effort and non-durable (unlike every other field here): `null`
    * means "unknown", NEVER "never claimed" — see client-edge-spec.md §1.10.
@@ -205,17 +137,16 @@ export interface ClaimStateOk {
 }
 
 /**
- * A failed claim-state entry. `error` is deliberately collapsed to two
- * causes (unlike a claim's own refusal taxonomy) so a caller learns nothing
- * about a channel it does not control: `"unverified"` covers "no such
- * channel" and "bad signature" identically.
+ * A failed claim-state entry. `error` is deliberately coarse, so a caller
+ * learns nothing about a channel it does not control: `"unverified"` covers
+ * "no such channel" and "bad signature" identically. `"toon-channel-refused"`
+ * names an entry for a retired `toon-channel` channel.
  */
 export interface ClaimStateFailed {
   blockchain: 'evm' | 'solana';
   channelId?: string;
-  channelAccount?: string;
   ok: false;
-  error: 'expired' | 'unverified';
+  error: 'expired' | 'unverified' | 'toon-channel-refused';
 }
 
 export type ClaimStateResult = ClaimStateOk | ClaimStateFailed;
@@ -461,23 +392,6 @@ function claimStr(
   return value;
 }
 
-/** A nullable-string reader: `null` passes through, anything else must be a string. */
-function claimNullableStr(
-  e: Record<string, unknown>,
-  key: string,
-  entryIndex: number
-): string | null {
-  const value = e[key];
-  if (value === null) return null;
-  if (typeof value !== 'string') {
-    throw new ConnectorEdgeError(
-      `claim-state channel entry ${entryIndex}'s '${key}' is neither a string nor null`,
-      'CLAIM_STATE_MALFORMED'
-    );
-  }
-  return value;
-}
-
 /** Parse one already-object-checked claim-state response entry. */
 function parseClaimStateEntry(raw: unknown, entryIndex: number): ClaimStateResult {
   if (typeof raw !== 'object' || raw === null) {
@@ -494,23 +408,22 @@ function parseClaimStateEntry(raw: unknown, entryIndex: number): ClaimStateResul
       'CLAIM_STATE_MALFORMED'
     );
   }
-  const channelId = typeof e['channelId'] === 'string' ? e['channelId'] : undefined;
-  const channelAccount =
-    typeof e['channelAccount'] === 'string' ? e['channelAccount'] : undefined;
-  const identity = {
-    ...(channelId !== undefined ? { channelId } : {}),
-    ...(channelAccount !== undefined ? { channelAccount } : {}),
-  };
+  const channelId =
+    typeof e['channelId'] === 'string'
+      ? e['channelId']
+      : typeof e['channelAccount'] === 'string'
+        ? e['channelAccount']
+        : undefined;
 
   if (e['ok'] === false) {
     const error = e['error'];
-    if (error !== 'expired' && error !== 'unverified') {
+    if (error !== 'expired' && error !== 'unverified' && error !== 'toon-channel-refused') {
       throw new ConnectorEdgeError(
         `claim-state channel entry ${entryIndex} has an undocumented error: ${String(error)}`,
         'CLAIM_STATE_MALFORMED'
       );
     }
-    return { blockchain, ...identity, ok: false, error };
+    return { blockchain, ...(channelId !== undefined ? { channelId } : {}), ok: false, error };
   }
   if (e['ok'] !== true) {
     throw new ConnectorEdgeError(
@@ -518,15 +431,13 @@ function parseClaimStateEntry(raw: unknown, entryIndex: number): ClaimStateResul
       'CLAIM_STATE_MALFORMED'
     );
   }
-
-  const nonce = e['nonce'];
-  if (typeof nonce !== 'number' || !Number.isInteger(nonce) || nonce < 0) {
+  if (channelId === undefined) {
     throw new ConnectorEdgeError(
-      `claim-state channel entry ${entryIndex} has a non-integer nonce`,
+      `claim-state channel entry ${entryIndex} names no channel`,
       'CLAIM_STATE_MALFORMED'
     );
   }
-  const lastClaimTime = e['lastClaimTime'];
+  const lastClaimTime = e['lastClaimTime'] ?? null;
   if (
     lastClaimTime !== null &&
     (typeof lastClaimTime !== 'number' || !Number.isInteger(lastClaimTime))
@@ -536,15 +447,14 @@ function parseClaimStateEntry(raw: unknown, entryIndex: number): ClaimStateResul
       'CLAIM_STATE_MALFORMED'
     );
   }
-
   return {
     blockchain,
-    ...identity,
+    channelId,
     ok: true,
-    depositTotal: claimNullableStr(e, 'depositTotal', entryIndex),
+    scheme: 'batch-settlement',
     cumulativeClaimed: claimStr(e, 'cumulativeClaimed', entryIndex),
-    available: claimNullableStr(e, 'available', entryIndex),
-    nonce,
+    maxCumulative: claimStr(e, 'maxCumulative', entryIndex),
+    available: claimStr(e, 'available', entryIndex),
     lastClaimTime,
   };
 }
@@ -1174,165 +1084,34 @@ export class ConnectorEdgeClient {
   }
 }
 
-/** A required-string reader over a raw settlement-facts record, refusing a missing/empty field. */
-function settlementStr(s: Record<string, unknown>, key: string): string {
-  const value = s[key];
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new ConnectorEdgeError(
-      `x402 greeting settlement facts lack '${key}'`,
-      'TERMS_MALFORMED'
-    );
-  }
-  return value;
-}
-
-/** A required-`decimals` reader, shared by every chain's settlement-facts shape. */
-function settlementDecimals(s: Record<string, unknown>): number {
-  const decimals = s['decimals'];
-  if (typeof decimals !== 'number') {
-    throw new ConnectorEdgeError(
-      "x402 greeting settlement facts lack 'decimals'",
-      'TERMS_MALFORMED'
-    );
-  }
-  return decimals;
-}
-
-/** Parse one already-object-checked EVM settlement-facts record (legacy `settlement` shape). */
-function parseEvmSettlementTerms(
-  s: Record<string, unknown>
-): ConnectorSettlementTerms {
-  return {
-    chain: settlementStr(s, 'chain'),
-    settlementAddress: settlementStr(s, 'settlementAddress'),
-    tokenNetworkRegistry: settlementStr(s, 'tokenNetworkRegistry'),
-    tokenNetwork: settlementStr(s, 'tokenNetwork'),
-    tokenAddress: settlementStr(s, 'tokenAddress'),
-    decimals: settlementDecimals(s),
-  };
-}
-
-/** Parse one already-object-checked Solana settlement-facts record (connector #632). */
-function parseSolanaSettlementTerms(
-  s: Record<string, unknown>
-): ConnectorSolanaSettlementTerms {
-  return {
-    chain: settlementStr(s, 'chain'),
-    settlementAddress: settlementStr(s, 'settlementAddress'),
-    programId: settlementStr(s, 'programId'),
-    tokenAddress: settlementStr(s, 'tokenAddress'),
-    decimals: settlementDecimals(s),
-  };
-}
-
-/**
- * Parse one entry of the greeting's `extra.settlements` list (connector
- * #632). The wire is untagged — serde on the connector side, and this parser
- * on the client side, both disambiguate structurally: `programId` names a
- * Solana entry, `tokenNetworkRegistry` names an EVM one. Anything else (both
- * fields present, neither present, or a field of the wrong shape) is refused
- * rather than guessed at.
- */
-function parseChainSettlementEntry(
-  raw: unknown
-): ConnectorChainSettlementTerms {
-  if (typeof raw !== 'object' || raw === null) {
-    throw new ConnectorEdgeError(
-      'x402 greeting settlements entry is not an object',
-      'TERMS_MALFORMED'
-    );
-  }
-  const s = raw as Record<string, unknown>;
-  if (typeof s['programId'] === 'string') {
-    return { kind: 'solana', ...parseSolanaSettlementTerms(s) };
-  }
-  if (typeof s['tokenNetworkRegistry'] === 'string') {
-    return { kind: 'evm', ...parseEvmSettlementTerms(s) };
-  }
-  throw new ConnectorEdgeError(
-    "x402 greeting settlements entry names neither an EVM ('tokenNetworkRegistry') nor a Solana ('programId') chain",
-    'TERMS_MALFORMED'
-  );
-}
-
 /**
  * Parse an x402 v2 greeting body into {@link ConnectorRouteTerms}. Pure and
  * exported so the wire shape is testable without a server. Refuses a body
- * that is not the documented greeting; a malformed OPTIONAL `settlement`
- * object (or `settlements` entry) is also a refusal rather than a silent
- * drop — half-understood channel-opening facts would be opened AGAINST.
+ * with no TOON terms, or a priced route offering no x402 `batch-settlement`
+ * channel — a reader that finds no `accepts[]` entry must not treat the route
+ * as free.
  */
 export function parseConnectorRouteTerms(body: unknown): ConnectorRouteTerms {
   if (typeof body !== 'object' || body === null) {
+    throw new ConnectorEdgeError('x402 greeting is not an object', 'TERMS_MALFORMED');
+  }
+  const parsed = parseX402Body(body);
+  if (parsed.toon === undefined) {
     throw new ConnectorEdgeError(
-      'x402 greeting is not an object',
+      'x402 greeting carries no TOON terms (extensions.toon.info)',
       'TERMS_MALFORMED'
     );
   }
-  const greeting = body as {
-    resource?: { url?: unknown };
-    accepts?: unknown;
-  };
-  const accepts = Array.isArray(greeting.accepts) ? greeting.accepts : [];
-  const option = accepts.find(
-    (entry): entry is Record<string, unknown> =>
-      typeof entry === 'object' &&
-      entry !== null &&
-      (entry as { scheme?: unknown }).scheme === 'toon-channel'
-  );
-  if (!option || typeof option['amount'] !== 'string') {
+  if (parsed.toon.amount > 0n && parsed.batchSettlements.length === 0) {
     throw new ConnectorEdgeError(
-      'x402 greeting carries no toon-channel option',
-      'TERMS_MALFORMED'
-    );
-  }
-  const destination =
-    typeof greeting.resource?.url === 'string' ? greeting.resource.url : '';
-  const rawExtra = option['extra'];
-  // Preserved verbatim on the returned terms below (issue #509, mirroring
-  // #506's `Http402Client` posture) — `extraForReads` stays the source for
-  // the fields this parser already knows (settlement/settlements) without
-  // narrowing the bag a caller sees.
-  const extra: X402ChannelExtra | undefined =
-    typeof rawExtra === 'object' && rawExtra !== null
-      ? (rawExtra as X402ChannelExtra)
-      : undefined;
-  const extraForReads = extra ?? {};
-
-  const rawSettlements = extraForReads['settlements'];
-  let settlements: ConnectorChainSettlementTerms[] | undefined;
-  if (rawSettlements !== undefined) {
-    if (!Array.isArray(rawSettlements)) {
-      throw new ConnectorEdgeError(
-        'x402 greeting settlements is not an array',
-        'TERMS_MALFORMED'
-      );
-    }
-    settlements = rawSettlements.map(parseChainSettlementEntry);
-  }
-
-  const rawSettlement = extraForReads['settlement'];
-  if (rawSettlement === undefined) {
-    return {
-      destination,
-      price: option['amount'],
-      ...(settlements ? { settlements } : {}),
-      ...(extra !== undefined ? { extra } : {}),
-    };
-  }
-  if (typeof rawSettlement !== 'object' || rawSettlement === null) {
-    throw new ConnectorEdgeError(
-      'x402 greeting settlement facts are malformed',
+      'x402 greeting prices the route but offers no batch-settlement channel to pay it on',
       'TERMS_MALFORMED'
     );
   }
   return {
-    destination,
-    price: option['amount'],
-    settlement: parseEvmSettlementTerms(
-      rawSettlement as Record<string, unknown>
-    ),
-    ...(settlements ? { settlements } : {}),
-    ...(extra !== undefined ? { extra } : {}),
+    destination: parsed.toon.destination,
+    price: parsed.toon.amount.toString(),
+    batchSettlements: parsed.batchSettlements,
+    info: parsed.toon.info,
   };
 }

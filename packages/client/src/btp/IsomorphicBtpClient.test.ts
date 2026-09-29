@@ -10,6 +10,7 @@ import {
   parseBtpMessage,
   type BTPMessageData,
 } from './protocol.js';
+import { must } from '../utils/must.test-support.js';
 
 /**
  * A minimal WebSocket test double: captures every frame `send()` writes and
@@ -73,7 +74,7 @@ async function createConnectedClient(configOverrides: Record<string, unknown> = 
   // synchronously inside triggerOpen()'s call stack — flush the microtask
   // queue first, then answer it with a bare RESPONSE under the same requestId.
   await flush();
-  const authFrame = parseBtpMessage(fakeWs.sent[0]!);
+  const authFrame = parseBtpMessage(must(fakeWs.sent[0]));
   fakeWs.triggerMessage(
     serializeBtpMessage({
       type: BTPMessageType.RESPONSE,
@@ -136,7 +137,7 @@ describe('IsomorphicBtpClient — server-originated MESSAGE (toon-client#493)', 
     await flush();
 
     expect(onMessage).toHaveBeenCalledTimes(1);
-    expect(onMessage.mock.calls[0]![0]).toMatchObject({
+    expect(must(onMessage.mock.calls[0])[0]).toMatchObject({
       requestId: 777,
       protocolData: [
         {
@@ -148,7 +149,7 @@ describe('IsomorphicBtpClient — server-originated MESSAGE (toon-client#493)', 
     });
 
     expect(fakeWs.sent).toHaveLength(1);
-    const answer = parseBtpMessage(fakeWs.sent[0]!);
+    const answer = parseBtpMessage(must(fakeWs.sent[0]));
     expect(answer.type).toBe(BTPMessageType.RESPONSE);
     expect(answer.requestId).toBe(777);
     expect((answer.data as BTPMessageData).protocolData).toEqual([
@@ -175,7 +176,7 @@ describe('IsomorphicBtpClient — server-originated MESSAGE (toon-client#493)', 
     await flush();
 
     expect(fakeWs.sent).toHaveLength(1);
-    const answer = parseBtpMessage(fakeWs.sent[0]!);
+    const answer = parseBtpMessage(must(fakeWs.sent[0]));
     expect(answer.type).toBe(BTPMessageType.ERROR);
     expect(answer.requestId).toBe(5);
   });
@@ -190,12 +191,12 @@ describe('IsomorphicBtpClient — server-originated TRANSFER (toon-client#493)',
     await flush();
 
     expect(onTransfer).toHaveBeenCalledTimes(1);
-    expect(onTransfer.mock.calls[0]![0]).toMatchObject({
+    expect(must(onTransfer.mock.calls[0])[0]).toMatchObject({
       requestId: 42,
       amount: 1_000_000n,
     });
 
-    const answer = parseBtpMessage(fakeWs.sent[0]!);
+    const answer = parseBtpMessage(must(fakeWs.sent[0]));
     expect(answer.type).toBe(BTPMessageType.RESPONSE);
     expect(answer.requestId).toBe(42);
   });
@@ -207,7 +208,7 @@ describe('IsomorphicBtpClient — server-originated TRANSFER (toon-client#493)',
     await flush();
 
     expect(fakeWs.sent).toHaveLength(1);
-    const answer = parseBtpMessage(fakeWs.sent[0]!);
+    const answer = parseBtpMessage(must(fakeWs.sent[0]));
     expect(answer.type).toBe(BTPMessageType.RESPONSE);
     expect(answer.requestId).toBe(9);
     expect((answer.data as BTPMessageData).protocolData).toEqual([]);
@@ -229,7 +230,7 @@ describe('IsomorphicBtpClient — id-space separation (toon-client#493)', () => 
     });
 
     // The outbound PREPARE's requestId — the first frame `sendPacket` wrote.
-    const outboundFrame = parseBtpMessage(fakeWs.sent[0]!);
+    const outboundFrame = parseBtpMessage(must(fakeWs.sent[0]));
     const collidingId = outboundFrame.requestId;
     fakeWs.sent.length = 0;
 
@@ -287,7 +288,7 @@ describe('IsomorphicBtpClient — disconnect fails in-flight inbound work loudly
     await client.disconnect();
 
     expect(onInboundError).toHaveBeenCalledTimes(1);
-    expect(onInboundError.mock.calls[0]![1]).toBe(3);
+    expect(must(onInboundError.mock.calls[0])[1]).toBe(3);
 
     // The handler settling after the fact must not throw or send anything further.
     expect(() => resolveHandler({})).not.toThrow();
@@ -310,7 +311,7 @@ describe('IsomorphicBtpClient — disconnect fails in-flight inbound work loudly
     fakeWs.triggerClose();
 
     expect(onInboundError).toHaveBeenCalledTimes(1);
-    expect(onInboundError.mock.calls[0]![1]).toBe(11);
+    expect(must(onInboundError.mock.calls[0])[1]).toBe(11);
   });
 });
 
@@ -339,7 +340,7 @@ describe('IsomorphicBtpClient — channel declaration on the greeting (toon-clie
     const connectPromise = client.connect();
     fakeWs.triggerOpen();
     await flush();
-    const authFrame = parseBtpMessage(fakeWs.sent[0]!);
+    const authFrame = parseBtpMessage(must(fakeWs.sent[0]));
     fakeWs.triggerMessage(
       serializeBtpMessage({
         type: BTPMessageType.RESPONSE,
@@ -349,7 +350,7 @@ describe('IsomorphicBtpClient — channel declaration on the greeting (toon-clie
     );
     await connectPromise;
 
-    expect(decodeAuthGreeting(fakeWs.sent[0]!)).toEqual({
+    expect(decodeAuthGreeting(must(fakeWs.sent[0]))).toEqual({
       peerId: 'p',
       secret: 's',
     });
@@ -374,7 +375,7 @@ describe('IsomorphicBtpClient — channel declaration on the greeting (toon-clie
     const connectPromise = client.connect();
     fakeWs.triggerOpen();
     await flush();
-    const authFrame = parseBtpMessage(fakeWs.sent[0]!);
+    const authFrame = parseBtpMessage(must(fakeWs.sent[0]));
     fakeWs.triggerMessage(
       serializeBtpMessage({
         type: BTPMessageType.RESPONSE,
@@ -384,10 +385,14 @@ describe('IsomorphicBtpClient — channel declaration on the greeting (toon-clie
     );
     await connectPromise;
 
-    // Flat, not nested: the connector's `auth_channel_proof` reads
-    // `channelId`/`expires`/`signature` off the greeting root, beside
-    // `peerId` and `secret` (connector#791, vector in connector#795).
-    expect(decodeAuthGreeting(fakeWs.sent[0]!)).toMatchObject(declaration);
+    // Nested under `channelChallenge`, beside `peerId` and `secret`: the
+    // connector's voucher claim-state challenge (ADR 0075, the vectors'
+    // `client_auth_channel_challenge`).
+    expect(decodeAuthGreeting(must(fakeWs.sent[0]))).toEqual({
+      channelChallenge: declaration,
+      peerId: 'p',
+      secret: 's',
+    });
   });
 
   it('reauthenticate() re-declares a channel that became known after connect, without a new socket', async () => {
@@ -405,7 +410,7 @@ describe('IsomorphicBtpClient — channel declaration on the greeting (toon-clie
 
     const reauthPromise = client.reauthenticate();
     await flush();
-    const authFrame = parseBtpMessage(fakeWs.sent[0]!);
+    const authFrame = parseBtpMessage(must(fakeWs.sent[0]));
     fakeWs.triggerMessage(
       serializeBtpMessage({
         type: BTPMessageType.RESPONSE,
@@ -415,9 +420,9 @@ describe('IsomorphicBtpClient — channel declaration on the greeting (toon-clie
     );
     await reauthPromise;
 
-    expect(decodeAuthGreeting(fakeWs.sent[0]!)).toMatchObject(
-      known.declaration!
-    );
+    expect(decodeAuthGreeting(must(fakeWs.sent[0]))).toMatchObject({
+      channelChallenge: known.declaration,
+    });
     expect(fakeWs.closed).toBe(false);
   });
 
@@ -446,7 +451,7 @@ describe('IsomorphicBtpClient — a RESPONSE resolves its protocolData too', () 
       expiresAt: new Date(Date.now() + 30_000),
       data: new Uint8Array(0),
     });
-    const requestId = parseBtpMessage(fakeWs.sent[0]!).requestId;
+    const requestId = parseBtpMessage(must(fakeWs.sent[0])).requestId;
     fakeWs.sent.length = 0;
     return { promise, requestId };
   }

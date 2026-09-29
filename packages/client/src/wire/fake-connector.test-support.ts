@@ -47,10 +47,6 @@ import {
   serializeIlpFulfill,
   serializeIlpReject,
 } from '../btp/protocol.js';
-import type {
-  ConnectorSettlementTerms,
-  ConnectorSolanaSettlementTerms,
-} from '../connector/ConnectorEdgeClient.js';
 
 /**
  * How this connector refuses the next claim-bearing request, when it does.
@@ -137,28 +133,9 @@ export class FakeTerminatingConnector {
   pricePerKib: bigint | undefined = undefined;
 
   /**
-   * The channel-opening facts the 402 greeting carries (connector #617).
-   * `null` — the default — is a settlement-less node: the greeting has no
-   * `settlement` key at all, exactly as the real edge omits it.
-   */
-  settlementTerms: ConnectorSettlementTerms | null = null;
-
-  /**
-   * The additive per-chain `settlements` list the greeting carries beside
-   * `settlementTerms` (connector #632) — untagged on the wire, one entry per
-   * chain this fake "settles on". `null` — the default — omits the key
-   * entirely, exactly as a pre-#632 (or settlement-less) node's greeting
-   * does.
-   */
-  settlements:
-    | (ConnectorSettlementTerms | ConnectorSolanaSettlementTerms)[]
-    | null = null;
-
-  /**
-   * Additional members merged into the greeting's `accepts[0].extra` bag
-   * beside `settlement`/`settlements` (issue #509, e.g.
-   * `session_lease_ttl_ms`). `null` — the default — adds nothing beyond the
-   * fixture's own `ilpAddress`/`endpoint`/`price` fields.
+   * Additional members merged into the greeting's `extensions.toon.info`
+   * (issue #509, e.g. `sessionLeaseTtlMs`). `null` — the default — adds nothing
+   * beyond the fixture's own `ilpAddress`/`amount`/`endpoint`/`price`.
    */
   extraFields: Record<string, unknown> | null = null;
 
@@ -174,18 +151,19 @@ export class FakeTerminatingConnector {
   /** Every destination a PREPARE was addressed to, in order. */
   readonly destinations: string[] = [];
   /**
-   * The settlement entries `GET /ilp` publishes — separate from
-   * {@link settlements}, which is the greeting's list, because a test may want a
-   * node that settles on a chain while its greeting says nothing.
+   * The x402 `batch-settlement` terms `GET /ilp` publishes, one per chain; the
+   * greeting's `accepts[]` is these, priced for the route (ADR 0075). Empty
+   * models a node that cannot be paid.
    */
-  describeSettlements: Record<string, unknown>[] = [
+  batchSettlements: Record<string, unknown>[] = [
     {
-      chain: 'evm:84532',
-      settlementAddress: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
-      tokenNetworkRegistry: '0x8263BdD4eB4862395Cb4ef5dA5d637F4b047Eea1',
-      tokenNetwork: '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478',
-      tokenAddress: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
-      decimals: 6,
+      network: 'eip155:84532',
+      asset: '0x0C996d7c934c79a6255254875607Fe69df25C0E1',
+      payTo: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+      receiverAuthorizer: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+      withdrawDelay: 86_400,
+      name: 'USDC',
+      version: '2',
     },
   ];
   /**
@@ -216,13 +194,9 @@ export class FakeTerminatingConnector {
    * "no such channel" and "bad signature" identically.
    *
    * Set it to model the state a timed-out-but-delivered packet leaves behind:
-   * the connector banked a claim the client believes it never sent
-   * (toon-client#671).
+   * the connector banked a voucher the client believes it never sent.
    */
-  readonly banked = new Map<
-    string,
-    { nonce: number; cumulativeClaimed: bigint; depositTotal?: bigint }
-  >();
+  readonly banked = new Map<string, { cumulativeClaimed: bigint; maxCumulative?: bigint }>();
   /** Every channel `POST /ilp/claim-state` was asked about, in order. */
   readonly claimStateAsks: string[] = [];
 
@@ -249,7 +223,7 @@ export class FakeTerminatingConnector {
       ...(this.publishEdgeIdentity
         ? { edgeIdentity: { keyId: 'fake', publicKey: this.publicKeyHex } }
         : {}),
-      settlements: this.describeSettlements,
+      batchSettlements: this.batchSettlements,
       routes: this.routes,
       ...(this.requiredTransport ? { requiredTransport: this.requiredTransport } : {}),
       supportedVersions: [1],
@@ -337,21 +311,21 @@ export class FakeTerminatingConnector {
       };
       const channels = (asked.channels ?? []).map((entry) => {
         const channelId = entry.channelId ?? entry.channelAccount ?? '';
+        const blockchain = entry.channelAccount !== undefined ? 'solana' : 'evm';
         this.claimStateAsks.push(channelId);
         const state = this.banked.get(channelId);
         if (state === undefined) {
-          return { blockchain: 'evm', channelId, ok: false, error: 'unverified' };
+          return { blockchain, channelId, ok: false, error: 'unverified' };
         }
-        const deposit = state.depositTotal;
+        const max = state.maxCumulative ?? 1_000_000n;
         return {
-          blockchain: 'evm',
+          blockchain,
           channelId,
           ok: true,
-          depositTotal: deposit === undefined ? null : deposit.toString(),
+          scheme: 'batch-settlement',
           cumulativeClaimed: state.cumulativeClaimed.toString(),
-          available:
-            deposit === undefined ? null : (deposit - state.cumulativeClaimed).toString(),
-          nonce: state.nonce,
+          maxCumulative: max.toString(),
+          available: (max > state.cumulativeClaimed ? max - state.cumulativeClaimed : 0n).toString(),
           lastClaimTime: null,
         };
       });
@@ -409,27 +383,33 @@ export class FakeTerminatingConnector {
     const body = JSON.stringify({
       x402Version: 2,
       resource: { url: destination },
-      accepts: [
-        {
-          scheme: 'toon-channel',
-          network: destination,
+      // Only x402-valid `batch-settlement` entries (ADR 0075), priced for the route.
+      accepts: this.batchSettlements.map((terms) => {
+        const { network, asset, payTo, ...extra } = terms;
+        return {
+          scheme: 'batch-settlement',
+          network,
           amount: price,
-          payTo: destination,
+          asset,
+          payTo,
           maxTimeoutSeconds: 60,
-          httpEndpoint: '/ilp',
-          extra: {
+          extra,
+        };
+      }),
+      // TOON's own facts, in x402 v2's extension slot.
+      extensions: {
+        toon: {
+          info: {
             ilpAddress: destination,
+            amount: price,
             endpoint: '/ilp',
             price,
-            ...(this.requiredTransport
-              ? { requiredTransport: this.requiredTransport }
-              : {}),
-            ...(this.settlementTerms ? { settlement: this.settlementTerms } : {}),
-            ...(this.settlements ? { settlements: this.settlements } : {}),
+            ...(this.requiredTransport ? { requiredTransport: this.requiredTransport } : {}),
             ...(this.extraFields ?? {}),
           },
+          schema: {},
         },
-      ],
+      },
     });
     return new Response(body, {
       status: 402,
@@ -462,7 +442,7 @@ export class FakeTerminatingConnector {
           serializeIlpReject({
             code: 'F03',
             triggeredBy: 'g.fake',
-            message: 'claim rejected: amount not advancing by the route price',
+            message: `claim rejected: advances value by 1, less than this route's price of ${String(this.routePrice ?? 0n)}`,
             data: new Uint8Array(0),
           }),
           {
@@ -527,7 +507,7 @@ export class FakeTerminatingConnector {
         // other; this is the case that proves it.
         const fulfilled = this.fulfill(dataBase64);
         return this.fulfillResponse(fulfilled, {
-          claimAck: { result: 'rejected', reason: 'nonce_not_advancing' },
+          claimAck: { result: 'rejected', reason: 'amount_not_advancing' },
         });
       }
 

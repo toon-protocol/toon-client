@@ -10,10 +10,9 @@
  *   export TOON_MNEMONIC="your twelve words …"
  *   npx tsx examples/send-http.ts
  *
- * The wallet needs two things before this works: mock USDC to collateralize the
- * channel (`toon faucet`, or `wallet.faucet()` below) and a little Base Sepolia
- * ETH for the gas the channel open itself spends. Paying for a request spends
- * no gas — that is the point of a channel.
+ * The wallet needs devnet USDC for the channel's deposit (`toon faucet`, or
+ * `wallet.faucet()` below) and no ETH at all: the devnet's x402 facilitator
+ * relays the deposit and pays its gas, and paying for a request spends none.
  */
 import { ToonClient, DEVNET } from '@toon-protocol/client';
 
@@ -25,8 +24,11 @@ const client = await ToonClient.create({
   mnemonic,
   chain: 'evm',
   transport: 'http',
-  // Persist the claim watermark. In memory it is lost on restart, and every
-  // claim signed after that is refused for not advancing the connector's nonce.
+  // In the settlement token's base units: 100000 is 0.10 USDC.
+  deposit: 100_000n,
+  // Persist the channel and its voucher watermark. An x402 channel's config
+  // cannot be read back from the chain, so without a store a restart opens a
+  // fresh channel.
   channelStore: `${process.env['HOME'] ?? '.'}/.toon/channels.json`,
 });
 
@@ -41,12 +43,13 @@ try {
   // Uncomment on a wallet that has never been funded. Devnet only.
   // await client.wallet.faucet('evm');
 
-  // Collateral, in the settlement token's base units: 100000 is 0.10 USDC.
-  // Idempotent — it adopts the channel already open with this connector.
-  const channel = await client.channel.open({ deposit: 100_000n });
+  // Optional: the first paid send opens the channel on its own. Opening it
+  // here just makes the deposit visible first. Idempotent — it returns the
+  // channel already open with this connector.
+  const channel = await client.channel.open();
   console.log(
-    'channel', channel.channelId,
-    'available', channel.available.toString(), 'base units'
+    'channel', channel.channel.channelId,
+    'deposit', channel.depositTotal.toString(), 'base units'
   );
 
   const answer = await client.send(DEVNET.store.route, {
@@ -67,8 +70,8 @@ try {
     console.log('status', answer.status);
     console.log('body', answer.text());
     console.log(
-      'spent', answer.claim.amount.toString(),
-      'base units at nonce', answer.claim.nonce
+      'spent', answer.claim?.amount.toString(),
+      'base units; cumulative', answer.claim?.cumulative.toString()
     );
   }
 } finally {

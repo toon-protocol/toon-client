@@ -10,11 +10,10 @@
  *
  * Not `*.test.ts`, so the runner does not collect it as a suite.
  */
-import type { BatchSettlementFacade } from '../client/batch-settlement-facade.js';
-import type { ConnectorChainSettlementTerms } from '../connector/self-description.js';
 import type { ConnectorRoutePrice } from '../connector/ConnectorEdgeClient.js';
 import type { NodeSelfDescription } from '../connector/self-description.js';
-import type { ChainKind, ChannelTerms } from '../channel/types.js';
+import type { BatchSettlementTerms } from '../channel/batch-settlement/offers.js';
+import type { ChainKind } from '../channel/types.js';
 import type { WalletChainBalances } from '../wallet/balances.js';
 import type { SendTransferParams, SendTransferResult } from '../wallet/transfer.js';
 import type { FundWalletResult } from '../wallet/faucet.js';
@@ -22,25 +21,26 @@ import type {
   ChannelFacade,
   ChannelState,
   ClaimStateResult,
-  OpenChannelOptions,
   SendOptions,
   SendRequest,
   SendResult,
   ToonClientLike,
   ToonIdentity,
-  TxRef,
   WalletFacade,
 } from '../client/types.js';
 
-/** A Base Sepolia settlement entry, shaped exactly as `GET /ilp` publishes one. */
-export const FAKE_SETTLEMENT: ConnectorChainSettlementTerms = {
-  kind: 'evm',
-  chain: 'evm:84532',
-  settlementAddress: '0x1111111111111111111111111111111111111111',
-  tokenNetworkRegistry: '0x8263BdD4eB4862395Cb4ef5dA5d637F4b047Eea1',
-  tokenNetwork: '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478',
-  tokenAddress: '0x0C996d7c934c79a6255254875607Fe69df25C0E1',
-  decimals: 6,
+/** The node's Base Sepolia x402 terms, shaped exactly as `GET /ilp` publishes them. */
+export const FAKE_SETTLEMENT: BatchSettlementTerms = {
+  chain: 'evm',
+  network: 'eip155:84532',
+  asset: '0x0C996d7c934c79a6255254875607Fe69df25C0E1',
+  payTo: '0x1111111111111111111111111111111111111111',
+  extra: {
+    receiverAuthorizer: '0x1111111111111111111111111111111111111111',
+    withdrawDelay: 86_400,
+    name: 'USDC',
+    version: '2',
+  },
 };
 
 export const FAKE_DESCRIPTION: NodeSelfDescription = {
@@ -49,35 +49,32 @@ export const FAKE_DESCRIPTION: NodeSelfDescription = {
   btpEndpoint: 'wss://node.example/ilp/btp',
   peerCarriages: ['http', 'btp'],
   edgeIdentity: { keyId: 'edge-1', publicKey: '0x04abcd' },
-  batchSettlements: [],
-  settlements: [FAKE_SETTLEMENT],
+  batchSettlements: [FAKE_SETTLEMENT],
+  voucherSigners: [{ network: 'eip155:84532', signer: FAKE_SETTLEMENT.payTo }],
   routes: [{ prefix: 'g.toon.store', price: 1000n }],
   supportedVersions: [1],
   defaultVersion: 1,
   raw: {},
 };
 
-export const FAKE_TERMS: ChannelTerms = {
-  kind: 'evm',
-  chain: 'evm:84532',
-  chainId: 84532,
-  counterparty: FAKE_SETTLEMENT.settlementAddress,
-  token: FAKE_SETTLEMENT.tokenAddress,
-  decimals: 6,
-  tokenNetwork: FAKE_SETTLEMENT.tokenNetwork,
-};
-
 export function fakeChannelState(overrides: Partial<ChannelState> = {}): ChannelState {
   return {
-    chain: 'evm',
-    channelId: '0xchannel',
-    counterparty: FAKE_TERMS.counterparty,
-    status: 'open',
+    channel: {
+      chain: 'evm',
+      channelId: '0xchannel',
+      network: 'eip155:84532',
+      config: {
+        payer: '0x2222222222222222222222222222222222222222',
+        payerAuthorizer: '0x2222222222222222222222222222222222222222',
+        receiver: FAKE_SETTLEMENT.payTo,
+        receiverAuthorizer: FAKE_SETTLEMENT.payTo,
+        token: FAKE_SETTLEMENT.asset,
+        withdrawDelay: 86_400,
+        salt: `0x${'00'.repeat(32)}`,
+      },
+    },
     depositTotal: 100_000n,
-    spent: 3_000n,
-    nonce: 3,
-    available: 97_000n,
-    domain: FAKE_TERMS,
+    signed: 3_000n,
     ...overrides,
   };
 }
@@ -94,7 +91,7 @@ export function fakeFulfilled(overrides: Partial<SendResult> = {}): SendResult {
     text: () => new TextDecoder().decode(body),
     json: <T>() => JSON.parse(new TextDecoder().decode(body)) as T,
     fulfillment: new Uint8Array(32),
-    claim: { channelId: '0xchannel', chain: 'evm', nonce: 4, cumulative: 4_000n, amount: 1_000n },
+    claim: { channelId: '0xchannel', chain: 'evm', cumulative: 4_000n, amount: 1_000n },
     ...overrides,
   } as SendResult;
 }
@@ -135,8 +132,6 @@ export interface FakeClientOptions {
   faucet?: FundWalletResult;
   /** Make any method throw, to exercise the exit-code mapping. */
   throws?: { method: string; error: unknown };
-  /** Present only for a client created with `batchSettlement`. */
-  batchSettlement?: BatchSettlementFacade;
 }
 
 export class FakeToonClient implements ToonClientLike {
@@ -146,7 +141,6 @@ export class FakeToonClient implements ToonClientLike {
   readonly identity: ToonIdentity;
   readonly channel: ChannelFacade;
   readonly wallet: WalletFacade;
-  readonly batchSettlement: BatchSettlementFacade | undefined;
   closed = false;
 
   private readonly options: FakeClientOptions;
@@ -155,7 +149,6 @@ export class FakeToonClient implements ToonClientLike {
     this.options = options;
     this.connector = options.connector ?? 'https://node.example';
     this.chain = options.chain ?? 'evm';
-    this.batchSettlement = options.batchSettlement;
     this.identity = options.identity ?? {
       evmAddress: '0x2222222222222222222222222222222222222222',
       solanaPublicKey: 'So11111111111111111111111111111111111111112',
@@ -163,20 +156,17 @@ export class FakeToonClient implements ToonClientLike {
     };
 
     const state = options.channelState ?? fakeChannelState();
+    const channelId = state.channel.channelId;
     this.channel = {
-      id: state.channelId,
-      open: async (o?: OpenChannelOptions) => this.record('channel.open', [o], state),
-      deposit: async (amount: bigint | string) =>
-        this.record('channel.deposit', [amount], state),
+      channels: () => this.record('channel.channels', [], [state]),
+      current: async () => this.record('channel.current', [], state),
+      open: async () => this.record('channel.open', [], state),
+      deposit: async (amount: bigint) => this.record('channel.deposit', [amount], state),
       close: async () =>
-        this.record('channel.close', [], {
-          txHash: '0xclose',
-          closedAt: 1_700_000_000n,
-          settleableAt: 1_700_003_600n,
-        } as TxRef & { closedAt?: bigint; settleableAt?: bigint }),
-      settle: async () => this.record('channel.settle', [], { txHash: '0xsettle' }),
-      state: async (o?: { onChain?: boolean }) => this.record('channel.state', [o], state),
-      ensure: async () => this.record('channel.ensure', [], state.channelId),
+        this.record('channel.close', [], [
+          { channelId, transaction: '0xclose', settleableAt: 1_700_003_600n },
+        ]),
+      settle: async () => this.record('channel.settle', [], [{ channelId, transaction: '0xsettle' }]),
     };
 
     this.wallet = {
@@ -293,10 +283,10 @@ export class FakeToonClient implements ToonClientLike {
           blockchain: 'evm',
           channelId: '0xchannel',
           ok: true,
-          depositTotal: '100000',
+          scheme: 'batch-settlement',
           cumulativeClaimed: '4000',
+          maxCumulative: '100000',
           available: '96000',
-          nonce: 4,
           lastClaimTime: null,
         },
       ]

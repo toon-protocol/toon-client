@@ -7,11 +7,17 @@
  * a request that was already paid for. So the client's central operation is not
  * "publish" or "post" — it is {@link ToonClientLike.send}, which puts one HTTP
  * request through a connector and gives you back the app's HTTP response, having
- * paid for it with a signed payment-channel claim that travels *with* the packet
- * (connector ADR 0042).
+ * paid for it with a voucher — a signed, cumulative claim on an x402
+ * `batch-settlement` channel — that travels *with* the packet (connector ADRs
+ * 0042, 0075).
  */
-import type { BatchSettlementFacade } from './batch-settlement-facade.js';
-import type { ChainKind, ChannelStatus, ChannelTerms } from '../channel/types.js';
+import type { BatchSettlementOffer } from '../channel/batch-settlement/offers.js';
+import type {
+  BatchChannelSummary,
+  BatchExitResult,
+  ChannelFacade,
+} from './channel-facade.js';
+import type { ChainKind } from '../channel/types.js';
 import type { KeyDerivationScheme } from '../keys/KeyDerivation.js';
 import type { ClaimAck } from '../ilp/types.js';
 import type { ChannelStore } from '../channel/ChannelStore.js';
@@ -24,7 +30,9 @@ import type { WalletChainBalances } from '../wallet/balances.js';
 import type { SendTransferParams, SendTransferResult } from '../wallet/transfer.js';
 import type { FundWalletResult } from '../wallet/faucet.js';
 
-export type { ChainKind, ChannelTerms, ChannelStatus };
+export type { ChainKind, ChannelFacade, BatchExitResult };
+/** One x402 channel this client pays a connector from, as it records it. */
+export type ChannelState = BatchChannelSummary;
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -100,46 +108,39 @@ export interface ToonClientConfig {
   channelStore?: string | ChannelStore;
 
   /**
-   * The `senderId` written into every claim. Defaults to your address on the
-   * selected chain. It is a label the connector echoes, never an authority —
-   * a claim is authorised by its signature against the channel's on-chain
-   * counterparty and by nothing else (connector ADR 0052).
+   * The `senderId` written into every voucher. Defaults to the voucher signer's
+   * address. It is a label the connector echoes, never an authority — a voucher
+   * is authorised by its signature against the channel's on-chain voucher
+   * signer and by nothing else (connector ADR 0052).
    */
   senderId?: string;
 
-  /** Collateral for the first channel this client opens, in base units. Default `100000n`. */
+  /**
+   * What a channel is opened with, and topped up by, in base units. Default
+   * `100000n`. A Solana channel is opened with at least the node's published
+   * `minDeposit`.
+   */
   deposit?: bigint | string;
-  /** Challenge period in seconds. Default `86400`; floored at `3600` on EVM. */
-  settlementTimeout?: number;
-  /** Open a channel on the first {@link ToonClientLike.send} when none exists. Default `true`. */
+  /**
+   * Open, top up or replace a channel on the first {@link ToonClientLike.send}
+   * that needs one. Default `true`. With `false`, that is `client.channel`'s
+   * job, and a send that needs it throws {@link ChannelNotOpenError}.
+   */
   autoOpenChannel?: boolean;
 
   /**
-   * Pay from an x402 `batch-settlement` channel wherever the node offers one on
-   * this client's chain (connector ADR 0074), onboarding with no native gas: on
-   * Base a facilitator relays the deposit, on Solana the node sponsors the open.
-   *
-   * Opt-in by presence. Such a channel is one-way, client to connector, so a
-   * client that expects payouts leaves this unset and stays on `toon-channel`.
-   * A node that offers no `batch-settlement` on the chain is paid over
-   * `toon-channel` exactly as if this were unset.
+   * The x402 facilitator that submits a Base deposit and pays its gas, so a
+   * wallet holding USDC and no ETH can open a channel. Defaults to the devnet's
+   * own (`https://onboard.devnet.toonprotocol.dev`) on Base Sepolia; required on
+   * any other EVM network. Solana needs none: the connector sponsors the open.
    */
-  batchSettlement?: {
-    /**
-     * The x402 facilitator that submits Base deposits and pays their gas —
-     * `https://x402.org/facilitator` on Base Sepolia, CDP's on mainnet, or the
-     * devnet's own. Required to pay on EVM.
-     */
-    facilitatorUrl?: string;
-    /** Deposited on onboarding and again on each top-up, base units. Defaults to `deposit`. */
-    deposit?: bigint | string;
-    /**
-     * `eip3009` (the default) for a token with ERC-3009, gasless outright;
-     * `permit2` for one without, which needs the payer's one-time Permit2
-     * approval — a transaction of its own — first.
-     */
-    depositMethod?: 'eip3009' | 'permit2';
-  };
+  facilitatorUrl?: string;
+  /**
+   * How a Base deposit is authorized: `eip3009` (the default) for a token with
+   * ERC-3009, gasless outright; `permit2` for one without, which needs the
+   * payer's one-time Permit2 approval — a transaction of its own — first.
+   */
+  depositMethod?: 'eip3009' | 'permit2';
 
   /** Per-packet timeout in milliseconds. Default `30000`. */
   timeoutMs?: number;
@@ -149,8 +150,9 @@ export interface ToonClientConfig {
     maxReconnectAttempts?: number;
     reconnectDelay?: number;
     /**
-     * Declare channel control at auth, binding this session to a channel before
-     * it has ever presented a claim. EVM only. Default `true`.
+     * Declare the channel at BTP auth with a voucher claim-state challenge
+     * (`channelChallenge`), binding the session to it before it has presented
+     * a voucher. Default `true`.
      */
     declareChannel?: boolean;
   };
@@ -245,18 +247,14 @@ export interface SendOptions {
    *   of the *sealed* payload, which does not exist until this client has
    *   sealed it. A caller vetting the cost beforehand is guessing at the figure
    *   it is about to authorise; the hook is handed the real one.
-   * - **The refusal provably precedes the signature.** A signed balance proof
-   *   is a bearer instrument, so
-   *   {@link ../channel/ChannelManager.js!ChannelManager.signBalanceProof}
-   *   advances and persists the channel's watermark *before* the packet leaves,
-   *   and its rollback deliberately restores the cumulative amount and **not**
-   *   the nonce — a re-signable nonce would put two different claims at one
-   *   watermark. So there is no "I changed my mind" once a claim is signed.
-   *   When this runs, nothing has been signed, no channel has been ensured and
-   *   no packet has left.
+   * - **The refusal provably precedes the signature.** A signed voucher is a
+   *   bearer instrument: the channel's watermark is advanced and persisted
+   *   *before* the packet leaves, and a voucher that went out cannot be taken
+   *   back. When this runs, nothing has been signed, no channel has been opened
+   *   and no packet has left.
    *
-   * Called exactly once per `send`, even on the bounded stale-channel retry: it
-   * is a decision about a request, not about an attempt. Throwing from it also
+   * Called exactly once per `send`: it is a decision about a request, not about
+   * an attempt. Throwing from it also
    * refuses the send, and the throw propagates unchanged — a caller's own check
    * failing is the caller's error to read, not one for this client to re-dress.
    *
@@ -281,24 +279,15 @@ export interface SendOptions {
   }) => string | void;
 }
 
-/** What one claim spent. */
+/** What one voucher spent. */
 export interface ClaimSummary {
+  /** The x402 channel it was drawn on: `0x…` on EVM, the channel account on Solana. */
   channelId: string;
   chain: ChainKind;
-  /**
-   * The nonce this claim carried. Strictly increasing per channel. Always `0`
-   * for a `batch-settlement` voucher, which has none.
-   */
-  nonce: number;
-  /** The channel's cumulative transferred amount after this claim. */
+  /** The channel's cumulative amount after this voucher. */
   cumulative: bigint;
-  /** What this packet cost — the difference this claim advanced by. */
+  /** What this packet cost — the difference this voucher advanced by. */
   amount: bigint;
-  /**
-   * Set when the claim was an x402 `batch-settlement` voucher (connector ADR
-   * 0074) rather than a `toon-channel` balance proof.
-   */
-  scheme?: 'batch-settlement';
 }
 
 /**
@@ -397,71 +386,14 @@ export interface PaymentTerms {
   btpEndpoint?: string;
   /** Set only when the route refuses the carriage the request arrived on. */
   requiredTransport?: RequiredTransport;
-  settlements: NodeSelfDescription['settlements'];
+  /** Per chain, the x402 `batch-settlement` offer a channel is opened on, priced for this request. */
+  batchSettlements: BatchSettlementOffer[];
   /** The connector's session lease TTL, published so a consumer need not guess it. */
   sessionLeaseTtlMs?: number;
   raw: unknown;
 }
 
-// ─── Channels ───────────────────────────────────────────────────────────────
-
-/**
- * A channel, as this client and the chain jointly see it.
- *
- * `spent`/`nonce` are the **local watermark** — what this client has signed. The
- * connector keeps its own watermark and is the one that decides; they agree
- * unless a claim was signed and never accepted. {@link ToonClientLike.claimState}
- * asks the connector for its side.
- */
-export interface ChannelState {
-  chain: ChainKind;
-  /** `0x…` 32 bytes on EVM; the channel account's base58 pubkey on Solana. */
-  channelId: string;
-  /** The connector's settlement address — the other participant. */
-  counterparty: string;
-  status: ChannelStatus;
-  /** On-chain collateral, base units. */
-  depositTotal: bigint;
-  /** Cumulative amount claimed against it so far. */
-  spent: bigint;
-  /** The last nonce signed. */
-  nonce: number;
-  /** `depositTotal - spent`: what is still spendable. */
-  available: bigint;
-  onChain?: {
-    deposit?: bigint;
-    closedAt?: bigint;
-    settleableAt?: bigint;
-  };
-  /** The domain a claim on this channel is signed under. */
-  domain: ChannelTerms;
-}
-
-export interface OpenChannelOptions {
-  deposit?: bigint | string;
-  settlementTimeout?: number;
-}
-
-export interface TxRef {
-  txHash?: string;
-}
-
-/** On-chain channel operations. Every one of these is your transaction, on your gas. */
-export interface ChannelFacade {
-  /** The current channel's id, or `undefined` before one is opened. */
-  readonly id: string | undefined;
-  /** Open a channel, or adopt the one already open with this connector. */
-  open(options?: OpenChannelOptions): Promise<ChannelState>;
-  /** Add collateral. Monotonic on both chains — a deposit can never decrease. */
-  deposit(amount: bigint | string): Promise<ChannelState>;
-  /** Start the challenge period. */
-  close(): Promise<TxRef & { closedAt?: bigint; settleableAt?: bigint }>;
-  /** Pay out and finish, once the challenge period has elapsed. */
-  settle(): Promise<TxRef>;
-  state(options?: { onChain?: boolean }): Promise<ChannelState>;
-  /** Ensure a usable channel exists, opening one if configured to. Returns its id. */
-  ensure(description?: NodeSelfDescription): Promise<string>;
-}
+// ─── Wallet ─────────────────────────────────────────────────────────────────
 
 /** Chain reads and transfers that have nothing to do with paying a connector. */
 export interface WalletFacade {
@@ -475,7 +407,7 @@ export interface WalletFacade {
 export interface ToonIdentity {
   evmAddress?: string;
   solanaPublicKey?: string;
-  /** What claims are labelled with. */
+  /** What vouchers are labelled with. */
   senderId: string;
 }
 
@@ -493,11 +425,6 @@ export interface ToonClientLike {
   readonly identity: ToonIdentity;
   readonly channel: ChannelFacade;
   readonly wallet: WalletFacade;
-  /**
-   * The x402 `batch-settlement` channels this client pays from. Present only on
-   * a client created with `batchSettlement` (connector ADR 0074).
-   */
-  readonly batchSettlement?: BatchSettlementFacade | undefined;
   /** `GET /ilp`. Cached per instance; `fresh` re-reads. */
   describe(options?: { fresh?: boolean }): Promise<NodeSelfDescription>;
   /**
@@ -508,7 +435,11 @@ export interface ToonClientLike {
   price(destination: string): Promise<bigint | null>;
   /** The same route's full terms, including a `pricePerKib` when it meters by size. */
   routePrice(destination: string): Promise<ConnectorRoutePrice | null>;
-  /** `POST /ilp/probe`: learn a path's cost without buying the work. Needs an open channel. */
+  /**
+   * `POST /ilp/probe`: learn a path's cost without buying the work. Identifies
+   * with the latest voucher, resent byte for byte, so it needs a channel this
+   * client has already paid on.
+   */
   probe(destination: string): Promise<{ accumulatedCost: bigint; code: string; message: string }>;
   /**
    * Pay for one HTTP request. The destination is optional — omitted, it goes to
@@ -522,53 +453,4 @@ export interface ToonClientLike {
   claimState(channelIds?: string[]): Promise<ClaimStateResult[]>;
   /** Release the BTP session and flush the channel store. Does not touch the channel. */
   close(): Promise<void>;
-}
-
-// ─── Balance proofs (the claim's signed core) ───────────────────────────────
-
-/**
- * The fields a balance proof commits to.
- *
- * `lockedAmount` and `locksRoot` are always zero and always present: value moves
- * on the claim itself, so nothing is ever locked — but both are still hashed
- * into the EIP-712 struct, and omitting them computes a digest no connector
- * will accept.
- */
-export interface BalanceProofParams {
-  channelId: string;
-  /** Strictly increasing. A claim whose nonce does not advance the payee's watermark is refused. */
-  nonce: number;
-  /** Cumulative, not per-packet: each claim supersedes the last. */
-  transferredAmount: bigint;
-  lockedAmount: bigint;
-  locksRoot: string;
-}
-
-/** A balance proof plus the signature over it and the domain it was signed under. */
-export interface SignedBalanceProof extends BalanceProofParams {
-  /** EVM: 65-byte `r‖s‖v` hex. Solana: base64 of the 64-byte Ed25519 signature. */
-  signature: string;
-  /** EVM address, or Solana pubkey, of whoever signed. Carried on the wire; carries no authority. */
-  signerAddress: string;
-  /** EIP-712 domain `chainId`. Unused on Solana. */
-  chainId: number;
-  /**
-   * EVM: the `TokenNetwork`, the EIP-712 `verifyingContract`.
-   * Solana: the settlement **program id**, which ADR 0053 binds into the signed
-   * message itself, so a claim can no longer be replayed against another
-   * deployment of the same program.
-   */
-  tokenNetworkAddress: string;
-  /** ERC-20 address or SPL mint, for a self-describing claim. */
-  tokenAddress?: string;
-  /**
-   * The counterparty this proof is bound to.
-   *
-   * Neither chain's signed message folds it in — which side gets paid is fixed
-   * by the channel's participants, not by the proof — so this is carried only so
-   * it flows from signing through to the claim message.
-   */
-  recipient?: string;
-  /** Solana only: the cluster the claim declares, cross-checked by the connector. */
-  cluster?: string;
 }

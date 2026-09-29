@@ -19,13 +19,12 @@ nobody named should not be silent.
 | Keys | — | `TOON_MNEMONIC` | The keystore, below |
 | Keystore | `--keystore PATH` | `TOON_KEYSTORE` | `~/.toon/keystore.json` |
 | Keystore password | `--password-file PATH` | `TOON_KEYSTORE_PASSWORD` | A hidden prompt, when stdin is a TTY |
-| Chain | `--chain evm\|solana` | `TOON_CHAIN` | The first chain the node settles on that you hold a key for |
+| Chain | `--chain evm\|solana` | `TOON_CHAIN` | The first chain the node is paid on that you hold a key for |
 | RPC | `--rpc URL` | `TOON_RPC_URL` | The package's preset for the chosen chain |
 | Channel store | `--store PATH` | `TOON_CHANNEL_STORE` | `~/.toon/channels.json` |
 | Carriage | `--transport auto\|http\|btp` | — | `auto` |
 | SOCKS5h proxy | `--socks URL` | `TOON_SOCKS` | a managed `anon` daemon, for a `.anyone` connector |
-| x402 batch-settlement | `--batch-settlement` | `TOON_BATCH_SETTLEMENT=1` | off |
-| x402 facilitator | `--facilitator URL` | `TOON_FACILITATOR` | none; needed to open or top up on Base |
+| x402 facilitator | `--facilitator URL` | `TOON_FACILITATOR` | The devnet's own on Base Sepolia; needed on any other EVM network |
 
 Keys resolve in that order for a reason: `TOON_MNEMONIC` first, then the keystore, then a message
 telling you to run `toon init`. **There is no `--mnemonic` flag and there will not be one** — a
@@ -67,7 +66,7 @@ look at when a channel opened before 1.0 seems to have vanished.
 ### `toon describe [URL]`
 
 Read a connector's self-description: its addresses, its endpoints, the key payloads are sealed to,
-what it settles in, and what each route costs. Free, unauthenticated, and needs no keys.
+which chains and tokens it is paid in, and what each route costs. Free, unauthenticated, and needs no keys.
 
 ### `toon price <destination> [URL]`
 
@@ -76,8 +75,9 @@ destination says so — an answer, not a failure.
 
 ### `toon probe <destination>`
 
-Learn a path's cost without buying the work. Needs an open channel: a probe carries a claim, it
-just does not spend it, and probing is rate-limited per channel.
+Learn a path's cost without buying the work. Needs a channel you have already paid on: a probe
+resends your latest voucher unchanged, so it moves no value, and probing is rate-limited per
+channel.
 
 ### `toon send [destination] [options]`
 
@@ -112,48 +112,34 @@ npx toon send g.toon.relay --transport btp --body 'hello'
 
 ### `toon channel open|deposit <amount>|status|close|settle`
 
+The x402 `batch-settlement` channels you pay the node from. See [channels.md](channels.md).
+
 | Subcommand | What it does |
 | --- | --- |
-| `open` | Open a channel, or adopt the one already open with this connector |
-| `deposit <base units>` | Add collateral. Monotonic — a deposit can never decrease |
-| `status` | The channel as this client and the chain jointly see it |
-| `close` | Start the challenge period |
-| `settle` | Pay out and finish, once the challenge period has elapsed |
+| `open` | Open a channel with no native gas — a deposit through the facilitator on Base, a sponsored open on Solana — or show the one already open |
+| `deposit <base units>` | Top up the Base channel through the facilitator. Solana channels are not topped up: the next payment the channel cannot cover opens a fresh sponsored one |
+| `status` | Every channel you hold with the node, live or archived: deposit, what you have signed, what is left, and any exit times |
+| `close` | Start leaving every open channel with the node, including ones a newer channel replaced: `initiateWithdraw` on Base, `request_close` on Solana. **Costs native gas** |
+| `settle` | Take back the unspent deposit of every channel whose window has passed, including a Solana channel the node sealed first. **Costs native gas**. One channel failing does not stop the others; the command exits non-zero when any fails |
 
 | Option | Meaning |
 | --- | --- |
-| `--deposit BASE_UNITS` | Collateral to lock, in the settlement token's base units |
-| `--settlement-timeout SECONDS` | Challenge period. Default 86400; EVM floors it at 3600 |
+| `--deposit BASE_UNITS` | What a channel opens with, in the token's base units. Default 100000 (0.10 USDC) |
+| `--facilitator URL` | The x402 facilitator a Base deposit goes through (a global flag, above) |
 | `--connector-view` | On `status`, also ask the connector for its own watermark and show both |
 
-Every one of these is your transaction, on your gas.
-
 ```bash
-npx toon channel open --deposit 100000     # 100000 base units (0.10 USDC)
+npx toon channel open --deposit 1000000    # 1000000 base units (1 USDC), no gas
 npx toon channel status --connector-view
-```
-
-With `--batch-settlement`, the same verbs act on the x402 `batch-settlement` channel you pay the
-node from instead (connector ADR 0074; see [channels.md](channels.md#onboarding-without-gas-x402-batch-settlement)).
-
-| Subcommand | Under `--batch-settlement` |
-| --- | --- |
-| `open` | Onboard with no native gas: a deposit through `--facilitator` on Base, or a sponsored open on Solana. If a channel is already open, it is shown instead. |
-| `status` | Every batch-settlement channel you hold with the node, and what you have signed on each. |
-| `deposit <base units>` | Top up the Base channel through `--facilitator`. Solana channels are not topped up: the next payment the channel cannot cover opens a fresh sponsored one. |
-| `close` | Start leaving every open channel with the node, including ones a newer channel replaced: `initiateWithdraw` on Base, or `request_close` on Solana. This costs native gas. |
-| `settle` | Take back the unspent deposit of every channel whose window has passed, including a Solana channel the node sealed first. This costs native gas. One channel failing does not stop the others. The command exits non-zero when any channel fails. |
-
-```bash
-npx toon --batch-settlement --facilitator https://x402.org/facilitator channel open
-npx toon --batch-settlement send g.toon.store --body '{"hello":"world"}'
+npx toon channel close                     # then, once the window has passed:
+npx toon channel settle
 ```
 
 ### `toon claim-state`
 
-The connector's own watermark for the channels you control — deposit total, cumulative claimed,
-available, nonce, last-claim time. One signature per channel, over a challenge distinct from a
-claim. It works when the channel has run dry.
+The connector's own watermark for the channels you hold — cumulative claimed, the highest
+cumulative it will accept now, what the next voucher may add, last-claim time. One signed voucher
+claim-state challenge per channel, distinct from a voucher. It works when the channel has run dry.
 
 ### `toon balances`
 
@@ -167,8 +153,8 @@ confirmed by an observed balance change at the destination, not by the transacti
 
 ### `toon faucet`
 
-Ask the devnet faucet for test funds. Devnet only. The Solana leg drips USDC and no SOL — see
-[devnet.md](devnet.md#faucet).
+Ask the devnet faucet for test funds. Devnet only. USDC is all a channel needs to open; leaving a
+Solana channel needs SOL, which the faucet does not drip — see [devnet.md](devnet.md#faucet).
 
 ## Hidden-service connectors
 
@@ -198,7 +184,7 @@ Inside that document:
 Without `--json`, amounts are printed base units first with the human figure in parentheses:
 `1000 (0.001 USDC)`. Both, because a channel deals in the integers the chain and the connector
 actually agree on, and every error message is denominated in them. The decimals come from the
-connector's own settlement entry; a node that publishes none gets the integer and no parenthetical
+token this client recognizes; an unrecognized token gets the integer and no parenthetical
 rather than a decimal point in a guessed place.
 
 ## Exit codes
@@ -209,7 +195,7 @@ rather than a decimal point in a guessed place.
 | `1` | An unexpected error |
 | `2` | A usage mistake, or a setting that could not be resolved |
 | `3` | The packet was refused (`fulfilled: false`) |
-| `4` | A funding or channel problem — no gas, no channel, a missing watermark |
+| `4` | A funding or channel problem — not enough of the token, no channel yet, or a facilitator or sponsor that would not open or fund one |
 | `5` | A network or connector failure |
 | `6` | Payment or a different carriage is required |
 
@@ -219,7 +205,7 @@ says which no. See [errors.md](errors.md).
 ## The CLI never opens a channel by itself
 
 The library defaults `autoOpenChannel` to `true`, which is right for a long-lived process
-configured once. It is wrong for a command: `toon send` would submit chain transactions, spend gas
-and lock collateral as a side effect of asking for one HTTP request. So the CLI turns it off, and
+configured once. It is wrong for a command: `toon send` would lock a deposit on chain as a side
+effect of asking for one HTTP request. So the CLI turns it off, and
 lets the refusal explain itself — "no channel yet, run `toon channel open`" — which is a sentence
 you can act on, and reversible.

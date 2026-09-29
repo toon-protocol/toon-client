@@ -107,13 +107,13 @@ export class ConfigError extends ToonClientError {
  * The node settles on chains, but not on one this client holds a key for — or
  * not on the one {@link ../client/types.js!ToonClientConfig.chain} named.
  *
- * Carries {@link offered}, the chains the node *does* publish in its
- * `settlements[]`, because the remedy is always to pick one of them (or to
+ * Carries {@link offered}, the networks the node *does* publish in its
+ * `batchSettlements[]`, because the remedy is always to pick one of them (or to
  * configure a key for one) and a message that only says "no" makes the caller go
  * read the self-description by hand to find out what would have worked.
  */
 export class ChainUnavailableError extends ToonClientError {
-  /** The chain keys the node publishes, exactly as it spells them (`evm:84532`, `solana`). */
+  /** The CAIP-2 networks the node publishes (`eip155:84532`, `solana:EtWT…`). */
   readonly offered: string[];
 
   constructor(message: string, offered: string[], cause?: Error) {
@@ -164,10 +164,9 @@ export class RouteNotPricedError extends ToonClientError {
  * rather than an exception to it: a {@link ../client/types.js!SendRefused} is
  * the *connector's* verdict on a packet that travelled, and here no packet
  * exists. The price was resolved, the hook said no, and the pipeline stopped
- * before a channel was ensured or a balance proof was signed — which is the
- * whole point of the hook, since a signed claim is a bearer instrument that
- * cannot be recalled (see
- * {@link ../channel/ChannelManager.js!ChannelManager.signBalanceProof}).
+ * before a channel was ensured or a voucher was signed — which is the whole
+ * point of the hook, since a signed voucher is a bearer instrument that cannot
+ * be recalled.
  *
  * A distinct class rather than a {@link ValidationError} because the two are
  * acted on differently: a `ValidationError` says this client could not use an
@@ -470,8 +469,8 @@ export function chainUnavailableMessage(
   if (reason === 'not-offered') {
     return (
       `This connector does not settle on "${String(wanted)}". It settles on: ` +
-      `${list}. Set \`chain\` to one of those, or leave it unset to take the ` +
-      'first one this client holds a key for.'
+      `${list}. Set \`chain\` to 'evm' or 'solana' to match one of those, or ` +
+      'leave it unset to take the first one this client holds a key for.'
     );
   }
   return (

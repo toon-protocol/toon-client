@@ -355,28 +355,40 @@ describe('HttpIlpClient', () => {
   // ─── issue #561: a 402 declaring requiredTransport in its BODY, never in ────
   // the peer's kind:10032 announce — the live devnet relay's actual shape ────
   describe('402 — the connector answered with terms, not a failure', () => {
-    /** The x402 402 body shape the live connector answers with (§1.4). */
-    function x402Body(extra: Record<string, unknown>): string {
+    /** The x402 402 body shape the live connector answers with (§1.4, ADR 0075). */
+    function x402Body(info: Record<string, unknown>): string {
       return JSON.stringify({
         x402Version: 2,
         resource: { url: 'g.toon.relay' },
         accepts: [
           {
-            scheme: 'toon-channel',
-            network: 'g.toon.relay',
+            scheme: 'batch-settlement',
+            network: 'eip155:84532',
             amount: '1000',
-            payTo: 'g.toon.relay',
+            asset: '0x' + '44'.repeat(20),
+            payTo: '0x' + '11'.repeat(20),
             maxTimeoutSeconds: 60,
-            httpEndpoint: '/ilp',
             extra: {
-              ilpAddress: 'g.toon.relay',
-              endpoint: '/ilp',
-              price: '1000',
-              sessionLeaseTtlMs: 120000,
-              ...extra,
+              receiverAuthorizer: '0x' + '11'.repeat(20),
+              withdrawDelay: 86_400,
+              name: 'USDC',
+              version: '2',
             },
           },
         ],
+        extensions: {
+          toon: {
+            info: {
+              ilpAddress: 'g.toon.relay',
+              amount: '1000',
+              endpoint: '/ilp',
+              price: '1000',
+              sessionLeaseTtlMs: 120000,
+              ...info,
+            },
+            schema: {},
+          },
+        },
       });
     }
 
@@ -388,20 +400,7 @@ describe('HttpIlpClient', () => {
     }
 
     it('throws PaymentRequiredError carrying the parsed terms on an ordinary greeting', async () => {
-      const httpClient = answering402(
-        x402Body({
-          settlements: [
-            {
-              chain: 'evm:84532',
-              settlementAddress: '0x' + '11'.repeat(20),
-              tokenNetworkRegistry: '0x' + '22'.repeat(20),
-              tokenNetwork: '0x' + '33'.repeat(20),
-              tokenAddress: '0x' + '44'.repeat(20),
-              decimals: 6,
-            },
-          ],
-        })
-      );
+      const httpClient = answering402(x402Body({}));
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
         httpClient,
@@ -417,10 +416,10 @@ describe('HttpIlpClient', () => {
       // A relative endpoint is resolved against the URL that answered.
       expect(error.terms.httpEndpoint).toBe('http://connector.test/ilp');
       expect(error.terms.sessionLeaseTtlMs).toBe(120000);
-      expect(error.terms.settlements).toHaveLength(1);
-      expect(error.terms.settlements[0]).toMatchObject({
-        kind: 'evm',
-        chain: 'evm:84532',
+      expect(error.terms.batchSettlements).toHaveLength(1);
+      expect(error.terms.batchSettlements[0]).toMatchObject({
+        chain: 'evm',
+        offer: { network: 'eip155:84532', amount: '1000' },
       });
       expect(error.terms.requiredTransport).toBeUndefined();
       // Not retried — a repeat POST would only repeat the same 402.
@@ -448,33 +447,7 @@ describe('HttpIlpClient', () => {
       expect(httpClient).toHaveBeenCalledTimes(1);
     });
 
-    it('reads requiredTransport from the entry top level too, not only from extra', async () => {
-      const body = JSON.stringify({
-        x402Version: 2,
-        resource: { url: 'g.toon.relay' },
-        accepts: [
-          {
-            scheme: 'toon-channel',
-            amount: '1000',
-            httpEndpoint: '/ilp',
-            requiredTransport: 'btp',
-            extra: { ilpAddress: 'g.toon.relay', price: '1000' },
-          },
-        ],
-      });
-      const client = new HttpIlpClient({
-        httpEndpoint: 'http://connector.test/ilp',
-        httpClient: answering402(body),
-      });
-
-      const error = (await client
-        .sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim())
-        .catch((e: unknown) => e)) as TransportRequiredError;
-      expect(error).toBeInstanceOf(TransportRequiredError);
-      expect(error.required).toBe('btp');
-    });
-
-    it('falls back to a plain ConnectorError on a 402 with no usable toon-channel terms', async () => {
+    it('falls back to a plain ConnectorError on a 402 with no usable TOON terms', async () => {
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
         httpClient: answering402('not json'),

@@ -2,24 +2,15 @@
  * x402 `batch-settlement` on the public devnet, from a wallet holding **no ETH**
  * (connector ADR 0074, toon-client#689).
  *
- * Two stages, because the devnet has only one of the two parties so far:
+ * Two stages:
  *
- *   1. **Onboarding** — always. A fresh wallet draws USDC from the devnet
- *      faucet (which drips no ETH), and `BatchSettlementPayer.open()` deposits
- *      it through the devnet's x402 facilitator, the Onboarder at
- *      `onboard.devnet` (infra#23), into a channel whose receiver is the relay
- *      connector. The channel is then read back off Base Sepolia, and the
- *      wallet must still hold no ETH.
- *
- *      A node that has not opted in publishes no `batchSettlements`, so the
- *      relay's terms are then built from its own `evm:84532` settlement entry:
- *      the same receiver, `receiverAuthorizer` and token its batch-settlement
- *      entry would carry (ADR 0074 decision 2), and ADR 0074's default one-day
- *      minimum `withdrawDelay`.
- *   2. **A paid send** — only once the node really publishes `batchSettlements`
- *      on Base, since until then it refuses every voucher by name. A
- *      `ToonClient` created with `batchSettlement` then pays a paid route with
- *      a voucher.
+ *   1. **Onboarding.** A fresh wallet draws USDC from the devnet faucet (which
+ *      drips no ETH), and `BatchSettlementPayer.open()` deposits it through the
+ *      devnet's x402 facilitator, the Onboarder at `onboard.devnet` (infra#23),
+ *      into a channel whose receiver is the relay connector. The channel is
+ *      then read back off Base Sepolia, and the wallet must still hold no ETH.
+ *   2. **A paid send.** A `ToonClient` sharing that channel's store pays the
+ *      relay's paid route with a voucher on it — no second deposit.
  *
  * ## Running it
  *
@@ -45,56 +36,18 @@ import { readEvmBatchChannel } from '../channel/batch-settlement/evm.js';
 import { chooseBatchSettlement } from '../channel/batch-settlement/offers.js';
 import { fundWallet } from '../wallet/faucet.js';
 import { ToonClient } from '../client/ToonClient.js';
+import { InMemoryChannelStore } from '../channel/ChannelStore.js';
 import type { NodeSelfDescription } from '../connector/self-description.js';
+import { must } from '../utils/must.test-support.js';
 
 const ENABLED = process.env['BATCH_SETTLEMENT_DEVNET'] === '1';
 const CONNECTOR = process.env['TOON_CONNECTOR'] ?? DEVNET.relay.url;
 const FACILITATOR =
-  process.env['TOON_FACILITATOR'] ?? 'https://onboard.devnet.toonprotocol.dev';
+  process.env['TOON_FACILITATOR'] ?? DEVNET.facilitator;
 const RPC_URL = process.env['TOON_RPC_URL'] ?? 'https://sepolia.base.org';
 const FAUCET = process.env['TOON_FAUCET'] ?? DEVNET.faucet;
 const DEPOSIT = 1_000_000n; // 1 USDC
 const BASE_SEPOLIA = 'eip155:84532';
-
-/**
- * The node's own Base terms when it publishes them; otherwise the ones its
- * `evm:84532` settlement entry implies, marked so the paid stage is skipped.
- */
-function baseTerms(desc: NodeSelfDescription): {
-  desc: NodeSelfDescription;
-  published: boolean;
-} {
-  if (chooseBatchSettlement(desc, 'evm') !== undefined)
-    return { desc, published: true };
-  const settlement = desc.settlements.find((s) => s.chain === 'evm:84532');
-  if (settlement === undefined || settlement.kind !== 'evm') {
-    throw new Error(
-      `${CONNECTOR} settles on no evm:84532 channel to take a receiver from`
-    );
-  }
-  const receiver = settlement.settlementAddress;
-  return {
-    published: false,
-    desc: {
-      ...desc,
-      batchSettlements: [
-        {
-          chain: 'evm',
-          network: BASE_SEPOLIA,
-          asset: settlement.tokenAddress,
-          payTo: receiver,
-          // Circle's FiatToken v2.2 — the devnet USDC since connector#1337.
-          extra: {
-            receiverAuthorizer: receiver,
-            withdrawDelay: 86_400,
-            name: 'USDC',
-            version: '2',
-          },
-        },
-      ],
-    },
-  };
-}
 
 describe.skipIf(!ENABLED)(
   'x402 batch-settlement on the devnet, with no ETH',
@@ -102,13 +55,16 @@ describe.skipIf(!ENABLED)(
     const chain = createPublicClient({ transport: http(RPC_URL) });
     const key = generatePrivateKey();
     const payer = privateKeyToAccount(key);
-    const manager = new BatchChannelManager();
-    let terms: { desc: NodeSelfDescription; published: boolean };
+    const store = new InMemoryChannelStore();
+    const manager = new BatchChannelManager(store);
+    let desc: NodeSelfDescription;
+    let channelId: string;
 
     it('funds a fresh wallet with devnet USDC and no ETH', async () => {
-      const desc = await new ConnectorEdgeClient({}).describe(CONNECTOR);
-      terms = baseTerms(desc);
-      const asset = chooseBatchSettlement(terms.desc, 'evm')!.asset as Hex;
+      desc = await new ConnectorEdgeClient({}).describe(CONNECTOR);
+      const terms = chooseBatchSettlement(desc, 'evm');
+      expect(terms?.network).toBe(BASE_SEPOLIA);
+      const asset = must(terms).asset as Hex;
 
       await fundWallet(FAUCET, payer.address, 'evm');
       let balance = 0n;
@@ -138,45 +94,41 @@ describe.skipIf(!ENABLED)(
           },
         },
       });
-      const channel = await payerFor.open(terms.desc, 'evm');
+      const channel = await payerFor.open(desc, 'evm');
       expect(channel).toBeDefined();
+      channelId = must(channel).channelId;
       console.log(
-        `[batch-settlement devnet] channel ${channel!.channelId} → ${CONNECTOR}`
+        `[batch-settlement devnet] channel ${must(channel).channelId} → ${CONNECTOR}`
       );
 
-      let state = await readEvmBatchChannel(chain, channel!.channelId as Hex);
+      let state = await readEvmBatchChannel(chain, must(channel).channelId as Hex);
       for (let i = 0; i < 10 && state.balance === 0n; i++) {
         await new Promise((r) => setTimeout(r, 2_000));
-        state = await readEvmBatchChannel(chain, channel!.channelId as Hex);
+        state = await readEvmBatchChannel(chain, must(channel).channelId as Hex);
       }
       expect(state.balance).toBe(DEPOSIT);
       expect(state.totalClaimed).toBe(0n);
-      expect(manager.depositTotal(channel!.channelId)).toBe(DEPOSIT);
+      expect(manager.depositTotal(must(channel).channelId)).toBe(DEPOSIT);
       expect(await chain.getBalance({ address: payer.address })).toBe(0n);
     }, 180_000);
 
-    it('pays a paid route with a voucher, once the node publishes batch-settlement', async (ctx) => {
-      if (!terms.published) {
-        console.log(
-          `[batch-settlement devnet] ${CONNECTOR} publishes no batchSettlements yet; ` +
-            'the paid send waits for it to opt in'
-        );
-        ctx.skip();
-      }
+    it('pays a paid route with a voucher on that channel', async () => {
       const client = await ToonClient.create({
         connector: CONNECTOR,
         evmPrivateKey: key,
         chain: 'evm',
         rpcUrl: RPC_URL,
-        batchSettlement: { facilitatorUrl: FACILITATOR, deposit: DEPOSIT },
+        facilitatorUrl: FACILITATOR,
+        deposit: DEPOSIT,
+        channelStore: store,
       });
       try {
         const result = await client.send(DEVNET.relay.route, {
           body: 'batch-settlement devnet',
         });
         expect(result.fulfilled).toBe(true);
-        if (result.fulfilled)
-          expect(result.claim?.scheme).toBe('batch-settlement');
+        expect(result.claim).toMatchObject({ channelId, chain: 'evm' });
+        expect(manager.depositTotal(channelId)).toBe(DEPOSIT);
         expect(await chain.getBalance({ address: payer.address })).toBe(0n);
       } finally {
         await client.close();

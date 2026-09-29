@@ -50,15 +50,15 @@ describe('a client whose connector is a hidden service', () => {
           ilpAddresses: ['g.toon.hs'],
           httpEndpoint: `http://${HS_HOST}/ilp`,
           edgeIdentity: { keyId: 'k1', publicKey: `0x04${'11'.repeat(64)}` },
-          settlements: [
+          batchSettlements: [
             {
-              kind: 'evm',
-              chain: 'evm:84532',
-              settlementAddress: '0x1111111111111111111111111111111111111111',
-              tokenNetworkRegistry: '0x8263BdD4eB4862395Cb4ef5dA5d637F4b047Eea1',
-              tokenNetwork: '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478',
-              tokenAddress: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
-              decimals: 6,
+              network: 'eip155:84532',
+              asset: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
+              payTo: '0x1111111111111111111111111111111111111111',
+              receiverAuthorizer: '0x1111111111111111111111111111111111111111',
+              withdrawDelay: 86_400,
+              name: 'USDC',
+              version: '2',
             },
           ],
           routes: [{ prefix: 'g.toon.hs', price: '0' }],

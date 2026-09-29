@@ -187,7 +187,6 @@ describe('resolveConfig — defaults', () => {
     expect(() => resolveConfig(base({ deposit: -1n }))).toThrow(/negative/);
     expect(() => resolveConfig(base({ deposit: 'lots' }))).toThrow(ConfigError);
     expect(() => resolveConfig(base({ timeoutMs: 0 }))).toThrow(/positive/);
-    expect(() => resolveConfig(base({ settlementTimeout: -5 }))).toThrow(/positive/);
     expect(() => resolveConfig(base({ accountIndex: -1 }))).toThrow(/non-negative/);
     expect(() => resolveConfig(base({ transport: 'carrier-pigeon' }))).toThrow(
       /'auto', 'http' or 'btp'/
@@ -328,24 +327,17 @@ describe('resolveConfig — hidden services', () => {
 });
 
 describe('resolveConfig — x402 batch-settlement', () => {
-  it('is off unless asked for', () => {
-    expect(resolveConfig(base()).batchSettlement).toBeUndefined();
+  it('leaves the facilitator to the network default, and deposits by ERC-3009', () => {
+    const resolved = resolveConfig(base());
+    expect(resolved.facilitatorUrl).toBeUndefined();
+    expect(resolved.depositMethod).toBe('eip3009');
   });
 
-  it('opts in by presence, with the channel deposit and ERC-3009 as defaults', () => {
-    expect(
-      resolveConfig(base({ deposit: 5_000n, batchSettlement: { facilitatorUrl: 'https://f' } }))
-        .batchSettlement
-    ).toEqual({ facilitatorUrl: 'https://f', deposit: 5_000n, depositMethod: 'eip3009' });
-    expect(
-      resolveConfig(base({ batchSettlement: { deposit: '7', depositMethod: 'permit2' } }))
-        .batchSettlement
-    ).toEqual({ facilitatorUrl: undefined, deposit: 7n, depositMethod: 'permit2' });
-  });
-
-  it('refuses a deposit that is not a whole number of base units', () => {
-    expect(() => resolveConfig(base({ batchSettlement: { deposit: 'lots' } }))).toThrow(
-      /whole number/
+  it('takes a facilitator and a deposit method when given', () => {
+    const resolved = resolveConfig(
+      base({ facilitatorUrl: 'https://f', depositMethod: 'permit2' })
     );
+    expect(resolved.facilitatorUrl).toBe('https://f');
+    expect(resolved.depositMethod).toBe('permit2');
   });
 });

@@ -13,7 +13,7 @@ Paying such a node needs one extra thing: a running `anon` daemon, and its SOCKS
               └── chain RPC goes here too, not around it
 ```
 
-Nothing else changes. Sealing, pricing, claims, channels and refusals are identical — the packet
+Nothing else changes. Sealing, pricing, vouchers, channels and refusals are identical — the packet
 does not know what carried it.
 
 ## From the CLI
@@ -132,8 +132,9 @@ dial:
 
 - the self-description and every paid packet (`GET /ilp`, `POST /ilp`),
 - the BTP websocket,
-- the chain RPC for every chain it settles on: channel opens, deposits, closes, settles, the reads
-  behind them, wallet balances and transfers.
+- the x402 facilitator a Base deposit goes through, and the connector's Solana sponsor endpoint,
+- the chain RPC for every chain it pays on: the reads behind opening and paying, leaving a channel
+  (`close`, `settle`), wallet balances and transfers.
 
 Only `socks5h://` is accepted. Under `socks5://` this process would resolve every name it dials
 itself, in a DNS query from its own address.
@@ -165,7 +166,8 @@ which resolves the name and dials from your real address.
 **What it does not hide.** The RPC provider still sees every query and transaction, all naming
 your keys. It can profile you, but it cannot locate you. An API-keyed RPC links all of it to the
 account that holds the key, so a hiding payer should use a keyless RPC. The connector sees
-your settlement address on every claim, as it must to be paid.
+your channel on every voucher, as it must to be paid — and a facilitator sees the deposits it
+relays.
 
 This used to be refused. Until TOON_Network#167, `socksProxy` beside a clearnet connector threw
 *"nothing would ride the proxy"*, so such a payer had to wire `createHiddenServiceTransport`'s
@@ -176,9 +178,9 @@ Provider had to run its own chain node. TOON_Network#167 reversed the refusal. S
 ## What else changes
 
 **Your chain RPC moves too.** By default, `socksProxy` carries the EVM and Solana JSON-RPC as well
-as the packets — channel opens, deposits, closes, settles, wallet balance reads and wallet
-transfers, on both chains, each on its own pinned circuit. This is deliberate and it is the point: reaching the connector inside
-the overlay while reading chain state on clearnet would broadcast your settlement address, from
+as the packets — the reads behind opening and paying, leaving a channel, wallet balance reads and
+wallet transfers, on both chains, each on its own pinned circuit. This is deliberate and it is the point: reaching the connector inside
+the overlay while reading chain state on clearnet would broadcast your addresses, from
 your own IP, timed either side of every paid request — see
 [ADR 0002](adr/0002-chain-rpc-is-proxied-with-the-connector.md). Opt out only when the RPC endpoint
 is already private:
@@ -215,13 +217,13 @@ passed the blockhash's `lastValidBlockHeight`, so it can no longer land). A Sola
 answer was lost, or that the node says it has *already processed*, is looked up by the signature it
 carries rather than reported as failed. An EVM receipt wait keeps polling by hash until a receipt
 or the 180 s deadline. When the deadline ends it, the error is a `TransactionOutcomeError` with
-`outcome: 'unknown'` and the `txHash` to look up before repeating anything. That matters most on
-Solana, where a deposit is incremental: a blind retry of an ambiguous one deposits twice. These
+`outcome: 'unknown'` and the `txHash` to look up before repeating anything. That matters for
+any write that is not idempotent: a blind retry of an ambiguous one may do the thing twice. These
 rules hold with or without a proxy. A direct RPC can lose an answer too.
 
 **Packets outlive your patience.** A packet's expiry is set 15 s beyond the client's own timeout,
 so the client always gives up first. Without that margin a slow answer arrives after the packet
-has expired — and it expires under a claim you already signed, which costs money for nothing. This
+has expired — and it expires under a voucher you already signed, which costs money for nothing. This
 was a latent defect on every carriage, clearnet included; the fix is not specific to hidden
 services. An `expiresAt` you name yourself is honoured exactly, neither extended nor clamped.
 
@@ -255,7 +257,7 @@ the proxy". It is accepted since TOON_Network#167, and everything rides it. See
 
 And one check before the first packet rather than at construction: the client probes the proxy
 port and fails, naming the daemon, if nothing is listening. Discovering that later would cost a
-signed claim.
+signed voucher.
 
 ## Browsers
 
@@ -290,5 +292,4 @@ this feature and no part of it made things worse.)
 - **A published devnet `.anyone` node.** None is deployed — that is a connector-side deployment,
   not a gap in this client. See [devnet.md](devnet.md#hidden-services).
 - **Hiding you from the connector.** The overlay conceals your network location from observers;
-  the connector still sees a claim carrying your settlement address, as it must in order to be
-  paid.
+  the connector still sees a voucher naming your channel, as it must in order to be paid.

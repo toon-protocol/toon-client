@@ -12,9 +12,9 @@
  *   export TOON_MNEMONIC="your twelve words …"
  *   npx tsx examples/send-btp-solana.ts
  *
- * The wallet needs devnet SOL for the transactions that open and fund the
- * channel — the faucet's Solana leg drips USDC and no SOL, so get SOL from
- * `solana airdrop 1 <address> --url devnet` first.
+ * The wallet needs devnet USDC for the channel's deposit and no SOL: the relay
+ * sponsors the open, paying its fee and rent. SOL is needed only to leave the
+ * channel later (`client.channel.close()` / `settle()`).
  */
 import { ToonClient, DEVNET } from '@toon-protocol/client';
 
@@ -25,9 +25,9 @@ const client = await ToonClient.create({
   connector: DEVNET.relay.url, // https://proxy.relay.devnet.toonprotocol.dev
   mnemonic,
   chain: 'solana',
-  // One ordered socket cannot race its own claim nonces, which parallel HTTP
-  // requests can. It is also the only carriage this route accepts.
+  // The only carriage this route accepts.
   transport: 'btp',
+  deposit: 100_000n,
   channelStore: `${process.env['HOME'] ?? '.'}/.toon/channels.json`,
 });
 
@@ -37,14 +37,15 @@ try {
   // Uncomment on a wallet that has never been funded. USDC only — see above.
   // await client.wallet.faucet('solana');
 
-  const channel = await client.channel.open({ deposit: 100_000n });
+  // A sponsored open: signed here, co-signed and submitted by the relay.
+  const channel = await client.channel.open();
   console.log(
-    'channel', channel.channelId,
-    'available', channel.available.toString(), 'base units'
+    'channel', channel.channel.channelId,
+    'deposit', channel.depositTotal.toString(), 'base units'
   );
 
   // The route costs 1 base unit (0.000001 USDC), so one 0.10 USDC deposit
-  // covers a hundred thousand of these before the channel needs a top-up.
+  // covers a hundred thousand of these before the channel is replaced.
   for (let i = 0; i < 3; i++) {
     const answer = await client.send(DEVNET.relay.route, {
       method: 'POST',
@@ -57,12 +58,11 @@ try {
     }
     console.log(
       `#${i}`, 'status', answer.status,
-      'nonce', answer.claim.nonce,
-      'cumulative', answer.claim.cumulative.toString()
+      'cumulative', answer.claim?.cumulative.toString()
     );
   }
 } finally {
   // Releases the websocket session and flushes the channel store. It does not
-  // close the channel — that is an on-chain act, `client.channel.close()`.
+  // leave the channel — that is an on-chain act, `client.channel.close()`.
   await client.close();
 }

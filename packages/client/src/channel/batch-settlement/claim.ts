@@ -3,10 +3,8 @@
  * "batch-settlement"` (connector ADR 0074 decision 4, pinned by the vectors'
  * `claim_voucher.*.json`).
  *
- * It rides exactly where a `toon-channel` claim rides — the
- * `ILP-Payment-Channel-Claim` header on `POST /ilp`, and the
- * `payment-channel-claim` protocolData entry on BTP — and the carriages
- * serialize it the same way, so all that is new is the object itself.
+ * It rides in the `ILP-Payment-Channel-Claim` header on `POST /ilp`, and in
+ * the `payment-channel-claim` protocolData entry on BTP.
  *
  * Keys are written in the vectors' order (sorted) and EVM hex in lowercase, so
  * `JSON.stringify` of a claim built from a vector's fields reproduces that

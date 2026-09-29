@@ -15,17 +15,17 @@ Amounts are `bigint` throughout, in the settlement asset's base units. The settl
 const client = await ToonClient.create(config);
 ```
 
-`create` reads the node's self-description with one free `GET /ilp`, derives your keys, picks a
-settlement chain and opens the channel store. **It sends no transaction and spends nothing.**
+`create` reads the node's self-description with one free `GET /ilp`, derives your keys, picks the
+chain to pay on and opens the channel store. **It sends no transaction and spends nothing.**
 
 ### Properties
 
 | Property | Type | What it is |
 | --- | --- | --- |
 | `connector` | `string` | The normalized client-edge base URL this client is attached to |
-| `chain` | `'evm' \| 'solana'` | The settlement chain in use |
+| `chain` | `'evm' \| 'solana'` | The chain this client pays on |
 | `identity` | `ToonIdentity` | `{ evmAddress?, solanaPublicKey?, senderId }` |
-| `channel` | `ChannelFacade` | On-chain channel operations |
+| `channel` | `ChannelFacade` | The x402 channels this client pays from |
 | `wallet` | `WalletFacade` | Chain reads and transfers unrelated to paying a connector |
 
 ### Methods
@@ -35,7 +35,8 @@ describe(options?: { fresh?: boolean }): Promise<NodeSelfDescription>
 ```
 
 `GET /ilp`. Cached per instance; `{ fresh: true }` re-reads. This is the whole of bootstrapping —
-addresses, endpoints, the sealing key, per-chain settlement terms and route prices.
+addresses, endpoints, the sealing key, the per-chain x402 `batch-settlement` terms
+(`batchSettlements`), the voucher signers (`voucherSigners`) and route prices.
 
 ```ts
 price(destination: string): Promise<bigint | null>
@@ -49,9 +50,10 @@ cannot quote a price a real request would not be charged.
 probe(destination: string): Promise<{ accumulatedCost: bigint; code: string; message: string }>
 ```
 
-`POST /ilp/probe`. Learns what a path costs without buying the work. Requires an open channel: a
-probe traverses for free, so it is gated on a channel the connector recognizes and rate-limited
-per channel.
+`POST /ilp/probe`. Learns what a path costs without buying the work. A probe identifies with the
+latest voucher this client sent, resent byte for byte, so it needs a channel this client has
+already paid on at least once; before that it throws `ChannelNotOpenError`. It moves no value, and
+the connector rate-limits it per channel.
 
 ```ts
 send(request?: SendRequest, options?: SendOptions): Promise<SendResult>
@@ -71,15 +73,16 @@ destination explicitly to address a route the node forwards rather than terminat
 claimState(channelIds?: string[]): Promise<ClaimStateResult[]>
 ```
 
-`POST /ilp/claim-state`. The connector's own watermark for channels you control — deposit total,
-cumulative claimed, available, nonce, last-claim time. Authenticated by one signature per channel
-over a challenge distinct from a claim. Works when the channel has run dry.
+`POST /ilp/claim-state`. The connector's own view of channels you hold — cumulative claimed, the
+highest cumulative it will accept now, what the next voucher may add, last-claim time.
+Authenticated by one signed voucher claim-state challenge per channel, which is distinct from a
+voucher. Works when the channel has run dry. See [channels.md](channels.md#asking-the-connector-for-its-side).
 
 ```ts
 close(): Promise<void>
 ```
 
-Releases the BTP session and flushes the channel store. **It does not close the channel** — that
+Releases the BTP session and flushes the channel store. **It does not leave the channel** — that
 is `channel.close()`, an on-chain transaction.
 
 ## `ToonClientConfig`
@@ -101,13 +104,9 @@ interface ToonClientConfig {
   senderId?: string;
 
   deposit?: bigint | string;
-  settlementTimeout?: number;
   autoOpenChannel?: boolean;
-  batchSettlement?: {
-    facilitatorUrl?: string;
-    deposit?: bigint | string;
-    depositMethod?: 'eip3009' | 'permit2';
-  };
+  facilitatorUrl?: string;
+  depositMethod?: 'eip3009' | 'permit2';
   timeoutMs?: number;
   socksProxy?: string;
   proxyRpc?: boolean;
@@ -127,15 +126,15 @@ interface ToonClientConfig {
 | `solanaSecretKey` | — | A 32-byte seed or a 64-byte secret key, bytes or base58. |
 | `accountIndex` | `0` | BIP-44 account index. |
 | `keyDerivation` | `'standard'` | See [Key derivation](#key-derivation). |
-| `chain` | first settlement you hold a key for | Set it explicitly when a node settles on several and you care which one your money moves on. |
-| `rpcUrl` | the devnet preset for the chain | On Base Sepolia, prefer a read-after-write consistent endpoint — see [channels.md](channels.md#choosing-an-evm-rpc). |
-| `transport` | `'auto'` | `'auto'` honours the carriage the destination's own route requires — its `requiredTransport` in `GET /ilp`, or the node-wide one where the route names none — and otherwise prefers HTTP. Choose `'btp'` when streaming many requests: one ordered socket cannot race its own claim nonces. |
+| `chain` | the first chain in the node's `batchSettlements` you hold a key for | Set it explicitly when a node is paid on several and you care which one your money moves on. |
+| `rpcUrl` | the devnet preset for the chain | Used to read channels back and to leave them. |
+| `transport` | `'auto'` | `'auto'` honours the carriage the destination's own route requires — its `requiredTransport` in `GET /ilp`, or the node-wide one where the route names none — and otherwise prefers HTTP. Choose `'btp'` when streaming many requests over one session. |
 | `channelStore` | in memory, with a warning | A path becomes a JSON file store. **Set it.** See [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable). |
-| `senderId` | your address on the selected chain | A label the connector echoes, never an authority — a claim is authorised by its signature and nothing else. |
-| `deposit` | `100000n` (0.10 USDC) | Collateral for the first channel this client opens, in base units. |
-| `settlementTimeout` | `86400` | Challenge period in seconds. Floored at `3600` on EVM. |
-| `autoOpenChannel` | `true` | Open a channel on the first `send()` when none exists. |
-| `batchSettlement` | off | Pay from an x402 `batch-settlement` channel wherever the node offers one on your chain, onboarding with no native gas. Opt-in by presence; see [channels.md](channels.md#onboarding-without-gas-x402-batch-settlement). `facilitatorUrl` is required on Base. Solana needs none: the node sponsors the open. `deposit` defaults to `deposit`. |
+| `senderId` | your voucher signer's address | A label the connector echoes, never an authority — a voucher is authorised by its signature and nothing else. |
+| `deposit` | `100000n` (0.10 USDC) | What a channel opens with and is topped up by, in base units. A Solana channel opens with at least the node's `minDeposit`. |
+| `autoOpenChannel` | `true` | Open, top up or replace a channel on the `send()` that needs it. With `false`, that is `client.channel`'s job, and such a send throws `ChannelNotOpenError`. |
+| `facilitatorUrl` | the devnet's own on Base Sepolia | The x402 facilitator that submits a Base deposit and pays its gas. Required on any other EVM network. Solana needs none: the connector sponsors the open. See [channels.md](channels.md#opening-costs-no-gas). |
+| `depositMethod` | `'eip3009'` | How a Base deposit is authorized. `'permit2'` is for a token without ERC-3009, and needs a one-time Permit2 approval first. |
 | `timeoutMs` | `30000`, or `120000` for a hidden service | Per-packet timeout. A packet's on-wire expiry is set 15 s beyond it (`PACKET_EXPIRY_HEADROOM_MS`), so the client always gives up before the packet does. An explicit `expiresAt` is honoured exactly. |
 | `socksProxy` | — | `socks5h://host:port` of an `anon` daemon. Required for a `.anyone` connector. Beside a clearnet one it hides the payer: the client edge, the BTP socket and each chain's RPC (on its own pinned circuit) all ride it, and nothing dials around it. Node only. See [hidden-service.md](hidden-service.md). |
 | `proxyRpc` | `true` | Send chain RPC through `socksProxy` too. Setting it to `false` opts **chain RPC only** out — the client edge and the BTP socket still ride the proxy. Turn it off only for an RPC endpoint that is already private. |
@@ -190,9 +189,8 @@ already knows is wrong should never become a signed claim.
 
 Checking before calling `send()` is not the same thing. The price is only resolved inside `send()` —
 a metered route charges by the size of the *sealed* payload, which does not exist until the request
-has been sealed — and only here is the refusal guaranteed to land before `signBalanceProof` has
-advanced the channel's watermark. A signed claim is a bearer instrument: the rollback on a refusal
-restores the cumulative amount and deliberately *not* the nonce, so there is no unsigning it.
+has been sealed — and only here is the refusal guaranteed to land before a voucher is signed. A
+signed voucher is a bearer instrument: there is no unsigning it.
 
 ```ts
 const answer = await client.send(
@@ -204,8 +202,8 @@ const answer = await client.send(
 );
 ```
 
-It runs exactly once per `send()`, including on the bounded stale-channel retry — it is a decision
-about the request, not about an attempt at it. It runs on a free (zero-priced) route as well: money
+It runs exactly once per `send()` — it is a decision about the request, not about an attempt at
+it. It runs on a free (zero-priced) route as well: money
 is not the only thing a wrong request spends.
 
 ### `SendResult`
@@ -239,10 +237,9 @@ interface SendRefused {
 }
 
 interface ClaimSummary {
-  channelId: string;
+  channelId: string;    // '0x…' on EVM; the channel account on Solana
   chain: 'evm' | 'solana';
-  nonce: number;        // strictly increasing per channel
-  cumulative: bigint;   // the channel's total after this claim
+  cumulative: bigint;   // the channel's total after this voucher
   amount: bigint;       // what this request cost
 }
 ```
@@ -250,43 +247,47 @@ interface ClaimSummary {
 A `404` from the app is a real answer: it arrives on a FULFILL, and costs what a `200` costs. Only
 a refusal short of the app produces `SendRefused`. Every code is in [errors.md](errors.md).
 
-`claimAck` is the connector's separate verdict on the claim, and is independent of the ILP
+`claim` is absent on a free route, which carries no voucher. `claimAck` is the connector's
+separate verdict on the voucher, and is independent of the ILP
 outcome: a FULFILL can carry a **rejected** `claimAck`. Never infer one from the other.
 
 ## `ChannelFacade` — `client.channel`
 
 ```ts
-readonly id: string | undefined;
-open(options?: { deposit?: bigint | string; settlementTimeout?: number }): Promise<ChannelState>;
-deposit(amount: bigint | string): Promise<ChannelState>;
-close(): Promise<{ txHash?: string; closedAt?: bigint; settleableAt?: bigint }>;
-settle(): Promise<{ txHash?: string }>;
-state(options?: { onChain?: boolean }): Promise<ChannelState>;
-ensure(description?: NodeSelfDescription): Promise<string>;
+channels(): ChannelState[];                        // every channel held with the node, live or archived
+current(): Promise<ChannelState | undefined>;      // the one a paid send() draws on now
+open(): Promise<ChannelState>;                     // open now, or return the one already open
+deposit(amount: bigint): Promise<ChannelState>;    // Base only: top up the current channel
+close(): Promise<BatchExitResult[]>;               // start leaving every open channel
+settle(): Promise<BatchExitResult[]>;              // take back every deposit whose window has passed
 ```
 
-Every one of these is your transaction, on your gas. `open` adopts the channel already open with
-this connector rather than opening a second one. `ensure` is what `send()` calls: it returns a
-usable channel's id, opening one if configured to.
+Paying needs none of these: `send()` opens and tops up on its own unless `autoOpenChannel` is
+`false`. `open` and `deposit` cost no native gas (see [channels.md](channels.md#opening-costs-no-gas)).
+`close` and `settle` are your own transactions on your own gas, and walk every channel with the
+node — one failing does not stop the rest.
 
 ```ts
 interface ChannelState {
-  chain: 'evm' | 'solana';
-  channelId: string;          // '0x…' 32 bytes on EVM; the channel account's base58 key on Solana
-  counterparty: string;       // the connector's settlement address
-  status: 'open' | 'closed' | 'settled' | 'missing';
-  depositTotal: bigint;       // on-chain collateral
-  spent: bigint;              // cumulative claimed
-  nonce: number;              // the last nonce signed
-  available: bigint;          // depositTotal - spent
-  onChain?: { deposit?: bigint; closedAt?: bigint; settleableAt?: bigint };
-  domain: ChannelTerms;       // the domain a claim on this channel is signed under
+  channel: BatchChannel;      // { chain, channelId, network, config, sponsor? }
+  depositTotal: bigint;       // what this client has deposited
+  signed: bigint;             // the cumulative amount this client has signed
+  closedAt?: bigint;          // unix seconds this client started leaving it
+  settleableAt?: bigint;      // unix seconds its unspent deposit can be taken back
+  settledAt?: bigint;         // unix seconds the unspent deposit came back
+}
+
+interface BatchExitResult {
+  channelId: string;
+  transaction?: string;       // absent when nothing needed sending
+  settleableAt?: bigint;      // for close()
+  error?: string;             // why this channel was left as it was
 }
 ```
 
-`spent` and `nonce` are the **local** watermark — what this client has signed. The connector keeps
-its own and is the one that decides. They agree unless a claim was signed and never accepted; ask
-the connector with `claimState()`.
+`signed` is the **local** watermark — what this client has signed. The connector keeps its own and
+is the one that decides. They differ exactly when a voucher was signed and never accepted; ask the
+connector with `claimState()`.
 
 ## `WalletFacade` — `client.wallet`
 
@@ -316,7 +317,7 @@ One phrase, two chains:
 
 `keyDerivation: 'legacy'` puts the EVM key at `m/44'/1237'/0'/0/{accountIndex}` instead. That is
 where this client derived it before 1.0, when one secp256k1 key served two roles. The addresses
-are different, and they may hold channels with real collateral, so:
+are different, and they may hold channels with real deposits, so:
 
 - **A keystore written before 1.0 records no derivation and is read as `legacy`.** Its addresses,
   and the channels funded at them, do not move when you upgrade.
@@ -361,7 +362,7 @@ const answer = await sendJob<MyReceipt>(
 
 The signature on the event is **integrity, not identity** — it proves the tags were not altered in
 transit, and nothing else. Who paid is the connector's `X-TOON-Payer` header, proved against a
-claim. So `buildJobEvent` generates a key per event by default, and this client carries no Nostr
+voucher. So `buildJobEvent` generates a key per event by default, and this client carries no Nostr
 identity: there is nothing to derive, back up or rotate.
 
 `sendJob` returns a `JobAnswer<T>` — `{ accepted: true, receipt }`, or `{ accepted: false, code,
@@ -461,15 +462,16 @@ connector's own wire vectors — see
 | `encodeEnvelope`, `decodeEnvelope` | The OER envelope codec |
 | `sealRequest`, `openResponse` | The gift wrap on its own |
 | `ConnectorEdgeClient` | The client-edge endpoints as plain calls |
-| `parseSelfDescription` | `GET /ilp` body to `NodeSelfDescription`, including `batchSettlements` — the x402 `batch-settlement` terms a node has opted in to |
-| `ChannelManager`, `JsonFileChannelStore` | The watermark and the bindings, without a client |
-| `EvmSigner`, `SolanaSigner` | Balance-proof signing, per chain |
+| `parseSelfDescription` | `GET /ilp` body to `NodeSelfDescription`, including `batchSettlements` and `voucherSigners` |
+| `BatchChannelManager`, `JsonFileChannelStore` | The watermark and the bindings, without a client |
+| `BatchSettlementPayer` | What `send()` asks for a voucher: onboarding, top-up, vouchers and their outcomes |
 | `parseSolanaWireTransaction` | Reads a compiled Solana transaction this client did not build — its signers, its blockhash, which slots are still zero |
 | `signSolanaWireTransaction` | Fills the signature slots that are yours, in place, without recompiling the message |
 | `patchSolanaRecentBlockhash` | Moves the 32 blockhash bytes to the one a fee payer chose, clearing the signatures made over the old message |
 | `generateSolanaKeypair`, `solanaKeypair` | A fresh single-use keypair, or one read back from a 32-byte seed or 64-byte secret |
-| `buildBatchChannelConfig`, `signBatchVoucher`, `buildEip3009Deposit`, `settleDeposit`, `buildSponsoredOpen`, `signSvmVoucher`, … | x402 `batch-settlement` on Base and Solana (connector ADR 0074): channel config and id, vouchers, the gasless deposit or sponsored open. Not used by `ToonClient` yet — see [channels.md](channels.md#onboarding-without-gas-x402-batch-settlement-not-wired-yet) |
-| `DEVNET`, `defaultRpcUrl` | Well-known devnet values. Defaults and examples only — settlement facts always come from `GET /ilp` |
+| `buildBatchChannelConfig`, `batchChannelId`, `signBatchVoucher`, `buildEip3009Deposit`, `settleDeposit`, `buildSponsoredOpen`, `requestSponsoredOpen`, `signSvmVoucher`, `evmVoucherClaim`, `solanaVoucherClaim`, … | x402 `batch-settlement` on Base and Solana (connector ADRs 0074, 0075): channel config and id, vouchers and the claims they ride in, the gasless deposit or sponsored open |
+| `initiateEvmBatchWithdraw`, `finalizeEvmBatchWithdraw`, `requestSvmBatchClose`, `withdrawSvmBatchChannel` | Leaving a channel, per chain |
+| `DEVNET`, `defaultRpcUrl`, `defaultFacilitatorFor` | Well-known devnet values. Defaults and examples only — a node's terms always come from `GET /ilp` |
 | `isRoutableHsHostname`, `isHiddenServiceUrl`, `assertRoutableHsHostname` | Hidden-service address validation. Pure and browser-safe — the `.anyone` pattern and the `.anon`/`.onion` refusals, in one place |
 | `validateSocks5hUrl` | Parses and enforces a `socks5h://` proxy URL, returning its host and port |
 | `rpcFetch`, `rpcTransport` | Bind a chain-RPC target to the proxy's `fetch`/dispatcher — see [hidden-service.md](hidden-service.md) |

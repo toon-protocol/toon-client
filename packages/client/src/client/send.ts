@@ -23,37 +23,25 @@
  *    ({@link ../connector/self-description.js!chargeFor}) is the only thing
  *    computed locally, and a wrong answer is refused `F03` with the real figure
  *    attached rather than silently overpaid.
- * 5. **Ensure a channel**, then **sign a claim** on it for that amount.
+ * 5. **Get a voucher** for that amount: the payer resolves the x402 channel it
+ *    holds with this node — opening one with no native gas when there is none —
+ *    and signs the next cumulative voucher on it (connector ADRs 0074, 0075).
  * 6. **Choose a carriage and send.**
  * 7. **Read the answer** with the secret from step 4.
  *
- * ## Two things this deliberately gets right
+ * ## How a voucher's fate moves the watermark
  *
- * **The watermark is repaid on every refusal.**
- * {@link ChannelManager.signBalanceProof} advances and persists the nonce and the
- * cumulative amount before the packet leaves, because a signed claim must never
- * be re-signable at the same nonce. When the connector then refuses the claim —
- * `F03` underpayment, `F03` over-deposit, `F01` unknown channel, or a
- * `claimAck.result === 'rejected'` riding beside any verdict — it banked nothing
- * (`client-edge-spec.md` §1.3: "a validation failure ... is rejected before it
- * reaches the terminating app or advances any watermark"), and our cumulative is
- * left inflated by value it never admitted. Every path that ends in a refusal
- * calls {@link ChannelManager.rollbackAmount}, including a thrown transport
- * error. The error case is a deliberate asymmetry: a lost response *may* have
- * been banked, so rolling back can leave us one claim short — being short spends
- * nothing, whereas running ahead silently spends the channel's deposit on
- * nothing and eventually breaches the deposit ceiling.
+ * A voucher has no nonce: the connector orders vouchers by amount alone, and
+ * accepts one only if it strictly exceeds the channel's watermark by at least
+ * the charge. So:
  *
- * **And a doubtful watermark is settled before the next claim, not after.**
- * Being one claim short is not actually self-correcting: every later claim
- * under-advances by the same gap and is refused `F03`, then `F01`, forever
- * (toon-client#671). On a clearnet loopback the window barely exists; over a
- * hidden-service circuit, timeout-but-delivered is ordinary. So a transport
- * error, and a refused claim, both leave the channel marked
- * {@link ChannelManager.markWatermarkUncertain}, and the next attempt on it asks
- * the connector for its own figure (`POST /ilp/claim-state`) and adopts it
- * BEFORE signing — the same read the client would otherwise reach for after two
- * refusals, moved to before the first one.
+ *   - **a transport error leaves the voucher counted.** It may have been
+ *     banked, and the next voucher exceeds it either way — being one charge
+ *     over is the only cost, where being under would be refused;
+ *   - **a refusal hands the payer the reject's own text,** which says where the
+ *     connector's watermark stands (`readVoucherRefusal`); one that says the
+ *     connector holds more without saying how much sends the payer to
+ *     `POST /ilp/claim-state` before the next voucher.
  *
  * **`refusedBy` is honest about what is actually known.** A sealed reject is
  * proof: only the terminating connector could recover the secret needed to seal
@@ -77,12 +65,11 @@ import { decodeConnectorPublicKey } from '../connector/ConnectorEdgeClient.js';
 import { parsePaymentTerms } from '../connector/x402.js';
 import type { IlpSendResult } from '../ilp/types.js';
 import type { IlpSendParams } from '../ilp/ilp-send.js';
-import type { ChannelManager } from '../channel/ChannelManager.js';
 import type { PreparedVoucher } from '../channel/batch-settlement/payer.js';
-import { isUnknownChannelReject, rejectNamesChannel } from '../channel/stale-channel.js';
 import { toBase64, fromBase64, encodeUtf8, decodeUtf8 } from '../utils/binary.js';
 import {
   BeforePayRefusedError,
+  ChainUnavailableError,
   PaymentRequiredError,
   RouteNotPricedError,
   TransportRequiredError,
@@ -144,28 +131,6 @@ export interface SendContext {
    * and the base price alone would under-pay it.
    */
   routePrice(destination: string): Promise<RouteCharge | null>;
-  /** Open or adopt a channel with this node, returning its id. */
-  ensureChannel(description: NodeSelfDescription): Promise<string>;
-  /**
-   * Retire the binding `channelId` was resolved through, so the next
-   * {@link SendContext.ensureChannel} re-resolves. `false` when there was
-   * nothing to retire — which is the signal NOT to retry.
-   */
-  evictChannel(channelId: string): boolean;
-  /** The watermark and the signers. */
-  channels: ChannelManager;
-  /**
-   * Re-read the connector's own watermark for `channelId`
-   * (`POST /ilp/claim-state`) and adopt it, settling a doubt
-   * {@link ChannelManager.markWatermarkUncertain} recorded.
-   *
-   * Optional: a context with no client edge to ask simply keeps the older
-   * behaviour of discovering the disagreement through a refusal. It may throw —
-   * it is a network call, and the connector may be exactly what is unreachable —
-   * and {@link send} treats that as "still in doubt" rather than as a failed
-   * request.
-   */
-  reconcileWatermark?(channelId: string): Promise<void>;
   /**
    * The carriage for one destination, chosen and connected.
    *
@@ -182,20 +147,17 @@ export interface SendContext {
     transport: PaidWriteTransport;
   }>;
   /**
-   * Where a voucher comes from, when the caller opted in to x402
-   * `batch-settlement` (connector ADR 0074). Asked first for every paid packet;
-   * `undefined` from it — the node offers no such channel on this chain — and
-   * the packet pays over `toon-channel` exactly as it would without it.
+   * Where a paid packet's voucher comes from (connector ADRs 0074, 0075).
+   * `undefined` from it means the node offers no x402 channel on this client's
+   * chain, and the packet cannot be paid.
    */
-  vouchers?: {
+  vouchers: {
     claimFor(
       description: NodeSelfDescription,
       chain: ChainKind,
       amount: bigint
     ): Promise<PreparedVoucher | undefined>;
   };
-  /** The label every claim carries. Never an authority (connector ADR 0052). */
-  senderId: string;
   /** The chain claims are signed on, for {@link ClaimSummary}. */
   chain: ChainKind;
   /** Per-packet timeout, in milliseconds. */
@@ -234,15 +196,12 @@ export async function send(
   );
   // The caller's last look, between step 4 and step 5: the price is known and
   // nothing has been signed. Here and only here can a refusal be guaranteed to
-  // cost nothing — one line later `attempt` ensures a channel and signs a
-  // balance proof, and a signed claim cannot be unsigned (its rollback restores
-  // the cumulative amount but deliberately not the nonce). Placed outside
-  // `attempt` on purpose: the stale-channel path runs `attempt` twice, and the
-  // hook is a decision about the REQUEST, not about an attempt at it.
+  // cost nothing — one line later `attempt` may open a channel and signs a
+  // voucher, and a signed voucher cannot be unsigned.
   refuseIfCallerSaysSo(options.beforePay, destination, amount, request);
   const carriage = await context.transport(description, destination);
 
-  const first = await attempt(context, {
+  return attempt(context, {
     destination,
     amount,
     exchange,
@@ -250,26 +209,6 @@ export async function send(
     description,
     timeoutMs: options.timeoutMs ?? context.timeoutMs,
   });
-
-  // The bounded stale-channel recovery. `F01 — names a channel this connector
-  // has no record of` is GROUND TRUTH that our binding is dead (a wiped
-  // connector, a restored-from-backup box, a redeployed contract), where the
-  // counterparty check that runs before a packet exists can only ever be a
-  // prediction. Retire that binding, re-resolve, and retry the SAME packet once.
-  //
-  // Bounded deliberately: ONE retry, never a loop — a second `F01` is returned
-  // as the failure it is, because a repeated eviction could open a channel per
-  // request. And only when re-resolution actually MOVES: a retry onto the same
-  // channel id would just repeat the reject.
-  const retry = await maybeRetryStaleChannel(context, first, {
-    destination,
-    amount,
-    exchange,
-    carriage,
-    description,
-    timeoutMs: options.timeoutMs ?? context.timeoutMs,
-  });
-  return retry ?? first.result;
 }
 
 /**
@@ -313,125 +252,43 @@ interface AttemptParams {
   timeoutMs: number;
 }
 
-/** One signed claim, one packet, one outcome — plus the channel it was drawn on. */
-interface Attempt {
-  result: SendResult;
-  /** Absent for a free route, which opens no channel and signs nothing. */
-  channelId: string | undefined;
-}
-
-async function attempt(context: SendContext, params: AttemptParams): Promise<Attempt> {
-  // A route priced at zero is deliberately free, and free means no claim.
+async function attempt(context: SendContext, params: AttemptParams): Promise<SendResult> {
+  // A route priced at zero is deliberately free, and free means no voucher.
   //
   // The connector states this rather than leaving it implied: a terminated
   // route MUST carry a price, and `price = 0` is how an operator writes down
   // that they meant it, "because it is never silently free". Such a route is
   // not greeted and no claim gate runs on it — an unpaid request to an unpriced
-  // destination is simply routed.
-  //
-  // So opening a payment channel to use one would be a real cost (gas, locked
-  // collateral, an on-chain round trip) demanded for nothing. That is why this
-  // path exists before `ensureChannel`: a free route must be usable by a client
+  // destination is simply routed. So a free route must be usable by a client
   // that holds no channel and no funds at all.
-  if (params.amount === 0n) return attemptUnpaid(context, params);
+  if (params.amount === 0n) return attemptUnpaid(params);
 
-  const voucher = await context.vouchers?.claimFor(
-    params.description,
-    context.chain,
-    params.amount
-  );
-  if (voucher !== undefined) return attemptWithVoucher(context, params, voucher);
-
-  const channelId = await context.ensureChannel(params.description);
-  await settleWatermarkDoubt(context, channelId);
-  const proof = await context.channels.signBalanceProof(channelId, params.amount);
-  const signer = context.channels.getSignerForChannel(channelId);
-  const claim = signer.buildClaimMessage(proof, context.senderId);
-  const summary: ClaimSummary = {
-    channelId,
-    chain: context.chain,
-    nonce: proof.nonce,
-    cumulative: proof.transferredAmount,
-    amount: params.amount,
-  };
-
-  let result: IlpSendResult;
-  try {
-    result = await params.carriage.transport.sendIlpPacketWithClaim(
-      {
-        destination: params.destination,
-        amount: params.amount.toString(),
-        data: toBase64(params.exchange.data),
-        expectedFulfillment: params.exchange.fulfillment,
-        timeout: params.timeoutMs,
-      },
-      claim as unknown as Record<string, unknown>
+  const voucher = await context.vouchers.claimFor(params.description, context.chain, params.amount);
+  if (voucher === undefined) {
+    throw new ChainUnavailableError(
+      `The connector offers no x402 channel on ${context.chain}, so this client has no way to ` +
+        'pay it. Pick a chain it publishes in `GET /ilp` `batchSettlements`.',
+      params.description.batchSettlements.map((t) => t.network)
     );
-  } catch (error) {
-    // Nothing is known to have arrived, so the claim is repaid. See this
-    // module's docs for why being one claim short is the safer failure.
-    context.channels.rollbackAmount(channelId, params.amount);
-    const greeting = asGreeting(error, params.carriage.kind, summary);
-    // A greeting is the connector ANSWERING — it refused before routing, so
-    // nothing travelled and nothing is in doubt.
-    if (greeting) return { result: greeting, channelId };
-    // Everything else is a transport failure or a timeout, where "nothing
-    // arrived" is the safer guess rather than a fact. Say so, so the next claim
-    // asks instead of guessing again.
-    context.channels.markWatermarkUncertain(channelId);
-    throw error;
   }
-
-  if (claimWasRefused(result)) {
-    context.channels.rollbackAmount(channelId, params.amount);
-    // A refused claim means the two watermarks already disagreed about
-    // something. The rollback is right when the disagreement was this packet's
-    // own price; it changes nothing when the gap predates this request — which
-    // is exactly the state a timeout leaves behind in a process that has since
-    // restarted. Reconciling before the next claim covers both.
-    context.channels.markWatermarkUncertain(channelId);
-  } else {
-    // The mirror image: the claim was BANKED, at the figure we signed it at, so
-    // the two watermarks provably agree and any earlier doubt is settled — for
-    // free, without the claim-state read it would otherwise have cost.
-    context.channels.markWatermarkCertain(channelId);
-  }
-
-  return {
-    result: toSendResult(result, params, summary),
-    channelId,
-  };
+  return attemptWithVoucher(context, params, voucher);
 }
 
 /**
- * One attempt paid by an x402 `batch-settlement` voucher.
- *
- * The same packet on the same carriage; what differs is how its fate moves the
- * watermark, because a voucher has no nonce (ADR 0074 decision 3):
- *
- *   - a transport error leaves the voucher COUNTED, where a `toon-channel`
- *     claim is rolled back. It may have been banked, and the next voucher then
- *     exceeds it either way — being one charge over is the only cost, where
- *     being under would be refused;
- *   - a refusal hands the payer the reject's own text, which says where the
- *     connector's watermark stands (see `readVoucherRefusal`).
- *
- * `channelId` is returned as `undefined` so the stale-channel retry never runs:
- * the connector admits a voucher channel from the config the voucher carries,
- * so "no record of this channel" is not a stale binding here.
+ * One attempt, paid by a voucher: the packet on its carriage, and its fate
+ * reported back to the payer so the watermark follows it (see this module's
+ * docs).
  */
 async function attemptWithVoucher(
   context: SendContext,
   params: AttemptParams,
   voucher: PreparedVoucher
-): Promise<Attempt> {
+): Promise<SendResult> {
   const summary: ClaimSummary = {
     channelId: voucher.channelId,
     chain: context.chain,
-    nonce: 0,
     cumulative: voucher.cumulative,
     amount: params.amount,
-    scheme: 'batch-settlement',
   };
 
   let result: IlpSendResult;
@@ -451,7 +308,7 @@ async function attemptWithVoucher(
     if (greeting) {
       // The connector answered before routing: nothing was banked.
       voucher.settle({ kind: 'refused' });
-      return { result: greeting, channelId: undefined };
+      return greeting;
     }
     voucher.settle({ kind: 'unknown' });
     throw error;
@@ -466,7 +323,7 @@ async function attemptWithVoucher(
   } else {
     voucher.settle({ kind: 'banked' });
   }
-  return { result: toSendResult(result, params, summary), channelId: undefined };
+  return toSendResult(result, params, summary);
 }
 
 /**
@@ -476,10 +333,7 @@ async function attemptWithVoucher(
  * derived from the secret inside it, and the sealed answer read back with that
  * same secret. Only the payment is absent, because there is nothing to pay.
  */
-async function attemptUnpaid(
-  context: SendContext,
-  params: AttemptParams
-): Promise<Attempt> {
+async function attemptUnpaid(params: AttemptParams): Promise<SendResult> {
   const result = await params.carriage.transport.sendIlpPacket({
     destination: params.destination,
     amount: params.amount.toString(),
@@ -487,69 +341,7 @@ async function attemptUnpaid(
     expectedFulfillment: params.exchange.fulfillment,
     timeout: params.timeoutMs,
   });
-  return { result: toSendResult(result, params, undefined), channelId: undefined };
-}
-
-/**
- * Settle a doubtful watermark before a claim is signed against it.
- *
- * Best effort by design: the read can fail — a connector that just timed out is
- * a connector that may still be unreachable — and a failure here must not turn
- * a request into a throw of its own. The doubt is simply left standing — only
- * an adoption, or a later claim the connector banks, clears it — so the next
- * attempt asks again, and this one proceeds on the local figure exactly as it
- * did before #671.
- */
-async function settleWatermarkDoubt(
-  context: SendContext,
-  channelId: string
-): Promise<void> {
-  if (context.reconcileWatermark === undefined) return;
-  if (!context.channels.isWatermarkUncertain(channelId)) return;
-  try {
-    await context.reconcileWatermark(channelId);
-  } catch (error) {
-    (context.warn ?? console.warn)(
-      `[toon] could not re-read the connector's watermark for channel ${channelId} ` +
-        `(${error instanceof Error ? error.message : String(error)}). The last claim ` +
-        'on it was signed and never confirmed, so this one may under-advance and be ' +
-        'refused; the next attempt will ask again.'
-    );
-  }
-}
-
-/**
- * Retry once against a re-resolved channel, when — and only when — the refusal
- * was the connector saying it holds no record of the channel we drew on.
- */
-async function maybeRetryStaleChannel(
-  context: SendContext,
-  first: Attempt,
-  params: AttemptParams
-): Promise<SendResult | undefined> {
-  const result = first.result;
-  if (result.fulfilled) return undefined;
-  if (!isUnknownChannelReject({ accepted: false, code: result.code, message: result.message })) {
-    return undefined;
-  }
-  // A free route opens no channel, so there is no binding to retire.
-  if (first.channelId === undefined) return undefined;
-  const staleChannelId = first.channelId;
-  if (!rejectNamesChannel(result.message, staleChannelId)) return undefined;
-  if (!context.evictChannel(staleChannelId)) return undefined;
-
-  (context.warn ?? console.warn)(
-    `[toon] the connector refused a claim drawn on channel ${staleChannelId} ` +
-      `(${result.code} — ${result.message}). It holds no record of that channel, ` +
-      'so its binding is retired (superseded, so any on-chain deposit stays ' +
-      'reclaimable) and the request is retried once against a re-resolved channel.'
-  );
-
-  const retry = await attempt(context, params);
-  // Re-resolution landed on the same channel: the retry would repeat the reject,
-  // so report the original refusal rather than spending a second claim on it.
-  if (retry.channelId === first.channelId) return undefined;
-  return retry.result;
+  return toSendResult(result, params, undefined);
 }
 
 // ─── Reading the outcome ────────────────────────────────────────────────────

@@ -126,8 +126,8 @@ function batchSettlementDomain(chainId: number) {
 
 /**
  * A connector's `batch-settlement` offer on EVM: one `accepts[]` entry of its
- * greeting. Unlike the `toon-channel` entry it is x402-valid (ADR 0074 decision
- * 8), so its shape is x402's `PaymentRequirements`, field for field.
+ * greeting. It is x402-valid (ADR 0074 decision 8), so its shape is x402's
+ * `PaymentRequirements`, field for field.
  */
 export interface BatchSettlementEvmOffer {
   scheme: 'batch-settlement';

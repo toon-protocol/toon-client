@@ -14,10 +14,12 @@
  * - **`httpEndpoint` / `btpEndpoint`** — where to reach it, and how.
  * - **`edgeIdentity`** — the key a packet's payload is sealed to. Without it a
  *   packet cannot be delivered at all (ND-06).
- * - **`settlements`** — per chain, what opening a channel takes. Each entry was
- *   *proved against a live chain* when the node booted (ND-07), which is why
- *   this is the source for channel opening and claim signing rather than any
- *   preset this package ships.
+ * - **`batchSettlements`** — per chain, the x402 `batch-settlement` terms a
+ *   channel is opened and paid on (connector ADR 0074, 0075). Each was *proved
+ *   against a live chain* when the node booted (ND-07), which is why this is
+ *   the source for opening a channel rather than any preset this package ships.
+ * - **`voucherSigners`** — per chain, the node's own voucher signer (ADR 0075
+ *   decision 10).
  * - **`routes`** — what each route costs.
  * - **`requiredTransport`** — when every route agrees on one carriage.
  *
@@ -31,17 +33,19 @@ import {
   parseBatchSettlementTerms,
   type BatchSettlementTerms,
 } from '../channel/batch-settlement/offers.js';
-import type {
-  ConnectorChainSettlementTerms,
-  ConnectorSettlementTerms,
-  ConnectorSolanaSettlementTerms,
-} from './ConnectorEdgeClient.js';
 
-export type {
-  ConnectorChainSettlementTerms,
-  ConnectorSettlementTerms,
-  ConnectorSolanaSettlementTerms,
-};
+/**
+ * One chain's voucher signer, as `GET /ilp` publishes it (ADR 0075 decision
+ * 10): the node's settlement address on EVM, its `authorized_signer` on
+ * Solana — the key its own vouchers are signed with, and what a peer binds an
+ * inbound channel by. A client paying the node never needs it; it is read so a
+ * caller can see it.
+ */
+export interface VoucherSigner {
+  /** CAIP-2. */
+  network: string;
+  signer: string;
+}
 
 /** The key a packet's payload is sealed to (ADR 0018). */
 export interface EdgeIdentity {
@@ -177,14 +181,14 @@ export interface NodeSelfDescription {
   peerCarriages: string[];
   /** The sealing key. Absent only from a node whose signer is broken. */
   edgeIdentity?: EdgeIdentity;
-  /** One entry per chain the node settles on. Absent — not empty — when it settles on none. */
-  settlements: ConnectorChainSettlementTerms[];
   /**
    * The x402 `batch-settlement` terms, one per chain the node has opted in to
    * (connector ADR 0074 decision 8). Empty when it has opted in to none —
    * which is every node that does not say otherwise.
    */
   batchSettlements: BatchSettlementTerms[];
+  /** Per chain, the node's own voucher signer. Empty when it publishes none. */
+  voucherSigners: VoucherSigner[];
   /** The node's routes and their prices. Absent — not empty — when it serves none. */
   routes: RoutePrice[];
   /** Set only when every route that covers this node's own addresses agrees on one carriage. */
@@ -236,56 +240,6 @@ export function readBaseUnits(value: unknown): bigint | undefined {
 }
 
 /**
- * Read one `settlements[]` entry.
- *
- * The wire is **untagged** — the two shapes are told apart structurally, by
- * which contract-ish field they carry (`tokenNetworkRegistry` names EVM,
- * `programId` names Solana), exactly as the connector's own `#[serde(untagged)]`
- * enum does it. `kind` is this parser's addition and never appears on the wire.
- *
- * Note what is *not* here: a Solana entry publishes no `cluster`. The connector
- * knows its own cluster (it reads the genesis hash) and cross-checks the one a
- * claim declares, but it does not publish it — so a client must never expect to
- * learn the cluster from this document.
- */
-export function parseSettlementEntry(raw: unknown): ConnectorChainSettlementTerms | undefined {
-  if (typeof raw !== 'object' || raw === null) return undefined;
-  const e = raw as Record<string, unknown>;
-  const chain = readString(e, 'chain');
-  const settlementAddress = readString(e, 'settlementAddress');
-  const tokenAddress = readString(e, 'tokenAddress');
-  const decimals = typeof e['decimals'] === 'number' ? (e['decimals'] as number) : undefined;
-  if (!chain || !settlementAddress || !tokenAddress || decimals === undefined) return undefined;
-
-  const programId = readString(e, 'programId');
-  if (programId !== undefined) {
-    const solana: ConnectorSolanaSettlementTerms = {
-      chain,
-      settlementAddress,
-      programId,
-      tokenAddress,
-      decimals,
-    };
-    return { kind: 'solana', ...solana };
-  }
-
-  const tokenNetworkRegistry = readString(e, 'tokenNetworkRegistry');
-  const tokenNetwork = readString(e, 'tokenNetwork');
-  if (tokenNetworkRegistry !== undefined && tokenNetwork !== undefined) {
-    const evm: ConnectorSettlementTerms = {
-      chain,
-      settlementAddress,
-      tokenNetworkRegistry,
-      tokenNetwork,
-      tokenAddress,
-      decimals,
-    };
-    return { kind: 'evm', ...evm };
-  }
-  return undefined;
-}
-
-/**
  * Parse a `GET /ilp` body.
  *
  * Never throws on a shape it does not recognise: an unreadable field is dropped
@@ -315,16 +269,21 @@ export function parseSelfDescription(
     if (publicKey !== undefined) edgeIdentity = { keyId: keyId ?? '', publicKey };
   }
 
-  const settlements = Array.isArray(b['settlements'])
-    ? (b['settlements'] as unknown[])
-        .map(parseSettlementEntry)
-        .filter((s): s is ConnectorChainSettlementTerms => s !== undefined)
-    : [];
 
   const batchSettlements = Array.isArray(b['batchSettlements'])
     ? (b['batchSettlements'] as unknown[])
         .map(parseBatchSettlementTerms)
         .filter((t): t is BatchSettlementTerms => t !== undefined)
+    : [];
+
+  const voucherSigners = Array.isArray(b['voucherSigners'])
+    ? (b['voucherSigners'] as unknown[]).flatMap((raw): VoucherSigner[] => {
+        if (typeof raw !== 'object' || raw === null) return [];
+        const r = raw as Record<string, unknown>;
+        const network = readString(r, 'network');
+        const signer = readString(r, 'signer');
+        return network !== undefined && signer !== undefined ? [{ network, signer }] : [];
+      })
     : [];
 
   const routes = Array.isArray(b['routes'])
@@ -369,8 +328,8 @@ export function parseSelfDescription(
     ...(btpEndpoint !== undefined ? { btpEndpoint } : {}),
     peerCarriages,
     ...(edgeIdentity !== undefined ? { edgeIdentity } : {}),
-    settlements,
     batchSettlements,
+    voucherSigners,
     routes,
     ...(requiredTransport !== undefined ? { requiredTransport } : {}),
     supportedVersions,

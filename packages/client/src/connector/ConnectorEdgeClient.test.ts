@@ -565,189 +565,173 @@ describe('ConnectorEdgeClient route-price caching (toon-client#452)', () => {
  * structurally (untagged wire, `tokenNetworkRegistry` for EVM vs `programId`
  * for Solana) since the connector adds no explicit tag.
  */
-describe('parseConnectorRouteTerms — per-chain settlements (connector #632)', () => {
-  const EVM_SETTLEMENT = {
-    chain: 'evm:84532',
-    settlementAddress: '0x' + 'a'.repeat(40),
-    tokenNetworkRegistry: '0x' + 'b'.repeat(40),
-    tokenNetwork: '0x' + 'e'.repeat(40),
-    tokenAddress: '0x' + 'f'.repeat(40),
-    decimals: 6,
-  };
-  const SOLANA_SETTLEMENT = {
-    chain: 'solana',
-    settlementAddress: 'ApexSolanaSettlementAddress11111111111111',
-    programId: 'PaymentChannelProgram1111111111111111111',
-    tokenAddress: 'UsdcMint1111111111111111111111111111111',
-    decimals: 6,
-  };
+// Both entries as the connector writes them (`batch_settlement_accept`).
+const EVM_ACCEPT = {
+  scheme: 'batch-settlement',
+  network: 'eip155:84532',
+  amount: '1000',
+  asset: '0x' + 'f'.repeat(40),
+  payTo: '0x' + 'a'.repeat(40),
+  maxTimeoutSeconds: 60,
+  extra: {
+    receiverAuthorizer: '0x' + 'a'.repeat(40),
+    withdrawDelay: 86_400,
+    name: 'USDC',
+    version: '2',
+  },
+};
+const SOLANA_ACCEPT = {
+  scheme: 'batch-settlement',
+  network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+  amount: '1000',
+  asset: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+  payTo: 'EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1',
+  maxTimeoutSeconds: 60,
+  extra: {
+    feePayer: '9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu',
+    withdrawDelay: 86_400,
+    tokenProgram: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    minDeposit: '1000000',
+    sponsorEndpoint: '/ilp/batch-settlement/solana/open',
+  },
+};
 
-  function greetingBody(extra: Record<string, unknown>) {
-    return {
-      x402Version: 2,
-      resource: { url: 'g.fake.route' },
-      accepts: [
-        {
-          scheme: 'toon-channel',
-          amount: '1000',
-          extra: {
-            ilpAddress: 'g.fake.route',
-            endpoint: '/ilp',
-            price: '1000',
-            ...extra,
-          },
-        },
-      ],
-    };
-  }
+/** A v7 greeting: batch-settlement `accepts[]`, TOON's facts in `extensions.toon.info`. */
+function greetingBody(
+  accepts: unknown[],
+  info: Record<string, unknown> = {},
+  price = '1000'
+): Record<string, unknown> {
+  return {
+    x402Version: 2,
+    resource: { url: 'g.fake.route' },
+    accepts,
+    extensions: {
+      toon: {
+        info: { ilpAddress: 'g.fake.route', amount: price, endpoint: '/ilp', price, ...info },
+        schema: {},
+      },
+    },
+  };
+}
 
-  it('leaves settlements undefined on a settlement-less greeting (pre-#632 shape unaffected)', () => {
-    const terms = parseConnectorRouteTerms(greetingBody({}));
-    expect(terms.settlement).toBeUndefined();
-    expect(terms.settlements).toBeUndefined();
+describe('parseConnectorRouteTerms — per-chain batch-settlement offers (ADR 0075)', () => {
+  it('parses an EVM-only greeting into one offer', () => {
+    const terms = parseConnectorRouteTerms(greetingBody([EVM_ACCEPT]));
+    expect(terms.destination).toBe('g.fake.route');
+    expect(terms.price).toBe('1000');
+    expect(terms.batchSettlements).toEqual([{ chain: 'evm', offer: EVM_ACCEPT }]);
   });
 
-  it('parses an EVM-only one-entry settlements list beside the unchanged legacy object', () => {
-    const terms = parseConnectorRouteTerms(
-      greetingBody({
-        settlement: EVM_SETTLEMENT,
-        settlements: [EVM_SETTLEMENT],
-      })
-    );
-    expect(terms.settlement).toEqual(EVM_SETTLEMENT);
-    expect(terms.settlements).toEqual([{ kind: 'evm', ...EVM_SETTLEMENT }]);
-  });
-
-  it('parses a two-chain settlements list, disambiguating EVM and Solana structurally', () => {
-    const terms = parseConnectorRouteTerms(
-      greetingBody({
-        settlement: EVM_SETTLEMENT,
-        settlements: [EVM_SETTLEMENT, SOLANA_SETTLEMENT],
-      })
-    );
-    expect(terms.settlements).toEqual([
-      { kind: 'evm', ...EVM_SETTLEMENT },
-      { kind: 'solana', ...SOLANA_SETTLEMENT },
+  it('parses a two-chain greeting, telling EVM and Solana apart by CAIP-2 network', () => {
+    const terms = parseConnectorRouteTerms(greetingBody([EVM_ACCEPT, SOLANA_ACCEPT]));
+    expect(terms.batchSettlements).toEqual([
+      { chain: 'evm', offer: EVM_ACCEPT },
+      { chain: 'solana', offer: SOLANA_ACCEPT },
     ]);
   });
 
-  it('refuses a settlements entry missing required fields rather than dropping it silently', () => {
-    const malformed = { ...SOLANA_SETTLEMENT, programId: undefined };
+  it('drops a malformed entry but keeps the well-formed ones', () => {
+    const malformed = { ...SOLANA_ACCEPT, extra: { ...SOLANA_ACCEPT.extra, feePayer: undefined } };
+    const terms = parseConnectorRouteTerms(greetingBody([EVM_ACCEPT, malformed]));
+    expect(terms.batchSettlements.map((o) => o.chain)).toEqual(['evm']);
+  });
+
+  it('refuses a priced route that offers no channel to pay it on — it is not free', () => {
+    expect(() => parseConnectorRouteTerms(greetingBody([]))).toThrow(ConnectorEdgeError);
     expect(() =>
-      parseConnectorRouteTerms(greetingBody({ settlements: [malformed] }))
+      parseConnectorRouteTerms(greetingBody([{ scheme: 'toon-channel', amount: '1000' }]))
     ).toThrow(ConnectorEdgeError);
   });
 
-  it('refuses a settlements list that is not an array', () => {
+  it('accepts a zero-priced route with no offers', () => {
+    const terms = parseConnectorRouteTerms(greetingBody([], {}, '0'));
+    expect(terms.price).toBe('0');
+    expect(terms.batchSettlements).toEqual([]);
+  });
+
+  it('refuses a greeting with no TOON terms at all', () => {
     expect(() =>
-      parseConnectorRouteTerms(greetingBody({ settlements: 'nope' }))
+      parseConnectorRouteTerms({ x402Version: 2, accepts: [EVM_ACCEPT] })
     ).toThrow(ConnectorEdgeError);
+    expect(() => parseConnectorRouteTerms('nope')).toThrow(ConnectorEdgeError);
   });
 });
 
-describe('parseConnectorRouteTerms — extra bag (issue #509)', () => {
-  function greetingBody(extra?: Record<string, unknown>) {
-    return {
-      x402Version: 2,
-      resource: { url: 'g.fake.route' },
-      accepts: [
-        {
-          scheme: 'toon-channel',
-          amount: '1000',
-          ...(extra !== undefined ? { extra } : {}),
-        },
-      ],
-    };
-  }
-
-  it('surfaces session_lease_ttl_ms from accepts[0].extra after ordinary bootstrap parsing', () => {
+describe('parseConnectorRouteTerms — the info bag (issue #509)', () => {
+  it('surfaces sessionLeaseTtlMs from extensions.toon.info', () => {
     const terms = parseConnectorRouteTerms(
-      greetingBody({ session_lease_ttl_ms: 120_000 })
+      greetingBody([EVM_ACCEPT], { sessionLeaseTtlMs: 120_000 })
     );
-    expect(terms.extra?.session_lease_ttl_ms).toBe(120_000);
+    expect(terms.info.sessionLeaseTtlMs).toBe(120_000);
   });
 
-  it('yields extra: undefined for a greeting with no extra bag at all, not a default', () => {
-    const terms = parseConnectorRouteTerms(greetingBody());
-    expect(terms.extra).toBeUndefined();
+  it('leaves sessionLeaseTtlMs absent when the node publishes none, not a default', () => {
+    const terms = parseConnectorRouteTerms(greetingBody([EVM_ACCEPT]));
+    expect(terms.info.sessionLeaseTtlMs).toBeUndefined();
   });
 
-  it('preserves unknown keys in the extra bag', () => {
+  it('preserves unknown keys in the info bag', () => {
     const terms = parseConnectorRouteTerms(
-      greetingBody({ some_future_field: 'unknown-but-preserved' })
+      greetingBody([EVM_ACCEPT], { someFutureField: 'unknown-but-preserved' })
     );
-    expect(terms.extra?.['some_future_field']).toBe('unknown-but-preserved');
+    expect(terms.info['someFutureField']).toBe('unknown-but-preserved');
   });
 
-  it('keeps existing settlement/settlements extraction unchanged when extra also carries session_lease_ttl_ms', () => {
-    const EVM_SETTLEMENT = {
-      chain: 'evm:84532',
-      settlementAddress: '0x' + 'a'.repeat(40),
-      tokenNetworkRegistry: '0x' + 'b'.repeat(40),
-      tokenNetwork: '0x' + 'e'.repeat(40),
-      tokenAddress: '0x' + 'f'.repeat(40),
-      decimals: 6,
-    };
+  it('keeps the offers unchanged when the info also carries a session lease', () => {
     const terms = parseConnectorRouteTerms(
-      greetingBody({
-        settlement: EVM_SETTLEMENT,
-        session_lease_ttl_ms: 120_000,
-      })
+      greetingBody([EVM_ACCEPT], { sessionLeaseTtlMs: 120_000 })
     );
-    expect(terms.settlement).toEqual(EVM_SETTLEMENT);
-    expect(terms.extra?.session_lease_ttl_ms).toBe(120_000);
+    expect(terms.batchSettlements).toEqual([{ chain: 'evm', offer: EVM_ACCEPT }]);
   });
 });
+
+/** An ok entry exactly as the connector answers one (ADR 0075). */
+function okEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    blockchain: 'evm',
+    channelId: '0x' + '11'.repeat(32),
+    ok: true,
+    scheme: 'batch-settlement',
+    cumulativeClaimed: '250000',
+    maxCumulative: '300000',
+    available: '750000',
+    lastClaimTime: 1735680000,
+    ...overrides,
+  };
+}
 
 describe('parseClaimStateResponse — POST /ilp/claim-state (§1.10)', () => {
   it('parses an ok EVM entry', () => {
-    const results = parseClaimStateResponse({
-      channels: [
-        {
-          blockchain: 'evm',
-          channelId: '0x' + '11'.repeat(32),
-          ok: true,
-          depositTotal: '1000000',
-          cumulativeClaimed: '250000',
-          available: '750000',
-          nonce: 3,
-          lastClaimTime: 1735680000,
-        },
-      ],
-    });
-    expect(results).toEqual([
+    expect(parseClaimStateResponse({ channels: [okEntry()] })).toEqual([
       {
         blockchain: 'evm',
         channelId: '0x' + '11'.repeat(32),
         ok: true,
-        depositTotal: '1000000',
+        scheme: 'batch-settlement',
         cumulativeClaimed: '250000',
+        maxCumulative: '300000',
         available: '750000',
-        nonce: 3,
         lastClaimTime: 1735680000,
       },
     ]);
   });
 
-  it('parses a declared (unresolved) channel with null depositTotal/available', () => {
+  it('reads a Solana entry’s channelAccount as its channelId, and a missing lastClaimTime as null', () => {
     const results = parseClaimStateResponse({
       channels: [
-        {
+        okEntry({
           blockchain: 'solana',
+          channelId: undefined,
           channelAccount: 'GfHq2tTVk9z4eXgZ8nWz3vWqkXBQ8K9aBcDeFgHiJkLm',
-          ok: true,
-          depositTotal: null,
-          cumulativeClaimed: '0',
-          available: null,
-          nonce: 0,
-          lastClaimTime: null,
-        },
+          lastClaimTime: undefined,
+        }),
       ],
     });
     expect(results[0]).toMatchObject({
+      blockchain: 'solana',
+      channelId: 'GfHq2tTVk9z4eXgZ8nWz3vWqkXBQ8K9aBcDeFgHiJkLm',
       ok: true,
-      depositTotal: null,
-      available: null,
       lastClaimTime: null,
     });
   });
@@ -773,20 +757,18 @@ describe('parseClaimStateResponse — POST /ilp/claim-state (§1.10)', () => {
     ]);
   });
 
+  it('parses the toon-channel refusal a connector answers a retired declaration with', () => {
+    const results = parseClaimStateResponse({
+      channels: [{ blockchain: 'evm', channelId: '0xaa', ok: false, error: 'toon-channel-refused' }],
+    });
+    expect(results[0]).toMatchObject({ ok: false, error: 'toon-channel-refused' });
+  });
+
   it('preserves request order across mixed ok/failed EVM/Solana entries', () => {
     const results = parseClaimStateResponse({
       channels: [
         { blockchain: 'evm', channelId: '0xaa', ok: false, error: 'expired' },
-        {
-          blockchain: 'solana',
-          channelAccount: 'acct',
-          ok: true,
-          depositTotal: '1',
-          cumulativeClaimed: '0',
-          available: '1',
-          nonce: 0,
-          lastClaimTime: null,
-        },
+        okEntry({ blockchain: 'solana', channelId: undefined, channelAccount: 'acct' }),
       ],
     });
     expect(results.map((r) => r.blockchain)).toEqual(['evm', 'solana']);
@@ -808,38 +790,30 @@ describe('parseClaimStateResponse — POST /ilp/claim-state (§1.10)', () => {
     ).toThrow(ConnectorEdgeError);
   });
 
-  it('throws when an ok entry is missing cumulativeClaimed', () => {
+  it('throws when an ok entry names no channel', () => {
     expect(() =>
-      parseClaimStateResponse({
-        channels: [
-          {
-            blockchain: 'evm',
-            ok: true,
-            depositTotal: '1',
-            available: '1',
-            nonce: 0,
-            lastClaimTime: null,
-          },
-        ],
-      })
+      parseClaimStateResponse({ channels: [okEntry({ channelId: undefined })] })
+    ).toThrow(ConnectorEdgeError);
+  });
+
+  it('throws when an ok entry is missing cumulativeClaimed or maxCumulative', () => {
+    expect(() =>
+      parseClaimStateResponse({ channels: [okEntry({ cumulativeClaimed: undefined })] })
+    ).toThrow(ConnectorEdgeError);
+    expect(() =>
+      parseClaimStateResponse({ channels: [okEntry({ maxCumulative: undefined })] })
     ).toThrow(ConnectorEdgeError);
   });
 
   it('throws when money fields are numbers instead of decimal strings', () => {
     expect(() =>
-      parseClaimStateResponse({
-        channels: [
-          {
-            blockchain: 'evm',
-            ok: true,
-            depositTotal: 1000000,
-            cumulativeClaimed: '0',
-            available: '1000000',
-            nonce: 0,
-            lastClaimTime: null,
-          },
-        ],
-      })
+      parseClaimStateResponse({ channels: [okEntry({ available: 1000000 })] })
+    ).toThrow(ConnectorEdgeError);
+  });
+
+  it('throws when lastClaimTime is neither an integer nor null', () => {
+    expect(() =>
+      parseClaimStateResponse({ channels: [okEntry({ lastClaimTime: 'yesterday' })] })
     ).toThrow(ConnectorEdgeError);
   });
 });
@@ -851,16 +825,7 @@ describe('ConnectorEdgeClient.getClaimState', () => {
       .mockResolvedValue(
         jsonResponse({
           channels: [
-            {
-              blockchain: 'evm',
-              channelId: '0x' + '11'.repeat(32),
-              ok: true,
-              depositTotal: '100',
-              cumulativeClaimed: '10',
-              available: '90',
-              nonce: 1,
-              lastClaimTime: null,
-            },
+            okEntry({ cumulativeClaimed: '10', maxCumulative: '10', available: '90', lastClaimTime: null }),
           ],
         })
       );
@@ -948,16 +913,18 @@ function selfDescriptionBody(
     btpEndpoint: 'wss://apex.example/ilp/btp',
     peerCarriages: ['btp', 'http'],
     edgeIdentity: { keyId: 'k1', publicKey: VALID_KEY_HEX },
-    settlements: [
+    batchSettlements: [
       {
-        chain: 'evm:84532',
-        settlementAddress: `0x${'11'.repeat(20)}`,
-        tokenNetworkRegistry: `0x${'22'.repeat(20)}`,
-        tokenNetwork: `0x${'33'.repeat(20)}`,
-        tokenAddress: `0x${'44'.repeat(20)}`,
-        decimals: 6,
+        network: 'eip155:84532',
+        asset: `0x${'44'.repeat(20)}`,
+        payTo: `0x${'11'.repeat(20)}`,
+        receiverAuthorizer: `0x${'11'.repeat(20)}`,
+        withdrawDelay: 86_400,
+        name: 'USDC',
+        version: '2',
       },
     ],
+    voucherSigners: [{ network: 'eip155:84532', signer: `0x${'11'.repeat(20)}` }],
     routes: [{ prefix: 'g.toon.store', price: '1000' }],
     supportedVersions: [1],
     defaultVersion: 1,
@@ -982,7 +949,13 @@ describe('ConnectorEdgeClient.describe', () => {
     expect(description.routes).toEqual([
       { prefix: 'g.toon.store', price: 1000n },
     ]);
-    expect(description.settlements[0]).toMatchObject({ kind: 'evm' });
+    expect(description.batchSettlements[0]).toMatchObject({
+      chain: 'evm',
+      network: 'eip155:84532',
+    });
+    expect(description.voucherSigners).toEqual([
+      { network: 'eip155:84532', signer: `0x${'11'.repeat(20)}` },
+    ]);
   });
 
   it('records the base it was read from, so a relative endpoint can be resolved', async () => {
@@ -1250,17 +1223,12 @@ describe('ConnectorEdgeClient.terms', () => {
     const fetchImpl = vi.fn(
       async () =>
         new Response(
-          JSON.stringify({
-            x402Version: 2,
-            resource: { url: 'g.toon.store' },
-            accepts: [
-              {
-                scheme: 'toon-channel',
-                amount: '1000',
-                extra: { price: '1000', sessionLeaseTtlMs: 120000 },
-              },
-            ],
-          }),
+          JSON.stringify(
+            greetingBody([EVM_ACCEPT], {
+              ilpAddress: 'g.toon.store',
+              sessionLeaseTtlMs: 120000,
+            })
+          ),
           { status: 402, headers: { 'content-type': 'application/json' } }
         )
     ) as unknown as typeof fetch;
@@ -1272,7 +1240,8 @@ describe('ConnectorEdgeClient.terms', () => {
       requestedUrl(fetchImpl as unknown as { mock: { calls: [string][] } })
     ).toBe('https://apex.example/ilp');
     expect(terms).toMatchObject({ destination: 'g.toon.store', price: '1000' });
-    expect(terms?.extra?.sessionLeaseTtlMs).toBe(120000);
+    expect(terms?.info.sessionLeaseTtlMs).toBe(120000);
+    expect(terms?.batchSettlements).toEqual([{ chain: 'evm', offer: EVM_ACCEPT }]);
   });
 
   it('answers null when the connector does not greet the destination', async () => {

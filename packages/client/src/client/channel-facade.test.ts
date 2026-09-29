@@ -1,466 +1,239 @@
-/**
- * Picking a chain, and reporting a channel — the two things the facade decides
- * that nothing else can re-derive.
- *
- * The on-chain client is a double here on purpose: opening a channel is
- * `TokenNetworkClient`'s subject and is proved against viem there. What is under
- * test is which settlement gets chosen, what the facade refuses to do on its
- * own, and that every `ChannelState` carries the domain a caller needs to render
- * an amount.
- */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { generatePrivateKey } from 'viem/accounts';
-import { ClientChannelFacade, settlementToTerms } from './channel-facade.js';
-import { ChannelManager } from '../channel/ChannelManager.js';
-import { InMemoryChannelStore } from '../channel/ChannelStore.js';
-import { EvmSigner } from '../signing/evm-signer.js';
+import { describe, it, expect } from 'vitest';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { ClientChannelFacade } from './channel-facade.js';
+import {
+  BatchChannelManager,
+  type BatchChannel,
+} from '../channel/batch-settlement/manager.js';
+import type { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
+import { PAYMENT_CHANNELS_PROGRAM_ID } from '../channel/batch-settlement/svm.js';
 import { parseSelfDescription } from '../connector/self-description.js';
-import { ChainUnavailableError, ChannelNotOpenError } from './errors.js';
-import { resolveConfig, type ResolvedConfig } from './config.js';
-import type { OnChainChannelClient } from '../channel/OnChainChannelClient.js';
-import type { OpenChannelParams, OpenChannelResult } from '../channel/types.js';
+import { base58Encode } from '../utils/base58.js';
+import { ChannelNotOpenError } from './errors.js';
 
-const MNEMONIC = 'test test test test test test test test test test test junk';
-const CONNECTOR = 'http://connector.test';
-const CHANNEL = `0x${'ab'.repeat(32)}`;
+const CONNECTOR = 'https://node.example';
+const privateKey = new Uint8Array(32).fill(1);
+const SIGNER = { privateKey, publicKey: ed25519.getPublicKey(privateKey) };
+const PAYER = base58Encode(SIGNER.publicKey);
+const MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+const NETWORK = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 
-const EVM_SETTLEMENT = {
-  chain: 'evm:84532',
-  settlementAddress: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
-  tokenNetworkRegistry: '0x8263BdD4eB4862395Cb4ef5dA5d637F4b047Eea1',
-  tokenNetwork: '0xa79C3b1dbcEA00a6d84735a134395D8eF6D6a478',
-  tokenAddress: '0x49beE1Bca5d15Fb0963117923403F9498119a9Ce',
-  decimals: 6,
-};
-const SOLANA_SETTLEMENT = {
+const CHANNEL: BatchChannel = {
   chain: 'solana',
-  settlementAddress: 'So11111111111111111111111111111111111111112',
-  programId: '2aEVJ8koKD8LTZrLRSGtAtU7LBt4e7QjjCgf1kzQ7Rip',
-  tokenAddress: '34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU',
-  decimals: 9,
+  channelId: 'WLNQ714q14a3SEXsbrXKDsWoxugYdGA6brPDGXpUWjX',
+  network: NETWORK,
+  sponsor: '9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu',
+  config: {
+    payer: PAYER,
+    payerAuthorizer: PAYER,
+    receiver: 'EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1',
+    token: MINT,
+    withdrawDelay: 86_400,
+    salt: 1n,
+    openSlot: 2n,
+  },
 };
 
-function description(settlements: Record<string, unknown>[]) {
-  return parseSelfDescription(
+const DESCRIPTION = parseSelfDescription({
+  batchSettlements: [
     {
-      ilpAddresses: ['g.fake'],
-      peerCarriages: [],
-      settlements,
-      routes: [],
-      supportedVersions: [1],
-      defaultVersion: 1,
+      network: NETWORK,
+      asset: MINT,
+      payTo: CHANNEL.config.receiver,
+      feePayer: CHANNEL.sponsor,
+      withdrawDelay: 86_400,
+      tokenProgram: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      minDeposit: '1',
+      sponsorEndpoint: '/ilp/batch-settlement/solana/open',
     },
-    CONNECTOR
-  );
+  ],
+});
+
+/**
+ * A Solana RPC over channel accounts: `status` per PDA, or `null` for an
+ * account that is gone. Records the methods called.
+ */
+function rpc(statuses: Record<string, number | null>) {
+  const methods: string[] = [];
+  const fetchImpl = (async (_u: string, init?: RequestInit) => {
+    const { method, params } = JSON.parse(init!.body as string) as {
+      method: string;
+      params: unknown[];
+    };
+    methods.push(method);
+    let result: unknown;
+    if (method === 'getAccountInfo') {
+      const status = statuses[params[0] as string];
+      if (status === null || status === undefined) {
+        result = { value: null };
+      } else {
+        const account = new Uint8Array(256);
+        account[0] = 1;
+        account[3] = status;
+        new DataView(account.buffer).setUint32(52, 86_400, true);
+        result = {
+          value: {
+            owner: PAYMENT_CHANNELS_PROGRAM_ID,
+            data: [Buffer.from(account).toString('base64'), 'base64'],
+          },
+        };
+      }
+    } else if (method === 'getLatestBlockhash') {
+      result = {
+        value: { blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' },
+      };
+    } else if (method === 'sendTransaction') {
+      result = 'sig';
+    } else {
+      result = { value: [{ confirmationStatus: 'confirmed', err: null }] };
+    }
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }));
+  }) as typeof fetch;
+  return { target: { url: 'http://rpc', fetchImpl }, methods };
 }
 
-interface Harness {
-  facade: ClientChannelFacade;
-  channels: ChannelManager;
-  config: ResolvedConfig;
-  opens: OpenChannelParams[];
-  onChain: OnChainChannelClient;
-}
+const OTHER: BatchChannel = {
+  ...CHANNEL,
+  channelId: 'EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1',
+};
 
-function harness(
-  settlements: Record<string, unknown>[] = [EVM_SETTLEMENT],
-  overrides: Record<string, unknown> = {}
-): Harness {
-  vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-  const config = resolveConfig({
+function facade(statuses: Record<string, number | null>, now = 1_000n) {
+  const manager = new BatchChannelManager();
+  const chain = rpc(statuses);
+  const f = new ClientChannelFacade({
     connector: CONNECTOR,
-    mnemonic: MNEMONIC,
-    channelStore: new InMemoryChannelStore(),
-    ...overrides,
+    chain: 'solana',
+    manager,
+    payer: {
+      open: async () => {
+        manager.adopt(CONNECTOR, CHANNEL, 5_000n);
+        return CHANNEL;
+      },
+    } as unknown as BatchSettlementPayer,
+    describe: async () => DESCRIPTION,
+    solana: { signer: SIGNER, rpc: chain.target },
+    now: () => now,
   });
-  const channels = new ChannelManager(
-    new EvmSigner(generatePrivateKey()),
-    config.channelStore
-  );
-  const opens: OpenChannelParams[] = [];
-  // A stand-in for the whole on-chain surface: opening is proved against viem
-  // in `channel/evm/TokenNetworkClient.test.ts`, and what matters here is which
-  // call the facade makes, with what, and when.
-  const onChain = {
-    openChannel: (params: OpenChannelParams): Promise<OpenChannelResult> => {
-      opens.push(params);
-      return Promise.resolve({
-        channelId: CHANNEL,
-        status: 'open' as const,
-        depositTotal: params.initialDeposit ?? 0n,
-      });
-    },
-    adoptChannel: () => undefined,
-    depositToChannel: () => Promise.reject(new Error('not stubbed')),
-    closeChannel: () => Promise.reject(new Error('not stubbed')),
-    settleChannel: () => Promise.reject(new Error('not stubbed')),
-    getChannelState: () => Promise.reject(new Error('not stubbed')),
-  } as unknown as OnChainChannelClient;
-  channels.setChannelClient(onChain);
-
-  const facade = new ClientChannelFacade({
-    config,
-    channels,
-    describe: () => Promise.resolve(description(settlements)),
-    onChainClient: () => onChain,
-  });
-  return { facade, channels, config, opens, onChain };
+  return { f, manager, chain };
 }
 
-beforeEach(() => {
-  vi.restoreAllMocks();
-});
-
-describe('picking a settlement', () => {
-  it('takes the first published chain this client holds a key for', async () => {
-    const h = harness([SOLANA_SETTLEMENT, EVM_SETTLEMENT]);
-    await h.facade.ensure();
-    expect(h.facade.terms?.kind).toBe('solana');
-    expect(h.facade.terms?.programId).toBe(SOLANA_SETTLEMENT.programId);
-  });
-
-  it('honours an explicit chain over the node\'s order', async () => {
-    const h = harness([SOLANA_SETTLEMENT, EVM_SETTLEMENT], { chain: 'evm' });
-    await h.facade.ensure();
-    expect(h.facade.terms?.kind).toBe('evm');
-  });
-
-  it('refuses, naming what the node DOES offer, when it settles on no chain we can pay on', async () => {
-    const h = harness([SOLANA_SETTLEMENT], {
-      // An EVM-only client against a Solana-only node.
-      mnemonic: undefined,
-      evmPrivateKey: `0x${'11'.repeat(32)}`,
+describe('client.channel', () => {
+  it('opens on request, and lists what it holds', async () => {
+    const { f } = facade({});
+    expect(f.channels()).toEqual([]);
+    const opened = await f.open();
+    expect(opened).toMatchObject({
+      channel: CHANNEL,
+      depositTotal: 5_000n,
+      signed: 0n,
     });
-    const error = await h.facade.ensure().catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(ChainUnavailableError);
-    expect((error as ChainUnavailableError).offered).toEqual(['solana']);
+    expect(f.channels()).toHaveLength(1);
   });
 
-  it('refuses a node that publishes no settlements at all', async () => {
-    const h = harness([]);
-    await expect(h.facade.ensure()).rejects.toBeInstanceOf(ChainUnavailableError);
-  });
-});
-
-describe('ensure — opening is never a side effect', () => {
-  it('opens with the configured collateral and challenge period', async () => {
-    const h = harness([EVM_SETTLEMENT], { deposit: 250_000n, settlementTimeout: 7200 });
-    await expect(h.facade.ensure()).resolves.toBe(CHANNEL);
-    expect(h.opens).toHaveLength(1);
-    expect(h.opens[0]?.initialDeposit).toBe(250_000n);
-    expect(h.opens[0]?.settlementTimeout).toBe(7200);
-    expect(h.opens[0]?.terms).toEqual(settlementToTerms({ kind: 'evm', ...EVM_SETTLEMENT }));
+  it('reports the channel a send would draw on, and none once it is being left', async () => {
+    const { f, manager } = facade({});
+    expect(await f.current()).toBeUndefined();
+    await f.open();
+    expect((await f.current())?.channel).toEqual(CHANNEL);
+    manager.markClosing(CHANNEL.channelId, 1_000n, 2_000n);
+    expect(await f.current()).toBeUndefined();
   });
 
-  it('resolves the same channel a second time without opening again', async () => {
-    const h = harness();
-    await h.facade.ensure();
-    await h.facade.ensure();
-    expect(h.opens).toHaveLength(1);
-  });
-
-  it('with autoOpenChannel off it opens NOTHING and says so', async () => {
-    const h = harness([EVM_SETTLEMENT], { autoOpenChannel: false });
-    const error = await h.facade.ensure().catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(ChannelNotOpenError);
-    expect(h.opens).toHaveLength(0);
-  });
-
-  it('…but still resolves a channel that already exists', async () => {
-    const h = harness([EVM_SETTLEMENT], { autoOpenChannel: false });
-    // A channel opened in a previous process, resumed from the store.
-    const terms = settlementToTerms({ kind: 'evm', ...EVM_SETTLEMENT });
-    h.channels.adoptChannel(CONNECTOR, terms, CHANNEL);
-    await expect(h.facade.ensure()).resolves.toBe(CHANNEL);
-    expect(h.opens).toHaveLength(0);
-  });
-});
-
-describe('state — every reading carries its domain', () => {
-  it('reports the local watermark, the collateral, and what is left', async () => {
-    const h = harness();
-    await h.facade.open({ deposit: 100_000n });
-    await h.channels.signBalanceProof(CHANNEL, 1000n);
-
-    const state = await h.facade.state();
-    expect(state).toMatchObject({
-      chain: 'evm',
-      channelId: CHANNEL,
-      counterparty: EVM_SETTLEMENT.settlementAddress,
-      status: 'open',
-      depositTotal: 100_000n,
-      spent: 1000n,
-      nonce: 1,
-      available: 99_000n,
-    });
-    // The domain is what a caller formats an amount FROM, so it is never absent.
-    expect(state.domain.token).toBe(EVM_SETTLEMENT.tokenAddress);
-    expect(state.domain.decimals).toBe(6);
-    expect(state.domain.tokenNetwork).toBe(EVM_SETTLEMENT.tokenNetwork);
-    expect(state.onChain).toBeUndefined();
-  });
-
-  it('carries the Solana domain just as completely', async () => {
-    const h = harness([SOLANA_SETTLEMENT]);
-    await h.facade.open();
-    const state = await h.facade.state();
-    expect(state.domain).toMatchObject({
-      kind: 'solana',
-      chain: 'solana',
-      decimals: 9,
-      programId: SOLANA_SETTLEMENT.programId,
-    });
-  });
-
-  it('reads the chain only when asked, and prefers its answer', async () => {
-    const h = harness();
-    await h.facade.open({ deposit: 10n });
-    const getChannelState = vi
-      .spyOn(h.onChain, 'getChannelState')
-      .mockResolvedValue({
-        channelId: CHANNEL,
-        status: 'closed',
-        deposit: 500n,
-        closedAt: 100n,
-        settleableAt: 3700n,
-      });
-
-    const state = await h.facade.state({ onChain: true });
-    expect(getChannelState).toHaveBeenCalledWith(CHANNEL);
-    expect(state.status).toBe('closed');
-    expect(state.depositTotal).toBe(500n);
-    expect(state.onChain).toEqual({ deposit: 500n, closedAt: 100n, settleableAt: 3700n });
-  });
-
-  it('never reports negative headroom, even if a claim outran the recorded deposit', async () => {
-    const h = harness();
-    await h.facade.open({ deposit: 10n });
-    await h.channels.signBalanceProof(CHANNEL, 1000n);
-    expect((await h.facade.state()).available).toBe(0n);
-  });
-});
-
-describe('settle — the time guard runs before the gas', () => {
-  it('refuses a channel that was never closed', async () => {
-    const h = harness();
-    await h.facade.open();
-    await expect(h.facade.settle()).rejects.toThrow(/not been closed/);
-  });
-
-  it('refuses while the challenge period is still running, without spending gas', async () => {
-    const h = harness();
-    await h.facade.open();
-    const future = BigInt(Math.floor(Date.now() / 1000) + 3600);
-    h.channels.setChannelClosed(CHANNEL, future - 3600n, future);
-    const settleChannel = vi.spyOn(h.onChain, 'settleChannel');
-
-    await expect(h.facade.settle()).rejects.toThrow(/not settleable yet/);
-    expect(settleChannel).not.toHaveBeenCalled();
-  });
-
-  it('settles once the period has elapsed', async () => {
-    const h = harness();
-    await h.facade.open();
-    const past = BigInt(Math.floor(Date.now() / 1000) - 10);
-    h.channels.setChannelClosed(CHANNEL, past - 3600n, past);
-    vi.spyOn(h.onChain, 'settleChannel').mockResolvedValue({ txHash: '0xsettled' });
-
-    await expect(h.facade.settle()).resolves.toEqual({ txHash: '0xsettled' });
-    expect(h.channels.getChannelCloseState(CHANNEL)).toBe('settled');
-  });
-});
-
-describe('deposit', () => {
-  it('adds the delta and records the new total', async () => {
-    const h = harness();
-    await h.facade.open({ deposit: 100n });
-    vi.spyOn(h.onChain, 'depositToChannel').mockResolvedValue({
-      txHash: '0xdeposit',
-      depositTotal: 600n,
-    });
-
-    const state = await h.facade.deposit(500n);
-    expect(h.onChain.depositToChannel).toHaveBeenCalledWith(CHANNEL, 500n, {
-      currentDeposit: 100n,
-    });
-    expect(state.depositTotal).toBe(600n);
-    expect(h.channels.getDepositTotal(CHANNEL)).toBe(600n);
-  });
-
-  it('refuses a non-positive amount', async () => {
-    const h = harness();
-    await h.facade.open();
-    await expect(h.facade.deposit(0n)).rejects.toBeInstanceOf(RangeError);
-  });
-});
-
-describe('settlementToTerms', () => {
-  it('parses the EVM chain id out of the chain key — the EIP-712 domain needs it', () => {
-    expect(settlementToTerms({ kind: 'evm', ...EVM_SETTLEMENT })).toEqual({
-      kind: 'evm',
-      chain: 'evm:84532',
-      chainId: 84532,
-      counterparty: EVM_SETTLEMENT.settlementAddress,
-      token: EVM_SETTLEMENT.tokenAddress,
-      decimals: 6,
-      tokenNetwork: EVM_SETTLEMENT.tokenNetwork,
-      tokenNetworkRegistry: EVM_SETTLEMENT.tokenNetworkRegistry,
-    });
-  });
-
-  it('carries the Solana program, which ADR 0053 binds into every signed claim', () => {
-    expect(settlementToTerms({ kind: 'solana', ...SOLANA_SETTLEMENT })).toEqual({
-      kind: 'solana',
-      chain: 'solana',
-      counterparty: SOLANA_SETTLEMENT.settlementAddress,
-      token: SOLANA_SETTLEMENT.tokenAddress,
-      decimals: 9,
-      programId: SOLANA_SETTLEMENT.programId,
-    });
-  });
-});
-
-// ─── Regressions found by running against a real connector image ────────────
-//
-// Both of these are wiring faults that every unit test above was structurally
-// unable to see, because `harness()` hands the manager its chain client up
-// front. `ToonClient` does not: the chain client is built lazily, by the very
-// getter these tests assert is called, so that `create()` and every free read
-// stay chain-free. Stubbing the wiring is what hid the missing wiring.
-describe('the chain client is wired before the chain is reached', () => {
-  /** A harness that does NOT pre-wire the manager — exactly as `ToonClient` does not. */
-  function unwired(): {
-    facade: ClientChannelFacade;
-    channels: ChannelManager;
-    adopted: { channelId: string; chain: string }[];
-    getterCalls: () => number;
-  } {
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const config = resolveConfig({
+  it('refuses to open on a chain the node offers no channel on', async () => {
+    const manager = new BatchChannelManager();
+    const f = new ClientChannelFacade({
       connector: CONNECTOR,
-      mnemonic: MNEMONIC,
-      channelStore: new InMemoryChannelStore(),
+      chain: 'evm',
+      manager,
+      payer: { open: async () => undefined } as unknown as BatchSettlementPayer,
+      describe: async () => DESCRIPTION,
     });
-    const channels = new ChannelManager(
-      new EvmSigner(generatePrivateKey()),
-      config.channelStore
+    await expect(f.open()).rejects.toThrow(/offers no x402 channel on evm/);
+  });
+
+  it('deposits through the payer, and reports the new total', async () => {
+    const { f, manager } = facade({});
+    const topUps: bigint[] = [];
+    const g = new ClientChannelFacade({
+      connector: CONNECTOR,
+      chain: 'solana',
+      manager,
+      payer: {
+        topUp: async (_d: unknown, _c: unknown, amount: bigint) => {
+          topUps.push(amount);
+          manager.adopt(CONNECTOR, CHANNEL, 5_000n + amount);
+          return CHANNEL;
+        },
+      } as unknown as BatchSettlementPayer,
+      describe: async () => DESCRIPTION,
+    });
+    expect(f.channels()).toEqual([]);
+    const after = await g.deposit(2_000n);
+    expect(topUps).toEqual([2_000n]);
+    expect(after.depositTotal).toBe(7_000n);
+  });
+
+  it('has nothing to close before a channel is open', async () => {
+    await expect(facade({}).f.close()).rejects.toThrow(ChannelNotOpenError);
+  });
+
+  it('closes every open channel, archived ones included, and none twice', async () => {
+    const { f, manager, chain } = facade({
+      [CHANNEL.channelId]: 0,
+      [OTHER.channelId]: 0,
+    });
+    manager.adopt(CONNECTOR, OTHER, 1_000n);
+    manager.adopt(CONNECTOR, CHANNEL, 5_000n); // archives OTHER
+    const closed = await f.close();
+    expect(closed.map((r) => r.channelId).sort()).toEqual(
+      [CHANNEL.channelId, OTHER.channelId].sort()
     );
-    const adopted: { channelId: string; chain: string }[] = [];
-    let getterCalls = 0;
-    const onChain = {
-      openChannel: (params: OpenChannelParams): Promise<OpenChannelResult> =>
-        Promise.resolve({
-          channelId: CHANNEL,
-          status: 'open' as const,
-          depositTotal: params.initialDeposit ?? 0n,
-        }),
-      adoptChannel: (channelId: string, ctx: { chain: string }) => {
-        adopted.push({ channelId, chain: ctx.chain });
-      },
-      depositToChannel: () =>
-        Promise.resolve({ txHash: '0xdep', depositTotal: 100_000n }),
-      closeChannel: () => Promise.reject(new Error('not stubbed')),
-      settleChannel: () => Promise.reject(new Error('not stubbed')),
-      getChannelState: () =>
-        Promise.resolve({ channelId: CHANNEL, status: 'open' as const }),
-    } as unknown as OnChainChannelClient;
-
-    const facade = new ClientChannelFacade({
-      config,
-      channels,
-      describe: () => Promise.resolve(description([EVM_SETTLEMENT])),
-      onChainClient: () => {
-        getterCalls += 1;
-        // The real getter's whole job, and the step whose absence made
-        // `open()` fail with "No channel client configured".
-        channels.setChannelClient(onChain);
-        return onChain;
-      },
-    });
-    return { facade, channels, adopted, getterCalls: () => getterCalls };
-  }
-
-  it('open() reaches for the chain client, so the manager has one to open with', async () => {
-    const { facade, getterCalls } = unwired();
-    await expect(facade.open({ deposit: 100_000n })).resolves.toMatchObject({
-      channelId: CHANNEL,
-    });
-    expect(getterCalls()).toBeGreaterThan(0);
+    expect(closed.every((r) => r.transaction === 'sig')).toBe(true);
+    expect(chain.methods.filter((m) => m === 'sendTransaction')).toHaveLength(
+      2
+    );
+    await expect(f.close()).rejects.toThrow(ChannelNotOpenError);
   });
 
-  it('ensure() does too, since it opens on the send path', async () => {
-    const { facade } = unwired();
-    await expect(facade.ensure()).resolves.toBe(CHANNEL);
+  it('settles only a channel whose window has passed', async () => {
+    const early = facade({ [CHANNEL.channelId]: 2 }, 1_000n);
+    await early.f.open();
+    early.manager.markClosing(CHANNEL.channelId, 900n, 2_000n);
+    expect(await early.f.settle()).toEqual([]);
+    expect(early.chain.methods).not.toContain('sendTransaction');
+
+    const due = facade({ [CHANNEL.channelId]: 1 }, 3_000n);
+    await due.f.open();
+    due.manager.markClosing(CHANNEL.channelId, 900n, 2_000n);
+    expect(await due.f.settle()).toEqual([
+      { channelId: CHANNEL.channelId, transaction: 'sig' },
+    ]);
+    expect(due.f.channels()[0]!.settledAt).toBe(3_000n);
+    expect(await due.f.settle()).toEqual([]);
   });
 
-  it('adopts a channel resolved from the store, which this process never opened', async () => {
-    // The store outlives the process; the chain client's map of which chain a
-    // channel is on does not. Paying needs none of it, so the gap only appears
-    // the first time a resumed channel is deposited into, closed or settled —
-    // and appeared there as "neither opened nor adopted".
-    const { facade, channels, adopted } = unwired();
-    await facade.open({ deposit: 100_000n });
-
-    // A second facade over the SAME store is a restart in miniature.
-    const resumed = new ClientChannelFacade({
-      config: resolveConfig({
-        connector: CONNECTOR,
-        mnemonic: MNEMONIC,
-        channelStore: channels.store ?? new InMemoryChannelStore(),
-      }),
-      channels,
-      describe: () => Promise.resolve(description([EVM_SETTLEMENT])),
-      onChainClient: () => ({
-        adoptChannel: (channelId: string, ctx: { chain: string }) => {
-          adopted.push({ channelId, chain: ctx.chain });
-        },
-        depositToChannel: () =>
-          Promise.resolve({ txHash: '0xdep', depositTotal: 100_000n }),
-        getChannelState: () =>
-          Promise.resolve({ channelId: CHANNEL, status: 'open' as const }),
-      }) as unknown as OnChainChannelClient,
-    });
-
-    await resumed.deposit(1_000n);
-    expect(adopted.map((a) => a.channelId)).toContain(CHANNEL);
+  it('takes back a channel the connector sealed first, with no close of ours', async () => {
+    const { f } = facade({ [CHANNEL.channelId]: 1 });
+    await f.open();
+    expect(await f.settle()).toEqual([
+      { channelId: CHANNEL.channelId, transaction: 'sig' },
+    ]);
   });
 
-  it('ensure() adopts a resumed channel too — deposit() after it must not find a stranger', async () => {
-    // The send path calls `ensure()` first, and `ensure()` sets `current`.
-    // `requireChannel` (which `deposit`/`close`/`settle` go through) adopts
-    // only when it has to RESOLVE the channel itself; with `current` already
-    // set it returns at once. So a process that resumed via `ensure()` and
-    // then deposited used to fail with "neither opened nor adopted" — the
-    // exact sequence a host runs when it tops up the channel it just paid on.
-    const { facade, channels, adopted } = unwired();
-    await facade.open({ deposit: 100_000n });
-
-    const later: { channelId: string; chain: string }[] = [];
-    const resumed = new ClientChannelFacade({
-      config: resolveConfig({
-        connector: CONNECTOR,
-        mnemonic: MNEMONIC,
-        channelStore: channels.store ?? new InMemoryChannelStore(),
-      }),
-      channels,
-      describe: () => Promise.resolve(description([EVM_SETTLEMENT])),
-      onChainClient: () => ({
-        adoptChannel: (channelId: string, ctx: { chain: string }) => {
-          later.push({ channelId, chain: ctx.chain });
-        },
-        depositToChannel: () =>
-          Promise.resolve({ txHash: '0xdep', depositTotal: 100_000n }),
-        getChannelState: () =>
-          Promise.resolve({ channelId: CHANNEL, status: 'open' as const }),
-      }) as unknown as OnChainChannelClient,
+  it('counts a cleaned-up channel as settled, and does not let one channel block the rest', async () => {
+    const { f, manager } = facade({
+      [OTHER.channelId]: null,
+      [CHANNEL.channelId]: 1,
     });
-
-    await expect(resumed.ensure()).resolves.toBe(CHANNEL);
-    // Adopted by ensure() itself, before any deposit asks for it.
-    expect(later.map((a) => a.channelId)).toContain(CHANNEL);
-    expect(adopted.map((a) => a.channelId)).toContain(CHANNEL);
-    await expect(resumed.deposit(1_000n)).resolves.toMatchObject({
-      channelId: CHANNEL,
-    });
+    manager.adopt(CONNECTOR, OTHER, 1_000n);
+    manager.adopt(CONNECTOR, CHANNEL, 5_000n);
+    manager.markClosing(OTHER.channelId, 1n, 2n);
+    const results = await f.settle();
+    expect(results).toEqual(
+      expect.arrayContaining([
+        { channelId: OTHER.channelId },
+        { channelId: CHANNEL.channelId, transaction: 'sig' },
+      ])
+    );
   });
 });

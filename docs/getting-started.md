@@ -7,9 +7,10 @@ You need Node.js 22 or newer. Nothing else — no local chain, no node of your o
 
 ## What you are about to do
 
-You will make a wallet, fill it with devnet test funds, lock some of them into a payment channel
+You will make a wallet, fill it with devnet USDC, deposit some of it into an x402 payment channel
 on chain, and then buy one HTTP request from an app behind a connector. The channel is the slow,
-on-chain part and you do it once; requests after that are signatures, not transactions.
+on-chain part and you do it once — with no native gas; requests after that are signatures, not
+transactions.
 
 The node used throughout is the devnet store, `https://proxy.ario.devnet.toonprotocol.dev`,
 which serves the route `g.toon.store` at 1000 base units (0.001 USDC) plus 10 per kibibyte of
@@ -76,22 +77,13 @@ addresses, deliberately.
 
 ## Step 2 — funds
 
-Two different things are needed, and they are easy to confuse.
-
-- **The settlement token** — mock USDC — is what a channel is collateralized with and what every
-  request is paid in.
-- **Native gas** — Base Sepolia ETH, or devnet SOL — is what the transactions that open and fund
-  the channel cost. Requests themselves spend no gas.
+A channel is funded in **USDC**, and every request is paid in it. That is all you need: opening a
+channel costs no native gas — on Base an x402 facilitator relays the deposit and pays for it, on
+Solana the connector sponsors the open. Native gas (Base Sepolia ETH, devnet SOL) is needed only
+later, to *leave* a channel.
 
 ```bash
 npx toon faucet
-```
-
-The faucet's EVM leg mints mock USDC and best-effort tops up ETH. Its Solana leg drips USDC and
-**no SOL**, so on Solana get SOL first:
-
-```bash
-solana airdrop 1 <your base58 address> --url https://api.devnet.solana.com
 ```
 
 ```ts
@@ -110,26 +102,26 @@ console.log(await client.wallet.balances());
 
 ## Step 3 — a channel
 
-A payment channel is a two-party agreement anchored on chain that lets value move between you and
-the connector many times while touching the chain only to open, top up and close. You open it
-yourself: the connector has no endpoint that opens one for you, it simply reads the chain and
-sees that your channel exists.
+A payment channel is an x402 `batch-settlement` channel: a deposit you lock on chain, payable to
+this one connector, that you then pay from many times while touching the chain only to open, top
+up and leave. The first paid request opens one on its own, but the CLI never does that as a side
+effect (see [cli.md](cli.md#the-cli-never-opens-a-channel-by-itself)), so open it explicitly:
 
 ```bash
 npx toon channel open --deposit 100000
 ```
 
-100000 base units is 0.10 USDC — collateral, in the settlement token's base units, never in wei.
-At 1000 base units (0.001 USDC) per request that is a hundred requests before the channel needs
-a top-up.
+100000 base units is 0.10 USDC — in the token's base units, never in wei. At 1000 base units
+(0.001 USDC) per request that is a hundred requests before the channel needs a top-up, which a
+library client does on its own.
 
 ```ts
-const channel = await client.channel.open({ deposit: 100_000n });
-console.log(channel.channelId, channel.available); // 100000n base units (0.10 USDC)
+const channel = await client.channel.open();   // opens with `deposit`, default 100000n
+console.log(channel.channel.channelId, channel.depositTotal);
 ```
 
-Both are idempotent: run against a connector you already hold an open channel with, they adopt it
-rather than opening a second one. Adding more collateral later:
+Both are idempotent: against a connector you already hold an open channel with, they return it
+rather than opening a second one. Adding more on Base later:
 
 ```bash
 npx toon channel deposit 100000
@@ -139,8 +131,8 @@ npx toon channel deposit 100000
 await client.channel.deposit(100_000n);
 ```
 
-[channels.md](channels.md) has the rest — closing, settling, and what the channel id is derived
-from.
+[channels.md](channels.md) has the rest — leaving a channel, the watermark, and what the channel id
+is derived from.
 
 ## Step 4 — one paid request
 
@@ -161,7 +153,7 @@ No route appears in either, and that is deliberate: you configured a **URL**, an
 — only when you want a route the node *forwards* rather than the one it terminates.
 
 Behind that one call: the client reads the route's price, seals your request to the connector's
-identity key, signs a claim advancing the channel by that price, and sends both as one packet.
+identity key, signs a voucher advancing the channel by that price, and sends both as one packet.
 [how-a-paid-packet-works.md](how-a-paid-packet-works.md) walks the whole wire.
 
 ## Step 5 — reading the result
@@ -176,7 +168,7 @@ if (answer.fulfilled) {
   answer.text();              // the body, as UTF-8
   answer.json();              // the body, parsed
   answer.claim.amount;        // 1000n base units (0.001 USDC) — what this cost
-  answer.claim.nonce;         // the nonce this claim carried
+  answer.claim.cumulative;    // the channel's running total after this voucher
 } else {
   answer.refusedBy;           // 'destination' | 'path' | 'edge'
   answer.code;                // 'F03', 'F01', 'PAYMENT_REQUIRED', …
@@ -206,7 +198,6 @@ npx toon send g.toon.store --body 'hello' --json
   "claim": {
     "channelId": "0xf5e0ecad66f856dc2a186635388804dfdbd241c690c27bfa7762250fbbb8af9b",
     "chain": "evm",
-    "nonce": 8,
     "cumulative": "5000",
     "amount": "1000"
   }
@@ -217,19 +208,19 @@ npx toon send g.toon.store --body 'hello' --json
 UTF-8. Every amount is a decimal string, never a JSON number — a figure past 2^53 is a real
 amount and rounding one silently would be worse than refusing to print it.
 
-The `claim` block is the receipt: which channel paid, at what nonce, and what the channel's
-cumulative total became. `fulfillment` is the proof the packet reached its intended receiver.
+The `claim` block is the receipt: which channel paid, what this request cost, and what the
+channel's cumulative total became. `fulfillment` is the proof the packet reached its intended receiver.
 
 Every code, and what to do about each one, is in [errors.md](errors.md).
 
 ## Step 6 — after a restart
 
-A claim's nonce must strictly advance the connector's watermark for your channel. A process that
-forgets which nonce it reached re-signs at one already banked, and every claim after that is
-refused. So the watermark has to outlive the process.
+A voucher states the channel's cumulative total, and the connector accepts it only if it advances
+the connector's own watermark. So a process has to remember two things across a restart: the
+channel's config — the chain never gives it back — and how far its vouchers have reached.
 
-The CLI persists it at `~/.toon/channels.json` by default. The library defaults to memory, which
-is almost never what you want:
+The CLI persists both at `~/.toon/channels.json` (and a sibling `channels.peers.json`) by default.
+The library defaults to memory, which is almost never what you want:
 
 ```ts
 const client = await ToonClient.create({
@@ -239,13 +230,11 @@ const client = await ToonClient.create({
 });
 ```
 
-With it set, the next process resumes the same channel at the next nonce, sends no transaction,
-and locks no second deposit. Without it — on EVM especially, where each open mints a new channel
-id — every restart strands a deposit in an abandoned channel.
+With it set, the next process resumes the same channel, sends no transaction, and locks no second
+deposit. Without it, every restart opens a fresh channel and strands a deposit in the old one.
 
-**Never delete that file for a live channel.** The collateral stays locked on chain and the
-watermark is unrecoverable. If the watermark for a bound channel goes missing, the client refuses
-to guess: it raises `ChannelResumeError` rather than silently restarting the nonce at zero.
+**Never delete that file for a live channel.** Without the config you cannot leave the channel,
+and its deposit stays locked on chain.
 
 To compare your side against the connector's:
 
@@ -257,14 +246,14 @@ npx toon claim-state
 console.log(await client.claimState());
 ```
 
-That is an owner-authenticated read: one signature per channel, over a challenge distinct from a
-claim, so it can never be replayed as a payment. It works when the channel has run dry, which is
+That is an owner-authenticated read: one signed challenge per channel, distinct from a voucher,
+so it can never be replayed as a payment. It works when the channel has run dry, which is
 exactly when you need it.
 
 ## Where to go next
 
 - [api.md](api.md) — every method, option and returned type
 - [cli.md](cli.md) — every command, the resolution order, exit codes
-- [channels.md](channels.md) — collateral, the lifecycle, the watermark
+- [channels.md](channels.md) — opening without gas, deposits, leaving, the watermark
 - [how-a-paid-packet-works.md](how-a-paid-packet-works.md) — the wire
 - [`packages/client/examples/`](../packages/client/examples/) — runnable versions of the above

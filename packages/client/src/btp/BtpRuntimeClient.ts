@@ -217,7 +217,7 @@ export class BtpRuntimeClient implements IlpClient {
   }
 
   /**
-   * Sends a balance proof claim via BTP protocol data, then sends an ILP packet.
+   * Sends a voucher claim via BTP protocol data, then sends an ILP packet.
    * Auto-reconnects on connection errors.
    *
    * `expectedFulfillment` / `greeting` / `expiresAt` semantics are identical
