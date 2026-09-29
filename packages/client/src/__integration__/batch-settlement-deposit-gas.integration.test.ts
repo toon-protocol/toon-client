@@ -126,7 +126,13 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
 
     onboarder = spawn('node', ['index.mjs'], {
       cwd: ONBOARDER,
-      env: { ...process.env, EVM_RPC_URL: ANVIL_RPC, PORT: String(ONBOARDER_PORT) },
+      env: {
+        ...process.env,
+        EVM_RPC_URL: ANVIL_RPC,
+        PORT: String(ONBOARDER_PORT),
+        // The token with neither ERC-3009 nor a permit: its approval is sponsored.
+        ONBOARDER_SPONSORED_TOKENS: WETH,
+      },
       stdio: 'ignore',
     });
     await waitFor('the Onboarder', 30_000, async () => {

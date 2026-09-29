@@ -41,6 +41,8 @@ interface Options {
   extensions?: string[];
   /** How the facilitator answers /settle. */
   facilitator?: 'ok' | 'down' | 'refuse';
+  /** The refusal's errorReason. */
+  refusal?: string;
   /** The payer's ETH, wei. */
   eth?: bigint;
   depositGas?: 'auto' | 'facilitator' | 'self';
@@ -73,7 +75,7 @@ function world(o: Options = {}) {
     return new Response(
       JSON.stringify(
         o.facilitator === 'refuse'
-          ? { success: false, errorReason: 'invalid_batch_settlement_evm_token_unsupported' }
+          ? { success: false, errorReason: o.refusal ?? 'unsupported_payment_flow' }
           : { success: true, transaction: '0xabc', network: 'eip155:84532' }
       )
     );
@@ -297,7 +299,27 @@ describe('the payer paying its own gas', () => {
     expect(w.writes.map((x) => x.functionName)).toEqual(['deposit']);
   });
 
-  it('falls back to depositing directly when the facilitator refuses, and the payer holds ETH', async () => {
+  it('keeps a deposit the facilitator broadcast but could not confirm, and does not send a second', async () => {
+    const w = world({ facilitator: 'refuse', refusal: 'settlement_pending', eth: 10n ** 16n });
+    await expect(w.payer.open(w.description, 'evm')).rejects.toThrow(/settlement_pending/);
+    expect(w.writes).toEqual([]);
+    const [pending] = w.manager.channels('https://node.example');
+    expect(w.manager.pendingDeposit(must(pending).channel.channelId)).toBe(10_000n);
+  });
+
+  it('reports a refusal of the deposit itself as it is, without spending the payer’s ETH on it', async () => {
+    const w = world({
+      facilitator: 'refuse',
+      refusal: 'invalid_batch_settlement_evm_insufficient_balance',
+      eth: 10n ** 16n,
+    });
+    await expect(w.payer.open(w.description, 'evm')).rejects.toThrow(
+      /invalid_batch_settlement_evm_insufficient_balance/
+    );
+    expect(w.writes).toEqual([]);
+  });
+
+  it('falls back to depositing directly when the facilitator cannot handle this deposit, and the payer holds ETH', async () => {
     const w = world({ facilitator: 'refuse', eth: 10n ** 16n });
     await w.payer.open(w.description, 'evm');
     expect(w.settled).toHaveLength(1);

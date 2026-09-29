@@ -700,9 +700,8 @@ export class BatchSettlementPayer {
       const retry =
         mode === 'auto' &&
         extensions === undefined &&
-        (err instanceof NetworkError || err instanceof FacilitatorError) &&
-        evm.wallet !== undefined &&
-        (await evm.wallet.getBalance()) > 0n;
+        facilitatorCannotHandle(err) &&
+        (await holdsEth(evm.wallet));
       if (!retry) throw explainPermit2(err, offer, evm);
       await depositDirectly(this.requireWallet(evm), payload, method);
     }
@@ -927,8 +926,10 @@ export class BatchSettlementPayer {
  * proves nothing, and leaves the deposit pending for the chain to decide.
  */
 function isDefinitiveRefusal(err: unknown): boolean {
+  // `settlement_pending`: x402's "I broadcast it; the receipt timed out". It
+  // may well land, so the channel is kept and settled against the chain.
   if (err instanceof FacilitatorError)
-    return err.reason !== 'unreadable_response';
+    return err.reason !== 'unreadable_response' && err.reason !== 'settlement_pending';
   if (err instanceof SponsorRefusedError) return err.status !== 502;
   return false;
 }
@@ -973,4 +974,29 @@ function explainPermit2(
     );
   }
   return err;
+}
+
+/**
+ * Whether a failed facilitator call leaves the deposit for the payer to send
+ * itself: the facilitator did not answer, answered with something that is not
+ * a settle result (a 500 — x402's "no facilitator registered for this scheme
+ * and network"), or said it cannot handle this kind of deposit. A refusal of
+ * the deposit itself (a balance, a voucher, a deadline) would fail on chain
+ * just the same, and `settlement_pending` means the facilitator's own
+ * transaction may yet land.
+ */
+function facilitatorCannotHandle(err: unknown): boolean {
+  if (err instanceof NetworkError) return true;
+  if (!(err instanceof FacilitatorError)) return false;
+  return err.reason === 'unreadable_response' || err.reason.startsWith('unsupported_');
+}
+
+/** Whether the payer holds any ETH; an unreadable balance counts as none. */
+async function holdsEth(wallet: EvmWalletAccess | undefined): Promise<boolean> {
+  if (!wallet) return false;
+  try {
+    return (await wallet.getBalance()) > 0n;
+  } catch {
+    return false;
+  }
 }
