@@ -34,6 +34,12 @@
  * Onboarder funds and broadcasts the wallet's own `approve(Permit2)`
  * (`erc20ApprovalGasSponsoring`, toon-protocol/infra#40) and relays the
  * deposit. It leaves a 1 mock-USDC channel behind.
+ *
+ * The same key runs the self-paid half of #695's acceptance on Base Sepolia:
+ * it sends each of three fresh wallets 0.0005 ETH, and each deposits from its
+ * own ETH — once with `depositGas: 'self'`, once a plain ERC-20 with no
+ * facilitator at all (approval and deposit both its own), and once with the
+ * facilitator down. Each leaves a 1-token channel behind.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -272,6 +278,117 @@ describe.skipIf(!ENABLED)(
       expect(state.balance).toBe(DEPOSIT);
       expect(await chain.getTransactionCount({ address: payer.address })).toBe(0);
       expect(await chain.getBalance({ address: payer.address })).toBe(0n);
+    }, 240_000);
+  }
+);
+
+/** What the funder sends each self-paying wallet: its approval and deposit, many times over. */
+const GAS_MONEY = 500_000_000_000_000n; // 0.0005 ETH
+
+describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
+  'a payer paying its own gas, on the devnet',
+  () => {
+    const chain = createPublicClient({ transport: http(RPC_URL) });
+    const funder = () =>
+      createWalletClient({
+        account: privateKeyToAccount(must(FUNDER_KEY)),
+        chain: { id: 84532, name: 'Base Sepolia', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [RPC_URL] } } },
+        transport: http(RPC_URL),
+      });
+
+    /** A fresh wallet holding `GAS_MONEY` of ETH and `DEPOSIT` of devnet USDC, or of the plain token. */
+    async function selfPayingWallet(plain: boolean) {
+      const payer = privateKeyToAccount(generatePrivateKey());
+      await chain.waitForTransactionReceipt({
+        hash: await funder().sendTransaction({ to: payer.address, value: GAS_MONEY }),
+      });
+      if (plain) {
+        await chain.waitForTransactionReceipt({
+          hash: await funder().writeContract({
+            address: PLAIN_ERC20,
+            abi: parseAbi(['function mint(address,uint256)']),
+            functionName: 'mint',
+            args: [payer.address, DEPOSIT],
+          }),
+        });
+      } else {
+        await fundWallet(FAUCET, payer.address, 'evm');
+      }
+      return payer;
+    }
+
+    /** Open a channel to the relay from `payer`, and read its deposit back off the chain. */
+    async function open(
+      payer: ReturnType<typeof privateKeyToAccount>,
+      evm: { facilitatorUrl: string; depositGas?: 'auto' | 'self' },
+      plain = false
+    ): Promise<void> {
+      const relay = await new ConnectorEdgeClient({}).describe(CONNECTOR);
+      const base = must(chooseBatchSettlement(relay, 'evm'));
+      if (base.chain !== 'evm') throw new Error('unreachable');
+      const asset = (plain ? PLAIN_ERC20 : base.asset) as Hex;
+      // The faucet's drip may trail its answer.
+      for (let i = 0; i < 40; i++) {
+        const held = await chain.readContract({
+          address: asset,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [payer.address],
+        });
+        if (held >= DEPOSIT) break;
+        await new Promise((r) => setTimeout(r, 3_000));
+      }
+      const description = plain
+        ? {
+            ...relay,
+            batchSettlements: [
+              {
+                ...base,
+                asset: PLAIN_ERC20,
+                extra: { ...base.extra, name: 'USD Coin (mock)', version: '1', assetTransferMethod: 'permit2' as const },
+              },
+            ],
+          }
+        : relay;
+      const payerFor = new BatchSettlementPayer({
+        connector: CONNECTOR,
+        manager: new BatchChannelManager(),
+        deposit: DEPOSIT,
+        evm: {
+          account: payer,
+          facilitatorUrl: evm.facilitatorUrl,
+          ...(evm.depositGas ? { depositGas: evm.depositGas } : {}),
+          reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
+          wallet: evmWalletAccess({ rpcUrl: RPC_URL, account: payer }),
+        },
+      });
+      const channel = must(await payerFor.open(description, 'evm'));
+      console.log(`[batch-settlement devnet] self-paid channel ${channel.channelId}`);
+      let state = await readEvmBatchChannel(chain, channel.channelId as Hex);
+      for (let i = 0; i < 10 && state.balance === 0n; i++) {
+        await new Promise((r) => setTimeout(r, 2_000));
+        state = await readEvmBatchChannel(chain, channel.channelId as Hex);
+      }
+      expect(state.balance).toBe(DEPOSIT);
+    }
+
+    it("depositGas 'self': the payer deposits devnet USDC from its own ETH", async () => {
+      const payer = await selfPayingWallet(false);
+      await open(payer, { facilitatorUrl: FACILITATOR, depositGas: 'self' });
+      expect(await chain.getTransactionCount({ address: payer.address })).toBe(1);
+    }, 240_000);
+
+    it('a token with neither, and no facilitator: the payer approves Permit2 and deposits, from its own ETH', async () => {
+      const payer = await selfPayingWallet(true);
+      // `''` is "no facilitator", whatever the connector names.
+      await open(payer, { facilitatorUrl: '' }, true);
+      expect(await chain.getTransactionCount({ address: payer.address })).toBe(2);
+    }, 240_000);
+
+    it('a facilitator that is down: a payer holding ETH deposits directly', async () => {
+      const payer = await selfPayingWallet(false);
+      await open(payer, { facilitatorUrl: 'http://127.0.0.1:1' });
+      expect(await chain.getTransactionCount({ address: payer.address })).toBe(1);
     }, 240_000);
   }
 );

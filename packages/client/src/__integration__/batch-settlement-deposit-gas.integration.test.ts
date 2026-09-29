@@ -9,7 +9,7 @@
  * infra's own (`onboarder/index.mjs`), run as a process against that anvil,
  * with both of x402's gas-sponsoring extensions.
  *
- * Five deposits, each from a fresh wallet, each read back off the chain:
+ * Six deposits, each from a fresh wallet, each read back off the chain:
  *
  *   1. a token with neither ERC-3009 nor a permit, from a wallet with NO ETH —
  *      the Onboarder funds and broadcasts the payer's signed approval;
@@ -19,7 +19,9 @@
  *      facilitator is contacted;
  *   4. a token with neither, and no facilitator at all — the payer approves
  *      Permit2 and deposits, both from its own ETH;
- *   5. a facilitator that is down — the payer, holding ETH, deposits directly.
+ *   5. a facilitator that is down — the payer, holding ETH, deposits directly;
+ *   6. the facilitator the CONNECTOR names in its terms, the caller naming
+ *      none — the seller's facilitator sponsors the payer's approval.
  *
  * ## Running it
  *
@@ -29,6 +31,8 @@
  * `CLIENT_REQUIRE_BATCH_SETTLEMENT=1` makes that a failure.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -178,10 +182,18 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
     return account;
   }
 
+  /**
+   * Open a channel to the connector. `facilitatorUrl` is the caller's own
+   * (`''` for none), and `named` the one the connector's terms name.
+   */
   function open(
     account: ReturnType<typeof privateKeyToAccount>,
     token: string,
-    evm: { facilitatorUrl?: string; depositGas?: 'auto' | 'facilitator' | 'self' },
+    evm: {
+      facilitatorUrl?: string;
+      named?: string;
+      depositGas?: 'auto' | 'facilitator' | 'self';
+    },
     method?: 'eip3009' | 'permit2'
   ) {
     const payer = new BatchSettlementPayer({
@@ -190,7 +202,7 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
       deposit: DEPOSIT,
       evm: {
         account,
-        facilitatorUrl: evm.facilitatorUrl ?? '',
+        ...(evm.facilitatorUrl !== undefined ? { facilitatorUrl: evm.facilitatorUrl } : {}),
         ...(evm.depositGas ? { depositGas: evm.depositGas } : {}),
         reader: pub as never,
         wallet: evmWalletAccess({ rpcUrl: ANVIL_RPC, account }),
@@ -206,6 +218,7 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
           withdrawDelay: 900,
           ...(token === USDC ? { name: 'USDC', version: '2' } : { name: 'Wrapped Ether', version: '1' }),
           ...(method ? { assetTransferMethod: method } : {}),
+          ...(evm.named ? { facilitator: evm.named } : {}),
         },
       ],
     });
@@ -241,17 +254,40 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
   }, 120_000);
 
   it("depositGas 'self': the payer deposits from its own ETH, and no facilitator is contacted", async () => {
-    const payer = await freshPayer(USDC, ONE_ETH);
-    const channel = must(await open(payer, USDC, { facilitatorUrl: 'http://127.0.0.1:1', depositGas: 'self' }));
-    expect(await escrow(channel.channelId)).toBe(DEPOSIT);
-    expect(await txCount(payer.address)).toBe(1);
+    // A facilitator that answers, named by both the caller and the connector,
+    // and counting every request it is sent.
+    let contacted = 0;
+    const spy: Server = createServer((_req, res) => {
+      contacted++;
+      res.writeHead(500).end();
+    });
+    await new Promise<void>((r) => spy.listen(0, '127.0.0.1', r));
+    const spyUrl = `http://127.0.0.1:${(spy.address() as AddressInfo).port}`;
+    try {
+      const payer = await freshPayer(USDC, ONE_ETH);
+      const channel = must(
+        await open(payer, USDC, { facilitatorUrl: spyUrl, named: spyUrl, depositGas: 'self' })
+      );
+      expect(await escrow(channel.channelId)).toBe(DEPOSIT);
+      expect(await txCount(payer.address)).toBe(1);
+      expect(contacted).toBe(0);
+    } finally {
+      await new Promise((r) => spy.close(r));
+    }
   }, 120_000);
 
   it('a token with neither, and no facilitator: the payer approves Permit2 and deposits, from its own ETH', async () => {
     const payer = await freshPayer(WETH, ONE_ETH);
-    const channel = must(await open(payer, WETH, {}, 'permit2'));
+    const channel = must(await open(payer, WETH, { facilitatorUrl: '' }, 'permit2'));
     expect(await escrow(channel.channelId)).toBe(DEPOSIT);
     expect(await txCount(payer.address)).toBe(2);
+  }, 120_000);
+
+  it('the facilitator the connector names, the caller naming none: it sponsors the approval of a wallet with no ETH', async () => {
+    const payer = await freshPayer(WETH, 0n);
+    const channel = must(await open(payer, WETH, { named: ONBOARDER_URL }, 'permit2'));
+    expect(await escrow(channel.channelId)).toBe(DEPOSIT);
+    expect(await txCount(payer.address)).toBe(1);
   }, 120_000);
 
   it('a facilitator that is down: a payer holding ETH deposits directly', async () => {
