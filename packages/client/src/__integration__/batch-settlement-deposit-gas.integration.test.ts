@@ -23,6 +23,9 @@
  *   6. the facilitator the CONNECTOR names in its terms, the caller naming
  *      none — the seller's facilitator sponsors the payer's approval.
  *
+ * And, for each deposit method, that one signed authorization lands once: the
+ * Onboarder settles it, and the payer's own copy of the same deposit reverts.
+ *
  * ## Running it
  *
  * Needs `anvil` on PATH, and an infra checkout beside this one
@@ -48,8 +51,21 @@ import {
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
-import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
-import { readEvmBatchChannel, PERMIT2_ADDRESS } from '../channel/batch-settlement/evm.js';
+import {
+  approvePermit2,
+  depositDirectly,
+  evmWalletAccess,
+} from '../channel/batch-settlement/deposit-gas.js';
+import {
+  batchChannelId,
+  buildBatchChannelConfig,
+  buildEip3009Deposit,
+  buildPermit2Deposit,
+  readEvmBatchChannel,
+  PERMIT2_ADDRESS,
+} from '../channel/batch-settlement/evm.js';
+import { settleDeposit } from '../channel/batch-settlement/facilitator.js';
+import { chooseBatchSettlement, offerFromTerms } from '../channel/batch-settlement/offers.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import { must } from '../utils/must.test-support.js';
 
@@ -151,8 +167,8 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
     for (const child of [onboarder, anvil]) if (child?.exitCode === null) child.kill('SIGKILL');
   });
 
-  /** A fresh wallet holding `eth` wei, `DEPOSIT` of `token`, and nothing else. */
-  async function freshPayer(token: string, eth: bigint) {
+  /** A fresh wallet holding `eth` wei, `tokens` of `token` (one deposit's worth by default), and nothing else. */
+  async function freshPayer(token: string, eth: bigint, tokens = DEPOSIT) {
     const key = generatePrivateKey();
     const account = privateKeyToAccount(key);
     if (token === USDC) {
@@ -162,17 +178,17 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
           address: USDC,
           abi: parseAbi(['function mint(address to, uint256 amount) returns (bool)']),
           functionName: 'mint',
-          args: [account.address, DEPOSIT],
+          args: [account.address, tokens],
         }),
       });
     } else {
       const funder = createWalletClient({ account: privateKeyToAccount(WETH_FUNDER_KEY), chain, transport: http(ANVIL_RPC) });
       const weth = parseAbi(['function deposit() payable', 'function transfer(address,uint256) returns (bool)']);
       await pub.waitForTransactionReceipt({
-        hash: await funder.writeContract({ address: WETH, abi: weth, functionName: 'deposit', value: DEPOSIT }),
+        hash: await funder.writeContract({ address: WETH, abi: weth, functionName: 'deposit', value: tokens }),
       });
       await pub.waitForTransactionReceipt({
-        hash: await funder.writeContract({ address: WETH, abi: weth, functionName: 'transfer', args: [account.address, DEPOSIT] }),
+        hash: await funder.writeContract({ address: WETH, abi: weth, functionName: 'transfer', args: [account.address, tokens] }),
       });
     }
     await pub.request({
@@ -208,7 +224,12 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
         wallet: evmWalletAccess({ rpcUrl: ANVIL_RPC, account }),
       },
     });
-    const description = parseSelfDescription({
+    return payer.open(connectorTerms(token, method, evm.named), 'evm');
+  }
+
+  /** The connector's self-description, its one EVM entry in `token`. */
+  function connectorTerms(token: string, method?: 'eip3009' | 'permit2', named?: string) {
+    return parseSelfDescription({
       batchSettlements: [
         {
           network: NETWORK,
@@ -218,11 +239,10 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
           withdrawDelay: 900,
           ...(token === USDC ? { name: 'USDC', version: '2' } : { name: 'Wrapped Ether', version: '1' }),
           ...(method ? { assetTransferMethod: method } : {}),
-          ...(evm.named ? { facilitator: evm.named } : {}),
+          ...(named ? { facilitator: named } : {}),
         },
       ],
     });
-    return payer.open(description, 'evm');
   }
 
   async function escrow(channelId: string): Promise<bigint> {
@@ -296,4 +316,41 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
     expect(await escrow(channel.channelId)).toBe(DEPOSIT);
     expect(await txCount(payer.address)).toBe(1);
   }, 120_000);
+
+  it.each([
+    // FiatToken's own refusal of a spent ERC-3009 nonce.
+    ['eip3009', USDC, /authorization is used or canceled/],
+    // Permit2's `InvalidNonce()`: its unordered nonce, already spent.
+    ['permit2', WETH, /0x756688fe/],
+  ] as const)(
+    'one %s authorization lands once: the Onboarder settles it, and the payer’s own copy reverts',
+    async (method, token, spent) => {
+      // Enough of the token for two deposits, so only the spent authorization
+      // can stop the second.
+      const payer = await freshPayer(token, ONE_ETH, 2n * DEPOSIT);
+      const wallet = evmWalletAccess({ rpcUrl: ANVIL_RPC, account: payer });
+      if (method === 'permit2') await approvePermit2(wallet, token);
+      const priced = offerFromTerms(must(chooseBatchSettlement(connectorTerms(token, method), 'evm')), 1n);
+      if (priced.chain !== 'evm') throw new Error('unreachable');
+      const offer = priced.offer;
+      const config = buildBatchChannelConfig({ payer: payer.address, offer });
+      const build = method === 'permit2' ? buildPermit2Deposit : buildEip3009Deposit;
+      const payload = await build({
+        payer,
+        offer: { ...offer, extra: { ...offer.extra, withdrawDelay: config.withdrawDelay } },
+        config,
+        amount: DEPOSIT,
+        voucherAmount: 1n,
+      });
+
+      const channelId = batchChannelId(config, 31337);
+      await settleDeposit({ facilitatorUrl: ONBOARDER_URL, offer, payload });
+      expect(await escrow(channelId)).toBe(DEPOSIT);
+      // The payer's fallback, had the Onboarder's answer been lost: refused by
+      // the spent nonce, not by the balance, which covers a second deposit.
+      await expect(depositDirectly(wallet, payload, method)).rejects.toThrow(spent);
+      expect(await escrow(channelId)).toBe(DEPOSIT);
+    },
+    120_000
+  );
 });
