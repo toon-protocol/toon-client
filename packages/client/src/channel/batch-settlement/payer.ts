@@ -674,7 +674,11 @@ export class BatchSettlementPayer {
             );
           }
           await this.payOwnGas(evm, `a one-time Permit2 approval of ${offer.asset}`, facilitatorUrl);
-          await approvePermit2(this.requireWallet(evm), offer.asset);
+          await approvePermit2(this.requireWallet(evm), offer.asset, {
+            reader: evm.reader,
+            owner: evm.account.address,
+            atLeast: amount,
+          });
         }
       }
     }

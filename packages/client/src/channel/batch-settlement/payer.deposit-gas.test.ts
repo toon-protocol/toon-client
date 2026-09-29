@@ -48,6 +48,12 @@ interface Options {
   depositGas?: 'auto' | 'facilitator' | 'self';
   depositMethod?: 'eip3009' | 'permit2';
   facilitatorUrl?: string | null;
+  /**
+   * Reads, after the payer's approval lands, that a load-balanced RPC answers
+   * from a backend that has not seen it yet — and a deposit sent meanwhile
+   * reverts there, as Permit2's `transferFrom` finds no allowance.
+   */
+  allowanceLag?: number;
 }
 
 interface Settled {
@@ -64,6 +70,8 @@ function world(o: Options = {}) {
   const urls: string[] = [];
   const writes: { functionName: string; address: string; args: unknown[] }[] = [];
   const signed: Hex[] = [];
+  let approved = false;
+  let lag = 0;
 
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     urls.push(url);
@@ -86,7 +94,14 @@ function world(o: Options = {}) {
   const reader = {
     readContract: async (q: never) => {
       const { functionName } = q as { functionName: string };
-      if (functionName === 'allowance') return o.allowance ?? 0n;
+      if (functionName === 'allowance') {
+        if (!approved) return o.allowance ?? 0n;
+        if (lag > 0) {
+          lag--;
+          return o.allowance ?? 0n;
+        }
+        return 2n ** 256n - 1n;
+      }
       if (functionName === 'nonces') {
         if (o.permitNonce === undefined) throw new Error('execution reverted');
         return o.permitNonce;
@@ -111,7 +126,14 @@ function world(o: Options = {}) {
         address: string;
         args: unknown[];
       };
+      if (functionName === 'deposit' && lag > 0) {
+        throw new Error('execution reverted: TRANSFER_FROM_FAILED');
+      }
       writes.push({ functionName, address, args });
+      if (functionName === 'approve') {
+        approved = true;
+        lag = o.allowanceLag ?? 0;
+      }
       return `0x${(++n).toString(16).padStart(64, '0')}` as Hex;
     },
     waitForTransactionReceipt: async () => ({ status: 'success' }),
@@ -284,6 +306,15 @@ describe('the payer paying its own gas', () => {
     const w = world({ depositGas: 'self', method: 'permit2', eth: 10n ** 16n });
     await w.payer.open(w.description, 'evm');
     expect(w.urls).toEqual([]);
+    expect(w.writes.map((x) => x.functionName)).toEqual(['approve', 'deposit']);
+  });
+
+  it("depositGas 'self' with a Permit2 token waits until the RPC shows its approval before depositing", async () => {
+    // A load-balanced RPC answers from any backend: the approval's receipt from
+    // one says nothing about the next. Seen on Base Sepolia: the deposit,
+    // estimated straight after the receipt, reverted TRANSFER_FROM_FAILED.
+    const w = world({ method: 'permit2', depositGas: 'self', eth: 10n ** 18n, allowanceLag: 1 });
+    await w.payer.open(w.description, 'evm');
     expect(w.writes.map((x) => x.functionName)).toEqual(['approve', 'deposit']);
   });
 
