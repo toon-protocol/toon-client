@@ -84,8 +84,12 @@ chains:
 | `batch-settlement-exit` | Needs `anvil`, `cast`, `solana-test-validator` and a toon-protocol/infra checkout beside this one (or `INFRA_SANDBOX_DIR`); skips without them unless `CLIENT_REQUIRE_BATCH_SETTLEMENT=1`. Runs against x402's real contract (seeded by infra's `seed-x402.sh`) and solana-foundation's real `payment-channels` program. On each chain it opens an x402 `batch-settlement` channel, closes it, and gets the deposit back. |
 | `batch-settlement-devnet` | `BATCH_SETTLEMENT_DEVNET=1`. Makes a fresh wallet with 0 ETH, gives it devnet USDC, and deposits through the devnet facilitator (`onboard.devnet`) into a channel to the relay, then pays the relay's route with a voucher on that channel. The test leaves 1 USDC in that channel. |
 
-None of the opt-in suites runs in CI. `batch-settlement-exit` is the one that could — it needs no
-credential, only local chains and an infra checkout — and it is not wired into a job yet.
+`batch-settlement-exit` is the one opt-in suite that runs in CI — it needs no credential, only
+local chains and an infra checkout — as the `batch-settlement-exit` job in
+`.github/workflows/ci.yml`, which installs Foundry and the Solana CLI, checks out
+toon-protocol/infra, and runs it with `CLIENT_REQUIRE_BATCH_SETTLEMENT=1` so a skip fails the job.
+`rust-edge-devnet` and `batch-settlement-devnet` stay out: both need a live service or a funded
+credential.
 
 ## A connector on your machine
 
@@ -165,7 +169,9 @@ the connector shows up as a failing check rather than as a mystery in production
 
 `.github/workflows/ci.yml` runs install, build, typecheck, lint, the unit tier, and the integration
 suites that need nothing off the machine; it typechecks every integration suite, including the
-opt-in ones it does not run. A change to `packages/client` without a changeset fails its own gate.
+opt-in ones it does not run. Its `batch-settlement-exit` job separately installs Foundry and the
+Solana CLI and runs `batch-settlement-exit` against real local chains, seeded from a
+toon-protocol/infra checkout. A change to `packages/client` without a changeset fails its own gate.
 
 ## Release
 
