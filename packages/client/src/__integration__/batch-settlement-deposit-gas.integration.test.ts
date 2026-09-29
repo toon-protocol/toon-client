@@ -9,7 +9,7 @@
  * infra's own (`onboarder/index.mjs`), run as a process against that anvil,
  * with both of x402's gas-sponsoring extensions.
  *
- * Five deposits, each from a fresh wallet, each read back off the chain:
+ * Six deposits, each from a fresh wallet, each read back off the chain:
  *
  *   1. a token with neither ERC-3009 nor a permit, from a wallet with NO ETH —
  *      the Onboarder funds and broadcasts the payer's signed approval;
@@ -19,7 +19,15 @@
  *      facilitator is contacted;
  *   4. a token with neither, and no facilitator at all — the payer approves
  *      Permit2 and deposits, both from its own ETH;
- *   5. a facilitator that is down — the payer, holding ETH, deposits directly.
+ *   5. a facilitator that is down, or refuses as unable — the payer, holding
+ *      ETH, deposits directly;
+ *   6. the facilitator the CONNECTOR names in its terms, the caller naming
+ *      none — the seller's facilitator sponsors the payer's approval.
+ *
+ * And that one signed authorization lands once: for each deposit method, the
+ * Onboarder settles it and a second copy of the same deposit reverts; and when
+ * the Onboarder's answer is lost after it landed, the payer's fallback reverts,
+ * the channel is kept, and the next use settles it from the chain.
  *
  * ## Running it
  *
@@ -29,6 +37,8 @@
  * `CLIENT_REQUIRE_BATCH_SETTLEMENT=1` makes that a failure.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,8 +54,21 @@ import {
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
-import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
-import { readEvmBatchChannel, PERMIT2_ADDRESS } from '../channel/batch-settlement/evm.js';
+import {
+  approvePermit2,
+  depositDirectly,
+  evmWalletAccess,
+} from '../channel/batch-settlement/deposit-gas.js';
+import {
+  batchChannelId,
+  buildBatchChannelConfig,
+  buildEip3009Deposit,
+  buildPermit2Deposit,
+  readEvmBatchChannel,
+  PERMIT2_ADDRESS,
+} from '../channel/batch-settlement/evm.js';
+import { settleDeposit } from '../channel/batch-settlement/facilitator.js';
+import { chooseBatchSettlement, offerFromTerms } from '../channel/batch-settlement/offers.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import { must } from '../utils/must.test-support.js';
 
@@ -147,8 +170,8 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
     for (const child of [onboarder, anvil]) if (child?.exitCode === null) child.kill('SIGKILL');
   });
 
-  /** A fresh wallet holding `eth` wei, `DEPOSIT` of `token`, and nothing else. */
-  async function freshPayer(token: string, eth: bigint) {
+  /** A fresh wallet holding `eth` wei, `tokens` of `token` (one deposit's worth by default), and nothing else. */
+  async function freshPayer(token: string, eth: bigint, tokens = DEPOSIT) {
     const key = generatePrivateKey();
     const account = privateKeyToAccount(key);
     if (token === USDC) {
@@ -158,17 +181,17 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
           address: USDC,
           abi: parseAbi(['function mint(address to, uint256 amount) returns (bool)']),
           functionName: 'mint',
-          args: [account.address, DEPOSIT],
+          args: [account.address, tokens],
         }),
       });
     } else {
       const funder = createWalletClient({ account: privateKeyToAccount(WETH_FUNDER_KEY), chain, transport: http(ANVIL_RPC) });
       const weth = parseAbi(['function deposit() payable', 'function transfer(address,uint256) returns (bool)']);
       await pub.waitForTransactionReceipt({
-        hash: await funder.writeContract({ address: WETH, abi: weth, functionName: 'deposit', value: DEPOSIT }),
+        hash: await funder.writeContract({ address: WETH, abi: weth, functionName: 'deposit', value: tokens }),
       });
       await pub.waitForTransactionReceipt({
-        hash: await funder.writeContract({ address: WETH, abi: weth, functionName: 'transfer', args: [account.address, DEPOSIT] }),
+        hash: await funder.writeContract({ address: WETH, abi: weth, functionName: 'transfer', args: [account.address, tokens] }),
       });
     }
     await pub.request({
@@ -178,10 +201,19 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
     return account;
   }
 
+  /**
+   * Open a channel to the connector. `facilitatorUrl` is the caller's own
+   * (`''` for none, absent for "the connector's"), and `connectorFacilitator`
+   * the one the connector's terms name.
+   */
   function open(
     account: ReturnType<typeof privateKeyToAccount>,
     token: string,
-    evm: { facilitatorUrl?: string; depositGas?: 'auto' | 'facilitator' | 'self' },
+    evm: {
+      facilitatorUrl?: string;
+      connectorFacilitator?: string;
+      depositGas?: 'auto' | 'facilitator' | 'self';
+    },
     method?: 'eip3009' | 'permit2'
   ) {
     const payer = new BatchSettlementPayer({
@@ -190,13 +222,22 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
       deposit: DEPOSIT,
       evm: {
         account,
-        facilitatorUrl: evm.facilitatorUrl ?? '',
+        ...(evm.facilitatorUrl !== undefined ? { facilitatorUrl: evm.facilitatorUrl } : {}),
         ...(evm.depositGas ? { depositGas: evm.depositGas } : {}),
         reader: pub as never,
         wallet: evmWalletAccess({ rpcUrl: ANVIL_RPC, account }),
       },
     });
-    const description = parseSelfDescription({
+    return payer.open(connectorTerms(token, method, evm.connectorFacilitator), 'evm');
+  }
+
+  /** The connector's self-description, its one EVM entry in `token`. */
+  function connectorTerms(
+    token: string,
+    method?: 'eip3009' | 'permit2',
+    connectorFacilitator?: string
+  ) {
+    return parseSelfDescription({
       batchSettlements: [
         {
           network: NETWORK,
@@ -206,16 +247,63 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
           withdrawDelay: 900,
           ...(token === USDC ? { name: 'USDC', version: '2' } : { name: 'Wrapped Ether', version: '1' }),
           ...(method ? { assetTransferMethod: method } : {}),
+          ...(connectorFacilitator ? { facilitator: connectorFacilitator } : {}),
         },
       ],
     });
-    return payer.open(description, 'evm');
   }
 
   async function escrow(channelId: string): Promise<bigint> {
     return (await readEvmBatchChannel(pub, channelId as Hex)).balance;
   }
   const txCount = (address: Hex) => pub.getTransactionCount({ address });
+
+  /**
+   * A facilitator on loopback that counts the requests it is sent and answers
+   * each with `answer` — given the request's path and body.
+   */
+  async function facilitatorSpy(
+    answer: (path: string, body: string) => Promise<{ status: number; body: string }>
+  ) {
+    let contacted = 0;
+    const server: Server = createServer((req, res) => {
+      contacted++;
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        void answer(req.url ?? '', body).then(
+          (a) => res.writeHead(a.status, { 'content-type': 'application/json' }).end(a.body),
+          () => res.writeHead(500).end()
+        );
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    return {
+      url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      contacted: () => contacted,
+      close: () => new Promise((r) => server.close(r)),
+    };
+  }
+
+  /**
+   * The ETH a wallet was given: what it holds now, plus what its
+   * transactions burned. It sent none of its own.
+   */
+  async function ethReceived(address: Hex): Promise<{ total: bigint; approvals: { gas: bigint; maxFeePerGas: bigint }[] }> {
+    let total = await pub.getBalance({ address });
+    const approvals: { gas: bigint; maxFeePerGas: bigint }[] = [];
+    const latest = await pub.getBlockNumber();
+    for (let n = latest; n >= 0n && n > latest - 20n; n--) {
+      const block = await pub.getBlock({ blockNumber: n, includeTransactions: true });
+      for (const tx of block.transactions) {
+        if (tx.from.toLowerCase() !== address.toLowerCase()) continue;
+        const receipt = await pub.getTransactionReceipt({ hash: tx.hash });
+        total += receipt.gasUsed * receipt.effectiveGasPrice;
+        approvals.push({ gas: tx.gas, maxFeePerGas: must(tx.maxFeePerGas) });
+      }
+    }
+    return { total, approvals };
+  }
 
   it('a token with neither ERC-3009 nor a permit, from a wallet with no ETH: the Onboarder sponsors the approval', async () => {
     const payer = await freshPayer(WETH, 0n);
@@ -229,8 +317,12 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
     });
     expect(allowance > 0n).toBe(true);
     // The payer's one transaction is its own approval, paid with ETH the
-    // Onboarder gave it for exactly that.
+    // Onboarder gave it for exactly that: its gas limit at its fee cap.
     expect(await txCount(payer.address)).toBe(1);
+    const received = await ethReceived(payer.address);
+    expect(received.approvals).toHaveLength(1);
+    const [approval] = received.approvals;
+    expect(received.total).toBe(must(approval).gas * must(approval).maxFeePerGas);
   }, 120_000);
 
   it('a permit token through Permit2, from a wallet with no ETH: the permit rides inside the deposit', async () => {
@@ -241,17 +333,37 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
   }, 120_000);
 
   it("depositGas 'self': the payer deposits from its own ETH, and no facilitator is contacted", async () => {
-    const payer = await freshPayer(USDC, ONE_ETH);
-    const channel = must(await open(payer, USDC, { facilitatorUrl: 'http://127.0.0.1:1', depositGas: 'self' }));
-    expect(await escrow(channel.channelId)).toBe(DEPOSIT);
-    expect(await txCount(payer.address)).toBe(1);
+    // A facilitator that answers, named by both the caller and the connector.
+    const spy = await facilitatorSpy(async () => ({ status: 500, body: '' }));
+    try {
+      const payer = await freshPayer(USDC, ONE_ETH);
+      const channel = must(
+        await open(payer, USDC, {
+          facilitatorUrl: spy.url,
+          connectorFacilitator: spy.url,
+          depositGas: 'self',
+        })
+      );
+      expect(await escrow(channel.channelId)).toBe(DEPOSIT);
+      expect(await txCount(payer.address)).toBe(1);
+      expect(spy.contacted()).toBe(0);
+    } finally {
+      await spy.close();
+    }
   }, 120_000);
 
   it('a token with neither, and no facilitator: the payer approves Permit2 and deposits, from its own ETH', async () => {
     const payer = await freshPayer(WETH, ONE_ETH);
-    const channel = must(await open(payer, WETH, {}, 'permit2'));
+    const channel = must(await open(payer, WETH, { facilitatorUrl: '' }, 'permit2'));
     expect(await escrow(channel.channelId)).toBe(DEPOSIT);
     expect(await txCount(payer.address)).toBe(2);
+  }, 120_000);
+
+  it('the facilitator the connector names, the caller naming none: it sponsors the approval of a wallet with no ETH', async () => {
+    const payer = await freshPayer(WETH, 0n);
+    const channel = must(await open(payer, WETH, { connectorFacilitator: ONBOARDER_URL }, 'permit2'));
+    expect(await escrow(channel.channelId)).toBe(DEPOSIT);
+    expect(await txCount(payer.address)).toBe(1);
   }, 120_000);
 
   it('a facilitator that is down: a payer holding ETH deposits directly', async () => {
@@ -260,4 +372,93 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
     expect(await escrow(channel.channelId)).toBe(DEPOSIT);
     expect(await txCount(payer.address)).toBe(1);
   }, 120_000);
+
+  it('a facilitator that refuses as unable to handle the deposit: the payer tries it, then deposits directly', async () => {
+    const spy = await facilitatorSpy(async () => ({
+      status: 200,
+      body: JSON.stringify({ success: false, errorReason: 'unsupported_scheme' }),
+    }));
+    try {
+      const payer = await freshPayer(USDC, ONE_ETH);
+      const channel = must(await open(payer, USDC, { facilitatorUrl: spy.url }));
+      expect(spy.contacted()).toBe(1);
+      expect(await escrow(channel.channelId)).toBe(DEPOSIT);
+      expect(await txCount(payer.address)).toBe(1);
+    } finally {
+      await spy.close();
+    }
+  }, 120_000);
+
+  it('the Onboarder lands the deposit and its answer is lost: the payer’s own copy reverts, and the channel is kept', async () => {
+    // Relays the deposit to the Onboarder, lets it land, and answers garbage.
+    const spy = await facilitatorSpy(async (path, body) => {
+      await fetch(`${ONBOARDER_URL}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      return { status: 502, body: 'bad gateway' };
+    });
+    try {
+      // Enough of the token for two deposits, so only the spent authorization
+      // can stop the second.
+      const account = await freshPayer(USDC, ONE_ETH, 2n * DEPOSIT);
+      const payer = new BatchSettlementPayer({
+        connector: 'https://node.example',
+        manager: new BatchChannelManager(),
+        deposit: DEPOSIT,
+        evm: {
+          account,
+          facilitatorUrl: spy.url,
+          reader: pub as never,
+          wallet: evmWalletAccess({ rpcUrl: ANVIL_RPC, account }),
+        },
+      });
+      const terms = connectorTerms(USDC);
+      await expect(payer.open(terms, 'evm')).rejects.toThrow(/authorization is used or canceled/);
+      // Kept, and settled from the chain on the next use, with no second deposit.
+      const channel = must(await payer.open(terms, 'evm'));
+      expect(await escrow(channel.channelId)).toBe(DEPOSIT);
+      expect(spy.contacted()).toBe(1);
+    } finally {
+      await spy.close();
+    }
+  }, 120_000);
+
+  it.each([
+    // FiatToken's own refusal of a spent ERC-3009 nonce.
+    ['eip3009', USDC, /authorization is used or canceled/],
+    // Permit2's `InvalidNonce()`: its unordered nonce, already spent.
+    ['permit2', WETH, /0x756688fe/],
+  ] as const)(
+    'one %s authorization lands once: the Onboarder settles it, and a second copy reverts',
+    async (method, token, spent) => {
+      // Enough of the token for two deposits, so only the spent authorization
+      // can stop the second.
+      const payer = await freshPayer(token, ONE_ETH, 2n * DEPOSIT);
+      const wallet = evmWalletAccess({ rpcUrl: ANVIL_RPC, account: payer });
+      if (method === 'permit2') await approvePermit2(wallet, token);
+      const priced = offerFromTerms(must(chooseBatchSettlement(connectorTerms(token, method), 'evm')), 1n);
+      if (priced.chain !== 'evm') throw new Error('unreachable');
+      const offer = priced.offer;
+      const config = buildBatchChannelConfig({ payer: payer.address, offer });
+      const build = method === 'permit2' ? buildPermit2Deposit : buildEip3009Deposit;
+      const payload = await build({
+        payer,
+        offer: { ...offer, extra: { ...offer.extra, withdrawDelay: config.withdrawDelay } },
+        config,
+        amount: DEPOSIT,
+        voucherAmount: 1n,
+      });
+
+      const channelId = batchChannelId(config, 31337);
+      await settleDeposit({ facilitatorUrl: ONBOARDER_URL, offer, payload });
+      expect(await escrow(channelId)).toBe(DEPOSIT);
+      // Refused by the spent nonce, not by the balance, which covers a second
+      // deposit.
+      await expect(depositDirectly(wallet, payload, method)).rejects.toThrow(spent);
+      expect(await escrow(channelId)).toBe(DEPOSIT);
+    },
+    120_000
+  );
 });
