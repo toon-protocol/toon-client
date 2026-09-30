@@ -14,7 +14,7 @@
 //     for (const key of Object.keys(sandcastleEnv))             // keys from the FILE
 //       result[key] = sandcastleEnv[key] || process.env[key];
 //
-// `.sandcastle/.env` is gitignored (only `.env.example` is committed), so in CI
+// `.sandcastle/.env` is gitignored (never committed), so in CI
 // the file does not exist -> `parseEnvFile` returns {} -> the loop never runs ->
 // the resolved env is {} -> NEITHER token is passed to `docker run`. The
 // container therefore starts with no credentials and claude-code is unauthed.
