@@ -20,10 +20,10 @@ function runGuard(headChangesFile: boolean, baseAlreadyHasIt: boolean) {
   git(dir, 'add', '.');
   git(dir, 'commit', '-qm', 'init');
   git(dir, 'checkout', '-qb', 'head');
-  if (headChangesFile) {
-    writeFileSync(join(dir, 'a.txt'), '2\n');
-    git(dir, 'commit', '-qam', 'change');
-  }
+  writeFileSync(join(dir, 'a.txt'), '2\n');
+  git(dir, 'commit', '-qam', 'change');
+  // Without a change of its own, the branch still has commits: a change and its revert.
+  if (!headChangesFile) git(dir, 'revert', '--no-edit', 'HEAD');
   const headSha = git(dir, 'rev-parse', 'HEAD');
   git(dir, 'checkout', '-q', 'main');
   if (baseAlreadyHasIt) {
@@ -58,6 +58,13 @@ describe('no-op merge guard', () => {
     const r = runGuard(true, true);
     expect(r.status).toBe(1);
     expect(r.stdout).toContain('EMPTY commit');
+    expect(r.stdout).toContain('already on main');
+  });
+
+  it("fails a PR whose branch's own commits cancel out", () => {
+    const r = runGuard(false, false);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('commits cancel out');
   });
 
   it('passes plainly on push', () => {

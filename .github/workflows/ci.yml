@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+    # The no-op merge guard's triggers: GitHub's defaults plus `ready_for_review`. `synchronize`
+    # is what catches a PR that BECOMES a no-op after its branch is updated.
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
@@ -168,7 +170,7 @@ jobs:
       # would re-run every package's unit suite through the root config.
       #
       # Deliberately BEFORE the guard step, so a broken `gate-guard.ts` fails
-      # here rather than being trusted to judge itself. 26 tests, ~0.2s of
+      # here rather than being trusted to judge itself. 34 tests, ~0.2s of
       # vitest plus node startup — inside the timed window, and small against the
       # 185s baseline's 20% tolerance.
       - name: Test the workspace root (the files `pnpm -r` cannot see)

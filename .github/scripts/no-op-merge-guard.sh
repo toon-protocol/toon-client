@@ -11,7 +11,7 @@ set -uo pipefail
 # `push`. There is no PR to evaluate there. Pass plainly — NOT with a
 # `::warning::`, which would annotate every push to main, and NOT
 # with a job-level `if:`, because a skipped job is a non-success
-# result to the aggregate that now asserts on this job.
+# result to the aggregate `CI OK`, which asserts on this job.
 if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
   echo "event is '${GITHUB_EVENT_NAME}', not 'pull_request' — no merge result to evaluate"
   exit 0
@@ -20,7 +20,8 @@ fi
 # `pull_request` runs check out refs/pull/N/merge. If HEAD is not a
 # merge commit, GitHub could not compute a merge result — a
 # conflicted PR is the usual reason, and a conflicted PR cannot merge
-# at all. Warn, do not fail: see the header.
+# at all. Warn, do not fail: the guard judges merge results, and
+# there is none to judge here.
 if ! git rev-parse --verify -q HEAD^2 >/dev/null; then
   echo "::warning::no merge ref for this PR (HEAD is not a merge commit) — the merge result could not be evaluated. A conflicted PR is the usual cause; resolve the conflict and this guard re-runs."
   exit 0
