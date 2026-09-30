@@ -199,6 +199,23 @@ describe('BatchChannelManager', () => {
     expect(m.reserve(EVM.channelId, 1_001n)).toBe(1_001n);
   });
 
+  it.each([2n ** 53n, 2n ** 64n])(
+    'reserves, compares and persists an EVM running total above %s exactly (connector#1439)',
+    (base) => {
+      const dir = mkdtempSync(join(tmpdir(), 'batch-wide-'));
+      const path = join(dir, 'channels.json');
+      const first = new BatchChannelManager(new JsonFileChannelStore(path));
+      first.adopt(CONNECTOR, EVM, base + 10n);
+      expect(first.reserve(EVM.channelId, base + 1n)).toBe(base + 1n);
+      first.banked(EVM.channelId, base + 1n);
+      expect(() => first.reserve(EVM.channelId, 10n)).toThrow(/deposit/);
+
+      const second = new BatchChannelManager(new JsonFileChannelStore(path));
+      expect(second.depositTotal(EVM.channelId)).toBe(base + 10n);
+      expect(second.reserve(EVM.channelId, 1n)).toBe(base + 2n);
+    }
+  );
+
   it('survives a restart: config, deposit and watermark, on both chains', () => {
     const dir = mkdtempSync(join(tmpdir(), 'batch-store-'));
     const path = join(dir, 'channels.json');

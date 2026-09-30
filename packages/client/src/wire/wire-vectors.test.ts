@@ -941,26 +941,22 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
         BigInt(v.max_claimable_amount)
       );
       expect(signed.signature).toBe(prefix0x(v.signature_hex));
+      expect(signed.maxClaimableAmount).toBe(v.max_claimable_amount);
     });
 
-    it('writes the published claim JSON byte for byte', () => {
+    it('writes the published claim JSON byte for byte, from what signBatchVoucher returns', async () => {
       const published = JSON.parse(v.json) as Record<string, string>;
-      const claim = evmVoucherClaim(
-        {
-          channelId: prefix0x(v.channel_id_hex),
-          maxClaimableAmount: String(v.max_claimable_amount),
-          signature: prefix0x(v.signature_hex),
-        },
-        config,
-        { messageId: published['messageId'], timestamp: published['timestamp'] }
+      const signed = await signBatchVoucher(
+        privateKeyToAccount(signerKey),
+        v.chain_id,
+        prefix0x(v.channel_id_hex),
+        BigInt(v.max_claimable_amount)
       );
+      const claim = evmVoucherClaim(signed, config, {
+        messageId: published['messageId'],
+        timestamp: published['timestamp'],
+      });
       expect(JSON.stringify(claim)).toBe(v.json);
-    });
-
-    it('carries the amount as a decimal string that survives BigInt exactly', () => {
-      expect(BigInt(v.max_claimable_amount).toString()).toBe(
-        v.max_claimable_amount
-      );
     });
   });
 
@@ -1000,7 +996,7 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
       const claim = solanaVoucherClaim(
         {
           channelId: v.channel_account_base58,
-          maxClaimableAmount: String(v.max_claimable_amount),
+          maxClaimableAmount: v.max_claimable_amount,
           expiresAt: 0,
           signature: v.signature_base58,
         },

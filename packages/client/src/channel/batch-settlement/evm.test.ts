@@ -220,6 +220,26 @@ describe('batchVoucherDigest', () => {
 describe('signBatchVoucher', () => {
   const channelId = keccak256(toBytes('channel'));
 
+  /** Who signed `maxClaimableAmount` on `channelId`, per the typed data. */
+  const recoverVoucherSigner = (maxClaimableAmount: bigint, signature: Hex) =>
+    recoverTypedDataAddress({
+      domain: {
+        name: 'x402 Batch Settlement',
+        version: '1',
+        chainId: BASE_SEPOLIA,
+        verifyingContract: X402_BATCH_SETTLEMENT_ADDRESS,
+      },
+      types: {
+        Voucher: [
+          { name: 'channelId', type: 'bytes32' },
+          { name: 'maxClaimableAmount', type: 'uint128' },
+        ],
+      },
+      primaryType: 'Voucher',
+      message: { channelId, maxClaimableAmount },
+      signature,
+    });
+
   it('produces the same signature as @x402/evm, recoverable to the signer', async () => {
     const ours = await signBatchVoucher(
       SESSION,
@@ -239,24 +259,9 @@ describe('signBatchVoucher', () => {
       signature: theirs.signature,
     });
 
-    const recovered = await recoverTypedDataAddress({
-      domain: {
-        name: 'x402 Batch Settlement',
-        version: '1',
-        chainId: BASE_SEPOLIA,
-        verifyingContract: X402_BATCH_SETTLEMENT_ADDRESS,
-      },
-      types: {
-        Voucher: [
-          { name: 'channelId', type: 'bytes32' },
-          { name: 'maxClaimableAmount', type: 'uint128' },
-        ],
-      },
-      primaryType: 'Voucher',
-      message: { channelId, maxClaimableAmount: 5_000n },
-      signature: ours.signature,
-    });
-    expect(recovered).toBe(SESSION.address);
+    expect(await recoverVoucherSigner(5_000n, ours.signature)).toBe(
+      SESSION.address
+    );
   });
 
   it('refuses an amount a uint128 cannot hold: negative, or above 2^128-1 (connector#1439)', async () => {
@@ -274,23 +279,16 @@ describe('signBatchVoucher', () => {
   it.each([2n ** 53n + 1n, 2n ** 64n, 2n ** 64n + 1n])(
     'signs %s exactly, recovering it from the typed data',
     async (amount) => {
-      const signed = await signBatchVoucher(SESSION, BASE_SEPOLIA, channelId, amount);
-      const recovered = await recoverTypedDataAddress({
-        domain: {
-          name: 'x402 Batch Settlement',
-          version: '1',
-          chainId: BASE_SEPOLIA,
-          verifyingContract: X402_BATCH_SETTLEMENT_ADDRESS,
-        },
-        types: { Voucher: [
-          { name: 'channelId', type: 'bytes32' },
-          { name: 'maxClaimableAmount', type: 'uint128' },
-        ] },
-        primaryType: 'Voucher',
-        message: { channelId, maxClaimableAmount: amount },
-        signature: signed.signature,
-      });
-      expect(recovered).toBe(SESSION.address);
+      const signed = await signBatchVoucher(
+        SESSION,
+        BASE_SEPOLIA,
+        channelId,
+        amount
+      );
+      expect(signed.maxClaimableAmount).toBe(amount.toString());
+      expect(await recoverVoucherSigner(amount, signed.signature)).toBe(
+        SESSION.address
+      );
     }
   );
 });
