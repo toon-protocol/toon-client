@@ -280,6 +280,9 @@ describe('vouchers', () => {
     expect(() => buildSvmVoucherMessage(FIXTURE.channel, 2n ** 64n)).toThrow(
       ValidationError
     );
+    expect(() => buildSvmVoucherMessage(FIXTURE.channel, 2n ** 128n - 1n)).toThrow(
+      ValidationError
+    );
     expect(() => buildSvmVoucherMessage(FIXTURE.channel, -1n)).toThrow(
       ValidationError
     );
