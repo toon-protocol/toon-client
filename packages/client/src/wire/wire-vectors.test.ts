@@ -113,6 +113,11 @@ const provenance = loadWireVectorsProvenance();
 /** anvil's (and hardhat's) well-known account #1: 0x70997970…79C8. */
 const ANVIL_ACCOUNT_1_KEY =
   '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+// `evm_above_u64_max` is signed by the connector's fixture key `seq_bytes(0xe1)`:
+// 32 bytes counting up from 0xe1. A literal, non-secret fixture.
+const ABOVE_U64_MAX_KEY = `0x${Array.from({ length: 32 }, (_, i) =>
+  ((0xe1 + i) & 0xff).toString(16).padStart(2, '0')
+).join('')}` as const;
 
 describe('the vendored vector file', () => {
   it('has not been edited since it was vendored', () => {
@@ -126,6 +131,8 @@ describe('the vendored vector file', () => {
 
   it('is the schema version this harness understands', () => {
     expect(vectors.schema_version).toBe(provenance.schemaVersion);
+    // 8 (connector#1439, ADR 0074 decision 3 amended): an EVM voucher's amount
+    // is a uint128, serialised as a decimal string; `claim_voucher.evm_above_u64_max`.
     // 7 (connector#1384, ADR 0075): every claim is a voucher. `claim` and
     // `channel_control_declaration` (the toon-channel balance proof and its BTP
     // declaration) are gone; the voucher claim-state challenge, its BTP auth
@@ -138,7 +145,7 @@ describe('the vendored vector file', () => {
     // 4 deleted the `{peerId, secret}` peer credential from both carriages;
     // 2 put the real settlement program into `claim_solana.programId`; 3
     // retired minimum delivery.
-    expect(vectors.schema_version).toBe(7);
+    expect(vectors.schema_version).toBe(8);
   });
 
   it('records which connector commit it came from', () => {
@@ -876,12 +883,15 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
   it('carries both chains and the connector-side cases', () => {
     expect(voucher?.evm).toBeDefined();
     expect(voucher?.solana).toBeDefined();
+    expect(voucher?.evm_above_u64_max).toBeDefined();
     expect(voucher?.amount_only_watermark.length).toBeGreaterThan(0);
     expect(voucher?.invalid.length).toBeGreaterThan(0);
   });
 
-  describe('evm', () => {
-    const v = must(voucher).evm;
+  describe.each([
+    ['evm', must(voucher).evm, ANVIL_ACCOUNT_1_KEY],
+    ['evm_above_u64_max', must(voucher).evm_above_u64_max, ABOVE_U64_MAX_KEY],
+  ] as const)('%s', (_label, v, signerKey) => {
     const config = {
       payer: getAddress(prefix0x(v.channel_config.payer_hex)),
       payerAuthorizer: getAddress(
@@ -919,9 +929,8 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
     });
 
     it('reproduces the signature byte-for-byte through signBatchVoucher', async () => {
-      // The signer is anvil's account #1; the vector publishes its address,
-      // and this well-known key derives exactly that address.
-      const account = privateKeyToAccount(ANVIL_ACCOUNT_1_KEY);
+      // The vector publishes the signer's address; the fixture key derives it.
+      const account = privateKeyToAccount(signerKey);
       expect(account.address.toLowerCase()).toBe(
         prefix0x(v.signer_address_hex)
       );
@@ -946,6 +955,12 @@ describe('claim_voucher — the x402 batch-settlement voucher (connector ADR 007
         { messageId: published['messageId'], timestamp: published['timestamp'] }
       );
       expect(JSON.stringify(claim)).toBe(v.json);
+    });
+
+    it('carries the amount as a decimal string that survives BigInt exactly', () => {
+      expect(BigInt(v.max_claimable_amount).toString()).toBe(
+        v.max_claimable_amount
+      );
     });
   });
 

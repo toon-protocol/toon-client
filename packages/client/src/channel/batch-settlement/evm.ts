@@ -58,11 +58,11 @@ export const MIN_WITHDRAW_DELAY_SECONDS = 15 * 60;
 export const MAX_WITHDRAW_DELAY_SECONDS = 30 * 24 * 60 * 60;
 
 /**
- * The largest amount a connector's claim gate holds (`u64` today). A voucher is
- * `uint128` on chain, but one above this is refused by the connector rather than
- * truncated (ADR 0074 decision 3), so it is refused here, before it is signed.
+ * The largest EVM voucher amount: `uint128`, the width of `x402BatchSettlement`'s
+ * `maxClaimableAmount` (connector#1439, amending ADR 0074 decision 3). One above
+ * this is refused before it is signed. A Solana voucher stays `u64`.
  */
-const MAX_VOUCHER_AMOUNT = 2n ** 64n - 1n;
+const MAX_VOUCHER_AMOUNT = 2n ** 128n - 1n;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 const CHANNEL_CONFIG_TYPES = {
@@ -327,7 +327,7 @@ export function batchChannelId(
 function assertVoucherAmount(amount: bigint): void {
   if (amount < 0n || amount > MAX_VOUCHER_AMOUNT) {
     throw new ValidationError(
-      `voucher amount ${amount} is outside 0..2^64-1, the most a connector's claim gate holds`
+      `voucher amount ${amount} is outside 0..2^128-1, the uint128 a voucher carries`
     );
   }
 }

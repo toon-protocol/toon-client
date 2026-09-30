@@ -259,17 +259,40 @@ describe('signBatchVoucher', () => {
     expect(recovered).toBe(SESSION.address);
   });
 
-  it('refuses an amount the connector cannot hold: negative, or above u64 (ADR 0074 decision 3)', async () => {
+  it('refuses an amount a uint128 cannot hold: negative, or above 2^128-1 (connector#1439)', async () => {
     await expect(
       signBatchVoucher(SESSION, BASE_SEPOLIA, channelId, -1n)
     ).rejects.toThrow(ValidationError);
     await expect(
-      signBatchVoucher(SESSION, BASE_SEPOLIA, channelId, 2n ** 64n)
+      signBatchVoucher(SESSION, BASE_SEPOLIA, channelId, 2n ** 128n)
     ).rejects.toThrow(ValidationError);
     await expect(
-      signBatchVoucher(SESSION, BASE_SEPOLIA, channelId, 2n ** 64n - 1n)
+      signBatchVoucher(SESSION, BASE_SEPOLIA, channelId, 2n ** 128n - 1n)
     ).resolves.toBeDefined();
   });
+
+  it.each([2n ** 53n + 1n, 2n ** 64n, 2n ** 64n + 1n])(
+    'signs %s exactly, recovering it from the typed data',
+    async (amount) => {
+      const signed = await signBatchVoucher(SESSION, BASE_SEPOLIA, channelId, amount);
+      const recovered = await recoverTypedDataAddress({
+        domain: {
+          name: 'x402 Batch Settlement',
+          version: '1',
+          chainId: BASE_SEPOLIA,
+          verifyingContract: X402_BATCH_SETTLEMENT_ADDRESS,
+        },
+        types: { Voucher: [
+          { name: 'channelId', type: 'bytes32' },
+          { name: 'maxClaimableAmount', type: 'uint128' },
+        ] },
+        primaryType: 'Voucher',
+        message: { channelId, maxClaimableAmount: amount },
+        signature: signed.signature,
+      });
+      expect(recovered).toBe(SESSION.address);
+    }
+  );
 });
 
 describe('buildEip3009Deposit', () => {

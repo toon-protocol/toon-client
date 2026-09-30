@@ -182,7 +182,7 @@ export interface PeerForwardedDataVector {
 /** A voucher as a carriage carries it: the JSON, and its BTP and HTTP spellings. */
 interface PeerVoucherCarriage {
   name: string;
-  max_claimable_amount: number;
+  max_claimable_amount: string;
   json: string;
   /** The claim JSON's raw UTF-8, as the BTP protocolData entry carries it. */
   btp_raw_hex: string;
@@ -312,7 +312,7 @@ export interface EvmVoucherVector {
   channel_config: VoucherChannelConfigVector;
   /** `getChannelId(channel_config)`. */
   channel_id_hex: string;
-  max_claimable_amount: number;
+  max_claimable_amount: string;
   /** `getVoucherDigest(channelId, maxClaimableAmount)`. */
   digest_hex: string;
   signer_address_hex: string;
@@ -329,7 +329,7 @@ export interface SolanaVoucherVector {
   channel_account_base58: string;
   signer_public_key_hex: string;
   signer_public_key_base58: string;
-  max_claimable_amount: number;
+  max_claimable_amount: string;
   expires_at: number;
   signed_message_hex: string;
   signature_hex: string;
@@ -343,9 +343,9 @@ export interface SolanaVoucherVector {
  */
 export interface VoucherWatermarkVector {
   name: string;
-  watermark_amount: number;
+  watermark_amount: string;
   watermark_signature_hex: string;
-  presented_amount: number;
+  presented_amount: string;
   presented_signature_hex: string;
   charge: number;
   outcome:
@@ -353,7 +353,7 @@ export interface VoucherWatermarkVector {
     | 'advances'
     | 'retransmission'
     | 'underpayment';
-  advanced: number | null;
+  advanced: string | null;
 }
 
 export interface VoucherInvalidVector {
@@ -364,6 +364,8 @@ export interface VoucherInvalidVector {
 
 export interface ClaimVoucherVectors {
   evm: EvmVoucherVector;
+  /** An EVM voucher above `u64::MAX`: 2^64 (connector#1439). */
+  evm_above_u64_max: EvmVoucherVector;
   solana: SolanaVoucherVector;
   amount_only_watermark: VoucherWatermarkVector[];
   invalid: VoucherInvalidVector[];
