@@ -1,8 +1,8 @@
 // Forward host secrets INTO the sandcastle Docker sandbox.
 //
-// WHY THIS EXISTS — root cause of the relay-pilot first-run failure (relay#68/#69)
-// -------------------------------------------------------------------------------
-// The `agent:implement` runner reached the sandbox, but claude-code inside it
+// WHY THIS EXISTS — root cause of a first-run failure
+// ------------------------------------------------
+// The implement runner reached the sandbox, but claude-code inside it
 // died with `Not logged in · Please run /login`, even though the workflow step
 // exported CLAUDE_CODE_OAUTH_TOKEN (and GH_TOKEN) into the runner's env.
 //
@@ -37,13 +37,11 @@
 
 // Host env vars that must reach claude-code and `gh`/`git` inside the sandbox.
 //
-// FACTORY_OPS_TOKEN is DELIBERATELY absent: it is the identity that submits
-// the formal review verdict on agent PRs (toon-meta#282), and the sandboxed
-// agent must never hold the credential that approves its own output. It stays
-// host-only (read by .sandcastle/review-verdict.ts after the sandbox closes).
+// DELIBERATELY ABSENT: APP_PRIVATE_KEY. It stays on the host so the runner can mint a fresh
+// push credential without the container ever holding the key (see ./mint-app-token.ts).
 const PASSTHROUGH_KEYS = [
-  "CLAUDE_CODE_OAUTH_TOKEN", // Claude Max-plan credential -> authenticates claude-code
-  "GH_TOKEN", // in-sandbox `git push` / `gh pr create` / `gh issue list`
+  'CLAUDE_CODE_OAUTH_TOKEN', // Claude Max-plan credential -> authenticates claude-code
+  'GH_TOKEN', // in-sandbox `git push` / `gh pr create` / `gh issue list`
 ] as const;
 
 /**
