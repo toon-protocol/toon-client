@@ -102,7 +102,7 @@ jobs:
       # gate runs inside the sandbox.
       - run: pnpm install --frozen-lockfile
 
-      # The sandbox image is prebuilt because its Foundry and Solana layers
+      # The sandbox image is prebuilt because its Foundry layer
       # take many minutes to build. It's built with AGENT_UID/GID=1001 to match the
       # runner user, then retagged to the name sandcastle expects. Rebuild and push
       # it whenever .sandcastle/Dockerfile changes:
