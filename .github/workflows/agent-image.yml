@@ -2,7 +2,7 @@ name: Agent image
 
 # Minimal build-only check for the sandcastle agent container image.
 # Proves the `.sandcastle/Dockerfile` (node:22-bookworm + gh + Claude Code CLI
-# + the mattpocock-skills plugin + corepack/pnpm@9.12.3 + Foundry + Solana CLI)
+# + the mattpocock-skills plugin + corepack/pnpm@9.12.3 + Foundry)
 # builds. This is not the runner itself; that is agent-implement.yml.
 
 on:
@@ -42,12 +42,11 @@ jobs:
             test -x /home/agent/.local/bin/claude
             # The runner starts every session with a mattpocock-skills slash command.
             claude plugin list | grep -q mattpocock-skills
-            # ci.yml's batch-settlement-exit job needs both chain toolchains, at its pins.
-            # `-lc` is a LOGIN shell on purpose: it rebuilds PATH from scratch, the
-            # strictest mode this container sees.
+            # The EVM half of the batch-settlement-exit job. `-lc` is a LOGIN shell on
+            # purpose: it rebuilds PATH from scratch, the strictest mode this container sees.
+            # There is no Solana CLI: v3's validator cannot run in this sandbox.
             anvil --version | head -1
             cast --version | head -1
-            solana-test-validator --version | grep -qE "^solana-test-validator 3\.1\.12 "
           '
 
       # Feeds `.sandcastle/gate-baseline.json`'s performance.imageSizeBytes,

@@ -53,30 +53,25 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN /home/agent/.local/bin/claude plugin marketplace add anthropics/claude-plugins-official \
   && /home/agent/.local/bin/claude plugin install mattpocock-skills@claude-plugins-official
 
-# Foundry provides `anvil` and `cast` for ci.yml's `batch-settlement-exit` job, which proves
-# close() and settle() against real chains. Pinned to the v1.7.1 that job installs, so an agent
+# Foundry provides `anvil` and `cast`, the EVM half of ci.yml's `batch-settlement-exit` job. Pinned to the v1.7.1 that job installs, so an agent
 # runs the anvil this client's EVM code was verified against.
 RUN curl -fsSL https://foundry.paradigm.xyz | bash \
   && /home/agent/.foundry/bin/foundryup --install v1.7.1
 
-# Solana CLI provides `solana-test-validator` for the same job, pinned to the v3.1.12 it
-# installs. NOT v2.1.21, which the connector's image uses: infra builds `payment_channels.so`
-# with v3.1.12 and, on a v2.1 validator, a sponsored `open` leaves the channel account short of
-# rent. The catch is that v3's validator wants io_uring, which Docker's default seccomp profile
-# can refuse. agent-image.yml checks the binaries are present, and does not claim the validator
-# serves inside the sandbox.
-RUN curl -sSfL https://release.anza.xyz/v3.1.12/install | sh
+# NO Solana CLI, deliberately. ci.yml's `batch-settlement-exit` job needs `solana-test-validator`
+# v3.1.12: infra builds `payment_channels.so` with it, and on a v2.1 validator a sponsored `open`
+# leaves the channel account short of rent (`InsufficientFundsForRent`), so v2.1.21 would not
+# help. But v3's validator panics in this sandbox with `assertion failed: io_uring_supported()`,
+# because the container runtime blocks io_uring (recorded in connector's .sandcastle/Dockerfile).
+# So that job is CI-only and is not part of the runner's gate. Foundry stays for the EVM half.
 
-# Add Claude, foundry and the Solana CLI to PATH
-ENV PATH="/home/agent/.local/bin:/home/agent/.foundry/bin:/home/agent/.local/share/solana/install/active_release/bin:$PATH"
+# Add Claude and foundry to PATH
+ENV PATH="/home/agent/.local/bin:/home/agent/.foundry/bin:$PATH"
 
 # ENV PATH covers the engine, which execs non-login shells. claude-code spawns its own shells
 # for the agent's commands, and a LOGIN shell sources /etc/profile, which rebuilds PATH from
-# scratch and drops anything set only via ENV. Export both toolchains from ~/.profile and
-# ~/.bashrc too, so `anvil` and `solana-test-validator` resolve in every shell mode.
+# scratch and drops anything set only via ENV. Export foundry from ~/.profile and ~/.bashrc too.
 RUN printf '\n# Foundry (anvil/cast) - see .sandcastle/Dockerfile\nexport PATH="$HOME/.foundry/bin:$PATH"\n' \
-  | tee -a /home/agent/.profile >> /home/agent/.bashrc \
-  && printf '\n# Solana CLI (solana-test-validator) - see .sandcastle/Dockerfile\nexport PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"\n' \
   | tee -a /home/agent/.profile >> /home/agent/.bashrc
 
 WORKDIR /home/agent
