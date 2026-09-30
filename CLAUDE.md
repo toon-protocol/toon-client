@@ -69,7 +69,9 @@ See [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
 
 ### Triage labels
 
-The five canonical roles, each label string equal to its name.
+The five canonical roles, each label string equal to its name. `ready-for-agent` is also the AFK
+factory's queue: `.github/workflows/agent-implement.yml` and `.sandcastle/` turn such an issue into
+a `ready-for-human` PR after running CI's `build` job as a gate.
 See [docs/agents/triage-labels.md](docs/agents/triage-labels.md).
 
 ### Domain docs

@@ -1,7 +1,7 @@
 // Mint a FRESH GitHub App installation token, on demand, on the host.
 //
-// WHY THIS EXISTS — root cause of connector#462, ported here via toon-meta#248
-// -------------------------------------------------------------------------
+// WHY THIS EXISTS — root cause of connector#462
+// --------------------------------------------
 // GitHub App installation tokens expire ONE HOUR after issue. The workflow
 // minted a single token in an early step (`actions/create-github-app-token@v2`)
 // and the runner pushed only after the implementer AND the reviewer had both
