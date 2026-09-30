@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    # The no-op merge guard's triggers: GitHub's defaults plus `ready_for_review`. `synchronize`
+    # is what catches a PR that BECOMES a no-op after its branch is updated.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -167,7 +170,7 @@ jobs:
       # would re-run every package's unit suite through the root config.
       #
       # Deliberately BEFORE the guard step, so a broken `gate-guard.ts` fails
-      # here rather than being trusted to judge itself. 26 tests, ~0.2s of
+      # here rather than being trusted to judge itself. 34 tests, ~0.2s of
       # vitest plus node startup — inside the timed window, and small against the
       # 185s baseline's 20% tolerance.
       - name: Test the workspace root (the files `pnpm -r` cannot see)
@@ -606,24 +609,30 @@ jobs:
           [ "$fail" -eq 0 ] || exit 1
           echo "✅ every no-infra integration suite collected and passed (${EXPECTED_TOTAL} tests)"
 
-  # Fleet no-op merge guard (toon-meta#405), wired INTO this repo's aggregate
-  # required check so that it blocks a HUMAN merge and not just the fleet
-  # auto-merge pass (toon-meta#408). connector#1008 merged green, closed its
-  # ticket and changed zero files -- and it was a human who merged it, because
-  # a red NON-required check is only a warning on the merge button. This
-  # replaces the stand-alone empty-pr-guard-shim.yml, deleted in the same
-  # commit; running both would put two identical "No-op merge guard" check
-  # runs on every PR. Canonical caller snippet and full rationale:
-  # toon-meta scripts/factory/empty-pr-guard-gate-job.yml.
+  # No-op merge guard: a PR whose merge result changes zero files must not merge green
+  # (connector#1008 did, and nobody noticed). Wired INTO the aggregate `CI OK` so it blocks a
+  # human merge too; branch protection requires only `CI OK`. Brought in-house from toon-meta's
+  # reusable empty-pr-guard.yml (toon-client#706); the logic is .github/scripts/no-op-merge-guard.sh.
   #
-  # No `secrets: inherit` -- the guard makes no API call and no write of any
-  # kind, so handing it FACTORY_OPS_TOKEN would widen a monitored credential
-  # for nothing. No `if:` either: this workflow also runs on push, where the
-  # guard passes with a plain "no merge result to evaluate"; a job-level `if:`
-  # would make it `skipped` there, and a skipped gating job must never read as
-  # a pass (toon-meta#279).
+  # No `if:`: this workflow also runs on push, where the script passes plainly, and a skipped
+  # gating job must never read as a pass.
   no-op-merge:
-    uses: toon-protocol/toon-meta/.github/workflows/empty-pr-guard.yml@main
+    name: No-op merge guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Depth 3 covers the merge commit and both parents; nothing walks history.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+      - name: A merge that changes nothing must not merge green
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: .github/scripts/no-op-merge-guard.sh
 
   # Fleet-wide aggregate required check per toon-meta#279. This job is the
   # single check that branch protection requires. `if: always()` makes it run

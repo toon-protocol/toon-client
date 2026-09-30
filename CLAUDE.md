@@ -79,13 +79,5 @@ See [docs/agents/triage-labels.md](docs/agents/triage-labels.md).
 Single-context: `CONTEXT.md` and `docs/adr/` at the repo root.
 See [docs/agents/domain.md](docs/agents/domain.md).
 
-## Shared skills, docs & project context → toon-protocol/toon-meta
-Cross-cutting agent skills, docs, and the canonical project context live in **[toon-protocol/toon-meta](https://github.com/toon-protocol/toon-meta)**. Load the shared skills:
-```bash
-/plugin marketplace add toon-protocol/toon-meta
-/plugin install toon-skills@toon-meta
-```
-Canonical rules: `toon-meta` → `context/context.md`.
-
 ## Publishing
 CI publishes via **changesets + `pnpm`** using the org `NPM_TOKEN` secret. **Never run `npm publish`** (it ships unresolved `workspace:*`).
