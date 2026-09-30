@@ -24,11 +24,11 @@ push, open a PR or close the issue. The runner does all three once you finish.
   any new violation. Do not clear the backlog inside this issue and do not edit the baseline.
 - If you touched `packages/client`, run `pnpm changeset` and commit the generated
   `.changeset/*.md`, or CI's changeset check fails. Tooling and docs changes need none.
-- `anvil` and `cast` are installed. `solana-test-validator` is not: v3.1.12, which CI's
-  `batch-settlement-exit` job needs, cannot run in this sandbox. That job is CI-only and is not
-  part of the runner's gate, so a change that touches settlement can pass here and still be
-  caught by CI. Say so in the issue if the ticket depends on it. A suite that reports
-  `0 tests` or `skipped` did not run. Treat that as a failure.
+- The sandbox is the shared factory image: Node 22, pnpm via corepack, gh, Rust, Foundry
+  (`anvil`, `cast`) and the Solana CLI v2.1.21. CI's `batch-settlement-exit` job needs
+  `solana-test-validator` v3.1.12, which cannot run in this sandbox, so that job is CI-only and is
+  not part of the runner's gate. A change that touches settlement can pass here and still be
+  caught by CI. A suite that reports `0 tests` or `skipped` did not run. Treat that as a failure.
 - A ticket that needs a funded key, a live devnet connector or a credential no workflow exposes
   is one you cannot finish: see below.
 
