@@ -157,7 +157,7 @@ export function reportError(error: unknown, stderr: Writer): number {
   }
   if (error instanceof CliConfigError) {
     stderr(`toon-client: ${error.message}`);
-    if (error.hint !== undefined) stderr(`      ${error.hint}`);
+    if (error.hint !== undefined) stderr(`             ${error.hint}`);
     return EXIT.usage;
   }
 
@@ -165,7 +165,7 @@ export function reportError(error: unknown, stderr: Writer): number {
   const message = error instanceof Error ? error.message : String(error);
   stderr(`toon-client: ${message}`);
   if (code === EXIT.network) {
-    stderr('      The connector or the chain RPC could not be reached. Check the URL and try again.');
+    stderr('             The connector or the chain RPC could not be reached. Check the URL and try again.');
   }
   if (code === EXIT.unexpected && error instanceof Error && error.stack !== undefined) {
     // Nothing recognised this, so the stack is the only useful thing left.

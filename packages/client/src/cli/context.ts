@@ -151,7 +151,7 @@ export function resolveSettings(
     connectorSource = 'default';
     warnings.push(
       `toon-client: no connector given, using the devnet store node ${DEVNET.store.url}.\n` +
-        `      Set --connector or ${CONNECTOR_ENV} to talk to another node.`
+        `             Set --connector or ${CONNECTOR_ENV} to talk to another node.`
     );
   }
 

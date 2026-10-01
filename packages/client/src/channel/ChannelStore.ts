@@ -25,7 +25,7 @@ export interface ChannelStoreEntry {
    * connector refused one. It means "our watermark and the connector's may
    * disagree", and the next claim on this channel reconciles against
    * `POST /ilp/claim-state` before it is signed. Persisted because a timeout in
-   * one `toon` invocation desyncs the next one.
+   * one `toon-client` invocation desyncs the next one.
    */
   watermarkUncertain?: boolean;
   /** Unix SECONDS when close was initiated (withdraw flow). */
