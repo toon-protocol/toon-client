@@ -417,7 +417,7 @@ export class BatchChannelManager {
 
   /**
    * Every channel this client holds on `connector`, live or archived, with its
-   * exit state — what `toon channel settle` walks to take deposits back.
+   * exit state — what `toon-client channel settle` walks to take deposits back.
    */
   channels(connector: string): {
     channel: BatchChannel;

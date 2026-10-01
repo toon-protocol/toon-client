@@ -1,5 +1,5 @@
 /**
- * `toon probe <destination>` — learn what a path costs without buying the work.
+ * `toon-client probe <destination>` — learn what a path costs without buying the work.
  *
  * A probe carries a real claim but never spends it: the connector prices the
  * path, reports the figure, and refuses the packet. So the refusal printed here

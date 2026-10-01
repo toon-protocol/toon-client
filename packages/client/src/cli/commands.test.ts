@@ -206,7 +206,7 @@ describe('price', () => {
   });
 
   it('prints the per-KiB rate beside the base price on a metered route', async () => {
-    // A metered route's base price is never what a packet costs, so `toon price`
+    // A metered route's base price is never what a packet costs, so `toon-client price`
     // has to say so rather than leaving a caller to discover it via `F03`.
     const result = await run(['price', 'g.toon.store'], { client: { pricePerKib: 10n } });
     const out = result.stdout.join('\n');
@@ -369,7 +369,7 @@ describe('send', () => {
     const text = result.stdout.join('\n');
     expect(text).toContain('REFUSED F03');
     expect(text).toContain('1000 (0.001 USDC)');
-    expect(text).toMatch(/toon channel deposit/);
+    expect(text).toMatch(/toon-client channel deposit/);
   });
 
   it('blames a node past the connector, not the voucher, when the path refused', async () => {
@@ -585,7 +585,7 @@ describe('claim-state, balances, transfer, faucet', () => {
 
   it('says so plainly when the connector knows of no channel', async () => {
     const result = await run(['claim-state'], { client: { claimState: [] } });
-    expect(result.stdout.join('\n')).toMatch(/toon channel open/);
+    expect(result.stdout.join('\n')).toMatch(/toon-client channel open/);
   });
 
   it('prints balances, and marks an unreadable chain as unreadable', async () => {
@@ -646,10 +646,10 @@ describe('identity', () => {
     expect(doc.derivations[0]?.evmAddress).not.toBe(doc.derivations[1]?.evmAddress);
   });
 
-  it("says to run 'toon init' when there are no keys", async () => {
+  it("says to run 'toon-client init' when there are no keys", async () => {
     const result = await run(['identity'], { env: { TOON_MNEMONIC: undefined } });
     expect(result.code).toBe(EXIT.usage);
-    expect(result.stderr.join('\n')).toMatch(/toon init/);
+    expect(result.stderr.join('\n')).toMatch(/toon-client init/);
   });
 });
 
@@ -666,7 +666,7 @@ describe('init', () => {
     });
     expect(first.code).toBe(EXIT.ok);
     expect(first.stdout.join('\n')).toMatch(/recovery phrase/);
-    expect(first.stdout.join('\n')).toMatch(/toon channel open/);
+    expect(first.stdout.join('\n')).toMatch(/toon-client channel open/);
 
     const second = await run(['init', '--keystore', path], {
       env: { TOON_KEYSTORE_PASSWORD: 'pw', TOON_MNEMONIC: undefined },
@@ -720,7 +720,7 @@ describe('help and version', () => {
   it('prints the command list for a bare invocation', async () => {
     const result = await run([]);
     expect(result.code).toBe(EXIT.ok);
-    expect(result.stdout.join('\n')).toContain('toon <command>');
+    expect(result.stdout.join('\n')).toContain('toon-client <command>');
   });
 
   it('prints one command in detail', async () => {
@@ -790,7 +790,7 @@ describe('exit codes', () => {
 });
 
 /**
- * A payer who already runs an `anon` daemon points `toon` at it. The proxy
+ * A payer who already runs an `anon` daemon points `toon-client` at it. The proxy
  * follows the order every other setting here follows — flag, then environment —
  * and both paths leave the daemon entirely in the operator's hands.
  */
@@ -883,7 +883,7 @@ describe('hidden-service connectors', () => {
 /**
  * The daemon the CLI runs itself.
  *
- * A payer who names nothing gets one anyway: `toon` starts an `anon` daemon for
+ * A payer who names nothing gets one anyway: `toon-client` starts an `anon` daemon for
  * a `.anyone` connector, says so on stderr, and stops it when the command ends.
  * The library never does this (ADR 0001). Every test here injects a starter that
  * never was, and the harness refuses the real one by default, so no test in this

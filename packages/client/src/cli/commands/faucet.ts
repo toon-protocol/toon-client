@@ -1,9 +1,9 @@
 /**
- * `toon faucet` — ask the devnet faucet for test funds.
+ * `toon-client faucet` — ask the devnet faucet for test funds.
  *
  * Devnet only, and deliberately unglamorous: it drips the settlement token (and,
  * on Base Sepolia, the gas to move it) onto the address this keystore derives,
- * so that `toon channel open` has something to lock. On a real network this
+ * so that `toon-client channel open` has something to lock. On a real network this
  * command has nothing to do.
  */
 import type { CommandContext } from '../context.js';
@@ -19,7 +19,7 @@ export async function run(ctx: CommandContext): Promise<number> {
       ['address', result.address],
     ]);
     ctx.out.line();
-    ctx.out.line("Check it landed with 'toon balances'.");
+    ctx.out.line("Check it landed with 'toon-client balances'.");
   });
 
   return 0;

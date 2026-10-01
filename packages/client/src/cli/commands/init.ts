@@ -1,5 +1,5 @@
 /**
- * `toon init [--import] [--legacy-derivation]` — create or import a keystore.
+ * `toon-client init [--import] [--legacy-derivation]` — create or import a keystore.
  *
  * The first command a new user runs, and the only one that writes a secret. Two
  * refusals here are deliberate:
@@ -113,8 +113,8 @@ export async function run(ctx: CommandContext): Promise<number> {
       ]);
       ctx.out.line();
       ctx.out.line('Next: fund it, then open a channel.');
-      ctx.out.line('  toon faucet');
-      ctx.out.line('  toon channel open --deposit 100000');
+      ctx.out.line('  toon-client faucet');
+      ctx.out.line('  toon-client channel open --deposit 100000');
     }
   );
 

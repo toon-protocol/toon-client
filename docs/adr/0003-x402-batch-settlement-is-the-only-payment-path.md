@@ -16,7 +16,7 @@ follow from it, and that a reader could otherwise "fix".
 
 ## Consequences
 
-- **`client.channel` and `toon channel` keep their names and are remapped onto x402 channels.**
+- **`client.channel` and `toon-client channel` keep their names and are remapped onto x402 channels.**
   This avoids a second, parallel surface. `close()` and `settle()` return one result per channel
   and walk every channel held with the node, archived ones included, because a replaced channel
   still holds a deposit.

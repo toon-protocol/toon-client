@@ -6,7 +6,7 @@ status: accepted
 
 Reaching a hidden-service connector needs a running `anon` daemon and a `socks5h://` port. We
 decided that `@toon-protocol/client` **never** downloads or spawns that daemon: the library accepts
-a `socksProxy` URL and nothing more, while the `toon` CLI may download a pinned `anon` release,
+a `socksProxy` URL and nothing more, while the `toon-client` CLI may download a pinned `anon` release,
 verify its checksum, and spawn it on the user's behalf. A library that an application embeds must
 not fetch and execute a binary at runtime — that is a supply-chain decision belonging to whoever
 chose to run our executable, not to every downstream consumer of a dependency.

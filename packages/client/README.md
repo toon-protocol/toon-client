@@ -2,7 +2,7 @@
 
 Pay for an HTTP request, per request, in stablecoin. A **connector** is a paid reverse proxy:
 it fronts an ordinary HTTP app, charges a flat price per route, and hands that app a request
-that was already paid for. This package is the payer, as a library and as the `toon` CLI.
+that was already paid for. This package is the payer, as a library and as the `toon-client` CLI.
 
 ## Install
 

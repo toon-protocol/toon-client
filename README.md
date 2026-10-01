@@ -25,14 +25,14 @@ x402 `batch-settlement` channel you funded on chain, and gives you back the app'
 npm install @toon-protocol/client
 ```
 
-The CLI ships in the same package. `npx toon` runs it without a global install.
+The CLI ships in the same package. `npx toon-client` runs it without a global install.
 
 ## Sixty seconds against the devnet
 
 Asking a node what it is costs nothing and needs nothing — no wallet, no channel, no account:
 
 ```bash
-npx toon describe https://proxy.relay.devnet.toonprotocol.dev
+npx toon-client describe https://proxy.relay.devnet.toonprotocol.dev
 ```
 
 That prints its addresses, the key packets are sealed to, the chains it is paid on, and every
@@ -41,8 +41,8 @@ you can exercise the whole wire without a channel or a single test token:
 
 ```bash
 export TOON_CONNECTOR=https://proxy.relay.devnet.toonprotocol.dev
-npx toon init                                        # an encrypted keystore at ~/.toon/keystore.json
-npx toon send g.toon.relay.ephemeral --body 'hello'  # free: no channel, no voucher
+npx toon-client init                                        # an encrypted keystore at ~/.toon/keystore.json
+npx toon-client send g.toon.relay.ephemeral --body 'hello'  # free: no channel, no voucher
 ```
 
 ```text
@@ -62,10 +62,10 @@ payload. `send()` works the total out from the node's own price list — you nev
 ```bash
 export TOON_CONNECTOR=https://proxy.ario.devnet.toonprotocol.dev
 
-npx toon init                      # write an encrypted keystore at ~/.toon/keystore.json
-npx toon faucet                    # devnet USDC for the address it just made — no ETH needed
-npx toon channel open --deposit 100000    # 100000 base units (0.10 USDC), no gas
-npx toon send --body 'hello'               # ~1010 base units, one request
+npx toon-client init                      # write an encrypted keystore at ~/.toon/keystore.json
+npx toon-client faucet                    # devnet USDC for the address it just made — no ETH needed
+npx toon-client channel open --deposit 100000    # 100000 base units (0.10 USDC), no gas
+npx toon-client send --body 'hello'               # ~1010 base units, one request
 ```
 
 ```ts
