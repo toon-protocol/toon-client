@@ -3,7 +3,7 @@
  *
  * Every setting resolves the same way — **flag, then environment, then
  * default** — and the defaults are chosen so that a user who has run nothing but
- * `toon init` can still run `toon describe`. Where a default is a guess rather
+ * `toon-client init` can still run `toon-client describe`. Where a default is a guess rather
  * than a fact, the guess is announced on stderr: falling back to the devnet
  * connector because none was named is exactly the kind of thing that should not
  * be silent, since the alternative is a user wondering why their production node
@@ -15,16 +15,16 @@
  * is written against {@link ToonClientLike} — the interface — so the whole CLI
  * can be unit-tested against a hand-written fake with no client, no network and
  * no chain anywhere in the test. The import stays a runtime lookup rather than a
- * static one for the same reason: a `toon --help` should not pay for loading
+ * static one for the same reason: a `toon-client --help` should not pay for loading
  * viem and the wire codec.
  *
  * ## Why a CLI never opens a channel by itself
  *
  * The library defaults `autoOpenChannel` to `true`, which is right for a
- * long-lived process configured once. It is wrong for a command: `toon send`
+ * long-lived process configured once. It is wrong for a command: `toon-client send`
  * would submit chain transactions, spend gas and lock collateral as a side
  * effect of asking for one HTTP request. So the CLI turns it off and lets the
- * refusal explain itself — "no channel yet, run `toon channel open`" — which is
+ * refusal explain itself — "no channel yet, run `toon-client channel open`" — which is
  * a sentence the user can act on, and reversible.
  */
 import { homedir } from 'node:os';
@@ -150,8 +150,8 @@ export function resolveSettings(
     connector = DEVNET.store.url;
     connectorSource = 'default';
     warnings.push(
-      `toon: no connector given, using the devnet store node ${DEVNET.store.url}.\n` +
-        `      Set --connector or ${CONNECTOR_ENV} to talk to another node.`
+      `toon-client: no connector given, using the devnet store node ${DEVNET.store.url}.\n` +
+        `             Set --connector or ${CONNECTOR_ENV} to talk to another node.`
     );
   }
 
@@ -228,8 +228,8 @@ export function resolveSettings(
  * a connector's free, unauthenticated endpoints. Rather than making the client
  * cope with having no identity at all, they run with a throwaway one: nothing is
  * signed with it, no chain is touched, and it is discarded when the process
- * exits. That is what lets `toon describe` work on a machine that has never run
- * `toon init`.
+ * exits. That is what lets `toon-client describe` work on a machine that has never run
+ * `toon-client init`.
  */
 export type KeyMaterial =
   | { kind: 'mnemonic'; mnemonic: string; derivation: KeyDerivationScheme; from: 'env' | 'keystore' }
@@ -302,7 +302,7 @@ export async function resolveKeyMaterial(
 
   throw new CliConfigError(
     `no keys: ${MNEMONIC_ENV} is unset and there is no keystore at ${settings.keystorePath}`,
-    "Run 'toon init' to create one, or set TOON_MNEMONIC."
+    "Run 'toon-client init' to create one, or set TOON_MNEMONIC."
   );
 }
 
@@ -441,7 +441,7 @@ export class Context implements CommandContext {
     if (settings.socksProxy !== undefined) return settings;
     if (!isHiddenServiceUrl(settings.connector)) return settings;
 
-    const log = (message: string): void => this.out.warn(`toon: ${message}`);
+    const log = (message: string): void => this.out.warn(`toon-client: ${message}`);
     log(`${settings.connector} is a hidden service; starting a local anon daemon`);
     const start = this.deps.startAnon ?? defaultStartAnon;
     this.managedAnon = await start(log);

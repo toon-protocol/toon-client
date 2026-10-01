@@ -1,10 +1,10 @@
 # CLI reference
 
-The `toon` command ships in `@toon-protocol/client`. `npx toon` runs it without a global install.
+The `toon-client` command ships in `@toon-protocol/client`. `npx toon-client` runs it without a global install.
 
 ```bash
-npx toon help
-npx toon help send
+npx toon-client help
+npx toon-client help send
 ```
 
 ## Settings, and where each comes from
@@ -29,7 +29,7 @@ nobody named should not be silent.
 | How the token moves | `--deposit-method eip3009\|permit2` | `TOON_DEPOSIT_METHOD` | What the connector names, else `eip3009` |
 
 Keys resolve in that order for a reason: `TOON_MNEMONIC` first, then the keystore, then a message
-telling you to run `toon init`. **There is no `--mnemonic` flag and there will not be one** — a
+telling you to run `toon-client init`. **There is no `--mnemonic` flag and there will not be one** — a
 flag value is written to shell history and is readable in `ps` by every other user on the machine
 for as long as the process runs.
 
@@ -49,7 +49,7 @@ one that says so.
 
 ## Commands
 
-### `toon init [--import] [--legacy-derivation]`
+### `toon-client init [--import] [--legacy-derivation]`
 
 Create or import a keystore. Writes an encrypted BIP-39 keystore to `~/.toon/keystore.json`, mode
 `0600`, and prints the phrase once for you to write down.
@@ -58,30 +58,30 @@ Create or import a keystore. Writes an encrypted BIP-39 keystore to `~/.toon/key
 `--legacy-derivation` records that this phrase's EVM key belongs at the pre-1.0 path — use it when
 importing a phrase whose channels were opened before 1.0.
 
-### `toon identity [--all-derivations]`
+### `toon-client identity [--all-derivations]`
 
 Show the addresses this keystore holds. Touches no network and no chain.
 
 `--all-derivations` also shows where a pre-1.0 keystore put the EVM key, which is the address to
 look at when a channel opened before 1.0 seems to have vanished.
 
-### `toon describe [URL]`
+### `toon-client describe [URL]`
 
 Read a connector's self-description: its addresses, its endpoints, the key payloads are sealed to,
 which chains and tokens it is paid in, and what each route costs. Free, unauthenticated, and needs no keys.
 
-### `toon price <destination> [URL]`
+### `toon-client price <destination> [URL]`
 
 What one route costs. Free, needs no keys. A connector that serves no route matching the
 destination says so — an answer, not a failure.
 
-### `toon probe <destination>`
+### `toon-client probe <destination>`
 
 Learn a path's cost without buying the work. Needs a channel you have already paid on: a probe
 resends your latest voucher unchanged, so it moves no value, and probing is rate-limited per
 channel.
 
-### `toon send [destination] [options]`
+### `toon-client send [destination] [options]`
 
 Pay for one HTTP request and print the answer.
 
@@ -105,14 +105,14 @@ fulfilled and costs exactly what a `200` costs. Only a refusal short of the app 
 ```bash
 export TOON_CONNECTOR=https://proxy.ario.devnet.toonprotocol.dev
 
-npx toon send --body 'hello'               # to whatever this node calls itself
-npx toon send g.toon.store --body 'hello'  # or name the route yourself
-npx toon send g.toon.store --json-body --body '{"key":"value"}'
-cat payload.bin | npx toon send g.toon.store --body -
-npx toon send g.toon.relay --transport btp --body 'hello'
+npx toon-client send --body 'hello'               # to whatever this node calls itself
+npx toon-client send g.toon.store --body 'hello'  # or name the route yourself
+npx toon-client send g.toon.store --json-body --body '{"key":"value"}'
+cat payload.bin | npx toon-client send g.toon.store --body -
+npx toon-client send g.toon.relay --transport btp --body 'hello'
 ```
 
-### `toon channel open|deposit <amount>|status|close|settle`
+### `toon-client channel open|deposit <amount>|status|close|settle`
 
 The x402 `batch-settlement` channels you pay the node from. See [channels.md](channels.md).
 
@@ -131,29 +131,29 @@ The x402 `batch-settlement` channels you pay the node from. See [channels.md](ch
 | `--connector-view` | On `status`, also ask the connector for its own watermark and show both |
 
 ```bash
-npx toon channel open --deposit 1000000    # 1000000 base units (1 USDC), no gas
-npx toon channel status --connector-view
-npx toon channel close                     # then, once the window has passed:
-npx toon channel settle
+npx toon-client channel open --deposit 1000000    # 1000000 base units (1 USDC), no gas
+npx toon-client channel status --connector-view
+npx toon-client channel close                     # then, once the window has passed:
+npx toon-client channel settle
 ```
 
-### `toon claim-state`
+### `toon-client claim-state`
 
 The connector's own watermark for the channels you hold — cumulative claimed, the highest
 cumulative it will accept now, what the next voucher may add, last-claim time. One signed voucher
 claim-state challenge per channel, distinct from a voucher. It works when the channel has run dry.
 
-### `toon balances`
+### `toon-client balances`
 
 Chain balances for this identity: the native coin and the settlement token, per chain. A free
 read.
 
-### `toon transfer --to <address> --amount <base units> [--asset native|token]`
+### `toon-client transfer --to <address> --amount <base units> [--asset native|token]`
 
 Move funds out of this wallet, straight to an address. Default asset is `token`. Delivery is
 confirmed by an observed balance change at the destination, not by the transaction returning.
 
-### `toon faucet`
+### `toon-client faucet`
 
 Ask the devnet faucet for test funds. Devnet only. USDC is all a channel needs to open; leaving a
 Solana channel needs SOL, which the faucet does not drip — see [devnet.md](devnet.md#faucet).
@@ -172,7 +172,7 @@ cached, and what happens to your chain RPC are all in [hidden-service.md](hidden
 ## `--json` output
 
 The contract is absolute: **stdout carries exactly one JSON document and nothing else.** Every
-warning, prompt and progress note goes to stderr, so `toon send … --json | jq` never chokes on a
+warning, prompt and progress note goes to stderr, so `toon-client send … --json | jq` never chokes on a
 line of prose.
 
 Inside that document:
@@ -207,7 +207,7 @@ says which no. See [errors.md](errors.md).
 ## The CLI never opens a channel by itself
 
 The library defaults `autoOpenChannel` to `true`, which is right for a long-lived process
-configured once. It is wrong for a command: `toon send` would lock a deposit on chain as a side
+configured once. It is wrong for a command: `toon-client send` would lock a deposit on chain as a side
 effect of asking for one HTTP request. So the CLI turns it off, and
-lets the refusal explain itself — "no channel yet, run `toon channel open`" — which is a sentence
+lets the refusal explain itself — "no channel yet, run `toon-client channel open`" — which is a sentence
 you can act on, and reversible.

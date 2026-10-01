@@ -5,7 +5,7 @@
  * can read; a script gets `--json`, and the contract there is absolute:
  * **stdout carries exactly one JSON document and nothing else**. Every warning,
  * every prompt, every "falling back to the devnet preset" note goes to stderr,
- * so `toon send … --json | jq` never chokes on a line of prose. {@link
+ * so `toon-client send … --json | jq` never chokes on a line of prose. {@link
  * Output.render} enforces the "exactly one" half by refusing to be called twice.
  *
  * Amounts are the other thing worth being deliberate about. A payment channel

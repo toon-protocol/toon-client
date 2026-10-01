@@ -413,7 +413,7 @@ export async function probeSocks5Proxy(socksProxy: string, timeoutMs = 2000): Pr
         new Error(
           `No SOCKS5 proxy at ${host}:${port} (${why}). A hidden-service connector is ` +
             'unreachable without one: start the Anyone Protocol `anon` daemon, or run ' +
-            '`toon` which can start one for you.'
+            '`toon-client` which can start one for you.'
         )
       );
     };

@@ -360,7 +360,7 @@ export class BatchSettlementPayer {
       'a fresh sponsored batch-settlement channel',
       // `open` returns the live channel however little is left in it; leaving
       // it first is what makes the next open a fresh one, and takes back the rest.
-      channel === undefined ? 'channel open' : 'channel close`, then `toon channel open'
+      channel === undefined ? 'channel open' : 'channel close`, then `toon-client channel open'
     );
     return this.onboard(
       offer,
@@ -919,7 +919,7 @@ export class BatchSettlementPayer {
     if (this.config.autoOpen === false) {
       throw new ChannelNotOpenError(
         `paying ${this.config.connector} needs ${what} first, and this client does not ` +
-          `open channels on its own; run \`toon ${command}\``
+          `open channels on its own; run \`toon-client ${command}\``
       );
     }
   }

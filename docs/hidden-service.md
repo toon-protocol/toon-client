@@ -18,20 +18,20 @@ does not know what carried it.
 
 ## From the CLI
 
-Nothing, if you let it: point `toon` at a `.anyone` address and it starts a daemon for you.
+Nothing, if you let it: point `toon-client` at a `.anyone` address and it starts a daemon for you.
 
 ```bash
 export TOON_CONNECTOR=http://<address>.anyone
-npx toon describe
+npx toon-client describe
 ```
 
 ```text
-toon: http://<address>.anyone is a hidden service; starting a local anon daemon
-toon: downloading anon-live-linux-amd64.zip (v0.4.10.2)…
-toon: verified; extracting
-toon: starting anon v0.4.10.2 on 127.0.0.1:41337 (…/anon)
-toon: anon is listening; building circuits on demand
-toon: proxying through socks5h://127.0.0.1:41337
+toon-client: http://<address>.anyone is a hidden service; starting a local anon daemon
+toon-client: downloading anon-live-linux-amd64.zip (v0.4.10.2)…
+toon-client: verified; extracting
+toon-client: starting anon v0.4.10.2 on 127.0.0.1:41337 (…/anon)
+toon-client: anon is listening; building circuits on demand
+toon-client: proxying through socks5h://127.0.0.1:41337
 ```
 
 Every line of that goes to **stderr**, never stdout, so `--json` output stays exactly one
@@ -40,7 +40,7 @@ parseable document.
 Already running your own daemon? Name it, and nothing is downloaded and no process is spawned:
 
 ```bash
-npx toon send --socks socks5h://127.0.0.1:9050 --body 'hello'
+npx toon-client send --socks socks5h://127.0.0.1:9050 --body 'hello'
 export TOON_SOCKS=socks5h://127.0.0.1:9050     # same thing, for every command
 ```
 
@@ -248,7 +248,7 @@ the missing proxy named — rather than falling through to a DNS lookup.
 One more refusal at construction time, before anything dials:
 
 - A `.anyone` connector with **no** `socksProxy` — unreachable, and the attempt would leak the
-  address to a resolver first. The message names the proxy to set, and that the `toon` CLI can
+  address to a resolver first. The message names the proxy to set, and that the `toon-client` CLI can
   start a daemon for you.
 
 A `socksProxy` beside a **clearnet** connector used to be refused as well, as "nothing would ride

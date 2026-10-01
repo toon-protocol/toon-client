@@ -1,8 +1,8 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  // Two entries: the library, and the `toon` CLI. The CLI is its own entry so a
-  // library consumer never pulls in argument parsing or the keystore prompt,
+  // Two entries: the library, and the `toon-client` CLI. The CLI is its own entry
+  // so a library consumer never pulls in argument parsing or the keystore prompt,
   // and so `bin` can point at a file with a shebang.
   entry: {
     index: 'src/index.ts',

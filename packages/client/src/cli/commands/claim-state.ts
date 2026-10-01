@@ -1,8 +1,8 @@
 /**
- * `toon claim-state` — the connector's own watermark for the channels this
+ * `toon-client claim-state` — the connector's own watermark for the channels this
  * identity controls.
  *
- * The authoritative half of the picture. `toon channel status` shows what this
+ * The authoritative half of the picture. `toon-client channel status` shows what this
  * client has *signed*; this shows what the connector has *banked*, which is the
  * figure every future claim has to advance past. When the two disagree, a claim
  * was signed and never accepted, and the connector's number is the one to
@@ -20,7 +20,7 @@ export async function run(ctx: CommandContext): Promise<number> {
   ctx.out.render({ connector: client.connector, channels: entries }, () => {
     if (entries.length === 0) {
       ctx.out.line('This connector reports no channels for your account.');
-      ctx.out.line("Open one with 'toon channel open', or pay for a request.");
+      ctx.out.line("Open one with 'toon-client channel open', or pay for a request.");
       return;
     }
     for (const entry of entries) {

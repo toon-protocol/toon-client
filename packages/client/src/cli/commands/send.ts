@@ -1,5 +1,5 @@
 /**
- * `toon send [destination] …` — pay for one HTTP request and print the answer.
+ * `toon-client send [destination] …` — pay for one HTTP request and print the answer.
  *
  * The destination is optional: omitted, the request goes to the address the node
  * published for itself, so `TOON_CONNECTOR` alone is enough to buy something.
@@ -128,7 +128,7 @@ export function refusalHint(result: SendRefused, asset: AssetInfo): string[] {
       }
       return [
         'The connector answered with terms instead of doing the work, which means it saw no',
-        "usable claim. Check the channel with 'toon channel status --connector-view'.",
+        "usable claim. Check the channel with 'toon-client channel status --connector-view'.",
       ];
     }
     case 'F03':
@@ -137,7 +137,7 @@ export function refusalHint(result: SendRefused, asset: AssetInfo): string[] {
         : [
             `The route costs ${cost}. Either the claim did not advance by that much, or the`,
             'channel has no room left for it — add collateral with',
-            "'toon channel deposit <base units>', then send again.",
+            "'toon-client channel deposit <base units>', then send again.",
           ];
     case 'F01':
       if (result.refusedBy === 'path') {
@@ -148,12 +148,12 @@ export function refusalHint(result: SendRefused, asset: AssetInfo): string[] {
       }
       return [
         'The connector would not take the voucher: it names a channel it cannot see, or an amount',
-        "it has already banked. Compare the two watermarks with 'toon channel status --connector-view'.",
+        "it has already banked. Compare the two watermarks with 'toon-client channel status --connector-view'.",
       ];
     case 'F02':
       return [
         'No route to that destination over this carriage. Check what this node actually serves',
-        "with 'toon describe', and which carriage it wants.",
+        "with 'toon-client describe', and which carriage it wants.",
       ];
     case 'F00':
       return [
@@ -161,7 +161,7 @@ export function refusalHint(result: SendRefused, asset: AssetInfo): string[] {
         'the route handler, so it cannot be absolute, contain `..`, or name a host.',
       ];
     case 'F06':
-      return ["No claim was attached. Open a channel with 'toon channel open --deposit 100000'."];
+      return ["No claim was attached. Open a channel with 'toon-client channel open --deposit 100000'."];
     default:
       if (result.code.startsWith('T')) {
         return ['A temporary refusal — the path asked you to try again shortly.'];

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The `toon` command.
+ * The `toon-client` command.
  *
  * Dispatch, and the translation of everything that can go wrong into an exit
  * code a script can branch on:
@@ -150,22 +150,22 @@ export function exitCodeFor(error: unknown): number {
  */
 export function reportError(error: unknown, stderr: Writer): number {
   if (error instanceof UsageError) {
-    stderr(`toon: ${error.message}`);
+    stderr(`toon-client: ${error.message}`);
     stderr('');
     stderr(usage(error.command));
     return EXIT.usage;
   }
   if (error instanceof CliConfigError) {
-    stderr(`toon: ${error.message}`);
-    if (error.hint !== undefined) stderr(`      ${error.hint}`);
+    stderr(`toon-client: ${error.message}`);
+    if (error.hint !== undefined) stderr(`             ${error.hint}`);
     return EXIT.usage;
   }
 
   const code = exitCodeFor(error);
   const message = error instanceof Error ? error.message : String(error);
-  stderr(`toon: ${message}`);
+  stderr(`toon-client: ${message}`);
   if (code === EXIT.network) {
-    stderr('      The connector or the chain RPC could not be reached. Check the URL and try again.');
+    stderr('             The connector or the chain RPC could not be reached. Check the URL and try again.');
   }
   if (code === EXIT.unexpected && error instanceof Error && error.stack !== undefined) {
     // Nothing recognised this, so the stack is the only useful thing left.
@@ -313,7 +313,7 @@ export async function runCli(argv: string[], options: RunOptions = {}): Promise<
       try {
         await client.close();
       } catch (error) {
-        out.warn(`toon: closing the client failed: ${error instanceof Error ? error.message : String(error)}`);
+        out.warn(`toon-client: closing the client failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     // And the daemon this run started, if it started one: leaving an `anon`
@@ -330,10 +330,10 @@ export async function runCli(argv: string[], options: RunOptions = {}): Promise<
  *
  * Both sides are resolved through their symlinks before they are compared, and
  * that is the whole point rather than a nicety. `package.json` points `bin` at
- * this file, so npm links `node_modules/.bin/toon` at it; Node then reports
+ * this file, so npm links `node_modules/.bin/toon-client` at it; Node then reports
  * `import.meta.url` as the *realpath* while `process.argv[1]` is the path as
  * invoked — the link. Comparing those two strings answers "no" for every
- * documented way to run the command (`npx toon`, a global install, the project
+ * documented way to run the command (`npx toon-client`, a global install, the project
  * `.bin`), and the failure is silent: nothing runs and the process exits 0, so
  * a script checking `$?` sees green (#640).
  *

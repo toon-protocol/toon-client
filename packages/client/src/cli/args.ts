@@ -1,5 +1,5 @@
 /**
- * The `toon` command line: what every command accepts, and how a mistake is
+ * The `toon-client` command line: what every command accepts, and how a mistake is
  * explained.
  *
  * Parsing is `node:util`'s {@link parseArgs} and nothing else — the package
@@ -11,7 +11,7 @@
  *
  * **Every option is parsed against one union spec.** `parseArgs` is strict, so
  * it must be told about an option before it can see it; giving it only the
- * current command's options would make `toon balances --body x` fail as
+ * current command's options would make `toon-client balances --body x` fail as
  * "unknown option", which is true but unhelpful. Parsing against the union and
  * *then* checking the option against the command lets the error say the thing
  * that is actually wrong: `--body` is not an option of `balances`.
@@ -19,7 +19,7 @@
  * **A mnemonic is never an option.** There is no `--mnemonic`, and there will
  * not be one: a flag value is written to shell history and is readable in `ps`
  * by every other user on the machine for as long as the process lives. The
- * phrase arrives on stdin (`toon init --import`), through `TOON_MNEMONIC`, or
+ * phrase arrives on stdin (`toon-client init --import`), through `TOON_MNEMONIC`, or
  * out of an encrypted keystore — see {@link ./keystore.js}.
  */
 import { parseArgs } from 'node:util';
@@ -199,13 +199,13 @@ const ALL_OPTIONS = { ...GLOBAL_OPTIONS, ...COMMAND_OPTIONS };
 /** What one command is, for dispatch and for help. */
 export interface CommandSpec {
   summary: string;
-  /** The argument line, without the leading `toon`. */
+  /** The argument line, without the leading `toon-client`. */
   usage: string;
   /** Long option names this command accepts on top of the globals. */
   options: string[];
   minPositionals: number;
   maxPositionals: number;
-  /** Extra paragraphs for `toon help <command>`. */
+  /** Extra paragraphs for `toon-client help <command>`. */
   details?: string[];
 }
 
@@ -398,15 +398,15 @@ export function parseCommandLine(argv: string[]): ParsedCommandLine {
   const command = positionals[0];
 
   // `--help` and `--version` are answers in their own right, so they are read
-  // before the command is validated: `toon --help` and `toon --version` must
-  // work, and `toon nonsense --help` should print help rather than complain.
+  // before the command is validated: `toon-client --help` and `toon-client --version` must
+  // work, and `toon-client nonsense --help` should print help rather than complain.
   if (command === undefined) {
     return { command: undefined, positionals: [], values };
   }
 
   const spec = COMMANDS[command];
   if (spec === undefined) {
-    throw new UsageError(`unknown command '${command}'. Run 'toon help' for the list.`);
+    throw new UsageError(`unknown command '${command}'. Run 'toon-client help' for the list.`);
   }
 
   const rest = positionals.slice(1);
@@ -453,7 +453,7 @@ function columns(rows: [string, string][]): string {
 export function usage(command?: string): string {
   if (command !== undefined && command in COMMANDS) {
     const spec = COMMANDS[command] as CommandSpec;
-    const parts = [`toon ${spec.usage}`, '', spec.summary];
+    const parts = [`toon-client ${spec.usage}`, '', spec.summary];
     if (spec.details) parts.push('', ...spec.details);
     const opts = spec.options.map((name) =>
       optionLine(name, COMMAND_OPTIONS[name] as OptionSpec)
@@ -468,9 +468,9 @@ export function usage(command?: string): string {
   }
 
   return [
-    'toon — pay for an HTTP request, per request, from an x402 payment channel.',
+    'toon-client — pay for an HTTP request, per request, from an x402 payment channel.',
     '',
-    'Usage: toon <command> [options]',
+    'Usage: toon-client <command> [options]',
     '',
     'Commands:',
     columns(
@@ -484,6 +484,6 @@ export function usage(command?: string): string {
     '             TOON_KEYSTORE_PASSWORD, TOON_CHAIN, TOON_RPC_URL, TOON_CHANNEL_STORE,',
     '             TOON_SOCKS, TOON_FACILITATOR, TOON_DEPOSIT_GAS, TOON_DEPOSIT_METHOD.',
     '',
-    "Run 'toon help <command>' for one command in detail.",
+    "Run 'toon-client help <command>' for one command in detail.",
   ].join('\n');
 }

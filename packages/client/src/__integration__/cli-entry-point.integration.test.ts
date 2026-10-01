@@ -1,12 +1,12 @@
 /**
- * The `toon` command, run the way a shell runs it: through the symlink npm
+ * The `toon-client` command, run the way a shell runs it: through the symlink npm
  * makes for `bin`.
  *
  * This is the integration tier because it spawns a process, and it spawns a
  * process because the defect it pins (#640) does not exist anywhere smaller.
  * `isEntryPoint`'s own cases in `src/cli/main.test.ts` prove the comparison;
  * only an actual invocation proves the comparison is still WIRED to the run —
- * that `runCli` is reached, and that the command speaks. `node_modules/.bin/toon`
+ * that `runCli` is reached, and that the command speaks. `node_modules/.bin/toon-client`
  * exited 0 having printed nothing, and silence with a zero status is the shape
  * of this bug: a script that branches on `$?` sees green either way.
  *
@@ -53,9 +53,9 @@ async function toon(link: string, ...args: string[]): Promise<{ stdout: string; 
   }
 }
 
-describe('the toon command through its bin symlink', () => {
+describe('the toon-client command through its bin symlink', () => {
   it('answers --version, rather than exiting 0 in silence', async () => {
-    const link = join(dir, 'toon');
+    const link = join(dir, 'toon-client');
     symlinkSync(ENTRY, link);
 
     const { stdout, code } = await toon(link, '--version');
@@ -73,7 +73,7 @@ describe('the toon command through its bin symlink', () => {
 
     const { stdout } = await toon(link);
 
-    expect(stdout).toContain('toon');
+    expect(stdout).toContain('toon-client');
     expect(stdout.trim()).not.toBe('');
   });
 

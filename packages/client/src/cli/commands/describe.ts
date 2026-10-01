@@ -1,5 +1,5 @@
 /**
- * `toon describe [URL]` — read a connector's self-description.
+ * `toon-client describe [URL]` — read a connector's self-description.
  *
  * The first command anyone should run against an unfamiliar node, and the only
  * one that costs nothing and proves nothing: one unauthenticated `GET` returns

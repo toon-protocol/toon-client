@@ -1,5 +1,5 @@
 /**
- * `toon price <destination> [URL]` — what one route costs.
+ * `toon-client price <destination> [URL]` — what one route costs.
  *
  * Free, keyless and channel-less, like `describe`. `null` back from the
  * connector is a real answer — "no route I serve matches this destination" —
