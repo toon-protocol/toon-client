@@ -33,7 +33,7 @@ an accusation against any particular node.
 | Code | Means | The client does | You do |
 | --- | --- | --- | --- |
 | `F00` | Bad request: the envelope's `target` escaped the route's handler path — an absolute path, a `..` segment, a scheme or an authority. | Nothing. It is a request the app was never asked. | Fix `target`. It is resolved *beneath* the handler; `''` and `'/'` both mean the handler itself. |
-| `F01` | A malformed voucher, one that does not verify, or a claim of a retired kind. | Gives the charge back, unless a later voucher has already superseded the refused one. | If it persists: run `claim-state` and compare the connector's figure with `toon channel status`. A figure ahead of yours usually means a lost channel store — see [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable). |
+| `F01` | A malformed voucher, one that does not verify, or a claim of a retired kind. | Gives the charge back, unless a later voucher has already superseded the refused one. | If it persists: run `claim-state` and compare the connector's figure with `toon-client channel status`. A figure ahead of yours usually means a lost channel store — see [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable). |
 | `F02` | No route to that destination — including "no route over *this* carriage", which is how the BTP side answers a route restricted to HTTP. | Surfaces the terms when the reject carried them. | Check the destination against `describe()`. If it carries `requiredTransport`, send over that carriage. |
 | `F03` | Either the voucher **did not advance** the connector's watermark by the route's price, or its cumulative amount exceeded the channel's deposit, or the declared `amount` exceeded the price on a forwarded route. | Reads the connector's watermark from the refusal where the message names it, and prices the next voucher from it. Where it does not ("goes backwards"), asks `claim-state` before the next voucher. Otherwise gives the charge back. | Underpayment: `accumulatedCost` **is the route's price** — pay that. Over deposit: `accumulatedCost` is `0`; top up and send again. Forwarded route: send exactly the price, not more. |
 | `F06` | No voucher was attached, on the BTP carriage. This is the greeting: the route's terms instead of the work. | Surfaces `terms` on the result, with the price and the x402 channels offered. | Open or fund a channel, then send with a voucher. |
@@ -55,7 +55,7 @@ connector answered with a greeting rather than a packet:
 | Code | Means | You do |
 | --- | --- | --- |
 | `PAYMENT_REQUIRED` | The connector answered the route's terms instead of the work — HTTP `402`, or `F06` over BTP. `answer.terms` carries the price and the x402 channels it accepts (`batchSettlements`). | Open or fund a channel on one of the offered chains. |
-| `TRANSPORT_REQUIRED` | The route does not accept the carriage you used. `answer.terms.requiredTransport` names the one it does. | Resend over that carriage: `transport: 'btp'`, or `--transport btp`. Better: leave `transport: 'auto'` against a node that publishes the pin on the route (`toon describe` prints it beside the price) and this never fires. |
+| `TRANSPORT_REQUIRED` | The route does not accept the carriage you used. `answer.terms.requiredTransport` names the one it does. | Resend over that carriage: `transport: 'btp'`, or `--transport btp`. Better: leave `transport: 'auto'` against a node that publishes the pin on the route (`toon-client describe` prints it beside the price) and this never fires. |
 
 ## HTTP statuses
 

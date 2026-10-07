@@ -175,8 +175,8 @@ export interface ToonClientConfig {
    * connector it makes this client a hidden payer (TOON_Network#167): the
    * client edge, the BTP socket and each chain's RPC, on a pinned circuit per
    * chain, all ride it. Nothing falls back to a direct dial. `socks5://` is
-   * refused either way. This library never starts a daemon itself; the `toon`
-   * CLI will start one for you (ADR 0001).
+   * refused either way. This library never starts a daemon itself; the
+   * `toon-client` CLI will start one for you (ADR 0001).
    *
    * Node only: a browser cannot dial a hidden service by any route.
    */

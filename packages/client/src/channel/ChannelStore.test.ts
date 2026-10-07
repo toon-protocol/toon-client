@@ -50,7 +50,7 @@ describe('JsonFileChannelStore', () => {
         watermarkUncertain: true,
       });
 
-      // Both survive the file, because a timeout in one `toon` invocation is
+      // Both survive the file, because a timeout in one `toon-client` invocation is
       // what desyncs the next one.
       expect(store.load(channelId)).toEqual({
         nonce: 4,

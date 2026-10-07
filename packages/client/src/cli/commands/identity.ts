@@ -1,5 +1,5 @@
 /**
- * `toon identity [--all-derivations]` — the addresses this keystore holds.
+ * `toon-client identity [--all-derivations]` — the addresses this keystore holds.
  *
  * Entirely offline: no connector, no chain, no channel. The addresses are a
  * property of the phrase and the derivation path, so answering needs nothing but

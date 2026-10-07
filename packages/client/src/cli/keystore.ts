@@ -126,7 +126,7 @@ export async function resolvePassword(
  */
 export function readKeystore(path: string, password: string): OpenedKeystore {
   if (!existsSync(path)) {
-    throw new CliConfigError(`no keystore at ${path}`, "Run 'toon init' to create one.");
+    throw new CliConfigError(`no keystore at ${path}`, "Run 'toon-client init' to create one.");
   }
   try {
     return openKeystore(path, password);

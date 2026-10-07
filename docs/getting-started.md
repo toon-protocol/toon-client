@@ -1,7 +1,7 @@
 # Getting started
 
 From nothing to a paid request against the public devnet, and back again after a restart. Every
-step is given twice: once as the `toon` CLI, once as the library.
+step is given twice: once as the `toon-client` CLI, once as the library.
 
 You need Node.js 22 or newer. Nothing else — no local chain, no node of your own.
 
@@ -23,7 +23,7 @@ sealed payload. See
 npm install @toon-protocol/client
 ```
 
-The `toon` CLI ships in the same package; `npx toon` runs it without a global install.
+The `toon-client` CLI ships in the same package; `npx toon-client` runs it without a global install.
 
 ## Step 1 — a wallet
 
@@ -32,14 +32,14 @@ One BIP-39 phrase derives both chain keys: an EVM key at `m/44'/60'/0'/0/0` and 
 ordinary wallet shows you the same address.
 
 ```bash
-npx toon init
+npx toon-client init
 ```
 
 That writes an encrypted keystore at `~/.toon/keystore.json` — scrypt and AES-256-GCM, mode
 `0600` — and prints the phrase once, for you to write down. It is not stored anywhere else.
 
 ```bash
-npx toon identity
+npx toon-client identity
 ```
 
 ```text
@@ -90,7 +90,7 @@ deposit from it and contacts no facilitator at all. See
 [channels.md](channels.md#who-pays-the-gas).
 
 ```bash
-npx toon faucet
+npx toon-client faucet
 ```
 
 ```ts
@@ -100,7 +100,7 @@ await client.wallet.faucet('evm');
 Check what arrived:
 
 ```bash
-npx toon balances
+npx toon-client balances
 ```
 
 ```ts
@@ -115,7 +115,7 @@ up and leave. The first paid request opens one on its own, but the CLI never doe
 effect (see [cli.md](cli.md#the-cli-never-opens-a-channel-by-itself)), so open it explicitly:
 
 ```bash
-npx toon channel open --deposit 100000
+npx toon-client channel open --deposit 100000
 ```
 
 100000 base units is 0.10 USDC — in the token's base units, never in wei. At 1000 base units
@@ -131,7 +131,7 @@ Both are idempotent: against a connector you already hold an open channel with, 
 rather than opening a second one. Adding more on Base later:
 
 ```bash
-npx toon channel deposit 100000
+npx toon-client channel deposit 100000
 ```
 
 ```ts
@@ -144,7 +144,7 @@ is derived from.
 ## Step 4 — one paid request
 
 ```bash
-npx toon send --body 'hello'
+npx toon-client send --body 'hello'
 ```
 
 ```ts
@@ -190,7 +190,7 @@ A `404` from the app is a real, paid answer: it arrives on a FULFILL and costs e
 The CLI prints one JSON document with `--json`, and exits `3` on a refusal:
 
 ```bash
-npx toon send g.toon.store --body 'hello' --json
+npx toon-client send g.toon.store --body 'hello' --json
 ```
 
 ```json
@@ -246,7 +246,7 @@ and its deposit stays locked on chain.
 To compare your side against the connector's:
 
 ```bash
-npx toon claim-state
+npx toon-client claim-state
 ```
 
 ```ts

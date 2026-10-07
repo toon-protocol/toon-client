@@ -26,7 +26,7 @@
  *
  * The wallet needs devnet USDC for the deposit and no gas: on Base the deposit
  * is relayed by the devnet's x402 facilitator, on Solana the connector
- * sponsors the open (connector ADRs 0074, 0075). `toon faucet` drips the USDC.
+ * sponsors the open (connector ADRs 0074, 0075). `toon-client faucet` drips the USDC.
  * The channel is opened on the first run and resumed on later ones from
  * `TOON_CHANNEL_STORE`: an x402 channel's config is not recoverable from the
  * chain, so a run without the store opens a fresh one.

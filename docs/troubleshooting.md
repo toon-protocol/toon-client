@@ -4,9 +4,9 @@ Symptom, cause, fix. For the meaning of a specific code, see [errors.md](errors.
 
 ## Setup and configuration
 
-**`toon` says there are no keys, or "run `toon init`".**
+**`toon-client` says there are no keys, or "run `toon-client init`".**
 No `TOON_MNEMONIC` in the environment and no keystore at `~/.toon/keystore.json`. Run
-`toon init`, or point `--keystore` at the file you have.
+`toon-client init`, or point `--keystore` at the file you have.
 
 **The command hangs, or fails asking for a password, in CI.**
 The keystore password has nowhere to come from and stdin is not a terminal. Set
@@ -22,12 +22,12 @@ different BIP-44 coin type, because one secp256k1 key served two roles; 1.0 deri
 standard Ethereum path. A keystore written before 1.0 is read as
 `legacy` and keeps its old addresses automatically — but a **raw phrase** handed to
 `ToonClient.create` gets the new derivation. Pass `keyDerivation: 'legacy'`, or run
-`toon identity --all-derivations` to see both. See
+`toon-client identity --all-derivations` to see both. See
 [api.md](api.md#key-derivation).
 
 **"is a hidden service, which is reachable only through a SOCKS5h proxy".**
 The connector is a `.anyone` address and the library was given no `socksProxy`. The library never
-starts a daemon itself — set `socksProxy` to a running `anon` daemon, or use the `toon` CLI, which
+starts a daemon itself — set `socksProxy` to a running `anon` daemon, or use the `toon-client` CLI, which
 starts one for you. See [hidden-service.md](hidden-service.md).
 
 **"Transaction … may still be mined" / "may still land" (`TransactionOutcomeError`, `outcome: 'unknown'`).**
@@ -42,7 +42,7 @@ with `HostUnreachable` — and `.onion` belongs to Tor, which this client does n
 `<address>.anyone` is routed. The `.anon` message carries the corrected address.
 
 **"No SOCKS5 proxy at 127.0.0.1:9050".**
-Nothing is listening there. Start the daemon, or let `toon` start one. This check runs before the
+Nothing is listening there. Start the daemon, or let `toon-client` start one. This check runs before the
 first packet on purpose: discovering it later costs a signed voucher.
 
 **A hidden-service request is slow, or times out the first time.**
@@ -50,7 +50,7 @@ Building a circuit to a cold hidden service takes tens of seconds. The per-packe
 defaults to 120 s on this path; raise `timeoutMs` if your node is slower still. A second request
 over the same client reuses the circuit and is far quicker.
 
-**`toon` pauses on a `.anyone` connector, or fails to start a daemon.**
+**`toon-client` pauses on a `.anyone` connector, or fails to start a daemon.**
 The first run downloads and verifies a pinned `anon` release, then waits up to 90 s for it to
 bootstrap; the stderr lines say which step it is on. It needs `unzip` on PATH (PowerShell on
 Windows) and a platform with a pinned checksum — an unpinned one is refused rather than trusted.
@@ -65,7 +65,7 @@ construct from a mnemonic so both keys exist.
 
 **`FacilitatorError` on `channel open` or `deposit` (Base).**
 The x402 facilitator answered and did not settle the deposit. `reason` is its own. Usually the
-wallet holds less USDC than the deposit — run `toon faucet`. No channel was funded. Under the
+wallet holds less USDC than the deposit — run `toon-client faucet`. No channel was funded. Under the
 default `depositGas: 'auto'` you only see this when the wallet holds no ETH either; with ETH, the
 client deposits directly instead.
 
@@ -92,7 +92,7 @@ least the node's `minDeposit`). Draw USDC from the faucet first; the open needs 
 **The faucet returned success and the balance did not move.**
 On the Solana leg this is a known shape: a real transaction signature, zero delivered. `transfer`
 raises `TransferNotDeliveredError` for exactly this, because it confirms by an observed balance
-change rather than by the call returning. Re-check with `toon balances` and ask again.
+change rather than by the call returning. Re-check with `toon-client balances` and ask again.
 
 **A restart opened a second channel and locked another deposit.**
 No channel store, so nothing remembered which channel this identity held — and an x402 channel's
@@ -113,13 +113,13 @@ Send the route's price — `accumulatedCost` on that refusal *is* the price.
 
 **`F03` with `accumulatedCost` of `0`.**
 The cumulative amount would exceed what the channel holds. A library client tops up on its own;
-with `autoOpenChannel: false` (the CLI), run `toon channel deposit` (Base) or `toon channel open`
+with `autoOpenChannel: false` (the CLI), run `toon-client channel deposit` (Base) or `toon-client channel open`
 after the Solana channel is replaced. Nothing was consumed.
 
 **`F01`, repeatedly.**
 The connector would not accept the voucher: it does not verify, the channel is one the node has no
-record of, or the claim is of a retired kind. Check `toon channel status --connector-view` against
-`toon describe`.
+record of, or the claim is of a retired kind. Check `toon-client channel status --connector-view` against
+`toon-client describe`.
 
 **A request timed out, and the next one was refused.**
 The packet may have been delivered anyway, and the connector banked the voucher. The client
@@ -134,7 +134,7 @@ check that the client edge is reachable (over `--socks`, for a hidden service). 
 **The connector's figure is ahead of this client's, after restoring a backup.**
 A channel store restored from an older copy is behind what was signed since, and the client never
 adopts a connector figure above what its own store says it signed — a connector can only hold a
-voucher it was given. `toon claim-state` shows the connector's side. Restore the newest copy; never
+voucher it was given. `toon-client claim-state` shows the connector's side. Restore the newest copy; never
 edit the store by hand. A store whose watermark file is missing outright *is* rebuilt, from the
 chain and then from `claim-state`.
 
@@ -148,7 +148,7 @@ one it wants. The devnet relay route is BTP-only: `--transport btp`, or `transpo
 
 On `transport: 'auto'` this should never happen — `auto` reads the pin off the route's own entry in
 `GET /ilp` and dials it. If it does, that node is not publishing the pin it enforces: run
-`toon describe` and look for a carriage beside the route's price. A node with none, on a route that
+`toon-client describe` and look for a carriage beside the route's price. A node with none, on a route that
 refuses you, is the defect connector ADR 0072 closes, and naming the carriage by hand is the only
 thing you can do until that node is upgraded.
 
@@ -192,8 +192,8 @@ said no. Do not read a plaintext reject as an accusation.
 
 ## Still stuck
 
-- `toon describe` and `toon channel status --connector-view` show, between them, almost everything
+- `toon-client describe` and `toon-client channel status --connector-view` show, between them, almost everything
   either side believes.
-- `toon claim-state` works when the channel has run dry, which is when you most need it.
+- `toon-client claim-state` works when the channel has run dry, which is when you most need it.
 - The wire is the connector's: [toon-protocol/connector](https://github.com/toon-protocol/connector)
   and its committed vectors are the authority.

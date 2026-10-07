@@ -68,7 +68,7 @@ rather than guessing.
 base price **plus 10 base units per kibibyte of sealed payload**. The metered
 quantity is the sealed packet, not your request body, and kibibytes are counted
 from one, so the smallest possible packet already costs `1000 + 10`. `send()`
-computes this for you; `toon price` prints both figures; and
+computes this for you; `toon-client price` prints both figures; and
 `client.routePrice()` returns them when you want to work it out yourself:
 
 ```ts
@@ -168,7 +168,7 @@ solana airdrop 1 <your base58 address> --url https://api.devnet.solana.com
 From this client:
 
 ```bash
-npx toon faucet --chain evm
+npx toon-client faucet --chain evm
 ```
 
 ```ts

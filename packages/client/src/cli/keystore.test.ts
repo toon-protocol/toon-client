@@ -91,7 +91,7 @@ describe('resolving the password', () => {
 });
 
 describe('reading the keystore', () => {
-  it("tells a newcomer to run 'toon init' when there is no keystore", () => {
+  it("tells a newcomer to run 'toon-client init' when there is no keystore", () => {
     const missing = join(workspace, 'nope.json');
     expect(keystoreExists(missing)).toBe(false);
     try {
@@ -99,7 +99,7 @@ describe('reading the keystore', () => {
       expect.unreachable('should have thrown');
     } catch (error) {
       expect(error).toBeInstanceOf(CliConfigError);
-      expect((error as CliConfigError).hint).toMatch(/toon init/);
+      expect((error as CliConfigError).hint).toMatch(/toon-client init/);
     }
   });
 

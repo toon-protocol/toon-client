@@ -280,7 +280,7 @@ function resolveSocksProxy(
     throw new ConfigError(
       `connector ${JSON.stringify(connector)} is a hidden service, which is reachable ` +
         'only through a SOCKS5h proxy. Set `socksProxy` to a running Anyone Protocol ' +
-        '`anon` daemon (e.g. "socks5h://127.0.0.1:9050"), or use the `toon` CLI, which ' +
+        '`anon` daemon (e.g. "socks5h://127.0.0.1:9050"), or use the `toon-client` CLI, which ' +
         'can start one for you.'
     );
   }

@@ -56,7 +56,7 @@ The first paid `send()` opens a channel by itself, unless `autoOpenChannel` is `
 also open one explicitly:
 
 ```bash
-npx toon channel open --deposit 1000000
+npx toon-client channel open --deposit 1000000
 ```
 
 ```ts
@@ -103,7 +103,7 @@ voucher, this client tops the channel up by itself (again unless `autoOpenChanne
 You can top up by hand on Base:
 
 ```bash
-npx toon channel deposit 1000000
+npx toon-client channel deposit 1000000
 ```
 
 ```ts
@@ -184,8 +184,8 @@ hold?" For each channel it reports:
 - when it last claimed.
 
 ```bash
-npx toon claim-state
-npx toon channel status --connector-view   # the same figures, beside this client's own
+npx toon-client claim-state
+npx toon-client channel status --connector-view   # the same figures, beside this client's own
 ```
 
 ```ts
@@ -209,9 +209,9 @@ Leaving is the payer's own transaction on its own chain account. It is the one s
 native gas: Base Sepolia ETH, or devnet SOL.
 
 ```bash
-npx toon channel close
+npx toon-client channel close
 # … wait out the withdrawal delay (Base) or the grace period (Solana) …
-npx toon channel settle
+npx toon-client channel settle
 ```
 
 ```ts

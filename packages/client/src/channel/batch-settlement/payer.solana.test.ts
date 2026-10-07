@@ -222,7 +222,7 @@ describe('BatchSettlementPayer on Solana', () => {
       autoOpen: false,
     });
     await expect(strict.claimFor(DESCRIPTION, 'solana', 5_000n)).rejects.toThrow(
-      /toon channel close`, then `toon channel open/
+      /toon-client channel close`, then `toon-client channel open/
     );
   });
 

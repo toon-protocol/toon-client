@@ -78,7 +78,7 @@
     "ws": "^8.19.0"
   },
   "bin": {
-    "toon": "./dist/cli/main.js"
+    "toon-client": "./dist/cli/main.js"
   },
   "engines": {
     "node": ">=22"

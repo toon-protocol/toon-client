@@ -4,7 +4,7 @@
  * Reaching a hidden-service connector takes a running Anyone Protocol daemon and
  * a SOCKS port. `@toon-protocol/client` never provides one: a library that an
  * application embeds must not download and execute a binary at runtime. The
- * `toon` command may, because running it is already a decision to run our
+ * `toon-client` command may, because running it is already a decision to run our
  * executable — so this module lives under `src/cli/`, which is a separate build
  * entry that a library consumer never loads.
  *

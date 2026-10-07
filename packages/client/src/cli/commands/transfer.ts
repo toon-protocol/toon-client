@@ -1,5 +1,5 @@
 /**
- * `toon transfer --to <address> --amount <base units> [--asset native|token]`
+ * `toon-client transfer --to <address> --amount <base units> [--asset native|token]`
  *
  * An ordinary on-chain send, out of the wallet this client derives. It exists
  * because the channel wallet is a real account that accumulates change — gas

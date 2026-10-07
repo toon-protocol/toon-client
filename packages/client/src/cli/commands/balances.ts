@@ -1,5 +1,5 @@
 /**
- * `toon balances` — what this identity holds on chain.
+ * `toon-client balances` — what this identity holds on chain.
  *
  * Nothing here concerns the connector. It answers the two questions that come up
  * when a channel operation fails: is there gas to pay for the transaction, and

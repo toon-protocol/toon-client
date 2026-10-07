@@ -10,7 +10,7 @@
  *   export TOON_MNEMONIC="your twelve words …"
  *   npx tsx examples/send-http.ts
  *
- * The wallet needs devnet USDC for the channel's deposit (`toon faucet`, or
+ * The wallet needs devnet USDC for the channel's deposit (`toon-client faucet`, or
  * `wallet.faucet()` below) and no ETH at all: the devnet's x402 facilitator
  * relays the deposit and pays its gas, and paying for a request spends none.
  */

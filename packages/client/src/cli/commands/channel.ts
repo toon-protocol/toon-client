@@ -1,5 +1,5 @@
 /**
- * `toon channel open|deposit|status|close|settle` — the x402 `batch-settlement`
+ * `toon-client channel open|deposit|status|close|settle` — the x402 `batch-settlement`
  * channels this client pays the connector from (connector ADRs 0074, 0075).
  *
  * Opening costs no native gas: on Base a facilitator relays the deposit, on
@@ -135,7 +135,7 @@ export async function run(ctx: CommandContext): Promise<number> {
   }
   ctx.out.render(connectorView === undefined ? channels : { channels, connector: connectorView }, () => {
     if (channels.length === 0) {
-      ctx.out.line("No channel with this node yet. Open one with 'toon channel open', or pay for a request.");
+      ctx.out.line("No channel with this node yet. Open one with 'toon-client channel open', or pay for a request.");
       return;
     }
     for (const state of channels) {

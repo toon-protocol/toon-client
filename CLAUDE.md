@@ -3,7 +3,7 @@
 One package plus a CLI. `@toon-protocol/client` pays for an HTTP request, per request, in
 stablecoin: it seals the request into a packet addressed to a route, attaches a signed claim on a
 payment channel the user opened on chain, and returns the app's HTTP response. It ships as a
-library and as the `toon` command.
+library and as the `toon-client` command.
 
 A **connector** is a paid reverse proxy — it fronts an ordinary HTTP app, charges a flat price per
 route, and hands that app a request that was already paid for. This repository is the payer, and
@@ -17,7 +17,7 @@ packages/client/src/
   ilp/ http/ btp/   the two carriages and their port  wire/       envelope, gift wrap, vectors
   channel/    lifecycle, store, per-chain clients     signing/    balance proofs
   keys/       derivation + keystore                   wallet/     balances, transfers, faucet
-  jobs/       NIP-90 job events + the ArNS ceremony   cli/        the `toon` command
+  jobs/       NIP-90 job events + the ArNS ceremony   cli/        the `toon-client` command
 ```
 
 ## Build & test

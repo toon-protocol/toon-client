@@ -29,7 +29,7 @@ describe('isEntryPoint', () => {
 
   it('recognises the module invoked through a symlink — how npm installs the bin', () => {
     const real = join(dir, 'linked.js');
-    const link = join(dir, 'toon');
+    const link = join(dir, 'toon-client');
     writeFileSync(real, '');
     symlinkSync(real, link);
     expect(isEntryPoint(pathToFileURL(real).href, link)).toBe(true);

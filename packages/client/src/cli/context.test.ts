@@ -99,7 +99,7 @@ describe('key material', () => {
     });
   });
 
-  it("tells a newcomer to run 'toon init' when there are no keys at all", async () => {
+  it("tells a newcomer to run 'toon-client init' when there are no keys at all", async () => {
     const promise = resolveKeyMaterial(BASE, { env: {}, home: '/home/x' });
     await expect(promise).rejects.toThrow(CliConfigError);
     await expect(promise).rejects.toThrow(/no keys/);

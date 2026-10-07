@@ -6,7 +6,7 @@ release happens.
 ## Layout
 
 One package, `packages/client`, published as `@toon-protocol/client` and carrying both the library
-and the `toon` CLI.
+and the `toon-client` CLI.
 
 ```text
 packages/client/src/
@@ -21,7 +21,7 @@ packages/client/src/
   keys/       mnemonic derivation and the encrypted keystore
   wallet/     chain balances, transfers, the devnet faucet
   jobs/       NIP-90 job events, and the ArNS ceremony that spends one
-  cli/        the `toon` command
+  cli/        the `toon-client` command
 ```
 
 ## Toolchain
@@ -71,7 +71,7 @@ header, the accumulated-cost header and the sealed answer. Generous timeouts for
 networking, but no external service.
 
 This is also where anything that needs a *process* lives, which the unit tier forbids:
-`cli-entry-point` spawns the `toon` entry through a symlink, because the shape of #640 — the
+`cli-entry-point` spawns the `toon-client` entry through a symlink, because the shape of #640 — the
 command exiting 0 having printed nothing when npm linked its `bin` — is invisible to any test that
 does not actually invoke it.
 
@@ -133,8 +133,8 @@ export TOON_MNEMONIC='test test test test test test test test test test test jun
 export TOON_RPC_URL=http://127.0.0.1:8545
 export TOON_FACILITATOR=http://127.0.0.1:<your facilitator's port>
 
-npx toon channel open --deposit 100000
-npx toon send g.lab.solo --body 'hello'
+npx toon-client channel open --deposit 100000
+npx toon-client send g.lab.solo --body 'hello'
 ```
 
 > [!WARNING]
