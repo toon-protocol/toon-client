@@ -167,6 +167,28 @@ describe('describe', () => {
     expect(result.config?.evmPrivateKey).toBeInstanceOf(Uint8Array);
   });
 
+  it('never opens a keystore that happens to exist, so it needs no password', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'toon-cli-describe-'));
+    try {
+      const path = join(workspace, 'keystore.json');
+      const made = await run(['init', '--keystore', path], {
+        env: { TOON_KEYSTORE_PASSWORD: 'pw', TOON_MNEMONIC: undefined },
+      });
+      expect(made.code).toBe(EXIT.ok);
+
+      // No password anywhere, and no terminal to ask on: before the fix this
+      // stopped with "a keystore password is needed and stdin is not a terminal".
+      const result = await run(['describe', '--keystore', path], {
+        env: { TOON_MNEMONIC: undefined, TOON_KEYSTORE_PASSWORD: undefined },
+      });
+      expect(result.code).toBe(EXIT.ok);
+      expect(result.config?.mnemonic).toBeUndefined();
+      expect(result.config?.evmPrivateKey).toBeInstanceOf(Uint8Array);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('lets its own URL argument outrank every other source, silently', async () => {
     const result = await run(['describe', 'https://other.example'], {
       env: { TOON_CONNECTOR: undefined },
