@@ -281,6 +281,13 @@ export async function resolveKeyMaterial(
     };
   }
 
+  // A command that signs nothing has no business opening the keystore: that
+  // would make `describe` prompt for a password on a machine that happens to
+  // have run `init`, and stop dead in a script with no terminal to ask on
+  // (toon-protocol/website, first-run test of 2026-10-13). The ephemeral
+  // identity is used whether or not a keystore exists.
+  if (options.keyless === true) return { kind: 'ephemeral' };
+
   if (keystoreExists(settings.keystorePath)) {
     const { password } = await resolvePassword({
       message: `Password for ${settings.keystorePath}: `,
@@ -297,8 +304,6 @@ export async function resolveKeyMaterial(
       from: 'keystore',
     };
   }
-
-  if (options.keyless === true) return { kind: 'ephemeral' };
 
   throw new CliConfigError(
     `no keys: ${MNEMONIC_ENV} is unset and there is no keystore at ${settings.keystorePath}`,

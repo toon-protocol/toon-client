@@ -80,7 +80,10 @@ addresses, deliberately.
 A channel is funded in **USDC**, and every request is paid in it. That is all you need: opening a
 channel costs no native gas — on Base an x402 facilitator relays the deposit and pays for it, on
 Solana the connector sponsors the open. Native gas (Base Sepolia ETH, devnet SOL) is needed only
-later, to *leave* a channel.
+later, to *leave* a channel. The devnet faucet drips a little Base Sepolia ETH beside the USDC
+when its own balance allows; if yours arrives with none, any public Base Sepolia faucet will do,
+and get it before you depend on a deposit coming back. Deposit only toward a node you expect to
+still exist: a channel whose receiver is gone has nobody left to settle it.
 
 The devnet nodes are paid in USDC, which has ERC-3009, so a deposit is a single signature. A
 connector paid in another ERC-20 names `permit2` as its deposit method, and the client handles it:
@@ -197,19 +200,26 @@ npx toon-client send g.toon.store --body 'hello' --json
 {
   "fulfilled": true,
   "transport": "http",
-  "status": 200,
-  "headers": [["content-type", "application/octet-stream"], ["content-length", "34"]],
-  "body": "ZGVsaXZlcmVkIGJ5IHN0dWIgYXBwOiBqc29uIHBsZWFzZQ==",
-  "text": "delivered by stub app: json please",
-  "fulfillment": "jPo1IwR2rxlICypi1c48W5uW127WVkVf/IiEsMmut54=",
+  "status": 422,
+  "headers": [["content-type", "application/json"], ["content-length", "63"]],
+  "body": "eyJhY2NlcHQiOmZhbHNlLCJjb2RlIjoiRjAwIiwibWVzc2FnZSI6IkludmFsaWQgcmVxdWVzdCBib2R5In0=",
+  "text": "{\"accept\":false,\"code\":\"F00\",\"message\":\"Invalid request body\"}",
+  "fulfillment": "…",
   "claim": {
-    "channelId": "0xf5e0ecad66f856dc2a186635388804dfdbd241c690c27bfa7762250fbbb8af9b",
+    "channelId": "0xb878…ac7e",
     "chain": "evm",
-    "cumulative": "5000",
-    "amount": "1000"
+    "cumulative": "1010",
+    "amount": "1010"
   }
 }
 ```
+
+That is what the devnet store really answers to `hello` (2026-10-13), and it is a success:
+the packet was paid for, carried, unsealed and handed to the store, and the store answered.
+The store is a real app, not an echo — it expects `{ "event": { …a signed Nostr kind:5094
+event… } }`, as [its README](https://github.com/toon-protocol/store#the-contract) shows — so
+it said `422`, and you paid 1,010 base units for that answer: 1,000 for the request plus 10 for
+its first kibibyte. `npx toon-client channel status` shows the same figure from your side.
 
 `body` is base64 because a response is bytes; `text` is beside it when those bytes decode as
 UTF-8. Every amount is a decimal string, never a JSON number — a figure past 2^53 is a real
