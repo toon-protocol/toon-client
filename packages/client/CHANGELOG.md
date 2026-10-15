@@ -1,5 +1,11 @@
 # @toon-protocol/client
 
+## 5.0.2
+
+### Patch Changes
+
+- 5e1763c: The `toon-client` command extracts the pinned `anon` release in process, so it no longer needs `unzip` or PowerShell on the machine.
+
 ## 5.0.1
 
 ### Patch Changes
