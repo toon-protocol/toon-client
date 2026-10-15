@@ -17,7 +17,8 @@
 // than in `build`, whose wall clock is gate-guarded with ~8% headroom. It covers
 // the whole directory, including the suites no job runs (`batch-settlement-exit`
 // needs local chains; `rust-edge-devnet` and `batch-settlement-devnet` are
-// opt-in against a live devnet).
+// opt-in against a live devnet; `anon-release` is opt-in because it downloads
+// the real anon release).
 {
   "extends": "./tsconfig.json",
 
@@ -35,6 +36,7 @@
   // matches src/__integration__/ exactly, so an omission is a red check rather
   // than a silent gap.
   "files": [
+    "src/__integration__/anon-release.integration.test.ts",
     "src/__integration__/batch-settlement-deposit-gas.integration.test.ts",
     "src/__integration__/batch-settlement-devnet.integration.test.ts",
     "src/__integration__/batch-settlement-exit.integration.test.ts",
