@@ -58,7 +58,6 @@ An operator is entitled to know what would run on their machine.
 | Platforms | `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `win32-x64`. |
 | Verification | sha256 against a checksum recorded in this repository, checked **before** the binary is ever executed. A platform with no pinned checksum is **refused**, not downloaded and trusted. |
 | Cache | `$XDG_CACHE_HOME/toon/anon/<version>/`, falling back to `~/.toon/anon/<version>/`. Keyed by version, so a new pin never silently reuses an old binary and only the first run pays the download. |
-| Also required | `unzip` on PATH (macOS/Linux), or PowerShell's `Expand-Archive` (Windows). |
 | Port | An ephemeral loopback port, chosen per run. |
 | Bootstrap | Up to 90 s for the SOCKS port to open. |
 | Lifetime | Stopped when the command ends. Nothing outlives the command that started it. |
@@ -281,7 +280,6 @@ this feature and no part of it made things worse.)
   `undici` is pinned to **`^7`** on purpose. Node's global `fetch` hands a userland dispatcher a
   handler defined by Node's *own* bundled undici; undici 8 dropped the shape Node 22 passes, and
   this package's `engines.node` is `>=22`. `^8` is not an upgrade here.
-- `unzip`, or PowerShell on Windows — only for the CLI's managed daemon.
 
 ## Not covered here
 

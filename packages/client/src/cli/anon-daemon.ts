@@ -22,6 +22,8 @@ import type netModule from 'node:net';
 import type osModule from 'node:os';
 import type pathModule from 'node:path';
 
+import { extractZip } from './zip-extract.js';
+
 const nodeRequire = createRequire(import.meta.url);
 
 /**
@@ -220,8 +222,11 @@ export async function ensureAnonBinary(
   }
 
   log('verified; extracting');
-  await extractZip(zipPath, cacheDir);
-  fs.rmSync(zipPath, { force: true });
+  try {
+    extractZip(zipPath, cacheDir);
+  } finally {
+    fs.rmSync(zipPath, { force: true });
+  }
   if (os.platform() !== 'win32') fs.chmodSync(anonPath, 0o755);
   return anonPath;
 }
@@ -268,32 +273,6 @@ async function downloadToFile(url: string, destPath: string): Promise<void> {
     });
 
   await once(url, 5);
-}
-
-/** No zip reader in Node, so borrow the platform's. */
-async function extractZip(zipPath: string, destDir: string): Promise<void> {
-  const cp = nodeRequire('node:child_process') as typeof childProcessModule;
-  const os = nodeRequire('node:os') as typeof osModule;
-
-  const [command, args] =
-    os.platform() === 'win32'
-      ? ([
-          'powershell',
-          ['-NoProfile', '-Command', `Expand-Archive -Force -Path "${zipPath}" -DestinationPath "${destDir}"`],
-        ] as const)
-      : (['unzip', ['-o', zipPath, '-d', destDir]] as const);
-
-  await new Promise<void>((resolve, reject) => {
-    const child = cp.spawn(command, [...args], { stdio: ['ignore', 'ignore', 'pipe'] });
-    let stderr = '';
-    child.stderr?.on('data', (d: Buffer) => (stderr += d.toString()));
-    child.on('error', (err: Error) =>
-      reject(new Error(`Could not run ${command} to extract ${zipPath} (is it installed?): ${err.message}`))
-    );
-    child.on('exit', (code) =>
-      code === 0 ? resolve() : reject(new Error(`${command} exited ${code} extracting ${zipPath}: ${stderr}`))
-    );
-  });
 }
 
 /** An unused loopback port, chosen by the OS. */

@@ -52,8 +52,7 @@ over the same client reuses the circuit and is far quicker.
 
 **`toon-client` pauses on a `.anyone` connector, or fails to start a daemon.**
 The first run downloads and verifies a pinned `anon` release, then waits up to 90 s for it to
-bootstrap; the stderr lines say which step it is on. It needs `unzip` on PATH (PowerShell on
-Windows) and a platform with a pinned checksum — an unpinned one is refused rather than trusted.
+bootstrap; the stderr lines say which step it is on. It extracts the archive itself, and needs a platform with a pinned checksum — an unpinned one is refused rather than trusted.
 On an unsupported or offline machine, run your own daemon and pass `--socks`.
 
 **`ChainUnavailableError`, listing networks.**
