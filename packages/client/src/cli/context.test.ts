@@ -31,7 +31,7 @@ describe('settings resolution', () => {
 
   it('falls back to the devnet preset, and says so on stderr', () => {
     const { settings, warnings } = settingsFor(['balances'], {});
-    expect(settings.connector).toBe(DEVNET.store.url);
+    expect(settings.connector).toBe(DEVNET.connector);
     expect(settings.connectorSource).toBe('default');
     expect(warnings.join('\n')).toMatch(/no connector given/);
   });

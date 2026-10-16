@@ -32,15 +32,15 @@ The CLI ships in the same package. `npx toon-client` runs it without a global in
 Asking a node what it is costs nothing and needs nothing — no wallet, no channel, no account:
 
 ```bash
-npx toon-client describe https://proxy.relay.devnet.toonprotocol.dev
+npx toon-client describe https://toonprotocol.dev
 ```
 
 That prints its addresses, the key packets are sealed to, the chains it is paid on, and every
-route with its price. The devnet relay serves one priced at **zero**, so once you have an identity
+route with its price. The devnet serves a route priced at **zero**, so once you have an identity
 you can exercise the whole wire without a channel or a single test token:
 
 ```bash
-export TOON_CONNECTOR=https://proxy.relay.devnet.toonprotocol.dev
+export TOON_CONNECTOR=https://toonprotocol.dev
 npx toon-client init                                        # an encrypted keystore at ~/.toon/keystore.json
 npx toon-client send g.toon.relay.ephemeral --body 'hello'  # free: no channel, no voucher
 ```
@@ -55,31 +55,31 @@ it — even a `4xx` is a real answer, and on a priced route it costs the same as
 
 ### Then, a paid one
 
-Both halves below do the same thing: open a channel with the devnet store node and buy one request
+Both halves below do the same thing: open a channel with the devnet connector and buy one request
 on `g.toon.store`, which costs 1000 base units (0.001 USDC) plus 10 per kibibyte of sealed
 payload. `send()` works the total out from the node's own price list — you never compute it.
 
 ```bash
-export TOON_CONNECTOR=https://proxy.ario.devnet.toonprotocol.dev
+export TOON_CONNECTOR=https://toonprotocol.dev
 
 npx toon-client init                      # write an encrypted keystore at ~/.toon/keystore.json
 npx toon-client faucet                    # devnet USDC for the address it just made — no ETH needed
 npx toon-client channel open --deposit 100000    # 100000 base units (0.10 USDC), no gas
-npx toon-client send --body 'hello'               # ~1010 base units, one request
+npx toon-client send g.toon.store --body 'hello'  # ~1010 base units, one request
 ```
 
 ```ts
 import { ToonClient } from '@toon-protocol/client';
 
 const client = await ToonClient.create({
-  connector: 'https://proxy.ario.devnet.toonprotocol.dev',
+  connector: 'https://toonprotocol.dev',
   mnemonic: process.env.TOON_MNEMONIC,
   channelStore: `${process.env.HOME}/.toon/channels.json`,
 });
 
 // No explicit open needed: the first paid send opens the channel, with no native gas.
 
-const answer = await client.send({ body: 'hello' });
+const answer = await client.send('g.toon.store', { body: 'hello' });
 if (answer.fulfilled) {
   console.log(answer.status, answer.text());       // the app's own HTTP response
   console.log(answer.claim?.amount);               // 1010n base units — 1000 + 10/KiB

@@ -1,6 +1,6 @@
 # Reaching a connector that is a hidden service
 
-A connector is ordinarily a clearnet host: `https://proxy.ario.devnet.toonprotocol.dev`. It can
+A connector is ordinarily a clearnet host: `https://toonprotocol.dev`. It can
 also be a **hidden service** — a node reachable only inside the [Anyone
 Protocol](https://github.com/anyone-protocol) overlay, at a `.anyone` address that public DNS
 cannot resolve and no certificate authority can certify.
@@ -118,7 +118,7 @@ not leak is the address of the box it runs on. Give it `socksProxy` beside a cle
 
 ```ts
 const client = await ToonClient.create({
-  connector: 'https://proxy.ario.devnet.toonprotocol.dev',
+  connector: 'https://toonprotocol.dev',
   socksProxy: 'socks5h://127.0.0.1:9050',
   rpcUrl: 'https://api.devnet.solana.com', // a public RPC is fine: it is reached through the proxy
   mnemonic: process.env.TOON_MNEMONIC,

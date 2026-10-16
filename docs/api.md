@@ -67,7 +67,8 @@ Pay for one HTTP request. The central operation. Never throws on a refusal.
 The destination is **optional**. Omitted, the packet goes to `defaultDestination` — the first
 address the node published for itself that it also prices — so configuring a client is just a
 URL and the route is a fact read off `GET /ilp` rather than a string copied by hand. Name a
-destination explicitly to address a route the node forwards rather than terminates.
+destination explicitly on a node that serves more than one app (the devnet connector serves several),
+or to address a route the node forwards rather than terminates.
 
 ```ts
 claimState(channelIds?: string[]): Promise<ClaimStateResult[]>
@@ -494,5 +495,5 @@ internally. See [hidden-service.md](hidden-service.md).
 
 Runnable, in [`packages/client/examples/`](../packages/client/examples/):
 
-- `send-http.ts` — EVM, the store node, over ILP-over-HTTP
-- `send-btp-solana.ts` — Solana, the relay node, over BTP
+- `send-http.ts` — EVM, the devnet store route, over ILP-over-HTTP
+- `send-btp-solana.ts` — Solana, the devnet relay route, over BTP

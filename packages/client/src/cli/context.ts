@@ -147,10 +147,10 @@ export function resolveSettings(
     connector = connectorEnv;
     connectorSource = 'env';
   } else {
-    connector = DEVNET.store.url;
+    connector = DEVNET.connector;
     connectorSource = 'default';
     warnings.push(
-      `toon-client: no connector given, using the devnet store node ${DEVNET.store.url}.\n` +
+      `toon-client: no connector given, using the devnet connector ${DEVNET.connector}.\n` +
         `             Set --connector or ${CONNECTOR_ENV} to talk to another node.`
     );
   }

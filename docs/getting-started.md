@@ -12,8 +12,8 @@ on chain, and then buy one HTTP request from an app behind a connector. The chan
 on-chain part and you do it once — with no native gas; requests after that are signatures, not
 transactions.
 
-The node used throughout is the devnet store, `https://proxy.ario.devnet.toonprotocol.dev`,
-which serves the route `g.toon.store` at 1000 base units (0.001 USDC) plus 10 per kibibyte of
+The node used throughout is the devnet connector, `https://toonprotocol.dev`, and the route is
+its store, `g.toon.store`, served at 1000 base units (0.001 USDC) plus 10 per kibibyte of
 sealed payload. See
 [devnet.md](devnet.md) for the full table.
 
@@ -59,7 +59,7 @@ As a library, hand the phrase in directly:
 import { ToonClient } from '@toon-protocol/client';
 
 const client = await ToonClient.create({
-  connector: 'https://proxy.ario.devnet.toonprotocol.dev',
+  connector: 'https://toonprotocol.dev',
   mnemonic: process.env.TOON_MNEMONIC,
   channelStore: `${process.env.HOME}/.toon/channels.json`,
 });
@@ -147,20 +147,21 @@ is derived from.
 ## Step 4 — one paid request
 
 ```bash
-npx toon-client send --body 'hello'
+npx toon-client send g.toon.store --body 'hello'
 ```
 
 ```ts
-const answer = await client.send({
+const answer = await client.send('g.toon.store', {
   method: 'POST',
   headers: { 'content-type': 'text/plain' },
   body: 'hello',
 });
 ```
 
-No route appears in either, and that is deliberate: you configured a **URL**, and the node's own
-`GET /ilp` says what to address it as. Name a destination — `client.send('g.toon.relay.store', …)`
-— only when you want a route the node *forwards* rather than the one it terminates.
+The destination is optional. Leave it out and the client sends to the first address the node's own
+`GET /ilp` lists that it also prices — on a node with one app that is the app, and the client is
+configured with nothing but a URL. The devnet connector serves several apps and lists `g.toon.relay`
+first, so name the route here.
 
 Behind that one call: the client reads the route's price, seals your request to the connector's
 identity key, signs a voucher advancing the channel by that price, and sends both as one packet.
@@ -241,7 +242,7 @@ The library defaults to memory, which is almost never what you want:
 
 ```ts
 const client = await ToonClient.create({
-  connector: 'https://proxy.ario.devnet.toonprotocol.dev',
+  connector: 'https://toonprotocol.dev',
   mnemonic: process.env.TOON_MNEMONIC,
   channelStore: `${process.env.HOME}/.toon/channels.json`, // set this
 });

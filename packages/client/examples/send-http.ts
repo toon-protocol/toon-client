@@ -1,9 +1,9 @@
 /**
  * Pay for one HTTP request over ILP-over-HTTP, settling on Base Sepolia.
  *
- * The node here is the devnet store: it fronts an object store at the route
- * `g.toon.store` and charges a flat 1000 base units (0.001 USDC) per request,
- * over either carriage.
+ * The node here is the devnet connector, and the route its store,
+ * `g.toon.store`: 1000 base units (0.001 USDC) per request plus 10 per KiB of
+ * sealed payload, over either carriage.
  *
  * Run it:
  *
@@ -20,7 +20,7 @@ const mnemonic = process.env['TOON_MNEMONIC'];
 if (!mnemonic) throw new Error('Set TOON_MNEMONIC to a BIP-39 phrase.');
 
 const client = await ToonClient.create({
-  connector: DEVNET.store.url, // https://proxy.ario.devnet.toonprotocol.dev
+  connector: DEVNET.store.url, // https://toonprotocol.dev
   mnemonic,
   chain: 'evm',
   transport: 'http',

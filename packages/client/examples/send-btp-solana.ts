@@ -1,8 +1,8 @@
 /**
  * Pay for one HTTP request over BTP, settling on Solana devnet.
  *
- * The node here is the devnet relay: it serves the route `g.toon.relay` at a
- * flat 1 base unit (0.000001 USDC) and accepts **BTP only**. An HTTP one-shot
+ * The node here is the devnet connector, and the route its relay,
+ * `g.toon.relay`, at a flat 1 base unit (0.000001 USDC) and accepts **BTP only**. An HTTP one-shot
  * to it is refused with the same terms document an unpaid request gets,
  * carrying `requiredTransport: 'btp'` — so this example asks for the websocket
  * carriage explicitly rather than letting `'auto'` discover it.
@@ -12,8 +12,8 @@
  *   export TOON_MNEMONIC="your twelve words …"
  *   npx tsx examples/send-btp-solana.ts
  *
- * The wallet needs devnet USDC for the channel's deposit and no SOL: the relay
- * sponsors the open, paying its fee and rent. SOL is needed only to leave the
+ * The wallet needs devnet USDC for the channel's deposit and no SOL: the
+ * connector sponsors the open, paying its fee and rent. SOL is needed only to leave the
  * channel later (`client.channel.close()` / `settle()`).
  */
 import { ToonClient, DEVNET } from '@toon-protocol/client';
@@ -22,7 +22,7 @@ const mnemonic = process.env['TOON_MNEMONIC'];
 if (!mnemonic) throw new Error('Set TOON_MNEMONIC to a BIP-39 phrase.');
 
 const client = await ToonClient.create({
-  connector: DEVNET.relay.url, // https://proxy.relay.devnet.toonprotocol.dev
+  connector: DEVNET.relay.url, // https://toonprotocol.dev
   mnemonic,
   chain: 'solana',
   // The only carriage this route accepts.
@@ -37,7 +37,7 @@ try {
   // Uncomment on a wallet that has never been funded. USDC only — see above.
   // await client.wallet.faucet('solana');
 
-  // A sponsored open: signed here, co-signed and submitted by the relay.
+  // A sponsored open: signed here, co-signed and submitted by the connector.
   const channel = await client.channel.open();
   console.log(
     'channel', channel.channel.channelId,

@@ -133,7 +133,7 @@ Set `channelStore` whenever the process can restart:
 
 ```ts
 const client = await ToonClient.create({
-  connector: 'https://proxy.ario.devnet.toonprotocol.dev',
+  connector: 'https://toonprotocol.dev',
   mnemonic: process.env.TOON_MNEMONIC,
   channelStore: `${process.env.HOME}/.toon/channels.json`,
 });

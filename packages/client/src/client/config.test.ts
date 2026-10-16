@@ -17,7 +17,7 @@ import { DEVNET } from '../presets.js';
 
 const MNEMONIC =
   'test test test test test test test test test test test junk';
-const CONNECTOR = 'https://proxy.ario.devnet.toonprotocol.dev';
+const CONNECTOR = 'https://toonprotocol.dev';
 
 /** A config that resolves, so a test can vary exactly one thing. */
 function base(overrides: Record<string, unknown> = {}) {

@@ -41,8 +41,8 @@
  * facilitator at all (approval and deposit both its own), and once with the
  * facilitator down. Each leaves a 1-token channel behind.
  *
- * And, reading only, that all three nodes publish their EVM
- * `assetTransferMethod` (and a `facilitator`, if they name one) in
+ * And, reading only, that the devnet connector publishes its EVM
+ * `assetTransferMethod` (and a `facilitator`, if it names one) in
  * `batchSettlements` — connector#1419, once the fleet runs it.
  */
 import { describe, it, expect } from 'vitest';
@@ -385,12 +385,11 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
   }
 );
 
-describe.skipIf(!ENABLED)('the devnet nodes publish how to deposit (toon-client#695)', () => {
-  it.each([
-    ['store', DEVNET.store.url],
-    ['gas station', DEVNET.gas.url],
-    ['relay', DEVNET.relay.url],
-  ])('the %s names its EVM deposit method, and its facilitator is a URL if it names one', async (_name, url) => {
+describe.skipIf(!ENABLED)('the devnet connector publishes how to deposit (toon-client#695)', () => {
+  // One connector since 2026-10-16: the store, gas station and relay are all
+  // routes on it, so there is one document to check rather than three.
+  it('names its EVM deposit method, and its facilitator is a URL if it names one', async () => {
+    const url = DEVNET.connector;
     const raw = (await (await fetch(`${url.replace(/\/+$/, '')}/ilp`)).json()) as {
       batchSettlements?: Record<string, unknown>[];
     };

@@ -44,11 +44,12 @@ export interface JobSender {
  * Where a job goes: who pays for it, which route terminates it, and — on a
  * FORWARDED route — whose key the payload is sealed to.
  *
- * The store and the gas station are different nodes with different connectors
- * and different channels, so a ceremony spanning both takes two endpoints. One
- * client can serve both only when it is attached to a node that forwards to
- * each, in which case both endpoints name that client and `sealTo` names the
- * far node — see `docs/devnet.md`.
+ * The store and the gas station MAY be different nodes with different
+ * connectors and different channels, so a ceremony spanning both takes two
+ * endpoints. Where one connector terminates both — as the devnet's does, at
+ * `https://toonprotocol.dev` — both endpoints name the same client and no
+ * `sealTo` is needed. Where a node only forwards to one of them, `sealTo` names
+ * the far node.
  */
 export interface JobEndpoint {
   /** Pays for the request. */

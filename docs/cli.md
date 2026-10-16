@@ -15,7 +15,7 @@ nobody named should not be silent.
 
 | Setting | Flag | Environment | Default |
 | --- | --- | --- | --- |
-| Connector | `--connector URL` | `TOON_CONNECTOR` | The devnet store node, with a warning |
+| Connector | `--connector URL` | `TOON_CONNECTOR` | The devnet connector (`https://toonprotocol.dev`), with a warning |
 | Keys | — | `TOON_MNEMONIC` | The keystore, below |
 | Keystore | `--keystore PATH` | `TOON_KEYSTORE` | `~/.toon/keystore.json` |
 | Keystore password | `--password-file PATH` | `TOON_KEYSTORE_PASSWORD` | A hidden prompt, when stdin is a TTY |
@@ -103,9 +103,9 @@ The status printed is the **app's own**. A `404` from the app is a real answer: 
 fulfilled and costs exactly what a `200` costs. Only a refusal short of the app exits `3`.
 
 ```bash
-export TOON_CONNECTOR=https://proxy.ario.devnet.toonprotocol.dev
+export TOON_CONNECTOR=https://toonprotocol.dev
 
-npx toon-client send --body 'hello'               # to whatever this node calls itself
+npx toon-client send --body 'hello'               # to the first priced address it lists (g.toon.relay here)
 npx toon-client send g.toon.store --body 'hello'  # or name the route yourself
 npx toon-client send g.toon.store --json-body --body '{"key":"value"}'
 cat payload.bin | npx toon-client send g.toon.store --body -
