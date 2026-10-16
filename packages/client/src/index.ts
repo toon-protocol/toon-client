@@ -10,7 +10,7 @@
  *
  * ```ts
  * const client = await ToonClient.create({
- *   connector: 'https://proxy.ario.devnet.toonprotocol.dev',
+ *   connector: 'https://toonprotocol.dev',
  *   mnemonic: process.env.TOON_MNEMONIC,
  * });
  * // The first paid send opens the channel — with no native gas.

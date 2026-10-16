@@ -15,7 +15,7 @@ npm install @toon-protocol/client
 devnet store. No ETH needed.
 
 ```bash
-export TOON_CONNECTOR=https://proxy.ario.devnet.toonprotocol.dev
+export TOON_CONNECTOR=https://toonprotocol.dev
 npx toon-client init                            # an encrypted keystore at ~/.toon/keystore.json
 npx toon-client faucet                          # devnet USDC for that address
 npx toon-client channel open --deposit 100000   # 100000 base units (0.10 USDC), no gas
@@ -25,7 +25,7 @@ npx toon-client channel open --deposit 100000   # 100000 base units (0.10 USDC),
 1010 base units, the same as a `200`.
 
 ```bash
-npx toon-client send --body 'hello'
+npx toon-client send g.toon.store --body 'hello'
 ```
 
 The same from the library:
@@ -34,14 +34,14 @@ The same from the library:
 import { ToonClient } from '@toon-protocol/client';
 
 const client = await ToonClient.create({
-  connector: 'https://proxy.ario.devnet.toonprotocol.dev',
+  connector: 'https://toonprotocol.dev',
   mnemonic: process.env.TOON_MNEMONIC,
   channelStore: `${process.env.HOME}/.toon/channels.json`,
 });
 
 await client.channel.open({ deposit: 100_000n }); // 100000 base units (0.10 USDC)
 
-const answer = await client.send({ body: 'hello' });
+const answer = await client.send('g.toon.store', { body: 'hello' });
 if (answer.fulfilled) {
   console.log(answer.status, answer.text());       // the app's own HTTP response
   console.log(answer.claim.amount);                // 1010n base units: 1000 + 10 per KiB

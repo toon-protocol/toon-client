@@ -39,7 +39,7 @@ describe('isHiddenServiceUrl', () => {
   });
 
   it('is false for clearnet and for anything that is not a URL', () => {
-    expect(isHiddenServiceUrl('https://proxy.relay.devnet.toonprotocol.dev')).toBe(false);
+    expect(isHiddenServiceUrl('https://toonprotocol.dev')).toBe(false);
     expect(isHiddenServiceUrl('not a url')).toBe(false);
     expect(isHiddenServiceUrl(undefined)).toBe(false);
   });

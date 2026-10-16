@@ -11,7 +11,7 @@ is a mock mint anyone can draw from the faucet.
 Ask the node, not this page:
 
 ```bash
-curl -s https://proxy.ario.devnet.toonprotocol.dev/ilp | jq
+curl -s https://toonprotocol.dev/ilp | jq
 ```
 
 `GET /ilp` is free and unauthenticated. Its `batchSettlements` are the x402 channel terms the node
@@ -22,49 +22,39 @@ this client never consults a preset in preference to the document a node answers
 The same values ship as `DEVNET` in `@toon-protocol/client`, for the same reason and with the same
 caveat.
 
-## Nodes
+## The connector
 
-Three nodes, six routes. Each node is the receiver of its own channels, so a
-channel opened with one buys nothing at the others.
+One connector, `https://toonprotocol.dev`, terminates every devnet route (it replaced five
+separate connectors on 2026-10-16). It is the receiver of every devnet channel, so **one channel
+with it pays for all of these routes**, and every payload is sealed to its one key.
 
-| Node        | Client-edge URL                               | Route                    | Price                        | Carriage     |
-| ----------- | --------------------------------------------- | ------------------------ | ---------------------------- | ------------ |
-| Store       | `https://proxy.ario.devnet.toonprotocol.dev`  | `g.toon.store`           | 1000 **+ 10 per KiB**        | HTTP or BTP  |
-| Gas station | `https://proxy.gas.devnet.toonprotocol.dev`   | `g.toon.gas`             | 1000 base units (0.001 USDC) | HTTP or BTP  |
-| Relay       | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay`           | 1 base unit (0.000001 USDC)  | **BTP only** |
-| Relay       | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay.ephemeral` | free                         | HTTP or BTP  |
-| Relay       | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay.store`     | 1001 **+ 10 per KiB**        | HTTP or BTP  |
-| Relay       | `https://proxy.relay.devnet.toonprotocol.dev` | `g.toon.relay.gas`       | 1001 base units              | HTTP or BTP  |
+| App         | Route                    | Price                        | Carriage     |
+| ----------- | ------------------------ | ---------------------------- | ------------ |
+| Store       | `g.toon.store`           | 1000 **+ 10 per KiB**        | HTTP or BTP  |
+| Store       | `g.toon.relay.store`     | 1000 **+ 10 per KiB**        | HTTP or BTP  |
+| Gas station | `g.toon.gas`             | 1000 base units (0.001 USDC) | HTTP or BTP  |
+| Gas station | `g.toon.gas.quote`       | 1000 base units              | HTTP or BTP  |
+| Gas station | `g.toon.relay.gas`       | 1000 base units              | HTTP or BTP  |
+| Relay       | `g.toon.relay`           | 1 base unit (0.000001 USDC)  | **BTP only** |
+| Relay       | `g.toon.relay.ephemeral` | free                         | HTTP or BTP  |
+| Echo        | `g.toon.echo`            | 1 **+ 1 per KiB**            | HTTP or BTP  |
 
-The last two are **forwarded**: the relay carries the packet to the store or the
-gas station and charges its own hop on top. Forwarding runs one way — the leaves
-do not carry back to the relay.
+`g.toon.relay.store` and `g.toon.relay.gas` used to be forwarded from a relay connector to a
+separate store or gas connector, at one base unit more than the direct route. They are not
+forwarded any more: the same connector terminates them, at the direct route's price, and no
+`sealTo` is needed. `sealTo` is still there for a network whose routes really are forwarded; see
+[api.md](api.md).
 
-A forwarded route needs one thing a direct one does not. The payload is sealed to
-the connector that _terminates_ the route, and no hop may name that key on the
-terminator's behalf, so you name the far node yourself with `sealTo`:
+The relay's Nostr websocket is `wss://relay.toonprotocol.dev` (NIP-11:
+`curl -s -H 'Accept: application/nostr+json' https://relay.toonprotocol.dev`).
 
-```ts
-const answer = await client.send(
-  'g.toon.relay.gas',
-  { body: 'hello' },
-  {
-    sealTo: 'https://proxy.gas.devnet.toonprotocol.dev',
-  }
-);
-```
-
-Seal to the relay instead and the packet is undeliverable: the gas station cannot
-open the wrap, and the refusal is an `F01`.
-
-The price needs no help here, because the relay prices both forwarded routes
-itself. Pass an explicit `amount` only when the node you are attached to prices
-no matching route at all — it will tell you so with a `RouteNotPricedError`
-rather than guessing.
+The price needs no help, because the connector prices every route itself. Pass an explicit
+`amount` only when the node you are attached to prices no matching route at all — it will tell you
+so with a `RouteNotPricedError` rather than guessing.
 
 ### A route that meters by size
 
-`g.toon.store` — and `g.toon.relay.store`, which terminates there — charges a
+`g.toon.store` (and `g.toon.relay.store`) charges a
 base price **plus 10 base units per kibibyte of sealed payload**. The metered
 quantity is the sealed packet, not your request body, and kibibytes are counted
 from one, so the smallest possible packet already costs `1000 + 10`. `send()`
@@ -91,13 +81,11 @@ BTP today — an HTTP send to it is refused `TRANSPORT_REQUIRED`.
 A pinned route names its carriage on **its own entry** in `GET /ilp`, as `requiredTransport`
 (connector ADR 0072), and `transport: 'auto'` reads it there and dials it on the first attempt. A
 node-wide `requiredTransport` sits beside the routes as a summary, and it is stated only where every
-route covering the node's own addresses agrees — which the relay's do not, since
-`g.toon.relay.ephemeral` is not pinned. **The deployed relay has not yet picked up a connector that
-publishes the per-route field**, so until it does its document names no pin at all and `auto` there
-still falls back to HTTP and is refused; name `btp` explicitly against it. Read the live document
-rather than this table if it matters to you.
+route covering the node's own addresses agrees — which the devnet's do not, since
+`g.toon.relay.ephemeral` is not pinned. Read the live document rather than this table if it
+matters to you.
 
-Client-edge paths on all three, relative to the base URL above:
+Client-edge paths, relative to `https://toonprotocol.dev`:
 
 | Path                             | Method | What it is                                               |
 | -------------------------------- | ------ | -------------------------------------------------------- |

@@ -219,7 +219,7 @@ function resolveConnector(connector: string | undefined): string {
   if (typeof connector !== 'string' || connector.trim().length === 0) {
     throw new ConfigError(
       'connector is required: the client-edge URL of the node to pay, e.g. ' +
-        `'${DEVNET.store.url}'. One free GET on it returns every other fact ` +
+        `'${DEVNET.connector}'. One free GET on it returns every other fact ` +
         'needed to transact (self-description-spec.md, connector ADR 0050).'
     );
   }

@@ -33,37 +33,47 @@ export interface DevnetNode {
   requiredTransport?: 'http' | 'btp';
 }
 
+/**
+ * The devnet's one connector (consolidated 2026-10-16). Every route below
+ * terminates here, one channel with it pays for all of them, and every payload
+ * is sealed to its key — no route on the devnet is forwarded to another node.
+ */
+const DEVNET_CONNECTOR = 'https://toonprotocol.dev';
+
 export const DEVNET = {
+  /** The devnet's single connector. `DEVNET.store.url` and the rest all equal it. */
+  connector: DEVNET_CONNECTOR,
+
   /**
-   * The store node: an Arweave-backed object store behind `g.toon.store`, and
-   * the one route here that METERS — 1000 base units (0.001 USDC) plus 10 per
-   * kibibyte of sealed payload, so no packet on it costs only `price`.
+   * The store: an Arweave-backed object store behind `g.toon.store`, and a
+   * route that METERS — 1000 base units (0.001 USDC) plus 10 per kibibyte of
+   * sealed payload, so no packet on it costs only `price`.
    */
   store: {
-    url: 'https://proxy.ario.devnet.toonprotocol.dev',
+    url: DEVNET_CONNECTOR,
     route: 'g.toon.store',
     price: 1000n,
     pricePerKib: 10n,
   } satisfies DevnetNode,
 
   /**
-   * The gas station behind `g.toon.gas`, priced flat at 1000 base units.
-   * Reachable directly, or through the relay at `g.toon.relay.gas`.
+   * The gas station behind `g.toon.gas`, priced flat at 1000 base units. Also
+   * addressable as `g.toon.relay.gas` at the same price, on the same connector.
    */
   gas: {
-    url: 'https://proxy.gas.devnet.toonprotocol.dev',
+    url: DEVNET_CONNECTOR,
     route: 'g.toon.gas',
     price: 1000n,
   } satisfies DevnetNode,
 
   /**
-   * The relay node behind `g.toon.relay`, priced at 1 base unit. Its route is
+   * The relay behind `g.toon.relay`, priced at 1 base unit. Its route is
    * pinned to **BTP**: an HTTP one-shot to it is refused with the same terms
    * document an unpaid request gets, carrying `requiredTransport` in
    * `extensions.toon.info`.
    */
   relay: {
-    url: 'https://proxy.relay.devnet.toonprotocol.dev',
+    url: DEVNET_CONNECTOR,
     route: 'g.toon.relay',
     price: 1n,
     requiredTransport: 'btp',
@@ -75,7 +85,7 @@ export const DEVNET = {
    * carriage-pinned, unlike `g.toon.relay` beside it.
    */
   ephemeral: {
-    url: 'https://proxy.relay.devnet.toonprotocol.dev',
+    url: DEVNET_CONNECTOR,
     route: 'g.toon.relay.ephemeral',
     price: 0n,
   } satisfies DevnetNode,
