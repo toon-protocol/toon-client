@@ -24,6 +24,7 @@ import {
   ValidationError,
 } from '../client/errors.js';
 import { sendTransfer, type TransferConfig } from './transfer.js';
+import { DEVNET } from '../presets.js';
 
 // ---------------------------------------------------------------------------
 // viem mock (mirrors OnChainChannelClient.test.ts)
@@ -415,7 +416,7 @@ describe('sendTransfer — Solana', () => {
     // The mint is owned by `TokenkegQ…` (checked live against
     // api.devnet.solana.com, issue #748) — the ATA derivation, the
     // CreateIdempotent accounts and the Transfer all name that program.
-    const DEVNET_MINT = '34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU';
+    const DEVNET_MINT = DEVNET.solana.tokenAddress;
     const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
     const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
     const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
@@ -431,7 +432,9 @@ describe('sendTransfer — Solana', () => {
     });
 
     await sendTransfer(
-      { solana: { rpcUrl: 'http://rpc', keypair: SEED, tokenMint: DEVNET_MINT } },
+      {
+        solana: { rpcUrl: 'http://rpc', keypair: SEED, tokenMint: DEVNET_MINT },
+      },
       { chain: 'solana', asset: 'token', to: DEST, amount: '1000000' }
     );
 
@@ -439,13 +442,13 @@ describe('sendTransfer — Solana', () => {
       .map((call) => JSON.parse((call[1] as RequestInit).body as string))
       .find((b) => b.method === 'sendTransaction');
     const txBytes = Buffer.from(sent.params[0] as string, 'base64');
-    const has = (b58: string) =>
+    const txIncludesKey = (b58: string) =>
       txBytes.includes(Buffer.from(base58Decode(b58)));
-    expect(has(TOKEN_PROGRAM)).toBe(true);
-    expect(has(ATA_PROGRAM)).toBe(true);
-    expect(has(TOKEN_2022_PROGRAM)).toBe(false);
-    expect(has(senderAta)).toBe(true);
-    expect(has(destAta)).toBe(true);
+    expect(txIncludesKey(TOKEN_PROGRAM)).toBe(true);
+    expect(txIncludesKey(ATA_PROGRAM)).toBe(true);
+    expect(txIncludesKey(TOKEN_2022_PROGRAM)).toBe(false);
+    expect(txIncludesKey(senderAta)).toBe(true);
+    expect(txIncludesKey(destAta)).toBe(true);
   });
 
   it('throws InsufficientBalanceError when the SPL token balance is short', async () => {
