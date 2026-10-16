@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { generatePrivateKey } from 'viem/accounts';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { base58Encode } from '../utils/base58.js';
+import { base58Decode, base58Encode } from '../utils/base58.js';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { deriveAssociatedTokenAccount } from '../channel/solana/payment-channel.js';
 import {
@@ -24,6 +24,7 @@ import {
   ValidationError,
 } from '../client/errors.js';
 import { sendTransfer, type TransferConfig } from './transfer.js';
+import { DEVNET } from '../presets.js';
 
 // ---------------------------------------------------------------------------
 // viem mock (mirrors OnChainChannelClient.test.ts)
@@ -409,6 +410,45 @@ describe('sendTransfer — Solana', () => {
       .map((call) => JSON.parse((call[1] as RequestInit).body as string))
       .find((b) => b.method === 'sendTransaction');
     expect(sentTx).toBeDefined();
+  });
+
+  it('builds the devnet mock-USDC send for the classic Token program, not Token-2022', async () => {
+    // The mint is owned by `TokenkegQ…` (checked live against
+    // api.devnet.solana.com, issue #748) — the ATA derivation, the
+    // CreateIdempotent accounts and the Transfer all name that program.
+    const DEVNET_MINT = DEVNET.solana.tokenAddress;
+    const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+    const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+    const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+    const senderAta = deriveAssociatedTokenAccount(PAYER_PUBKEY, DEVNET_MINT);
+    const destAta = deriveAssociatedTokenAccount(DEST, DEVNET_MINT);
+    let destCalls = 0;
+    mockRpc({
+      tokenBalanceFor: (account) => {
+        if (account === senderAta) return '5000000';
+        if (account === destAta) return ++destCalls === 1 ? null : '1000000';
+        return '0';
+      },
+    });
+
+    await sendTransfer(
+      {
+        solana: { rpcUrl: 'http://rpc', keypair: SEED, tokenMint: DEVNET_MINT },
+      },
+      { chain: 'solana', asset: 'token', to: DEST, amount: '1000000' }
+    );
+
+    const sent = fetchMock.mock.calls
+      .map((call) => JSON.parse((call[1] as RequestInit).body as string))
+      .find((b) => b.method === 'sendTransaction');
+    const txBytes = Buffer.from(sent.params[0] as string, 'base64');
+    const txIncludesKey = (b58: string) =>
+      txBytes.includes(Buffer.from(base58Decode(b58)));
+    expect(txIncludesKey(TOKEN_PROGRAM)).toBe(true);
+    expect(txIncludesKey(ATA_PROGRAM)).toBe(true);
+    expect(txIncludesKey(TOKEN_2022_PROGRAM)).toBe(false);
+    expect(txIncludesKey(senderAta)).toBe(true);
+    expect(txIncludesKey(destAta)).toBe(true);
   });
 
   it('throws InsufficientBalanceError when the SPL token balance is short', async () => {
