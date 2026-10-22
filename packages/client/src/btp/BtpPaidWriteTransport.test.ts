@@ -300,6 +300,7 @@ describe('BtpPaidWriteTransport', () => {
       expect(fallback.sendIlpPacketWithClaim).not.toHaveBeenCalled();
       expect(session.reconnect).not.toHaveBeenCalled();
     });
+  });
 
   describe('naming the endpoint', () => {
     const URL = 'ws://connector-a:3000/ilp';
@@ -374,6 +375,5 @@ describe('BtpPaidWriteTransport', () => {
       expect(error).toBe(httpError);
       expect(error.message).toContain('http://connector-a:3000/ilp');
     });
-  });
   });
 });
