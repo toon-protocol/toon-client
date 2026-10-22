@@ -382,7 +382,22 @@ describe('send', () => {
 
   it('passes --amount through as a bigint', async () => {
     const result = await run(['send', 'g.toon.store', '--amount', '2500']);
-    expect(result.client.callsTo('send')[0]?.args[2]).toEqual({ amount: 2500n });
+    expect(result.client.callsTo('send')[0]?.args[2]).toStrictEqual({ amount: 2500n });
+  });
+
+  it('passes --seal-to through unchanged as sealTo', async () => {
+    const result = await run(['send', 'g.toon.store', '--seal-to', 'https://far.example']);
+    expect(result.client.callsTo('send')[0]?.args[2]).toEqual({ sealTo: 'https://far.example' });
+  });
+
+  it('passes --seal-to and --amount together', async () => {
+    const result = await run(['send', 'g.toon.store', '--seal-to', '0x04ab', '--amount', '500']);
+    expect(result.client.callsTo('send')[0]?.args[2]).toEqual({ sealTo: '0x04ab', amount: 500n });
+  });
+
+  it('sends no options object without --amount or --seal-to', async () => {
+    const result = await run(['send', 'g.toon.store']);
+    expect(result.client.callsTo('send')[0]?.args[2]).toBeUndefined();
   });
 
   it('prints a refusal in full and exits 3', async () => {
