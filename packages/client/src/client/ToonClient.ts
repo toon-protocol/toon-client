@@ -59,6 +59,7 @@ import {
   ChannelNotOpenError,
   ConfigError,
   chainUnavailableMessage,
+  type EndpointSource,
 } from './errors.js';
 import type {
   ChainKind,
@@ -197,6 +198,11 @@ export class ToonClient implements ToonClientLike {
    */
   static async create(config: ToonClientConfig): Promise<ToonClient> {
     const base = resolveConfig(config);
+    // An override is the payer's own string, so a `.anyone` one with no proxy is
+    // knowable now — before the first `GET` and before any DNS query.
+    for (const override of Object.values(base.carriageEndpoints)) {
+      assertReachableWithoutProxy(override, base.socksProxy, 'override');
+    }
     // Before the first `GET`: a hidden-service connector is unreachable without
     // its proxy, and the very first thing this method does is dial. Building the
     // transport here also means `describe()` below already rides the overlay —
@@ -448,14 +454,7 @@ export class ToonClient implements ToonClientLike {
    * this fails loudly, naming the proxy, before anything dials.
    */
   private assertEndpointReachable(endpoint: string): void {
-    if (this.config.socksProxy !== undefined) return;
-    if (!isHiddenServiceUrl(endpoint)) return;
-    throw new ConfigError(
-      `The connector published the endpoint ${JSON.stringify(endpoint)}, which is a ` +
-        'hidden service, but this client has no `socksProxy` to reach it through. ' +
-        'Set one to a running Anyone Protocol `anon` daemon (e.g. ' +
-        '"socks5h://127.0.0.1:9050"), or ask the operator for a clearnet endpoint.'
-    );
+    assertReachableWithoutProxy(endpoint, this.config.socksProxy, 'published');
   }
 
   /** The port {@link send} runs against. */
@@ -529,16 +528,34 @@ export class ToonClient implements ToonClientLike {
       throw new ConfigError('This client has been closed; construct a new one to send again.');
     }
 
-    const choice = selectTransport(description, this.config.transport, undefined, destination);
+    const overrides = this.config.carriageEndpoints;
+    const choice = selectTransport(
+      description,
+      this.config.transport,
+      undefined,
+      destination,
+      overrides
+    );
     const cached = this.carriages[choice.kind];
     if (cached) return cached;
     const httpEndpoint =
-      choice.kind === 'http' ? choice.url : httpEndpointOf(description, this.connector);
+      choice.kind === 'http'
+        ? choice.url
+        : (overrides.http ?? httpEndpointOf(description, this.connector));
     this.assertEndpointReachable(choice.url);
     this.assertEndpointReachable(httpEndpoint);
+    const sourceOf = (kind: 'http' | 'btp'): EndpointSource | undefined => {
+      const published = description[kind === 'http' ? 'httpEndpoint' : 'btpEndpoint'];
+      if (overrides[kind] !== undefined) {
+        return { override: published !== undefined ? { published } : {} };
+      }
+      return published !== undefined ? 'published' : undefined;
+    };
+    const httpSource = sourceOf('http');
+    const btpSource = sourceOf('btp');
     const http = new HttpIlpClient({
       httpEndpoint,
-      ...(description.httpEndpoint !== undefined ? { endpointSource: 'published' as const } : {}),
+      ...(httpSource !== undefined ? { endpointSource: httpSource } : {}),
       timeout: this.config.timeoutMs,
       httpClient: this.config.fetch,
       ...(this.config.createWebSocket
@@ -579,7 +596,7 @@ export class ToonClient implements ToonClientLike {
       transport: new BtpPaidWriteTransport({
         session,
         url: choice.url,
-        endpointSource: 'published',
+        ...(btpSource !== undefined ? { endpointSource: btpSource } : {}),
         // HTTP fallback only where the node did not REQUIRE btp *for this
         // destination*: falling back onto a carriage the route refuses would
         // turn a recoverable socket outage into a `402` per request. Read
@@ -641,6 +658,32 @@ function pickChain(config: ResolvedConfig, description: NodeSelfDescription): Ch
     throw new ChainUnavailableError(chainUnavailableMessage(undefined, offered, 'no-key'), offered);
   }
   return match.chain;
+}
+
+/**
+ * Refuse a hidden-service endpoint when there is no proxy to reach it through,
+ * naming who chose it: the connector, or the caller's `carriageEndpoints`.
+ */
+function assertReachableWithoutProxy(
+  endpoint: string,
+  socksProxy: string | undefined,
+  chosenBy: 'published' | 'override'
+): void {
+  if (socksProxy !== undefined) return;
+  if (!isHiddenServiceUrl(endpoint)) return;
+  const [subject, alternative] =
+    chosenBy === 'published'
+      ? [
+          'The connector published the endpoint',
+          'ask the operator for a clearnet endpoint',
+        ]
+      : ['The carriage endpoint override', 'use a clearnet override'];
+  throw new ConfigError(
+    `${subject} ${JSON.stringify(endpoint)}, which is a ` +
+      'hidden service, but this client has no `socksProxy` to reach it through. ' +
+      'Set one to a running Anyone Protocol `anon` daemon (e.g. ' +
+      `"socks5h://127.0.0.1:9050"), or ${alternative}.`
+  );
 }
 
 /**

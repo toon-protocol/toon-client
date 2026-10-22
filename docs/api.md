@@ -111,6 +111,7 @@ interface ToonClientConfig {
   depositGas?: 'auto' | 'facilitator' | 'self';
   timeoutMs?: number;
   socksProxy?: string;
+  carriageEndpoints?: { http?: string; btp?: string };
   proxyRpc?: boolean;
 
   btp?: { maxReconnectAttempts?: number; reconnectDelay?: number; declareChannel?: boolean };
@@ -140,6 +141,7 @@ interface ToonClientConfig {
 | `depositGas` | `'auto'` | Who pays a Base deposit's gas: `'auto'` (the facilitator, else this wallet's ETH), `'facilitator'` (never this wallet), `'self'` (always this wallet, no facilitator). |
 | `timeoutMs` | `30000`, or `120000` for a hidden service | Per-packet timeout. A packet's on-wire expiry is set 15 s beyond it (`PACKET_EXPIRY_HEADROOM_MS`), so the client always gives up before the packet does. An explicit `expiresAt` is honoured exactly. |
 | `socksProxy` | — | `socks5h://host:port` of an `anon` daemon. Required for a `.anyone` connector. Beside a clearnet one it hides the payer: the client edge, the BTP socket and each chain's RPC (on its own pinned circuit) all ride it, and nothing dials around it. Node only. See [hidden-service.md](hidden-service.md). |
+| `carriageEndpoints` | — | Replaces the **carriage endpoint** the connector publishes, per carriage: `http` (an `http:`/`https:` URL) and/or `btp` (a `ws:`/`wss:` URL). Each must be absolute, or `create` throws `ConfigError`; the path is not checked. A carriage with no override uses the published endpoint. The `http` override also serves the HTTP fallback beneath a BTP session. A `btp` override makes BTP selectable on a connector that publishes no `btpEndpoint`, but the route's `requiredTransport` still decides which carriage is used, and an unused override is not an error. The self-description, prices, claim state and seal key are still read from `connector`, and nothing ever falls back to it when an endpoint is unreachable (ADR 0006). A network failure on an overridden carriage names the override and the published endpoint. A `.anyone` override needs a `socksProxy`. |
 | `proxyRpc` | `true` | Send chain RPC through `socksProxy` too. Setting it to `false` opts **chain RPC only** out — the client edge and the BTP socket still ride the proxy. Turn it off only for an RPC endpoint that is already private. |
 | `faucetUrl` | the devnet faucet | Devnet only. |
 

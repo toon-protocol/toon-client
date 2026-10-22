@@ -32,6 +32,7 @@ import { join } from 'node:path';
 import { generateRandomIdentity, type KeyDerivationScheme } from '../keys/KeyDerivation.js';
 import type { ChainKind } from '../channel/types.js';
 import type {
+  CarriageEndpoints,
   ToonClientConfig,
   ToonClientLike,
   TransportPreference,
@@ -58,6 +59,8 @@ export const CHAIN_ENV = 'TOON_CHAIN';
 export const RPC_ENV = 'TOON_RPC_URL';
 export const CHANNEL_STORE_ENV = 'TOON_CHANNEL_STORE';
 export const SOCKS_ENV = 'TOON_SOCKS';
+export const HTTP_ENDPOINT_ENV = 'TOON_HTTP_ENDPOINT';
+export const BTP_ENDPOINT_ENV = 'TOON_BTP_ENDPOINT';
 export const FACILITATOR_ENV = 'TOON_FACILITATOR';
 export const DEPOSIT_GAS_ENV = 'TOON_DEPOSIT_GAS';
 export const DEPOSIT_METHOD_ENV = 'TOON_DEPOSIT_METHOD';
@@ -81,6 +84,10 @@ export interface CliSettings {
    * unlike the library, the CLI may run an `anon` daemon itself (ADR 0001).
    */
   socksProxy?: string;
+  /** Replaces the connector's published `httpEndpoint`, from `--http-endpoint`. */
+  httpEndpoint?: string;
+  /** Replaces the connector's published `btpEndpoint`, from `--btp-endpoint`. */
+  btpEndpoint?: string;
   /** The x402 facilitator that relays Base deposits; unset means the network's default. */
   facilitatorUrl?: string;
   /** What a channel is opened with, base units, from `--deposit`. */
@@ -178,6 +185,15 @@ export function resolveSettings(
         ? socksEnv
         : undefined;
 
+  const nonEmpty = (flag: string, envName: string): string | undefined => {
+    const fromFlag = stringOption(values, flag);
+    if (fromFlag !== undefined && fromFlag.length > 0) return fromFlag;
+    const fromEnv = env[envName];
+    return fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : undefined;
+  };
+  const httpEndpoint = nonEmpty('http-endpoint', HTTP_ENDPOINT_ENV);
+  const btpEndpoint = nonEmpty('btp-endpoint', BTP_ENDPOINT_ENV);
+
   const facilitator = stringOption(values, 'facilitator') ?? env[FACILITATOR_ENV];
   const deposit = stringOption(values, 'deposit');
   const depositGasFlag = stringOption(values, 'deposit-gas');
@@ -205,6 +221,8 @@ export function resolveSettings(
     channelStore,
     transport,
     ...(socksProxy !== undefined ? { socksProxy } : {}),
+    ...(httpEndpoint !== undefined ? { httpEndpoint } : {}),
+    ...(btpEndpoint !== undefined ? { btpEndpoint } : {}),
     keystorePath: resolveKeystorePath({
       flag: stringOption(values, 'keystore'),
       env,
@@ -311,16 +329,34 @@ export async function resolveKeyMaterial(
   );
 }
 
+/** `--http-endpoint` / `--btp-endpoint`, as the library's `carriageEndpoints`; unset when neither is. */
+export function carriageEndpointsOf(
+  settings: CliSettings
+): CarriageEndpoints | undefined {
+  if (settings.httpEndpoint === undefined && settings.btpEndpoint === undefined)
+    return undefined;
+  return {
+    ...(settings.httpEndpoint !== undefined
+      ? { http: settings.httpEndpoint }
+      : {}),
+    ...(settings.btpEndpoint !== undefined
+      ? { btp: settings.btpEndpoint }
+      : {}),
+  };
+}
+
 /** Turn resolved settings and key material into the library's own config object. */
 export function buildClientConfig(
   settings: CliSettings,
   keys: KeyMaterial
 ): ToonClientConfig {
+  const carriageEndpoints = carriageEndpointsOf(settings);
   const base: ToonClientConfig = {
     connector: settings.connector,
     channelStore: settings.channelStore,
     transport: settings.transport,
     ...(settings.socksProxy !== undefined ? { socksProxy: settings.socksProxy } : {}),
+    ...(carriageEndpoints !== undefined ? { carriageEndpoints } : {}),
     // See this module's docs: a command never opens a channel as a side effect.
     autoOpenChannel: false,
     ...(settings.chain !== undefined ? { chain: settings.chain } : {}),
