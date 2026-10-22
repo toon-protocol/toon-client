@@ -14,6 +14,11 @@ A paid reverse proxy that fronts an ordinary HTTP app, charges a flat price per 
 that app a request that was already paid for.
 _Avoid_: Proxy, relay, gateway, node
 
+**Agent node**:
+One agent's connector, relay and store, run together with the agent as their operator. Always two
+words: a bare "node" names nothing here, and is still not a connector.
+_Avoid_: Node, full node, hub, stack
+
 **Route**:
 An ILP address prefix a connector serves, with a price attached. Longest matching prefix wins.
 _Avoid_: Endpoint, path
