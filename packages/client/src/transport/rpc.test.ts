@@ -290,7 +290,7 @@ describe('EVM chain RPC through the connector’s proxy', () => {
   const signer = new EvmSigner(SIGNER_KEY);
 
   it('carries a contract read to a node that public DNS cannot find', async () => {
-    const client = createPublicClient({ transport: rpcTransport(RPC_URL, transport.dispatcher) });
+    const client = createPublicClient({ transport: rpcTransport(RPC_URL, transport.fetch) });
     await expect(readEvmBatchChannel(client, CHANNEL_ID)).resolves.toMatchObject({
       balance: 5_000n,
       totalClaimed: 1_200n,
@@ -317,14 +317,14 @@ describe('EVM chain RPC through the connector’s proxy', () => {
       rpcUrl: RPC_URL,
       chainKey: CHAIN_KEY,
       owner: signer.address,
-      rpcDispatcher: transport.dispatcher,
+      evmRpcFetch: transport.fetch,
     });
     const token = await readEvmTokenBalance({
       rpcUrl: RPC_URL,
       chainKey: CHAIN_KEY,
       tokenAddress: TOKEN,
       owner: signer.address,
-      rpcDispatcher: transport.dispatcher,
+      evmRpcFetch: transport.fetch,
     });
 
     expect(native.amount).toBe((WEI * 1_000n).toString());
@@ -340,7 +340,7 @@ describe('EVM chain RPC through the connector’s proxy', () => {
           chainKey: CHAIN_KEY,
           rpcUrl: RPC_URL,
           signer,
-          rpcDispatcher: transport.dispatcher,
+          evmRpcFetch: transport.fetch,
         },
       },
       { chain: 'evm', asset: 'native', to: DEST, amount: WEI, confirmTimeoutMs: 5_000 }
@@ -425,19 +425,17 @@ describe('a clearnet client, unchanged', () => {
     // two transports viem builds and says nothing about configuration.
     expect(settings(built)).toEqual(settings(plain));
     expect(built.value).toEqual(plain.value);
-    // No fetch options at all — not an empty object, not an undefined dispatcher.
+    // No fetch options and no `fetchFn` at all — not an empty object, not undefined members.
     expect(built.value?.fetchOptions).toBeUndefined();
   });
 
-  it('keeps the caller’s options and adds fetchOptions only for a dispatcher', () => {
+  it('keeps the caller’s options and adds fetchFn only for a proxied fetch', () => {
     const withOpts = viemHttp(RPC_URL, { timeout: 1_234, retryCount: 1 })({});
     const built = rpcTransport(RPC_URL, undefined, { timeout: 1_234, retryCount: 1 })({});
     expect(settings(built)).toEqual(settings(withOpts));
 
-    const proxied = rpcTransport(RPC_URL, transport.dispatcher, { timeout: 1_234 })({});
-    expect(
-      (proxied.value?.fetchOptions as { dispatcher?: unknown } | undefined)?.dispatcher
-    ).toBe(transport.dispatcher);
+    const proxied = rpcTransport(RPC_URL, transport.fetch, { timeout: 1_234 })({});
+    // The fetch itself is proven by the tests above: the call reaches the proxy.
     // The caller's timeout beats the proxied default.
     expect(proxied.config.timeout).toBe(1_234);
   });
@@ -445,7 +443,7 @@ describe('a clearnet client, unchanged', () => {
   it('gives a proxied request the budget a circuit needs (connector ADR 0073)', () => {
     // viem's 10s would fail the slowest call ADR 0073 measured through a new
     // circuit (13s), and its 150ms retry delay mostly earns a second 429.
-    const proxied = rpcTransport(RPC_URL, transport.dispatcher)({});
+    const proxied = rpcTransport(RPC_URL, transport.fetch)({});
     expect(proxied.config.timeout).toBe(PROXIED_RPC_DEFAULTS.timeout);
     expect(proxied.config.retryCount).toBe(PROXIED_RPC_DEFAULTS.retryCount);
     expect(proxied.config.retryDelay).toBe(PROXIED_RPC_DEFAULTS.retryDelay);

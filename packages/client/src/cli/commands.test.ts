@@ -1017,3 +1017,57 @@ describe('the managed anon daemon', () => {
     }
   });
 });
+
+describe('carriage endpoint overrides', () => {
+  it('carries --http-endpoint and --btp-endpoint into the client config', async () => {
+    const result = await run([
+      'balances',
+      '--http-endpoint',
+      'http://localhost:4000/ilp',
+      '--btp-endpoint',
+      'ws://localhost:4000/ilp/btp',
+    ]);
+    expect(result.config?.carriageEndpoints).toEqual({
+      http: 'http://localhost:4000/ilp',
+      btp: 'ws://localhost:4000/ilp/btp',
+    });
+  });
+
+  it('reads TOON_HTTP_ENDPOINT / TOON_BTP_ENDPOINT, and lets the flag win', async () => {
+    const env = run(['balances'], {
+      env: {
+        TOON_HTTP_ENDPOINT: 'http://env.example/ilp',
+        TOON_BTP_ENDPOINT: 'ws://env.example/btp',
+      },
+    });
+    expect((await env).config?.carriageEndpoints).toEqual({
+      http: 'http://env.example/ilp',
+      btp: 'ws://env.example/btp',
+    });
+    const flag = await run(
+      ['balances', '--http-endpoint', 'http://flag.example/ilp'],
+      {
+        env: { TOON_HTTP_ENDPOINT: 'http://env.example/ilp' },
+      }
+    );
+    expect(flag.config?.carriageEndpoints).toEqual({
+      http: 'http://flag.example/ilp',
+    });
+  });
+
+  it('sets nothing when neither is given', async () => {
+    const result = await run(['balances']);
+    expect(result.config?.carriageEndpoints).toBeUndefined();
+  });
+
+  it('describe labels an override as one', async () => {
+    const result = await run([
+      'describe',
+      '--http-endpoint',
+      'http://localhost:4000/ilp',
+    ]);
+    const out = [result.stdout].flat().join('\n');
+    expect(out).toContain('http override');
+    expect(out).toContain('http://localhost:4000/ilp');
+  });
+});

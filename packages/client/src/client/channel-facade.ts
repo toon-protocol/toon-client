@@ -112,7 +112,7 @@ export interface ChannelFacadeDeps {
   chain: ChainKind;
   manager: BatchChannelManager;
   describe(): Promise<NodeSelfDescription>;
-  evm?: { privateKey: Uint8Array; rpcUrl: string; rpcDispatcher: unknown };
+  evm?: { privateKey: Uint8Array; rpcUrl: string; evmRpcFetch: typeof fetch | undefined };
   solana?: { signer: Signer; rpc: SolanaRpcTarget };
   now?: () => bigint;
 }
@@ -360,7 +360,7 @@ export class ClientChannelFacade implements ChannelFacade {
       rpcUrls: { default: { http: [evm.rpcUrl] } },
     });
     const account = privateKeyToAccount(toHexKey(evm.privateKey));
-    const transport = rpcTransport(evm.rpcUrl, evm.rpcDispatcher);
+    const transport = rpcTransport(evm.rpcUrl, evm.evmRpcFetch);
     const publicClient = createPublicClient({ chain, transport });
     const walletClient = createWalletClient({ account, chain, transport });
     return {

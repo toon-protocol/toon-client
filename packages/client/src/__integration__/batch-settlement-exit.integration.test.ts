@@ -300,7 +300,7 @@ describe.skipIf(MISSING.length > 0)('x402 batch-settlement exit on EVM', () => {
       evm: {
         privateKey: Buffer.from(payerKey.slice(2), 'hex'),
         rpcUrl: ANVIL_RPC,
-        rpcDispatcher: undefined,
+        evmRpcFetch: undefined,
       },
       now: () => now,
     });

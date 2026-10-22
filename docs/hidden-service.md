@@ -155,7 +155,8 @@ only when the RPC is your own node on a private address. An exit cannot reach on
 crosses no network anyone outside can watch.
 
 **An injected `fetch` or `createWebSocket` still wins** for the client edge, as it always has. A
-caller who hands one in is responsible for where it goes. Chain RPC never uses an injected `fetch`
+caller who hands one in is responsible for where it goes: no canary runs on it, and it is outside
+the guarantee above. Chain RPC never uses an injected `fetch`
 under a proxy: it rides its own circuit, or dials directly because `proxyRpc: false` said so.
 If you inject one, inject both halves from `createHiddenServiceTransport`: `fetch` alone is not
 enough, because the BTP carriage would then open its websocket with the platform's `WebSocket`,
@@ -277,6 +278,7 @@ this feature and no part of it made things worse.)
 - The optional dependencies `undici` and `socks`, installed automatically unless you disabled
   optional dependencies, loaded through a guarded dynamic `require` and never bundled. `ws` too,
   if you use the BTP carriage.
+- `viem` `^2.37.2`: chain RPC goes through its `fetchFn`, which older versions ignore.
   `undici` is pinned to **`^7`** on purpose. Node's global `fetch` hands a userland dispatcher a
   handler defined by Node's *own* bundled undici; undici 8 dropped the shape Node 22 passes, and
   this package's `engines.node` is `>=22`. `^8` is not an upgrade here.

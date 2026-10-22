@@ -163,11 +163,11 @@ export interface EvmWalletAccess {
 export function evmWalletAccess(params: {
   rpcUrl: string;
   account: LocalAccount;
-  /** The proxy-bound dispatcher a hidden payer's RPC rides, if any. */
-  dispatcher?: unknown;
+  /** The proxy-bound fetch a hidden payer's RPC rides, if any. */
+  fetchFn?: typeof fetch;
 }): EvmWalletAccess {
   const { account } = params;
-  const transport = rpcTransport(params.rpcUrl, params.dispatcher);
+  const transport = rpcTransport(params.rpcUrl, params.fetchFn);
   const reader = createPublicClient({ transport });
   let writer: Promise<ReturnType<typeof createWalletClient>> | undefined;
   const wallet = () =>

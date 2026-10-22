@@ -30,6 +30,7 @@ import { ConfigError } from './errors.js';
 import { assertRoutableHsHostname, isHiddenServiceUrl } from '../transport/hs-hostname.js';
 import { validateSocks5hUrl } from '../transport/socks-url.js';
 import type {
+  CarriageEndpoints,
   ChainKind,
   KeyDerivationScheme,
   ToonClientConfig,
@@ -49,13 +50,12 @@ export const DEFAULT_HS_TIMEOUT_MS = 120_000;
 export const DEFAULT_DEPOSIT = 100_000n;
 
 /**
- * How one chain's RPC leaves this process when it rides the proxy: two shapes of
- * one pinned circuit, because the two chains' clients take different objects.
+ * How one chain's RPC leaves this process when it rides the proxy: a `fetch`
+ * bound to the chain's pinned circuit, handed to viem's `fetchFn` (EVM) or to
+ * Solana's JSON-RPC client.
  */
 export interface ProxiedChainRpc {
-  /** The undici dispatcher, for viem, which calls the global `fetch` itself (EVM). */
-  dispatcher: unknown;
-  /** `fetch` bound to that dispatcher, for Solana's JSON-RPC. */
+  /** `fetch` bound to that circuit. */
   fetch: typeof fetch;
 }
 
@@ -77,6 +77,8 @@ export interface ResolvedConfig {
   connectorIsHiddenService: boolean;
   /** The `socks5h://` proxy to reach it through, when there is one. */
   socksProxy: string | undefined;
+  /** Validated per-carriage replacements for the published endpoints. */
+  carriageEndpoints: CarriageEndpoints;
   /** Whether chain RPC rides that proxy too (ADR 0002). */
   proxyRpc: boolean;
   /**
@@ -132,6 +134,7 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
   const connector = resolveConnector(config.connector);
   const connectorIsHiddenService = isHiddenServiceUrl(connector);
   const socksProxy = resolveSocksProxy(config.socksProxy, connector, connectorIsHiddenService);
+  const carriageEndpoints = resolveCarriageEndpoints(config.carriageEndpoints);
   const accountIndex = resolveAccountIndex(config.accountIndex);
   const keyDerivation = config.keyDerivation ?? 'standard';
   const identity = resolveIdentity(config, keyDerivation, accountIndex);
@@ -182,6 +185,7 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
     depositGas: config.depositGas ?? 'auto',
     connectorIsHiddenService,
     socksProxy,
+    carriageEndpoints,
     proxyRpc: config.proxyRpc ?? true,
     chainRpc: undefined,
     autoOpenChannel: config.autoOpenChannel ?? true,
@@ -465,4 +469,34 @@ function resolveChannelStore(store: string | ChannelStore | undefined): {
       'one run.'
   );
   return { channelStore: new InMemoryChannelStore(), channelStoreIsEphemeral: true };
+}
+
+/** Each override must be an absolute URL on its carriage's scheme; the path is not checked. */
+function resolveCarriageEndpoints(
+  overrides: CarriageEndpoints | undefined
+): CarriageEndpoints {
+  const out: CarriageEndpoints = {};
+  if (overrides === undefined) return out;
+  const schemes = { http: ['http:', 'https:'], btp: ['ws:', 'wss:'] } as const;
+  for (const kind of ['http', 'btp'] as const) {
+    const value = overrides[kind];
+    if (value === undefined) continue;
+    const label = `carriageEndpoints.${kind}`;
+    const trimmed = value.trim();
+    let url: URL;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      throw new ConfigError(
+        `${label} must be an absolute URL; got ${JSON.stringify(value)}.`
+      );
+    }
+    if (!(schemes[kind] as readonly string[]).includes(url.protocol)) {
+      throw new ConfigError(
+        `${label} must be a ${schemes[kind].join(' or ')} URL; got ${JSON.stringify(value)}.`
+      );
+    }
+    out[kind] = trimmed;
+  }
+  return out;
 }

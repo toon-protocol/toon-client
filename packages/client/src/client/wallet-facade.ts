@@ -43,9 +43,9 @@ function solanaRpcFetch(config: ResolvedConfig): typeof fetch {
   return config.chainRpc?.solana.fetch ?? globalThis.fetch;
 }
 
-/** The EVM dispatcher chain RPC rides, when it rides the proxy at all. */
-function evmRpcDispatcher(config: ResolvedConfig): { rpcDispatcher: unknown } | Record<string, never> {
-  return config.chainRpc !== undefined ? { rpcDispatcher: config.chainRpc.evm.dispatcher } : {};
+/** The EVM fetch chain RPC rides, when it rides the proxy at all. */
+function evmRpcFetchOf(config: ResolvedConfig): { evmRpcFetch: typeof fetch } | Record<string, never> {
+  return config.chainRpc !== undefined ? { evmRpcFetch: config.chainRpc.evm.fetch } : {};
 }
 
 /** One chain's settlement token, as the node's x402 terms name it. */
@@ -88,7 +88,7 @@ export class ClientWalletFacade implements WalletFacade {
           chainKey: entry?.chain ?? 'evm',
           rpcUrl: config.rpcUrls.evm,
           owner: config.identity.evm.address,
-          ...evmRpcDispatcher(config),
+          ...evmRpcFetchOf(config),
           ...(entry?.tokenAddress ? { tokenAddress: entry.tokenAddress } : {}),
         };
       }
@@ -133,7 +133,7 @@ export class ClientWalletFacade implements WalletFacade {
                 chainKey: entry?.kind === 'evm' ? entry.chain : 'evm',
                 rpcUrl: config.rpcUrls.evm,
                 signer: this.signer(),
-                ...evmRpcDispatcher(config),
+                ...evmRpcFetchOf(config),
                 ...(entry?.tokenAddress ? { tokenAddress: entry.tokenAddress } : {}),
               },
             }

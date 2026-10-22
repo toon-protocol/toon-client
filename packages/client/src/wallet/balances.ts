@@ -116,13 +116,13 @@ export async function readEvmTokenBalance(opts: {
   tokenAddress: string;
   owner: string;
   /** Send this read through the hidden-service proxy, when there is one (ADR 0002). */
-  rpcDispatcher?: unknown;
+  evmRpcFetch?: typeof fetch;
 }): Promise<WalletBalance> {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
-    transport: rpcTransport(opts.rpcUrl, opts.rpcDispatcher, {
-      ...(rpcTimeoutMs(opts.rpcDispatcher !== undefined)
-        ? { timeout: rpcTimeoutMs(opts.rpcDispatcher !== undefined) }
+    transport: rpcTransport(opts.rpcUrl, opts.evmRpcFetch, {
+      ...(rpcTimeoutMs(opts.evmRpcFetch !== undefined)
+        ? { timeout: rpcTimeoutMs(opts.evmRpcFetch !== undefined) }
         : {}),
       retryCount: 1,
     }),
@@ -152,13 +152,13 @@ export async function readEvmNativeBalance(opts: {
   chainKey: string;
   owner: string;
   /** Send this read through the hidden-service proxy, when there is one (ADR 0002). */
-  rpcDispatcher?: unknown;
+  evmRpcFetch?: typeof fetch;
 }): Promise<WalletTokenAmount> {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
-    transport: rpcTransport(opts.rpcUrl, opts.rpcDispatcher, {
-      ...(rpcTimeoutMs(opts.rpcDispatcher !== undefined)
-        ? { timeout: rpcTimeoutMs(opts.rpcDispatcher !== undefined) }
+    transport: rpcTransport(opts.rpcUrl, opts.evmRpcFetch, {
+      ...(rpcTimeoutMs(opts.evmRpcFetch !== undefined)
+        ? { timeout: rpcTimeoutMs(opts.evmRpcFetch !== undefined) }
         : {}),
       retryCount: 1,
     }),
@@ -259,7 +259,7 @@ export interface WalletBalanceSources {
      * reads need no equivalent: they go through {@link WalletBalanceSources.fetchImpl},
      * which is already the proxied `fetch` on a hidden-service client.
      */
-    rpcDispatcher?: unknown;
+    evmRpcFetch?: typeof fetch;
   };
   solana?: { chainKey?: string; rpcUrl: string; owner: string; tokenMint?: string };
   /** Injectable fetch (the Solana JSON-RPC calls) for tests. */
@@ -322,15 +322,15 @@ export async function readWalletBalances(
   const tasks: Promise<WalletChainBalances>[] = [];
 
   if (sources.evm) {
-    const { chainKey, rpcUrl, owner, tokenAddress, rpcDispatcher } = sources.evm;
+    const { chainKey, rpcUrl, owner, tokenAddress, evmRpcFetch } = sources.evm;
     tasks.push(
       (async () => {
         const out: WalletChainBalances = { chain: 'evm', chainKey, address: owner, tokens: [] };
         const errors: string[] = [];
         const [nativeR, tokenR] = await Promise.allSettled([
-          readEvmNativeBalance({ rpcUrl, chainKey, owner, rpcDispatcher }),
+          readEvmNativeBalance({ rpcUrl, chainKey, owner, evmRpcFetch }),
           tokenAddress
-            ? readEvmTokenBalance({ rpcUrl, chainKey, tokenAddress, owner, rpcDispatcher })
+            ? readEvmTokenBalance({ rpcUrl, chainKey, tokenAddress, owner, evmRpcFetch })
             : Promise.resolve<WalletBalance | undefined>(undefined),
         ]);
         foldNative(out, nativeR, errors);

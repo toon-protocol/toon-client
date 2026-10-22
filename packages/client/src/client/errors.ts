@@ -57,13 +57,24 @@ export class NetworkError extends ToonClientError {
 }
 
 /** Where a packet-path URL came from: the caller's config, or the node's self-description. */
-export type EndpointSource = 'configured' | 'published';
+export type EndpointSource =
+  | 'configured'
+  | 'published'
+  /** The caller's `carriageEndpoints` replaced what the connector published (`published`, when it did). */
+  | { override: { published?: string } };
 
-/** `url`, plus a note when the node (not the caller) chose it. */
+/** `url`, plus a note when the node (not the caller) chose it, or when the caller replaced the node's. */
 export function describeEndpoint(url: string, source?: EndpointSource): string {
-  return source === 'published'
-    ? `${url} (the endpoint the connector published in its self-description)`
-    : url;
+  if (source === 'published') {
+    return `${url} (the endpoint the connector published in its self-description)`;
+  }
+  if (typeof source === 'object') {
+    const published = source.override.published;
+    return published === undefined
+      ? `${url} (carriage endpoint override; the connector publishes none)`
+      : `${url} (carriage endpoint override; the connector publishes ${published})`;
+  }
+  return url;
 }
 
 /**
@@ -261,6 +272,45 @@ export class TransportRequiredError extends ToonClientError {
     this.name = 'TransportRequiredError';
     this.required = options.required;
     this.terms = options.terms;
+  }
+}
+
+/** The four paths a hidden payer hands its proxy to. */
+export type ProxiedPath = 'client-edge' | 'evm-rpc' | 'solana-rpc' | 'btp';
+
+/**
+ * Thrown by `ToonClient.create` when a hidden payer's canary shows that one path
+ * ignores its proxy hook, so that path would dial clearnet and name the payer
+ * (ADR 0005). Nothing has been sent: the canary targets a closed loopback port.
+ * {@link path} says which path, and the message says how to fix it.
+ */
+export class ProxyBypassError extends ToonClientError {
+  /** The path whose proxy hook was never reached. */
+  readonly path: ProxiedPath;
+
+  constructor(path: ProxiedPath) {
+    super(ProxyBypassError.messageFor(path), 'PROXY_BYPASS');
+    this.name = 'ProxyBypassError';
+    this.path = path;
+  }
+
+  private static messageFor(path: ProxiedPath): string {
+    const refusal = 'Refusing to start: it would reach its destination without the SOCKS proxy.';
+    switch (path) {
+      case 'client-edge':
+      case 'solana-rpc':
+        return (
+          `The ${path} path ignored its proxy. ${refusal} The installed undici is not honoured ` +
+          "by this Node's fetch; install undici@^7."
+        );
+      case 'evm-rpc':
+        return (
+          `The evm-rpc path ignored its proxy. ${refusal} The installed viem ignores ` +
+          '`fetchFn`; upgrade viem to ^2.37.2.'
+        );
+      case 'btp':
+        return `The btp path ignored its proxy. ${refusal} \`ws\` ignored its agent.`;
+    }
   }
 }
 

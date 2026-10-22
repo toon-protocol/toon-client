@@ -59,6 +59,7 @@ import {
   ChannelNotOpenError,
   ConfigError,
   chainUnavailableMessage,
+  type EndpointSource,
 } from './errors.js';
 import type {
   ChainKind,
@@ -151,7 +152,7 @@ export class ToonClient implements ToonClientLike {
               wallet: evmWalletAccess({
                 rpcUrl: init.config.rpcUrls.evm,
                 account: chains.evm.account,
-                dispatcher: init.config.chainRpc?.evm.dispatcher,
+                fetchFn: init.config.chainRpc?.evm.fetch,
               }),
             },
           }
@@ -172,7 +173,7 @@ export class ToonClient implements ToonClientLike {
             evm: {
               privateKey: chains.evm.privateKey,
               rpcUrl: init.config.rpcUrls.evm,
-              rpcDispatcher: init.config.chainRpc?.evm.dispatcher,
+              evmRpcFetch: init.config.chainRpc?.evm.fetch,
             },
           }
         : {}),
@@ -197,6 +198,11 @@ export class ToonClient implements ToonClientLike {
    */
   static async create(config: ToonClientConfig): Promise<ToonClient> {
     const base = resolveConfig(config);
+    // An override is the payer's own string, so a `.anyone` one with no proxy is
+    // knowable now — before the first `GET` and before any DNS query.
+    for (const override of Object.values(base.carriageEndpoints)) {
+      assertReachableWithoutProxy(override, base.socksProxy, 'override');
+    }
     // Before the first `GET`: a hidden-service connector is unreachable without
     // its proxy, and the very first thing this method does is dial. Building the
     // transport here also means `describe()` below already rides the overlay —
@@ -448,14 +454,7 @@ export class ToonClient implements ToonClientLike {
    * this fails loudly, naming the proxy, before anything dials.
    */
   private assertEndpointReachable(endpoint: string): void {
-    if (this.config.socksProxy !== undefined) return;
-    if (!isHiddenServiceUrl(endpoint)) return;
-    throw new ConfigError(
-      `The connector published the endpoint ${JSON.stringify(endpoint)}, which is a ` +
-        'hidden service, but this client has no `socksProxy` to reach it through. ' +
-        'Set one to a running Anyone Protocol `anon` daemon (e.g. ' +
-        '"socks5h://127.0.0.1:9050"), or ask the operator for a clearnet endpoint.'
-    );
+    assertReachableWithoutProxy(endpoint, this.config.socksProxy, 'published');
   }
 
   /** The port {@link send} runs against. */
@@ -529,16 +528,34 @@ export class ToonClient implements ToonClientLike {
       throw new ConfigError('This client has been closed; construct a new one to send again.');
     }
 
-    const choice = selectTransport(description, this.config.transport, undefined, destination);
+    const overrides = this.config.carriageEndpoints;
+    const choice = selectTransport(
+      description,
+      this.config.transport,
+      undefined,
+      destination,
+      overrides
+    );
     const cached = this.carriages[choice.kind];
     if (cached) return cached;
     const httpEndpoint =
-      choice.kind === 'http' ? choice.url : httpEndpointOf(description, this.connector);
+      choice.kind === 'http'
+        ? choice.url
+        : (overrides.http ?? httpEndpointOf(description, this.connector));
     this.assertEndpointReachable(choice.url);
     this.assertEndpointReachable(httpEndpoint);
+    const sourceOf = (kind: 'http' | 'btp'): EndpointSource | undefined => {
+      const published = description[kind === 'http' ? 'httpEndpoint' : 'btpEndpoint'];
+      if (overrides[kind] !== undefined) {
+        return { override: published !== undefined ? { published } : {} };
+      }
+      return published !== undefined ? 'published' : undefined;
+    };
+    const httpSource = sourceOf('http');
+    const btpSource = sourceOf('btp');
     const http = new HttpIlpClient({
       httpEndpoint,
-      ...(description.httpEndpoint !== undefined ? { endpointSource: 'published' as const } : {}),
+      ...(httpSource !== undefined ? { endpointSource: httpSource } : {}),
       timeout: this.config.timeoutMs,
       httpClient: this.config.fetch,
       ...(this.config.createWebSocket
@@ -579,7 +596,7 @@ export class ToonClient implements ToonClientLike {
       transport: new BtpPaidWriteTransport({
         session,
         url: choice.url,
-        endpointSource: 'published',
+        ...(btpSource !== undefined ? { endpointSource: btpSource } : {}),
         // HTTP fallback only where the node did not REQUIRE btp *for this
         // destination*: falling back onto a carriage the route refuses would
         // turn a recoverable socket outage into a `402` per request. Read
@@ -644,6 +661,32 @@ function pickChain(config: ResolvedConfig, description: NodeSelfDescription): Ch
 }
 
 /**
+ * Refuse a hidden-service endpoint when there is no proxy to reach it through,
+ * naming who chose it: the connector, or the caller's `carriageEndpoints`.
+ */
+function assertReachableWithoutProxy(
+  endpoint: string,
+  socksProxy: string | undefined,
+  chosenBy: 'published' | 'override'
+): void {
+  if (socksProxy !== undefined) return;
+  if (!isHiddenServiceUrl(endpoint)) return;
+  const [subject, alternative] =
+    chosenBy === 'published'
+      ? [
+          'The connector published the endpoint',
+          'ask the operator for a clearnet endpoint',
+        ]
+      : ['The carriage endpoint override', 'use a clearnet override'];
+  throw new ConfigError(
+    `${subject} ${JSON.stringify(endpoint)}, which is a ` +
+      'hidden service, but this client has no `socksProxy` to reach it through. ' +
+      'Set one to a running Anyone Protocol `anon` daemon (e.g. ' +
+      `"socks5h://127.0.0.1:9050"), or ${alternative}.`
+  );
+}
+
+/**
  * The `POST /ilp` URL, for the HTTP fallback beneath a BTP session.
  *
  * Falls back to the client-edge base plus `/ilp` when the node published no
@@ -688,6 +731,7 @@ async function openHiddenService(
 
   const { createChainRpcTransport, createHiddenServiceTransport, probeSocks5Proxy } =
     await import('../transport/socks.js');
+  const { proveProxy } = await import('../transport/canary.js');
   // Fail closed, and fail now. A missing daemon discovered at packet time costs
   // a signed claim; discovered here it costs nothing.
   await probeSocks5Proxy(socksProxy);
@@ -698,13 +742,26 @@ async function openHiddenService(
         solana: createChainRpcTransport(socksProxy, 'solana'),
       }
     : undefined;
+  const close = async (): Promise<void> => {
+    await Promise.all([edge.close(), rpc?.evm.close(), rpc?.solana.close()]);
+  };
+
+  // Prove every hook is honoured before anything real is sent (ADR 0005). An
+  // injected `fetch` or `createWebSocket` is the caller's own transport and is
+  // outside the guarantee, but the proxy's own objects are still tested.
+  try {
+    await proveProxy({
+      edge,
+      ...(rpc !== undefined ? { rpc } : {}),
+      ...(config.canaryPaths !== undefined ? { overrides: config.canaryPaths } : {}),
+    });
+  } catch (err) {
+    await close().catch(() => undefined);
+    throw err;
+  }
 
   return {
-    transport: {
-      async close(): Promise<void> {
-        await Promise.all([edge.close(), rpc?.evm.close(), rpc?.solana.close()]);
-      },
-    },
+    transport: { close },
     config: {
       ...resolved,
       fetch: config.fetch ?? edge.fetch,
@@ -713,8 +770,8 @@ async function openHiddenService(
         rpc === undefined
           ? undefined
           : {
-              evm: { dispatcher: rpc.evm.dispatcher, fetch: rpc.evm.fetch },
-              solana: { dispatcher: rpc.solana.dispatcher, fetch: rpc.solana.fetch },
+              evm: { fetch: rpc.evm.fetch },
+              solana: { fetch: rpc.solana.fetch },
             },
     },
   };
@@ -765,7 +822,7 @@ function lazyEvmReader(config: ResolvedConfig): ContractReader {
   return {
     readContract: (params: never) => {
       client ??= createPublicClient({
-        transport: rpcTransport(config.rpcUrls.evm, config.chainRpc?.evm.dispatcher),
+        transport: rpcTransport(config.rpcUrls.evm, config.chainRpc?.evm.fetch),
       });
       return client.readContract(params);
     },

@@ -29,6 +29,7 @@ import type {
 } from '../connector/ConnectorEdgeClient.js';
 import type { WalletChainBalances } from '../wallet/balances.js';
 import type { SendTransferParams, SendTransferResult } from '../wallet/transfer.js';
+import type { CanaryPathOverrides } from '../transport/canary.js';
 import type { FundWalletResult } from '../wallet/faucet.js';
 
 export type { ChainKind, ChannelFacade, BatchExitResult };
@@ -57,6 +58,17 @@ export type TransportPreference = 'auto' | 'http' | 'btp';
  * declaration is also an ambiguous export.
  */
 export type { KeyDerivationScheme };
+
+/**
+ * A payer's per-carriage replacements for the carriage endpoints a connector
+ * publishes (ADR 0006).
+ */
+export interface CarriageEndpoints {
+  /** Replaces the published `httpEndpoint`. */
+  http?: string;
+  /** Replaces the published `btpEndpoint`. */
+  btp?: string;
+}
 
 export interface ToonClientConfig {
   /**
@@ -183,6 +195,16 @@ export interface ToonClientConfig {
    */
   socksProxy?: string;
   /**
+   * Replace the carriage endpoint the connector publishes, per carriage. Each
+   * value must be an absolute URL: `http` an `http:`/`https:` one, `btp` a
+   * `ws:`/`wss:` one. A carriage with no override uses the published endpoint.
+   * Everything else (self-description, prices, claim state, seal key) is still
+   * read from `connector`. Nothing falls back to the client edge (ADR 0006).
+   *
+   * The `http` override also serves the HTTP fallback beneath a BTP session.
+   */
+  carriageEndpoints?: CarriageEndpoints;
+  /**
    * Send chain RPC through `socksProxy` as well as the packets. Default `true`.
    *
    * Set `false` only when the RPC endpoint is already private — your own node on
@@ -195,6 +217,14 @@ export interface ToonClientConfig {
   fetch?: typeof fetch;
   /** Injected websocket factory, for tests and runtimes without a global `WebSocket`. */
   createWebSocket?: (url: string) => unknown;
+  /**
+   * Path objects the hidden-payer canary tests in place of the proxy's own, so a
+   * test can prove a deliberately broken path is caught (ADR 0005). Not for
+   * production use.
+   *
+   * @internal
+   */
+  canaryPaths?: CanaryPathOverrides;
 }
 
 // ─── Sending ────────────────────────────────────────────────────────────────
