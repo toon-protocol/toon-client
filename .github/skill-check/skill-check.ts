@@ -16,16 +16,15 @@ export interface Skill {
 export interface Cli {
   /** This package's version. */
   version: string;
-  /** Run `toon-client <path…> --help`. */
-  help(path: string[]): Promise<{ exitCode: number; stderr: string }>;
+  /** Run `toon-client <command…> --help`. */
+  help(command: string[]): Promise<{ exitCode: number; stderr: string }>;
 }
 
 /**
  * Each place a skill names a command, as its binary and the words after it.
  *
  * `toon` is collected as well as `toon-client`. It was this package's binary before 5.0 (#739)
- * and is now toon_cli's, whose commands differ, so in a `toon-client` skill it is always a
- * mistake.
+ * and is now toon_cli's, whose commands differ.
  */
 function namedCommands(text: string): { binary: string; words: string[] }[] {
   const spans = text.split('`').filter((_, i) => i % 2 === 1);
@@ -40,13 +39,13 @@ function namedCommands(text: string): { binary: string; words: string[] }[] {
 }
 
 /** The command's own words: the plain ones before any placeholder, value or flag. */
-function commandPath(words: string[]): string[] {
-  const path: string[] = [];
+function commandWords(words: string[]): string[] {
+  const command: string[] = [];
   for (const word of words) {
     if (!/^[a-z][a-z-]*$/.test(word)) break;
-    path.push(word);
+    command.push(word);
   }
-  return path;
+  return command;
 }
 
 /** A SKILL.md's `toon-client:` frontmatter value, unquoted; `undefined` when it has none. */
@@ -56,40 +55,72 @@ function frontmatterRange(text: string): string | undefined {
   return value?.replace(/^(["'])(.*)\1$/, '$2');
 }
 
-/** `5`, `5.1` or `5.1.1` as three numbers, the missing ones 0; `undefined` if it is none of those. */
+/**
+ * `5`, `5.1` or `5.1.1` as three numbers, the missing ones 0; `undefined` if it is none of those.
+ * A prerelease or build suffix is dropped, so `5.2.0-next.0` counts as `5.2.0`.
+ */
 function versionParts(version: string): number[] | undefined {
-  const match = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(version);
+  const match = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$/.exec(version);
   return match?.slice(1).map((part) => Number(part ?? 0));
 }
 
+/** Is `have` on the side of `want` that `operator` asks for? */
+function compare(have: number[], operator: string, want: number[]): boolean {
+  const i = have.findIndex((part, n) => part !== want[n]);
+  const order = i === -1 ? 0 : Math.sign((have[i] ?? 0) - (want[i] ?? 0));
+  switch (operator) {
+    case '>=':
+      return order >= 0;
+    case '<=':
+      return order <= 0;
+    case '>':
+      return order > 0;
+    case '<':
+      return order < 0;
+    default:
+      return order === 0;
+  }
+}
+
 /**
- * Does `version` fall inside `range`? A range is comparators joined by commas, Cargo-style,
- * e.g. `>=5.0.0, <6`. `undefined` when the range cannot be read.
+ * Does `version` fall inside `range`? A range is comparators joined by commas (Cargo) or spaces
+ * (npm), e.g. `>=5.0.0, <6`. `undefined` when the range cannot be read.
  */
 function inRange(version: string, range: string): boolean | undefined {
   const have = versionParts(version);
-  if (have === undefined) return undefined;
-  const results = range.split(',').map((comparator) => {
-    const match = /^\s*(>=|<=|>|<|=)?\s*(\S+)\s*$/.exec(comparator);
-    const want = match ? versionParts(match[2] as string) : undefined;
-    if (!match || want === undefined) return undefined;
-    const i = have.findIndex((part, n) => part !== want[n]);
-    const order =
-      i === -1 ? 0 : Math.sign((have[i] as number) - (want[i] as number));
-    switch (match[1] ?? '=') {
-      case '>=':
-        return order >= 0;
-      case '<=':
-        return order <= 0;
-      case '>':
-        return order > 0;
-      case '<':
-        return order < 0;
-      default:
-        return order === 0;
-    }
+  const comparators = range
+    .split(/[\s,]+/)
+    .join(' ')
+    .replace(/(>=|<=|>|<|=) /g, '$1')
+    .split(' ')
+    .filter(Boolean)
+    .map((comparator) => /^(>=|<=|>|<|=)?(.+)$/.exec(comparator));
+  const fits = comparators.map((match) => {
+    const want = match ? versionParts(match[2] ?? '') : undefined;
+    return have === undefined || want === undefined
+      ? undefined
+      : compare(have, match?.[1] ?? '=', want);
   });
-  return results.includes(undefined) ? undefined : results.every(Boolean);
+  if (fits.length === 0 || fits.includes(undefined)) return undefined;
+  return fits.every(Boolean);
+}
+
+/** What is wrong with a SKILL.md's `toon-client` range, if anything. */
+function rangeProblem(
+  path: string,
+  text: string,
+  version: string
+): string | undefined {
+  const range = frontmatterRange(text);
+  if (range === undefined)
+    return `${path}: its frontmatter has no \`toon-client\` version range`;
+  const fits = inRange(version, range);
+  if (fits === undefined)
+    return `${path}: cannot read its toon-client range "${range}"`;
+  if (!fits) {
+    return `${path}: this package is ${version}, outside the skill's toon-client range "${range}"`;
+  }
+  return undefined;
 }
 
 /** Every way the skills have drifted from the CLI, one line each; empty when they agree. */
@@ -98,39 +129,36 @@ export async function checkSkills(
   cli: Cli
 ): Promise<string[]> {
   const problems: string[] = [];
-  const asked = new Set<string>();
-  for (const { path, text } of skills) {
+  // One `--help` per command, however many files name it; each file is still reported.
+  const asked = new Map<string, ReturnType<Cli['help']>>();
+  const help = (command: string[]) => {
+    const key = command.join(' ');
+    const answer = asked.get(key) ?? cli.help(command);
+    asked.set(key, answer);
+    return answer;
+  };
+  for (const skill of skills) {
+    const { path } = skill;
+    const text = skill.text.replace(/\r\n/g, '\n');
     if (path === 'SKILL.md' || path.endsWith('/SKILL.md')) {
-      const range = frontmatterRange(text);
-      const fits =
-        range === undefined ? undefined : inRange(cli.version, range);
-      if (range === undefined) {
-        problems.push(
-          `${path}: its frontmatter has no \`toon-client\` version range`
-        );
-      } else if (fits === undefined) {
-        problems.push(`${path}: cannot read its toon-client range "${range}"`);
-      } else if (!fits) {
-        problems.push(
-          `${path}: this package is ${cli.version}, outside the skill's toon-client range "${range}"`
-        );
-      }
+      const problem = rangeProblem(path, text, cli.version);
+      if (problem !== undefined) problems.push(problem);
     }
     for (const { binary, words } of namedCommands(text)) {
-      const command = commandPath(words);
-      const key = command.join(' ');
+      const command = commandWords(words);
+      const answer = await help(command);
+      const named = command.join(' ');
       if (binary === 'toon') {
+        // Only when the words are a `toon-client` command: that is the old name for it. Prose
+        // that starts a line with "toon", or a real toon_cli command, is left alone.
+        if (command.length > 0 && answer.exitCode === 0) {
+          problems.push(
+            `${path}: \`toon ${named}\` names the old binary; this package's is \`toon-client\``
+          );
+        }
+      } else if (answer.exitCode !== 0) {
         problems.push(
-          `${path}: \`toon ${key}\` names the old binary; this package's is \`toon-client\``
-        );
-        continue;
-      }
-      if (asked.has(key)) continue;
-      asked.add(key);
-      const help = await cli.help(command);
-      if (help.exitCode !== 0) {
-        problems.push(
-          `${path}: \`toon-client ${key}\` is not a command: ${help.stderr.split('\n')[0]}`
+          `${path}: \`toon-client ${named}\` is not a command: ${answer.stderr.split('\n')[0]}`
         );
       }
     }

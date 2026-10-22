@@ -80,6 +80,11 @@ describe('parseCommandLine', () => {
     expect(parseCommandLine(['channel', '--help']).command).toBe('channel');
   });
 
+  it('refuses more positionals than a command takes, even under --help', () => {
+    expect(() => parseCommandLine(['faucet', 'drip', '--help'])).toThrow(/at most 0 argument/);
+    expect(parseCommandLine(['send', 'g.toon.echo', '--help']).command).toBe('send');
+  });
+
   it('returns no command for a bare invocation', () => {
     expect(parseCommandLine([]).command).toBeUndefined();
   });

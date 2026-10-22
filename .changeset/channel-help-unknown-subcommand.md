@@ -2,4 +2,4 @@
 '@toon-protocol/client': patch
 ---
 
-`toon-client channel <subcommand> --help` now exits 2 when there is no such subcommand, as it does without `--help`. It used to print the channel help and exit 0, which said a subcommand existed that did not.
+`--help` no longer answers for a command that does not exist. `toon-client faucet drip --help` and `toon-client channel refill --help` now exit 2, as they do without `--help`; they used to print the command's help and exit 0.

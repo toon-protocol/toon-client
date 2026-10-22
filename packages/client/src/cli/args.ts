@@ -343,6 +343,11 @@ export const COMMANDS: Record<string, CommandSpec> = {
 /** The `channel` subcommands, in the order a channel goes through them. */
 export const CHANNEL_SUBCOMMANDS = ['open', 'deposit', 'status', 'close', 'settle'] as const;
 
+/** Is `word` one of the {@link CHANNEL_SUBCOMMANDS}? */
+export function isChannelSubcommand(word: string): boolean {
+  return (CHANNEL_SUBCOMMANDS as readonly string[]).includes(word);
+}
+
 /** A parsed command line, before any setting is resolved. */
 export interface ParsedCommandLine {
   /** `undefined` when the line was only `--help` or `--version`. */
@@ -417,14 +422,16 @@ export function parseCommandLine(argv: string[]): ParsedCommandLine {
   }
 
   const rest = positionals.slice(1);
-  // Checked even under `--help`: `channel refill --help` answering 0 would say a subcommand
-  // exists that does not, and the toon-plugins skill check asks exactly that (#752).
-  const sub = rest[0];
-  if (
-    command === 'channel' &&
-    sub !== undefined &&
-    !(CHANNEL_SUBCOMMANDS as readonly string[]).includes(sub)
-  ) {
+  // These two hold even under `--help`. Answering 0 to `faucet drip --help` or `channel refill
+  // --help` would say a command exists that does not, and the toon-plugins skill check asks
+  // exactly that (#752).
+  if (rest.length > spec.maxPositionals) {
+    throw new UsageError(
+      `'${command}' takes at most ${String(spec.maxPositionals)} argument(s); got ${String(rest.length)}`,
+      command
+    );
+  }
+  if (command === 'channel' && rest[0] !== undefined && !isChannelSubcommand(rest[0])) {
     throw new UsageError(`channel needs one of: ${CHANNEL_SUBCOMMANDS.join(', ')}`, command);
   }
   if (!boolOption(values, 'help')) {
@@ -436,12 +443,6 @@ export function parseCommandLine(argv: string[]): ParsedCommandLine {
     }
     if (rest.length < spec.minPositionals) {
       throw new UsageError(`'${command}' needs more arguments`, command);
-    }
-    if (rest.length > spec.maxPositionals) {
-      throw new UsageError(
-        `'${command}' takes at most ${String(spec.maxPositionals)} argument(s); got ${String(rest.length)}`,
-        command
-      );
     }
   }
 

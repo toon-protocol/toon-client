@@ -178,7 +178,8 @@ toon-protocol/infra checkout. A change to `packages/client` without a changeset 
 
 Its `toon-plugins-skills` job checks out toon-plugins `main`, unpinned, and runs
 `.github/skill-check/main.ts` against the CLI it just built. Every `toon-client` command a skill in
-the `toon-client` plugin names must answer `--help`, no skill may name the old `toon` binary, and
+the `toon-client` plugin names must answer `--help`, no skill may name a `toon-client` command
+under the old `toon` binary, and
 this package's version must fall inside each `SKILL.md`'s `toon-client` frontmatter range. When
 this job goes red, this repo changed something the skills use. For a planned break, update the
 skill and its range in toon-plugins first.

@@ -55,6 +55,36 @@ describe('checkSkills', () => {
     );
   });
 
+  it('fails a skill that gives a command more words than it takes', async () => {
+    const problems = await checkSkills(
+      [skill('Run `toon-client faucet drip`.')],
+      cli()
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('`toon-client faucet drip` is not a command');
+  });
+
+  it('names every file that names a missing command, not just the first', async () => {
+    const other = {
+      ...skill('Or `toon-client frobnicate`.'),
+      path: 'skills/other/SKILL.md',
+    };
+    const problems = await checkSkills(
+      [skill('Run `toon-client frobnicate`.'), other],
+      cli()
+    );
+    expect(problems).toHaveLength(2);
+    expect(problems[1]).toContain(
+      'skills/other/SKILL.md: `toon-client frobnicate`'
+    );
+  });
+
+  it('lets prose start a line with "toon" when no toon-client command follows', async () => {
+    const text =
+      'toon and toon-client are different binaries.\n\nThe node runs `toon node start`.';
+    expect(await checkSkills([skill(text)], cli())).toEqual([]);
+  });
+
   it('fails a skill that names the old binary, `toon`, in a span or on a line', async () => {
     const text = [
       'Pay with `toon send <route>`.',
@@ -85,6 +115,19 @@ describe('checkSkills', () => {
     expect(major).toContain(
       '6.0.0, outside the skill\'s toon-client range ">=5.0.0, <6"'
     );
+  });
+
+  it('reads a space-separated range, a prerelease version and CRLF frontmatter', async () => {
+    const body = 'Run `toon-client balances`.';
+    expect(await checkSkills([skill(body, '">=5.0.0 <6"')], cli())).toEqual([]);
+    expect(await checkSkills([skill(body)], cli('5.2.0-next.0'))).toEqual([]);
+    const crlf = skill(body);
+    expect(
+      await checkSkills(
+        [{ ...crlf, text: crlf.text.replace(/\n/g, '\r\n') }],
+        cli()
+      )
+    ).toEqual([]);
   });
 
   it('fails a SKILL.md with no toon-client range, but asks no reference file for one', async () => {
