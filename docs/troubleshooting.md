@@ -152,6 +152,15 @@ On `transport: 'auto'` this should never happen — `auto` reads the pin off the
 refuses you, is the defect connector ADR 0072 closes, and naming the carriage by hand is the only
 thing you can do until that node is upgraded.
 
+**A network failure naming a published endpoint you cannot reach** (a docker network name, `localhost`, a wrong host).
+The client sends every packet to the endpoint the connector publishes, and never falls back to the
+`connector` URL you configured. Ask the operator to publish relative endpoints (`/ilp`,
+`/ilp/btp`), which resolve against the client edge you can already reach. When they can't, override
+the carriage yourself: `carriageEndpoints: { http: 'http://localhost:4000/ilp' }` in the library, or
+`--http-endpoint` / `--btp-endpoint` (`TOON_HTTP_ENDPOINT` / `TOON_BTP_ENDPOINT`) in the CLI.
+`toon-client describe` shows the published endpoints and, labelled as such, any override in effect.
+The error for an overridden carriage names both URLs.
+
 **`T04` and a message naming a cap.**
 The packet exceeds the largest amount that connector will forward to one peer in a single packet.
 It is never split. Send a smaller one — the message is the only place that cap is published.

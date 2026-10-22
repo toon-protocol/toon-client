@@ -342,3 +342,34 @@ describe('resolveConfig — x402 batch-settlement', () => {
     expect(resolved.depositMethod).toBe('permit2');
   });
 });
+
+describe('resolveConfig — carriageEndpoints', () => {
+  it('defaults to no overrides and accepts absolute URLs on each carriage scheme', () => {
+    quiet();
+    expect(resolveConfig(base()).carriageEndpoints).toEqual({});
+    expect(
+      resolveConfig(
+        base({
+          carriageEndpoints: {
+            http: 'http://localhost:4000/ilp',
+            btp: 'wss://x.example',
+          },
+        })
+      ).carriageEndpoints
+    ).toEqual({ http: 'http://localhost:4000/ilp', btp: 'wss://x.example' });
+  });
+
+  it.each([
+    ['http', '/ilp'],
+    ['http', 'not a url'],
+    ['http', 'ws://localhost:4000/ilp'],
+    ['btp', '/ilp/btp'],
+    ['btp', 'https://localhost:4000/ilp/btp'],
+    ['btp', ''],
+  ])('refuses %s override %j with a ConfigError', (kind, value) => {
+    quiet();
+    expect(() =>
+      resolveConfig(base({ carriageEndpoints: { [kind]: value } }))
+    ).toThrow(ConfigError);
+  });
+});

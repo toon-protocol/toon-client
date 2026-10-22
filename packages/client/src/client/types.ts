@@ -59,6 +59,17 @@ export type TransportPreference = 'auto' | 'http' | 'btp';
  */
 export type { KeyDerivationScheme };
 
+/**
+ * A payer's per-carriage replacements for the carriage endpoints a connector
+ * publishes (ADR 0006).
+ */
+export interface CarriageEndpoints {
+  /** Replaces the published `httpEndpoint`. */
+  http?: string;
+  /** Replaces the published `btpEndpoint`. */
+  btp?: string;
+}
+
 export interface ToonClientConfig {
   /**
    * The connector's client-edge base URL. A trailing `/ilp` is normalized away,
@@ -183,6 +194,16 @@ export interface ToonClientConfig {
    * Node only: a browser cannot dial a hidden service by any route.
    */
   socksProxy?: string;
+  /**
+   * Replace the carriage endpoint the connector publishes, per carriage. Each
+   * value must be an absolute URL: `http` an `http:`/`https:` one, `btp` a
+   * `ws:`/`wss:` one. A carriage with no override uses the published endpoint.
+   * Everything else (self-description, prices, claim state, seal key) is still
+   * read from `connector`. Nothing falls back to the client edge (ADR 0006).
+   *
+   * The `http` override also serves the HTTP fallback beneath a BTP session.
+   */
+  carriageEndpoints?: CarriageEndpoints;
   /**
    * Send chain RPC through `socksProxy` as well as the packets. Default `true`.
    *

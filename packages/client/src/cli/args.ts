@@ -115,6 +115,20 @@ export const GLOBAL_OPTIONS: Record<string, OptionSpec> = {
     arg: 'auto|http|btp',
     help: 'Which carriage to pay over. Default auto.',
   },
+  'http-endpoint': {
+    type: 'string',
+    arg: 'URL',
+    help:
+      'Pay HTTP packets at this URL instead of the httpEndpoint the connector publishes. ' +
+      'Env TOON_HTTP_ENDPOINT.',
+  },
+  'btp-endpoint': {
+    type: 'string',
+    arg: 'URL',
+    help:
+      'Dial BTP at this ws(s):// URL instead of the btpEndpoint the connector publishes. ' +
+      'Env TOON_BTP_ENDPOINT.',
+  },
   socks: {
     type: 'string',
     arg: 'URL',
@@ -489,7 +503,8 @@ export function usage(command?: string): string {
     '',
     'Environment: TOON_CONNECTOR, TOON_MNEMONIC, TOON_KEYSTORE,',
     '             TOON_KEYSTORE_PASSWORD, TOON_CHAIN, TOON_RPC_URL, TOON_CHANNEL_STORE,',
-    '             TOON_SOCKS, TOON_FACILITATOR, TOON_DEPOSIT_GAS, TOON_DEPOSIT_METHOD.',
+    '             TOON_SOCKS, TOON_HTTP_ENDPOINT, TOON_BTP_ENDPOINT, TOON_FACILITATOR,',
+    '             TOON_DEPOSIT_GAS, TOON_DEPOSIT_METHOD.',
     '',
     "Run 'toon-client help <command>' for one command in detail.",
   ].join('\n');

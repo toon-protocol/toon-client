@@ -293,3 +293,48 @@ function catchError(fn: () => unknown): unknown {
   }
   throw new Error('expected the call to throw, and it did not');
 }
+
+describe('selectTransport — carriage endpoint overrides', () => {
+  const HTTP = 'http://localhost:4000/ilp';
+  const BTP = 'ws://localhost:4000/ilp/btp';
+
+  it('replaces the published endpoint of that carriage only', () => {
+    const d = describeNode(BOTH);
+    expect(
+      selectTransport(d, 'http', undefined, undefined, { http: HTTP }).url
+    ).toBe(HTTP);
+    expect(
+      selectTransport(d, 'btp', undefined, undefined, { http: HTTP }).url
+    ).toBe('wss://proxy.example/ilp/btp');
+  });
+
+  it('makes BTP selectable on a node that publishes no btpEndpoint', () => {
+    const d = describeNode({
+      ilpAddresses: ['g.toon.store'],
+      httpEndpoint: 'https://p.example/ilp',
+    });
+    expect(
+      selectTransport(d, 'btp', undefined, undefined, { btp: BTP })
+    ).toEqual({
+      kind: 'btp',
+      url: BTP,
+    });
+    const required = describeNode({
+      ilpAddresses: ['g.toon.store'],
+      requiredTransport: 'btp',
+    });
+    expect(
+      selectTransport(required, 'auto', undefined, undefined, { btp: BTP }).kind
+    ).toBe('btp');
+  });
+
+  it('never overrides what the route requires, and an unused override is no error', () => {
+    const d = describeNode({ ...BOTH, requiredTransport: 'http' });
+    expect(
+      selectTransport(d, 'auto', undefined, undefined, { btp: BTP })
+    ).toEqual({
+      kind: 'http',
+      url: 'https://proxy.example/ilp',
+    });
+  });
+});

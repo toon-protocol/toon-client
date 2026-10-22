@@ -24,6 +24,8 @@ nobody named should not be silent.
 | Channel store | `--store PATH` | `TOON_CHANNEL_STORE` | `~/.toon/channels.json` |
 | Carriage | `--transport auto\|http\|btp` | — | `auto` |
 | SOCKS5h proxy | `--socks URL` | `TOON_SOCKS` | a managed `anon` daemon, for a `.anyone` connector |
+| HTTP carriage endpoint | `--http-endpoint URL` | `TOON_HTTP_ENDPOINT` | The `httpEndpoint` the connector publishes |
+| BTP carriage endpoint | `--btp-endpoint URL` | `TOON_BTP_ENDPOINT` | The `btpEndpoint` the connector publishes |
 | x402 facilitator | `--facilitator URL` | `TOON_FACILITATOR` | The one the connector names, else the devnet's own on Base Sepolia |
 | Who pays deposit gas | `--deposit-gas auto\|facilitator\|self` | `TOON_DEPOSIT_GAS` | `auto`: the facilitator, else your own ETH |
 | How the token moves | `--deposit-method eip3009\|permit2` | `TOON_DEPOSIT_METHOD` | What the connector names, else `eip3009` |
