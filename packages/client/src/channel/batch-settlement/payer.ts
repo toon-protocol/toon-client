@@ -158,7 +158,7 @@ export interface BatchSettlementPayerConfig {
     rpc: SolanaRpcTarget;
   };
   /** How the connector's sponsor endpoint and the facilitator are reached. */
-  fetch?: typeof fetch;
+  fetch: typeof fetch;
   /**
    * The connector's own watermark for a channel (`POST /ilp/claim-state`),
    * asked with the voucher challenge this payer signs. It recovers a lost
@@ -696,7 +696,7 @@ export class BatchSettlementPayer {
         offer: { ...offer, extra: { ...offer.extra, assetTransferMethod: method } },
         payload,
         ...(extensions ? { extensions } : {}),
-        ...(this.config.fetch ? { fetchImpl: this.config.fetch } : {}),
+        fetchImpl: this.config.fetch,
       });
     } catch (err) {
       // The same signed payload can go on chain from the payer's own wallet,
@@ -878,7 +878,7 @@ export class BatchSettlementPayer {
         connector: this.config.connector,
         sponsorEndpoint,
         transaction,
-        ...(this.config.fetch ? { fetchImpl: this.config.fetch } : {}),
+        fetchImpl: this.config.fetch,
       });
     } catch (err) {
       if (isDefinitiveRefusal(err)) manager.abandon(channelId);

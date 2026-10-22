@@ -47,7 +47,8 @@ import { ClientChannelFacade } from './channel-facade.js';
 import { ClientWalletFacade } from './wallet-facade.js';
 import { privateKeyToAccount } from 'viem/accounts';
 import { createPublicClient, toHex } from 'viem';
-import { rpcTransport } from '../transport/rpc.js';
+import { rpcTransport, type ChainRpcRoute } from '../transport/rpc.js';
+import { chainRoutes } from './chain-access.js';
 import type { ContractReader } from '../channel/batch-settlement/evm.js';
 import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
@@ -133,6 +134,7 @@ export class ToonClient implements ToonClientLike {
 
     this.manager = new BatchChannelManager(init.config.channelStore);
     const chains = chainAccess(init.config);
+    const routes = chainRoutes(init.config);
     this.payer = new BatchSettlementPayer({
       connector: init.config.connector,
       manager: this.manager,
@@ -148,12 +150,8 @@ export class ToonClient implements ToonClientLike {
                 ? { depositMethod: init.config.depositMethod }
                 : {}),
               depositGas: init.config.depositGas,
-              reader: lazyEvmReader(init.config),
-              wallet: evmWalletAccess({
-                rpcUrl: init.config.rpcUrls.evm,
-                account: chains.evm.account,
-                fetchFn: init.config.chainRpc?.evm.fetch,
-              }),
+              reader: lazyEvmReader(routes.evm),
+              wallet: evmWalletAccess({ rpc: routes.evm, account: chains.evm.account }),
             },
           }
         : {}),
@@ -172,8 +170,7 @@ export class ToonClient implements ToonClientLike {
         ? {
             evm: {
               privateKey: chains.evm.privateKey,
-              rpcUrl: init.config.rpcUrls.evm,
-              evmRpcFetch: init.config.chainRpc?.evm.fetch,
+              rpc: routes.evm,
             },
           }
         : {}),
@@ -787,7 +784,7 @@ function chainAccess(config: ResolvedConfig): {
   evm?: { account: ReturnType<typeof privateKeyToAccount>; privateKey: Uint8Array };
   solana?: {
     signer: { privateKey: Uint8Array; publicKey: Uint8Array };
-    rpc: { url: string; fetchImpl?: typeof fetch };
+    rpc: ChainRpcRoute;
   };
 } {
   const evmKey = config.identity.evm?.privateKey;
@@ -803,10 +800,7 @@ function chainAccess(config: ResolvedConfig): {
               privateKey: solanaKey.secretKey.slice(0, 32),
               publicKey: base58Decode(solanaKey.publicKey),
             },
-            rpc: {
-              url: config.rpcUrls.solana,
-              ...(config.chainRpc !== undefined ? { fetchImpl: config.chainRpc.solana.fetch } : {}),
-            },
+            rpc: chainRoutes(config).solana,
           },
         }
       : {}),
@@ -817,12 +811,12 @@ function chainAccess(config: ResolvedConfig): {
  * A `readContract` over the client's EVM RPC, built on first use so a client
  * that never needs to read a batch-settlement channel back opens no connection.
  */
-function lazyEvmReader(config: ResolvedConfig): ContractReader {
+function lazyEvmReader(route: ChainRpcRoute): ContractReader {
   let client: ReturnType<typeof createPublicClient> | undefined;
   return {
     readContract: (params: never) => {
       client ??= createPublicClient({
-        transport: rpcTransport(config.rpcUrls.evm, config.chainRpc?.evm.fetch),
+        transport: rpcTransport(route),
       });
       return client.readContract(params);
     },

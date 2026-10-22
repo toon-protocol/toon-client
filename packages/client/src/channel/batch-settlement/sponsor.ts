@@ -16,6 +16,7 @@
  */
 
 import { NetworkError, SponsorRefusedError } from '../../client/errors.js';
+import { directFetch } from '../../transport/rpc.js';
 
 /** The channel the connector opened. */
 export interface SponsoredOpen {
@@ -40,13 +41,14 @@ export async function requestSponsoredOpen(params: {
   connector: string;
   sponsorEndpoint: string;
   transaction: string;
+  /** Defaults to the global `fetch`: the clearnet behaviour for a direct caller. The client always passes its own. */
   fetchImpl?: typeof fetch;
 }): Promise<SponsoredOpen> {
   const url = new URL(
     params.sponsorEndpoint,
     `${params.connector.replace(/\/+$/, '')}/`
   ).toString();
-  const fetchImpl = params.fetchImpl ?? fetch;
+  const fetchImpl = params.fetchImpl ?? directFetch;
 
   let response: Response;
   let text: string;

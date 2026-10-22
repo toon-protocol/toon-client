@@ -12,6 +12,7 @@
 
 import type { BatchDepositPayload, BatchSettlementEvmOffer } from './evm.js';
 import { FacilitatorError, NetworkError } from '../../client/errors.js';
+import { directFetch } from '../../transport/rpc.js';
 
 /** The deposit as the chain now holds it. */
 export interface SettledDeposit {
@@ -41,6 +42,7 @@ export async function settleDeposit(params: {
    * (`deposit-gas.ts`) — carried as `paymentPayload.extensions`.
    */
   extensions?: Record<string, { info: Record<string, unknown> }>;
+  /** Defaults to the global `fetch`: the clearnet behaviour for a direct caller. The client always passes its own. */
   fetchImpl?: typeof fetch;
 }): Promise<SettledDeposit> {
   const { payload } = params;
@@ -51,7 +53,7 @@ export async function settleDeposit(params: {
       withdrawDelay: payload.channelConfig.withdrawDelay,
     },
   };
-  const fetchImpl = params.fetchImpl ?? fetch;
+  const fetchImpl = params.fetchImpl ?? directFetch;
   const url = `${params.facilitatorUrl.replace(/\/+$/, '')}/settle`;
 
   let response: Response;

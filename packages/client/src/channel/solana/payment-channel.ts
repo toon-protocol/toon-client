@@ -20,6 +20,7 @@ import {
   TransactionOutcomeError,
 } from '../../client/errors.js';
 import { RECEIPT_TIMEOUT_MS } from '../evm/receipt.js';
+import type { ChainRpcRoute } from '../../transport/rpc.js';
 
 // ---------------------------------------------------------------------------
 // Constants (must match the Rust program + connector SDK exactly)
@@ -223,20 +224,13 @@ function isAccountNotFoundError(err: unknown): boolean {
 /**
  * Where Solana JSON-RPC goes, and how it gets there.
  *
- * A bare URL is the ordinary case and dials the global `fetch`. The object form
- * carries a `fetch` to use instead — on a hidden-service client that is the
+ * It carries the `fetch` to dial with, and there is no default: on a hidden-service client that is the
  * proxied one, so chain reads ride the overlay with the packets rather than
  * announcing this wallet on clearnet (ADR 0002). Every function in this module
  * that takes an RPC target passes it straight through to {@link solanaRpc}; only
  * that function ever looks inside.
  */
-export type SolanaRpcTarget = string | { url: string; fetchImpl?: typeof fetch };
-
-/** Split a target into the URL to dial and the `fetch` to dial it with. */
-function resolveRpcTarget(target: SolanaRpcTarget): { url: string; fetchImpl: typeof fetch } {
-  if (typeof target === 'string') return { url: target, fetchImpl: globalThis.fetch };
-  return { url: target.url, fetchImpl: target.fetchImpl ?? globalThis.fetch };
-}
+export type SolanaRpcTarget = ChainRpcRoute;
 
 /**
  * Delays before each retry of a Solana JSON-RPC call that failed in transit.
@@ -303,7 +297,7 @@ export async function solanaRpc(
   method: string,
   params: unknown[] = []
 ): Promise<unknown> {
-  const { url, fetchImpl } = resolveRpcTarget(rpcUrl);
+  const { url, fetch: fetchImpl } = rpcUrl;
   let mayHaveArrived = false;
   for (let attempt = 0; ; attempt++) {
     try {

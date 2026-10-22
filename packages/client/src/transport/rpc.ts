@@ -36,24 +36,49 @@ export const PROXIED_RPC_DEFAULTS = {
 } as const satisfies Required<RpcTransportOptions>;
 
 /**
- * A viem HTTP transport for `url`, bound to `fetchFn` when there is one.
+ * Where one chain's JSON-RPC goes and what it goes through: the URL, and the
+ * `fetch` that dials it. Both are required. A chain RPC call site cannot compile
+ * without the fetch it should use, so a hidden payer cannot reach clearnet by
+ * leaving one out (ADR 0005).
  *
- * `undefined` means clearnet, and produces exactly the transport this
- * package built before hidden services existed. A proxied fetch also brings
- * {@link PROXIED_RPC_DEFAULTS}, under anything the caller set explicitly.
+ * The decision is made once, in the client's chain-access layer. Nothing below
+ * it picks a fetch; nothing below it can default to the global one.
+ */
+export interface ChainRpcRoute {
+  url: string;
+  fetch: typeof fetch;
+  /**
+   * The `fetch` rides the hidden-service proxy, so a request gets
+   * {@link PROXIED_RPC_DEFAULTS} under anything the caller set explicitly.
+   */
+  proxied?: boolean;
+}
+
+/**
+ * The global `fetch`, looked up per call. This is the deliberately direct
+ * route: a clearnet client's, a public helper's default, and a hidden payer's
+ * with `proxyRpc: false` (ADR 0002). Choose it by name, at the one place that
+ * decides.
+ */
+export const directFetch: typeof fetch = (input, init) => globalThis.fetch(input, init);
+
+/**
+ * A viem HTTP transport over `route`.
+ *
+ * A proxied route also brings {@link PROXIED_RPC_DEFAULTS}, under anything the
+ * caller set explicitly.
  */
 export function rpcTransport(
-  url: string,
-  fetchFn: typeof fetch | undefined,
+  route: ChainRpcRoute,
   options: RpcTransportOptions = {}
 ): ReturnType<typeof http> {
   const { timeout, retryCount, retryDelay } =
-    fetchFn === undefined ? options : { ...PROXIED_RPC_DEFAULTS, ...definedOnly(options) };
-  return http(url, {
+    route.proxied === true ? { ...PROXIED_RPC_DEFAULTS, ...definedOnly(options) } : options;
+  return http(route.url, {
     ...(timeout !== undefined ? { timeout } : {}),
     ...(retryCount !== undefined ? { retryCount } : {}),
     ...(retryDelay !== undefined ? { retryDelay } : {}),
-    ...(fetchFn !== undefined ? { fetchFn } : {}),
+    fetchFn: route.fetch,
   });
 }
 

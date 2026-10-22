@@ -35,6 +35,7 @@
  *   src/__integration__/batch-settlement-exit.integration.test.ts
  * ```
  */
+import { directFetch } from '../transport/rpc.js';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -299,8 +300,7 @@ describe.skipIf(MISSING.length > 0)('x402 batch-settlement exit on EVM', () => {
       describe: async () => parseSelfDescription({}),
       evm: {
         privateKey: Buffer.from(payerKey.slice(2), 'hex'),
-        rpcUrl: ANVIL_RPC,
-        evmRpcFetch: undefined,
+        rpc: { url: ANVIL_RPC, fetch: directFetch },
       },
       now: () => now,
     });
@@ -341,7 +341,7 @@ describe.skipIf(MISSING.length > 0)('x402 batch-settlement exit on EVM', () => {
 // ─── Solana ─────────────────────────────────────────────────────────────────
 
 const RPC_PORT = 18899;
-const SOLANA_RPC = `http://127.0.0.1:${RPC_PORT}`;
+const SOLANA_RPC = { url: `http://127.0.0.1:${RPC_PORT}`, fetch: directFetch };
 const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
 const SOL_DEPOSIT = 2_000_000n;

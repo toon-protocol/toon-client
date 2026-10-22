@@ -161,7 +161,7 @@ function setup(overrides: Partial<World> = {}, deposit = 1_000_000n) {
     connector: 'https://node.example',
     manager,
     deposit,
-    solana: { signer: PAYER, rpc: { url: 'http://rpc', fetchImpl } },
+    solana: { signer: PAYER, rpc: { url: 'http://rpc', fetch: fetchImpl } },
     fetch: fetchImpl,
   });
   return { world, manager, payer };
@@ -217,7 +217,7 @@ describe('BatchSettlementPayer on Solana', () => {
       connector: 'https://node.example',
       manager,
       deposit: 1_000_000n,
-      solana: { signer: PAYER, rpc: { url: 'http://rpc', fetchImpl: fakeFetch(world) } },
+      solana: { signer: PAYER, rpc: { url: 'http://rpc', fetch: fakeFetch(world) } },
       fetch: fakeFetch(world),
       autoOpen: false,
     });
