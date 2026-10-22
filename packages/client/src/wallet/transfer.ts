@@ -98,7 +98,7 @@ export interface EvmTransferConfig {
   /** ERC-20 settlement-token address. Required only for `asset: 'token'`. */
   tokenAddress?: string;
   /** Send this transfer's RPC through the hidden-service proxy (ADR 0002). */
-  rpcDispatcher?: unknown;
+  evmRpcFetch?: typeof fetch;
 }
 
 export interface SolanaTransferConfig {
@@ -264,12 +264,12 @@ function evmClients(cfg: EvmTransferConfig) {
     rpcUrls: { default: { http: [cfg.rpcUrl] } },
   });
   const publicClient = createPublicClient({
-    transport: rpcTransport(cfg.rpcUrl, cfg.rpcDispatcher),
+    transport: rpcTransport(cfg.rpcUrl, cfg.evmRpcFetch),
     chain: viemChain,
   });
   const walletClient = createWalletClient({
     account: cfg.signer.account,
-    transport: rpcTransport(cfg.rpcUrl, cfg.rpcDispatcher),
+    transport: rpcTransport(cfg.rpcUrl, cfg.evmRpcFetch),
     chain: viemChain,
   });
   return { publicClient, walletClient };

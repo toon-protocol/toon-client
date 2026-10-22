@@ -9,9 +9,9 @@
  *   Node is undici and takes a **dispatcher**. It does not take an `http.Agent`,
  *   which is why the `socks-proxy-agent` this package used to depend on cannot
  *   serve this path at all.
- * - **Chain RPC** goes through viem, which calls the *global* `fetch` and accepts
- *   no injected one. Its only opening is `http(url, { fetchOptions })`, so it
- *   needs the same dispatcher handed to it as a fetch option (ADR 0002).
+ * - **Chain RPC** goes through viem, which takes an injected `fetchFn`
+ *   (`http(url, { fetchFn })`), so it is handed this transport's proxied `fetch`
+ *   (ADR 0002, ADR 0005).
  * - **The BTP carriage** goes through `ws`, which is `node:http` underneath and
  *   therefore takes an `http.Agent` and nothing else.
  *
@@ -127,6 +127,22 @@ const SOCKS_ISOLATION_PASSWORD = 'toon';
 /** undici's own idle keep-alive, which {@link HiddenServiceTransportOptions.idleTimeoutMs} only ever lowers. */
 const UNDICI_DEFAULT_KEEP_ALIVE_MS = 4_000;
 
+/**
+ * Where a canary (ADR 0005) is sent: a closed loopback port. The proxy hooks
+ * recognise it, count it and refuse the dial without contacting the proxy; a
+ * path that ignores its hook dials it directly and finds nothing listening.
+ */
+export const CANARY_HOST = '127.0.0.1';
+/**
+ * Not port 1: the fetch standard blocks it as a "bad port" (tcpmux), so a request
+ * to it dies before any dial and could never tell a honoured hook from a bypass.
+ */
+export const CANARY_PORT = 2;
+
+function isCanary(host: string, port: number): boolean {
+  return host === CANARY_HOST && port === CANARY_PORT;
+}
+
 /** Options for {@link createHiddenServiceTransport}. */
 export interface HiddenServiceTransportOptions {
   /** Circuit-build timeout, ms. Default {@link DEFAULT_HS_CONNECT_TIMEOUT_MS}. */
@@ -162,6 +178,11 @@ export interface HiddenServiceTransport {
    * (`http(url, { fetchOptions: { dispatcher } })`).
    */
   dispatcher: unknown;
+  /**
+   * How many canary dials this transport's proxy hooks (the dispatcher's
+   * `connect`, the websocket agents' `createConnection`) have seen and refused.
+   */
+  canaryHits(): number;
   /** Close the dispatcher's pool and the websocket agents' sockets. */
   close(): Promise<void>;
 }
@@ -213,6 +234,7 @@ export function createHiddenServiceTransport(
     ...(options.socksUsername !== undefined ? { username: options.socksUsername } : {}),
   };
   const timeoutMs = options.connectTimeoutMs ?? DEFAULT_HS_CONNECT_TIMEOUT_MS;
+  const canary = { hits: 0 };
 
   const undici = requireOptional<typeof undiciModule>('undici', socksProxy);
   requireOptional<typeof socksModule>('socks', socksProxy);
@@ -236,6 +258,10 @@ export function createHiddenServiceTransport(
       callback: (err: Error | null, socket: unknown) => void
     ) {
       const port = portFor(connectOptions.protocol ?? 'http:', connectOptions.port);
+      if (isCanary(connectOptions.hostname, port)) {
+        canary.hits += 1;
+        return callback(new Error('proxy canary: dial refused'), null);
+      }
       socksConnect(proxy, { host: connectOptions.hostname, port }, timeoutMs).then((socket) => {
         socket.setNoDelay(true);
         if (connectOptions.protocol !== 'https:') return callback(null, socket);
@@ -262,7 +288,7 @@ export function createHiddenServiceTransport(
   const proxiedFetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
     globalThis.fetch(input, { ...init, dispatcher } as unknown as RequestInit)) as typeof fetch;
 
-  const agents = createWebSocketAgents(proxy, timeoutMs);
+  const agents = createWebSocketAgents(proxy, timeoutMs, canary);
 
   return {
     fetch: proxiedFetch,
@@ -273,6 +299,7 @@ export function createHiddenServiceTransport(
       return new (WSClass as any)(url, { agent: secure ? agents.https : agents.http });
     },
     dispatcher,
+    canaryHits: () => canary.hits,
     async close(): Promise<void> {
       agents.http.destroy();
       agents.https.destroy();
@@ -307,7 +334,8 @@ export function createChainRpcTransport(
  */
 function createWebSocketAgents(
   proxy: { host: string; port: number; username?: string },
-  timeoutMs: number
+  timeoutMs: number,
+  canary: { hits: number }
 ): { http: httpModule.Agent; https: httpsModule.Agent } {
   const http = nodeRequire('node:http') as typeof httpModule;
   const https = nodeRequire('node:https') as typeof httpsModule;
@@ -320,7 +348,13 @@ function createWebSocketAgents(
       opts: httpModule.ClientRequestArgs,
       callback?: (err: Error | null, stream: streamModule.Duplex) => void
     ): streamModule.Duplex | null | undefined {
-      socksConnect(proxy, { host: String(opts.host), port: portFor('http:', opts.port) }, timeoutMs).then(
+      const port = portFor('http:', opts.port);
+      if (isCanary(String(opts.host), port)) {
+        canary.hits += 1;
+        callback?.(new Error('proxy canary: dial refused'), undefined as unknown as streamModule.Duplex);
+        return undefined;
+      }
+      socksConnect(proxy, { host: String(opts.host), port }, timeoutMs).then(
         (socket) => callback?.(null, socket),
         (err: Error) => callback?.(err, undefined as unknown as streamModule.Duplex)
       );
@@ -334,7 +368,13 @@ function createWebSocketAgents(
       callback?: (err: Error | null, stream: streamModule.Duplex) => void
     ): streamModule.Duplex | null | undefined {
       const fail = (err: Error): void => callback?.(err, undefined as unknown as streamModule.Duplex);
-      socksConnect(proxy, { host: String(opts.host), port: portFor('https:', opts.port) }, timeoutMs).then(
+      const port = portFor('https:', opts.port);
+      if (isCanary(String(opts.host), port)) {
+        canary.hits += 1;
+        fail(new Error('proxy canary: dial refused'));
+        return undefined;
+      }
+      socksConnect(proxy, { host: String(opts.host), port }, timeoutMs).then(
         (socket) => {
           const secure = tls.connect({
             socket,

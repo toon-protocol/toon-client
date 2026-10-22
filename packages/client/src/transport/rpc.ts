@@ -1,14 +1,12 @@
 /**
  * The one place viem is told to send chain RPC through the hidden-service proxy.
  *
- * viem's HTTP transport calls the **global** `fetch` and accepts no injected one.
- * Its only opening is `fetchOptions`, which it merges into the `fetch` init — and
- * Node's `fetch` reads a `dispatcher` from there. So a dispatcher is how, and the
- * only how, chain traffic joins the packet traffic inside the overlay (ADR 0002).
+ * viem's HTTP transport takes an injected `fetchFn` (viem `^2.37.2`). Handing it
+ * the proxied fetch means chain traffic joins the packet traffic inside the
+ * overlay (ADR 0002) through the same fetch the canary tests (ADR 0005).
  *
- * Browser-safe: this module imports nothing but viem. The dispatcher itself is
- * built in `./socks.js`, which is Node-only and dynamically imported; here it is
- * an opaque `unknown` that is either present or not.
+ * Browser-safe: this module imports nothing but viem. The proxied fetch itself is
+ * built in `./socks.js`, which is Node-only and dynamically imported.
  */
 import { http } from 'viem';
 
@@ -38,24 +36,24 @@ export const PROXIED_RPC_DEFAULTS = {
 } as const satisfies Required<RpcTransportOptions>;
 
 /**
- * A viem HTTP transport for `url`, bound to `dispatcher` when there is one.
+ * A viem HTTP transport for `url`, bound to `fetchFn` when there is one.
  *
- * `undefined` dispatcher means clearnet, and produces exactly the transport this
- * package built before hidden services existed. A dispatcher also brings
+ * `undefined` means clearnet, and produces exactly the transport this
+ * package built before hidden services existed. A proxied fetch also brings
  * {@link PROXIED_RPC_DEFAULTS}, under anything the caller set explicitly.
  */
 export function rpcTransport(
   url: string,
-  dispatcher: unknown | undefined,
+  fetchFn: typeof fetch | undefined,
   options: RpcTransportOptions = {}
 ): ReturnType<typeof http> {
   const { timeout, retryCount, retryDelay } =
-    dispatcher === undefined ? options : { ...PROXIED_RPC_DEFAULTS, ...definedOnly(options) };
+    fetchFn === undefined ? options : { ...PROXIED_RPC_DEFAULTS, ...definedOnly(options) };
   return http(url, {
     ...(timeout !== undefined ? { timeout } : {}),
     ...(retryCount !== undefined ? { retryCount } : {}),
     ...(retryDelay !== undefined ? { retryDelay } : {}),
-    ...(dispatcher !== undefined ? { fetchOptions: { dispatcher } as RequestInit } : {}),
+    ...(fetchFn !== undefined ? { fetchFn } : {}),
   });
 }
 

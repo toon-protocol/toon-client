@@ -10,7 +10,7 @@ Solana RPC, and an `http.Agent` to `ws` for the BTP socket. If any one hook is s
 that path dials clearnet and still works, so the client looks healthy while it de-anonymises its
 payer (#667). Whether a hook is honoured is a property of the installed Node and libraries, which do
 not change for the life of a process. So `ToonClient.create` sends one **canary** down each path,
-through the very objects real traffic will use, to a closed loopback port. The proxy hook
+through the very objects real traffic will use, to a closed loopback port (port 2: `fetch` refuses port 1 outright). The proxy hook
 recognises the canary, notes that it fired and refuses the dial. A canary the hook never saw is a
 **proxy bypass**, and `create` throws `ProxyBypassError` (`PROXY_BYPASS`) naming the path and the
 fix. Either way nothing leaves the machine, and a client without a `socksProxy` runs no canary.
