@@ -46,3 +46,10 @@ Chain RPC now follows connector ADR 0073, which made the same call for the conne
   by its own signature, not reported as a failure.
 - **Still fail closed.** A proxy that is down fails the call. Nothing dials the RPC directly unless
   `proxyRpc: false` says to.
+
+## Amended by ADR 0005: viem takes an injected fetch
+
+viem's `http` transport has accepted a `fetchFn` since 2.37, so "accepts no injected one" above is
+no longer true. EVM RPC now rides the proxy through `fetchFn`, the same proxied fetch the client edge
+and Solana use, which lets one canary prove all three are honoured before the client starts.
+`undici` is still needed: that fetch is built on its dispatcher.

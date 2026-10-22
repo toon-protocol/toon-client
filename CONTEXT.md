@@ -102,3 +102,8 @@ A client that sends every byte (client edge, BTP socket and each chain's RPC) th
 proxy to hide its *own* address, whatever the connector is. Configured by a `socksProxy` beside a
 clearnet connector (TOON_Network#167).
 _Avoid_: Anonymous client, private payer
+
+**Proxy bypass**:
+A byte a hidden payer meant to send through its SOCKS5h proxy that leaves by any other route. The
+one failure a hidden payer must never have: when the client cannot rule it out, it refuses to start.
+_Avoid_: Leak, fail-open, DNS leak (a narrower case)
