@@ -201,7 +201,7 @@ export class ToonClient implements ToonClientLike {
     // An override is the payer's own string, so a `.anyone` one with no proxy is
     // knowable now — before the first `GET` and before any DNS query.
     for (const override of Object.values(base.carriageEndpoints)) {
-      assertReachableWithoutProxy(override, base.socksProxy);
+      assertReachableWithoutProxy(override, base.socksProxy, 'override');
     }
     // Before the first `GET`: a hidden-service connector is unreachable without
     // its proxy, and the very first thing this method does is dial. Building the
@@ -454,7 +454,7 @@ export class ToonClient implements ToonClientLike {
    * this fails loudly, naming the proxy, before anything dials.
    */
   private assertEndpointReachable(endpoint: string): void {
-    assertReachableWithoutProxy(endpoint, this.config.socksProxy);
+    assertReachableWithoutProxy(endpoint, this.config.socksProxy, 'published');
   }
 
   /** The port {@link send} runs against. */
@@ -660,18 +660,29 @@ function pickChain(config: ResolvedConfig, description: NodeSelfDescription): Ch
   return match.chain;
 }
 
-/** Refuse a hidden-service endpoint when there is no proxy to reach it through. */
+/**
+ * Refuse a hidden-service endpoint when there is no proxy to reach it through,
+ * naming who chose it: the connector, or the caller's `carriageEndpoints`.
+ */
 function assertReachableWithoutProxy(
   endpoint: string,
-  socksProxy: string | undefined
+  socksProxy: string | undefined,
+  chosenBy: 'published' | 'override'
 ): void {
   if (socksProxy !== undefined) return;
   if (!isHiddenServiceUrl(endpoint)) return;
+  const [subject, alternative] =
+    chosenBy === 'published'
+      ? [
+          'The connector published the endpoint',
+          'ask the operator for a clearnet endpoint',
+        ]
+      : ['The carriage endpoint override', 'use a clearnet override'];
   throw new ConfigError(
-    `The connector published the endpoint ${JSON.stringify(endpoint)}, which is a ` +
+    `${subject} ${JSON.stringify(endpoint)}, which is a ` +
       'hidden service, but this client has no `socksProxy` to reach it through. ' +
       'Set one to a running Anyone Protocol `anon` daemon (e.g. ' +
-      '"socks5h://127.0.0.1:9050"), or ask the operator for a clearnet endpoint.'
+      `"socks5h://127.0.0.1:9050"), or ${alternative}.`
   );
 }
 

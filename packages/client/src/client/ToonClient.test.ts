@@ -815,7 +815,10 @@ describe('ToonClient — carriageEndpoints', () => {
     vi.useRealTimers();
   });
 
-  /** Publishes `endpoints`, records every request, and fails any dial to `localhost:4000`. */
+  const BTP_OVERRIDE = 'ws://localhost:4001/ilp/btp';
+  const BTP_PUBLISHED = 'ws://connector-a:3000/ilp/btp';
+
+  /** Publishes `endpoints`, records every request, and fails any dial off the client edge. */
   function watched(
     fake: FakeTerminatingConnector,
     endpoints: Record<string, string>
@@ -826,8 +829,7 @@ describe('ToonClient — carriageEndpoints', () => {
       const url = String(input);
       const method = (init?.method ?? 'GET').toUpperCase();
       calls.push({ method, url });
-      if (url.startsWith('http://localhost:4000'))
-        throw new TypeError('fetch failed');
+      if (!url.startsWith(fake.endpoint)) throw new TypeError('fetch failed');
       const response = await inner(input, init);
       if (method !== 'GET' || !(url.endsWith('/ilp') || url.endsWith('/ilp/')))
         return response;
@@ -869,6 +871,125 @@ describe('ToonClient — carriageEndpoints', () => {
     );
   });
 
+  it('still reads the self-description, price and seal key from the client edge', async () => {
+    const fake = fixture();
+    fake.routePrice = 0n;
+    const { calls, fetchFn } = watched(fake, { httpEndpoint: PUBLISHED });
+    const client = await create(fake, {
+      fetch: fetchFn,
+      carriageEndpoints: { http: OVERRIDE },
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const settled = client.send('g.fake.route').catch(() => undefined);
+    await vi.runAllTimersAsync();
+    await settled;
+    const reads = calls.filter((c) => c.method === 'GET');
+    expect(reads.length).toBeGreaterThan(0);
+    for (const read of reads)
+      expect(read.url.startsWith(fake.endpoint)).toBe(true);
+    expect(
+      calls.filter((c) => c.method === 'POST').every((c) => c.url === OVERRIDE)
+    ).toBe(true);
+  });
+
+  it('dials the BTP override, and its HTTP fallback uses the HTTP override', async () => {
+    const fake = fixture();
+    const { calls, fetchFn } = watched(fake, {
+      httpEndpoint: PUBLISHED,
+      btpEndpoint: BTP_PUBLISHED,
+    });
+    const dialed: string[] = [];
+    const client = await create(fake, {
+      fetch: fetchFn,
+      carriageEndpoints: { http: OVERRIDE, btp: BTP_OVERRIDE },
+      createWebSocket: (url: string): never => {
+        dialed.push(url);
+        throw new Error('WebSocket connection error: ECONNREFUSED');
+      },
+      transport: 'btp',
+      autoOpenChannel: false,
+      btp: { maxReconnectAttempts: 0 },
+    });
+    adoptChannel(client, fake);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const settled = client.send('g.fake.route').then(
+      () => expect.fail('send() resolved'),
+      (e: unknown) => e
+    );
+    await vi.runAllTimersAsync();
+    const error = (await settled) as NetworkError;
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(dialed.length).toBeGreaterThan(0);
+    expect(dialed.every((url) => url.startsWith(BTP_OVERRIDE))).toBe(true);
+    expect(error.endpoint).toBe(OVERRIDE);
+    const posts = calls.filter((c) => c.method === 'POST').map((c) => c.url);
+    expect(posts).toContain(OVERRIDE);
+    expect(posts).not.toContain(PUBLISHED);
+  });
+
+  it('falls back to the published HTTP endpoint when only BTP is overridden', async () => {
+    const fake = fixture();
+    const { calls, fetchFn } = watched(fake, {
+      httpEndpoint: PUBLISHED,
+      btpEndpoint: BTP_PUBLISHED,
+    });
+    const client = await create(fake, {
+      fetch: fetchFn,
+      carriageEndpoints: { btp: BTP_OVERRIDE },
+      createWebSocket: (): never => {
+        throw new Error('WebSocket connection error: ECONNREFUSED');
+      },
+      transport: 'btp',
+      autoOpenChannel: false,
+      btp: { maxReconnectAttempts: 0 },
+    });
+    adoptChannel(client, fake);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const settled = client.send('g.fake.route').then(
+      () => expect.fail('send() resolved'),
+      (e: unknown) => e
+    );
+    await vi.runAllTimersAsync();
+    const error = (await settled) as NetworkError;
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error.endpoint).toBe(PUBLISHED);
+    expect(calls.some((c) => c.method === 'POST' && c.url === PUBLISHED)).toBe(
+      true
+    );
+  });
+
+  it('names the BTP override and the published BTP endpoint when BTP fails with no fallback', async () => {
+    const fake = fixture();
+    fake.requiredTransport = 'btp';
+    const { fetchFn } = watched(fake, { btpEndpoint: BTP_PUBLISHED });
+    const client = await create(fake, {
+      fetch: fetchFn,
+      carriageEndpoints: { btp: BTP_OVERRIDE },
+      createWebSocket: (): never => {
+        throw new Error('WebSocket connection error: ECONNREFUSED');
+      },
+      autoOpenChannel: false,
+      btp: { maxReconnectAttempts: 0 },
+    });
+    adoptChannel(client, fake);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const settled = client.send('g.fake.route').then(
+      () => expect.fail('send() resolved'),
+      (e: unknown) => e
+    );
+    await vi.runAllTimersAsync();
+    const error = (await settled) as NetworkError;
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error.message).toContain(
+      `${BTP_OVERRIDE} (carriage endpoint override; the connector publishes ${BTP_PUBLISHED})`
+    );
+    expect(error.endpoint).toBe(BTP_OVERRIDE);
+  });
+
   it('refuses a .anyone override with no socksProxy before anything dials', async () => {
     const fake = fixture();
     const { calls, fetchFn } = watched(fake, {});
@@ -877,7 +998,7 @@ describe('ToonClient — carriageEndpoints', () => {
         fetch: fetchFn,
         carriageEndpoints: { http: 'http://abcdefghijklmnop.anyone/ilp' },
       })
-    ).rejects.toThrow(/hidden service/);
+    ).rejects.toThrow(/carriage endpoint override .*hidden service/);
     expect(calls).toHaveLength(0);
   });
 });

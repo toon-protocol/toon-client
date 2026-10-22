@@ -30,6 +30,7 @@ import { ConfigError } from './errors.js';
 import { assertRoutableHsHostname, isHiddenServiceUrl } from '../transport/hs-hostname.js';
 import { validateSocks5hUrl } from '../transport/socks-url.js';
 import type {
+  CarriageEndpoints,
   ChainKind,
   KeyDerivationScheme,
   ToonClientConfig,
@@ -78,7 +79,7 @@ export interface ResolvedConfig {
   /** The `socks5h://` proxy to reach it through, when there is one. */
   socksProxy: string | undefined;
   /** Validated per-carriage replacements for the published endpoints. */
-  carriageEndpoints: { http?: string; btp?: string };
+  carriageEndpoints: CarriageEndpoints;
   /** Whether chain RPC rides that proxy too (ADR 0002). */
   proxyRpc: boolean;
   /**
@@ -473,18 +474,19 @@ function resolveChannelStore(store: string | ChannelStore | undefined): {
 
 /** Each override must be an absolute URL on its carriage's scheme; the path is not checked. */
 function resolveCarriageEndpoints(
-  overrides: { http?: string; btp?: string } | undefined
-): { http?: string; btp?: string } {
-  const out: { http?: string; btp?: string } = {};
+  overrides: CarriageEndpoints | undefined
+): CarriageEndpoints {
+  const out: CarriageEndpoints = {};
   if (overrides === undefined) return out;
   const schemes = { http: ['http:', 'https:'], btp: ['ws:', 'wss:'] } as const;
   for (const kind of ['http', 'btp'] as const) {
     const value = overrides[kind];
     if (value === undefined) continue;
     const label = `carriageEndpoints.${kind}`;
+    const trimmed = value.trim();
     let url: URL;
     try {
-      url = new URL(typeof value === 'string' ? value.trim() : '');
+      url = new URL(trimmed);
     } catch {
       throw new ConfigError(
         `${label} must be an absolute URL; got ${JSON.stringify(value)}.`
@@ -495,7 +497,7 @@ function resolveCarriageEndpoints(
         `${label} must be a ${schemes[kind].join(' or ')} URL; got ${JSON.stringify(value)}.`
       );
     }
-    out[kind] = value.trim();
+    out[kind] = trimmed;
   }
   return out;
 }

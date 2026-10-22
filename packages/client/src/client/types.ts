@@ -58,6 +58,17 @@ export type TransportPreference = 'auto' | 'http' | 'btp';
  */
 export type { KeyDerivationScheme };
 
+/**
+ * A payer's per-carriage replacements for the carriage endpoints a connector
+ * publishes (ADR 0006).
+ */
+export interface CarriageEndpoints {
+  /** Replaces the published `httpEndpoint`. */
+  http?: string;
+  /** Replaces the published `btpEndpoint`. */
+  btp?: string;
+}
+
 export interface ToonClientConfig {
   /**
    * The connector's client-edge base URL. A trailing `/ilp` is normalized away,
@@ -191,7 +202,7 @@ export interface ToonClientConfig {
    *
    * The `http` override also serves the HTTP fallback beneath a BTP session.
    */
-  carriageEndpoints?: { http?: string; btp?: string };
+  carriageEndpoints?: CarriageEndpoints;
   /**
    * Send chain RPC through `socksProxy` as well as the packets. Default `true`.
    *

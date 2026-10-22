@@ -25,7 +25,10 @@
 
 import type { NodeSelfDescription } from '../connector/self-description.js';
 import { requiredTransportFor } from '../connector/self-description.js';
-import type { TransportPreference } from '../client/types.js';
+import type {
+  CarriageEndpoints,
+  TransportPreference,
+} from '../client/types.js';
 import { TransportRequiredError } from '../client/errors.js';
 
 /**
@@ -87,7 +90,7 @@ export function selectTransport(
   preference: TransportPreference = 'auto',
   baseUrl: string | undefined = description.readFrom,
   destination?: string,
-  overrides: { http?: string; btp?: string } = {}
+  overrides: CarriageEndpoints = {}
 ): TransportChoice {
   // An override counts as "this carriage has an endpoint", but never changes
   // which carriage a route requires (ADR 0006).

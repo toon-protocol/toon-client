@@ -32,6 +32,7 @@ import { join } from 'node:path';
 import { generateRandomIdentity, type KeyDerivationScheme } from '../keys/KeyDerivation.js';
 import type { ChainKind } from '../channel/types.js';
 import type {
+  CarriageEndpoints,
   ToonClientConfig,
   ToonClientLike,
   TransportPreference,
@@ -328,24 +329,34 @@ export async function resolveKeyMaterial(
   );
 }
 
+/** `--http-endpoint` / `--btp-endpoint`, as the library's `carriageEndpoints`; unset when neither is. */
+export function carriageEndpointsOf(
+  settings: CliSettings
+): CarriageEndpoints | undefined {
+  if (settings.httpEndpoint === undefined && settings.btpEndpoint === undefined)
+    return undefined;
+  return {
+    ...(settings.httpEndpoint !== undefined
+      ? { http: settings.httpEndpoint }
+      : {}),
+    ...(settings.btpEndpoint !== undefined
+      ? { btp: settings.btpEndpoint }
+      : {}),
+  };
+}
+
 /** Turn resolved settings and key material into the library's own config object. */
 export function buildClientConfig(
   settings: CliSettings,
   keys: KeyMaterial
 ): ToonClientConfig {
+  const carriageEndpoints = carriageEndpointsOf(settings);
   const base: ToonClientConfig = {
     connector: settings.connector,
     channelStore: settings.channelStore,
     transport: settings.transport,
     ...(settings.socksProxy !== undefined ? { socksProxy: settings.socksProxy } : {}),
-    ...(settings.httpEndpoint !== undefined || settings.btpEndpoint !== undefined
-      ? {
-          carriageEndpoints: {
-            ...(settings.httpEndpoint !== undefined ? { http: settings.httpEndpoint } : {}),
-            ...(settings.btpEndpoint !== undefined ? { btp: settings.btpEndpoint } : {}),
-          },
-        }
-      : {}),
+    ...(carriageEndpoints !== undefined ? { carriageEndpoints } : {}),
     // See this module's docs: a command never opens a channel as a side effect.
     autoOpenChannel: false,
     ...(settings.chain !== undefined ? { chain: settings.chain } : {}),
