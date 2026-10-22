@@ -119,9 +119,9 @@ export class FakeTerminatingConnector {
   };
 
   /**
-   * What every destination costs here — the flat per-handler price ADR 0020
-   * makes a route's whole fee. `null` means this connector terminates no
-   * matching route, which it reports as the `404` a real one does.
+   * What every destination costs here — the per-handler base price ADR 0020
+   * gives a route. `null` means this connector terminates no matching route,
+   * which it reports as the `404` a real one does.
    */
   routePrice: bigint | null = 1000n;
 

@@ -207,6 +207,7 @@ function payloadFor(result: SendResult): unknown {
 export async function run(ctx: CommandContext): Promise<number> {
   const request = await buildRequest(ctx);
   const amountFlag = stringOption(ctx.values, 'amount');
+  const sealToFlag = stringOption(ctx.values, 'seal-to');
 
   const client = await ctx.client();
   // The destination is optional: with none, the packet goes to the address the
@@ -222,7 +223,12 @@ export async function run(ctx: CommandContext): Promise<number> {
   const result = await client.send(
     destination,
     request,
-    amountFlag === undefined ? undefined : { amount: BigInt(amountFlag) }
+    amountFlag === undefined && sealToFlag === undefined
+      ? undefined
+      : {
+          ...(amountFlag === undefined ? {} : { amount: BigInt(amountFlag) }),
+          ...(sealToFlag === undefined ? {} : { sealTo: sealToFlag }),
+        }
   );
 
   const description = await client.describe();

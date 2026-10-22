@@ -10,9 +10,14 @@ connector's.
 ### The nodes
 
 **Connector**:
-A paid reverse proxy that fronts an ordinary HTTP app, charges a flat price per route, and hands
-that app a request that was already paid for.
+A paid reverse proxy that fronts an ordinary HTTP app, charges a base price plus an optional
+per-kibibyte rate per route, and hands that app a request that was already paid for.
 _Avoid_: Proxy, relay, gateway, node
+
+**Agent node**:
+One agent's connector, relay and store, run together with the agent as their operator. Always two
+words: a bare "node" names nothing here, and is still not a connector.
+_Avoid_: Node, full node, hub, stack
 
 **Route**:
 An ILP address prefix a connector serves, with a price attached. Longest matching prefix wins.
@@ -97,3 +102,8 @@ A client that sends every byte (client edge, BTP socket and each chain's RPC) th
 proxy to hide its *own* address, whatever the connector is. Configured by a `socksProxy` beside a
 clearnet connector (TOON_Network#167).
 _Avoid_: Anonymous client, private payer
+
+**Proxy bypass**:
+A byte a hidden payer meant to send through its SOCKS5h proxy that leaves by any other route. The
+one failure a hidden payer must never have: when the client cannot rule it out, it refuses to start.
+_Avoid_: Leak, fail-open, DNS leak (a narrower case)
