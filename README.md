@@ -4,8 +4,9 @@ Pay for an HTTP request, per request, in stablecoin — from Node.js or from the
 
 A **connector** is a paid reverse proxy: it fronts an ordinary HTTP app, charges a base price
 plus an optional per-kibibyte rate per route, and hands that app a request that was already paid
-for. This repository is the payer. It seals your request into a packet addressed to a route, attaches a signed voucher on an
-x402 `batch-settlement` channel you funded on chain, and gives you back the app's HTTP response.
+for. This repository is the payer. It seals your request into a packet addressed to a route,
+attaches a signed voucher on an x402 `batch-settlement` channel you funded on chain, and gives
+you back the app's HTTP response.
 
 ```text
   you                                connector                          app

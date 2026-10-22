@@ -3,8 +3,9 @@
  *
  * A **connector** is a paid reverse proxy: it fronts an ordinary HTTP app,
  * charges a base price plus an optional per-kibibyte rate per route, and
- * hands that app a request which was already paid for. This package is the payer. It seals your request into an
- * ILP packet addressed to a route, attaches a signed voucher on an x402
+ * hands that app a request which was already paid for. This package is the
+ * payer. It seals your request into an ILP packet addressed to a route,
+ * attaches a signed voucher on an x402
  * `batch-settlement` channel you funded on chain, and gives you back the app's
  * HTTP response.
  *

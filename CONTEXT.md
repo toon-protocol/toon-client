@@ -10,8 +10,8 @@ connector's.
 ### The nodes
 
 **Connector**:
-A paid reverse proxy that fronts an ordinary HTTP app, charges a base price plus an optional per-kibibyte rate per route, and hands
-that app a request that was already paid for.
+A paid reverse proxy that fronts an ordinary HTTP app, charges a base price plus an optional
+per-kibibyte rate per route, and hands that app a request that was already paid for.
 _Avoid_: Proxy, relay, gateway, node
 
 **Route**:

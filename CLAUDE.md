@@ -5,9 +5,9 @@ stablecoin: it seals the request into a packet addressed to a route, attaches a 
 payment channel the user opened on chain, and returns the app's HTTP response. It ships as a
 library and as the `toon-client` command.
 
-A **connector** is a paid reverse proxy — it fronts an ordinary HTTP app, charges a base price plus an
-optional per-kibibyte rate per route, and hands that app a request that was already paid for. This repository is the payer, and
-only the payer.
+A **connector** is a paid reverse proxy — it fronts an ordinary HTTP app, charges a base price
+plus an optional per-kibibyte rate per route, and hands that app a request that was already paid
+for. This repository is the payer, and only the payer.
 
 ## Layout
 

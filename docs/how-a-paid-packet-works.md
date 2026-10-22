@@ -70,6 +70,7 @@ per handler — an app that wants to charge differently exposes more handlers �
 import { chargeFor } from '@toon-protocol/client';
 
 const terms = await client.routePrice('g.toon.store'); // { price: 1000n, pricePerKib: 10n }, or null
+// sealedBytes is the sealed packet's length (`exchange.data.length`, Step 3)
 const cost = terms && chargeFor(terms, sealedBytes);   // 1010n for a packet of up to 1 KiB
 ```
 
@@ -126,7 +127,7 @@ It is a description of an HTTP message, not an HTTP message: the app is handed o
 nothing on the wire is text to be parsed. `target` is resolved strictly *beneath* the route's own
 configured handler path and can never replace it — `''` and `'/'` both address the handler, and
 an absolute path, a `..` segment, a scheme, an authority or a percent-encoded equivalent of any
-of those is refused `F00` before the app is called. That is what keeps "one handler, one price"
+of those is refused `F00` before the app is called. That is what keeps "one handler, one set of terms"
 true in the presence of a sender-chosen target.
 
 **The gift wrap**, around it:
