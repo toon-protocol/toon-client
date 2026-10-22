@@ -382,7 +382,7 @@ describe('send', () => {
 
   it('passes --amount through as a bigint', async () => {
     const result = await run(['send', 'g.toon.store', '--amount', '2500']);
-    expect(result.client.callsTo('send')[0]?.args[2]).toEqual({ amount: 2500n });
+    expect(result.client.callsTo('send')[0]?.args[2]).toStrictEqual({ amount: 2500n });
   });
 
   it('passes --seal-to through unchanged as sealTo', async () => {

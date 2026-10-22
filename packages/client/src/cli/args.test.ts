@@ -85,6 +85,8 @@ describe('usage', () => {
     const text = usage('send');
     expect(text).toContain('-H, --header');
     expect(text).toContain('--json-body');
+    expect(text).toContain('--seal-to URL|KEY');
+    expect(text).toContain('terminates the route');
     expect(text).toContain('--connector');
   });
 });
