@@ -61,13 +61,20 @@ are never confused.
 
 ## Step 2 — ask the route what it costs
 
-There is no per-byte rate to multiply. A price is **flat per handler** — one handler, one price,
-and an app that wants to charge differently exposes more handlers — so the route table *is* the
-price list, and only the connector can state it.
+A route's price is a **base price** plus an optional **rate per kibibyte of the sealed packet**
+(not of the request body; a kibibyte that has been started counts in full). It is one set of terms
+per handler — an app that wants to charge differently exposes more handlers — so the route table
+*is* the price list, and only the connector can state it.
 
 ```ts
-const price = await client.price('g.toon.store'); // 1000n base units (0.001 USDC), or null
+import { chargeFor } from '@toon-protocol/client';
+
+const terms = await client.routePrice('g.toon.store'); // { price: 1000n, pricePerKib: 10n }, or null
+const cost = terms && chargeFor(terms, sealedBytes);   // 1010n for a packet of up to 1 KiB
 ```
+
+`client.price('g.toon.store')` returns the base price only (`1000n`, 0.001 USDC). It is not a
+budget when the route meters by size.
 
 `null` means the connector serves no route matching that destination. That is an answer, not a
 failure, and it is distinct from the `NetworkError` an unreachable edge raises; `send()` raises

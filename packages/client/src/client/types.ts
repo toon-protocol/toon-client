@@ -3,7 +3,7 @@
  * send, and what comes back.
  *
  * One idea underlies all of it. A **connector** is a paid reverse proxy: it
- * fronts an ordinary HTTP app, charges a flat price per route, and hands the app
+ * fronts an ordinary HTTP app, charges a base price plus an optional per-kibibyte rate per route, and hands the app
  * a request that was already paid for. So the client's central operation is not
  * "publish" or "post" — it is {@link ToonClientLike.send}, which puts one HTTP
  * request through a connector and gives you back the app's HTTP response, having

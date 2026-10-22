@@ -529,9 +529,10 @@ function priceCacheKeyPrefix(base: string): string {
  * are how a stale answer is dropped.
  *
  * A price is cached the same way and for the same reason (toon-client#452):
- * under ADR 0020 a route's price is FLAT — one handler, one price — so it does
- * not vary with what is being sent, and asking again per packet would buy
- * nothing but latency.
+ * under ADR 0020 a route has one set of terms — one handler, one base price and
+ * an optional per-KiB rate — and the terms do not vary with what is being sent
+ * (only the arithmetic over the sealed size does), so asking again per packet
+ * would buy nothing but latency.
  */
 export class ConnectorEdgeClient {
   private readonly fetchImpl: typeof fetch;
@@ -791,8 +792,8 @@ export class ConnectorEdgeClient {
    * a transport failure throws {@link NetworkError} instead, so a caller can
    * always tell "not mine" from "could not ask".
    *
-   * Fetched once per (endpoint, destination) and reused. ADR 0020 makes a
-   * price flat per handler, so it does not vary with the packet — a route
+   * Fetched once per (endpoint, destination) and reused. ADR 0020 gives a
+   * handler one set of terms, which do not vary with the packet — a route
    * being repriced is an operator event, and {@link invalidateRoutePrice} is
    * how a caller reacts to one.
    *
