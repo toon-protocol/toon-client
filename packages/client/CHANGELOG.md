@@ -1,5 +1,13 @@
 # @toon-protocol/client
 
+## 5.1.1
+
+### Patch Changes
+
+- 621556e: A `NetworkError` raised while delivering a packet now names the URL it tried to reach — the HTTP `POST /ilp` endpoint or the BTP `ws(s)://` URL — and says when the connector published it in its self-description. The original error stays as `cause`, the `code` is unchanged, and the URL is also on `NetworkError.endpoint`.
+- ef9bd4c: Docs: a route's price is a base price plus an optional per-kibibyte rate, not a flat figure.
+- a8ca06b: `toon send --seal-to <url|key>` passes `SendOptions.sealTo` through, so the CLI can pay a route the addressed connector only forwards.
+
 ## 5.1.0
 
 ### Minor Changes
