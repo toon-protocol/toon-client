@@ -174,7 +174,7 @@ jobs:
       # vitest plus node startup — inside the timed window, and small against the
       # 185s baseline's 20% tolerance.
       - name: Test the workspace root (the files `pnpm -r` cannot see)
-        run: npx vitest run .sandcastle/ .github/rig-web-redirect/
+        run: npx vitest run .sandcastle/ .github/rig-web-redirect/ .github/skill-check/
 
       - name: Gate no-regression guard
         run: |
@@ -634,6 +634,44 @@ jobs:
           PR_CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
         run: .github/scripts/no-op-merge-guard.sh
 
+  # Do toon-plugins' `toon-client` skills still describe the CLI this commit builds? (#752)
+  #
+  # toon-plugins `main` is fetched UNPINNED, on purpose. toon-plugins gates its own side (its
+  # skills against the low end of their range, from npm), and `main` there is gated, so a red
+  # here means THIS repo moved: a command was removed or renamed, or the version left the
+  # skills' `toon-client` range. A planned break (a command renamed in a major) keeps this red
+  # until the skill and its range are updated in toon-plugins — land that change first. There is
+  # no pin because this package ships no copy of the skills: a pin would only be a SHA to bump,
+  # and a stale one misses a command a skill started using after it.
+  toon-plugins-skills:
+    name: toon-plugins skills name real commands
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout toon-protocol/toon-plugins (main, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: toon-protocol/toon-plugins
+          ref: main
+          path: toon-plugins
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm --filter @toon-protocol/client build
+
+      - name: Check every command the skills name against the built CLI
+        run: npx tsx .github/skill-check/main.ts toon-plugins
+
   # Fleet-wide aggregate required check per toon-meta#279. This job is the
   # single check that branch protection requires. `if: always()` makes it run
   # even when upstream jobs fail, are skipped, or are cancelled — a skipped or
@@ -650,6 +688,7 @@ jobs:
         batch-settlement-exit,
         integration,
         no-op-merge,
+        toon-plugins-skills,
       ]
     if: always()
     steps:
@@ -661,6 +700,7 @@ jobs:
           BATCH_SETTLEMENT_EXIT_RESULT: ${{ needs.batch-settlement-exit.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           NO_OP_MERGE_RESULT: ${{ needs.no-op-merge.result }}
+          TOON_PLUGINS_SKILLS_RESULT: ${{ needs.toon-plugins-skills.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           echo "event:                 $EVENT_NAME"
@@ -670,6 +710,7 @@ jobs:
           echo "batch-settlement-exit: $BATCH_SETTLEMENT_EXIT_RESULT"
           echo "integration:           $INTEGRATION_RESULT"
           echo "no-op-merge:           $NO_OP_MERGE_RESULT"
+          echo "toon-plugins-skills:   $TOON_PLUGINS_SKILLS_RESULT"
 
           ok=true
 
@@ -709,6 +750,12 @@ jobs:
           # "no merge result to evaluate", so it is unconditional here.
           if [ "$NO_OP_MERGE_RESULT" != "success" ]; then
             echo "::error::no-op merge guard result is '$NO_OP_MERGE_RESULT' (expected 'success') — merging this PR would change nothing"
+            ok=false
+          fi
+
+          # No `if:` on the skill check either, so a skip is never a pass.
+          if [ "$TOON_PLUGINS_SKILLS_RESULT" != "success" ]; then
+            echo "::error::toon-plugins-skills result is '$TOON_PLUGINS_SKILLS_RESULT' (expected 'success') — a toon-plugins skill names a command or range this build does not have"
             ok=false
           fi
 

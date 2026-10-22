@@ -67,6 +67,7 @@ export default tseslint.config(
       '.claude/**',
       '.sandcastle/**',
       '.github/rig-web-redirect/**',
+      '.github/skill-check/**',
       'packages/memvid-node/index.d.ts',
     ],
   }

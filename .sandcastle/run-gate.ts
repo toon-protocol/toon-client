@@ -61,10 +61,10 @@ export const GATE_STEPS: readonly GateStep[] = [
   },
   { name: 'test', command: 'pnpm -r test --if-present' },
   // `pnpm -r` skips the workspace root, and the root vitest config is the only one that
-  // covers `.sandcastle/` and `.github/rig-web-redirect/`.
+  // covers `.sandcastle/`, `.github/rig-web-redirect/` and `.github/skill-check/`.
   {
     name: 'root test',
-    command: 'npx vitest run .sandcastle/ .github/rig-web-redirect/',
+    command: 'npx vitest run .sandcastle/ .github/rig-web-redirect/ .github/skill-check/',
   },
   {
     name: 'gate guard',
