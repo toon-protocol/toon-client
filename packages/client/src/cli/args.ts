@@ -417,6 +417,16 @@ export function parseCommandLine(argv: string[]): ParsedCommandLine {
   }
 
   const rest = positionals.slice(1);
+  // Checked even under `--help`: `channel refill --help` answering 0 would say a subcommand
+  // exists that does not, and the toon-plugins skill check asks exactly that (#752).
+  const sub = rest[0];
+  if (
+    command === 'channel' &&
+    sub !== undefined &&
+    !(CHANNEL_SUBCOMMANDS as readonly string[]).includes(sub)
+  ) {
+    throw new UsageError(`channel needs one of: ${CHANNEL_SUBCOMMANDS.join(', ')}`, command);
+  }
   if (!boolOption(values, 'help')) {
     for (const name of Object.keys(values)) {
       if (values[name] === undefined) continue;

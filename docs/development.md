@@ -176,6 +176,13 @@ opt-in ones it does not run. Its `batch-settlement-exit` job separately installs
 Solana CLI and runs `batch-settlement-exit` against real local chains, seeded from a
 toon-protocol/infra checkout. A change to `packages/client` without a changeset fails its own gate.
 
+Its `toon-plugins-skills` job checks out toon-plugins `main`, unpinned, and runs
+`.github/skill-check/main.ts` against the CLI it just built. Every `toon-client` command a skill in
+the `toon-client` plugin names must answer `--help`, no skill may name the old `toon` binary, and
+this package's version must fall inside each `SKILL.md`'s `toon-client` frontmatter range. When
+this job goes red, this repo changed something the skills use. For a planned break, update the
+skill and its range in toon-plugins first.
+
 ## Release
 
 Releases go through [changesets](https://github.com/changesets/changesets), published by CI with

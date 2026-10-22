@@ -26,7 +26,7 @@ describe('GATE_STEPS', () => {
       'pnpm -r build',
       'pnpm -r --no-bail run typecheck',
       'pnpm -r test --if-present',
-      'npx vitest run .sandcastle/ .github/rig-web-redirect/',
+      'npx vitest run .sandcastle/ .github/rig-web-redirect/ .github/skill-check/',
       'npx tsx .sandcastle/gate-guard.ts',
     ];
     const positions = needles.map((n) => job.indexOf(n));
