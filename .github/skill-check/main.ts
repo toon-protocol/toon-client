@@ -61,7 +61,11 @@ const problems = await checkSkills(skills, {
     const run = spawnSync(process.execPath, [bin, ...path, '--help'], {
       encoding: 'utf8',
     });
-    return { exitCode: run.status ?? 1, stderr: run.stderr };
+    return {
+      exitCode: run.status ?? 1,
+      stdout: run.stdout,
+      stderr: run.stderr,
+    };
   },
 });
 for (const problem of problems) console.error(`::error::${problem}`);

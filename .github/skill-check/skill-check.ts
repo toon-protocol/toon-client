@@ -4,7 +4,8 @@
 // A skill names a command the way toon_cli's `tests/skill.rs` (`named_commands`) reads one: an
 // inline code span that starts with `toon-client `, or a line that starts with it. The command is
 // the leading plain words; a `<placeholder>`, a value or a `--flag` ends it. Each command is
-// asked for `--help`, which must exit 0: the CLI is the list, so nothing here hard-codes one.
+// asked for `--help`, which must exit 0, and every `--flag` the skill gives it must appear in that
+// help: the CLI is the list, so nothing here hard-codes one.
 
 /** One skill file: its path for the report, and its text. */
 export interface Skill {
@@ -17,7 +18,9 @@ export interface Cli {
   /** This package's version. */
   version: string;
   /** Run `toon-client <command…> --help`. */
-  help(command: string[]): Promise<{ exitCode: number; stderr: string }>;
+  help(
+    command: string[]
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }>;
 }
 
 /**
@@ -46,6 +49,18 @@ function commandWords(words: string[]): string[] {
     command.push(word);
   }
   return command;
+}
+
+/** The `--flags` among a command's words, without a `=value` or trailing punctuation. */
+function flagsOf(words: string[]): string[] {
+  return words
+    .filter((word) => word.startsWith('--'))
+    .map((word) => word.replace(/=.*$/, '').replace(/[^a-z0-9]+$/, ''));
+}
+
+/** Does this help text document `flag`, as a whole word? */
+function documents(help: string, flag: string): boolean {
+  return help.split(/[^a-z0-9-]+/i).includes(flag);
 }
 
 /** A SKILL.md's `toon-client:` frontmatter value, unquoted; `undefined` when it has none. */
@@ -160,6 +175,12 @@ export async function checkSkills(
         problems.push(
           `${path}: \`toon-client ${named}\` is not a command: ${answer.stderr.split('\n')[0]}`
         );
+      } else {
+        for (const flag of flagsOf(words)) {
+          if (!documents(answer.stdout, flag)) {
+            problems.push(`${path}: \`toon-client ${named}\` has no ${flag}`);
+          }
+        }
       }
     }
   }

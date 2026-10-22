@@ -7,13 +7,14 @@ import { checkSkills, type Cli } from './skill-check.js';
 
 const cli = (version = '5.1.1'): Cli => ({
   version,
-  async help(path) {
+  async help(command) {
+    const stdout: string[] = [];
     const stderr: string[] = [];
-    const exitCode = await runCli([...path, '--help'], {
-      stdout: () => {},
+    const exitCode = await runCli([...command, '--help'], {
+      stdout: (text) => stdout.push(text),
       stderr: (text) => stderr.push(text),
     });
-    return { exitCode, stderr: stderr.join('\n') };
+    return { exitCode, stdout: stdout.join('\n'), stderr: stderr.join('\n') };
   },
 });
 
@@ -62,6 +63,20 @@ describe('checkSkills', () => {
     );
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('`toon-client faucet drip` is not a command');
+  });
+
+  it('fails a skill that gives a command a flag it does not have', async () => {
+    const text = [
+      'Pay with `toon-client send <route> --body hi --seal-to=<url>`, or,',
+      '',
+      'toon-client channel open --deposit 5000 --json.',
+      '',
+      'Then `toon-client balances --verbose` and `toon-client send <route> --deposit 1`.',
+    ].join('\n');
+    expect(await checkSkills([skill(text)], cli())).toEqual([
+      'plugins/toon-client/skills/sending/SKILL.md: `toon-client balances` has no --verbose',
+      'plugins/toon-client/skills/sending/SKILL.md: `toon-client send` has no --deposit',
+    ]);
   });
 
   it('names every file that names a missing command, not just the first', async () => {
