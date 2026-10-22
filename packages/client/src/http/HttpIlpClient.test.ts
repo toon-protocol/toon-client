@@ -339,6 +339,52 @@ describe('HttpIlpClient', () => {
       expect(httpClient).toHaveBeenCalledTimes(3);
     });
 
+    it('names the published endpoint when it cannot be reached, keeping the cause', async () => {
+      const cause = new TypeError('fetch failed');
+      const httpClient = vi.fn(async () => {
+        throw cause;
+      }) as unknown as typeof fetch;
+      const client = new HttpIlpClient({
+        httpEndpoint: 'http://connector-a:3000/ilp',
+        endpointSource: 'published',
+        httpClient,
+        maxRetries: 0,
+      });
+
+      const error = (await client
+        .sendIlpPacket(SEND_PARAMS)
+        .catch((e: unknown) => e)) as NetworkError;
+      expect(error).toBeInstanceOf(NetworkError);
+      expect(error.code).toBe('NETWORK_ERROR');
+      expect(error.message).toContain('http://connector-a:3000/ilp');
+      expect(error.message).toContain('published');
+      expect(error.message).toContain('fetch failed');
+      expect(error.endpoint).toBe('http://connector-a:3000/ilp');
+      expect(error.cause).toBe(cause);
+    });
+
+    it('names the endpoint on a request timeout, keeping the cause', async () => {
+      const cause = Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const httpClient = vi.fn(async () => {
+        throw cause;
+      }) as unknown as typeof fetch;
+      const client = new HttpIlpClient({
+        httpEndpoint: 'http://connector-a:3000/ilp',
+        httpClient,
+        timeout: 50,
+        maxRetries: 0,
+      });
+
+      const error = (await client
+        .sendIlpPacket(SEND_PARAMS)
+        .catch((e: unknown) => e)) as NetworkError;
+      expect(error).toBeInstanceOf(NetworkError);
+      expect(error.code).toBe('NETWORK_ERROR');
+      expect(error.message).toContain('Request timeout after 50ms');
+      expect(error.message).toContain('http://connector-a:3000/ilp');
+      expect(error.cause).toBe(cause);
+    });
+
     it('throws ConnectorError on an empty 200 body', async () => {
       const httpClient = fetchReturning(new Uint8Array(0));
       const client = new HttpIlpClient({

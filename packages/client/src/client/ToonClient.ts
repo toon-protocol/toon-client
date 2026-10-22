@@ -538,6 +538,7 @@ export class ToonClient implements ToonClientLike {
     this.assertEndpointReachable(httpEndpoint);
     const http = new HttpIlpClient({
       httpEndpoint,
+      ...(description.httpEndpoint !== undefined ? { endpointSource: 'published' as const } : {}),
       timeout: this.config.timeoutMs,
       httpClient: this.config.fetch,
       ...(this.config.createWebSocket
@@ -577,6 +578,8 @@ export class ToonClient implements ToonClientLike {
       kind: 'btp' as const,
       transport: new BtpPaidWriteTransport({
         session,
+        url: choice.url,
+        endpointSource: 'published',
         // HTTP fallback only where the node did not REQUIRE btp *for this
         // destination*: falling back onto a carriage the route refuses would
         // turn a recoverable socket outage into a `402` per request. Read

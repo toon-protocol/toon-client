@@ -79,7 +79,7 @@ on `code`, never on the message.
 | --- | --- | --- |
 | `ConfigError` | `CONFIG` | The configuration cannot be used as given — a missing required field, no `facilitatorUrl` for a Base network with no default, no x402 channel offered on the chain asked for. |
 | `ValidationError` | `VALIDATION_ERROR` | An argument is invalid. Thrown before anything is sent. |
-| `NetworkError` | `NETWORK_ERROR` | A connection failed or timed out. Distinct from a refusal: nobody answered. |
+| `NetworkError` | `NETWORK_ERROR` | A connection failed or timed out. Distinct from a refusal: nobody answered. On the packet path the message names the URL it tried (`endpoint` carries it too) and, when the connector chose it, says so. A `NetworkError` naming an address you did not configure means the connector published an endpoint you cannot reach — the operator's `[node]` setting, not yours. |
 | `ConnectorError` | `CONNECTOR_ERROR` | The connector answered with a transport-level failure — the non-2xx statuses above. |
 | `ChainUnavailableError` | `CHAIN_UNAVAILABLE` | The chain you asked to pay on is not among the node's `batchSettlements`, or you hold no key for any it offers. `offered` lists the networks it does offer, in CAIP-2 (`eip155:84532`, `solana:EtWT…`). |
 | `RouteNotPricedError` | `ROUTE_NOT_PRICED` | The connector serves no route matching the destination, so there is no price to pay. |

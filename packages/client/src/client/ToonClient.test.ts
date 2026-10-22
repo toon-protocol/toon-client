@@ -7,7 +7,12 @@ import { ToonClient } from './ToonClient.js';
 import { FakeTerminatingConnector } from '../wire/fake-connector.test-support.js';
 import { InMemoryChannelStore } from '../channel/ChannelStore.js';
 import { deriveFullIdentity } from '../keys/KeyDerivation.js';
-import { ChainUnavailableError, ChannelNotOpenError, ConfigError } from './errors.js';
+import {
+  ChainUnavailableError,
+  ChannelNotOpenError,
+  ConfigError,
+  NetworkError,
+} from './errors.js';
 import type {
   BatchChannel,
   BatchChannelManager,
@@ -690,5 +695,114 @@ describe('ToonClient — an endpoint the node advertises and this client cannot 
       await client.close();
       await proxy.close();
     }
+  });
+});
+
+/**
+ * #633: an endpoint the node published, that nobody answers at. The caller
+ * never configured it, so the error has to name it — and say where it came from.
+ */
+describe('ToonClient — a published endpoint nobody answers at', () => {
+  const HTTP = 'http://connector-a:3000/ilp';
+  const BTP = 'ws://connector-a:3000/ilp/btp';
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Serves `fake`, publishing `endpoints`, and fails every request to `connector-a`. */
+  function unreachable(
+    fake: FakeTerminatingConnector,
+    endpoints: Record<string, string>
+  ): typeof fetch {
+    const inner = fake.fetch;
+    return async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('http://connector-a:3000')) throw new TypeError('fetch failed');
+      const response = await inner(input, init);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method !== 'GET' || !(url.endsWith('/ilp') || url.endsWith('/ilp/'))) {
+        return response;
+      }
+      const body = (await response.json()) as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...body, ...endpoints }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+  }
+
+  /** A socket that never opens. */
+  const refuseSocket = (): never => {
+    throw new Error('WebSocket connection error: getaddrinfo ENOTFOUND connector-a');
+  };
+
+  /**
+   * The rejection `promise` settles to. HTTP retries a `NetworkError` with
+   * backoff, so the clock is run out under it.
+   */
+  async function rejection(promise: Promise<unknown>): Promise<NetworkError> {
+    const settled = promise.then(
+      () => expect.fail('send() resolved'),
+      (e: unknown) => e
+    );
+    await vi.runAllTimersAsync();
+    const error = await settled;
+    expect(error).toBeInstanceOf(NetworkError);
+    return error as NetworkError;
+  }
+
+  it('names the published HTTP endpoint, and says the connector published it', async () => {
+    const fake = fixture();
+    fake.routePrice = 0n;
+    const client = await create(fake, { fetch: unreachable(fake, { httpEndpoint: HTTP }) });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const error = await rejection(client.send('g.fake.route'));
+    expect(error.code).toBe('NETWORK_ERROR');
+    expect(error.message).toContain(HTTP);
+    expect(error.message).toContain('published');
+    expect(error.endpoint).toBe(HTTP);
+    expect(error.cause).toBeInstanceOf(TypeError);
+  });
+
+  it('names the published BTP URL when BTP is required and there is no fallback', async () => {
+    const fake = fixture();
+    fake.requiredTransport = 'btp';
+    const client = await create(fake, {
+      fetch: unreachable(fake, { btpEndpoint: BTP }),
+      createWebSocket: refuseSocket,
+      autoOpenChannel: false,
+      btp: { maxReconnectAttempts: 0 },
+    });
+    adoptChannel(client, fake);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const error = await rejection(client.send('g.fake.route'));
+    expect(error.code).toBe('NETWORK_ERROR');
+    expect(error.message).toContain(BTP);
+    expect(error.message).toContain('published');
+    expect(error.endpoint).toBe(BTP);
+    expect(error.cause).toBeInstanceOf(Error);
+  });
+
+  it('names the HTTP URL tried last when BTP fails over to an HTTP that is down too', async () => {
+    const fake = fixture();
+    const client = await create(fake, {
+      fetch: unreachable(fake, { btpEndpoint: BTP, httpEndpoint: HTTP }),
+      createWebSocket: refuseSocket,
+      transport: 'btp',
+      autoOpenChannel: false,
+      btp: { maxReconnectAttempts: 0 },
+    });
+    adoptChannel(client, fake);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const error = await rejection(client.send('g.fake.route'));
+    expect(error.code).toBe('NETWORK_ERROR');
+    expect(error.message).toContain(HTTP);
+    expect(error.message).not.toContain(BTP);
+    expect(error.endpoint).toBe(HTTP);
+    expect(error.cause).toBeInstanceOf(TypeError);
   });
 });

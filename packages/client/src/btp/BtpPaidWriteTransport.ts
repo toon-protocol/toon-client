@@ -61,7 +61,11 @@
 
 import type { IlpSendResult } from '../ilp/types.js';
 import type { IlpSendParams } from '../ilp/ilp-send.js';
-import { NetworkError } from '../client/errors.js';
+import {
+  NetworkError,
+  describeEndpoint,
+  type EndpointSource,
+} from '../client/errors.js';
 
 /**
  * The narrow shape a paid-write transport candidate needs — the same method
@@ -102,6 +106,13 @@ export interface BtpPaidWriteTransportConfig {
    * lazily on first use and never disconnected between writes.
    */
   session: OrderedBtpSession;
+  /**
+   * The `ws(s)://` URL the session dials, so a connection failure can name it.
+   * Omit and a failure carries the session's own message alone.
+   */
+  url?: string;
+  /** Where `url` came from, so a failure can say the node chose it. */
+  endpointSource?: EndpointSource;
   /**
    * Stateless fallback used once a write's reconnect budget is exhausted.
    * Typically an `HttpIlpClient` pointed at the same connector's `POST /ilp`.
@@ -148,6 +159,8 @@ function sleep(ms: number): Promise<void> {
 export class BtpPaidWriteTransport implements ClaimSendingTransport {
   private readonly session: OrderedBtpSession;
   private readonly fallback: ClaimSendingTransport | undefined;
+  private readonly url: string | undefined;
+  private readonly endpointSource: EndpointSource | undefined;
   private readonly maxReconnectAttempts: number;
   private readonly reconnectDelay: number;
   /**
@@ -161,6 +174,8 @@ export class BtpPaidWriteTransport implements ClaimSendingTransport {
   constructor(config: BtpPaidWriteTransportConfig) {
     this.session = config.session;
     this.fallback = config.fallback;
+    this.url = config.url;
+    this.endpointSource = config.endpointSource;
     this.maxReconnectAttempts = config.maxReconnectAttempts ?? 1;
     this.reconnectDelay = config.reconnectDelay ?? 250;
   }
@@ -215,8 +230,29 @@ export class BtpPaidWriteTransport implements ClaimSendingTransport {
 
   /** Connect if need be, then send once. No claim, so nothing to re-spend. */
   private async dispatchUnpaid(params: IlpSendParams): Promise<IlpSendResult> {
-    if (!this.session.isConnected) await this.session.connect();
-    return this.session.sendIlpPacket(params);
+    try {
+      if (!this.session.isConnected) await this.session.connect();
+      return await this.session.sendIlpPacket(params);
+    } catch (error) {
+      throw this.nameEndpoint(error);
+    }
+  }
+
+  /**
+   * A connection-level failure becomes a {@link NetworkError} naming the BTP
+   * URL, with the original kept as `cause`. Anything else passes through.
+   */
+  private nameEndpoint(error: unknown): unknown {
+    if (this.url === undefined || error instanceof NetworkError) return error;
+    if (!isConnectionError(error)) return error;
+    const cause = error instanceof Error ? error : undefined;
+    return new NetworkError(
+      `BTP connection failed reaching ${describeEndpoint(this.url, this.endpointSource)}: ${
+        cause?.message ?? String(error)
+      }`,
+      cause,
+      this.url
+    );
   }
 
   /**
@@ -261,10 +297,16 @@ export class BtpPaidWriteTransport implements ClaimSendingTransport {
       return this.fallback.sendIlpPacketWithClaim(params, claim);
     }
 
-    throw lastError instanceof Error
-      ? lastError
-      : new NetworkError(
-          'BTP paid-write transport exhausted its reconnect budget and no HTTP fallback is configured'
-        );
+    const named = this.nameEndpoint(lastError);
+    if (named instanceof Error) throw named;
+    throw new NetworkError(
+      `BTP paid-write transport exhausted its reconnect budget${
+        this.url !== undefined
+          ? ` reaching ${describeEndpoint(this.url, this.endpointSource)}`
+          : ''
+      } and no HTTP fallback is configured`,
+      undefined,
+      this.url
+    );
   }
 }

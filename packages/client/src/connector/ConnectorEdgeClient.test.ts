@@ -12,6 +12,15 @@ import {
 import { NetworkError, ConnectorError } from '../client/errors.js';
 import { deserializeIlpPrepare } from '../btp/protocol.js';
 
+/** A transport failure names the URL it tried, in the message and as `endpoint` (#633). */
+function namesItsUrl(error: unknown): boolean {
+  return (
+    error instanceof NetworkError &&
+    error.endpoint?.startsWith('https://apex.example/') === true &&
+    error.message.includes(error.endpoint)
+  );
+}
+
 /**
  * A 65-byte SEC1-uncompressed secp256k1 key: `0x04` + 64 body bytes. The exact
  * bytes don't matter (nothing here does curve arithmetic) — the LENGTH and the
@@ -318,6 +327,7 @@ describe('ConnectorEdgeClient.getIdentity', () => {
     await expect(client.getIdentity('https://apex.example')).rejects.toThrow(
       NetworkError
     );
+    await expect(client.getIdentity('https://apex.example')).rejects.toSatisfy(namesItsUrl);
   });
 });
 
@@ -383,6 +393,7 @@ describe('ConnectorEdgeClient.getRoutePrice', () => {
     await expect(
       client.getRoutePrice('https://apex.example', 'g.example.app')
     ).rejects.toThrow(NetworkError);
+    await expect(client.getRoutePrice('https://apex.example', 'g.example.app')).rejects.toSatisfy(namesItsUrl);
   });
 
   it('refuses a 5xx distinguishably from a 404', async () => {
@@ -883,6 +894,11 @@ describe('ConnectorEdgeClient.getClaimState', () => {
         { blockchain: 'evm', channelId: '0xaa', expires: 1, signature: '0x00' },
       ])
     ).rejects.toThrow(NetworkError);
+    await expect(
+      client.getClaimState('https://apex.example', [
+        { blockchain: 'evm', channelId: '0xaa', expires: 1, signature: '0x00' },
+      ])
+    ).rejects.toSatisfy(namesItsUrl);
   });
 
   it('throws ConnectorEdgeError on a non-2xx status', async () => {
@@ -1073,6 +1089,7 @@ describe('ConnectorEdgeClient.describe', () => {
     await expect(client.describe('https://apex.example')).rejects.toBeInstanceOf(
       NetworkError
     );
+    await expect(client.describe('https://apex.example')).rejects.toSatisfy(namesItsUrl);
   });
 });
 
@@ -1215,6 +1232,7 @@ describe('ConnectorEdgeClient.probe', () => {
     await expect(
       client.probe('https://apex.example', PROBE_PARAMS, probeClaim())
     ).rejects.toBeInstanceOf(NetworkError);
+    await expect(client.probe('https://apex.example', PROBE_PARAMS, probeClaim())).rejects.toSatisfy(namesItsUrl);
   });
 });
 

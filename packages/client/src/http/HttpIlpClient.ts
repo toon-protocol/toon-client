@@ -54,6 +54,8 @@ import {
 import { BtpRuntimeClient } from '../btp/BtpRuntimeClient.js';
 import {
   NetworkError,
+  describeEndpoint,
+  type EndpointSource,
   ConnectorError,
   PaymentRequiredError,
   TransportRequiredError,
@@ -160,6 +162,11 @@ export interface HttpIlpClientConfig {
   /** The peer's `POST /ilp` URL (the `httpEndpoint` from discovery). */
   httpEndpoint: string;
   /**
+   * Where `httpEndpoint` came from, so a network failure can say so. Omit when
+   * the caller supplied it.
+   */
+  endpointSource?: EndpointSource;
+  /**
    * Optional peer identity. With no `peerId`/`authToken` the connector treats
    * the request as an anonymous no-auth peer (permissionless default) and
    * derives an ephemeral id from the claim signer.
@@ -196,6 +203,7 @@ export interface HttpIlpClientConfig {
  */
 export class HttpIlpClient implements IlpClient {
   private readonly httpEndpoint: string;
+  private readonly endpointSource: EndpointSource | undefined;
   private readonly peerId: string | undefined;
   private readonly authToken: string | undefined;
   private readonly timeout: number;
@@ -205,6 +213,7 @@ export class HttpIlpClient implements IlpClient {
 
   constructor(config: HttpIlpClientConfig) {
     this.httpEndpoint = config.httpEndpoint;
+    this.endpointSource = config.endpointSource;
     this.peerId = config.peerId;
     this.authToken = config.authToken;
     this.timeout = config.timeout ?? 30000;
@@ -504,8 +513,9 @@ export class HttpIlpClient implements IlpClient {
     }
     if (error instanceof Error && error.name === 'AbortError') {
       return new NetworkError(
-        `Request timeout after ${requestTimeout}ms`,
-        error
+        `Request timeout after ${requestTimeout}ms reaching ${describeEndpoint(this.httpEndpoint, this.endpointSource)}`,
+        error,
+        this.httpEndpoint
       );
     }
     if (
@@ -517,8 +527,9 @@ export class HttpIlpClient implements IlpClient {
         error.message.includes('network'))
     ) {
       return new NetworkError(
-        `Network connection failed: ${error.message}`,
-        error
+        `Network connection failed reaching ${describeEndpoint(this.httpEndpoint, this.endpointSource)}: ${error.message}`,
+        error,
+        this.httpEndpoint
       );
     }
     return new ConnectorError(

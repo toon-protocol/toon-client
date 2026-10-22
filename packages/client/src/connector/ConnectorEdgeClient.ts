@@ -749,7 +749,8 @@ export class ConnectorEdgeClient {
     } catch (error) {
       throw new NetworkError(
         `could not reach the connector client edge at ${url}`,
-        error instanceof Error ? error : undefined
+        error instanceof Error ? error : undefined,
+        url
       );
     } finally {
       clearTimeout(timer);
@@ -885,7 +886,8 @@ export class ConnectorEdgeClient {
     } catch (error) {
       throw new NetworkError(
         `could not reach the connector client edge at ${base}/ilp`,
-        error instanceof Error ? error : undefined
+        error instanceof Error ? error : undefined,
+        `${base}/ilp`
       );
     } finally {
       clearTimeout(timer);
@@ -945,7 +947,8 @@ export class ConnectorEdgeClient {
     } catch (error) {
       throw new NetworkError(
         `could not reach the connector client edge at ${url}`,
-        error instanceof Error ? error : undefined
+        error instanceof Error ? error : undefined,
+        url
       );
     } finally {
       clearTimeout(timer);
@@ -1077,7 +1080,8 @@ export class ConnectorEdgeClient {
     } catch (error) {
       throw new NetworkError(
         `could not reach the connector client edge at ${url}`,
-        error instanceof Error ? error : undefined
+        error instanceof Error ? error : undefined,
+        url
       );
     } finally {
       clearTimeout(timer);
