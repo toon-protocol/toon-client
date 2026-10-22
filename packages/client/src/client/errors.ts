@@ -46,10 +46,24 @@ export class ToonClientError extends Error {
  * These errors trigger retry logic with exponential backoff.
  */
 export class NetworkError extends ToonClientError {
-  constructor(message: string, cause?: Error) {
+  /** The URL that could not be reached, when the failure was reaching one. */
+  readonly endpoint?: string;
+
+  constructor(message: string, cause?: Error, endpoint?: string) {
     super(message, 'NETWORK_ERROR', cause);
     this.name = 'NetworkError';
+    if (endpoint !== undefined) this.endpoint = endpoint;
   }
+}
+
+/** Where a packet-path URL came from: the caller's config, or the node's self-description. */
+export type EndpointSource = 'configured' | 'published';
+
+/** `url`, plus a note when the node (not the caller) chose it. */
+export function describeEndpoint(url: string, source?: EndpointSource): string {
+  return source === 'published'
+    ? `${url} (the endpoint the connector published in its self-description)`
+    : url;
 }
 
 /**

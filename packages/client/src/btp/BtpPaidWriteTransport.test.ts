@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { NetworkError } from '../client/errors.js';
 import type { IlpSendResult } from '../ilp/types.js';
 import {
   BtpPaidWriteTransport,
@@ -299,5 +300,80 @@ describe('BtpPaidWriteTransport', () => {
       expect(fallback.sendIlpPacketWithClaim).not.toHaveBeenCalled();
       expect(session.reconnect).not.toHaveBeenCalled();
     });
+
+  describe('naming the endpoint', () => {
+    const URL = 'ws://connector-a:3000/ilp';
+
+    it('names the BTP URL when the connection never opens and there is no fallback', async () => {
+      const session = makeFakeSession();
+      const cause = new Error('WebSocket connection failed: ECONNREFUSED');
+      session.connect.mockRejectedValue(cause);
+      session.reconnect.mockRejectedValue(cause);
+      const transport = new BtpPaidWriteTransport({
+        session,
+        url: URL,
+        endpointSource: 'published',
+        maxReconnectAttempts: 1,
+        reconnectDelay: 10,
+      });
+
+      const caught = transport
+        .sendIlpPacketWithClaim(params('g.a'), {})
+        .catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(10);
+
+      const error = (await caught) as NetworkError;
+      expect(error).toBeInstanceOf(NetworkError);
+      expect(error.code).toBe('NETWORK_ERROR');
+      expect(error.message).toContain(URL);
+      expect(error.message).toContain('published');
+      expect(error.endpoint).toBe(URL);
+      expect(error.cause).toBe(cause);
+    });
+
+    it('names the BTP URL on an unpaid send whose connect fails', async () => {
+      const session = makeFakeSession();
+      const cause = new Error('connection refused');
+      session.connect.mockRejectedValue(cause);
+      const transport = new BtpPaidWriteTransport({ session, url: URL });
+
+      const error = (await transport
+        .sendIlpPacket(params('g.a'))
+        .catch((e: unknown) => e)) as NetworkError;
+      expect(error).toBeInstanceOf(NetworkError);
+      expect(error.message).toContain(URL);
+      expect(error.cause).toBe(cause);
+    });
+
+    it('surfaces the HTTP fallback error, which names the HTTP URL, when both fail', async () => {
+      const session = makeFakeSession();
+      session.connect.mockRejectedValue(new Error('connection refused'));
+      session.reconnect.mockRejectedValue(new Error('connection refused'));
+      const httpError = new NetworkError(
+        'Network connection failed reaching http://connector-a:3000/ilp: fetch failed',
+        undefined,
+        'http://connector-a:3000/ilp'
+      );
+      const fallback = {
+        sendIlpPacketWithClaim: vi.fn().mockRejectedValue(httpError),
+      } as unknown as ClaimSendingTransport;
+      const transport = new BtpPaidWriteTransport({
+        session,
+        url: URL,
+        fallback,
+        maxReconnectAttempts: 1,
+        reconnectDelay: 10,
+      });
+
+      const caught = transport
+        .sendIlpPacketWithClaim(params('g.a'), {})
+        .catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(10);
+
+      const error = (await caught) as NetworkError;
+      expect(error).toBe(httpError);
+      expect(error.message).toContain('http://connector-a:3000/ilp');
+    });
+  });
   });
 });
