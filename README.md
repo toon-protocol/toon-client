@@ -2,10 +2,11 @@
 
 Pay for an HTTP request, per request, in stablecoin — from Node.js or from the command line.
 
-A **connector** is a paid reverse proxy: it fronts an ordinary HTTP app, charges a flat price
-per route, and hands that app a request that was already paid for. This repository is the
-payer. It seals your request into a packet addressed to a route, attaches a signed voucher on an
-x402 `batch-settlement` channel you funded on chain, and gives you back the app's HTTP response.
+A **connector** is a paid reverse proxy: it fronts an ordinary HTTP app, charges a base price
+plus an optional per-kibibyte rate per route, and hands that app a request that was already paid
+for. This repository is the payer. It seals your request into a packet addressed to a route,
+attaches a signed voucher on an x402 `batch-settlement` channel you funded on chain, and gives
+you back the app's HTTP response.
 
 ```text
   you                                connector                          app
@@ -102,8 +103,10 @@ Runnable versions of both, on each chain:
 - **You fund an x402 channel, and need no gas to do it.** On Base an x402 facilitator relays your
   deposit; on Solana the connector sponsors the open. A wallet with its own ETH can pay instead.
   Only leaving the channel always costs gas.
-- **A price is flat per route.** One route, one price, whatever the payload — so a route's price
-  is a figure you can ask for before you spend anything.
+- **A price is a schedule per route.** One route, one set of terms: a base price plus an optional
+  rate per kibibyte of the sealed packet (a started kibibyte counts in full). Both are published
+  for free in the node's self-description (`routePrice()`), and `chargeFor()` gives the exact
+  cost of a packet, so you can work out a call's cost before you spend anything.
 - **Reading a node's facts is free.** Its addresses, endpoints, sealing key, settlement terms and
   route prices come from one unauthenticated `GET`. Only the app's work costs money.
 

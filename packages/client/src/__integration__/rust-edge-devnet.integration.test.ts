@@ -7,7 +7,8 @@
  * `GET /ilp/routes/price` for the price — because a connector *answers*, it
  * never announces
  * ([ADR 0022](https://github.com/toon-protocol/connector/blob/main/docs/adr/0022-a-connector-answers-it-does-not-announce.md)),
- * and a price is flat per handler (ADR 0020) so nothing local could derive one.
+ * and a route's price terms are the handler's (ADR 0020) so nothing local could
+ * derive them.
  * The only thing this test supplies is a funded key.
  *
  * It is the counterpart to the loopback suites: those prove the wire against a
