@@ -43,6 +43,11 @@ The transport a packet rides: `http` (`POST /ilp`) or `btp` (a WebSocket session
 insist on one.
 _Avoid_: Transport, protocol, channel
 
+**Carriage endpoint**:
+The URL a connector's self-description publishes for one carriage: where packets on that carriage
+go. Distinct from the client edge, which is where the payer reads the self-description.
+_Avoid_: Peer URL, advertised URL, a bare "httpEndpoint"
+
 **Payment channel**:
 An x402 `batch-settlement` channel: a deposit the payer locks on chain, payable one way to one
 connector — x402's contract on Base, solana-foundation's `payment-channels` program on Solana. The
