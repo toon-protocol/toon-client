@@ -806,3 +806,78 @@ describe('ToonClient — a published endpoint nobody answers at', () => {
     expect(error.cause).toBeInstanceOf(TypeError);
   });
 });
+
+describe('ToonClient — carriageEndpoints', () => {
+  const OVERRIDE = 'http://localhost:4000/ilp';
+  const PUBLISHED = 'http://connector-a:3000/ilp';
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Publishes `endpoints`, records every request, and fails any dial to `localhost:4000`. */
+  function watched(
+    fake: FakeTerminatingConnector,
+    endpoints: Record<string, string>
+  ) {
+    const calls: { method: string; url: string }[] = [];
+    const inner = fake.fetch;
+    const fetchFn: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      calls.push({ method, url });
+      if (url.startsWith('http://localhost:4000'))
+        throw new TypeError('fetch failed');
+      const response = await inner(input, init);
+      if (method !== 'GET' || !(url.endsWith('/ilp') || url.endsWith('/ilp/')))
+        return response;
+      const body = (await response.json()) as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...body, ...endpoints }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    return { calls, fetchFn };
+  }
+
+  it('POSTs to the override, and a failure names it and the published endpoint', async () => {
+    const fake = fixture();
+    fake.routePrice = 0n;
+    const { calls, fetchFn } = watched(fake, { httpEndpoint: PUBLISHED });
+    const client = await create(fake, {
+      fetch: fetchFn,
+      carriageEndpoints: { http: OVERRIDE },
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const settled = client.send('g.fake.route').then(
+      () => expect.fail('send() resolved'),
+      (e: unknown) => e
+    );
+    await vi.runAllTimersAsync();
+    const error = (await settled) as NetworkError;
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error.message).toContain(
+      `${OVERRIDE} (carriage endpoint override; the connector publishes ${PUBLISHED})`
+    );
+    expect(error.endpoint).toBe(OVERRIDE);
+    expect(calls.some((c) => c.method === 'POST' && c.url === OVERRIDE)).toBe(
+      true
+    );
+    expect(calls.some((c) => c.method === 'POST' && c.url === PUBLISHED)).toBe(
+      false
+    );
+  });
+
+  it('refuses a .anyone override with no socksProxy before anything dials', async () => {
+    const fake = fixture();
+    const { calls, fetchFn } = watched(fake, {});
+    await expect(
+      create(fake, {
+        fetch: fetchFn,
+        carriageEndpoints: { http: 'http://abcdefghijklmnop.anyone/ilp' },
+      })
+    ).rejects.toThrow(/hidden service/);
+    expect(calls).toHaveLength(0);
+  });
+});

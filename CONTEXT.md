@@ -32,6 +32,12 @@ _Avoid_: Manifest, greeting, announcement, discovery
 The URL a payer configures and dials to reach a connector.
 _Avoid_: Base URL, API endpoint
 
+**Carriage endpoint**:
+The absolute URL a carriage is dialled at: `httpEndpoint` or `btpEndpoint` as the connector
+publishes it in its self-description, or the payer's `carriageEndpoints` override of it. Distinct
+from the client edge, which the payer configures and which is never an automatic fallback.
+_Avoid_: Peer URL, node URL
+
 ### The wire
 
 **Packet**:

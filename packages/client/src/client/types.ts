@@ -183,6 +183,16 @@ export interface ToonClientConfig {
    */
   socksProxy?: string;
   /**
+   * Replace the carriage endpoint the connector publishes, per carriage. Each
+   * value must be an absolute URL: `http` an `http:`/`https:` one, `btp` a
+   * `ws:`/`wss:` one. A carriage with no override uses the published endpoint.
+   * Everything else (self-description, prices, claim state, seal key) is still
+   * read from `connector`. Nothing falls back to the client edge (ADR 0006).
+   *
+   * The `http` override also serves the HTTP fallback beneath a BTP session.
+   */
+  carriageEndpoints?: { http?: string; btp?: string };
+  /**
    * Send chain RPC through `socksProxy` as well as the packets. Default `true`.
    *
    * Set `false` only when the RPC endpoint is already private — your own node on

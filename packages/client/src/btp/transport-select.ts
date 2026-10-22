@@ -77,6 +77,8 @@ export interface TransportChoice {
  *   `ConnectorEdgeClient.describe` records; an absolute endpoint needs neither.
  * @param destination the ILP address this carriage will carry packets to, so
  *   the route that governs it answers rather than the node-wide summary.
+ * @param overrides the payer's `carriageEndpoints`, absolute, replacing the
+ *   published endpoint of that carriage only.
  * @throws {TransportRequiredError} the requested carriage is unavailable, or
  *   the node publishes no usable endpoint at all.
  */
@@ -84,10 +86,15 @@ export function selectTransport(
   description: NodeSelfDescription,
   preference: TransportPreference = 'auto',
   baseUrl: string | undefined = description.readFrom,
-  destination?: string
+  destination?: string,
+  overrides: { http?: string; btp?: string } = {}
 ): TransportChoice {
-  const http = resolveEndpoint(description.httpEndpoint, baseUrl);
-  const btp = resolveEndpoint(description.btpEndpoint, baseUrl);
+  // An override counts as "this carriage has an endpoint", but never changes
+  // which carriage a route requires (ADR 0006).
+  const http =
+    overrides.http ?? resolveEndpoint(description.httpEndpoint, baseUrl);
+  const btp =
+    overrides.btp ?? resolveEndpoint(description.btpEndpoint, baseUrl);
   const required = requiredTransportFor(description, destination);
 
   if (preference === 'http' || preference === 'btp') {

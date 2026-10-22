@@ -77,6 +77,8 @@ export interface ResolvedConfig {
   connectorIsHiddenService: boolean;
   /** The `socks5h://` proxy to reach it through, when there is one. */
   socksProxy: string | undefined;
+  /** Validated per-carriage replacements for the published endpoints. */
+  carriageEndpoints: { http?: string; btp?: string };
   /** Whether chain RPC rides that proxy too (ADR 0002). */
   proxyRpc: boolean;
   /**
@@ -132,6 +134,7 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
   const connector = resolveConnector(config.connector);
   const connectorIsHiddenService = isHiddenServiceUrl(connector);
   const socksProxy = resolveSocksProxy(config.socksProxy, connector, connectorIsHiddenService);
+  const carriageEndpoints = resolveCarriageEndpoints(config.carriageEndpoints);
   const accountIndex = resolveAccountIndex(config.accountIndex);
   const keyDerivation = config.keyDerivation ?? 'standard';
   const identity = resolveIdentity(config, keyDerivation, accountIndex);
@@ -182,6 +185,7 @@ export function resolveConfig(config: ToonClientConfig): ResolvedConfig {
     depositGas: config.depositGas ?? 'auto',
     connectorIsHiddenService,
     socksProxy,
+    carriageEndpoints,
     proxyRpc: config.proxyRpc ?? true,
     chainRpc: undefined,
     autoOpenChannel: config.autoOpenChannel ?? true,
@@ -465,4 +469,33 @@ function resolveChannelStore(store: string | ChannelStore | undefined): {
       'one run.'
   );
   return { channelStore: new InMemoryChannelStore(), channelStoreIsEphemeral: true };
+}
+
+/** Each override must be an absolute URL on its carriage's scheme; the path is not checked. */
+function resolveCarriageEndpoints(
+  overrides: { http?: string; btp?: string } | undefined
+): { http?: string; btp?: string } {
+  const out: { http?: string; btp?: string } = {};
+  if (overrides === undefined) return out;
+  const schemes = { http: ['http:', 'https:'], btp: ['ws:', 'wss:'] } as const;
+  for (const kind of ['http', 'btp'] as const) {
+    const value = overrides[kind];
+    if (value === undefined) continue;
+    const label = `carriageEndpoints.${kind}`;
+    let url: URL;
+    try {
+      url = new URL(typeof value === 'string' ? value.trim() : '');
+    } catch {
+      throw new ConfigError(
+        `${label} must be an absolute URL; got ${JSON.stringify(value)}.`
+      );
+    }
+    if (!(schemes[kind] as readonly string[]).includes(url.protocol)) {
+      throw new ConfigError(
+        `${label} must be a ${schemes[kind].join(' or ')} URL; got ${JSON.stringify(value)}.`
+      );
+    }
+    out[kind] = value.trim();
+  }
+  return out;
 }

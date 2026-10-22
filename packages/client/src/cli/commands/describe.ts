@@ -22,11 +22,20 @@ export async function run(ctx: CommandContext): Promise<number> {
   const description = await client.describe();
   const asset = assetFromSettlement(description.batchSettlements[0]);
 
+  const { httpEndpoint, btpEndpoint } = ctx.settings;
+  const overrides = {
+    ...(httpEndpoint !== undefined ? { http: httpEndpoint } : {}),
+    ...(btpEndpoint !== undefined ? { btp: btpEndpoint } : {}),
+  };
+
   const payload = {
     connector: client.connector,
     ilpAddresses: description.ilpAddresses,
     httpEndpoint: description.httpEndpoint,
     btpEndpoint: description.btpEndpoint,
+    ...(overrides.http !== undefined || overrides.btp !== undefined
+      ? { carriageEndpointOverrides: overrides }
+      : {}),
     peerCarriages: description.peerCarriages,
     edgeIdentity: description.edgeIdentity,
     batchSettlements: description.batchSettlements,
@@ -44,6 +53,12 @@ export async function run(ctx: CommandContext): Promise<number> {
     }
     if (description.httpEndpoint !== undefined) head.push(['http', description.httpEndpoint]);
     if (description.btpEndpoint !== undefined) head.push(['btp', description.btpEndpoint]);
+    if (overrides.http !== undefined) {
+      head.push(['http override', `${overrides.http}  (--http-endpoint; packets go here)`]);
+    }
+    if (overrides.btp !== undefined) {
+      head.push(['btp override', `${overrides.btp}  (--btp-endpoint; packets go here)`]);
+    }
     if (description.requiredTransport !== undefined) {
       head.push(['requires', `${description.requiredTransport} carriage`]);
     }

@@ -57,13 +57,24 @@ export class NetworkError extends ToonClientError {
 }
 
 /** Where a packet-path URL came from: the caller's config, or the node's self-description. */
-export type EndpointSource = 'configured' | 'published';
+export type EndpointSource =
+  | 'configured'
+  | 'published'
+  /** The caller's `carriageEndpoints` replaced what the connector published (`published`, when it did). */
+  | { override: { published?: string } };
 
-/** `url`, plus a note when the node (not the caller) chose it. */
+/** `url`, plus a note when the node (not the caller) chose it, or when the caller replaced the node's. */
 export function describeEndpoint(url: string, source?: EndpointSource): string {
-  return source === 'published'
-    ? `${url} (the endpoint the connector published in its self-description)`
-    : url;
+  if (source === 'published') {
+    return `${url} (the endpoint the connector published in its self-description)`;
+  }
+  if (typeof source === 'object') {
+    const published = source.override.published;
+    return published === undefined
+      ? `${url} (carriage endpoint override; the connector publishes none)`
+      : `${url} (carriage endpoint override; the connector publishes ${published})`;
+  }
+  return url;
 }
 
 /**
