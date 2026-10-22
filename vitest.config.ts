@@ -21,7 +21,7 @@ export default defineConfig({
     // Canonical test count: `pnpm test` at the repo root is the single source
     // of truth for total test count. All workspace members with tests must be
     // listed here so counts are consistent across pipeline steps.
-    include: ['packages/*/src/**/*.test.ts', '.sandcastle/**/*.test.ts', '.github/rig-web-redirect/**/*.test.ts'],
+    include: ['packages/*/src/**/*.test.ts', '.sandcastle/**/*.test.ts', '.github/rig-web-redirect/**/*.test.ts', '.github/skill-check/**/*.test.ts'],
     exclude: ['**/node_modules/**', '**/dist/**', '**/__integration__/**'],
     coverage: {
       provider: 'v8',

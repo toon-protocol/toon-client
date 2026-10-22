@@ -11,7 +11,7 @@
  */
 import { UsageError, boolOption, stringOption } from '../args.js';
 import type { CommandContext } from '../context.js';
-import { CHANNEL_SUBCOMMANDS } from '../args.js';
+import { CHANNEL_SUBCOMMANDS, isChannelSubcommand } from '../args.js';
 import { assetInfo, formatAmount, type AssetInfo } from '../output.js';
 import type { ClaimStateResult, ChannelState, BatchExitResult } from '../../client/types.js';
 
@@ -68,7 +68,7 @@ function exitRows(result: BatchExitResult): [string, string][] {
 
 export async function run(ctx: CommandContext): Promise<number> {
   const sub = ctx.positionals[0];
-  if (sub === undefined || !(CHANNEL_SUBCOMMANDS as readonly string[]).includes(sub)) {
+  if (sub === undefined || !isChannelSubcommand(sub)) {
     throw new UsageError(`channel needs one of: ${CHANNEL_SUBCOMMANDS.join(', ')}`, 'channel');
   }
 

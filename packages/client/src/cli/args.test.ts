@@ -70,6 +70,21 @@ describe('parseCommandLine', () => {
     expect(boolOption(line.values, 'help')).toBe(true);
   });
 
+  it('refuses a channel subcommand that does not exist, even under --help', () => {
+    // Otherwise `channel refill --help` exits 0, and a skill naming it passes the toon-plugins
+    // check (#752).
+    expect(() => parseCommandLine(['channel', 'refill', '--help'])).toThrow(
+      /channel needs one of: open, deposit, status, close, settle/
+    );
+    expect(parseCommandLine(['channel', 'status', '--help']).command).toBe('channel');
+    expect(parseCommandLine(['channel', '--help']).command).toBe('channel');
+  });
+
+  it('refuses more positionals than a command takes, even under --help', () => {
+    expect(() => parseCommandLine(['faucet', 'drip', '--help'])).toThrow(/at most 0 argument/);
+    expect(parseCommandLine(['send', 'g.toon.echo', '--help']).command).toBe('send');
+  });
+
   it('returns no command for a bare invocation', () => {
     expect(parseCommandLine([]).command).toBeUndefined();
   });
