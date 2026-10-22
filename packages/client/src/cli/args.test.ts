@@ -45,6 +45,14 @@ describe('parseCommandLine', () => {
     expect(() => parseCommandLine(['balances', '--nope'])).toThrow(UsageError);
   });
 
+  it('accepts --seal-to on send and refuses it on price', () => {
+    const line = parseCommandLine(['send', 'g.x', '--seal-to', 'https://far.example']);
+    expect(line.values['seal-to']).toBe('https://far.example');
+    expect(() => parseCommandLine(['price', 'g.x', '--seal-to', 'https://far.example'])).toThrow(
+      /--seal-to is not an option of 'price'/
+    );
+  });
+
   it("refuses an option that belongs to a different command", () => {
     expect(() => parseCommandLine(['balances', '--body', 'x'])).toThrow(
       /--body is not an option of 'balances'/

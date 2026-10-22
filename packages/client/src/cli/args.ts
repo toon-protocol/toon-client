@@ -143,7 +143,10 @@ export const GLOBAL_OPTIONS: Record<string, OptionSpec> = {
       'How a Base deposit moves the token: eip3009 for USDC-style tokens, permit2 for any ERC-20. ' +
       'Env TOON_DEPOSIT_METHOD. Default: what the connector names.',
   },
-  json: { type: 'boolean', help: 'Print one JSON document on stdout and nothing else.' },
+  json: {
+    type: 'boolean',
+    help: 'Print one JSON document on stdout and nothing else.',
+  },
   quiet: { type: 'boolean', help: 'Suppress progress and warnings on stderr.' },
   help: { type: 'boolean', short: 'h', help: 'Show this help.' },
   version: { type: 'boolean', help: 'Print the client version.' },
@@ -151,7 +154,10 @@ export const GLOBAL_OPTIONS: Record<string, OptionSpec> = {
 
 /** Options that belong to individual commands. */
 export const COMMAND_OPTIONS: Record<string, OptionSpec> = {
-  import: { type: 'boolean', help: 'Import an existing BIP-39 phrase, read from stdin.' },
+  import: {
+    type: 'boolean',
+    help: 'Import an existing BIP-39 phrase, read from stdin.',
+  },
   'legacy-derivation': {
     type: 'boolean',
     help: "Derive the EVM key at Nostr's coin type, as this client did before 1.0.",
@@ -167,10 +173,14 @@ export const COMMAND_OPTIONS: Record<string, OptionSpec> = {
   },
   'connector-view': {
     type: 'boolean',
-    help: "Also ask the connector for its own watermark, and show both.",
+    help: 'Also ask the connector for its own watermark, and show both.',
   },
   method: { type: 'string', arg: 'VERB', help: 'HTTP method. Default POST.' },
-  target: { type: 'string', arg: 'PATH', help: "Path beneath the route's handler. Default ''." },
+  target: {
+    type: 'string',
+    arg: 'PATH',
+    help: "Path beneath the route's handler. Default ''.",
+  },
   header: {
     type: 'string',
     short: 'H',
@@ -178,8 +188,16 @@ export const COMMAND_OPTIONS: Record<string, OptionSpec> = {
     arg: 'NAME:VALUE',
     help: 'A request header. Repeat for more; order and duplicates are preserved.',
   },
-  body: { type: 'string', arg: 'TEXT', help: 'Request body. `-` reads stdin to EOF.' },
-  'body-file': { type: 'string', arg: 'PATH', help: 'Read the request body from a file.' },
+  body: {
+    type: 'string',
+    arg: 'TEXT',
+    help: 'Request body. `-` reads stdin to EOF.',
+  },
+  'body-file': {
+    type: 'string',
+    arg: 'PATH',
+    help: 'Read the request body from a file.',
+  },
   'json-body': {
     type: 'boolean',
     help: 'Check the body parses as JSON and send it as application/json.',
@@ -189,8 +207,17 @@ export const COMMAND_OPTIONS: Record<string, OptionSpec> = {
     arg: 'BASE_UNITS',
     help: 'Amount in base units. On send, overrides the route price.',
   },
+  'seal-to': {
+    type: 'string',
+    arg: 'URL|KEY',
+    help: 'On send, the connector that terminates the route: its /ilp URL or 0x key. A forwarded route usually also needs --amount.',
+  },
   to: { type: 'string', arg: 'ADDRESS', help: 'Destination address.' },
-  asset: { type: 'string', arg: 'native|token', help: "Which asset to move. Default 'token'." },
+  asset: {
+    type: 'string',
+    arg: 'native|token',
+    help: "Which asset to move. Default 'token'.",
+  },
 };
 
 /** Everything `parseArgs` is allowed to see. */
@@ -267,12 +294,24 @@ export const COMMANDS: Record<string, CommandSpec> = {
     options: [],
     minPositionals: 1,
     maxPositionals: 1,
-    details: ['Needs a channel already paid on: a probe resends the last voucher, which spends nothing.'],
+    details: [
+      'Needs a channel already paid on: a probe resends the last voucher, which spends nothing.',
+    ],
   },
   send: {
     summary: 'Pay for one HTTP request and print the answer.',
-    usage: 'send [destination] [--method VERB] [--target PATH] [-H NAME:VALUE]... [--body TEXT | --body-file PATH | --body -] [--json-body] [--amount BASE_UNITS]',
-    options: ['method', 'target', 'header', 'body', 'body-file', 'json-body', 'amount'],
+    usage:
+      'send [destination] [--method VERB] [--target PATH] [-H NAME:VALUE]... [--body TEXT | --body-file PATH | --body -] [--json-body] [--amount BASE_UNITS] [--seal-to URL|KEY]',
+    options: [
+      'method',
+      'target',
+      'header',
+      'body',
+      'body-file',
+      'json-body',
+      'amount',
+      'seal-to',
+    ],
     minPositionals: 0,
     maxPositionals: 1,
     details: [
@@ -285,7 +324,8 @@ export const COMMANDS: Record<string, CommandSpec> = {
   },
   channel: {
     summary: 'Open, fund, inspect, close and settle the payment channel.',
-    usage: 'channel open|deposit <amount>|close|settle|status [--deposit BASE_UNITS] [--connector-view]',
+    usage:
+      'channel open|deposit <amount>|close|settle|status [--deposit BASE_UNITS] [--connector-view]',
     options: ['deposit', 'connector-view'],
     minPositionals: 1,
     maxPositionals: 2,
@@ -312,7 +352,8 @@ export const COMMANDS: Record<string, CommandSpec> = {
   },
   transfer: {
     summary: 'Move funds out of this wallet.',
-    usage: 'transfer --to <address> --amount <base units> [--asset native|token]',
+    usage:
+      'transfer --to <address> --amount <base units> [--asset native|token]',
     options: ['to', 'amount', 'asset'],
     minPositionals: 0,
     maxPositionals: 0,
@@ -334,7 +375,13 @@ export const COMMANDS: Record<string, CommandSpec> = {
 };
 
 /** The `channel` subcommands, in the order a channel goes through them. */
-export const CHANNEL_SUBCOMMANDS = ['open', 'deposit', 'status', 'close', 'settle'] as const;
+export const CHANNEL_SUBCOMMANDS = [
+  'open',
+  'deposit',
+  'status',
+  'close',
+  'settle',
+] as const;
 
 /** A parsed command line, before any setting is resolved. */
 export interface ParsedCommandLine {
@@ -346,15 +393,22 @@ export interface ParsedCommandLine {
 }
 
 /** Option values, typed the way `parseArgs` returns them. */
-export type ParsedValues = Record<string, string | boolean | string[] | undefined>;
+export type ParsedValues = Record<
+  string,
+  string | boolean | string[] | undefined
+>;
 
 /** Read a string option, or `undefined`. Throws if it was given more than once. */
-export function stringOption(values: ParsedValues, name: string): string | undefined {
+export function stringOption(
+  values: ParsedValues,
+  name: string
+): string | undefined {
   const v = values[name];
   if (v === undefined) return undefined;
   if (typeof v === 'string') return v;
   if (Array.isArray(v)) {
-    if (v.length > 1) throw new UsageError(`--${name} was given more than once`);
+    if (v.length > 1)
+      throw new UsageError(`--${name} was given more than once`);
     return v[0];
   }
   return undefined;
@@ -406,7 +460,9 @@ export function parseCommandLine(argv: string[]): ParsedCommandLine {
 
   const spec = COMMANDS[command];
   if (spec === undefined) {
-    throw new UsageError(`unknown command '${command}'. Run 'toon-client help' for the list.`);
+    throw new UsageError(
+      `unknown command '${command}'. Run 'toon-client help' for the list.`
+    );
   }
 
   const rest = positionals.slice(1);
@@ -415,7 +471,10 @@ export function parseCommandLine(argv: string[]): ParsedCommandLine {
       if (values[name] === undefined) continue;
       if (name in GLOBAL_OPTIONS) continue;
       if (spec.options.includes(name)) continue;
-      throw new UsageError(`--${name} is not an option of '${command}'`, command);
+      throw new UsageError(
+        `--${name} is not an option of '${command}'`,
+        command
+      );
     }
     if (rest.length < spec.minPositionals) {
       throw new UsageError(`'${command}' needs more arguments`, command);
@@ -441,7 +500,9 @@ function optionLine(name: string, spec: OptionSpec): [string, string] {
 /** Render two-column rows with the left column padded to a common width. */
 function columns(rows: [string, string][]): string {
   const width = rows.reduce((w, [left]) => Math.max(w, left.length), 0);
-  return rows.map(([left, right]) => `${left.padEnd(width)}  ${right}`).join('\n');
+  return rows
+    .map(([left, right]) => `${left.padEnd(width)}  ${right}`)
+    .join('\n');
 }
 
 /**
@@ -474,7 +535,10 @@ export function usage(command?: string): string {
     '',
     'Commands:',
     columns(
-      Object.entries(COMMANDS).map(([name, spec]) => [`  ${name}`, spec.summary])
+      Object.entries(COMMANDS).map(([name, spec]) => [
+        `  ${name}`,
+        spec.summary,
+      ])
     ),
     '',
     'Global options:',

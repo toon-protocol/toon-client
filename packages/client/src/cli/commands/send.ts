@@ -20,8 +20,17 @@
  */
 import { UsageError, listOption, stringOption } from '../args.js';
 import type { CommandContext } from '../context.js';
-import { assetFromSettlement, decodeUtf8, formatAmount, type AssetInfo } from '../output.js';
-import type { SendRefused, SendRequest, SendResult } from '../../client/types.js';
+import {
+  assetFromSettlement,
+  decodeUtf8,
+  formatAmount,
+  type AssetInfo,
+} from '../output.js';
+import type {
+  SendRefused,
+  SendRequest,
+  SendResult,
+} from '../../client/types.js';
 
 /** Split one `-H name:value` into its two halves. */
 export function parseHeaderSpec(spec: string): [string, string] {
@@ -60,7 +69,10 @@ export async function buildRequest(ctx: CommandContext): Promise<SendRequest> {
   if (bodyFlag === '-') {
     const readStdin = ctx.deps.readStdin;
     if (readStdin === undefined) {
-      throw new UsageError('--body - reads stdin, and stdin is unavailable', 'send');
+      throw new UsageError(
+        '--body - reads stdin, and stdin is unavailable',
+        'send'
+      );
     }
     body = await readStdin();
   } else if (bodyFlag !== undefined) {
@@ -68,7 +80,10 @@ export async function buildRequest(ctx: CommandContext): Promise<SendRequest> {
   } else if (bodyFile !== undefined) {
     const readFileBytes = ctx.deps.readFileBytes;
     if (readFileBytes === undefined) {
-      throw new UsageError('--body-file cannot be read in this environment', 'send');
+      throw new UsageError(
+        '--body-file cannot be read in this environment',
+        'send'
+      );
     }
     try {
       body = readFileBytes(bodyFile);
@@ -81,9 +96,14 @@ export async function buildRequest(ctx: CommandContext): Promise<SendRequest> {
   }
 
   if (ctx.values['json-body'] === true) {
-    if (body === undefined) throw new UsageError('--json-body needs a body', 'send');
+    if (body === undefined)
+      throw new UsageError('--json-body needs a body', 'send');
     const text = typeof body === 'string' ? body : decodeUtf8(body);
-    if (text === undefined) throw new UsageError('--json-body was given bytes that are not UTF-8', 'send');
+    if (text === undefined)
+      throw new UsageError(
+        '--json-body was given bytes that are not UTF-8',
+        'send'
+      );
     try {
       JSON.parse(text);
     } catch (err) {
@@ -96,7 +116,8 @@ export async function buildRequest(ctx: CommandContext): Promise<SendRequest> {
     // re-serialized from the parse: `--json-body` is a check and a content type,
     // not a reformatter, and an app that signs or hashes its request body would
     // not survive being helpfully re-indented.
-    if (!hasHeader(headers, 'content-type')) headers.push(['content-type', 'application/json']);
+    if (!hasHeader(headers, 'content-type'))
+      headers.push(['content-type', 'application/json']);
   }
 
   const method = stringOption(ctx.values, 'method');
@@ -117,14 +138,18 @@ export async function buildRequest(ctx: CommandContext): Promise<SendRequest> {
  */
 export function refusalHint(result: SendRefused, asset: AssetInfo): string[] {
   const cost =
-    result.accumulatedCost === undefined ? undefined : formatAmount(result.accumulatedCost, asset);
+    result.accumulatedCost === undefined
+      ? undefined
+      : formatAmount(result.accumulatedCost, asset);
 
   switch (result.code) {
     case 'PAYMENT_REQUIRED':
     case 'TRANSPORT_REQUIRED': {
       const required = result.terms?.requiredTransport;
       if (required !== undefined) {
-        return [`This route only accepts the ${required} carriage. Retry with --transport ${required}.`];
+        return [
+          `This route only accepts the ${required} carriage. Retry with --transport ${required}.`,
+        ];
       }
       return [
         'The connector answered with terms instead of doing the work, which means it saw no',
@@ -157,14 +182,18 @@ export function refusalHint(result: SendRefused, asset: AssetInfo): string[] {
       ];
     case 'F00':
       return [
-        "The target path was refused before the app saw it: --target is resolved strictly beneath",
+        'The target path was refused before the app saw it: --target is resolved strictly beneath',
         'the route handler, so it cannot be absolute, contain `..`, or name a host.',
       ];
     case 'F06':
-      return ["No claim was attached. Open a channel with 'toon-client channel open --deposit 100000'."];
+      return [
+        "No claim was attached. Open a channel with 'toon-client channel open --deposit 100000'.",
+      ];
     default:
       if (result.code.startsWith('T')) {
-        return ['A temporary refusal — the path asked you to try again shortly.'];
+        return [
+          'A temporary refusal — the path asked you to try again shortly.',
+        ];
       }
       return [];
   }
@@ -207,6 +236,7 @@ function payloadFor(result: SendResult): unknown {
 export async function run(ctx: CommandContext): Promise<number> {
   const request = await buildRequest(ctx);
   const amountFlag = stringOption(ctx.values, 'amount');
+  const sealToFlag = stringOption(ctx.values, 'seal-to');
 
   const client = await ctx.client();
   // The destination is optional: with none, the packet goes to the address the
@@ -222,7 +252,12 @@ export async function run(ctx: CommandContext): Promise<number> {
   const result = await client.send(
     destination,
     request,
-    amountFlag === undefined ? undefined : { amount: BigInt(amountFlag) }
+    amountFlag === undefined && sealToFlag === undefined
+      ? undefined
+      : {
+          ...(amountFlag === undefined ? {} : { amount: BigInt(amountFlag) }),
+          ...(sealToFlag === undefined ? {} : { sealTo: sealToFlag }),
+        }
   );
 
   const description = await client.describe();
@@ -247,12 +282,16 @@ export async function run(ctx: CommandContext): Promise<number> {
       );
       if (result.headers.length > 0) {
         ctx.out.line();
-        ctx.out.rows(result.headers.map(([k, v]): [string, string] => [`${k}:`, v]));
+        ctx.out.rows(
+          result.headers.map(([k, v]): [string, string] => [`${k}:`, v])
+        );
       }
       ctx.out.line();
       const text = decodeUtf8(result.body);
       if (text === undefined) {
-        ctx.out.line(`<${String(result.body.length)} bytes of binary; use --json for base64>`);
+        ctx.out.line(
+          `<${String(result.body.length)} bytes of binary; use --json for base64>`
+        );
       } else if (text.length > 0) {
         ctx.out.line(text.replace(/\n$/, ''));
       }
