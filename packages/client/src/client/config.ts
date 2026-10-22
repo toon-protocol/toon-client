@@ -50,13 +50,12 @@ export const DEFAULT_HS_TIMEOUT_MS = 120_000;
 export const DEFAULT_DEPOSIT = 100_000n;
 
 /**
- * How one chain's RPC leaves this process when it rides the proxy: two shapes of
- * one pinned circuit, because the two chains' clients take different objects.
+ * How one chain's RPC leaves this process when it rides the proxy: a `fetch`
+ * bound to the chain's pinned circuit, handed to viem's `fetchFn` (EVM) or to
+ * Solana's JSON-RPC client.
  */
 export interface ProxiedChainRpc {
-  /** The undici dispatcher, for viem, which calls the global `fetch` itself (EVM). */
-  dispatcher: unknown;
-  /** `fetch` bound to that dispatcher, for Solana's JSON-RPC. */
+  /** `fetch` bound to that circuit. */
   fetch: typeof fetch;
 }
 

@@ -152,7 +152,7 @@ export class ToonClient implements ToonClientLike {
               wallet: evmWalletAccess({
                 rpcUrl: init.config.rpcUrls.evm,
                 account: chains.evm.account,
-                dispatcher: init.config.chainRpc?.evm.dispatcher,
+                fetchFn: init.config.chainRpc?.evm.fetch,
               }),
             },
           }
@@ -173,7 +173,7 @@ export class ToonClient implements ToonClientLike {
             evm: {
               privateKey: chains.evm.privateKey,
               rpcUrl: init.config.rpcUrls.evm,
-              rpcDispatcher: init.config.chainRpc?.evm.dispatcher,
+              evmRpcFetch: init.config.chainRpc?.evm.fetch,
             },
           }
         : {}),
@@ -731,6 +731,7 @@ async function openHiddenService(
 
   const { createChainRpcTransport, createHiddenServiceTransport, probeSocks5Proxy } =
     await import('../transport/socks.js');
+  const { proveProxy } = await import('../transport/canary.js');
   // Fail closed, and fail now. A missing daemon discovered at packet time costs
   // a signed claim; discovered here it costs nothing.
   await probeSocks5Proxy(socksProxy);
@@ -741,13 +742,26 @@ async function openHiddenService(
         solana: createChainRpcTransport(socksProxy, 'solana'),
       }
     : undefined;
+  const close = async (): Promise<void> => {
+    await Promise.all([edge.close(), rpc?.evm.close(), rpc?.solana.close()]);
+  };
+
+  // Prove every hook is honoured before anything real is sent (ADR 0005). An
+  // injected `fetch` or `createWebSocket` is the caller's own transport and is
+  // outside the guarantee, but the proxy's own objects are still tested.
+  try {
+    await proveProxy({
+      edge,
+      ...(rpc !== undefined ? { rpc } : {}),
+      ...(config.canaryPaths !== undefined ? { overrides: config.canaryPaths } : {}),
+    });
+  } catch (err) {
+    await close().catch(() => undefined);
+    throw err;
+  }
 
   return {
-    transport: {
-      async close(): Promise<void> {
-        await Promise.all([edge.close(), rpc?.evm.close(), rpc?.solana.close()]);
-      },
-    },
+    transport: { close },
     config: {
       ...resolved,
       fetch: config.fetch ?? edge.fetch,
@@ -756,8 +770,8 @@ async function openHiddenService(
         rpc === undefined
           ? undefined
           : {
-              evm: { dispatcher: rpc.evm.dispatcher, fetch: rpc.evm.fetch },
-              solana: { dispatcher: rpc.solana.dispatcher, fetch: rpc.solana.fetch },
+              evm: { fetch: rpc.evm.fetch },
+              solana: { fetch: rpc.solana.fetch },
             },
     },
   };
@@ -808,7 +822,7 @@ function lazyEvmReader(config: ResolvedConfig): ContractReader {
   return {
     readContract: (params: never) => {
       client ??= createPublicClient({
-        transport: rpcTransport(config.rpcUrls.evm, config.chainRpc?.evm.dispatcher),
+        transport: rpcTransport(config.rpcUrls.evm, config.chainRpc?.evm.fetch),
       });
       return client.readContract(params);
     },

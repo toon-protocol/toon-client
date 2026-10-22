@@ -29,6 +29,7 @@ import type {
 } from '../connector/ConnectorEdgeClient.js';
 import type { WalletChainBalances } from '../wallet/balances.js';
 import type { SendTransferParams, SendTransferResult } from '../wallet/transfer.js';
+import type { CanaryPathOverrides } from '../transport/canary.js';
 import type { FundWalletResult } from '../wallet/faucet.js';
 
 export type { ChainKind, ChannelFacade, BatchExitResult };
@@ -216,6 +217,14 @@ export interface ToonClientConfig {
   fetch?: typeof fetch;
   /** Injected websocket factory, for tests and runtimes without a global `WebSocket`. */
   createWebSocket?: (url: string) => unknown;
+  /**
+   * Path objects the hidden-payer canary tests in place of the proxy's own, so a
+   * test can prove a deliberately broken path is caught (ADR 0005). Not for
+   * production use.
+   *
+   * @internal
+   */
+  canaryPaths?: CanaryPathOverrides;
 }
 
 // ─── Sending ────────────────────────────────────────────────────────────────
