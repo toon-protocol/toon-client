@@ -224,7 +224,7 @@ function solanaChain(
     })();
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }));
   }) as typeof fetch;
-  return { rpc: { url: 'http://rpc', fetchImpl }, sent };
+  return { rpc: { url: 'http://rpc', fetch: fetchImpl }, sent };
 }
 
 /** The instruction discriminators in a sent legacy transaction, in order. */

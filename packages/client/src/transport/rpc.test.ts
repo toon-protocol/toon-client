@@ -17,7 +17,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { encodeAbiParameters, http as viemHttp, toFunctionSelector } from 'viem';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { PROXIED_RPC_DEFAULTS, rpcFetch, rpcTransport } from './rpc.js';
+import { PROXIED_RPC_DEFAULTS, directFetch, rpcFetch, rpcTransport } from './rpc.js';
 import { startFakeSocks5, type FakeSocks5Server } from './fake-socks5.js';
 import { createHiddenServiceTransport, type HiddenServiceTransport } from './socks.js';
 import { createPublicClient } from 'viem';
@@ -290,7 +290,7 @@ describe('EVM chain RPC through the connector’s proxy', () => {
   const signer = new EvmSigner(SIGNER_KEY);
 
   it('carries a contract read to a node that public DNS cannot find', async () => {
-    const client = createPublicClient({ transport: rpcTransport(RPC_URL, transport.fetch) });
+    const client = createPublicClient({ transport: rpcTransport({ url: RPC_URL, fetch: transport.fetch, proxied: true }) });
     await expect(readEvmBatchChannel(client, CHANNEL_ID)).resolves.toMatchObject({
       balance: 5_000n,
       totalClaimed: 1_200n,
@@ -299,12 +299,12 @@ describe('EVM chain RPC through the connector’s proxy', () => {
     expectOnlyNamesReachedTheProxy();
   });
 
-  it('cannot reach that node at all without the dispatcher', async () => {
-    // The negative control. Same client, same URL, no dispatcher: viem falls
-    // back to the global `fetch`, which asks the operating system where a
+  it('cannot reach that node at all on the direct fetch', async () => {
+    // The negative control. Same client, same URL, the direct fetch: viem
+    // dials the global `fetch`, which asks the operating system where a
     // `.anyone` host lives and is told nowhere. The proxy sees nothing, and in
     // the real world the address has by then gone out in a plaintext DNS query.
-    const client = createPublicClient({ transport: rpcTransport(RPC_URL, undefined) });
+    const client = createPublicClient({ transport: rpcTransport({ url: RPC_URL, fetch: directFetch }) });
     const seen = proxy.requests.length;
 
     await expect(readEvmBatchChannel(client, CHANNEL_ID)).rejects.toThrow();
@@ -355,20 +355,19 @@ describe('EVM chain RPC through the connector’s proxy', () => {
 
 describe('Solana chain RPC through the connector’s proxy', () => {
   it('carries JSON-RPC through the injected fetch', async () => {
-    // The Solana shape: no dispatcher, a `fetch`. Passing the target as an
-    // object rather than a bare URL is what lets every intermediate function
-    // stay ignorant of the proxy.
+    // The Solana shape: no dispatcher, a `fetch`. The route carries it, which
+    // is what lets every intermediate function stay ignorant of the proxy.
     await expect(
-      getLamports({ url: RPC_URL, fetchImpl: transport.fetch }, SOL_PUBKEY)
+      getLamports({ url: RPC_URL, fetch: transport.fetch }, SOL_PUBKEY)
     ).resolves.toBe(LAMPORTS * 10n);
 
     expect(rpcCalls).toEqual(['getBalance']);
     expectOnlyNamesReachedTheProxy();
   });
 
-  it('cannot reach that node on a bare URL', async () => {
+  it('cannot reach that node on the direct fetch', async () => {
     const seen = proxy.requests.length;
-    await expect(getLamports(RPC_URL, SOL_PUBKEY)).rejects.toThrow();
+    await expect(getLamports({ url: RPC_URL, fetch: directFetch }, SOL_PUBKEY)).rejects.toThrow();
     expect(proxy.requests.length).toBe(seen);
     expect(rpcCalls).toEqual([]);
   });
@@ -418,23 +417,23 @@ function settings(transport: { config: Record<string, unknown> }): Record<string
 
 describe('a clearnet client, unchanged', () => {
   it('builds exactly the viem transport this package built before hidden services', () => {
-    const plain = viemHttp(RPC_URL)({});
-    const built = rpcTransport(RPC_URL, undefined)({});
+    const plain = viemHttp(RPC_URL, { fetchFn: directFetch })({});
+    const built = rpcTransport({ url: RPC_URL, fetch: directFetch })({});
 
     // Everything but the `request` closure, whose identity differs between any
     // two transports viem builds and says nothing about configuration.
     expect(settings(built)).toEqual(settings(plain));
     expect(built.value).toEqual(plain.value);
-    // No fetch options and no `fetchFn` at all — not an empty object, not undefined members.
+    // No fetch options — not an empty object, not undefined members.
     expect(built.value?.fetchOptions).toBeUndefined();
   });
 
-  it('keeps the caller’s options and adds fetchFn only for a proxied fetch', () => {
-    const withOpts = viemHttp(RPC_URL, { timeout: 1_234, retryCount: 1 })({});
-    const built = rpcTransport(RPC_URL, undefined, { timeout: 1_234, retryCount: 1 })({});
+  it('keeps the caller’s options and the route’s fetch', () => {
+    const withOpts = viemHttp(RPC_URL, { timeout: 1_234, retryCount: 1, fetchFn: directFetch })({});
+    const built = rpcTransport({ url: RPC_URL, fetch: directFetch }, { timeout: 1_234, retryCount: 1 })({});
     expect(settings(built)).toEqual(settings(withOpts));
 
-    const proxied = rpcTransport(RPC_URL, transport.fetch, { timeout: 1_234 })({});
+    const proxied = rpcTransport({ url: RPC_URL, fetch: transport.fetch, proxied: true }, { timeout: 1_234 })({});
     // The fetch itself is proven by the tests above: the call reaches the proxy.
     // The caller's timeout beats the proxied default.
     expect(proxied.config.timeout).toBe(1_234);
@@ -443,7 +442,7 @@ describe('a clearnet client, unchanged', () => {
   it('gives a proxied request the budget a circuit needs (connector ADR 0073)', () => {
     // viem's 10s would fail the slowest call ADR 0073 measured through a new
     // circuit (13s), and its 150ms retry delay mostly earns a second 429.
-    const proxied = rpcTransport(RPC_URL, transport.fetch)({});
+    const proxied = rpcTransport({ url: RPC_URL, fetch: transport.fetch, proxied: true })({});
     expect(proxied.config.timeout).toBe(PROXIED_RPC_DEFAULTS.timeout);
     expect(proxied.config.retryCount).toBe(PROXIED_RPC_DEFAULTS.retryCount);
     expect(proxied.config.retryDelay).toBe(PROXIED_RPC_DEFAULTS.retryDelay);

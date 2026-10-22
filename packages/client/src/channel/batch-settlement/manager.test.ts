@@ -313,7 +313,7 @@ describe('reading a channel back off the chain', () => {
     new DataView(account.buffer).setBigUint64(20, 4_321n, true); // settled
     const rpc = (value: unknown) => ({
       url: 'http://rpc',
-      fetchImpl: (async () =>
+      fetch: (async () =>
         new Response(
           JSON.stringify({ jsonrpc: '2.0', id: 1, result: { value } })
         )) as typeof fetch,

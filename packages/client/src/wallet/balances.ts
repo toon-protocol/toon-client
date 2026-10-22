@@ -12,7 +12,7 @@
  * RPC is unreachable degrades to `unreadable` rather than failing the others.
  */
 import { createPublicClient, defineChain } from 'viem';
-import { PROXIED_RPC_DEFAULTS, rpcTransport } from '../transport/rpc.js';
+import { PROXIED_RPC_DEFAULTS, directFetch, rpcTransport, type ChainRpcRoute } from '../transport/rpc.js';
 
 /** One on-chain wallet token balance. `amount` is base-unit integer, decimal. */
 export interface WalletBalance {
@@ -109,23 +109,44 @@ function rpcAbortSignal(proxied = false): AbortSignal | undefined {
   return ms > 0 ? AbortSignal.timeout(ms) : undefined;
 }
 
+/** The route an EVM read dials: the caller's fetch, else the global one (clearnet). */
+function evmReadRoute(opts: { rpcUrl: string; evmRpcFetch?: typeof fetch; proxied?: boolean }): ChainRpcRoute {
+  return {
+    url: opts.rpcUrl,
+    fetch: opts.evmRpcFetch ?? directFetch,
+    proxied: opts.proxied ?? opts.evmRpcFetch !== undefined,
+  };
+}
+
+/** A viem transport for one EVM balance read: a circuit's timeout when proxied, one retry. */
+function evmReadTransport(opts: {
+  rpcUrl: string;
+  evmRpcFetch?: typeof fetch;
+  proxied?: boolean;
+}): ReturnType<typeof rpcTransport> {
+  const route = evmReadRoute(opts);
+  const timeout = rpcTimeoutMs(route.proxied);
+  return rpcTransport(route, { ...(timeout ? { timeout } : {}), retryCount: 1 });
+}
+
 /** Read an ERC-20 token balance (balance + decimals + symbol) for `owner`. */
 export async function readEvmTokenBalance(opts: {
   rpcUrl: string;
   chainKey: string;
   tokenAddress: string;
   owner: string;
-  /** Send this read through the hidden-service proxy, when there is one (ADR 0002). */
+  /**
+   * The `fetch` this read dials through; the hidden-service proxy's on a hidden
+   * payer (ADR 0002). Defaults to the global `fetch`: the clearnet behaviour for
+   * a direct caller. The client always passes its own.
+   */
   evmRpcFetch?: typeof fetch;
+  /** `evmRpcFetch` rides the proxy: allow a circuit's latency. Defaults to whether one was passed. */
+  proxied?: boolean;
 }): Promise<WalletBalance> {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
-    transport: rpcTransport(opts.rpcUrl, opts.evmRpcFetch, {
-      ...(rpcTimeoutMs(opts.evmRpcFetch !== undefined)
-        ? { timeout: rpcTimeoutMs(opts.evmRpcFetch !== undefined) }
-        : {}),
-      retryCount: 1,
-    }),
+    transport: evmReadTransport(opts),
     chain: defineChain({
       id: chainId,
       name: opts.chainKey,
@@ -151,17 +172,18 @@ export async function readEvmNativeBalance(opts: {
   rpcUrl: string;
   chainKey: string;
   owner: string;
-  /** Send this read through the hidden-service proxy, when there is one (ADR 0002). */
+  /**
+   * The `fetch` this read dials through; the hidden-service proxy's on a hidden
+   * payer (ADR 0002). Defaults to the global `fetch`: the clearnet behaviour for
+   * a direct caller. The client always passes its own.
+   */
   evmRpcFetch?: typeof fetch;
+  /** `evmRpcFetch` rides the proxy: allow a circuit's latency. Defaults to whether one was passed. */
+  proxied?: boolean;
 }): Promise<WalletTokenAmount> {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
-    transport: rpcTransport(opts.rpcUrl, opts.evmRpcFetch, {
-      ...(rpcTimeoutMs(opts.evmRpcFetch !== undefined)
-        ? { timeout: rpcTimeoutMs(opts.evmRpcFetch !== undefined) }
-        : {}),
-      retryCount: 1,
-    }),
+    transport: evmReadTransport(opts),
     chain: defineChain({
       id: chainId,
       name: opts.chainKey,
@@ -177,11 +199,12 @@ export async function readEvmNativeBalance(opts: {
 export async function readSolanaNativeBalance(opts: {
   rpcUrl: string;
   owner: string;
+  /** Defaults to the global `fetch`: the clearnet behaviour for a direct caller. */
   fetchImpl?: typeof fetch;
   /** The fetch rides the SOCKS5h proxy: allow a circuit's latency. */
   proxied?: boolean;
 }): Promise<WalletTokenAmount> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  const fetchImpl = opts.fetchImpl ?? directFetch;
   const res = await fetchImpl(opts.rpcUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -208,11 +231,12 @@ export async function readSolanaTokenBalance(opts: {
   rpcUrl: string;
   mint: string;
   owner: string;
+  /** Defaults to the global `fetch`: the clearnet behaviour for a direct caller. */
   fetchImpl?: typeof fetch;
   /** The fetch rides the SOCKS5h proxy: allow a circuit's latency. */
   proxied?: boolean;
 }): Promise<WalletBalance> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  const fetchImpl = opts.fetchImpl ?? directFetch;
   const res = await fetchImpl(opts.rpcUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -260,6 +284,8 @@ export interface WalletBalanceSources {
      * which is already the proxied `fetch` on a hidden-service client.
      */
     evmRpcFetch?: typeof fetch;
+    /** `evmRpcFetch` rides the proxy. Defaults to whether one was passed. */
+    proxied?: boolean;
   };
   solana?: { chainKey?: string; rpcUrl: string; owner: string; tokenMint?: string };
   /** Injectable fetch (the Solana JSON-RPC calls) for tests. */
@@ -322,15 +348,15 @@ export async function readWalletBalances(
   const tasks: Promise<WalletChainBalances>[] = [];
 
   if (sources.evm) {
-    const { chainKey, rpcUrl, owner, tokenAddress, evmRpcFetch } = sources.evm;
+    const { chainKey, rpcUrl, owner, tokenAddress, evmRpcFetch, proxied: evmProxied } = sources.evm;
     tasks.push(
       (async () => {
         const out: WalletChainBalances = { chain: 'evm', chainKey, address: owner, tokens: [] };
         const errors: string[] = [];
         const [nativeR, tokenR] = await Promise.allSettled([
-          readEvmNativeBalance({ rpcUrl, chainKey, owner, evmRpcFetch }),
+          readEvmNativeBalance({ rpcUrl, chainKey, owner, evmRpcFetch, proxied: evmProxied }),
           tokenAddress
-            ? readEvmTokenBalance({ rpcUrl, chainKey, tokenAddress, owner, evmRpcFetch })
+            ? readEvmTokenBalance({ rpcUrl, chainKey, tokenAddress, owner, evmRpcFetch, proxied: evmProxied })
             : Promise.resolve<WalletBalance | undefined>(undefined),
         ]);
         foldNative(out, nativeR, errors);

@@ -45,7 +45,7 @@ import {
   type SolanaRpcTarget,
 } from '../channel/solana/payment-channel.js';
 import { base58Encode } from '../utils/base58.js';
-import { rpcTransport } from '../transport/rpc.js';
+import { rpcTransport, type ChainRpcRoute } from '../transport/rpc.js';
 import {
   ChannelNotOpenError,
   ConfigError,
@@ -112,7 +112,7 @@ export interface ChannelFacadeDeps {
   chain: ChainKind;
   manager: BatchChannelManager;
   describe(): Promise<NodeSelfDescription>;
-  evm?: { privateKey: Uint8Array; rpcUrl: string; evmRpcFetch: typeof fetch | undefined };
+  evm?: { privateKey: Uint8Array; rpc: ChainRpcRoute };
   solana?: { signer: Signer; rpc: SolanaRpcTarget };
   now?: () => bigint;
 }
@@ -357,10 +357,10 @@ export class ClientChannelFacade implements ChannelFacade {
       id: evmChainIdOf(network),
       name: network,
       nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-      rpcUrls: { default: { http: [evm.rpcUrl] } },
+      rpcUrls: { default: { http: [evm.rpc.url] } },
     });
     const account = privateKeyToAccount(toHexKey(evm.privateKey));
-    const transport = rpcTransport(evm.rpcUrl, evm.evmRpcFetch);
+    const transport = rpcTransport(evm.rpc);
     const publicClient = createPublicClient({ chain, transport });
     const walletClient = createWalletClient({ account, chain, transport });
     return {

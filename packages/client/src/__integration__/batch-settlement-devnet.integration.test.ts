@@ -45,6 +45,7 @@
  * `assetTransferMethod` (and a `facilitator`, if it names one) in
  * `batchSettlements` — connector#1419, once the fleet runs it.
  */
+import { directFetch } from '../transport/rpc.js';
 import { describe, it, expect } from 'vitest';
 import {
   createPublicClient,
@@ -189,6 +190,7 @@ describe.skipIf(!ENABLED)(
 
     it('opens a channel through the facilitator, and the chain holds the deposit', async () => {
       const payerFor = new BatchSettlementPayer({
+        fetch: directFetch,
         connector: CONNECTOR,
         manager,
         deposit: DEPOSIT,
@@ -250,6 +252,7 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
 
       const relay = await new ConnectorEdgeClient({}).describe(CONNECTOR);
       const payerFor = new BatchSettlementPayer({
+        fetch: directFetch,
         connector: CONNECTOR,
         manager: new BatchChannelManager(),
         deposit: DEPOSIT,
@@ -257,7 +260,7 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
           account: payer,
           facilitatorUrl: FACILITATOR,
           reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
-          wallet: evmWalletAccess({ rpcUrl: RPC_URL, account: payer }),
+          wallet: evmWalletAccess({ rpc: { url: RPC_URL, fetch: directFetch }, account: payer }),
         },
       });
       const channel = must(await payerFor.open(inPlainToken(relay), 'evm'));
@@ -290,6 +293,7 @@ describe.skipIf(!ENABLED)(
       await waitForTokens(chain, base.asset as Hex, payer.address);
 
       const payerFor = new BatchSettlementPayer({
+        fetch: directFetch,
         connector: CONNECTOR,
         manager: new BatchChannelManager(),
         deposit: DEPOSIT,
@@ -299,7 +303,7 @@ describe.skipIf(!ENABLED)(
           // Devnet USDC has ERC-3009 too; Permit2 is forced to take the permit path.
           depositMethod: 'permit2',
           reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
-          wallet: evmWalletAccess({ rpcUrl: RPC_URL, account: payer }),
+          wallet: evmWalletAccess({ rpc: { url: RPC_URL, fetch: directFetch }, account: payer }),
         },
       });
       const channel = must(await payerFor.open(relay, 'evm'));
@@ -345,6 +349,7 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
       const description = token === 'plain' ? inPlainToken(relay) : relay;
       await waitForTokens(chain, must(chooseBatchSettlement(description, 'evm')).asset as Hex, payer.address);
       const payerFor = new BatchSettlementPayer({
+        fetch: directFetch,
         connector: CONNECTOR,
         manager: new BatchChannelManager(),
         deposit: DEPOSIT,
@@ -356,7 +361,7 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
           ...(token === 'usdc' ? { depositMethod: 'eip3009' as const } : {}),
           ...(evm.depositGas ? { depositGas: evm.depositGas } : {}),
           reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
-          wallet: evmWalletAccess({ rpcUrl: RPC_URL, account: payer }),
+          wallet: evmWalletAccess({ rpc: { url: RPC_URL, fetch: directFetch }, account: payer }),
         },
       });
       const channel = must(await payerFor.open(description, 'evm'));

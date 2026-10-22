@@ -21,31 +21,12 @@ import type { NodeSelfDescription } from '../connector/self-description.js';
 import { EvmSigner } from '../signing/evm-signer.js';
 import { ChainUnavailableError, ConfigError, chainUnavailableMessage } from './errors.js';
 import type { ResolvedConfig } from './config.js';
+import { chainRoutes } from './chain-access.js';
 
 export interface WalletFacadeDeps {
   config: ResolvedConfig;
   /** The node's `GET /ilp`, cached — the source of every token address read here. */
   describe: () => Promise<NodeSelfDescription>;
-}
-
-/**
- * The `fetch` this client's SOLANA JSON-RPC should dial through.
- *
- * With no proxy that is `config.fetch`: the caller's own if they injected one,
- * and otherwise the global. With one, `chainRpc` is the single signal for "chain
- * RPC rides the proxy" (ADR 0002), on Solana's own circuit. `proxyRpc: false`
- * clears it, and the Solana reads then leave the proxy with the EVM ones. A
- * payer who opted out because their node is on loopback would otherwise still
- * be dialling it through a circuit that cannot reach loopback at all.
- */
-function solanaRpcFetch(config: ResolvedConfig): typeof fetch {
-  if (config.socksProxy === undefined) return config.fetch;
-  return config.chainRpc?.solana.fetch ?? globalThis.fetch;
-}
-
-/** The EVM fetch chain RPC rides, when it rides the proxy at all. */
-function evmRpcFetchOf(config: ResolvedConfig): { evmRpcFetch: typeof fetch } | Record<string, never> {
-  return config.chainRpc !== undefined ? { evmRpcFetch: config.chainRpc.evm.fetch } : {};
 }
 
 /** One chain's settlement token, as the node's x402 terms name it. */
@@ -76,9 +57,10 @@ export class ClientWalletFacade implements WalletFacade {
     const settlements = await this.settlements();
 
     const wanted: ChainKind[] = chain !== undefined ? [chain] : ['evm', 'solana'];
+    const routes = chainRoutes(config);
     const sources: Parameters<typeof readWalletBalances>[0] = {
-      fetchImpl: solanaRpcFetch(config),
-      ...(config.chainRpc !== undefined ? { solanaProxied: true } : {}),
+      fetchImpl: routes.solana.fetch,
+      solanaProxied: routes.solana.proxied === true,
     };
 
     for (const kind of wanted) {
@@ -86,16 +68,17 @@ export class ClientWalletFacade implements WalletFacade {
       if (kind === 'evm' && config.identity.evm) {
         sources.evm = {
           chainKey: entry?.chain ?? 'evm',
-          rpcUrl: config.rpcUrls.evm,
+          rpcUrl: routes.evm.url,
           owner: config.identity.evm.address,
-          ...evmRpcFetchOf(config),
+          evmRpcFetch: routes.evm.fetch,
+          proxied: routes.evm.proxied === true,
           ...(entry?.tokenAddress ? { tokenAddress: entry.tokenAddress } : {}),
         };
       }
       if (kind === 'solana' && config.identity.solana) {
         sources.solana = {
           ...(entry?.chain ? { chainKey: entry.chain } : {}),
-          rpcUrl: config.rpcUrls.solana,
+          rpcUrl: routes.solana.url,
           owner: config.identity.solana.publicKey,
           ...(entry?.tokenAddress ? { tokenMint: entry.tokenAddress } : {}),
         };
@@ -124,6 +107,7 @@ export class ClientWalletFacade implements WalletFacade {
     const { config } = this.deps;
     const settlements = await this.settlements();
     const entry = settlements.get(params.chain);
+    const routes = chainRoutes(config);
 
     return sendTransfer(
       {
@@ -131,9 +115,10 @@ export class ClientWalletFacade implements WalletFacade {
           ? {
               evm: {
                 chainKey: entry?.kind === 'evm' ? entry.chain : 'evm',
-                rpcUrl: config.rpcUrls.evm,
+                rpcUrl: routes.evm.url,
                 signer: this.signer(),
-                ...evmRpcFetchOf(config),
+                evmRpcFetch: routes.evm.fetch,
+                proxied: routes.evm.proxied === true,
                 ...(entry?.tokenAddress ? { tokenAddress: entry.tokenAddress } : {}),
               },
             }
@@ -141,8 +126,8 @@ export class ClientWalletFacade implements WalletFacade {
         ...(config.identity.solana
           ? {
               solana: {
-                rpcUrl: config.rpcUrls.solana,
-                ...(config.chainRpc !== undefined ? { rpcFetch: config.chainRpc.solana.fetch } : {}),
+                rpcUrl: routes.solana.url,
+                rpcFetch: routes.solana.fetch,
                 keypair: config.identity.solana.secretKey,
                 ...(entry?.tokenAddress ? { tokenMint: entry.tokenAddress } : {}),
               },

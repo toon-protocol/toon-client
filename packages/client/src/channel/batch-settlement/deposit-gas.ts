@@ -45,7 +45,7 @@ import {
   type Hex,
   type LocalAccount,
 } from 'viem';
-import { rpcTransport } from '../../transport/rpc.js';
+import { rpcTransport, directFetch, type ChainRpcRoute } from '../../transport/rpc.js';
 import {
   ERC3009_DEPOSIT_COLLECTOR_ADDRESS,
   PERMIT2_ADDRESS,
@@ -161,13 +161,12 @@ export interface EvmWalletAccess {
  * RPC reports. Nothing connects until it is first used.
  */
 export function evmWalletAccess(params: {
-  rpcUrl: string;
+  /** The route chain RPC takes, with the fetch it dials through. */
+  rpc: ChainRpcRoute;
   account: LocalAccount;
-  /** The proxy-bound fetch a hidden payer's RPC rides, if any. */
-  fetchFn?: typeof fetch;
 }): EvmWalletAccess {
   const { account } = params;
-  const transport = rpcTransport(params.rpcUrl, params.fetchFn);
+  const transport = rpcTransport(params.rpc);
   const reader = createPublicClient({ transport });
   let writer: Promise<ReturnType<typeof createWalletClient>> | undefined;
   const wallet = () =>
@@ -179,7 +178,7 @@ export function evmWalletAccess(params: {
           id,
           name: `eip155:${id}`,
           nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-          rpcUrls: { default: { http: [params.rpcUrl] } },
+          rpcUrls: { default: { http: [params.rpc.url] } },
         }),
       })
     ));
@@ -233,10 +232,14 @@ export async function eip2612Nonce(
   }
 }
 
-/** The extensions a facilitator's `GET /supported` advertises. */
+/**
+ * The extensions a facilitator's `GET /supported` advertises. `fetchImpl` defaults
+ * to the global `fetch`, the clearnet behaviour for a direct caller; the client
+ * always passes its own.
+ */
 export async function facilitatorExtensions(
   facilitatorUrl: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = directFetch
 ): Promise<string[]> {
   const url = `${facilitatorUrl.replace(/\/+$/, '')}/supported`;
   let body: unknown;

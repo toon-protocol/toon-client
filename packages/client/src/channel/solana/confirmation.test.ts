@@ -72,7 +72,7 @@ function scriptedRpc(script: Record<string, Answer[]>) {
     );
   }) as typeof fetch;
   return {
-    target: { url: 'http://rpc.test', fetchImpl },
+    target: { url: 'http://rpc.test', fetch: fetchImpl },
     calls,
     count: (method: string) =>
       calls.filter((call) => call.method === method).length,

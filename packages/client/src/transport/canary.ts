@@ -58,7 +58,7 @@ export async function proveProxy(targets: CanaryTargets): Promise<void> {
   if (rpc !== undefined) {
     await check('evm-rpc', rpc.evm, async () => {
       const build = overrides.evmRpcTransport ?? rpcTransport;
-      const transport = build(CANARY_HTTP_URL, rpc.evm.fetch, {
+      const transport = build({ url: CANARY_HTTP_URL, fetch: rpc.evm.fetch, proxied: true }, {
         timeout: CANARY_TIMEOUT_MS,
         retryCount: 0,
       })({});

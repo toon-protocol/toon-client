@@ -151,7 +151,7 @@ describe('with the real transports', () => {
     const evm = createChainRpcTransport(proxy.url, 'evm');
     try {
       const before = proxy.requests.length;
-      const result = await rpcTransport(`http://${HS_HOST}/rpc`, evm.fetch)({}).request({
+      const result = await rpcTransport({ url: `http://${HS_HOST}/rpc`, fetch: evm.fetch, proxied: true })({}).request({
         method: 'eth_chainId',
       });
       expect(result).toBe('0x14a34');

@@ -24,7 +24,7 @@ import {
   defineChain,
   type Hex,
 } from 'viem';
-import { rpcTransport } from '../transport/rpc.js';
+import { directFetch, rpcTransport, type ChainRpcRoute } from '../transport/rpc.js';
 import { waitForReceipt } from '../channel/evm/receipt.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Decode, base58Encode } from '../utils/base58.js';
@@ -97,13 +97,23 @@ export interface EvmTransferConfig {
   signer: EvmSigner;
   /** ERC-20 settlement-token address. Required only for `asset: 'token'`. */
   tokenAddress?: string;
-  /** Send this transfer's RPC through the hidden-service proxy (ADR 0002). */
+  /**
+   * The `fetch` this transfer's RPC dials through; the hidden-service proxy's
+   * on a hidden payer (ADR 0002). Defaults to the global `fetch`: the clearnet
+   * behaviour for a direct caller. The client always passes its own.
+   */
   evmRpcFetch?: typeof fetch;
+  /** `evmRpcFetch` rides the proxy. Defaults to whether one was passed. */
+  proxied?: boolean;
 }
 
 export interface SolanaTransferConfig {
   rpcUrl: string;
-  /** `fetch` for Solana JSON-RPC — the proxied one on a hidden-service client (ADR 0002). */
+  /**
+   * `fetch` for Solana JSON-RPC — the proxied one on a hidden-service client
+   * (ADR 0002). Defaults to the global `fetch`: the clearnet behaviour for a
+   * direct caller. The client always passes its own.
+   */
   rpcFetch?: typeof fetch;
   /** Ed25519 signing seed (32 bytes) or a 64-byte seed||pubkey keypair. */
   keypair: Uint8Array;
@@ -250,9 +260,18 @@ const ERC20_TRANSFER_ABI = [
   },
 ] as const;
 
-/** The RPC target for a Solana transfer: the URL, plus a proxied `fetch` if configured. */
+/** The RPC route for a Solana transfer; the global `fetch` when the caller named none. */
 function solanaRpcTarget(cfg: SolanaTransferConfig): SolanaRpcTarget {
-  return cfg.rpcFetch === undefined ? cfg.rpcUrl : { url: cfg.rpcUrl, fetchImpl: cfg.rpcFetch };
+  return { url: cfg.rpcUrl, fetch: cfg.rpcFetch ?? directFetch };
+}
+
+/** The RPC route for an EVM transfer; the global `fetch` when the caller named none. */
+function evmRpcRoute(cfg: EvmTransferConfig): ChainRpcRoute {
+  return {
+    url: cfg.rpcUrl,
+    fetch: cfg.evmRpcFetch ?? directFetch,
+    proxied: cfg.proxied ?? cfg.evmRpcFetch !== undefined,
+  };
 }
 
 function evmClients(cfg: EvmTransferConfig) {
@@ -264,12 +283,12 @@ function evmClients(cfg: EvmTransferConfig) {
     rpcUrls: { default: { http: [cfg.rpcUrl] } },
   });
   const publicClient = createPublicClient({
-    transport: rpcTransport(cfg.rpcUrl, cfg.evmRpcFetch),
+    transport: rpcTransport(evmRpcRoute(cfg)),
     chain: viemChain,
   });
   const walletClient = createWalletClient({
     account: cfg.signer.account,
-    transport: rpcTransport(cfg.rpcUrl, cfg.evmRpcFetch),
+    transport: rpcTransport(evmRpcRoute(cfg)),
     chain: viemChain,
   });
   return { publicClient, walletClient };

@@ -91,7 +91,7 @@ function rpc(statuses: Record<string, number | null>, lamports = 1_000_000_000) 
     }
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }));
   }) as typeof fetch;
-  return { target: { url: 'http://rpc', fetchImpl }, methods };
+  return { target: { url: 'http://rpc', fetch: fetchImpl }, methods };
 }
 
 const OTHER: BatchChannel = {

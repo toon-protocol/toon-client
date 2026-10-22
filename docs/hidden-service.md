@@ -103,8 +103,9 @@ its own pinned circuit, and the RPC timeouts below. `ToonClient` builds these fo
 has a `socksProxy`.
 
 The browser-safe pieces — `isRoutableHsHostname`, `isHiddenServiceUrl`,
-`assertRoutableHsHostname`, `validateSocks5hUrl`, `rpcFetch`, `rpcTransport` — are exported from
-the package root, because config validation needs them and they touch no Node built-in.
+`assertRoutableHsHostname`, `validateSocks5hUrl`, `rpcFetch`, `rpcTransport`, `directFetch` — are
+exported from the package root, because config validation needs them and they touch no Node
+built-in.
 
 An explicitly injected `fetch` or `createWebSocket` still wins over the proxy's. A caller who
 supplied their own has said something specific about how bytes leave their process, and that is

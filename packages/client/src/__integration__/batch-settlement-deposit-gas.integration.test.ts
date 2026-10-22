@@ -36,6 +36,7 @@
  * `node_modules` installed). Absent any of them it SKIPS, unless
  * `CLIENT_REQUIRE_BATCH_SETTLEMENT=1` makes that a failure.
  */
+import { directFetch } from '../transport/rpc.js';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -217,6 +218,7 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
     method?: 'eip3009' | 'permit2'
   ) {
     const payer = new BatchSettlementPayer({
+      fetch: directFetch,
       connector: 'https://node.example',
       manager: new BatchChannelManager(),
       deposit: DEPOSIT,
@@ -225,7 +227,7 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
         ...(evm.facilitatorUrl !== undefined ? { facilitatorUrl: evm.facilitatorUrl } : {}),
         ...(evm.depositGas ? { depositGas: evm.depositGas } : {}),
         reader: pub as never,
-        wallet: evmWalletAccess({ rpcUrl: ANVIL_RPC, account }),
+        wallet: evmWalletAccess({ rpc: { url: ANVIL_RPC, fetch: directFetch }, account }),
       },
     });
     return payer.open(connectorTerms(token, method, evm.connectorFacilitator), 'evm');
@@ -404,6 +406,7 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
       // can stop the second.
       const account = await freshPayer(USDC, ONE_ETH, 2n * DEPOSIT);
       const payer = new BatchSettlementPayer({
+        fetch: directFetch,
         connector: 'https://node.example',
         manager: new BatchChannelManager(),
         deposit: DEPOSIT,
@@ -411,7 +414,7 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
           account,
           facilitatorUrl: spy.url,
           reader: pub as never,
-          wallet: evmWalletAccess({ rpcUrl: ANVIL_RPC, account }),
+          wallet: evmWalletAccess({ rpc: { url: ANVIL_RPC, fetch: directFetch }, account }),
         },
       });
       const terms = connectorTerms(USDC);
@@ -436,7 +439,7 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
       // Enough of the token for two deposits, so only the spent authorization
       // can stop the second.
       const payer = await freshPayer(token, ONE_ETH, 2n * DEPOSIT);
-      const wallet = evmWalletAccess({ rpcUrl: ANVIL_RPC, account: payer });
+      const wallet = evmWalletAccess({ rpc: { url: ANVIL_RPC, fetch: directFetch }, account: payer });
       if (method === 'permit2') await approvePermit2(wallet, token);
       const priced = offerFromTerms(must(chooseBatchSettlement(connectorTerms(token, method), 'evm')), 1n);
       if (priced.chain !== 'evm') throw new Error('unreachable');
