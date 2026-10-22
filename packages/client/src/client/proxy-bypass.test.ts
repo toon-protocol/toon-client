@@ -205,7 +205,7 @@ describe('a client with no socksProxy', () => {
     });
     try {
       expect(seen.length).toBeGreaterThan(0);
-      expect(seen.every((url) => url.startsWith('http://connector.invalid'))).toBe(true);
+      expect(seen.every((url) => new URL(url).host === 'connector.invalid')).toBe(true);
       expect(canaries).toEqual([]);
     } finally {
       await client.close();
