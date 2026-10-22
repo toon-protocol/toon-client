@@ -189,6 +189,13 @@ export const COMMAND_OPTIONS: Record<string, OptionSpec> = {
     arg: 'BASE_UNITS',
     help: 'Amount in base units. On send, overrides the route price.',
   },
+  'seal-to': {
+    type: 'string',
+    arg: 'URL|KEY',
+    help:
+      'On send, the connector that terminates the route: its GET /ilp URL or a 0x uncompressed key. ' +
+      'A forwarded route usually also needs --amount.',
+  },
   to: { type: 'string', arg: 'ADDRESS', help: 'Destination address.' },
   asset: { type: 'string', arg: 'native|token', help: "Which asset to move. Default 'token'." },
 };
@@ -271,8 +278,8 @@ export const COMMANDS: Record<string, CommandSpec> = {
   },
   send: {
     summary: 'Pay for one HTTP request and print the answer.',
-    usage: 'send [destination] [--method VERB] [--target PATH] [-H NAME:VALUE]... [--body TEXT | --body-file PATH | --body -] [--json-body] [--amount BASE_UNITS]',
-    options: ['method', 'target', 'header', 'body', 'body-file', 'json-body', 'amount'],
+    usage: 'send [destination] [--method VERB] [--target PATH] [-H NAME:VALUE]... [--body TEXT | --body-file PATH | --body -] [--json-body] [--amount BASE_UNITS] [--seal-to URL|KEY]',
+    options: ['method', 'target', 'header', 'body', 'body-file', 'json-body', 'amount', 'seal-to'],
     minPositionals: 0,
     maxPositionals: 1,
     details: [

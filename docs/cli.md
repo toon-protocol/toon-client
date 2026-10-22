@@ -98,6 +98,7 @@ route string to copy out of a document and get wrong.
 | `--body-file PATH` | Read the request body from a file. |
 | `--json-body` | Check the body parses as JSON and send it as `application/json`. |
 | `--amount BASE_UNITS` | Override the route's price. |
+| `--seal-to URL\|KEY` | The connector that **terminates** the route: its `GET /ilp` URL or a `0x` uncompressed key. A forwarded route usually also needs `--amount`. |
 
 The status printed is the **app's own**. A `404` from the app is a real answer: it rides home
 fulfilled and costs exactly what a `200` costs. Only a refusal short of the app exits `3`.
@@ -110,6 +111,7 @@ npx toon-client send g.toon.store --body 'hello'  # or name the route yourself
 npx toon-client send g.toon.store --json-body --body '{"key":"value"}'
 cat payload.bin | npx toon-client send g.toon.store --body -
 npx toon-client send g.toon.relay --transport btp --body 'hello'
+npx toon-client send g.far.store --seal-to https://far.example --amount 500 --body 'hello'  # a route the addressed node only forwards
 ```
 
 ### `toon-client channel open|deposit <amount>|status|close|settle`
