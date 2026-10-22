@@ -133,8 +133,8 @@ export class ToonClient implements ToonClientLike {
     };
 
     this.manager = new BatchChannelManager(init.config.channelStore);
-    const chains = chainAccess(init.config);
     const routes = chainRoutes(init.config);
+    const chains = chainAccess(init.config, routes.solana);
     this.payer = new BatchSettlementPayer({
       connector: init.config.connector,
       manager: this.manager,
@@ -776,11 +776,13 @@ async function openHiddenService(
 
 /**
  * This client's keys, in the shapes the x402 channel code signs with: a viem
- * account on EVM, and on Solana a keypair plus the JSON-RPC it reads the chain
- * through. Chain RPC rides the proxy under the same condition everywhere: there
- * is one, and the caller has not opted RPC out of it.
+ * account on EVM, and on Solana a keypair plus the JSON-RPC route it reads the
+ * chain through, as {@link chainRoutes} decided it.
  */
-function chainAccess(config: ResolvedConfig): {
+function chainAccess(
+  config: ResolvedConfig,
+  solanaRpc: ChainRpcRoute
+): {
   evm?: { account: ReturnType<typeof privateKeyToAccount>; privateKey: Uint8Array };
   solana?: {
     signer: { privateKey: Uint8Array; publicKey: Uint8Array };
@@ -800,7 +802,7 @@ function chainAccess(config: ResolvedConfig): {
               privateKey: solanaKey.secretKey.slice(0, 32),
               publicKey: base58Decode(solanaKey.publicKey),
             },
-            rpc: chainRoutes(config).solana,
+            rpc: solanaRpc,
           },
         }
       : {}),

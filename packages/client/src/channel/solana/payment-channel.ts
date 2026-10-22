@@ -224,11 +224,11 @@ function isAccountNotFoundError(err: unknown): boolean {
 /**
  * Where Solana JSON-RPC goes, and how it gets there.
  *
- * It carries the `fetch` to dial with, and there is no default: on a hidden-service client that is the
- * proxied one, so chain reads ride the overlay with the packets rather than
- * announcing this wallet on clearnet (ADR 0002). Every function in this module
- * that takes an RPC target passes it straight through to {@link solanaRpc}; only
- * that function ever looks inside.
+ * A {@link ChainRpcRoute}: it carries the `fetch` to dial with, and there is no
+ * default. On a hidden-service client that is the proxied one, so chain reads
+ * ride the overlay with the packets rather than announcing this wallet on
+ * clearnet (ADR 0002). Every function in this module that takes a route passes
+ * it straight through to {@link solanaRpc}; only that function ever looks inside.
  */
 export type SolanaRpcTarget = ChainRpcRoute;
 

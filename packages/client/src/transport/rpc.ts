@@ -41,8 +41,10 @@ export const PROXIED_RPC_DEFAULTS = {
  * without the fetch it should use, so a hidden payer cannot reach clearnet by
  * leaving one out (ADR 0005).
  *
- * The decision is made once, in the client's chain-access layer. Nothing below
- * it picks a fetch; nothing below it can default to the global one.
+ * The client decides it once, in its chain-access layer, and every internal
+ * layer below takes it whole. The only defaults to the global `fetch` left are
+ * at public helpers, for a direct caller on clearnet; the client always passes
+ * its own route to them.
  */
 export interface ChainRpcRoute {
   url: string;

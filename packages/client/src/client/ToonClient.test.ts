@@ -174,6 +174,32 @@ describe('ToonClient.create', () => {
   });
 });
 
+describe('ToonClient — a clearnet client\'s Solana RPC', () => {
+  it('goes through the injected fetch for wallet reads and channel RPC alike', async () => {
+    const fake = fixture();
+    fake.batchSettlements = [SOLANA_SETTLEMENT];
+    const rpcUrl = 'http://solana.rpc.test/';
+    const rpc: string[] = [];
+    const injected: typeof fetch = async (input, init) => {
+      if (String(input) !== rpcUrl) return fake.fetch(input, init);
+      const { method } = JSON.parse(String(init?.body)) as { method: string };
+      rpc.push(method);
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }));
+    };
+    const globalFetch = vi.spyOn(globalThis, 'fetch');
+    const client = await create(fake, { fetch: injected, rpcUrl });
+
+    await client.wallet.balances('solana');
+    const reads = rpc.length;
+    expect(reads).toBeGreaterThan(0);
+
+    await client.channel.open().catch(() => undefined);
+    // The payer read the chain too, through the same fetch.
+    expect(rpc.length).toBeGreaterThan(reads);
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('ToonClient.describe', () => {
   it('caches: the document describes a deployment, not a reading', async () => {
     const fake = fixture();

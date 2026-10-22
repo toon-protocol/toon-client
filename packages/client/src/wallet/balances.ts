@@ -118,6 +118,17 @@ function evmReadRoute(opts: { rpcUrl: string; evmRpcFetch?: typeof fetch; proxie
   };
 }
 
+/** A viem transport for one EVM balance read: a circuit's timeout when proxied, one retry. */
+function evmReadTransport(opts: {
+  rpcUrl: string;
+  evmRpcFetch?: typeof fetch;
+  proxied?: boolean;
+}): ReturnType<typeof rpcTransport> {
+  const route = evmReadRoute(opts);
+  const timeout = rpcTimeoutMs(route.proxied);
+  return rpcTransport(route, { ...(timeout ? { timeout } : {}), retryCount: 1 });
+}
+
 /** Read an ERC-20 token balance (balance + decimals + symbol) for `owner`. */
 export async function readEvmTokenBalance(opts: {
   rpcUrl: string;
@@ -135,12 +146,7 @@ export async function readEvmTokenBalance(opts: {
 }): Promise<WalletBalance> {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
-    transport: rpcTransport(evmReadRoute(opts), {
-      ...(rpcTimeoutMs(opts.proxied ?? opts.evmRpcFetch !== undefined)
-        ? { timeout: rpcTimeoutMs(opts.proxied ?? opts.evmRpcFetch !== undefined) }
-        : {}),
-      retryCount: 1,
-    }),
+    transport: evmReadTransport(opts),
     chain: defineChain({
       id: chainId,
       name: opts.chainKey,
@@ -177,12 +183,7 @@ export async function readEvmNativeBalance(opts: {
 }): Promise<WalletTokenAmount> {
   const chainId = parseEvmChainId(opts.chainKey);
   const client = createPublicClient({
-    transport: rpcTransport(evmReadRoute(opts), {
-      ...(rpcTimeoutMs(opts.proxied ?? opts.evmRpcFetch !== undefined)
-        ? { timeout: rpcTimeoutMs(opts.proxied ?? opts.evmRpcFetch !== undefined) }
-        : {}),
-      retryCount: 1,
-    }),
+    transport: evmReadTransport(opts),
     chain: defineChain({
       id: chainId,
       name: opts.chainKey,

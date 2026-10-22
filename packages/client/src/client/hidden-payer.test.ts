@@ -29,6 +29,8 @@ import {
   describe,
   expect,
   it,
+  vi,
+  type MockInstance,
 } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { ed25519 } from '@noble/curves/ed25519.js';
@@ -74,6 +76,12 @@ let sponsorRequests: { transaction?: string }[] = [];
 let btpConnections = 0;
 /** Connections that reached the trap: every one of them is a leak. */
 let directDials = 0;
+/**
+ * The global `fetch`, watched. A proxied fetch is the global one handed the
+ * proxy's dispatcher, so a call WITHOUT a dispatcher is a path that reached
+ * `globalThis.fetch` itself instead of the fetch it was given.
+ */
+let globalFetch: MockInstance<typeof fetch>;
 
 function evmResult(method: string): unknown {
   switch (method) {
@@ -300,10 +308,12 @@ beforeEach(async () => {
   sponsorRequests = [];
   btpConnections = 0;
   directDials = 0;
+  globalFetch = vi.spyOn(globalThis, 'fetch');
   proxy = await startFakeSocks5(new Map([[HOST, nodePort]]));
 });
 
 afterEach(async () => {
+  globalFetch.mockRestore();
   await proxy.close();
 });
 
@@ -337,6 +347,12 @@ function expectEverythingRodeTheProxy(): void {
     expect(request).toMatchObject({ host: HOST, kind: 'domain' });
   }
   expect(directDials).toBe(0);
+  // Every fetch carried the proxy's dispatcher: none was the bare global one.
+  expect(globalFetch).toHaveBeenCalled();
+  const bare = globalFetch.mock.calls
+    .filter(([, init]) => (init as { dispatcher?: unknown } | undefined)?.dispatcher === undefined)
+    .map(([input]) => String(input));
+  expect(bare).toEqual([]);
 }
 
 describe('a hidden payer paying a clearnet connector', () => {
@@ -438,6 +454,30 @@ describe('a hidden payer paying a clearnet connector', () => {
       expect(chainConnects.length).toBeGreaterThan(0);
       for (const request of chainConnects)
         expect(request.username).toBe(RPC_SOCKS_USERNAMES.evm);
+    } finally {
+      await client.close();
+    }
+  });
+  it('sends a Solana transfer through the proxy on the Solana circuit', async () => {
+    const client = await hiddenPayer({ chain: 'solana' });
+    try {
+      await client.wallet
+        .transfer({
+          chain: 'solana',
+          asset: 'native',
+          to: SOL_COUNTERPARTY,
+          amount: 1n,
+          confirmTimeoutMs: 1,
+        })
+        .catch(() => undefined);
+      expect(rpcCalls).toContain('sendTransaction');
+      expectEverythingRodeTheProxy();
+      const chainConnects = proxy.requests.filter(
+        (r) => r.username !== undefined
+      );
+      expect(chainConnects.length).toBeGreaterThan(0);
+      for (const request of chainConnects)
+        expect(request.username).toBe(RPC_SOCKS_USERNAMES.solana);
     } finally {
       await client.close();
     }
