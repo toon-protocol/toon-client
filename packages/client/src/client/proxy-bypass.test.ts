@@ -170,7 +170,25 @@ describe('with the real transports', () => {
 describe('a client with no socksProxy', () => {
   it('runs no canary: nothing but the self-description is fetched', async () => {
     const seen: string[] = [];
+    const canaries: string[] = [];
+    const record = (input: Parameters<typeof fetch>[0]): Promise<Response> => {
+      canaries.push(String(input));
+      return Promise.reject(new Error('no canary should run'));
+    };
     const client = await ToonClient.create({
+      // Were a canary run, it would go down these paths.
+      canaryPaths: {
+        clientEdgeFetch: record,
+        solanaRpcFetch: record,
+        evmRpcTransport: (url) => {
+          canaries.push(url);
+          return viemHttp(url);
+        },
+        createWebSocket: (url) => {
+          canaries.push(url);
+          return new WS(url);
+        },
+      },
       connector: 'http://connector.invalid',
       mnemonic: MNEMONIC,
       rpcUrl: 'http://rpc.invalid',
@@ -188,6 +206,7 @@ describe('a client with no socksProxy', () => {
     try {
       expect(seen.length).toBeGreaterThan(0);
       expect(seen.every((url) => url.startsWith('http://connector.invalid'))).toBe(true);
+      expect(canaries).toEqual([]);
     } finally {
       await client.close();
     }

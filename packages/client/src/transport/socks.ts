@@ -174,8 +174,8 @@ export interface HiddenServiceTransport {
   createWebSocket: (url: string) => unknown;
   /**
    * The undici dispatcher behind `fetch`, for handing to something that insists
-   * on calling the global `fetch` itself — viem's HTTP transport, in practice
-   * (`http(url, { fetchOptions: { dispatcher } })`).
+   * on calling the global `fetch` itself. The client's own paths, viem's
+   * included (`http(url, { fetchFn })`), use `fetch` instead.
    */
   dispatcher: unknown;
   /**

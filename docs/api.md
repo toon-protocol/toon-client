@@ -477,7 +477,7 @@ connector's own wire vectors — see
 | `DEVNET`, `defaultRpcUrl`, `defaultFacilitatorFor` | Well-known devnet values. Defaults and examples only — a node's terms always come from `GET /ilp` |
 | `isRoutableHsHostname`, `isHiddenServiceUrl`, `assertRoutableHsHostname` | Hidden-service address validation. Pure and browser-safe — the `.anyone` pattern and the `.anon`/`.onion` refusals, in one place |
 | `validateSocks5hUrl` | Parses and enforces a `socks5h://` proxy URL, returning its host and port |
-| `rpcFetch`, `rpcTransport` | Bind a chain-RPC target to the proxy's `fetch`/dispatcher — see [hidden-service.md](hidden-service.md) |
+| `rpcFetch`, `rpcTransport` | Bind a chain-RPC target to the proxy: `rpcFetch` binds `fetch` to a dispatcher, `rpcTransport` builds a viem transport on a proxied `fetch` (`fetchFn`) — see [hidden-service.md](hidden-service.md) |
 
 ## The hidden-service entry point
 
