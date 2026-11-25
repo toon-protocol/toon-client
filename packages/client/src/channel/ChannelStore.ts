@@ -20,12 +20,12 @@ export interface ChannelStoreEntry {
    */
   provenFloor?: bigint;
   /**
-   * Set when a signed claim's fate is unknown (a transport error or a timeout,
-   * where the packet may have been delivered and banked anyway) or when the
-   * connector refused one. It means "our watermark and the connector's may
-   * disagree", and the next claim on this channel reconciles against
-   * `POST /ilp/claim-state` before it is signed. Persisted because a timeout in
-   * one `toon-client` invocation desyncs the next one.
+   * Set when the connector refused a claim as not advancing its watermark
+   * without saying where that watermark is. It means "our watermark and the
+   * connector's disagree", and the next claim on this channel reconciles
+   * against `POST /ilp/claim-state` before it is signed; adopting the
+   * connector's figure clears it. Persisted because each `toon-client`
+   * invocation is a new process, and the next one must resync first.
    */
   watermarkUncertain?: boolean;
   /** Unix SECONDS when close was initiated (withdraw flow). */

@@ -485,6 +485,7 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
     const c = must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n));
     c.settle({ kind: 'refused', message: BACKWARDS });
     await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(w.asked).toHaveLength(1);
     expect(store.load(c.channelId)?.watermarkUncertain).toBe(true);
   });
 
