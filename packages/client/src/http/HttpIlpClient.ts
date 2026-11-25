@@ -45,13 +45,11 @@
  */
 
 import type { IlpClient, IlpSendResult } from '../ilp/types.js';
-import type WSModule from 'ws';
 import {
   ILPPacketType,
   serializeIlpPrepare,
   deserializeIlpPacket,
 } from '../btp/protocol.js';
-import { BtpRuntimeClient } from '../btp/BtpRuntimeClient.js';
 import {
   NetworkError,
   describeEndpoint,
@@ -172,8 +170,7 @@ export interface HttpIlpClientConfig {
    * derives an ephemeral id from the claim signer.
    *
    * NOTE (issue #565): this is only PRESENTED on the wire when an `authToken`
-   * accompanies it — see {@link HttpIlpClient.authHeaders}. It is still used
-   * as the BTP auth-frame id on the {@link HttpIlpClient.upgradeToBtp} path.
+   * accompanies it — see {@link HttpIlpClient.authHeaders}.
    */
   peerId?: string;
   /** Bearer secret for `Authorization`. Omit for the no-auth peer path. */
@@ -186,11 +183,6 @@ export interface HttpIlpClientConfig {
   retryDelay?: number;
   /** Custom fetch implementation (for testing / custom transports). */
   httpClient?: typeof fetch;
-  /**
-   * Custom WebSocket constructor for the BTP upgrade path (for testing /
-   * custom transports). Forwarded to the underlying BtpRuntimeClient.
-   */
-  createWebSocket?: (url: string) => WebSocket;
 }
 
 /**
@@ -198,8 +190,7 @@ export interface HttpIlpClientConfig {
  *
  * Use this for pure one-shot consumers (publish-and-forget writes). When the
  * client needs a duplex session — to receive server-initiated packets or to act
- * as a peer — call {@link upgradeToBtp} to obtain a connected BtpRuntimeClient
- * that reuses the existing BTP code path.
+ * as a peer — use `BtpRuntimeClient`.
  */
 export class HttpIlpClient implements IlpClient {
   private readonly httpEndpoint: string;
@@ -209,7 +200,6 @@ export class HttpIlpClient implements IlpClient {
   private readonly timeout: number;
   private readonly retryConfig: { maxRetries: number; retryDelay: number };
   private readonly httpClient: typeof fetch;
-  private readonly createWebSocket: ((url: string) => WebSocket) | undefined;
 
   constructor(config: HttpIlpClientConfig) {
     this.httpEndpoint = config.httpEndpoint;
@@ -222,7 +212,6 @@ export class HttpIlpClient implements IlpClient {
       retryDelay: config.retryDelay ?? 1000,
     };
     this.httpClient = config.httpClient ?? fetch;
-    this.createWebSocket = config.createWebSocket;
   }
 
   /**
@@ -273,43 +262,6 @@ export class HttpIlpClient implements IlpClient {
       exponentialBackoff: true,
       shouldRetry: (error) => error instanceof NetworkError,
     });
-  }
-
-  /**
-   * Upgrade to a duplex BTP session over the SAME endpoint.
-   *
-   * Derives the `ws(s)://` URL from `httpEndpoint`, opens a WebSocket with
-   * `Sec-WebSocket-Protocol: btp` and the same `ILP-Peer-Id` + `Authorization`
-   * headers, and returns a connected {@link BtpRuntimeClient}. When auth headers
-   * are present the connector pre-authenticates the session (no in-band auth
-   * frame); without them the BtpRuntimeClient falls back to the normal BTP
-   * auth-frame flow.
-   *
-   * NOTE: passing per-connection headers + a subprotocol to a WebSocket is
-   * Node-only (the `ws` package). Browsers cannot set arbitrary request headers
-   * on a WebSocket handshake, so a browser consumer must use the gateway
-   * transport or BTP-with-auth-frame instead.
-   */
-  async upgradeToBtp(): Promise<BtpRuntimeClient> {
-    const btpUrl = httpEndpointToBtpUrl(this.httpEndpoint);
-
-    // Default WS factory negotiates `btp` + carries the auth headers so the
-    // connector pre-authenticates. Built lazily (Node-only) — browsers must
-    // pass an explicit `createWebSocket` (they can't set handshake headers).
-    const createWebSocket =
-      this.createWebSocket ??
-      (await makeBtpWebSocketFactory(this.authHeaders()));
-
-    const client = new BtpRuntimeClient({
-      btpUrl,
-      // BtpRuntimeClient sends an auth frame using these; when the connector
-      // pre-authenticated via Upgrade headers it accepts the (redundant) frame.
-      peerId: this.peerId ?? 'client',
-      authToken: this.authToken ?? '',
-      createWebSocket,
-    });
-    await client.connect();
-    return client;
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────
@@ -539,52 +491,4 @@ export class HttpIlpClient implements IlpClient {
       error instanceof Error ? error : undefined
     );
   }
-}
-
-/**
- * Derive the BTP WebSocket URL from a `POST /ilp` HTTP endpoint. The connector
- * serves BTP on the SAME path, so we only swap the scheme (http→ws, https→wss).
- */
-export function httpEndpointToBtpUrl(httpEndpoint: string): string {
-  return httpEndpoint
-    .replace(/^https:\/\//i, 'wss://')
-    .replace(/^http:\/\//i, 'ws://');
-}
-
-/**
- * Build a WebSocket factory that opens the BTP upgrade with a `btp` subprotocol
- * and the given handshake headers. Node-only — lazily loads the `ws` package via
- * a dynamically-imported `createRequire` so the node-only `node:module`/`ws`
- * deps never enter a browser bundle (per-connection headers aren't settable on
- * the browser WebSocket anyway).
- */
-async function makeBtpWebSocketFactory(
-  headers: Record<string, string>
-): Promise<(url: string) => WebSocket> {
-  const { createRequire } = await import('node:module');
-  const require = createRequire(import.meta.url);
-  const WS = require('ws') as typeof WSModule;
-
-  // CJS/ESM interop: walk the constructor ladder (class / .default / .WebSocket)
-  // so this works under any loader.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ws = WS as any;
-  const WSClass = (typeof ws === 'function'
-    ? ws
-    : typeof ws.default === 'function'
-      ? ws.default
-      : typeof ws.WebSocket === 'function'
-        ? ws.WebSocket
-        : null) as unknown as typeof WSModule.prototype.constructor;
-  if (WSClass === null) {
-    throw new Error(
-      "makeBtpWebSocketFactory: require('ws') did not yield a constructor on .default, .WebSocket, or the module root."
-    );
-  }
-
-  // `ws` accepts (url, protocols, options); the connector negotiates `btp` and
-  // pre-authenticates the session from the `ILP-Peer-Id`/`Authorization` headers.
-  return (url: string): WebSocket =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    new (WSClass as any)(url, 'btp', { headers }) as unknown as WebSocket;
 }

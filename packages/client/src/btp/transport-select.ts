@@ -92,12 +92,7 @@ export function selectTransport(
   destination?: string,
   overrides: CarriageEndpoints = {}
 ): TransportChoice {
-  // An override counts as "this carriage has an endpoint", but never changes
-  // which carriage a route requires (ADR 0006).
-  const http =
-    overrides.http ?? resolveEndpoint(description.httpEndpoint, baseUrl);
-  const btp =
-    overrides.btp ?? resolveEndpoint(description.btpEndpoint, baseUrl);
+  const { http, btp } = resolveCarriageEndpoints(description, baseUrl, overrides);
   const required = requiredTransportFor(description, destination);
 
   if (preference === 'http' || preference === 'btp') {
@@ -134,6 +129,27 @@ export function selectTransport(
   throw new TransportRequiredError(
     'the connector publishes neither an httpEndpoint nor a btpEndpoint'
   );
+}
+
+/**
+ * Every carriage endpoint this client may use, absolute: the one place an
+ * endpoint is resolved, so the carriage chosen and the HTTP fallback beneath a
+ * BTP session read the same published value against the same base.
+ *
+ * An override counts as "this carriage has an endpoint", but never changes
+ * which carriage a route requires (ADR 0006). A carriage the node does not
+ * publish and the payer did not override is `undefined`; no endpoint is
+ * invented for it.
+ */
+export function resolveCarriageEndpoints(
+  description: NodeSelfDescription,
+  baseUrl: string | undefined = description.readFrom,
+  overrides: CarriageEndpoints = {}
+): { http: string | undefined; btp: string | undefined } {
+  return {
+    http: overrides.http ?? resolveEndpoint(description.httpEndpoint, baseUrl),
+    btp: overrides.btp ?? resolveEndpoint(description.btpEndpoint, baseUrl),
+  };
 }
 
 /**

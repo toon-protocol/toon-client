@@ -31,8 +31,7 @@
  * ─── What it adds over a bare `BtpRuntimeClient` ────────────────────────
  *  - **Persistent session**: the underlying session is connected once,
  *    lazily, on the first write, and stays open across every subsequent
- *    write. This is NOT the `Http402Client.upgradeToBtp()` pattern (open,
- *    send one packet, immediately disconnect) — the whole point is to reuse
+ *    write. The whole point is to reuse
  *    one ordered socket across a burst.
  *  - **Strictly ordered dispatch**: every `sendIlpPacketWithClaim` call is
  *    appended to a FIFO queue; the next call is not dispatched onto the wire
