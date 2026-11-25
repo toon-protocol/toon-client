@@ -60,6 +60,7 @@ import { DEVNET } from '../presets.js';
 import { ConnectorEdgeClient } from '../connector/ConnectorEdgeClient.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
+import { EvmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
 import { PERMIT2_ADDRESS, readEvmBatchChannel } from '../channel/batch-settlement/evm.js';
 import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
 import { chooseBatchSettlement } from '../channel/batch-settlement/offers.js';
@@ -190,17 +191,19 @@ describe.skipIf(!ENABLED)(
 
     it('opens a channel through the facilitator, and the chain holds the deposit', async () => {
       const payerFor = new BatchSettlementPayer({
-        fetch: directFetch,
         connector: CONNECTOR,
         manager,
         deposit: DEPOSIT,
-        evm: {
-          account: payer,
-          facilitatorUrl: FACILITATOR,
-          reader: chain as unknown as {
-            readContract: (p: never) => Promise<unknown>;
-          },
-        },
+        networks: [
+          new EvmSettlementNetwork({
+            account: payer,
+            facilitatorUrl: FACILITATOR,
+            reader: chain as unknown as {
+              readContract: (p: never) => Promise<unknown>;
+            },
+            fetch: directFetch,
+          }),
+        ],
       });
       const channel = await payerFor.open(desc, 'evm');
       expect(channel).toBeDefined();
@@ -252,16 +255,18 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
 
       const relay = await new ConnectorEdgeClient({}).describe(CONNECTOR);
       const payerFor = new BatchSettlementPayer({
-        fetch: directFetch,
         connector: CONNECTOR,
         manager: new BatchChannelManager(),
         deposit: DEPOSIT,
-        evm: {
-          account: payer,
-          facilitatorUrl: FACILITATOR,
-          reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
-          wallet: evmWalletAccess({ rpc: { url: RPC_URL, fetch: directFetch }, account: payer }),
-        },
+        networks: [
+          new EvmSettlementNetwork({
+            account: payer,
+            facilitatorUrl: FACILITATOR,
+            reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
+            wallet: evmWalletAccess({ rpc: { url: RPC_URL, fetch: directFetch }, account: payer }),
+            fetch: directFetch,
+          }),
+        ],
       });
       const channel = must(await payerFor.open(inPlainToken(relay), 'evm'));
       console.log(`[batch-settlement devnet] Permit2 channel ${channel.channelId}`);
@@ -293,18 +298,20 @@ describe.skipIf(!ENABLED)(
       await waitForTokens(chain, base.asset as Hex, payer.address);
 
       const payerFor = new BatchSettlementPayer({
-        fetch: directFetch,
         connector: CONNECTOR,
         manager: new BatchChannelManager(),
         deposit: DEPOSIT,
-        evm: {
-          account: payer,
-          facilitatorUrl: FACILITATOR,
-          // Devnet USDC has ERC-3009 too; Permit2 is forced to take the permit path.
-          depositMethod: 'permit2',
-          reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
-          wallet: evmWalletAccess({ rpc: { url: RPC_URL, fetch: directFetch }, account: payer }),
-        },
+        networks: [
+          new EvmSettlementNetwork({
+            account: payer,
+            facilitatorUrl: FACILITATOR,
+            // Devnet USDC has ERC-3009 too; Permit2 is forced to take the permit path.
+            depositMethod: 'permit2',
+            reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
+            wallet: evmWalletAccess({ rpc: { url: RPC_URL, fetch: directFetch }, account: payer }),
+            fetch: directFetch,
+          }),
+        ],
       });
       const channel = must(await payerFor.open(relay, 'evm'));
       expect((await waitForEscrow(chain, channel.channelId)).balance).toBe(DEPOSIT);
@@ -349,20 +356,22 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
       const description = token === 'plain' ? inPlainToken(relay) : relay;
       await waitForTokens(chain, must(chooseBatchSettlement(description, 'evm')).asset as Hex, payer.address);
       const payerFor = new BatchSettlementPayer({
-        fetch: directFetch,
         connector: CONNECTOR,
         manager: new BatchChannelManager(),
         deposit: DEPOSIT,
-        evm: {
-          account: payer,
-          facilitatorUrl: evm.facilitatorUrl,
-          // Devnet USDC by ERC-3009, whatever the relay comes to publish, so
-          // its deposit is the payer's one transaction.
-          ...(token === 'usdc' ? { depositMethod: 'eip3009' as const } : {}),
-          ...(evm.depositGas ? { depositGas: evm.depositGas } : {}),
-          reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
-          wallet: evmWalletAccess({ rpc: { url: RPC_URL, fetch: directFetch }, account: payer }),
-        },
+        networks: [
+          new EvmSettlementNetwork({
+            account: payer,
+            facilitatorUrl: evm.facilitatorUrl,
+            // Devnet USDC by ERC-3009, whatever the relay comes to publish, so
+            // its deposit is the payer's one transaction.
+            ...(token === 'usdc' ? { depositMethod: 'eip3009' as const } : {}),
+            ...(evm.depositGas ? { depositGas: evm.depositGas } : {}),
+            reader: chain as unknown as { readContract: (p: never) => Promise<unknown> },
+            wallet: evmWalletAccess({ rpc: { url: RPC_URL, fetch: directFetch }, account: payer }),
+            fetch: directFetch,
+          }),
+        ],
       });
       const channel = must(await payerFor.open(description, 'evm'));
       console.log(`[batch-settlement devnet] self-paid channel ${channel.channelId}`);

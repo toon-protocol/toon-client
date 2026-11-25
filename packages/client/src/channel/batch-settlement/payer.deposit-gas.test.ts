@@ -11,6 +11,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { parseTransaction, recoverTypedDataAddress, type Hex } from 'viem';
 import { BatchSettlementPayer } from './payer.js';
 import { BatchChannelManager } from './manager.js';
+import { EvmSettlementNetwork } from './evm-network.js';
 import { parseSelfDescription } from '../../connector/self-description.js';
 import {
   ConfigError,
@@ -161,15 +162,17 @@ function world(o: Options = {}) {
     connector: 'https://node.example',
     manager,
     deposit: 10_000n,
-    evm: {
-      account: PAYER,
-      ...(o.facilitatorUrl === null ? {} : { facilitatorUrl: o.facilitatorUrl ?? FACILITATOR }),
-      ...(o.depositMethod ? { depositMethod: o.depositMethod } : {}),
-      ...(o.depositGas ? { depositGas: o.depositGas } : {}),
-      reader,
-      wallet,
-    },
-    fetch: fetchImpl,
+    networks: [
+      new EvmSettlementNetwork({
+        account: PAYER,
+        ...(o.facilitatorUrl === null ? {} : { facilitatorUrl: o.facilitatorUrl ?? FACILITATOR }),
+        ...(o.depositMethod ? { depositMethod: o.depositMethod } : {}),
+        ...(o.depositGas ? { depositGas: o.depositGas } : {}),
+        reader,
+        wallet,
+        fetch: fetchImpl,
+      }),
+    ],
   });
   return { payer, manager, description, settled, urls, writes, signed };
 }

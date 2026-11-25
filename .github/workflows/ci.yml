@@ -421,6 +421,39 @@ jobs:
           [ "$fail" -eq 0 ] || exit 1
           echo "✅ the batch-settlement exit proof collected ${EXPECTED_TESTS}, passed ${EXPECTED_TESTS}, on both chains"
 
+      # The payer through each real settlement network: open, pay and cover on
+      # both local chains (toon-client#778). Same chains, same assertions.
+      - name: Prove the payer opens, pays and covers through each settlement network
+        env:
+          CLIENT_REQUIRE_BATCH_SETTLEMENT: '1'
+          INFRA_SANDBOX_DIR: ${{ github.workspace }}/infra/sandbox
+          NO_COLOR: '1'
+          FORCE_COLOR: '0'
+        run: |
+          set -euo pipefail
+          pnpm --filter @toon-protocol/client test:integration \
+            src/__integration__/settlement-network.integration.test.ts 2>&1 \
+            | tee /tmp/settlement-network.log
+
+      - name: Assert the settlement network proof collected and passed
+        env:
+          EXPECTED_TESTS: '2'
+          SUITE: src/__integration__/settlement-network.integration.test.ts
+        run: |
+          set -euo pipefail
+          sed -r 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/settlement-network.log > /tmp/settlement-network.plain
+          line=$(grep -E "${SUITE} +\(" /tmp/settlement-network.plain | tail -1 || true)
+          echo "  ${line}"
+          if ! echo "$line" | grep -qE "\(${EXPECTED_TESTS} tests\)"; then
+            echo "::error::${SUITE} did not report exactly ${EXPECTED_TESTS} collected tests with none skipped"
+            exit 1
+          fi
+          if ! grep -qE "Tests +${EXPECTED_TESTS} passed \(${EXPECTED_TESTS}\)" /tmp/settlement-network.plain; then
+            echo "::error::vitest did not report ${EXPECTED_TESTS} passed of ${EXPECTED_TESTS}"
+            exit 1
+          fi
+          echo "✅ the settlement network proof collected ${EXPECTED_TESTS}, passed ${EXPECTED_TESTS}, on both chains"
+
   # ---------------------------------------------------------------------------
   # The integration suites that need NOTHING — toon-client#607.
   #
@@ -443,6 +476,8 @@ jobs:
   #   the Solana CLI:
   #     client/batch-settlement-exit     `anvil` + `solana-test-validator`,
   #                                      seeded from a toon-protocol/infra checkout
+  #     client/settlement-network        the same chains: the payer opens, pays
+  #                                      and covers through each adapter
   #   NEEDS A LIVE SERVICE OR A CREDENTIAL — deliberately NOT in CI:
   #     client/rust-edge-devnet          a funded key + a live devnet connector
   #     client/batch-settlement-devnet   a live facilitator + devnet connector

@@ -3,6 +3,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { recoverTypedDataAddress, type Hex } from 'viem';
 import { BatchSettlementPayer, readVoucherRefusal } from './payer.js';
 import { BatchChannelManager } from './manager.js';
+import { EvmSettlementNetwork } from './evm-network.js';
 import {
   InMemoryChannelStore,
   JsonFileChannelStore,
@@ -73,8 +74,13 @@ function payer(
     connector: 'https://node.example',
     manager,
     deposit,
-    evm: { account: PAYER, facilitatorUrl },
-    ...(fetchImpl ? { fetch: fetchImpl } : {}),
+    networks: [
+      new EvmSettlementNetwork({
+        account: PAYER,
+        facilitatorUrl,
+        fetch: fetchImpl ?? facilitator().fetchImpl,
+      }),
+    ],
   });
   return { p, manager };
 }
@@ -187,8 +193,7 @@ describe('BatchSettlementPayer on Base', () => {
       connector: 'https://node.example',
       manager,
       deposit: 2_000n,
-      evm: { account: PAYER, facilitatorUrl: 'https://facilitator.test' },
-      fetch: f.fetchImpl,
+      networks: [new EvmSettlementNetwork({ account: PAYER, facilitatorUrl: 'https://facilitator.test', fetch: f.fetchImpl })],
       autoOpen: false,
     });
     await expect(p.claimFor(DESCRIPTION, 'evm', 1_000n)).rejects.toThrow(
@@ -227,12 +232,14 @@ describe('BatchSettlementPayer on Base', () => {
       connector: 'https://node.example',
       manager,
       deposit: 10_000n,
-      evm: {
-        account: PAYER,
-        facilitatorUrl: 'https://facilitator.test',
-        depositMethod: 'permit2',
-      },
-      fetch: f.fetchImpl,
+      networks: [
+        new EvmSettlementNetwork({
+          account: PAYER,
+          facilitatorUrl: 'https://facilitator.test',
+          depositMethod: 'permit2',
+          fetch: f.fetchImpl,
+        }),
+      ],
     });
     const err = await p
       .claimFor(DESCRIPTION, 'evm', 1_000n)
@@ -306,12 +313,14 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
       connector: 'https://node.example',
       manager,
       deposit: 10_000n,
-      evm: {
-        account: PAYER,
-        facilitatorUrl: 'https://facilitator.test',
-        reader,
-      },
-      fetch: fetchImpl,
+      networks: [
+        new EvmSettlementNetwork({
+          account: PAYER,
+          facilitatorUrl: 'https://facilitator.test',
+          reader,
+          fetch: fetchImpl,
+        }),
+      ],
     });
     const landed = (i = posted.length - 1) => {
       const v = must(
@@ -404,20 +413,22 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
         connector: 'https://node.example',
         manager: new BatchChannelManager(store),
         deposit: 10_000n,
-        evm: {
-          account: PAYER,
-          facilitatorUrl: 'https://facilitator.test',
-          reader: {
-            readContract: async (q: never) =>
-              (q as { functionName: string }).functionName === 'channels'
-                ? [10_000n, 4_000n]
-                : [0n, 0],
-          },
-        },
-        fetch: (async () =>
-          new Response(
-            JSON.stringify({ success: true, transaction: '0x1' })
-          )) as typeof fetch,
+        networks: [
+          new EvmSettlementNetwork({
+            account: PAYER,
+            facilitatorUrl: 'https://facilitator.test',
+            reader: {
+              readContract: async (q: never) =>
+                (q as { functionName: string }).functionName === 'channels'
+                  ? [10_000n, 4_000n]
+                  : [0n, 0],
+            },
+            fetch: (async () =>
+            new Response(
+              JSON.stringify({ success: true, transaction: '0x1' })
+            )) as typeof fetch,
+          }),
+        ],
       });
     const store = new InMemoryChannelStore();
     const first = await payerOver(store).claimFor(DESCRIPTION, 'evm', 1_000n);
@@ -447,17 +458,19 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
       connector: 'https://node.example',
       manager,
       deposit: 10_000n,
-      evm: {
-        account: PAYER,
-        facilitatorUrl: 'https://facilitator.test',
-        reader: {
-          readContract: async (q: never) =>
-            (q as { functionName: string }).functionName === 'channels'
-              ? [10_000n, 0n]
-              : [0n, 0],
-        },
-      },
-      fetch: facilitator().fetchImpl,
+      networks: [
+        new EvmSettlementNetwork({
+          account: PAYER,
+          facilitatorUrl: 'https://facilitator.test',
+          reader: {
+            readContract: async (q: never) =>
+              (q as { functionName: string }).functionName === 'channels'
+                ? [10_000n, 0n]
+                : [0n, 0],
+          },
+          fetch: facilitator().fetchImpl,
+        }),
+      ],
       connectorWatermark: async (entry) => {
         asked.push(entry);
         const answer = answers.shift();
