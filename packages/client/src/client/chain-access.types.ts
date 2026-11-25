@@ -8,14 +8,16 @@
  * Nothing here runs, and nothing imports it.
  */
 import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
-import type { BatchSettlementPayerConfig } from '../channel/batch-settlement/payer.js';
+import type { EvmSettlementNetworkConfig } from '../channel/batch-settlement/evm-network.js';
+import type { SolanaSettlementNetworkConfig } from '../channel/batch-settlement/solana-network.js';
 import { getLamports } from '../channel/solana/payment-channel.js';
 import { rpcTransport, type ChainRpcRoute } from '../transport/rpc.js';
 import type { ChannelFacadeDeps } from './channel-facade.js';
 
 declare const url: string;
 declare const account: Parameters<typeof evmWalletAccess>[0]['account'];
-declare const payerConfig: BatchSettlementPayerConfig;
+declare const evmNetwork: EvmSettlementNetworkConfig;
+declare const solanaNetwork: SolanaSettlementNetworkConfig;
 declare const facade: ChannelFacadeDeps;
 
 export function chainRpcNeedsAFetch(): void {
@@ -46,10 +48,17 @@ export function chainRpcNeedsAFetch(): void {
     void missing;
   }
 
-  // The payer's own fetch, which serves the facilitator and the sponsor
-  // endpoint, is required.
-  const { fetch: _fetch, ...withoutFetch } = payerConfig;
-  // @ts-expect-error the payer cannot be configured without a fetch
-  const noFetch: BatchSettlementPayerConfig = withoutFetch;
-  void noFetch;
+  // Each settlement network's own fetch, which serves the facilitator or the
+  // sponsor endpoint, is required, as is the Solana network's RPC route.
+  const { fetch: _evmFetch, ...evmWithoutFetch } = evmNetwork;
+  // @ts-expect-error the EVM network cannot be configured without a fetch
+  const noEvmFetch: EvmSettlementNetworkConfig = evmWithoutFetch;
+  void noEvmFetch;
+  const { fetch: _solanaFetch, ...solanaWithoutFetch } = solanaNetwork;
+  // @ts-expect-error the Solana network cannot be configured without a fetch
+  const noSolanaFetch: SolanaSettlementNetworkConfig = solanaWithoutFetch;
+  void noSolanaFetch;
+  // @ts-expect-error the Solana network's RPC route needs a fetch
+  const noRpcFetch: SolanaSettlementNetworkConfig = { ...solanaNetwork, rpc: { url } };
+  void noRpcFetch;
 }

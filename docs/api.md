@@ -496,7 +496,8 @@ connector's own wire vectors — see
 | `ConnectorEdgeClient` | The client-edge endpoints as plain calls |
 | `parseSelfDescription` | `GET /ilp` body to `NodeSelfDescription`, including `batchSettlements` and `voucherSigners` |
 | `BatchChannelManager`, `JsonFileChannelStore` | The channel records, without a client |
-| `BatchSettlementPayer` | What `send()` asks for a voucher: onboarding, top-up, vouchers and their outcomes |
+| `BatchSettlementPayer` | What `send()` asks for a voucher: onboarding, top-up, vouchers and their outcomes. Chain-blind: it pays through the `networks` it is given |
+| `EvmSettlementNetwork`, `evmSettlementNetwork`, `SolanaSettlementNetwork`, `SettlementNetwork` | One settlement network per network the payer pays on: opening, covering, reading the chain, and its voucher scheme |
 | `parseSolanaWireTransaction` | Reads a compiled Solana transaction this client did not build — its signers, its blockhash, which slots are still zero |
 | `signSolanaWireTransaction` | Fills the signature slots that are yours, in place, without recompiling the message |
 | `patchSolanaRecentBlockhash` | Moves the 32 blockhash bytes to the one a fee payer chose, clearing the signatures made over the old message |
