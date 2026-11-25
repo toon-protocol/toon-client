@@ -113,6 +113,7 @@ describe('Carriage over HTTP', () => {
     if (outcome.kind !== 'greeting') return;
     expect(outcome.terms?.price).toBe(1000n);
     expect(outcome.terms?.destination).toBe(DESTINATION);
+    expect(outcome.message).toContain(`The connector at ${fake.endpoint}`);
   });
 
   it('returns a greeting that names a carriage as TRANSPORT_REQUIRED', async () => {

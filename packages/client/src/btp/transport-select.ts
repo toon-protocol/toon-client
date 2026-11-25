@@ -72,9 +72,9 @@ export interface TransportUnavailable {
  * - `'auto'`: the carriage the node requires for `destination` when it states
  *   one, else HTTP when it publishes an `httpEndpoint`, else BTP. HTTP is the
  *   default because it is stateless — one request, no session to keep alive —
- *   and a client that needs ordered claim nonces across many writes is a client
- *   that will ask for BTP explicitly (§1.9: one socket, one order, no racing
- *   into `F01 NonceNotAdvancing`).
+ *   and a client that sends many vouchers on one channel is a client that will
+ *   ask for BTP explicitly (§1.9: one socket, one order, so vouchers never race
+ *   each other's amounts).
  *
  * **The requirement is read per destination**, through
  * {@link requiredTransportFor}: the route governing `destination` first, the

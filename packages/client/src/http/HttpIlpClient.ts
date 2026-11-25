@@ -413,8 +413,19 @@ export class HttpIlpClient {
       } catch {
         parsedBody = undefined;
       }
-      if (parsePaymentTerms(parsedBody, this.httpEndpoint) !== undefined) {
-        return { accepted: false, paymentRequired: parsedBody };
+      const terms = parsePaymentTerms(parsedBody, this.httpEndpoint);
+      if (terms !== undefined) {
+        const required = terms.requiredTransport;
+        return {
+          accepted: false,
+          paymentRequired: parsedBody,
+          message:
+            required !== undefined
+              ? `The connector at ${this.httpEndpoint} refused this write over HTTP; ` +
+                `the route requires the ${required} transport.`
+              : `The connector at ${this.httpEndpoint} answered 402 with terms for ` +
+                `${terms.destination} at ${terms.price}.`,
+        };
       }
       // A 402 this client cannot read as a TOON greeting at all — a vanilla
       // x402 challenge, or a malformed body. Surfaced as the transport error
