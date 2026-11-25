@@ -422,7 +422,7 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
   const BACKWARDS =
     "claim rejected: cumulative amount goes backwards relative to this channel's watermark";
 
-  function withConnector(answers: (bigint | undefined)[], store = new InMemoryChannelStore()) {
+  function withConnector(answers: (bigint | undefined | Error)[], store = new InMemoryChannelStore()) {
     const asked: Record<string, unknown>[] = [];
     const manager = new BatchChannelManager(store);
     const p = new BatchSettlementPayer({
@@ -442,7 +442,9 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
       fetch: facilitator().fetchImpl,
       connectorWatermark: async (entry) => {
         asked.push(entry);
-        return answers.shift();
+        const answer = answers.shift();
+        if (answer instanceof Error) throw answer;
+        return answer;
       },
     });
     return { p, manager, asked, store };
@@ -475,7 +477,7 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
     const next = await second.p.claimFor(DESCRIPTION, 'evm', 1_000n);
     expect(second.asked).toHaveLength(1);
     expect(must(next).cumulative).toBe(3_000n);
-    expect(store.load(must(next).channelId)?.watermarkUncertain).toBeUndefined();
+    expect(second.manager.inDoubt(must(next).channelId)).toBe(false);
   });
 
   it('leaves the doubt standing in the store when the connector cannot answer', async () => {
@@ -486,7 +488,17 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
     c.settle({ kind: 'refused', message: BACKWARDS });
     await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
     expect(w.asked).toHaveLength(1);
-    expect(store.load(c.channelId)?.watermarkUncertain).toBe(true);
+    expect(w.manager.inDoubt(c.channelId)).toBe(true);
+  });
+
+  it('leaves the doubt standing when the claim-state call fails', async () => {
+    const w = withConnector([new Error('claim-state unreachable')]);
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    const c = must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n));
+    c.settle({ kind: 'refused', message: BACKWARDS });
+    await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(w.asked).toHaveLength(1);
+    expect(w.manager.inDoubt(c.channelId)).toBe(true);
   });
 
   it('asks once, not on every packet, once the doubt is settled', async () => {

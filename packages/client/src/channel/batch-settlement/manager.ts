@@ -255,7 +255,9 @@ export class BatchChannelManager {
    *     next voucher is priced from it rather than refused the same way again;
    *   - **it did not advance** — the connector holds at least this much, and
    *     can hold no more than this client ever signed, so the count moves to
-   *     that ceiling and the next voucher clears whatever it holds;
+   *     that ceiling and the next voucher clears whatever it holds — and,
+   *     with no figure named, the channel is in doubt until the connector's
+   *     own figure is adopted;
    *   - **anything else** banked nothing, and the charge is given back — but
    *     only if no later voucher has already superseded this one, since a
    *     concurrent send may have been banked above it.
@@ -286,13 +288,13 @@ export class BatchChannelManager {
     if (floor !== undefined && cumulative < floor) cumulative = floor;
     // A refusal that says "not advancing" without a figure leaves the connector's
     // watermark unknown: persisted, so the next voucher resyncs before it signs.
-    const inDoubt =
-      entry.watermarkUncertain === true ||
-      (reason.notAdvancing && reason.connectorWatermark === undefined);
+    const wasInDoubt = entry.watermarkUncertain === true;
+    const doubted =
+      wasInDoubt || (reason.notAdvancing && reason.connectorWatermark === undefined);
     if (
       cumulative === entry.cumulativeAmount &&
       floor === entry.provenFloor &&
-      inDoubt === (entry.watermarkUncertain === true)
+      doubted === wasInDoubt
     ) {
       return;
     }
@@ -300,7 +302,7 @@ export class BatchChannelManager {
       ...entry,
       cumulativeAmount: cumulative,
       ...(floor !== undefined ? { provenFloor: floor } : {}),
-      ...(inDoubt ? { watermarkUncertain: true } : {}),
+      ...(doubted ? { watermarkUncertain: true } : {}),
     });
   }
 
