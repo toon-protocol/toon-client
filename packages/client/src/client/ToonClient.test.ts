@@ -831,6 +831,41 @@ describe('ToonClient — a published endpoint nobody answers at', () => {
     expect(error.endpoint).toBe(HTTP);
     expect(error.cause).toBeInstanceOf(TypeError);
   });
+
+  it('makes no HTTP request, and names the BTP URL, when the node publishes no httpEndpoint', async () => {
+    const fake = fixture();
+    const posts: string[] = [];
+    const strip: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'POST') posts.push(url);
+      const response = await unreachable(fake, { btpEndpoint: BTP })(input, init);
+      if (method !== 'GET' || !(url.endsWith('/ilp') || url.endsWith('/ilp/'))) {
+        return response;
+      }
+      const { httpEndpoint: _dropped, ...body } = (await response.json()) as Record<string, unknown>;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const client = await create(fake, {
+      fetch: strip,
+      createWebSocket: refuseSocket,
+      transport: 'btp',
+      autoOpenChannel: false,
+      btp: { maxReconnectAttempts: 0 },
+    });
+    adoptChannel(client, fake);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const error = await rejection(client.send('g.fake.route'));
+    expect(error.code).toBe('NETWORK_ERROR');
+    expect(error.endpoint).toBe(BTP);
+    expect(error.message).toContain(BTP);
+    expect(error.message).toContain('published');
+    expect(posts).toEqual([]);
+  });
 });
 
 describe('ToonClient — carriageEndpoints', () => {
