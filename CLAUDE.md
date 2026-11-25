@@ -15,7 +15,7 @@ for. This repository is the payer, and only the payer.
 packages/client/src/
   client/     ToonClient, config, send(), errors      connector/  the client edge
   ilp/ http/ btp/   the two carriages and their port  wire/       envelope, gift wrap, vectors
-  channel/    lifecycle, store, per-chain clients     signing/    balance proofs
+  channel/    lifecycle, store, settlement networks   signing/    the EVM key
   keys/       derivation + keystore                   wallet/     balances, transfers, faucet
   jobs/       NIP-90 job events + the ArNS ceremony   cli/        the `toon-client` command
 ```

@@ -60,15 +60,18 @@ import { DEVNET } from '../presets.js';
 import { ConnectorEdgeClient } from '../connector/ConnectorEdgeClient.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
-import { EvmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
+import {
+  EvmSettlementNetwork,
+  evmWalletAccess,
+} from '../channel/batch-settlement/evm-network.js';
 import { PERMIT2_ADDRESS, readEvmBatchChannel } from '../channel/batch-settlement/evm.js';
-import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
 import { chooseBatchSettlement } from '../channel/batch-settlement/offers.js';
 import { fundWallet } from '../wallet/faucet.js';
 import { ToonClient } from '../client/ToonClient.js';
 import { InMemoryChannelStore } from '../channel/ChannelStore.js';
 import type { NodeSelfDescription } from '../connector/self-description.js';
 import { must } from '../utils/must.test-support.js';
+import { STORED_FORMS } from '../channel/batch-settlement/stored-forms.test-support.js';
 
 const ENABLED = process.env['BATCH_SETTLEMENT_DEVNET'] === '1';
 const CONNECTOR = process.env['TOON_CONNECTOR'] ?? DEVNET.relay.url;
@@ -175,7 +178,7 @@ describe.skipIf(!ENABLED)(
     const key = generatePrivateKey();
     const payer = privateKeyToAccount(key);
     const store = new InMemoryChannelStore();
-    const manager = new BatchChannelManager(store);
+    const manager = new BatchChannelManager(STORED_FORMS, store);
     let desc: NodeSelfDescription;
     let channelId: string;
 
@@ -256,7 +259,7 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
       const relay = await new ConnectorEdgeClient({}).describe(CONNECTOR);
       const payerFor = new BatchSettlementPayer({
         connector: CONNECTOR,
-        manager: new BatchChannelManager(),
+        manager: new BatchChannelManager(STORED_FORMS),
         deposit: DEPOSIT,
         networks: [
           new EvmSettlementNetwork({
@@ -299,7 +302,7 @@ describe.skipIf(!ENABLED)(
 
       const payerFor = new BatchSettlementPayer({
         connector: CONNECTOR,
-        manager: new BatchChannelManager(),
+        manager: new BatchChannelManager(STORED_FORMS),
         deposit: DEPOSIT,
         networks: [
           new EvmSettlementNetwork({
@@ -357,7 +360,7 @@ describe.skipIf(!ENABLED || FUNDER_KEY === undefined)(
       await waitForTokens(chain, must(chooseBatchSettlement(description, 'evm')).asset as Hex, payer.address);
       const payerFor = new BatchSettlementPayer({
         connector: CONNECTOR,
-        manager: new BatchChannelManager(),
+        manager: new BatchChannelManager(STORED_FORMS),
         deposit: DEPOSIT,
         networks: [
           new EvmSettlementNetwork({

@@ -1,6 +1,7 @@
 /**
  * Leaving an x402 `batch-settlement` channel, against the real contract and the
- * real program (connector ADR 0074, toon-client#691).
+ * real program (connector ADR 0074, toon-client#691), through `client.channel`
+ * and each chain's settlement network (toon-client#779).
  *
  * Exit is the payer's own transaction and involves no connector, so it can be
  * proved end to end on local chains seeded with exactly what production runs:
@@ -78,17 +79,24 @@ import {
   type SvmBatchChannelConfig,
 } from '../channel/batch-settlement/svm.js';
 import { ClientChannelFacade } from '../client/channel-facade.js';
+import { evmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
+import {
+  SolanaSettlementNetwork,
+  requestSvmBatchClose,
+} from '../channel/batch-settlement/solana-network.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import {
+  buildAndSendTransaction,
   deriveAssociatedTokenAccount,
   getLatestBlockhash,
   getTokenAccountBalance,
   solanaRpc,
   waitForConfirmation,
-} from '../channel/solana/payment-channel.js';
+} from '../channel/solana/json-rpc.js';
 import { signSolanaWireTransaction } from '../channel/solana/wire-transaction.js';
 import { base58Decode, base58Encode } from '../utils/base58.js';
 import { must } from '../utils/must.test-support.js';
+import { STORED_FORMS } from '../channel/batch-settlement/stored-forms.test-support.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const INFRA =
@@ -162,9 +170,8 @@ describe.skipIf(MISSING.length > 0)('x402 batch-settlement exit on EVM', () => {
     rpcUrls: { default: { http: [ANVIL_RPC] } },
   });
   const pub = createPublicClient({ chain, transport: http(ANVIL_RPC) });
-  const payerKey = generatePrivateKey();
-  const payer = privateKeyToAccount(payerKey);
-  const manager = new BatchChannelManager();
+  const payer = privateKeyToAccount(generatePrivateKey());
+  const manager = new BatchChannelManager(STORED_FORMS);
   let channel: BatchChannel;
 
   beforeAll(async () => {
@@ -298,10 +305,13 @@ describe.skipIf(MISSING.length > 0)('x402 batch-settlement exit on EVM', () => {
       chain: 'evm',
       manager,
       describe: async () => parseSelfDescription({}),
-      evm: {
-        privateKey: Buffer.from(payerKey.slice(2), 'hex'),
-        rpc: { url: ANVIL_RPC, fetch: directFetch },
-      },
+      networks: [
+        evmSettlementNetwork({
+          account: payer,
+          rpc: { url: ANVIL_RPC, fetch: directFetch },
+          fetch: directFetch,
+        }),
+      ],
       now: () => now,
     });
 
@@ -395,7 +405,7 @@ describe.skipIf(MISSING.length > 0)(
     const PAYER_ATA = deriveAssociatedTokenAccount(PAYER.address, MINT);
     let validator: ChildProcess | undefined;
     let workDir: string | undefined;
-    const manager = new BatchChannelManager();
+    const manager = new BatchChannelManager(STORED_FORMS);
     let channel: BatchChannel;
 
     beforeAll(async () => {
@@ -474,7 +484,14 @@ describe.skipIf(MISSING.length > 0)(
       if (workDir) rmSync(workDir, { recursive: true, force: true });
     });
 
-    it('opens with this client’s sponsored open, co-signed by the sponsor', async () => {
+    /**
+     * Open a channel with this client's sponsored open, co-signed by the
+     * sponsor, with a `gracePeriod`-second exit window.
+     */
+    async function openSponsored(
+      salt: bigint,
+      gracePeriod: number
+    ): Promise<BatchChannel> {
       const offer: BatchSettlementSvmOffer = {
         scheme: 'batch-settlement',
         network: 'solana:local',
@@ -484,7 +501,7 @@ describe.skipIf(MISSING.length > 0)(
         maxTimeoutSeconds: 1,
         extra: {
           feePayer: SPONSOR.address,
-          withdrawDelay: 1,
+          withdrawDelay: gracePeriod,
           tokenProgram: TOKEN_PROGRAM_ID,
         },
       };
@@ -493,15 +510,15 @@ describe.skipIf(MISSING.length > 0)(
           { commitment: 'confirmed' },
         ])) as number
       );
-      // A one-second grace period: the program's floor, below the 900 s x402 and
-      // any connector would require, so the config is written out by hand.
+      // A grace period below the 900 s x402 and any connector would require
+      // (one second is the program's floor), so the config is written out by hand.
       const config: SvmBatchChannelConfig = {
         payer: PAYER.address,
         payerAuthorizer: PAYER.address,
         receiver: RECEIVER.address,
         token: MINT,
-        withdrawDelay: 1,
-        salt: 7n,
+        withdrawDelay: gracePeriod,
+        salt,
         openSlot,
       };
       const { transaction, channelId } = buildSponsoredOpen({
@@ -524,7 +541,7 @@ describe.skipIf(MISSING.length > 0)(
         status: 'open',
         deposit: SOL_DEPOSIT,
         settled: 0n,
-        gracePeriod: 1,
+        gracePeriod,
         payer: PAYER.address,
         payee: SPONSOR.address,
         rentPayer: SPONSOR.address,
@@ -538,27 +555,40 @@ describe.skipIf(MISSING.length > 0)(
         )
       );
       expect(await getTokenAccountBalance(SOLANA_RPC, PAYER_ATA)).toBe(0n);
-
-      channel = {
+      return {
         chain: 'solana',
         channelId,
         network: 'solana:local',
         sponsor: SPONSOR.address,
         config,
       };
+    }
+
+    it('opens with this client’s sponsored open, co-signed by the sponsor', async () => {
+      channel = await openSponsored(7n, 1);
       manager.adopt(CONNECTOR, channel, SOL_DEPOSIT);
     });
 
-    it('requests the close, then seals and withdraws the deposit back after the grace period', async () => {
-      const facade = new ClientChannelFacade({
+    function exitFacade(): ClientChannelFacade {
+      return new ClientChannelFacade({
         connector: CONNECTOR,
         payer: {} as BatchSettlementPayer,
         chain: 'solana',
         manager,
         describe: async () => parseSelfDescription({}),
-        solana: { signer: PAYER, rpc: SOLANA_RPC },
+        networks: [
+          new SolanaSettlementNetwork({
+            signer: PAYER,
+            rpc: SOLANA_RPC,
+            fetch: directFetch,
+            connector: CONNECTOR,
+          }),
+        ],
       });
+    }
 
+    it('requests the close, then seals and withdraws the deposit back after the grace period', async () => {
+      const facade = exitFacade();
       const closed = await facade.close();
       expect(must(closed[0]).error).toBeUndefined();
       expect(
@@ -587,6 +617,54 @@ describe.skipIf(MISSING.length > 0)(
       const after = await getSvmBatchChannel(SOLANA_RPC, channel.channelId);
       expect(after?.status).toBe('sealed');
       expect(after?.payerWithdrawnAt).not.toBe(0n);
+    });
+
+    it('takes back a channel the connector sealed first, with no close of ours on record', async () => {
+      // A day's grace: settling below is long before this client's own window.
+      const sealedFirst = await openSponsored(8n, 86_400);
+      manager.adopt(CONNECTOR, sealedFirst, SOL_DEPOSIT);
+      // The payer's request_close landed (from another machine, say), and the
+      // connector sealed at once with nothing more to land.
+      await requestSvmBatchClose(SOLANA_RPC, PAYER, sealedFirst.channelId);
+      await buildAndSendTransaction(SOLANA_RPC, SPONSOR, [
+        {
+          programId: PAYMENT_CHANNELS_PROGRAM_ID,
+          keys: [
+            { pubkey: SPONSOR.address, isSigner: true, isWritable: false },
+            {
+              pubkey: sealedFirst.channelId,
+              isSigner: false,
+              isWritable: true,
+            },
+            {
+              pubkey: 'Sysvar1nstructions1111111111111111111111111',
+              isSigner: false,
+              isWritable: false,
+            },
+          ],
+          // settle_and_seal (4), has_voucher = 0.
+          data: new Uint8Array([4, 0]),
+        },
+      ]);
+      expect(
+        must(await getSvmBatchChannel(SOLANA_RPC, sealedFirst.channelId)).status
+      ).toBe('sealed');
+
+      const facade = exitFacade();
+      const settled = await facade.settle();
+      expect(settled).toEqual([
+        { channelId: sealedFirst.channelId, transaction: expect.any(String) },
+      ]);
+      expect(await getTokenAccountBalance(SOLANA_RPC, PAYER_ATA)).toBe(
+        SOL_DEPOSIT
+      );
+      const record = must(
+        facade
+          .channels()
+          .find((c) => c.channel.channelId === sealedFirst.channelId)
+      );
+      expect(record.settledAt).toBeDefined();
+      expect(record.closedAt).toBe(record.settledAt);
     });
   }
 );

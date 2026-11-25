@@ -11,6 +11,7 @@ import type { SettlementNetwork } from './settlement-network.js';
 import { parseSelfDescription } from '../../connector/self-description.js';
 import { ConfigError, FacilitatorError } from '../../client/errors.js';
 import { must } from '../../utils/must.test-support.js';
+import { STORED_FORMS } from './stored-forms.test-support.js';
 
 const NETWORK = 'eip155:84532';
 const TOKEN = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
@@ -125,7 +126,7 @@ function payerOver(
     entry: Record<string, unknown>
   ) => Promise<bigint | undefined>
 ) {
-  const manager = new BatchChannelManager();
+  const manager = new BatchChannelManager(STORED_FORMS);
   const p = new BatchSettlementPayer({
     connector: 'https://node.example',
     manager,

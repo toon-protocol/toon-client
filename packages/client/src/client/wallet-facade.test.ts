@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ClientWalletFacade } from './wallet-facade.js';
 import { resolveConfig } from './config.js';
+import { settlementNetworks } from './chain-access.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import { InMemoryChannelStore } from '../channel/ChannelStore.js';
 import { deriveFullIdentity } from '../keys/KeyDerivation.js';
@@ -83,7 +84,11 @@ function facade(
     CONNECTOR
   );
   return {
-    facade: new ClientWalletFacade({ config, describe: () => Promise.resolve(description) }),
+    facade: new ClientWalletFacade({
+      config,
+      describe: () => Promise.resolve(description),
+      networks: settlementNetworks(config),
+    }),
     calls,
   };
 }
@@ -139,8 +144,8 @@ describe('balances', () => {
   });
 
   it('reads a chain in the token the CONNECTOR published, not a preset', async () => {
-    // The Solana leg reads over the injected fetch, so nothing leaves the
-    // process: what is asserted is that the read was ADDRESSED with this
+    // The Solana leg reads through the Solana settlement network, over the
+    // injected fetch, so nothing leaves the process: what is asserted is that the read was ADDRESSED with this
     // client's own pubkey and the node's own mint.
     const h = facade([SOLANA_SETTLEMENT]);
     const [solana] = await h.facade.balances('solana');

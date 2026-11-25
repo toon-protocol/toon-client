@@ -5,6 +5,10 @@ import { join } from 'node:path';
 import { BatchChannelManager, type BatchChannel } from './manager.js';
 import { InMemoryChannelStore, JsonFileChannelStore } from '../ChannelStore.js';
 import { writeLegacyFiles } from '../legacy-files.test-support.js';
+import { STORED_FORMS } from './stored-forms.test-support.js';
+import { must } from '../../utils/must.test-support.js';
+import { evmStoredForm } from './evm-network.js';
+import { solanaStoredForm } from './solana-network.js';
 
 const CONNECTOR = 'https://node.example';
 
@@ -43,16 +47,38 @@ const SOLANA: BatchChannel = {
 /** A manager over a channel whose binding survived and whose watermark did not. */
 function withLostWatermark(): BatchChannelManager {
   const store = new InMemoryChannelStore();
-  new BatchChannelManager(store).adopt(CONNECTOR, EVM, 1_000_000n);
+  new BatchChannelManager(STORED_FORMS, store).adopt(
+    CONNECTOR,
+    EVM,
+    1_000_000n
+  );
   const entry = store.load(EVM.channelId)!;
   return new BatchChannelManager(
+    STORED_FORMS,
     new JsonFileChannelStore(writeLegacyFiles(entry, { watermark: false }))
   );
 }
 
 describe('BatchChannelManager', () => {
+  it('keeps each channel in its own network’s stored form', () => {
+    const store = new InMemoryChannelStore();
+    const m = new BatchChannelManager(STORED_FORMS, store);
+    m.adopt(CONNECTOR, SOLANA, 1n);
+    expect(must(store.load(SOLANA.channelId)).batchSettlement).toEqual(
+      solanaStoredForm.toStored(SOLANA)
+    );
+    expect(m.channels(CONNECTOR).map((c) => c.channel)).toEqual([SOLANA]);
+  });
+
+  it('refuses a channel on a network no stored form keeps, naming the network', () => {
+    const m = new BatchChannelManager([evmStoredForm]);
+    expect(() => m.adopt(CONNECTOR, SOLANA, 1n)).toThrow(
+      /keeps no batch-settlement channels on solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/
+    );
+  });
+
   it('resolves an adopted channel by connector, network and asset, and nothing else', () => {
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     expect(m.resolve(CONNECTOR, EVM.network, EVM.config.token)).toEqual(EVM);
     expect(
@@ -65,7 +91,7 @@ describe('BatchChannelManager', () => {
   });
 
   it('signs exactly the running total plus the charge, and nothing on a free route', () => {
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     expect(m.reserve(EVM.channelId, 1_000n)).toBe(1_000n);
     expect(m.reserve(EVM.channelId, 0n)).toBeUndefined();
@@ -74,7 +100,7 @@ describe('BatchChannelManager', () => {
   });
 
   it('gives back a charge the connector refused without banking', () => {
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 1_000n);
     m.reserve(EVM.channelId, 500n);
@@ -86,7 +112,7 @@ describe('BatchChannelManager', () => {
     // Two sends in flight: A reserves 1000, B reserves 2000. B is banked, then
     // A is refused. Subtracting A's charge would drop below what the connector
     // holds and refuse every voucher after.
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 1_000n);
     m.reserve(EVM.channelId, 1_000n);
@@ -97,7 +123,7 @@ describe('BatchChannelManager', () => {
   it('adopts the watermark an underpayment names, so the next voucher is not refused the same way', () => {
     // The connector holds 15; this client counts 12. A charge of 7 signs 19,
     // which advances by 4 < 7: "advances value by 4". Watermark = 19 - 4.
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 20n); // ceiling 20: the client signed that much
     m.refused(EVM.channelId, 20n, 8n, { notAdvancing: false }); // count falls back to 12
@@ -111,7 +137,7 @@ describe('BatchChannelManager', () => {
   });
 
   it('never adopts a named watermark above what this client ever signed', () => {
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 100n);
     m.refused(EVM.channelId, 100n, 100n, {
@@ -126,7 +152,7 @@ describe('BatchChannelManager', () => {
     // went unanswered may or may not have been banked, so it is never given
     // back: the next voucher then exceeds it either way, at the cost of at most
     // one charge if it never arrived. Only a definite refusal gives a charge back.
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 1_000n);
     m.reserve(EVM.channelId, 500n);
@@ -136,7 +162,7 @@ describe('BatchChannelManager', () => {
   });
 
   it('reads amount_not_advancing as: the connector holds up to everything ever signed', () => {
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 1_000n);
     m.reserve(EVM.channelId, 1_000n);
@@ -147,7 +173,7 @@ describe('BatchChannelManager', () => {
   });
 
   it('recovers a lost watermark from what the chain has landed, as a lower bound', () => {
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, SOLANA, 1_000_000n);
     m.recoverFromChain(SOLANA.channelId, 7_000n);
     expect(m.reserve(SOLANA.channelId, 1_000n)).toBe(8_000n);
@@ -157,7 +183,7 @@ describe('BatchChannelManager', () => {
   });
 
   it('keeps the highest voucher for a probe to resend, whatever order the answers came in', () => {
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.recordVoucher(EVM.channelId, '{"v":20}', 20n);
     m.recordVoucher(EVM.channelId, '{"v":10}', 10n);
@@ -175,7 +201,7 @@ describe('BatchChannelManager', () => {
   });
 
   it('never adopts a connector figure below a voucher it banked or refused as not advancing', () => {
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 1_000n);
     m.banked(EVM.channelId, 1_000n);
@@ -189,17 +215,23 @@ describe('BatchChannelManager', () => {
   it('keeps the floor across a restart', () => {
     const dir = mkdtempSync(join(tmpdir(), 'batch-floor-'));
     const path = join(dir, 'channels.json');
-    const first = new BatchChannelManager(new JsonFileChannelStore(path));
+    const first = new BatchChannelManager(
+      STORED_FORMS,
+      new JsonFileChannelStore(path)
+    );
     first.adopt(CONNECTOR, EVM, 1_000_000n);
     first.reserve(EVM.channelId, 3_000n);
     first.banked(EVM.channelId, 3_000n);
-    const second = new BatchChannelManager(new JsonFileChannelStore(path));
+    const second = new BatchChannelManager(
+      STORED_FORMS,
+      new JsonFileChannelStore(path)
+    );
     second.adoptConnectorWatermark(EVM.channelId, 0n);
     expect(second.reserve(EVM.channelId, 1n)).toBe(3_001n);
   });
 
   it('clamps an adopted figure between what the connector is proven to hold and what was ever signed', () => {
-    const m = new BatchChannelManager(new InMemoryChannelStore());
+    const m = new BatchChannelManager(STORED_FORMS, new InMemoryChannelStore());
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 3_000n);
     m.banked(EVM.channelId, 1_000n);
@@ -218,7 +250,7 @@ describe('BatchChannelManager', () => {
   });
 
   it('marks a "not advancing" refusal with no figure as in doubt, and a named figure or other refusal not', () => {
-    const m = new BatchChannelManager(new InMemoryChannelStore());
+    const m = new BatchChannelManager(STORED_FORMS, new InMemoryChannelStore());
     m.adopt(CONNECTOR, EVM, 1_000_000n);
     m.reserve(EVM.channelId, 1_000n);
     m.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: false });
@@ -234,11 +266,11 @@ describe('BatchChannelManager', () => {
 
   it("keeps the doubt until the connector's figure is adopted, here and in a second record over one store", () => {
     const store = new InMemoryChannelStore();
-    const first = new BatchChannelManager(store);
+    const first = new BatchChannelManager(STORED_FORMS, store);
     first.adopt(CONNECTOR, EVM, 1_000_000n);
     first.reserve(EVM.channelId, 1_000n);
     first.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: true });
-    const second = new BatchChannelManager(store);
+    const second = new BatchChannelManager(STORED_FORMS, store);
     expect(second.inDoubt(EVM.channelId)).toBe(true);
     // An unrelated refusal does not clear it.
     second.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: false });
@@ -263,7 +295,7 @@ describe('BatchChannelManager', () => {
   });
 
   it('refuses a voucher its deposit cannot cover', () => {
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000n);
     expect(() => m.reserve(EVM.channelId, 1_001n)).toThrow(/deposit/);
     expect(m.signedSoFar(EVM.channelId)).toBe(0n);
@@ -276,13 +308,19 @@ describe('BatchChannelManager', () => {
     (base) => {
       const dir = mkdtempSync(join(tmpdir(), 'batch-wide-'));
       const path = join(dir, 'channels.json');
-      const first = new BatchChannelManager(new JsonFileChannelStore(path));
+      const first = new BatchChannelManager(
+        STORED_FORMS,
+        new JsonFileChannelStore(path)
+      );
       first.adopt(CONNECTOR, EVM, base + 10n);
       expect(first.reserve(EVM.channelId, base + 1n)).toBe(base + 1n);
       first.banked(EVM.channelId, base + 1n);
       expect(() => first.reserve(EVM.channelId, 10n)).toThrow(/deposit/);
 
-      const second = new BatchChannelManager(new JsonFileChannelStore(path));
+      const second = new BatchChannelManager(
+        STORED_FORMS,
+        new JsonFileChannelStore(path)
+      );
       expect(second.depositTotal(EVM.channelId)).toBe(base + 10n);
       expect(second.reserve(EVM.channelId, 1n)).toBe(base + 2n);
     }
@@ -291,13 +329,19 @@ describe('BatchChannelManager', () => {
   it('survives a restart: config, deposit and watermark, on both chains', () => {
     const dir = mkdtempSync(join(tmpdir(), 'batch-store-'));
     const path = join(dir, 'channels.json');
-    const first = new BatchChannelManager(new JsonFileChannelStore(path));
+    const first = new BatchChannelManager(
+      STORED_FORMS,
+      new JsonFileChannelStore(path)
+    );
     first.adopt(CONNECTOR, EVM, 1_000_000n);
     first.adopt(CONNECTOR, SOLANA, 2_000_000n);
     first.reserve(EVM.channelId, 1_000n);
     first.reserve(SOLANA.channelId, 3_000n);
 
-    const second = new BatchChannelManager(new JsonFileChannelStore(path));
+    const second = new BatchChannelManager(
+      STORED_FORMS,
+      new JsonFileChannelStore(path)
+    );
     expect(second.resolve(CONNECTOR, EVM.network, EVM.config.token)).toEqual(
       EVM
     );
@@ -311,7 +355,7 @@ describe('BatchChannelManager', () => {
 
   it('keeps more than one channel to one connector apart', () => {
     const store = new InMemoryChannelStore();
-    const m = new BatchChannelManager(store);
+    const m = new BatchChannelManager(STORED_FORMS, store);
     const second: BatchChannel = { ...EVM, channelId: `0x${'ab'.repeat(32)}` };
     m.adopt(CONNECTOR, EVM, 10n);
     m.adopt(CONNECTOR, second, 10n);
@@ -337,11 +381,10 @@ describe('BatchChannelManager', () => {
       })
     );
     expect(
-      new BatchChannelManager(new JsonFileChannelStore(path)).resolve(
-        CONNECTOR,
-        EVM.network,
-        EVM.config.token
-      )
+      new BatchChannelManager(
+        STORED_FORMS,
+        new JsonFileChannelStore(path)
+      ).resolve(CONNECTOR, EVM.network, EVM.config.token)
     ).toBeUndefined();
   });
 });
@@ -408,7 +451,7 @@ describe('reading a channel back off the chain', () => {
 
 describe('BatchChannelManager — leaving a channel', () => {
   it('records the exit, and lists every channel with its state', () => {
-    const m = new BatchChannelManager();
+    const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000n);
     m.reserve(EVM.channelId, 400n);
     expect(m.isClosing(EVM.channelId)).toBe(false);

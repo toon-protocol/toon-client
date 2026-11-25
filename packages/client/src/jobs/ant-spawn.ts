@@ -58,7 +58,7 @@ import {
   patchSolanaRecentBlockhash,
   signSolanaWireTransaction,
 } from '../channel/solana/wire-transaction.js';
-import type { Signer } from '../channel/solana/payment-channel.js';
+import type { Signer } from '../channel/solana/json-rpc.js';
 import { base58Encode } from '../utils/base58.js';
 import { buildJobEvent } from './job-event.js';
 import { sendJob, type JobAnswer, type JobEndpoint } from './send-job.js';

@@ -8,49 +8,27 @@
  * own transaction on its own chain account, the one step of the scheme that
  * costs native gas.
  *
+ * Leaving a channel is its settlement network's to do: this facade walks the
+ * channels and records what each network answered, and never asks which chain
+ * a channel is on.
+ *
  * Exit walks EVERY channel this client holds with the node, not only the one it
  * pays from now: a channel archived by a newer one — replaced when exhausted,
  * or left behind by a lost binding — still holds a deposit.
  */
 
-import {
-  createPublicClient,
-  createWalletClient,
-  defineChain,
-  type Hex,
-} from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
 import type { NodeSelfDescription } from '../connector/self-description.js';
 import type {
   BatchChannel,
   BatchChannelManager,
 } from '../channel/batch-settlement/manager.js';
 import type { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
-import {
-  evmChainIdOf,
-  readEvmBatchChannel,
-} from '../channel/batch-settlement/evm.js';
-import { getSvmBatchChannel } from '../channel/batch-settlement/svm.js';
 import { chooseBatchSettlement } from '../channel/batch-settlement/offers.js';
 import {
-  finalizeEvmBatchWithdraw,
-  initiateEvmBatchWithdraw,
-  requestSvmBatchClose,
-  withdrawSvmBatchChannel,
-  type EvmExitClients,
-} from '../channel/batch-settlement/exit.js';
-import {
-  getLamports,
-  type Signer,
-  type SolanaRpcTarget,
-} from '../channel/solana/payment-channel.js';
-import { base58Encode } from '../utils/base58.js';
-import { rpcTransport, type ChainRpcRoute } from '../transport/rpc.js';
-import {
-  ChannelNotOpenError,
-  ConfigError,
-  InsufficientBalanceError,
-} from './errors.js';
+  settlementNetworkFor,
+  type SettlementNetwork,
+} from '../channel/batch-settlement/settlement-network.js';
+import { ChannelNotOpenError, ConfigError } from './errors.js';
 import type { ChainKind } from './types.js';
 
 /** One batch-settlement channel, as this client records it. */
@@ -112,8 +90,8 @@ export interface ChannelFacadeDeps {
   chain: ChainKind;
   manager: BatchChannelManager;
   describe(): Promise<NodeSelfDescription>;
-  evm?: { privateKey: Uint8Array; rpc: ChainRpcRoute };
-  solana?: { signer: Signer; rpc: SolanaRpcTarget };
+  /** The settlement networks this client holds a key for, which leave its channels. */
+  networks: readonly SettlementNetwork[];
   now?: () => bigint;
 }
 
@@ -177,9 +155,12 @@ export class ClientChannelFacade implements ChannelFacade {
       if (summary.settledAt !== undefined) continue;
       const due =
         summary.settleableAt !== undefined && summary.settleableAt <= now;
-      // A Solana channel the connector sealed first is settleable with no
-      // close of ours; an EVM one never is.
-      if (!due && summary.channel.chain !== 'solana') continue;
+      const network = settlementNetworkFor(
+        this.deps.networks,
+        summary.channel.network
+      );
+      // Nothing is due, and no network here can say otherwise.
+      if (!due && network === undefined) continue;
       const result = await this.attempt(summary.channel.channelId, () =>
         this.settleOne(summary, due, now)
       );
@@ -191,66 +172,20 @@ export class ClientChannelFacade implements ChannelFacade {
   private async closeOne(channel: BatchChannel): Promise<BatchExitResult> {
     const now = this.now();
     const manager = this.deps.manager;
-    if (channel.chain === 'evm') {
-      const clients = this.evmClients(channel.network);
-      const state = await readEvmBatchChannel(
-        clients.publicClient,
-        channel.channelId as Hex
-      );
-      if (
-        state.balance <= state.totalClaimed &&
-        state.pendingWithdrawal === 0n
-      ) {
-        // Nothing left to take back: everything deposited was claimed.
-        manager.markClosing(channel.channelId, now, now);
-        manager.markSettled(channel.channelId, now);
-        return { channelId: channel.channelId };
-      }
-      await requireGas('ETH', clients.address, clients.nativeBalance(), 'close');
-      const started = await initiateEvmBatchWithdraw(clients, channel);
-      manager.markClosing(channel.channelId, now, started.finalizeAfter);
-      return {
-        channelId: channel.channelId,
-        transaction: started.transaction,
-        settleableAt: started.finalizeAfter,
-      };
-    }
-    const solana = this.requireSolana();
-    const state = await getSvmBatchChannel(solana.rpc, channel.channelId);
-    if (
-      state === null ||
-      state.payerWithdrawnAt !== 0n ||
-      state.status === 'distributed'
-    ) {
+    const outcome = await this.networkOf(channel).close(channel, now);
+    if (outcome.kind === 'done') {
+      // Nothing left on chain to take back.
       manager.markClosing(channel.channelId, now, now);
       manager.markSettled(channel.channelId, now);
       return { channelId: channel.channelId };
     }
-    if (state.status !== 'open') {
-      // Already closing or sealed — by the connector, or by an earlier run.
-      const settleableAt =
-        state.status === 'sealed'
-          ? now
-          : state.closureStartedAt + BigInt(state.gracePeriod);
-      manager.markClosing(channel.channelId, now, settleableAt);
-      return { channelId: channel.channelId, settleableAt };
-    }
-    await requireGas(
-      'SOL',
-      base58Encode(solana.signer.publicKey),
-      getLamports(solana.rpc, base58Encode(solana.signer.publicKey)),
-      'close'
-    );
-    const started = await requestSvmBatchClose(
-      solana.rpc,
-      solana.signer,
-      channel.channelId
-    );
-    manager.markClosing(channel.channelId, now, started.settleableAt);
+    manager.markClosing(channel.channelId, now, outcome.settleableAt);
     return {
       channelId: channel.channelId,
-      transaction: started.transaction,
-      settleableAt: started.settleableAt,
+      ...(outcome.transaction !== undefined
+        ? { transaction: outcome.transaction }
+        : {}),
+      settleableAt: outcome.settleableAt,
     };
   }
 
@@ -262,61 +197,19 @@ export class ClientChannelFacade implements ChannelFacade {
   ): Promise<BatchExitResult | undefined> {
     const { channel } = summary;
     const manager = this.deps.manager;
-    if (channel.chain === 'evm') {
-      const clients = this.evmClients(channel.network);
-      const state = await readEvmBatchChannel(
-        clients.publicClient,
-        channel.channelId as Hex
-      );
-      if (
-        state.pendingWithdrawal === 0n &&
-        state.balance <= state.totalClaimed
-      ) {
-        manager.markSettled(channel.channelId, now);
-        return { channelId: channel.channelId };
-      }
-      await requireGas('ETH', clients.address, clients.nativeBalance(), 'settle');
-      const { transaction } = await finalizeEvmBatchWithdraw(
-        clients,
-        channel,
-        now
-      );
-      manager.markSettled(channel.channelId, now);
-      return { channelId: channel.channelId, transaction };
-    }
-
-    const solana = this.requireSolana();
-    const state = await getSvmBatchChannel(solana.rpc, channel.channelId);
-    // Gone, or already refunded — `distribute` pays the payer too — is done.
-    if (
-      state === null ||
-      state.payerWithdrawnAt !== 0n ||
-      state.status === 'distributed'
-    ) {
-      if (summary.closedAt === undefined)
-        manager.markClosing(channel.channelId, now, now);
-      manager.markSettled(channel.channelId, now);
-      return { channelId: channel.channelId };
-    }
-    const sealedByConnector = state.status === 'sealed';
-    if (!due && !sealedByConnector) return undefined;
-    await requireGas(
-      'SOL',
-      base58Encode(solana.signer.publicKey),
-      getLamports(solana.rpc, base58Encode(solana.signer.publicKey)),
-      'settle'
-    );
-    const { transaction } = await withdrawSvmBatchChannel(
-      solana.rpc,
-      solana.signer,
-      channel.channelId,
-      channel.config,
-      now
-    );
+    const outcome = await this.networkOf(channel).settle(channel, { due, now });
+    if (outcome.kind === 'not-yet') return undefined;
+    // A channel settled with no close of ours (sealed by the connector, or
+    // gone) is recorded as closed now.
     if (summary.closedAt === undefined)
       manager.markClosing(channel.channelId, now, now);
     manager.markSettled(channel.channelId, now);
-    return { channelId: channel.channelId, transaction };
+    return {
+      channelId: channel.channelId,
+      ...(outcome.transaction !== undefined
+        ? { transaction: outcome.transaction }
+        : {}),
+    };
   }
 
   /** Run one channel's step, turning a failure into that channel's result. */
@@ -343,68 +236,18 @@ export class ClientChannelFacade implements ChannelFacade {
     return found;
   }
 
-  private evmClients(network: string): EvmExitClients & {
-    address: string;
-    nativeBalance(): Promise<bigint>;
-  } {
-    const evm = this.deps.evm;
-    if (!evm) {
+  /** The settlement network that leaves `channel`, or a refusal naming its network. */
+  private networkOf(channel: BatchChannel): SettlementNetwork {
+    const network = settlementNetworkFor(this.deps.networks, channel.network);
+    if (network === undefined) {
       throw new ConfigError(
-        'leaving a Base batch-settlement channel needs this client’s EVM key'
+        `this client holds no key to leave a batch-settlement channel on ${channel.network}`
       );
     }
-    const chain = defineChain({
-      id: evmChainIdOf(network),
-      name: network,
-      nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-      rpcUrls: { default: { http: [evm.rpc.url] } },
-    });
-    const account = privateKeyToAccount(toHexKey(evm.privateKey));
-    const transport = rpcTransport(evm.rpc);
-    const publicClient = createPublicClient({ chain, transport });
-    const walletClient = createWalletClient({ account, chain, transport });
-    return {
-      publicClient: publicClient as unknown as EvmExitClients['publicClient'],
-      walletClient: walletClient as unknown as EvmExitClients['walletClient'],
-      address: account.address,
-      nativeBalance: () => publicClient.getBalance({ address: account.address }),
-    };
-  }
-
-  private requireSolana(): { signer: Signer; rpc: SolanaRpcTarget } {
-    if (!this.deps.solana) {
-      throw new ConfigError(
-        'leaving a Solana batch-settlement channel needs this client’s Solana key'
-      );
-    }
-    return this.deps.solana;
+    return network;
   }
 
   private now(): bigint {
     return this.deps.now?.() ?? BigInt(Math.floor(Date.now() / 1000));
   }
-}
-
-/**
- * Leaving is the one step of the scheme that costs native gas, and a payer that
- * onboarded gaslessly may well hold none. Say so plainly, before a transaction
- * is built, rather than let the node's "gas required exceeds allowance" stand
- * in for the reason.
- */
-async function requireGas(
-  gas: 'ETH' | 'SOL',
-  address: string,
-  balance: Promise<bigint>,
-  step: 'close' | 'settle'
-): Promise<void> {
-  if ((await balance) > 0n) return;
-  throw new InsufficientBalanceError(
-    `leaving a channel needs ${gas} for the fee, and ${address} holds none. Opening and ` +
-      `paying never did, so a wallet funded only with USDC has none yet: send it a little ` +
-      `${gas}, then run ${step} again.`
-  );
-}
-
-function toHexKey(key: Uint8Array): Hex {
-  return `0x${Buffer.from(key).toString('hex')}`;
 }

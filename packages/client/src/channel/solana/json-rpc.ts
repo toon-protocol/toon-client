@@ -3,13 +3,14 @@
  * token accounts, a legacy transaction compiler and sender, and the reads a
  * payer needs — balances, blockhashes, confirmation.
  *
- * Everything here is chain plumbing shared by the x402 `batch-settlement`
- * code (`../batch-settlement/`), the wallet's transfers and the ArNS jobs, and
- * none of it knows about any channel program. TOON's own `payment-channel`
- * program — which this module was named for — left with connector ADR 0075;
- * the channel program is solana-foundation's `payment-channels`, driven from
- * `../batch-settlement/svm.ts`. No `@solana/web3.js` / `@solana/kit` runtime
- * dependency: only `@noble/curves` and `@noble/hashes`.
+ * It is chain plumbing and knows about no channel program; the channel program
+ * is solana-foundation's `payment-channels`, driven from
+ * `../batch-settlement/svm.ts`. Every function that dials takes a route, and
+ * only the Solana settlement network (`../batch-settlement/solana-network.ts`)
+ * passes one. Anything else that reaches the chain asks that network for its
+ * {@link SolanaRpcClient}, already bound to the route (toon-client#777). No
+ * `@solana/web3.js` / `@solana/kit` runtime dependency: only `@noble/curves`
+ * and `@noble/hashes`.
  */
 
 import { ed25519 } from '@noble/curves/ed25519.js';
@@ -141,13 +142,7 @@ export function deriveAssociatedTokenAccount(
 }
 
 // ---------------------------------------------------------------------------
-// Balance-proof message + signing (connector-parity)
-// ---------------------------------------------------------------------------
-
-
-
-// ---------------------------------------------------------------------------
-// On-chain channel open (initialize_channel + deposit) over raw JSON-RPC
+// Instructions, signers and JSON-RPC
 // ---------------------------------------------------------------------------
 
 /** One account meta of an instruction, in the order the program reads them. */
@@ -211,16 +206,6 @@ function isAccountNotFoundError(err: unknown): boolean {
   );
 }
 
-/**
- * Raw Solana JSON-RPC call.
- *
- * Exported (with {@link getLatestBlockhash} and {@link waitForConfirmation}) for
- * `../swap/solana-settlement.js`, which submits a settlement Message the SDK has
- * ALREADY compiled and so cannot go through {@link buildAndSendTransaction} —
- * that builds its own message from instructions. Sharing the transport keeps one
- * definition of "the node answered and said no" (see {@link SolanaRpcError})
- * across the channel and settlement paths.
- */
 /**
  * Where Solana JSON-RPC goes, and how it gets there.
  *
@@ -286,6 +271,14 @@ class SolanaRpcHttpError extends Error {
   }
 }
 
+/** How one {@link solanaRpc} call is made, where its caller needs other than the default. */
+export interface SolanaRpcCallOptions {
+  /** Per-try timeout, ms; `0` sets none. Defaults to 30 s. */
+  timeoutMs?: number;
+  /** Retry a try lost in transit. Defaults to `true`. */
+  retry?: boolean;
+}
+
 /**
  * One JSON-RPC call, retried when it fails in transit.
  *
@@ -295,13 +288,16 @@ class SolanaRpcHttpError extends Error {
 export async function solanaRpc(
   rpcUrl: SolanaRpcTarget,
   method: string,
-  params: unknown[] = []
+  params: unknown[] = [],
+  options: SolanaRpcCallOptions = {}
 ): Promise<unknown> {
   const { url, fetch: fetchImpl } = rpcUrl;
+  const timeoutMs = options.timeoutMs ?? SOLANA_RPC_TIMEOUT_MS;
+  const retries = options.retry === false ? 0 : SOLANA_RPC_RETRY_DELAYS_MS.length;
   let mayHaveArrived = false;
   for (let attempt = 0; ; attempt++) {
     try {
-      return await solanaRpcOnce(url, fetchImpl, method, params);
+      return await solanaRpcOnce(url, fetchImpl, method, params, timeoutMs);
     } catch (err) {
       if (err instanceof SolanaRpcError) throw err;
       mayHaveArrived ||= !failedBeforeSending(err);
@@ -313,7 +309,7 @@ export async function solanaRpc(
           : SOLANA_RPC_RETRY_DELAYS_MS[attempt];
       if (
         !retryable ||
-        attempt >= SOLANA_RPC_RETRY_DELAYS_MS.length ||
+        attempt >= retries ||
         delay === undefined ||
         delay > MAX_RETRY_AFTER_MS
       ) {
@@ -329,7 +325,8 @@ async function solanaRpcOnce(
   url: string,
   fetchImpl: typeof fetch,
   method: string,
-  params: unknown[]
+  params: unknown[],
+  timeoutMs: number
 ): Promise<unknown> {
   const res = await fetchImpl(url, {
     method: 'POST',
@@ -340,7 +337,7 @@ async function solanaRpcOnce(
       params,
       id: rpcIdCounter++,
     }),
-    signal: AbortSignal.timeout(SOLANA_RPC_TIMEOUT_MS),
+    ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
   if (res.ok === false) {
     throw new SolanaRpcHttpError(res.status, retryAfterMs(res.headers?.get('retry-after')));
@@ -744,12 +741,6 @@ export function serializeLegacyTransaction(
 /**
  * Build, sign, and send a Solana legacy transaction over raw JSON-RPC, then wait
  * for confirmation. Mirrors the SDK reference E2E's `buildAndSendTransaction`.
- *
- * Exported (along with {@link getLamports} and {@link getTokenAccountBalance})
- * so `../transfer.js` can build plain System/SPL-Token instructions on the
- * SAME wire-format code this module already gets connector-parity-tested
- * against, rather than re-deriving Solana's compact transaction encoding a
- * second time.
  */
 export async function buildAndSendTransaction(
   rpcUrl: SolanaRpcTarget,
@@ -803,6 +794,36 @@ export async function buildAndSendTransaction(
     ...(lastValidBlockHeight !== undefined ? { lastValidBlockHeight } : {}),
   });
   return txSig;
+}
+
+/**
+ * A Solana JSON-RPC client bound to one route: what the Solana settlement
+ * network hands anything else that reaches its chain (a wallet balance read, a
+ * transfer), so that nothing outside the network holds the route itself.
+ */
+export interface SolanaRpcClient {
+  /** The route rides the SOCKS5h proxy, so a caller's own timeout should allow a circuit's latency. */
+  readonly proxied: boolean;
+  /** One raw call. See {@link solanaRpc}. */
+  request(method: string, params?: unknown[], options?: SolanaRpcCallOptions): Promise<unknown>;
+  /** See {@link getLamports}. */
+  getLamports(pubkey: string): Promise<bigint>;
+  /** See {@link getTokenAccountBalance}. */
+  getTokenAccountBalance(tokenAccount: string): Promise<bigint | null>;
+  /** See {@link buildAndSendTransaction}. */
+  sendTransaction(feePayer: Signer, instructions: RawInstruction[]): Promise<string>;
+}
+
+/** The {@link SolanaRpcClient} over `route`. Only the Solana settlement network calls this. */
+export function solanaRpcClient(route: SolanaRpcTarget): SolanaRpcClient {
+  return {
+    proxied: route.proxied === true,
+    request: (method, params = [], options = {}) => solanaRpc(route, method, params, options),
+    getLamports: (pubkey) => getLamports(route, pubkey),
+    getTokenAccountBalance: (tokenAccount) => getTokenAccountBalance(route, tokenAccount),
+    sendTransaction: (feePayer, instructions) =>
+      buildAndSendTransaction(route, feePayer, instructions),
+  };
 }
 
 export const __testing = {

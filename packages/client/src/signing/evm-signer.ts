@@ -6,8 +6,8 @@ import { type Hex, toHex } from 'viem';
  * challenges, deposit authorizations and on-chain transactions.
  *
  * Encapsulates the private key — no getPrivateKey() method is exposed. What it
- * signs is decided elsewhere (`../channel/batch-settlement/`); since connector
- * ADR 0075 there is no balance proof left for it to sign.
+ * signs is decided elsewhere, by each settlement network
+ * (`../channel/batch-settlement/`).
  */
 export class EvmSigner {
   readonly chainType = 'evm' as const;

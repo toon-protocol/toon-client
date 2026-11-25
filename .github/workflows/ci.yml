@@ -393,7 +393,7 @@ jobs:
       # the proof turns this red until the number moves with it.
       - name: Assert the proof collected and passed
         env:
-          EXPECTED_TESTS: '4'
+          EXPECTED_TESTS: '5'
           SUITE: src/__integration__/batch-settlement-exit.integration.test.ts
         run: |
           set -euo pipefail

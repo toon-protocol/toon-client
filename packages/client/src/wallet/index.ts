@@ -4,6 +4,7 @@ export {
   readEvmTokenBalance,
   readSolanaNativeBalance,
   readSolanaTokenBalance,
+  type EvmBalanceReader,
   type WalletBalance,
   type WalletBalanceSources,
   type WalletChainBalances,
@@ -14,6 +15,8 @@ export {
   type SendTransferParams,
   type SendTransferResult,
   type TransferConfig,
+  type EvmTransferConfig,
+  type SolanaTransferConfig,
 } from './transfer.js';
 export {
   fundWallet,

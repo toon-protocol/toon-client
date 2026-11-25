@@ -293,13 +293,8 @@ airdrop` first. See [devnet.md](devnet.md#faucet).
 
 ## Building blocks
 
-The pieces are exported for callers building something of their own:
-
-- the channel config and id on both chains;
-- voucher signing and the claims built from it;
-- the claim-state challenges;
-- the deposits and `settleDeposit`;
-- the sponsored Solana `open`;
-- the exit transactions.
-
-See [api.md](api.md).
+For callers building something of their own, the payer (`BatchSettlementPayer`), the channel
+records (`BatchChannelManager`) and the two settlement networks are exported. Each network owns
+everything chain-specific: the channel config and id, the deposit or sponsored open, vouchers and
+the claims built from them, the claim-state challenge and the exit transactions. Those steps are
+reached through the network, not exported one by one. See [api.md](api.md).
