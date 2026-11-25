@@ -190,6 +190,56 @@ describe('BatchChannelManager', () => {
     expect(second.reserve(EVM.channelId, 1n)).toBe(3_001n);
   });
 
+  it('clamps an adopted figure between what the connector is proven to hold and what was ever signed', () => {
+    const m = new BatchChannelManager(new InMemoryChannelStore());
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    m.reserve(EVM.channelId, 3_000n);
+    m.banked(EVM.channelId, 1_000n);
+    m.adoptConnectorWatermark(EVM.channelId, 10n); // below the floor
+    expect(m.signedSoFar(EVM.channelId)).toBe(1_000n);
+    m.adoptConnectorWatermark(EVM.channelId, 9_999n); // above the ceiling
+    expect(m.signedSoFar(EVM.channelId)).toBe(3_000n);
+  });
+
+  it('restores a lost record from the chain, with no store entry and no connector', () => {
+    const store = new InMemoryChannelStore();
+    const m = new BatchChannelManager(store);
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    store.delete(EVM.channelId);
+    expect(m.hasWatermark(EVM.channelId)).toBe(false);
+    m.restoreWatermark(EVM.channelId, 4_000n);
+    expect(m.hasWatermark(EVM.channelId)).toBe(true);
+    expect(m.reserve(EVM.channelId, 1n)).toBe(4_001n);
+  });
+
+  it('marks a "not advancing" refusal with no figure as in doubt, and a named figure or other refusal not', () => {
+    const m = new BatchChannelManager(new InMemoryChannelStore());
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    m.reserve(EVM.channelId, 1_000n);
+    m.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: false });
+    expect(m.inDoubt(EVM.channelId)).toBe(false);
+    m.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: true, connectorWatermark: 500n });
+    expect(m.inDoubt(EVM.channelId)).toBe(false);
+    m.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: true });
+    expect(m.inDoubt(EVM.channelId)).toBe(true);
+  });
+
+  it('keeps the doubt until the connector\'s figure is adopted, here and in a second record over one store', () => {
+    const store = new InMemoryChannelStore();
+    const first = new BatchChannelManager(store);
+    first.adopt(CONNECTOR, EVM, 1_000_000n);
+    first.reserve(EVM.channelId, 1_000n);
+    first.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: true });
+    const second = new BatchChannelManager(store);
+    expect(second.inDoubt(EVM.channelId)).toBe(true);
+    // An unrelated refusal does not clear it.
+    second.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: false });
+    expect(first.inDoubt(EVM.channelId)).toBe(true);
+    second.adoptConnectorWatermark(EVM.channelId, 1_000n);
+    expect(second.inDoubt(EVM.channelId)).toBe(false);
+    expect(first.inDoubt(EVM.channelId)).toBe(false);
+  });
+
   it('refuses a voucher its deposit cannot cover', () => {
     const m = new BatchChannelManager();
     m.adopt(CONNECTOR, EVM, 1_000n);

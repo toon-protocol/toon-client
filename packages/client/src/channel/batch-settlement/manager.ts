@@ -255,7 +255,9 @@ export class BatchChannelManager {
    *     next voucher is priced from it rather than refused the same way again;
    *   - **it did not advance** — the connector holds at least this much, and
    *     can hold no more than this client ever signed, so the count moves to
-   *     that ceiling and the next voucher clears whatever it holds;
+   *     that ceiling and the next voucher clears whatever it holds — and,
+   *     with no figure named, the channel is in doubt until the connector's
+   *     own figure is adopted;
    *   - **anything else** banked nothing, and the charge is given back — but
    *     only if no later voucher has already superseded this one, since a
    *     concurrent send may have been banked above it.
@@ -284,11 +286,23 @@ export class BatchChannelManager {
       cumulative = voucherAmount > charge ? voucherAmount - charge : 0n;
     }
     if (floor !== undefined && cumulative < floor) cumulative = floor;
-    if (cumulative === entry.cumulativeAmount && floor === entry.provenFloor) return;
+    // A refusal that says "not advancing" without a figure leaves the connector's
+    // watermark unknown: persisted, so the next voucher resyncs before it signs.
+    const wasInDoubt = entry.watermarkUncertain === true;
+    const doubted =
+      wasInDoubt || (reason.notAdvancing && reason.connectorWatermark === undefined);
+    if (
+      cumulative === entry.cumulativeAmount &&
+      floor === entry.provenFloor &&
+      doubted === wasInDoubt
+    ) {
+      return;
+    }
     this.store.save(channelId, {
       ...entry,
       cumulativeAmount: cumulative,
       ...(floor !== undefined ? { provenFloor: floor } : {}),
+      ...(doubted ? { watermarkUncertain: true } : {}),
     });
   }
 
@@ -349,16 +363,6 @@ export class BatchChannelManager {
       cumulativeAmount: adopted,
       signedCeiling: adopted > ceiling ? adopted : ceiling,
     });
-  }
-
-  /**
-   * Mark `channelId`'s watermark as possibly out of step with the connector's.
-   * Persisted, so the next invocation resyncs before it signs.
-   */
-  markInDoubt(channelId: string): void {
-    const entry = this.entry(channelId);
-    if (entry.watermarkUncertain) return;
-    this.store.save(channelId, { ...entry, watermarkUncertain: true });
   }
 
   /** Whether `channelId`'s watermark is in doubt, here or in an earlier invocation. */

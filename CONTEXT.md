@@ -76,6 +76,13 @@ The cumulative amount a channel's latest voucher reached. The payer keeps one; t
 its own, which decides, and reports it through `claim-state`.
 _Avoid_: Nonce, balance
 
+**Channel record**:
+What the payer keeps per channel, in the channel store, behind `BatchChannelManager`: the
+**watermark** with every rule that moves it (reserve, banked, refused, adopt, restore), and whether
+it is *in doubt* — a refusal said "not advancing" without a figure — so the next voucher resyncs
+from the connector first. The payer holds no channel state of its own.
+_Avoid_: Channel state, ledger
+
 **Refusal**:
 A connector's rejection of a packet. It is *returned*, never thrown — anything this client throws
 happened before the packet went out, or on chain.

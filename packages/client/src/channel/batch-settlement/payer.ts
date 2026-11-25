@@ -546,9 +546,6 @@ export class BatchSettlementPayer {
         }
         const reading = readVoucherRefusal(outcome.message, cumulative);
         manager.refused(channelId, cumulative, charge, reading);
-        if (reading.notAdvancing && reading.connectorWatermark === undefined) {
-          manager.markInDoubt(channelId);
-        }
       },
     };
   }
