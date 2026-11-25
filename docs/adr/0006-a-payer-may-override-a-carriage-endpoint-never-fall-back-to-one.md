@@ -22,9 +22,13 @@ everywhere the payer did not say otherwise.
   possible but obscure and has to be built separately for each carriage.
 - **Automatic fallback** to the client edge's origin when the published endpoint cannot be
   reached. Rejected: it is implicit, it sends paid packets to an address the operator never
-  published, and it turns one wrong endpoint into a slow failure followed by a silent retry.
+  published, and it turns one wrong endpoint into a slow failure followed by a silent retry. A
+  failure to reach the published endpoint is also ambiguous (down, or merely unreachable from
+  here), so a payer who knows better says so explicitly.
 - **A single `endpoint`** from which the BTP URL is derived. Rejected: it cannot express a
   connector that serves BTP on a different host or path.
+- **Derive one carriage's URL from the other's override.** Rejected: the two carriages share a
+  port only by convention, not by contract.
 
 ## Consequences
 
