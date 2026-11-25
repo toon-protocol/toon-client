@@ -29,7 +29,6 @@ import type {
   CarriageEndpoints,
   TransportPreference,
 } from '../client/types.js';
-import { TransportRequiredError } from '../client/errors.js';
 
 /**
  * `'auto'` is a preference, not an instruction: it defers to the node. An
@@ -52,10 +51,22 @@ export interface TransportChoice {
 }
 
 /**
+ * The node offers no endpoint for the carriage that was asked for or required.
+ * Returned, not thrown: nothing was sent, and the caller wants to learn which
+ * carriage to ask for instead.
+ */
+export interface TransportUnavailable {
+  kind: 'unavailable';
+  /** The carriage the node requires, when it stated one. */
+  required?: 'http' | 'btp';
+  message: string;
+}
+
+/**
  * Choose a carriage for `description`.
  *
  * - `'http'` / `'btp'`: honoured when the node publishes that endpoint;
- *   {@link TransportRequiredError} otherwise, naming the node's own
+ *   {@link TransportUnavailable} otherwise, naming the node's own
  *   `requiredTransport` when it stated one so the caller learns what to ask
  *   for instead.
  * - `'auto'`: the carriage the node requires for `destination` when it states
@@ -82,8 +93,8 @@ export interface TransportChoice {
  *   the route that governs it answers rather than the node-wide summary.
  * @param overrides the payer's `carriageEndpoints`, absolute, replacing the
  *   published endpoint of that carriage only.
- * @throws {TransportRequiredError} the requested carriage is unavailable, or
- *   the node publishes no usable endpoint at all.
+ * @returns {@link TransportUnavailable} when the requested carriage is
+ *   unavailable, or the node publishes no usable endpoint at all.
  */
 export function selectTransport(
   description: NodeSelfDescription,
@@ -91,20 +102,22 @@ export function selectTransport(
   baseUrl: string | undefined = description.readFrom,
   destination?: string,
   overrides: CarriageEndpoints = {}
-): TransportChoice {
+): TransportChoice | TransportUnavailable {
   const { http, btp } = resolveCarriageEndpoints(description, baseUrl, overrides);
   const required = requiredTransportFor(description, destination);
 
   if (preference === 'http' || preference === 'btp') {
     const url = preference === 'http' ? http : btp;
     if (url === undefined) {
-      throw new TransportRequiredError(
-        `the connector publishes no ${preference} endpoint` +
+      return {
+        kind: 'unavailable',
+        message:
+          `the connector publishes no ${preference} endpoint` +
           (required !== undefined
             ? `; its self-description requires the ${required} transport`
             : ''),
-        required !== undefined ? { required } : {}
-      );
+        ...(required !== undefined ? { required } : {}),
+      };
     }
     return { kind: preference, url };
   }
@@ -116,19 +129,21 @@ export function selectTransport(
   if (required !== undefined) {
     const url = required === 'http' ? http : btp;
     if (url === undefined) {
-      throw new TransportRequiredError(
-        `the connector requires the ${required} transport but publishes no ${required} endpoint`,
-        { required }
-      );
+      return {
+        kind: 'unavailable',
+        message: `the connector requires the ${required} transport but publishes no ${required} endpoint`,
+        required,
+      };
     }
     return { kind: required, url };
   }
 
   if (http !== undefined) return { kind: 'http', url: http };
   if (btp !== undefined) return { kind: 'btp', url: btp };
-  throw new TransportRequiredError(
-    'the connector publishes neither an httpEndpoint nor a btpEndpoint'
-  );
+  return {
+    kind: 'unavailable',
+    message: 'the connector publishes neither an httpEndpoint nor a btpEndpoint',
+  };
 }
 
 /**

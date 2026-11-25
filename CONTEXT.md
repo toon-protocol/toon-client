@@ -47,7 +47,12 @@ _Avoid_: Message, envelope, frame
 
 **Carriage**:
 The transport a packet rides: `http` (`POST /ilp`) or `btp` (a WebSocket session). A connector may
-insist on one.
+insist on one. One module, the carriage, owns the choice and the **Carriage endpoint**, and delivers
+a packet with or without a voucher, returning one of four outcomes: **answered** (a FULFILL),
+**refused** (a REJECT), **greeting** (the connector's terms instead of routing, returned rather than
+thrown) or **unknown** (it failed before an answer, so the packet may have been banked). HTTP and BTP
+are its two adapters, and BTP keeps one ordered queue so vouchers on one socket never race each
+other's amounts.
 _Avoid_: Transport, protocol, channel
 
 **Payment channel**:

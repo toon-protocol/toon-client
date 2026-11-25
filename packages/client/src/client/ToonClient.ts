@@ -31,14 +31,11 @@ import type {
 } from '../connector/ConnectorEdgeClient.js';
 import {
   defaultDestinationFor,
-  requiredTransportFor,
   type NodeSelfDescription,
 } from '../connector/self-description.js';
-import { resolveCarriageEndpoints, selectTransport } from '../btp/transport-select.js';
 import { isHiddenServiceUrl } from '../transport/hs-hostname.js';
-import { HttpIlpClient } from '../http/HttpIlpClient.js';
-import { BtpRuntimeClient, type BtpChannelDeclaration } from '../btp/BtpRuntimeClient.js';
-import { BtpPaidWriteTransport } from '../btp/BtpPaidWriteTransport.js';
+import { Carriage } from '../carriage/Carriage.js';
+import type { BtpChannelDeclaration } from '../btp/BtpRuntimeClient.js';
 
 import { sealExchange } from '../wire/sealed-exchange.js';
 import { toBase64 } from '../utils/binary.js';
@@ -54,13 +51,12 @@ import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { base58Decode } from '../utils/base58.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
-import { send, type PaidWriteTransport, type SendContext } from './send.js';
+import { send, type SendContext } from './send.js';
 import {
   ChainUnavailableError,
   ChannelNotOpenError,
   ConfigError,
   chainUnavailableMessage,
-  type EndpointSource,
 } from './errors.js';
 import type {
   ChainKind,
@@ -93,21 +89,8 @@ export class ToonClient implements ToonClientLike {
   /** Where every paid packet's voucher comes from. */
   private readonly payer: BatchSettlementPayer;
   private description: NodeSelfDescription;
-  /**
-   * One live carriage per kind, not one per client.
-   *
-   * A node pins carriages **per route** (connector ADR 0072), so one client can
-   * legitimately owe one destination a BTP session and another an HTTP one-shot.
-   * Keying by kind keeps each carriage chosen once and reused — which is the
-   * point of caching at all — without letting the first destination decide for
-   * every later one.
-   */
-  private carriages: Partial<
-    Record<'http' | 'btp', { kind: 'http' | 'btp'; transport: PaidWriteTransport }>
-  > = {};
-  private btpSession: BtpRuntimeClient | undefined;
+  private readonly carriage: Carriage;
   private readonly hiddenService: { close(): Promise<void> } | undefined;
-  private closed = false;
 
   private constructor(init: {
     config: ResolvedConfig;
@@ -131,6 +114,18 @@ export class ToonClient implements ToonClientLike {
         : {}),
       senderId: init.senderId,
     };
+    this.carriage = new Carriage({
+      transport: init.config.transport,
+      carriageEndpoints: init.config.carriageEndpoints,
+      timeoutMs: init.config.timeoutMs,
+      fetch: init.config.fetch,
+      createWebSocket: init.config.createWebSocket,
+      btp: init.config.btp,
+      peerId: init.senderId,
+      channelDeclaration: () => this.channelDeclaration(),
+      assertReachable: (endpoint) =>
+        assertReachableWithoutProxy(endpoint, init.config.socksProxy, 'published'),
+    });
 
     this.manager = new BatchChannelManager(init.config.channelStore);
     const routes = chainRoutes(init.config);
@@ -427,32 +422,13 @@ export class ToonClient implements ToonClientLike {
    * to perform here — the watermark is already durable when this is called.
    */
   async close(): Promise<void> {
-    this.closed = true;
-    const session = this.btpSession;
-    this.btpSession = undefined;
-    this.carriages = {};
-    if (session) await session.disconnect();
+    await this.carriage.close();
     // The dispatcher pools connections; without this a hidden-service client
     // holds circuits open and the process does not exit.
     if (this.hiddenService) await this.hiddenService.close();
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────
-
-  /**
-   * Refuse an endpoint this client has no way to dial.
-   *
-   * A node's endpoints are its own strings, and a hidden-service node may publish
-   * absolute `.anyone` ones. The configured client edge always wins on *whether*
-   * we can reach the node — but a carriage resolved from the description can
-   * still point somewhere the configured transport cannot go. Without a proxy
-   * that address does not merely fail: the hostname goes out in a plaintext DNS
-   * query first, which is precisely what a hidden service exists to prevent. So
-   * this fails loudly, naming the proxy, before anything dials.
-   */
-  private assertEndpointReachable(endpoint: string): void {
-    assertReachableWithoutProxy(endpoint, this.config.socksProxy, 'published');
-  }
 
   /** The port {@link send} runs against. */
   private sendContext(): SendContext {
@@ -462,7 +438,7 @@ export class ToonClient implements ToonClientLike {
       sealKeyAt: (endpoint) => this.sealKeyAt(endpoint),
       routePrice: (destination) => this.routePrice(destination),
       vouchers: this.payer,
-      transport: (description, destination) => this.transportFor(description, destination),
+      carriage: this.carriage,
       chain: this.chain,
       timeoutMs: this.config.timeoutMs,
     };
@@ -498,124 +474,6 @@ export class ToonClient implements ToonClientLike {
   private async connectorWatermark(entry: Record<string, unknown>): Promise<bigint | undefined> {
     const [answer] = await this.edge.getClaimState(this.connector, [entry]);
     return answer?.ok === true ? BigInt((answer as ClaimStateOk).cumulativeClaimed) : undefined;
-  }
-
-  /**
-   * The carriage for `destination`, chosen once per kind and then reused.
-   *
-   * Reuse matters for BTP specifically: the whole reason to prefer it is that one
-   * ordered socket cannot race its own claim nonces into `F01 NonceNotAdvancing`
-   * (`client-edge-spec.md` §1.9), and a session rebuilt per request would give
-   * that up while paying for the handshake.
-   *
-   * `destination` is what lets the node's **per-route** pin decide, rather than
-   * only its node-wide summary — which is silent on any node that pins one of
-   * its own addresses and not another (TOON_Network#111). The choice is made
-   * before the first packet, so a pinned route is dialled correctly on the first
-   * attempt and never learns its carriage from a refusal.
-   */
-  private async transportFor(
-    description: NodeSelfDescription,
-    destination?: string
-  ): Promise<{
-    kind: 'http' | 'btp';
-    transport: PaidWriteTransport;
-  }> {
-    if (this.closed) {
-      throw new ConfigError('This client has been closed; construct a new one to send again.');
-    }
-
-    const overrides = this.config.carriageEndpoints;
-    const choice = selectTransport(
-      description,
-      this.config.transport,
-      undefined,
-      destination,
-      overrides
-    );
-    const cached = this.carriages[choice.kind];
-    if (cached) return cached;
-    // The HTTP fallback beneath BTP is the published (or overridden) endpoint
-    // or nothing: a paid packet never goes to a URL nobody published (ADR 0006).
-    const httpEndpoint =
-      choice.kind === 'http'
-        ? choice.url
-        : resolveCarriageEndpoints(description, undefined, overrides).http;
-    this.assertEndpointReachable(choice.url);
-    if (httpEndpoint !== undefined) this.assertEndpointReachable(httpEndpoint);
-    const sourceOf = (kind: 'http' | 'btp'): EndpointSource | undefined => {
-      const published = description[kind === 'http' ? 'httpEndpoint' : 'btpEndpoint'];
-      if (overrides[kind] !== undefined) {
-        return { override: published !== undefined ? { published } : {} };
-      }
-      return published !== undefined ? 'published' : undefined;
-    };
-    const httpSource = sourceOf('http');
-    const btpSource = sourceOf('btp');
-    const http =
-      httpEndpoint === undefined
-        ? undefined
-        : new HttpIlpClient({
-            httpEndpoint,
-            ...(httpSource !== undefined ? { endpointSource: httpSource } : {}),
-            timeout: this.config.timeoutMs,
-            httpClient: this.config.fetch,
-          });
-
-    if (choice.kind === 'http') {
-      if (http === undefined) throw new Error('unreachable: an http choice has an endpoint');
-      const carriage = { kind: 'http' as const, transport: http };
-      this.carriages.http = carriage;
-      return carriage;
-    }
-
-    const session = new BtpRuntimeClient({
-      btpUrl: choice.url,
-      // The client edge resolves a PRESENTED identity before it looks at the
-      // route and answers `401` when it cannot authenticate one, so an anonymous
-      // peer plus a valid claim is the supported permissionless path.
-      peerId: this.identity.senderId,
-      authToken: '',
-      ...(this.config.btp.maxReconnectAttempts !== undefined
-        ? { maxRetries: this.config.btp.maxReconnectAttempts }
-        : {}),
-      ...(this.config.btp.reconnectDelay !== undefined
-        ? { retryDelay: this.config.btp.reconnectDelay }
-        : {}),
-      ...(this.config.createWebSocket
-        ? { createWebSocket: this.config.createWebSocket as (url: string) => WebSocket }
-        : {}),
-      ...(this.config.btp.declareChannel
-        ? { getChannelDeclaration: () => this.channelDeclaration() }
-        : {}),
-    });
-    this.btpSession = session;
-
-    const carriage = {
-      kind: 'btp' as const,
-      transport: new BtpPaidWriteTransport({
-        session,
-        url: choice.url,
-        ...(btpSource !== undefined ? { endpointSource: btpSource } : {}),
-        // HTTP fallback only where the node did not REQUIRE btp *for this
-        // destination*: falling back onto a carriage the route refuses would
-        // turn a recoverable socket outage into a `402` per request. Read
-        // through the same per-route resolution the choice above was made with,
-        // so the fallback cannot be enabled against a route the node-wide field
-        // happens not to describe (TOON_Network#111).
-        ...(requiredTransportFor(description, destination) === 'btp' || http === undefined
-          ? {}
-          : { fallback: http }),
-        ...(this.config.btp.maxReconnectAttempts !== undefined
-          ? { maxReconnectAttempts: this.config.btp.maxReconnectAttempts }
-          : {}),
-        ...(this.config.btp.reconnectDelay !== undefined
-          ? { reconnectDelay: this.config.btp.reconnectDelay }
-          : {}),
-      }),
-    };
-    this.carriages.btp = carriage;
-    return carriage;
   }
 
   /**

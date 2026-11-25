@@ -17,15 +17,12 @@
  * those away and would put the ordinary case of "you underpaid, here is the
  * price" onto the same path as "your RPC is unreachable".
  *
- * The one edge: {@link PaymentRequiredError} and {@link TransportRequiredError}
- * are *thrown by the transports* when the connector answers HTTP `402` rather
- * than routing at all, because at that layer there is no packet outcome to
- * return. {@link ../client/send.js}'s pipeline catches both and converts them
- * into a {@link ../client/types.js!SendRefused} with `refusedBy: 'edge'`, so a
- * caller of {@link ../client/ToonClient.js!ToonClient.send} still never sees a
- * refusal as an exception.
+ * A **greeting** — the connector answering with its terms instead of routing — is
+ * on the refusal side of that split too: the carriage returns it
+ * ({@link ../carriage/Carriage.js!Greeting}) and `send()` maps it to a
+ * {@link ../client/types.js!SendRefused} with `refusedBy: 'edge'`.
  */
-import type { PaymentTerms, ChainKind } from './types.js';
+import type { ChainKind } from './types.js';
 
 /**
  * Base error class for all TOON client errors.
@@ -220,60 +217,6 @@ export class BeforePayRefusedError extends ToonClientError {
 }
 
 // ─── Greetings: refusals raised before the packet was routed ────────────────
-
-/**
- * The connector answered an unpaid (or insufficiently paid) request with its
- * terms instead of routing it — HTTP `402`, `client-edge-spec.md` §1.4.
- *
- * The terms are the point: {@link terms} carries the route's price and the
- * chains it settles on, which is everything needed to open a channel and pay.
- * This is the greeting a first-contact client is *supposed* to receive.
- *
- * Thrown by the transport, where there is no packet outcome to return; converted
- * by {@link ../client/send.js} into a `SendRefused` with
- * `code: 'PAYMENT_REQUIRED'` and `refusedBy: 'edge'`, so a `send()` caller sees
- * an outcome rather than an exception. Catch it directly only when driving a
- * transport by hand.
- */
-export class PaymentRequiredError extends ToonClientError {
-  /** The route's terms, parsed from the x402 challenge body. */
-  readonly terms: PaymentTerms;
-
-  constructor(message: string, terms: PaymentTerms, cause?: Error) {
-    super(message, 'PAYMENT_REQUIRED', cause);
-    this.name = 'PaymentRequiredError';
-    this.terms = terms;
-  }
-}
-
-/**
- * The route refuses the carriage this request arrived on.
- *
- * A node may pin a route to one transport — the devnet relay's `g.toon.relay` is
- * BTP-only — and it says so two ways: in its self-description's
- * `requiredTransport`, and in the greeting it answers a wrong-carriage request
- * with (`extra.requiredTransport`, or an `F02` on BTP). Distinct from
- * {@link PaymentRequiredError} because the remedy is different: paying more will
- * never help, and re-sending over the other carriage always will.
- *
- * {@link required} is the carriage the node insists on, when it named one.
- */
-export class TransportRequiredError extends ToonClientError {
-  /** The carriage the node requires, when the refusal named one. */
-  readonly required: 'http' | 'btp' | undefined;
-  /** The route's terms, when the refusal carried them. */
-  readonly terms: PaymentTerms | undefined;
-
-  constructor(
-    message: string,
-    options: { required?: 'http' | 'btp'; terms?: PaymentTerms; cause?: Error } = {}
-  ) {
-    super(message, 'TRANSPORT_REQUIRED', options.cause);
-    this.name = 'TransportRequiredError';
-    this.required = options.required;
-    this.terms = options.terms;
-  }
-}
 
 /** The four paths a hidden payer hands its proxy to. */
 export type ProxiedPath = 'client-edge' | 'evm-rpc' | 'solana-rpc' | 'btp';

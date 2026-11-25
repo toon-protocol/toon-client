@@ -7,10 +7,9 @@ import {
 import {
   NetworkError,
   ConnectorError,
-  PaymentRequiredError,
-  TransportRequiredError,
 } from '../client/errors.js';
 import { fromBase64 } from '../utils/binary.js';
+import { parsePaymentTerms } from '../connector/x402.js';
 import { deriveFulfillment } from '../wire/giftwrap.js';
 import {
   FULFILLMENT_MISMATCH_CODE,
@@ -445,51 +444,47 @@ describe('HttpIlpClient', () => {
       ) as unknown as typeof fetch;
     }
 
-    it('throws PaymentRequiredError carrying the parsed terms on an ordinary greeting', async () => {
+    it('returns the greeting as a refusal carrying the raw terms, and does not retry', async () => {
       const httpClient = answering402(x402Body({}));
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
         httpClient,
       });
 
-      const error = (await client
-        .sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim())
-        .catch((e: unknown) => e)) as PaymentRequiredError;
+      const result = await client.sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim());
 
-      expect(error).toBeInstanceOf(PaymentRequiredError);
-      expect(error.terms.destination).toBe('g.toon.relay');
-      expect(error.terms.price).toBe(1000n);
+      expect(result.accepted).toBe(false);
+      // A 402 carries no packet, so there is no ILP code to report.
+      expect(result.code).toBeUndefined();
+      const terms = parsePaymentTerms(result.paymentRequired, 'http://connector.test/ilp');
+      expect(terms?.destination).toBe('g.toon.relay');
+      expect(terms?.price).toBe(1000n);
       // A relative endpoint is resolved against the URL that answered.
-      expect(error.terms.httpEndpoint).toBe('http://connector.test/ilp');
-      expect(error.terms.sessionLeaseTtlMs).toBe(120000);
-      expect(error.terms.batchSettlements).toHaveLength(1);
-      expect(error.terms.batchSettlements[0]).toMatchObject({
+      expect(terms?.httpEndpoint).toBe('http://connector.test/ilp');
+      expect(terms?.sessionLeaseTtlMs).toBe(120000);
+      expect(terms?.batchSettlements).toHaveLength(1);
+      expect(terms?.batchSettlements[0]).toMatchObject({
         chain: 'evm',
         offer: { network: 'eip155:84532', amount: '1000' },
       });
-      expect(error.terms.requiredTransport).toBeUndefined();
+      expect(terms?.requiredTransport).toBeUndefined();
       // Not retried — a repeat POST would only repeat the same 402.
       expect(httpClient).toHaveBeenCalledTimes(1);
     });
 
-    it('throws TransportRequiredError when the greeting names a carriage (issue #701)', async () => {
+    it('carries a greeting that names a carriage the same way (issue #701)', async () => {
       const httpClient = answering402(x402Body({ requiredTransport: 'btp' }));
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
         httpClient,
       });
 
-      const error = (await client
-        .sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim())
-        .catch((e: unknown) => e)) as TransportRequiredError;
+      const result = await client.sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim());
 
-      // A different refusal from "pay me": paying more never helps, and
-      // re-sending over BTP always does.
-      expect(error).toBeInstanceOf(TransportRequiredError);
-      expect(error).not.toBeInstanceOf(PaymentRequiredError);
-      expect(error.required).toBe('btp');
-      expect(error.terms?.requiredTransport).toBe('btp');
-      expect(error.terms?.price).toBe(1000n);
+      expect(result.accepted).toBe(false);
+      const terms = parsePaymentTerms(result.paymentRequired);
+      expect(terms?.requiredTransport).toBe('btp');
+      expect(terms?.price).toBe(1000n);
       expect(httpClient).toHaveBeenCalledTimes(1);
     });
 
@@ -503,7 +498,6 @@ describe('HttpIlpClient', () => {
         .sendIlpPacketWithClaim(SEND_PARAMS, makeTestClaim())
         .catch((e: unknown) => e);
       expect(error).toBeInstanceOf(ConnectorError);
-      expect(error).not.toBeInstanceOf(PaymentRequiredError);
     });
   });
 

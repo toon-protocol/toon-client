@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { selectTransport } from './transport-select.js';
-import { TransportRequiredError } from '../client/errors.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import type { NodeSelfDescription } from '../connector/self-description.js';
 
@@ -80,10 +79,10 @@ describe("selectTransport — 'auto'", () => {
 
   it('refuses a node that publishes no endpoint at all', () => {
     const description = describeNode({ ilpAddresses: ['g.x'], peerCarriages: [] });
-    expect(() => selectTransport(description, 'auto')).toThrow(
-      TransportRequiredError
-    );
-    expect(() => selectTransport(description, 'auto')).toThrow(/neither/i);
+    expect(selectTransport(description, 'auto')).toMatchObject({
+      kind: 'unavailable',
+      message: expect.stringMatching(/neither/i),
+    });
   });
 
   it('refuses a node that requires a carriage it publishes no endpoint for', () => {
@@ -93,9 +92,10 @@ describe("selectTransport — 'auto'", () => {
       peerCarriages: [],
       requiredTransport: 'btp',
     });
-    const error = catchError(() => selectTransport(description, 'auto'));
-    expect(error).toBeInstanceOf(TransportRequiredError);
-    expect((error as TransportRequiredError).required).toBe('btp');
+    expect(selectTransport(description, 'auto')).toMatchObject({
+      kind: 'unavailable',
+      required: 'btp',
+    });
   });
 });
 
@@ -185,9 +185,10 @@ describe('selectTransport — a per-route pin (TOON_Network#111)', () => {
       peerCarriages: [],
       routes: [{ prefix: 'g.toon.relay', price: '1', requiredTransport: 'btp' }],
     });
-    const error = catchError(() => selectTransport(description, 'auto', undefined, 'g.toon.relay'));
-    expect(error).toBeInstanceOf(TransportRequiredError);
-    expect((error as TransportRequiredError).required).toBe('btp');
+    expect(selectTransport(description, 'auto', undefined, 'g.toon.relay')).toMatchObject({
+      kind: 'unavailable',
+      required: 'btp',
+    });
   });
 });
 
@@ -218,12 +219,11 @@ describe('selectTransport — an explicit preference', () => {
   });
 
   it("refuses 'http' on a BTP-only node, and says which carriage to ask for", () => {
-    const error = catchError(() =>
-      selectTransport(describeNode(BTP_ONLY), 'http')
-    );
-    expect(error).toBeInstanceOf(TransportRequiredError);
-    expect((error as TransportRequiredError).required).toBe('btp');
-    expect((error as Error).message).toMatch(/no http endpoint/i);
+    expect(selectTransport(describeNode(BTP_ONLY), 'http')).toMatchObject({
+      kind: 'unavailable',
+      required: 'btp',
+      message: expect.stringMatching(/no http endpoint/i),
+    });
   });
 
   it("refuses 'btp' on a node with no btpEndpoint", () => {
@@ -232,10 +232,10 @@ describe('selectTransport — an explicit preference', () => {
       httpEndpoint: 'https://proxy.example/ilp',
       peerCarriages: ['http'],
     });
-    const error = catchError(() => selectTransport(description, 'btp'));
-    expect(error).toBeInstanceOf(TransportRequiredError);
+    const refusal = selectTransport(description, 'btp');
+    expect(refusal.kind).toBe('unavailable');
     // The node named no required carriage, so neither does the refusal.
-    expect((error as TransportRequiredError).required).toBeUndefined();
+    expect(refusal).not.toHaveProperty('required');
   });
 });
 
@@ -245,7 +245,7 @@ describe('selectTransport — endpoint resolution', () => {
       { ilpAddresses: ['g.x'], httpEndpoint: '/ilp', peerCarriages: [] },
       'https://proxy.example'
     );
-    expect(selectTransport(description, 'http').url).toBe(
+    expect(urlOf(selectTransport(description, 'http'))).toBe(
       'https://proxy.example/ilp'
     );
   });
@@ -256,7 +256,7 @@ describe('selectTransport — endpoint resolution', () => {
       'https://recorded.example'
     );
     expect(
-      selectTransport(description, 'http', 'https://override.example').url
+      urlOf(selectTransport(description, 'http', 'https://override.example'))
     ).toBe('https://override.example/ilp');
   });
 
@@ -269,7 +269,7 @@ describe('selectTransport — endpoint resolution', () => {
       },
       'https://proxy.example'
     );
-    expect(selectTransport(description, 'btp').url).toBe(
+    expect(urlOf(selectTransport(description, 'btp'))).toBe(
       'wss://elsewhere.example/ilp/btp'
     );
   });
@@ -280,18 +280,14 @@ describe('selectTransport — endpoint resolution', () => {
       httpEndpoint: '/ilp',
       peerCarriages: [],
     });
-    expect(selectTransport(description, 'http').url).toBe('/ilp');
+    expect(urlOf(selectTransport(description, 'http'))).toBe('/ilp');
   });
 });
 
-/** Run `fn` and return whatever it threw, so a test can assert on the value. */
-function catchError(fn: () => unknown): unknown {
-  try {
-    fn();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('expected the call to throw, and it did not');
+/** The URL of a choice, failing the test on an unavailable carriage. */
+function urlOf(choice: ReturnType<typeof selectTransport>): string {
+  if (choice.kind === 'unavailable') throw new Error(`expected a carriage: ${choice.message}`);
+  return choice.url;
 }
 
 describe('selectTransport — carriage endpoint overrides', () => {
@@ -301,10 +297,10 @@ describe('selectTransport — carriage endpoint overrides', () => {
   it('replaces the published endpoint of that carriage only', () => {
     const d = describeNode(BOTH);
     expect(
-      selectTransport(d, 'http', undefined, undefined, { http: HTTP }).url
+      urlOf(selectTransport(d, 'http', undefined, undefined, { http: HTTP }))
     ).toBe(HTTP);
     expect(
-      selectTransport(d, 'btp', undefined, undefined, { http: HTTP }).url
+      urlOf(selectTransport(d, 'btp', undefined, undefined, { http: HTTP }))
     ).toBe('wss://proxy.example/ilp/btp');
   });
 

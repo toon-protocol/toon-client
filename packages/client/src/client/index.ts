@@ -10,7 +10,7 @@ export {
   type ResolvedConfig,
   type ResolvedIdentity,
 } from './config.js';
-export { send, toEnvelopeRequest, type PaidWriteTransport, type SendContext } from './send.js';
+export { send, toEnvelopeRequest, type SendContext } from './send.js';
 export {
   ClientChannelFacade,
   type ChannelFacadeDeps,

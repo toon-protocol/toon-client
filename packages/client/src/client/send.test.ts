@@ -11,12 +11,11 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FakeTerminatingConnector } from '../wire/fake-connector.test-support.js';
-import { HttpIlpClient } from '../http/HttpIlpClient.js';
+import { Carriage } from '../carriage/Carriage.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import {
   send,
   toEnvelopeRequest,
-  type PaidWriteTransport,
   type SendContext,
 } from './send.js';
 import type { SendRequest } from './types.js';
@@ -44,6 +43,22 @@ interface Harness {
   offered: boolean;
 }
 
+function carriageOver(
+  fetchImpl: typeof fetch,
+  transport: 'auto' | 'http' | 'btp' = 'http'
+): Carriage {
+  return new Carriage({
+    transport,
+    carriageEndpoints: {},
+    timeoutMs: 5_000,
+    fetch: fetchImpl,
+    btp: { declareChannel: false },
+    peerId: 'test-peer',
+    channelDeclaration: async () => undefined,
+    assertReachable: () => undefined,
+  });
+}
+
 function harness(): Harness {
   const fake = new FakeTerminatingConnector({ endpoint: 'http://connector.test' });
   const state: Harness = {
@@ -54,11 +69,6 @@ function harness(): Harness {
     offered: true,
     context: undefined as unknown as SendContext,
   };
-  const transport = new HttpIlpClient({
-    httpEndpoint: 'http://connector.test/ilp',
-    httpClient: fake.fetch,
-    maxRetries: 0,
-  });
   state.context = {
     describe: async () => parseSelfDescription(fake.selfDescription(), fake.endpoint),
     sealKey: async () => fake.identityPublic,
@@ -93,7 +103,7 @@ function harness(): Harness {
         };
       },
     },
-    transport: async () => ({ kind: 'http', transport }),
+    carriage: carriageOver(fake.fetch),
     chain: 'evm',
     timeoutMs: 5_000,
     warn: () => undefined,
@@ -280,11 +290,7 @@ describe('send — a voucher’s fate goes back to the payer', () => {
   });
 
   it('a thrown transport error leaves the voucher counted, and rethrows', async () => {
-    const failing: PaidWriteTransport = {
-      sendIlpPacketWithClaim: () => Promise.reject(new Error('socket hang up')),
-      sendIlpPacket: () => Promise.reject(new Error('socket hang up')),
-    };
-    h.context.transport = async () => ({ kind: 'http', transport: failing });
+    h.context.carriage = carriageOver(() => Promise.reject(new Error('socket hang up')));
     await expect(send(h.context, DESTINATION)).rejects.toThrow('socket hang up');
     expect(h.settled).toEqual([{ kind: 'unknown' }]);
   });

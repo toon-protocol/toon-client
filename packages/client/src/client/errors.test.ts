@@ -8,11 +8,8 @@ import {
   ChainUnavailableError,
   ChannelNotOpenError,
   RouteNotPricedError,
-  PaymentRequiredError,
-  TransportRequiredError,
   chainUnavailableMessage,
 } from './errors.js';
-import type { PaymentTerms } from './types.js';
 
 describe('ToonClientError', () => {
   it('should create error with message and code', () => {
@@ -102,14 +99,6 @@ describe('ValidationError', () => {
 
 // ─── 1.0's own classes ──────────────────────────────────────────────────────
 
-const TERMS: PaymentTerms = {
-  destination: 'g.toon.store',
-  price: 1000n,
-  httpEndpoint: 'https://node.example/ilp',
-  settlements: [],
-  raw: {},
-};
-
 describe('ConfigError', () => {
   it('carries the CONFIG code and its cause', () => {
     const cause = new Error('registry disagreed');
@@ -167,29 +156,5 @@ describe('RouteNotPricedError', () => {
     const error = new RouteNotPricedError('no route');
     expect(error.code).toBe('ROUTE_NOT_PRICED');
     expect(error.name).toBe('RouteNotPricedError');
-  });
-});
-
-describe('PaymentRequiredError', () => {
-  it('carries the terms the greeting stated — the point of the greeting', () => {
-    const error = new PaymentRequiredError('pay first', TERMS);
-    expect(error.code).toBe('PAYMENT_REQUIRED');
-    expect(error.terms.price).toBe(1000n);
-    expect(error.terms.destination).toBe('g.toon.store');
-  });
-});
-
-describe('TransportRequiredError', () => {
-  it('names the carriage the node insists on', () => {
-    const error = new TransportRequiredError('btp only', { required: 'btp', terms: TERMS });
-    expect(error.code).toBe('TRANSPORT_REQUIRED');
-    expect(error.required).toBe('btp');
-    expect(error.terms).toBe(TERMS);
-  });
-
-  it('tolerates a refusal that named no carriage', () => {
-    const error = new TransportRequiredError('wrong carriage');
-    expect(error.required).toBeUndefined();
-    expect(error.terms).toBeUndefined();
   });
 });
