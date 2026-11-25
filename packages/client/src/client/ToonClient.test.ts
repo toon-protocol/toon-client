@@ -860,8 +860,10 @@ describe('ToonClient — a published endpoint nobody answers at', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
     const error = await rejection(client.send('g.fake.route'));
+    expect(error.code).toBe('NETWORK_ERROR');
     expect(error.endpoint).toBe(BTP);
     expect(error.message).toContain(BTP);
+    expect(error.message).toContain('published');
     expect(posts).toEqual([]);
   });
 });
