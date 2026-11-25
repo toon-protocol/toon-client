@@ -34,7 +34,7 @@ import {
   requiredTransportFor,
   type NodeSelfDescription,
 } from '../connector/self-description.js';
-import { selectTransport } from '../btp/transport-select.js';
+import { resolveCarriageEndpoints, selectTransport } from '../btp/transport-select.js';
 import { isHiddenServiceUrl } from '../transport/hs-hostname.js';
 import { HttpIlpClient } from '../http/HttpIlpClient.js';
 import { BtpRuntimeClient, type BtpChannelDeclaration } from '../btp/BtpRuntimeClient.js';
@@ -535,12 +535,14 @@ export class ToonClient implements ToonClientLike {
     );
     const cached = this.carriages[choice.kind];
     if (cached) return cached;
+    // The HTTP fallback beneath BTP is the published (or overridden) endpoint
+    // or nothing: a paid packet never goes to a URL nobody published (ADR 0006).
     const httpEndpoint =
       choice.kind === 'http'
         ? choice.url
-        : (overrides.http ?? httpEndpointOf(description, this.connector));
+        : resolveCarriageEndpoints(description, undefined, overrides).http;
     this.assertEndpointReachable(choice.url);
-    this.assertEndpointReachable(httpEndpoint);
+    if (httpEndpoint !== undefined) this.assertEndpointReachable(httpEndpoint);
     const sourceOf = (kind: 'http' | 'btp'): EndpointSource | undefined => {
       const published = description[kind === 'http' ? 'httpEndpoint' : 'btpEndpoint'];
       if (overrides[kind] !== undefined) {
@@ -550,17 +552,18 @@ export class ToonClient implements ToonClientLike {
     };
     const httpSource = sourceOf('http');
     const btpSource = sourceOf('btp');
-    const http = new HttpIlpClient({
-      httpEndpoint,
-      ...(httpSource !== undefined ? { endpointSource: httpSource } : {}),
-      timeout: this.config.timeoutMs,
-      httpClient: this.config.fetch,
-      ...(this.config.createWebSocket
-        ? { createWebSocket: this.config.createWebSocket as (url: string) => WebSocket }
-        : {}),
-    });
+    const http =
+      httpEndpoint === undefined
+        ? undefined
+        : new HttpIlpClient({
+            httpEndpoint,
+            ...(httpSource !== undefined ? { endpointSource: httpSource } : {}),
+            timeout: this.config.timeoutMs,
+            httpClient: this.config.fetch,
+          });
 
     if (choice.kind === 'http') {
+      if (http === undefined) throw new Error('unreachable: an http choice has an endpoint');
       const carriage = { kind: 'http' as const, transport: http };
       this.carriages.http = carriage;
       return carriage;
@@ -600,7 +603,9 @@ export class ToonClient implements ToonClientLike {
         // through the same per-route resolution the choice above was made with,
         // so the fallback cannot be enabled against a route the node-wide field
         // happens not to describe (TOON_Network#111).
-        ...(requiredTransportFor(description, destination) === 'btp' ? {} : { fallback: http }),
+        ...(requiredTransportFor(description, destination) === 'btp' || http === undefined
+          ? {}
+          : { fallback: http }),
         ...(this.config.btp.maxReconnectAttempts !== undefined
           ? { maxReconnectAttempts: this.config.btp.maxReconnectAttempts }
           : {}),
@@ -681,22 +686,6 @@ function assertReachableWithoutProxy(
       'Set one to a running Anyone Protocol `anon` daemon (e.g. ' +
       `"socks5h://127.0.0.1:9050"), or ${alternative}.`
   );
-}
-
-/**
- * The `POST /ilp` URL, for the HTTP fallback beneath a BTP session.
- *
- * Falls back to the client-edge base plus `/ilp` when the node published no
- * `httpEndpoint`: the fallback is only ever *tried* when BTP has already failed,
- * so a guess that turns out to be wrong costs one failed request rather than
- * suppressing a working carriage.
- */
-function httpEndpointOf(description: NodeSelfDescription, connector: string): string {
-  const published = description.httpEndpoint;
-  if (published === undefined) return `${connector}/ilp`;
-  return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(published)
-    ? published
-    : new URL(published, connector).toString();
 }
 
 /**
