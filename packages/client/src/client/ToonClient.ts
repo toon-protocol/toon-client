@@ -42,20 +42,10 @@ import { toBase64 } from '../utils/binary.js';
 import { resolveConfig, addressFor, type ResolvedConfig } from './config.js';
 import { ClientChannelFacade } from './channel-facade.js';
 import { ClientWalletFacade } from './wallet-facade.js';
-import { privateKeyToAccount } from 'viem/accounts';
-import { toHex } from 'viem';
-import { chainRoutes } from './chain-access.js';
-import {
-  evmSettlementNetwork,
-  evmStoredForm,
-} from '../channel/batch-settlement/evm-network.js';
-import {
-  SolanaSettlementNetwork,
-  solanaStoredForm,
-} from '../channel/batch-settlement/solana-network.js';
-import type { SettlementNetwork } from '../channel/batch-settlement/settlement-network.js';
+import { settlementNetworks } from './chain-access.js';
+import { evmStoredForm } from '../channel/batch-settlement/evm-network.js';
+import { solanaStoredForm } from '../channel/batch-settlement/solana-network.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
-import { base58Decode } from '../utils/base58.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
 import { send, type SendContext } from './send.js';
 import {
@@ -157,6 +147,7 @@ export class ToonClient implements ToonClientLike {
     this.wallet = new ClientWalletFacade({
       config: init.config,
       describe: () => this.describe(),
+      networks,
     });
   }
 
@@ -602,46 +593,4 @@ async function openHiddenService(
             },
     },
   };
-}
-
-/**
- * The settlement networks this client pays on and leaves its channels through:
- * one per chain it holds a key for, each built once from that key and the RPC
- * route {@link chainRoutes} decided for its chain.
- */
-function settlementNetworks(config: ResolvedConfig): SettlementNetwork[] {
-  const routes = chainRoutes(config);
-  const evmKey = config.identity.evm?.privateKey;
-  const solanaKey = config.identity.solana;
-  return [
-    ...(evmKey !== undefined
-      ? [
-          evmSettlementNetwork({
-            account: privateKeyToAccount(toHex(evmKey)),
-            rpc: routes.evm,
-            fetch: config.fetch,
-            ...(config.facilitatorUrl !== undefined
-              ? { facilitatorUrl: config.facilitatorUrl }
-              : {}),
-            ...(config.depositMethod !== undefined
-              ? { depositMethod: config.depositMethod }
-              : {}),
-            depositGas: config.depositGas,
-          }),
-        ]
-      : []),
-    ...(solanaKey !== undefined
-      ? [
-          new SolanaSettlementNetwork({
-            signer: {
-              privateKey: solanaKey.secretKey.slice(0, 32),
-              publicKey: base58Decode(solanaKey.publicKey),
-            },
-            rpc: routes.solana,
-            fetch: config.fetch,
-            connector: config.connector,
-          }),
-        ]
-      : []),
-  ];
 }

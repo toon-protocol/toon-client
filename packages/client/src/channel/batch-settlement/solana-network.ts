@@ -31,10 +31,12 @@ import {
   getLatestBlockhash,
   getTokenAccountBalance,
   solanaRpc,
+  solanaRpcClient,
   type RawInstruction,
+  type SolanaRpcClient,
   type Signer,
   type SolanaRpcTarget,
-} from '../solana/payment-channel.js';
+} from '../solana/json-rpc.js';
 import {
   PAYMENT_CHANNELS_PROGRAM_ID,
   buildSponsoredOpen,
@@ -135,7 +137,15 @@ export class SolanaSettlementNetwork implements SettlementNetwork {
   readonly toStored = solanaStoredForm.toStored;
   readonly fromStored = solanaStoredForm.fromStored;
 
-  constructor(private readonly config: SolanaSettlementNetworkConfig) {}
+  /**
+   * This network's JSON-RPC, bound to its route: how anything else that reaches
+   * the chain (a wallet balance read, a transfer) reaches it.
+   */
+  readonly rpc: SolanaRpcClient;
+
+  constructor(private readonly config: SolanaSettlementNetworkConfig) {
+    this.rpc = solanaRpcClient(config.rpc);
+  }
 
   /**
    * A channel the receiving connector sponsors.

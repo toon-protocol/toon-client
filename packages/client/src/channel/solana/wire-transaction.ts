@@ -1,7 +1,7 @@
 /**
  * Solana wire transactions this client did NOT build.
  *
- * {@link import('./payment-channel.js').buildAndSendTransaction} composes a
+ * {@link import('./json-rpc.js').buildAndSendTransaction} composes a
  * transaction from instructions and signs every slot it created. This module is
  * the other half: somebody else compiled the message, and the client's only job
  * is to fill in the signature slots that are its own — and, when a fee payer
@@ -46,7 +46,7 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { randomBytes } from '@noble/hashes/utils.js';
 import { base58Decode, base58Encode } from '../../utils/base58.js';
 import { fromBase64, toBase64 } from '../../utils/binary.js';
-import type { Signer } from './payment-channel.js';
+import type { Signer } from './json-rpc.js';
 
 /** Bytes in one Ed25519 signature slot. */
 const SIGNATURE_LENGTH = 64;

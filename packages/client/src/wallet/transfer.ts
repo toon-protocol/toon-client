@@ -16,19 +16,17 @@
  * would report a funded wallet that in fact holds nothing.
  * {@link TransferNotDeliveredError} is exactly that failure mode, made loud
  * instead of silent.
+ *
+ * Each chain is reached through its settlement network's own RPC client
+ * (toon-client#777), so a hidden payer's transfer rides the same proxied route
+ * its channel does.
  */
 
-import {
-  createPublicClient,
-  createWalletClient,
-  defineChain,
-  type Hex,
-} from 'viem';
-import { directFetch, rpcTransport, type ChainRpcRoute } from '../transport/rpc.js';
+import type { Hex } from 'viem';
 import { waitForReceipt } from '../channel/evm/receipt.js';
+import type { EvmRpc } from '../channel/batch-settlement/evm-network.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Decode, base58Encode } from '../utils/base58.js';
-import type { EvmSigner } from '../signing/evm-signer.js';
 import {
   InsufficientBalanceError,
   InvalidAddressError,
@@ -41,12 +39,9 @@ import {
   parseEvmChainId,
 } from './balances.js';
 import {
-  buildAndSendTransaction,
-  getLamports,
-  getTokenAccountBalance,
   deriveAssociatedTokenAccount,
-  type SolanaRpcTarget,
-} from '../channel/solana/payment-channel.js';
+  type SolanaRpcClient,
+} from '../channel/solana/json-rpc.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -91,30 +86,17 @@ export interface SendTransferResult {
 
 /** Per-chain config a caller supplies to {@link sendTransfer}. */
 export interface EvmTransferConfig {
-  /** Chain key, e.g. `'evm:base-sepolia:84532'` (used for chainId + RPC). */
+  /** Chain key, e.g. `'evm:base-sepolia:84532'`: the chain id the transaction is signed for. */
   chainKey: string;
-  rpcUrl: string;
-  signer: EvmSigner;
+  /** The EVM settlement network's RPC. The transfer is sent from its account. */
+  rpc: EvmRpc;
   /** ERC-20 settlement-token address. Required only for `asset: 'token'`. */
   tokenAddress?: string;
-  /**
-   * The `fetch` this transfer's RPC dials through; the hidden-service proxy's
-   * on a hidden payer (ADR 0002). Defaults to the global `fetch`: the clearnet
-   * behaviour for a direct caller. The client always passes its own.
-   */
-  evmRpcFetch?: typeof fetch;
-  /** `evmRpcFetch` rides the proxy. Defaults to whether one was passed. */
-  proxied?: boolean;
 }
 
 export interface SolanaTransferConfig {
-  rpcUrl: string;
-  /**
-   * `fetch` for Solana JSON-RPC — the proxied one on a hidden-service client
-   * (ADR 0002). Defaults to the global `fetch`: the clearnet behaviour for a
-   * direct caller. The client always passes its own.
-   */
-  rpcFetch?: typeof fetch;
+  /** The Solana settlement network's RPC. */
+  rpc: SolanaRpcClient;
   /** Ed25519 signing seed (32 bytes) or a 64-byte seed||pubkey keypair. */
   keypair: Uint8Array;
   /** SPL settlement-token mint. Required only for `asset: 'token'`. */
@@ -260,38 +242,11 @@ const ERC20_TRANSFER_ABI = [
   },
 ] as const;
 
-/** The RPC route for a Solana transfer; the global `fetch` when the caller named none. */
-function solanaRpcTarget(cfg: SolanaTransferConfig): SolanaRpcTarget {
-  return { url: cfg.rpcUrl, fetch: cfg.rpcFetch ?? directFetch };
-}
-
-/** The RPC route for an EVM transfer; the global `fetch` when the caller named none. */
-function evmRpcRoute(cfg: EvmTransferConfig): ChainRpcRoute {
-  return {
-    url: cfg.rpcUrl,
-    fetch: cfg.evmRpcFetch ?? directFetch,
-    proxied: cfg.proxied ?? cfg.evmRpcFetch !== undefined,
-  };
-}
-
 function evmClients(cfg: EvmTransferConfig) {
-  const chainId = parseEvmChainId(cfg.chainKey);
-  const viemChain = defineChain({
-    id: chainId,
-    name: cfg.chainKey,
-    nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-    rpcUrls: { default: { http: [cfg.rpcUrl] } },
-  });
-  const publicClient = createPublicClient({
-    transport: rpcTransport(evmRpcRoute(cfg)),
-    chain: viemChain,
-  });
-  const walletClient = createWalletClient({
-    account: cfg.signer.account,
-    transport: rpcTransport(evmRpcRoute(cfg)),
-    chain: viemChain,
-  });
-  return { publicClient, walletClient };
+  return {
+    publicClient: cfg.rpc.reader(),
+    walletClient: cfg.rpc.writer(parseEvmChainId(cfg.chainKey)),
+  };
 }
 
 async function sendEvmTransfer(
@@ -300,7 +255,7 @@ async function sendEvmTransfer(
   amount: bigint
 ): Promise<SendTransferResult> {
   const { publicClient, walletClient } = evmClients(cfg);
-  const from = cfg.signer.address as Hex;
+  const from = cfg.rpc.account.address;
   const to = params.to as Hex;
   const timeoutMs = params.confirmTimeoutMs ?? DEFAULT_EVM_CONFIRM_TIMEOUT_MS;
 
@@ -388,9 +343,8 @@ async function sendEvmTransfer(
 }
 
 // ---------------------------------------------------------------------------
-// Solana — raw System/SPL-Token instructions over the same connector-parity
-// transaction wire format `solana-payment-channel.ts` already builds and
-// tests against (`buildAndSendTransaction`).
+// Solana — raw System/SPL-Token instructions, compiled and sent by the
+// network's JSON-RPC client.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SOLANA_CONFIRM_TIMEOUT_MS = 30_000;
@@ -419,14 +373,14 @@ async function sendSolanaTransfer(
   const payer = { publicKey: base58Decode(payerPubkey), privateKey: payerSeed };
   const timeoutMs =
     params.confirmTimeoutMs ?? DEFAULT_SOLANA_CONFIRM_TIMEOUT_MS;
-  // Bound ONCE, and used for every call below — the sends and the balance reads
-  // alike. A read left on the bare URL would be the one chain-touching operation
-  // that still announced this wallet on clearnet, beside a transfer that did not
-  // (ADR 0002), which is exactly the correlation the overlay exists to prevent.
-  const rpc = solanaRpcTarget(cfg);
+  // The network's one client, used for every call below — the sends and the
+  // balance reads alike. A read on any other route would be the one
+  // chain-touching operation that still announced this wallet on clearnet,
+  // beside a transfer that did not (ADR 0002).
+  const { rpc } = cfg;
 
   if (params.asset === 'native') {
-    const lamports = await getLamports(rpc, payerPubkey);
+    const lamports = await rpc.getLamports(payerPubkey);
     const need = amount + SOLANA_LAMPORTS_PER_SIGNATURE;
     if (lamports < need) {
       throw new InsufficientBalanceError(
@@ -434,7 +388,7 @@ async function sendSolanaTransfer(
           `transfer plus the ${SOLANA_LAMPORTS_PER_SIGNATURE}-lamport signature fee.`
       );
     }
-    const readDest = () => getLamports(rpc, params.to);
+    const readDest = () => rpc.getLamports(params.to);
     const before = await readDest();
 
     // SystemProgram::Transfer — Borsh enum: u32 LE variant(2) + u64 LE lamports.
@@ -442,7 +396,7 @@ async function sendSolanaTransfer(
     new DataView(data.buffer).setUint32(0, 2, true);
     writeU64LE(data, 4, amount);
 
-    const txHash = await buildAndSendTransaction(rpc, payer, [
+    const txHash = await rpc.sendTransaction(payer, [
       {
         programId: SOLANA_SYSTEM_PROGRAM_ID,
         keys: [
@@ -483,14 +437,14 @@ async function sendSolanaTransfer(
     );
   }
   const senderAta = deriveAssociatedTokenAccount(payerPubkey, cfg.tokenMint);
-  const senderBalance = await getTokenAccountBalance(rpc, senderAta);
+  const senderBalance = await rpc.getTokenAccountBalance(senderAta);
   if (senderBalance === null || senderBalance < amount) {
     throw new InsufficientBalanceError(
       `Solana token account ${senderAta} holds ${senderBalance ?? 0n} base units of ${cfg.tokenMint}, ` +
         `short of the ${amount} transfer.`
     );
   }
-  const lamports = await getLamports(rpc, payerPubkey);
+  const lamports = await rpc.getLamports(payerPubkey);
   if (lamports < SOLANA_LAMPORTS_PER_SIGNATURE) {
     throw new InsufficientBalanceError(
       `Solana wallet ${payerPubkey} holds ${lamports} lamports, below the ` +
@@ -500,7 +454,7 @@ async function sendSolanaTransfer(
 
   const destAta = deriveAssociatedTokenAccount(params.to, cfg.tokenMint);
   const readDest = async () =>
-    (await getTokenAccountBalance(rpc, destAta)) ?? 0n;
+    (await rpc.getTokenAccountBalance(destAta)) ?? 0n;
   const before = await readDest();
 
   // Associated-Token-Account "CreateIdempotent" (variant 1, no-op if it
@@ -534,7 +488,7 @@ async function sendSolanaTransfer(
     data: transferData,
   };
 
-  const txHash = await buildAndSendTransaction(rpc, payer, [
+  const txHash = await rpc.sendTransaction(payer, [
     createAtaIx,
     transferIx,
   ]);
@@ -588,7 +542,7 @@ export async function sendTransfer(
     case 'evm': {
       if (!config.evm) {
         throw new UnknownChainError(
-          'sendTransfer: no EVM chain configured on this client (no RPC URL or no EVM key).'
+          'sendTransfer: no EVM chain configured on this client (no EVM key).'
         );
       }
       assertValidEvmAddress(params.to);
@@ -597,7 +551,7 @@ export async function sendTransfer(
     case 'solana': {
       if (!config.solana) {
         throw new UnknownChainError(
-          'sendTransfer: no Solana chain configured on this client (no RPC URL, or no Solana key ' +
+          'sendTransfer: no Solana chain configured on this client (no Solana key ' +
             '— construct the client from a mnemonic or pass solanaSecretKey).'
         );
       }

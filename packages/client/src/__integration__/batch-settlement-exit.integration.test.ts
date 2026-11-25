@@ -92,7 +92,7 @@ import {
   getTokenAccountBalance,
   solanaRpc,
   waitForConfirmation,
-} from '../channel/solana/payment-channel.js';
+} from '../channel/solana/json-rpc.js';
 import { signSolanaWireTransaction } from '../channel/solana/wire-transaction.js';
 import { base58Decode, base58Encode } from '../utils/base58.js';
 import { must } from '../utils/must.test-support.js';

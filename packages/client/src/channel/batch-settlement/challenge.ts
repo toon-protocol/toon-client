@@ -28,7 +28,7 @@ import { hashTypedData, type Hex } from 'viem';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Decode } from '../../utils/base58.js';
 import { encodeUtf8, toBase64 } from '../../utils/binary.js';
-import type { Signer } from '../solana/payment-channel.js';
+import type { Signer } from '../solana/json-rpc.js';
 import {
   X402_BATCH_SETTLEMENT_ADDRESS,
   type BatchChannelConfig,

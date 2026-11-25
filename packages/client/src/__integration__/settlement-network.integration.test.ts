@@ -55,7 +55,7 @@ import {
   deriveAssociatedTokenAccount,
   solanaRpc,
   waitForConfirmation,
-} from '../channel/solana/payment-channel.js';
+} from '../channel/solana/json-rpc.js';
 import {
   parseSolanaWireTransaction,
   signSolanaWireTransaction,
@@ -223,6 +223,21 @@ describe.skipIf(MISSING.length > 0)('the payer through the EVM settlement networ
 
 const RPC_PORT = 18950;
 const SOLANA_RPC = { url: `http://127.0.0.1:${RPC_PORT}`, fetch: directFetch };
+
+/**
+ * Never run, only typechecked (`tsconfig.integration.json`): a settlement
+ * network is the one place a chain's RPC route enters, and it cannot be built
+ * over a route without the `fetch` to dial through (ADR 0005).
+ */
+export function aNetworkNeedsARouteWithAFetch(): void {
+  const signer = { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) };
+  const account = privateKeyToAccount(generatePrivateKey());
+  const route = { url: SOLANA_RPC.url };
+  // @ts-expect-error the EVM network's route has no fetch
+  evmSettlementNetwork({ account, rpc: route, fetch: directFetch });
+  // @ts-expect-error the Solana network's route has no fetch
+  new SolanaSettlementNetwork({ signer, rpc: route, fetch: directFetch, connector: CONNECTOR });
+}
 const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
 const SOL_DEPOSIT = 1_000_000n;

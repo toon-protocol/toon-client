@@ -18,12 +18,15 @@ export {
   solanaKeypair,
   type SolanaWireTransaction,
 } from './solana/wire-transaction.js';
-export type { Signer as SolanaKeypair } from './solana/payment-channel.js';
+export type { Signer as SolanaKeypair } from './solana/json-rpc.js';
 
 // A Solana JSON-RPC call that got no answer after its retries. The outcome of a
 // chain write that did not end confirmed is `TransactionOutcomeError`, exported
 // with the other client errors.
-export { SolanaRpcTransportError } from './solana/payment-channel.js';
+export { SolanaRpcTransportError } from './solana/json-rpc.js';
+
+// The Solana settlement network's JSON-RPC client (`SolanaSettlementNetwork.rpc`).
+export type { SolanaRpcClient, SolanaRpcCallOptions } from './solana/json-rpc.js';
 
 // Every channel is an x402 batch-settlement channel (connector ADRs 0074,
 // 0075): opened with no native gas, and paid with vouchers.

@@ -44,7 +44,7 @@ import {
   serializeLegacyTransaction,
   type RawInstruction,
   type Signer,
-} from '../solana/payment-channel.js';
+} from '../solana/json-rpc.js';
 import { signSolanaWireTransaction } from '../solana/wire-transaction.js';
 import { ConfigError, ValidationError } from '../../client/errors.js';
 

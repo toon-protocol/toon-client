@@ -22,14 +22,16 @@ import { startFakeSocks5, type FakeSocks5Server } from './fake-socks5.js';
 import { createHiddenServiceTransport, type HiddenServiceTransport } from './socks.js';
 import { createPublicClient } from 'viem';
 import { readEvmBatchChannel } from '../channel/batch-settlement/evm.js';
-import { EvmSigner } from '../signing/evm-signer.js';
+import { privateKeyToAccount } from 'viem/accounts';
+import { evmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
+import { SolanaSettlementNetwork } from '../channel/batch-settlement/solana-network.js';
 import {
   readEvmNativeBalance,
   readEvmTokenBalance,
   readWalletBalances,
 } from '../wallet/balances.js';
 import { sendTransfer } from '../wallet/transfer.js';
-import { getLamports } from '../channel/solana/payment-channel.js';
+import { getLamports } from '../channel/solana/json-rpc.js';
 import { base58Encode } from '../utils/base58.js';
 import { ToonClient } from '../client/ToonClient.js';
 
@@ -287,7 +289,17 @@ function expectOnlyNamesReachedTheProxy(): void {
 }
 
 describe('EVM chain RPC through the connector’s proxy', () => {
-  const signer = new EvmSigner(SIGNER_KEY);
+  const account = privateKeyToAccount(SIGNER_KEY);
+  /** The EVM settlement network's RPC, over the proxied route. */
+  const networkRpc = () => {
+    const rpc = evmSettlementNetwork({
+      account,
+      rpc: { url: RPC_URL, fetch: transport.fetch, proxied: true },
+      fetch: transport.fetch,
+    }).rpc;
+    if (rpc === undefined) throw new Error('the network was built without its RPC');
+    return rpc;
+  };
 
   it('carries a contract read to a node that public DNS cannot find', async () => {
     const client = createPublicClient({ transport: rpcTransport({ url: RPC_URL, fetch: transport.fetch, proxied: true }) });
@@ -312,19 +324,13 @@ describe('EVM chain RPC through the connector’s proxy', () => {
     expect(rpcCalls).toEqual([]);
   });
 
-  it('carries the wallet balance reads', async () => {
-    const native = await readEvmNativeBalance({
-      rpcUrl: RPC_URL,
-      chainKey: CHAIN_KEY,
-      owner: signer.address,
-      evmRpcFetch: transport.fetch,
-    });
+  it('carries the wallet balance reads, through the settlement network’s RPC', async () => {
+    const client = networkRpc().reader();
+    const native = await readEvmNativeBalance({ client, owner: account.address });
     const token = await readEvmTokenBalance({
-      rpcUrl: RPC_URL,
-      chainKey: CHAIN_KEY,
+      client,
       tokenAddress: TOKEN,
-      owner: signer.address,
-      evmRpcFetch: transport.fetch,
+      owner: account.address,
     });
 
     expect(native.amount).toBe((WEI * 1_000n).toString());
@@ -336,12 +342,7 @@ describe('EVM chain RPC through the connector’s proxy', () => {
   it('carries a write — the signed transaction itself goes to the proxy', async () => {
     const result = await sendTransfer(
       {
-        evm: {
-          chainKey: CHAIN_KEY,
-          rpcUrl: RPC_URL,
-          signer,
-          evmRpcFetch: transport.fetch,
-        },
+        evm: { chainKey: CHAIN_KEY, rpc: networkRpc() },
       },
       { chain: 'evm', asset: 'native', to: DEST, amount: WEI, confirmTimeoutMs: 5_000 }
     );
@@ -372,10 +373,18 @@ describe('Solana chain RPC through the connector’s proxy', () => {
     expect(rpcCalls).toEqual([]);
   });
 
-  it('carries the wallet balance reads', async () => {
+  /** The Solana settlement network's RPC, over the proxied route. */
+  const networkRpc = () =>
+    new SolanaSettlementNetwork({
+      signer: { privateKey: SOL_SEED, publicKey: new Uint8Array(ed25519.getPublicKey(SOL_SEED)) },
+      rpc: { url: RPC_URL, fetch: transport.fetch, proxied: true },
+      fetch: transport.fetch,
+      connector: `http://${HS_HOST}`,
+    }).rpc;
+
+  it('carries the wallet balance reads, through the settlement network’s RPC', async () => {
     const [chain] = await readWalletBalances({
-      solana: { rpcUrl: RPC_URL, owner: SOL_PUBKEY, tokenMint: TOKEN },
-      fetchImpl: transport.fetch,
+      solana: { owner: SOL_PUBKEY, tokenMint: TOKEN, rpc: networkRpc() },
     });
 
     expect(chain?.chain).toBe('solana');
@@ -387,7 +396,7 @@ describe('Solana chain RPC through the connector’s proxy', () => {
   it('carries a transfer’s reads as well as its send', async () => {
     const result = await sendTransfer(
       {
-        solana: { rpcUrl: RPC_URL, rpcFetch: transport.fetch, keypair: SOL_SEED },
+        solana: { rpc: networkRpc(), keypair: SOL_SEED },
       },
       {
         chain: 'solana',

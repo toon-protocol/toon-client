@@ -34,3 +34,15 @@ fix. Either way nothing leaves the machine, and a client without a `socksProxy` 
   the proxy for the client edge, and we do not own what it does with bytes.
 - The canary proves a hook is honoured, not that every call site passes it. A call site that forgets
   the proxied fetch altogether is tracked separately.
+
+## Note, 2026-11-25: call-site coverage holds by construction
+
+The last consequence above was tracked by `client/chain-access.types.ts`, a type-level list of
+every chain RPC call site and the `@ts-expect-error` that stopped each compiling without a fetch.
+Since the settlement network (toon-client#777), a chain's RPC route enters in one place: the
+constructor of that chain's settlement network, which requires a route with a `fetch`. The payer,
+the channel facade, the wallet's balances and transfers and the deposit-gas reads all ask the
+network for its RPC client, and nothing else builds a viem client or passes the Solana JSON-RPC a
+route (`client/chain-access.test.ts` holds that line). So the list is gone (toon-client#780). The
+canary is unchanged, and the fetch it proves for each chain is the one that chain's network is built
+with.

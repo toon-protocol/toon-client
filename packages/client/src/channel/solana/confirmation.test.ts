@@ -20,7 +20,7 @@ import {
   solanaRpc,
   type RawInstruction,
   type Signer,
-} from './payment-channel.js';
+} from './json-rpc.js';
 import { TransactionOutcomeError } from '../../client/errors.js';
 
 const SEED = new Uint8Array(32).fill(7);
