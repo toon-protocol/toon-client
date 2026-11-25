@@ -33,10 +33,11 @@ The URL a payer configures and dials to reach a connector.
 _Avoid_: Base URL, API endpoint
 
 **Carriage endpoint**:
-The absolute URL a carriage is dialled at: `httpEndpoint` or `btpEndpoint` as the connector
-publishes it in its self-description, or the payer's `carriageEndpoints` override of it. Distinct
-from the client edge, which the payer configures and which is never an automatic fallback.
-_Avoid_: Peer URL, node URL
+The URL a carriage is dialled at: `httpEndpoint` or `btpEndpoint` as the connector publishes it
+in its self-description (a relative one resolves against the client edge), or the payer's absolute
+`carriageEndpoints` override of it. Distinct from the client edge, which is where the payer reads
+the self-description and which is never an automatic fallback.
+_Avoid_: Peer URL, node URL, advertised URL, a bare "httpEndpoint"
 
 ### The wire
 
@@ -48,11 +49,6 @@ _Avoid_: Message, envelope, frame
 The transport a packet rides: `http` (`POST /ilp`) or `btp` (a WebSocket session). A connector may
 insist on one.
 _Avoid_: Transport, protocol, channel
-
-**Carriage endpoint**:
-The URL a connector's self-description publishes for one carriage: where packets on that carriage
-go. Distinct from the client edge, which is where the payer reads the self-description.
-_Avoid_: Peer URL, advertised URL, a bare "httpEndpoint"
 
 **Payment channel**:
 An x402 `batch-settlement` channel: a deposit the payer locks on chain, payable one way to one

@@ -22,9 +22,13 @@ everywhere the payer did not say otherwise.
   possible but obscure and has to be built separately for each carriage.
 - **Automatic fallback** to the client edge's origin when the published endpoint cannot be
   reached. Rejected: it is implicit, it sends paid packets to an address the operator never
-  published, and it turns one wrong endpoint into a slow failure followed by a silent retry.
+  published, and it turns one wrong endpoint into a slow failure followed by a silent retry. A
+  failure to reach the published endpoint is also ambiguous (down, or merely unreachable from
+  here), so a payer who knows better says so explicitly.
 - **A single `endpoint`** from which the BTP URL is derived. Rejected: it cannot express a
   connector that serves BTP on a different host or path.
+- **Deriving one carriage's URL from the other's override.** Rejected: the two carriages share a
+  port only by convention, not by contract.
 
 ## Consequences
 
@@ -34,9 +38,9 @@ everywhere the payer did not say otherwise.
   still decides which carriage that is. An override never makes a route accept a carriage it
   refuses, and an override that goes unused is not an error.
 - The HTTP override also applies to the HTTP fallback under a BTP session.
-- Overrides must be absolute, with a scheme that matches the carriage (`http(s):` / `ws(s):`).
-  A relative override is a `ConfigError`, because a relative published endpoint already means "on
-  the client edge".
+- Overrides are validated when the client is created. They must be absolute, with a scheme that
+  matches the carriage (`http(s):` / `ws(s):`). A relative override is a `ConfigError`, because a
+  relative published endpoint already means "on the client edge".
 - The hidden-service reachability check applies to an override exactly as it does to a published
   endpoint. Mixing a clearnet override with a `.anyone` client edge, or the reverse, is allowed.
 - A failure on an overridden carriage names both the override and the published endpoint.
