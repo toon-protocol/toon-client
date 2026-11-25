@@ -205,8 +205,6 @@ type SolanaPayerConfig = NonNullable<BatchSettlementPayerConfig['solana']>;
 export class BatchSettlementPayer {
   /** Onboardings in flight, so concurrent first sends open one channel, not two. */
   private readonly onboarding = new Map<string, Promise<BatchChannel>>();
-  /** Channels whose last refusal said the connector holds more, without saying how much. */
-  private readonly inDoubt = new Set<string>();
 
   constructor(private readonly config: BatchSettlementPayerConfig) {
     if (config.deposit <= 0n) {
@@ -395,7 +393,7 @@ export class BatchSettlementPayer {
         (await this.readChain(channel)).landed
       );
       await this.resync(channel, { recovering: true });
-    } else if (this.inDoubt.has(channel.channelId)) {
+    } else if (manager.inDoubt(channel.channelId)) {
       await this.resync(channel);
     }
     if (manager.isClosing(channel.channelId)) return undefined;
@@ -419,7 +417,6 @@ export class BatchSettlementPayer {
     }
     if (watermark === undefined) return;
     this.config.manager.adoptConnectorWatermark(channel.channelId, watermark, options);
-    this.inDoubt.delete(channel.channelId);
   }
 
   /**
@@ -550,7 +547,7 @@ export class BatchSettlementPayer {
         const reading = readVoucherRefusal(outcome.message, cumulative);
         manager.refused(channelId, cumulative, charge, reading);
         if (reading.notAdvancing && reading.connectorWatermark === undefined) {
-          this.inDoubt.add(channelId);
+          manager.markInDoubt(channelId);
         }
       },
     };

@@ -463,6 +463,31 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
     expect(must(next).cumulative).toBe(3_000n);
   });
 
+  it('carries the doubt to a second payer over the same store, which resyncs before its first claim', async () => {
+    const store = new InMemoryChannelStore();
+    const first = withConnector([], store);
+    must(await first.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    must(await first.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'refused',
+      message: BACKWARDS,
+    });
+    const second = withConnector([5_000n], store);
+    const next = await second.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(second.asked).toHaveLength(1);
+    expect(must(next).cumulative).toBe(3_000n);
+    expect(store.load(must(next).channelId)?.watermarkUncertain).toBeUndefined();
+  });
+
+  it('leaves the doubt standing in the store when the connector cannot answer', async () => {
+    const store = new InMemoryChannelStore();
+    const w = withConnector([undefined], store);
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    const c = must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n));
+    c.settle({ kind: 'refused', message: BACKWARDS });
+    await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
+    expect(store.load(c.channelId)?.watermarkUncertain).toBe(true);
+  });
+
   it('asks once, not on every packet, once the doubt is settled', async () => {
     const w = withConnector([1_000n]);
     must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });

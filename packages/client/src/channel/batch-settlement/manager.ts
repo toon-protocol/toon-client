@@ -343,11 +343,27 @@ export class BatchChannelManager {
     if (entry.provenFloor !== undefined && adopted < entry.provenFloor) {
       adopted = entry.provenFloor;
     }
+    const { watermarkUncertain: _settled, ...rest } = entry;
     this.store.save(channelId, {
-      ...entry,
+      ...rest,
       cumulativeAmount: adopted,
       signedCeiling: adopted > ceiling ? adopted : ceiling,
     });
+  }
+
+  /**
+   * Mark `channelId`'s watermark as possibly out of step with the connector's.
+   * Persisted, so the next invocation resyncs before it signs.
+   */
+  markInDoubt(channelId: string): void {
+    const entry = this.entry(channelId);
+    if (entry.watermarkUncertain) return;
+    this.store.save(channelId, { ...entry, watermarkUncertain: true });
+  }
+
+  /** Whether `channelId`'s watermark is in doubt, here or in an earlier invocation. */
+  inDoubt(channelId: string): boolean {
+    return this.store.load(channelId)?.watermarkUncertain === true;
   }
 
   /** Whether this client still holds the watermark for `channelId`. */
