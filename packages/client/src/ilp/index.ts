@@ -1,7 +1,5 @@
 export type {
   ClaimAck,
-  ClaimSendingTransport,
-  IlpClient,
   IlpSendParams,
   IlpSendResult,
 } from './types.js';

@@ -23,7 +23,7 @@ if (!answer.fulfilled) {
 | --- | --- |
 | `destination` | The reject came back **sealed**. Only the terminating connector holds the secret to seal one, so this is proof the destination itself said no. |
 | `path` | The reject arrived in plaintext. That identifies nobody: a hop short of the termination refused, or the termination could not open the wrap. |
-| `edge` | The connector you are attached to refused before routing at all — a greeting, or a wrong carriage. |
+| `edge` | The connector you are attached to refused before routing at all — a greeting, or a wrong carriage — or the node publishes no endpoint for the carriage the route needs. |
 
 Sealed identifies the destination; unsealed identifies nobody. Do not read a plaintext reject as
 an accusation against any particular node.
@@ -34,9 +34,9 @@ an accusation against any particular node.
 | --- | --- | --- | --- |
 | `F00` | Bad request: the envelope's `target` escaped the route's handler path — an absolute path, a `..` segment, a scheme or an authority. | Nothing. It is a request the app was never asked. | Fix `target`. It is resolved *beneath* the handler; `''` and `'/'` both mean the handler itself. |
 | `F01` | A malformed voucher, one that does not verify, or a claim of a retired kind. | Gives the charge back, unless a later voucher has already superseded the refused one. | If it persists: run `claim-state` and compare the connector's figure with `toon-client channel status`. A figure ahead of yours usually means a lost channel store — see [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable). |
-| `F02` | No route to that destination — including "no route over *this* carriage", which is how the BTP side answers a route restricted to HTTP. | Surfaces the terms when the reject carried them. | Check the destination against `describe()`. If it carries `requiredTransport`, send over that carriage. |
+| `F02` | No route to that destination — including "no route over *this* carriage", which is how the BTP side answers a route restricted to HTTP. | Returns a greeting (`TRANSPORT_REQUIRED` or `PAYMENT_REQUIRED`, with `terms`) when the reject carried terms. | Check the destination against `describe()`. If it carries `requiredTransport`, send over that carriage. |
 | `F03` | Either the voucher **did not advance** the connector's watermark by the route's price, or its cumulative amount exceeded the channel's deposit, or the declared `amount` exceeded the price on a forwarded route. | Reads the connector's watermark from the refusal where the message names it, and prices the next voucher from it. Where it does not ("goes backwards"), asks `claim-state` before the next voucher. Otherwise gives the charge back. | Underpayment: `accumulatedCost` **is the route's price** — pay that. Over deposit: `accumulatedCost` is `0`; top up and send again. Forwarded route: send exactly the price, not more. |
-| `F06` | No voucher was attached, on the BTP carriage. This is the greeting: the route's terms instead of the work. | Surfaces `terms` on the result, with the price and the x402 channels offered. | Open or fund a channel, then send with a voucher. |
+| `F06` | No voucher was attached, on the BTP carriage. This is the greeting: the route's terms instead of the work. | Returns it as a greeting, `code: 'PAYMENT_REQUIRED'`, with `terms` giving the price and the x402 channels offered. | Open or fund a channel, then send with a voucher. |
 | `T00` | The connector hit an internal error. Temporary. | Nothing automatic. | Retry with backoff. |
 | `T01` | A peer on the path is unreachable, or the client session addressed is gone. Temporary. | Nothing automatic. | Retry with backoff. The packet is fine; the path currently is not. |
 | `T04` | The packet exceeds the cap a connector will forward to one peer in a single packet. Never carried, never split. | Nothing. | The reject's message states the cap. Send a smaller packet — this is the only way the cap is published. |
@@ -49,13 +49,15 @@ Never a breakdown. It is `0` when nothing was traversed and nothing terminated.
 
 ## Client-side codes on a refusal
 
-Two `code` values do not come from the wire. They are refusals this client names when the
-connector answered with a greeting rather than a packet:
+Two `code` values do not come from the wire. A **greeting** is the connector answering with the
+route's terms instead of routing the packet — HTTP `402`, or an `F06`/`F02` carrying terms over BTP.
+It is an outcome of `send()`, returned beside the other refusals and never thrown, and this client
+names it with one of these codes (the same document, so the same code, on either carriage):
 
 | Code | Means | You do |
 | --- | --- | --- |
 | `PAYMENT_REQUIRED` | The connector answered the route's terms instead of the work — HTTP `402`, or `F06` over BTP. `answer.terms` carries the price and the x402 channels it accepts (`batchSettlements`). | Open or fund a channel on one of the offered chains. |
-| `TRANSPORT_REQUIRED` | The route does not accept the carriage you used. `answer.terms.requiredTransport` names the one it does. | Resend over that carriage: `transport: 'btp'`, or `--transport btp`. Better: leave `transport: 'auto'` against a node that publishes the pin on the route (`toon-client describe` prints it beside the price) and this never fires. |
+| `TRANSPORT_REQUIRED` | The route does not accept the carriage you used, or the node publishes no endpoint for the carriage the route needs. `answer.terms.requiredTransport` names the one it does, when the greeting carried terms. | Resend over that carriage: `transport: 'btp'`, or `--transport btp`. Better: leave `transport: 'auto'` against a node that publishes the pin on the route (`toon-client describe` prints it beside the price) and this never fires. |
 
 ## HTTP statuses
 
@@ -93,8 +95,6 @@ on `code`, never on the message.
 | `TransferNotDeliveredError` | `TRANSFER_NOT_DELIVERED` | A transfer's transaction landed and did not revert, but the destination's observed balance never moved. Real: the devnet faucet's Solana leg has returned a genuine signature having delivered nothing. |
 | `TransferUnsupportedError` | `TRANSFER_UNSUPPORTED` | The chain and asset combination has no configuration — an `asset: 'token'` send with no token address or mint. |
 | `SealedResponseError` | — | A FULFILL came back that is not a readable sealed response. `kind` is `'not-sealed'`, `'unopenable'` or `'malformed-envelope'`. Value moved, so this is a broken counterparty, not an outcome. |
-| `PaymentRequiredError` | `PAYMENT_REQUIRED` | Raised by the low-level HTTP transport on a `402`. `send()` catches it and returns a refusal instead; you see it only when driving the transport directly. |
-| `TransportRequiredError` | `TRANSPORT_REQUIRED` | You asked for a carriage the node does not expose, or the route requires the other one. `send()` returns a refusal for the route case. |
 | `ProxyBypassError` | `PROXY_BYPASS` | `ToonClient.create` found that a hidden payer's path ignores its proxy, so it would have dialled clearnet. `path` is `'client-edge'`, `'evm-rpc'`, `'solana-rpc'` or `'btp'`. Nothing was sent. Edge or Solana: the installed `undici` is not honoured by this Node, so install `undici@^7`. EVM: the installed viem ignores `fetchFn`, so upgrade to `^2.37.2`. BTP: `ws` ignored its agent. An injected `fetch`/`createWebSocket` is not checked. |
 | `FacilitatorError` | `FACILITATOR` | An x402 facilitator answered and did not settle an x402 `batch-settlement` deposit. `reason` is its own `errorReason` (`invalid_batch_settlement_evm_…`), or `unreadable_response` when its answer was not a settle result. No channel was funded. |
 | `SponsorRefusedError` | `SPONSOR_REFUSED` | The connector's Solana sponsor endpoint did not open an x402 `batch-settlement` channel. `reason` is its own refusal name (`token_program_unsupported`, `cluster_rent_threshold_unsupported`, `sponsor_busy`, …). Nothing was spent — except on `status` `502`, the endpoint's "sent and did not confirm", which does not prove nothing landed; the next use reads the chain. |

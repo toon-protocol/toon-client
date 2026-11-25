@@ -448,6 +448,67 @@ describe('send', () => {
     expect(result.stdout.join('\n')).toMatch(/--transport btp/);
   });
 
+  it('prints a payment greeting as a refusal with the route price, and exits 3', async () => {
+    const refusal = fakeRefused({
+      code: 'PAYMENT_REQUIRED',
+      refusedBy: 'edge',
+      message: 'The connector at https://node/ilp answered 402 with terms for g.toon.store at 1000.',
+      accumulatedCost: undefined,
+      terms: {
+        destination: 'g.toon.store',
+        price: 1_000n,
+        batchSettlements: [],
+        raw: {},
+      },
+    });
+    const result = await run(['send', 'g.toon.store'], { client: { send: refusal } });
+    expect(result.code).toBe(EXIT.refused);
+    const text = result.stdout.join('\n');
+    expect(text).toContain('REFUSED PAYMENT_REQUIRED  (http, refused by edge)');
+    expect(text).toContain('answered 402 with terms for g.toon.store at 1000.');
+    expect(text).toContain('1000 (0.001 USDC)');
+    expect(text).toMatch(/channel status --connector-view/);
+  });
+
+  it('prints a carriage greeting as a refusal naming the carriage, and exits 3', async () => {
+    const refusal = fakeRefused({
+      code: 'TRANSPORT_REQUIRED',
+      refusedBy: 'edge',
+      message: 'The connector at https://node/ilp refused this write over HTTP; the route requires the btp transport.',
+      accumulatedCost: undefined,
+      terms: {
+        destination: 'g.toon.relay',
+        price: 1n,
+        requiredTransport: 'btp',
+        batchSettlements: [],
+        raw: {},
+      },
+    });
+    const result = await run(['send', 'g.toon.relay'], { client: { send: refusal } });
+    expect(result.code).toBe(EXIT.refused);
+    const text = result.stdout.join('\n');
+    expect(text).toContain('REFUSED TRANSPORT_REQUIRED  (http, refused by edge)');
+    expect(text).toMatch(/Retry with --transport btp/);
+  });
+
+  it('reports a node with no endpoint for the needed carriage as an error, and exits 6', async () => {
+    // Nothing reached the connector, so this is not a refusal: the CLI names the
+    // missing carriage on stderr, as it did when the library threw it.
+    const greeting = fakeRefused({
+      code: 'TRANSPORT_REQUIRED',
+      refusedBy: 'edge',
+      transport: 'btp',
+      message: 'the connector requires the btp transport but publishes no btp endpoint',
+      accumulatedCost: undefined,
+    });
+    const result = await run(['send', 'g.toon.relay'], { client: { send: greeting } });
+    expect(result.code).toBe(EXIT.paymentRequired);
+    expect(result.stdout).toEqual([]);
+    expect(result.stderr.join('\n')).toContain(
+      'toon-client: the connector requires the btp transport but publishes no btp endpoint'
+    );
+  });
+
   it('emits one JSON document, bytes base64 and amounts as strings', async () => {
     const result = await run(['send', 'g.toon.store', '--json']);
     const doc = result.json() as {

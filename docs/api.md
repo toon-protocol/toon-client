@@ -62,7 +62,9 @@ send(destination: string, request?: SendRequest, options?: SendOptions): Promise
 defaultDestination: string | undefined
 ```
 
-Pay for one HTTP request. The central operation. Never throws on a refusal.
+Pay for one HTTP request. The central operation. Never throws on a refusal — a greeting
+(the connector's terms instead of the work) is one, and is returned as `SendRefused` with
+`code: 'PAYMENT_REQUIRED'` or `'TRANSPORT_REQUIRED'`, `refusedBy: 'edge'` and `terms`.
 
 The destination is **optional**. Omitted, the packet goes to `defaultDestination` — the first
 address the node published for itself that it also prices — so configuring a client is just a

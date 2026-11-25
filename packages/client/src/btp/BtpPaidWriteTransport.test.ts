@@ -3,8 +3,8 @@ import { NetworkError } from '../client/errors.js';
 import type { IlpSendResult } from '../ilp/types.js';
 import {
   BtpPaidWriteTransport,
-  type OrderedBtpSession,
-  type ClaimSendingTransport,
+  type BtpSession,
+  type HttpFallback,
 } from './BtpPaidWriteTransport.js';
 import type { IlpSendParams } from './ilp-send.js';
 
@@ -18,7 +18,7 @@ function fulfilled(data = 'ok'): IlpSendResult {
 
 /** A controllable fake session: `isConnected` is a real mutable field (not a
  * getter) so tests can flip it directly to simulate a dropped socket. */
-function makeFakeSession(): OrderedBtpSession & {
+function makeFakeSession(): BtpSession & {
   sendIlpPacketWithClaim: ReturnType<typeof vi.fn>;
   connect: ReturnType<typeof vi.fn>;
   reconnect: ReturnType<typeof vi.fn>;
@@ -226,7 +226,7 @@ describe('BtpPaidWriteTransport', () => {
   });
 
   describe('fallback to HTTP', () => {
-    function makeFallback(): ClaimSendingTransport & {
+    function makeFallback(): HttpFallback & {
       sendIlpPacketWithClaim: ReturnType<typeof vi.fn>;
     } {
       return { sendIlpPacketWithClaim: vi.fn() };
@@ -357,7 +357,7 @@ describe('BtpPaidWriteTransport', () => {
       );
       const fallback = {
         sendIlpPacketWithClaim: vi.fn().mockRejectedValue(httpError),
-      } as unknown as ClaimSendingTransport;
+      } as unknown as HttpFallback;
       const transport = new BtpPaidWriteTransport({
         session,
         url: URL,

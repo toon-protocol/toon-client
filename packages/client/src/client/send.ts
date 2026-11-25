@@ -62,49 +62,24 @@ import {
   type RouteCharge,
 } from '../connector/self-description.js';
 import { decodeConnectorPublicKey } from '../connector/ConnectorEdgeClient.js';
-import { parsePaymentTerms } from '../connector/x402.js';
 import type { IlpSendResult } from '../ilp/types.js';
 import type { IlpSendParams } from '../ilp/ilp-send.js';
+import type { Carriage, Greeting, OpenCarriage } from '../carriage/Carriage.js';
 import type { PreparedVoucher } from '../channel/batch-settlement/payer.js';
 import { toBase64, fromBase64, encodeUtf8, decodeUtf8 } from '../utils/binary.js';
 import {
   BeforePayRefusedError,
   ChainUnavailableError,
-  PaymentRequiredError,
   RouteNotPricedError,
-  TransportRequiredError,
   ValidationError,
 } from './errors.js';
 import type {
   ChainKind,
   ClaimSummary,
-  PaymentTerms,
   SendOptions,
   SendRequest,
   SendResult,
 } from './types.js';
-
-/**
- * The narrowest thing that can carry a paid packet: one method.
- *
- * Deliberately narrower than {@link ../ilp/types.js!ClaimSendingTransport}, which
- * also requires the unpaid `sendIlpPacket`. Nothing in this pipeline ever sends
- * an unpaid packet — a request with no claim is answered with terms rather than
- * performed — and requiring the wider port would exclude
- * {@link ../btp/BtpPaidWriteTransport.js!BtpPaidWriteTransport}, whose whole
- * subject is paid writes.
- */
-export interface PaidWriteTransport {
-  sendIlpPacketWithClaim(
-    params: IlpSendParams,
-    claim: Record<string, unknown>
-  ): Promise<IlpSendResult>;
-  /**
-   * The same packet with no claim attached, for a route priced at zero. Both
-   * carriages have always offered it; only a free route uses it.
-   */
-  sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult>;
-}
 
 /**
  * Everything {@link send} needs from the client around it.
@@ -132,20 +107,13 @@ export interface SendContext {
    */
   routePrice(destination: string): Promise<RouteCharge | null>;
   /**
-   * The carriage for one destination, chosen and connected.
-   *
-   * `destination` is passed because a node pins a carriage **per route**
+   * The carriage packets are delivered through. It is asked for one
+   * destination at a time because a node pins a carriage **per route**
    * (connector ADR 0072): the pin covering the prefix this packet is addressed
    * to is the one that will be enforced, and a node-wide summary is silent on
    * any node that pins one of its own addresses and not another.
    */
-  transport(
-    description: NodeSelfDescription,
-    destination: string
-  ): Promise<{
-    kind: 'http' | 'btp';
-    transport: PaidWriteTransport;
-  }>;
+  carriage: Carriage;
   /**
    * Where a paid packet's voucher comes from (connector ADRs 0074, 0075).
    * `undefined` from it means the node offers no x402 channel on this client's
@@ -199,7 +167,10 @@ export async function send(
   // cost nothing — one line later `attempt` may open a channel and signs a
   // voucher, and a signed voucher cannot be unsigned.
   refuseIfCallerSaysSo(options.beforePay, destination, amount, request);
-  const carriage = await context.transport(description, destination);
+  const carriage = await context.carriage.open(description, destination);
+  // A node that offers no endpoint for the carriage this route needs greets
+  // before anything is signed, so there is no voucher to settle.
+  if (carriage.kind === 'greeting') return greetingResult(carriage, undefined);
 
   return attempt(context, {
     destination,
@@ -247,7 +218,7 @@ interface AttemptParams {
   destination: string;
   amount: bigint;
   exchange: SealedExchange;
-  carriage: { kind: 'http' | 'btp'; transport: PaidWriteTransport };
+  carriage: OpenCarriage;
   description: NodeSelfDescription;
   timeoutMs: number;
 }
@@ -291,39 +262,29 @@ async function attemptWithVoucher(
     amount: params.amount,
   };
 
-  let result: IlpSendResult;
-  try {
-    result = await params.carriage.transport.sendIlpPacketWithClaim(
-      {
-        destination: params.destination,
-        amount: params.amount.toString(),
-        data: toBase64(params.exchange.data),
-        expectedFulfillment: params.exchange.fulfillment,
-        timeout: params.timeoutMs,
-      },
-      voucher.claim
-    );
-  } catch (error) {
-    const greeting = asGreeting(error, params.carriage.kind, summary);
-    if (greeting) {
+  const outcome = await params.carriage.deliver(packetOf(params), voucher.claim);
+  switch (outcome.kind) {
+    case 'greeting':
       // The connector answered before routing: nothing was banked.
       voucher.settle({ kind: 'refused' });
-      return greeting;
-    }
-    voucher.settle({ kind: 'unknown' });
-    throw error;
+      return greetingResult(outcome, summary);
+    case 'unknown':
+      // The packet may have been banked; the next voucher exceeds it either way.
+      voucher.settle({ kind: 'unknown' });
+      throw outcome.error;
+    case 'refused':
+    case 'answered':
+      if (claimWasRefused(outcome.result)) {
+        // The reject's own text says where the connector's watermark stands.
+        voucher.settle({
+          kind: 'refused',
+          ...(outcome.result.message !== undefined ? { message: outcome.result.message } : {}),
+        });
+      } else {
+        voucher.settle({ kind: 'banked' });
+      }
+      return toSendResult(outcome.result, params, summary);
   }
-
-  if (claimWasRefused(result)) {
-    // The reject's own text says where the connector's watermark stands.
-    voucher.settle({
-      kind: 'refused',
-      ...(result.message !== undefined ? { message: result.message } : {}),
-    });
-  } else {
-    voucher.settle({ kind: 'banked' });
-  }
-  return toSendResult(result, params, summary);
 }
 
 /**
@@ -334,14 +295,26 @@ async function attemptWithVoucher(
  * same secret. Only the payment is absent, because there is nothing to pay.
  */
 async function attemptUnpaid(params: AttemptParams): Promise<SendResult> {
-  const result = await params.carriage.transport.sendIlpPacket({
+  const outcome = await params.carriage.deliver(packetOf(params));
+  switch (outcome.kind) {
+    case 'greeting':
+      return greetingResult(outcome, undefined);
+    case 'unknown':
+      throw outcome.error;
+    case 'refused':
+    case 'answered':
+      return toSendResult(outcome.result, params, undefined);
+  }
+}
+
+function packetOf(params: AttemptParams): IlpSendParams {
+  return {
     destination: params.destination,
     amount: params.amount.toString(),
     data: toBase64(params.exchange.data),
     expectedFulfillment: params.exchange.fulfillment,
     timeout: params.timeoutMs,
-  });
-  return toSendResult(result, params, undefined);
+  };
 }
 
 // ─── Reading the outcome ────────────────────────────────────────────────────
@@ -398,25 +371,14 @@ function toSendResult(
     };
   }
 
-  // A greeting that arrived as a REJECT rather than an HTTP status: BTP answers
-  // an unpaid or wrong-carriage request with `F06`/`F02` carrying the same terms
-  // document a `402` would have. Terms are the tell, not the code.
-  const terms = readTerms(result);
-
   return {
     fulfilled: false,
     transport,
-    refusedBy:
-      terms !== undefined
-        ? 'edge'
-        : outcome.kind === 'destination-refused'
-          ? 'destination'
-          : 'path',
+    refusedBy: outcome.kind === 'destination-refused' ? 'destination' : 'path',
     code: outcome.code,
     message: outcome.message,
     ...(result.accumulatedCost !== undefined ? { accumulatedCost: result.accumulatedCost } : {}),
     ...(result.claimAck !== undefined ? { claimAck: result.claimAck } : {}),
-    ...(terms !== undefined ? { terms } : {}),
     ...(outcome.kind === 'destination-refused' && outcome.detail.length > 0
       ? { detail: outcome.detail }
       : {}),
@@ -425,57 +387,24 @@ function toSendResult(
 }
 
 /**
- * The terms a reject carried, when it carried any.
+ * A greeting as the refusal a caller sees.
  *
- * `paymentRequired` is the raw x402 document the connector attached beside the
- * packet — the `payment-required` protocolData entry on BTP. It is projected onto
- * {@link PaymentTerms} by the same parser the HTTP `402` path uses, so the two
- * carriages cannot come to different conclusions about one greeting.
- */
-function readTerms(result: IlpSendResult): PaymentTerms | undefined {
-  if (result.paymentRequired === undefined) return undefined;
-  return parsePaymentTerms(result.paymentRequired);
-}
-
-/**
- * A refusal the transport threw because the connector answered with a status
- * rather than a packet — `402 Payment Required`, or a `402`/`401` naming a
- * carriage this route does not accept.
- *
- * Converted to a {@link SendResult} rather than propagated, because from
- * {@link send}'s contract these are refusals like any other: the packet did not
- * travel, nothing was paid, and the caller wants the terms, not a stack trace.
  * `refusedBy: 'edge'` — the connector we are attached to made this decision
- * before routing anything.
+ * before routing anything, or could not be reached on the carriage the route
+ * needs. The packet did not travel and nothing was paid, so the caller wants
+ * the terms. The result codes stay `'PAYMENT_REQUIRED'` and
+ * `'TRANSPORT_REQUIRED'`, because the CLI keys on them.
  */
-function asGreeting(
-  error: unknown,
-  transport: 'http' | 'btp',
-  claim: ClaimSummary
-): SendResult | undefined {
-  if (error instanceof PaymentRequiredError) {
-    return {
-      fulfilled: false,
-      transport,
-      refusedBy: 'edge',
-      code: 'PAYMENT_REQUIRED',
-      message: error.message,
-      terms: error.terms,
-      claim,
-    };
-  }
-  if (error instanceof TransportRequiredError) {
-    return {
-      fulfilled: false,
-      transport,
-      refusedBy: 'edge',
-      code: 'TRANSPORT_REQUIRED',
-      message: error.message,
-      ...(error.terms !== undefined ? { terms: error.terms } : {}),
-      claim,
-    };
-  }
-  return undefined;
+function greetingResult(greeting: Greeting, claim: ClaimSummary | undefined): SendResult {
+  return {
+    fulfilled: false,
+    transport: greeting.carriage,
+    refusedBy: 'edge',
+    code: greeting.code,
+    message: greeting.message,
+    ...(greeting.terms !== undefined ? { terms: greeting.terms } : {}),
+    ...(claim !== undefined ? { claim } : {}),
+  };
 }
 
 // ─── Inputs ─────────────────────────────────────────────────────────────────

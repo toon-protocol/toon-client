@@ -30,7 +30,9 @@ export * from './client/index.js';
 // and the greeting it answers an unpaid request with.
 export * from './connector/index.js';
 
-// The two carriages a packet can ride, and the port they share.
+// The carriage that delivers a packet and says what came back, and the two
+// adapters it rides: HTTP and BTP.
+export * from './carriage/index.js';
 export * from './ilp/index.js';
 export * from './http/index.js';
 export * from './btp/index.js';

@@ -25,7 +25,7 @@ import {
   HttpIlpClient,
   ILP_CLAIM_HEADER,
 } from '../http/HttpIlpClient.js';
-import { PaymentRequiredError, TransportRequiredError } from '../client/errors.js';
+import { parsePaymentTerms } from '../connector/x402.js';
 import {
   FULFILLMENT_MISMATCH_CODE,
   type IlpSendResultWithFulfillment,
@@ -275,7 +275,7 @@ describe('HttpIlpClient over a real http.Server (integration)', () => {
     });
   });
 
-  it('throws TransportRequiredError on a real 402 naming another carriage', async () => {
+  it('returns a real 402 naming another carriage, with its terms', async () => {
     const terms = {
       x402Version: 2,
       resource: { url: 'g.toon.relay' },
@@ -304,18 +304,16 @@ describe('HttpIlpClient over a real http.Server (integration)', () => {
     };
     const client = new HttpIlpClient({ httpEndpoint: url, maxRetries: 0 });
 
-    const error = (await client
-      .sendIlpPacketWithClaim(
-        { destination: 'g.toon.relay', amount: '1', data: '' },
-        { messageId: 'm7', nonce: 7, transferredAmount: '4000' }
-      )
-      .catch((e: unknown) => e)) as TransportRequiredError;
+    const result = await client.sendIlpPacketWithClaim(
+      { destination: 'g.toon.relay', amount: '1', data: '' },
+      { messageId: 'm7', nonce: 7, transferredAmount: '4000' }
+    );
 
-    expect(error).toBeInstanceOf(TransportRequiredError);
-    expect(error).not.toBeInstanceOf(PaymentRequiredError);
-    expect(error.required).toBe('btp');
-    expect(error.terms?.price).toBe(1n);
-    expect(error.terms?.btpEndpoint).toBe('wss://relay.example/ilp/btp');
+    expect(result.accepted).toBe(false);
+    const parsed = parsePaymentTerms(result.paymentRequired);
+    expect(parsed?.requiredTransport).toBe('btp');
+    expect(parsed?.price).toBe(1n);
+    expect(parsed?.btpEndpoint).toBe('wss://relay.example/ilp/btp');
     respondWith = undefined;
   });
 });

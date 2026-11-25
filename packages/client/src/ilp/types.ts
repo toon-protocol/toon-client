@@ -1,11 +1,11 @@
 /**
- * The ILP transport port: what a carriage must be able to do, and what it
- * reports back.
+ * What a carriage's adapters report back.
  *
  * These types were `@toon-protocol/core`'s. They live here now because 1.0 has
- * exactly two implementations of them — {@link ../http/HttpIlpClient.js} and
+ * exactly two producers of them — {@link ../http/HttpIlpClient.js} and
  * {@link ../btp/BtpRuntimeClient.js} — and a shared package that carried
- * nothing else this client needs is a dependency with no subject.
+ * nothing else this client needs is a dependency with no subject. What a caller
+ * sees is the carriage's outcome ({@link ../carriage/Carriage.js}), not these.
  *
  * The one substantive change from core's version: a result carries what the
  * connector reported **beside** the packet. `accumulated_cost` is deliberately
@@ -63,31 +63,9 @@ export interface IlpSendResult {
   claimAck?: ClaimAck;
   /**
    * The raw x402 terms document, when the connector answered with a greeting
-   * instead of routing (HTTP `402`, or an `F06`/`F02` carrying a
-   * `payment-required` protocolData entry). Parse with
-   * {@link ../connector/x402.js}'s `parseX402Body`.
+   * instead of routing (HTTP `402`, which carries no packet and so no `code`, or
+   * an `F06`/`F02` carrying a `payment-required` protocolData entry). The
+   * carriage turns it into a greeting outcome.
    */
   paymentRequired?: unknown;
 }
-
-/** A transport that can send an unpaid packet. */
-export interface IlpClient {
-  sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult>;
-}
-
-/**
- * A transport that can send a packet with its covering claim attached.
- *
- * The claim is passed as a plain object and serialized by the carriage, because
- * the two carriages disagree about the envelope and only about that: HTTP sends
- * `base64(JSON.stringify(claim))` in the `ILP-Payment-Channel-Claim` header,
- * BTP sends the same JSON as raw UTF-8 in a `payment-channel-claim`
- * protocolData entry. Same object, two spellings.
- */
-export interface ClaimSendingTransport extends IlpClient {
-  sendIlpPacketWithClaim(
-    params: IlpSendParams,
-    claim: Record<string, unknown>
-  ): Promise<IlpSendResult>;
-}
-
