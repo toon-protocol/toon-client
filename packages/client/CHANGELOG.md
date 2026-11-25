@@ -1,5 +1,20 @@
 # @toon-protocol/client
 
+## 7.0.0
+
+### Major Changes
+
+- d2eba49: One carriage module delivers a packet, with or without a voucher, and returns one of four outcomes: answered, refused, greeting or unknown. Greetings are returned, not thrown: `PaymentRequiredError` and `TransportRequiredError` are removed from the public interface and nothing throws them (`send()` returns `code: 'PAYMENT_REQUIRED'` / `'TRANSPORT_REQUIRED'` as before, and a node that publishes no endpoint for the carriage a route needs now returns `TRANSPORT_REQUIRED` with no `terms` rather than throwing; the CLI still reports that case as an error and exits `6`). A greeting over BTP now carries `code: 'PAYMENT_REQUIRED'` or `'TRANSPORT_REQUIRED'` instead of the wire's `F06`/`F02`. `HttpIlpClient` returns a `402` carrying terms as a refusal with `paymentRequired` set and no `code`, and `selectTransport` returns `{ kind: 'unavailable' }` instead of throwing. Removed: the `IlpClient`, `ClaimSendingTransport`, `OrderedBtpSession` and `PaidWriteTransport` interfaces.
+- fb3c4d7: Closing, settling and storing a channel go through its settlement network. `SettlementNetwork` gains `close(channel, now)`, `settle(channel, { due, now })`, `toStored` and `fromStored`, so a custom network must implement them. `client.channel.close()` and `settle()` ask each channel's network and return one result per channel as before, archived channels included; a channel on a network this client holds no key for is reported as that channel's error. `BatchChannelManager` now takes every network's stored form first: `new BatchChannelManager([evmStoredForm, solanaStoredForm], store)`. `ClientChannelFacade` takes `networks` in place of `evm` and `solana`. The exit helpers (`initiateEvmBatchWithdraw`, `requestSvmBatchClose`, the Solana instruction builders, …) moved into the adapters and are still exported; `requestSvmBatchClose` takes an optional `now`. The stored channel record, vouchers, exits and CLI output are unchanged.
+- 80cf902: Every chain RPC path goes through the settlement network. `client.wallet.balances()` and `transfer()` reach each chain through that chain's network, over the same route the client pays on, and behave as before. A network now hands out its RPC client: `EvmSettlementNetwork.rpc` (`EvmRpc`, built by `evmSettlementNetwork`) and `SolanaSettlementNetwork.rpc` (`SolanaRpcClient`).
+
+  Breaking:
+
+  - `readWalletBalances`, `readEvmNativeBalance`, `readEvmTokenBalance`, `readSolanaNativeBalance`, `readSolanaTokenBalance` and `sendTransfer` take a network's RPC client (`rpc`, or `client` for the two EVM reads) in place of `rpcUrl` and a fetch (`evmRpcFetch`, `fetchImpl`, `rpcFetch`, `solanaProxied`). `EvmTransferConfig` takes `rpc` in place of `rpcUrl` and `signer`.
+  - The per-chain helpers only the adapters need are no longer exported from the package root: channel config and id (`buildBatchChannelConfig`, `batchChannelId`, …), deposits (`buildEip3009Deposit`, `buildPermit2Deposit`, `settleDeposit`, `approvePermit2`, `depositDirectly`, `evmWalletAccess`, the gas-sponsoring helpers), vouchers, claims and challenges (`signBatchVoucher`, `signSvmVoucher`, `evmVoucherClaim`, `solanaVoucherClaim`, `signEvmChallenge`, `signSolanaChallenge`, …), chain reads (`readEvmBatchChannel`, `getSvmBatchChannel`, `decodeSvmBatchChannel`), the sponsored open (`buildSponsoredOpen`, `requestSponsoredOpen`) and the exit helpers (`initiateEvmBatchWithdraw`, `finalizeEvmBatchWithdraw`, `requestSvmBatchClose`, `withdrawSvmBatchChannel`, the Solana instruction builders). Open, pay, close and settle through a settlement network instead.
+
+  Vouchers, claims, deposits, exits, the stored channel record and CLI output are unchanged.
+
 ## 6.0.0
 
 ### Major Changes
