@@ -184,12 +184,6 @@ export class FakeTerminatingConnector {
   readonly claims: Record<string, unknown>[] = [];
   /** Every claim-bearing request, whether or not it was fulfilled. */
   paidRequests = 0;
-  /**
-   * Set to take every claim-bearing request and never answer it: the claim is
-   * recorded, then the response waits until the caller gives up (its abort
-   * signal). The packet was written; its answer is lost.
-   */
-  silent = false;
   /** Set to refuse every probe with `403`, as a node over its probe rate limit does. */
   probeForbidden = false;
 
@@ -351,7 +345,6 @@ export class FakeTerminatingConnector {
       this.claims.push(
         JSON.parse(decodeUtf8(fromBase64(claimHeader))) as Record<string, unknown>
       );
-      if (this.silent) return neverAnswered(init?.signal);
       return this.answerPaidRequest(init?.body);
     }
 
@@ -647,17 +640,6 @@ function assertTargetStaysUnderHandler(target: string): void {
       `F00: envelope target '${target}' attempts to escape the route's handler path`
     );
   }
-}
-
-/** A response that never comes: it rejects as `fetch` does when `signal` aborts. */
-function neverAnswered(signal: AbortSignal | null | undefined): Promise<Response> {
-  return new Promise((_resolve, reject) => {
-    signal?.addEventListener('abort', () => {
-      const error = new Error('This operation was aborted');
-      error.name = 'AbortError';
-      reject(error);
-    });
-  });
 }
 
 /**

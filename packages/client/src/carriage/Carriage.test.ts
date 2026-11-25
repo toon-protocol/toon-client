@@ -33,6 +33,7 @@ vi.mock('../btp/IsomorphicBtpClient.js', () => ({
 
 import { Carriage, type CarriageOutcome } from './Carriage.js';
 import { FakeTerminatingConnector } from '../wire/fake-connector.test-support.js';
+import { lossyLine } from './lost-answer.test-support.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import { sealExchange } from '../wire/sealed-exchange.js';
 import { toEnvelopeRequest } from '../client/send.js';
@@ -239,8 +240,9 @@ describe('Carriage retry rule', () => {
   const connectRefused = () => new BtpConnectionError('WebSocket connection error: ECONNREFUSED');
 
   it('sends a written, unanswered packet exactly once over HTTP, and returns unknown', async () => {
-    fake.silent = true;
-    const outcome = await deliver(carriage('http'), VOUCHER, 50);
+    const line = lossyLine(fake);
+    line.silent = true;
+    const outcome = await deliver(carriage('http', line.fetch), VOUCHER, 50);
     expect(fake.paidRequests).toBe(1);
     expect(outcome).toMatchObject({ kind: 'unknown', carriage: 'http', written: true });
     if (outcome.kind !== 'unknown') return;

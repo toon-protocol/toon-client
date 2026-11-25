@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ToonClient } from './ToonClient.js';
 import { FakeTerminatingConnector } from '../wire/fake-connector.test-support.js';
+import { lossyLine } from '../carriage/lost-answer.test-support.js';
 import { InMemoryChannelStore } from '../channel/ChannelStore.js';
 import { deriveFullIdentity } from '../keys/KeyDerivation.js';
 import {
@@ -504,16 +505,22 @@ describe('ToonClient — a written voucher whose answer is lost', () => {
   it('is sent once, surfaces a NetworkError, and the next send from another client resyncs first', async () => {
     const fake = fixture();
     const store = new InMemoryChannelStore();
-    const first = await create(fake, { channelStore: store, autoOpenChannel: false, timeoutMs: 50 });
+    const line = lossyLine(fake);
+    const first = await create(fake, {
+      channelStore: store,
+      autoOpenChannel: false,
+      timeoutMs: 50,
+      fetch: line.fetch,
+    });
     adoptChannel(first, fake);
-    fake.silent = true;
+    line.silent = true;
 
     await expect(first.send('g.fake.route')).rejects.toBeInstanceOf(NetworkError);
     expect(fake.paidRequests).toBe(1);
     expect(store.load(CHANNEL)?.watermarkUncertain).toBe(true);
 
     // The connector did bank it.
-    fake.silent = false;
+    line.silent = false;
     fake.banked.set(CHANNEL, { cumulativeClaimed: 1000n });
     const second = await create(fake, { channelStore: store, autoOpenChannel: false });
     const paid = await second.send('g.fake.route');
@@ -527,12 +534,18 @@ describe('ToonClient — a written voucher whose answer is lost', () => {
   it('resyncs down to the connector\'s figure when the lost packet was never banked', async () => {
     const fake = fixture();
     const store = new InMemoryChannelStore();
-    const first = await create(fake, { channelStore: store, autoOpenChannel: false, timeoutMs: 50 });
+    const line = lossyLine(fake);
+    const first = await create(fake, {
+      channelStore: store,
+      autoOpenChannel: false,
+      timeoutMs: 50,
+      fetch: line.fetch,
+    });
     adoptChannel(first, fake);
-    fake.silent = true;
+    line.silent = true;
     await expect(first.send('g.fake.route')).rejects.toBeInstanceOf(NetworkError);
 
-    fake.silent = false;
+    line.silent = false;
     fake.banked.set(CHANNEL, { cumulativeClaimed: 0n });
     const second = await create(fake, { channelStore: store, autoOpenChannel: false });
     const paid = await second.send('g.fake.route');
