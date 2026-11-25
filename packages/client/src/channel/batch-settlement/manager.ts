@@ -284,11 +284,23 @@ export class BatchChannelManager {
       cumulative = voucherAmount > charge ? voucherAmount - charge : 0n;
     }
     if (floor !== undefined && cumulative < floor) cumulative = floor;
-    if (cumulative === entry.cumulativeAmount && floor === entry.provenFloor) return;
+    // A refusal that says "not advancing" without a figure leaves the connector's
+    // watermark unknown: persisted, so the next voucher resyncs before it signs.
+    const inDoubt =
+      entry.watermarkUncertain === true ||
+      (reason.notAdvancing && reason.connectorWatermark === undefined);
+    if (
+      cumulative === entry.cumulativeAmount &&
+      floor === entry.provenFloor &&
+      inDoubt === (entry.watermarkUncertain === true)
+    ) {
+      return;
+    }
     this.store.save(channelId, {
       ...entry,
       cumulativeAmount: cumulative,
       ...(floor !== undefined ? { provenFloor: floor } : {}),
+      ...(inDoubt ? { watermarkUncertain: true } : {}),
     });
   }
 
@@ -349,16 +361,6 @@ export class BatchChannelManager {
       cumulativeAmount: adopted,
       signedCeiling: adopted > ceiling ? adopted : ceiling,
     });
-  }
-
-  /**
-   * Mark `channelId`'s watermark as possibly out of step with the connector's.
-   * Persisted, so the next invocation resyncs before it signs.
-   */
-  markInDoubt(channelId: string): void {
-    const entry = this.entry(channelId);
-    if (entry.watermarkUncertain) return;
-    this.store.save(channelId, { ...entry, watermarkUncertain: true });
   }
 
   /** Whether `channelId`'s watermark is in doubt, here or in an earlier invocation. */
