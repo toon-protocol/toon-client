@@ -77,7 +77,8 @@ its own, which decides, and reports it through `claim-state`.
 _Avoid_: Nonce, balance
 
 **Channel record**:
-What the payer keeps per channel, in the channel store, behind `BatchChannelManager`: the
+What the payer keeps per channel, in the channel store, behind `BatchChannelManager`, as one record
+per channel id: its x402 config, deposit, last voucher and exit timestamps, and the
 **watermark** with every rule that moves it (reserve, banked, refused, adopt, restore), and whether
 it is *in doubt* — a refusal said "not advancing" without a figure — so the next voucher resyncs
 from the connector first. The payer holds no channel state of its own.

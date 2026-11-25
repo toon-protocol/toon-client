@@ -330,6 +330,31 @@ are different, and they may hold channels with real deposits, so:
 - Nothing rewrites an old file in place. Moving to the standard path is deliberate: import the
   same phrase into a new keystore, and open a new channel at the new address.
 
+## Channel store
+
+`channelStore` takes a path or your own `ChannelStore`. The interface has no optional methods, and
+holds one `ChannelStoreEntry` per channel id: its x402 config, deposit, watermark, last voucher and
+exit timestamps.
+
+```ts
+interface ChannelStore {
+  save(entry: ChannelStoreEntry): void;
+  load(channelId: string): ChannelStoreEntry | undefined;
+  find(connector: string, network: string, asset: string): ChannelStoreEntry | undefined;
+  list(): ChannelStoreEntry[];
+  delete(channelId: string): void;
+}
+```
+
+- `find` returns the live channel for a connector, network and asset, never a retired one.
+- A retired channel is archived by setting `supersededAt` and saving it, not by deleting it: it may
+  still hold a deposit. `list` returns it.
+- A store must persist the whole entry, `batchSettlement` included: the chain never gives a channel's
+  config back.
+- `JsonFileChannelStore` and `InMemoryChannelStore` are exported; `ChannelBinding`,
+  `ChannelBindingContext` and `ChannelStoreEntry.nonce` are gone. See
+  [channels.md](channels.md#the-watermark-and-why-the-store-must-be-durable) for the file layout.
+
 ## Keystore
 
 Node-only. scrypt for the KDF, AES-256-GCM for the encryption, mode `0600` on the file.
@@ -468,7 +493,7 @@ connector's own wire vectors — see
 | `sealRequest`, `openResponse` | The gift wrap on its own |
 | `ConnectorEdgeClient` | The client-edge endpoints as plain calls |
 | `parseSelfDescription` | `GET /ilp` body to `NodeSelfDescription`, including `batchSettlements` and `voucherSigners` |
-| `BatchChannelManager`, `JsonFileChannelStore` | The watermark and the bindings, without a client |
+| `BatchChannelManager`, `JsonFileChannelStore` | The channel records, without a client |
 | `BatchSettlementPayer` | What `send()` asks for a voucher: onboarding, top-up, vouchers and their outcomes |
 | `parseSolanaWireTransaction` | Reads a compiled Solana transaction this client did not build — its signers, its blockhash, which slots are still zero |
 | `signSolanaWireTransaction` | Fills the signature slots that are yours, in place, without recompiling the message |

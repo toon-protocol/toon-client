@@ -1,50 +1,11 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
-
-export interface ChannelStoreEntry {
-  nonce: number;
-  cumulativeAmount: bigint;
-  /**
-   * The highest cumulative this client has ever SIGNED on the channel, which a
-   * rollback deliberately does not lower. It is the ceiling on what the
-   * connector can possibly have banked — nothing it never received a signature
-   * for is claimable — and so the clamp on adopting the connector's own figure
-   * (see `BatchChannelManager.adoptConnectorWatermark`).
-   */
-  signedCeiling?: bigint;
-  /**
-   * The highest cumulative the connector is PROVEN to hold: what the chain
-   * shows landed, a voucher it banked, or one it refused as not advancing. The
-   * floor under adopting the connector's own figure, as `signedCeiling` is the
-   * ceiling over it.
-   */
-  provenFloor?: bigint;
-  /**
-   * Set when the connector refused a claim as not advancing its watermark
-   * without saying where that watermark is. It means "our watermark and the
-   * connector's disagree", and the next claim on this channel reconciles
-   * against `POST /ilp/claim-state` before it is signed; adopting the
-   * connector's figure clears it. Persisted because each `toon-client`
-   * invocation is a new process, and the next one must resync first.
-   */
-  watermarkUncertain?: boolean;
-  /** Unix SECONDS when close was initiated (withdraw flow). */
-  closedAt?: bigint;
-  /** Unix SECONDS the channel becomes settleable (= closedAt + settlementTimeout). */
-  settleableAt?: bigint;
-  /** Unix SECONDS the channel was settled (collateral released). */
-  settledAt?: bigint;
-}
-
-/** Where a channel lives: its chain, the x402 contract or program, and its token. */
-export interface ChannelBindingContext {
-  chainType: string;
-  chainId: number;
-  tokenNetworkAddress: string;
-  tokenAddress?: string;
-  /** Counterparty settlement address (required for Solana/Mina proofs). */
-  recipient?: string;
-}
 
 /**
  * The config of an x402 `batch-settlement` channel (connector ADR 0074), in a
@@ -88,107 +49,147 @@ export type BatchSettlementBinding =
     };
 
 /**
- * One persisted peer→channel binding: WHICH on-chain channel this identity
- * already holds with a peer, on a given chain + token network (#489).
+ * Everything the payer keeps about one x402 `batch-settlement` channel: its
+ * config, its deposit, its watermark, its last voucher and its exit
+ * timestamps. One record per channel id.
  */
-export interface ChannelBinding {
-  /** On-chain payment channel id (EVM bytes32 / Solana PDA / Mina zkApp). */
+export interface ChannelStoreEntry {
   channelId: string;
-  /** Context for `trackChannel` on resume. */
-  context: ChannelBindingContext;
-  /** On-chain collateral locked at open time, when the open surfaced it. */
-  depositTotal?: bigint;
-  /** ISO timestamp of the open that created this binding. */
-  openedAt?: string;
+  /** The connector the channel pays. Part of how {@link ChannelStore.find} looks it up. */
+  connector: string;
   /**
-   * ISO timestamp this binding was RETIRED from the resume path because its
-   * peer now announces a different settlement address than the channel was
-   * opened against (see `counterpartyMatch` / {@link ChannelStore.supersedeBinding}).
-   * A superseded binding is never resumed again, but stays in
-   * {@link ChannelStore.listBindings} so whatever it holds on-chain can still
-   * be found and reclaimed.
+   * The channel's config, which names its network and token. Required: the id
+   * travels in every voucher and is never derived, so a channel whose config
+   * was not kept cannot be resumed (ADR 0003).
    */
-  supersededAt?: string;
+  batchSettlement: BatchSettlementBinding;
+  /** On-chain collateral the channel holds, as far as this client knows. */
+  depositTotal: bigint;
   /**
-   * Set when the channel is an x402 `batch-settlement` channel rather than a
-   * `TokenNetwork` / TOON-program one: its full config. Such a binding is kept
-   * under its own key namespace (`batch|…`) and never resumed as a
-   * `toon-channel` channel.
-   */
-  batchSettlement?: BatchSettlementBinding;
-  /**
-   * A deposit into this batch-settlement channel that was handed to a
-   * facilitator or a sponsor and whose fate is not yet known. Recorded BEFORE
-   * the deposit leaves, so a lost answer never loses the channel: the next use
-   * reads the chain and settles it.
+   * A deposit handed to a facilitator or a sponsor whose fate is not yet known.
+   * Recorded BEFORE the deposit leaves, so a lost answer never loses the
+   * channel: the next use reads the chain and settles it.
    */
   pendingDeposit?: bigint;
+  /** ISO timestamp the record was created. */
+  openedAt?: string;
   /**
-   * The last voucher this client sent on the channel, as the JSON that
-   * travelled. A probe identifies by resending it byte for byte — a
-   * retransmission the connector records nothing for (client-edge-spec §1.6).
+   * ISO timestamp the channel was RETIRED because a newer channel took its
+   * connector, network and asset. A retired channel is never resumed, but it
+   * stays in {@link ChannelStore.list}: it may still hold a deposit.
+   */
+  supersededAt?: string;
+  /** The cumulative amount this client counts as signed. */
+  cumulativeAmount: bigint;
+  /**
+   * The highest cumulative this client has ever SIGNED on the channel, which a
+   * rollback deliberately does not lower. It is the ceiling on what the
+   * connector can possibly have banked, and so the clamp on adopting the
+   * connector's own figure.
+   */
+  signedCeiling?: bigint;
+  /**
+   * The highest cumulative the connector is PROVEN to hold: what the chain
+   * shows landed, a voucher it banked, or one it refused as not advancing. The
+   * floor under adopting the connector's own figure.
+   */
+  provenFloor?: bigint;
+  /**
+   * The watermark is in doubt: a refusal said "not advancing" without saying
+   * where the connector's watermark is. The next voucher resyncs against the
+   * connector before it is signed. Persisted because each `toon-client`
+   * invocation is a new process.
+   */
+  watermarkUncertain?: boolean;
+  /**
+   * The watermark was not found when an older store was read, so
+   * `cumulativeAmount` is a placeholder until it is rebuilt from the chain and
+   * the connector.
+   */
+  watermarkLost?: boolean;
+  /**
+   * The last voucher sent, as the JSON that travelled. A probe resends it byte
+   * for byte, a retransmission the connector records nothing for.
    */
   lastVoucher?: string;
   /** The cumulative amount {@link lastVoucher} names. */
   lastVoucherAmount?: bigint;
+  /** Unix SECONDS when close was initiated (withdraw flow). */
+  closedAt?: bigint;
+  /** Unix SECONDS the withdraw delay ends and the deposit can be taken back. */
+  settleableAt?: bigint;
+  /** Unix SECONDS the channel was settled (collateral released). */
+  settledAt?: bigint;
 }
 
 /**
- * Persistence interface for payment channel nonce/amount state.
- *
- * The binding methods are OPTIONAL so a third-party `ChannelStore` written
- * against the pre-#489 surface still satisfies the type; a store that omits
- * them simply can't resume a peer's channel across restarts (it will open a
- * fresh one, the old behaviour). {@link JsonFileChannelStore} implements them.
+ * The store the payer's channel records live in. Every method is required: a
+ * store that cannot persist the channel config cannot resume a channel.
  */
 export interface ChannelStore {
-  save(channelId: string, tracking: ChannelStoreEntry): void;
+  /** Write the record for `entry.channelId`, replacing any earlier one. */
+  save(entry: ChannelStoreEntry): void;
   load(channelId: string): ChannelStoreEntry | undefined;
-  list(): string[];
-  delete(channelId: string): void;
-  /** Persist the channel a peer key is bound to. */
-  saveBinding?(key: string, binding: ChannelBinding): void;
-  /** The channel a peer key is bound to, if any. */
-  loadBinding?(key: string): ChannelBinding | undefined;
-  /** Every persisted binding, keyed as {@link saveBinding} stored it. */
-  listBindings?(): { key: string; binding: ChannelBinding }[];
-  /** Forget a binding (its nonce watermark is deliberately left intact). */
-  deleteBinding?(key: string): void;
   /**
-   * Retire a binding from the resume path — the counterparty terminating its
-   * peer's route has been REPLACED, so the channel it names is dead to the
-   * node now answering (`F01 - claim rejected`) even though every key field
-   * still matches.
-   *
-   * ARCHIVES rather than deletes: the retired channel may still hold an
-   * on-chain deposit, so dropping it would strand those funds behind
-   * hand-editing the JSON. It disappears from {@link loadBinding} (never
-   * resumed again) and frees its live key for the re-resolved channel, while
-   * {@link listBindings} still shows it. Idempotent; a no-op for an unknown
-   * key. Optional, like the rest of the binding surface: a store that omits it
-   * simply keeps the pre-validation behaviour of overwriting the stale record.
+   * The live (not retired) channel for `connector` on `network` in `asset`, if
+   * there is one.
    */
-  supersedeBinding?(key: string): void;
+  find(
+    connector: string,
+    network: string,
+    asset: string
+  ): ChannelStoreEntry | undefined;
+  /** Every record, live or retired. */
+  list(): ChannelStoreEntry[];
+  /** Forget a record. A retired channel is archived with `supersededAt`, never deleted. */
+  delete(channelId: string): void;
 }
 
+/** What a channel is found by. EVM addresses are case-insensitive, base58 is not. */
+function lookupKey(connector: string, network: string, asset: string): string {
+  const a = network.startsWith('eip155:') ? asset.toLowerCase() : asset;
+  return `${connector}|${network}|${a}`;
+}
+
+function keyOf(entry: ChannelStoreEntry): string {
+  return lookupKey(
+    entry.connector,
+    entry.batchSettlement.network,
+    entry.batchSettlement.config.token
+  );
+}
+
+/** The newer of two live records for one key (there should only be one). */
+function newer(a: ChannelStoreEntry, b: ChannelStoreEntry): ChannelStoreEntry {
+  return (b.openedAt ?? '') >= (a.openedAt ?? '') ? b : a;
+}
+
+/** One record as the file holds it: bigints as strings. */
 interface JsonEntry {
-  nonce: number;
-  /** Stored as string to preserve bigint precision */
+  /** Absent on the entries of a file older than this layout. */
+  channelId?: string;
+  connector?: string;
+  batchSettlement?: BatchSettlementBinding;
+  depositTotal?: string;
+  pendingDeposit?: string;
+  openedAt?: string;
+  supersededAt?: string;
+  /** Read by rig under each channel id. */
   cumulativeAmount: string;
-  /** Stored as string to preserve bigint precision. */
   signedCeiling?: string;
   provenFloor?: string;
   watermarkUncertain?: boolean;
-  /** Withdraw-flow timers, string-encoded SECONDS (bigint precision). */
+  watermarkLost?: boolean;
+  lastVoucher?: string;
+  lastVoucherAmount?: string;
   closedAt?: string;
   settleableAt?: string;
   settledAt?: string;
 }
 
-interface JsonBinding {
+/** A binding as an older release wrote it to `channels.peers.json`. */
+interface LegacyBinding {
   channelId: string;
-  context: ChannelBindingContext;
-  /** Stored as string to preserve bigint precision. */
   depositTotal?: string;
   openedAt?: string;
   supersededAt?: string;
@@ -198,275 +199,231 @@ interface JsonBinding {
   lastVoucherAmount?: string;
 }
 
-/**
- * The archive key a superseded binding moves to: its live key plus the channel
- * id, so the retired record survives the re-resolved channel being written
- * under the live key, and several supersessions of one route never collide.
- */
-function supersededKey(key: string, channelId: string): string {
-  return `${key}|superseded:${channelId}`;
-}
+const KEY_PREFIX = 'batch|';
 
 /** `channels.json` → `channels.peers.json`. */
-function defaultBindingsPath(filePath: string): string {
+function legacyBindingsPath(filePath: string): string {
   return filePath.replace(/\.json$/i, '') + '.peers.json';
 }
 
+const big = (v: string | undefined): bigint | undefined =>
+  v === undefined ? undefined : BigInt(v);
+const str = (v: bigint | undefined): string | undefined => v?.toString();
+
+function compact<T extends object>(o: T): T {
+  return Object.fromEntries(
+    Object.entries(o).filter(([, v]) => v !== undefined)
+  ) as T;
+}
+
+function toJson(e: ChannelStoreEntry): JsonEntry {
+  return compact({
+    channelId: e.channelId,
+    connector: e.connector,
+    batchSettlement: e.batchSettlement,
+    depositTotal: e.depositTotal.toString(),
+    pendingDeposit: str(e.pendingDeposit),
+    openedAt: e.openedAt,
+    supersededAt: e.supersededAt,
+    cumulativeAmount: e.cumulativeAmount.toString(),
+    signedCeiling: str(e.signedCeiling),
+    provenFloor: str(e.provenFloor),
+    watermarkUncertain: e.watermarkUncertain ? true : undefined,
+    watermarkLost: e.watermarkLost ? true : undefined,
+    lastVoucher: e.lastVoucher,
+    lastVoucherAmount: str(e.lastVoucherAmount),
+    closedAt: str(e.closedAt),
+    settleableAt: str(e.settleableAt),
+    settledAt: str(e.settledAt),
+  });
+}
+
+/** A record, or `undefined` for a legacy entry that never had a config. */
+function fromJson(
+  channelId: string,
+  j: JsonEntry
+): ChannelStoreEntry | undefined {
+  if (!j.batchSettlement || j.connector === undefined) return undefined;
+  return compact({
+    channelId,
+    connector: j.connector,
+    batchSettlement: j.batchSettlement,
+    depositTotal: BigInt(j.depositTotal ?? '0'),
+    pendingDeposit: big(j.pendingDeposit),
+    openedAt: j.openedAt,
+    supersededAt: j.supersededAt,
+    cumulativeAmount: BigInt(j.cumulativeAmount),
+    signedCeiling: big(j.signedCeiling),
+    provenFloor: big(j.provenFloor),
+    watermarkUncertain: j.watermarkUncertain ? true : undefined,
+    watermarkLost: j.watermarkLost ? true : undefined,
+    lastVoucher: j.lastVoucher,
+    lastVoucherAmount: big(j.lastVoucherAmount),
+    closedAt: big(j.closedAt),
+    settleableAt: big(j.settleableAt),
+    settledAt: big(j.settledAt),
+  });
+}
+
 /**
- * JSON file-backed ChannelStore.
- * Uses synchronous I/O to match BatchChannelManager's sync API surface.
+ * JSON file-backed ChannelStore, with synchronous I/O to match
+ * BatchChannelManager.
  *
- * Two files, on purpose: the nonce/cumulative watermark keeps its historical
- * `{ [channelId]: entry }` schema in `filePath` (rig and the MCP daemon parse
- * that file directly), while the peer→channel bindings live in a SIBLING file
- * (`channels.json` → `channels.peers.json`, override with `bindingsPath`).
- * Extending the watermark file's schema in place would have broken those
- * external readers.
+ * One file, `{ [channelId]: record }`. Each record keeps `cumulativeAmount`
+ * under its channel id, which rig reads directly.
+ *
+ * A release that kept bindings in a sibling `channels.peers.json` is migrated
+ * on first use: its bindings are joined with the watermarks in `filePath`, the
+ * result is written to `filePath`, and the sibling is renamed to
+ * `channels.peers.json.migrated`. Fields no longer used (`nonce`, the binding
+ * context) are ignored on read and not written back.
  */
 export class JsonFileChannelStore implements ChannelStore {
   private readonly filePath: string;
-  private readonly bindingsPath: string;
+  private readonly legacyPath: string;
 
+  /** `options.bindingsPath` is where an older release kept its bindings. */
   constructor(filePath: string, options?: { bindingsPath?: string }) {
     this.filePath = filePath;
-    this.bindingsPath = options?.bindingsPath ?? defaultBindingsPath(filePath);
+    this.legacyPath = options?.bindingsPath ?? legacyBindingsPath(filePath);
   }
 
-  save(channelId: string, tracking: ChannelStoreEntry): void {
+  save(entry: ChannelStoreEntry): void {
     const data = this.readFile();
-    data[channelId] = {
-      nonce: tracking.nonce,
-      cumulativeAmount: tracking.cumulativeAmount.toString(),
-      ...(tracking.signedCeiling !== undefined
-        ? { signedCeiling: tracking.signedCeiling.toString() }
-        : {}),
-      ...(tracking.provenFloor !== undefined
-        ? { provenFloor: tracking.provenFloor.toString() }
-        : {}),
-      ...(tracking.watermarkUncertain ? { watermarkUncertain: true } : {}),
-      ...(tracking.closedAt !== undefined
-        ? { closedAt: tracking.closedAt.toString() }
-        : {}),
-      ...(tracking.settleableAt !== undefined
-        ? { settleableAt: tracking.settleableAt.toString() }
-        : {}),
-      ...(tracking.settledAt !== undefined
-        ? { settledAt: tracking.settledAt.toString() }
-        : {}),
-    };
+    data[entry.channelId] = toJson(entry);
     this.writeFile(data);
   }
 
   load(channelId: string): ChannelStoreEntry | undefined {
-    const data = this.readFile();
-    const entry = data[channelId];
-    if (!entry) return undefined;
-    return {
-      nonce: entry.nonce,
-      cumulativeAmount: BigInt(entry.cumulativeAmount),
-      ...(entry.signedCeiling !== undefined
-        ? { signedCeiling: BigInt(entry.signedCeiling) }
-        : {}),
-      ...(entry.provenFloor !== undefined
-        ? { provenFloor: BigInt(entry.provenFloor) }
-        : {}),
-      ...(entry.watermarkUncertain ? { watermarkUncertain: true } : {}),
-      ...(entry.closedAt !== undefined
-        ? { closedAt: BigInt(entry.closedAt) }
-        : {}),
-      ...(entry.settleableAt !== undefined
-        ? { settleableAt: BigInt(entry.settleableAt) }
-        : {}),
-      ...(entry.settledAt !== undefined
-        ? { settledAt: BigInt(entry.settledAt) }
-        : {}),
-    };
+    const j = this.readFile()[channelId];
+    return j ? fromJson(channelId, j) : undefined;
   }
 
-  list(): string[] {
-    return Object.keys(this.readFile());
+  find(
+    connector: string,
+    network: string,
+    asset: string
+  ): ChannelStoreEntry | undefined {
+    const want = lookupKey(connector, network, asset);
+    let found: ChannelStoreEntry | undefined;
+    for (const e of this.list()) {
+      if (e.supersededAt !== undefined || keyOf(e) !== want) continue;
+      found = found ? newer(found, e) : e;
+    }
+    return found;
+  }
+
+  list(): ChannelStoreEntry[] {
+    return Object.entries(this.readFile()).flatMap(([id, j]) => {
+      const e = fromJson(id, j);
+      return e ? [e] : [];
+    });
   }
 
   delete(channelId: string): void {
     const data = this.readFile();
-    const { [channelId]: _, ...rest } = data;
+    if (!(channelId in data)) return;
+    const { [channelId]: _gone, ...rest } = data;
     this.writeFile(rest);
   }
 
-  saveBinding(key: string, binding: ChannelBinding): void {
-    const data = this.readBindings();
-    data[key] = {
-      channelId: binding.channelId,
-      context: binding.context,
-      ...(binding.depositTotal !== undefined
-        ? { depositTotal: binding.depositTotal.toString() }
-        : {}),
-      openedAt: binding.openedAt ?? new Date().toISOString(),
-      ...(binding.supersededAt !== undefined
-        ? { supersededAt: binding.supersededAt }
-        : {}),
-      ...(binding.batchSettlement !== undefined
-        ? { batchSettlement: binding.batchSettlement }
-        : {}),
-      ...(binding.pendingDeposit !== undefined
-        ? { pendingDeposit: binding.pendingDeposit.toString() }
-        : {}),
-      ...(binding.lastVoucher !== undefined
-        ? { lastVoucher: binding.lastVoucher }
-        : {}),
-      ...(binding.lastVoucherAmount !== undefined
-        ? { lastVoucherAmount: binding.lastVoucherAmount.toString() }
-        : {}),
-    };
-    this.writeBindings(data);
-  }
-
-  loadBinding(key: string): ChannelBinding | undefined {
-    const entry = this.readBindings()[key];
-    if (!entry) return undefined;
-    // A retired record is not a resume candidate, even if something wrote one
-    // back under the live key.
-    if (entry.supersededAt !== undefined) return undefined;
-    return toBinding(entry);
-  }
-
-  listBindings(): { key: string; binding: ChannelBinding }[] {
-    return Object.entries(this.readBindings()).map(([key, entry]) => ({
-      key,
-      binding: toBinding(entry),
-    }));
-  }
-
-  deleteBinding(key: string): void {
-    const data = this.readBindings();
-    if (!(key in data)) return;
-    const { [key]: _removed, ...rest } = data;
-    this.writeBindings(rest);
-  }
-
-  supersedeBinding(key: string): void {
-    const data = this.readBindings();
-    const existing = data[key];
-    if (!existing || existing.supersededAt !== undefined) return;
-    const { [key]: _retired, ...rest } = data;
-    this.writeBindings({
-      ...rest,
-      [supersededKey(key, existing.channelId)]: {
-        ...existing,
-        supersededAt: new Date().toISOString(),
-      },
-    });
-  }
-
   private readFile(): Record<string, JsonEntry> {
-    if (!existsSync(this.filePath)) {
-      return {};
+    const data: Record<string, JsonEntry> = existsSync(this.filePath)
+      ? (JSON.parse(readFileSync(this.filePath, 'utf-8')) as Record<
+          string,
+          JsonEntry
+        >)
+      : {};
+    return this.migrate(data);
+  }
+
+  private migrate(data: Record<string, JsonEntry>): Record<string, JsonEntry> {
+    if (!existsSync(this.legacyPath)) return data;
+    const legacy = JSON.parse(readFileSync(this.legacyPath, 'utf-8')) as Record<
+      string,
+      LegacyBinding
+    >;
+    for (const [key, b] of Object.entries(legacy)) {
+      if (!key.startsWith(KEY_PREFIX) || !b.batchSettlement) continue;
+      const net = b.batchSettlement.network;
+      const connector = key
+        .slice(KEY_PREFIX.length)
+        .split(`|${net}|`)[0] as string;
+      const mark = data[b.channelId];
+      const merged: JsonEntry = compact({
+        ...mark,
+        channelId: b.channelId,
+        connector,
+        batchSettlement: b.batchSettlement,
+        depositTotal: b.depositTotal ?? '0',
+        pendingDeposit: b.pendingDeposit,
+        openedAt: b.openedAt,
+        supersededAt: b.supersededAt,
+        lastVoucher: b.lastVoucher,
+        lastVoucherAmount: b.lastVoucherAmount,
+        cumulativeAmount: mark?.cumulativeAmount ?? '0',
+        watermarkLost: mark ? undefined : true,
+      });
+      data[b.channelId] = merged;
     }
-    const raw = readFileSync(this.filePath, 'utf-8');
-    return JSON.parse(raw) as Record<string, JsonEntry>;
+    this.writeFile(data);
+    renameSync(this.legacyPath, `${this.legacyPath}.migrated`);
+    return data;
   }
 
   private writeFile(data: Record<string, JsonEntry>): void {
+    for (const j of Object.values(data)) {
+      delete (j as { nonce?: unknown }).nonce;
+    }
     mkdirSync(dirname(this.filePath), { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(data, null, 2), 'utf-8');
-  }
-
-  private readBindings(): Record<string, JsonBinding> {
-    if (!existsSync(this.bindingsPath)) return {};
-    const raw = readFileSync(this.bindingsPath, 'utf-8');
-    return JSON.parse(raw) as Record<string, JsonBinding>;
-  }
-
-  private writeBindings(data: Record<string, JsonBinding>): void {
-    mkdirSync(dirname(this.bindingsPath), { recursive: true });
-    writeFileSync(this.bindingsPath, JSON.stringify(data, null, 2), {
+    writeFileSync(this.filePath, JSON.stringify(data, null, 2), {
       encoding: 'utf-8',
       mode: 0o600,
     });
   }
 }
 
-function toBinding(entry: JsonBinding): ChannelBinding {
-  return {
-    channelId: entry.channelId,
-    context: entry.context,
-    ...(entry.depositTotal !== undefined
-      ? { depositTotal: BigInt(entry.depositTotal) }
-      : {}),
-    ...(entry.openedAt !== undefined ? { openedAt: entry.openedAt } : {}),
-    ...(entry.supersededAt !== undefined
-      ? { supersededAt: entry.supersededAt }
-      : {}),
-    ...(entry.batchSettlement !== undefined
-      ? { batchSettlement: entry.batchSettlement }
-      : {}),
-    ...(entry.pendingDeposit !== undefined
-      ? { pendingDeposit: BigInt(entry.pendingDeposit) }
-      : {}),
-    ...(entry.lastVoucher !== undefined ? { lastVoucher: entry.lastVoucher } : {}),
-    ...(entry.lastVoucherAmount !== undefined
-      ? { lastVoucherAmount: BigInt(entry.lastVoucherAmount) }
-      : {}),
-  };
-}
-
 /**
- * In-memory {@link ChannelStore} (watermarks + bindings). Handy for tests and
- * for a process that wants resume semantics within its own lifetime without
- * touching disk.
+ * In-memory {@link ChannelStore}. Handy for tests and for a process that wants
+ * resume semantics within its own lifetime without touching disk.
  */
 export class InMemoryChannelStore implements ChannelStore {
   private readonly entries = new Map<string, ChannelStoreEntry>();
-  private readonly bindings = new Map<string, ChannelBinding>();
+  /** Live channel id by lookup key. */
+  private readonly live = new Map<string, string>();
 
-  save(channelId: string, tracking: ChannelStoreEntry): void {
-    this.entries.set(channelId, { ...tracking });
+  save(entry: ChannelStoreEntry): void {
+    const key = keyOf(entry);
+    this.entries.set(entry.channelId, { ...entry });
+    if (entry.supersededAt !== undefined) {
+      if (this.live.get(key) === entry.channelId) this.live.delete(key);
+    } else {
+      this.live.set(key, entry.channelId);
+    }
   }
 
   load(channelId: string): ChannelStoreEntry | undefined {
-    const entry = this.entries.get(channelId);
-    return entry ? { ...entry } : undefined;
+    const e = this.entries.get(channelId);
+    return e ? { ...e } : undefined;
   }
 
-  list(): string[] {
-    return [...this.entries.keys()];
+  find(
+    connector: string,
+    network: string,
+    asset: string
+  ): ChannelStoreEntry | undefined {
+    const id = this.live.get(lookupKey(connector, network, asset));
+    return id === undefined ? undefined : this.load(id);
+  }
+
+  list(): ChannelStoreEntry[] {
+    return [...this.entries.values()].map((e) => ({ ...e }));
   }
 
   delete(channelId: string): void {
+    const e = this.entries.get(channelId);
+    if (!e) return;
     this.entries.delete(channelId);
-  }
-
-  saveBinding(key: string, binding: ChannelBinding): void {
-    this.bindings.set(key, {
-      ...binding,
-      openedAt: binding.openedAt ?? new Date().toISOString(),
-    });
-  }
-
-  loadBinding(key: string): ChannelBinding | undefined {
-    const binding = this.bindings.get(key);
-    if (!binding || binding.supersededAt !== undefined) return undefined;
-    return { ...binding };
-  }
-
-  listBindings(): { key: string; binding: ChannelBinding }[] {
-    return [...this.bindings.entries()].map(([key, binding]) => ({
-      key,
-      binding: { ...binding },
-    }));
-  }
-
-  deleteBinding(key: string): void {
-    this.bindings.delete(key);
-  }
-
-  supersedeBinding(key: string): void {
-    const binding = this.bindings.get(key);
-    if (!binding || binding.supersededAt !== undefined) return;
-    this.bindings.delete(key);
-    this.bindings.set(supersededKey(key, binding.channelId), {
-      ...binding,
-      supersededAt: new Date().toISOString(),
-    });
+    if (this.live.get(keyOf(e)) === channelId) this.live.delete(keyOf(e));
   }
 }
