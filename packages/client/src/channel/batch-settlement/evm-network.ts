@@ -5,7 +5,10 @@
  * It opens a channel by depositing into it through an x402 facilitator — or
  * from the payer's own ETH, as `depositGas` and what is available decide —
  * covers a charge by depositing more into the same channel (ADR 0003), and
- * reads the escrow back from the contract.
+ * reads the escrow back from the contract. It leaves a channel with a timed
+ * withdrawal: `initiateWithdraw(config, amount)` of everything unclaimed, then
+ * after `withdrawDelay` `finalizeWithdraw(config)`, which pays out what is still
+ * unclaimed — the payer's own transactions, the one step that costs it gas.
  *
  * Its voucher scheme is EIP-712: a voucher signed by the channel's
  * `payerAuthorizer` over the channel id and the cumulative amount, carried as
@@ -18,10 +21,12 @@ import {
   FacilitatorError,
   InsufficientBalanceError,
   NetworkError,
+  ValidationError,
 } from '../../client/errors.js';
 import { defaultFacilitatorFor } from '../../presets.js';
 import { rpcTransport, type ChainRpcRoute } from '../../transport/rpc.js';
 import {
+  X402_BATCH_SETTLEMENT_ADDRESS,
   batchChannelId,
   buildBatchChannelConfig,
   buildEip3009Deposit,
@@ -29,6 +34,7 @@ import {
   evmChainIdOf,
   readEvmBatchChannel,
   signBatchVoucher,
+  type BatchChannelConfig,
   type BatchSettlementEvmOffer,
   type ContractReader,
   type TypedDataSigner,
@@ -52,15 +58,62 @@ import { evmVoucherClaim } from './claim.js';
 import { signEvmChallenge } from './challenge.js';
 import { offerFromTerms, type BatchSettlementTerms } from './offers.js';
 import type { BatchChannel } from './manager.js';
-import type {
-  Cover,
-  OpenAmounts,
-  PlannedOpen,
-  SettlementNetwork,
-  TopUpAmounts,
+import type { BatchSettlementBinding } from '../ChannelStore.js';
+import {
+  requireExitGas,
+  type ChannelStoredForm,
+  type CloseOutcome,
+  type Cover,
+  type OpenAmounts,
+  type PlannedOpen,
+  type SettleOutcome,
+  type SettlementNetwork,
+  type TopUpAmounts,
 } from './settlement-network.js';
 
 type EvmChannel = Extract<BatchChannel, { chain: 'evm' }>;
+
+/**
+ * An EVM channel in the channel record: its network and its whole config. The
+ * contract stores a channel by id and never gives the config back.
+ */
+export const evmStoredForm: ChannelStoredForm = {
+  serves: (network) => network.startsWith('eip155:'),
+  toStored(channel) {
+    const evm = asEvmChannel(channel);
+    return { chain: 'evm', network: evm.network, config: { ...evm.config } };
+  },
+  fromStored(channelId, stored) {
+    const evm = asEvmStored(channelId, stored);
+    return {
+      chain: 'evm',
+      channelId,
+      network: evm.network,
+      config: { ...evm.config, salt: evm.config.salt as Hex },
+    };
+  },
+};
+
+function asEvmChannel(channel: BatchChannel): EvmChannel {
+  if (channel.chain !== 'evm') {
+    throw new ConfigError(
+      `channel ${channel.channelId} is on ${channel.network}, not an EVM network`
+    );
+  }
+  return channel;
+}
+
+function asEvmStored(
+  channelId: string,
+  stored: BatchSettlementBinding
+): Extract<BatchSettlementBinding, { chain: 'evm' }> {
+  if (stored.chain !== 'evm') {
+    throw new ConfigError(
+      `channel ${channelId} is stored on ${stored.network}, not an EVM network`
+    );
+  }
+  return stored;
+}
 
 export interface EvmSettlementNetworkConfig {
   /** The funding wallet; also signs vouchers unless `voucherSigner` is set. */
@@ -112,11 +165,11 @@ export class EvmSettlementNetwork implements SettlementNetwork {
     deposit: (channel, terms, amounts) => this.topUp(channel, terms, amounts),
   };
 
-  constructor(private readonly config: EvmSettlementNetworkConfig) {}
+  readonly serves = evmStoredForm.serves;
+  readonly toStored = evmStoredForm.toStored;
+  readonly fromStored = evmStoredForm.fromStored;
 
-  serves(network: string): boolean {
-    return network.startsWith('eip155:');
-  }
+  constructor(private readonly config: EvmSettlementNetworkConfig) {}
 
   /**
    * A channel opened by depositing into it through the facilitator. The
@@ -145,7 +198,7 @@ export class EvmSettlementNetwork implements SettlementNetwork {
     return {
       channel,
       deposit,
-      land: () => this.settle(offer, channel, deposit, amounts.charge),
+      land: () => this.putOnChain(offer, channel, deposit, amounts.charge),
     };
   }
 
@@ -196,13 +249,92 @@ export class EvmSettlementNetwork implements SettlementNetwork {
     );
   }
 
+  /**
+   * Start a timed withdrawal of everything the connector has not claimed. The
+   * connector sees `WithdrawInitiated` and claims its latest voucher before the
+   * delay ends. A channel whose deposit was all claimed is done already.
+   */
+  async close(channel: BatchChannel, _now: bigint): Promise<CloseOutcome> {
+    const evm = this.evmChannel(channel);
+    const clients = this.exitClients('close');
+    const state = await readEvmBatchChannel(
+      clients.publicClient,
+      evm.channelId as Hex
+    );
+    if (state.balance <= state.totalClaimed && state.pendingWithdrawal === 0n) {
+      return { kind: 'done' };
+    }
+    await requireExitGas(
+      'ETH',
+      this.config.account.address,
+      this.requireWallet().getBalance(),
+      'close'
+    );
+    const started = await initiateEvmBatchWithdraw(clients, evm);
+    return {
+      kind: 'closing',
+      transaction: started.transaction,
+      settleableAt: started.finalizeAfter,
+    };
+  }
+
+  /**
+   * Finish the timed withdrawal once this client's window has passed. An EVM
+   * channel is never settleable before that.
+   */
+  async settle(
+    channel: BatchChannel,
+    when: { due: boolean; now: bigint }
+  ): Promise<SettleOutcome> {
+    if (!when.due) return { kind: 'not-yet' };
+    const evm = this.evmChannel(channel);
+    const clients = this.exitClients('settle');
+    const state = await readEvmBatchChannel(
+      clients.publicClient,
+      evm.channelId as Hex
+    );
+    if (state.pendingWithdrawal === 0n && state.balance <= state.totalClaimed) {
+      return { kind: 'settled' };
+    }
+    await requireExitGas(
+      'ETH',
+      this.config.account.address,
+      this.requireWallet().getBalance(),
+      'settle'
+    );
+    const { transaction } = await finalizeEvmBatchWithdraw(
+      clients,
+      evm,
+      when.now
+    );
+    return { kind: 'settled', transaction };
+  }
+
+  /** The reader and the wallet an exit reads and writes with. */
+  private exitClients(step: 'close' | 'settle'): EvmExitClients {
+    const { reader, wallet } = this.config;
+    if (!reader || !wallet) {
+      throw new ConfigError(
+        `leaving a Base batch-settlement channel (${step}) needs this client’s EVM chain access`
+      );
+    }
+    return {
+      publicClient: {
+        readContract: (params: never) => reader.readContract(params),
+        waitForTransactionReceipt: (params) =>
+          wallet.waitForTransactionReceipt(params),
+      },
+      walletClient: wallet,
+    };
+  }
+
   /** Deposit `amount` more into `channel`, carrying the running cumulative. */
   private async topUp(
     channel: BatchChannel,
     terms: BatchSettlementTerms,
     amounts: TopUpAmounts
   ): Promise<void> {
-    await this.settle(
+    await this.putOnChain(
       this.offer(terms, amounts.charge),
       this.evmChannel(channel),
       amounts.amount,
@@ -229,12 +361,7 @@ export class EvmSettlementNetwork implements SettlementNetwork {
   }
 
   private evmChannel(channel: BatchChannel): EvmChannel {
-    if (channel.chain !== 'evm') {
-      throw new ConfigError(
-        `channel ${channel.channelId} is on ${channel.network}, not an EVM network`
-      );
-    }
-    return channel;
+    return asEvmChannel(channel);
   }
 
   /**
@@ -242,7 +369,7 @@ export class EvmSettlementNetwork implements SettlementNetwork {
    * chain — through the facilitator, or from the payer's own ETH, as
    * `depositGas` and what is available decide (toon-client#695).
    */
-  private async settle(
+  private async putOnChain(
     offer: BatchSettlementEvmOffer,
     channel: EvmChannel,
     amount: bigint,
@@ -537,5 +664,158 @@ async function holdsEth(wallet: EvmWalletAccess | undefined): Promise<boolean> {
     return (await wallet.getBalance()) > 0n;
   } catch {
     return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Leaving a channel
+// ---------------------------------------------------------------------------
+
+const CHANNEL_CONFIG_TUPLE = {
+  name: 'config',
+  type: 'tuple',
+  components: [
+    { name: 'payer', type: 'address' },
+    { name: 'payerAuthorizer', type: 'address' },
+    { name: 'receiver', type: 'address' },
+    { name: 'receiverAuthorizer', type: 'address' },
+    { name: 'token', type: 'address' },
+    { name: 'withdrawDelay', type: 'uint40' },
+    { name: 'salt', type: 'bytes32' },
+  ],
+} as const;
+
+/** `initiateWithdraw` and `finalizeWithdraw`. */
+export const X402_BATCH_SETTLEMENT_EXIT_ABI = [
+  {
+    type: 'function',
+    name: 'initiateWithdraw',
+    stateMutability: 'nonpayable',
+    inputs: [CHANNEL_CONFIG_TUPLE, { name: 'amount', type: 'uint128' }],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'finalizeWithdraw',
+    stateMutability: 'nonpayable',
+    inputs: [CHANNEL_CONFIG_TUPLE],
+    outputs: [],
+  },
+] as const;
+
+/** The clients an EVM exit needs: one to write, one to read and wait. */
+export interface EvmExitClients {
+  publicClient: ContractReader & {
+    waitForTransactionReceipt: (params: {
+      hash: Hex;
+    }) => Promise<{ status: string }>;
+  };
+  walletClient: { writeContract: (params: never) => Promise<Hex> };
+}
+
+/**
+ * Start a timed withdrawal of everything the connector has not claimed, so
+ * what finally comes back is the deposit less what was spent.
+ */
+export async function initiateEvmBatchWithdraw(
+  clients: EvmExitClients,
+  channel: { channelId: string; config: BatchChannelConfig }
+): Promise<{ transaction: Hex; amount: bigint; finalizeAfter: bigint }> {
+  const state = await readEvmBatchChannel(
+    clients.publicClient,
+    channel.channelId as Hex
+  );
+  if (state.pendingWithdrawal > 0n) {
+    throw new ValidationError(
+      `channel ${channel.channelId} already has a withdrawal of ${state.pendingWithdrawal} pending`
+    );
+  }
+  const amount = state.balance - state.totalClaimed;
+  if (amount <= 0n) {
+    throw new ValidationError(
+      `channel ${channel.channelId} holds nothing unclaimed to withdraw`
+    );
+  }
+  const transaction = await clients.walletClient.writeContract({
+    address: X402_BATCH_SETTLEMENT_ADDRESS,
+    abi: X402_BATCH_SETTLEMENT_EXIT_ABI,
+    functionName: 'initiateWithdraw',
+    args: [channelConfigArg(channel.config), amount],
+  } as never);
+  assertSucceeded(
+    await clients.publicClient.waitForTransactionReceipt({ hash: transaction }),
+    'initiateWithdraw',
+    transaction
+  );
+  // The chain's own start time, not this machine's clock.
+  const started = await readEvmBatchChannel(
+    clients.publicClient,
+    channel.channelId as Hex
+  );
+  return {
+    transaction,
+    amount,
+    finalizeAfter:
+      BigInt(started.withdrawalInitiatedAt) +
+      BigInt(channel.config.withdrawDelay),
+  };
+}
+
+/** Finish a timed withdrawal once `withdrawDelay` has passed. */
+export async function finalizeEvmBatchWithdraw(
+  clients: EvmExitClients,
+  channel: { channelId: string; config: BatchChannelConfig },
+  now = BigInt(Math.floor(Date.now() / 1000))
+): Promise<{ transaction: Hex }> {
+  const state = await readEvmBatchChannel(
+    clients.publicClient,
+    channel.channelId as Hex
+  );
+  if (state.withdrawalInitiatedAt === 0) {
+    throw new ValidationError(
+      `channel ${channel.channelId} has no withdrawal pending`
+    );
+  }
+  const finalizeAfter = BigInt(
+    state.withdrawalInitiatedAt + channel.config.withdrawDelay
+  );
+  if (now < finalizeAfter) {
+    throw new ValidationError(
+      `channel ${channel.channelId}'s withdrawal can be finalized at ${finalizeAfter} (unix seconds), not yet`
+    );
+  }
+  const transaction = await clients.walletClient.writeContract({
+    address: X402_BATCH_SETTLEMENT_ADDRESS,
+    abi: X402_BATCH_SETTLEMENT_EXIT_ABI,
+    functionName: 'finalizeWithdraw',
+    args: [channelConfigArg(channel.config)],
+  } as never);
+  assertSucceeded(
+    await clients.publicClient.waitForTransactionReceipt({ hash: transaction }),
+    'finalizeWithdraw',
+    transaction
+  );
+  return { transaction };
+}
+
+function channelConfigArg(config: BatchChannelConfig) {
+  return {
+    payer: config.payer as Hex,
+    payerAuthorizer: config.payerAuthorizer as Hex,
+    receiver: config.receiver as Hex,
+    receiverAuthorizer: config.receiverAuthorizer as Hex,
+    token: config.token as Hex,
+    withdrawDelay: config.withdrawDelay,
+    salt: config.salt,
+  };
+}
+
+function assertSucceeded(
+  receipt: { status: string },
+  what: string,
+  transaction: Hex
+): void {
+  if (receipt.status !== 'success') {
+    throw new ValidationError(`${what} reverted in ${transaction}`);
   }
 }

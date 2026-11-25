@@ -11,14 +11,12 @@ import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
 import type { EvmSettlementNetworkConfig } from '../channel/batch-settlement/evm-network.js';
 import type { SolanaSettlementNetworkConfig } from '../channel/batch-settlement/solana-network.js';
 import { getLamports } from '../channel/solana/payment-channel.js';
-import { rpcTransport, type ChainRpcRoute } from '../transport/rpc.js';
-import type { ChannelFacadeDeps } from './channel-facade.js';
+import { rpcTransport } from '../transport/rpc.js';
 
 declare const url: string;
 declare const account: Parameters<typeof evmWalletAccess>[0]['account'];
 declare const evmNetwork: EvmSettlementNetworkConfig;
 declare const solanaNetwork: SolanaSettlementNetworkConfig;
-declare const facade: ChannelFacadeDeps;
 
 export function chainRpcNeedsAFetch(): void {
   // The Solana JSON-RPC entry point.
@@ -38,15 +36,6 @@ export function chainRpcNeedsAFetch(): void {
   // The payer's EVM wallet access.
   // @ts-expect-error a route without a fetch
   evmWalletAccess({ rpc: { url }, account });
-
-  // The channel facade's EVM and Solana access.
-  if (facade.evm !== undefined) {
-    const route: ChainRpcRoute = facade.evm.rpc;
-    void route;
-    // @ts-expect-error the route is required
-    const missing: typeof facade.evm = { privateKey: facade.evm.privateKey };
-    void missing;
-  }
 
   // Each settlement network's own fetch, which serves the facilitator or the
   // sponsor endpoint, is required, as is the Solana network's RPC route.

@@ -62,6 +62,7 @@ import {
 } from '../channel/solana/wire-transaction.js';
 import { base58Decode, base58Encode } from '../utils/base58.js';
 import { must } from '../utils/must.test-support.js';
+import { STORED_FORMS } from '../channel/batch-settlement/stored-forms.test-support.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const INFRA = process.env['INFRA_SANDBOX_DIR'] ?? resolve(HERE, '../../../../../infra/sandbox');
@@ -168,7 +169,7 @@ describe.skipIf(MISSING.length > 0)('the payer through the EVM settlement networ
   afterAll(() => stop(anvil));
 
   it('opens, pays and tops up on the real contract', async () => {
-    const manager = new BatchChannelManager();
+    const manager = new BatchChannelManager(STORED_FORMS);
     const payer = new BatchSettlementPayer({
       connector: CONNECTOR,
       manager,
@@ -381,7 +382,7 @@ describe.skipIf(MISSING.length > 0)('the payer through the Solana settlement net
   });
 
   it('opens through the sponsor, pays, and replaces a channel it cannot cover', async () => {
-    const manager = new BatchChannelManager();
+    const manager = new BatchChannelManager(STORED_FORMS);
     const payer = new BatchSettlementPayer({
       connector: CONNECTOR,
       manager,

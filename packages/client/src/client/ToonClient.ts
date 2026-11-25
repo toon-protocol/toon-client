@@ -44,10 +44,16 @@ import { ClientChannelFacade } from './channel-facade.js';
 import { ClientWalletFacade } from './wallet-facade.js';
 import { privateKeyToAccount } from 'viem/accounts';
 import { toHex } from 'viem';
-import type { ChainRpcRoute } from '../transport/rpc.js';
 import { chainRoutes } from './chain-access.js';
-import { evmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
-import { SolanaSettlementNetwork } from '../channel/batch-settlement/solana-network.js';
+import {
+  evmSettlementNetwork,
+  evmStoredForm,
+} from '../channel/batch-settlement/evm-network.js';
+import {
+  SolanaSettlementNetwork,
+  solanaStoredForm,
+} from '../channel/batch-settlement/solana-network.js';
+import type { SettlementNetwork } from '../channel/batch-settlement/settlement-network.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { base58Decode } from '../utils/base58.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
@@ -127,40 +133,16 @@ export class ToonClient implements ToonClientLike {
         assertReachableWithoutProxy(endpoint, init.config.socksProxy, 'published'),
     });
 
-    this.manager = new BatchChannelManager(init.config.channelStore);
-    const routes = chainRoutes(init.config);
-    const chains = chainKeys(init.config, routes.solana);
+    this.manager = new BatchChannelManager(
+      [evmStoredForm, solanaStoredForm],
+      init.config.channelStore
+    );
+    const networks = settlementNetworks(init.config);
     this.payer = new BatchSettlementPayer({
       connector: init.config.connector,
       manager: this.manager,
       deposit: init.config.deposit,
-      networks: [
-        ...(chains.evm !== undefined
-          ? [
-              evmSettlementNetwork({
-                account: chains.evm.account,
-                rpc: routes.evm,
-                fetch: init.config.fetch,
-                ...(init.config.facilitatorUrl !== undefined
-                  ? { facilitatorUrl: init.config.facilitatorUrl }
-                  : {}),
-                ...(init.config.depositMethod !== undefined
-                  ? { depositMethod: init.config.depositMethod }
-                  : {}),
-                depositGas: init.config.depositGas,
-              }),
-            ]
-          : []),
-        ...(chains.solana !== undefined
-          ? [
-              new SolanaSettlementNetwork({
-                ...chains.solana,
-                fetch: init.config.fetch,
-                connector: init.config.connector,
-              }),
-            ]
-          : []),
-      ],
+      networks,
       autoOpen: init.config.autoOpenChannel,
       connectorWatermark: (entry) => this.connectorWatermark(entry),
     });
@@ -170,15 +152,7 @@ export class ToonClient implements ToonClientLike {
       chain: init.chain,
       manager: this.manager,
       describe: () => this.describe(),
-      ...(chains.evm !== undefined
-        ? {
-            evm: {
-              privateKey: chains.evm.privateKey,
-              rpc: routes.evm,
-            },
-          }
-        : {}),
-      ...(chains.solana !== undefined ? { solana: chains.solana } : {}),
+      networks,
     });
     this.wallet = new ClientWalletFacade({
       config: init.config,
@@ -631,36 +605,43 @@ async function openHiddenService(
 }
 
 /**
- * This client's keys, in the shapes the settlement networks and the channel
- * facade sign with: a viem account on EVM, and on Solana a keypair plus the
- * JSON-RPC route it reads the chain through, as {@link chainRoutes} decided it.
+ * The settlement networks this client pays on and leaves its channels through:
+ * one per chain it holds a key for, each built once from that key and the RPC
+ * route {@link chainRoutes} decided for its chain.
  */
-function chainKeys(
-  config: ResolvedConfig,
-  solanaRpc: ChainRpcRoute
-): {
-  evm?: { account: ReturnType<typeof privateKeyToAccount>; privateKey: Uint8Array };
-  solana?: {
-    signer: { privateKey: Uint8Array; publicKey: Uint8Array };
-    rpc: ChainRpcRoute;
-  };
-} {
+function settlementNetworks(config: ResolvedConfig): SettlementNetwork[] {
+  const routes = chainRoutes(config);
   const evmKey = config.identity.evm?.privateKey;
   const solanaKey = config.identity.solana;
-  return {
+  return [
     ...(evmKey !== undefined
-      ? { evm: { account: privateKeyToAccount(toHex(evmKey)), privateKey: evmKey } }
-      : {}),
+      ? [
+          evmSettlementNetwork({
+            account: privateKeyToAccount(toHex(evmKey)),
+            rpc: routes.evm,
+            fetch: config.fetch,
+            ...(config.facilitatorUrl !== undefined
+              ? { facilitatorUrl: config.facilitatorUrl }
+              : {}),
+            ...(config.depositMethod !== undefined
+              ? { depositMethod: config.depositMethod }
+              : {}),
+            depositGas: config.depositGas,
+          }),
+        ]
+      : []),
     ...(solanaKey !== undefined
-      ? {
-          solana: {
+      ? [
+          new SolanaSettlementNetwork({
             signer: {
               privateKey: solanaKey.secretKey.slice(0, 32),
               publicKey: base58Decode(solanaKey.publicKey),
             },
-            rpc: solanaRpc,
-          },
-        }
-      : {}),
-  };
+            rpc: routes.solana,
+            fetch: config.fetch,
+            connector: config.connector,
+          }),
+        ]
+      : []),
+  ];
 }
