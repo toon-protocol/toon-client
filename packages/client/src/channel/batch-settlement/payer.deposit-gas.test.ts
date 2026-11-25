@@ -21,6 +21,7 @@ import {
 import { PERMIT2_ADDRESS, X402_BATCH_SETTLEMENT_ADDRESS } from './evm.js';
 import type { EvmWalletAccess } from './deposit-gas.js';
 import { must } from '../../utils/must.test-support.js';
+import { STORED_FORMS } from './stored-forms.test-support.js';
 
 const PAYER = privateKeyToAccount(
   '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
@@ -157,7 +158,7 @@ function world(o: Options = {}) {
     ],
   });
 
-  const manager = new BatchChannelManager();
+  const manager = new BatchChannelManager(STORED_FORMS);
   const payer = new BatchSettlementPayer({
     connector: 'https://node.example',
     manager,

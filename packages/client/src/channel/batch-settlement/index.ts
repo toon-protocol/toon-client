@@ -74,19 +74,33 @@ export {
 } from './payer.js';
 export {
   settlementNetworkFor,
+  type ChannelStoredForm,
+  type CloseOutcome,
   type Cover,
   type OpenAmounts,
   type PlannedOpen,
+  type SettleOutcome,
   type SettlementNetwork,
   type TopUpAmounts,
 } from './settlement-network.js';
 export {
   EvmSettlementNetwork,
   evmSettlementNetwork,
+  evmStoredForm,
+  X402_BATCH_SETTLEMENT_EXIT_ABI,
+  initiateEvmBatchWithdraw,
+  finalizeEvmBatchWithdraw,
+  type EvmExitClients,
   type EvmSettlementNetworkConfig,
 } from './evm-network.js';
 export {
   SolanaSettlementNetwork,
+  solanaStoredForm,
+  buildSvmRequestCloseInstruction,
+  buildSvmSealInstruction,
+  buildSvmWithdrawPayerInstruction,
+  requestSvmBatchClose,
+  withdrawSvmBatchChannel,
   type SolanaSettlementNetworkConfig,
 } from './solana-network.js';
 export { requestSponsoredOpen, type SponsoredOpen } from './sponsor.js';
@@ -115,14 +129,3 @@ export {
   solanaChallengeMessage,
   signSolanaChallenge,
 } from './challenge.js';
-export {
-  X402_BATCH_SETTLEMENT_EXIT_ABI,
-  initiateEvmBatchWithdraw,
-  finalizeEvmBatchWithdraw,
-  buildSvmRequestCloseInstruction,
-  buildSvmSealInstruction,
-  buildSvmWithdrawPayerInstruction,
-  requestSvmBatchClose,
-  withdrawSvmBatchChannel,
-  type EvmExitClients,
-} from './exit.js';

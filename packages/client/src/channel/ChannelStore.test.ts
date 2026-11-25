@@ -13,6 +13,7 @@ import {
   BatchChannelManager,
   type BatchChannel,
 } from './batch-settlement/manager.js';
+import { STORED_FORMS } from './batch-settlement/stored-forms.test-support.js';
 
 const CONNECTOR = 'https://node.example';
 const TOKEN = '0x5555555555555555555555555555555555555555';
@@ -206,7 +207,10 @@ describe('JsonFileChannelStore', () => {
 
     it('loads, pays and exits', () => {
       const path = legacyFixture();
-      const m = new BatchChannelManager(new JsonFileChannelStore(path));
+      const m = new BatchChannelManager(
+        STORED_FORMS,
+        new JsonFileChannelStore(path)
+      );
       expect(m.resolve(CONNECTOR, 'eip155:84532', TOKEN)).toEqual(CHANNEL);
       expect(m.depositTotal(A)).toBe(10_000n);
       expect(m.lastVoucher(A)).toBe('{"v":3000}');
@@ -266,7 +270,10 @@ describe('JsonFileChannelStore', () => {
           },
         })
       );
-      const m = new BatchChannelManager(new JsonFileChannelStore(path));
+      const m = new BatchChannelManager(
+        STORED_FORMS,
+        new JsonFileChannelStore(path)
+      );
       expect(m.hasWatermark(A)).toBe(false);
       m.restoreWatermark(A, 4_000n);
       expect(m.hasWatermark(A)).toBe(true);

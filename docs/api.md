@@ -493,15 +493,15 @@ connector's own wire vectors — see
 | `sealRequest`, `openResponse` | The gift wrap on its own |
 | `ConnectorEdgeClient` | The client-edge endpoints as plain calls |
 | `parseSelfDescription` | `GET /ilp` body to `NodeSelfDescription`, including `batchSettlements` and `voucherSigners` |
-| `BatchChannelManager`, `JsonFileChannelStore` | The channel records, without a client |
+| `BatchChannelManager`, `JsonFileChannelStore` | The channel records, without a client. The manager takes every network's stored form (`evmStoredForm`, `solanaStoredForm`), which turns a channel to and from its record |
 | `BatchSettlementPayer` | What `send()` asks for a voucher: onboarding, top-up, vouchers and their outcomes. Chain-blind: it pays through the `networks` it is given |
-| `EvmSettlementNetwork`, `evmSettlementNetwork`, `SolanaSettlementNetwork`, `SettlementNetwork` | One settlement network per network the payer pays on: opening, covering, reading the chain, and its voucher scheme |
+| `EvmSettlementNetwork`, `evmSettlementNetwork`, `SolanaSettlementNetwork`, `SettlementNetwork` | One settlement network per network the payer pays on: opening, covering, reading the chain, closing and settling, the channel's stored form, and its voucher scheme. `client.channel` leaves channels through the same networks |
 | `parseSolanaWireTransaction` | Reads a compiled Solana transaction this client did not build — its signers, its blockhash, which slots are still zero |
 | `signSolanaWireTransaction` | Fills the signature slots that are yours, in place, without recompiling the message |
 | `patchSolanaRecentBlockhash` | Moves the 32 blockhash bytes to the one a fee payer chose, clearing the signatures made over the old message |
 | `generateSolanaKeypair`, `solanaKeypair` | A fresh single-use keypair, or one read back from a 32-byte seed or 64-byte secret |
 | `buildBatchChannelConfig`, `batchChannelId`, `signBatchVoucher`, `buildEip3009Deposit`, `settleDeposit`, `buildSponsoredOpen`, `requestSponsoredOpen`, `signSvmVoucher`, `evmVoucherClaim`, `solanaVoucherClaim`, … | x402 `batch-settlement` on Base and Solana (connector ADRs 0074, 0075): channel config and id, vouchers and the claims they ride in, the gasless deposit or sponsored open |
-| `initiateEvmBatchWithdraw`, `finalizeEvmBatchWithdraw`, `requestSvmBatchClose`, `withdrawSvmBatchChannel` | Leaving a channel, per chain |
+| `initiateEvmBatchWithdraw`, `finalizeEvmBatchWithdraw`, `requestSvmBatchClose`, `withdrawSvmBatchChannel` | Leaving a channel, per chain: the steps each network's `close` and `settle` take |
 | `DEVNET`, `defaultRpcUrl`, `defaultFacilitatorFor` | Well-known devnet values. Defaults and examples only — a node's terms always come from `GET /ilp` |
 | `isRoutableHsHostname`, `isHiddenServiceUrl`, `assertRoutableHsHostname` | Hidden-service address validation. Pure and browser-safe — the `.anyone` pattern and the `.anon`/`.onion` refusals, in one place |
 | `validateSocks5hUrl` | Parses and enforces a `socks5h://` proxy URL, returning its host and port |
