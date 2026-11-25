@@ -1,12 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NetworkError } from '../client/errors.js';
 import type { IlpSendResult } from '../ilp/types.js';
-import {
-  BtpPaidWriteTransport,
-  type BtpSession,
-  type HttpFallback,
-} from './BtpPaidWriteTransport.js';
-import type { IlpSendParams } from './ilp-send.js';
+import { BtpPaidWriteTransport, type BtpSession } from './BtpPaidWriteTransport.js';
+import { BtpConnectionError } from './IsomorphicBtpClient.js';
+import { NothingWritten } from '../carriage/nothing-written.js';
+import type { IlpSendParams } from '../ilp/ilp-send.js';
 
 function params(destination: string): IlpSendParams {
   return { destination, amount: '100', data: 'ZGF0YQ==' };
@@ -16,29 +14,24 @@ function fulfilled(data = 'ok'): IlpSendResult {
   return { accepted: true, data };
 }
 
-/** A controllable fake session: `isConnected` is a real mutable field (not a
- * getter) so tests can flip it directly to simulate a dropped socket. */
+/** A controllable fake session: `isConnected` is a real mutable field. */
 function makeFakeSession(): BtpSession & {
   sendIlpPacketWithClaim: ReturnType<typeof vi.fn>;
-  connect: ReturnType<typeof vi.fn>;
-  reconnect: ReturnType<typeof vi.fn>;
+  sendIlpPacket: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
 } {
   const session = {
     isConnected: false,
-    connect: vi.fn(async () => {
-      session.isConnected = true;
-    }),
-    reconnect: vi.fn(async () => {
-      session.isConnected = true;
-    }),
     disconnect: vi.fn(async () => {
       session.isConnected = false;
     }),
     sendIlpPacketWithClaim: vi.fn(),
+    sendIlpPacket: vi.fn(),
   };
   return session;
 }
+
+const URL = 'ws://connector.test/ilp/btp';
 
 describe('BtpPaidWriteTransport', () => {
   beforeEach(() => {
@@ -49,32 +42,7 @@ describe('BtpPaidWriteTransport', () => {
     vi.useRealTimers();
   });
 
-  describe('persistent connection', () => {
-    it('connects lazily on the first write and reuses the session thereafter', async () => {
-      const session = makeFakeSession();
-      session.sendIlpPacketWithClaim.mockResolvedValue(fulfilled());
-      const transport = new BtpPaidWriteTransport({ session });
-
-      expect(session.connect).not.toHaveBeenCalled();
-
-      await transport.sendIlpPacketWithClaim(params('g.a'), { n: 1 });
-      await transport.sendIlpPacketWithClaim(params('g.a'), { n: 2 });
-
-      expect(session.connect).toHaveBeenCalledTimes(1);
-      expect(session.sendIlpPacketWithClaim).toHaveBeenCalledTimes(2);
-    });
-
-    it('does not reconnect an already-connected session', async () => {
-      const session = makeFakeSession();
-      session.isConnected = true; // e.g. modes/http.ts already connected it
-      session.sendIlpPacketWithClaim.mockResolvedValue(fulfilled());
-      const transport = new BtpPaidWriteTransport({ session });
-
-      await transport.sendIlpPacketWithClaim(params('g.a'), {});
-
-      expect(session.connect).not.toHaveBeenCalled();
-    });
-
+  describe('the session', () => {
     it('exposes isConnected and disconnect as passthroughs to the session', async () => {
       const session = makeFakeSession();
       session.isConnected = true;
@@ -161,219 +129,81 @@ describe('BtpPaidWriteTransport', () => {
     });
   });
 
-  describe('reconnect + resume', () => {
-    it('reconnects the same session and resumes the write after one connection error', async () => {
+  describe('one write per call', () => {
+    it('writes a claim once and passes a failure on, never resending it', async () => {
       const session = makeFakeSession();
-      session.isConnected = true;
-      session.sendIlpPacketWithClaim
-        .mockImplementationOnce(async () => {
-          // Mirrors real BtpRuntimeClient: a connection-level failure marks
-          // the session disconnected before the error surfaces here.
-          session.isConnected = false;
-          throw new Error('WebSocket connection error');
-        })
-        .mockResolvedValueOnce(fulfilled('resumed'));
-      const transport = new BtpPaidWriteTransport({
-        session,
-        reconnectDelay: 50,
-      });
+      session.sendIlpPacketWithClaim.mockRejectedValue(new BtpConnectionError('Packet send timeout'));
+      const transport = new BtpPaidWriteTransport({ session });
 
-      const send = transport.sendIlpPacketWithClaim(params('g.a'), {
-        claim: 1,
-      });
-
-      await vi.advanceTimersByTimeAsync(50);
-      const result = await send;
-
-      expect(result.data).toBe('resumed');
-      expect(session.reconnect).toHaveBeenCalledTimes(1);
-      expect(session.sendIlpPacketWithClaim).toHaveBeenCalledTimes(2);
+      await expect(transport.sendIlpPacketWithClaim(params('g.a'), {})).rejects.toBeInstanceOf(
+        Error
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(session.sendIlpPacketWithClaim).toHaveBeenCalledTimes(1);
     });
 
-    it('does not let a mid-burst reconnect reorder writes queued behind it', async () => {
+    it('holds one slot for every attempt a task makes, so nothing queued behind it overtakes', async () => {
       const session = makeFakeSession();
-      session.isConnected = true;
-      const calls: string[] = [];
-      session.sendIlpPacketWithClaim.mockImplementation(
-        async (p: IlpSendParams) => {
-          calls.push(p.destination);
-          if (
-            p.destination === 'one' &&
-            calls.filter((c) => c === 'one').length === 1
-          ) {
-            session.isConnected = false;
-            throw new Error('connection reset');
-          }
-          return fulfilled(p.destination);
+      const order: string[] = [];
+      session.sendIlpPacketWithClaim.mockImplementation(async (p: IlpSendParams) => {
+        order.push(p.destination);
+        if (p.destination === 'retried' && order.length === 1) {
+          throw new NothingWritten(new BtpConnectionError('ECONNREFUSED'));
         }
-      );
-      const transport = new BtpPaidWriteTransport({
-        session,
-        reconnectDelay: 10,
+        return fulfilled(p.destination);
       });
+      const transport = new BtpPaidWriteTransport({ session });
 
-      const p1 = transport.sendIlpPacketWithClaim(params('one'), {});
-      const p2 = transport.sendIlpPacketWithClaim(params('two'), {});
-
-      await vi.advanceTimersByTimeAsync(10);
-      const [r1, r2] = await Promise.all([p1, p2]);
-
-      expect(r1.data).toBe('one');
-      expect(r2.data).toBe('two');
-      // 'one' failed once then succeeded on retry, BEFORE 'two' ever ran.
-      expect(calls).toEqual(['one', 'one', 'two']);
-    });
-  });
-
-  describe('fallback to HTTP', () => {
-    function makeFallback(): HttpFallback & {
-      sendIlpPacketWithClaim: ReturnType<typeof vi.fn>;
-    } {
-      return { sendIlpPacketWithClaim: vi.fn() };
-    }
-
-    it('falls back to HTTP once the reconnect budget is exhausted', async () => {
-      const session = makeFakeSession();
-      session.isConnected = true;
-      session.sendIlpPacketWithClaim.mockImplementation(async () => {
-        session.isConnected = false;
-        throw new Error('ECONNRESET');
+      const first = transport.ordered(async (attempt) => {
+        try {
+          return await attempt(params('retried'), {});
+        } catch {
+          return attempt(params('retried'), {});
+        }
       });
-      const fallback = makeFallback();
-      fallback.sendIlpPacketWithClaim.mockResolvedValue(fulfilled('via-http'));
+      const second = transport.sendIlpPacketWithClaim(params('behind'), {});
 
-      const transport = new BtpPaidWriteTransport({
-        session,
-        fallback,
-        maxReconnectAttempts: 1,
-        reconnectDelay: 10,
-      });
-
-      const send = transport.sendIlpPacketWithClaim(params('g.a'), {
-        claim: true,
-      });
-      await vi.advanceTimersByTimeAsync(10);
-      const result = await send;
-
-      expect(result.data).toBe('via-http');
-      expect(fallback.sendIlpPacketWithClaim).toHaveBeenCalledWith(
-        params('g.a'),
-        { claim: true }
-      );
-      // session was tried initially plus every reconnect attempt.
-      expect(session.sendIlpPacketWithClaim).toHaveBeenCalledTimes(2);
-    });
-
-    it('throws the last connection error when no fallback is configured', async () => {
-      const session = makeFakeSession();
-      session.isConnected = true;
-      session.sendIlpPacketWithClaim.mockImplementation(async () => {
-        session.isConnected = false;
-        throw new Error('socket hang up');
-      });
-      const transport = new BtpPaidWriteTransport({
-        session,
-        maxReconnectAttempts: 1,
-        reconnectDelay: 10,
-      });
-
-      const send = transport.sendIlpPacketWithClaim(params('g.a'), {});
-      const caught = send.catch((e: unknown) => e);
-      await vi.advanceTimersByTimeAsync(10);
-
-      const error = (await caught) as Error;
-      expect(error.message).toBe('socket hang up');
-    });
-
-    it('never falls back on an application-level (non-connection) error', async () => {
-      const session = makeFakeSession();
-      session.isConnected = true;
-      session.sendIlpPacketWithClaim.mockRejectedValue(
-        new Error('F02_UNREACHABLE something odd')
-      );
-      const fallback = makeFallback();
-      const transport = new BtpPaidWriteTransport({ session, fallback });
-
-      await expect(
-        transport.sendIlpPacketWithClaim(params('g.a'), {})
-      ).rejects.toThrow('F02_UNREACHABLE something odd');
-      expect(fallback.sendIlpPacketWithClaim).not.toHaveBeenCalled();
-      expect(session.reconnect).not.toHaveBeenCalled();
+      await expect(first).resolves.toEqual(fulfilled('retried'));
+      await expect(second).resolves.toEqual(fulfilled('behind'));
+      expect(order).toEqual(['retried', 'retried', 'behind']);
     });
   });
 
   describe('naming the endpoint', () => {
-    const URL = 'ws://connector-a:3000/ilp';
-
-    it('names the BTP URL when the connection never opens and there is no fallback', async () => {
+    it('names the BTP URL when the socket fails after the write', async () => {
       const session = makeFakeSession();
-      const cause = new Error('WebSocket connection failed: ECONNREFUSED');
-      session.connect.mockRejectedValue(cause);
-      session.reconnect.mockRejectedValue(cause);
-      const transport = new BtpPaidWriteTransport({
-        session,
-        url: URL,
-        endpointSource: 'published',
-        maxReconnectAttempts: 1,
-        reconnectDelay: 10,
-      });
+      session.sendIlpPacketWithClaim.mockRejectedValue(new BtpConnectionError('Connection closed'));
+      const transport = new BtpPaidWriteTransport({ session, url: URL, endpointSource: 'published' });
 
-      const caught = transport
-        .sendIlpPacketWithClaim(params('g.a'), {})
-        .catch((e: unknown) => e);
-      await vi.advanceTimersByTimeAsync(10);
+      const error = await transport.sendIlpPacketWithClaim(params('g.a'), {}).catch((e: unknown) => e);
 
-      const error = (await caught) as NetworkError;
       expect(error).toBeInstanceOf(NetworkError);
-      expect(error.code).toBe('NETWORK_ERROR');
-      expect(error.message).toContain(URL);
-      expect(error.message).toContain('published');
-      expect(error.endpoint).toBe(URL);
-      expect(error.cause).toBe(cause);
+      expect((error as NetworkError).message).toContain(URL);
+      expect((error as NetworkError).message).toContain('Connection closed');
     });
 
-    it('names the BTP URL on an unpaid send whose connect fails', async () => {
+    it('names the BTP URL on a connect failure, and still says nothing was written', async () => {
       const session = makeFakeSession();
-      const cause = new Error('connection refused');
-      session.connect.mockRejectedValue(cause);
+      session.sendIlpPacket.mockRejectedValue(
+        new NothingWritten(new BtpConnectionError('WebSocket connection error: ECONNREFUSED'))
+      );
       const transport = new BtpPaidWriteTransport({ session, url: URL });
 
-      const error = (await transport
-        .sendIlpPacket(params('g.a'))
-        .catch((e: unknown) => e)) as NetworkError;
-      expect(error).toBeInstanceOf(NetworkError);
-      expect(error.message).toContain(URL);
-      expect(error.cause).toBe(cause);
+      const error = await transport.sendIlpPacket(params('g.a')).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(NothingWritten);
+      const inner = (error as NothingWritten).error;
+      expect(inner).toBeInstanceOf(NetworkError);
+      expect((inner as NetworkError).message).toContain(URL);
     });
 
-    it('surfaces the HTTP fallback error, which names the HTTP URL, when both fail', async () => {
+    it('passes any other failure on unchanged', async () => {
       const session = makeFakeSession();
-      session.connect.mockRejectedValue(new Error('connection refused'));
-      session.reconnect.mockRejectedValue(new Error('connection refused'));
-      const httpError = new NetworkError(
-        'Network connection failed reaching http://connector-a:3000/ilp: fetch failed',
-        undefined,
-        'http://connector-a:3000/ilp'
-      );
-      const fallback = {
-        sendIlpPacketWithClaim: vi.fn().mockRejectedValue(httpError),
-      } as unknown as HttpFallback;
-      const transport = new BtpPaidWriteTransport({
-        session,
-        url: URL,
-        fallback,
-        maxReconnectAttempts: 1,
-        reconnectDelay: 10,
-      });
+      const boom = new Error('boom');
+      session.sendIlpPacketWithClaim.mockRejectedValue(boom);
+      const transport = new BtpPaidWriteTransport({ session, url: URL });
 
-      const caught = transport
-        .sendIlpPacketWithClaim(params('g.a'), {})
-        .catch((e: unknown) => e);
-      await vi.advanceTimersByTimeAsync(10);
-
-      const error = (await caught) as NetworkError;
-      expect(error).toBe(httpError);
-      expect(error.message).toContain('http://connector-a:3000/ilp');
+      await expect(transport.sendIlpPacketWithClaim(params('g.a'), {})).rejects.toBe(boom);
     });
   });
 });

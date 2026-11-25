@@ -495,6 +495,52 @@ describe('ToonClient — reading the connector\'s watermark', () => {
   });
 });
 
+/**
+ * A voucher whose answer was lost: sent once, never again, and the channel left
+ * in doubt in the channel record, so whichever client pays next — this one, or
+ * another reading the same store — asks the connector before it signs.
+ */
+describe('ToonClient — a written voucher whose answer is lost', () => {
+  it('is sent once, surfaces a NetworkError, and the next send from another client resyncs first', async () => {
+    const fake = fixture();
+    const store = new InMemoryChannelStore();
+    const first = await create(fake, { channelStore: store, autoOpenChannel: false, timeoutMs: 50 });
+    adoptChannel(first, fake);
+    fake.silent = true;
+
+    await expect(first.send('g.fake.route')).rejects.toBeInstanceOf(NetworkError);
+    expect(fake.paidRequests).toBe(1);
+    expect(store.load(CHANNEL)?.watermarkUncertain).toBe(true);
+
+    // The connector did bank it.
+    fake.silent = false;
+    fake.banked.set(CHANNEL, { cumulativeClaimed: 1000n });
+    const second = await create(fake, { channelStore: store, autoOpenChannel: false });
+    const paid = await second.send('g.fake.route');
+
+    expect(fake.claimStateAsks).toEqual([CHANNEL]);
+    expect(paid.claim).toMatchObject({ cumulative: 2000n });
+    expect(fake.claims.at(-1)!['maxClaimableAmount']).toBe('2000');
+    expect(store.load(CHANNEL)?.watermarkUncertain).toBeUndefined();
+  });
+
+  it('resyncs down to the connector\'s figure when the lost packet was never banked', async () => {
+    const fake = fixture();
+    const store = new InMemoryChannelStore();
+    const first = await create(fake, { channelStore: store, autoOpenChannel: false, timeoutMs: 50 });
+    adoptChannel(first, fake);
+    fake.silent = true;
+    await expect(first.send('g.fake.route')).rejects.toBeInstanceOf(NetworkError);
+
+    fake.silent = false;
+    fake.banked.set(CHANNEL, { cumulativeClaimed: 0n });
+    const second = await create(fake, { channelStore: store, autoOpenChannel: false });
+    const paid = await second.send('g.fake.route');
+
+    expect(paid.claim).toMatchObject({ cumulative: 1000n });
+  });
+});
+
 describe('ToonClient.close', () => {
   it('releases the client without touching the channel', async () => {
     const client = await create(fixture());

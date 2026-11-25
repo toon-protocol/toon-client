@@ -69,7 +69,6 @@ import {
   decodePaymentRequired,
   type IlpResponseMeta,
 } from '../ilp/response-meta.js';
-import { withRetry } from '../utils/retry.js';
 import { toBase64, fromBase64, encodeUtf8 } from '../utils/binary.js';
 import {
   mapIlpResponse,
@@ -176,10 +175,6 @@ export interface HttpIlpClientConfig {
   authToken?: string;
   /** Request timeout in milliseconds (default: 30000). */
   timeout?: number;
-  /** Max retry attempts for transport-level network failures (default: 3). */
-  maxRetries?: number;
-  /** Initial retry delay in milliseconds (default: 1000). */
-  retryDelay?: number;
   /** Custom fetch implementation (for testing / custom transports). */
   httpClient?: typeof fetch;
 }
@@ -197,7 +192,6 @@ export class HttpIlpClient {
   private readonly peerId: string | undefined;
   private readonly authToken: string | undefined;
   private readonly timeout: number;
-  private readonly retryConfig: { maxRetries: number; retryDelay: number };
   private readonly httpClient: typeof fetch;
 
   constructor(config: HttpIlpClientConfig) {
@@ -206,10 +200,6 @@ export class HttpIlpClient {
     this.peerId = config.peerId;
     this.authToken = config.authToken;
     this.timeout = config.timeout ?? 30000;
-    this.retryConfig = {
-      maxRetries: config.maxRetries ?? 3,
-      retryDelay: config.retryDelay ?? 1000,
-    };
     this.httpClient = config.httpClient ?? fetch;
   }
 
@@ -234,12 +224,7 @@ export class HttpIlpClient {
    * mismatch is surfaced as a failed result — see {@link mapIlpResponse}.
    */
   async sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult> {
-    return withRetry(() => this.postPrepare(params), {
-      maxRetries: this.retryConfig.maxRetries,
-      retryDelay: this.retryConfig.retryDelay,
-      exponentialBackoff: true,
-      shouldRetry: (error) => error instanceof NetworkError,
-    });
+    return this.postPrepare(params);
   }
 
   /**
@@ -255,12 +240,7 @@ export class HttpIlpClient {
     params: IlpSendParams,
     claim: unknown
   ): Promise<IlpSendResult> {
-    return withRetry(() => this.postPrepare(params, claim), {
-      maxRetries: this.retryConfig.maxRetries,
-      retryDelay: this.retryConfig.retryDelay,
-      exponentialBackoff: true,
-      shouldRetry: (error) => error instanceof NetworkError,
-    });
+    return this.postPrepare(params, claim);
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────
@@ -299,7 +279,11 @@ export class HttpIlpClient {
 
   /**
    * Single attempt: serialize the PREPARE, POST it, and map the response.
-   * @throws {NetworkError} On connection/timeout failures (retried).
+   *
+   * Never retried. `fetch` does not say whether any of the request left before
+   * it failed, so every failure here is treated as written: a paid POST whose
+   * answer was lost is never resent (ADR 0007).
+   * @throws {NetworkError} On connection/timeout failures.
    * @throws {ConnectorError} On non-retryable transport errors (5xx / unexpected).
    *   A `402` carrying terms is returned, not thrown.
    */

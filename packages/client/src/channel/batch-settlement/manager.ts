@@ -344,6 +344,18 @@ export class BatchChannelManager {
     });
   }
 
+  /**
+   * A voucher on `channelId` may have reached the connector, and its answer was
+   * lost: whether it was banked is unknown, so the watermark is in doubt until
+   * the connector's own figure is adopted. Persisted, so the next voucher —
+   * from this client or another reading the same store — resyncs first.
+   */
+  lost(channelId: string): void {
+    const entry = this.store.load(channelId);
+    if (!entry || entry.watermarkUncertain === true) return;
+    this.store.save({ ...entry, watermarkUncertain: true });
+  }
+
   /** Whether `channelId`'s watermark is in doubt, here or in an earlier invocation. */
   inDoubt(channelId: string): boolean {
     return this.store.load(channelId)?.watermarkUncertain === true;

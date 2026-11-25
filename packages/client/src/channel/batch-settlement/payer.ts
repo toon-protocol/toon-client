@@ -46,7 +46,10 @@ import {
 /** What became of a packet that carried a voucher. */
 export type VoucherOutcome =
   | { kind: 'banked' }
-  /** A transport error or timeout: it may or may not have arrived. */
+  /**
+   * A transport error or timeout: it may or may not have arrived. The channel
+   * is marked in doubt, so the next voucher resyncs before it is signed.
+   */
   | { kind: 'unknown' }
   /** The connector refused the voucher; `message` is its reject's own text. */
   | { kind: 'refused'; message?: string };
@@ -445,6 +448,9 @@ export class BatchSettlementPayer {
           // Possibly — or certainly — the connector's latest: what a probe resends.
           manager.recordVoucher(channelId, JSON.stringify(claim), cumulative);
           if (outcome.kind === 'banked') manager.banked(channelId, cumulative);
+          // A lost answer is never resent (ADR 0007): the next voucher asks the
+          // connector where it stands before it is signed.
+          else manager.lost(channelId);
           return;
         }
         const reading = readVoucherRefusal(outcome.message, cumulative);

@@ -302,7 +302,7 @@ describe('HttpIlpClient over a real http.Server (integration)', () => {
       },
       body,
     };
-    const client = new HttpIlpClient({ httpEndpoint: url, maxRetries: 0 });
+    const client = new HttpIlpClient({ httpEndpoint: url });
 
     const result = await client.sendIlpPacketWithClaim(
       { destination: 'g.toon.relay', amount: '1', data: '' },
