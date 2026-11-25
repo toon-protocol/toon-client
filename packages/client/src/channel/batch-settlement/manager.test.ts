@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BatchChannelManager, type BatchChannel } from './manager.js';
 import { InMemoryChannelStore, JsonFileChannelStore } from '../ChannelStore.js';
+import { writeLegacyFiles } from '../legacy-files.test-support.js';
 
 const CONNECTOR = 'https://node.example';
 
@@ -38,6 +39,16 @@ const SOLANA: BatchChannel = {
     openSlot: 400_000_000n,
   },
 };
+
+/** A manager over a channel whose binding survived and whose watermark did not. */
+function withLostWatermark(): BatchChannelManager {
+  const store = new InMemoryChannelStore();
+  new BatchChannelManager(store).adopt(CONNECTOR, EVM, 1_000_000n);
+  const entry = store.load(EVM.channelId)!;
+  return new BatchChannelManager(
+    new JsonFileChannelStore(writeLegacyFiles(entry, { watermark: false }))
+  );
+}
 
 describe('BatchChannelManager', () => {
   it('resolves an adopted channel by connector, network and asset, and nothing else', () => {
@@ -156,10 +167,7 @@ describe('BatchChannelManager', () => {
   });
 
   it('never adopts a connector figure below what the chain has landed', () => {
-    const store = new InMemoryChannelStore();
-    const m = new BatchChannelManager(store);
-    m.adopt(CONNECTOR, EVM, 1_000_000n);
-    store.delete(EVM.channelId); // the watermark file is lost; the binding survives
+    const m = withLostWatermark();
     m.restoreWatermark(EVM.channelId, 4_000n);
     // A store that was lost is the recovering case, and still has a floor.
     m.adoptConnectorWatermark(EVM.channelId, 1_000n, { recovering: true });
@@ -188,6 +196,56 @@ describe('BatchChannelManager', () => {
     const second = new BatchChannelManager(new JsonFileChannelStore(path));
     second.adoptConnectorWatermark(EVM.channelId, 0n);
     expect(second.reserve(EVM.channelId, 1n)).toBe(3_001n);
+  });
+
+  it('clamps an adopted figure between what the connector is proven to hold and what was ever signed', () => {
+    const m = new BatchChannelManager(new InMemoryChannelStore());
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    m.reserve(EVM.channelId, 3_000n);
+    m.banked(EVM.channelId, 1_000n);
+    m.adoptConnectorWatermark(EVM.channelId, 10n); // below the floor
+    expect(m.signedSoFar(EVM.channelId)).toBe(1_000n);
+    m.adoptConnectorWatermark(EVM.channelId, 9_999n); // above the ceiling
+    expect(m.signedSoFar(EVM.channelId)).toBe(3_000n);
+  });
+
+  it('restores a lost record from the chain, with no store entry and no connector', () => {
+    const m = withLostWatermark();
+    expect(m.hasWatermark(EVM.channelId)).toBe(false);
+    m.restoreWatermark(EVM.channelId, 4_000n);
+    expect(m.hasWatermark(EVM.channelId)).toBe(true);
+    expect(m.reserve(EVM.channelId, 1n)).toBe(4_001n);
+  });
+
+  it('marks a "not advancing" refusal with no figure as in doubt, and a named figure or other refusal not', () => {
+    const m = new BatchChannelManager(new InMemoryChannelStore());
+    m.adopt(CONNECTOR, EVM, 1_000_000n);
+    m.reserve(EVM.channelId, 1_000n);
+    m.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: false });
+    expect(m.inDoubt(EVM.channelId)).toBe(false);
+    m.refused(EVM.channelId, 1_000n, 1_000n, {
+      notAdvancing: true,
+      connectorWatermark: 500n,
+    });
+    expect(m.inDoubt(EVM.channelId)).toBe(false);
+    m.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: true });
+    expect(m.inDoubt(EVM.channelId)).toBe(true);
+  });
+
+  it("keeps the doubt until the connector's figure is adopted, here and in a second record over one store", () => {
+    const store = new InMemoryChannelStore();
+    const first = new BatchChannelManager(store);
+    first.adopt(CONNECTOR, EVM, 1_000_000n);
+    first.reserve(EVM.channelId, 1_000n);
+    first.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: true });
+    const second = new BatchChannelManager(store);
+    expect(second.inDoubt(EVM.channelId)).toBe(true);
+    // An unrelated refusal does not clear it.
+    second.refused(EVM.channelId, 1_000n, 1_000n, { notAdvancing: false });
+    expect(first.inDoubt(EVM.channelId)).toBe(true);
+    second.adoptConnectorWatermark(EVM.channelId, 1_000n);
+    expect(second.inDoubt(EVM.channelId)).toBe(false);
+    expect(first.inDoubt(EVM.channelId)).toBe(false);
   });
 
   it('refuses a voucher its deposit cannot cover', () => {
@@ -251,21 +309,21 @@ describe('BatchChannelManager', () => {
     );
   });
 
-  it('never resolves a toon-channel binding, nor lets one resolve a voucher channel', () => {
-    const store = new InMemoryChannelStore();
-    store.saveBinding(
-      `batch|${CONNECTOR}|${EVM.network}|${EVM.config.token.toLowerCase()}`,
-      {
-        channelId: '0xdead',
-        context: {
-          chainType: 'evm',
-          chainId: 84532,
-          tokenNetworkAddress: '0x0',
-        },
-      }
+  it('resolves nothing from a legacy binding that holds no x402 config', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'batch-legacy-'));
+    const path = join(dir, 'channels.json');
+    writeFileSync(
+      join(dir, 'channels.peers.json'),
+      JSON.stringify({
+        [`batch|${CONNECTOR}|${EVM.network}|${EVM.config.token.toLowerCase()}`]:
+          {
+            channelId: '0xdead',
+            context: { chainType: 'evm', chainId: 84532 },
+          },
+      })
     );
     expect(
-      new BatchChannelManager(store).resolve(
+      new BatchChannelManager(new JsonFileChannelStore(path)).resolve(
         CONNECTOR,
         EVM.network,
         EVM.config.token

@@ -237,7 +237,7 @@ A voucher states the channel's cumulative total, and the connector accepts it on
 the connector's own watermark. So a process has to remember two things across a restart: the
 channel's config — the chain never gives it back — and how far its vouchers have reached.
 
-The CLI persists both at `~/.toon/channels.json` (and a sibling `channels.peers.json`) by default.
+The CLI persists both at `~/.toon/channels.json` by default.
 The library defaults to memory, which is almost never what you want:
 
 ```ts

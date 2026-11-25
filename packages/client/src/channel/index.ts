@@ -4,8 +4,6 @@ export {
   InMemoryChannelStore,
   type ChannelStore,
   type ChannelStoreEntry,
-  type ChannelBinding,
-  type ChannelBindingContext,
   type BatchSettlementBinding,
 } from './ChannelStore.js';
 export type { ChainKind } from './types.js';

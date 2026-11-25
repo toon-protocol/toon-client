@@ -139,14 +139,26 @@ const client = await ToonClient.create({
 });
 ```
 
-It persists two things:
+It writes one file, with one record per channel id:
 
-| File | Contents |
+| Field | Contents |
 | --- | --- |
-| `channels.json` | The watermark per channel: the cumulative amount, and the highest amount ever signed |
-| `channels.peers.json` (sibling) | Each channel this identity holds with each connector: its full config, its deposit, the last voucher sent, and whether it is being left |
+| `cumulativeAmount`, `signedCeiling`, `provenFloor`, `watermarkUncertain` | The watermark: what is counted as signed, the highest ever signed, the highest the connector is proven to hold, and whether the connector's own figure is in doubt |
+| `connector`, `batchSettlement` | Which connector the channel pays, and its full x402 config (network, token, receiver, salt and so on) |
+| `depositTotal`, `pendingDeposit` | The deposit, and a deposit still in flight |
+| `lastVoucher`, `lastVoucherAmount` | The last voucher sent |
+| `closedAt`, `settleableAt`, `settledAt` | Whether the channel is being left, and when |
+| `supersededAt` | Set on a channel retired by a newer one on the same connector, network and asset; it stays in the file because it may still hold a deposit |
 
-With both files present, the next paid request **resumes** the existing channel instead of opening a
+`cumulativeAmount` stays under each channel id, which is where `rig channel` and `rig balance`
+read it.
+
+A release before this layout kept the config apart, in a sibling `channels.peers.json`. That file
+is read once, joined into `channels.json`, and renamed to `channels.peers.json.migrated`. `nonce`
+and the old binding context are ignored and not written back. A channel with a config but no
+watermark entry is rebuilt from the chain and the connector on its next use.
+
+With the file present, the next paid request **resumes** the existing channel instead of opening a
 new one. Without them, every restart opens a fresh channel and locks a fresh deposit. The CLI
 defaults to `~/.toon/channels.json`. The library defaults to memory and warns about it, because a
 default that silently loses money would be worse than a warning.
@@ -170,7 +182,7 @@ Rules of the road:
     refused one.
 - **A lost watermark is rebuilt.** Its floor is what the chain shows landed. After that, the
   connector's own figure from `claim-state` replaces it.
-- **Never delete these files for a live channel.** The deposit stays locked on chain, and without
+- **Never delete this file for a live channel.** The deposit stays locked on chain, and without
   the config you cannot leave the channel.
 
 ## Asking the connector for its side
