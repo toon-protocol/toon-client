@@ -5,7 +5,7 @@
  *
  * A voucher is not a balance proof, so the bookkeeping is its own:
  *
- *   - **There is no nonce.** The connector orders vouchers by amount alone and
+ *   - **Only the amount is kept.** The connector orders vouchers by amount alone and
  *     accepts one only if it strictly exceeds the channel's watermark by at
  *     least the charge, so the one number to keep is the cumulative amount.
  *   - **Nothing is derived.** The channel id travels in every voucher, so the
@@ -44,9 +44,7 @@ import type {
 } from '../ChannelStore.js';
 import { InMemoryChannelStore } from '../ChannelStore.js';
 import type { BatchChannelConfig } from './evm.js';
-import { evmChainIdOf, X402_BATCH_SETTLEMENT_ADDRESS } from './evm.js';
 import type { SvmBatchChannelConfig } from './svm.js';
-import { PAYMENT_CHANNELS_PROGRAM_ID } from './svm.js';
 import { nextVoucherAmount } from './claim.js';
 import { ValidationError } from '../../client/errors.js';
 
@@ -67,20 +65,11 @@ export type BatchChannel =
       config: SvmBatchChannelConfig;
     };
 
-const KEY_PREFIX = 'batch|';
-
 export class BatchChannelManager {
   private readonly store: ChannelStore;
 
   constructor(store: ChannelStore = new InMemoryChannelStore()) {
     this.store = store;
-  }
-
-  /** Where the binding for `connector`'s channel on `network` in `asset` lives. */
-  static bindingKey(connector: string, network: string, asset: string): string {
-    // EVM addresses are case-insensitive, base58 is not.
-    const a = network.startsWith('eip155:') ? asset.toLowerCase() : asset;
-    return `${KEY_PREFIX}${connector}|${network}|${a}`;
   }
 
   /**
@@ -112,54 +101,41 @@ export class BatchChannelManager {
     channel: BatchChannel,
     deposit: { depositTotal: bigint; pendingDeposit?: bigint }
   ): void {
-    const key = BatchChannelManager.bindingKey(
+    const existing = this.store.find(
       connector,
       channel.network,
       channel.config.token
     );
-    const existing = this.store.loadBinding?.(key);
     if (existing && existing.channelId !== channel.channelId) {
-      this.store.supersedeBinding?.(key);
+      this.store.save({
+        ...existing,
+        supersededAt: new Date().toISOString(),
+      });
     }
-    this.store.saveBinding?.(key, {
+    const known = this.store.load(channel.channelId);
+    this.store.save({
+      cumulativeAmount: 0n,
+      signedCeiling: 0n,
+      ...known,
       channelId: channel.channelId,
-      context: {
-        chainType: channel.chain,
-        chainId: channel.chain === 'evm' ? evmChainIdOf(channel.network) : 0,
-        tokenNetworkAddress:
-          channel.chain === 'evm'
-            ? X402_BATCH_SETTLEMENT_ADDRESS
-            : PAYMENT_CHANNELS_PROGRAM_ID,
-        tokenAddress: channel.config.token,
-        recipient: channel.config.receiver,
-      },
+      connector,
+      batchSettlement: toBinding(channel),
       depositTotal: deposit.depositTotal,
+      openedAt: known?.openedAt ?? new Date().toISOString(),
       ...(deposit.pendingDeposit !== undefined
         ? { pendingDeposit: deposit.pendingDeposit }
         : {}),
-      batchSettlement: toBinding(channel),
     });
-    if (!this.store.load(channel.channelId)) {
-      this.store.save(channel.channelId, {
-        nonce: 0,
-        cumulativeAmount: 0n,
-        signedCeiling: 0n,
-      });
-    }
   }
 
   /** A deposit on `channelId` whose fate is not yet known, if there is one. */
   pendingDeposit(channelId: string): bigint | undefined {
-    return this.findBinding(channelId)?.binding.pendingDeposit;
+    return this.store.load(channelId)?.pendingDeposit;
   }
 
   /** Record a top-up about to leave, before it does. */
   setPendingDeposit(channelId: string, amount: bigint): void {
-    const found = this.requireBinding(channelId);
-    this.store.saveBinding?.(found.key, {
-      ...found.binding,
-      pendingDeposit: amount,
-    });
+    this.store.save({ ...this.entry(channelId), pendingDeposit: amount });
   }
 
   /**
@@ -168,9 +144,8 @@ export class BatchChannelManager {
    * Solana `deposit`), which is the deposit from here on.
    */
   confirmDeposit(channelId: string, onChain: bigint): void {
-    const found = this.requireBinding(channelId);
-    const { pendingDeposit: _settled, ...rest } = found.binding;
-    this.store.saveBinding?.(found.key, { ...rest, depositTotal: onChain });
+    const { pendingDeposit: _settled, ...rest } = this.entry(channelId);
+    this.store.save({ ...rest, depositTotal: onChain });
   }
 
   /**
@@ -178,9 +153,8 @@ export class BatchChannelManager {
    * on chain under it, so there is nothing to keep.
    */
   abandon(channelId: string): void {
-    const found = this.findBinding(channelId);
-    if (!found || (found.binding.depositTotal ?? 0n) > 0n) return;
-    this.store.deleteBinding?.(found.key);
+    const entry = this.store.load(channelId);
+    if (!entry || entry.depositTotal > 0n) return;
     this.store.delete(channelId);
   }
 
@@ -190,25 +164,19 @@ export class BatchChannelManager {
     network: string,
     asset: string
   ): BatchChannel | undefined {
-    const binding = this.store.loadBinding?.(
-      BatchChannelManager.bindingKey(connector, network, asset)
-    );
-    if (!binding?.batchSettlement) return undefined;
-    return fromBinding(binding.channelId, binding.batchSettlement);
+    const entry = this.store.find(connector, network, asset);
+    return entry && fromBinding(entry.channelId, entry.batchSettlement);
   }
 
   /** The deposit recorded for `channelId`. */
   depositTotal(channelId: string): bigint {
-    return this.findBinding(channelId)?.binding.depositTotal ?? 0n;
+    return this.store.load(channelId)?.depositTotal ?? 0n;
   }
 
   /** Record a top-up of `amount` on `channelId`. */
   addDeposit(channelId: string, amount: bigint): void {
-    const found = this.requireBinding(channelId);
-    this.store.saveBinding?.(found.key, {
-      ...found.binding,
-      depositTotal: (found.binding.depositTotal ?? 0n) + amount,
-    });
+    const entry = this.entry(channelId);
+    this.store.save({ ...entry, depositTotal: entry.depositTotal + amount });
   }
 
   /** The cumulative amount this client counts as signed on `channelId`. */
@@ -228,13 +196,13 @@ export class BatchChannelManager {
     const entry = this.entry(channelId);
     const amount = nextVoucherAmount(entry.cumulativeAmount, charge);
     if (amount === undefined) return undefined;
-    const deposit = this.depositTotal(channelId);
+    const deposit = entry.depositTotal;
     if (amount > deposit) {
       throw new ValidationError(
         `a voucher for ${amount} exceeds channel ${channelId}'s deposit of ${deposit}; top it up first`
       );
     }
-    this.store.save(channelId, {
+    this.store.save({
       ...entry,
       cumulativeAmount: amount,
       signedCeiling:
@@ -290,7 +258,8 @@ export class BatchChannelManager {
     // watermark unknown: persisted, so the next voucher resyncs before it signs.
     const wasInDoubt = entry.watermarkUncertain === true;
     const doubted =
-      wasInDoubt || (reason.notAdvancing && reason.connectorWatermark === undefined);
+      wasInDoubt ||
+      (reason.notAdvancing && reason.connectorWatermark === undefined);
     if (
       cumulative === entry.cumulativeAmount &&
       floor === entry.provenFloor &&
@@ -298,7 +267,7 @@ export class BatchChannelManager {
     ) {
       return;
     }
-    this.store.save(channelId, {
+    this.store.save({
       ...entry,
       cumulativeAmount: cumulative,
       ...(floor !== undefined ? { provenFloor: floor } : {}),
@@ -309,8 +278,9 @@ export class BatchChannelManager {
   /** The connector banked the voucher for `voucherAmount`: it holds at least that. */
   banked(channelId: string, voucherAmount: bigint): void {
     const entry = this.entry(channelId);
-    if (entry.provenFloor !== undefined && entry.provenFloor >= voucherAmount) return;
-    this.store.save(channelId, { ...entry, provenFloor: voucherAmount });
+    if (entry.provenFloor !== undefined && entry.provenFloor >= voucherAmount)
+      return;
+    this.store.save({ ...entry, provenFloor: voucherAmount });
   }
 
   /**
@@ -319,12 +289,15 @@ export class BatchChannelManager {
    * retransmit the connector's latest, never an older voucher it superseded.
    */
   recordVoucher(channelId: string, claimJson: string, amount: bigint): void {
-    const found = this.findBinding(channelId);
-    if (!found) return;
-    const recorded = found.binding.lastVoucherAmount;
-    if (recorded !== undefined && recorded > amount) return;
-    this.store.saveBinding?.(found.key, {
-      ...found.binding,
+    const entry = this.store.load(channelId);
+    if (!entry) return;
+    if (
+      entry.lastVoucherAmount !== undefined &&
+      entry.lastVoucherAmount > amount
+    )
+      return;
+    this.store.save({
+      ...entry,
       lastVoucher: claimJson,
       lastVoucherAmount: amount,
     });
@@ -332,7 +305,7 @@ export class BatchChannelManager {
 
   /** The last voucher this client sent on `channelId`, exactly as it travelled. */
   lastVoucher(channelId: string): string | undefined {
-    return this.findBinding(channelId)?.binding.lastVoucher;
+    return this.store.load(channelId)?.lastVoucher;
   }
 
   /**
@@ -353,12 +326,18 @@ export class BatchChannelManager {
     const entry = this.entry(channelId);
     const ceiling = entry.signedCeiling ?? entry.cumulativeAmount;
     let adopted =
-      options.recovering !== true && cumulativeClaimed > ceiling ? ceiling : cumulativeClaimed;
+      options.recovering !== true && cumulativeClaimed > ceiling
+        ? ceiling
+        : cumulativeClaimed;
     if (entry.provenFloor !== undefined && adopted < entry.provenFloor) {
       adopted = entry.provenFloor;
     }
-    const { watermarkUncertain: _settled, ...rest } = entry;
-    this.store.save(channelId, {
+    const {
+      watermarkUncertain: _settled,
+      watermarkLost: _found,
+      ...rest
+    } = entry;
+    this.store.save({
       ...rest,
       cumulativeAmount: adopted,
       signedCeiling: adopted > ceiling ? adopted : ceiling,
@@ -370,21 +349,26 @@ export class BatchChannelManager {
     return this.store.load(channelId)?.watermarkUncertain === true;
   }
 
-  /** Whether this client still holds the watermark for `channelId`. */
+  /**
+   * Whether this client still holds the watermark for `channelId`. A record
+   * read from an older store that kept the config apart from the watermark can
+   * come without one.
+   */
   hasWatermark(channelId: string): boolean {
-    return this.store.load(channelId) !== undefined;
+    const entry = this.store.load(channelId);
+    return entry !== undefined && entry.watermarkLost !== true;
   }
 
   /**
-   * Rebuild a lost watermark for a channel whose binding survived — the two
-   * live in separate files — from what the chain shows landed. The connector
+   * Rebuild a missing watermark from what the chain shows landed. The connector
    * holds at least that much; the payer then asks `claim-state` for the
    * connector's own figure (connector#1364), which replaces this floor.
    */
   restoreWatermark(channelId: string, landed: bigint): void {
-    if (this.store.load(channelId)) return;
-    this.store.save(channelId, {
-      nonce: 0,
+    const { watermarkLost, ...rest } = this.entry(channelId);
+    if (watermarkLost !== true) return;
+    this.store.save({
+      ...rest,
       cumulativeAmount: landed,
       signedCeiling: landed,
       provenFloor: landed,
@@ -400,7 +384,7 @@ export class BatchChannelManager {
   recoverFromChain(channelId: string, landed: bigint): void {
     const entry = this.entry(channelId);
     if (landed <= entry.cumulativeAmount) return;
-    this.store.save(channelId, {
+    this.store.save({
       ...entry,
       cumulativeAmount: landed,
       provenFloor: max(entry.provenFloor, landed),
@@ -418,7 +402,7 @@ export class BatchChannelManager {
    * chain says the payer is leaving.
    */
   markClosing(channelId: string, closedAt: bigint, settleableAt: bigint): void {
-    this.store.save(channelId, {
+    this.store.save({
       ...this.entry(channelId),
       closedAt,
       settleableAt,
@@ -427,7 +411,7 @@ export class BatchChannelManager {
 
   /** Record that `channelId`'s unspent deposit is back with the payer. */
   markSettled(channelId: string, settledAt: bigint): void {
-    this.store.save(channelId, { ...this.entry(channelId), settledAt });
+    this.store.save({ ...this.entry(channelId), settledAt });
   }
 
   /** Whether this client has started leaving `channelId`. */
@@ -447,29 +431,19 @@ export class BatchChannelManager {
     settleableAt?: bigint;
     settledAt?: bigint;
   }[] {
-    const prefix = `${KEY_PREFIX}${connector}|`;
-    return (this.store.listBindings?.() ?? [])
-      .filter(
-        ({ key, binding }) => key.startsWith(prefix) && binding.batchSettlement
-      )
-      .map(({ binding }) => {
-        const entry = this.store.load(binding.channelId);
-        return {
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- filtered above
-          channel: fromBinding(binding.channelId, binding.batchSettlement!),
-          depositTotal: binding.depositTotal ?? 0n,
-          signed: entry?.cumulativeAmount ?? 0n,
-          ...(entry?.closedAt !== undefined
-            ? { closedAt: entry.closedAt }
-            : {}),
-          ...(entry?.settleableAt !== undefined
-            ? { settleableAt: entry.settleableAt }
-            : {}),
-          ...(entry?.settledAt !== undefined
-            ? { settledAt: entry.settledAt }
-            : {}),
-        };
-      });
+    return this.store
+      .list()
+      .filter((e) => e.connector === connector)
+      .map((e) => ({
+        channel: fromBinding(e.channelId, e.batchSettlement),
+        depositTotal: e.depositTotal,
+        signed: e.cumulativeAmount,
+        ...(e.closedAt !== undefined ? { closedAt: e.closedAt } : {}),
+        ...(e.settleableAt !== undefined
+          ? { settleableAt: e.settleableAt }
+          : {}),
+        ...(e.settledAt !== undefined ? { settledAt: e.settledAt } : {}),
+      }));
   }
 
   /**
@@ -482,15 +456,6 @@ export class BatchChannelManager {
       .map((c) => c.channel);
   }
 
-  private requireBinding(channelId: string) {
-    const found = this.findBinding(channelId);
-    if (!found)
-      throw new ValidationError(
-        `no batch-settlement channel ${channelId} is held`
-      );
-    return found;
-  }
-
   private entry(channelId: string): ChannelStoreEntry {
     const entry = this.store.load(channelId);
     if (!entry)
@@ -498,22 +463,6 @@ export class BatchChannelManager {
         `no batch-settlement channel ${channelId} is held`
       );
     return entry;
-  }
-
-  /**
-   * The binding that records `channelId`, live or archived: a channel retired by
-   * a newer one on the same connector still holds its deposit, and still needs
-   * its watermark to exit.
-   */
-  private findBinding(channelId: string) {
-    return this.store
-      .listBindings?.()
-      .find(
-        ({ key, binding }) =>
-          key.startsWith(KEY_PREFIX) &&
-          binding.batchSettlement !== undefined &&
-          binding.channelId === channelId
-      );
   }
 }
 

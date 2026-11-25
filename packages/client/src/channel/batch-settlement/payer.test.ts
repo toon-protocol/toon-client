@@ -3,7 +3,12 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { recoverTypedDataAddress, type Hex } from 'viem';
 import { BatchSettlementPayer, readVoucherRefusal } from './payer.js';
 import { BatchChannelManager } from './manager.js';
-import { InMemoryChannelStore } from '../ChannelStore.js';
+import {
+  InMemoryChannelStore,
+  JsonFileChannelStore,
+  type ChannelStore,
+} from '../ChannelStore.js';
+import { writeLegacyFiles } from '../legacy-files.test-support.js';
 import { parseSelfDescription } from '../../connector/self-description.js';
 import {
   ChannelNotOpenError,
@@ -143,7 +148,9 @@ describe('BatchSettlementPayer on Base', () => {
     expect(must(await p.claimFor(DESCRIPTION, 'evm', 1_000n)).cumulative).toBe(
       1_000n
     );
-    must(await p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'unknown' });
+    must(await p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'unknown',
+    });
     expect(must(await p.claimFor(DESCRIPTION, 'evm', 1_000n)).cumulative).toBe(
       3_000n
     );
@@ -191,9 +198,9 @@ describe('BatchSettlementPayer on Base', () => {
 
     const opened = await p.open(DESCRIPTION, 'evm');
     // The deposit's voucher is one unit, and it is not counted as spent.
-    expect(must(f.posted[0]).paymentPayload.payload.voucher.maxClaimableAmount).toBe(
-      '1'
-    );
+    expect(
+      must(f.posted[0]).paymentPayload.payload.voucher.maxClaimableAmount
+    ).toBe('1');
     expect(manager.signedSoFar(must(opened).channelId)).toBe(0n);
     expect(must(await p.claimFor(DESCRIPTION, 'evm', 1_500n)).cumulative).toBe(
       1_500n
@@ -307,8 +314,9 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
       fetch: fetchImpl,
     });
     const landed = (i = posted.length - 1) => {
-      const v =
-        must(posted[i]).paymentPayload.payload.voucher.channelId.toLowerCase();
+      const v = must(
+        posted[i]
+      ).paymentPayload.payload.voucher.channelId.toLowerCase();
       chain.set(v, {
         balance: BigInt(must(posted[i]).paymentPayload.payload.deposit.amount),
         claimed: 0n,
@@ -384,35 +392,42 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
     expect(w.posted).toHaveLength(1);
     await w.p.topUp(DESCRIPTION, 'evm', 5_000n);
     expect(w.posted).toHaveLength(2);
-    expect(must(w.posted[1]).paymentPayload.payload.deposit.amount).toBe('5000');
+    expect(must(w.posted[1]).paymentPayload.payload.deposit.amount).toBe(
+      '5000'
+    );
     expect(w.manager.depositTotal(must(opened).channelId)).toBe(15_000n);
   });
 
   it('rebuilds a lost watermark from what the chain shows claimed', async () => {
-    const store = new InMemoryChannelStore();
-    const manager = new BatchChannelManager(store);
-    const p = new BatchSettlementPayer({
-      connector: 'https://node.example',
-      manager,
-      deposit: 10_000n,
-      evm: {
-        account: PAYER,
-        facilitatorUrl: 'https://facilitator.test',
-        reader: {
-          readContract: async (q: never) =>
-            (q as { functionName: string }).functionName === 'channels'
-              ? [10_000n, 4_000n]
-              : [0n, 0],
+    const payerOver = (store: ChannelStore) =>
+      new BatchSettlementPayer({
+        connector: 'https://node.example',
+        manager: new BatchChannelManager(store),
+        deposit: 10_000n,
+        evm: {
+          account: PAYER,
+          facilitatorUrl: 'https://facilitator.test',
+          reader: {
+            readContract: async (q: never) =>
+              (q as { functionName: string }).functionName === 'channels'
+                ? [10_000n, 4_000n]
+                : [0n, 0],
+          },
         },
-      },
-      fetch: (async () =>
-        new Response(
-          JSON.stringify({ success: true, transaction: '0x1' })
-        )) as typeof fetch,
-    });
-    const first = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
-    store.delete(must(first).channelId); // the watermark file is lost; the binding survives
-    const next = await p.claimFor(DESCRIPTION, 'evm', 1_000n);
+        fetch: (async () =>
+          new Response(
+            JSON.stringify({ success: true, transaction: '0x1' })
+          )) as typeof fetch,
+      });
+    const store = new InMemoryChannelStore();
+    const first = await payerOver(store).claimFor(DESCRIPTION, 'evm', 1_000n);
+    // An older release's files, where the watermark file is lost and the binding survives.
+    const lost = new JsonFileChannelStore(
+      writeLegacyFiles(must(store.load(must(first).channelId)), {
+        watermark: false,
+      })
+    );
+    const next = await payerOver(lost).claimFor(DESCRIPTION, 'evm', 1_000n);
     expect(must(next).channelId).toBe(must(first).channelId);
     expect(must(next).cumulative).toBe(5_000n);
   });
@@ -422,7 +437,10 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
   const BACKWARDS =
     "claim rejected: cumulative amount goes backwards relative to this channel's watermark";
 
-  function withConnector(answers: (bigint | undefined | Error)[], store = new InMemoryChannelStore()) {
+  function withConnector(
+    answers: (bigint | undefined | Error)[],
+    store: ChannelStore = new InMemoryChannelStore()
+  ) {
     const asked: Record<string, unknown>[] = [];
     const manager = new BatchChannelManager(store);
     const p = new BatchSettlementPayer({
@@ -454,7 +472,9 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
     // "Goes backwards" proves the connector holds more than 2000, so a
     // claim-state answer of 1000 is a connector behind its own state.
     const w = withConnector([1_000n]);
-    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'banked',
+    });
     must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
       kind: 'refused',
       message: BACKWARDS,
@@ -468,7 +488,9 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
   it('carries the doubt to a second payer over the same store, which resyncs before its first claim', async () => {
     const store = new InMemoryChannelStore();
     const first = withConnector([], store);
-    must(await first.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    must(await first.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'banked',
+    });
     must(await first.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
       kind: 'refused',
       message: BACKWARDS,
@@ -483,7 +505,9 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
   it('leaves the doubt standing in the store when the connector cannot answer', async () => {
     const store = new InMemoryChannelStore();
     const w = withConnector([undefined], store);
-    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'banked',
+    });
     const c = must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n));
     c.settle({ kind: 'refused', message: BACKWARDS });
     await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
@@ -493,7 +517,9 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
 
   it('leaves the doubt standing when the claim-state call fails', async () => {
     const w = withConnector([new Error('claim-state unreachable')]);
-    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'banked',
+    });
     const c = must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n));
     c.settle({ kind: 'refused', message: BACKWARDS });
     await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
@@ -503,7 +529,9 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
 
   it('asks once, not on every packet, once the doubt is settled', async () => {
     const w = withConnector([1_000n]);
-    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'banked',
+    });
     must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
       kind: 'refused',
       message: BACKWARDS,
@@ -515,7 +543,9 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
 
   it('keeps asking while the connector cannot say, and signs above the ceiling meanwhile', async () => {
     const w = withConnector([undefined, undefined]);
-    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({ kind: 'banked' });
+    must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
+      kind: 'banked',
+    });
     must(await w.p.claimFor(DESCRIPTION, 'evm', 1_000n)).settle({
       kind: 'refused',
       message: BACKWARDS,
@@ -529,9 +559,18 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
 
   it('rebuilds a lost watermark from the connector’s figure, not only the chain’s', async () => {
     const store = new InMemoryChannelStore();
-    const w = withConnector([7_000n], store);
-    const first = await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
-    store.delete(must(first).channelId); // the watermark file is lost; the binding survives
+    const first = await withConnector([], store).p.claimFor(
+      DESCRIPTION,
+      'evm',
+      1_000n
+    );
+    // An older release's files, where the watermark file is lost and the binding survives.
+    const lost = new JsonFileChannelStore(
+      writeLegacyFiles(must(store.load(must(first).channelId)), {
+        watermark: false,
+      })
+    );
+    const w = withConnector([7_000n], lost);
     const next = await w.p.claimFor(DESCRIPTION, 'evm', 1_000n);
     expect(w.asked).toHaveLength(1);
     expect(must(next).cumulative).toBe(8_000n);
