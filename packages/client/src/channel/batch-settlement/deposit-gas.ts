@@ -59,6 +59,7 @@ import {
   type TypedDataSigner,
 } from './evm.js';
 import { NetworkError, TransactionOutcomeError } from '../../client/errors.js';
+import { trimTrailingSlashes } from '../../utils/url.js';
 
 export const EIP2612_GAS_SPONSORING = 'eip2612GasSponsoring';
 export const ERC20_APPROVAL_GAS_SPONSORING = 'erc20ApprovalGasSponsoring';
@@ -241,7 +242,7 @@ export async function facilitatorExtensions(
   facilitatorUrl: string,
   fetchImpl: typeof fetch = directFetch
 ): Promise<string[]> {
-  const url = `${facilitatorUrl.replace(/\/+$/, '')}/supported`;
+  const url = `${trimTrailingSlashes(facilitatorUrl)}/supported`;
   let body: unknown;
   try {
     const response = await fetchImpl(url);
