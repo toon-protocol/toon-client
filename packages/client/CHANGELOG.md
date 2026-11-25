@@ -1,5 +1,17 @@
 # @toon-protocol/client
 
+## 6.0.0
+
+### Major Changes
+
+- 13f1793: Carriage endpoints are resolved in one place, and a paid packet never goes to a guessed URL. When the connector publishes no `httpEndpoint` and no HTTP override is set, there is no HTTP fallback beneath BTP (the invented `${connector}/ilp` is gone). Removed: `HttpIlpClient.upgradeToBtp`, `httpEndpointToBtpUrl`, `HttpIlpClientConfig.createWebSocket` and `BtpRuntimeClient.sendClaimMessage`.
+- d7635c3: The channel store keeps one record per channel, and every method is required. `ChannelStore` is now `save(entry)`, `load(channelId)`, `find(connector, network, asset)`, `list()` and `delete(channelId)`; the optional binding methods are gone, and `find` replaces the scan over bindings. `ChannelStoreEntry` holds the x402 config, deposit, watermark, last voucher and exit timestamps, and `batchSettlement` is required. Removed: `ChannelBinding`, `ChannelBindingContext` and `ChannelStoreEntry.nonce`. `BatchChannelManager.bindingKey` is gone. `channels.json` and `channels.peers.json` from earlier releases load: the peers file is joined into `channels.json` on first use and renamed `channels.peers.json.migrated`, and `cumulativeAmount` stays under each channel id, where rig reads it.
+- 208b54e: The payer pays through a settlement network: one adapter per network, which opens, covers and reads its channels and holds its voucher scheme (the voucher signature, the claim and the claim-state challenge). `BatchSettlementPayerConfig` loses `evm`, `solana` and `fetch`, and takes `networks: SettlementNetwork[]` instead. Build them with `evmSettlementNetwork({ account, rpc, fetch, … })` or `new EvmSettlementNetwork({ account, reader, wallet, fetch, … })` for Base, and `new SolanaSettlementNetwork({ signer, rpc, fetch, connector })` for Solana; the options that were under `evm` and `solana` move onto them unchanged. Vouchers, claims, challenges, deposits and CLI output are unchanged.
+
+### Patch Changes
+
+- f453279: The channel record now decides for itself when a channel is in doubt: a "not advancing" refusal with no figure marks it, and the payer no longer reaches into the record to do so.
+
 ## 5.2.1
 
 ### Patch Changes
