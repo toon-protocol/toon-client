@@ -158,7 +158,6 @@ describe('BtpRuntimeClient over a real ws server (integration)', () => {
       btpUrl,
       peerId: 'itest-peer',
       authToken: 'itest-secret',
-      maxRetries: 0,
     });
   }
 

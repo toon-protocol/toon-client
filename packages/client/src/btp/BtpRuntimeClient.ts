@@ -17,7 +17,7 @@ import {
   decodePaymentRequired,
   type IlpResponseMeta,
 } from '../ilp/response-meta.js';
-import { withRetry } from '../utils/retry.js';
+import { NothingWritten } from '../carriage/nothing-written.js';
 import { fromBase64, encodeUtf8, decodeUtf8 } from '../utils/binary.js';
 import {
   mapIlpResponse,
@@ -33,10 +33,6 @@ export interface BtpRuntimeClientConfig {
   btpUrl: string;
   peerId: string;
   authToken: string;
-  /** Max reconnection attempts on send failure (default: 3) */
-  maxRetries?: number;
-  /** Delay between reconnection attempts in ms (default: 1000) */
-  retryDelay?: number;
   /** Custom WebSocket constructor (for testing / custom transports). */
   createWebSocket?: (url: string) => WebSocket;
   /**
@@ -104,30 +100,17 @@ export function readResponseMeta(
 }
 
 /**
- * Returns true if the error is a connection-level error worth retrying.
- * ILP application-level rejects (F02, T01, etc.) are NOT retried.
- */
-function isConnectionError(error: Error): boolean {
-  const msg = error.message.toLowerCase();
-  return (
-    msg.includes('not connected') ||
-    msg.includes('connection') ||
-    msg.includes('websocket') ||
-    msg.includes('econnrefused') ||
-    msg.includes('econnreset') ||
-    msg.includes('socket hang up') ||
-    msg.includes('timeout')
-  );
-}
-
-/**
  * BTP transport: the carriage's BTP session.
  * Uses IsomorphicBtpClient (browser-native, no Node.js dependencies).
+ *
+ * Each send is ONE attempt. It never retries: whether to try again is the
+ * carriage's retry rule (ADR 0007), and the only fact this session hands it is
+ * {@link NothingWritten} — thrown when connecting failed, or the socket was
+ * not open, before any byte of the packet left.
  */
 export class BtpRuntimeClient {
   private btpClient: IsomorphicBtpClient | null = null;
   private readonly config: BtpRuntimeClientConfig;
-  private _isConnected = false;
 
   constructor(config: BtpRuntimeClientConfig) {
     this.config = config;
@@ -149,7 +132,6 @@ export class BtpRuntimeClient {
     });
 
     await this.btpClient.connect();
-    this._isConnected = true;
   }
 
   /**
@@ -159,7 +141,7 @@ export class BtpRuntimeClient {
    * `connect()`/`reconnect()` already re-declares via `getChannelDeclaration`.
    */
   async reauthenticate(): Promise<void> {
-    if (!this._isConnected || !this.btpClient) return;
+    if (!this.isConnected || !this.btpClient) return;
     await this.btpClient.reauthenticate();
   }
 
@@ -174,7 +156,6 @@ export class BtpRuntimeClient {
         // Ignore disconnect errors during reconnect
       }
       this.btpClient = null;
-      this._isConnected = false;
     }
 
     await this.connect();
@@ -186,17 +167,18 @@ export class BtpRuntimeClient {
   async disconnect(): Promise<void> {
     if (this.btpClient) {
       await this.btpClient.disconnect();
-      this._isConnected = false;
       this.btpClient = null;
     }
   }
 
+  /** Whether the socket is open now: read from the socket, so a drop is seen at once. */
   get isConnected(): boolean {
-    return this._isConnected;
+    return this.btpClient?.isConnected === true;
   }
 
   /**
-   * Sends an ILP packet via BTP with auto-reconnect on connection errors.
+   * Sends an ILP packet via BTP, connecting first if the socket is not open.
+   * One attempt; see the class docs for what a failure says.
    *
    * `params` may carry an `expectedFulfillment` (the sender's end-to-end
    * check, ADR 0069), a `greeting` flag and an explicit `expiresAt`. With an
@@ -204,20 +186,12 @@ export class BtpRuntimeClient {
    * mismatch is surfaced as a failed result — see `mapIlpResponse`.
    */
   async sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult> {
-    return withRetry(() => this._sendIlpPacketOnce(params), {
-      maxRetries: this.config.maxRetries ?? 3,
-      retryDelay: this.config.retryDelay ?? 1000,
-      shouldRetry: (error) => {
-        if (!isConnectionError(error)) return false;
-        this._isConnected = false;
-        return true;
-      },
-    });
+    return this.sendOnce(params, []);
   }
 
   /**
-   * Sends a voucher claim via BTP protocol data, then sends an ILP packet.
-   * Auto-reconnects on connection errors.
+   * Sends an ILP packet carrying a voucher claim as BTP protocol data, in the
+   * same frame. One attempt, exactly as {@link sendIlpPacket}.
    *
    * `expectedFulfillment` / `greeting` / `expiresAt` semantics are identical
    * to {@link sendIlpPacket}.
@@ -226,15 +200,13 @@ export class BtpRuntimeClient {
     params: IlpSendParams,
     claim: Record<string, unknown>
   ): Promise<IlpSendResult> {
-    return withRetry(() => this._sendIlpPacketWithClaimOnce(params, claim), {
-      maxRetries: this.config.maxRetries ?? 3,
-      retryDelay: this.config.retryDelay ?? 1000,
-      shouldRetry: (error) => {
-        if (!isConnectionError(error)) return false;
-        this._isConnected = false;
-        return true;
+    return this.sendOnce(params, [
+      {
+        protocolName: 'payment-channel-claim',
+        contentType: 1,
+        data: encodeUtf8(JSON.stringify(claim)),
       },
-    });
+    ]);
   }
 
   /**
@@ -275,51 +247,30 @@ export class BtpRuntimeClient {
   }
 
   /**
-   * Single-attempt ILP packet send. Reconnects if not connected.
+   * One attempt: connect if the socket is not open, then write the frame once.
+   *
+   * Everything up to `sendPacket` happens before a byte of the packet leaves,
+   * and a failure there is {@link NothingWritten}. `sendPacket` writes the frame
+   * before its first `await`, so once it is called the packet has left — or may
+   * have — and a failure after that is passed on as it is.
    */
-  private async _sendIlpPacketOnce(
-    params: IlpSendParams
-  ): Promise<IlpSendResult> {
-    if (!this._isConnected) {
-      await this.reconnect();
-    }
-
-    const { prepare, expectedFulfillment } = this.buildPrepare(params);
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guaranteed by reconnect() above
-    const response = await this.btpClient!.sendPacket(prepare);
-
-    return {
-      ...mapIlpResponse(response.packet, expectedFulfillment),
-      ...readResponseMeta(response.protocolData),
-    };
-  }
-
-  /**
-   * Single-attempt claim + ILP packet send. Reconnects if not connected.
-   */
-  private async _sendIlpPacketWithClaimOnce(
+  private async sendOnce(
     params: IlpSendParams,
-    claim: Record<string, unknown>
+    protocolData: BTPProtocolData[]
   ): Promise<IlpSendResult> {
-    if (!this._isConnected) {
-      await this.reconnect();
-    }
-
-    if (!this.btpClient) {
-      throw new BtpConnectionError('BTP client not connected');
-    }
-
-    const protocolData: BTPProtocolData[] = [
-      {
-        protocolName: 'payment-channel-claim',
-        contentType: 1,
-        data: encodeUtf8(JSON.stringify(claim)),
-      },
-    ];
-
     const { prepare, expectedFulfillment } = this.buildPrepare(params);
-    const response = await this.btpClient.sendPacket(prepare, protocolData);
-
+    if (!this.isConnected) {
+      try {
+        await this.reconnect();
+      } catch (error) {
+        throw new NothingWritten(error);
+      }
+    }
+    const client = this.btpClient;
+    if (client === null || !client.isConnected) {
+      throw new NothingWritten(new BtpConnectionError('BTP client not connected'));
+    }
+    const response = await client.sendPacket(prepare, protocolData);
     return {
       ...mapIlpResponse(response.packet, expectedFulfillment),
       ...readResponseMeta(response.protocolData),

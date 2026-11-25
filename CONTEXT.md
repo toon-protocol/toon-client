@@ -52,7 +52,8 @@ a packet with or without a voucher, returning one of four outcomes: **answered**
 **refused** (a REJECT), **greeting** (the connector's terms instead of routing, returned rather than
 thrown) or **unknown** (it failed before an answer, so the packet may have been banked). HTTP and BTP
 are its two adapters, and BTP keeps one ordered queue so vouchers on one socket never race each
-other's amounts.
+other's amounts. It retries only what was never written: a written voucher whose answer is lost is
+never resent (ADR 0007).
 _Avoid_: Transport, protocol, channel
 
 **Payment channel**:
@@ -100,8 +101,8 @@ _Avoid_: Nonce, balance
 What the payer keeps per channel, in the channel store, behind `BatchChannelManager`, as one record
 per channel id: its x402 config, deposit, last voucher and exit timestamps, and the
 **watermark** with every rule that moves it (reserve, banked, refused, adopt, restore), and whether
-it is *in doubt* — a refusal said "not advancing" without a figure — so the next voucher resyncs
-from the connector first. The payer holds no channel state of its own.
+it is *in doubt* — a refusal said "not advancing" without a figure, or a voucher's answer was lost —
+so the next voucher resyncs from the connector first. The payer holds no channel state of its own.
 _Avoid_: Channel state, ledger
 
 **Refusal**:

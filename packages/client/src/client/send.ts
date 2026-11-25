@@ -35,9 +35,12 @@
  * accepts one only if it strictly exceeds the channel's watermark by at least
  * the charge. So:
  *
- *   - **a transport error leaves the voucher counted.** It may have been
- *     banked, and the next voucher exceeds it either way — being one charge
- *     over is the only cost, where being under would be refused;
+ *   - **a lost answer leaves the voucher counted, and the channel in doubt.**
+ *     The carriage never resends a written voucher (ADR 0007); it may have
+ *     been banked, so the payer marks the channel in doubt in the channel
+ *     record and the next voucher asks the connector (`POST /ilp/claim-state`)
+ *     where it stands before it is signed. The `NetworkError` is then thrown
+ *     as it always was, so the CLI's exit codes do not change;
  *   - **a refusal hands the payer the reject's own text,** which says where the
  *     connector's watermark stands (`readVoucherRefusal`); one that says the
  *     connector holds more without saying how much sends the payer to
@@ -269,7 +272,10 @@ async function attemptWithVoucher(
       voucher.settle({ kind: 'refused' });
       return greetingResult(outcome, summary);
     case 'unknown':
-      // The packet may have been banked; the next voucher exceeds it either way.
+      // The packet may have been banked. It is never resent: the payer marks
+      // the channel in doubt, and the next voucher resyncs before it signs.
+      // A packet the carriage knows was never written is settled the same
+      // way — the resync gives back a charge the connector never saw.
       voucher.settle({ kind: 'unknown' });
       throw outcome.error;
     case 'refused':

@@ -280,6 +280,20 @@ describe('BatchChannelManager', () => {
     expect(first.inDoubt(EVM.channelId)).toBe(false);
   });
 
+  it('puts a channel in doubt when a voucher\'s answer was lost, keeping the voucher counted', () => {
+    const store = new InMemoryChannelStore();
+    const first = new BatchChannelManager(STORED_FORMS, store);
+    first.adopt(CONNECTOR, EVM, 1_000_000n);
+    first.reserve(EVM.channelId, 1_000n);
+    first.lost(EVM.channelId);
+    const second = new BatchChannelManager(STORED_FORMS, store);
+    expect(second.inDoubt(EVM.channelId)).toBe(true);
+    expect(second.signedSoFar(EVM.channelId)).toBe(1_000n);
+    second.adoptConnectorWatermark(EVM.channelId, 0n);
+    expect(first.inDoubt(EVM.channelId)).toBe(false);
+    expect(first.signedSoFar(EVM.channelId)).toBe(0n);
+  });
+
   it('refuses a voucher its deposit cannot cover', () => {
     const m = new BatchChannelManager(STORED_FORMS);
     m.adopt(CONNECTOR, EVM, 1_000n);

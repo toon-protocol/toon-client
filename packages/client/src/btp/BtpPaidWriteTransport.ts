@@ -34,33 +34,27 @@
  *    one ordered socket across a burst.
  *  - **Strictly ordered dispatch**: every `sendIlpPacketWithClaim` call is
  *    appended to a FIFO queue; the next call is not dispatched onto the wire
- *    until the previous one has fully settled (fulfilled, rejected, or
- *    fallen back to HTTP). Callers may still fire writes concurrently
+ *    until the previous one has fully settled (fulfilled, rejected, failed,
+ *    or fallen back to HTTP). Callers may still fire writes concurrently
  *    (`Promise.all`) — ordering is enforced here, not pushed onto the
  *    caller.
- *  - **Reconnect + resume**: a write that fails on a connection-level error
- *    (socket dropped mid-burst) reconnects the SAME session and retries
- *    that write in place, without losing its position in the queue and
- *    without reordering the writes queued behind it — they simply wait for
- *    it to resolve one way or another.
- *  - **Falls back to HTTP**: once the reconnect budget for one write is
- *    exhausted, the write is handed to `fallback` (typically the existing
- *    `HttpIlpClient`) when one is configured, so a BTP outage degrades a
- *    session to the pre-existing one-shot behavior instead of failing the
- *    write outright.
+ *  - **One attempt per slot, unless the carriage asks for more**: a plain
+ *    `sendIlpPacketWithClaim` writes once. The carriage's retry rule
+ *    (ADR 0007) runs inside one slot through {@link BtpPaidWriteTransport.ordered},
+ *    so a connect retry or the HTTP fallback beneath it holds the write's
+ *    place in the queue and reorders nothing behind it.
  *
- * Only CONNECTION-level failures (dropped socket, timeout — the errors
- * `BtpRuntimeClient`/`IsomorphicBtpClient` throw) are retried or routed to
- * the fallback. An ILP-level REJECT (F02, T01, ...) is a normal
- * `IlpSendResult`, exactly like every other transport here — it is returned
- * to the caller unchanged, never retried and never silently resent over
- * HTTP (a claim that was actually judged and refused must not be replayed).
+ * This transport never retries on its own, and never decides whether a failure
+ * came before the write: the session says so with {@link NothingWritten}. An
+ * ILP-level REJECT (F02, T01, ...) is a normal `IlpSendResult`, returned to the
+ * caller unchanged.
  */
 
 import type { IlpSendResult } from '../ilp/types.js';
 import type { BtpRuntimeClient } from './BtpRuntimeClient.js';
-import type { HttpIlpClient } from '../http/HttpIlpClient.js';
 import type { IlpSendParams } from '../ilp/ilp-send.js';
+import { BtpAuthError, BtpConnectionError } from './IsomorphicBtpClient.js';
+import { NothingWritten } from '../carriage/nothing-written.js';
 import {
   NetworkError,
   describeEndpoint,
@@ -75,22 +69,22 @@ import {
 export type BtpSession = Pick<
   BtpRuntimeClient,
   | 'isConnected'
-  | 'connect'
-  | 'reconnect'
   | 'disconnect'
   | 'sendIlpPacketWithClaim'
   | 'sendIlpPacket'
 >;
 
-/** What the HTTP fallback beneath a BTP session must be able to send. */
-export type HttpFallback = Pick<HttpIlpClient, 'sendIlpPacket' | 'sendIlpPacketWithClaim'>;
+/** One attempt on the session: a claim makes it a paid write. */
+export type BtpAttempt = (
+  params: IlpSendParams,
+  claim?: Record<string, unknown>
+) => Promise<IlpSendResult>;
 
 export interface BtpPaidWriteTransportConfig {
   /**
-   * The persistent BTP session this transport owns the connect/reconnect
-   * lifecycle of. May already be connected (the common case — `modes/http.ts`
-   * connects `btpClient` at startup) or not; either way it is connected
-   * lazily on first use and never disconnected between writes.
+   * The persistent BTP session this transport writes through. It connects
+   * itself on a write that finds its socket closed, and is never disconnected
+   * between writes.
    */
   session: BtpSession;
   /**
@@ -100,56 +94,17 @@ export interface BtpPaidWriteTransportConfig {
   url?: string;
   /** Where `url` came from, so a failure can say the node chose it. */
   endpointSource?: EndpointSource;
-  /**
-   * Stateless fallback used once a write's reconnect budget is exhausted.
-   * Typically an `HttpIlpClient` pointed at the same connector's `POST /ilp`.
-   * Omit to have an exhausted BTP session fail the write outright.
-   */
-  fallback?: HttpFallback;
-  /**
-   * Reconnect attempts for one write before giving up on BTP (and, if
-   * configured, falling back to HTTP). Default 1 — one explicit reconnect
-   * beyond whatever retrying the session already does internally.
-   */
-  maxReconnectAttempts?: number;
-  /** Delay before each reconnect attempt, in ms. Default 250. */
-  reconnectDelay?: number;
-}
-
-/** Message substrings that identify a connection-level (retryable) failure,
- * as opposed to an application-level one. Mirrors `BtpRuntimeClient`'s own
- * `isConnectionError` — duplicated rather than imported since that helper is
- * private to a different transport and this module must not reach into it. */
-function isConnectionError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const msg = error.message.toLowerCase();
-  return (
-    msg.includes('not connected') ||
-    msg.includes('connection') ||
-    msg.includes('websocket') ||
-    msg.includes('econnrefused') ||
-    msg.includes('econnreset') ||
-    msg.includes('socket hang up') ||
-    msg.includes('timeout')
-  );
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
  * Wraps a {@link BtpSession} (a `BtpRuntimeClient`) as a first-class,
- * persistent, strictly-ordered paid-write transport with an optional HTTP
- * fallback. See the module docs above for the full rationale.
+ * persistent, strictly-ordered paid-write transport. See the module docs
+ * above for the full rationale.
  */
 export class BtpPaidWriteTransport {
   private readonly session: BtpSession;
-  private readonly fallback: HttpFallback | undefined;
   private readonly url: string | undefined;
   private readonly endpointSource: EndpointSource | undefined;
-  private readonly maxReconnectAttempts: number;
-  private readonly reconnectDelay: number;
   /**
    * Tail of the ordering queue. ALWAYS settles (never rejects) so one
    * failed write can never strand every write queued behind it — only the
@@ -160,11 +115,8 @@ export class BtpPaidWriteTransport {
 
   constructor(config: BtpPaidWriteTransportConfig) {
     this.session = config.session;
-    this.fallback = config.fallback;
     this.url = config.url;
     this.endpointSource = config.endpointSource;
-    this.maxReconnectAttempts = config.maxReconnectAttempts ?? 1;
-    this.reconnectDelay = config.reconnectDelay ?? 250;
   }
 
   /** Whether the underlying session currently holds an open socket. */
@@ -178,22 +130,28 @@ export class BtpPaidWriteTransport {
   }
 
   /**
-   * Enqueue a claim-bearing write. The returned promise resolves/rejects
-   * with THIS write's own outcome; its position in the queue only controls
-   * WHEN it is dispatched onto the wire, never what it returns.
+   * Run `task` in this session's order. `task` is handed {@link BtpAttempt}, one
+   * write on the session, which it may call more than once — the carriage's
+   * retry rule does, when nothing was written — while every write queued behind
+   * it waits. The returned promise settles with THIS task's own outcome.
    */
-  sendIlpPacketWithClaim(
-    params: IlpSendParams,
-    claim: Record<string, unknown>
-  ): Promise<IlpSendResult> {
+  ordered<T>(task: (attempt: BtpAttempt) => Promise<T>): Promise<T> {
     const dispatched = this.queueTail.then(() =>
-      this.dispatchWithRetry(params, claim)
+      task((params, claim) => this.attempt(params, claim))
     );
     this.queueTail = dispatched.then(
       () => undefined,
       () => undefined
     );
     return dispatched;
+  }
+
+  /** Enqueue a claim-bearing write, written once. */
+  sendIlpPacketWithClaim(
+    params: IlpSendParams,
+    claim: Record<string, unknown>
+  ): Promise<IlpSendResult> {
+    return this.ordered((attempt) => attempt(params, claim));
   }
 
   /**
@@ -201,95 +159,41 @@ export class BtpPaidWriteTransport {
    *
    * Enqueued behind the same tail as a paid write. The ordering exists for
    * vouchers — amounts on one socket must not race — and an unpaid packet
-   * carries none, so strictly it needs no slot. It takes one anyway: the queue
-   * also serialises this transport's connect/reconnect policy, and letting an
+   * carries none, so strictly it needs no slot. It takes one anyway: letting an
    * unpaid send dial concurrently with a paid one would race the session itself
    * rather than the vouchers' amounts.
    */
   sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult> {
-    const dispatched = this.queueTail.then(() => this.dispatchUnpaid(params));
-    this.queueTail = dispatched.then(
-      () => undefined,
-      () => undefined
-    );
-    return dispatched;
+    return this.ordered((attempt) => attempt(params));
   }
 
-  /** Connect if need be, then send once. No claim, so nothing to re-spend. */
-  private async dispatchUnpaid(params: IlpSendParams): Promise<IlpSendResult> {
+  /** One write on the session, connecting it first if it is not open. */
+  private async attempt(
+    params: IlpSendParams,
+    claim?: Record<string, unknown>
+  ): Promise<IlpSendResult> {
     try {
-      if (!this.session.isConnected) await this.session.connect();
-      return await this.session.sendIlpPacket(params);
+      return claim === undefined
+        ? await this.session.sendIlpPacket(params)
+        : await this.session.sendIlpPacketWithClaim(params, claim);
     } catch (error) {
+      if (error instanceof NothingWritten) throw new NothingWritten(this.nameEndpoint(error.error));
       throw this.nameEndpoint(error);
     }
   }
 
   /**
-   * A connection-level failure becomes a {@link NetworkError} naming the BTP
+   * A failure of the socket itself becomes a {@link NetworkError} naming the BTP
    * URL, with the original kept as `cause`. Anything else passes through.
    */
   private nameEndpoint(error: unknown): unknown {
     if (this.url === undefined || error instanceof NetworkError) return error;
-    if (!isConnectionError(error)) return error;
-    const cause = error instanceof Error ? error : undefined;
+    if (!(error instanceof BtpConnectionError || error instanceof BtpAuthError)) return error;
     return new NetworkError(
       `BTP connection failed reaching ${describeEndpoint(this.url, this.endpointSource)}: ${
-        cause?.message ?? String(error)
+        error.message
       }`,
-      cause,
-      this.url
-    );
-  }
-
-  /**
-   * One write's worth of connect/send/reconnect/fallback policy. Runs
-   * strictly after every write enqueued ahead of it has settled.
-   */
-  private async dispatchWithRetry(
-    params: IlpSendParams,
-    claim: Record<string, unknown>
-  ): Promise<IlpSendResult> {
-    let attempt = 0;
-    let lastError: unknown;
-
-    // attempt 0: use the session as-is (connecting it if this is the very
-    // first write). attempt 1..maxReconnectAttempts: explicit reconnect,
-    // i.e. "resume" — the queue already guarantees nothing behind this write
-    // has been dispatched early, so a reconnect here reorders nothing.
-    while (attempt <= this.maxReconnectAttempts) {
-      try {
-        if (!this.session.isConnected) {
-          if (attempt === 0) {
-            await this.session.connect();
-          } else {
-            await sleep(this.reconnectDelay * attempt);
-            await this.session.reconnect();
-          }
-        }
-        return await this.session.sendIlpPacketWithClaim(params, claim);
-      } catch (error) {
-        lastError = error;
-        if (!isConnectionError(error)) {
-          throw error;
-        }
-        attempt += 1;
-      }
-    }
-
-    if (this.fallback) {
-      return this.fallback.sendIlpPacketWithClaim(params, claim);
-    }
-
-    const named = this.nameEndpoint(lastError);
-    if (named instanceof Error) throw named;
-    throw new NetworkError(
-      `BTP paid-write transport exhausted its reconnect budget${
-        this.url !== undefined
-          ? ` reaching ${describeEndpoint(this.url, this.endpointSource)}`
-          : ''
-      } and no HTTP fallback is configured`,
-      undefined,
+      error,
       this.url
     );
   }

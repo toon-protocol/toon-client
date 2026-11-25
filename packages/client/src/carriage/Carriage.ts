@@ -16,8 +16,20 @@
  *   BTP). The same outcome on either carriage, because it is the same document.
  *   A node that offers no endpoint for the carriage asked for is a greeting too:
  *   nothing was sent, and what the caller needs is which carriage to ask for.
- * - **unknown** — the carriage failed before an answer arrived. The packet may
- *   have been banked, and the caller must not assume otherwise.
+ * - **unknown** — the carriage failed before an answer arrived. `written`
+ *   says whether any of the packet left: when it did, it may have been banked,
+ *   and the caller must not assume otherwise.
+ *
+ * ## The retry rule (ADR 0007)
+ *
+ * The carriage sends a packet again only when none of it was written: a dial or
+ * connect failure, which the adapter reports as {@link NothingWritten} from the
+ * step where it happened. Such failures are retried within one budget,
+ * `btp.maxReconnectAttempts` more tries spaced by `btp.reconnectDelay`, and once
+ * it runs out a BTP packet may fall back to HTTP where the route does not
+ * require BTP and the node publishes an HTTP endpoint. A packet that was written
+ * and whose answer was lost is never resent, on either carriage: the outcome is
+ * `unknown`, and the caller marks its channel in doubt.
  *
  * Only the first two are verdicts about the packet. A greeting is returned, not
  * thrown, because from the caller's side it is an answer like the others: the
@@ -36,6 +48,7 @@ import {
 } from '../connector/self-description.js';
 import { parsePaymentTerms } from '../connector/x402.js';
 import { ConfigError, type EndpointSource } from '../client/errors.js';
+import { NothingWritten } from './nothing-written.js';
 import type {
   CarriageEndpoints,
   PaymentTerms,
@@ -76,10 +89,16 @@ export interface Greeting {
   terms?: PaymentTerms;
 }
 
-/** The carriage failed before an answer arrived; the packet may have been banked. */
+/** The carriage failed before an answer arrived. */
 export interface Unknown {
   kind: 'unknown';
   carriage: CarriageKind;
+  /**
+   * Whether any of the packet may have left. `false` only when the adapter
+   * knows it did not — every connect failed within the budget, with no
+   * fallback. `true` otherwise: the packet may have been banked.
+   */
+  written: boolean;
   error: unknown;
 }
 
@@ -115,7 +134,16 @@ export interface CarriageConfig {
   assertReachable(endpoint: string): void;
 }
 
-type Adapter = Pick<HttpIlpClient, 'sendIlpPacket' | 'sendIlpPacketWithClaim'>;
+type Send = () => Promise<IlpSendResult>;
+
+/** How many more tries a connect failure gets, and the delay before the first. */
+interface Budget {
+  attempts: number;
+  delayMs: number;
+}
+
+/** One reconnect beyond the first dial, after 250 ms. */
+const DEFAULT_BUDGET: Budget = { attempts: 1, delayMs: 250 };
 
 export class Carriage {
   /**
@@ -208,7 +236,9 @@ export class Carriage {
 
     if (choice.kind === 'http') {
       if (http === undefined) throw new Error('unreachable: an http choice has an endpoint');
-      return (this.open_.http = adapt('http', http, httpEndpoint));
+      return (this.open_.http = carriageOf('http', httpEndpoint, (packet, voucher) =>
+        sendOver(http, packet, voucher)
+      ));
     }
 
     const { btp } = this.config;
@@ -219,8 +249,6 @@ export class Carriage {
       // peer plus a valid claim is the supported permissionless path.
       peerId: this.config.peerId,
       authToken: '',
-      ...(btp.maxReconnectAttempts !== undefined ? { maxRetries: btp.maxReconnectAttempts } : {}),
-      ...(btp.reconnectDelay !== undefined ? { retryDelay: btp.reconnectDelay } : {}),
       ...(this.config.createWebSocket
         ? { createWebSocket: this.config.createWebSocket as (url: string) => WebSocket }
         : {}),
@@ -234,21 +262,30 @@ export class Carriage {
       session,
       url: choice.url,
       ...(btpSource !== undefined ? { endpointSource: btpSource } : {}),
-      // HTTP fallback only where the node did not REQUIRE btp *for this
-      // destination*: falling back onto a carriage the route refuses would
-      // turn a recoverable socket outage into a `402` per request. Read
-      // through the same per-route resolution the choice above was made with,
-      // so the fallback cannot be enabled against a route the node-wide field
-      // happens not to describe (TOON_Network#111).
-      ...(requiredTransportFor(description, destination) === 'btp' || http === undefined
-        ? {}
-        : { fallback: http }),
-      ...(btp.maxReconnectAttempts !== undefined
-        ? { maxReconnectAttempts: btp.maxReconnectAttempts }
-        : {}),
-      ...(btp.reconnectDelay !== undefined ? { reconnectDelay: btp.reconnectDelay } : {}),
     });
-    return (this.open_.btp = adapt('btp', transport, undefined));
+    // HTTP fallback only where the node did not REQUIRE btp *for this
+    // destination*: falling back onto a carriage the route refuses would turn a
+    // recoverable socket outage into a greeting per request. Read through the
+    // same per-route resolution the choice above was made with, so the fallback
+    // cannot be enabled against a route the node-wide field happens not to
+    // describe (TOON_Network#111).
+    const fallback =
+      requiredTransportFor(description, destination) === 'btp' ? undefined : http;
+    const budget: Budget = {
+      attempts: btp.maxReconnectAttempts ?? DEFAULT_BUDGET.attempts,
+      delayMs: btp.reconnectDelay ?? DEFAULT_BUDGET.delayMs,
+    };
+    return (this.open_.btp = carriageOf('btp', undefined, (packet, voucher) =>
+      // The whole rule runs in one slot of the session's queue, so a retry or a
+      // fallback holds this packet's place and reorders nothing behind it.
+      transport.ordered((attempt) =>
+        underRetryRule(
+          () => attempt(packet, voucher),
+          budget,
+          fallback && (() => sendOver(fallback, packet, voucher))
+        )
+      )
+    ));
   }
 
   /** Release the BTP session and refuse further packets. */
@@ -261,18 +298,60 @@ export class Carriage {
   }
 }
 
-function adapt(kind: CarriageKind, adapter: Adapter, baseUrl: string | undefined): OpenCarriage {
+function sendOver(
+  http: HttpIlpClient,
+  packet: IlpSendParams,
+  voucher: Record<string, unknown> | undefined
+): Promise<IlpSendResult> {
+  return voucher === undefined
+    ? http.sendIlpPacket(packet)
+    : http.sendIlpPacketWithClaim(packet, voucher);
+}
+
+/**
+ * The retry rule, the only one in this package: `send` again only while it
+ * failed with nothing written and the budget lasts; then `fallback`, if there
+ * is one, sent once. Anything that may have been written is passed on at once.
+ */
+async function underRetryRule(
+  send: Send,
+  budget: Budget,
+  fallback: Send | undefined
+): Promise<IlpSendResult> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await send();
+    } catch (error) {
+      if (!(error instanceof NothingWritten)) throw error;
+      if (attempt >= budget.attempts) {
+        if (fallback !== undefined) return fallback();
+        throw error;
+      }
+      await sleep(budget.delayMs * (attempt + 1));
+    }
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function carriageOf(
+  kind: CarriageKind,
+  baseUrl: string | undefined,
+  send: (packet: IlpSendParams, voucher?: Record<string, unknown>) => Promise<IlpSendResult>
+): OpenCarriage {
   return {
     kind,
     async deliver(packet, voucher) {
       let result: IlpSendResult;
       try {
-        result =
-          voucher === undefined
-            ? await adapter.sendIlpPacket(packet)
-            : await adapter.sendIlpPacketWithClaim(packet, voucher);
+        result = await send(packet, voucher);
       } catch (error) {
-        return { kind: 'unknown', carriage: kind, error };
+        if (error instanceof NothingWritten) {
+          return { kind: 'unknown', carriage: kind, written: false, error: error.error };
+        }
+        return { kind: 'unknown', carriage: kind, written: true, error };
       }
       if (result.accepted) return { kind: 'answered', carriage: kind, result };
       return readGreeting(kind, result, baseUrl) ?? { kind: 'refused', carriage: kind, result };

@@ -143,9 +143,8 @@ export const FULFILLMENT_MISMATCH_MESSAGE =
  * Verification is fail-closed: when `expectedFulfillment` is given, a FULFILL
  * whose preimage is absent, not exactly 32 bytes, or simply different yields
  * `accepted: false` (code F99). The result shape — not a thrown error — is
- * deliberate: transports only retry thrown `NetworkError`s, so a forged or
- * wrong FULFILL is never retried, because re-sending would re-spend the
- * attached claim.
+ * deliberate: a wrong FULFILL is an answer, and an answered packet is never
+ * sent again (ADR 0007), because re-sending would re-spend the attached claim.
  *
  * Since ADR 0069 this is the only fulfilment check anywhere on the path. A
  * candidate FULFILL rides home through every hop unexamined, which is exactly

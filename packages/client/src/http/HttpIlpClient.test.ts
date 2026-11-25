@@ -320,22 +320,20 @@ describe('HttpIlpClient', () => {
       expect(httpClient).toHaveBeenCalledTimes(1);
     });
 
-    it('wraps a fetch network failure as a retryable NetworkError', async () => {
+    it('wraps a fetch network failure as a NetworkError, and never resends the POST', async () => {
       const httpClient = vi.fn(async () => {
         throw new TypeError('fetch failed');
       }) as unknown as typeof fetch;
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
         httpClient,
-        maxRetries: 2,
-        retryDelay: 0,
       });
 
-      await expect(client.sendIlpPacket(SEND_PARAMS)).rejects.toBeInstanceOf(
-        NetworkError
-      );
-      // 1 initial + 2 retries.
-      expect(httpClient).toHaveBeenCalledTimes(3);
+      await expect(
+        client.sendIlpPacketWithClaim(SEND_PARAMS, { channelId: '0x01' })
+      ).rejects.toBeInstanceOf(NetworkError);
+      // `fetch` cannot say whether the request left, so it is never resent.
+      expect(httpClient).toHaveBeenCalledTimes(1);
     });
 
     it('names the published endpoint when it cannot be reached, keeping the cause', async () => {
@@ -347,7 +345,6 @@ describe('HttpIlpClient', () => {
         httpEndpoint: 'http://connector-a:3000/ilp',
         endpointSource: 'published',
         httpClient,
-        maxRetries: 0,
       });
 
       const error = (await client
@@ -371,7 +368,6 @@ describe('HttpIlpClient', () => {
         httpEndpoint: 'http://connector-a:3000/ilp',
         httpClient,
         timeout: 50,
-        maxRetries: 0,
       });
 
       const error = (await client
@@ -709,8 +705,6 @@ describe('HttpIlpClient', () => {
       const client = new HttpIlpClient({
         httpEndpoint: 'http://connector.test/ilp',
         httpClient,
-        maxRetries: 2,
-        retryDelay: 0,
       });
 
       const result = await client.sendIlpPacketWithClaim(

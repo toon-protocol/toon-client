@@ -169,9 +169,12 @@ Rules of the road:
   pending *before* it is sent. If the facilitator or the connector lands it and then fails to
   answer, the next use reads the chain and keeps the channel. If it never landed, the channel is
   forgotten.
-- **A voucher whose fate is unknown stays counted.** After a timeout, the connector may or may not
-  have banked the voucher. The next voucher signs above it either way, which overpays by at most one
-  charge if the first never arrived.
+- **A voucher whose fate is unknown is never resent, and puts the channel in doubt.** After a
+  timeout, the connector may or may not have banked the voucher. The client never sends it again
+  (ADR 0007). It stays counted, the channel is marked in doubt in `channels.json`, and the next
+  voucher, from this process or the next, asks `claim-state` first and adopts the connector's
+  figure. If the connector cannot answer, the next voucher signs above the lost one, which overpays
+  by at most one charge if the lost one never arrived.
 - **A refusal says where the node stands.**
   - An underpayment names how far the voucher advanced the connector's watermark, and the next
     voucher is priced from that figure.

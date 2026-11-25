@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ToonClient } from './ToonClient.js';
 import { FakeTerminatingConnector } from '../wire/fake-connector.test-support.js';
+import { lossyLine } from '../carriage/lost-answer.test-support.js';
 import { InMemoryChannelStore } from '../channel/ChannelStore.js';
 import { deriveFullIdentity } from '../keys/KeyDerivation.js';
 import {
@@ -492,6 +493,64 @@ describe('ToonClient — reading the connector\'s watermark', () => {
     await resync(client, channel);
 
     expect(internals(client).manager.signedSoFar(CHANNEL)).toBe(1000n);
+  });
+});
+
+/**
+ * A voucher whose answer was lost: sent once, never again, and the channel left
+ * in doubt in the channel record, so whichever client pays next — this one, or
+ * another reading the same store — asks the connector before it signs.
+ */
+describe('ToonClient — a written voucher whose answer is lost', () => {
+  it('is sent once, surfaces a NetworkError, and the next send from another client resyncs first', async () => {
+    const fake = fixture();
+    const store = new InMemoryChannelStore();
+    const line = lossyLine(fake);
+    const first = await create(fake, {
+      channelStore: store,
+      autoOpenChannel: false,
+      timeoutMs: 50,
+      fetch: line.fetch,
+    });
+    adoptChannel(first, fake);
+    line.silent = true;
+
+    await expect(first.send('g.fake.route')).rejects.toBeInstanceOf(NetworkError);
+    expect(fake.paidRequests).toBe(1);
+    expect(store.load(CHANNEL)?.watermarkUncertain).toBe(true);
+
+    // The connector did bank it.
+    line.silent = false;
+    fake.banked.set(CHANNEL, { cumulativeClaimed: 1000n });
+    const second = await create(fake, { channelStore: store, autoOpenChannel: false });
+    const paid = await second.send('g.fake.route');
+
+    expect(fake.claimStateAsks).toEqual([CHANNEL]);
+    expect(paid.claim).toMatchObject({ cumulative: 2000n });
+    expect(fake.claims.at(-1)!['maxClaimableAmount']).toBe('2000');
+    expect(store.load(CHANNEL)?.watermarkUncertain).toBeUndefined();
+  });
+
+  it('resyncs down to the connector\'s figure when the lost packet was never banked', async () => {
+    const fake = fixture();
+    const store = new InMemoryChannelStore();
+    const line = lossyLine(fake);
+    const first = await create(fake, {
+      channelStore: store,
+      autoOpenChannel: false,
+      timeoutMs: 50,
+      fetch: line.fetch,
+    });
+    adoptChannel(first, fake);
+    line.silent = true;
+    await expect(first.send('g.fake.route')).rejects.toBeInstanceOf(NetworkError);
+
+    line.silent = false;
+    fake.banked.set(CHANNEL, { cumulativeClaimed: 0n });
+    const second = await create(fake, { channelStore: store, autoOpenChannel: false });
+    const paid = await second.send('g.fake.route');
+
+    expect(paid.claim).toMatchObject({ cumulative: 1000n });
   });
 });
 

@@ -16,12 +16,24 @@ const mockReauthenticate = vi.fn();
 // Mock ../btp/IsomorphicBtpClient (the actual import used by BtpRuntimeClient)
 vi.mock('../btp/IsomorphicBtpClient.js', () => {
   return {
-    IsomorphicBtpClient: vi.fn().mockImplementation(() => ({
-      connect: mockConnect,
-      disconnect: mockDisconnect,
-      sendPacket: mockSendPacket,
-      reauthenticate: mockReauthenticate,
-    })),
+    // A socket whose `isConnected` follows what `connect`/`disconnect` did,
+    // as the real one's does.
+    IsomorphicBtpClient: vi.fn().mockImplementation(() => {
+      const socket = {
+        isConnected: false,
+        connect: async () => {
+          await mockConnect();
+          socket.isConnected = true;
+        },
+        disconnect: async () => {
+          socket.isConnected = false;
+          await mockDisconnect();
+        },
+        sendPacket: mockSendPacket,
+        reauthenticate: mockReauthenticate,
+      };
+      return socket;
+    }),
     BtpConnectionError: class BtpConnectionError extends Error {
       constructor(message: string) {
         super(message);
@@ -33,6 +45,7 @@ vi.mock('../btp/IsomorphicBtpClient.js', () => {
 
 import { BtpRuntimeClient, readResponseMeta } from './BtpRuntimeClient.js';
 import { IsomorphicBtpClient } from '../btp/IsomorphicBtpClient.js';
+import { NothingWritten } from '../carriage/nothing-written.js';
 import { deriveFulfillment } from '../wire/giftwrap.js';
 import {
   FULFILLMENT_MISMATCH_CODE,
@@ -88,8 +101,6 @@ describe('BtpRuntimeClient', () => {
       btpUrl: 'ws://localhost:3000',
       peerId: 'test-peer',
       authToken: 'test-token',
-      maxRetries: 2,
-      retryDelay: 100,
     });
   });
 
@@ -124,32 +135,23 @@ describe('BtpRuntimeClient', () => {
       await client.connect();
     });
 
-    it('should auto-reconnect when not connected', async () => {
-      // Simulate disconnection — first call rejects with connection error,
-      // second call succeeds after reconnect
-      mockSendPacket
-        .mockRejectedValueOnce(new Error('BTP client not connected'))
-        .mockResolvedValueOnce(
-          answer({
-            type: ILP_PACKET_TYPE.FULFILL,
-            data: new Uint8Array(0),
-          })
-        );
-      mockDisconnect.mockResolvedValue(undefined);
+    it('reconnects a socket that closed, then writes the packet once', async () => {
+      mockSendPacket.mockResolvedValueOnce(
+        answer({ type: ILP_PACKET_TYPE.FULFILL, data: new Uint8Array(0) })
+      );
+      // The socket dropped since the last write.
+      (vi.mocked(IsomorphicBtpClient).mock.results.at(-1)!.value as { isConnected: boolean })
+        .isConnected = false;
 
-      const resultPromise = client.sendIlpPacket({
+      const result = await client.sendIlpPacket({
         destination: 'g.test',
         amount: '1000',
         data: Buffer.from('test').toString('base64'),
       });
 
-      // Advance through retry delay
-      await vi.advanceTimersByTimeAsync(100);
-
-      const result = await resultPromise;
       expect(result.accepted).toBe(true);
-      // connect called: initial + reconnect
       expect(mockConnect).toHaveBeenCalledTimes(2);
+      expect(mockSendPacket).toHaveBeenCalledTimes(1);
     });
 
     it('should map fulfill response to IlpSendResult', async () => {
@@ -189,24 +191,20 @@ describe('BtpRuntimeClient', () => {
       expect(result.message).toBe('Insufficient funds');
     });
 
-    it('should throw after exhausting retries on connection errors', async () => {
-      mockSendPacket.mockRejectedValue(new Error('Connection lost'));
-      mockDisconnect.mockResolvedValue(undefined);
+    it('passes on a failure after the frame was written, and never resends it', async () => {
+      mockSendPacket.mockRejectedValue(new Error('Packet send timeout (1000ms)'));
 
-      const resultPromise = client.sendIlpPacket({
-        destination: 'g.test.relay',
-        amount: '1000',
-        data: Buffer.from('test').toString('base64'),
-      });
+      const error = await client
+        .sendIlpPacket({
+          destination: 'g.test.relay',
+          amount: '1000',
+          data: Buffer.from('test').toString('base64'),
+        })
+        .catch((err: unknown) => err);
 
-      const errorPromise = resultPromise.catch((err) => err);
-
-      // Advance through all retry delays
-      await vi.advanceTimersByTimeAsync(100); // 1st retry
-      await vi.advanceTimersByTimeAsync(200); // 2nd retry (exponential)
-
-      const error = (await errorPromise) as Error;
-      expect(error.message).toBe('Connection lost');
+      expect((error as Error).message).toBe('Packet send timeout (1000ms)');
+      expect(error).not.toBeInstanceOf(NothingWritten);
+      expect(mockSendPacket).toHaveBeenCalledTimes(1);
     });
 
     it('should not retry on ILP application errors (non-connection)', async () => {
@@ -241,7 +239,8 @@ describe('BtpRuntimeClient', () => {
           type: ILP_PACKET_TYPE.PREPARE,
           amount: 5000n,
           destination: 'g.test.relay',
-        })
+        }),
+        []
       );
     });
   });
@@ -279,38 +278,23 @@ describe('BtpRuntimeClient', () => {
       );
     });
 
-    it('should auto-reconnect on connection error during claim send', async () => {
-      mockSendPacket
-        .mockRejectedValueOnce(new Error('WebSocket closed'))
-        .mockResolvedValueOnce(
-          answer({
-            type: ILP_PACKET_TYPE.FULFILL,
-            data: new Uint8Array(0),
-          })
-        );
-      mockDisconnect.mockResolvedValue(undefined);
+    it('never resends a claim whose socket closed after it was written', async () => {
+      mockSendPacket.mockRejectedValue(new Error('Connection closed'));
 
-      const claim = makeTestClaim();
+      const error = await client
+        .sendIlpPacketWithClaim({ destination: 'g.test', amount: '1000', data: '' }, makeTestClaim())
+        .catch((err: unknown) => err);
 
-      const resultPromise = client.sendIlpPacketWithClaim(
-        { destination: 'g.test', amount: '1000', data: '' },
-        claim
-      );
-
-      await vi.advanceTimersByTimeAsync(100);
-
-      const result = await resultPromise;
-      expect(result.accepted).toBe(true);
-      // connect called: initial + reconnect
-      expect(mockConnect).toHaveBeenCalledTimes(2);
+      expect(error).not.toBeInstanceOf(NothingWritten);
+      expect(mockSendPacket).toHaveBeenCalledTimes(1);
+      expect(mockConnect).toHaveBeenCalledTimes(1);
     });
 
-    it('should throw when not connected and reconnect fails', async () => {
+    it('says nothing was written when connecting fails, and sends nothing', async () => {
       const disconnectedClient = new BtpRuntimeClient({
         btpUrl: 'ws://localhost:3000',
         peerId: 'test-peer',
         authToken: 'test-token',
-        maxRetries: 0,
       });
 
       mockConnect.mockRejectedValue(new Error('ECONNREFUSED'));
@@ -323,6 +307,13 @@ describe('BtpRuntimeClient', () => {
           claim
         )
       ).rejects.toThrow('ECONNREFUSED');
+      await expect(
+        disconnectedClient.sendIlpPacketWithClaim(
+          { destination: 'g.test', amount: '1000', data: '' },
+          claim
+        )
+      ).rejects.toBeInstanceOf(NothingWritten);
+      expect(mockSendPacket).not.toHaveBeenCalled();
     });
   });
 
@@ -646,7 +637,6 @@ describe('BtpRuntimeClient surfaces what rode beside the packet', () => {
       btpUrl: 'ws://localhost:3000',
       peerId: 'test-peer',
       authToken: 'test-token',
-      maxRetries: 0,
     });
     mockConnect.mockResolvedValue(undefined);
     await client.connect();
