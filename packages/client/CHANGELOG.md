@@ -1,5 +1,11 @@
 # @toon-protocol/client
 
+## 8.0.0
+
+### Major Changes
+
+- ca42ceb: A voucher that was written and whose answer was lost is never resent (ADR 0007). The carriage retries only a dial or connect failure, before any of the packet left, within one budget (`btp.maxReconnectAttempts`, default 1, and `btp.reconnectDelay`, default 250 ms), then falls back from BTP to HTTP where the route does not require BTP. A packet that times out after it was written is sent once on either carriage and comes back `unknown`. `send()` marks the channel in doubt in the channel record, so the next voucher (from any client over the same store) asks `claim-state` before it signs, and then throws the same `NetworkError` as before, so CLI exit codes are unchanged. This replaces up to 8 BTP sends plus 4 HTTP POSTs with the defaults. The carriage's `unknown` outcome gains `written`. Removed: `maxRetries` and `retryDelay` from `BtpRuntimeClientConfig` and `HttpIlpClientConfig`, and `fallback`, `maxReconnectAttempts`, `reconnectDelay` and the `HttpFallback` type from `BtpPaidWriteTransport`, which gains `ordered()`. `BtpRuntimeClient` and `HttpIlpClient` now send each packet once.
+
 ## 7.0.0
 
 ### Major Changes
