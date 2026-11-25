@@ -54,6 +54,7 @@ import {
 } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
+import { EvmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
 import {
   approvePermit2,
@@ -218,17 +219,19 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
     method?: 'eip3009' | 'permit2'
   ) {
     const payer = new BatchSettlementPayer({
-      fetch: directFetch,
       connector: 'https://node.example',
       manager: new BatchChannelManager(),
       deposit: DEPOSIT,
-      evm: {
-        account,
-        ...(evm.facilitatorUrl !== undefined ? { facilitatorUrl: evm.facilitatorUrl } : {}),
-        ...(evm.depositGas ? { depositGas: evm.depositGas } : {}),
-        reader: pub as never,
-        wallet: evmWalletAccess({ rpc: { url: ANVIL_RPC, fetch: directFetch }, account }),
-      },
+      networks: [
+        new EvmSettlementNetwork({
+          account,
+          ...(evm.facilitatorUrl !== undefined ? { facilitatorUrl: evm.facilitatorUrl } : {}),
+          ...(evm.depositGas ? { depositGas: evm.depositGas } : {}),
+          reader: pub as never,
+          wallet: evmWalletAccess({ rpc: { url: ANVIL_RPC, fetch: directFetch }, account }),
+          fetch: directFetch,
+        }),
+      ],
     });
     return payer.open(connectorTerms(token, method, evm.connectorFacilitator), 'evm');
   }
@@ -406,16 +409,18 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
       // can stop the second.
       const account = await freshPayer(USDC, ONE_ETH, 2n * DEPOSIT);
       const payer = new BatchSettlementPayer({
-        fetch: directFetch,
         connector: 'https://node.example',
         manager: new BatchChannelManager(),
         deposit: DEPOSIT,
-        evm: {
-          account,
-          facilitatorUrl: spy.url,
-          reader: pub as never,
-          wallet: evmWalletAccess({ rpc: { url: ANVIL_RPC, fetch: directFetch }, account }),
-        },
+        networks: [
+          new EvmSettlementNetwork({
+            account,
+            facilitatorUrl: spy.url,
+            reader: pub as never,
+            wallet: evmWalletAccess({ rpc: { url: ANVIL_RPC, fetch: directFetch }, account }),
+            fetch: directFetch,
+          }),
+        ],
       });
       const terms = connectorTerms(USDC);
       await expect(payer.open(terms, 'evm')).rejects.toThrow(/authorization is used or canceled/);

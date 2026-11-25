@@ -46,11 +46,11 @@ import { resolveConfig, addressFor, type ResolvedConfig } from './config.js';
 import { ClientChannelFacade } from './channel-facade.js';
 import { ClientWalletFacade } from './wallet-facade.js';
 import { privateKeyToAccount } from 'viem/accounts';
-import { createPublicClient, toHex } from 'viem';
-import { rpcTransport, type ChainRpcRoute } from '../transport/rpc.js';
+import { toHex } from 'viem';
+import type { ChainRpcRoute } from '../transport/rpc.js';
 import { chainRoutes } from './chain-access.js';
-import type { ContractReader } from '../channel/batch-settlement/evm.js';
-import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
+import { evmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
+import { SolanaSettlementNetwork } from '../channel/batch-settlement/solana-network.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { base58Decode } from '../utils/base58.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
@@ -134,29 +134,38 @@ export class ToonClient implements ToonClientLike {
 
     this.manager = new BatchChannelManager(init.config.channelStore);
     const routes = chainRoutes(init.config);
-    const chains = chainAccess(init.config, routes.solana);
+    const chains = chainKeys(init.config, routes.solana);
     this.payer = new BatchSettlementPayer({
       connector: init.config.connector,
       manager: this.manager,
       deposit: init.config.deposit,
-      ...(chains.evm !== undefined
-        ? {
-            evm: {
-              account: chains.evm.account,
-              ...(init.config.facilitatorUrl !== undefined
-                ? { facilitatorUrl: init.config.facilitatorUrl }
-                : {}),
-              ...(init.config.depositMethod !== undefined
-                ? { depositMethod: init.config.depositMethod }
-                : {}),
-              depositGas: init.config.depositGas,
-              reader: lazyEvmReader(routes.evm),
-              wallet: evmWalletAccess({ rpc: routes.evm, account: chains.evm.account }),
-            },
-          }
-        : {}),
-      ...(chains.solana !== undefined ? { solana: chains.solana } : {}),
-      fetch: init.config.fetch,
+      networks: [
+        ...(chains.evm !== undefined
+          ? [
+              evmSettlementNetwork({
+                account: chains.evm.account,
+                rpc: routes.evm,
+                fetch: init.config.fetch,
+                ...(init.config.facilitatorUrl !== undefined
+                  ? { facilitatorUrl: init.config.facilitatorUrl }
+                  : {}),
+                ...(init.config.depositMethod !== undefined
+                  ? { depositMethod: init.config.depositMethod }
+                  : {}),
+                depositGas: init.config.depositGas,
+              }),
+            ]
+          : []),
+        ...(chains.solana !== undefined
+          ? [
+              new SolanaSettlementNetwork({
+                ...chains.solana,
+                fetch: init.config.fetch,
+                connector: init.config.connector,
+              }),
+            ]
+          : []),
+      ],
       autoOpen: init.config.autoOpenChannel,
       connectorWatermark: (entry) => this.connectorWatermark(entry),
     });
@@ -764,11 +773,11 @@ async function openHiddenService(
 }
 
 /**
- * This client's keys, in the shapes the x402 channel code signs with: a viem
- * account on EVM, and on Solana a keypair plus the JSON-RPC route it reads the
- * chain through, as {@link chainRoutes} decided it.
+ * This client's keys, in the shapes the settlement networks and the channel
+ * facade sign with: a viem account on EVM, and on Solana a keypair plus the
+ * JSON-RPC route it reads the chain through, as {@link chainRoutes} decided it.
  */
-function chainAccess(
+function chainKeys(
   config: ResolvedConfig,
   solanaRpc: ChainRpcRoute
 ): {
@@ -795,21 +804,5 @@ function chainAccess(
           },
         }
       : {}),
-  };
-}
-
-/**
- * A `readContract` over the client's EVM RPC, built on first use so a client
- * that never needs to read a batch-settlement channel back opens no connection.
- */
-function lazyEvmReader(route: ChainRpcRoute): ContractReader {
-  let client: ReturnType<typeof createPublicClient> | undefined;
-  return {
-    readContract: (params: never) => {
-      client ??= createPublicClient({
-        transport: rpcTransport(route),
-      });
-      return client.readContract(params);
-    },
   };
 }

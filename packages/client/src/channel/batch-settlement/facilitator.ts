@@ -13,6 +13,7 @@
 import type { BatchDepositPayload, BatchSettlementEvmOffer } from './evm.js';
 import { FacilitatorError, NetworkError } from '../../client/errors.js';
 import { directFetch } from '../../transport/rpc.js';
+import { trimTrailingSlashes } from '../../utils/url.js';
 
 /** The deposit as the chain now holds it. */
 export interface SettledDeposit {
@@ -54,7 +55,7 @@ export async function settleDeposit(params: {
     },
   };
   const fetchImpl = params.fetchImpl ?? directFetch;
-  const url = `${params.facilitatorUrl.replace(/\/+$/, '')}/settle`;
+  const url = `${trimTrailingSlashes(params.facilitatorUrl)}/settle`;
 
   let response: Response;
   let text: string;

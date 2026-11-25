@@ -17,6 +17,7 @@
 
 import { NetworkError, SponsorRefusedError } from '../../client/errors.js';
 import { directFetch } from '../../transport/rpc.js';
+import { trimTrailingSlashes } from '../../utils/url.js';
 
 /** The channel the connector opened. */
 export interface SponsoredOpen {
@@ -46,7 +47,7 @@ export async function requestSponsoredOpen(params: {
 }): Promise<SponsoredOpen> {
   const url = new URL(
     params.sponsorEndpoint,
-    `${params.connector.replace(/\/+$/, '')}/`
+    `${trimTrailingSlashes(params.connector)}/`
   ).toString();
   const fetchImpl = params.fetchImpl ?? directFetch;
 

@@ -45,6 +45,7 @@
     "src/__integration__/hidden-payer-btp.integration.test.ts",
     "src/__integration__/hidden-service.integration.test.ts",
     "src/__integration__/http-ilp-transport.integration.test.ts",
-    "src/__integration__/rust-edge-devnet.integration.test.ts"
+    "src/__integration__/rust-edge-devnet.integration.test.ts",
+    "src/__integration__/settlement-network.integration.test.ts"
   ]
 }

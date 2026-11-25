@@ -72,6 +72,23 @@ export {
   type PreparedVoucher,
   type VoucherOutcome,
 } from './payer.js';
+export {
+  settlementNetworkFor,
+  type Cover,
+  type OpenAmounts,
+  type PlannedOpen,
+  type SettlementNetwork,
+  type TopUpAmounts,
+} from './settlement-network.js';
+export {
+  EvmSettlementNetwork,
+  evmSettlementNetwork,
+  type EvmSettlementNetworkConfig,
+} from './evm-network.js';
+export {
+  SolanaSettlementNetwork,
+  type SolanaSettlementNetworkConfig,
+} from './solana-network.js';
 export { requestSponsoredOpen, type SponsoredOpen } from './sponsor.js';
 export {
   EIP2612_GAS_SPONSORING,

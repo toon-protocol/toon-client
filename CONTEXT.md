@@ -66,6 +66,21 @@ A signed statement of a channel's cumulative total. It has no nonce, so a connec
 vouchers by amount alone, and each one supersedes the last.
 _Avoid_: Balance proof
 
+**Settlement network**:
+The one adapter for a network this client pays on, keyed by its CAIP-2 network (`eip155:84532`,
+`solana:…`). Built once, from the chain's key and its RPC route, it owns everything chain-specific
+about a payment channel there: opening one from the connector's terms, covering a charge the
+deposit cannot (an EVM channel is topped up, a Solana one replaced), reading the escrow and what
+has landed, and its voucher scheme. The payer looks a channel's network up and asks it; it never
+asks which chain it is on. The connector's name for its own side of the same split (connector #1684).
+_Avoid_: Chain backend, chain client, per-chain helper
+
+**Voucher scheme**:
+How one chain signs and spells a voucher: the voucher signature, the claim a packet carries, and the
+claim-state challenge that proves control of the channel. It lives inside the settlement network and
+is pinned by the wire vectors (connector #1685).
+_Avoid_: Signer, claim format
+
 **Facilitator**:
 An x402 service that submits a payer-authorized Base deposit and pays its gas, so opening a
 channel costs the payer no native gas. On Solana the connector itself sponsors the open instead.

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { BatchSettlementPayer } from './payer.js';
 import { BatchChannelManager } from './manager.js';
+import { SolanaSettlementNetwork } from './solana-network.js';
 import { buildSvmVoucherMessage } from './svm.js';
 import { parseSelfDescription } from '../../connector/self-description.js';
 import { parseSolanaWireTransaction } from '../solana/wire-transaction.js';
@@ -161,8 +162,7 @@ function setup(overrides: Partial<World> = {}, deposit = 1_000_000n) {
     connector: 'https://node.example',
     manager,
     deposit,
-    solana: { signer: PAYER, rpc: { url: 'http://rpc', fetch: fetchImpl } },
-    fetch: fetchImpl,
+    networks: [new SolanaSettlementNetwork({ signer: PAYER, rpc: { url: 'http://rpc', fetch: fetchImpl }, fetch: fetchImpl, connector: 'https://node.example' })],
   });
   return { world, manager, payer };
 }
@@ -217,8 +217,7 @@ describe('BatchSettlementPayer on Solana', () => {
       connector: 'https://node.example',
       manager,
       deposit: 1_000_000n,
-      solana: { signer: PAYER, rpc: { url: 'http://rpc', fetch: fakeFetch(world) } },
-      fetch: fakeFetch(world),
+      networks: [new SolanaSettlementNetwork({ signer: PAYER, rpc: { url: 'http://rpc', fetch: fakeFetch(world) }, fetch: fakeFetch(world), connector: 'https://node.example' })],
       autoOpen: false,
     });
     await expect(strict.claimFor(DESCRIPTION, 'solana', 5_000n)).rejects.toThrow(
