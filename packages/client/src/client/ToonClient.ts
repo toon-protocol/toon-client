@@ -42,14 +42,10 @@ import { toBase64 } from '../utils/binary.js';
 import { resolveConfig, addressFor, type ResolvedConfig } from './config.js';
 import { ClientChannelFacade } from './channel-facade.js';
 import { ClientWalletFacade } from './wallet-facade.js';
-import { privateKeyToAccount } from 'viem/accounts';
-import { toHex } from 'viem';
-import type { ChainRpcRoute } from '../transport/rpc.js';
-import { chainRoutes } from './chain-access.js';
-import { evmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
-import { SolanaSettlementNetwork } from '../channel/batch-settlement/solana-network.js';
+import { settlementNetworks } from './chain-access.js';
+import { evmStoredForm } from '../channel/batch-settlement/evm-network.js';
+import { solanaStoredForm } from '../channel/batch-settlement/solana-network.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
-import { base58Decode } from '../utils/base58.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
 import { send, type SendContext } from './send.js';
 import {
@@ -127,40 +123,16 @@ export class ToonClient implements ToonClientLike {
         assertReachableWithoutProxy(endpoint, init.config.socksProxy, 'published'),
     });
 
-    this.manager = new BatchChannelManager(init.config.channelStore);
-    const routes = chainRoutes(init.config);
-    const chains = chainKeys(init.config, routes.solana);
+    this.manager = new BatchChannelManager(
+      [evmStoredForm, solanaStoredForm],
+      init.config.channelStore
+    );
+    const networks = settlementNetworks(init.config);
     this.payer = new BatchSettlementPayer({
       connector: init.config.connector,
       manager: this.manager,
       deposit: init.config.deposit,
-      networks: [
-        ...(chains.evm !== undefined
-          ? [
-              evmSettlementNetwork({
-                account: chains.evm.account,
-                rpc: routes.evm,
-                fetch: init.config.fetch,
-                ...(init.config.facilitatorUrl !== undefined
-                  ? { facilitatorUrl: init.config.facilitatorUrl }
-                  : {}),
-                ...(init.config.depositMethod !== undefined
-                  ? { depositMethod: init.config.depositMethod }
-                  : {}),
-                depositGas: init.config.depositGas,
-              }),
-            ]
-          : []),
-        ...(chains.solana !== undefined
-          ? [
-              new SolanaSettlementNetwork({
-                ...chains.solana,
-                fetch: init.config.fetch,
-                connector: init.config.connector,
-              }),
-            ]
-          : []),
-      ],
+      networks,
       autoOpen: init.config.autoOpenChannel,
       connectorWatermark: (entry) => this.connectorWatermark(entry),
     });
@@ -170,19 +142,12 @@ export class ToonClient implements ToonClientLike {
       chain: init.chain,
       manager: this.manager,
       describe: () => this.describe(),
-      ...(chains.evm !== undefined
-        ? {
-            evm: {
-              privateKey: chains.evm.privateKey,
-              rpc: routes.evm,
-            },
-          }
-        : {}),
-      ...(chains.solana !== undefined ? { solana: chains.solana } : {}),
+      networks,
     });
     this.wallet = new ClientWalletFacade({
       config: init.config,
       describe: () => this.describe(),
+      networks,
     });
   }
 
@@ -627,40 +592,5 @@ async function openHiddenService(
               solana: { fetch: rpc.solana.fetch },
             },
     },
-  };
-}
-
-/**
- * This client's keys, in the shapes the settlement networks and the channel
- * facade sign with: a viem account on EVM, and on Solana a keypair plus the
- * JSON-RPC route it reads the chain through, as {@link chainRoutes} decided it.
- */
-function chainKeys(
-  config: ResolvedConfig,
-  solanaRpc: ChainRpcRoute
-): {
-  evm?: { account: ReturnType<typeof privateKeyToAccount>; privateKey: Uint8Array };
-  solana?: {
-    signer: { privateKey: Uint8Array; publicKey: Uint8Array };
-    rpc: ChainRpcRoute;
-  };
-} {
-  const evmKey = config.identity.evm?.privateKey;
-  const solanaKey = config.identity.solana;
-  return {
-    ...(evmKey !== undefined
-      ? { evm: { account: privateKeyToAccount(toHex(evmKey)), privateKey: evmKey } }
-      : {}),
-    ...(solanaKey !== undefined
-      ? {
-          solana: {
-            signer: {
-              privateKey: solanaKey.secretKey.slice(0, 32),
-              publicKey: base58Decode(solanaKey.publicKey),
-            },
-            rpc: solanaRpc,
-          },
-        }
-      : {}),
   };
 }

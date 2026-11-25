@@ -9,7 +9,7 @@ import { parseSolanaWireTransaction } from '../solana/wire-transaction.js';
 import {
   deriveAssociatedTokenAccount,
   type Signer,
-} from '../solana/payment-channel.js';
+} from '../solana/json-rpc.js';
 import { base58Decode, base58Encode } from '../../utils/base58.js';
 import { fromBase64 } from '../../utils/binary.js';
 import {
@@ -19,6 +19,7 @@ import {
   ValidationError,
 } from '../../client/errors.js';
 import { must } from '../../utils/must.test-support.js';
+import { STORED_FORMS } from './stored-forms.test-support.js';
 
 function keypair(n: number): Signer & { address: string } {
   const privateKey = new Uint8Array(32).fill(n);
@@ -157,7 +158,7 @@ function setup(overrides: Partial<World> = {}, deposit = 1_000_000n) {
     ...overrides,
   };
   const fetchImpl = fakeFetch(world);
-  const manager = new BatchChannelManager();
+  const manager = new BatchChannelManager(STORED_FORMS);
   const payer = new BatchSettlementPayer({
     connector: 'https://node.example',
     manager,

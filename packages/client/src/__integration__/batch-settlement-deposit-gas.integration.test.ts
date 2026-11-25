@@ -54,13 +54,12 @@ import {
 } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
-import { EvmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
-import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
 import {
-  approvePermit2,
-  depositDirectly,
+  EvmSettlementNetwork,
   evmWalletAccess,
-} from '../channel/batch-settlement/deposit-gas.js';
+} from '../channel/batch-settlement/evm-network.js';
+import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
+import { approvePermit2, depositDirectly } from '../channel/batch-settlement/deposit-gas.js';
 import {
   batchChannelId,
   buildBatchChannelConfig,
@@ -73,6 +72,7 @@ import { settleDeposit } from '../channel/batch-settlement/facilitator.js';
 import { chooseBatchSettlement, offerFromTerms } from '../channel/batch-settlement/offers.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import { must } from '../utils/must.test-support.js';
+import { STORED_FORMS } from '../channel/batch-settlement/stored-forms.test-support.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const INFRA =
@@ -220,7 +220,7 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
   ) {
     const payer = new BatchSettlementPayer({
       connector: 'https://node.example',
-      manager: new BatchChannelManager(),
+      manager: new BatchChannelManager(STORED_FORMS),
       deposit: DEPOSIT,
       networks: [
         new EvmSettlementNetwork({
@@ -410,7 +410,7 @@ describe.skipIf(MISSING.length > 0)('who pays a Base deposit’s gas, on the rea
       const account = await freshPayer(USDC, ONE_ETH, 2n * DEPOSIT);
       const payer = new BatchSettlementPayer({
         connector: 'https://node.example',
-        manager: new BatchChannelManager(),
+        manager: new BatchChannelManager(STORED_FORMS),
         deposit: DEPOSIT,
         networks: [
           new EvmSettlementNetwork({

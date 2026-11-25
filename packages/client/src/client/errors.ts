@@ -110,13 +110,12 @@ export class ValidationError extends ToonClientError {
  * is not a URL, a negative deposit — or a fact this client checked against the
  * chain and found to disagree with what the node published.
  *
- * That last case is the one worth naming. `self-description-spec.md` ND-07 says
- * a node proves each settlement entry against a live chain before publishing it,
- * so a `tokenNetwork` that the `TokenNetworkRegistry` does not agree is the token
- * network for that token is a contradiction between two authorities, not a
- * recoverable condition. Signing a claim under the wrong `verifyingContract`
- * produces a signature that verifies against nothing, and the only symptom is a
- * refused claim — so it is caught here, before any collateral is locked.
+ * That last case is the one worth naming. A connector proves its channel terms
+ * against a live chain before publishing them, so terms the chain contradicts —
+ * a Solana mint owned by a program other than the offer's `tokenProgram`, say —
+ * are a disagreement between two authorities, not a recoverable condition. A
+ * channel opened on them would lock collateral the connector cannot be paid
+ * from, so it is caught here, before any deposit leaves.
  */
 export class ConfigError extends ToonClientError {
   constructor(message: string, cause?: Error) {

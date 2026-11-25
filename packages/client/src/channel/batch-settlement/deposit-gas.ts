@@ -33,9 +33,6 @@
  */
 
 import {
-  createPublicClient,
-  createWalletClient,
-  defineChain,
   encodeAbiParameters,
   encodeFunctionData,
   getAddress,
@@ -43,9 +40,8 @@ import {
   parseErc6492Signature,
   parseSignature,
   type Hex,
-  type LocalAccount,
 } from 'viem';
-import { rpcTransport, directFetch, type ChainRpcRoute } from '../../transport/rpc.js';
+import { directFetch } from '../../transport/rpc.js';
 import {
   ERC3009_DEPOSIT_COLLECTOR_ADDRESS,
   PERMIT2_ADDRESS,
@@ -142,7 +138,8 @@ const EIP2612_PERMIT_TYPES = {
 /**
  * What paying gas from the payer's own wallet needs of the chain, bound to the
  * payer's account. A viem wallet client extended with public actions provides
- * all of it; `ToonClient` builds one lazily.
+ * all of it; the EVM settlement network builds one over its RPC
+ * (`evmWalletAccess`).
  */
 export interface EvmWalletAccess {
   /** The payer's native balance, wei. */
@@ -155,43 +152,6 @@ export interface EvmWalletAccess {
   /** Send a contract call from the payer's account. */
   writeContract(params: never): Promise<Hex>;
   waitForTransactionReceipt(params: { hash: Hex }): Promise<{ status: string }>;
-}
-
-/**
- * {@link EvmWalletAccess} for `account` over `rpcUrl`, on whichever chain the
- * RPC reports. Nothing connects until it is first used.
- */
-export function evmWalletAccess(params: {
-  /** The route chain RPC takes, with the fetch it dials through. */
-  rpc: ChainRpcRoute;
-  account: LocalAccount;
-}): EvmWalletAccess {
-  const { account } = params;
-  const transport = rpcTransport(params.rpc);
-  const reader = createPublicClient({ transport });
-  let writer: Promise<ReturnType<typeof createWalletClient>> | undefined;
-  const wallet = () =>
-    (writer ??= reader.getChainId().then((id) =>
-      createWalletClient({
-        account,
-        transport,
-        chain: defineChain({
-          id,
-          name: `eip155:${id}`,
-          nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-          rpcUrls: { default: { http: [params.rpc.url] } },
-        }),
-      })
-    ));
-  return {
-    getBalance: () => reader.getBalance({ address: account.address }),
-    getTransactionCount: () =>
-      reader.getTransactionCount({ address: account.address, blockTag: 'pending' }),
-    estimateFeesPerGas: () => reader.estimateFeesPerGas(),
-    signTransaction: (tx: never) => account.signTransaction(tx),
-    writeContract: async (q: never) => (await wallet()).writeContract(q),
-    waitForTransactionReceipt: ({ hash }) => reader.waitForTransactionReceipt({ hash }),
-  };
 }
 
 // ---------------------------------------------------------------------------

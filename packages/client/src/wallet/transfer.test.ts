@@ -2,7 +2,7 @@
  * sendTransfer — plain token/native-gas transfer (issue #491).
  *
  * Covers: chain/asset dispatch and validation (unknown chain, malformed
- * address, non-positive amount), EVM native+token sends over a mocked viem,
+ * address, non-positive amount), EVM native+token sends over a faked network RPC,
  * Solana native+SPL sends over a mocked raw JSON-RPC (mirroring
  * OnChainChannelClient.test.ts's `fetchMock` pattern)
  * over a mocked GraphQL fetch. Every chain gets an explicit "accepted
@@ -10,11 +10,15 @@
  * the issue calls out by name for Solana.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { generatePrivateKey } from 'viem/accounts';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58Decode, base58Encode } from '../utils/base58.js';
-import { EvmSigner } from '../signing/evm-signer.js';
-import { deriveAssociatedTokenAccount } from '../channel/solana/payment-channel.js';
+import {
+  deriveAssociatedTokenAccount,
+  solanaRpcClient,
+} from '../channel/solana/json-rpc.js';
+import { directFetch } from '../transport/rpc.js';
+import type { EvmRpc } from '../channel/batch-settlement/evm-network.js';
 import {
   InsufficientBalanceError,
   InvalidAddressError,
@@ -27,7 +31,7 @@ import { sendTransfer, type TransferConfig } from './transfer.js';
 import { DEVNET } from '../presets.js';
 
 // ---------------------------------------------------------------------------
-// viem mock (mirrors OnChainChannelClient.test.ts)
+// The EVM settlement network's RPC, faked
 // ---------------------------------------------------------------------------
 
 const mockGetBalance = vi.fn();
@@ -35,22 +39,27 @@ const mockReadContract = vi.fn();
 const mockWriteContract = vi.fn();
 const mockSendTransaction = vi.fn();
 const mockWaitForTransactionReceipt = vi.fn();
+const mockWriter = vi.fn();
 
-vi.mock('viem', async (importOriginal) => {
-  const actual: Record<string, unknown> = await importOriginal();
+function fakeEvmRpc(): EvmRpc {
+  mockWriter.mockImplementation(() => ({
+    sendTransaction: mockSendTransaction,
+    writeContract: mockWriteContract,
+  }));
   return {
-    ...actual,
-    createPublicClient: vi.fn(() => ({
+    account: privateKeyToAccount(generatePrivateKey()),
+    proxied: false,
+    reader: () => ({
       getBalance: mockGetBalance,
       readContract: mockReadContract,
       waitForTransactionReceipt: mockWaitForTransactionReceipt,
-    })),
-    createWalletClient: vi.fn(() => ({
-      sendTransaction: mockSendTransaction,
-      writeContract: mockWriteContract,
-    })),
-  };
-});
+    }),
+    writer: mockWriter,
+  } as unknown as EvmRpc;
+}
+
+/** The Solana settlement network's RPC, over whatever `globalThis.fetch` is now. */
+const SOLANA_RPC = solanaRpcClient({ url: 'http://rpc', fetch: directFetch });
 
 const EVM_CHAIN_KEY = 'evm:anvil:31337';
 const EVM_TOKEN = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512';
@@ -60,8 +69,7 @@ function evmConfig({ withToken = true } = {}): TransferConfig {
   return {
     evm: {
       chainKey: EVM_CHAIN_KEY,
-      rpcUrl: 'http://localhost:8545',
-      signer: new EvmSigner(generatePrivateKey()),
+      rpc: fakeEvmRpc(),
       ...(withToken ? { tokenAddress: EVM_TOKEN } : {}),
     },
   };
@@ -127,7 +135,7 @@ describe('sendTransfer — dispatch & validation', () => {
   it('throws InvalidAddressError for a malformed Solana address', async () => {
     await expect(
       sendTransfer(
-        { solana: { rpcUrl: 'http://x', keypair: new Uint8Array(32).fill(1) } },
+        { solana: { rpc: SOLANA_RPC, keypair: new Uint8Array(32).fill(1) } },
         { chain: 'solana', asset: 'native', to: '0xnotbase58!!', amount: '1' }
       )
     ).rejects.toThrow(InvalidAddressError);
@@ -159,6 +167,8 @@ describe('sendTransfer — EVM', () => {
     expect(mockSendTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ to: EVM_TO, value: 1000n })
     );
+    // Signed for the chain the key names.
+    expect(mockWriter).toHaveBeenCalledWith(31337);
   });
 
   it('throws InsufficientBalanceError before sending when the sender is short', async () => {
@@ -334,7 +344,7 @@ describe('sendTransfer — Solana', () => {
     mockRpc({ destLamportsSequence: [0, 2000] });
 
     const result = await sendTransfer(
-      { solana: { rpcUrl: 'http://rpc', keypair: SEED } },
+      { solana: { rpc: SOLANA_RPC, keypair: SEED } },
       { chain: 'solana', asset: 'native', to: DEST, amount: '2000' }
     );
 
@@ -347,7 +357,7 @@ describe('sendTransfer — Solana', () => {
     mockRpc({ lamports: 100 });
     await expect(
       sendTransfer(
-        { solana: { rpcUrl: 'http://rpc', keypair: SEED } },
+        { solana: { rpc: SOLANA_RPC, keypair: SEED } },
         { chain: 'solana', asset: 'native', to: DEST, amount: '2000' }
       )
     ).rejects.toThrow(InsufficientBalanceError);
@@ -365,7 +375,7 @@ describe('sendTransfer — Solana', () => {
 
     await expect(
       sendTransfer(
-        { solana: { rpcUrl: 'http://rpc', keypair: SEED } },
+        { solana: { rpc: SOLANA_RPC, keypair: SEED } },
         {
           chain: 'solana',
           asset: 'native',
@@ -396,7 +406,7 @@ describe('sendTransfer — Solana', () => {
     const result = await sendTransfer(
       {
         solana: {
-          rpcUrl: 'http://rpc',
+          rpc: SOLANA_RPC,
           keypair: SEED,
           tokenMint: TOKEN_MINT,
         },
@@ -433,7 +443,7 @@ describe('sendTransfer — Solana', () => {
 
     await sendTransfer(
       {
-        solana: { rpcUrl: 'http://rpc', keypair: SEED, tokenMint: DEVNET_MINT },
+        solana: { rpc: SOLANA_RPC, keypair: SEED, tokenMint: DEVNET_MINT },
       },
       { chain: 'solana', asset: 'token', to: DEST, amount: '1000000' }
     );
@@ -459,7 +469,7 @@ describe('sendTransfer — Solana', () => {
     await expect(
       sendTransfer(
         {
-          solana: { rpcUrl: 'http://rpc', keypair: SEED, tokenMint: TOKEN_MINT },
+          solana: { rpc: SOLANA_RPC, keypair: SEED, tokenMint: TOKEN_MINT },
         },
         { chain: 'solana', asset: 'token', to: DEST, amount: '3000000' }
       )
@@ -470,7 +480,7 @@ describe('sendTransfer — Solana', () => {
     mockRpc();
     await expect(
       sendTransfer(
-        { solana: { rpcUrl: 'http://rpc', keypair: SEED } },
+        { solana: { rpc: SOLANA_RPC, keypair: SEED } },
         { chain: 'solana', asset: 'token', to: DEST, amount: '1000' }
       )
     ).rejects.toThrow(TransferUnsupportedError);

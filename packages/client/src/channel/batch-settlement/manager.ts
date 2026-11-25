@@ -3,7 +3,7 @@
  * channels (connector ADRs 0074, 0075; toon-client#688), persisted in a
  * {@link ChannelStore}.
  *
- * A voucher is not a balance proof, so the bookkeeping is its own:
+ * A voucher carries one cumulative amount and no nonce, so the bookkeeping is its own:
  *
  *   - **Only the amount is kept.** The connector orders vouchers by amount alone and
  *     accepts one only if it strictly exceeds the channel's watermark by at
@@ -36,16 +36,12 @@
  *     and then from `claim-state`, the connector's own figure.
  */
 
-import type { Hex } from 'viem';
-import type {
-  BatchSettlementBinding,
-  ChannelStore,
-  ChannelStoreEntry,
-} from '../ChannelStore.js';
+import type { ChannelStore, ChannelStoreEntry } from '../ChannelStore.js';
 import { InMemoryChannelStore } from '../ChannelStore.js';
 import type { BatchChannelConfig } from './evm.js';
 import type { SvmBatchChannelConfig } from './svm.js';
 import { nextVoucherAmount } from './claim.js';
+import { storedFormFor, type ChannelStoredForm } from './settlement-network.js';
 import { ValidationError } from '../../client/errors.js';
 
 /** One batch-settlement channel this client holds. */
@@ -68,7 +64,15 @@ export type BatchChannel =
 export class BatchChannelManager {
   private readonly store: ChannelStore;
 
-  constructor(store: ChannelStore = new InMemoryChannelStore()) {
+  /**
+   * @param storedForms how each network's channels are kept in the channel
+   *   record — every network's, not only those this client holds a key for,
+   *   so an archived channel on any of them still reads back.
+   */
+  constructor(
+    private readonly storedForms: readonly ChannelStoredForm[],
+    store: ChannelStore = new InMemoryChannelStore()
+  ) {
     this.store = store;
   }
 
@@ -101,6 +105,7 @@ export class BatchChannelManager {
     channel: BatchChannel,
     deposit: { depositTotal: bigint; pendingDeposit?: bigint }
   ): void {
+    const stored = this.toStored(channel);
     const existing = this.store.find(
       connector,
       channel.network,
@@ -119,7 +124,7 @@ export class BatchChannelManager {
       ...known,
       channelId: channel.channelId,
       connector,
-      batchSettlement: toBinding(channel),
+      batchSettlement: stored,
       depositTotal: deposit.depositTotal,
       openedAt: known?.openedAt ?? new Date().toISOString(),
       ...(deposit.pendingDeposit !== undefined
@@ -165,7 +170,7 @@ export class BatchChannelManager {
     asset: string
   ): BatchChannel | undefined {
     const entry = this.store.find(connector, network, asset);
-    return entry && fromBinding(entry.channelId, entry.batchSettlement);
+    return entry && this.fromStored(entry);
   }
 
   /** The deposit recorded for `channelId`. */
@@ -447,7 +452,7 @@ export class BatchChannelManager {
       .list()
       .filter((e) => e.connector === connector)
       .map((e) => ({
-        channel: fromBinding(e.channelId, e.batchSettlement),
+        channel: this.fromStored(e),
         depositTotal: e.depositTotal,
         signed: e.cumulativeAmount,
         ...(e.closedAt !== undefined ? { closedAt: e.closedAt } : {}),
@@ -468,6 +473,20 @@ export class BatchChannelManager {
       .map((c) => c.channel);
   }
 
+  private toStored(
+    channel: BatchChannel
+  ): ChannelStoreEntry['batchSettlement'] {
+    return storedFormFor(this.storedForms, channel.network).toStored(channel);
+  }
+
+  private fromStored(entry: ChannelStoreEntry): BatchChannel {
+    const stored = entry.batchSettlement;
+    return storedFormFor(this.storedForms, stored.network).fromStored(
+      entry.channelId,
+      stored
+    );
+  }
+
   private entry(channelId: string): ChannelStoreEntry {
     const entry = this.store.load(channelId);
     if (!entry)
@@ -476,51 +495,6 @@ export class BatchChannelManager {
       );
     return entry;
   }
-}
-
-function toBinding(channel: BatchChannel): BatchSettlementBinding {
-  if (channel.chain === 'evm') {
-    return {
-      chain: 'evm',
-      network: channel.network,
-      config: { ...channel.config },
-    };
-  }
-  return {
-    chain: 'solana',
-    network: channel.network,
-    sponsor: channel.sponsor,
-    config: {
-      ...channel.config,
-      salt: channel.config.salt.toString(),
-      openSlot: channel.config.openSlot.toString(),
-    },
-  };
-}
-
-function fromBinding(
-  channelId: string,
-  b: BatchSettlementBinding
-): BatchChannel {
-  if (b.chain === 'evm') {
-    return {
-      chain: 'evm',
-      channelId,
-      network: b.network,
-      config: { ...b.config, salt: b.config.salt as Hex },
-    };
-  }
-  return {
-    chain: 'solana',
-    channelId,
-    network: b.network,
-    sponsor: b.sponsor,
-    config: {
-      ...b.config,
-      salt: BigInt(b.config.salt),
-      openSlot: BigInt(b.config.openSlot),
-    },
-  };
 }
 
 function max(a: bigint | undefined, b: bigint): bigint {

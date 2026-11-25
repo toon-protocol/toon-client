@@ -17,6 +17,7 @@ import {
   FacilitatorError,
 } from '../../client/errors.js';
 import { must } from '../../utils/must.test-support.js';
+import { STORED_FORMS } from './stored-forms.test-support.js';
 
 const PAYER = privateKeyToAccount(
   '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
@@ -69,7 +70,7 @@ function payer(
   fetchImpl?: typeof fetch,
   facilitatorUrl = 'https://facilitator.test'
 ) {
-  const manager = new BatchChannelManager();
+  const manager = new BatchChannelManager(STORED_FORMS);
   const p = new BatchSettlementPayer({
     connector: 'https://node.example',
     manager,
@@ -188,7 +189,7 @@ describe('BatchSettlementPayer on Base', () => {
 
   it('with autoOpen off, refuses to open or top up on a packet, and opens on request', async () => {
     const f = facilitator();
-    const manager = new BatchChannelManager();
+    const manager = new BatchChannelManager(STORED_FORMS);
     const p = new BatchSettlementPayer({
       connector: 'https://node.example',
       manager,
@@ -227,7 +228,7 @@ describe('BatchSettlementPayer on Base', () => {
       success: false,
       errorReason: 'invalid_batch_settlement_evm_permit2_allowance_required',
     });
-    const manager = new BatchChannelManager();
+    const manager = new BatchChannelManager(STORED_FORMS);
     const p = new BatchSettlementPayer({
       connector: 'https://node.example',
       manager,
@@ -308,7 +309,7 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
           : [0n, 0];
       },
     };
-    const manager = new BatchChannelManager();
+    const manager = new BatchChannelManager(STORED_FORMS);
     const p = new BatchSettlementPayer({
       connector: 'https://node.example',
       manager,
@@ -411,7 +412,7 @@ describe('BatchSettlementPayer on Base — nothing leaves before it is recorded'
     const payerOver = (store: ChannelStore) =>
       new BatchSettlementPayer({
         connector: 'https://node.example',
-        manager: new BatchChannelManager(store),
+        manager: new BatchChannelManager(STORED_FORMS, store),
         deposit: 10_000n,
         networks: [
           new EvmSettlementNetwork({
@@ -453,7 +454,7 @@ describe('BatchSettlementPayer — asking the connector where it stands (connect
     store: ChannelStore = new InMemoryChannelStore()
   ) {
     const asked: Record<string, unknown>[] = [];
-    const manager = new BatchChannelManager(store);
+    const manager = new BatchChannelManager(STORED_FORMS, store);
     const p = new BatchSettlementPayer({
       connector: 'https://node.example',
       manager,

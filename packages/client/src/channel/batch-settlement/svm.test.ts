@@ -14,7 +14,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { base58Decode, base58Encode } from '../../utils/base58.js';
 import { fromBase64 } from '../../utils/binary.js';
 import { parseSolanaWireTransaction } from '../solana/wire-transaction.js';
-import type { Signer } from '../solana/payment-channel.js';
+import type { Signer } from '../solana/json-rpc.js';
 import {
   PAYMENT_CHANNELS_PROGRAM_ID,
   buildSponsoredOpen,

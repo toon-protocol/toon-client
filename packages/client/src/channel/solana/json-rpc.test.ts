@@ -16,7 +16,7 @@ import {
   deriveAssociatedTokenAccount,
   findProgramAddress,
   serializeLegacyTransaction,
-} from './payment-channel.js';
+} from './json-rpc.js';
 import { parseSolanaWireTransaction } from './wire-transaction.js';
 
 const PAYER = 'AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9';

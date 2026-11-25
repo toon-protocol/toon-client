@@ -12,21 +12,31 @@
  * for the same reason everything else does: the node proved them against a live
  * chain at boot (`self-description-spec.md` ND-07), and a preset that disagreed
  * would report a balance in the wrong token without saying so.
+ *
+ * It reaches each chain through that chain's settlement network, the same one
+ * the client pays on, and builds no chain client of its own (toon-client#777).
  */
 import { readWalletBalances, type WalletChainBalances } from '../wallet/balances.js';
 import { sendTransfer, type SendTransferParams, type SendTransferResult } from '../wallet/transfer.js';
 import { fundWallet, type FundWalletResult } from '../wallet/faucet.js';
 import type { ChainKind, WalletFacade } from './types.js';
 import type { NodeSelfDescription } from '../connector/self-description.js';
-import { EvmSigner } from '../signing/evm-signer.js';
-import { ChainUnavailableError, ConfigError, chainUnavailableMessage } from './errors.js';
+import { ChainUnavailableError, chainUnavailableMessage } from './errors.js';
 import type { ResolvedConfig } from './config.js';
-import { chainRoutes } from './chain-access.js';
+import type { SettlementNetwork } from '../channel/batch-settlement/settlement-network.js';
+import {
+  EvmSettlementNetwork,
+  type EvmRpc,
+} from '../channel/batch-settlement/evm-network.js';
+import { SolanaSettlementNetwork } from '../channel/batch-settlement/solana-network.js';
+import type { SolanaRpcClient } from '../channel/solana/json-rpc.js';
 
 export interface WalletFacadeDeps {
   config: ResolvedConfig;
   /** The node's `GET /ilp`, cached — the source of every token address read here. */
   describe: () => Promise<NodeSelfDescription>;
+  /** The settlement networks the client pays on: each chain is reached through its own. */
+  networks: readonly SettlementNetwork[];
 }
 
 /** One chain's settlement token, as the node's x402 terms name it. */
@@ -38,7 +48,6 @@ interface SettlementToken {
 
 export class ClientWalletFacade implements WalletFacade {
   private readonly deps: WalletFacadeDeps;
-  private evmSigner: EvmSigner | undefined;
 
   constructor(deps: WalletFacadeDeps) {
     this.deps = deps;
@@ -57,29 +66,25 @@ export class ClientWalletFacade implements WalletFacade {
     const settlements = await this.settlements();
 
     const wanted: ChainKind[] = chain !== undefined ? [chain] : ['evm', 'solana'];
-    const routes = chainRoutes(config);
-    const sources: Parameters<typeof readWalletBalances>[0] = {
-      fetchImpl: routes.solana.fetch,
-      solanaProxied: routes.solana.proxied === true,
-    };
+    const sources: Parameters<typeof readWalletBalances>[0] = {};
+    const evmRpc = this.evmRpc();
+    const solanaRpc = this.solanaRpc();
 
     for (const kind of wanted) {
       const entry = settlements.get(kind);
-      if (kind === 'evm' && config.identity.evm) {
+      if (kind === 'evm' && config.identity.evm && evmRpc) {
         sources.evm = {
           chainKey: entry?.chain ?? 'evm',
-          rpcUrl: routes.evm.url,
           owner: config.identity.evm.address,
-          evmRpcFetch: routes.evm.fetch,
-          proxied: routes.evm.proxied === true,
+          rpc: evmRpc,
           ...(entry?.tokenAddress ? { tokenAddress: entry.tokenAddress } : {}),
         };
       }
-      if (kind === 'solana' && config.identity.solana) {
+      if (kind === 'solana' && config.identity.solana && solanaRpc) {
         sources.solana = {
           ...(entry?.chain ? { chainKey: entry.chain } : {}),
-          rpcUrl: routes.solana.url,
           owner: config.identity.solana.publicKey,
+          rpc: solanaRpc,
           ...(entry?.tokenAddress ? { tokenMint: entry.tokenAddress } : {}),
         };
       }
@@ -107,27 +112,24 @@ export class ClientWalletFacade implements WalletFacade {
     const { config } = this.deps;
     const settlements = await this.settlements();
     const entry = settlements.get(params.chain);
-    const routes = chainRoutes(config);
+    const evmRpc = this.evmRpc();
+    const solanaRpc = this.solanaRpc();
 
     return sendTransfer(
       {
-        ...(config.identity.evm
+        ...(evmRpc
           ? {
               evm: {
                 chainKey: entry?.kind === 'evm' ? entry.chain : 'evm',
-                rpcUrl: routes.evm.url,
-                signer: this.signer(),
-                evmRpcFetch: routes.evm.fetch,
-                proxied: routes.evm.proxied === true,
+                rpc: evmRpc,
                 ...(entry?.tokenAddress ? { tokenAddress: entry.tokenAddress } : {}),
               },
             }
           : {}),
-        ...(config.identity.solana
+        ...(config.identity.solana && solanaRpc
           ? {
               solana: {
-                rpcUrl: routes.solana.url,
-                rpcFetch: routes.solana.fetch,
+                rpc: solanaRpc,
                 keypair: config.identity.solana.secretKey,
                 ...(entry?.tokenAddress ? { tokenMint: entry.tokenAddress } : {}),
               },
@@ -197,14 +199,14 @@ export class ClientWalletFacade implements WalletFacade {
     );
   }
 
-  /** The EVM transaction signer, built once and only when a transfer needs one. */
-  private signer(): EvmSigner {
-    if (this.evmSigner) return this.evmSigner;
-    const key = this.deps.config.identity.evm?.privateKey;
-    if (key === undefined) {
-      throw new ConfigError('This client holds no EVM key, so it cannot sign an EVM transaction.');
-    }
-    this.evmSigner = new EvmSigner(key);
-    return this.evmSigner;
+  /** The EVM settlement network's RPC, when this client pays on EVM. */
+  private evmRpc(): EvmRpc | undefined {
+    return this.deps.networks.find((n) => n instanceof EvmSettlementNetwork)?.rpc;
+  }
+
+  /** The Solana settlement network's RPC, when this client pays on Solana. */
+  private solanaRpc(): SolanaRpcClient | undefined {
+    const network = this.deps.networks.find((n) => n instanceof SolanaSettlementNetwork);
+    return network?.rpc;
   }
 }

@@ -7,9 +7,11 @@ import {
 } from '../channel/batch-settlement/manager.js';
 import type { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
 import { PAYMENT_CHANNELS_PROGRAM_ID } from '../channel/batch-settlement/svm.js';
+import { SolanaSettlementNetwork } from '../channel/batch-settlement/solana-network.js';
 import { parseSelfDescription } from '../connector/self-description.js';
 import { base58Encode } from '../utils/base58.js';
 import { ChannelNotOpenError } from './errors.js';
+import { STORED_FORMS } from '../channel/batch-settlement/stored-forms.test-support.js';
 
 const CONNECTOR = 'https://node.example';
 const privateKey = new Uint8Array(32).fill(1);
@@ -94,13 +96,28 @@ function rpc(statuses: Record<string, number | null>, lamports = 1_000_000_000) 
   return { target: { url: 'http://rpc', fetch: fetchImpl }, methods };
 }
 
+const EVM_CHANNEL: BatchChannel = {
+  chain: 'evm',
+  channelId: `0x${'ab'.repeat(32)}`,
+  network: 'eip155:84532',
+  config: {
+    payer: '0x1111111111111111111111111111111111111111',
+    payerAuthorizer: '0x1111111111111111111111111111111111111111',
+    receiver: '0x3333333333333333333333333333333333333333',
+    receiverAuthorizer: '0x3333333333333333333333333333333333333333',
+    token: '0x5555555555555555555555555555555555555555',
+    withdrawDelay: 86_400,
+    salt: `0x${'66'.repeat(32)}`,
+  },
+};
+
 const OTHER: BatchChannel = {
   ...CHANNEL,
   channelId: 'EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1',
 };
 
 function facade(statuses: Record<string, number | null>, now = 1_000n, lamports?: number) {
-  const manager = new BatchChannelManager();
+  const manager = new BatchChannelManager(STORED_FORMS);
   const chain = rpc(statuses, lamports);
   const f = new ClientChannelFacade({
     connector: CONNECTOR,
@@ -113,7 +130,14 @@ function facade(statuses: Record<string, number | null>, now = 1_000n, lamports?
       },
     } as unknown as BatchSettlementPayer,
     describe: async () => DESCRIPTION,
-    solana: { signer: SIGNER, rpc: chain.target },
+    networks: [
+      new SolanaSettlementNetwork({
+        signer: SIGNER,
+        rpc: chain.target,
+        fetch: chain.target.fetch,
+        connector: CONNECTOR,
+      }),
+    ],
     now: () => now,
   });
   return { f, manager, chain };
@@ -142,13 +166,14 @@ describe('client.channel', () => {
   });
 
   it('refuses to open on a chain the node offers no channel on', async () => {
-    const manager = new BatchChannelManager();
+    const manager = new BatchChannelManager(STORED_FORMS);
     const f = new ClientChannelFacade({
       connector: CONNECTOR,
       chain: 'evm',
       manager,
       payer: { open: async () => undefined } as unknown as BatchSettlementPayer,
       describe: async () => DESCRIPTION,
+      networks: [],
     });
     await expect(f.open()).rejects.toThrow(/offers no x402 channel on evm/);
   });
@@ -168,6 +193,7 @@ describe('client.channel', () => {
         },
       } as unknown as BatchSettlementPayer,
       describe: async () => DESCRIPTION,
+      networks: [],
     });
     expect(f.channels()).toEqual([]);
     const after = await g.deposit(2_000n);
@@ -246,6 +272,29 @@ describe('client.channel', () => {
         { channelId: OTHER.channelId },
         { channelId: CHANNEL.channelId, transaction: 'sig' },
       ])
+    );
+  });
+
+  it('reports a channel on a network this client holds no key for, and still closes the rest', async () => {
+    const { f, manager } = facade({ [CHANNEL.channelId]: 0 });
+    manager.adopt(CONNECTOR, EVM_CHANNEL, 1_000n);
+    manager.adopt(CONNECTOR, CHANNEL, 5_000n);
+    const closed = await f.close();
+    expect(closed).toEqual(
+      expect.arrayContaining([
+        {
+          channelId: EVM_CHANNEL.channelId,
+          error: `this client holds no key to leave a batch-settlement channel on ${EVM_CHANNEL.network}`,
+        },
+        expect.objectContaining({
+          channelId: CHANNEL.channelId,
+          transaction: 'sig',
+        }),
+      ])
+    );
+    // Not yet due, so settling leaves it alone rather than reporting it again.
+    expect((await f.settle()).map((r) => r.channelId)).not.toContain(
+      EVM_CHANNEL.channelId
     );
   });
 });
