@@ -60,9 +60,11 @@ import { DEVNET } from '../presets.js';
 import { ConnectorEdgeClient } from '../connector/ConnectorEdgeClient.js';
 import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
-import { EvmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
+import {
+  EvmSettlementNetwork,
+  evmWalletAccess,
+} from '../channel/batch-settlement/evm-network.js';
 import { PERMIT2_ADDRESS, readEvmBatchChannel } from '../channel/batch-settlement/evm.js';
-import { evmWalletAccess } from '../channel/batch-settlement/deposit-gas.js';
 import { chooseBatchSettlement } from '../channel/batch-settlement/offers.js';
 import { fundWallet } from '../wallet/faucet.js';
 import { ToonClient } from '../client/ToonClient.js';

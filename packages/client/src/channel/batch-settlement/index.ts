@@ -1,6 +1,13 @@
 // x402 `batch-settlement` (connector ADRs 0074, 0075): the only way this client
-// pays a connector — channel config and id, the gasless deposit or sponsored
-// open, vouchers and the claim-state challenge, and leaving a channel.
+// pays a connector.
+//
+// What is exported is the chain-blind lifecycle (the payer, the channel
+// record) and the seam it pays through: the settlement network, one adapter per
+// network. The per-chain helpers each adapter composes (channel config and id,
+// deposits, vouchers, claims, challenges, exits, the sponsor and facilitator
+// calls) are its own, and are not exported (toon-client#780).
+
+// The deployments' fixed facts.
 export {
   X402_BATCH_SETTLEMENT_ADDRESS,
   ERC3009_DEPOSIT_COLLECTOR_ADDRESS,
@@ -8,40 +15,20 @@ export {
   PERMIT2_ADDRESS,
   MIN_WITHDRAW_DELAY_SECONDS,
   MAX_WITHDRAW_DELAY_SECONDS,
-  evmChainIdOf,
-  buildBatchChannelConfig,
-  batchChannelId,
-  batchVoucherDigest,
-  signBatchVoucher,
-  buildEip3009Deposit,
-  buildPermit2Deposit,
-  type BatchSettlementEvmOffer,
   type BatchChannelConfig,
-  type BatchVoucher,
-  type BatchDepositPayload,
-  type Eip3009DepositPayload,
-  type Permit2DepositPayload,
+  type BatchSettlementEvmOffer,
+  type ContractReader,
   type TypedDataSigner,
 } from './evm.js';
-export { settleDeposit, type SettledDeposit } from './facilitator.js';
 export {
   PAYMENT_CHANNELS_PROGRAM_ID,
   MIN_GRACE_PERIOD_SECONDS,
   MAX_GRACE_PERIOD_SECONDS,
-  buildSvmBatchChannelConfig,
-  svmBatchChannelAddress,
-  paymentChannelsEventAuthority,
-  buildSvmTopUpInstruction,
-  buildSponsoredOpen,
-  buildSvmVoucherMessage,
-  signSvmVoucher,
-  decodeSvmBatchChannel,
-  singleRecipientDistributionHash,
   type BatchSettlementSvmOffer,
   type SvmBatchChannelConfig,
-  type SvmBatchVoucher,
-  type SvmBatchChannelState,
 } from './svm.js';
+
+// The connector's terms, as its self-description publishes them.
 export {
   CONNECTOR_MAX_TIMEOUT_SECONDS,
   parseBatchSettlementOffer,
@@ -51,20 +38,11 @@ export {
   type BatchSettlementOffer,
   type BatchSettlementTerms,
 } from './offers.js';
-export {
-  evmVoucherClaim,
-  solanaVoucherClaim,
-  nextVoucherAmount,
-  type VoucherClaimEnvelope,
-} from './claim.js';
+
+// The chain-blind lifecycle.
+export { nextVoucherAmount, type VoucherClaimEnvelope } from './claim.js';
+export { CHANNEL_CHALLENGE_MAX_LIFETIME_SECONDS } from './challenge.js';
 export { BatchChannelManager, type BatchChannel } from './manager.js';
-export {
-  X402_BATCH_SETTLEMENT_READ_ABI,
-  readEvmBatchChannel,
-  type EvmBatchChannelState,
-  type ContractReader,
-} from './evm.js';
-export { getSvmBatchChannel } from './svm.js';
 export {
   BatchSettlementPayer,
   readVoucherRefusal,
@@ -72,6 +50,8 @@ export {
   type PreparedVoucher,
   type VoucherOutcome,
 } from './payer.js';
+
+// The settlement network, and its two adapters.
 export {
   settlementNetworkFor,
   type ChannelStoredForm,
@@ -87,45 +67,12 @@ export {
   EvmSettlementNetwork,
   evmSettlementNetwork,
   evmStoredForm,
-  X402_BATCH_SETTLEMENT_EXIT_ABI,
-  initiateEvmBatchWithdraw,
-  finalizeEvmBatchWithdraw,
-  type EvmExitClients,
+  type EvmRpc,
   type EvmSettlementNetworkConfig,
 } from './evm-network.js';
+export type { EvmWalletAccess } from './deposit-gas.js';
 export {
   SolanaSettlementNetwork,
   solanaStoredForm,
-  buildSvmRequestCloseInstruction,
-  buildSvmSealInstruction,
-  buildSvmWithdrawPayerInstruction,
-  requestSvmBatchClose,
-  withdrawSvmBatchChannel,
   type SolanaSettlementNetworkConfig,
 } from './solana-network.js';
-export { requestSponsoredOpen, type SponsoredOpen } from './sponsor.js';
-export {
-  EIP2612_GAS_SPONSORING,
-  ERC20_APPROVAL_GAS_SPONSORING,
-  X402_BATCH_SETTLEMENT_DEPOSIT_ABI,
-  approvePermit2,
-  depositDirectly,
-  eip2612Nonce,
-  eip2612PermitData,
-  erc3009CollectorData,
-  evmWalletAccess,
-  facilitatorExtensions,
-  permit2Allowance,
-  permit2CollectorData,
-  signEip2612GasSponsoring,
-  signErc20ApprovalGasSponsoring,
-  type DepositExtensions,
-  type EvmWalletAccess,
-} from './deposit-gas.js';
-export {
-  CHANNEL_CHALLENGE_MAX_LIFETIME_SECONDS,
-  evmChallengeDigest,
-  signEvmChallenge,
-  solanaChallengeMessage,
-  signSolanaChallenge,
-} from './challenge.js';

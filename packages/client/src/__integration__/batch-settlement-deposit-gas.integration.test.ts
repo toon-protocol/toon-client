@@ -54,13 +54,12 @@ import {
 } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { BatchSettlementPayer } from '../channel/batch-settlement/payer.js';
-import { EvmSettlementNetwork } from '../channel/batch-settlement/evm-network.js';
-import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
 import {
-  approvePermit2,
-  depositDirectly,
+  EvmSettlementNetwork,
   evmWalletAccess,
-} from '../channel/batch-settlement/deposit-gas.js';
+} from '../channel/batch-settlement/evm-network.js';
+import { BatchChannelManager } from '../channel/batch-settlement/manager.js';
+import { approvePermit2, depositDirectly } from '../channel/batch-settlement/deposit-gas.js';
 import {
   batchChannelId,
   buildBatchChannelConfig,

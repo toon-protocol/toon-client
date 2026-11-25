@@ -15,7 +15,18 @@
  * {@link evmVoucherClaim}, and the claim-state challenge {@link signEvmChallenge}.
  */
 
-import { createPublicClient, type Hex, type LocalAccount } from 'viem';
+import {
+  createPublicClient,
+  createWalletClient,
+  defineChain,
+  type Account,
+  type Chain,
+  type Hex,
+  type LocalAccount,
+  type PublicClient,
+  type Transport,
+  type WalletClient,
+} from 'viem';
 import {
   ConfigError,
   FacilitatorError,
@@ -24,7 +35,11 @@ import {
   ValidationError,
 } from '../../client/errors.js';
 import { defaultFacilitatorFor } from '../../presets.js';
-import { rpcTransport, type ChainRpcRoute } from '../../transport/rpc.js';
+import {
+  rpcTransport,
+  type ChainRpcRoute,
+  type RpcTransportOptions,
+} from '../../transport/rpc.js';
 import {
   X402_BATCH_SETTLEMENT_ADDRESS,
   batchChannelId,
@@ -46,7 +61,6 @@ import {
   approvePermit2,
   depositDirectly,
   eip2612Nonce,
-  evmWalletAccess,
   facilitatorExtensions,
   permit2Allowance,
   signEip2612GasSponsoring,
@@ -154,8 +168,82 @@ export interface EvmSettlementNetworkConfig {
    * rather than a guess.
    */
   reader?: ContractReader;
+  /**
+   * This network's JSON-RPC, which anything else that reaches the chain (a
+   * wallet balance read, a transfer) is handed. {@link evmSettlementNetwork}
+   * builds it over the client's RPC route.
+   */
+  rpc?: EvmRpc;
   /** How the facilitator is reached. */
   fetch: typeof fetch;
+}
+
+/**
+ * An EVM network's JSON-RPC, bound to its route and its account: the only viem
+ * clients this package builds (toon-client#777). Nothing connects until a
+ * client is used.
+ */
+export interface EvmRpc {
+  /** The account this network pays from, which a {@link EvmRpc.writer} sends as. */
+  readonly account: LocalAccount;
+  /** The route rides the SOCKS5h proxy, so a caller's own timeout should allow a circuit's latency. */
+  readonly proxied: boolean;
+  /** A read client. `options` set the caller's own timeout and retries. */
+  reader(options?: RpcTransportOptions): PublicClient;
+  /** A client that sends transactions as {@link EvmRpc.account} on chain `chainId`. */
+  writer(chainId: number): WalletClient<Transport, Chain, Account>;
+}
+
+/** {@link EvmRpc} for `account` over `route`. */
+export function evmRpc(route: ChainRpcRoute, account: LocalAccount): EvmRpc {
+  let reader: PublicClient | undefined;
+  return {
+    account,
+    proxied: route.proxied === true,
+    reader: (options) =>
+      options === undefined
+        ? (reader ??= createPublicClient({ transport: rpcTransport(route) }))
+        : createPublicClient({ transport: rpcTransport(route, options) }),
+    writer: (chainId) =>
+      createWalletClient({
+        account,
+        transport: rpcTransport(route),
+        chain: defineChain({
+          id: chainId,
+          name: `eip155:${chainId}`,
+          nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+          rpcUrls: { default: { http: [route.url] } },
+        }),
+      }),
+  };
+}
+
+/**
+ * {@link EvmWalletAccess} for `account` over `rpc`, on whichever chain the RPC
+ * reports. Nothing connects until it is first used.
+ */
+export function evmWalletAccess(params: {
+  /** The route chain RPC takes, with the fetch it dials through. */
+  rpc: ChainRpcRoute;
+  account: LocalAccount;
+}): EvmWalletAccess {
+  return walletAccessOver(evmRpc(params.rpc, params.account));
+}
+
+function walletAccessOver(rpc: EvmRpc): EvmWalletAccess {
+  const { account } = rpc;
+  const reader = rpc.reader();
+  let writer: Promise<ReturnType<EvmRpc['writer']>> | undefined;
+  const wallet = () => (writer ??= reader.getChainId().then((id) => rpc.writer(id)));
+  return {
+    getBalance: () => reader.getBalance({ address: account.address }),
+    getTransactionCount: () =>
+      reader.getTransactionCount({ address: account.address, blockTag: 'pending' }),
+    estimateFeesPerGas: () => reader.estimateFeesPerGas(),
+    signTransaction: (tx: never) => account.signTransaction(tx),
+    writeContract: async (q: never) => (await wallet()).writeContract(q),
+    waitForTransactionReceipt: ({ hash }) => reader.waitForTransactionReceipt({ hash }),
+  };
 }
 
 export class EvmSettlementNetwork implements SettlementNetwork {
@@ -170,6 +258,11 @@ export class EvmSettlementNetwork implements SettlementNetwork {
   readonly fromStored = evmStoredForm.fromStored;
 
   constructor(private readonly config: EvmSettlementNetworkConfig) {}
+
+  /** This network's JSON-RPC, when it was built over one. */
+  get rpc(): EvmRpc | undefined {
+    return this.config.rpc;
+  }
 
   /**
    * A channel opened by depositing into it through the facilitator. The
@@ -597,24 +690,15 @@ export function evmSettlementNetwork(params: {
   depositMethod?: 'eip3009' | 'permit2';
   depositGas?: 'auto' | 'facilitator' | 'self';
 }): EvmSettlementNetwork {
-  const { account, rpc, ...rest } = params;
+  const { account, rpc: route, ...rest } = params;
+  const rpc = evmRpc(route, account);
   return new EvmSettlementNetwork({
     ...rest,
     account,
-    reader: lazyReader(rpc),
-    wallet: evmWalletAccess({ rpc, account }),
+    rpc,
+    reader: { readContract: (q: never) => rpc.reader().readContract(q) },
+    wallet: walletAccessOver(rpc),
   });
-}
-
-/** A `readContract` over `route`, built on first use. */
-function lazyReader(route: ChainRpcRoute): ContractReader {
-  let client: ReturnType<typeof createPublicClient> | undefined;
-  return {
-    readContract: (params: never) => {
-      client ??= createPublicClient({ transport: rpcTransport(route) });
-      return client.readContract(params);
-    },
-  };
 }
 
 /** A facilitator's Permit2-allowance refusal, explained; any other error as it was. */

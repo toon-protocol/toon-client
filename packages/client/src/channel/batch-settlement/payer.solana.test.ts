@@ -9,7 +9,7 @@ import { parseSolanaWireTransaction } from '../solana/wire-transaction.js';
 import {
   deriveAssociatedTokenAccount,
   type Signer,
-} from '../solana/payment-channel.js';
+} from '../solana/json-rpc.js';
 import { base58Decode, base58Encode } from '../../utils/base58.js';
 import { fromBase64 } from '../../utils/binary.js';
 import {

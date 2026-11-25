@@ -1,33 +1,39 @@
 import { describe, it, expect, vi } from 'vitest';
-import type * as ViemModule from 'viem';
-
-// Mock viem's createPublicClient so the EVM reader resolves balanceOf/decimals/
-// symbol deterministically without a live RPC. Mirrors OnChainChannelClient.test.
-vi.mock('viem', async (importOriginal) => {
-  const actual = await importOriginal<typeof ViemModule>();
-  return {
-    ...actual,
-    createPublicClient: vi.fn(() => ({
-      readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
-        if (functionName === 'balanceOf') return 125_500_000n;
-        if (functionName === 'decimals') return 6;
-        if (functionName === 'symbol') return 'USDC';
-        throw new Error(`unexpected fn ${functionName}`);
-      }),
-      // Native ETH read (`eth_getBalance`) — 1.5 ETH in wei.
-      getBalance: vi.fn(async () => 1_500_000_000_000_000_000n),
-    })),
-  };
-});
-
-const {
+import type { EvmRpc } from '../channel/batch-settlement/evm-network.js';
+import { solanaRpcClient } from '../channel/solana/json-rpc.js';
+import {
   parseEvmChainId,
   readEvmTokenBalance,
   readEvmNativeBalance,
   readSolanaTokenBalance,
   readSolanaNativeBalance,
   readWalletBalances,
-} = await import('./balances.js');
+  type EvmBalanceReader,
+} from './balances.js';
+
+/** An EVM read client that answers balanceOf/decimals/symbol and eth_getBalance. */
+function evmClient(): EvmBalanceReader {
+  return {
+    readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
+      if (functionName === 'balanceOf') return 125_500_000n;
+      if (functionName === 'decimals') return 6;
+      if (functionName === 'symbol') return 'USDC';
+      throw new Error(`unexpected fn ${functionName}`);
+    }),
+    // Native ETH read (`eth_getBalance`) — 1.5 ETH in wei.
+    getBalance: vi.fn(async () => 1_500_000_000_000_000_000n),
+  } as unknown as EvmBalanceReader;
+}
+
+/** The EVM settlement network's RPC, as far as a balance read uses it. */
+function evmRpc(client: EvmBalanceReader = evmClient()): EvmRpc {
+  return { proxied: false, reader: () => client } as unknown as EvmRpc;
+}
+
+/** The Solana settlement network's RPC over `fetchImpl`. */
+function solanaRpc(fetchImpl: unknown) {
+  return solanaRpcClient({ url: 'http://localhost:8899', fetch: fetchImpl as typeof fetch });
+}
 
 describe('parseEvmChainId', () => {
   it('handles 3-part and 2-part chain keys', () => {
@@ -42,8 +48,7 @@ describe('parseEvmChainId', () => {
 describe('readEvmTokenBalance', () => {
   it('reads balanceOf + decimals + symbol', async () => {
     const bal = await readEvmTokenBalance({
-      rpcUrl: 'http://localhost:8545',
-      chainKey: 'evm:anvil:31337',
+      client: evmClient(),
       tokenAddress: '0x0000000000000000000000000000000000000001',
       owner: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
     });
@@ -75,10 +80,9 @@ describe('readSolanaTokenBalance', () => {
       )
     );
     const bal = await readSolanaTokenBalance({
-      rpcUrl: 'http://localhost:8899',
+      rpc: solanaRpc(fetchImpl),
       mint: 'mint11111111111111111111111111111111111111',
       owner: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',
-      fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     expect(bal).toEqual({
       chain: 'solana',
@@ -93,7 +97,7 @@ describe('readSolanaTokenBalance', () => {
       new Response(JSON.stringify({ error: { message: 'boom' } }), { status: 200 })
     );
     await expect(
-      readSolanaTokenBalance({ rpcUrl: 'x', mint: 'm', owner: 'o', fetchImpl: fetchImpl as unknown as typeof fetch })
+      readSolanaTokenBalance({ rpc: solanaRpc(fetchImpl), mint: 'm', owner: 'o' })
     ).rejects.toThrow(/boom/);
   });
 });
@@ -101,8 +105,7 @@ describe('readSolanaTokenBalance', () => {
 describe('readEvmNativeBalance', () => {
   it('reads native ETH (wei) via eth_getBalance as symbol ETH / 18 decimals', async () => {
     const bal = await readEvmNativeBalance({
-      rpcUrl: 'http://localhost:8545',
-      chainKey: 'evm:anvil:31337',
+      client: evmClient(),
       owner: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
     });
     expect(bal).toEqual({ symbol: 'ETH', amount: '1500000000000000000', decimals: 18 });
@@ -117,9 +120,8 @@ describe('readSolanaNativeBalance', () => {
       })
     );
     const bal = await readSolanaNativeBalance({
-      rpcUrl: 'http://localhost:8899',
+      rpc: solanaRpc(fetchImpl),
       owner: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',
-      fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     expect(bal).toEqual({ symbol: 'SOL', amount: '2000000000', decimals: 9 });
   });
@@ -127,7 +129,7 @@ describe('readSolanaNativeBalance', () => {
   it('throws on a non-200 RPC response', async () => {
     const fetchImpl = vi.fn(async () => new Response('nope', { status: 502 }));
     await expect(
-      readSolanaNativeBalance({ rpcUrl: 'x', owner: 'o', fetchImpl: fetchImpl as unknown as typeof fetch })
+      readSolanaNativeBalance({ rpc: solanaRpc(fetchImpl), owner: 'o' })
     ).rejects.toThrow(/HTTP 502/);
   });
 });
@@ -159,16 +161,15 @@ describe('readWalletBalances (grouped multi-chain view)', () => {
     const result = await readWalletBalances({
       evm: {
         chainKey: 'evm:31337',
-        rpcUrl: 'http://localhost:8545',
         owner: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
         tokenAddress: '0x0000000000000000000000000000000000000001',
+        rpc: evmRpc(),
       },
       solana: {
-        rpcUrl: 'http://localhost:8899',
         owner: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',
         tokenMint: 'mint11111111111111111111111111111111111111',
+        rpc: solanaRpc(sol),
       },
-      fetchImpl: sol as unknown as typeof fetch,
     });
 
     expect(result).toEqual([
@@ -207,11 +208,10 @@ describe('readWalletBalances (grouped multi-chain view)', () => {
     const sol = solanaFetch();
     const [chain] = await readWalletBalances({
       solana: {
-        rpcUrl: 'http://localhost:8899',
         owner: 'SoLownerNoToken1111111111111111111111111111',
         // no tokenMint
+        rpc: solanaRpc(sol),
       },
-      fetchImpl: sol as unknown as typeof fetch,
     });
     expect(chain).toMatchObject({
       chain: 'solana',
@@ -224,9 +224,9 @@ describe('readWalletBalances (grouped multi-chain view)', () => {
   it('an unreachable RPC degrades that chain to unreadable without failing others', async () => {
     const evmOk = {
       chainKey: 'evm:31337',
-      rpcUrl: 'http://localhost:8545',
       owner: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
       tokenAddress: '0x0000000000000000000000000000000000000001',
+      rpc: evmRpc(),
     };
     // Solana RPC is down: every call rejects.
     const downFetch = vi.fn(async () => {
@@ -235,11 +235,10 @@ describe('readWalletBalances (grouped multi-chain view)', () => {
     const result = await readWalletBalances({
       evm: evmOk,
       solana: {
-        rpcUrl: 'http://down:8899',
         owner: 'SoLownerDown11111111111111111111111111111111',
         tokenMint: 'mint11111111111111111111111111111111111111',
+        rpc: solanaRpc(downFetch),
       },
-      fetchImpl: downFetch as unknown as typeof fetch,
     });
     const evm = result.find((c) => c.chain === 'evm');
     const solana = result.find((c) => c.chain === 'solana');

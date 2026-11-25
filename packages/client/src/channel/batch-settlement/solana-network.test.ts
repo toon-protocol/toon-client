@@ -13,7 +13,7 @@ import {
   solanaStoredForm,
 } from './solana-network.js';
 import { PAYMENT_CHANNELS_PROGRAM_ID } from './svm.js';
-import { deriveAssociatedTokenAccount } from '../solana/payment-channel.js';
+import { deriveAssociatedTokenAccount } from '../solana/json-rpc.js';
 import { base58Encode } from '../../utils/base58.js';
 import type { BatchChannel } from './manager.js';
 import type { BatchSettlementBinding } from '../ChannelStore.js';
