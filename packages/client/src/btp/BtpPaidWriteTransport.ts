@@ -4,20 +4,19 @@
  * ─── Why this exists ─────────────────────────────────────────────────────
  * `HttpIlpClient` (the default paid-write transport, `POST /ilp`) is
  * stateless: every write is an independent HTTP request, and the connector's
- * claim gate advances a channel's nonce watermark per request in WHATEVER
- * order those requests happen to arrive — client-edge-spec.md §1.3 step 2. A
- * burst of concurrent paid writes on one channel can therefore race each
- * other into `F01 NonceNotAdvancing`: two requests both built against the
- * same last-known nonce, one arrives first and advances the watermark, the
- * other is now stale.
+ * claim gate admits a voucher only if its amount strictly exceeds the
+ * channel's watermark (client-edge-spec.md §1.3 step 2). A burst of concurrent
+ * paid writes on one channel can therefore race each other's amounts: two
+ * vouchers both built against the same watermark, one arrives first and
+ * advances it, and the other no longer exceeds it and is refused.
  *
  * The connector's client-facing BTP websocket ingress (client-edge-spec.md
  * §1.9, connector#680/#674) processes frames on ONE session strictly in
  * arrival order — the next frame is not read until the previous frame's
- * claim has been judged. A client that dispatches its OWN claims in the same
- * order it enqueued them therefore never races itself. This was measured on
- * the huddle-over-ILP prototype (`toon-meta/prototypes/huddle-over-ilp`,
- * branch `proto/huddle-over-ilp`): 0 F01 rejects across 4,156 events at a
+ * voucher has been judged. A client that dispatches its OWN vouchers in the
+ * same order it enqueued them therefore never races itself. This was measured
+ * on the huddle-over-ILP prototype (`toon-meta/prototypes/huddle-over-ilp`,
+ * branch `proto/huddle-over-ilp`): 0 refused vouchers across 4,156 events at a
  * paced 50fps (audio-frame-rate) sustained load, where the equivalent
  * unordered concurrent-HTTP baseline raced.
  *
@@ -25,8 +24,8 @@
  * a one-off harness: a caller that needs many ordered paid writes on one
  * channel (the motivating consumer is relay-native huddle audio, ~140fps of
  * measured headroom per session) constructs one `BtpPaidWriteTransport`
- * around a `BtpRuntimeClient` session and sends through it exactly like any
- * other `sendIlpPacketWithClaim`-shaped transport.
+ * around a `BtpRuntimeClient` session and sends through it exactly like it
+ * would through `HttpIlpClient.sendIlpPacketWithClaim`.
  *
  * ─── What it adds over a bare `BtpRuntimeClient` ────────────────────────
  *  - **Persistent session**: the underlying session is connected once,
@@ -59,6 +58,8 @@
  */
 
 import type { IlpSendResult } from '../ilp/types.js';
+import type { BtpRuntimeClient } from './BtpRuntimeClient.js';
+import type { HttpIlpClient } from '../http/HttpIlpClient.js';
 import type { IlpSendParams } from '../ilp/ilp-send.js';
 import {
   NetworkError,
@@ -67,35 +68,22 @@ import {
 } from '../client/errors.js';
 
 /**
- * The narrow shape a paid-write transport candidate needs — the same method
- * `ToonClient.getClaimTransport()` already requires of `HttpIlpClient` and
- * `BtpRuntimeClient`. Declared independently so this module (and its tests)
- * do not need the concrete transport classes.
- */
-export interface ClaimSendingTransport {
-  sendIlpPacketWithClaim(
-    params: IlpSendParams,
-    claim: unknown
-  ): Promise<IlpSendResult>;
-  sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult>;
-}
-
-/**
  * The subset of `BtpRuntimeClient` this transport drives. `BtpRuntimeClient`
  * satisfies this structurally — no adapter needed — but tests can supply a
  * lightweight fake instead of a real WebSocket-backed instance.
  */
-export interface OrderedBtpSession {
-  readonly isConnected: boolean;
-  connect(): Promise<void>;
-  reconnect(): Promise<void>;
-  disconnect(): Promise<void>;
-  sendIlpPacketWithClaim(
-    params: IlpSendParams,
-    claim: Record<string, unknown>
-  ): Promise<IlpSendResult>;
-  sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult>;
-}
+export type BtpSession = Pick<
+  BtpRuntimeClient,
+  | 'isConnected'
+  | 'connect'
+  | 'reconnect'
+  | 'disconnect'
+  | 'sendIlpPacketWithClaim'
+  | 'sendIlpPacket'
+>;
+
+/** What the HTTP fallback beneath a BTP session must be able to send. */
+export type HttpFallback = Pick<HttpIlpClient, 'sendIlpPacket' | 'sendIlpPacketWithClaim'>;
 
 export interface BtpPaidWriteTransportConfig {
   /**
@@ -104,7 +92,7 @@ export interface BtpPaidWriteTransportConfig {
    * connects `btpClient` at startup) or not; either way it is connected
    * lazily on first use and never disconnected between writes.
    */
-  session: OrderedBtpSession;
+  session: BtpSession;
   /**
    * The `ws(s)://` URL the session dials, so a connection failure can name it.
    * Omit and a failure carries the session's own message alone.
@@ -117,7 +105,7 @@ export interface BtpPaidWriteTransportConfig {
    * Typically an `HttpIlpClient` pointed at the same connector's `POST /ilp`.
    * Omit to have an exhausted BTP session fail the write outright.
    */
-  fallback?: ClaimSendingTransport;
+  fallback?: HttpFallback;
   /**
    * Reconnect attempts for one write before giving up on BTP (and, if
    * configured, falling back to HTTP). Default 1 — one explicit reconnect
@@ -151,13 +139,13 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Wraps an {@link OrderedBtpSession} (a `BtpRuntimeClient`) as a first-class,
+ * Wraps a {@link BtpSession} (a `BtpRuntimeClient`) as a first-class,
  * persistent, strictly-ordered paid-write transport with an optional HTTP
  * fallback. See the module docs above for the full rationale.
  */
-export class BtpPaidWriteTransport implements ClaimSendingTransport {
-  private readonly session: OrderedBtpSession;
-  private readonly fallback: ClaimSendingTransport | undefined;
+export class BtpPaidWriteTransport {
+  private readonly session: BtpSession;
+  private readonly fallback: HttpFallback | undefined;
   private readonly url: string | undefined;
   private readonly endpointSource: EndpointSource | undefined;
   private readonly maxReconnectAttempts: number;
@@ -196,7 +184,7 @@ export class BtpPaidWriteTransport implements ClaimSendingTransport {
    */
   sendIlpPacketWithClaim(
     params: IlpSendParams,
-    claim: unknown
+    claim: Record<string, unknown>
   ): Promise<IlpSendResult> {
     const dispatched = this.queueTail.then(() =>
       this.dispatchWithRetry(params, claim)
@@ -212,11 +200,11 @@ export class BtpPaidWriteTransport implements ClaimSendingTransport {
    * Send a packet with no claim, for a route priced at zero.
    *
    * Enqueued behind the same tail as a paid write. The ordering exists for
-   * claims — nonces on one socket must not race — and an unpaid packet carries
-   * none, so strictly it needs no slot. It takes one anyway: the queue also
-   * serialises this transport's connect/reconnect policy, and letting an unpaid
-   * send dial concurrently with a paid one would race the session itself rather
-   * than the nonces.
+   * vouchers — amounts on one socket must not race — and an unpaid packet
+   * carries none, so strictly it needs no slot. It takes one anyway: the queue
+   * also serialises this transport's connect/reconnect policy, and letting an
+   * unpaid send dial concurrently with a paid one would race the session itself
+   * rather than the vouchers' amounts.
    */
   sendIlpPacket(params: IlpSendParams): Promise<IlpSendResult> {
     const dispatched = this.queueTail.then(() => this.dispatchUnpaid(params));
@@ -260,7 +248,7 @@ export class BtpPaidWriteTransport implements ClaimSendingTransport {
    */
   private async dispatchWithRetry(
     params: IlpSendParams,
-    claim: unknown
+    claim: Record<string, unknown>
   ): Promise<IlpSendResult> {
     let attempt = 0;
     let lastError: unknown;
@@ -279,10 +267,7 @@ export class BtpPaidWriteTransport implements ClaimSendingTransport {
             await this.session.reconnect();
           }
         }
-        return await this.session.sendIlpPacketWithClaim(
-          params,
-          claim as Record<string, unknown>
-        );
+        return await this.session.sendIlpPacketWithClaim(params, claim);
       } catch (error) {
         lastError = error;
         if (!isConnectionError(error)) {

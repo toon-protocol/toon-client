@@ -107,8 +107,8 @@ export interface ToonClientConfig {
    * Which carriage to pay over. `'auto'` (default) honours the node's own
    * `requiredTransport` and otherwise prefers HTTP, which is the one-shot,
    * stateless path. Choose `'btp'` when streaming many paid requests: one
-   * ordered socket cannot race its own claim nonces, which parallel HTTP
-   * requests can.
+   * ordered socket cannot race its own vouchers' amounts, which parallel
+   * HTTP requests can.
    */
   transport?: TransportPreference;
 

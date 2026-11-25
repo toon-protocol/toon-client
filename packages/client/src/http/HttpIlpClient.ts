@@ -40,11 +40,12 @@
  * only way to learn a route's carriage was to be refused over the wrong one.
  * 1.0 reads the node's own self-description first and picks a carriage from it
  * (`../btp/transport-select.js`), so that fallback is gone: a `401` is an
- * ordinary transport error again, and a `402` is terms — thrown as
- * {@link PaymentRequiredError} carrying them.
+ * ordinary transport error again, and a `402` is terms — returned as a refusal
+ * carrying the raw document in `paymentRequired`, which the carriage reads as a
+ * greeting.
  */
 
-import type { IlpClient, IlpSendResult } from '../ilp/types.js';
+import type { IlpSendResult } from '../ilp/types.js';
 import {
   ILPPacketType,
   serializeIlpPrepare,
@@ -55,8 +56,6 @@ import {
   describeEndpoint,
   type EndpointSource,
   ConnectorError,
-  PaymentRequiredError,
-  TransportRequiredError,
 } from '../client/errors.js';
 import { parsePaymentTerms } from '../connector/x402.js';
 import {
@@ -186,13 +185,13 @@ export interface HttpIlpClientConfig {
 }
 
 /**
- * Stateless ILP-over-HTTP transport implementing `IlpClient`.
+ * Stateless ILP-over-HTTP transport: the carriage's HTTP adapter.
  *
  * Use this for pure one-shot consumers (publish-and-forget writes). When the
  * client needs a duplex session — to receive server-initiated packets or to act
  * as a peer — use `BtpRuntimeClient`.
  */
-export class HttpIlpClient implements IlpClient {
+export class HttpIlpClient {
   private readonly httpEndpoint: string;
   private readonly endpointSource: EndpointSource | undefined;
   private readonly peerId: string | undefined;
@@ -227,7 +226,7 @@ export class HttpIlpClient implements IlpClient {
   /**
    * Send an ILP PREPARE via `POST /ilp` WITHOUT a claim. The connector accepts
    * this only on free/zero-amount routes; paid writes must use
-   * {@link sendIlpPacketWithClaim}. Satisfies the IlpClient interface.
+   * {@link sendIlpPacketWithClaim}.
    *
    * `params` may carry an `expectedFulfillment` (the sender's end-to-end
    * check, ADR 0069), a `greeting` flag and an explicit `expiresAt`. With an
@@ -302,6 +301,7 @@ export class HttpIlpClient implements IlpClient {
    * Single attempt: serialize the PREPARE, POST it, and map the response.
    * @throws {NetworkError} On connection/timeout failures (retried).
    * @throws {ConnectorError} On non-retryable transport errors (5xx / unexpected).
+   *   A `402` carrying terms is returned, not thrown.
    */
   private async postPrepare(
     params: IlpSendParams,
@@ -396,8 +396,9 @@ export class HttpIlpClient implements IlpClient {
     // TERMS instead of doing the work — an unpaid request to a priced route,
     // or a request that arrived over a carriage this route does not accept
     // (§1.4). Both carry the same x402 v2 document, the second adding
-    // `extra.requiredTransport`. Thrown with the parsed terms so a caller can
-    // act on them rather than re-parse an English message.
+    // `extra.requiredTransport`. Returned as a refusal carrying the raw document
+    // in `paymentRequired`, exactly where BTP puts it, so the carriage reads one
+    // greeting whichever way it arrived.
     //
     // Pre-1.0 this class caught a 402 (and a bare 401) purely to signal
     // "retry over BTP". That fallback is gone: 1.0 decides its carriage up
@@ -413,23 +414,18 @@ export class HttpIlpClient implements IlpClient {
         parsedBody = undefined;
       }
       const terms = parsePaymentTerms(parsedBody, this.httpEndpoint);
-      const required = terms?.requiredTransport;
-      // A greeting that NAMES a carriage is a different refusal from one that
-      // merely asks to be paid, because the remedy is different: paying more
-      // will never help, and re-sending over the named carriage always will.
-      if (required !== undefined) {
-        throw new TransportRequiredError(
-          `The connector at ${this.httpEndpoint} refused this write over HTTP; ` +
-            `the route requires the ${required} transport.`,
-          { required, ...(terms !== undefined ? { terms } : {}) }
-        );
-      }
       if (terms !== undefined) {
-        throw new PaymentRequiredError(
-          `The connector at ${this.httpEndpoint} answered 402 with terms for ` +
-            `${terms.destination} at ${terms.price}.`,
-          terms
-        );
+        const required = terms.requiredTransport;
+        return {
+          accepted: false,
+          paymentRequired: parsedBody,
+          message:
+            required !== undefined
+              ? `The connector at ${this.httpEndpoint} refused this write over HTTP; ` +
+                `the route requires the ${required} transport.`
+              : `The connector at ${this.httpEndpoint} answered 402 with terms for ` +
+                `${terms.destination} at ${terms.price}.`,
+        };
       }
       // A 402 this client cannot read as a TOON greeting at all — a vanilla
       // x402 challenge, or a malformed body. Surfaced as the transport error
@@ -453,13 +449,7 @@ export class HttpIlpClient implements IlpClient {
   private mapTransportError(error: unknown, requestTimeout: number): Error {
     if (
       error instanceof ConnectorError ||
-      error instanceof NetworkError ||
-      // Thrown by `mapResponse` inside the same try. Neither is a
-      // `ConnectorError` (carrying the terms is the whole point of those
-      // classes), so each needs its own check to pass through unwrapped — and
-      // neither may be retried: repeating the POST only repeats the 402.
-      error instanceof PaymentRequiredError ||
-      error instanceof TransportRequiredError
+      error instanceof NetworkError
     ) {
       return error;
     }

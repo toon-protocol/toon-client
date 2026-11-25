@@ -17,6 +17,7 @@ export {
 export {
   selectTransport,
   type TransportChoice,
+  type TransportUnavailable,
 } from './transport-select.js';
 export {
   serializeIlpPrepare,

@@ -6,7 +6,7 @@ import {
   type BtpTransferHandler,
 } from '../btp/IsomorphicBtpClient.js';
 import { type BTPProtocolData } from '../btp/protocol.js';
-import type { IlpClient, IlpSendResult } from '../ilp/types.js';
+import type { IlpSendResult } from '../ilp/types.js';
 import {
   ACCUMULATED_COST_PROTOCOL,
   CLAIM_ACK_PROTOCOL,
@@ -121,10 +121,10 @@ function isConnectionError(error: Error): boolean {
 }
 
 /**
- * BTP transport implementing IlpClient.
+ * BTP transport: the carriage's BTP session.
  * Uses IsomorphicBtpClient (browser-native, no Node.js dependencies).
  */
-export class BtpRuntimeClient implements IlpClient {
+export class BtpRuntimeClient {
   private btpClient: IsomorphicBtpClient | null = null;
   private readonly config: BtpRuntimeClientConfig;
   private _isConnected = false;
@@ -197,7 +197,6 @@ export class BtpRuntimeClient implements IlpClient {
 
   /**
    * Sends an ILP packet via BTP with auto-reconnect on connection errors.
-   * Satisfies IlpClient interface.
    *
    * `params` may carry an `expectedFulfillment` (the sender's end-to-end
    * check, ADR 0069), a `greeting` flag and an explicit `expiresAt`. With an

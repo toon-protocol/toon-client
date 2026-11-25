@@ -22,6 +22,7 @@ import { UsageError, listOption, stringOption } from '../args.js';
 import type { CommandContext } from '../context.js';
 import { assetFromSettlement, decodeUtf8, formatAmount, type AssetInfo } from '../output.js';
 import type { SendRefused, SendRequest, SendResult } from '../../client/types.js';
+import { ToonClientError } from '../../client/errors.js';
 
 /** Split one `-H name:value` into its two halves. */
 export function parseHeaderSpec(spec: string): [string, string] {
@@ -230,6 +231,13 @@ export async function run(ctx: CommandContext): Promise<number> {
           ...(sealToFlag === undefined ? {} : { sealTo: sealToFlag }),
         }
   );
+
+  // A greeting with no terms is the node publishing no endpoint for the carriage
+  // this route needs: nothing reached the connector. The CLI has always reported
+  // that as an error naming the missing carriage, exit 6, not as a refusal.
+  if (!result.fulfilled && result.code === 'TRANSPORT_REQUIRED' && result.terms === undefined) {
+    throw new ToonClientError(result.message, 'TRANSPORT_REQUIRED');
+  }
 
   const description = await client.describe();
   const asset = assetFromSettlement(description.batchSettlements[0]);
